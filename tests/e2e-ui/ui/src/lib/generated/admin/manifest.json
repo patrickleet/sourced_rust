@@ -1,0 +1,48 @@
+{
+  "compiler_manifest_version": 1,
+  "distributed_manifest_version": 7,
+  "protocol_version": 2,
+  "service_id": "e2e-ui",
+  "surface": {
+    "kind": "application",
+    "name": "fieldnote-admin",
+    "roles": [
+      "admin"
+    ]
+  },
+  "schema_fingerprint": "sha256:29eac37de7571cf1d9c8152676491460f1423149a50ed7cc792141e740ddc4fa",
+  "protocol_fingerprint": "sha256:7631d15b16e327ff08d728e97ac5f90f5150d00774938e720bbbc6830b77e0cf",
+  "scalar_codecs": {
+    "BigInt": "json_number_precision_limited",
+    "Boolean": "boolean",
+    "Bytea": "base64",
+    "Float": "float64",
+    "ID": "string",
+    "Int": "int32",
+    "JSON": "json",
+    "String": "string",
+    "Timestamptz": "string_unvalidated_timestamp"
+  },
+  "commands_requiring_revalidation": [
+    "blob.move",
+    "blob.start",
+    "blob.start_level"
+  ],
+  "operations": [
+    {
+      "name": "AdminAllTodos",
+      "source_path": "src/routes/admin/+page.graphql",
+      "module_path": "operations/admin-all-todos.ts",
+      "export_name": "Operation_AdminAllTodos",
+      "operation_hash": "sha256:3436d01402748d8c4f2f5d2ff5f1173fea89786c8e902de09a24bd03596eaf27"
+    }
+  ],
+  "routes": [
+    {
+      "operation": "AdminAllTodos",
+      "route": "/admin",
+      "source_path": "src/routes/admin/+page.graphql",
+      "discovery": "convention"
+    }
+  ]
+}

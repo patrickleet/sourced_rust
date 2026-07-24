@@ -49,10 +49,7 @@ pub fn presented_secret(session: &Session) -> Option<String> {
     None
 }
 
-pub fn verify_authenticity(
-    session: &Session,
-    is_action_event: bool,
-) -> Result<(), HandlerError> {
+pub fn verify_authenticity(session: &Session, is_action_event: bool) -> Result<(), HandlerError> {
     if let Some(presented) = presented_secret(session) {
         let expected = configured_secret().ok_or_else(|| {
             HandlerError::Unauthorized(format!(
@@ -130,8 +127,7 @@ mod tests {
     #[test]
     fn rejects_when_secret_not_configured() {
         with_env(None, false, || {
-            let err =
-                verify_authenticity(&session(&[(SECRET_HEADER, "x")]), false).unwrap_err();
+            let err = verify_authenticity(&session(&[(SECRET_HEADER, "x")]), false).unwrap_err();
             assert!(matches!(err, HandlerError::Unauthorized(_)));
         });
     }

@@ -1,6 +1,7 @@
 import type {
-	ReplicaLegacyOperationArtifact,
 	ReplicaOperationArtifact,
+	ReplicaObjectMember,
+	ReplicaObjectSelection,
 	ReplicaOperationProtocol,
 	ReplicaPaginationArtifact,
 	ReplicaProtocolOperationArtifact,
@@ -18,8 +19,29 @@ type Variables = {
 const protocol = {
 	version: 2,
 	schemaHash: 'schema:type-test',
-	operation: 'query:type-test'
+	surface: {
+		kind: 'role',
+		name: 'user'
+	},
+	operation: 'query:type-test',
+	trustedPresets: []
 } as const satisfies ReplicaOperationProtocol;
+
+// @ts-expect-error Generated protocol artifacts always name their client surface.
+export const protocolWithoutSurface: ReplicaOperationProtocol = {
+	version: 2,
+	schemaHash: 'schema:type-test',
+	operation: 'query:type-test',
+	trustedPresets: []
+};
+
+// @ts-expect-error Generated protocol artifacts always carry the exact preset union.
+export const protocolWithoutTrustedPresets: ReplicaOperationProtocol = {
+	version: 2,
+	schemaHash: 'schema:type-test',
+	surface: { kind: 'role', name: 'user' },
+	operation: 'query:type-test'
+};
 
 const variableCodec = {
 	version: 2,
@@ -50,26 +72,11 @@ export const protocolArtifact: ReplicaProtocolOperationArtifact<Data, Variables>
 export const protocolArtifactViaUnion: ReplicaOperationArtifact<Data, Variables> =
 	protocolArtifact;
 
-export const legacyArtifact: ReplicaLegacyOperationArtifact<Data, Variables> = {
-	id: 'legacy:type-test',
+// @ts-expect-error Artifacts without protocol-v2 binding are unsupported.
+export const unboundArtifact: ReplicaOperationArtifact<Data, Variables> = {
+	id: 'unbound:type-test',
 	document: 'query TypeTest { items { id } }',
 	roots: []
-};
-
-export const legacyArtifactViaUnion: ReplicaOperationArtifact<Data, Variables> = {
-	id: 'legacy:type-test-union',
-	document: 'query TypeTest { items { id } }',
-	roots: []
-};
-
-export const legacyArtifactWithCodec: ReplicaLegacyOperationArtifact<
-	Data,
-	Variables
-> = {
-	id: 'legacy:type-test-codec',
-	document: 'query TypeTest($id: ID!) { items(id: $id) { id } }',
-	roots: [],
-	variableCodec
 };
 
 // @ts-expect-error Protocol-v2 artifacts must include their variable codec.
@@ -93,6 +100,22 @@ declare const independentlyOptionalArtifact: IndependentlyOptionalArtifact;
 // @ts-expect-error Protocol and codec cannot be modeled as independent options.
 export const rejectedIndependentOptions: ReplicaOperationArtifact<Data, Variables> =
 	independentlyOptionalArtifact;
+
+const handwrittenEntitySelection = {
+	model: { id: 'Item', identityFields: ['id'] },
+	fields: []
+} as const;
+
+// @ts-expect-error The generated recursive object IR is the only selection shape.
+export const rejectedHandwrittenSelection: ReplicaObjectSelection =
+	handwrittenEntitySelection;
+
+// @ts-expect-error Generated scalars must bind an exact codec and nullability.
+export const rejectedUnboundScalar: ReplicaObjectMember = {
+	kind: 'scalar',
+	responseKey: 'id',
+	field: 'id'
+};
 
 export const unprovenCursorPagination: ReplicaPaginationArtifact = {
 	kind: 'cursor',

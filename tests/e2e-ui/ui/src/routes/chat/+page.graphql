@@ -1,0 +1,11 @@
+# One query declaration owns SSR, normalized cache reads, and its generated
+# live companion. The page never maintains a second subscription document.
+query ChatMessages @load @live {
+  chat_messages(where: { room_id: { _eq: "lobby" } }) {
+    message_id
+    room_id
+    author_id
+    body
+    created_at
+  }
+}

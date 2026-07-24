@@ -18,6 +18,10 @@ export type FetchLike = typeof globalThis.fetch;
 export type RequestGraphqlOptions = {
 	/** Override the runtime's global fetch implementation. */
 	fetch?: FetchLike;
+	/** Framework-owned GraphQL request extensions. */
+	extensions?: Readonly<Record<string, unknown>>;
+	/** Cancel the underlying HTTP request when its authorization generation closes. */
+	signal?: AbortSignal;
 };
 
 type GraphqlResponseBody<TData> = {
@@ -111,7 +115,14 @@ export async function requestGraphql<
 	const response = await fetchImpl(url, {
 		method: 'POST',
 		headers: buildAuthHeaders(auth),
-		body: JSON.stringify({ query: documentToString(document), variables })
+		body: JSON.stringify({
+			query: documentToString(document),
+			variables,
+			...(options.extensions === undefined
+				? {}
+				: { extensions: options.extensions })
+		}),
+		...(options.signal === undefined ? {} : { signal: options.signal })
 	});
 
 	const { body, rawText } = await readResponseBody<TData>(response);

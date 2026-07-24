@@ -1,0 +1,9 @@
+# Elevated surface: deterministic and bounded all-owner view.
+query AdminAllTodos @load {
+  todos(limit: 100, order_by: [{ status: asc }, { owner_id: asc }, { todo_id: asc }]) {
+    todo_id
+    owner_id
+    title
+    status
+  }
+}

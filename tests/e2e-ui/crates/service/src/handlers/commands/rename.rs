@@ -1,12 +1,11 @@
 //! Command: `todo.rename` — owner-only (aggregate enforces).
 
-use distributed::microsvc::{Context, HandlerError};
+use distributed::graphql::{Fact, PreparedCommand};
+use distributed::microsvc::{CausalCommandContext, HandlerError};
 use serde::{Deserialize, Serialize};
-use serde_json::{json, Value};
+use todo_domain::Todo;
 
-use crate::deps::TodoDeps;
-use crate::handlers::commands::todo_cmd::{commit_todo_event, load_todo, map_domain};
-use crate::handlers::util::{require_user, session_has_user};
+use crate::handlers::commands::todo_cmd::{load_todo, map_domain, stage_todo_event};
 
 pub const COMMAND: &str = "todo.rename";
 
@@ -23,31 +22,18 @@ pub struct TodoRenamePayload {
     pub status: String,
 }
 
-pub fn guard<R, L, S>(ctx: &Context<TodoDeps<R, L, S>>) -> bool
-where
-    R: crate::bounds::EventStore,
-    L: crate::bounds::Locks,
-    S: Send + Sync + 'static,
-{
-    ctx.has_fields(&["todo_id", "title"]) && session_has_user(ctx.session())
-}
-
-pub async fn handle<R, L, S>(
-    ctx: &Context<'_, TodoDeps<R, L, S>>,
-) -> Result<Value, HandlerError>
-where
-    R: crate::bounds::EventStore,
-    L: crate::bounds::Locks,
-    S: Send + Sync + 'static,
-{
-    let owner = require_user(ctx.session())?;
-    let input = ctx.input::<TodoRenameInput>()?;
+pub async fn handle(
+    ctx: &CausalCommandContext<'_, Todo>,
+    input: TodoRenameInput,
+) -> Result<PreparedCommand<Fact<TodoRenamePayload>>, HandlerError> {
+    let owner = ctx.user_id()?.to_string();
     let mut todo = load_todo(ctx, &input.todo_id).await?;
     todo.rename(&owner, &input.title).map_err(map_domain)?;
-    let fact = commit_todo_event(ctx, &mut todo, "todo.renamed").await?;
-    Ok(json!({
-        "todo_id": fact.todo_id,
-        "title": fact.title,
-        "status": fact.status,
-    }))
+    let fact = stage_todo_event(ctx, todo, "todo.renamed")?;
+    PreparedCommand::<Fact<TodoRenamePayload>>::prepare(TodoRenamePayload {
+        todo_id: fact.todo_id,
+        title: fact.title,
+        status: fact.status,
+    })
+    .map_err(|error| HandlerError::Other(Box::new(error)))
 }

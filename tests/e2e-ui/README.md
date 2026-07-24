@@ -7,15 +7,15 @@ A **copyable starting point** for a Distributed service + SvelteKit UI with:
 | Multi-crate domain (todos + chat + blob) | `crates/*-domain`, `readmodels`, `service` |
 | Projectors-only read models | command handlers never dual-write |
 | GraphQL RLS | `owner_id = claim(x-user-id)` on todos / blob |
-| Live subscriptions | `subscription { chat_messages }` + ChangeHub |
+| Live subscriptions | `query ChatMessages @load @live` + ChangeHub |
 | **Zitadel ingestor** | `POST /zitadel.ingress.v1` + scrape reconcile → `auth_users` ([local runbook](docs/zitadel-ingestor.md); design: `specs/e2e-ui/zitadel-ingestor`) |
 | **GraphQL joins** | `chat_messages.author` / `blob_games.owner` → `auth_users` |
 | **WebSocket auth** | Bearer access token in `connection_init` (OIDC best practice) |
 | **Real OIDC** | Zitadel in Docker + Auth.js (PKCE + session cookie) |
 | **Login V2** | **Custom** `/login` + `/signup` in this UI (Session API + CreateCallback); not Zitadel’s stock login image |
 | **Postgres** | event store + bus + locks |
-| **SSR GraphQL** | `+page.server.ts` loads with session token (no Loading flash) |
-| **Published JS client** | Local [`js/`](../../js/) package supplies typed transport, cache, command runtime, and SvelteKit adapter |
+| **SSR GraphQL** | A generated static route registry drives root-layout loading and hydration (no Loading flash) |
+| **Published JS client** | Local [`js/`](../../js/) package supplies typed transport, normalized causal replica, generated commands, and SvelteKit adapter |
 | Auth routes | sign-in, protected todos/chat, session inspector |
 
 ## Quick start (full stack)
@@ -33,7 +33,7 @@ make run         # API :8791 + UI :5180
 | http://127.0.0.1:5180/todos | SSR todos (auth required) |
 | http://127.0.0.1:5180/blob | Blob game — aggregate moves → projected `blob_games` map/score |
 | http://127.0.0.1:5180/admin | Admin all-owners todos (admin role only) |
-| http://127.0.0.1:5180/chat | SSR seed + live WS sub |
+| http://127.0.0.1:5180/chat | SSR load + live WS continuation |
 | http://127.0.0.1:5180/session | Session / token inspector |
 | http://127.0.0.1:8791/graphql | GraphiQL |
 | `ws://127.0.0.1:8791/graphql/ws` | Subscriptions |
@@ -48,7 +48,7 @@ make run         # API :8791 + UI :5180
 | Login | Engine role | Notes |
 |-------|-------------|--------|
 | `alice` / `bob` | `user` | Personal `/todos` (owner filter) |
-| `admin` | `admin` | `/admin` — all owners' notes + **`todos_force_archive`** (admin-only mutation; absent from user SDL) |
+| `admin` | `admin` | `/admin` — all owners' notes + **`todos_force_archive`** through a separate elevated client surface |
 
 ## Offline (no Docker)
 
@@ -177,79 +177,96 @@ released npm version.
 
 ## Design docs (GitKB)
 
-Normative design lives in the Distributed GitKB attached to this repository:
+Normative architecture, API decisions, and implementation plans live in the
+**Distributed GitKB**, not in this code fixture. This README documents how to
+run and extend the checked-in example; update the Distributed KB when the
+design itself changes.
 
-| Spec | Content |
-|------|---------|
-| `specs/e2e-ui/layout` | Crate map, projector/RLS rules, UI surface |
-| `specs/e2e-ui/blob-game` | Blob Game aggregate, facts, projection, GraphQL, and UI contract |
-| `specs/e2e-ui/zitadel-ingestor` | Provider ingress, reconciliation, directory projection, and joins |
-| `specs/e2e-ui/sveltekit-dx` | SvelteKit GraphQL DX (unified client, defineResource) |
-| `specs/e2e-ui/gql-codegen-dx` | Co-located `.gql` + graphql-codegen |
-| `specs/e2e-ui/rust-role-sdl-codegen` | Role SDL from Rust engine → UI schema |
+### One typed client generation path
 
-### UI GraphQL schema + codegen
+The Rust `Service` inventory is the source of truth for reads, commands,
+permissions, result contracts, and optimistic effects. The fixture exposes two
+pool-free client surfaces:
 
-Role SDL is **generated** from the same GraphQL engine the API runs
-(`build_graphql_engine` + `sdl_for_role`):
+| Entrypoint | Application | Roles | Used by |
+|------------|-------------|-------|---------|
+| `e2e_service::distributed_client_surface` | `fieldnote` | `admin`, `user` | The normal app shell and user routes |
+| `e2e_service::distributed_admin_client_surface` | `fieldnote-admin` | `admin` | The nested `/admin` shell only |
 
-| File | Role | Notes |
-|------|------|--------|
-| `ui/schema/user.graphql` | `user` | No `todos_force_archive` |
-| `ui/schema/admin.graphql` | `admin` | Superset — includes admin-only mutations |
-
-Codegen uses **admin** schema so co-located admin ops typecheck; **runtime ACL is the session engine role** — a user token cannot call admin-only fields even if types exist in the bundle.
+`dctl client-manifest` evaluates that inventory without starting Postgres.
+`dctl client` combines the manifest with co-located route documents and emits
+the typed operations, command tree, optimistic metadata, and static route
+registry used by both SSR and the browser.
 
 ```bash
 # from tests/e2e-ui
-make export-sdl          # user + admin SDL from GraphQL engine
-make gen-gql             # export-sdl + TypedDocumentNode from co-located *.gql
-make check-gql           # gen-gql + git diff --exit-code (CI / agents)
-
-# or from ui/
-npm run gen:schema
-npm run gen:gql
-npm run gen
+make gen-client      # generate both surfaces from ui/distributed.config.js
+make check-client    # dctl --check both surfaces without rewriting
 ```
 
-Edit co-located `routes/**/*.gql`, run `make gen-gql`, commit schema + `*.generated.ts`.
+Route reads live beside their pages as `+page.graphql`:
 
-**Agent rule:** after changing `build_graphql_engine` / `graphql_commands()`, command handlers, or `*.gql`, run `make check-gql` **and** `make check-commands`, then commit any schema/generated diffs. Do not hand-edit `schema/*.graphql`, `*.generated.ts`, or `commands.generated.ts` as source of truth.
-
-### Command client (typed functions over GraphQL wire)
-
-Day-to-day writes are **commands**, not hand-authored mutation documents.
-The same Rust registry (`e2e_service::graphql_commands()`) exports a catalog;
-`make gen-commands` invokes the `distributed-gen-commands` CLI supplied by
-`@hops-ops/distributed` and emits:
-
-| Artifact | Purpose |
-|----------|---------|
-| `ui/src/lib/api/commands.manifest.json` | Machine catalog from Rust |
-| `ui/src/lib/api/commands.operations.gql` | Copy-paste mutations for GraphiQL |
-| `ui/src/lib/api/commands.generated.ts` | Same documents + `bindCommands` → `gql.commands.*` |
-| `ui/src/lib/api/commands.policies.generated.ts` | Typed result/reconciliation defaults from the service manifest |
-
-Co-located route `*.gql` files hold **queries/subscriptions** only. Command
-mutations live under `$lib/api/commands.operations.gql`.
-
-```bash
-make export-commands   # → commands.manifest.json
-make gen-commands      # → .operations.gql + .generated.ts
-make check-commands    # fail on drift
+```graphql
+query Todos @load {
+  todos(order_by: [{ status: asc }, { todo_id: asc }]) {
+    todo_id
+    owner_id
+    title
+    status
+  }
+}
 ```
 
-Example (commands pre-bound on the client):
+`@load` adds the operation to the generated static route registry for SSR.
+`@live` continues the same operation over WebSocket after hydration. Commands
+come from the typed Rust inventory, so route documents contain reads rather
+than hand-authored command mutations.
+
+The compiler-owned `$distributed` target exports `Todos`,
+`useCommands`, `provideDistributed`, and `DISTRIBUTED_ROUTE_OPERATIONS`.
+The root server layout loads declared routes once:
 
 ```ts
-const gql = useGraphql(() => data);
-await gql.commands.todosCreate({ todo_id, title });
-await gql.commands.chatMessagesPost({ message_id, body, room_id });
-gql.subscribe(chat.subscription!, { onNext });
+const distributed = createDistributedSvelteKitServer({
+  routes: DISTRIBUTED_ROUTE_OPERATIONS,
+  getSession: ({ locals }) => locals.auth(),
+  getRole: (session) => engineRoleFromGroups(session?.user?.groups)
+});
+
+export const load = distributed.load;
 ```
 
-See distributed GitKB: `specs/query-layer/references/command-client-dx` and
-epic `tasks/graphql-qs-command-client-1`.
+The root component tree provides one client with the same session source for
+GraphQL HTTP, WebSocket connection init, commands, and authorization-scope
+invalidation:
+
+```ts
+import { provideDistributed } from '$distributed';
+
+const client = provideDistributed({
+  session,
+  hydration: data.distributed,
+  authority: data.distributedAuthority
+});
+```
+
+Routes resolve that nearest client only when the component initializes:
+
+```ts
+import { Todos, useCommands } from '$distributed';
+
+const todos = Todos.use();
+const commands = useCommands();
+await commands.todo.create({ title }); // todo_id defaults to uuid_v7()
+```
+
+The nested `/admin` layout creates a second client from the
+`fieldnote-admin` artifacts after its role gate. User pages cannot import or
+discover elevated operations through the normal `fieldnote` client.
+
+**Agent rule:** after changing the typed `Service` inventory, a command
+contract, or a co-located `+page.graphql`, run `make check-client` and commit
+the generated diffs. Generated artifacts are outputs, not authoring surfaces.
 
 ### Security template notes
 

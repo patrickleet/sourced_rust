@@ -23,7 +23,9 @@
 	}: Props = $props();
 
 	// Arrow is automatically light on dark themes
-	const isLightArrow = theme === 'dark' || theme === 'transparent-dark';
+	const isLightArrow = $derived(
+		theme === 'dark' || theme === 'transparent-dark'
+	);
 </script>
 
 <section

@@ -38,6 +38,36 @@ export type DistributedCommandConsistency =
 	| 'fact'
 	| 'projected';
 
+/** Closed wire codecs for server-derived, client-visible trusted presets. */
+export type DistributedTrustedPresetCodec =
+	| 'string'
+	| 'string_unvalidated_timestamp'
+	| 'base64'
+	| 'boolean'
+	| 'int32'
+	| 'float64'
+	| 'json_number_precision_limited'
+	| 'json';
+
+/** JSON value accepted by the Distributed protocol parser. */
+export type DistributedProtocolValue =
+	| null
+	| boolean
+	| number
+	| string
+	| readonly DistributedProtocolValue[]
+	| { readonly [key: string]: DistributedProtocolValue };
+
+/**
+ * One server-derived value valid only under its containing envelope's exact
+ * authoritative cache scope.
+ */
+export type DistributedTrustedPreset = Readonly<{
+	name: string;
+	codec: DistributedTrustedPresetCodec;
+	value: DistributedProtocolValue;
+}>;
+
 /** One finite, server-resolved projection obligation for a command. */
 export type DistributedProjectionExpectation = Readonly<
 	Record<string, unknown> & {
@@ -142,6 +172,8 @@ export type DistributedProtocolEnvelope = Readonly<
 		command?: DistributedCommandMetadata;
 		snapshot?: DistributedQuerySnapshot;
 		live?: DistributedLiveMetadata;
+		/** Defaults to an empty array when omitted by the compact wire format. */
+		trustedPresets: readonly DistributedTrustedPreset[];
 	}
 >;
 
@@ -195,7 +227,13 @@ const MAX_OPAQUE_STRING_LENGTH = 16_384;
 const MAX_EVIDENCE_ITEMS = 4_096;
 const MAX_LIVE_RESUME_CURSORS = 64;
 const MAX_PATH_SEGMENTS = 256;
+const MAX_TRUSTED_PRESETS = 4_096;
+const MAX_TRUSTED_PRESET_NAME_LENGTH = 128;
+const MAX_TRUSTED_PRESET_VALUE_DEPTH = 64;
 const MAX_UNSIGNED_64 = '18446744073709551615';
+const MAX_SAFE_INTEGER = 9_007_199_254_740_991;
+const CANONICAL_BASE64 =
+	/^(?:[A-Za-z0-9+/]{4})*(?:[A-Za-z0-9+/]{2}==|[A-Za-z0-9+/]{3}=)?$/;
 
 /**
  * Parse GraphQL's optional top-level `extensions` object.
@@ -266,6 +304,9 @@ export function parseDistributedProtocolEnvelope(
 		envelope.live === undefined
 			? undefined
 			: parseLive(envelope.live);
+	const trustedPresets = parseDistributedTrustedPresetInventory(
+		envelope.trustedPresets
+	);
 
 	return Object.freeze({
 		...envelope,
@@ -275,8 +316,48 @@ export function parseDistributedProtocolEnvelope(
 		...(operation === undefined ? {} : { operation }),
 		...(command === undefined ? {} : { command }),
 		...(snapshot === undefined ? {} : { snapshot }),
-		...(live === undefined ? {} : { live })
+		...(live === undefined ? {} : { live }),
+		trustedPresets
 	}) as DistributedProtocolEnvelope;
+}
+
+/**
+ * Parse and deeply freeze one scope-wide trusted-preset value inventory.
+ *
+ * This is exported for the framework-neutral replica's internal command seam.
+ * Applications receive the same values through
+ * {@link parseDistributedProtocolEnvelope}; they must never supply this
+ * inventory as command authority.
+ *
+ * @internal
+ */
+export function parseDistributedTrustedPresetInventory(
+	value: unknown,
+	path = 'extensions.distributed.trustedPresets'
+): readonly DistributedTrustedPreset[] {
+	if (value === undefined) return Object.freeze([]);
+	if (!Array.isArray(value) || value.length > MAX_TRUSTED_PRESETS) {
+		invalid(path);
+	}
+	const names = new Set<string>();
+	const presets = value.map((candidate, index) => {
+		const itemPath = `${path}[${index}]`;
+		const item = record(candidate, itemPath);
+		const name = trustedPresetName(item.name, `${itemPath}.name`);
+		if (names.has(name)) invalid(`${itemPath}.name`);
+		names.add(name);
+		const codec = trustedPresetCodec(item.codec, `${itemPath}.codec`);
+		return Object.freeze({
+			name,
+			codec,
+			value: parseTrustedPresetValue(
+				item.value,
+				codec,
+				`${itemPath}.value`
+			)
+		});
+	});
+	return Object.freeze(presets);
 }
 
 /**
@@ -602,6 +683,179 @@ function publicString(value: unknown, path: string): string {
 		invalid(path);
 	}
 	return value;
+}
+
+function trustedPresetName(value: unknown, path: string): string {
+	if (
+		typeof value !== 'string' ||
+		value.length === 0 ||
+		value.length > MAX_TRUSTED_PRESET_NAME_LENGTH ||
+		value.trim() !== value ||
+		/[\u0000-\u001f\u007f-\u009f]/.test(value)
+	) {
+		invalid(path);
+	}
+	return value;
+}
+
+/** @internal */
+export function isDistributedTrustedPresetCodec(
+	value: unknown
+): value is DistributedTrustedPresetCodec {
+	return (
+		value === 'string' ||
+		value === 'string_unvalidated_timestamp' ||
+		value === 'base64' ||
+		value === 'boolean' ||
+		value === 'int32' ||
+		value === 'float64' ||
+		value === 'json_number_precision_limited' ||
+		value === 'json'
+	);
+}
+
+function trustedPresetCodec(
+	value: unknown,
+	path: string
+): DistributedTrustedPresetCodec {
+	if (!isDistributedTrustedPresetCodec(value)) invalid(path);
+	return value;
+}
+
+function parseTrustedPresetValue(
+	value: unknown,
+	codec: DistributedTrustedPresetCodec,
+	path: string
+): DistributedProtocolValue {
+	switch (codec) {
+		case 'string':
+		case 'string_unvalidated_timestamp':
+			if (typeof value !== 'string') invalid(path);
+			return value;
+		case 'base64':
+			if (typeof value !== 'string' || !CANONICAL_BASE64.test(value)) {
+				invalid(path);
+			}
+			return value;
+		case 'boolean':
+			if (typeof value !== 'boolean') invalid(path);
+			return value;
+		case 'int32':
+			if (
+				typeof value !== 'number' ||
+				!Number.isInteger(value) ||
+				Object.is(value, -0) ||
+				value < -2_147_483_648 ||
+				value > 2_147_483_647
+			) {
+				invalid(path);
+			}
+			return value;
+		case 'json_number_precision_limited':
+			if (
+				typeof value !== 'number' ||
+				!Number.isInteger(value) ||
+				Object.is(value, -0) ||
+				value < -MAX_SAFE_INTEGER ||
+				value > MAX_SAFE_INTEGER
+			) {
+				invalid(path);
+			}
+			return value;
+		case 'float64':
+			if (typeof value !== 'number' || !Number.isFinite(value)) {
+				invalid(path);
+			}
+			return Object.is(value, -0) ? 0 : value;
+		case 'json':
+			return cloneProtocolValue(value, path);
+	}
+}
+
+function cloneProtocolValue(
+	value: unknown,
+	path: string,
+	active: Set<object> = new Set(),
+	depth = 0
+): DistributedProtocolValue {
+	if (depth > MAX_TRUSTED_PRESET_VALUE_DEPTH) invalid(path);
+	if (
+		value === null ||
+		typeof value === 'string' ||
+		typeof value === 'boolean'
+	) {
+		return value;
+	}
+	if (typeof value === 'number') {
+		if (!Number.isFinite(value)) invalid(path);
+		return Object.is(value, -0) ? 0 : value;
+	}
+	if (typeof value !== 'object' || active.has(value)) invalid(path);
+	active.add(value);
+	if (Array.isArray(value)) {
+		if (Object.getPrototypeOf(value) !== Array.prototype) invalid(path);
+		const ownKeys = Reflect.ownKeys(value);
+		if (
+			ownKeys.some(
+				(key) =>
+					key !== 'length' &&
+					(typeof key !== 'string' ||
+						!/^(0|[1-9][0-9]*)$/.test(key) ||
+						Number(key) >= value.length)
+			)
+		) {
+			invalid(path);
+		}
+		const result: DistributedProtocolValue[] = [];
+		for (let index = 0; index < value.length; index += 1) {
+			const descriptor = Object.getOwnPropertyDescriptor(value, String(index));
+			if (
+				descriptor === undefined ||
+				!('value' in descriptor) ||
+				descriptor.value === undefined
+			) {
+				invalid(`${path}[${index}]`);
+			}
+			result.push(
+				cloneProtocolValue(
+					descriptor.value,
+					`${path}[${index}]`,
+					active,
+					depth + 1
+				)
+			);
+		}
+		active.delete(value);
+		return Object.freeze(result);
+	}
+	const prototype = Object.getPrototypeOf(value);
+	if (prototype !== Object.prototype && prototype !== null) invalid(path);
+	const keys = Reflect.ownKeys(value);
+	if (keys.some((key) => typeof key !== 'string')) invalid(path);
+	const result: Record<string, DistributedProtocolValue> = {};
+	for (const key of (keys as string[]).sort()) {
+		const descriptor = Object.getOwnPropertyDescriptor(value, key);
+		if (
+			descriptor === undefined ||
+			!('value' in descriptor) ||
+			descriptor.value === undefined
+		) {
+			invalid(`${path}.${key}`);
+		}
+		Object.defineProperty(result, key, {
+			value: cloneProtocolValue(
+				descriptor.value,
+				`${path}.${key}`,
+				active,
+				depth + 1
+			),
+			enumerable: true,
+			configurable: false,
+			writable: false
+		});
+	}
+	active.delete(value);
+	return Object.freeze(result);
 }
 
 function opaqueString(value: unknown, path: string): DistributedOpaqueString {

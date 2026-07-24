@@ -143,7 +143,7 @@ Each operation artifact also contains the closed variable/input codec compiled
 from that selected surface. The runtime applies GraphQL singleton-list coercion,
 canonical scalar encoding, unknown-field rejection, and deterministic deep
 freezing before variables can identify a cache entry or reach the network.
-Manifest v6 and variable codec v2 carry the selected service's exact
+Manifest v7 and variable codec v2 carry the selected service's exact
 `max_depth`, `max_bool_width`, and `max_in_list` contract. Static literal and
 mixed-variable filters are rejected during generation when their known shape
 exceeds those limits; runtime variables carry per-use `filterBaseDepth` and

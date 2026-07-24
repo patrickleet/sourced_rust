@@ -1,15 +1,30 @@
 import assert from 'node:assert/strict';
 import { execFile } from 'node:child_process';
-import { mkdtemp, mkdir, readFile, rm, stat, writeFile } from 'node:fs/promises';
+import {
+	mkdtemp,
+	mkdir,
+	readFile,
+	rm,
+	stat,
+	writeFile
+} from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { dirname, isAbsolute, join, resolve, sep } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { promisify } from 'node:util';
 
+import { build } from 'esbuild';
+
 const execFileAsync = promisify(execFile);
 const packageRoot = resolve(dirname(fileURLToPath(import.meta.url)), '..');
 const npmCommand = process.platform === 'win32' ? 'npm.cmd' : 'npm';
 const nodeCommand = process.execPath;
+const removedSubpaths = Object.freeze([
+	'@hops-ops/distributed/cache',
+	'@hops-ops/distributed/commands',
+	'@hops-ops/distributed/codegen',
+	'@hops-ops/distributed/internal/cache-engine'
+]);
 
 async function run(command, args, cwd) {
 	try {
@@ -19,11 +34,15 @@ async function run(command, args, cwd) {
 			maxBuffer: 10 * 1024 * 1024
 		});
 	} catch (error) {
-		const stdout = typeof error.stdout === 'string' ? error.stdout.trim() : '';
-		const stderr = typeof error.stderr === 'string' ? error.stderr.trim() : '';
+		const stdout =
+			typeof error.stdout === 'string' ? error.stdout.trim() : '';
+		const stderr =
+			typeof error.stderr === 'string' ? error.stderr.trim() : '';
 		const output = [stdout, stderr].filter(Boolean).join('\n');
 		throw new Error(
-			`Command failed: ${command} ${args.join(' ')}${output ? `\n${output}` : ''}`,
+			`Command failed: ${command} ${args.join(' ')}${
+				output.length === 0 ? '' : `\n${output}`
+			}`,
 			{ cause: error }
 		);
 	}
@@ -39,106 +58,161 @@ function collectPackageTargets(value, targets) {
 		for (const entry of value) collectPackageTargets(entry, targets);
 		return;
 	}
-	if (value && typeof value === 'object') {
-		for (const entry of Object.values(value)) collectPackageTargets(entry, targets);
+	if (value !== null && typeof value === 'object') {
+		for (const entry of Object.values(value)) {
+			collectPackageTargets(entry, targets);
+		}
 	}
 }
 
 function parsePackResult(stdout) {
-	const trimmed = stdout.trim();
 	try {
-		return JSON.parse(trimmed);
+		return JSON.parse(stdout.trim());
 	} catch (error) {
-		throw new Error(`npm pack did not return valid JSON:\n${trimmed}`, { cause: error });
+		throw new Error(`npm pack did not return valid JSON:\n${stdout.trim()}`, {
+			cause: error
+		});
 	}
+}
+
+function inspectPackageContract(packageJson) {
+	assert.deepEqual(Object.keys(packageJson.exports).sort(), [
+		'.',
+		'./diagnostics',
+		'./package.json',
+		'./react',
+		'./replica',
+		'./sveltekit',
+		'./sveltekit/vite'
+	]);
+	assert.equal(
+		packageJson.bin,
+		undefined,
+		'the npm package must not expose a package-owned generator'
+	);
+	for (const subpath of ['./cache', './commands', './codegen']) {
+		assert.equal(
+			Object.hasOwn(packageJson.exports, subpath),
+			false,
+			`${subpath} must not remain public`
+		);
+	}
+	assert.equal(
+		packageJson.peerDependenciesMeta?.react?.optional,
+		true,
+		'React must remain an optional peer'
+	);
+	assert.equal(
+		packageJson.peerDependenciesMeta?.svelte?.optional,
+		true,
+		'Svelte must remain an optional peer'
+	);
 }
 
 function inspectPackResult(packResult, packageJson) {
 	assert.equal(packResult.length, 1, 'npm pack must produce exactly one tarball');
 	const [packed] = packResult;
-	assert.equal(packed.name, packageJson.name, 'packed package name must match package.json');
-	assert.equal(
-		packed.version,
-		packageJson.version,
-		'packed package version must match package.json'
-	);
-	assert.ok(Array.isArray(packed.files), 'npm pack result must include its file manifest');
+	assert.equal(packed.name, packageJson.name);
+	assert.equal(packed.version, packageJson.version);
+	assert.ok(Array.isArray(packed.files), 'npm pack must report its file manifest');
 
 	const packedPaths = new Set(packed.files.map((file) => file.path));
 	const requiredPaths = new Set(['README.md', 'package.json']);
 	collectPackageTargets(packageJson.exports, requiredPaths);
-	collectPackageTargets(packageJson.bin, requiredPaths);
-
 	for (const requiredPath of requiredPaths) {
-		assert.ok(packedPaths.has(requiredPath), `packed tarball is missing ${requiredPath}`);
+		assert.ok(packedPaths.has(requiredPath), `tarball is missing ${requiredPath}`);
 	}
 	assert.ok(
 		[...packedPaths].some((path) => path.startsWith('dist/')),
-		'packed tarball must contain built dist files'
+		'tarball must contain built declarations and JavaScript'
 	);
 
-	const forbiddenSegments = new Set(['src', 'tests', 'node_modules']);
+	const forbiddenSegments = new Set([
+		'src',
+		'tests',
+		'type-tests',
+		'scripts',
+		'node_modules'
+	]);
 	const forbiddenPaths = [...packedPaths].filter((path) =>
 		path.split('/').some((segment) => forbiddenSegments.has(segment))
 	);
 	assert.deepEqual(
 		forbiddenPaths,
 		[],
-		`packed tarball contains forbidden paths: ${forbiddenPaths.join(', ')}`
+		`tarball contains private paths: ${forbiddenPaths.join(', ')}`
 	);
-
 	return { packed, packedPaths };
 }
 
-const typecheckSource = `
+const consumerTypeSource = `
 import {
-  QueryCache,
-  bindCommands,
-  createGraphqlClient,
-  defineCausalProtocol,
-  defineCommand,
-  defineCommands,
-  defineResource,
-  type GqlDocument,
-  type CausalCommandReceipt,
-  type CausalReceiptErrorCode,
-  type GqlResult,
-  type GraphqlClient
+  DISTRIBUTED_PROTOCOL_VERSION,
+  documentToString,
+  parseDistributedProtocolEnvelope,
+  requestGraphql,
+  type GqlAuth,
+  type GqlDocument
 } from '@hops-ops/distributed';
-import { cacheKey } from '@hops-ops/distributed/cache';
-import type { CommandClient } from '@hops-ops/distributed/commands';
 import {
   createDistributedReplica,
-  type ReplicaObjectSelection,
+  createReplicaGraphqlTransport,
+  createReplicaIndexedDbPersistence,
   type ReplicaOperationArtifact,
   type ReplicaSnapshot,
   type ReplicaSparse
 } from '@hops-ops/distributed/replica';
-import { fieldToFunctionName } from '@hops-ops/distributed/codegen';
 import {
-  createLoadQuery,
-  createUseGraphql,
-  distributedGraphqlProxy,
-  type PageGraphqlData,
-  type ServerLoadEventLike
-} from '@hops-ops/distributed/sveltekit';
+  createReplicaDiagnostics,
+  type ReplicaDiagnosticsSnapshot
+} from '@hops-ops/distributed/diagnostics';
+// @ts-expect-error The removed document-cache type must stay absent.
+import type { QueryCache } from '@hops-ops/distributed';
+// @ts-expect-error The removed handwritten cache target must stay absent.
+import type { CacheTarget } from '@hops-ops/distributed';
+// @ts-expect-error The removed manual list reconciliation policy must stay absent.
+import type { ListMergeSpec } from '@hops-ops/distributed';
+// @ts-expect-error The removed pilot client factory must stay absent.
+import { createGraphqlClient } from '@hops-ops/distributed';
+// @ts-expect-error The removed resource wrapper must stay absent.
+import { defineResource } from '@hops-ops/distributed';
+// @ts-expect-error The removed pilot client type must stay absent.
+import type { GraphqlClient } from '@hops-ops/distributed';
+// @ts-expect-error The removed resource abstraction must stay absent.
+import type { GraphqlResource } from '@hops-ops/distributed';
+// @ts-expect-error The removed document-store abstraction must stay absent.
+import type { DocumentStore } from '@hops-ops/distributed';
+// @ts-expect-error The removed raw command definition must stay absent.
+import type { CommandDefinition } from '@hops-ops/distributed';
+// @ts-expect-error The removed manual command policy must stay absent.
+import type { CommandPolicy } from '@hops-ops/distributed';
 
-type HealthData = { health: string };
-type Session = { accessToken?: string | null; user?: { id?: string | null } | null };
-type LoadEvent = ServerLoadEventLike<{ session: Session | null }>;
-type TodosResult = { todos: Array<{ id: string; title: string }> };
-type TodosVariables = { limit: number };
-const todoSelection = {
-  typename: 'Todo',
-  storage: { kind: 'normalized', model: 'Todo', identityFields: ['id'] },
-  members: [
-    { kind: 'scalar', responseKey: 'id', field: 'id', codec: 'string', nullable: false },
-    { kind: 'scalar', responseKey: 'title', field: 'title', codec: 'string', nullable: false }
-  ]
-} as const satisfies ReplicaObjectSelection;
-const generatedOperation: ReplicaOperationArtifact<TodosResult, TodosVariables> = {
-  id: 'sha256:dddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddd',
+type TodosData = { todos: readonly { id: string; title: string }[] };
+type TodosVariables = Readonly<{ limit: number }>;
+
+const operation: ReplicaOperationArtifact<TodosData, TodosVariables> = {
+  id: 'query:todos',
   document: 'query Todos($limit: Int!) { todos(limit: $limit) { id title } }',
+  protocol: {
+    version: 2,
+    schemaHash: \`sha256:\${'a'.repeat(64)}\`,
+    surface: { kind: 'role', name: 'user' },
+    operation: 'query:todos',
+    trustedPresets: []
+  },
+  variableCodec: {
+    version: 2,
+    limits: { maxDepth: 8, maxBoolWidth: 32, maxInList: 64 },
+    variables: {
+      limit: {
+        kind: 'scalar',
+        scalar: 'Int',
+        codec: 'int32',
+        nullable: false
+      }
+    },
+    inputs: {}
+  },
   roots: [{
     responseKey: 'todos',
     field: 'todos',
@@ -146,162 +220,541 @@ const generatedOperation: ReplicaOperationArtifact<TodosResult, TodosVariables> 
     nullable: false,
     arguments: { limit: { kind: 'variable', name: 'limit' } },
     dependencies: ['todos'],
-    selection: todoSelection
+    selection: {
+      typename: 'todo',
+      storage: {
+        kind: 'normalized',
+        model: 'Todo',
+        identityFields: ['id']
+      },
+      members: [
+        {
+          kind: 'scalar',
+          responseKey: 'id',
+          field: 'id',
+          codec: 'ID',
+          nullable: false
+        },
+        {
+          kind: 'scalar',
+          responseKey: 'title',
+          field: 'title',
+          codec: 'String',
+          nullable: false
+        }
+      ]
+    }
   }]
 };
-todoSelection.members.map((member) => member.field);
-declare const replicaSnapshot: ReplicaSnapshot<TodosResult>;
-const sparseTodos: ReplicaSparse<TodosResult> = {};
-if (replicaSnapshot.complete) {
-  replicaSnapshot.data.todos.map((todo) => todo.title);
-} else {
-  // @ts-expect-error Sparse/loading data requires a presence guard.
-  replicaSnapshot.data.todos.map((todo) => todo.title);
-}
 
-const query: GqlDocument<HealthData> = 'query Smoke { health }';
-const resource = defineResource<HealthData>({
-  query,
-  select: (data) => data.health
-});
-const cache = new QueryCache();
-const client: GraphqlClient = createGraphqlClient({
+const auth: GqlAuth = { accessToken: 'token' };
+const document: GqlDocument<TodosData, TodosVariables> = operation.document;
+const diagnostics = createReplicaDiagnostics();
+const diagnosticSnapshot: ReplicaDiagnosticsSnapshot = diagnostics.getSnapshot();
+const transport = createReplicaGraphqlTransport({
   getUrl: () => '/graphql',
-  getAuth: async () => ({ userId: 'pack-smoke', role: 'user' }),
-  cache
+  getAuth: () => auth
 });
+const replica = createDistributedReplica({ transport, diagnostics });
+const snapshot: ReplicaSnapshot<TodosData> = replica.read(operation, { limit: 10 });
+const sparse: ReplicaSparse<TodosData> = {};
+if (snapshot.complete) snapshot.data.todos.map((todo) => todo.title);
 
-const pageData: PageGraphqlData = {
-  session: { user: { id: 'pack-smoke' } },
-  engineRole: 'user'
-};
-const useGraphql = createUseGraphql({ url: '/graphql' });
-const pageClient = useGraphql(() => pageData, { cache });
-// @ts-expect-error A read-only adapter must not invent generated command names.
-pageClient.commands.missing();
-const proxy = distributedGraphqlProxy('http://127.0.0.1:8791');
-const commandClient: CommandClient = client;
-const causalProtocol = defineCausalProtocol({
-  protocolVersion: 2,
-  schemaHash: \`sha256:\${'a'.repeat(64)}\`,
-  commandStatus: {
-    name: 'Distributed_CommandStatus',
-    document: 'query Distributed_CommandStatus($commandId: ID!) { commandStatus(commandId: $commandId) { state } }',
-    operationHash: \`sha256:\${'b'.repeat(64)}\`
-  }
-});
-const commandDefinitions = defineCommands({
-  create: defineCommand<{ id: string }, { id: string }>({
-    field: 'create',
-    document: 'mutation Create($commandId: ID!, $input: CreateInput!) { create(commandId: $commandId, input: $input) { id } }',
-    hasInput: true,
-    causal: {
-      protocol: causalProtocol,
-      operationHash: \`sha256:\${'c'.repeat(64)}\`,
-      projects: true
-    }
-  }),
-  ping: defineCommand<void, { ok: boolean }>({
-    field: 'ping',
-    document: 'mutation Ping { ping { ok } }',
-    hasInput: false
-  })
-});
-const commands = bindCommands(commandClient, commandDefinitions);
-void commands.create({ id: 'one' }).then((result) => {
-  const receipt: CausalCommandReceipt | undefined = result.receipt;
-  void receipt?.projected;
-});
-void commands.ping();
-const receiptCode: CausalReceiptErrorCode = 'CAUSAL_DEADLINE_EXCEEDED';
-void cacheKey('query Smoke { health }');
-void fieldToFunctionName('todos_create');
-
-const loadQuery = createLoadQuery<Session, LoadEvent>({
-  getSession: async (event) => event.locals.session,
-  getRole: () => 'user',
-  request: async <TData>(): Promise<GqlResult<TData>> => ({ status: 200 })
-});
-const loadHealth = loadQuery<HealthData, { health: string }>(
-  query,
-  (data) => ({ health: data?.health ?? 'unknown' })
-);
-
-void [resource, client, pageClient, proxy, loadHealth, createDistributedReplica, sparseTodos, receiptCode];
+void [
+  DISTRIBUTED_PROTOCOL_VERSION,
+  documentToString(document),
+  parseDistributedProtocolEnvelope,
+  requestGraphql,
+  createReplicaIndexedDbPersistence,
+  diagnosticSnapshot,
+  sparse
+];
 `;
 
-const runtimeSource = `
+const consumerRuntimeSource = `
 import assert from 'node:assert/strict';
+import * as rootSurface from '@hops-ops/distributed';
+import * as replicaSurface from '@hops-ops/distributed/replica';
+import * as diagnosticsSurface from '@hops-ops/distributed/diagnostics';
 import {
-  QueryCache,
-  CausalReceiptError,
-  createGraphqlClient,
-  defineCausalProtocol,
-  defineResource,
-  looksLikeMutation
+  requestGraphql
 } from '@hops-ops/distributed';
 import {
-  createUseGraphql,
-  distributedGraphqlProxy
-} from '@hops-ops/distributed/sveltekit';
-import { createDistributedReplica } from '@hops-ops/distributed/replica';
+  createDistributedReplica
+} from '@hops-ops/distributed/replica';
+import {
+  createReplicaDiagnostics
+} from '@hops-ops/distributed/diagnostics';
 
-const document = 'query Smoke { health }';
-const resource = defineResource({
-  query: document,
-  select: (data) => data.health
+const schemaHash = \`sha256:\${'a'.repeat(64)}\`;
+const operation = Object.freeze({
+  id: 'query:todos',
+  document: 'query Todos { todos { id title } }',
+  protocol: Object.freeze({
+    version: 2,
+    schemaHash,
+    surface: Object.freeze({ kind: 'role', name: 'user' }),
+    operation: 'query:todos',
+    trustedPresets: Object.freeze([])
+  }),
+  variableCodec: Object.freeze({
+    version: 2,
+    limits: Object.freeze({
+      maxDepth: 8,
+      maxBoolWidth: 32,
+      maxInList: 64
+    }),
+    variables: Object.freeze({}),
+    inputs: Object.freeze({})
+  }),
+  roots: Object.freeze([Object.freeze({
+    responseKey: 'todos',
+    field: 'todos',
+    cardinality: 'many',
+    nullable: false,
+    dependencies: Object.freeze(['todos']),
+    selection: Object.freeze({
+      typename: 'todo',
+      storage: Object.freeze({
+        kind: 'normalized',
+        model: 'Todo',
+        identityFields: Object.freeze(['id'])
+      }),
+      members: Object.freeze([
+        Object.freeze({
+          kind: 'scalar',
+          responseKey: 'id',
+          field: 'id',
+          codec: 'ID',
+          nullable: false
+        }),
+        Object.freeze({
+          kind: 'scalar',
+          responseKey: 'title',
+          field: 'title',
+          codec: 'String',
+          nullable: false
+        })
+      ])
+    })
+  })])
 });
-const cache = new QueryCache();
-const client = createGraphqlClient({
-  getUrl: () => 'http://127.0.0.1:8791/graphql',
-  getAuth: () => ({ userId: 'pack-smoke', role: 'user' }),
-  cache,
-  fetch: async (_input, init) => {
-    const body = JSON.parse(String(init?.body));
-    assert.equal(body.query, document);
-    return new Response(JSON.stringify({ data: { health: 'ok' } }), {
-      status: 200,
-      headers: { 'content-type': 'application/json' }
-    });
+
+const diagnostics = createReplicaDiagnostics();
+const replica = createDistributedReplica({ diagnostics });
+replica.writeResult(operation, {}, {
+  data: { todos: [{ id: 'todo-1', title: 'packed' }] },
+  extensions: {
+    distributed: {
+      protocolVersion: 2,
+      schemaHash,
+      cacheScope: 'scope:user',
+      operation: operation.id,
+      trustedPresets: [],
+      snapshot: {
+        scopeToken: 'snapshot:todos',
+        complete: true,
+        records: [{
+          path: ['todos', '0'],
+          model: 'Todo',
+          scopeToken: 'record:todo-1',
+          incarnation: '1',
+          revision: '1',
+          tombstone: false
+        }],
+        indexes: [{
+          projection: 'todos',
+          scopeToken: 'index:todos',
+          position: '1'
+        }],
+        observations: []
+      }
+    }
   }
+}, 'network');
+assert.deepEqual(replica.read(operation, {}).data, {
+  todos: [{ id: 'todo-1', title: 'packed' }]
+});
+assert.equal(diagnostics.getSnapshot().records.length, 1);
+
+const result = await requestGraphql(
+  'https://example.test/graphql',
+  'query Health { health }',
+  {},
+  {},
+  {
+    fetch: async (_input, init) => {
+      const body = JSON.parse(String(init.body));
+      assert.equal(body.query, 'query Health { health }');
+      return new Response(JSON.stringify({ data: { health: 'ok' } }), {
+        status: 200,
+        headers: { 'content-type': 'application/json' }
+      });
+    }
+  }
+);
+assert.equal(result.data.health, 'ok');
+
+assert.deepEqual(Object.keys(rootSurface).sort(), [
+  'DISTRIBUTED_PROTOCOL_VERSION',
+  'DistributedProtocolError',
+  'applyWsDevHeaderParams',
+  'authIdentityKey',
+  'buildAuthHeaders',
+  'compareDistributedDecimal',
+  'distributedLiveResumeExtensions',
+  'documentToString',
+  'graphqlWsUrl',
+  'httpUrlToWsUrl',
+  'jwtPayloadSub',
+  'parseDistributedProtocolEnvelope',
+  'parseGraphqlResponseExtensions',
+  'requestGraphql',
+  'subscribe',
+  'wsConnectionInitPayload'
+]);
+assert.deepEqual(Object.keys(replicaSurface).sort(), [
+  'REPLICA_OFFLINE_COMMAND_OUTBOX_SUPPORTED',
+  'ReplicaCommandContractError',
+  'ReplicaCommandRuntimeError',
+  'canonicalizeOperationVariables',
+  'compareReplicaOrder',
+  'createDistributedReplica',
+  'createReplicaCommandRuntime',
+  'createReplicaDevelopmentCapability',
+  'createReplicaDiagnostics',
+  'createReplicaGraphqlTransport',
+  'createReplicaIndexMaintenanceRegistry',
+  'createReplicaIndexedDbPersistence',
+  'decideReplicaPaginationMaintenance',
+  'evaluateReplicaFilter',
+  'formatReplicaIndexStaleReason',
+  'inspectReplicaCommandArtifact',
+  'inspectReplicaOperationArtifact',
+  'prepareReplicaCommand',
+  'replicaIndexKey',
+  'replicaRecordKey',
+  'verifyReplicaCommandReceipt'
+]);
+assert.deepEqual(Object.keys(diagnosticsSurface).sort(), [
+  'createReplicaDevelopmentCapability',
+  'createReplicaDiagnostics',
+  'inspectReplicaCommandArtifact',
+  'inspectReplicaOperationArtifact'
+]);
+for (const subpath of ${JSON.stringify(removedSubpaths)}) {
+  await assert.rejects(
+    import(subpath),
+    (error) => error?.code === 'ERR_PACKAGE_PATH_NOT_EXPORTED',
+    \`\${subpath} must remain private\`
+  );
+}
+`;
+
+const svelteTypeSource = `
+import {
+  createDistributedSvelteKit,
+  createDistributedSvelteKitServer,
+  createPageDataSessionSource,
+  defineDistributedSvelteKitOperation,
+  provideDistributedSvelteKitClient,
+  useDistributedSvelteKitClient,
+  useDistributedSvelteKitCommands
+} from '@hops-ops/distributed/sveltekit';
+import {
+  checkDistributedSvelteKit,
+  distributedGraphqlProxy,
+  distributedSvelteKit,
+  distributedSvelteKitAliases,
+  generateDistributedSvelteKit
+} from '@hops-ops/distributed/sveltekit/vite';
+import type {
+  ReplicaOperationArtifact
+} from '@hops-ops/distributed/replica';
+// @ts-expect-error The removed Svelte pilot query helper must stay absent.
+import { createUseGraphql } from '@hops-ops/distributed/sveltekit';
+// @ts-expect-error The removed Svelte pilot load helper must stay absent.
+import { createLoadQuery } from '@hops-ops/distributed/sveltekit';
+// @ts-expect-error Node-only proxy helpers must not leak from the browser entry.
+import { distributedGraphqlProxy as leakedProxy } from '@hops-ops/distributed/sveltekit';
+
+type TodosData = { todos: readonly { id: string; title: string }[] };
+type TodosVariables = Readonly<{ limit: number }>;
+type Commands = {
+  readonly todo: {
+    readonly create: (input: { readonly title: string }) => Promise<unknown>
+  }
+};
+declare const operation: ReplicaOperationArtifact<TodosData, TodosVariables>;
+
+const pageData = createPageDataSessionSource({
+  session: null,
+  accessToken: null,
+  engineRole: null
+});
+const client = createDistributedSvelteKit<Commands>({
+  browser: false,
+  session: pageData.session
+});
+const Todos = defineDistributedSvelteKitOperation(operation);
+Todos.read({ limit: 10 });
+provideDistributedSvelteKitClient(client);
+useDistributedSvelteKitClient<Commands>().operation(operation);
+useDistributedSvelteKitCommands<Commands>().todo.create({ title: 'typed' });
+
+createDistributedSvelteKitServer({
+  routes: [],
+  getSession: async () => null,
+  getRole: () => 'user'
 });
 
-const result = await client.request(document);
-assert.equal(result.status, 200);
-assert.equal(resource.select(result.data), 'ok');
-assert.equal(looksLikeMutation('# comment\\nmutation Smoke { run }'), true);
-assert.equal(typeof defineCausalProtocol, 'function');
-assert.equal(typeof CausalReceiptError, 'function');
-
+const compiler = {
+  clients: [{
+    module: '$distributed',
+    manifest: 'target/distributed-client.json',
+    role: 'user',
+    documents: ['src/**/*.graphql'],
+    out: 'src/lib/generated/distributed'
+  }]
+} as const;
+const plugin = distributedSvelteKit(compiler);
+const aliases = distributedSvelteKitAliases(compiler);
 const proxy = distributedGraphqlProxy('http://127.0.0.1:8791');
-assert.deepEqual(proxy, {
+
+void [
+  checkDistributedSvelteKit,
+  generateDistributedSvelteKit,
+  plugin,
+  aliases,
+  proxy,
+  leakedProxy
+];
+client.destroy();
+`;
+
+const svelteRuntimeSource = `
+import assert from 'node:assert/strict';
+import * as sveltekitSurface from '@hops-ops/distributed/sveltekit';
+import * as sveltekitViteSurface from '@hops-ops/distributed/sveltekit/vite';
+import {
+  createDistributedSvelteKit,
+  createPageDataSessionSource
+} from '@hops-ops/distributed/sveltekit';
+import {
+  distributedGraphqlProxy
+} from '@hops-ops/distributed/sveltekit/vite';
+
+assert.deepEqual(Object.keys(sveltekitSurface).sort(), [
+  'authFromPageData',
+  'bindSveltekitOperation',
+  'createDistributedSvelteKit',
+  'createDistributedSvelteKitServer',
+  'createPageDataSessionSource',
+  'defineDistributedSvelteKitOperation',
+  'provideDistributedSvelteKitClient',
+  'registerDistributedRoute',
+  'sessionSourceFromPageData',
+  'useDistributedSvelteKitClient',
+  'useDistributedSvelteKitCommands'
+]);
+assert.deepEqual(Object.keys(sveltekitViteSurface).sort(), [
+  'checkDistributedSvelteKit',
+  'distributedGraphqlProxy',
+  'distributedSvelteKit',
+  'distributedSvelteKitAliases',
+  'generateDistributedSvelteKit'
+]);
+assert.equal(typeof sveltekitViteSurface.generateDistributedSvelteKit, 'function');
+assert.equal(typeof sveltekitViteSurface.checkDistributedSvelteKit, 'function');
+
+const pageData = createPageDataSessionSource({
+  session: null,
+  accessToken: null,
+  engineRole: null
+});
+assert.deepEqual(pageData.get(), {
+  session: null,
+  accessToken: null,
+  engineRole: null
+});
+pageData.set({
+  session: { user: { sub: 'user-1' } },
+  accessToken: 'token',
+  engineRole: 'user'
+});
+assert.equal(pageData.session.getAuth().accessToken, 'token');
+
+const client = createDistributedSvelteKit({
+  browser: false,
+  session: pageData.session
+});
+assert.equal(typeof client.operation, 'function');
+client.destroy();
+
+assert.deepEqual(distributedGraphqlProxy('http://127.0.0.1:8791'), {
   '/graphql': {
     target: 'http://127.0.0.1:8791',
     changeOrigin: true,
     ws: true
   }
 });
-
-const useGraphql = createUseGraphql({ url: '/graphql' });
-const pageClient = useGraphql(() => ({ session: null, engineRole: null }));
-assert.equal(typeof pageClient.request, 'function');
-assert.equal(typeof pageClient.store, 'function');
-assert.equal(typeof createDistributedReplica().read, 'function');
 `;
+
+const reactTypeSource = `
+import { createElement } from 'react';
+import {
+  DistributedProvider,
+  useDistributedQuery
+} from '@hops-ops/distributed/react';
+import type {
+  DistributedReplica,
+  ReplicaOperationArtifact
+} from '@hops-ops/distributed/replica';
+
+type TodosData = { todos: readonly { id: string; title: string }[] };
+declare const replica: DistributedReplica;
+declare const Todos: ReplicaOperationArtifact<
+  TodosData,
+  Readonly<Record<never, never>>
+>;
+
+function App() {
+  const todos = useDistributedQuery(Todos);
+  if (todos.complete) todos.data.todos.map((todo) => todo.title);
+  void todos.refresh;
+  return null;
+}
+
+createElement(DistributedProvider, { replica }, createElement(App));
+`;
+
+const reactRuntimeSource = `
+import assert from 'node:assert/strict';
+import * as reactSurface from '@hops-ops/distributed/react';
+import {
+  DistributedProvider,
+  useDistributedQuery,
+  useDistributedReplica
+} from '@hops-ops/distributed/react';
+
+assert.equal(typeof DistributedProvider, 'function');
+assert.equal(typeof useDistributedQuery, 'function');
+assert.equal(typeof useDistributedReplica, 'function');
+assert.deepEqual(Object.keys(reactSurface).sort(), [
+  'DistributedProvider',
+  'useDistributedQuery',
+  'useDistributedReplica'
+]);
+`;
+
+const tsconfig = (types) =>
+	`${JSON.stringify(
+		{
+			compilerOptions: {
+				target: 'ES2022',
+				module: 'NodeNext',
+				moduleResolution: 'NodeNext',
+				lib: ['ES2022', 'DOM'],
+				types,
+				strict: true,
+				noEmit: true,
+				verbatimModuleSyntax: true
+			},
+			include: ['consumer.ts']
+		},
+		null,
+		2
+	)}\n`;
+
+async function installConsumer(
+	directory,
+	name,
+	tarballPath,
+	typescriptVersion,
+	extraPackages = []
+) {
+	await writeFile(
+		join(directory, 'package.json'),
+		`${JSON.stringify(
+			{
+				name,
+				private: true,
+				type: 'module'
+			},
+			null,
+			2
+		)}\n`
+	);
+	await run(
+		npmCommand,
+		[
+			'install',
+			'--ignore-scripts',
+			'--no-audit',
+			'--no-fund',
+			'--save-exact',
+			tarballPath,
+			`typescript@${typescriptVersion}`,
+			...extraPackages
+		],
+		directory
+	);
+}
+
+async function typecheck(directory, types) {
+	await writeFile(join(directory, 'tsconfig.json'), tsconfig(types));
+	const tscPath = join(
+		directory,
+		'node_modules',
+		'typescript',
+		'bin',
+		'tsc'
+	);
+	await run(nodeCommand, [tscPath, '--project', 'tsconfig.json'], directory);
+}
+
+async function bundleInputs(directory, contents) {
+	const result = await build({
+		absWorkingDir: directory,
+		stdin: {
+			contents,
+			resolveDir: directory,
+			sourcefile: 'bundle-smoke.js'
+		},
+		bundle: true,
+		format: 'esm',
+		platform: 'browser',
+		target: 'es2022',
+		treeShaking: true,
+		write: false,
+		metafile: true,
+		logLevel: 'silent'
+	});
+	return Object.keys(result.metafile.inputs).map((path) =>
+		path.replaceAll('\\', '/')
+	);
+}
 
 async function smokePack() {
 	const packageJson = JSON.parse(
 		await readFile(join(packageRoot, 'package.json'), 'utf8')
 	);
+	inspectPackageContract(packageJson);
 	const typescriptVersion = packageJson.devDependencies?.typescript;
-	assert.ok(typescriptVersion, 'package devDependencies must declare TypeScript');
+	assert.ok(typescriptVersion, 'TypeScript must be a declared dev dependency');
 
 	const temporaryRoot = await mkdtemp(join(tmpdir(), 'distributed-pack-smoke-'));
 	try {
 		const packDirectory = join(temporaryRoot, 'pack');
 		const consumerDirectory = join(temporaryRoot, 'consumer');
-		await mkdir(packDirectory);
-		await mkdir(consumerDirectory);
+		const svelteConsumerDirectory = join(temporaryRoot, 'svelte-consumer');
+		const reactConsumerDirectory = join(temporaryRoot, 'react-consumer');
+		await Promise.all([
+			mkdir(packDirectory),
+			mkdir(consumerDirectory),
+			mkdir(svelteConsumerDirectory),
+			mkdir(reactConsumerDirectory)
+		]);
 
 		const { stdout } = await run(
 			npmCommand,
@@ -317,95 +770,141 @@ async function smokePack() {
 			: resolve(packDirectory, packed.filename);
 		assert.ok(
 			tarballPath.startsWith(`${resolve(packDirectory)}${sep}`),
-			'npm pack returned a tarball outside the temporary pack directory'
+			'npm pack returned a path outside the temporary pack directory'
 		);
-		assert.ok((await stat(tarballPath)).size > 0, 'packed tarball must not be empty');
+		assert.ok((await stat(tarballPath)).size > 0, 'tarball must not be empty');
 
-		await writeFile(
-			join(consumerDirectory, 'package.json'),
-			`${JSON.stringify(
-				{
-					name: 'distributed-pack-smoke-consumer',
-					private: true,
-					type: 'module'
-				},
-				null,
-				2
-			)}\n`
-		);
-		await run(
-			npmCommand,
-			[
-				'install',
-				'--ignore-scripts',
-				'--no-audit',
-				'--no-fund',
-				'--save-exact',
-				tarballPath,
-				`typescript@${typescriptVersion}`
-			],
-			consumerDirectory
-		);
-
-		const installedPackageJson = JSON.parse(
-			await readFile(
-				join(
-					consumerDirectory,
-					'node_modules',
-					...packageJson.name.split('/'),
-					'package.json'
-				),
-				'utf8'
-			)
-		);
-		assert.equal(installedPackageJson.name, packageJson.name);
-		assert.equal(installedPackageJson.version, packageJson.version);
-		assert.deepEqual(
-			installedPackageJson.bin,
-			packageJson.bin,
-			'npm pack must not normalize or remove the declared CLI bin mapping'
-		);
-
-		await writeFile(
-			join(consumerDirectory, 'tsconfig.json'),
-			`${JSON.stringify(
-				{
-					compilerOptions: {
-						target: 'ES2022',
-						module: 'NodeNext',
-						moduleResolution: 'NodeNext',
-						lib: ['ES2022', 'DOM'],
-						types: [],
-						strict: true,
-						noEmit: true,
-						verbatimModuleSyntax: true
-					},
-					include: ['consumer.ts']
-				},
-				null,
-				2
-			)}\n`
-		);
-		await writeFile(join(consumerDirectory, 'consumer.ts'), typecheckSource);
-		await writeFile(join(consumerDirectory, 'runtime.mjs'), runtimeSource);
-
-		const tscPath = join(
+		await installConsumer(
 			consumerDirectory,
-			'node_modules',
-			'typescript',
-			'bin',
-			'tsc'
+			'distributed-pack-smoke-consumer',
+			tarballPath,
+			typescriptVersion
 		);
-		await run(nodeCommand, [tscPath, '--project', 'tsconfig.json'], consumerDirectory);
+		await writeFile(
+			join(consumerDirectory, 'consumer.ts'),
+			consumerTypeSource
+		);
+		await writeFile(
+			join(consumerDirectory, 'runtime.mjs'),
+			consumerRuntimeSource
+		);
+		await typecheck(consumerDirectory, []);
 		await run(nodeCommand, ['runtime.mjs'], consumerDirectory);
-		const binPath = join(
+		for (const peer of ['react', 'svelte']) {
+			await assert.rejects(
+				stat(join(consumerDirectory, 'node_modules', peer)),
+				(error) => error?.code === 'ENOENT',
+				`${peer} must remain optional for root/replica consumers`
+			);
+		}
+
+		const baseInputs = await bundleInputs(
 			consumerDirectory,
-			'node_modules',
-			'.bin',
-			process.platform === 'win32' ? 'distributed-gen-commands.cmd' : 'distributed-gen-commands'
+			`
+				import '@hops-ops/distributed';
+				import '@hops-ops/distributed/replica';
+				import '@hops-ops/distributed/diagnostics';
+			`
 		);
-		const { stdout: cliHelp } = await run(binPath, ['--help'], consumerDirectory);
-		assert.match(cliHelp, /Usage: distributed-gen-commands/);
+		assert.equal(
+			baseInputs.some((path) => /node_modules\/react(?:\/|$)/.test(path)),
+			false,
+			'framework-neutral entry points must not pull React into browser bundles'
+		);
+		assert.equal(
+			baseInputs.some((path) => /node_modules\/svelte(?:\/|$)/.test(path)),
+			false,
+			'framework-neutral entry points must not pull Svelte into browser bundles'
+		);
+		assert.equal(
+			baseInputs.some((path) => path.includes('/dist/sveltekit/')),
+			false,
+			'framework-neutral entry points must not pull the SvelteKit adapter'
+		);
+
+		await installConsumer(
+			svelteConsumerDirectory,
+			'distributed-svelte-pack-smoke-consumer',
+			tarballPath,
+			typescriptVersion,
+			[`svelte@${packageJson.devDependencies.svelte}`]
+		);
+		await writeFile(
+			join(svelteConsumerDirectory, 'consumer.ts'),
+			svelteTypeSource
+		);
+		await writeFile(
+			join(svelteConsumerDirectory, 'runtime.mjs'),
+			svelteRuntimeSource
+		);
+		await typecheck(svelteConsumerDirectory, []);
+		await run(nodeCommand, ['runtime.mjs'], svelteConsumerDirectory);
+		await assert.rejects(
+			stat(join(svelteConsumerDirectory, 'node_modules', 'react')),
+			(error) => error?.code === 'ENOENT',
+			'the SvelteKit entry point must not install React'
+		);
+
+		const svelteInputs = await bundleInputs(
+			svelteConsumerDirectory,
+			`import '@hops-ops/distributed/sveltekit';`
+		);
+		assert.equal(
+			svelteInputs.some((path) => /node_modules\/svelte(?:\/|$)/.test(path)),
+			true,
+			'the SvelteKit entry point must bind the installed Svelte peer'
+		);
+		assert.equal(
+			svelteInputs.some((path) => /node_modules\/react(?:\/|$)/.test(path)),
+			false,
+			'the SvelteKit entry point must not pull React'
+		);
+		assert.equal(
+			svelteInputs.some((path) => path.endsWith('/dist/sveltekit/vite.js')),
+			false,
+			'the browser SvelteKit entry point must not pull the Node-only Vite integration'
+		);
+
+		await installConsumer(
+			reactConsumerDirectory,
+			'distributed-react-pack-smoke-consumer',
+			tarballPath,
+			typescriptVersion,
+			[
+				`react@${packageJson.devDependencies.react}`,
+				`@types/react@${packageJson.devDependencies['@types/react']}`
+			]
+		);
+		await writeFile(
+			join(reactConsumerDirectory, 'consumer.ts'),
+			reactTypeSource
+		);
+		await writeFile(
+			join(reactConsumerDirectory, 'runtime.mjs'),
+			reactRuntimeSource
+		);
+		await typecheck(reactConsumerDirectory, ['react']);
+		await run(nodeCommand, ['runtime.mjs'], reactConsumerDirectory);
+		await assert.rejects(
+			stat(join(reactConsumerDirectory, 'node_modules', 'svelte')),
+			(error) => error?.code === 'ENOENT',
+			'the React entry point must not install Svelte'
+		);
+
+		const reactInputs = await bundleInputs(
+			reactConsumerDirectory,
+			`import '@hops-ops/distributed/react';`
+		);
+		assert.equal(
+			reactInputs.some((path) => /node_modules\/react(?:\/|$)/.test(path)),
+			true,
+			'the React entry point must bind the installed peer'
+		);
+		assert.equal(
+			reactInputs.some((path) => path.includes('/dist/sveltekit/')),
+			false,
+			'the React entry point must not pull the SvelteKit adapter'
+		);
 
 		console.log(
 			`Pack smoke passed for ${packageJson.name}@${packageJson.version} (${packedPaths.size} files).`

@@ -56,11 +56,11 @@ fn client_manifest_uses_service_surface_export() {
     assert_eq!(manifest["surface"]["name"], "user");
     assert_eq!(
         manifest["schema_fingerprint"],
-        "sha256:a84733d7f7f7a045f4de9a434620a50174f858de41d225b548701ce80e0864cd"
+        "sha256:b99b09420301b8e837cc5c734bff9114ce3de9c02429e1d05add1dda0ca2bf58"
     );
     assert_eq!(
         manifest["protocol_fingerprint"],
-        "sha256:a3b12d91f7d60ab279cfffe6bb708852b6e9f6641d6aa0311cce2103600ccdc3"
+        "sha256:7631d15b16e327ff08d728e97ac5f90f5150d00774938e720bbbc6830b77e0cf"
     );
     assert_eq!(manifest["models"][0]["id"], "OrderView");
     assert_eq!(manifest["models"][0]["record_revisions"], true);

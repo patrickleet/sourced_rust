@@ -4,6 +4,7 @@
 use std::path::PathBuf;
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
+use e2e_suite::new_command_id;
 use jsonwebtoken::{encode, Algorithm, EncodingKey, Header};
 use serde_json::{json, Value};
 
@@ -56,11 +57,7 @@ async fn mint_machine_token(keyfile: &str, uid: &str, issuer: &str, project_id: 
         .send()
         .await
         .expect("token");
-    assert!(
-        resp.status().is_success(),
-        "token mint {}",
-        resp.status()
-    );
+    assert!(resp.status().is_success(), "token mint {}", resp.status());
     let j: Value = resp.json().await.expect("json");
     j["access_token"]
         .as_str()
@@ -106,7 +103,11 @@ async fn oidc_bearer_graphql_isolation_against_stack() {
         .send()
         .await
         .expect("http");
-    assert_eq!(unauth.status().as_u16(), 401, "unauth GraphQL must 401 under OidcBearer");
+    assert_eq!(
+        unauth.status().as_u16(),
+        401,
+        "unauth GraphQL must 401 under OidcBearer"
+    );
 
     // HTTP command routes are not mounted (GraphQL-only surface).
     let http_cmd = client
@@ -124,13 +125,16 @@ async fn oidc_bearer_graphql_isolation_against_stack() {
     );
 
     // Mutation without Bearer but with spoofed identity headers must 401 (fail closed).
+    let spoof_command_id = new_command_id();
     let spoof_mut = client
         .post(format!("{base}/graphql"))
         .header("content-type", "application/json")
         .header("x-user-id", "spoofed-attacker")
         .header("x-role", "admin")
         .json(&json!({
-            "query": r#"mutation { todos_create(input: { todo_id: "t-spoof", title: "no" }) { todo_id } }"#
+            "query": format!(
+                r#"mutation {{ todos_create(commandId: "{spoof_command_id}", input: {{ todo_id: "t-spoof", title: "no" }}) {{ todo_id }} }}"#
+            )
         }))
         .send()
         .await
@@ -149,13 +153,14 @@ async fn oidc_bearer_graphql_isolation_against_stack() {
             .unwrap()
             .as_millis()
     );
+    let command_id = new_command_id();
     let create = client
         .post(format!("{base}/graphql"))
         .header("content-type", "application/json")
         .header("authorization", format!("Bearer {user_tok}"))
         .json(&json!({
             "query": format!(
-                r#"mutation {{ todos_create(input: {{ todo_id: "{tid}", title: "OIDC todo" }}) {{ todo_id owner_id title status }} }}"#
+                r#"mutation {{ todos_create(commandId: "{command_id}", input: {{ todo_id: "{tid}", title: "OIDC todo" }}) {{ todo_id owner_id title status }} }}"#
             )
         }))
         .send()
@@ -163,7 +168,11 @@ async fn oidc_bearer_graphql_isolation_against_stack() {
         .expect("create");
     let create_body: serde_json::Value = create.json().await.expect("create json");
     assert!(
-        create_body.get("errors").and_then(|e| e.as_array()).map(|a| a.is_empty()).unwrap_or(true),
+        create_body
+            .get("errors")
+            .and_then(|e| e.as_array())
+            .map(|a| a.is_empty())
+            .unwrap_or(true),
         "create mutation errors: {create_body}"
     );
     assert_eq!(
@@ -183,11 +192,7 @@ async fn oidc_bearer_graphql_isolation_against_stack() {
             .send()
             .await
             .expect("gql");
-        assert!(
-            gql.status().is_success(),
-            "user gql HTTP {}",
-            gql.status()
-        );
+        assert!(gql.status().is_success(), "user gql HTTP {}", gql.status());
         let body: Value = gql.json().await.unwrap();
         last = body.to_string();
         if let Some(arr) = body["data"]["todos"].as_array() {
@@ -252,5 +257,8 @@ fn compose_and_bootstrap_scripts_present() {
     assert!(root.join("scripts/up.sh").is_file(), "scripts/up.sh");
     let up = std::fs::read_to_string(root.join("scripts/up.sh")).unwrap();
     assert!(up.contains("OIDC_ISSUER"), "bootstrap exports OIDC_ISSUER");
-    assert!(up.contains("DATABASE_URL"), "bootstrap exports DATABASE_URL");
+    assert!(
+        up.contains("DATABASE_URL"),
+        "bootstrap exports DATABASE_URL"
+    );
 }

@@ -23,10 +23,13 @@ export {
 	type DistributedOpaqueString,
 	type DistributedProjectionExpectation,
 	type DistributedProjectionObservation,
+	type DistributedProtocolValue,
 	type DistributedProtocolEnvelope,
 	type DistributedProtocolErrorCode,
 	type DistributedQuerySnapshot,
 	type DistributedRecordRevision,
+	type DistributedTrustedPreset,
+	type DistributedTrustedPresetCodec,
 	type GraphqlResponseExtensions
 } from './protocol.js';
 export { documentToString, type GqlDocument } from './document.js';
@@ -50,26 +53,3 @@ export {
 	type WebSocketConstructor
 } from './websocket.js';
 export { authIdentityKey, jwtPayloadSub } from './identity.js';
-export {
-	createGraphqlClient,
-	looksLikeMutation,
-	type GraphqlClient,
-	type GraphqlClientOptions,
-	type RequestWriteOptions,
-	type SubscribeCallOptions
-} from './client.js';
-export {
-	defineResource,
-	type DefineResourceInput,
-	type GraphqlResource
-} from './resource.js';
-export {
-	createDocumentStore,
-	type DocumentStore,
-	type DocumentStoreOptions,
-	type DocumentStoreSnapshot,
-	type StoreStatus
-} from './document-store.js';
-
-export * from './cache/index.js';
-export * from './commands.js';

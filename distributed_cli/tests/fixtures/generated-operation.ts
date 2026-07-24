@@ -163,6 +163,11 @@ export const Operation_ScalarInputsDocument = "query ScalarInputs($big: BigInt!,
 export const Operation_ScalarInputs: ReplicaOperationArtifact<Operation_ScalarInputs_Data, Operation_ScalarInputs_Variables> = {
   "id": "sha256:d9f67afd74da3173c4a3b60d3dc832cc1288424a932a3784e2a8f9de3b379c13",
   "document": "query ScalarInputs($big: BigInt!, $bytes: Bytea, $id: ID!, $json: JSON, $order: [todo_order_by!], $timestamp: Timestamptz, $where: todo_bool_exp!) {\n  todos(order_by: $order, where: {_and: [$where, {blob: {_eq: $bytes}, id: {_eq: $id}, payload: {_eq: $json}, sequence: {_eq: $big}, updatedAt: {_eq: $timestamp}}]}) {\n    id\n    _distributed_tenantId: tenantId\n    _distributed_typename: __typename\n    _distributed_blob: blob\n    _distributed_completed: completed\n    _distributed_payload: payload\n    _distributed_priority: priority\n    _distributed_sequence: sequence\n    _distributed_title: title\n    _distributed_updatedAt: updatedAt\n  }\n}\n",
+  "source": {
+    "path": "src/routes/todos/+page.graphql",
+    "line": 2,
+    "column": 3
+  },
   "variableCodec": {
     "version": 2,
     "limits": {
@@ -720,9 +725,9 @@ export const Operation_ScalarInputs: ReplicaOperationArtifact<Operation_ScalarIn
       },
       "pagination": {
         "kind": "offset",
-        "insert": "revalidate",
-        "delete": "revalidate",
-        "reorder": "revalidate",
+        "insert": "local",
+        "delete": "local",
+        "reorder": "local",
         "stableUpdate": "local"
       },
       "selection": {
@@ -826,6 +831,7 @@ export const Operation_ScalarInputs: ReplicaOperationArtifact<Operation_ScalarIn
       "kind": "role",
       "name": "user"
     },
-    "operation": "sha256:d9f67afd74da3173c4a3b60d3dc832cc1288424a932a3784e2a8f9de3b379c13"
+    "operation": "sha256:d9f67afd74da3173c4a3b60d3dc832cc1288424a932a3784e2a8f9de3b379c13",
+    "trustedPresets": []
   }
 };

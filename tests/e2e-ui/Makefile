@@ -7,8 +7,8 @@
 #   make test-browser # Playwright UI e2e (needs make up + make run)
 
 .PHONY: all up down run run-api stop test test-domain test-suite test-live \
-	test-browser test-browser-install js-install js-build ui-install ui-build ui-check ui-test export-sdl gen-gql check-gql \
-	export-commands gen-commands check-commands check clean help
+	test-browser test-browser-install js-install js-build ui-install ui-build ui-check ui-test \
+	gen-client check-client check clean help
 
 # Defaults only — do NOT `include e2e-ui.env` (shell-quoted dotenv breaks Make).
 # Recipes `source` the env file so values stay clean.
@@ -143,59 +143,16 @@ ui-check: ui-install
 ui-test: ui-install
 	cd ui && $(NPM) test
 
-## Role SDL for UI codegen (GraphqlEngine::sdl_for_role → ui/schema/*.graphql)
-export-sdl:
-	cargo run -q -p e2e-runner --bin e2e-export-sdl -- ui/schema/user.graphql
-	GQL_ROLE=admin cargo run -q -p e2e-runner --bin e2e-export-sdl -- ui/schema/admin.graphql
+## One app-owned config drives Vite development, explicit generation, and CI drift checks.
+## Manifests remain ephemeral; compiler-owned output remains committed and inspectable.
+gen-client: ui-install
+	cd ui && $(NPM) run client:generate
 
-## Export role SDL + regenerate TypedDocumentNode from co-located *.gql
-## Codegen uses schema/admin.graphql (field superset incl. admin-only mutations).
-## Runtime ACL is still the session engine role — user cannot call admin-only fields.
-gen-gql: export-sdl ui-install
-	cd ui && $(NPM) run gen:gql
+## Byte/file-set drift check through dctl --check; never repairs generated files.
+check-client: ui-install
+	cd ui && $(NPM) run client:check
 
-## Fail if engine SDL / generated TS drift from git (CI + agents).
-## Paths are relative to the Distributed git root (this worktree / repo).
-check-gql: gen-gql
-	@set -e; \
-	ROOT=$$(git rev-parse --show-toplevel); \
-	if ! git -C "$$ROOT" diff --exit-code -- \
-		tests/e2e-ui/ui/schema \
-		tests/e2e-ui/ui/src/lib/gql/generated \
-		tests/e2e-ui/ui/src/routes/todos/todos.generated.ts \
-		tests/e2e-ui/ui/src/routes/chat/chat.generated.ts \
-		tests/e2e-ui/ui/src/routes/admin/admin.generated.ts \
-		':(literal)tests/e2e-ui/ui/src/routes/blob/[[gameId]]/blob.generated.ts'; then \
-		echo "ERROR: GraphQL schema/codegen drift — run make gen-gql and commit"; \
-		git -C "$$ROOT" diff --stat -- tests/e2e-ui/ui/schema tests/e2e-ui/ui/src/routes tests/e2e-ui/ui/src/lib/gql/generated || true; \
-		exit 1; \
-	fi; \
-	echo "check-gql: schema + generated types clean"
-
-## Command catalog from graphql_commands() (same registry as the engine).
-export-commands:
-	cargo run -q -p e2e-runner --bin e2e-export-commands -- ui/src/lib/api/commands.manifest.json
-
-## Manifest → TypeScript command functions (todosCreate, todosComplete, …).
-gen-commands: export-commands ui-install
-	cd ui && $(NPM) run gen:commands
-
-## Fail if command manifest / generated client drift from git.
-check-commands: gen-commands
-	@set -e; \
-	ROOT=$$(git rev-parse --show-toplevel); \
-	if ! git -C "$$ROOT" diff --exit-code -- \
-		tests/e2e-ui/ui/src/lib/api/commands.manifest.json \
-		tests/e2e-ui/ui/src/lib/api/commands.generated.ts \
-		tests/e2e-ui/ui/src/lib/api/commands.operations.gql \
-		tests/e2e-ui/ui/src/lib/api/commands.policies.generated.ts; then \
-		echo "ERROR: command client drift — run make gen-commands and commit"; \
-		git -C "$$ROOT" diff --stat -- tests/e2e-ui/ui/src/lib/api || true; \
-		exit 1; \
-	fi; \
-	echo "check-commands: manifest + command client clean"
-
-check: check-gql check-commands
+check: check-client
 	cargo check --workspace
 	cargo test -p todo-domain -p chat-domain --no-run
 	cargo test -p e2e-suite --test behavioral --no-run
@@ -211,11 +168,7 @@ help:
 	@echo "  make run        API + UI (source e2e-ui.env when present)"
 	@echo "  make test       offline suite + UI structural"
 	@echo "  make test-live  OIDC isolation against stack"
-	@echo "  make export-sdl      role SDL → ui/schema/{user,admin}.graphql"
-	@echo "  make gen-gql         export-sdl + ui npm run gen:gql"
-	@echo "  make check-gql       gen-gql + fail on schema/generated drift"
-	@echo "  make export-commands command manifest from graphql_commands()"
-	@echo "  make gen-commands    manifest → TypeScript command functions"
-	@echo "  make check-commands  gen-commands + fail on client drift"
+	@echo "  make gen-client      typed Service → generated user/admin clients"
+	@echo "  make check-client    verify generated artifacts byte-for-byte"
 	@echo "  make down       docker compose down"
 	@echo "  GRAPHIQL=0      disable GraphiQL when running the API"

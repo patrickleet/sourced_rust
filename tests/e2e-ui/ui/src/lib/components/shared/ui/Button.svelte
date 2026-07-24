@@ -32,7 +32,7 @@
 		children
 	}: Props = $props();
 
-	const isLink = !!href;
+	const isLink = $derived(!!href);
 </script>
 
 {#if isLink}

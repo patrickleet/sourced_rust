@@ -67,6 +67,13 @@ impl Scaffold {
     fn from_spec(spec: ServiceScaffoldSpec) -> Result<Self, ScaffoldError> {
         let names = ScaffoldNames::new(&spec.name)?;
         let models = model_scaffolds(&spec.models)?;
+        // GraphQL execution is SQL-backed. Keep the public pure generator aligned
+        // with the CLI, which promotes its in-memory default to SQLite.
+        let store = if spec.query_api && spec.store == StoreTarget::InMemory {
+            StoreTarget::Sqlite
+        } else {
+            spec.store
+        };
         let read_models = if spec.read_models {
             if models.is_empty() {
                 vec![ModelScaffold::new(&names.package_name)?]
@@ -92,7 +99,7 @@ impl Scaffold {
             names,
             distributed_dependency_path: spec.distributed_dependency_path,
             transport: spec.transport,
-            store: spec.store,
+            store,
             bus: spec.bus,
             metrics: spec.metrics,
             include_read_models: spec.read_models,
@@ -119,7 +126,7 @@ impl Scaffold {
         files.push(file("src/main.rs", self.main_rs()));
         files.push(file("src/manifest.rs", self.manifest_rs()));
         files.push(file("src/service.rs", self.service_rs()));
-        if !self.models.is_empty() {
+        if !self.models.is_empty() || (self.query_api && !self.commands.is_empty()) {
             files.push(file("src/models/mod.rs", self.models_mod_rs()));
             for model in &self.models {
                 files.push(file(
@@ -144,7 +151,6 @@ impl Scaffold {
         if self.query_api {
             files.push(file("src/query/mod.rs", self.query_mod_rs()));
             files.push(file("src/query/roles.rs", self.query_roles_rs()));
-            files.push(file("src/query/commands.rs", self.query_commands_rs()));
             for model in &self.read_models {
                 files.push(file(
                     &format!("src/query/{}.rs", model.module_ident),
@@ -453,12 +459,11 @@ mod tests {
         let paths = paths(&project);
         assert!(paths.contains(&"src/query/mod.rs"));
         assert!(paths.contains(&"src/query/roles.rs"));
-        assert!(paths.contains(&"src/query/commands.rs"));
+        assert!(!paths.contains(&"src/query/commands.rs"));
         assert!(
             paths.iter().any(|p| p.starts_with("src/query/")
                 && *p != "src/query/mod.rs"
-                && *p != "src/query/roles.rs"
-                && *p != "src/query/commands.rs"),
+                && *p != "src/query/roles.rs"),
             "expected per-model query module: {paths:?}"
         );
         let cargo = contents(&project, "Cargo.toml");
@@ -468,8 +473,12 @@ mod tests {
         );
         let service = contents(&project, "src/service.rs");
         assert!(
-            service.contains("build_with_graphql") && service.contains("with_graphql"),
+            service.contains("build_with_graphql") && service.contains("try_with_graphql"),
             "service must wire GraphQL: {service}"
+        );
+        assert!(
+            service.contains(".without_http_command_routes()"),
+            "GraphQL scaffold must not also expose unauthenticated direct command POST routes: {service}"
         );
         assert!(
             service.contains("pub type ServiceRepo = SqliteRepository;"),
@@ -480,12 +489,13 @@ mod tests {
             "build_with_graphql must open the persistent repository: {service}"
         );
         assert!(
-            service.contains("let engine = crate::query::build_engine(&repo)?;"),
-            "build_with_graphql must preserve the repository's GraphQL storage identity: {service}"
+            service.contains("crate::query::build_engine(&repo, &service"),
+            "build_with_graphql must bind the exact executable service and preserve the repository's GraphQL storage identity: {service}"
         );
         assert!(
-            service.contains("Routes::new().with_dependencies(repo),"),
-            "build_with_graphql routes must use the persistent repository: {service}"
+            service.contains("AggregateRepository::<_, crate::models::Order>::new(repo.clone())")
+                && service.contains(".typed_command(handlers::"),
+            "build_with_graphql routes must register typed causal commands over the persistent repository: {service}"
         );
         assert!(
             !service.contains("Routes::new().with_dependencies(InMemoryRepository::new())"),
@@ -502,6 +512,9 @@ mod tests {
                 "use distributed::graphql::{GraphqlBuildError, GraphqlEngine, GraphqlPoolSource};"
             )
                 && query_mod.contains("source: impl Into<GraphqlPoolSource>")
+                && query_mod.contains("service: &Service")
+                && query_mod.contains(".service(service)")
+                && query_mod.contains(".protocol_token_key(protocol_token_key)")
                 && query_mod.contains(".graphiql(")
                 && query_mod.contains("graphiql_enabled_from_env")
                 && query_mod.contains(".identity(")
@@ -532,6 +545,23 @@ mod tests {
             "deployment must bind DATABASE_URL from values: {deployment}"
         );
         assert!(deployment.contains("if and .Values.queryApi.enabled .Values.queryApi.databaseUrl"));
+    }
+
+    #[test]
+    fn public_query_api_scaffold_promotes_in_memory_store_to_sqlite() {
+        let mut s = spec("orders");
+        s.query_api = true;
+        s.store = StoreTarget::InMemory;
+        let project = generate_service_scaffold(s).unwrap();
+        let cargo = contents(&project, "Cargo.toml");
+        let service = contents(&project, "src/service.rs");
+
+        assert!(cargo.contains("\"sqlite\""), "Cargo.toml: {cargo}");
+        assert!(
+            service.contains("pub type ServiceRepo = SqliteRepository;"),
+            "query-api scaffold must use its enabled SQL repository: {service}"
+        );
+        assert!(!service.contains("pub type ServiceRepo = InMemoryRepository;"));
     }
 
     #[test]

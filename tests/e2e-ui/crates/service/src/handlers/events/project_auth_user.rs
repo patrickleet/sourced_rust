@@ -2,9 +2,7 @@
 
 use distributed::microsvc::{Context, HandlerError};
 use distributed::ReadModelWritePlanBuilder;
-use e2e_readmodels::{
-    map_zitadel_user_status, map_zitadel_user_upsert, ZitadelUserPayload,
-};
+use e2e_readmodels::{map_zitadel_user_status, map_zitadel_user_upsert, ZitadelUserPayload};
 use serde_json::{json, Value};
 
 use crate::deps::AuthDeps;
@@ -27,9 +25,7 @@ where
     true
 }
 
-pub async fn handle<R, L, S>(
-    ctx: &Context<'_, AuthDeps<R, L, S>>,
-) -> Result<Value, HandlerError>
+pub async fn handle<R, L, S>(ctx: &Context<'_, AuthDeps<R, L, S>>) -> Result<Value, HandlerError>
 where
     R: crate::bounds::EventStore,
     L: crate::bounds::Locks,

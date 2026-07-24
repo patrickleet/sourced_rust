@@ -1,0 +1,19 @@
+# Blob games join their imported owner records and are seeded on route load.
+query BlobGames @load {
+  blob_games(order_by: [{ game_id: asc }]) {
+    game_id
+    owner_id
+    score
+    player_dead
+    current_level
+    current_level_completed
+    map_json
+    status
+    owner {
+      user_id
+      display_name
+      email
+      status
+    }
+  }
+}

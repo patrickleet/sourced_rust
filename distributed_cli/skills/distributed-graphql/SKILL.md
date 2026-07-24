@@ -1,6 +1,6 @@
 ---
 name: distributed-graphql
-description: Expose auto-generated read-only GraphQL over Distributed read models (permissions, dctl schema --format graphql, with_graphql, command mutations). Use when adding a GraphQL query API, roles, model exposure, subscriptions, or command mutations.
+description: Expose generated GraphQL queries and typed causal commands over Distributed services. Use when adding a GraphQL API, roles, model exposure, subscriptions, command mutations, or generated clients.
 ---
 
 # GraphQL query service
@@ -15,11 +15,13 @@ distributed = { path = "...", features = ["graphql", "sqlite"] } # or postgres
 
 ```
 src/query/
-  mod.rs          # build_engine(pool) -> GraphqlEngine
+  mod.rs          # build_engine(repository, &service, protocol_key)
   roles.rs        # role name constants
-  commands.rs     # GraphqlCommands (optional)
   <model>.rs      # one file per exposed model: permissions()
 ```
+
+Typed command declarations live beside their executable handlers. There is no
+second GraphQL command registry.
 
 ### Add a model exposure
 
@@ -53,13 +55,29 @@ a role sees nothing until granted via `.model(...)` / `.grant_all(role)` /
 ## Wire the service
 
 ```rust
-let engine = query::build_engine(pool)?; // scaffold enables GraphiQL unless GRAPHIQL=0
-let service = Service::new()
-    .routes(routes)
-    .with_graphql(engine);
+let service = build_service(repository.clone())
+    // Browser writes go through the OIDC-protected GraphQL command proxy only.
+    .without_http_command_routes();
+let engine = query::build_engine(
+    &repository,
+    &service,
+    protocol_token_key,
+)?;
+let service = service.try_with_graphql(engine)?;
 // POST /graphql  — queries / mutations
 // GET  /graphql  — GraphiQL IDE when `.graphiql(true)`
 ```
+
+`without_http_command_routes()` disables only the generic `POST /{command}`
+transport on this GraphQL-facing service. Non-GraphQL services may keep those
+direct command routes when that transport is intentional and independently
+authenticated.
+
+Build the executable `Service` first and pass that exact instance to
+`GraphqlEngineBuilder::service`. For `Projected<M>`, pass the repository handle
+itself as the GraphQL pool source; a separately cloned raw pool cannot prove the
+same transactional storage identity. Configure a stable, nonzero 32-byte
+protocol key on every replica serving the same endpoint.
 
 ### GraphiQL (local visual explorer)
 
@@ -94,31 +112,46 @@ Never trust raw client `x-user-id` / `x-role` on a public edge.
 
 Pass `change_stream(repo.read_model_changes())` for live subscriptions.
 
-Command mutations: register `GraphqlCommands` on the builder and use
-`graphql_router_with_service` / `with_graphql` so `Request::data` carries `Service`.
+### Typed causal commands
 
-### Command return modes (ack / fact / projection)
+Declare each GraphQL mutation on the executable route:
+
+```rust
+let routes = Routes::new()
+    .with_repo(repository.aggregate::<Order>())
+    .typed_command(
+        typed_command::<CreateOrderInput, Fact<CreateOrderPayload>>("order.create")
+            .roles(["user"])
+            .confirmations(/* finite projector proof */),
+    )
+    .handle(create_order);
+```
+
+Handlers accept `CausalCommandContext`, stage aggregate/outbox/projection work on
+that context, and return `PreparedCommand<Accepted<_>>`,
+`PreparedCommand<Fact<_>>`, or `PreparedCommand<Projected<M>>`. Never commit
+outside the framework-owned causal boundary.
+
+### Command consistency modes
 
 **Command success does not imply projection visibility.**
 
-| Handler topology | Return payload | Client `result.kind` |
-|------------------|----------------|----------------------|
-| Events/outbox only; projector separate (**default Seeker / e2e-ui todos**) | ack or domain-fact fields only | `ack` / `fact` + reconcile (subscription/refetch) |
-| Handler commits **read model in the same request** | view-shaped JSON matching GraphQL output / RM columns | `projection` — client may apply payload now |
+| Contract | Meaning |
+|----------|---------|
+| `Accepted<T>` | Durable command accepted; no projection visibility is promised. |
+| `Fact<T>` | Durable fact returned with finite registered projector confirmations. |
+| `Projected<M>` | Exact read-model row is staged in the same transaction. |
 
 Rules:
 
-1. If you **write** the read model in the command, **return it** (view-shaped). Prefer
-   `stage_projection_and_payload(&mut plan, &view)` so upsert + JSON cannot drift, or
-   `projection_return_value(&view)` after you commit the same row.
-2. If projection is a **separate** event handler, return **ack/fact only** — do **not**
-   invent a full list row the RM has not stored.
-3. e2e-ui `todos.create` returns fact-shaped `TodoCreatePayload` — treat as **`fact`**,
-   not projection-from-store.
+1. Use `Projected<M>` only when the exact row is staged with the command.
+2. Use `Fact<T>` only with finite confirmation topology registered on the same
+   service.
+3. Otherwise use `Accepted<T>`; never invent a projected row.
 
 Surface IR: SDL is built via `build_surface` → `graphql_sdl_from_surface` (shared inventory
-for dialect-honest comparison ops and role grants). Runtime schema still partially dual
-until full IR wire-up.
+for dialect-honest comparison ops, role grants, typed commands, and generated
+client manifests).
 
 ## SDL artifact (CI gate)
 
@@ -135,9 +168,11 @@ git diff --exit-code schema.graphql
 dctl scaffold my-service --query-api --read-models --store sqlite
 ```
 
-Emits `src/query/` skeleton + `graphql` feature + `DATABASE_URL` / pool wiring notes.
+Emits typed causal handlers, a service-derived GraphQL engine, `src/query/`
+permissions, the `graphql` feature, and repository/token-key wiring.
 
 ## Reference
 
 - Framework docs: `README § GraphQL query service` in the Distributed repo
-- Spec: `specs/query-service-graphql` (normative)
+- Distributed GitKB: `specs/query-layer/v1/client-replica` and
+  `specs/query-layer/v1/causal-command-protocol` (normative)

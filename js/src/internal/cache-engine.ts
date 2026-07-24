@@ -190,6 +190,43 @@ export type CacheEngineSnapshot = {
 	}[];
 };
 
+/**
+ * Opaque, detached JSON context owned by the replica and carried with one
+ * optimistic layer. The cache engine never interprets it.
+ */
+export type OptimisticLayerContext = CacheValue;
+
+export type OptimisticLayerView = {
+	readonly id: string;
+	readonly sequence: number;
+	readonly state: OptimisticLayerState;
+	readonly context?: OptimisticLayerContext;
+};
+
+export type DerivedIndexMutation =
+	| {
+			readonly kind: 'write';
+			readonly write: OptimisticIndexWrite;
+	  }
+	| {
+			readonly kind: 'stale';
+			readonly key: IndexKey;
+			readonly reason: string;
+	  }
+	| {
+			readonly kind: 'delete';
+			readonly key: IndexKey;
+	  };
+
+/**
+ * Rebuild the complete derived-index overlay from confirmed state and the
+ * ordered semantic contexts of every surviving optimistic layer.
+ */
+export type DerivedIndexReconciler = (
+	confirmed: CacheEngineSnapshot,
+	layers: readonly OptimisticLayerView[]
+) => readonly DerivedIndexMutation[];
+
 export interface CacheEngine {
 	read<T>(selector: CacheSelector<T>): T;
 	watch<T>(
@@ -198,7 +235,12 @@ export interface CacheEngine {
 		options?: WatchOptions
 	): () => void;
 	batch<T>(update: (writer: BaseCacheWriter) => T): T;
-	createOptimisticLayer(id: string, update: (writer: OptimisticCacheWriter) => void): void;
+	createOptimisticLayer(
+		id: string,
+		update: (writer: OptimisticCacheWriter) => void,
+		context?: OptimisticLayerContext
+	): void;
+	setDerivedIndexReconciler(reconciler: DerivedIndexReconciler | undefined): void;
 	markOptimisticLayerAccepted(id: string): boolean;
 	confirmOptimisticLayer<T>(id: string, update: (writer: BaseCacheWriter) => T): T;
 	confirmOptimisticLayers<T>(
@@ -209,6 +251,11 @@ export interface CacheEngine {
 	optimisticLayerState(id: string): OptimisticLayerState | undefined;
 	extract(): CacheEngineSnapshot;
 	restore(snapshot: CacheEngineSnapshot): void;
+	/**
+	 * Replace only confirmed base state while preserving local optimistic layers,
+	 * their acceptance state, and causal sequencing floors.
+	 */
+	restoreConfirmed(snapshot: CacheEngineSnapshot): void;
 	/**
 	 * Drop incomparable/reset base indexes without assigning them a fabricated
 	 * revision. Pending optimistic overlays remain layered above the new gap.
@@ -252,7 +299,13 @@ type OptimisticLayer = {
 	sequence: number;
 	state: OptimisticLayerState;
 	operations: OverlayOperation[];
+	context?: OptimisticLayerContext;
 };
+
+type DerivedIndexOperation =
+	| { kind: 'write-index'; write: OptimisticIndexWrite }
+	| { kind: 'mark-index-stale'; key: IndexKey; reason: string }
+	| { kind: 'delete-index'; key: IndexKey };
 
 type VisibleRecord = {
 	revision: bigint;
@@ -287,6 +340,7 @@ type EngineBackup = {
 	records: Map<RecordKey, StoredRecord>;
 	indexes: Map<IndexKey, StoredIndex>;
 	layers: OptimisticLayer[];
+	derivedIndexOperations: DerivedIndexOperation[];
 	confirmedFloors: Map<string, number>;
 	retained: Map<RecordKey, number>;
 	nextLayerSequence: number;
@@ -305,6 +359,9 @@ class PurposeBuiltCacheEngine implements CacheEngine {
 	#records = new Map<RecordKey, StoredRecord>();
 	#indexes = new Map<IndexKey, StoredIndex>();
 	#layers: OptimisticLayer[] = [];
+	#derivedIndexOperations: DerivedIndexOperation[] = [];
+	#derivedIndexReconciler: DerivedIndexReconciler | undefined;
+	#reconcilingDerivedIndexes = false;
 	#confirmedFloors = new Map<string, number>();
 	#retained = new Map<RecordKey, number>();
 	#nextLayerSequence = 0;
@@ -352,12 +409,17 @@ class PurposeBuiltCacheEngine implements CacheEngine {
 		if (this.#transactionDepth !== 0) {
 			throw new Error('nested cache batches are not supported');
 		}
-		return this.#transaction(() => this.#runBaseUpdate(update));
+		return this.#transaction(() => {
+			const result = this.#runBaseUpdate(update);
+			this.#reconcileDerivedIndexes();
+			return result;
+		});
 	}
 
 	createOptimisticLayer(
 		id: string,
-		update: (writer: OptimisticCacheWriter) => void
+		update: (writer: OptimisticCacheWriter) => void,
+		context?: OptimisticLayerContext
 	): void {
 		assertName(id, 'optimistic layer id');
 		if (this.#layers.some((layer) => layer.id === id)) {
@@ -369,23 +431,48 @@ class PurposeBuiltCacheEngine implements CacheEngine {
 		}
 		const operations: OverlayOperation[] = [];
 		this.#runOptimisticUpdate(update, operations);
+		const stableContext =
+			context === undefined ? undefined : cloneCacheValue(context);
 		this.#transaction(() => {
 			const before = this.#materialize();
 			this.#layers.push({
 				id,
 				sequence: ++this.#nextLayerSequence,
 				state: 'optimistic',
-				operations
+				operations,
+				...(stableContext === undefined ? {} : { context: stableContext })
 			});
 			this.#markOverlayChanges(operations, before, this.#materialize());
 			this.#dirty = true;
+			this.#reconcileDerivedIndexes();
 		});
+	}
+
+	setDerivedIndexReconciler(
+		reconciler: DerivedIndexReconciler | undefined
+	): void {
+		if (reconciler !== undefined && typeof reconciler !== 'function') {
+			throw new TypeError('derived index reconciler must be a function');
+		}
+		const previous = this.#derivedIndexReconciler;
+		try {
+			this.#transaction(() => {
+				this.#derivedIndexReconciler = reconciler;
+				this.#reconcileDerivedIndexes();
+			});
+		} catch (error) {
+			this.#derivedIndexReconciler = previous;
+			throw error;
+		}
 	}
 
 	markOptimisticLayerAccepted(id: string): boolean {
 		const layer = this.#layers.find((candidate) => candidate.id === id);
 		if (!layer) return false;
-		layer.state = 'accepted';
+		this.#transaction(() => {
+			layer.state = 'accepted';
+			this.#reconcileDerivedIndexes();
+		});
 		return true;
 	}
 
@@ -436,6 +523,7 @@ class PurposeBuiltCacheEngine implements CacheEngine {
 			}
 			if (this.#layers.length === 0) this.#confirmedFloors.clear();
 			this.#dirty = true;
+			this.#reconcileDerivedIndexes();
 			return result;
 		});
 	}
@@ -449,6 +537,7 @@ class PurposeBuiltCacheEngine implements CacheEngine {
 			this.#markOverlayChanges(layer.operations, before, this.#materialize());
 			if (this.#layers.length === 0) this.#confirmedFloors.clear();
 			this.#dirty = true;
+			this.#reconcileDerivedIndexes();
 		});
 		return true;
 	}
@@ -524,10 +613,23 @@ class PurposeBuiltCacheEngine implements CacheEngine {
 			this.#records = restored.records;
 			this.#indexes = restored.indexes;
 			this.#layers = [];
+			this.#derivedIndexOperations = [];
 			this.#confirmedFloors.clear();
 			this.#nextLayerSequence = 0;
 			this.#changedDependencies.add('*');
 			this.#dirty = true;
+		});
+	}
+
+	restoreConfirmed(snapshot: CacheEngineSnapshot): void {
+		const restored = parseSnapshot(snapshot);
+		this.#transaction(() => {
+			this.#records = restored.records;
+			this.#indexes = restored.indexes;
+			this.#derivedIndexOperations = [];
+			this.#changedDependencies.add('*');
+			this.#dirty = true;
+			this.#reconcileDerivedIndexes();
 		});
 	}
 
@@ -546,6 +648,7 @@ class PurposeBuiltCacheEngine implements CacheEngine {
 				changed = true;
 			}
 			if (changed) this.#dirty = true;
+			this.#reconcileDerivedIndexes();
 		});
 	}
 
@@ -598,6 +701,7 @@ class PurposeBuiltCacheEngine implements CacheEngine {
 				indexesCollected = true;
 			}
 			if (collected.length > 0 || indexesCollected) this.#dirty = true;
+			this.#reconcileDerivedIndexes();
 			return Object.freeze(collected.sort());
 		});
 	}
@@ -701,6 +805,10 @@ class PurposeBuiltCacheEngine implements CacheEngine {
 				}
 			}
 		}
+		for (const operation of this.#derivedIndexOperations) {
+			if (operation.kind !== 'write-index') continue;
+			for (const key of operation.write.records) roots.add(key);
+		}
 		return roots;
 	}
 
@@ -780,6 +888,9 @@ class PurposeBuiltCacheEngine implements CacheEngine {
 				for (const operation of layer.operations) {
 					this.#applyOverlay(records, indexes, layer.sequence, operation);
 				}
+			}
+			for (const operation of this.#derivedIndexOperations) {
+				this.#applyDerivedIndexOperation(records, indexes, operation);
 			}
 		}
 
@@ -909,6 +1020,121 @@ class PurposeBuiltCacheEngine implements CacheEngine {
 			index.records = [];
 			indexes.set(key, index);
 		}
+	}
+
+	#applyDerivedIndexOperation(
+		records: Map<RecordKey, VisibleRecord>,
+		indexes: Map<IndexKey, VisibleIndex>,
+		operation: DerivedIndexOperation
+	): void {
+		if (operation.kind === 'mark-index-stale') {
+			const index = indexes.get(operation.key);
+			if (!index || index.deleted) return;
+			index.complete = false;
+			if (
+				index.staleRevision === undefined ||
+				index.staleRevision < index.revision
+			) {
+				index.staleRevision = index.revision;
+			}
+			if (index.metadata !== undefined) {
+				index.metadata = cloneIndexMetadata({
+					...index.metadata,
+					staleReason: operation.reason
+				});
+			}
+			return;
+		}
+
+		const key =
+			operation.kind === 'write-index' ? operation.write.key : operation.key;
+		if (operation.kind === 'delete-index') {
+			const index = indexes.get(key) ?? {
+				revision: 0n,
+				staleRevision: undefined,
+				records: [],
+				complete: false,
+				deleted: true,
+				metadata: undefined
+			};
+			index.deleted = true;
+			index.records = [];
+			indexes.set(key, index);
+			return;
+		}
+
+		let metadata = operation.write.metadata;
+		if (metadata?.parent !== undefined) {
+			const parent = records.get(metadata.parent);
+			if (!parent || parent.tombstoned) return;
+			if (
+				metadata.parentRevision !== undefined &&
+				revisionToken(metadata.parentRevision) !== parent.revision
+			) {
+				return;
+			}
+			if (
+				metadata.parentIncarnation !== undefined &&
+				revisionToken(metadata.parentIncarnation) !== parent.incarnation
+			) {
+				return;
+			}
+			metadata = cloneIndexMetadata({
+				...metadata,
+				parentIncarnation: revisionString(parent.incarnation)
+			});
+		}
+		indexes.set(key, {
+			revision: indexes.get(key)?.revision ?? 0n,
+			staleRevision: indexes.get(key)?.staleRevision,
+			records: [...operation.write.records],
+			complete: operation.write.complete ?? false,
+			deleted: false,
+			metadata
+		});
+	}
+
+	#reconcileDerivedIndexes(): void {
+		if (this.#reconcilingDerivedIndexes) {
+			throw new Error('derived index reconciliation cannot be re-entered');
+		}
+		const reconciler = this.#derivedIndexReconciler;
+		let next: readonly DerivedIndexOperation[];
+		this.#reconcilingDerivedIndexes = true;
+		try {
+			next =
+				reconciler === undefined
+					? []
+					: cloneDerivedIndexOperations(
+							runDerivedIndexReconciler(
+								reconciler,
+								this.extract(),
+								this.#layers.map((layer) =>
+									Object.freeze({
+										id: layer.id,
+										sequence: layer.sequence,
+										state: layer.state,
+										...(layer.context === undefined
+											? {}
+											: { context: layer.context })
+									})
+								)
+							)
+						);
+		} finally {
+			this.#reconcilingDerivedIndexes = false;
+		}
+		const before = this.#materialize();
+		const previous = this.#derivedIndexOperations;
+		this.#derivedIndexOperations = [...next];
+		const after = this.#materialize();
+		let changed = false;
+		for (const key of derivedIndexKeys([...previous, ...next])) {
+			if (deepEqual(before.indexes.get(key), after.indexes.get(key))) continue;
+			this.#changedDependencies.add(indexDependency(key));
+			changed = true;
+		}
+		if (changed) this.#dirty = true;
 	}
 
 	#recordFieldFloor(key: RecordKey, field: string): number {
@@ -1516,6 +1742,7 @@ class PurposeBuiltCacheEngine implements CacheEngine {
 			records: this.#records,
 			indexes: this.#indexes,
 			layers: this.#layers,
+			derivedIndexOperations: this.#derivedIndexOperations,
 			confirmedFloors: this.#confirmedFloors,
 			retained: this.#retained,
 			nextLayerSequence: this.#nextLayerSequence,
@@ -1529,6 +1756,7 @@ class PurposeBuiltCacheEngine implements CacheEngine {
 		this.#records = backup.records;
 		this.#indexes = backup.indexes;
 		this.#layers = backup.layers;
+		this.#derivedIndexOperations = backup.derivedIndexOperations;
 		this.#confirmedFloors = backup.confirmedFloors;
 		this.#retained = backup.retained;
 		this.#nextLayerSequence = backup.nextLayerSequence;
@@ -1628,6 +1856,154 @@ function parseSnapshot(snapshot: CacheEngineSnapshot): {
 		});
 	}
 	return { records, indexes };
+}
+
+function runDerivedIndexReconciler(
+	reconciler: DerivedIndexReconciler,
+	confirmed: CacheEngineSnapshot,
+	layers: readonly OptimisticLayerView[]
+): readonly DerivedIndexMutation[] {
+	const result = reconciler(confirmed, Object.freeze([...layers]));
+	assertSynchronousResult(result, 'derived index reconciler');
+	if (!Array.isArray(result)) {
+		throw new TypeError('derived index reconciler must return an array');
+	}
+	return result;
+}
+
+function cloneDerivedIndexOperations(
+	input: readonly DerivedIndexMutation[]
+): readonly DerivedIndexOperation[] {
+	const operations: DerivedIndexOperation[] = [];
+	const keys = new Set<IndexKey>();
+	for (const [index, value] of input.entries()) {
+		const path = `derived index mutation ${index}`;
+		if (
+			value === null ||
+			typeof value !== 'object' ||
+			Array.isArray(value) ||
+			(Object.getPrototypeOf(value) !== Object.prototype &&
+				Object.getPrototypeOf(value) !== null)
+		) {
+			throw new TypeError(`${path} must be a plain object`);
+		}
+		if (value.kind === 'write') {
+			assertExactKeys(value, ['kind', 'write'], path);
+			const write = value.write;
+			if (
+				write === null ||
+				typeof write !== 'object' ||
+				Array.isArray(write) ||
+				(Object.getPrototypeOf(write) !== Object.prototype &&
+					Object.getPrototypeOf(write) !== null)
+			) {
+				throw new TypeError(`${path}.write must be a plain object`);
+			}
+			assertExactKeys(
+				write as unknown as Record<string, unknown>,
+				['key', 'records', 'complete', 'metadata'],
+				`${path}.write`,
+				['key', 'records']
+			);
+			validateIndexWrite(write);
+			if (
+				write.complete !== undefined &&
+				typeof write.complete !== 'boolean'
+			) {
+				throw new TypeError(`${path}.write.complete must be a boolean`);
+			}
+			if (keys.has(write.key)) {
+				throw new TypeError(`duplicate derived index mutation: ${write.key}`);
+			}
+			keys.add(write.key);
+			operations.push(
+				Object.freeze({
+					kind: 'write-index' as const,
+					write: Object.freeze({
+						key: write.key,
+						records: Object.freeze([...write.records]),
+						complete: write.complete ?? false,
+						...(write.metadata === undefined
+							? {}
+							: { metadata: cloneIndexMetadata(write.metadata) })
+					})
+				})
+			);
+			continue;
+		}
+		if (value.kind === 'stale') {
+			assertExactKeys(value, ['kind', 'key', 'reason'], path);
+			assertName(value.key, `${path} key`);
+			assertName(value.reason, `${path} reason`);
+			if (keys.has(value.key)) {
+				throw new TypeError(`duplicate derived index mutation: ${value.key}`);
+			}
+			keys.add(value.key);
+			operations.push(
+				Object.freeze({
+					kind: 'mark-index-stale' as const,
+					key: value.key,
+					reason: value.reason
+				})
+			);
+			continue;
+		}
+		if (value.kind === 'delete') {
+			assertExactKeys(value, ['kind', 'key'], path);
+			assertName(value.key, `${path} key`);
+			if (keys.has(value.key)) {
+				throw new TypeError(`duplicate derived index mutation: ${value.key}`);
+			}
+			keys.add(value.key);
+			operations.push(
+				Object.freeze({ kind: 'delete-index' as const, key: value.key })
+			);
+			continue;
+		}
+		throw new TypeError(`${path} has unsupported kind`);
+	}
+	return Object.freeze(
+		operations.sort((left, right) =>
+			derivedIndexOperationKey(left).localeCompare(
+				derivedIndexOperationKey(right)
+			)
+		)
+	);
+}
+
+function derivedIndexKeys(
+	operations: readonly DerivedIndexOperation[]
+): readonly IndexKey[] {
+	return Object.freeze(
+		[...new Set(operations.map(derivedIndexOperationKey))].sort()
+	);
+}
+
+function derivedIndexOperationKey(
+	operation: DerivedIndexOperation
+): IndexKey {
+	return operation.kind === 'write-index'
+		? operation.write.key
+		: operation.key;
+}
+
+function assertExactKeys(
+	value: Record<string, unknown>,
+	allowed: readonly string[],
+	description: string,
+	required: readonly string[] = allowed
+): void {
+	const allowedKeys = new Set(allowed);
+	for (const key of Object.keys(value)) {
+		if (!allowedKeys.has(key)) {
+			throw new TypeError(`${description} contains unknown field ${key}`);
+		}
+	}
+	for (const key of required) {
+		if (!Object.prototype.hasOwnProperty.call(value, key)) {
+			throw new TypeError(`${description} is missing field ${key}`);
+		}
+	}
 }
 
 function operationDependencies(operation: OverlayOperation): readonly string[] {

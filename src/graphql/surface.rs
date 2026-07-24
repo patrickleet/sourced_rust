@@ -215,7 +215,6 @@ pub struct SurfaceTypeDef {
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub enum SurfaceCommandShape {
     None,
-    Json,
     Typed(SurfaceTypeDef),
 }
 
@@ -227,7 +226,7 @@ pub struct SurfaceCommand {
     pub roles: Vec<String>,
     pub input: SurfaceCommandShape,
     pub output: SurfaceCommandShape,
-    pub consistency: Option<CommandConsistency>,
+    pub consistency: CommandConsistency,
     pub(crate) input_defaults: Vec<CommandInputDefault>,
     pub(crate) effects: Option<CommandEffects>,
     pub(crate) confirmations: Vec<CommandProjectionConfirmation>,
@@ -238,8 +237,8 @@ pub struct SurfaceCommand {
     pub(crate) confirmation_unavailable: bool,
 }
 
-/// Projector topology declaration. Typed consistency/effects intentionally do
-/// not live here; task 4 populates the versioned manifest extension slots.
+/// Projector topology declaration. Typed consistency/effects live on each
+/// executable command contract rather than in this topology record.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct SurfaceProjector {
     pub name: String,
@@ -459,10 +458,12 @@ impl Surface {
         &self.projectors
     }
 
-    /// Attach the structural GraphQL command registry to this Surface.
-    pub fn with_commands(
+    /// Attach the crate-private typed command inventory to this unselected
+    /// catalog surface. Public callers derive this exclusively via
+    /// [`Surface::with_service`].
+    pub(crate) fn with_typed_commands(
         mut self,
-        commands: &super::commands::GraphqlCommands,
+        commands: &super::commands::TypedCommandInventory,
     ) -> Result<Self, String> {
         if !matches!(self.selection, SurfaceSelection::Catalog) {
             return Err(
@@ -509,8 +510,8 @@ impl Surface {
         }
         let binding = service.typed_command_binding()?;
         let contracts = service.typed_command_contracts();
-        let commands = super::commands::GraphqlCommands::from_typed_contracts(&contracts)?;
-        self = self.with_commands(&commands)?;
+        let commands = super::commands::TypedCommandInventory::from_contracts(&contracts)?;
+        self = self.with_typed_commands(&commands)?;
         self.service_binding = Some(binding);
         Ok(self)
     }
@@ -1766,7 +1767,7 @@ fn validate_and_canonicalize_commands(
                 reject_occupied_command_types(definition, &occupied_types)?;
                 register_type_def(definition, true, &mut type_defs)?;
             }
-            SurfaceCommandShape::None | SurfaceCommandShape::Json => {}
+            SurfaceCommandShape::None => {}
         }
         let output_command_name = command.command_name.clone();
         let output_consistency = command.consistency;
@@ -1795,7 +1796,6 @@ fn validate_and_canonicalize_commands(
                     register_type_def(definition, false, &mut type_defs)?;
                 }
             }
-            SurfaceCommandShape::Json => {}
         }
         command
             .input_defaults
@@ -1818,12 +1818,12 @@ fn validate_and_canonicalize_commands(
 
 pub(crate) fn projected_output_reuses_surface_model(
     command_name: &str,
-    consistency: Option<CommandConsistency>,
+    consistency: CommandConsistency,
     projected: Option<&CommandProjectedModel>,
     definition: &SurfaceTypeDef,
     models: &BTreeMap<String, SurfaceModel>,
 ) -> Result<bool, String> {
-    if consistency != Some(CommandConsistency::Projected) {
+    if consistency != CommandConsistency::Projected {
         return Ok(false);
     }
     let Some(projected) = projected else {
@@ -1923,35 +1923,29 @@ fn validate_command_confirmations(
 ) -> Result<(), String> {
     validate_projection_confirmation_count(&command.command_name, command.confirmations.len())?;
     match command.consistency {
-        Some(CommandConsistency::Fact) if command.confirmations.is_empty() => {
+        CommandConsistency::Fact if command.confirmations.is_empty() => {
             return Err(format!(
                 "typed fact command `{}` must declare at least one expected projector confirmation",
                 command.command_name
             ));
         }
-        Some(CommandConsistency::Projected) if !command.confirmations.is_empty() => {
+        CommandConsistency::Projected if !command.confirmations.is_empty() => {
             return Err(format!(
                 "typed projected command `{}` cannot declare asynchronous projector confirmations",
                 command.command_name
             ));
         }
-        Some(CommandConsistency::Projected) if command.projected_model.is_none() => {
+        CommandConsistency::Projected if command.projected_model.is_none() => {
             return Err(format!(
                 "typed projected command `{}` is missing its compiler-retained relational model",
                 command.command_name
             ));
         }
-        Some(CommandConsistency::Accepted | CommandConsistency::Fact)
+        CommandConsistency::Accepted | CommandConsistency::Fact
             if command.projected_model.is_some() || command.direct_projection.is_some() =>
         {
             return Err(format!(
                 "typed non-projected command `{}` cannot carry direct projection metadata",
-                command.command_name
-            ));
-        }
-        None if !command.confirmations.is_empty() => {
-            return Err(format!(
-                "legacy command `{}` cannot declare typed projector confirmations",
                 command.command_name
             ));
         }
@@ -2128,7 +2122,7 @@ fn bind_surface_direct_projection_targets(
             confirmation.bind_protocol_topology(topology.clone());
         }
 
-        if command.consistency != Some(CommandConsistency::Projected) {
+        if command.consistency != CommandConsistency::Projected {
             continue;
         }
         let projected = command.projected_model.as_ref().ok_or_else(|| {
@@ -3038,9 +3032,21 @@ fn filter_is_surface_visible(
             .iter()
             .all(|item| filter_is_surface_visible(item, model_name, models)),
         FilterExpr::Not(item) => filter_is_surface_visible(item, model_name, models),
-        FilterExpr::Cmp { column, .. }
-        | FilterExpr::In { column, .. }
-        | FilterExpr::IsNull { column, .. } => {
+        FilterExpr::Cmp { column, rhs, .. } => model
+            .columns
+            .iter()
+            .find(|field| field.name == *column)
+            .is_some_and(|field| policy_operand_is_client_typed(rhs, &field.scalar)),
+        FilterExpr::In { column, values, .. } => model
+            .columns
+            .iter()
+            .find(|field| field.name == *column)
+            .is_some_and(|field| {
+                values
+                    .iter()
+                    .all(|value| policy_operand_is_client_typed(value, &field.scalar))
+            }),
+        FilterExpr::IsNull { column, .. } => {
             model.columns.iter().any(|field| field.name == *column)
         }
         FilterExpr::Rel { field, predicate } => model
@@ -3055,6 +3061,14 @@ fn filter_is_surface_visible(
                 ) && filter_is_surface_visible(predicate, &relationship.target_model, models)
             }),
     }
+}
+
+fn policy_operand_is_client_typed(operand: &Operand, scalar: &str) -> bool {
+    !matches!(operand, Operand::Claim(_))
+        || matches!(
+            scalar,
+            "BigInt" | "Boolean" | "Float" | "ID" | "Int" | "String" | "Timestamptz"
+        )
 }
 
 fn root_fields_for_models(
@@ -3298,7 +3312,12 @@ fn relationship_emitted(
 
 #[cfg(test)]
 mod tests {
+    use std::any::TypeId;
+
     use super::*;
+    use crate::graphql::command_contract::{CommandEffects, TypedCommandContract};
+    use crate::graphql::commands::TypedCommandInventory;
+    use crate::graphql::{GraphqlTypeDef, GraphqlTypeField};
     use crate::table::{ColumnType, PrimaryKey, RelationshipDef, TableColumn, TableKind};
 
     fn orders() -> TableSchema {
@@ -3341,6 +3360,47 @@ mod tests {
             relationships: Vec::new(),
             kind: TableKind::Operational,
         }
+    }
+
+    fn test_command(
+        command_name: &str,
+        field_name: &str,
+        output: GraphqlTypeDef,
+    ) -> TypedCommandContract {
+        let input_type_id = TypeId::of::<String>();
+        let output_type_id = TypeId::of::<()>();
+        TypedCommandContract {
+            name: command_name.into(),
+            field_name: field_name.into(),
+            roles: Vec::new(),
+            input: GraphqlTypeDef::new(
+                "TestCommandInput",
+                vec![GraphqlTypeField {
+                    name: "id".into(),
+                    type_name: "String".into(),
+                    nullable: false,
+                    list: false,
+                    item_nullable: false,
+                    nested: None,
+                }],
+            )
+            .with_type_id(input_type_id),
+            output: output.with_type_id(output_type_id),
+            input_type_id,
+            output_type_id,
+            consistency: CommandConsistency::Accepted,
+            input_defaults: Vec::new(),
+            effects: CommandEffects::revalidate(),
+            confirmations: Vec::new(),
+            projected_model: None,
+            direct_projection: None,
+        }
+    }
+
+    fn test_inventory(
+        contracts: impl IntoIterator<Item = TypedCommandContract>,
+    ) -> TypedCommandInventory {
+        TypedCommandInventory::from_contracts(&contracts.into_iter().collect::<Vec<_>>()).unwrap()
     }
 
     #[test]
@@ -3443,14 +3503,12 @@ mod tests {
 
     #[test]
     fn selected_surfaces_reject_command_and_projector_reattachment() {
-        use super::super::GraphqlCommands;
-
         let full = build_surface(&[orders()], &SurfaceOptions::sqlite()).unwrap();
         let grants = BTreeMap::from([("OrderView".into(), RoleGrant::all_columns())]);
         let selected = surface_for_role(&full, "user", &grants).unwrap();
         assert!(selected
             .clone()
-            .with_commands(&GraphqlCommands::new())
+            .with_typed_commands(&TypedCommandInventory::empty())
             .unwrap_err()
             .contains("before authorization selection"));
         assert!(selected
@@ -3463,7 +3521,7 @@ mod tests {
             surface_for_application(&full, "web", &["user".into()], &grants_by_role).unwrap();
         assert!(application
             .clone()
-            .with_commands(&GraphqlCommands::new())
+            .with_typed_commands(&TypedCommandInventory::empty())
             .unwrap_err()
             .contains("before authorization selection"));
         assert!(application
@@ -3506,90 +3564,80 @@ mod tests {
 
     #[test]
     fn command_surface_rejects_duplicate_mutation_field_ids() {
-        use super::super::{exposed_command, GraphqlCommands};
-
-        let commands = GraphqlCommands::new()
-            .command("order.create", exposed_command().field_name("orders_write"))
-            .command(
-                "order.replace",
-                exposed_command().field_name("orders_write"),
-            );
+        let output = GraphqlTypeDef::new(
+            "TestCommandPayload",
+            vec![GraphqlTypeField {
+                name: "id".into(),
+                type_name: "String".into(),
+                nullable: false,
+                list: false,
+                item_nullable: false,
+                nested: None,
+            }],
+        );
+        let commands = test_inventory([
+            test_command("order.create", "orders_write", output.clone()),
+            test_command("order.replace", "orders_write", output),
+        ]);
         let error = build_surface(&[orders()], &SurfaceOptions::sqlite())
             .unwrap()
-            .with_commands(&commands)
+            .with_typed_commands(&commands)
             .unwrap_err();
         assert!(error.contains("duplicate command mutation field `orders_write`"));
     }
 
     #[test]
     fn command_surface_rejects_empty_nested_and_surface_colliding_types() {
-        use super::super::{
-            exposed_command, GraphqlCommands, GraphqlOutputType, GraphqlTypeDef, GraphqlTypeField,
-        };
-
-        struct EmptyOutput;
-        impl GraphqlOutputType for EmptyOutput {
-            fn graphql_type() -> GraphqlTypeDef {
-                GraphqlTypeDef::new("EmptyPayload", Vec::new())
-            }
-        }
-        let empty = GraphqlCommands::new()
-            .command("order.empty", exposed_command().output::<EmptyOutput>());
+        let empty = test_inventory([test_command(
+            "order.empty",
+            "order_empty",
+            GraphqlTypeDef::new("EmptyPayload", Vec::new()),
+        )]);
         let error = build_surface(&[orders()], &SurfaceOptions::sqlite())
             .unwrap()
-            .with_commands(&empty)
+            .with_typed_commands(&empty)
             .unwrap_err();
         assert!(error.contains("must declare at least one field"), "{error}");
 
-        struct NestedEmptyOutput;
-        impl GraphqlOutputType for NestedEmptyOutput {
-            fn graphql_type() -> GraphqlTypeDef {
-                GraphqlTypeDef::new(
-                    "OuterPayload",
-                    vec![GraphqlTypeField {
-                        name: "inner".into(),
-                        type_name: "InnerPayload".into(),
-                        nullable: false,
-                        list: false,
-                        item_nullable: false,
-                        nested: Some(Box::new(GraphqlTypeDef::new("InnerPayload", Vec::new()))),
-                    }],
-                )
-            }
-        }
-        let nested = GraphqlCommands::new().command(
+        let nested = test_inventory([test_command(
             "order.nested_empty",
-            exposed_command().output::<NestedEmptyOutput>(),
-        );
+            "order_nested_empty",
+            GraphqlTypeDef::new(
+                "OuterPayload",
+                vec![GraphqlTypeField {
+                    name: "inner".into(),
+                    type_name: "InnerPayload".into(),
+                    nullable: false,
+                    list: false,
+                    item_nullable: false,
+                    nested: Some(Box::new(GraphqlTypeDef::new("InnerPayload", Vec::new()))),
+                }],
+            ),
+        )]);
         let error = build_surface(&[orders()], &SurfaceOptions::sqlite())
             .unwrap()
-            .with_commands(&nested)
+            .with_typed_commands(&nested)
             .unwrap_err();
         assert!(error.contains("`InnerPayload` must declare at least one field"));
 
-        struct CollidingOutput;
-        impl GraphqlOutputType for CollidingOutput {
-            fn graphql_type() -> GraphqlTypeDef {
-                GraphqlTypeDef::new(
-                    "OrderView",
-                    vec![GraphqlTypeField {
-                        name: "order_id".into(),
-                        type_name: "String".into(),
-                        nullable: false,
-                        list: false,
-                        item_nullable: false,
-                        nested: None,
-                    }],
-                )
-            }
-        }
-        let collision = GraphqlCommands::new().command(
+        let collision = test_inventory([test_command(
             "order.collision",
-            exposed_command().output::<CollidingOutput>(),
-        );
+            "order_collision",
+            GraphqlTypeDef::new(
+                "OrderView",
+                vec![GraphqlTypeField {
+                    name: "order_id".into(),
+                    type_name: "String".into(),
+                    nullable: false,
+                    list: false,
+                    item_nullable: false,
+                    nested: None,
+                }],
+            ),
+        )]);
         let error = build_surface(&[orders()], &SurfaceOptions::sqlite())
             .unwrap()
-            .with_commands(&collision)
+            .with_typed_commands(&collision)
             .unwrap_err();
         assert!(error.contains("collides with a Surface GraphQL type"));
     }
@@ -3608,9 +3656,9 @@ mod tests {
             command_name: "order.projected".into(),
             field_name: "order_projected".into(),
             roles: Vec::new(),
-            input: SurfaceCommandShape::Json,
+            input: SurfaceCommandShape::None,
             output: SurfaceCommandShape::Typed(output),
-            consistency: Some(CommandConsistency::Projected),
+            consistency: CommandConsistency::Projected,
             input_defaults: Vec::new(),
             effects: Some(CommandEffects::revalidate()),
             confirmations: Vec::new(),
@@ -3717,8 +3765,18 @@ mod tests {
             field_name: "order_assign_customer".into(),
             roles: Vec::new(),
             input: SurfaceCommandShape::Typed(input.clone()),
-            output: SurfaceCommandShape::Json,
-            consistency: Some(CommandConsistency::Accepted),
+            output: SurfaceCommandShape::Typed(SurfaceTypeDef {
+                name: "AssignCustomerPayload".into(),
+                fields: vec![SurfaceTypeField {
+                    name: "order_id".into(),
+                    type_name: "String".into(),
+                    nullable: false,
+                    list: false,
+                    item_nullable: false,
+                    nested: None,
+                }],
+            }),
+            consistency: CommandConsistency::Accepted,
             input_defaults: Vec::new(),
             effects: Some(CommandEffects::new([CommandEffect::Patch {
                 model: "OrderView".into(),
@@ -3740,8 +3798,18 @@ mod tests {
             field_name: "order_apply_preset".into(),
             roles: Vec::new(),
             input: SurfaceCommandShape::Typed(input),
-            output: SurfaceCommandShape::Json,
-            consistency: Some(CommandConsistency::Accepted),
+            output: SurfaceCommandShape::Typed(SurfaceTypeDef {
+                name: "ApplyPresetPayload".into(),
+                fields: vec![SurfaceTypeField {
+                    name: "order_id".into(),
+                    type_name: "String".into(),
+                    nullable: false,
+                    list: false,
+                    item_nullable: false,
+                    nested: None,
+                }],
+            }),
+            consistency: CommandConsistency::Accepted,
             input_defaults: Vec::new(),
             effects: Some(CommandEffects::new([CommandEffect::Patch {
                 model: "OrderView".into(),
@@ -4273,9 +4341,19 @@ mod tests {
             command_name: "test.constant".into(),
             field_name: "test_constant".into(),
             roles: Vec::new(),
-            input: SurfaceCommandShape::Json,
-            output: SurfaceCommandShape::Json,
-            consistency: Some(CommandConsistency::Accepted),
+            input: SurfaceCommandShape::None,
+            output: SurfaceCommandShape::Typed(SurfaceTypeDef {
+                name: "ConstantPayload".into(),
+                fields: vec![SurfaceTypeField {
+                    name: "ok".into(),
+                    type_name: "Boolean".into(),
+                    nullable: false,
+                    list: false,
+                    item_nullable: false,
+                    nested: None,
+                }],
+            }),
+            consistency: CommandConsistency::Accepted,
             input_defaults: Vec::new(),
             effects: Some(CommandEffects::revalidate()),
             confirmations: Vec::new(),
@@ -4328,9 +4406,19 @@ mod tests {
             command_name: "order.patch".into(),
             field_name: "order_patch".into(),
             roles: Vec::new(),
-            input: SurfaceCommandShape::Json,
-            output: SurfaceCommandShape::Json,
-            consistency: Some(CommandConsistency::Accepted),
+            input: SurfaceCommandShape::None,
+            output: SurfaceCommandShape::Typed(SurfaceTypeDef {
+                name: "PatchOrderPayload".into(),
+                fields: vec![SurfaceTypeField {
+                    name: "order_id".into(),
+                    type_name: "String".into(),
+                    nullable: false,
+                    list: false,
+                    item_nullable: false,
+                    nested: None,
+                }],
+            }),
+            consistency: CommandConsistency::Accepted,
             input_defaults: Vec::new(),
             effects: Some(CommandEffects::revalidate()),
             confirmations: Vec::new(),

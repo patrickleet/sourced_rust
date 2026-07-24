@@ -1,8 +1,81 @@
 //! Shared helpers for the e2e-ui suite — GraphQL-only public API.
 
-use std::time::Duration;
+use std::sync::atomic::{AtomicBool, Ordering};
+use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
+use jsonwebtoken::{encode, Algorithm, EncodingKey, Header};
 use serde_json::{json, Value};
+
+const OFFLINE_ISSUER: &str = "https://offline-oidc.e2e.invalid";
+const OFFLINE_AUDIENCE: &str = "e2e-ui-offline";
+const OFFLINE_KID: &str = "e2e-ui-offline-es256";
+const OFFLINE_ES256_PRIVATE_KEY: &str = r#"-----BEGIN PRIVATE KEY-----
+MIGHAgEAMBMGByqGSM49AgEGCCqGSM49AwEHBG0wawIBAQQgWTFfCGljY6aw3Hrt
+kHmPRiazukxPLb6ilpRAewjW8nihRANCAATDskChT+Altkm9X7MI69T3IUmrQU0L
+950IxEzvw/x5BMEINRMrXLBJhqzO9Bm+d6JbqA21YQmd1Kt4RzLJR1W+
+-----END PRIVATE KEY-----"#;
+const OFFLINE_ES256_X: &str = "w7JAoU_gJbZJvV-zCOvU9yFJq0FNC_edCMRM78P8eQQ";
+const OFFLINE_ES256_Y: &str = "wQg1EytcsEmGrM70Gb53oluoDbVhCZ3Uq3hHMslHVb4";
+
+static OFFLINE_OIDC_ENABLED: AtomicBool = AtomicBool::new(false);
+
+/// Configure the in-process suite with a real signature-verified OIDC identity.
+///
+/// Durable commands intentionally reject DevHeaders. This fixture preserves
+/// that production fence while keeping the SQLite behavioral suite offline.
+pub fn offline_oidc_identity() -> distributed::graphql::IdentityConfig {
+    OFFLINE_OIDC_ENABLED.store(true, Ordering::Release);
+    let jwks = json!({
+        "keys": [{
+            "kty": "EC",
+            "kid": OFFLINE_KID,
+            "alg": "ES256",
+            "use": "sig",
+            "crv": "P-256",
+            "x": OFFLINE_ES256_X,
+            "y": OFFLINE_ES256_Y
+        }]
+    })
+    .to_string();
+    e2e_service::oidc_bearer_config(OFFLINE_ISSUER, OFFLINE_AUDIENCE, None, Some(jwks))
+}
+
+fn offline_bearer(subject: &str, role: &str) -> String {
+    let now = SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .expect("system clock")
+        .as_secs();
+    let claims = json!({
+        "iss": OFFLINE_ISSUER,
+        "aud": OFFLINE_AUDIENCE,
+        "sub": subject,
+        "iat": now.saturating_sub(1),
+        "nbf": now.saturating_sub(1),
+        "exp": now + 3600,
+        "roles": [role]
+    });
+    let mut header = Header::new(Algorithm::ES256);
+    header.kid = Some(OFFLINE_KID.to_string());
+    let key =
+        EncodingKey::from_ec_pem(OFFLINE_ES256_PRIVATE_KEY.as_bytes()).expect("offline EC key");
+    encode(&header, &claims, &key).expect("sign offline access token")
+}
+
+fn with_identity(
+    request: reqwest::RequestBuilder,
+    user_id: &str,
+    role: &str,
+) -> reqwest::RequestBuilder {
+    if OFFLINE_OIDC_ENABLED.load(Ordering::Acquire) {
+        request.bearer_auth(offline_bearer(user_id, role))
+    } else {
+        request.header("x-user-id", user_id).header("x-role", role)
+    }
+}
+
+pub fn new_command_id() -> String {
+    uuid::Uuid::now_v7().hyphenated().to_string()
+}
 
 pub fn base_url() -> String {
     std::env::var("E2E_BASE_URL").unwrap_or_else(|_| "http://127.0.0.1:8791".into())
@@ -12,12 +85,14 @@ pub async fn wait_ready(base: &str, timeout: Duration) -> bool {
     let client = reqwest::Client::new();
     let start = std::time::Instant::now();
     while start.elapsed() < timeout {
-        let req = client
-            .post(format!("{base}/graphql"))
-            .header("content-type", "application/json")
-            .header("x-user-id", "probe")
-            .header("x-role", "admin")
-            .json(&json!({"query":"{ __typename }"}));
+        let req = with_identity(
+            client
+                .post(format!("{base}/graphql"))
+                .header("content-type", "application/json"),
+            "probe",
+            "admin",
+        )
+        .json(&json!({"query":"{ __typename }"}));
         if let Ok(resp) = req.send().await {
             if resp.status().as_u16() < 500 {
                 return true;
@@ -28,25 +103,22 @@ pub async fn wait_ready(base: &str, timeout: Duration) -> bool {
     false
 }
 
-pub async fn graphql(
-    base: &str,
-    query: &str,
-    user_id: &str,
-    role: &str,
-) -> Result<Value, String> {
+pub async fn graphql(base: &str, query: &str, user_id: &str, role: &str) -> Result<Value, String> {
     let client = reqwest::Client::builder()
         .timeout(Duration::from_secs(10))
         .build()
         .map_err(|e| e.to_string())?;
-    let resp = client
-        .post(format!("{base}/graphql"))
-        .header("content-type", "application/json")
-        .header("x-user-id", user_id)
-        .header("x-role", role)
-        .json(&json!({ "query": query }))
-        .send()
-        .await
-        .map_err(|e| e.to_string())?;
+    let resp = with_identity(
+        client
+            .post(format!("{base}/graphql"))
+            .header("content-type", "application/json"),
+        user_id,
+        role,
+    )
+    .json(&json!({ "query": query }))
+    .send()
+    .await
+    .map_err(|e| e.to_string())?;
     let status = resp.status();
     let v: Value = resp.json().await.map_err(|e| e.to_string())?;
     if !status.is_success() {
@@ -75,7 +147,12 @@ fn gql_errors(v: &Value) -> Option<String> {
     if errs.is_empty() {
         return None;
     }
-    Some(errs.iter().map(|e| e.to_string()).collect::<Vec<_>>().join("; "))
+    Some(
+        errs.iter()
+            .map(|e| e.to_string())
+            .collect::<Vec<_>>()
+            .join("; "),
+    )
 }
 
 /// Run a mutation and return `data.<field>` or Err with GraphQL errors.
@@ -104,9 +181,10 @@ pub async fn todos_create(
     user_id: &str,
     role: &str,
 ) -> Result<Value, String> {
+    let command_id = new_command_id();
     let doc = format!(
         r#"mutation {{
-          todos_create(input: {{ todo_id: "{todo_id}", title: "{title}" }}) {{
+          todos_create(commandId: "{command_id}", input: {{ todo_id: "{todo_id}", title: "{title}" }}) {{
             todo_id owner_id title status
           }}
         }}"#
@@ -120,9 +198,10 @@ pub async fn todos_complete(
     user_id: &str,
     role: &str,
 ) -> Result<Value, String> {
+    let command_id = new_command_id();
     let doc = format!(
         r#"mutation {{
-          todos_complete(input: {{ todo_id: "{todo_id}" }}) {{
+          todos_complete(commandId: "{command_id}", input: {{ todo_id: "{todo_id}" }}) {{
             todo_id status
           }}
         }}"#
@@ -136,9 +215,10 @@ pub async fn todos_archive(
     user_id: &str,
     role: &str,
 ) -> Result<Value, String> {
+    let command_id = new_command_id();
     let doc = format!(
         r#"mutation {{
-          todos_archive(input: {{ todo_id: "{todo_id}" }}) {{
+          todos_archive(commandId: "{command_id}", input: {{ todo_id: "{todo_id}" }}) {{
             todo_id status
           }}
         }}"#
@@ -153,9 +233,10 @@ pub async fn todos_force_archive(
     user_id: &str,
     role: &str,
 ) -> Result<Value, String> {
+    let command_id = new_command_id();
     let doc = format!(
         r#"mutation {{
-          todos_force_archive(input: {{ todo_id: "{todo_id}" }}) {{
+          todos_force_archive(commandId: "{command_id}", input: {{ todo_id: "{todo_id}" }}) {{
             todo_id owner_id status archived_by
           }}
         }}"#
@@ -170,9 +251,10 @@ pub async fn todos_rename(
     user_id: &str,
     role: &str,
 ) -> Result<Value, String> {
+    let command_id = new_command_id();
     let doc = format!(
         r#"mutation {{
-          todos_rename(input: {{ todo_id: "{todo_id}", title: "{title}" }}) {{
+          todos_rename(commandId: "{command_id}", input: {{ todo_id: "{todo_id}", title: "{title}" }}) {{
             todo_id title status
           }}
         }}"#
@@ -186,9 +268,10 @@ pub async fn todos_reopen(
     user_id: &str,
     role: &str,
 ) -> Result<Value, String> {
+    let command_id = new_command_id();
     let doc = format!(
         r#"mutation {{
-          todos_reopen(input: {{ todo_id: "{todo_id}" }}) {{
+          todos_reopen(commandId: "{command_id}", input: {{ todo_id: "{todo_id}" }}) {{
             todo_id status
           }}
         }}"#

@@ -2,6 +2,7 @@ name: e2e-ui fixture (offline + browser)
 
 # Nested Fieldnote template under tests/e2e-ui — not the root workspace.
 # Local parity:
+#   cd tests/e2e-ui && make check-client
 #   cd tests/e2e-ui && make test
 #   cd tests/e2e-ui && make up && make run   # then make test-browser
 on:
@@ -41,8 +42,8 @@ jobs:
             js/package-lock.json
             tests/e2e-ui/ui/package-lock.json
 
-      - name: Verify generated GraphQL and command artifacts
-        run: make check-gql check-commands
+      - name: Verify generated client artifacts
+        run: make check-client
 
       - name: Offline test suite
         run: make test
