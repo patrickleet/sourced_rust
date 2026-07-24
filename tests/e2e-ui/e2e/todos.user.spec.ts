@@ -161,6 +161,12 @@ test.describe('todos (alice)', () => {
 			await new Promise((resolve) => setTimeout(resolve, 700));
 			await route.fulfill({ response });
 		});
+		let completeRequests = 0;
+		page.on('request', (request) => {
+			if ((request.postData() ?? '').includes('todos_complete')) {
+				completeRequests += 1;
+			}
+		});
 
 		const title = `ordered optimism ${Date.now()}`;
 		await page.locator('#todo-title').fill(title);
@@ -174,6 +180,10 @@ test.describe('todos (alice)', () => {
 			.filter({ has: page.getByRole('heading', { name: /^open$/i }) })
 			.locator('.fn-item', { hasText: title });
 		await expect(openItem).toBeVisible({ timeout: 400 });
+		expect(
+			await page.locator('.fn-board button:disabled').count(),
+			'routine command concurrency guards must not flash Todo row controls disabled'
+		).toBe(0);
 		expectBinarySorted(await visibleTodoOrders(page));
 		await createResponse;
 		await expect(openItem).toBeVisible();
@@ -183,14 +193,25 @@ test.describe('todos (alice)', () => {
 			(response) =>
 				(response.request().postData() ?? '').includes('todos_complete')
 		);
-		await openItem.getByRole('button', { name: /^done$/i }).click();
+		await openItem.getByRole('button', { name: /^done$/i }).evaluate((button) => {
+			button.click();
+			button.click();
+		});
 		const doneItem = page
 			.locator('.fn-panel')
 			.filter({ has: page.getByRole('heading', { name: /^done$/i }) })
 			.locator('.fn-item', { hasText: title });
 		await expect(doneItem).toBeVisible({ timeout: 400 });
+		expect(
+			await page.locator('.fn-board button:disabled').count(),
+			'routine command concurrency guards must not flash Todo row controls disabled'
+		).toBe(0);
 		expectBinarySorted(await visibleTodoOrders(page));
 		await completeResponse;
+		expect(
+			completeRequests,
+			'optimistic state must suppress a duplicate action without disabling controls'
+		).toBe(1);
 		await expect(doneItem).toBeVisible();
 		expectBinarySorted(await visibleTodoOrders(page));
 		await page.unrouteAll({ behavior: 'wait' });
