@@ -353,7 +353,8 @@ replica.writeResult(operation, {}, {
       trustedPresets: [],
       snapshot: {
         scopeToken: 'snapshot:todos',
-        complete: true,
+        recordsComplete: true,
+        indexesComparable: true,
         records: [{
           path: ['todos', '0'],
           model: 'Todo',

@@ -157,6 +157,14 @@ function subscribeReplicaOperation<
 		request.signal?.removeEventListener('abort', close);
 		unsubscribe();
 	};
+	const fail = (error: unknown): void => {
+		if (closed) return;
+		try {
+			observer.error(error);
+		} finally {
+			close();
+		}
+	};
 	if (request.signal?.aborted) {
 		return close;
 	}
@@ -173,8 +181,14 @@ function subscribeReplicaOperation<
 					onNext: (result) => {
 						if (!closed) observer.next(result);
 					},
-					onError: (error) => {
-						if (!closed) observer.error(error);
+					onError: fail,
+					onComplete: () => {
+						if (closed) return;
+						try {
+							observer.complete();
+						} finally {
+							close();
+						}
 					}
 				},
 				{
@@ -194,7 +208,7 @@ function subscribeReplicaOperation<
 			if (closed || request.signal?.aborted) unsubscribe();
 		})
 		.catch((error: unknown) => {
-			if (!closed) observer.error(error);
+			fail(error);
 		});
 
 	return close;

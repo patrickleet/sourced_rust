@@ -13,7 +13,6 @@ import {
 	verifyReplicaCommandReceipt,
 	type PrepareReplicaCommandOptions,
 	type ReplicaCommandArtifact,
-	type ReplicaCommandRevalidationPlan,
 	type ReplicaPreparedCommand,
 	type ReplicaPreparedCommandEffect,
 	type ReplicaPreparedEffectKey,
@@ -35,6 +34,8 @@ import type {
 
 const MAX_TRANSPORT_RETRIES = 8;
 const MAX_OUTPUT_DEPTH = 64;
+const INITIAL_STATUS_POLL_MS = 25;
+const MAX_STATUS_POLL_MS = 1_000;
 const SHA256 = /^sha256:[0-9a-f]{64}$/;
 
 /**
@@ -141,19 +142,6 @@ export type ReplicaCommandTransportResult = Readonly<{
 	status: number;
 }>;
 
-export type ReplicaCommandRevalidationReason =
-	| 'accepted-fallback'
-	| 'command-effect'
-	| 'projection-failed'
-	| 'protocol-uncertain';
-
-export type ReplicaCommandRevalidationRequest = Readonly<{
-	commandId: string;
-	commandName: string;
-	reason: ReplicaCommandRevalidationReason;
-	plan: ReplicaCommandRevalidationPlan;
-}>;
-
 export interface ReplicaCommandTransport {
 	dispatch(
 		request: ReplicaCommandTransportRequest
@@ -162,13 +150,6 @@ export interface ReplicaCommandTransport {
 	status?(
 		request: ReplicaCommandStatusRequest
 	): Promise<ReplicaCommandTransportResult>;
-	/**
-	 * Execute the generated dependency plan through the replica's normal query
-	 * coordinator. This is a framework hook, never per-call cache vocabulary.
-	 */
-	revalidate?(
-		request: ReplicaCommandRevalidationRequest
-	): void | Promise<void>;
 }
 
 export type ReplicaCommandProjectedOutcome<TOutput> = Readonly<{
@@ -417,6 +398,7 @@ type PendingProjection = {
 	readonly promise: Promise<ReplicaCommandProjectedOutcome<unknown>>;
 	readonly prepared: ReplicaPreparedCommand<unknown, unknown>;
 	abort?: () => void;
+	stopMonitor?: () => void;
 	metadata: DistributedCommandMetadata;
 	settled: boolean;
 };
@@ -469,14 +451,46 @@ export function createReplicaCommandRuntime<
 		options.status === undefined
 			? undefined
 			: commandStatusArtifact(options.status, contract);
+	const replicaRevalidate =
+		typeof replica.revalidate === 'function'
+			? replica.revalidate.bind(replica)
+			: undefined;
 	if (statusArtifact !== undefined && transport.status === undefined) {
 		throw new TypeError(
 			'generated command status artifact requires transport.status'
 		);
 	}
+	if (
+		replicaRevalidate === undefined &&
+		inventory.some(({ artifact }) => artifact.revalidation.required)
+	) {
+		throw new TypeError(
+			'generated command revalidation plan requires replica.revalidate'
+		);
+	}
 	const registration = replica[replicaCommandAuthority]?.(contract);
 	const pending = new Map<string, PendingProjection>();
+	const unmanagedLayers = new Set<string>();
+	const runtimeAbort = new AbortController();
 	let disposed = false;
+
+	const rejectUnmanagedLayer = (commandId: string): boolean => {
+		unmanagedLayers.delete(commandId);
+		return replica.rejectOptimisticLayer(commandId);
+	};
+
+	const retireLayerAfterAuthoritativeRevalidation = (
+		commandId: string
+	): boolean => {
+		if (!replica.markOptimisticLayerAccepted(commandId)) {
+			// The authoritative result may already have retired this layer.
+			unmanagedLayers.delete(commandId);
+			return false;
+		}
+		replica.confirmOptimisticLayer(commandId, () => undefined);
+		unmanagedLayers.delete(commandId);
+		return true;
+	};
 
 	const authoritySnapshot = (): ReplicaCommandAuthoritySnapshot =>
 		registration?.read() ?? {
@@ -522,26 +536,58 @@ export function createReplicaCommandRuntime<
 		);
 	};
 
-	const revalidate = (
+	const revalidate = async (
 		prepared: ReplicaPreparedCommand<unknown, unknown>,
-		reason: ReplicaCommandRevalidationReason
-	): void => {
-		if (transport.revalidate === undefined) return;
+		authoritySignal?: AbortSignal
+	): Promise<boolean> => {
+		if (replicaRevalidate === undefined) return false;
+		const revalidationSignals = linkAbortSignals([
+			authoritySignal,
+			runtimeAbort.signal
+		]);
 		try {
-			const result = transport.revalidate(
-				Object.freeze({
-					commandId: prepared.commandId,
-					commandName: prepared.name,
-					reason,
-					plan: prepared.revalidation
-				})
+			await waitForCommandOperation(
+				replicaRevalidate(prepared.revalidation),
+				revalidationSignals.signal
 			);
-			if (isPromiseLike(result)) {
-				void result.catch((error: unknown) => options.onBackgroundError?.(error));
-			}
+			return true;
 		} catch (error) {
-			options.onBackgroundError?.(error);
+			if (!disposed && authoritySignal?.aborted !== true) {
+				options.onBackgroundError?.(error);
+			}
+			throw error;
+		} finally {
+			revalidationSignals.dispose();
 		}
+	};
+	const revalidateInBackground = (
+		prepared: ReplicaPreparedCommand<unknown, unknown>,
+		authority?: CapturedAuthority
+	): void => {
+		void revalidate(prepared, authority?.signal).catch(() => undefined);
+	};
+	const revalidateAndConfirmUnmanagedInBackground = (
+		prepared: ReplicaPreparedCommand<unknown, unknown>,
+		authority: CapturedAuthority
+	): void => {
+		void revalidate(prepared, authority.signal)
+			.then((refreshed) => {
+				if (
+					refreshed &&
+					stillCurrent(authority) &&
+					unmanagedLayers.has(prepared.commandId)
+				) {
+					/*
+					 * A generated required revalidation is the canonical base
+					 * fence for commands without a finite observation contract.
+					 * Retire their accepted overlay only after that fetch settles.
+					 */
+					retireLayerAfterAuthoritativeRevalidation(
+						prepared.commandId
+					);
+				}
+			})
+			.catch(() => undefined);
 	};
 
 	const statusReader = <TInput, TOutput>(
@@ -550,6 +596,11 @@ export function createReplicaCommandRuntime<
 		tracker: CommandStatusTracker
 	): (() => Promise<ReplicaCommandStatus>) => {
 		const read = async (): Promise<ReplicaCommandStatus> => {
+			if (disposed) {
+				throw new ReplicaCommandRuntimeError('REPLICA_COMMAND_DISPOSED', {
+					commandId: prepared.commandId
+				});
+			}
 			if (statusArtifact === undefined || transport.status === undefined) {
 				throw new ReplicaCommandRuntimeError(
 					'REPLICA_COMMAND_STATUS_UNAVAILABLE',
@@ -563,21 +614,36 @@ export function createReplicaCommandRuntime<
 				);
 			}
 			let result: ReplicaCommandTransportResult;
+			const statusSignals = linkAbortSignals([
+				authority.signal,
+				runtimeAbort.signal
+			]);
 			try {
-				result = await transport.status(
-					commandStatusRequest(
-						statusArtifact,
-						prepared.commandId,
-						authority.signal
-					)
+				result = await waitForCommandOperation(
+					transport.status(
+						commandStatusRequest(
+							statusArtifact,
+							prepared.commandId,
+							statusSignals.signal
+						)
+					),
+					statusSignals.signal
 				);
 			} catch (error) {
+				if (disposed) {
+					throw new ReplicaCommandRuntimeError(
+						'REPLICA_COMMAND_DISPOSED',
+						{ commandId: prepared.commandId, cause: error }
+					);
+				}
 				throw new ReplicaCommandRuntimeError(
 					authority.signal?.aborted
 						? 'REPLICA_COMMAND_SCOPE_INVALIDATED'
 						: 'REPLICA_COMMAND_TRANSPORT_AMBIGUOUS',
 					{ commandId: prepared.commandId, cause: error }
 				);
+			} finally {
+				statusSignals.dispose();
 			}
 			if (!stillCurrent(authority)) {
 				throw new ReplicaCommandRuntimeError(
@@ -596,7 +662,7 @@ export function createReplicaCommandRuntime<
 				);
 				validateStatusProgression(tracker.state, tracker.metadata, status);
 			} catch (error) {
-				revalidate(prepared, 'protocol-uncertain');
+				revalidateInBackground(prepared, authority);
 				throw new ReplicaCommandRuntimeError(
 					'REPLICA_COMMAND_PROTOCOL_INVALID',
 					{ commandId: prepared.commandId, cause: error }
@@ -611,7 +677,7 @@ export function createReplicaCommandRuntime<
 			}
 			switch (status.state) {
 				case 'rejected':
-					replica.rejectOptimisticLayer(prepared.commandId);
+					rejectUnmanagedLayer(prepared.commandId);
 					failTrackedProjection(
 						tracker,
 						pending,
@@ -626,8 +692,8 @@ export function createReplicaCommandRuntime<
 					break;
 				case 'projection_failed':
 				case 'expired':
-					replica.rejectOptimisticLayer(prepared.commandId);
-					revalidate(prepared, 'projection-failed');
+					rejectUnmanagedLayer(prepared.commandId);
+					revalidateInBackground(prepared, authority);
 					failTrackedProjection(
 						tracker,
 						pending,
@@ -648,13 +714,96 @@ export function createReplicaCommandRuntime<
 						prepared.commandId,
 						metadata
 					);
-					if (!remainsPending && tracker.pending !== undefined) {
-						settleTrackedProjection(tracker, pending);
-					} else if (metadata.state === 'projected') {
-						// Status is causal truth, but it carries no canonical query
-						// payload. Revalidate while retaining the layer until the
-						// replica atomically ingests confirmed base data.
-						revalidate(prepared, 'accepted-fallback');
+					if (!remainsPending) {
+						unmanagedLayers.delete(prepared.commandId);
+						if (tracker.pending !== undefined) {
+							settleTrackedProjection(tracker, pending);
+						}
+					} else if (
+						metadata.state === 'projected' ||
+						(metadata.state === 'accepted' &&
+							prepared.confirmations === undefined &&
+							prepared.revalidation.required)
+					) {
+						/*
+						 * Status is causal truth, but it carries no canonical
+						 * query payload. `projected` fences asynchronous
+						 * projection; `accepted` is terminal when the generated
+						 * contract has no confirmations. In both cases, only a
+						 * query started after that fence may retire optimism.
+						 */
+						let refreshed = false;
+						try {
+							refreshed = await revalidate(
+								prepared,
+								authority.signal
+							);
+						} catch (error) {
+							if (disposed) {
+								throw new ReplicaCommandRuntimeError(
+									'REPLICA_COMMAND_DISPOSED',
+									{
+										commandId: prepared.commandId,
+										cause: error
+									}
+								);
+							}
+							if (
+								authority.signal?.aborted ||
+								!stillCurrent(authority)
+							) {
+								throw new ReplicaCommandRuntimeError(
+									'REPLICA_COMMAND_SCOPE_INVALIDATED',
+									{
+										commandId: prepared.commandId,
+										cause: error
+									}
+								);
+							}
+							// Keep the accepted layer and let the background
+							// status monitor retry the exact generated plan.
+						}
+						if (disposed) {
+							throw new ReplicaCommandRuntimeError(
+								'REPLICA_COMMAND_DISPOSED',
+								{ commandId: prepared.commandId }
+							);
+						}
+						if (
+							authority.signal?.aborted ||
+							!stillCurrent(authority)
+						) {
+							throw new ReplicaCommandRuntimeError(
+								'REPLICA_COMMAND_SCOPE_INVALIDATED',
+								{ commandId: prepared.commandId }
+							);
+						}
+						const controller = tracker.pending;
+						if (refreshed) {
+							if (
+								controller !== undefined &&
+								!controller.settled &&
+								pending.get(prepared.commandId) === controller
+							) {
+								retireLayerAfterAuthoritativeRevalidation(
+									prepared.commandId
+								);
+								settleTrackedProjection(tracker, pending);
+							} else if (
+								unmanagedLayers.has(prepared.commandId)
+							) {
+								/*
+								 * Recovery receipts and commands without a
+								 * finite projection awaitable have no
+								 * PendingProjection controller. The same
+								 * post-status canonical fetch still owns
+								 * retirement of their retained overlay.
+								 */
+								retireLayerAfterAuthoritativeRevalidation(
+									prepared.commandId
+								);
+							}
+						}
 					}
 					break;
 				}
@@ -689,11 +838,14 @@ export function createReplicaCommandRuntime<
 		);
 		const transportRetries = normalizeRetries(callOptions.transportRetries);
 		const semanticChanges = preparedSemanticChanges(prepared);
-		const request = commandTransportRequest(
-			prepared,
-			mergeSignals(authority.signal, callOptions.signal)
-		);
+		const requestSignals = linkAbortSignals([
+			authority.signal,
+			callOptions.signal,
+			runtimeAbort.signal
+		]);
+		const request = commandTransportRequest(prepared, requestSignals.signal);
 		if (request.signal?.aborted) {
+			requestSignals.dispose();
 			throw new ReplicaCommandRuntimeError(
 				stillCurrent(authority)
 					? 'REPLICA_COMMAND_ABORTED'
@@ -701,20 +853,28 @@ export function createReplicaCommandRuntime<
 				{ commandId: prepared.commandId, cause: request.signal.reason }
 			);
 		}
-		(replica as SemanticReplica).createOptimisticLayer(
-			prepared.commandId,
-			(writer) => applyOptimisticEffects(writer, prepared.optimistic.operations),
-			semanticChanges
-		);
+		try {
+			(replica as SemanticReplica).createOptimisticLayer(
+				prepared.commandId,
+				(writer) =>
+					applyOptimisticEffects(writer, prepared.optimistic.operations),
+				semanticChanges
+			);
+		} catch (error) {
+			requestSignals.dispose();
+			throw error;
+		}
+		unmanagedLayers.add(prepared.commandId);
 
 		const statusTracker: CommandStatusTracker = {
 			state: undefined,
 			metadata: undefined,
 			inFlight: undefined
 		};
+		const readStatus = statusReader(prepared, authority, statusTracker);
 		const recovery: ReplicaCommandRecoveryReceipt<TOutput> = Object.freeze({
 			commandId: prepared.commandId,
-			status: statusReader(prepared, authority, statusTracker)
+			status: readStatus
 		});
 		const recoveryForRetainedLayer = (
 			revalidateOnRollback = false
@@ -725,9 +885,9 @@ export function createReplicaCommandRuntime<
 			 * reachable again. Roll it back and let generated revalidation
 			 * restore canonical truth instead of leaking optimism forever.
 			 */
-			replica.rejectOptimisticLayer(prepared.commandId);
+			rejectUnmanagedLayer(prepared.commandId);
 			if (revalidateOnRollback) {
-				revalidate(prepared, 'protocol-uncertain');
+				revalidateInBackground(prepared, authority);
 			}
 			return undefined;
 		};
@@ -743,8 +903,15 @@ export function createReplicaCommandRuntime<
 				}
 			);
 		} catch (error) {
+			if (disposed) {
+				rejectUnmanagedLayer(prepared.commandId);
+				throw new ReplicaCommandRuntimeError(
+					'REPLICA_COMMAND_DISPOSED',
+					{ commandId: prepared.commandId, cause: error }
+				);
+			}
 			if (!dispatchAttempted) {
-				replica.rejectOptimisticLayer(prepared.commandId);
+				rejectUnmanagedLayer(prepared.commandId);
 				throw new ReplicaCommandRuntimeError(
 					stillCurrent(authority)
 						? 'REPLICA_COMMAND_ABORTED'
@@ -753,7 +920,7 @@ export function createReplicaCommandRuntime<
 				);
 			}
 			if (!stillCurrent(authority)) {
-				replica.rejectOptimisticLayer(prepared.commandId);
+				rejectUnmanagedLayer(prepared.commandId);
 				throw new ReplicaCommandRuntimeError(
 					'REPLICA_COMMAND_SCOPE_INVALIDATED',
 					{ commandId: prepared.commandId, cause: error }
@@ -769,10 +936,12 @@ export function createReplicaCommandRuntime<
 					recovery: recoveryForRetainedLayer(true)
 				}
 			);
+		} finally {
+			requestSignals.dispose();
 		}
 
 		if (!stillCurrent(authority)) {
-			replica.rejectOptimisticLayer(prepared.commandId);
+			rejectUnmanagedLayer(prepared.commandId);
 			throw new ReplicaCommandRuntimeError(
 				'REPLICA_COMMAND_SCOPE_INVALIDATED',
 				{ commandId: prepared.commandId }
@@ -787,7 +956,7 @@ export function createReplicaCommandRuntime<
 				distributed.trustedPresets
 			);
 		} catch (error) {
-			revalidate(prepared, 'protocol-uncertain');
+			revalidateInBackground(prepared, authority);
 			throw new ReplicaCommandRuntimeError(
 				'REPLICA_COMMAND_PROTOCOL_INVALID',
 				{
@@ -802,15 +971,15 @@ export function createReplicaCommandRuntime<
 		statusTracker.state = metadata.state;
 		statusTracker.metadata = metadata;
 		if (metadata.state === 'rejected') {
-			replica.rejectOptimisticLayer(prepared.commandId);
+			rejectUnmanagedLayer(prepared.commandId);
 			throw new ReplicaCommandRuntimeError('REPLICA_COMMAND_REJECTED', {
 				commandId: prepared.commandId,
 				state: metadata.state
 			});
 		}
 		if (metadata.state === 'expired') {
-			replica.rejectOptimisticLayer(prepared.commandId);
-			revalidate(prepared, 'projection-failed');
+			rejectUnmanagedLayer(prepared.commandId);
+			revalidateInBackground(prepared, authority);
 			throw new ReplicaCommandRuntimeError(
 				'REPLICA_COMMAND_PROJECTION_FAILED',
 				{ commandId: prepared.commandId, state: metadata.state }
@@ -827,8 +996,8 @@ export function createReplicaCommandRuntime<
 			);
 		}
 		if (metadata.state === 'projection_failed') {
-			replica.rejectOptimisticLayer(prepared.commandId);
-			revalidate(prepared, 'projection-failed');
+			rejectUnmanagedLayer(prepared.commandId);
+			revalidateInBackground(prepared, authority);
 			throw new ReplicaCommandRuntimeError(
 				'REPLICA_COMMAND_PROJECTION_FAILED',
 				{ commandId: prepared.commandId, state: metadata.state }
@@ -840,9 +1009,9 @@ export function createReplicaCommandRuntime<
 				replica.markOptimisticLayerAccepted(prepared.commandId, metadata);
 				retainedRecovery = recoveryForRetainedLayer();
 			} else {
-				replica.rejectOptimisticLayer(prepared.commandId);
+				rejectUnmanagedLayer(prepared.commandId);
 			}
-			revalidate(prepared, 'protocol-uncertain');
+			revalidateInBackground(prepared, authority);
 			throw new ReplicaCommandRuntimeError(
 				'REPLICA_COMMAND_PROTOCOL_INVALID',
 				{ commandId: prepared.commandId, recovery: retainedRecovery }
@@ -862,12 +1031,12 @@ export function createReplicaCommandRuntime<
 				prepared.consistency === 'projected' ||
 				prepared.confirmations?.kind !== 'finite'
 			) {
-				replica.rejectOptimisticLayer(prepared.commandId);
+				rejectUnmanagedLayer(prepared.commandId);
 			} else {
 				replica.markOptimisticLayerAccepted(prepared.commandId, metadata);
 				retainedRecovery = recoveryForRetainedLayer();
 			}
-			revalidate(prepared, 'protocol-uncertain');
+			revalidateInBackground(prepared, authority);
 			throw new ReplicaCommandRuntimeError(
 				'REPLICA_COMMAND_PROTOCOL_INVALID',
 				{
@@ -896,9 +1065,10 @@ export function createReplicaCommandRuntime<
 			}
 			try {
 				confirmDirectProjection(replica, prepared, output, metadata);
+				unmanagedLayers.delete(prepared.commandId);
 			} catch (error) {
-				replica.rejectOptimisticLayer(prepared.commandId);
-				revalidate(prepared, 'protocol-uncertain');
+				rejectUnmanagedLayer(prepared.commandId);
+				revalidateInBackground(prepared, authority);
 				throw new ReplicaCommandRuntimeError(
 					'REPLICA_COMMAND_PROTOCOL_INVALID',
 					{ commandId: prepared.commandId, cause: error }
@@ -925,14 +1095,8 @@ export function createReplicaCommandRuntime<
 				);
 				statusTracker.pending = controller;
 				if (!remainsPending) {
-					controller.settled = true;
-					controller.resolve(
-						Object.freeze({
-							commandId: prepared.commandId,
-							state: 'projected',
-							metadata
-						})
-					);
+					unmanagedLayers.delete(prepared.commandId);
+					settleProjectionSuccess(controller);
 				} else {
 					/*
 					 * Receipt/status observations prove durable causality, not
@@ -941,9 +1105,21 @@ export function createReplicaCommandRuntime<
 					 * when every observation is already present here.
 					 */
 					pending.set(prepared.commandId, controller);
+					unmanagedLayers.delete(prepared.commandId);
 					attachAuthorityAbort(controller, () =>
 						pending.delete(prepared.commandId)
 					);
+					if (
+						statusArtifact !== undefined &&
+						replicaRevalidate !== undefined
+					) {
+						monitorPendingProjection(
+							controller,
+							readStatus,
+							() => pending.get(prepared.commandId) === controller,
+							options.onBackgroundError
+						);
+					}
 				}
 				projectionLifecycle =
 					controller.promise as Promise<
@@ -957,7 +1133,7 @@ export function createReplicaCommandRuntime<
 		}
 
 		if (prepared.revalidation.required) {
-			revalidate(prepared, 'accepted-fallback');
+			revalidateAndConfirmUnmanagedInBackground(prepared, authority);
 		}
 
 		const receiptValue = {
@@ -965,7 +1141,7 @@ export function createReplicaCommandRuntime<
 			state: metadata.state as ReplicaCommandReceipt<TOutput>['state'],
 			result: output,
 			metadata,
-			status: statusReader(prepared, authority, statusTracker),
+			status: readStatus,
 			...(projected === undefined ? {} : { projected })
 		};
 		if (projectionLifecycle !== undefined) {
@@ -1040,7 +1216,10 @@ export function createReplicaCommandRuntime<
 				try {
 					verifyReplicaCommandReceipt(controller.prepared, command);
 				} catch (error) {
-					revalidate(controller.prepared, 'protocol-uncertain');
+					revalidateInBackground(
+						controller.prepared,
+						controller.authority
+					);
 					settleProjectionFailure(
 						controller,
 						new ReplicaCommandRuntimeError(
@@ -1065,7 +1244,10 @@ export function createReplicaCommandRuntime<
 				controller.metadata = command;
 				if (command.state === 'projection_failed') {
 					replica.rejectOptimisticLayer(commandId);
-					revalidate(controller.prepared, 'projection-failed');
+					revalidateInBackground(
+						controller.prepared,
+						controller.authority
+					);
 					settleProjectionFailure(
 						controller,
 						new ReplicaCommandRuntimeError(
@@ -1081,7 +1263,10 @@ export function createReplicaCommandRuntime<
 					command.state === 'expired'
 				) {
 					replica.rejectOptimisticLayer(commandId);
-					revalidate(controller.prepared, 'projection-failed');
+					revalidateInBackground(
+						controller.prepared,
+						controller.authority
+					);
 					settleProjectionFailure(
 						controller,
 						new ReplicaCommandRuntimeError(
@@ -1103,15 +1288,7 @@ export function createReplicaCommandRuntime<
 			const remainsPending =
 				replica.markOptimisticLayerAccepted(commandId);
 			if (!remainsPending) {
-				controller.settled = true;
-				controller.abort?.();
-				controller.resolve(
-					Object.freeze({
-						commandId,
-						state: 'projected',
-						metadata: controller.metadata
-					})
-				);
+				settleProjectionSuccess(controller);
 				pending.delete(commandId);
 			}
 		}
@@ -1125,9 +1302,17 @@ export function createReplicaCommandRuntime<
 		dispose(): void {
 			if (disposed) return;
 			disposed = true;
+			runtimeAbort.abort(
+				new ReplicaCommandRuntimeError('REPLICA_COMMAND_DISPOSED')
+			);
 			observationRegistration?.dispose();
 			registration?.dispose();
+			for (const commandId of unmanagedLayers) {
+				replica.rejectOptimisticLayer(commandId);
+			}
+			unmanagedLayers.clear();
 			for (const [commandId, controller] of pending) {
+				replica.rejectOptimisticLayer(commandId);
 				settleProjectionFailure(
 					controller,
 					new ReplicaCommandRuntimeError('REPLICA_COMMAND_DISPOSED', {
@@ -1609,9 +1794,13 @@ async function dispatchPrepared(
 		}
 		try {
 			onAttempt();
-			return await transport.dispatch(request);
+			return await waitForCommandOperation(
+				transport.dispatch(request),
+				request.signal
+			);
 		} catch (candidate) {
 			error = candidate;
+			if (request.signal?.aborted) throw candidate;
 		}
 	}
 	throw error;
@@ -2139,6 +2328,135 @@ function pendingProjection(
 	return controller;
 }
 
+/**
+ * Generated fact commands converge without application polling. Durable status
+ * is the only completion signal; timers merely schedule reads and never infer a
+ * successful outcome.
+ */
+function monitorPendingProjection(
+	controller: PendingProjection,
+	readStatus: () => Promise<ReplicaCommandStatus>,
+	retained: () => boolean,
+	reportError: ((error: unknown) => void) | undefined
+): void {
+	if (
+		controller.settled ||
+		!retained() ||
+		projectionAuthorityAborted(controller)
+	) {
+		return;
+	}
+	const monitorAbort = new AbortController();
+	const stopMonitor = () => monitorAbort.abort();
+	controller.stopMonitor = stopMonitor;
+	const signals =
+		controller.authority.signal === undefined
+			? [monitorAbort.signal]
+			: [controller.authority.signal, monitorAbort.signal];
+	void (async () => {
+		try {
+			let delay = INITIAL_STATUS_POLL_MS;
+			while (
+				!controller.settled &&
+				retained() &&
+				!projectionAuthorityAborted(controller)
+			) {
+				await waitForProjectionPoll(delay, signals);
+				if (
+					controller.settled ||
+					!retained() ||
+					projectionAuthorityAborted(controller)
+				) {
+					return;
+				}
+				try {
+					await readStatus();
+				} catch (error) {
+					if (
+						controller.settled ||
+						!retained() ||
+						projectionAuthorityAborted(controller)
+					) {
+						return;
+					}
+					reportBackgroundErrorSafely(reportError, error);
+				}
+				delay = Math.min(delay * 2, MAX_STATUS_POLL_MS);
+			}
+		} finally {
+			if (controller.stopMonitor === stopMonitor) {
+				controller.stopMonitor = undefined;
+			}
+			monitorAbort.abort();
+		}
+	})().catch((error: unknown) =>
+		reportBackgroundErrorSafely(reportError, error)
+	);
+}
+
+function reportBackgroundErrorSafely(
+	reportError: ((error: unknown) => void) | undefined,
+	error: unknown
+): void {
+	if (reportError === undefined) return;
+	try {
+		reportError(error);
+	} catch {
+		// Error reporting is a terminal boundary and must never reject detached work.
+	}
+}
+
+function projectionAuthorityAborted(
+	controller: PendingProjection
+): boolean {
+	return controller.authority.signal?.aborted === true;
+}
+
+function waitForProjectionPoll(
+	delay: number,
+	signals: readonly AbortSignal[]
+): Promise<void> {
+	if (signals.some((signal) => signal.aborted)) return Promise.resolve();
+	return new Promise((resolve) => {
+		let settled = false;
+		let timer: ReturnType<typeof setTimeout> | undefined;
+		const finish = () => {
+			if (settled) return;
+			settled = true;
+			if (timer !== undefined) clearTimeout(timer);
+			for (const signal of signals) {
+				signal.removeEventListener('abort', finish);
+			}
+			resolve();
+		};
+		timer = setTimeout(finish, delay);
+		(
+			timer as unknown as {
+				unref?: () => void;
+			}
+		).unref?.();
+		for (const signal of signals) {
+			signal.addEventListener('abort', finish, { once: true });
+		}
+		// Close the check/register race if either signal aborted synchronously.
+		if (signals.some((signal) => signal.aborted)) finish();
+	});
+}
+
+function settleProjectionSuccess(controller: PendingProjection): void {
+	if (controller.settled) return;
+	controller.settled = true;
+	controller.abort?.();
+	controller.stopMonitor?.();
+	controller.resolve(
+		Object.freeze({
+			commandId: controller.commandId,
+			state: 'projected',
+			metadata: controller.metadata
+		})
+	);
+}
+
 function callerProjectedPromise(
 	controller: PendingProjection,
 	signal: AbortSignal | undefined
@@ -2214,6 +2532,7 @@ function settleProjectionFailure(
 	if (controller.settled) return;
 	controller.settled = true;
 	controller.abort?.();
+	controller.stopMonitor?.();
 	controller.reject(error);
 }
 
@@ -2223,15 +2542,7 @@ function settleTrackedProjection(
 ): void {
 	const controller = tracker.pending;
 	if (controller === undefined || controller.settled) return;
-	controller.settled = true;
-	controller.abort?.();
-	controller.resolve(
-		Object.freeze({
-			commandId: controller.commandId,
-			state: 'projected',
-			metadata: controller.metadata
-		})
-	);
+	settleProjectionSuccess(controller);
 	pending.delete(controller.commandId);
 }
 
@@ -2304,33 +2615,95 @@ function cloneSurface(surface: ReplicaClientSurface): ReplicaClientSurface {
 			});
 }
 
-function mergeSignals(
-	generation: AbortSignal | undefined,
-	caller: AbortSignal | undefined
-): AbortSignal | undefined {
-	if (generation === undefined) return caller;
-	if (caller === undefined || caller === generation) return generation;
-	if (typeof AbortSignal.any === 'function') {
-		return AbortSignal.any([generation, caller]);
+function linkAbortSignals(
+	signals: readonly (AbortSignal | undefined)[]
+): Readonly<{
+	signal: AbortSignal | undefined;
+	dispose(): void;
+}> {
+	const sources = [
+		...new Set(
+			signals.filter(
+				(signal): signal is AbortSignal => signal !== undefined
+			)
+		)
+	];
+	if (sources.length === 0) {
+		return Object.freeze({
+			signal: undefined,
+			dispose(): void {}
+		});
+	}
+	if (sources.length === 1) {
+		return Object.freeze({
+			signal: sources[0],
+			dispose(): void {}
+		});
 	}
 	const controller = new AbortController();
-	const abort = (signal: AbortSignal) => {
-		if (!controller.signal.aborted) controller.abort(signal.reason);
+	const listeners = new Map<AbortSignal, () => void>();
+	let disposed = false;
+	const dispose = (): void => {
+		if (disposed) return;
+		disposed = true;
+		for (const [source, listener] of listeners) {
+			source.removeEventListener('abort', listener);
+		}
+		listeners.clear();
 	};
-	if (generation.aborted) abort(generation);
-	else generation.addEventListener('abort', () => abort(generation), { once: true });
-	if (caller.aborted) abort(caller);
-	else caller.addEventListener('abort', () => abort(caller), { once: true });
-	return controller.signal;
+	const abort = (signal: AbortSignal) => {
+		if (!controller.signal.aborted) {
+			controller.abort(signal.reason);
+		}
+		dispose();
+	};
+	for (const source of sources) {
+		if (source.aborted) {
+			abort(source);
+			break;
+		}
+		const listener = () => abort(source);
+		listeners.set(source, listener);
+		source.addEventListener('abort', listener, { once: true });
+		// Close the check/register race if a source aborted synchronously.
+		if (source.aborted) {
+			listener();
+			break;
+		}
+	}
+	return Object.freeze({ signal: controller.signal, dispose });
 }
 
-function isPromiseLike(value: unknown): value is Promise<void> {
-	return (
-		value !== null &&
-		typeof value === 'object' &&
-		'then' in value &&
-		typeof value.then === 'function'
-	);
+function waitForCommandOperation<T>(
+	operation: Promise<T> | T,
+	signal: AbortSignal | undefined
+): Promise<T> {
+	const result = Promise.resolve(operation);
+	if (signal === undefined) return result;
+	return new Promise<T>((resolve, reject) => {
+		let settled = false;
+		const finish = (complete: () => void): void => {
+			if (settled) return;
+			settled = true;
+			signal.removeEventListener('abort', onAbort);
+			complete();
+		};
+		const onAbort = (): void => {
+			finish(() =>
+				reject(
+					signal.reason ??
+						new ReplicaCommandRuntimeError('REPLICA_COMMAND_ABORTED')
+				)
+			);
+		};
+		signal.addEventListener('abort', onAbort, { once: true });
+		void result.then(
+			(value) => finish(() => resolve(value)),
+			(error: unknown) => finish(() => reject(error))
+		);
+		// Close the check/register race if the signal aborted synchronously.
+		if (signal.aborted) onAbort();
+	});
 }
 
 function isPlainRecord(

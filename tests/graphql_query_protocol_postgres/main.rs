@@ -217,7 +217,8 @@ async fn postgres_emits_exact_revisions_and_accepts_an_exact_live_resume() {
     assert_eq!(distributed["protocolVersion"], 2);
     assert_opaque_token(&distributed["cacheScope"], "cache-scope");
     let snapshot = &distributed["snapshot"];
-    assert_eq!(snapshot["complete"], true);
+    assert_eq!(snapshot["recordsComplete"], true);
+    assert_eq!(snapshot["indexesComparable"], true);
     assert_eq!(snapshot["records"].as_array().map(Vec::len), Some(1));
     assert_eq!(
         snapshot["records"][0]["path"],

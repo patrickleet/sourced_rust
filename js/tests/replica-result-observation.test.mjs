@@ -81,7 +81,8 @@ function frame(revision, value, operation = Query.id) {
 				trustedPresets: [],
 				snapshot: {
 					scopeToken: 'snapshot:items',
-					complete: true,
+					recordsComplete: true,
+					indexesComparable: true,
 					records: [
 						{
 							path: ['items', '0'],
@@ -96,7 +97,16 @@ function frame(revision, value, operation = Query.id) {
 						{
 							projection: 'items',
 							scopeToken: 'index:items',
-							position: String(revision)
+							position: String(revision),
+							...(operation === Query.live.id
+								? {
+										resume: {
+											projection: 'items',
+											position: String(revision),
+											token: `cursor:${revision}`
+										}
+									}
+								: {})
 						}
 					],
 					observations: []

@@ -397,7 +397,8 @@ fn assert_live_frame(
     );
     let distributed = distributed_envelope(response);
     let snapshot = &distributed["snapshot"];
-    assert_eq!(snapshot["complete"], true, "{response}");
+    assert_eq!(snapshot["recordsComplete"], true, "{response}");
+    assert_eq!(snapshot["indexesComparable"], true, "{response}");
     assert_eq!(snapshot["indexes"].as_array().map(Vec::len), Some(1));
     assert_eq!(snapshot["indexes"][0]["projection"], PROJECTOR_NAME);
     assert_eq!(snapshot["indexes"][0]["position"], expected_position);
@@ -465,7 +466,9 @@ async fn projected_query_emits_exact_record_and_index_revisions_without_key_leak
     assert_opaque_token(&distributed["cacheScope"], "cache-scope");
 
     let snapshot = &distributed["snapshot"];
-    assert_eq!(snapshot["complete"], true);
+    assert_eq!(snapshot["recordsComplete"], true);
+    assert_eq!(snapshot["indexesComparable"], true);
+    assert!(snapshot.get("complete").is_none());
     assert_eq!(snapshot["observations"], json!([]));
     assert_opaque_token(&snapshot["scopeToken"], "query-snapshot");
 
@@ -539,7 +542,8 @@ async fn count_only_aggregate_emits_no_unselected_node_record_evidence() {
         "{response}"
     );
     let snapshot = &distributed_envelope(&response)["snapshot"];
-    assert_eq!(snapshot["complete"], true, "{snapshot}");
+    assert_eq!(snapshot["recordsComplete"], true, "{snapshot}");
+    assert_eq!(snapshot["indexesComparable"], true, "{snapshot}");
     assert_eq!(snapshot["records"], json!([]), "{snapshot}");
     assert_eq!(snapshot["indexes"].as_array().map(Vec::len), Some(1));
     assert_eq!(snapshot["indexes"][0]["projection"], PROJECTOR_NAME);
@@ -664,7 +668,8 @@ async fn embedded_models_emit_index_evidence_without_record_evidence() {
     let serialized = response.to_string();
     assert!(!serialized.contains(HIDDEN_ALIAS_PREFIX), "{response}");
     let snapshot = &distributed_envelope(&response)["snapshot"];
-    assert_eq!(snapshot["complete"], true, "{snapshot}");
+    assert_eq!(snapshot["recordsComplete"], true, "{snapshot}");
+    assert_eq!(snapshot["indexesComparable"], true, "{snapshot}");
     assert_eq!(snapshot["records"], json!([]), "{snapshot}");
     assert_eq!(snapshot["indexes"].as_array().map(Vec::len), Some(1));
     assert_eq!(
@@ -723,7 +728,8 @@ async fn query_evidence_chunks_129_unique_rows_inside_one_snapshot() {
         "{response}"
     );
     let snapshot = &distributed_envelope(&response)["snapshot"];
-    assert_eq!(snapshot["complete"], true, "{snapshot}");
+    assert_eq!(snapshot["recordsComplete"], true, "{snapshot}");
+    assert_eq!(snapshot["indexesComparable"], true, "{snapshot}");
     assert_eq!(snapshot["records"].as_array().map(Vec::len), Some(129));
 }
 
@@ -1100,9 +1106,25 @@ async fn row_filtered_surface_never_exposes_partition_wide_live_activity() {
         json!([{ "title": "causal row" }])
     );
     let envelope = distributed_envelope(&initial);
-    assert_eq!(envelope["snapshot"]["complete"], false, "{initial}");
+    assert_eq!(envelope["snapshot"]["recordsComplete"], true, "{initial}");
+    assert_eq!(
+        envelope["snapshot"]["indexesComparable"], false,
+        "{initial}"
+    );
     assert_eq!(envelope["snapshot"]["indexes"], json!([]), "{initial}");
     assert_eq!(envelope["snapshot"]["observations"], json!([]));
+    let records = envelope["snapshot"]["records"]
+        .as_array()
+        .expect("authorized row record evidence");
+    assert_eq!(records.len(), 1, "{initial}");
+    assert_eq!(
+        records[0]["path"],
+        json!(["causal_query_views", "0"]),
+        "{initial}"
+    );
+    assert_eq!(records[0]["model"], "CausalQueryView");
+    assert_eq!(records[0]["tombstone"], false);
+    assert_opaque_token(&records[0]["scopeToken"], "record-revision");
     assert_eq!(envelope["live"]["supported"], false, "{initial}");
     assert_eq!(envelope["live"]["reset"], true, "{initial}");
     assert_eq!(envelope["live"]["cursors"], json!([]), "{initial}");
@@ -1267,7 +1289,8 @@ async fn unowned_legacy_query_is_explicitly_incomplete_and_still_strips_keys() {
     );
 
     let snapshot = &distributed_envelope(&response)["snapshot"];
-    assert_eq!(snapshot["complete"], false);
+    assert_eq!(snapshot["recordsComplete"], false);
+    assert_eq!(snapshot["indexesComparable"], false);
     assert_eq!(snapshot["records"], json!([]));
     assert_eq!(snapshot["indexes"], json!([]));
     assert_eq!(snapshot["observations"], json!([]));

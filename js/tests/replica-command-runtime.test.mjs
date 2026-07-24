@@ -252,7 +252,8 @@ function scopeSnapshotEnvelope(position, options = {}) {
 					: { command: options.command }),
 				snapshot: {
 					scopeToken: 'snapshot:scope',
-					complete: true,
+					recordsComplete: true,
+					indexesComparable: true,
 					records: [],
 					indexes: [
 						{
@@ -290,6 +291,8 @@ class FakeReplica {
 	layers = new Map();
 	accepted = new Map();
 	contracts = [];
+	revalidations = [];
+	onRevalidate;
 	authority = {
 		generation: 1,
 		scope: SCOPE,
@@ -368,6 +371,11 @@ class FakeReplica {
 		this.layers.delete(id);
 		this.accepted.delete(id);
 		return result;
+	}
+
+	revalidate(plan) {
+		this.revalidations.push(plan);
+		return this.onRevalidate?.(plan);
 	}
 
 	visible(model, identity) {
@@ -562,7 +570,8 @@ test('real replica authority gates commands on its server-issued scope inventory
 					command: receipt.metadata,
 					snapshot: {
 						scopeToken: 'snapshot:scope',
-						complete: true,
+						recordsComplete: true,
+						indexesComparable: true,
 						records: [],
 						indexes: [],
 						observations: [
@@ -862,6 +871,13 @@ test('explicit rejection removes only its own layer and rebases later work', asy
 		consistency: 'accepted',
 		trustedPresets: Object.freeze([]),
 		confirmations: undefined,
+		revalidation: Object.freeze({
+			version: 1,
+			required: true,
+			dependencies: Object.freeze(['todos']),
+			models: Object.freeze(['Todo']),
+			relationships: Object.freeze([])
+		}),
 		effects: {
 			version: 1,
 			operations: [
@@ -999,6 +1015,7 @@ test('Projected<T> validates and writes canonical data while retiring its layer 
 
 test('relationship and invalidation effects stay semantic instead of guessing list links', async () => {
 	const replica = new FakeReplica();
+	replica.onRevalidate = () => new Promise(() => undefined);
 	const relationshipArtifact = artifact({
 		name: 'todo.relate',
 		mutationField: 'relateTodo',
@@ -1007,6 +1024,13 @@ test('relationship and invalidation effects stay semantic instead of guessing li
 		consistency: 'accepted',
 		trustedPresets: Object.freeze([]),
 		confirmations: undefined,
+		revalidation: Object.freeze({
+			version: 1,
+			required: true,
+			dependencies: Object.freeze(['todos']),
+			models: Object.freeze(['Todo']),
+			relationships: Object.freeze([])
+		}),
 		effects: {
 			version: 1,
 			operations: [
@@ -1230,6 +1254,83 @@ test('matching wire observations resolve only after the replica retires the laye
 	runtime.dispose();
 });
 
+test('required command revalidation plans require a replica coordinator at construction', () => {
+	const required = artifact({
+		revalidation: Object.freeze({
+			version: 1,
+			required: true,
+			dependencies: Object.freeze(['todos']),
+			models: Object.freeze(['Todo']),
+			relationships: Object.freeze([])
+		})
+	});
+	const replica = new FakeReplica();
+	replica.revalidate = undefined;
+	assert.throws(
+		() =>
+			createReplicaCommandRuntime(
+				replica,
+				{ dispatch: () => Promise.reject(new Error('unused')) },
+				{ createTodo: required }
+			),
+		/generated command revalidation plan requires replica\.revalidate/
+	);
+});
+
+test('required revalidation retires unavailable-confirmation optimism only after canonical refresh', async () => {
+	const required = artifact({
+		confirmations: Object.freeze({
+			version: 1,
+			kind: 'unavailable',
+			expected: Object.freeze([]),
+			fallback: 'revalidate'
+		}),
+		revalidation: Object.freeze({
+			version: 1,
+			required: true,
+			dependencies: Object.freeze(['todos']),
+			models: Object.freeze(['Todo']),
+			relationships: Object.freeze([])
+		})
+	});
+	const replica = new FakeReplica();
+	let resolveRefresh;
+	const refresh = new Promise((resolve) => {
+		resolveRefresh = resolve;
+	});
+	replica.onRevalidate = () => refresh;
+	const runtime = createReplicaCommandRuntime(
+		replica,
+		{
+			dispatch: (request) =>
+				Promise.resolve(commandEnvelope(request.commandId))
+		},
+		{ createTodo: required }
+	);
+
+	const receipt = await runtime.commands.createTodo(
+		{ id: 'todo-required-refresh', title: 'optimistic until canonical' },
+		{ commandId: COMMAND_A }
+	);
+	assert.equal(receipt.projected, undefined);
+	assert.equal(replica.revalidations.length, 1);
+	assert.equal(
+		replica.layers.has(COMMAND_A),
+		true,
+		'acceptance alone must not retire non-canonical optimism'
+	);
+
+	resolveRefresh();
+	await refresh;
+	await new Promise((resolve) => setImmediate(resolve));
+	assert.equal(
+		replica.layers.has(COMMAND_A),
+		false,
+		'the completed generated refresh is the retirement fence'
+	);
+	runtime.dispose();
+});
+
 test('generated status is required at construction and coalesces exact causal reads', async () => {
 	const missingStatusReplica = new FakeReplica();
 	assert.throws(
@@ -1245,7 +1346,6 @@ test('generated status is required at construction and coalesces exact causal re
 
 	const replica = new FakeReplica();
 	const statusRequests = [];
-	const revalidations = [];
 	let resolveStatus;
 	const transport = {
 		dispatch: (request) => Promise.resolve(commandEnvelope(request.commandId)),
@@ -1254,9 +1354,6 @@ test('generated status is required at construction and coalesces exact causal re
 			return new Promise((resolve) => {
 				resolveStatus = resolve;
 			});
-		},
-		revalidate(request) {
-			revalidations.push(request);
 		}
 	};
 	const runtime = createReplicaCommandRuntime(
@@ -1286,7 +1383,12 @@ test('generated status is required at construction and coalesces exact causal re
 	assert.equal(first, second, 'concurrent status reads must coalesce');
 	assert.equal(statusRequests.length, 1);
 	const { signal, ...wireRequest } = statusRequests[0];
-	assert.equal(signal, replica.authority.controller.signal);
+	assert.notEqual(
+		signal,
+		replica.authority.controller.signal,
+		'status cancellation combines replica authority with runtime teardown'
+	);
+	assert.equal(signal.aborted, false);
 	assert.deepEqual(wireRequest, {
 		operation: 'status',
 		commandId: COMMAND_A,
@@ -1308,22 +1410,646 @@ test('generated status is required at construction and coalesces exact causal re
 	assert.equal(status.state, 'projected');
 	assert.equal(status.metadata.commandId, COMMAND_A);
 
-	let projectedSettled = false;
-	void receipt.projected.then(() => {
-		projectedSettled = true;
+	assert.equal((await receipt.projected).state, 'projected');
+	assert.equal(
+		replica.layers.has(COMMAND_A),
+		false,
+		'status-projected revalidation retires optimism only after it completes'
+	);
+	assert.equal(replica.revalidations.length, 1);
+	assert.deepEqual(replica.revalidations[0], artifact().revalidation);
+
+	runtime.dispose();
+});
+
+test('projected recovery status revalidates and retires optimism without a projection controller', async () => {
+	const replica = new FakeReplica();
+	let resolveRefresh;
+	const refresh = new Promise((resolve) => {
+		resolveRefresh = resolve;
 	});
-	await Promise.resolve();
-	assert.equal(projectedSettled, false);
-	assert.equal(replica.layers.has(COMMAND_A), true);
-	assert.deepEqual(
-		revalidations.map(({ reason }) => reason),
-		['accepted-fallback']
+	replica.onRevalidate = () => refresh;
+	const runtime = createReplicaCommandRuntime(
+		replica,
+		{
+			dispatch: (request) =>
+				Promise.resolve(
+					commandEnvelope(request.commandId, {
+						state: 'in_progress',
+						expects: []
+					})
+				),
+			status: (request) =>
+				Promise.resolve(
+					statusEnvelope(request.commandId, {
+						state: 'projected',
+						observations: [
+							{
+								causationId: `cause:${request.commandId}`,
+								projection: 'todos',
+								model: 'Todo',
+								scopeToken: 'todo:scope'
+							}
+						]
+					})
+				)
+		},
+		{ createTodo: artifact() },
+		{ status: COMMAND_STATUS }
 	);
 
-	replica.confirmOptimisticLayer(COMMAND_A, () => undefined);
-	runtime.observeResult(projectedEnvelope);
-	assert.equal((await receipt.projected).state, 'projected');
+	let failure;
+	try {
+		await runtime.commands.createTodo(
+			{ id: 'todo-recovery-projected', title: 'recover causally' },
+			{ commandId: COMMAND_A }
+		);
+		assert.fail('in-progress dispatch should expose recovery');
+	} catch (error) {
+		failure = error;
+	}
+	assert.equal(failure.code, 'REPLICA_COMMAND_OUTCOME_PENDING');
+	assert.equal(failure.recovery.commandId, COMMAND_A);
+
+	let statusSettled = false;
+	const status = failure.recovery.status().finally(() => {
+		statusSettled = true;
+	});
+	await new Promise((resolve) => setImmediate(resolve));
+	assert.equal(replica.revalidations.length, 1);
+	assert.equal(statusSettled, false);
+	assert.equal(
+		replica.layers.has(COMMAND_A),
+		true,
+		'projected status alone carries no canonical query payload'
+	);
+
+	resolveRefresh();
+	assert.equal((await status).state, 'projected');
+	assert.equal(replica.layers.has(COMMAND_A), false);
 	runtime.dispose();
+});
+
+test('terminal accepted recovery revalidates before retiring optimism', async () => {
+	const replica = new FakeReplica();
+	let resolveRefresh;
+	const refresh = new Promise((resolve) => {
+		resolveRefresh = resolve;
+	});
+	replica.onRevalidate = () => refresh;
+	const accepted = artifact({
+		consistency: 'accepted',
+		confirmations: undefined,
+		revalidation: Object.freeze({
+			version: 1,
+			required: true,
+			dependencies: Object.freeze(['todos']),
+			models: Object.freeze(['Todo']),
+			relationships: Object.freeze([])
+		})
+	});
+	const runtime = createReplicaCommandRuntime(
+		replica,
+		{
+			dispatch: () => Promise.reject(new Error('accepted response lost')),
+			status: (request) =>
+				Promise.resolve(
+					statusEnvelope(request.commandId, {
+						state: 'accepted',
+						consistency: 'accepted',
+						expects: []
+					})
+				)
+		},
+		{ createTodo: accepted },
+		{ status: COMMAND_STATUS }
+	);
+
+	let failure;
+	try {
+		await runtime.commands.createTodo(
+			{ id: 'todo-recovery-accepted', title: 'recover terminally' },
+			{ commandId: COMMAND_A }
+		);
+		assert.fail('ambiguous dispatch should expose recovery');
+	} catch (error) {
+		failure = error;
+	}
+	assert.equal(failure.code, 'REPLICA_COMMAND_TRANSPORT_AMBIGUOUS');
+	assert.equal(failure.recovery.commandId, COMMAND_A);
+
+	let statusSettled = false;
+	const status = failure.recovery.status().finally(() => {
+		statusSettled = true;
+	});
+	await new Promise((resolve) => setImmediate(resolve));
+	assert.equal(replica.revalidations.length, 1);
+	assert.equal(statusSettled, false);
+	assert.equal(
+		replica.layers.has(COMMAND_A),
+		true,
+		'terminal acceptance alone has no canonical query payload'
+	);
+
+	resolveRefresh();
+	assert.equal((await status).state, 'accepted');
+	assert.equal(replica.layers.has(COMMAND_A), false);
+	runtime.dispose();
+});
+
+test('completed dispatch and status reads release linked abort listeners', async () => {
+	const replica = new FakeReplica();
+	const authoritySignal = replica.authority.controller.signal;
+	const originalAddEventListener =
+		authoritySignal.addEventListener.bind(authoritySignal);
+	const originalRemoveEventListener =
+		authoritySignal.removeEventListener.bind(authoritySignal);
+	const activeAbortListeners = new Set();
+	authoritySignal.addEventListener = (type, listener, options) => {
+		if (type === 'abort') activeAbortListeners.add(listener);
+		return originalAddEventListener(type, listener, options);
+	};
+	authoritySignal.removeEventListener = (type, listener, options) => {
+		if (type === 'abort') activeAbortListeners.delete(listener);
+		return originalRemoveEventListener(type, listener, options);
+	};
+
+	let runtime;
+	try {
+		const accepted = artifact({
+			consistency: 'accepted',
+			confirmations: undefined,
+			revalidation: Object.freeze({
+				version: 1,
+				required: true,
+				dependencies: Object.freeze(['todos']),
+				models: Object.freeze(['Todo']),
+				relationships: Object.freeze([])
+			})
+		});
+		runtime = createReplicaCommandRuntime(
+			replica,
+			{
+				dispatch: (request) =>
+					Promise.resolve(
+						commandEnvelope(request.commandId, {
+							state: 'accepted',
+							consistency: 'accepted',
+							expects: []
+						})
+					),
+				status: (request) =>
+					Promise.resolve(
+						statusEnvelope(request.commandId, {
+							state: 'accepted',
+							consistency: 'accepted',
+							expects: []
+						})
+					)
+			},
+			{ createTodo: accepted },
+			{ status: COMMAND_STATUS }
+		);
+		const receipt = await runtime.commands.createTodo(
+			{ id: 'todo-listener-cleanup', title: 'bounded listeners' },
+			{ commandId: COMMAND_A }
+		);
+		assert.equal(activeAbortListeners.size, 0);
+
+		for (let read = 0; read < 32; read += 1) {
+			assert.equal((await receipt.status()).state, 'accepted');
+			assert.equal(
+				activeAbortListeners.size,
+				0,
+				`status read ${read + 1} must release its authority listener`
+			);
+		}
+	} finally {
+		runtime?.dispose();
+		delete authoritySignal.addEventListener;
+		delete authoritySignal.removeEventListener;
+	}
+});
+
+test('optimistic layer creation failure releases linked abort listeners', async () => {
+	const replica = new FakeReplica();
+	replica.createOptimisticLayer(COMMAND_A, () => undefined);
+	const authoritySignal = replica.authority.controller.signal;
+	const originalAddEventListener =
+		authoritySignal.addEventListener.bind(authoritySignal);
+	const originalRemoveEventListener =
+		authoritySignal.removeEventListener.bind(authoritySignal);
+	const activeAbortListeners = new Set();
+	authoritySignal.addEventListener = (type, listener, options) => {
+		if (type === 'abort') activeAbortListeners.add(listener);
+		return originalAddEventListener(type, listener, options);
+	};
+	authoritySignal.removeEventListener = (type, listener, options) => {
+		if (type === 'abort') activeAbortListeners.delete(listener);
+		return originalRemoveEventListener(type, listener, options);
+	};
+
+	let dispatches = 0;
+	const runtime = createReplicaCommandRuntime(
+		replica,
+		{
+			dispatch: () => {
+				dispatches += 1;
+				return Promise.reject(new Error('must not dispatch'));
+			}
+		},
+		{ createTodo: artifact() }
+	);
+	try {
+		await assert.rejects(
+			runtime.commands.createTodo(
+				{ id: 'todo-duplicate-layer', title: 'must fail locally' },
+				{ commandId: COMMAND_A }
+			),
+			/optimistic layer already exists/
+		);
+		assert.equal(dispatches, 0);
+		assert.equal(
+			activeAbortListeners.size,
+			0,
+			'pre-dispatch failure must release its authority listener'
+		);
+	} finally {
+		runtime.dispose();
+		replica.rejectOptimisticLayer(COMMAND_A);
+		delete authoritySignal.addEventListener;
+		delete authoritySignal.removeEventListener;
+	}
+});
+
+test('accepted facts poll durable status and revalidate before retiring optimism', async () => {
+	const replica = new FakeReplica();
+	let statusReads = 0;
+	const runtime = createReplicaCommandRuntime(
+		replica,
+		{
+			dispatch: (request) =>
+				Promise.resolve(commandEnvelope(request.commandId)),
+			status(request) {
+				statusReads += 1;
+				return Promise.resolve(
+					statusEnvelope(request.commandId, {
+						state:
+							statusReads === 1
+								? 'accepted_pending_projection'
+								: 'projected',
+						observations:
+							statusReads === 1
+								? []
+								: [
+										{
+											causationId: `cause:${request.commandId}`,
+											projection: 'todos',
+											model: 'Todo',
+											scopeToken: 'todo:scope'
+										}
+									]
+					})
+				);
+			}
+		},
+		{ createTodo: artifact() },
+		{ status: COMMAND_STATUS }
+	);
+	const receipt = await runtime.commands.createTodo(
+		{ id: 'todo-auto-status', title: 'eventually canonical' },
+		{ commandId: COMMAND_A }
+	);
+
+	assert.equal((await receipt.projected).state, 'projected');
+	assert.equal(statusReads, 2);
+	assert.equal(replica.revalidations.length, 1);
+	assert.deepEqual(replica.revalidations[0], artifact().revalidation);
+	assert.equal(replica.layers.has(COMMAND_A), false);
+	runtime.dispose();
+});
+
+test('disposing during dispatch aborts the request and removes pre-acceptance optimism', async () => {
+	const replica = new FakeReplica();
+	let dispatchStarted;
+	const started = new Promise((resolve) => {
+		dispatchStarted = resolve;
+	});
+	let dispatchRequest;
+	const runtime = createReplicaCommandRuntime(
+		replica,
+		{
+			dispatch(request) {
+				dispatchRequest = request;
+				dispatchStarted();
+				return new Promise(() => undefined);
+			}
+		},
+		{ createTodo: artifact() }
+	);
+	const invocation = runtime.commands.createTodo(
+		{ id: 'todo-dispose-dispatch', title: 'must not leak' },
+		{ commandId: COMMAND_A }
+	);
+	const commandFailure = assert.rejects(
+		invocation,
+		(error) =>
+			error instanceof ReplicaCommandRuntimeError &&
+			error.code === 'REPLICA_COMMAND_DISPOSED'
+	);
+
+	await started;
+	assert.equal(replica.layers.has(COMMAND_A), true);
+	assert.equal(dispatchRequest.signal.aborted, false);
+	assert.equal(replica.authority.controller.signal.aborted, false);
+
+	runtime.dispose();
+	await commandFailure;
+	assert.equal(dispatchRequest.signal.aborted, true);
+	assert.equal(
+		replica.authority.controller.signal.aborted,
+		false,
+		'runtime teardown must not invalidate the replica authorization generation'
+	);
+	assert.equal(
+		replica.layers.has(COMMAND_A),
+		false,
+		'terminal local teardown must remove its pre-acceptance layer'
+	);
+});
+
+test('disposing aborts an in-flight status read and removes accepted optimism', async () => {
+	const replica = new FakeReplica();
+	let statusStarted;
+	const started = new Promise((resolve) => {
+		statusStarted = resolve;
+	});
+	let statusRequest;
+	const runtime = createReplicaCommandRuntime(
+		replica,
+		{
+			dispatch: (request) =>
+				Promise.resolve(commandEnvelope(request.commandId)),
+			status(request) {
+				statusRequest = request;
+				statusStarted();
+				return new Promise(() => undefined);
+			}
+		},
+		{ createTodo: artifact() },
+		{ status: COMMAND_STATUS }
+	);
+	const receipt = await runtime.commands.createTodo(
+		{ id: 'todo-dispose-status', title: 'must stop polling' },
+		{ commandId: COMMAND_A }
+	);
+	const statusFailure = assert.rejects(
+		receipt.status(),
+		(error) =>
+			error instanceof ReplicaCommandRuntimeError &&
+			error.code === 'REPLICA_COMMAND_DISPOSED'
+	);
+	const projectionFailure = assert.rejects(
+		receipt.projected,
+		(error) =>
+			error instanceof ReplicaCommandRuntimeError &&
+			error.code === 'REPLICA_COMMAND_DISPOSED'
+	);
+
+	await started;
+	assert.equal(statusRequest.signal.aborted, false);
+	assert.equal(replica.layers.has(COMMAND_A), true);
+
+	runtime.dispose();
+	await Promise.all([statusFailure, projectionFailure]);
+	assert.equal(statusRequest.signal.aborted, true);
+	assert.equal(replica.authority.controller.signal.aborted, false);
+	assert.equal(replica.layers.has(COMMAND_A), false);
+});
+
+test('disposing during required status revalidation rejects the status read', async () => {
+	const replica = new FakeReplica();
+	let refreshStarted;
+	const started = new Promise((resolve) => {
+		refreshStarted = resolve;
+	});
+	replica.onRevalidate = () => {
+		refreshStarted();
+		return new Promise(() => undefined);
+	};
+	const runtime = createReplicaCommandRuntime(
+		replica,
+		{
+			dispatch: (request) =>
+				Promise.resolve(commandEnvelope(request.commandId)),
+			status: (request) =>
+				Promise.resolve(
+					statusEnvelope(request.commandId, {
+						state: 'projected',
+						observations: [
+							{
+								causationId: `cause:${request.commandId}`,
+								projection: 'todos',
+								model: 'Todo',
+								scopeToken: 'todo:scope'
+							}
+						]
+					})
+				)
+		},
+		{ createTodo: artifact() },
+		{ status: COMMAND_STATUS }
+	);
+	const receipt = await runtime.commands.createTodo(
+		{ id: 'todo-dispose-revalidation', title: 'must stop refreshing' },
+		{ commandId: COMMAND_A }
+	);
+	const statusFailure = assert.rejects(
+		receipt.status(),
+		(error) =>
+			error instanceof ReplicaCommandRuntimeError &&
+			error.code === 'REPLICA_COMMAND_DISPOSED'
+	);
+	const projectionFailure = assert.rejects(
+		receipt.projected,
+		(error) =>
+			error instanceof ReplicaCommandRuntimeError &&
+			error.code === 'REPLICA_COMMAND_DISPOSED'
+	);
+
+	await started;
+	assert.equal(replica.layers.has(COMMAND_A), true);
+	assert.equal(replica.revalidations.length, 1);
+
+	runtime.dispose();
+	await Promise.all([statusFailure, projectionFailure]);
+	assert.equal(replica.authority.controller.signal.aborted, false);
+	assert.equal(replica.layers.has(COMMAND_A), false);
+});
+
+test('authority invalidation during required status revalidation rejects stale status', async () => {
+	const replica = new FakeReplica();
+	let refreshStarted;
+	const started = new Promise((resolve) => {
+		refreshStarted = resolve;
+	});
+	replica.onRevalidate = () => {
+		refreshStarted();
+		return new Promise(() => undefined);
+	};
+	const runtime = createReplicaCommandRuntime(
+		replica,
+		{
+			dispatch: (request) =>
+				Promise.resolve(commandEnvelope(request.commandId)),
+			status: (request) =>
+				Promise.resolve(
+					statusEnvelope(request.commandId, {
+						state: 'projected',
+						observations: [
+							{
+								causationId: `cause:${request.commandId}`,
+								projection: 'todos',
+								model: 'Todo',
+								scopeToken: 'todo:scope'
+							}
+						]
+					})
+				)
+		},
+		{ createTodo: artifact() },
+		{ status: COMMAND_STATUS }
+	);
+	const receipt = await runtime.commands.createTodo(
+		{ id: 'todo-stale-revalidation', title: 'must reject stale status' },
+		{ commandId: COMMAND_A }
+	);
+	const statusFailure = assert.rejects(
+		receipt.status(),
+		(error) =>
+			error instanceof ReplicaCommandRuntimeError &&
+			error.code === 'REPLICA_COMMAND_SCOPE_INVALIDATED'
+	);
+	const projectionFailure = assert.rejects(
+		receipt.projected,
+		(error) =>
+			error instanceof ReplicaCommandRuntimeError &&
+			error.code === 'REPLICA_COMMAND_SCOPE_INVALIDATED'
+	);
+
+	await started;
+	replica.authority.generation += 1;
+	replica.authority.scope = undefined;
+	replica.layers.clear();
+	replica.authority.controller.abort('logout');
+	await Promise.all([statusFailure, projectionFailure]);
+	assert.equal(replica.layers.has(COMMAND_A), false);
+
+	runtime.dispose();
+});
+
+test('disposing a pending fact clears its scheduled durable-status timer', async () => {
+	const originalSetTimeout = globalThis.setTimeout;
+	const originalClearTimeout = globalThis.clearTimeout;
+	const scheduled = [];
+	const cleared = [];
+	globalThis.setTimeout = (callback, delay, ...args) => {
+		const timer = originalSetTimeout(callback, delay, ...args);
+		scheduled.push({ timer, delay });
+		return timer;
+	};
+	globalThis.clearTimeout = (timer) => {
+		cleared.push(timer);
+		return originalClearTimeout(timer);
+	};
+
+	let runtime;
+	try {
+		const replica = new FakeReplica();
+		runtime = createReplicaCommandRuntime(
+			replica,
+			{
+				dispatch: (request) =>
+					Promise.resolve(commandEnvelope(request.commandId)),
+				status: () => Promise.reject(new Error('must not be called'))
+			},
+			{ createTodo: artifact() },
+			{ status: COMMAND_STATUS }
+		);
+		const receipt = await runtime.commands.createTodo(
+			{ id: 'todo-cancel-poll', title: 'cancel poll' },
+			{ commandId: COMMAND_A }
+		);
+		const projectionFailure = assert.rejects(
+			receipt.projected,
+			(error) =>
+				error instanceof ReplicaCommandRuntimeError &&
+				error.code === 'REPLICA_COMMAND_DISPOSED'
+		);
+		const poll = scheduled.find(({ delay }) => delay === 25);
+		assert.ok(poll, 'accepted fact must schedule its first status poll');
+
+		runtime.dispose();
+		await projectionFailure;
+		assert.equal(
+			cleared.includes(poll.timer),
+			true,
+			'projection settlement must clear rather than merely orphan the timer'
+		);
+	} finally {
+		runtime?.dispose();
+		for (const { timer } of scheduled) originalClearTimeout(timer);
+		globalThis.setTimeout = originalSetTimeout;
+		globalThis.clearTimeout = originalClearTimeout;
+	}
+});
+
+test('a throwing background-error reporter cannot reject the detached status monitor', async () => {
+	const replica = new FakeReplica();
+	let statusStarted;
+	const firstStatusRead = new Promise((resolve) => {
+		statusStarted = resolve;
+	});
+	let statusReads = 0;
+	let reports = 0;
+	const runtime = createReplicaCommandRuntime(
+		replica,
+		{
+			dispatch: (request) =>
+				Promise.resolve(commandEnvelope(request.commandId)),
+			status() {
+				statusReads += 1;
+				statusStarted();
+				return Promise.reject(new Error('transient status failure'));
+			}
+		},
+		{ createTodo: artifact() },
+		{
+			status: COMMAND_STATUS,
+			onBackgroundError() {
+				reports += 1;
+				throw new Error('reporter failure');
+			}
+		}
+	);
+	const receipt = await runtime.commands.createTodo(
+		{ id: 'todo-report-error', title: 'report safely' },
+		{ commandId: COMMAND_A }
+	);
+	const projectionFailure = assert.rejects(
+		receipt.projected,
+		(error) =>
+			error instanceof ReplicaCommandRuntimeError &&
+			error.code === 'REPLICA_COMMAND_DISPOSED'
+	);
+
+	await firstStatusRead;
+	await new Promise((resolve) => setImmediate(resolve));
+	assert.equal(statusReads, 1);
+	assert.equal(reports, 1);
+
+	runtime.dispose();
+	await projectionFailure;
 });
 
 test('dotted generated names become frozen nested namespaces and reject prefix collisions', () => {
@@ -1425,7 +2151,6 @@ test('ambiguous and in-progress dispatches expose recovery without retiring opti
 
 test('terminal status rolls back only its layer and rejects its projected awaitable', async () => {
 	const replica = new FakeReplica();
-	const revalidations = [];
 	const transport = {
 		dispatch: (request) => Promise.resolve(commandEnvelope(request.commandId)),
 		status: (request) =>
@@ -1433,10 +2158,7 @@ test('terminal status rolls back only its layer and rejects its projected awaita
 				statusEnvelope(request.commandId, {
 					state: 'projection_failed'
 				})
-			),
-		revalidate(request) {
-			revalidations.push(request);
-		}
+			)
 	};
 	const runtime = createReplicaCommandRuntime(
 		replica,
@@ -1460,10 +2182,8 @@ test('terminal status rolls back only its layer and rejects its projected awaita
 	await projectedFailure;
 	assert.equal(replica.layers.has(COMMAND_A), false);
 	assert.equal(replica.layers.has(COMMAND_B), true);
-	assert.deepEqual(
-		revalidations.map(({ reason }) => reason),
-		['projection-failed']
-	);
+	assert.equal(replica.revalidations.length, 1);
+	assert.deepEqual(replica.revalidations[0], artifact().revalidation);
 	replica.rejectOptimisticLayer(COMMAND_B);
 	runtime.dispose();
 });

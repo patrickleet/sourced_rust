@@ -78,7 +78,7 @@ pub(crate) struct QueryProtocolRuntime {
 
 #[derive(Clone, Debug, Default)]
 pub(crate) struct QueryIndexPlan {
-    pub(crate) complete: bool,
+    pub(crate) comparable: bool,
     pub(crate) projectors: Vec<Arc<QueryProjectorRuntime>>,
 }
 
@@ -197,7 +197,7 @@ impl QueryProtocolRuntime {
 
     /// Build one conservative vector over every physical dependency touched by
     /// an exact query plan. Missing, denied, dynamic, epochless, or ambiguous
-    /// ownership makes the vector incomplete; no scalar maximum is invented.
+    /// ownership makes the vector incomparable; no scalar maximum is invented.
     pub(crate) fn index_plan(&self, role_surface: &Surface, tables: &[String]) -> QueryIndexPlan {
         if tables.is_empty() {
             return QueryIndexPlan::default();
@@ -220,7 +220,7 @@ impl QueryProtocolRuntime {
                 .collect::<Vec<_>>();
             let [candidate] = candidates.as_slice() else {
                 return QueryIndexPlan {
-                    complete: false,
+                    comparable: false,
                     projectors: Vec::new(),
                 };
             };
@@ -228,14 +228,14 @@ impl QueryProtocolRuntime {
                 || !candidate.partition_matches_authorization(role_surface)
             {
                 return QueryIndexPlan {
-                    complete: false,
+                    comparable: false,
                     projectors: Vec::new(),
                 };
             }
             selected.insert(candidate.name.clone(), Arc::clone(candidate));
         }
         QueryIndexPlan {
-            complete: true,
+            comparable: true,
             projectors: selected.into_values().collect(),
         }
     }
@@ -257,7 +257,7 @@ struct PreparedRecordProbe {
 }
 
 struct PreparedQueryEvidence {
-    complete: bool,
+    records_complete: bool,
     records: Vec<PreparedRecordProbe>,
     indexes: QueryIndexPlan,
 }
@@ -451,11 +451,11 @@ where
         let partition = projector
             .static_partition
             .as_ref()
-            .expect("complete index plans retain a static partition");
+            .expect("comparable index plans retain a static partition");
         let epoch = projector
             .change_epoch
             .as_ref()
-            .expect("complete index plans retain a change epoch");
+            .expect("comparable index plans retain a change epoch");
         partitions.push(
             read_projection_partition_snapshot_in_executor::<DB>(
                 connection,
@@ -501,13 +501,13 @@ fn prepare_query_evidence(
     plan: &SqlPlan,
     extracted: ExtractedQueryEvidence,
 ) -> Result<PreparedQueryEvidence, ProjectionProtocolError> {
-    let mut complete = extracted.complete;
+    let mut records_complete = extracted.complete;
     let mut records = Vec::<PreparedRecordProbe>::new();
     let mut identities = BTreeMap::<(String, String, [u8; 32], Vec<u8>), usize>::new();
 
     for record in extracted.records {
         let Some(owner) = runtime.visible_model_owner(role_surface, &record.model) else {
-            complete = false;
+            records_complete = false;
             continue;
         };
         let key = owner
@@ -548,12 +548,11 @@ fn prepare_query_evidence(
 
     let mut indexes = runtime.index_plan(role_surface, &plan.tables_touched);
     if !query_index_budget_allows(indexes.projectors.len()) {
-        indexes.projectors.truncate(MAX_PROTOCOL_EVIDENCE_ITEMS);
-        indexes.complete = false;
+        indexes.projectors.clear();
+        indexes.comparable = false;
     }
-    complete &= indexes.complete;
     Ok(PreparedQueryEvidence {
-        complete,
+        records_complete,
         records,
         indexes,
     })
@@ -583,7 +582,7 @@ where
             "query live adapter response length mismatch".into(),
         ));
     }
-    if !prepared.indexes.complete
+    if !prepared.indexes.comparable
         || prepared.indexes.projectors.is_empty()
         || !live_resume_cursor_budget_allows(prepared.indexes.projectors.len())
     {
@@ -605,11 +604,11 @@ where
         let partition = projector
             .static_partition
             .as_ref()
-            .expect("complete live plans retain a static partition");
+            .expect("comparable live plans retain a static partition");
         let epoch = projector
             .change_epoch
             .as_ref()
-            .expect("complete live plans retain a change epoch");
+            .expect("comparable live plans retain a change epoch");
         let position = partition_snapshot
             .head
             .as_ref()
@@ -664,11 +663,11 @@ where
             let partition = projector
                 .static_partition
                 .as_ref()
-                .expect("complete live plans retain a static partition");
+                .expect("comparable live plans retain a static partition");
             let epoch = projector
                 .change_epoch
                 .as_ref()
-                .expect("complete live plans retain a change epoch");
+                .expect("comparable live plans retain a change epoch");
             if accumulator
                 .verify_live_resume_position(
                     &supplied,
@@ -741,7 +740,7 @@ where
                 let partition = projector
                     .static_partition
                     .as_ref()
-                    .expect("complete live plans retain a static partition");
+                    .expect("comparable live plans retain a static partition");
                 let read_limit = remaining.checked_add(1).unwrap_or(usize::MAX);
                 let read = read_projection_changes_in_executor::<DB>(
                     connection,
@@ -845,7 +844,7 @@ fn wire_query_snapshot(
     let mut current_record_clocks = BTreeMap::<String, (u64, u64)>::new();
     for (probe, metadata) in prepared.records.drain(..).zip(metadata) {
         let Some(metadata) = metadata else {
-            prepared.complete = false;
+            prepared.records_complete = false;
             continue;
         };
         let scope_token = accumulator
@@ -860,7 +859,7 @@ fn wire_query_snapshot(
         );
         for path in probe.paths {
             if records.len() == MAX_PROTOCOL_EVIDENCE_ITEMS {
-                prepared.complete = false;
+                prepared.records_complete = false;
                 break;
             }
             records.push(DistributedRecordRevision {
@@ -875,20 +874,21 @@ fn wire_query_snapshot(
     }
 
     let mut indexes = Vec::new();
+    let mut indexes_comparable = prepared.indexes.comparable;
     let issue_index_resumes = live_resume_cursor_budget_allows(prepared.indexes.projectors.len());
     for (projector, partition_snapshot) in prepared.indexes.projectors.into_iter().zip(partitions) {
         if !query_index_budget_allows(indexes.len().saturating_add(1)) {
-            prepared.complete = false;
+            indexes_comparable = false;
             break;
         }
         let partition = projector
             .static_partition
             .as_ref()
-            .expect("complete index plans retain a static partition");
+            .expect("comparable index plans retain a static partition");
         let epoch = projector
             .change_epoch
             .as_ref()
-            .expect("complete index plans retain a change epoch");
+            .expect("comparable index plans retain a change epoch");
         let position = partition_snapshot
             .head
             .as_ref()
@@ -1053,7 +1053,8 @@ fn wire_query_snapshot(
 
     Ok(DistributedQuerySnapshot {
         scope_token: snapshot_scope,
-        complete: prepared.complete,
+        records_complete: prepared.records_complete,
+        indexes_comparable,
         records,
         indexes,
         observations,

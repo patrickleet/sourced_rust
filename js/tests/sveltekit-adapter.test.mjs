@@ -32,6 +32,14 @@ async function flushMicrotasks() {
 	}
 }
 
+function jsonResponse(body, status = 200) {
+	return {
+		status,
+		statusText: status === 200 ? 'OK' : 'Error',
+		text: async () => JSON.stringify(body)
+	};
+}
+
 test('generated wrappers resolve the nearest tree-local client and never capture module state', () => {
 	const wrapper = defineDistributedSvelteKitOperation(TodosArtifact);
 	const calls = [];
@@ -318,6 +326,66 @@ test('pre-subscribe refetch uses one temporary HTTP watch and never opens live',
 	assert.equal(transport.fetches.length, 1, 'hydrated cache avoids a duplicate first fetch');
 	unsubscribe();
 	store.destroy();
+});
+
+test('Svelte uses replica-owned revalidation with an undecorated GraphQL transport', async () => {
+	const requests = [];
+	let position = 0;
+	let commandTransport;
+	const client = createDistributedSvelteKit({
+		session: { getAuth: () => ({ accessToken: 'token' }) },
+		fetch: async (_url, init) => {
+			requests.push(JSON.parse(init.body));
+			position += 1;
+			return jsonResponse(
+				todoFrame(
+					TodosArtifact,
+					[{ id: 'todo-1', title: `server-${position}`, status: 'open' }],
+					{ position: String(position) }
+				)
+			);
+		},
+		createCommands(_replica, transport) {
+			commandTransport = transport;
+			return {
+				commands: Object.freeze({}),
+				dispose() {}
+			};
+		}
+	});
+	const store = client.operation(TodosArtifact).use({}, { live: false });
+	const unsubscribe = store.subscribe(() => undefined);
+	await store.refetch();
+	assert.equal(requests.length, 1);
+	assert.equal(store.get().status, 'ready');
+	assert.equal(commandTransport, client.transport);
+	assert.equal(commandTransport.revalidate, undefined);
+
+	const plan = (dependencies, models = []) => ({
+		dependencies,
+		models,
+		relationships: []
+	});
+	await client.replica.revalidate(plan(['unrelated']));
+	assert.equal(
+		requests.length,
+		1,
+		'an unrelated dependency inventory must not refresh this operation'
+	);
+
+	await Promise.all([
+		client.replica.revalidate(plan(['todos'])),
+		client.replica.revalidate(plan(['todos']))
+	]);
+	assert.equal(requests.length, 2, 'matching concurrent plans share one HTTP request');
+	assert.equal(store.get().data.todos[0].title, 'server-2');
+
+	await client.replica.revalidate(plan([], ['TodoView']));
+	assert.equal(requests.length, 3, 'model inventory also targets the operation');
+
+	unsubscribe();
+	store.destroy();
+	client.destroy();
 });
 
 test('Svelte composition shares one diagnostics sink with operations and generated commands', () => {

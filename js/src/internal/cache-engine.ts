@@ -229,6 +229,18 @@ export type DerivedIndexReconciler = (
 
 export interface CacheEngine {
 	read<T>(selector: CacheSelector<T>): T;
+	/**
+	 * Read only the authoritative base graph, excluding optimistic records and
+	 * their derived-index overlay.
+	 */
+	readConfirmed<T>(selector: CacheSelector<T>): T;
+	/**
+	 * Return the authoritative write fence for requested base indexes.
+	 * Deleted sentinels remain visible here even though CacheReader hides them.
+	 */
+	confirmedIndexFences(
+		keys: readonly IndexKey[]
+	): ReadonlyMap<IndexKey, string>;
 	watch<T>(
 		selector: CacheSelector<T>,
 		listener: CacheListener<T>,
@@ -379,6 +391,29 @@ class PurposeBuiltCacheEngine implements CacheEngine {
 	read<T>(selector: CacheSelector<T>): T {
 		if (typeof selector !== 'function') throw new TypeError('cache selector must be a function');
 		return selector(this.#reader());
+	}
+
+	readConfirmed<T>(selector: CacheSelector<T>): T {
+		if (typeof selector !== 'function') throw new TypeError('cache selector must be a function');
+		return selector(this.#reader(undefined, false));
+	}
+
+	confirmedIndexFences(
+		keys: readonly IndexKey[]
+	): ReadonlyMap<IndexKey, string> {
+		const fences = new Map<IndexKey, string>();
+		for (const key of new Set(keys)) {
+			assertName(key, 'index key');
+			const index = this.#indexes.get(key);
+			if (index === undefined) continue;
+			const fence =
+				index.staleRevision !== undefined &&
+				index.staleRevision > index.revision
+					? index.staleRevision
+					: index.revision;
+			fences.set(key, revisionString(fence));
+		}
+		return fences;
 	}
 
 	watch<T>(
@@ -706,12 +741,15 @@ class PurposeBuiltCacheEngine implements CacheEngine {
 		});
 	}
 
-	#reader(dependencies?: Set<string>): CacheReader {
+	#reader(
+		dependencies?: Set<string>,
+		includeOptimistic = true
+	): CacheReader {
 		// V1 executable-spike tradeoff: materializing the visible graph is
 		// O(records + indexes + overlay operations) per selector. The private seam
 		// keeps this replaceable with an incrementally indexed graph without
 		// changing generated artifacts or the public replica API.
-		const { records, indexes } = this.#materialize();
+		const { records, indexes } = this.#materialize(includeOptimistic);
 		return Object.freeze({
 			recordMeta(key: RecordKey): SparseRecordMeta | undefined {
 				dependencies?.add(recordSeenDependency(key));

@@ -1,7 +1,8 @@
 import assert from 'node:assert/strict';
 
 import {
-	createDistributedReplica
+	createDistributedReplica,
+	createReplicaCommandRuntime
 } from '../../dist/replica/index.js';
 
 export const REACT_FIXTURE_SCHEMA = `sha256:${'a'.repeat(64)}`;
@@ -13,6 +14,54 @@ export const REACT_FIXTURE_SURFACE = Object.freeze({
 export const TodoModel = Object.freeze({
 	id: 'TodoView',
 	identityFields: Object.freeze(['id'])
+});
+
+const RequiredRevalidationCommand = Object.freeze({
+	version: 1,
+	name: 'todo.revalidate',
+	mutationField: 'revalidateTodos',
+	document:
+		'mutation RevalidateTodos($commandId: ID!) { revalidateTodos(commandId: $commandId) }',
+	operationHash: `sha256:${'b'.repeat(64)}`,
+	protocol: Object.freeze({
+		version: 2,
+		schemaHash: REACT_FIXTURE_SCHEMA,
+		protocolHash: `sha256:${'c'.repeat(64)}`,
+		surface: REACT_FIXTURE_SURFACE,
+		operation: `sha256:${'b'.repeat(64)}`,
+		trustedPresets: Object.freeze([])
+	}),
+	input: Object.freeze({ kind: 'none' }),
+	output: Object.freeze({
+		kind: 'object',
+		definition: Object.freeze({
+			name: 'RevalidateTodosResult',
+			fields: Object.freeze([
+				Object.freeze({
+					name: 'accepted',
+					typeName: 'Boolean',
+					nullable: false,
+					list: false,
+					itemNullable: false,
+					codec: 'boolean'
+				})
+			])
+		})
+	}),
+	consistency: 'accepted',
+	effects: Object.freeze({
+		version: 1,
+		operations: Object.freeze([]),
+		fallback: 'revalidate'
+	}),
+	revalidation: Object.freeze({
+		version: 1,
+		required: true,
+		dependencies: Object.freeze(['todos']),
+		models: Object.freeze([TodoModel.id]),
+		relationships: Object.freeze([])
+	}),
+	trustedPresets: Object.freeze([])
 });
 
 const NoVariables = Object.freeze({
@@ -288,7 +337,8 @@ export function todoFrame(
 				trustedPresets: [],
 				snapshot: {
 					scopeToken: `snapshot:${root.field}`,
-					complete: true,
+					recordsComplete: true,
+					indexesComparable: true,
 					records,
 					indexes: [
 						{
@@ -328,6 +378,13 @@ function currentTitle(snapshot) {
 export async function assertReplicaAdapterConformance({ mount }) {
 	const transport = new ControlledReplicaTransport();
 	const replica = createDistributedReplica({ transport });
+	const commandRuntime = createReplicaCommandRuntime(
+		replica,
+		Object.freeze({
+			dispatch: () => Promise.reject(new Error('unused command transport'))
+		}),
+		{ revalidateTodos: RequiredRevalidationCommand }
+	);
 	const adapter = await mount({
 		replica,
 		artifact: TodosArtifact,
@@ -558,6 +615,7 @@ export async function assertReplicaAdapterConformance({ mount }) {
 		assert.equal(currentTitle(adapter.getSnapshot()), 'new-user');
 		assert.equal(replica.scope.cacheScope, 'cache:user-b');
 	} finally {
+		commandRuntime.dispose();
 		await adapter.dispose();
 	}
 }
