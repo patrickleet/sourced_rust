@@ -12,7 +12,6 @@
 
 	let title = $state('');
 	let actionError = $state<string | null>(null);
-	let busy = $state(false);
 
 	const who = $derived(sessionDisplayName(data.session));
 
@@ -29,65 +28,50 @@
 	async function onCreate(e: Event) {
 		e.preventDefault();
 		const text = title.trim();
-		if (!text || busy) return;
+		if (!text) return;
 
 		actionError = null;
-		busy = true;
 		title = '';
 		try {
 			await commands.todo.create({ title: text });
 		} catch (error) {
 			actionError = error instanceof Error ? error.message : 'create failed';
-		} finally {
-			busy = false;
 		}
 	}
 
 	async function onComplete(todo_id: string) {
-		if (busy) return;
 		const target = rows.find((todo) => todo.todo_id === todo_id);
 		if (!target || target.status !== 'open') return;
 
 		actionError = null;
-		busy = true;
 		try {
 			await commands.todo.complete({ todo_id });
 		} catch (error) {
 			actionError = error instanceof Error ? error.message : 'complete failed';
-		} finally {
-			busy = false;
 		}
 	}
 
 	async function onReopen(todo_id: string) {
-		if (busy) return;
 		const target = rows.find((todo) => todo.todo_id === todo_id);
 		if (!target || target.status !== 'completed') return;
 
 		actionError = null;
-		busy = true;
 		try {
 			await commands.todo.reopen({ todo_id });
 		} catch (error) {
 			actionError = error instanceof Error ? error.message : 'reopen failed';
-		} finally {
-			busy = false;
 		}
 	}
 
 	async function onArchive(todo_id: string) {
-		if (busy) return;
 		const target = rows.find((todo) => todo.todo_id === todo_id);
 		if (!target || target.status === 'archived') return;
 
 		actionError = null;
-		busy = true;
 		try {
 			await commands.todo.archive({ todo_id });
 		} catch (error) {
 			actionError = error instanceof Error ? error.message : 'archive failed';
-		} finally {
-			busy = false;
 		}
 	}
 </script>
@@ -130,7 +114,7 @@
 			autocomplete="off"
 			bind:value={title}
 		/>
-		<button class="fn-btn fn-btn-primary" type="submit" disabled={!title.trim() || busy}>
+		<button class="fn-btn fn-btn-primary" type="submit" disabled={!title.trim()}>
 			<span>Add</span>
 			<svg width="16" height="16" viewBox="0 0 24 24" fill="none" aria-hidden="true">
 				<path
@@ -176,7 +160,6 @@
 									type="button"
 									title="Mark done"
 									aria-label="Mark done: {t.title}"
-									disabled={busy}
 									onclick={() => onComplete(t.todo_id)}
 								></button>
 								<span class="fn-item-title">{t.title}</span>
@@ -186,7 +169,6 @@
 									class="fn-btn fn-btn-ghost"
 									type="button"
 									title="Mark done"
-									disabled={busy}
 									onclick={() => onComplete(t.todo_id)}
 								>
 									Done
@@ -195,7 +177,6 @@
 									class="fn-btn fn-btn-quiet"
 									type="button"
 									title="Archive"
-									disabled={busy}
 									onclick={() => onArchive(t.todo_id)}
 								>
 									Archive
@@ -228,7 +209,6 @@
 									type="button"
 									title="Reopen"
 									aria-label="Reopen: {t.title}"
-									disabled={busy}
 									onclick={() => onReopen(t.todo_id)}
 								>
 									<svg width="12" height="12" viewBox="0 0 24 24" fill="none" aria-hidden="true">
@@ -248,7 +228,6 @@
 									class="fn-btn fn-btn-ghost"
 									type="button"
 									title="Reopen"
-									disabled={busy}
 									onclick={() => onReopen(t.todo_id)}
 								>
 									Reopen
@@ -256,7 +235,6 @@
 								<button
 									class="fn-btn fn-btn-quiet"
 									type="button"
-									disabled={busy}
 									onclick={() => onArchive(t.todo_id)}
 								>
 									Archive
