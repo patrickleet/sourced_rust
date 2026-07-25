@@ -852,30 +852,23 @@ fn collect_client_documents(patterns: &[String]) -> Result<Vec<ClientDocument>, 
         if pattern.trim().is_empty() {
             return Err("--documents glob must not be empty".into());
         }
+
+        // Exact existing files must not go through glob expansion. Materialized
+        // toolchain paths can contain SvelteKit params such as `[[gameId]]`,
+        // which are valid path characters but glob metacharacters.
+        let direct = PathBuf::from(pattern);
+        if direct.is_file() {
+            insert_client_document_path(&project_root, &mut matched, &direct)?;
+            continue;
+        }
+
         let mut pattern_matches = 0usize;
         let entries = glob::glob(pattern)
             .map_err(|error| format!("invalid --documents glob `{pattern}`: {error}"))?;
         for entry in entries {
             let path =
                 entry.map_err(|error| format!("expand --documents glob `{pattern}`: {error}"))?;
-            let canonical = fs::canonicalize(&path)
-                .map_err(|error| format!("resolve GraphQL document {}: {error}", path.display()))?;
-            if !canonical.is_file() {
-                return Err(format!(
-                    "--documents glob `{pattern}` matched non-file {}",
-                    path.display()
-                )
-                .into());
-            }
-            let relative = canonical.strip_prefix(&project_root).map_err(|_| {
-                format!(
-                    "GraphQL document {} resolves outside project root {}",
-                    path.display(),
-                    project_root.display()
-                )
-            })?;
-            let source_path = portable_relative_path(relative)?;
-            matched.entry(canonical).or_insert(source_path);
+            insert_client_document_path(&project_root, &mut matched, &path)?;
             pattern_matches += 1;
         }
         if pattern_matches == 0 {
@@ -892,6 +885,32 @@ fn collect_client_documents(patterns: &[String]) -> Result<Vec<ClientDocument>, 
             ))
         })
         .collect()
+}
+
+fn insert_client_document_path(
+    project_root: &Path,
+    matched: &mut BTreeMap<PathBuf, String>,
+    path: &Path,
+) -> Result<(), Box<dyn Error>> {
+    let canonical = fs::canonicalize(path)
+        .map_err(|error| format!("resolve GraphQL document {}: {error}", path.display()))?;
+    if !canonical.is_file() {
+        return Err(format!(
+            "GraphQL document {} is not a file",
+            path.display()
+        )
+        .into());
+    }
+    let relative = canonical.strip_prefix(project_root).map_err(|_| {
+        format!(
+            "GraphQL document {} resolves outside project root {}",
+            path.display(),
+            project_root.display()
+        )
+    })?;
+    let source_path = portable_relative_path(relative)?;
+    matched.entry(canonical).or_insert(source_path);
+    Ok(())
 }
 
 fn parse_client_route_registration(value: &str) -> Result<ClientRouteRegistration, Box<dyn Error>> {

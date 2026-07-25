@@ -80,6 +80,7 @@ function inspectPackageContract(packageJson) {
 		'.',
 		'./diagnostics',
 		'./package.json',
+		'./query',
 		'./react',
 		'./replica',
 		'./sveltekit',
