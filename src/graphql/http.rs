@@ -18,7 +18,7 @@ use crate::microsvc::{Service, Session, MAX_HTTP_BODY_BYTES, ROLE_KEY, USER_ID_K
 
 use super::engine::GraphqlEngine;
 use super::identity::{
-    resolve_identity, AuthError, IdentityMode, ResolvedIdentity, VerifiedPrincipal,
+    resolve_identity_with_validator, AuthError, IdentityMode, ResolvedIdentity, VerifiedPrincipal,
 };
 
 /// DevHeaders baked into GraphiQL for local exploration (not production security).
@@ -249,7 +249,13 @@ async fn graphql_handler(
     headers: axum::http::HeaderMap,
     req: GraphQLRequest,
 ) -> Response {
-    let identity = match resolve_identity(&headers, engine.identity_config()).await {
+    let identity = match resolve_identity_with_validator(
+        &headers,
+        engine.identity_config(),
+        engine.identity_validator(),
+    )
+    .await
+    {
         Ok(identity) => identity,
         Err(AuthError::Unauthorized) => return unauthorized_response(),
     };
@@ -266,7 +272,13 @@ async fn graphql_handler_with_service(
     headers: axum::http::HeaderMap,
     req: GraphQLRequest,
 ) -> Response {
-    let identity = match resolve_identity(&headers, state.engine.identity_config()).await {
+    let identity = match resolve_identity_with_validator(
+        &headers,
+        state.engine.identity_config(),
+        state.engine.identity_validator(),
+    )
+    .await
+    {
         Ok(identity) => identity,
         Err(AuthError::Unauthorized) => return unauthorized_response(),
     };
@@ -288,7 +300,13 @@ pub async fn microsvc_graphql_handler(
     let engine = service
         .graphql_engine()
         .expect("graphql route mounted without engine");
-    let identity = match resolve_identity(&headers, engine.identity_config()).await {
+    let identity = match resolve_identity_with_validator(
+        &headers,
+        engine.identity_config(),
+        engine.identity_validator(),
+    )
+    .await
+    {
         Ok(identity) => identity,
         Err(AuthError::Unauthorized) => return unauthorized_response(),
     };
@@ -342,7 +360,13 @@ pub async fn microsvc_graphql_ws(
     let upgrade_identity = if mode == IdentityMode::OidcBearer || mode == IdentityMode::Hybrid {
         ResolvedIdentity::unverified(Session::new())
     } else {
-        match resolve_identity(&upgrade_headers, engine.identity_config()).await {
+        match resolve_identity_with_validator(
+            &upgrade_headers,
+            engine.identity_config(),
+            engine.identity_validator(),
+        )
+        .await
+        {
             Ok(identity) => identity,
             Err(AuthError::Unauthorized) => return unauthorized_response(),
         }
@@ -406,12 +430,15 @@ async fn resolve_ws_identity(
                     headers.insert(axum::http::header::AUTHORIZATION, val);
                 }
             }
-            resolve_identity(&headers, engine.identity_config())
-                .await
-                .map_err(|_| {
-                    "unauthorized: provide Authorization Bearer access_token in connection_init"
-                        .into()
-                })
+            resolve_identity_with_validator(
+                &headers,
+                engine.identity_config(),
+                engine.identity_validator(),
+            )
+            .await
+            .map_err(|_| {
+                "unauthorized: provide Authorization Bearer access_token in connection_init".into()
+            })
         }
         IdentityMode::DevHeaders | IdentityMode::TrustedProxy => Ok(ResolvedIdentity::unverified(
             session_from_connection_init(base, payload, mode),

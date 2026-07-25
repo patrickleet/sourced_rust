@@ -4,7 +4,8 @@
 
 #![cfg(all(feature = "graphql", feature = "sqlite"))]
 
-use std::sync::Arc;
+use std::sync::atomic::{AtomicUsize, Ordering};
+use std::sync::{Arc, RwLock};
 use std::time::{SystemTime, UNIX_EPOCH};
 
 use axum::http::{HeaderMap, HeaderValue};
@@ -38,12 +39,16 @@ fn b64url(data: &[u8]) -> String {
 }
 
 fn mint_keys() -> TestKeys {
+    mint_keys_with_kid("test-kid-1")
+}
+
+fn mint_keys_with_kid(kid: &str) -> TestKeys {
     let mut rng = rand::thread_rng();
     let private = RsaPrivateKey::new(&mut rng, 2048).expect("rsa key");
     let public = RsaPublicKey::from(&private);
     let pem = private.to_pkcs1_pem(rsa::pkcs8::LineEnding::LF).unwrap();
     let encoding = EncodingKey::from_rsa_pem(pem.as_bytes()).unwrap();
-    let kid = "test-kid-1".to_string();
+    let kid = kid.to_string();
     let n = b64url(&public.n().to_bytes_be());
     let e = b64url(&public.e().to_bytes_be());
     let jwks_json = json!({
@@ -465,6 +470,129 @@ async fn engine_with_identity(identity: IdentityConfig) -> Arc<GraphqlEngine> {
         .build()
         .unwrap();
     Arc::new(engine)
+}
+
+#[derive(Clone)]
+struct RotatingJwks {
+    body: Arc<RwLock<String>>,
+    fetches: Arc<AtomicUsize>,
+}
+
+async fn serve_rotating_jwks(
+    axum::extract::State(state): axum::extract::State<RotatingJwks>,
+) -> String {
+    state.fetches.fetch_add(1, Ordering::SeqCst);
+    state.body.read().expect("read JWKS response").clone()
+}
+
+async fn authenticated_graphql_status(app: axum::Router, token: &str) -> axum::http::StatusCode {
+    app.oneshot(
+        axum::http::Request::builder()
+            .method("POST")
+            .uri("/graphql")
+            .header("content-type", "application/json")
+            .header("authorization", format!("Bearer {token}"))
+            .body(axum::body::Body::from(r#"{"query":"{ __typename }"}"#))
+            .unwrap(),
+    )
+    .await
+    .unwrap()
+    .status()
+}
+
+#[tokio::test]
+async fn engine_reuses_expires_and_singleflights_rotated_jwks() {
+    let first_keys = mint_keys_with_kid("rotation-kid-1");
+    let rotated_keys = mint_keys_with_kid("rotation-kid-2");
+    let jwks = RotatingJwks {
+        body: Arc::new(RwLock::new(first_keys.jwks_json.clone())),
+        fetches: Arc::new(AtomicUsize::new(0)),
+    };
+    let listener = tokio::net::TcpListener::bind("127.0.0.1:0")
+        .await
+        .expect("bind JWKS server");
+    let address = listener.local_addr().expect("JWKS server address");
+    let jwks_server = axum::Router::new()
+        .route("/jwks", axum::routing::get(serve_rotating_jwks))
+        .with_state(jwks.clone());
+    let server = tokio::spawn(async move {
+        axum::serve(listener, jwks_server)
+            .await
+            .expect("serve JWKS");
+    });
+
+    let claims = |subject: &str| {
+        json!({
+            "iss": "http://localhost:8080",
+            "aud": "graphql-api",
+            "sub": subject,
+            "exp": now() + 3600,
+            "iat": now(),
+            "groups": ["customer"]
+        })
+    };
+    let first_token = sign_claims(&first_keys, claims("first-key-user"));
+    let rotated_token = sign_claims(&rotated_keys, claims("rotated-key-user"));
+    let mut oidc =
+        OidcConfig::new("http://localhost:8080", "graphql-api").engine_roles(&["customer"]);
+    oidc.jwks_uri = Some(format!("http://{address}/jwks"));
+    let engine = engine_with_identity(IdentityConfig::oidc_bearer(oidc)).await;
+    let app = graphql_router(engine);
+
+    assert_eq!(
+        authenticated_graphql_status(app.clone(), &first_token).await,
+        axum::http::StatusCode::OK
+    );
+    assert_eq!(
+        authenticated_graphql_status(app.clone(), &first_token).await,
+        axum::http::StatusCode::OK
+    );
+    assert_eq!(
+        jwks.fetches.load(Ordering::SeqCst),
+        1,
+        "repeated engine requests must reuse the JWKS cache"
+    );
+
+    *jwks.body.write().expect("rotate JWKS response") = rotated_keys.jwks_json.clone();
+    let (left, right) = tokio::join!(
+        authenticated_graphql_status(app.clone(), &rotated_token),
+        authenticated_graphql_status(app.clone(), &rotated_token),
+    );
+    assert_eq!(left, axum::http::StatusCode::OK);
+    assert_eq!(right, axum::http::StatusCode::OK);
+    assert_eq!(
+        jwks.fetches.load(Ordering::SeqCst),
+        2,
+        "concurrent unknown-kid requests must trigger one refresh"
+    );
+    assert_eq!(
+        authenticated_graphql_status(app, &rotated_token).await,
+        axum::http::StatusCode::OK
+    );
+    assert_eq!(jwks.fetches.load(Ordering::SeqCst), 2);
+
+    jwks.fetches.store(0, Ordering::SeqCst);
+    let mut expiring_oidc =
+        OidcConfig::new("http://localhost:8080", "graphql-api").engine_roles(&["customer"]);
+    expiring_oidc.jwks_uri = Some(format!("http://{address}/jwks"));
+    expiring_oidc.jwks_cache_ttl = std::time::Duration::ZERO;
+    let expiring_engine = engine_with_identity(IdentityConfig::oidc_bearer(expiring_oidc)).await;
+    let expiring_app = graphql_router(expiring_engine);
+    assert_eq!(
+        authenticated_graphql_status(expiring_app.clone(), &rotated_token).await,
+        axum::http::StatusCode::OK
+    );
+    assert_eq!(
+        authenticated_graphql_status(expiring_app, &rotated_token).await,
+        axum::http::StatusCode::OK
+    );
+    assert_eq!(
+        jwks.fetches.load(Ordering::SeqCst),
+        2,
+        "expired JWKS must refresh before the next authenticated request"
+    );
+
+    server.abort();
 }
 
 #[tokio::test]

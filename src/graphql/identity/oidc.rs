@@ -2,15 +2,19 @@
 
 use std::collections::HashMap;
 use std::sync::RwLock;
-use std::time::{Duration, SystemTime, UNIX_EPOCH};
+use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 
 use jsonwebtoken::{decode, decode_header, Algorithm, DecodingKey, Validation};
 use serde::Deserialize;
 use serde_json::Value;
 use sha2::{Digest, Sha256};
+use tokio::sync::Mutex as AsyncMutex;
 
 use super::claims::{map_claims_to_session_with_provenance, ClaimMapConfig};
 use crate::microsvc::Session;
+
+const DEFAULT_JWKS_CACHE_TTL: Duration = Duration::from_secs(300);
+const OIDC_HTTP_TIMEOUT: Duration = Duration::from_secs(5);
 
 /// OIDC validation configuration (behavior normative; field names free).
 #[derive(Debug, Clone)]
@@ -21,6 +25,8 @@ pub struct OidcConfig {
     /// whose client_credentials tokens carry distinct `azp` values).
     pub extra_audiences: Vec<String>,
     pub jwks_uri: Option<String>,
+    /// How long live JWKS remain fresh before one request refreshes the cache.
+    pub jwks_cache_ttl: Duration,
     pub clock_skew: Duration,
     pub alg_allowlist: Vec<String>,
     /// When true (default), missing Bearer → Unauthorized.
@@ -43,6 +49,7 @@ impl OidcConfig {
             audience: audience.into(),
             extra_audiences: Vec::new(),
             jwks_uri: None,
+            jwks_cache_ttl: DEFAULT_JWKS_CACHE_TTL,
             clock_skew: Duration::from_secs(60),
             alg_allowlist: vec!["RS256".into(), "ES256".into()],
             require_auth: true,
@@ -246,20 +253,42 @@ struct JwkKey {
     use_: Option<String>,
 }
 
-/// Validator with optional static JWKS and one-shot kid refresh hook.
+struct JwksCache {
+    keys: HashMap<String, DecodingKey>,
+    refreshed_at: Option<Instant>,
+    generation: u64,
+}
+
+impl JwksCache {
+    fn is_fresh(&self, ttl: Duration) -> bool {
+        !self.keys.is_empty()
+            && self
+                .refreshed_at
+                .is_some_and(|refreshed_at| refreshed_at.elapsed() < ttl)
+    }
+}
+
+/// Validator with an expiring JWKS cache and single-flight live refresh.
 pub struct OidcValidator {
     config: OidcConfig,
-    /// kid → DecodingKey material cached from JWKS.
-    cache: RwLock<HashMap<String, DecodingKey>>,
-    raw_jwks: RwLock<Option<String>>,
+    cache: RwLock<JwksCache>,
+    refresh: AsyncMutex<()>,
+    discovered_jwks_uri: RwLock<Option<String>>,
+    http: reqwest::Client,
 }
 
 impl OidcValidator {
     pub fn new(config: OidcConfig) -> Self {
         let v = Self {
             config,
-            cache: RwLock::new(HashMap::new()),
-            raw_jwks: RwLock::new(None),
+            cache: RwLock::new(JwksCache {
+                keys: HashMap::new(),
+                refreshed_at: None,
+                generation: 0,
+            }),
+            refresh: AsyncMutex::new(()),
+            discovered_jwks_uri: RwLock::new(None),
+            http: reqwest::Client::new(),
         };
         if let Some(jwks) = &v.config.static_jwks {
             let _ = v.load_jwks_json(jwks);
@@ -272,31 +301,11 @@ impl OidcValidator {
     }
 
     pub fn load_jwks_json(&self, jwks: &str) -> Result<(), ValidationError> {
-        let doc: JwksDoc = serde_json::from_str(jwks).map_err(|_| ValidationError::Jwks)?;
+        let keys = parse_jwks_keys(jwks)?;
         let mut cache = self.cache.write().map_err(|_| ValidationError::Jwks)?;
-        cache.clear();
-        for key in doc.keys {
-            let decoding_key = match key.kty.as_str() {
-                "RSA" if jwk_alg_matches(key.alg.as_deref(), "RS256") => {
-                    let (Some(n), Some(e)) = (key.n.as_deref(), key.e.as_deref()) else {
-                        continue;
-                    };
-                    DecodingKey::from_rsa_components(n, e).map_err(|_| ValidationError::Jwks)?
-                }
-                "EC" if key.crv.as_deref() == Some("P-256")
-                    && jwk_alg_matches(key.alg.as_deref(), "ES256") =>
-                {
-                    let (Some(x), Some(y)) = (key.x.as_deref(), key.y.as_deref()) else {
-                        continue;
-                    };
-                    DecodingKey::from_ec_components(x, y).map_err(|_| ValidationError::Jwks)?
-                }
-                _ => continue,
-            };
-            let kid = key.kid.unwrap_or_else(|| "_".into());
-            cache.insert(kid, decoding_key);
-        }
-        *self.raw_jwks.write().map_err(|_| ValidationError::Jwks)? = Some(jwks.to_string());
+        cache.keys = keys;
+        cache.refreshed_at = Some(Instant::now());
+        cache.generation = cache.generation.wrapping_add(1);
         Ok(())
     }
 
@@ -332,27 +341,18 @@ impl OidcValidator {
 
     /// Ensure JWKS is loaded (static or HTTP discovery / jwks_uri).
     pub async fn ensure_jwks(&self) -> Result<(), ValidationError> {
-        {
-            let cache = self.cache.read().map_err(|_| ValidationError::Jwks)?;
-            if !cache.is_empty() {
-                return Ok(());
-            }
+        let (generation, fresh) = self.cache_snapshot()?;
+        if fresh {
+            return Ok(());
         }
-        if let Some(jwks) = &self.config.static_jwks {
-            return self.load_jwks_json(jwks);
-        }
-        let jwks_uri = match &self.config.jwks_uri {
-            Some(u) => u.clone(),
-            None => discover_jwks_uri(&self.config.issuer).await?,
-        };
-        let body = http_get_text(&jwks_uri).await?;
-        self.load_jwks_json(&body)
+        self.refresh_jwks(generation, false).await
     }
 
     /// Async validate with JWKS fetch when needed.
     pub async fn validate_and_map_async(&self, token: &str) -> Result<Session, ValidationError> {
-        self.ensure_jwks().await?;
-        self.validate_and_map(token)
+        self.validate_and_map_principal_async(token)
+            .await
+            .map(|(session, _)| session)
     }
 
     pub(crate) async fn validate_and_map_principal_async(
@@ -360,7 +360,92 @@ impl OidcValidator {
         token: &str,
     ) -> Result<(Session, VerifiedPrincipal), ValidationError> {
         self.ensure_jwks().await?;
-        self.validate_and_map_principal(token)
+        let generation = self.cache_generation()?;
+        match self.validate_and_map_principal(token) {
+            Err(ValidationError::UnknownKid) => {
+                self.refresh_jwks(generation, true).await?;
+                self.validate_and_map_principal(token)
+            }
+            result => result,
+        }
+    }
+
+    fn cache_snapshot(&self) -> Result<(u64, bool), ValidationError> {
+        let cache = self.cache.read().map_err(|_| ValidationError::Jwks)?;
+        Ok((cache.generation, cache.is_fresh(self.config.jwks_cache_ttl)))
+    }
+
+    fn cache_generation(&self) -> Result<u64, ValidationError> {
+        self.cache
+            .read()
+            .map(|cache| cache.generation)
+            .map_err(|_| ValidationError::Jwks)
+    }
+
+    async fn refresh_jwks(
+        &self,
+        observed_generation: u64,
+        unknown_kid: bool,
+    ) -> Result<(), ValidationError> {
+        let _refresh = self.refresh.lock().await;
+        {
+            let cache = self.cache.read().map_err(|_| ValidationError::Jwks)?;
+            if cache.generation != observed_generation
+                || (!unknown_kid && cache.is_fresh(self.config.jwks_cache_ttl))
+            {
+                return Ok(());
+            }
+        }
+
+        if let Some(jwks) = &self.config.static_jwks {
+            return self.load_jwks_json(jwks);
+        }
+        let jwks_uri = self.live_jwks_uri().await?;
+        let body = self.http_get_text(&jwks_uri).await?;
+        self.load_jwks_json(&body)
+    }
+
+    async fn live_jwks_uri(&self) -> Result<String, ValidationError> {
+        if let Some(uri) = &self.config.jwks_uri {
+            return Ok(uri.clone());
+        }
+        if let Some(uri) = self
+            .discovered_jwks_uri
+            .read()
+            .map_err(|_| ValidationError::Jwks)?
+            .clone()
+        {
+            return Ok(uri);
+        }
+
+        let base = self.config.issuer.trim_end_matches('/');
+        let discovery_url = format!("{base}/.well-known/openid-configuration");
+        let body = self.http_get_text(&discovery_url).await?;
+        let document: Value = serde_json::from_str(&body).map_err(|_| ValidationError::Jwks)?;
+        let uri = document
+            .get("jwks_uri")
+            .and_then(Value::as_str)
+            .map(str::to_string)
+            .ok_or(ValidationError::Jwks)?;
+        *self
+            .discovered_jwks_uri
+            .write()
+            .map_err(|_| ValidationError::Jwks)? = Some(uri.clone());
+        Ok(uri)
+    }
+
+    async fn http_get_text(&self, url: &str) -> Result<String, ValidationError> {
+        let response = self
+            .http
+            .get(url)
+            .timeout(OIDC_HTTP_TIMEOUT)
+            .send()
+            .await
+            .map_err(|_| ValidationError::Jwks)?;
+        if !response.status().is_success() {
+            return Err(ValidationError::Jwks);
+        }
+        response.text().await.map_err(|_| ValidationError::Jwks)
     }
 
     /// Validate and return claims JSON (for tests).
@@ -449,31 +534,53 @@ impl OidcValidator {
     }
 
     fn key_for_kid(&self, kid: &str) -> Result<DecodingKey, ValidationError> {
-        {
-            let cache = self.cache.read().map_err(|_| ValidationError::Jwks)?;
-            if let Some(k) = cache.get(kid) {
-                return Ok(k.clone());
-            }
-            // try default key
-            if let Some(k) = cache.get("_") {
-                return Ok(k.clone());
-            }
-            if cache.len() == 1 {
-                if let Some(k) = cache.values().next() {
-                    return Ok(k.clone());
-                }
-            }
+        let cache = self.cache.read().map_err(|_| ValidationError::Jwks)?;
+        if let Some(key) = cache.keys.get(kid) {
+            return Ok(key.clone());
         }
-        // One refresh from static jwks if present
-        if let Some(jwks) = &self.config.static_jwks {
-            let _ = self.load_jwks_json(jwks);
-            let cache = self.cache.read().map_err(|_| ValidationError::Jwks)?;
-            if let Some(k) = cache.get(kid).or_else(|| cache.values().next()) {
-                return Ok(k.clone());
-            }
+        if kid == "_" {
+            return cache
+                .keys
+                .get("_")
+                .or_else(|| {
+                    (cache.keys.len() == 1)
+                        .then(|| cache.keys.values().next())
+                        .flatten()
+                })
+                .cloned()
+                .ok_or(ValidationError::UnknownKid);
         }
         Err(ValidationError::UnknownKid)
     }
+}
+
+fn parse_jwks_keys(jwks: &str) -> Result<HashMap<String, DecodingKey>, ValidationError> {
+    let document: JwksDoc = serde_json::from_str(jwks).map_err(|_| ValidationError::Jwks)?;
+    let mut keys = HashMap::new();
+    for key in document.keys {
+        let decoding_key = match key.kty.as_str() {
+            "RSA" if jwk_alg_matches(key.alg.as_deref(), "RS256") => {
+                let (Some(n), Some(e)) = (key.n.as_deref(), key.e.as_deref()) else {
+                    continue;
+                };
+                DecodingKey::from_rsa_components(n, e).map_err(|_| ValidationError::Jwks)?
+            }
+            "EC" if key.crv.as_deref() == Some("P-256")
+                && jwk_alg_matches(key.alg.as_deref(), "ES256") =>
+            {
+                let (Some(x), Some(y)) = (key.x.as_deref(), key.y.as_deref()) else {
+                    continue;
+                };
+                DecodingKey::from_ec_components(x, y).map_err(|_| ValidationError::Jwks)?
+            }
+            _ => continue,
+        };
+        keys.insert(key.kid.unwrap_or_else(|| "_".into()), decoding_key);
+    }
+    if keys.is_empty() {
+        return Err(ValidationError::Jwks);
+    }
+    Ok(keys)
 }
 
 fn normalize_issuer(iss: &str) -> String {
@@ -678,33 +785,6 @@ pub fn now_unix() -> u64 {
         .duration_since(UNIX_EPOCH)
         .map(|d| d.as_secs())
         .unwrap_or(0)
-}
-
-async fn discover_jwks_uri(issuer: &str) -> Result<String, ValidationError> {
-    let base = issuer.trim_end_matches('/');
-    let url = format!("{base}/.well-known/openid-configuration");
-    let body = http_get_text(&url).await?;
-    let v: Value = serde_json::from_str(&body).map_err(|_| ValidationError::Jwks)?;
-    v.get("jwks_uri")
-        .and_then(|u| u.as_str())
-        .map(|s| s.to_string())
-        .ok_or(ValidationError::Jwks)
-}
-
-async fn http_get_text(url: &str) -> Result<String, ValidationError> {
-    let client = reqwest::Client::builder()
-        .timeout(Duration::from_secs(5))
-        .build()
-        .map_err(|_| ValidationError::Jwks)?;
-    let resp = client
-        .get(url)
-        .send()
-        .await
-        .map_err(|_| ValidationError::Jwks)?;
-    if !resp.status().is_success() {
-        return Err(ValidationError::Jwks);
-    }
-    resp.text().await.map_err(|_| ValidationError::Jwks)
 }
 
 #[cfg(test)]

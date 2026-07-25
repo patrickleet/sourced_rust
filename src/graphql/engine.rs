@@ -28,7 +28,7 @@ use super::commands::TypedCommandInventory;
 use super::compile::{SqlDialect, SqlPlan};
 use super::execute;
 use super::filter::{validate_row_policy_operand_literal, FilterExpr, Operand};
-use super::identity::{IdentityConfig, IdentityMode, VerifiedPrincipal};
+use super::identity::{IdentityConfig, IdentityMode, OidcValidator, VerifiedPrincipal};
 use super::naming::{
     by_pk_field, is_valid_graphql_name, object_type_name, reserved_type_names, root_list_field,
 };
@@ -290,6 +290,7 @@ pub(crate) struct EngineInner {
     pub dialect: SqlDialect,
     /// Identity mode for HTTP session construction (see `identity` module).
     pub identity: IdentityConfig,
+    pub(crate) identity_validator: Option<OidcValidator>,
     protocol: Option<ProtocolRuntime>,
     pub(crate) query_protocol: QueryProtocolRuntime,
 }
@@ -507,6 +508,10 @@ impl GraphqlEngine {
     /// Identity configuration used by GraphQL HTTP handlers.
     pub fn identity_config(&self) -> &IdentityConfig {
         &self.inner.identity
+    }
+
+    pub(crate) fn identity_validator(&self) -> Option<&OidcValidator> {
+        self.inner.identity_validator.as_ref()
     }
 
     /// Whether unknown/ungranted client `where` and `order_by` keys fail closed.
@@ -2176,6 +2181,7 @@ impl GraphqlEngineBuilder {
                 applications: protocol_applications,
             }
         });
+        let identity_validator = self.identity.oidc.clone().map(OidcValidator::new);
         let inner = Arc::new(EngineInner {
             service_id: self.service_id,
             command_binding: self.command_binding,
@@ -2204,6 +2210,7 @@ impl GraphqlEngineBuilder {
             change_hub,
             dialect,
             identity: self.identity,
+            identity_validator,
             protocol,
             query_protocol,
         });

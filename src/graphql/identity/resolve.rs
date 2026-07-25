@@ -327,9 +327,8 @@ fn oidc_identity(token: &str, oidc: &OidcConfig) -> Result<ResolvedIdentity, Aut
 
 async fn oidc_identity_async(
     token: &str,
-    oidc: &OidcConfig,
+    validator: &OidcValidator,
 ) -> Result<ResolvedIdentity, AuthError> {
-    let validator = OidcValidator::new(oidc.clone());
     let (session, principal) = validator
         .validate_and_map_principal_async(token)
         .await
@@ -401,6 +400,20 @@ pub(crate) async fn resolve_identity(
     headers: &HeaderMap,
     config: &IdentityConfig,
 ) -> Result<ResolvedIdentity, AuthError> {
+    let validator = match config.mode {
+        IdentityMode::OidcBearer | IdentityMode::Hybrid => {
+            config.oidc.clone().map(OidcValidator::new)
+        }
+        IdentityMode::DevHeaders | IdentityMode::TrustedProxy => None,
+    };
+    resolve_identity_with_validator(headers, config, validator.as_ref()).await
+}
+
+pub(crate) async fn resolve_identity_with_validator(
+    headers: &HeaderMap,
+    config: &IdentityConfig,
+    validator: Option<&OidcValidator>,
+) -> Result<ResolvedIdentity, AuthError> {
     match config.mode {
         IdentityMode::OidcBearer => {
             let oidc = config.oidc.as_ref().ok_or(AuthError::Unauthorized)?;
@@ -412,15 +425,19 @@ pub(crate) async fn resolve_identity(
                         Ok(ResolvedIdentity::unverified(Session::new()))
                     }
                 }
-                Some(token) => oidc_identity_async(&token, oidc).await,
+                Some(token) => {
+                    let validator = validator.ok_or(AuthError::Unauthorized)?;
+                    oidc_identity_async(&token, validator).await
+                }
             }
         }
         IdentityMode::Hybrid => match extract_bearer(headers)? {
             None => hybrid_proxy_session(headers, &config.trusted_proxy)
                 .map(ResolvedIdentity::unverified),
             Some(token) => {
-                let oidc = config.oidc.as_ref().ok_or(AuthError::Unauthorized)?;
-                oidc_identity_async(&token, oidc).await
+                let _ = config.oidc.as_ref().ok_or(AuthError::Unauthorized)?;
+                let validator = validator.ok_or(AuthError::Unauthorized)?;
+                oidc_identity_async(&token, validator).await
             }
         },
         _ => resolve_identity_sync(headers, config),

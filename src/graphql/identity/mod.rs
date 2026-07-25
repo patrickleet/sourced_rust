@@ -16,7 +16,7 @@ pub use resolve::{
     IdentityMode, TrustedProxyConfig, DEFAULT_IDENTITY_STRIP_HEADERS, UNSET_OIDC_AUDIENCE,
     UNSET_OIDC_ISSUER,
 };
-pub(crate) use resolve::{resolve_identity, ResolvedIdentity};
+pub(crate) use resolve::{resolve_identity_with_validator, ResolvedIdentity};
 
 use crate::microsvc::Session;
 use axum::http::HeaderMap;
