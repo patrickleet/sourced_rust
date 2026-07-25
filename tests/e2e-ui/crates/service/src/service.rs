@@ -8,7 +8,7 @@ use chat_domain::ChatMessage;
 use distributed::graphql::{
     build_surface, read, surface_for_application, typed_command, DistributedClientSurfaceExport,
     Fact, GraphqlEngine, GraphqlPoolSource, IdentityConfig, ModelPermissions, OidcConfig,
-    Projected, RoleGrant, SurfaceOptions, SurfaceProjector,
+    Projected, RoleGrant, SurfaceDirectProjection, SurfaceOptions, SurfaceProjector,
 };
 use distributed::microsvc::{
     ConfigurableOutboxPublisher, HasOutboxStore, HasRepo, Routes, Service,
@@ -58,10 +58,9 @@ fn chat_projector() -> SurfaceProjector {
         .change_epoch("e2e-ui-chat-v1")
 }
 
-fn blob_projector() -> SurfaceProjector {
-    SurfaceProjector::new("project_blob")
-        .facts(handlers::events::project_blob::EVENTS.iter().copied())
-        .models(["BlobGameView"])
+fn blob_projection() -> SurfaceDirectProjection {
+    SurfaceDirectProjection::new("project_blob")
+        .model::<BlobGameView>()
         .change_epoch("e2e-ui-blob-v1")
 }
 
@@ -102,7 +101,11 @@ fn pool_free_client_surface(application: &str, roles: &[&str]) -> DistributedCli
         .expect("e2e-ui client Surface should build")
         .with_service(&service)
         .expect("e2e-ui typed Service inventory should bind")
-        .with_projectors([todo_projector(), chat_projector(), blob_projector()])
+        .with_projection_owners([
+            todo_projector().into(),
+            chat_projector().into(),
+            blob_projection().into(),
+        ])
         .expect("e2e-ui projector topology should bind");
     let roles = roles
         .iter()
@@ -348,7 +351,6 @@ where
             handlers::events::project_auth_user::handle,
         );
 
-    let blob_projection = blob_projector();
     let blob = Routes::new()
         .with_repo(repo.queued_with(locks).aggregate::<BlobGame>())
         .with_read_model_store(read_models)
@@ -373,10 +375,7 @@ where
             .field_name("blob_games_start_level")
             .roles(app_roles),
         )
-        .handle(blob_start_level::handle)
-        .causal_projector::<blob_domain::BlobGameFact>(blob_projection)
-        .model::<BlobGameView>()
-        .handle(handlers::events::project_blob::handle);
+        .handle(blob_start_level::handle);
 
     // GraphQL-only public write surface (POST /todo.* must 404 — suite T0 / oidc_pg).
     // Zitadel Action ingress still needs HTTP: those commands are registered above and
@@ -452,7 +451,11 @@ fn build_graphql_engine_with_graphiql(
                 .grant("admin", read().all_columns()),
         )
         .service(service)
-        .client_projectors([todo_projector(), chat_projector(), blob_projector()])
+        .client_projection_owners([
+            todo_projector().into(),
+            chat_projector().into(),
+            blob_projection().into(),
+        ])
         .identity(identity)
         // GraphiQL is a local template convenience. Disable with GRAPHIQL=0
         // (never ship a public edge with GraphiQL + DevHeaders).
@@ -552,6 +555,37 @@ mod client_surface_tests {
         distributed_admin_client_surface()
             .manifest()
             .expect("elevated application client manifest");
+    }
+
+    #[test]
+    fn blob_projection_owner_has_no_async_fact_route() {
+        let manifest = distributed_client_surface().manifest().unwrap();
+        let owner = manifest
+            .projectors
+            .iter()
+            .find(|projector| projector.name == "project_blob")
+            .expect("Blob direct owner should be exported");
+        assert!(owner.facts.is_empty());
+        assert!(!owner.causal_confirmation);
+
+        let repository = InMemoryRepository::new();
+        let service = build_service(
+            repository.clone(),
+            ClientSurfaceLocks::default(),
+            repository,
+        );
+        let plan = service.subscription_plan();
+        for fact in [
+            "blob.started",
+            "blob.initialized",
+            "blob.level_started",
+            "blob.moved",
+        ] {
+            assert!(
+                !plan.events.iter().any(|event| event == fact),
+                "direct-only Blob ownership must not register an async route for {fact}"
+            );
+        }
     }
 
     #[tokio::test]

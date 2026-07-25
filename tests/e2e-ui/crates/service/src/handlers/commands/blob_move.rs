@@ -6,7 +6,7 @@ use distributed::microsvc::{CausalCommandContext, HandlerError};
 use e2e_readmodels::{map_blob_fact, BlobGameView};
 use serde::Deserialize;
 
-use crate::handlers::commands::blob_cmd::{load_game, map_domain, stage_blob_event};
+use crate::handlers::commands::blob_cmd::{load_game, map_domain, stage_blob};
 
 pub const COMMAND: &str = "blob.move";
 
@@ -31,6 +31,6 @@ pub async fn handle(
     let mut game = load_game(ctx, &input.game_id).await?;
     game.move_dir(&owner, dir).map_err(map_domain)?;
 
-    let fact = stage_blob_event(ctx, game, "blob.moved")?;
+    let fact = stage_blob(ctx, game)?;
     ctx.projected(map_blob_fact(&fact))
 }

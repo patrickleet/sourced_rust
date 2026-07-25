@@ -5,7 +5,7 @@ import type { ReplicaCommandStatusArtifact } from '@hops-ops/distributed/replica
 export const CLIENT_PROTOCOL = {
 	version: 2,
 	serviceId: "e2e-ui",
-	schemaHash: "sha256:29eac37de7571cf1d9c8152676491460f1423149a50ed7cc792141e740ddc4fa",
+	schemaHash: "sha256:a49ec7d69faf022136beb5789c6030a235c05b73021d082c04a41cf0c1a10e73",
 	protocolHash: "sha256:7631d15b16e327ff08d728e97ac5f90f5150d00774938e720bbbc6830b77e0cf",
 	surface: {"kind":"application","name":"fieldnote-admin","roles":["admin"]},
 	trustedPresets: [
@@ -32,7 +32,7 @@ export const COMMAND_STATUS: ReplicaCommandStatusArtifact = {
   "protocol": {
     "operation": "sha256:eb3ce6a8b306d935fc9f3d6f071804ce3ec415d209594c04015fa35b080282ef",
     "protocolHash": "sha256:7631d15b16e327ff08d728e97ac5f90f5150d00774938e720bbbc6830b77e0cf",
-    "schemaHash": "sha256:29eac37de7571cf1d9c8152676491460f1423149a50ed7cc792141e740ddc4fa",
+    "schemaHash": "sha256:a49ec7d69faf022136beb5789c6030a235c05b73021d082c04a41cf0c1a10e73",
     "surface": {
       "kind": "application",
       "name": "fieldnote-admin",

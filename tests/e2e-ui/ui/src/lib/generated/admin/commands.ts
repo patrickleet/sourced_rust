@@ -44,7 +44,7 @@ export const Command_blob_games_move: ReplicaCommandArtifact<Command_blob_games_
     ],
     "model": "BlobGameView",
     "topology": {
-      "digest": "sha256:74e634ff59dbd7484be81aca412ca95afe671e5b3b41ab2ba01d9c8d0967bc3f",
+      "digest": "sha256:259f4c8941653467b4ff9bbfcf7b4d1dcf490be96fc60499e7debf78a3beeef0",
       "name": "project_blob",
       "version": 1
     }
@@ -157,7 +157,7 @@ export const Command_blob_games_move: ReplicaCommandArtifact<Command_blob_games_
   "protocol": {
     "operation": "sha256:6e3c6c00474e126a3fce6b671cd8a06eed988546f161793d39a08cc784ae49c7",
     "protocolHash": "sha256:7631d15b16e327ff08d728e97ac5f90f5150d00774938e720bbbc6830b77e0cf",
-    "schemaHash": "sha256:29eac37de7571cf1d9c8152676491460f1423149a50ed7cc792141e740ddc4fa",
+    "schemaHash": "sha256:a49ec7d69faf022136beb5789c6030a235c05b73021d082c04a41cf0c1a10e73",
     "surface": {
       "kind": "application",
       "name": "fieldnote-admin",
@@ -219,7 +219,7 @@ export const Command_blob_games_start: ReplicaCommandArtifact<Command_blob_games
     ],
     "model": "BlobGameView",
     "topology": {
-      "digest": "sha256:74e634ff59dbd7484be81aca412ca95afe671e5b3b41ab2ba01d9c8d0967bc3f",
+      "digest": "sha256:259f4c8941653467b4ff9bbfcf7b4d1dcf490be96fc60499e7debf78a3beeef0",
       "name": "project_blob",
       "version": 1
     }
@@ -324,7 +324,7 @@ export const Command_blob_games_start: ReplicaCommandArtifact<Command_blob_games
   "protocol": {
     "operation": "sha256:4b7ab56a38aec41d21809801ecefc5d7039a09e53a350187152c72a305de1567",
     "protocolHash": "sha256:7631d15b16e327ff08d728e97ac5f90f5150d00774938e720bbbc6830b77e0cf",
-    "schemaHash": "sha256:29eac37de7571cf1d9c8152676491460f1423149a50ed7cc792141e740ddc4fa",
+    "schemaHash": "sha256:a49ec7d69faf022136beb5789c6030a235c05b73021d082c04a41cf0c1a10e73",
     "surface": {
       "kind": "application",
       "name": "fieldnote-admin",
@@ -386,7 +386,7 @@ export const Command_blob_games_start_level: ReplicaCommandArtifact<Command_blob
     ],
     "model": "BlobGameView",
     "topology": {
-      "digest": "sha256:74e634ff59dbd7484be81aca412ca95afe671e5b3b41ab2ba01d9c8d0967bc3f",
+      "digest": "sha256:259f4c8941653467b4ff9bbfcf7b4d1dcf490be96fc60499e7debf78a3beeef0",
       "name": "project_blob",
       "version": 1
     }
@@ -491,7 +491,7 @@ export const Command_blob_games_start_level: ReplicaCommandArtifact<Command_blob
   "protocol": {
     "operation": "sha256:37c108a568f62e7391a03728555d7013bb717f14d1957a5c3527151fd70093bf",
     "protocolHash": "sha256:7631d15b16e327ff08d728e97ac5f90f5150d00774938e720bbbc6830b77e0cf",
-    "schemaHash": "sha256:29eac37de7571cf1d9c8152676491460f1423149a50ed7cc792141e740ddc4fa",
+    "schemaHash": "sha256:a49ec7d69faf022136beb5789c6030a235c05b73021d082c04a41cf0c1a10e73",
     "surface": {
       "kind": "application",
       "name": "fieldnote-admin",
@@ -724,7 +724,7 @@ export const Command_chat_messages_post: ReplicaCommandArtifact<Command_chat_mes
   "protocol": {
     "operation": "sha256:838e5ccb79daebb523ea3c634bea27077bcea191feabb86e45923470a7b9373d",
     "protocolHash": "sha256:7631d15b16e327ff08d728e97ac5f90f5150d00774938e720bbbc6830b77e0cf",
-    "schemaHash": "sha256:29eac37de7571cf1d9c8152676491460f1423149a50ed7cc792141e740ddc4fa",
+    "schemaHash": "sha256:a49ec7d69faf022136beb5789c6030a235c05b73021d082c04a41cf0c1a10e73",
     "surface": {
       "kind": "application",
       "name": "fieldnote-admin",
@@ -882,7 +882,7 @@ export const Command_todos_archive: ReplicaCommandArtifact<Command_todos_archive
   "protocol": {
     "operation": "sha256:fb2d3a14933841a966836ced65263a9ba2413d5aed8c582d31165aaee6e632ab",
     "protocolHash": "sha256:7631d15b16e327ff08d728e97ac5f90f5150d00774938e720bbbc6830b77e0cf",
-    "schemaHash": "sha256:29eac37de7571cf1d9c8152676491460f1423149a50ed7cc792141e740ddc4fa",
+    "schemaHash": "sha256:a49ec7d69faf022136beb5789c6030a235c05b73021d082c04a41cf0c1a10e73",
     "surface": {
       "kind": "application",
       "name": "fieldnote-admin",
@@ -1034,7 +1034,7 @@ export const Command_todos_complete: ReplicaCommandArtifact<Command_todos_comple
   "protocol": {
     "operation": "sha256:9b8185c835d3308bda308593486767731acaf4b084a7962b4b17e3e2e319922c",
     "protocolHash": "sha256:7631d15b16e327ff08d728e97ac5f90f5150d00774938e720bbbc6830b77e0cf",
-    "schemaHash": "sha256:29eac37de7571cf1d9c8152676491460f1423149a50ed7cc792141e740ddc4fa",
+    "schemaHash": "sha256:a49ec7d69faf022136beb5789c6030a235c05b73021d082c04a41cf0c1a10e73",
     "surface": {
       "kind": "application",
       "name": "fieldnote-admin",
@@ -1240,7 +1240,7 @@ export const Command_todos_create: ReplicaCommandArtifact<Command_todos_create_I
   "protocol": {
     "operation": "sha256:187e72cd747aaa13ac0362942d73085a5166401f8cc3a188badeb3e7fa50cacb",
     "protocolHash": "sha256:7631d15b16e327ff08d728e97ac5f90f5150d00774938e720bbbc6830b77e0cf",
-    "schemaHash": "sha256:29eac37de7571cf1d9c8152676491460f1423149a50ed7cc792141e740ddc4fa",
+    "schemaHash": "sha256:a49ec7d69faf022136beb5789c6030a235c05b73021d082c04a41cf0c1a10e73",
     "surface": {
       "kind": "application",
       "name": "fieldnote-admin",
@@ -1416,7 +1416,7 @@ export const Command_todos_force_archive: ReplicaCommandArtifact<Command_todos_f
   "protocol": {
     "operation": "sha256:50d0d05ce63148fd7c4041478b57656e927f500f938798df61bf7ade6b53ccbf",
     "protocolHash": "sha256:7631d15b16e327ff08d728e97ac5f90f5150d00774938e720bbbc6830b77e0cf",
-    "schemaHash": "sha256:29eac37de7571cf1d9c8152676491460f1423149a50ed7cc792141e740ddc4fa",
+    "schemaHash": "sha256:a49ec7d69faf022136beb5789c6030a235c05b73021d082c04a41cf0c1a10e73",
     "surface": {
       "kind": "application",
       "name": "fieldnote-admin",
@@ -1588,7 +1588,7 @@ export const Command_todos_rename: ReplicaCommandArtifact<Command_todos_rename_I
   "protocol": {
     "operation": "sha256:a3e8a5ceae1a0f2c33863a4f2bf377a95b79da2157a619eb7823aa845ef681c3",
     "protocolHash": "sha256:7631d15b16e327ff08d728e97ac5f90f5150d00774938e720bbbc6830b77e0cf",
-    "schemaHash": "sha256:29eac37de7571cf1d9c8152676491460f1423149a50ed7cc792141e740ddc4fa",
+    "schemaHash": "sha256:a49ec7d69faf022136beb5789c6030a235c05b73021d082c04a41cf0c1a10e73",
     "surface": {
       "kind": "application",
       "name": "fieldnote-admin",
@@ -1740,7 +1740,7 @@ export const Command_todos_reopen: ReplicaCommandArtifact<Command_todos_reopen_I
   "protocol": {
     "operation": "sha256:04531ace98fd3ee5e652761abbcb6ebd745d5ff6ed0ad100030f935335c5a35e",
     "protocolHash": "sha256:7631d15b16e327ff08d728e97ac5f90f5150d00774938e720bbbc6830b77e0cf",
-    "schemaHash": "sha256:29eac37de7571cf1d9c8152676491460f1423149a50ed7cc792141e740ddc4fa",
+    "schemaHash": "sha256:a49ec7d69faf022136beb5789c6030a235c05b73021d082c04a41cf0c1a10e73",
     "surface": {
       "kind": "application",
       "name": "fieldnote-admin",
@@ -1822,12 +1822,7 @@ export const PROJECTOR_ARTIFACTS = [
   {
     "version": 1,
     "name": "project_blob",
-    "facts": [
-      "blob.initialized",
-      "blob.level_started",
-      "blob.moved",
-      "blob.started"
-    ],
+    "facts": [],
     "models": [
       "BlobGameView"
     ],

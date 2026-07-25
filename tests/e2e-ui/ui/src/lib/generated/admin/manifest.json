@@ -10,7 +10,7 @@
       "admin"
     ]
   },
-  "schema_fingerprint": "sha256:29eac37de7571cf1d9c8152676491460f1423149a50ed7cc792141e740ddc4fa",
+  "schema_fingerprint": "sha256:a49ec7d69faf022136beb5789c6030a235c05b73021d082c04a41cf0c1a10e73",
   "protocol_fingerprint": "sha256:7631d15b16e327ff08d728e97ac5f90f5150d00774938e720bbbc6830b77e0cf",
   "scalar_codecs": {
     "BigInt": "json_number_precision_limited",

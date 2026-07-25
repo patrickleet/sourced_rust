@@ -12,7 +12,7 @@ use std::collections::BTreeSet;
 use super::command_contract::CommandConsistency;
 use super::command_contract::TypedCommandContract;
 #[cfg(feature = "graphql")]
-use super::surface::SurfaceProjector;
+use super::surface::SurfaceProjectionOwner;
 use super::surface::{SurfaceCommand, SurfaceCommandShape, SurfaceTypeDef, SurfaceTypeField};
 use super::types::GraphqlTypeDef;
 #[cfg(feature = "graphql")]
@@ -101,7 +101,7 @@ impl TypedCommandInventory {
     #[cfg(feature = "graphql")]
     pub(crate) fn bind_direct_projection_targets(
         &mut self,
-        projectors: &[SurfaceProjector],
+        projectors: &[SurfaceProjectionOwner],
         model_schemas: &BTreeMap<String, crate::table::TableSchema>,
     ) -> Result<(), String> {
         let mut compiled_projectors = BTreeMap::new();

@@ -266,7 +266,7 @@ export const Operation_Todos: ReplicaOperationArtifact<Operation_Todos_Data, Ope
   ],
   "protocol": {
     "version": 2,
-    "schemaHash": "sha256:f1e1cd1eb4ca15250e60ba37871293992ad68668804cddd12aba9bc4518d08c0",
+    "schemaHash": "sha256:6cc9d1fc85cd92135d7505c0ee5f664ff87d5a802648bd3927264fc45217ce8d",
     "surface": {
       "kind": "application",
       "name": "fieldnote",
