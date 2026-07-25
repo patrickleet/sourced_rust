@@ -1249,7 +1249,7 @@ test('Projected<T> advances record clocks so older query responses stay complete
 	runtime.dispose();
 });
 
-test('Projected<T> accepts a causally newer row before the projected echo', async () => {
+test('Projected<T> rejects a conflicting snapshot body even with later evidence', async () => {
 	const replica = createDistributedReplica();
 	const scopeOperation = scopeQueryArtifact();
 	replica.writeResult(
@@ -1260,15 +1260,61 @@ test('Projected<T> accepts a causally newer row before the projected echo', asyn
 	);
 	const runtime = await directlyProjectTodo(replica);
 
+	/*
+	 * Reproduce the live-query race: SQL body predates the projected
+	 * command, but response evidence is stamped after it. The projected
+	 * row must win until an exact echo, tombstone, partial supersession,
+	 * or pathless supersession releases the fence.
+	 */
 	replica.writeResult(
 		scopeOperation,
 		{},
-		scopeTodoSnapshotEnvelope('4', 'server-newer'),
+		scopeTodoSnapshotEnvelope('4', 'server-stale-body', {
+			recordRevision: '999999999999999999'
+		}),
+		'network'
+	);
+
+	assert.equal(
+		replica.read(scopeOperation, {}).data.todos[0].title,
+		'projected-newer'
+	);
+	assert.equal(replica.inspectRecord(Todo, 'todo-1').revision, '3');
+	runtime.dispose();
+});
+
+test('Projected<T> accepts a pathless supersession before the projected echo', async () => {
+	const replica = createDistributedReplica();
+	const scopeOperation = scopeQueryArtifact();
+	replica.writeResult(
+		scopeOperation,
+		{},
+		scopeTodoSnapshotEnvelope('1', 'initial'),
+		'network'
+	);
+	const runtime = await directlyProjectTodo(replica);
+
+	const pathlessNewer = scopeSnapshotEnvelope('4');
+	pathlessNewer.data = { todos: [] };
+	pathlessNewer.extensions.distributed.snapshot.records = [
+		{
+			model: Todo.id,
+			scopeToken: 'record:todo-1',
+			incarnation: '1',
+			revision: '4',
+			tombstone: false
+		}
+	];
+	replica.writeResult(scopeOperation, {}, pathlessNewer, 'network');
+	replica.writeResult(
+		scopeOperation,
+		{},
+		scopeTodoSnapshotEnvelope('5', 'server-newer'),
 		'network'
 	);
 
 	assert.equal(replica.read(scopeOperation, {}).data.todos[0].title, 'server-newer');
-	assert.equal(replica.inspectRecord(Todo, 'todo-1').revision, '4');
+	assert.equal(replica.inspectRecord(Todo, 'todo-1').revision, '5');
 	runtime.dispose();
 });
 

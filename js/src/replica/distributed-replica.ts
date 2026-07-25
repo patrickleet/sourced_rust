@@ -1409,20 +1409,30 @@ class DistributedReplicaImpl implements DistributedReplicaApi {
 								evidence,
 								projectedFence
 							);
-				if (
-					projectedFence !== undefined &&
-					(
-						projectedClockComparison === 1 ||
+				/*
+				 * Snapshot bodies can race: SQL may be read before a command
+				 * while response evidence is stamped after it. Conflicting
+				 * field bodies therefore never clear or override a projected
+				 * fence, even when the evidence revision is numerically later.
+				 * An exact field echo, a newer partial selection, a newer
+				 * tombstone, or pathless supersession can release the fence.
+				 */
+				if (projectedFence !== undefined) {
+					const exactEcho =
+						projectedDisposition === 'complete' &&
 						(
-							projectedDisposition === 'complete' &&
-							projectedClockComparison === 0
-						)
-					)
-				) {
-					pendingProjectedRecordFenceClears.set(
-						recordKey,
-						projectedFence
-					);
+							projectedClockComparison === 0 ||
+							projectedClockComparison === 1
+						);
+					const newerPartial =
+						projectedDisposition === 'partial' &&
+						projectedClockComparison === 1;
+					if (exactEcho || newerPartial) {
+						pendingProjectedRecordFenceClears.set(
+							recordKey,
+							projectedFence
+						);
+					}
 				}
 				const resolution = this.#resolveRecordEvidence(
 					recordKey,
@@ -1431,8 +1441,7 @@ class DistributedReplicaImpl implements DistributedReplicaApi {
 					pendingRecordScopes,
 					pendingAnonymousRecordClocks,
 					consumedAnonymousRecordClocks,
-					projectedDisposition === 'conflict' &&
-						projectedClockComparison !== 1
+					projectedDisposition === 'conflict'
 				);
 				pendingPathRecords.set(encodedPath, recordKey);
 				return Object.freeze({ evidence, apply: resolution });
