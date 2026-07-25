@@ -28,6 +28,8 @@ import {
 } from 'node:path';
 import { isMainThread } from 'node:worker_threads';
 
+import { materializeClientDocuments } from '../query/materialize.js';
+
 const GENERATED_SVELTEKIT_MODULE = 'sveltekit.ts';
 const MAX_COMMAND_OUTPUT_BYTES = 16 * 1024 * 1024;
 const MODULE_NAME = /^\$distributed(?:\/[A-Za-z0-9][A-Za-z0-9._-]*)*$/;
@@ -85,8 +87,9 @@ export type DistributedSvelteKitClientCompiler = Readonly<{
 	/** Verify exactly one Rust-declared application surface. */
 	surface?: string;
 	/**
-	 * Client document globs passed as repeated `dctl client --documents`.
-	 * Accepts GraphQL (`.graphql`/`.gql`) and QuerySpec (`.query.json`) sources.
+	 * Client document globs passed as repeated `dctl client --documents` after
+	 * materialization. Accepts GraphQL (`.graphql`/`.gql`) and TypeScript
+	 * `defineQuery` modules (`.query.ts`).
 	 */
 	documents: readonly string[];
 	/** Explicit `OPERATION=/route` fallbacks. */
@@ -324,7 +327,7 @@ export function distributedSvelteKit(
 			const integration = requireResolved(resolved);
 			if (!isClientDocumentInput(context.file, integration)) return undefined;
 			try {
-				await compile(`GraphQL change ${context.file}`);
+				await compile(`client document change ${context.file}`);
 			} catch (error) {
 				context.server.ws.send({
 					type: 'error',
@@ -467,7 +470,7 @@ function resolveIntegration(
 			client.documents.length === 0
 		) {
 			throw new TypeError(
-				`Distributed client \`${client.module}\` requires at least one client document glob (GraphQL or QuerySpec)`
+				`Distributed client \`${client.module}\` requires at least one client document glob (GraphQL or .query.ts)`
 			);
 		}
 		const documents = client.documents.map((document: string, documentIndex: number) =>
@@ -602,8 +605,8 @@ function isClientDocumentInput(
 	const absolute = resolve(integration.cwd, file);
 	const isGraphql =
 		absolute.endsWith('.graphql') || absolute.endsWith('.gql');
-	const isQuerySpec = absolute.endsWith('.query.json');
-	if ((!isGraphql && !isQuerySpec) || !isWithin(integration.cwd, absolute)) {
+	const isQueryTs = /\.query\.tsx?$/.test(absolute);
+	if ((!isGraphql && !isQueryTs) || !isWithin(integration.cwd, absolute)) {
 		return false;
 	}
 	if (
@@ -614,6 +617,21 @@ function isClientDocumentInput(
 	return integration.clients.some((client) =>
 		client.watchRoots.some((root) => isWithin(root, absolute))
 	);
+}
+
+async function materializeClientDocumentArgs(
+	integration: ResolvedIntegration,
+	client: ResolvedClient,
+	transaction: string,
+	index: number
+): Promise<string[]> {
+	const outDir = join(transaction, `documents-${index}`);
+	const materialized = await materializeClientDocuments({
+		cwd: integration.cwd,
+		patterns: client.documents,
+		outDir
+	});
+	return [...materialized.documents];
 }
 
 async function compileTransaction(
@@ -643,6 +661,12 @@ async function compileTransaction(
 				children,
 				signal
 			);
+			const documents = await materializeClientDocumentArgs(
+				integration,
+				client,
+				transaction,
+				index
+			);
 			const output = join(transaction, `output-${index}`);
 			let hadOutput = false;
 			try {
@@ -668,10 +692,7 @@ async function compileTransaction(
 				manifest,
 				client.selector[0],
 				client.selector[1],
-				...client.documents.flatMap((document) => [
-					'--documents',
-					document
-				]),
+				...documents.flatMap((document) => ['--documents', document]),
 				...client.routes.flatMap((route) => ['--route', route]),
 				'--out',
 				output
@@ -713,6 +734,12 @@ async function checkTransaction(
 				children,
 				signal
 			);
+			const documents = await materializeClientDocumentArgs(
+				integration,
+				client,
+				transaction,
+				index
+			);
 			await runCommand(
 				integration,
 				[
@@ -722,10 +749,7 @@ async function checkTransaction(
 					manifest,
 					client.selector[0],
 					client.selector[1],
-					...client.documents.flatMap((document) => [
-						'--documents',
-						document
-					]),
+					...documents.flatMap((document) => ['--documents', document]),
 					...client.routes.flatMap((route) => ['--route', route]),
 					'--out',
 					client.out

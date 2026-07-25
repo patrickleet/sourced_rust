@@ -4175,7 +4175,7 @@ fn compile_route(
         return Err(source_error(
             "client.route.registration_required",
             format!(
-                "`@load` operation `{operation}` is outside `src/routes/**/+page.graphql` or `+page.query.json`; move it there or register `--route {operation}=/route-id`"
+                "`@load` operation `{operation}` is outside `src/routes/**/+page.graphql` or `+page.query.ts`; move it there or register `--route {operation}=/route-id`"
             ),
             document,
             position,
@@ -4207,9 +4207,11 @@ fn infer_route(path: &str) -> Option<String> {
 
 /// Conventional SSR document names colocated with SvelteKit routes.
 ///
-/// Supports both GraphQL documents and QuerySpec dual-authoring sources.
+/// `+page.graphql` is authored GraphQL. `+page.query.ts` is a TypeScript
+/// `defineQuery` module whose toolchain-materialized body is still GraphQL
+/// document text (the path is provenance only).
 fn page_document_directory(rest: &str) -> Option<&str> {
-    const SUFFIXES: &[&str] = &["+page.graphql", "+page.query.json"];
+    const SUFFIXES: &[&str] = &["+page.graphql", "+page.query.ts"];
     for suffix in SUFFIXES {
         if rest == *suffix {
             return Some("");
@@ -4865,7 +4867,7 @@ mod local_tests {
             Some("/todos")
         );
         assert_eq!(
-            infer_route("src/routes/todos/+page.query.json").as_deref(),
+            infer_route("src/routes/todos/+page.query.ts").as_deref(),
             Some("/todos")
         );
         assert_eq!(
@@ -4873,12 +4875,12 @@ mod local_tests {
             Some("/")
         );
         assert_eq!(
-            infer_route("/tmp/app/src/routes/+page.query.json").as_deref(),
+            infer_route("/tmp/app/src/routes/+page.query.ts").as_deref(),
             Some("/")
         );
         assert_eq!(infer_route("src/lib/todos.graphql"), None);
         assert_eq!(infer_route("src/routes/todos/query.graphql"), None);
-        assert_eq!(infer_route("src/routes/todos/todos.query.json"), None);
+        assert_eq!(infer_route("src/routes/todos/todos.query.ts"), None);
     }
 
     #[test]

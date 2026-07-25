@@ -1,18 +1,17 @@
 //! Pure, framework-neutral compiler for Distributed client artifacts.
 //!
 //! This module deliberately owns no filesystem or glob behavior. Callers load
-//! one role/application-selected manifest and the colocated client documents
-//! (GraphQL sources and/or QuerySpec JSON), then decide how to write or check
-//! the returned files.
+//! one role/application-selected manifest and colocated GraphQL document text,
+//! then decide how to write or check the returned files.
 //!
-//! GraphQL documents and QuerySpec files are dual authoring surfaces. QuerySpec
-//! lowers deterministically into GraphQL before the shared operation compiler
-//! runs, so artifact identity stays singular.
+//! Application authoring may be GraphQL sources or a TypeScript `defineQuery`
+//! builder. The TypeScript path materializes GraphQL document text before this
+//! compiler runs, so artifact identity stays singular and GraphQL remains the
+//! only query language on the wire.
 
 mod command_manifest;
 mod graphql;
 mod manifest;
-mod query_spec;
 mod render;
 
 #[cfg(test)]
@@ -26,7 +25,6 @@ use serde_json::Value as JsonValue;
 
 use graphql::{compile_document, CompiledOperation};
 use manifest::ClientManifest;
-use query_spec::materialize_client_document;
 use render::render_project;
 
 /// Complete input to one deterministic client compilation.
@@ -85,11 +83,11 @@ impl ClientSurfaceSelector {
     }
 }
 
-/// One already-loaded client source.
+/// One already-loaded GraphQL source.
 ///
-/// Supported forms:
-/// - GraphQL document text (`.graphql` / `.gql`)
-/// - QuerySpec JSON (`.query.json`), lowered to GraphQL before compile
+/// `source` is always GraphQL document text. `path` is provenance and may be a
+/// TypeScript builder path (for example `+page.query.ts`) when a toolchain
+/// materializes builder output before compilation.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct ClientDocument {
     pub path: String,
@@ -223,7 +221,7 @@ impl fmt::Display for ClientCompileError {
 
 impl std::error::Error for ClientCompileError {}
 
-/// Compile one selected manifest and its colocated client documents.
+/// Compile one selected manifest and its colocated GraphQL sources.
 pub fn compile_client(
     mut input: ClientCompileInput,
 ) -> Result<GeneratedClientProject, ClientCompileError> {
@@ -232,13 +230,12 @@ pub fn compile_client(
     if input.documents.is_empty() {
         return Err(ClientCompileError::manifest(
             "client.documents.empty",
-            "client compilation requires at least one GraphQL document or QuerySpec",
+            "client compilation requires at least one GraphQL document",
         ));
     }
 
     for document in &mut input.documents {
         document.path = normalize_source_path(&document.path)?;
-        materialize_client_document(document)?;
     }
     input.documents.sort_by(|left, right| {
         left.path
@@ -249,7 +246,7 @@ pub fn compile_client(
         if pair[0].path == pair[1].path {
             return Err(ClientCompileError::manifest(
                 "client.documents.duplicate_path",
-                format!("duplicate client document path `{}`", pair[0].path),
+                format!("duplicate GraphQL document path `{}`", pair[0].path),
             ));
         }
     }
@@ -282,7 +279,7 @@ pub fn compile_client(
             return Err(ClientCompileError::manifest(
                 "client.operation.duplicate_name",
                 format!(
-                    "duplicate client operation `{}` in `{}` and `{}`",
+                    "duplicate GraphQL operation `{}` in `{}` and `{}`",
                     operation.name, previous_path, operation.source_path
                 ),
             ));

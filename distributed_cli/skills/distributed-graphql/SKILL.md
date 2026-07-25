@@ -153,28 +153,33 @@ Surface IR: SDL is built via `build_surface` → `graphql_sdl_from_surface` (sha
 for dialect-honest comparison ops, role grants, typed commands, and generated
 client manifests).
 
-### Dual client authoring (GraphQL or QuerySpec)
+### Dual client authoring (GraphQL or TypeScript `defineQuery`)
 
-`dctl client --documents` accepts:
+Application reads may be authored as:
 
 - GraphQL documents (`.graphql` / `.gql`) — joins, GraphiQL, exploratory shapes
-- QuerySpec JSON (`.query.json`) — typed/model-shaped builders
+- TypeScript builders (`.query.ts`) via `defineQuery` from
+  `@hops-ops/distributed/query` — typed, model-shaped screens
 
-Both lower into the same frozen operation artifacts. Prefer GraphQL when joins
-or hand-tuned selection sets are clearer; prefer QuerySpec / `defineQuery` from
-`@hops-ops/distributed/query` when the screen is a closed model read.
+Both produce the same frozen operation artifacts. **GraphQL is the only query
+language** `dctl client` compiles and the only wire dialect. The SvelteKit Vite
+integration materializes `*.query.ts` → GraphQL document text before invoking
+dctl. Prefer GraphQL when the notation is clearer; prefer the TS builder when
+you want typed construction in app code. Do not introduce a JSON query format.
 
-```bash
-dctl client \
-  --manifest target/distributed-client.json \
-  --surface fieldnote \
-  --documents 'src/**/*.graphql' \
-  --documents 'src/**/*.query.json' \
-  --out src/lib/generated/distributed
+```ts
+// src/routes/todos/+page.query.ts
+import { defineQuery } from '@hops-ops/distributed/query';
+
+export default defineQuery('Todos')
+  .from('todos')
+  .orderBy({ status: 'asc' }, { todo_id: 'asc' })
+  .select({ todo_id: true, title: true, status: true })
+  .load();
 ```
 
-`src/routes/**/+page.query.json` uses the same `@load` route convention as
-`+page.graphql`. Enum tokens and variables in QuerySpec use `$enum` / `$var`.
+`src/routes/**/+page.query.ts` uses the same `@load` route convention as
+`+page.graphql` (path is provenance; body after materialization is GraphQL).
 
 ## SDL artifact (CI gate)
 

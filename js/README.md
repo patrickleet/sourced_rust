@@ -43,19 +43,18 @@ dctl client \
   --manifest target/distributed-client.json \
   --role user \
   --documents 'src/**/*.graphql' \
-  --documents 'src/**/*.query.json' \
   --out src/lib/generated/distributed
 ```
 
 Use `--surface <name>` for a named application surface. CI can append `--check`
 to validate that committed artifacts are current without rewriting them.
 
-### Dual authoring: GraphQL or QuerySpec
+### Dual authoring: GraphQL or TypeScript `defineQuery`
 
-Reads can be authored either as GraphQL documents or as portable QuerySpec
-JSON. Both lower into the same frozen operation artifacts. GraphQL remains the
-wire protocol and the natural notation for joins/exploration; QuerySpec is the
-typed model-shaped builder surface.
+Reads can be authored as **GraphQL documents** or as **TypeScript query
+builders**. Both produce the same frozen operation artifacts. GraphQL stays the
+wire language and the best notation for joins/GraphiQL; the builder is for
+typed, model-shaped screens.
 
 GraphQL (joins and GraphiQL-friendly shapes stay first-class):
 
@@ -69,52 +68,28 @@ query Todos @load @live {
 }
 ```
 
-QuerySpec via the TypeScript builder (commit the JSON, or author JSON by hand):
+TypeScript builder (materialized to GraphQL before `dctl client` runs):
 
 ```ts
+// src/routes/todos/+page.query.ts
 import { defineQuery } from '@hops-ops/distributed/query';
-import { writeFileSync } from 'node:fs';
 
-const Todos = defineQuery('Todos')
+export default defineQuery('Todos')
   .from('todos')
   .orderBy({ status: 'asc' }, { todo_id: 'asc' })
   .select({ todo_id: true, title: true, status: true })
   .load()
-  .live()
-  .build();
-
-// e.g. src/routes/todos/+page.query.json
-writeFileSync('src/routes/todos/+page.query.json', `${JSON.stringify(Todos, null, 2)}\n`);
+  .live();
 ```
 
-Equivalent QuerySpec JSON:
+The SvelteKit Vite integration evaluates `*.query.ts`, materializes
+`toGraphql()` document text, then invokes `dctl client` with that GraphQL. There
+is no JSON query dialect — JSON would just be a worse GraphQL. Prefer
+`+page.graphql` when the query is clearer as GraphQL; prefer `+page.query.ts`
+when you want typed field/filter construction in application code.
 
-```json
-{
-  "version": 1,
-  "name": "Todos",
-  "load": true,
-  "live": true,
-  "roots": [{
-    "field": "todos",
-    "args": {
-      "order_by": [
-        { "status": { "$enum": "asc" } },
-        { "todo_id": { "$enum": "asc" } }
-      ]
-    },
-    "select": {
-      "todo_id": true,
-      "title": true,
-      "status": true
-    }
-  }]
-}
-```
-
-`src/routes/**/+page.query.json` participates in the same `@load` route
-convention as `+page.graphql`. Enum tokens and variables use `$enum` / `$var`
-tags so lowering is unambiguous.
+`src/routes/**/+page.query.ts` participates in the same `@load` route
+convention as `+page.graphql`.
 
 Generation validates the document against the selected role/application,
 injects wire-only identity and revision fields, and emits:
@@ -470,8 +445,8 @@ duplicated as decision documents in this package.
 - `@hops-ops/distributed/sveltekit/vite` — Node-only one-shot/check/watch
   generation, virtual module aliases, and GraphQL HTTP/WebSocket proxy helpers.
 - `@hops-ops/distributed/react` — provider and query hook over the same replica.
-- `@hops-ops/distributed/query` — QuerySpec builder (`defineQuery`) and GraphQL
-  lowering helpers for dual client authoring.
+- `@hops-ops/distributed/query` — TypeScript `defineQuery` builder and
+  materialization helpers (TS → GraphQL document text for `dctl client`).
 
 All other subpaths are private and blocked by the package export map.
 

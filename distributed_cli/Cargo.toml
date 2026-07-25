@@ -21,7 +21,5 @@ base64 = "0.22.1"
 clap = { version = "4", features = ["derive"] }
 glob = "0.3"
 serde = { version = "1", features = ["derive"] }
-# preserve_order keeps QuerySpec object key order stable when lowering to GraphQL
-# so dual-authored operations hash identically to hand-written documents.
-serde_json = { version = "1", features = ["preserve_order"] }
+serde_json = "1"
 sha2 = "0.10"

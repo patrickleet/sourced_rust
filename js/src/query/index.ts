@@ -1,16 +1,26 @@
 /**
- * Typed QuerySpec authoring surface.
+ * TypeScript query builder for Distributed client operations.
  *
- * GraphQL documents and QuerySpec builders are dual frontends. Builders produce
- * portable QuerySpec JSON that `dctl client` lowers into the same GraphQL
- * operation text and frozen replica artifacts as hand-written `.graphql` files.
+ * Dual authoring surfaces:
+ * - GraphQL documents (`.graphql`) — joins, GraphiQL, exploratory shapes
+ * - This builder (`.query.ts`) — typed, model-shaped reads
  *
- * This module is intentionally build-time oriented: call `build()` / `toJSON()`
- * / `toGraphql()` to emit committed sources. Runtime still executes generated
- * operation artifacts only.
+ * Both produce the same frozen client artifacts. The builder materializes to
+ * **GraphQL document text** before `dctl client` runs. GraphQL remains the only
+ * query language on the wire; there is no JSON query dialect.
+ *
+ * @example
+ * ```ts
+ * // src/routes/todos/+page.query.ts
+ * import { defineQuery } from '@hops-ops/distributed/query';
+ *
+ * export default defineQuery('Todos')
+ *   .from('todos')
+ *   .orderBy({ status: 'asc' }, { todo_id: 'asc' })
+ *   .select({ todo_id: true, title: true, status: true })
+ *   .load();
+ * ```
  */
-
-export const QUERY_SPEC_VERSION = 1 as const;
 
 /** GraphQL enum token. Serializes as an unquoted GraphQL name. */
 export type QueryEnumValue = {
@@ -37,30 +47,7 @@ export type QuerySelection = {
 	readonly [field: string]: true | QuerySelection;
 };
 
-export type QuerySpecVariable = {
-	readonly name: string;
-	readonly type: string;
-};
-
-export type QuerySpecRoot = {
-	readonly field: string;
-	readonly alias?: string;
-	readonly args?: Readonly<Record<string, QueryValue>>;
-	readonly select: QuerySelection;
-};
-
-/**
- * Portable IR consumed by `dctl client` from `*.query.json` files.
- * Version is closed; unknown fields are rejected by the compiler.
- */
-export type QuerySpec = {
-	readonly version: typeof QUERY_SPEC_VERSION;
-	readonly name: string;
-	readonly load?: boolean;
-	readonly live?: boolean;
-	readonly variables?: readonly QuerySpecVariable[];
-	readonly roots: readonly QuerySpecRoot[];
-};
+export type OrderDirection = 'asc' | 'desc';
 
 /** Mark a GraphQL enum token (e.g. order direction `asc`). */
 export function gqlEnum(value: string): QueryEnumValue {
@@ -74,7 +61,7 @@ export function gqlVar(name: string): QueryVariableRef {
 	return Object.freeze({ $var: name });
 }
 
-/** True when value is a QuerySpec enum tag. */
+/** True when value is a GraphQL enum tag. */
 export function isQueryEnumValue(value: unknown): value is QueryEnumValue {
 	return (
 		typeof value === 'object' &&
@@ -84,7 +71,7 @@ export function isQueryEnumValue(value: unknown): value is QueryEnumValue {
 	);
 }
 
-/** True when value is a QuerySpec variable tag. */
+/** True when value is a GraphQL variable tag. */
 export function isQueryVariableRef(value: unknown): value is QueryVariableRef {
 	return (
 		typeof value === 'object' &&
@@ -94,20 +81,9 @@ export function isQueryVariableRef(value: unknown): value is QueryVariableRef {
 	);
 }
 
-export type OrderDirection = 'asc' | 'desc';
-
 /**
- * Start a named query builder.
- *
- * @example
- * ```ts
- * const Todos = defineQuery('Todos')
- *   .from('todos')
- *   .orderBy({ status: 'asc' }, { todo_id: 'asc' })
- *   .select({ todo_id: true, title: true, status: true })
- *   .load()
- *   .build();
- * ```
+ * Start a named query builder. Default-export the builder from a `*.query.ts`
+ * module; the SvelteKit Vite integration materializes `toGraphql()` for dctl.
  */
 export function defineQuery(name: string): QueryBuilder {
 	return new QueryBuilder(name);
@@ -117,7 +93,7 @@ export class QueryBuilder {
 	readonly #name: string;
 	#load = false;
 	#live = false;
-	#variables: QuerySpecVariable[] = [];
+	#variables: Array<{ name: string; type: string }> = [];
 	#field: string | undefined;
 	#alias: string | undefined;
 	#args: Record<string, QueryValue> = {};
@@ -146,7 +122,7 @@ export class QueryBuilder {
 		if (this.#variables.some((entry) => entry.name === name)) {
 			throw new TypeError(`QueryBuilder variable \`${name}\` is already declared`);
 		}
-		this.#variables.push(Object.freeze({ name, type }));
+		this.#variables.push({ name, type });
 		return this;
 	}
 
@@ -162,7 +138,9 @@ export class QueryBuilder {
 	 * Pass multiple objects for multi-key order.
 	 */
 	orderBy(
-		...entries: ReadonlyArray<Readonly<Record<string, OrderDirection | QueryEnumValue | QueryVariableRef>>>
+		...entries: ReadonlyArray<
+			Readonly<Record<string, OrderDirection | QueryEnumValue | QueryVariableRef>>
+		>
 	): this {
 		if (entries.length === 0) {
 			throw new TypeError('orderBy requires at least one order entry');
@@ -250,91 +228,46 @@ export class QueryBuilder {
 		return this;
 	}
 
-	/** Freeze a portable QuerySpec object. */
-	build(): QuerySpec {
-		if (this.#field === undefined) {
-			throw new TypeError('QueryBuilder requires from(field) before build()');
-		}
-		if (this.#select === undefined) {
-			throw new TypeError('QueryBuilder requires select(...) before build()');
-		}
-		const root: QuerySpecRoot = {
-			field: this.#field,
-			select: this.#select,
-			...(this.#alias !== undefined ? { alias: this.#alias } : {}),
-			...(Object.keys(this.#args).length > 0
-				? { args: Object.freeze({ ...this.#args }) }
-				: {})
-		};
-		return Object.freeze({
-			version: QUERY_SPEC_VERSION,
-			name: this.#name,
-			...(this.#load ? { load: true } : {}),
-			...(this.#live ? { live: true } : {}),
-			...(this.#variables.length > 0
-				? { variables: Object.freeze([...this.#variables]) }
-				: {}),
-			roots: Object.freeze([Object.freeze(root)])
-		});
-	}
-
-	/** Serialize QuerySpec as stable JSON for `*.query.json` files. */
-	toJSON(space: number | string = 2): string {
-		return `${JSON.stringify(this.build(), null, space)}\n`;
-	}
-
 	/**
-	 * Lower to GraphQL document text.
-	 *
-	 * Prefer committing `*.query.json` and letting `dctl client` lower, so the
-	 * Rust compiler remains the single source of GraphQL canonicalization.
-	 * This helper is for tests, previews, and tooling.
+	 * Materialize the exact GraphQL document text compiled by `dctl client`.
+	 * This is the builder's product — not a parallel query language.
 	 */
 	toGraphql(): string {
-		return lowerQuerySpecToGraphql(this.build());
+		if (this.#field === undefined) {
+			throw new TypeError('QueryBuilder requires from(field) before toGraphql()');
+		}
+		if (this.#select === undefined) {
+			throw new TypeError('QueryBuilder requires select(...) before toGraphql()');
+		}
+
+		let directives = '';
+		if (this.#load) directives += ' @load';
+		if (this.#live) directives += ' @live';
+
+		const variableDefinitions =
+			this.#variables.length === 0
+				? ''
+				: `(${this.#variables
+						.map((variable) => `$${variable.name}: ${variable.type}`)
+						.join(', ')})`;
+
+		const head =
+			this.#alias !== undefined && this.#alias !== this.#field
+				? `${this.#alias}: ${this.#field}`
+				: this.#field;
+		const args = renderArguments(this.#args);
+		const selection = renderSelection(this.#select, 2);
+
+		return `query ${this.#name}${variableDefinitions}${directives} {\n  ${head}${args} {\n${selection}  }\n}\n`;
 	}
 }
 
-/** Lower a QuerySpec to GraphQL text (mirrors the Rust client compiler). */
-export function lowerQuerySpecToGraphql(spec: QuerySpec): string {
-	if (spec.version !== QUERY_SPEC_VERSION) {
-		throw new TypeError(
-			`QuerySpec version ${String(spec.version)} is unsupported; expected ${QUERY_SPEC_VERSION}`
-		);
-	}
-	assertOperationName(spec.name);
-	if (!Array.isArray(spec.roots) || spec.roots.length !== 1) {
-		throw new TypeError('QuerySpec v1 requires exactly one root');
-	}
-
-	let directives = '';
-	if (spec.load) directives += ' @load';
-	if (spec.live) directives += ' @live';
-
-	const variables = spec.variables ?? [];
-	const variableDefinitions =
-		variables.length === 0
-			? ''
-			: `(${variables
-					.map((variable) => {
-						assertIdent(variable.name, 'variable name');
-						assertGraphqlType(variable.type);
-						return `$${variable.name}: ${variable.type}`;
-					})
-					.join(', ')})`;
-
-	const root = spec.roots[0]!;
-	assertIdent(root.field, 'root field');
-	const head =
-		root.alias !== undefined && root.alias !== root.field
-			? `${assertIdent(root.alias, 'root alias')}: ${root.field}`
-			: root.field;
-	const args = renderArguments(root.args ?? {});
-	// Root field is indented 2 spaces; its selection members are one level deeper.
-	const selection = renderSelection(root.select, 2);
-
-	return `query ${spec.name}${variableDefinitions}${directives} {\n  ${head}${args} {\n${selection}  }\n}\n`;
-}
+export {
+	evaluateQueryModule,
+	materializeClientDocuments,
+	type MaterializeClientDocumentsOptions,
+	type MaterializedClientDocuments
+} from './materialize.js';
 
 function renderArguments(args: Readonly<Record<string, QueryValue>>): string {
 	const keys = Object.keys(args);
@@ -367,7 +300,7 @@ function renderValue(value: QueryValue): string {
 	if (typeof value === 'boolean') return value ? 'true' : 'false';
 	if (typeof value === 'number') {
 		if (!Number.isFinite(value)) {
-			throw new TypeError('QuerySpec numbers must be finite');
+			throw new TypeError('query values must be finite numbers');
 		}
 		return String(value);
 	}
@@ -390,7 +323,7 @@ function renderValue(value: QueryValue): string {
 		const parts = keys.map((key) => {
 			if (key.startsWith('$')) {
 				throw new TypeError(
-					`unknown QuerySpec value tag \`${key}\`; supported tags are $enum and $var`
+					`unknown query value tag \`${key}\`; supported tags are $enum and $var`
 				);
 			}
 			assertIdent(key, 'input field');
@@ -398,7 +331,7 @@ function renderValue(value: QueryValue): string {
 		});
 		return `{${parts.join(', ')}}`;
 	}
-	throw new TypeError('unsupported QuerySpec value');
+	throw new TypeError('unsupported query value');
 }
 
 function escapeGraphqlString(value: string): string {
@@ -412,30 +345,31 @@ function escapeGraphqlString(value: string): string {
 
 function assertOperationName(name: string): string {
 	if (!/^[A-Za-z_][A-Za-z0-9_]*$/.test(name)) {
-		throw new TypeError(`QuerySpec name \`${name}\` is not a valid GraphQL name`);
+		throw new TypeError(`query name \`${name}\` is not a valid GraphQL name`);
 	}
 	return name;
 }
 
 function assertIdent(name: string, kind: string): string {
 	if (!/^[A-Za-z_][A-Za-z0-9_]*$/.test(name)) {
-		throw new TypeError(`QuerySpec ${kind} \`${name}\` is not a valid GraphQL name`);
+		throw new TypeError(`query ${kind} \`${name}\` is not a valid GraphQL name`);
 	}
 	return name;
 }
 
 function assertGraphqlType(type: string): void {
 	if (type.trim().length === 0) {
-		throw new TypeError('QuerySpec variable type must be non-empty');
+		throw new TypeError('variable type must be non-empty');
 	}
 	if (!/^[A-Za-z0-9_!\[\] ]+$/.test(type)) {
-		throw new TypeError(
-			`QuerySpec variable type \`${type}\` contains unsupported characters`
-		);
+		throw new TypeError(`variable type \`${type}\` contains unsupported characters`);
 	}
 }
 
-function assertPlainObject(value: unknown, label: string): asserts value is Record<string, unknown> {
+function assertPlainObject(
+	value: unknown,
+	label: string
+): asserts value is Record<string, unknown> {
 	if (value === null || typeof value !== 'object' || Array.isArray(value)) {
 		throw new TypeError(`${label} must be a plain object`);
 	}
@@ -452,7 +386,7 @@ function assertSelection(value: unknown, label: string): asserts value is QueryS
 		if (selection === true) continue;
 		if (selection === false) {
 			throw new TypeError(
-				`QuerySpec field \`${field}\` is false; omit excluded fields instead of setting false`
+				`field \`${field}\` is false; omit excluded fields instead of setting false`
 			);
 		}
 		assertSelection(selection, `select.${field}`);

@@ -255,7 +255,9 @@ pub struct ClientArgs {
     /// Verify that the manifest is selected for this named application surface.
     #[arg(long)]
     pub surface: Option<String>,
-    /// Client document glob (`.graphql`/`.gql` or `.query.json`). Repeat for multiple source roots.
+    /// GraphQL document glob (`.graphql` / `.gql`). TypeScript `defineQuery`
+    /// modules are materialized to GraphQL by the package toolchain before this
+    /// command runs. Repeat for multiple source roots.
     #[arg(long, required = true, value_name = "GLOB")]
     pub documents: Vec<String>,
     /// Explicit @load fallback in OPERATION=/route form. Repeat as needed.
