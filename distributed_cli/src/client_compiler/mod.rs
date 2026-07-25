@@ -86,7 +86,7 @@ impl ClientSurfaceSelector {
 /// One already-loaded GraphQL source.
 ///
 /// `source` is always GraphQL document text. `path` is provenance and may be a
-/// TypeScript builder path (for example `+page.query.ts`) when a toolchain
+/// TypeScript builder path (for example `+page.graphql.ts`) when a toolchain
 /// materializes builder output before compilation.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct ClientDocument {

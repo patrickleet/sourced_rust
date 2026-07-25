@@ -3,7 +3,8 @@
  *
  * Dual authoring surfaces:
  * - GraphQL documents (`.graphql`) — joins, GraphiQL, exploratory shapes
- * - This builder (`.query.ts`) — typed, model-shaped reads
+ * - This builder (`.graphql.ts`, SvelteKit-style `+page.graphql.ts`) — typed,
+ *   model-shaped reads
  *
  * Both produce the same frozen client artifacts. The builder materializes to
  * **GraphQL document text** before `dctl client` runs. GraphQL remains the only
@@ -11,7 +12,7 @@
  *
  * @example
  * ```ts
- * // src/routes/todos/+page.query.ts
+ * // src/routes/todos/+page.graphql.ts
  * import { defineQuery } from '@hops-ops/distributed/query';
  *
  * export default defineQuery('Todos')
@@ -82,8 +83,9 @@ export function isQueryVariableRef(value: unknown): value is QueryVariableRef {
 }
 
 /**
- * Start a named query builder. Default-export the builder from a `*.query.ts`
- * module; the SvelteKit Vite integration materializes `toGraphql()` for dctl.
+ * Start a named query builder. Default-export the builder from a `*.graphql.ts`
+ * module (e.g. `+page.graphql.ts`); the SvelteKit Vite integration materializes
+ * `toGraphql()` for dctl.
  */
 export function defineQuery(name: string): QueryBuilder {
 	return new QueryBuilder(name);

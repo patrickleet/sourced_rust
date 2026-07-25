@@ -73,14 +73,14 @@ test('rejects incomplete builders and invalid names', () => {
 	assert.throws(() => gqlEnum('not valid'), /valid GraphQL name/);
 });
 
-test('materializeClientDocuments evaluates .query.ts to GraphQL files', async () => {
+test('materializeClientDocuments evaluates +page.graphql.ts to GraphQL files', async () => {
 	const root = await mkdtemp(join(tmpdir(), 'distributed-query-mat-'));
 	const outDir = join(root, 'out');
 	const routes = join(root, 'src', 'routes', 'todos');
 	await mkdir(routes, { recursive: true });
 
 	const queryPackage = join(process.cwd(), 'dist/query/index.js');
-	const queryPath = join(routes, '+page.query.ts');
+	const queryPath = join(routes, '+page.graphql.ts');
 	await writeFile(
 		queryPath,
 		`
@@ -105,7 +105,7 @@ export default defineQuery('Todos')
 		const materialized = await materializeClientDocuments({
 			cwd: root,
 			patterns: [
-				'src/routes/todos/+page.query.ts',
+				'src/routes/todos/+page.graphql.ts',
 				'src/routes/todos/notes.graphql'
 			],
 			outDir
@@ -114,7 +114,7 @@ export default defineQuery('Todos')
 		assert.equal(materialized.documents.length, 2);
 		const { readFile } = await import('node:fs/promises');
 		const fromTs = await readFile(
-			join(outDir, 'src/routes/todos/+page.query.ts'),
+			join(outDir, 'src/routes/todos/+page.graphql.ts'),
 			'utf8'
 		);
 		assert.match(fromTs, /^query Todos @load \{/);

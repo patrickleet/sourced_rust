@@ -256,8 +256,8 @@ pub struct ClientArgs {
     #[arg(long)]
     pub surface: Option<String>,
     /// GraphQL document glob (`.graphql` / `.gql`). TypeScript `defineQuery`
-    /// modules are materialized to GraphQL by the package toolchain before this
-    /// command runs. Repeat for multiple source roots.
+    /// modules (`+page.graphql.ts`) are materialized to GraphQL by the package
+    /// toolchain before this command runs. Repeat for multiple source roots.
     #[arg(long, required = true, value_name = "GLOB")]
     pub documents: Vec<String>,
     /// Explicit @load fallback in OPERATION=/route form. Repeat as needed.

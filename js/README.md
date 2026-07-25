@@ -68,10 +68,11 @@ query Todos @load @live {
 }
 ```
 
-TypeScript builder (materialized to GraphQL before `dctl client` runs):
+TypeScript builder (SvelteKit-style companion file; materialized to GraphQL
+before `dctl client` runs):
 
 ```ts
-// src/routes/todos/+page.query.ts
+// src/routes/todos/+page.graphql.ts
 import { defineQuery } from '@hops-ops/distributed/query';
 
 export default defineQuery('Todos')
@@ -82,13 +83,13 @@ export default defineQuery('Todos')
   .live();
 ```
 
-The SvelteKit Vite integration evaluates `*.query.ts`, materializes
+The SvelteKit Vite integration evaluates `*.graphql.ts`, materializes
 `toGraphql()` document text, then invokes `dctl client` with that GraphQL. There
 is no JSON query dialect — JSON would just be a worse GraphQL. Prefer
-`+page.graphql` when the query is clearer as GraphQL; prefer `+page.query.ts`
+`+page.graphql` when the query is clearer as GraphQL; prefer `+page.graphql.ts`
 when you want typed field/filter construction in application code.
 
-`src/routes/**/+page.query.ts` participates in the same `@load` route
+`src/routes/**/+page.graphql.ts` participates in the same `@load` route
 convention as `+page.graphql`.
 
 Generation validates the document against the selected role/application,

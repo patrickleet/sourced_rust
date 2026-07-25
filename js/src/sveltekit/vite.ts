@@ -89,7 +89,7 @@ export type DistributedSvelteKitClientCompiler = Readonly<{
 	/**
 	 * Client document globs passed as repeated `dctl client --documents` after
 	 * materialization. Accepts GraphQL (`.graphql`/`.gql`) and TypeScript
-	 * `defineQuery` modules (`.query.ts`).
+	 * `defineQuery` modules (`.graphql.ts`, e.g. `+page.graphql.ts`).
 	 */
 	documents: readonly string[];
 	/** Explicit `OPERATION=/route` fallbacks. */
@@ -470,7 +470,7 @@ function resolveIntegration(
 			client.documents.length === 0
 		) {
 			throw new TypeError(
-				`Distributed client \`${client.module}\` requires at least one client document glob (GraphQL or .query.ts)`
+				`Distributed client \`${client.module}\` requires at least one client document glob (GraphQL or .graphql.ts)`
 			);
 		}
 		const documents = client.documents.map((document: string, documentIndex: number) =>
@@ -603,10 +603,12 @@ function isClientDocumentInput(
 	integration: ResolvedIntegration
 ): boolean {
 	const absolute = resolve(integration.cwd, file);
+	const isGraphqlTs =
+		absolute.endsWith('.graphql.ts') || absolute.endsWith('.graphql.tsx');
 	const isGraphql =
-		absolute.endsWith('.graphql') || absolute.endsWith('.gql');
-	const isQueryTs = /\.query\.tsx?$/.test(absolute);
-	if ((!isGraphql && !isQueryTs) || !isWithin(integration.cwd, absolute)) {
+		!isGraphqlTs &&
+		(absolute.endsWith('.graphql') || absolute.endsWith('.gql'));
+	if ((!isGraphql && !isGraphqlTs) || !isWithin(integration.cwd, absolute)) {
 		return false;
 	}
 	if (

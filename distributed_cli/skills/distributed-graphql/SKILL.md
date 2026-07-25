@@ -158,17 +158,17 @@ client manifests).
 Application reads may be authored as:
 
 - GraphQL documents (`.graphql` / `.gql`) — joins, GraphiQL, exploratory shapes
-- TypeScript builders (`.query.ts`) via `defineQuery` from
-  `@hops-ops/distributed/query` — typed, model-shaped screens
+- TypeScript builders (`.graphql.ts`, SvelteKit-style `+page.graphql.ts`) via
+  `defineQuery` from `@hops-ops/distributed/query` — typed, model-shaped screens
 
 Both produce the same frozen operation artifacts. **GraphQL is the only query
 language** `dctl client` compiles and the only wire dialect. The SvelteKit Vite
-integration materializes `*.query.ts` → GraphQL document text before invoking
+integration materializes `*.graphql.ts` → GraphQL document text before invoking
 dctl. Prefer GraphQL when the notation is clearer; prefer the TS builder when
 you want typed construction in app code. Do not introduce a JSON query format.
 
 ```ts
-// src/routes/todos/+page.query.ts
+// src/routes/todos/+page.graphql.ts
 import { defineQuery } from '@hops-ops/distributed/query';
 
 export default defineQuery('Todos')
@@ -178,7 +178,7 @@ export default defineQuery('Todos')
   .load();
 ```
 
-`src/routes/**/+page.query.ts` uses the same `@load` route convention as
+`src/routes/**/+page.graphql.ts` uses the same `@load` route convention as
 `+page.graphql` (path is provenance; body after materialization is GraphQL).
 
 ## SDL artifact (CI gate)

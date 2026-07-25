@@ -16,8 +16,16 @@ import {
 import { pathToFileURL } from 'node:url';
 import { mkdtemp, rm } from 'node:fs/promises';
 
-const QUERY_TS = /\.query\.tsx?$/;
-const GRAPHQL = /\.(?:graphql|gql)$/;
+/** TypeScript GraphQL builders: `+page.graphql.ts`, `todos.graphql.ts`, etc. */
+function isGraphqlTsPath(path: string): boolean {
+	return path.endsWith('.graphql.ts') || path.endsWith('.graphql.tsx');
+}
+
+/** Plain GraphQL documents (never `.graphql.ts`). */
+function isPlainGraphqlPath(path: string): boolean {
+	if (isGraphqlTsPath(path)) return false;
+	return path.endsWith('.graphql') || path.endsWith('.gql');
+}
 
 export type MaterializeClientDocumentsOptions = Readonly<{
 	/** Project root used to resolve document globs. */
@@ -27,7 +35,7 @@ export type MaterializeClientDocumentsOptions = Readonly<{
 	/**
 	 * Directory that receives materialized GraphQL files. Relative paths under
 	 * this directory preserve the authoring path so route convention still sees
-	 * SvelteKit page documents such as +page.query.ts or +page.graphql.
+	 * SvelteKit page documents such as +page.graphql.ts or +page.graphql.
 	 */
 	outDir: string;
 }>;
@@ -38,7 +46,7 @@ export type MaterializedClientDocuments = Readonly<{
 }>;
 
 /**
- * Expand document globs, evaluate `*.query.ts` builders to GraphQL, copy plain
+ * Expand document globs, evaluate `*.graphql.ts` builders to GraphQL, copy plain
  * GraphQL sources, and return absolute paths for `dctl client`.
  */
 export async function materializeClientDocuments(
@@ -71,15 +79,15 @@ export async function materializeClientDocuments(
 	)) {
 		const dest = join(outDir, rel);
 		await mkdir(dirname(dest), { recursive: true });
-		if (QUERY_TS.test(rel)) {
+		if (isGraphqlTsPath(rel)) {
 			const graphql = await evaluateQueryModule(absolute);
 			await writeFile(dest, graphql, 'utf8');
-		} else if (GRAPHQL.test(rel)) {
+		} else if (isPlainGraphqlPath(rel)) {
 			const source = await readFile(absolute, 'utf8');
 			await writeFile(dest, source, 'utf8');
 		} else {
 			throw new Error(
-				`unsupported client document \`${rel}\`; use .graphql/.gql or .query.ts`
+				`unsupported client document \`${rel}\`; use .graphql/.gql or .graphql.ts`
 			);
 		}
 		documents.push(dest);
