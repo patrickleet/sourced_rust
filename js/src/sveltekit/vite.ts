@@ -621,19 +621,33 @@ function isClientDocumentInput(
 	);
 }
 
+/**
+ * Materialize GraphQL / `.graphql.ts` sources into a temporary document root.
+ * `dctl` is run with `cwd = documentRoot` so provenance paths stay
+ * `src/routes/...` (not the temp prefix), matching committed artifacts.
+ */
 async function materializeClientDocumentArgs(
 	integration: ResolvedIntegration,
 	client: ResolvedClient,
 	transaction: string,
 	index: number
-): Promise<string[]> {
-	const outDir = join(transaction, `documents-${index}`);
+): Promise<{ documentRoot: string; documents: string[] }> {
+	const documentRoot = join(transaction, `documents-${index}`);
 	const materialized = await materializeClientDocuments({
 		cwd: integration.cwd,
 		patterns: client.documents,
-		outDir
+		outDir: documentRoot
 	});
-	return [...materialized.documents];
+	const documents = materialized.documents.map((absolute) => {
+		const rel = relative(documentRoot, absolute).split(sep).join('/');
+		if (rel.startsWith('..') || isAbsolute(rel)) {
+			throw new Error(
+				`materialized document ${absolute} escaped document root ${documentRoot}`
+			);
+		}
+		return rel;
+	});
+	return { documentRoot, documents };
 }
 
 async function compileTransaction(
@@ -663,7 +677,7 @@ async function compileTransaction(
 				children,
 				signal
 			);
-			const documents = await materializeClientDocumentArgs(
+			const { documentRoot, documents } = await materializeClientDocumentArgs(
 				integration,
 				client,
 				transaction,
@@ -699,7 +713,7 @@ async function compileTransaction(
 				'--out',
 				output
 			];
-			await runCommand(integration, args, children, signal);
+			await runCommand(integration, args, children, signal, documentRoot);
 			await validateGeneratedEntrypoint(integration.cwd, output, client.module);
 			staged.push({
 				client,
@@ -736,7 +750,7 @@ async function checkTransaction(
 				children,
 				signal
 			);
-			const documents = await materializeClientDocumentArgs(
+			const { documentRoot, documents } = await materializeClientDocumentArgs(
 				integration,
 				client,
 				transaction,
@@ -757,7 +771,8 @@ async function checkTransaction(
 					client.out
 				],
 				children,
-				signal
+				signal,
+				documentRoot
 			);
 		}
 	} finally {
@@ -876,13 +891,15 @@ async function runCommand(
 	integration: ResolvedIntegration,
 	args: readonly string[],
 	children: Set<ChildProcess>,
-	signal: AbortSignal
+	signal: AbortSignal,
+	/** Override spawn cwd (document materialization root). Defaults to project root. */
+	cwd: string = integration.cwd
 ): Promise<{ stdout: string; stderr: string }> {
 	throwIfAborted(signal);
 	const argv = [...integration.commandArgs, ...args];
 	return await new Promise((resolvePromise, rejectPromise) => {
 		const child = spawn(integration.command, argv, {
-			cwd: integration.cwd,
+			cwd,
 			env: process.env,
 			shell: false,
 			detached: process.platform !== 'win32',
