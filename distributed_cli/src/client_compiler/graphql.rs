@@ -4175,7 +4175,7 @@ fn compile_route(
         return Err(source_error(
             "client.route.registration_required",
             format!(
-                "`@load` operation `{operation}` is outside `src/routes/**/+page.graphql`; move it there or register `--route {operation}=/route-id`"
+                "`@load` operation `{operation}` is outside `src/routes/**/+page.graphql` or `+page.query.json`; move it there or register `--route {operation}=/route-id`"
             ),
             document,
             position,
@@ -4197,15 +4197,28 @@ fn infer_route(path: &str) -> Option<String> {
         path.find(&format!("/{marker}"))? + marker.len() + 1
     };
     let rest = path.get(start..)?;
-    if rest == "+page.graphql" {
-        return Some("/".into());
-    }
-    let directory = rest.strip_suffix("/+page.graphql")?;
+    let directory = page_document_directory(rest)?;
     if directory.is_empty() {
         Some("/".into())
     } else {
         Some(format!("/{directory}"))
     }
+}
+
+/// Conventional SSR document names colocated with SvelteKit routes.
+///
+/// Supports both GraphQL documents and QuerySpec dual-authoring sources.
+fn page_document_directory(rest: &str) -> Option<&str> {
+    const SUFFIXES: &[&str] = &["+page.graphql", "+page.query.json"];
+    for suffix in SUFFIXES {
+        if rest == *suffix {
+            return Some("");
+        }
+        if let Some(directory) = rest.strip_suffix(&format!("/{suffix}")) {
+            return Some(directory);
+        }
+    }
+    None
 }
 
 fn render_operation(
@@ -4852,11 +4865,20 @@ mod local_tests {
             Some("/todos")
         );
         assert_eq!(
+            infer_route("src/routes/todos/+page.query.json").as_deref(),
+            Some("/todos")
+        );
+        assert_eq!(
             infer_route("/tmp/app/src/routes/+page.graphql").as_deref(),
+            Some("/")
+        );
+        assert_eq!(
+            infer_route("/tmp/app/src/routes/+page.query.json").as_deref(),
             Some("/")
         );
         assert_eq!(infer_route("src/lib/todos.graphql"), None);
         assert_eq!(infer_route("src/routes/todos/query.graphql"), None);
+        assert_eq!(infer_route("src/routes/todos/todos.query.json"), None);
     }
 
     #[test]

@@ -255,7 +255,7 @@ pub struct ClientArgs {
     /// Verify that the manifest is selected for this named application surface.
     #[arg(long)]
     pub surface: Option<String>,
-    /// GraphQL document glob. Repeat for multiple source roots.
+    /// Client document glob (`.graphql`/`.gql` or `.query.json`). Repeat for multiple source roots.
     #[arg(long, required = true, value_name = "GLOB")]
     pub documents: Vec<String>,
     /// Explicit @load fallback in OPERATION=/route form. Repeat as needed.

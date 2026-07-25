@@ -2978,3 +2978,80 @@ fn source_paths_cannot_inject_generated_typescript() {
     );
     assert!(file(&project, "manifest.json").contains("\\nexport const compromised"));
 }
+
+#[test]
+fn query_spec_and_graphql_produce_identical_operation_artifacts() {
+    let graphql = ClientCompileInput::new(
+        manifest(),
+        ClientSurfaceSelector::role("user"),
+        vec![ClientDocument::new(
+            "src/routes/todos/+page.graphql",
+            r#"
+              # Compiler-owned SSR seed
+              query Todos @load {
+                todos(order_by: [{priority: asc}, {id: asc}]) {
+                  id
+                  title
+                  completed
+                }
+              }
+            "#,
+        )],
+    );
+    let query_spec = ClientCompileInput::new(
+        manifest(),
+        ClientSurfaceSelector::role("user"),
+        vec![ClientDocument::new(
+            "src/routes/todos/+page.query.json",
+            r#"{
+              "version": 1,
+              "name": "Todos",
+              "load": true,
+              "roots": [{
+                "field": "todos",
+                "args": {
+                  "order_by": [
+                    {"priority": {"$enum": "asc"}},
+                    {"id": {"$enum": "asc"}}
+                  ]
+                },
+                "select": {
+                  "id": true,
+                  "title": true,
+                  "completed": true
+                }
+              }]
+            }"#,
+        )],
+    );
+
+    let from_graphql = compile_client(graphql).expect("compile GraphQL document");
+    let from_spec = compile_client(query_spec).expect("compile QuerySpec");
+
+    assert_eq!(
+        from_graphql.operations[0].operation_hash,
+        from_spec.operations[0].operation_hash
+    );
+    assert_eq!(
+        from_graphql.operations[0].name,
+        from_spec.operations[0].name
+    );
+    assert_eq!(from_spec.routes[0].route, "/todos");
+    assert_eq!(
+        from_spec.routes[0].discovery,
+        ClientRouteDiscovery::Convention
+    );
+
+    // Generated operation modules differ only by provenance path, not wire document.
+    let gql_module = file(&from_graphql, &from_graphql.operations[0].module_path);
+    let spec_module = file(&from_spec, &from_spec.operations[0].module_path);
+    let gql_document = gql_module
+        .lines()
+        .find(|line| line.contains("Operation_TodosDocument"))
+        .expect("document export");
+    let spec_document = spec_module
+        .lines()
+        .find(|line| line.contains("Operation_TodosDocument"))
+        .expect("document export");
+    assert_eq!(gql_document, spec_document);
+}

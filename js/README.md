@@ -43,13 +43,21 @@ dctl client \
   --manifest target/distributed-client.json \
   --role user \
   --documents 'src/**/*.graphql' \
+  --documents 'src/**/*.query.json' \
   --out src/lib/generated/distributed
 ```
 
 Use `--surface <name>` for a named application surface. CI can append `--check`
 to validate that committed artifacts are current without rewriting them.
 
-A co-located route document can opt into SSR and live continuation:
+### Dual authoring: GraphQL or QuerySpec
+
+Reads can be authored either as GraphQL documents or as portable QuerySpec
+JSON. Both lower into the same frozen operation artifacts. GraphQL remains the
+wire protocol and the natural notation for joins/exploration; QuerySpec is the
+typed model-shaped builder surface.
+
+GraphQL (joins and GraphiQL-friendly shapes stay first-class):
 
 ```graphql
 query Todos @load @live {
@@ -60,6 +68,53 @@ query Todos @load @live {
   }
 }
 ```
+
+QuerySpec via the TypeScript builder (commit the JSON, or author JSON by hand):
+
+```ts
+import { defineQuery } from '@hops-ops/distributed/query';
+import { writeFileSync } from 'node:fs';
+
+const Todos = defineQuery('Todos')
+  .from('todos')
+  .orderBy({ status: 'asc' }, { todo_id: 'asc' })
+  .select({ todo_id: true, title: true, status: true })
+  .load()
+  .live()
+  .build();
+
+// e.g. src/routes/todos/+page.query.json
+writeFileSync('src/routes/todos/+page.query.json', `${JSON.stringify(Todos, null, 2)}\n`);
+```
+
+Equivalent QuerySpec JSON:
+
+```json
+{
+  "version": 1,
+  "name": "Todos",
+  "load": true,
+  "live": true,
+  "roots": [{
+    "field": "todos",
+    "args": {
+      "order_by": [
+        { "status": { "$enum": "asc" } },
+        { "todo_id": { "$enum": "asc" } }
+      ]
+    },
+    "select": {
+      "todo_id": true,
+      "title": true,
+      "status": true
+    }
+  }]
+}
+```
+
+`src/routes/**/+page.query.json` participates in the same `@load` route
+convention as `+page.graphql`. Enum tokens and variables use `$enum` / `$var`
+tags so lowering is unambiguous.
 
 Generation validates the document against the selected role/application,
 injects wire-only identity and revision fields, and emits:
@@ -415,6 +470,8 @@ duplicated as decision documents in this package.
 - `@hops-ops/distributed/sveltekit/vite` — Node-only one-shot/check/watch
   generation, virtual module aliases, and GraphQL HTTP/WebSocket proxy helpers.
 - `@hops-ops/distributed/react` — provider and query hook over the same replica.
+- `@hops-ops/distributed/query` — QuerySpec builder (`defineQuery`) and GraphQL
+  lowering helpers for dual client authoring.
 
 All other subpaths are private and blocked by the package export map.
 

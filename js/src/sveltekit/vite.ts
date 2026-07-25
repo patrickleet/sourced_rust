@@ -84,7 +84,10 @@ export type DistributedSvelteKitClientCompiler = Readonly<{
 	role?: string;
 	/** Verify exactly one Rust-declared application surface. */
 	surface?: string;
-	/** GraphQL globs passed verbatim as repeated `dctl client --documents`. */
+	/**
+	 * Client document globs passed as repeated `dctl client --documents`.
+	 * Accepts GraphQL (`.graphql`/`.gql`) and QuerySpec (`.query.json`) sources.
+	 */
 	documents: readonly string[];
 	/** Explicit `OPERATION=/route` fallbacks. */
 	routes?: readonly string[];
@@ -319,7 +322,7 @@ export function distributedSvelteKit(
 		},
 		async handleHotUpdate(context): Promise<never[] | undefined> {
 			const integration = requireResolved(resolved);
-			if (!isGraphqlInput(context.file, integration)) return undefined;
+			if (!isClientDocumentInput(context.file, integration)) return undefined;
 			try {
 				await compile(`GraphQL change ${context.file}`);
 			} catch (error) {
@@ -344,7 +347,7 @@ export function distributedSvelteKit(
 		},
 		async watchChange(id): Promise<void> {
 			const integration = requireResolved(resolved);
-			if (isGraphqlInput(id, integration)) {
+			if (isClientDocumentInput(id, integration)) {
 				await compile(`GraphQL watch change ${id}`);
 			}
 		},
@@ -464,7 +467,7 @@ function resolveIntegration(
 			client.documents.length === 0
 		) {
 			throw new TypeError(
-				`Distributed client \`${client.module}\` requires at least one GraphQL document glob`
+				`Distributed client \`${client.module}\` requires at least one client document glob (GraphQL or QuerySpec)`
 			);
 		}
 		const documents = client.documents.map((document: string, documentIndex: number) =>
@@ -584,7 +587,7 @@ function documentWatchRoots(
 		const watch = resolve(cwd, base === '.' || base.length === 0 ? '.' : base);
 		if (!isWithin(cwd, watch)) {
 			throw new TypeError(
-				`Distributed GraphQL document glob \`${pattern}\` escapes project root ${cwd}`
+				`Distributed client document glob \`${pattern}\` escapes project root ${cwd}`
 			);
 		}
 		if (!isWithin(out, watch)) roots.add(watch);
@@ -592,15 +595,15 @@ function documentWatchRoots(
 	return [...roots].sort();
 }
 
-function isGraphqlInput(
+function isClientDocumentInput(
 	file: string,
 	integration: ResolvedIntegration
 ): boolean {
 	const absolute = resolve(integration.cwd, file);
-	if (
-		(!absolute.endsWith('.graphql') && !absolute.endsWith('.gql')) ||
-		!isWithin(integration.cwd, absolute)
-	) {
+	const isGraphql =
+		absolute.endsWith('.graphql') || absolute.endsWith('.gql');
+	const isQuerySpec = absolute.endsWith('.query.json');
+	if ((!isGraphql && !isQuerySpec) || !isWithin(integration.cwd, absolute)) {
 		return false;
 	}
 	if (
