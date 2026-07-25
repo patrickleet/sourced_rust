@@ -147,6 +147,53 @@ fn f2_groups_array_session() {
     assert_eq!(session.get("x-roles"), Some("customer"));
 }
 
+#[test]
+fn require_role_rejects_signed_token_without_role_claims() {
+    let keys = mint_keys();
+    let token = sign_claims(
+        &keys,
+        json!({
+            "iss": "http://localhost:8080",
+            "aud": "graphql-api",
+            "sub": "user-without-roles",
+            "exp": now() + 3600,
+            "iat": now()
+        }),
+    );
+    let mut cfg = oidc_cfg(&keys);
+    cfg.require_role = true;
+
+    let error = OidcValidator::new(cfg)
+        .validate_and_map(&token)
+        .expect_err("strict role mode must reject the user fallback");
+
+    assert_eq!(error.to_string(), "require_role: no asserted engine role");
+}
+
+#[test]
+fn require_role_rejects_signed_token_with_only_nonmatching_roles() {
+    let keys = mint_keys();
+    let token = sign_claims(
+        &keys,
+        json!({
+            "iss": "http://localhost:8080",
+            "aud": "graphql-api",
+            "sub": "user-with-nonmatching-role",
+            "exp": now() + 3600,
+            "iat": now(),
+            "groups": ["external-role"]
+        }),
+    );
+    let mut cfg = oidc_cfg(&keys);
+    cfg.require_role = true;
+
+    let error = OidcValidator::new(cfg)
+        .validate_and_map(&token)
+        .expect_err("strict role mode must reject non-allowlisted claims");
+
+    assert_eq!(error.to_string(), "require_role: no asserted engine role");
+}
+
 // ── F3–F5 JWT validation rejects ────────────────────────────────────────────
 
 #[test]

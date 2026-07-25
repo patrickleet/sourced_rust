@@ -43,6 +43,18 @@ impl Default for ClaimMapConfig {
 /// `x-roles`: comma-separated allowlisted candidates in first-seen order.
 /// `x-role`: priority ∩ candidates (D4).
 pub fn map_claims_to_session(claims: &Value, config: &ClaimMapConfig) -> Result<Session, String> {
+    map_claims_to_session_with_provenance(claims, config).map(|mapped| mapped.session)
+}
+
+pub(crate) struct MappedClaims {
+    pub(crate) session: Session,
+    pub(crate) selected_role_is_asserted: bool,
+}
+
+pub(crate) fn map_claims_to_session_with_provenance(
+    claims: &Value,
+    config: &ClaimMapConfig,
+) -> Result<MappedClaims, String> {
     let sub = claims
         .get(&config.subject_claim)
         .and_then(|v| v.as_str())
@@ -80,7 +92,9 @@ pub fn map_claims_to_session(claims: &Value, config: &ClaimMapConfig) -> Result<
     // Prefer explicit claim roles; if the subject is authenticated but no role
     // claim matched engine roles, default to `user` when that role is configured
     // (common for OIDC apps that assert roles asynchronously or omit them).
-    let x_role = select_role(&allowlisted, &config.role_priority).or_else(|| {
+    let asserted_role = select_role(&allowlisted, &config.role_priority);
+    let selected_role_is_asserted = asserted_role.is_some();
+    let x_role = asserted_role.or_else(|| {
         if config.engine_roles.iter().any(|e| e == "user") {
             Some("user".into())
         } else {
@@ -109,7 +123,10 @@ pub fn map_claims_to_session(claims: &Value, config: &ClaimMapConfig) -> Result<
         session.set("x-org-id", org);
     }
 
-    Ok(session)
+    Ok(MappedClaims {
+        session,
+        selected_role_is_asserted,
+    })
 }
 
 fn claim_path<'a>(claims: &'a Value, path: &str) -> Option<&'a Value> {

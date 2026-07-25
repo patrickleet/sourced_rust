@@ -9,7 +9,7 @@ use serde::Deserialize;
 use serde_json::Value;
 use sha2::{Digest, Sha256};
 
-use super::claims::{map_claims_to_session, ClaimMapConfig};
+use super::claims::{map_claims_to_session_with_provenance, ClaimMapConfig};
 use crate::microsvc::Session;
 
 /// OIDC validation configuration (behavior normative; field names free).
@@ -313,20 +313,21 @@ impl OidcValidator {
         token: &str,
     ) -> Result<(Session, VerifiedPrincipal), ValidationError> {
         let claims = self.validate_token(token)?;
-        let session = map_claims_to_session(&claims, &self.config.claim_map).map_err(|e| {
-            if e.contains("subject") {
-                ValidationError::MissingSub
-            } else {
-                ValidationError::Other(e)
-            }
-        })?;
-        if self.config.require_role && session.role().is_none() {
+        let mapped = map_claims_to_session_with_provenance(&claims, &self.config.claim_map)
+            .map_err(|e| {
+                if e.contains("subject") {
+                    ValidationError::MissingSub
+                } else {
+                    ValidationError::Other(e)
+                }
+            })?;
+        if self.config.require_role && !mapped.selected_role_is_asserted {
             return Err(ValidationError::Other(
-                "require_role: no engine role".into(),
+                "require_role: no asserted engine role".into(),
             ));
         }
         let principal = verified_principal(&claims, &self.config)?;
-        Ok((session, principal))
+        Ok((mapped.session, principal))
     }
 
     /// Ensure JWKS is loaded (static or HTTP discovery / jwks_uri).
