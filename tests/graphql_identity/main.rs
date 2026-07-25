@@ -13,7 +13,7 @@ use base64::Engine;
 use distributed::graphql::{
     extract_bearer, graphql_router, map_claims_to_session, read, resolve_session_sync,
     strip_identity_headers, AuthError, ClaimMapConfig, GraphqlEngine, IdentityConfig, IdentityMode,
-    ModelPermissions, OidcConfig, OidcValidator, DEFAULT_IDENTITY_STRIP_HEADERS,
+    IdentityResolver, ModelPermissions, OidcConfig, OidcValidator, DEFAULT_IDENTITY_STRIP_HEADERS,
 };
 use distributed::ReadModel;
 use jsonwebtoken::{encode, Algorithm, EncodingKey, Header};
@@ -107,6 +107,15 @@ fn headers_from(pairs: &[(&str, &str)]) -> HeaderMap {
         );
     }
     h
+}
+
+fn bearer_headers(token: &str) -> HeaderMap {
+    let mut headers = HeaderMap::new();
+    headers.insert(
+        axum::http::header::AUTHORIZATION,
+        HeaderValue::from_str(&format!("Bearer {token}")).expect("bearer header"),
+    );
+    headers
 }
 
 // ── F1 / F2 claim map (shipped map_claims_to_session) ───────────────────────
@@ -591,6 +600,157 @@ async fn engine_reuses_expires_and_singleflights_rotated_jwks() {
         2,
         "expired JWKS must refresh before the next authenticated request"
     );
+
+    server.abort();
+}
+
+#[tokio::test]
+async fn identity_resolver_reuses_live_jwks_for_repeated_valid_requests() {
+    let keys = mint_keys_with_kid("resolver-kid");
+    let jwks = RotatingJwks {
+        body: Arc::new(RwLock::new(keys.jwks_json.clone())),
+        fetches: Arc::new(AtomicUsize::new(0)),
+    };
+    let listener = tokio::net::TcpListener::bind("127.0.0.1:0")
+        .await
+        .expect("bind JWKS server");
+    let address = listener.local_addr().expect("JWKS server address");
+    let server = tokio::spawn({
+        let jwks = jwks.clone();
+        async move {
+            axum::serve(
+                listener,
+                axum::Router::new()
+                    .route("/jwks", axum::routing::get(serve_rotating_jwks))
+                    .with_state(jwks),
+            )
+            .await
+            .expect("serve JWKS");
+        }
+    });
+    let token = sign_claims(
+        &keys,
+        json!({
+            "iss": "http://localhost:8080",
+            "aud": "graphql-api",
+            "sub": "resolver-user",
+            "exp": now() + 3600,
+            "iat": now(),
+            "groups": ["customer"]
+        }),
+    );
+    let mut oidc =
+        OidcConfig::new("http://localhost:8080", "graphql-api").engine_roles(&["customer"]);
+    oidc.jwks_uri = Some(format!("http://{address}/jwks"));
+    let resolver = IdentityResolver::new(IdentityConfig::oidc_bearer(oidc));
+    let headers = bearer_headers(&token);
+
+    resolver
+        .resolve_session(&headers)
+        .await
+        .expect("first resolve");
+    resolver
+        .resolve_session(&headers)
+        .await
+        .expect("second resolve");
+
+    assert_eq!(
+        jwks.fetches.load(Ordering::SeqCst),
+        1,
+        "a reusable resolver must retain its JWKS cache"
+    );
+    server.abort();
+}
+
+#[tokio::test]
+async fn unknown_kid_refreshes_are_cooled_down_until_rotation_can_be_retried() {
+    let first_keys = mint_keys_with_kid("cooldown-current");
+    let unknown_keys = mint_keys_with_kid("cooldown-unknown");
+    let rotated_keys = mint_keys_with_kid("cooldown-rotated");
+    let jwks = RotatingJwks {
+        body: Arc::new(RwLock::new(first_keys.jwks_json.clone())),
+        fetches: Arc::new(AtomicUsize::new(0)),
+    };
+    let listener = tokio::net::TcpListener::bind("127.0.0.1:0")
+        .await
+        .expect("bind JWKS server");
+    let address = listener.local_addr().expect("JWKS server address");
+    let server = tokio::spawn({
+        let jwks = jwks.clone();
+        async move {
+            axum::serve(
+                listener,
+                axum::Router::new()
+                    .route("/jwks", axum::routing::get(serve_rotating_jwks))
+                    .with_state(jwks),
+            )
+            .await
+            .expect("serve JWKS");
+        }
+    });
+    let claims = |subject: &str| {
+        json!({
+            "iss": "http://localhost:8080",
+            "aud": "graphql-api",
+            "sub": subject,
+            "exp": now() + 3600,
+            "iat": now(),
+            "groups": ["customer"]
+        })
+    };
+    let first_token = sign_claims(&first_keys, claims("current-user"));
+    let unknown_token = sign_claims(&unknown_keys, claims("unknown-user"));
+    let rotated_token = sign_claims(&rotated_keys, claims("rotated-user"));
+    let mut oidc =
+        OidcConfig::new("http://localhost:8080", "graphql-api").engine_roles(&["customer"]);
+    oidc.jwks_uri = Some(format!("http://{address}/jwks"));
+    oidc.jwks_forced_refresh_cooldown = std::time::Duration::from_millis(200);
+    let resolver = IdentityResolver::new(IdentityConfig::oidc_bearer(oidc));
+
+    resolver
+        .resolve_session(&bearer_headers(&first_token))
+        .await
+        .expect("load initial JWKS");
+    assert_eq!(jwks.fetches.load(Ordering::SeqCst), 1);
+
+    assert_eq!(
+        resolver
+            .resolve_session(&bearer_headers(&unknown_token))
+            .await
+            .unwrap_err(),
+        AuthError::Unauthorized
+    );
+    assert_eq!(jwks.fetches.load(Ordering::SeqCst), 2);
+
+    assert_eq!(
+        resolver
+            .resolve_session(&bearer_headers(&rotated_token))
+            .await
+            .unwrap_err(),
+        AuthError::Unauthorized
+    );
+    assert_eq!(
+        jwks.fetches.load(Ordering::SeqCst),
+        2,
+        "a distinct unknown kid must not bypass the forced-refresh cooldown"
+    );
+
+    *jwks.body.write().expect("rotate JWKS response") = rotated_keys.jwks_json.clone();
+    assert_eq!(
+        resolver
+            .resolve_session(&bearer_headers(&rotated_token))
+            .await
+            .unwrap_err(),
+        AuthError::Unauthorized
+    );
+    assert_eq!(jwks.fetches.load(Ordering::SeqCst), 2);
+
+    tokio::time::sleep(std::time::Duration::from_millis(225)).await;
+    resolver
+        .resolve_session(&bearer_headers(&rotated_token))
+        .await
+        .expect("rotation refresh after cooldown");
+    assert_eq!(jwks.fetches.load(Ordering::SeqCst), 3);
 
     server.abort();
 }

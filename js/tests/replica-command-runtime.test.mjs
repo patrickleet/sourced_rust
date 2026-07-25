@@ -15,6 +15,7 @@ const HASH_A = `sha256:${'a'.repeat(64)}`;
 const HASH_B = `sha256:${'b'.repeat(64)}`;
 const HASH_C = `sha256:${'c'.repeat(64)}`;
 const HASH_D = `sha256:${'d'.repeat(64)}`;
+const HASH_E = `sha256:${'e'.repeat(64)}`;
 const COMMAND_A = '018f47de-3d2a-7abc-8abc-0123456789ab';
 const COMMAND_B = '018f47de-3d2a-7def-8def-0123456789ab';
 const GENERATED_ID = '018f47de-3d2a-7123-8123-0123456789ab';
@@ -171,15 +172,39 @@ function commandEnvelope(commandId, options = {}) {
 	};
 }
 
-function scopeQueryArtifact() {
+function scopeQueryArtifact(options = {}) {
+	const operation = options.operation ?? HASH_D;
+	const members = [
+		Object.freeze({
+			kind: 'scalar',
+			responseKey: 'id',
+			field: 'id',
+			codec: 'ID',
+			nullable: false
+		}),
+		...(options.includeTitle === false
+			? []
+			: [
+					Object.freeze({
+						kind: 'scalar',
+						responseKey: 'title',
+						field: 'title',
+						codec: 'String',
+						nullable: false
+					})
+				])
+	];
 	return Object.freeze({
-		id: HASH_D,
-		document: 'query ClientScope { todos { id title } }',
+		id: operation,
+		document:
+			options.includeTitle === false
+				? 'query ClientScopeId { todos { id } }'
+				: 'query ClientScope { todos { id title } }',
 		protocol: Object.freeze({
 			version: 2,
 			schemaHash: HASH_B,
 			surface: SURFACE,
-			operation: HASH_D,
+			operation,
 			trustedPresets: Object.freeze([
 				Object.freeze({ name: 'owner', codec: 'string' })
 			])
@@ -208,22 +233,7 @@ function scopeQueryArtifact() {
 						model: Todo.id,
 						identityFields: Todo.identityFields
 					}),
-					members: Object.freeze([
-						Object.freeze({
-							kind: 'scalar',
-							responseKey: 'id',
-							field: 'id',
-							codec: 'ID',
-							nullable: false
-						}),
-						Object.freeze({
-							kind: 'scalar',
-							responseKey: 'title',
-							field: 'title',
-							codec: 'String',
-							nullable: false
-						})
-					])
+					members: Object.freeze(members)
 				})
 			})
 		])
@@ -243,7 +253,7 @@ function scopeSnapshotEnvelope(position, options = {}) {
 				protocolVersion: 2,
 				schemaHash: HASH_B,
 				cacheScope: 'scope:user',
-				operation: HASH_D,
+				operation: options.operation ?? HASH_D,
 				trustedPresets: [
 					{ name: 'owner', codec: 'string', value: 'user-1' }
 				],
@@ -270,9 +280,25 @@ function scopeSnapshotEnvelope(position, options = {}) {
 	};
 }
 
-function scopeTodoSnapshotEnvelope(position, title) {
-	const envelope = scopeSnapshotEnvelope(position);
+function scopeTodoSnapshotEnvelope(position, title, options = {}) {
+	const envelope = scopeSnapshotEnvelope(position, options);
 	envelope.data = { todos: [{ id: 'todo-1', title }] };
+	envelope.extensions.distributed.snapshot.records = [
+		{
+			path: ['todos', '0'],
+			model: Todo.id,
+			scopeToken: 'record:todo-1',
+			incarnation: '1',
+			revision: options.recordRevision ?? position,
+			tombstone: false
+		}
+	];
+	return envelope;
+}
+
+function scopeTodoIdSnapshotEnvelope(position, operation) {
+	const envelope = scopeSnapshotEnvelope(position, { operation });
+	envelope.data = { todos: [{ id: 'todo-1' }] };
 	envelope.extensions.distributed.snapshot.records = [
 		{
 			path: ['todos', '0'],
@@ -284,6 +310,69 @@ function scopeTodoSnapshotEnvelope(position, title) {
 		}
 	];
 	return envelope;
+}
+
+function projectedTodoArtifact() {
+	return artifact({
+		name: 'todo.project',
+		mutationField: 'createTodo',
+		document:
+			'mutation Client_createTodo($commandId: ID!, $input: TodoInput!) { createTodo(commandId: $commandId, input: $input) { id title } }',
+		output: Object.freeze({ kind: 'object', definition: TodoOutput }),
+		consistency: 'projected',
+		confirmations: undefined,
+		directProjection: Object.freeze({
+			topology: Object.freeze({
+				version: 1,
+				name: 'todos',
+				digest: HASH_C
+			}),
+			model: Todo.id,
+			identityFields: Todo.identityFields,
+			changeEpoch: 'todos-v1'
+		})
+	});
+}
+
+async function directlyProjectTodo(
+	replica,
+	revision = '3',
+	title = 'projected-newer'
+) {
+	const runtime = createReplicaCommandRuntime(
+		replica,
+		{
+			dispatch: (request) =>
+				Promise.resolve(
+					commandEnvelope(request.commandId, {
+						state: 'projected',
+						consistency: 'projected',
+						expects: [],
+						data: {
+							createTodo: {
+								id: 'todo-1',
+								title
+							}
+						},
+						records: [
+							{
+								model: Todo.id,
+								scopeToken: 'record:todo-1',
+								incarnation: '1',
+								revision,
+								tombstone: false
+							}
+						]
+					})
+				)
+		},
+		{ projectTodo: projectedTodoArtifact() }
+	);
+	await runtime.commands.projectTodo(
+		{ id: 'todo-1', title },
+		{ commandId: COMMAND_A }
+	);
+	return runtime;
 }
 
 function statusEnvelope(commandId, options = {}) {
@@ -1160,6 +1249,89 @@ test('Projected<T> advances record clocks so older query responses stay complete
 	runtime.dispose();
 });
 
+test('Projected<T> accepts a causally newer row before the projected echo', async () => {
+	const replica = createDistributedReplica();
+	const scopeOperation = scopeQueryArtifact();
+	replica.writeResult(
+		scopeOperation,
+		{},
+		scopeTodoSnapshotEnvelope('1', 'initial'),
+		'network'
+	);
+	const runtime = await directlyProjectTodo(replica);
+
+	replica.writeResult(
+		scopeOperation,
+		{},
+		scopeTodoSnapshotEnvelope('4', 'server-newer'),
+		'network'
+	);
+
+	assert.equal(replica.read(scopeOperation, {}).data.todos[0].title, 'server-newer');
+	assert.equal(replica.inspectRecord(Todo, 'todo-1').revision, '4');
+	runtime.dispose();
+});
+
+test('Projected<T> accepts a causally newer tombstone before the projected echo', async () => {
+	const replica = createDistributedReplica();
+	const scopeOperation = scopeQueryArtifact();
+	replica.writeResult(
+		scopeOperation,
+		{},
+		scopeTodoSnapshotEnvelope('1', 'initial'),
+		'network'
+	);
+	const runtime = await directlyProjectTodo(replica);
+	const deleted = scopeSnapshotEnvelope('4');
+	deleted.extensions.distributed.snapshot.records = [
+		{
+			model: Todo.id,
+			scopeToken: 'record:todo-1',
+			incarnation: '1',
+			revision: '4',
+			tombstone: true
+		}
+	];
+
+	replica.writeResult(scopeOperation, {}, deleted, 'network');
+
+	assert.equal(replica.inspectRecord(Todo, 'todo-1'), undefined);
+	runtime.dispose();
+});
+
+test('Projected<T> clears its fence when a newer partial selection supersedes it', async () => {
+	const replica = createDistributedReplica();
+	const partialOperation = scopeQueryArtifact({ includeTitle: false });
+	const fullOperation = scopeQueryArtifact({ operation: HASH_E });
+	replica.writeResult(
+		fullOperation,
+		{},
+		scopeTodoSnapshotEnvelope('1', 'initial', { operation: HASH_E }),
+		'network'
+	);
+	const runtime = await directlyProjectTodo(replica);
+
+	replica.writeResult(
+		partialOperation,
+		{},
+		scopeTodoIdSnapshotEnvelope('4', HASH_D),
+		'network'
+	);
+	replica.writeResult(
+		fullOperation,
+		{},
+		scopeTodoSnapshotEnvelope('5', 'server-newest', { operation: HASH_E }),
+		'network'
+	);
+
+	assert.equal(
+		replica.read(fullOperation, {}).data.todos[0].title,
+		'server-newest'
+	);
+	assert.equal(replica.inspectRecord(Todo, 'todo-1').revision, '5');
+	runtime.dispose();
+});
+
 test('Projected<T> retains its authoritative row while a later revalidation reads a lagging projection', async () => {
 	let resolveFetch;
 	let markFetchStarted;
@@ -1240,7 +1412,11 @@ test('Projected<T> retains its authoritative row while a later revalidation read
 	);
 	const refresh = watch.refresh();
 	await fetchStarted;
-	resolveFetch(scopeTodoSnapshotEnvelope('7', 'stale-snapshot'));
+	resolveFetch(
+		scopeTodoSnapshotEnvelope('7', 'stale-snapshot', {
+			recordRevision: '5'
+		})
+	);
 	await refresh;
 
 	const snapshot = watch.get();

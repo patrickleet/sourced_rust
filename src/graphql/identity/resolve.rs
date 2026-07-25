@@ -103,6 +103,47 @@ impl IdentityConfig {
     }
 }
 
+/// Reusable request identity resolver with one shared OIDC validator and JWKS cache.
+///
+/// Construct one resolver per service or middleware layer and reuse it across
+/// requests so live JWKS discovery, parsing, and refresh state remain cached.
+pub struct IdentityResolver {
+    config: IdentityConfig,
+    validator: Option<OidcValidator>,
+}
+
+impl IdentityResolver {
+    /// Build a resolver and its shared validator from one identity configuration.
+    pub fn new(config: IdentityConfig) -> Self {
+        let validator = match config.mode {
+            IdentityMode::OidcBearer | IdentityMode::Hybrid => {
+                config.oidc.clone().map(OidcValidator::new)
+            }
+            IdentityMode::DevHeaders | IdentityMode::TrustedProxy => None,
+        };
+        Self { config, validator }
+    }
+
+    /// Return the immutable identity configuration used for every resolution.
+    pub fn config(&self) -> &IdentityConfig {
+        &self.config
+    }
+
+    /// Resolve one request while reusing this resolver's live JWKS cache.
+    pub async fn resolve_session(&self, headers: &HeaderMap) -> Result<Session, AuthError> {
+        self.resolve_identity(headers)
+            .await
+            .map(|identity| identity.session)
+    }
+
+    pub(crate) async fn resolve_identity(
+        &self,
+        headers: &HeaderMap,
+    ) -> Result<ResolvedIdentity, AuthError> {
+        resolve_identity_with_validator(headers, &self.config, self.validator.as_ref()).await
+    }
+}
+
 /// Placeholder issuer/audience when OIDC env is unset — fail-closed (401) until configured.
 pub const UNSET_OIDC_ISSUER: &str = "http://localhost/unset-oidc-issuer";
 pub const UNSET_OIDC_AUDIENCE: &str = "unset-audience";
@@ -386,27 +427,17 @@ pub(crate) fn resolve_identity_sync(
     }
 }
 
-/// Resolve Session; fetches JWKS over HTTP when OIDC is configured without static JWKS.
+/// Resolve one Session, fetching JWKS when needed.
+///
+/// Services handling repeated requests should reuse [`IdentityResolver`] so
+/// live JWKS remain cached between calls.
 pub async fn resolve_session(
     headers: &HeaderMap,
     config: &IdentityConfig,
 ) -> Result<Session, AuthError> {
-    resolve_identity(headers, config)
+    IdentityResolver::new(config.clone())
+        .resolve_session(headers)
         .await
-        .map(|identity| identity.session)
-}
-
-pub(crate) async fn resolve_identity(
-    headers: &HeaderMap,
-    config: &IdentityConfig,
-) -> Result<ResolvedIdentity, AuthError> {
-    let validator = match config.mode {
-        IdentityMode::OidcBearer | IdentityMode::Hybrid => {
-            config.oidc.clone().map(OidcValidator::new)
-        }
-        IdentityMode::DevHeaders | IdentityMode::TrustedProxy => None,
-    };
-    resolve_identity_with_validator(headers, config, validator.as_ref()).await
 }
 
 pub(crate) async fn resolve_identity_with_validator(

@@ -13,8 +13,8 @@ pub use oidc::{OidcConfig, OidcValidator, ValidationError};
 pub use resolve::{
     extract_bearer, public_oidc_identity_from_env, public_oidc_identity_from_env_vars,
     resolve_session, resolve_session_sync, strip_identity_headers, AuthError, IdentityConfig,
-    IdentityMode, TrustedProxyConfig, DEFAULT_IDENTITY_STRIP_HEADERS, UNSET_OIDC_AUDIENCE,
-    UNSET_OIDC_ISSUER,
+    IdentityMode, IdentityResolver, TrustedProxyConfig, DEFAULT_IDENTITY_STRIP_HEADERS,
+    UNSET_OIDC_AUDIENCE, UNSET_OIDC_ISSUER,
 };
 pub(crate) use resolve::{resolve_identity_with_validator, ResolvedIdentity};
 

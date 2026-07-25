@@ -16,7 +16,7 @@ use axum::response::IntoResponse;
 use axum::routing::post;
 use axum::Json;
 use distributed::graphql::{
-    resolve_session, AuthError, IdentityConfig, IdentityMode, DEFAULT_IDENTITY_STRIP_HEADERS,
+    AuthError, IdentityConfig, IdentityMode, IdentityResolver, DEFAULT_IDENTITY_STRIP_HEADERS,
 };
 use distributed::microsvc::{HandlerError, Service, Session};
 use futures_util::future::BoxFuture;
@@ -25,12 +25,14 @@ use tower::{Layer, Service as TowerService};
 
 #[derive(Clone)]
 pub struct OidcIdentityLayer {
-    identity: IdentityConfig,
+    resolver: Arc<IdentityResolver>,
 }
 
 impl OidcIdentityLayer {
     pub fn new(identity: IdentityConfig) -> Self {
-        Self { identity }
+        Self {
+            resolver: Arc::new(IdentityResolver::new(identity)),
+        }
     }
 }
 
@@ -40,7 +42,7 @@ impl<S> Layer<S> for OidcIdentityLayer {
     fn layer(&self, inner: S) -> Self::Service {
         OidcIdentityService {
             inner,
-            identity: self.identity.clone(),
+            resolver: Arc::clone(&self.resolver),
         }
     }
 }
@@ -48,7 +50,7 @@ impl<S> Layer<S> for OidcIdentityLayer {
 #[derive(Clone)]
 pub struct OidcIdentityService<S> {
     inner: S,
-    identity: IdentityConfig,
+    resolver: Arc<IdentityResolver>,
 }
 
 fn skip_oidc_gate(method: &Method, path: &str) -> bool {
@@ -96,13 +98,13 @@ where
 
     fn call(&mut self, mut req: Request<Body>) -> Self::Future {
         let mut inner = self.inner.clone();
-        let identity = self.identity.clone();
+        let resolver = Arc::clone(&self.resolver);
         Box::pin(async move {
             let path = req.uri().path().to_string();
             let method = req.method().clone();
 
             if !matches!(
-                identity.mode,
+                resolver.config().mode,
                 IdentityMode::OidcBearer | IdentityMode::Hybrid
             ) {
                 // DevHeaders: ambient headers trusted only for local/offline.
@@ -116,7 +118,7 @@ where
             // Fail closed: never trust client identity headers under OidcBearer.
             strip_client_identity(req.headers_mut());
 
-            match resolve_session(req.headers(), &identity).await {
+            match resolver.resolve_session(req.headers()).await {
                 Ok(session) => {
                     if let Some(uid) = session.user_id() {
                         if let Ok(v) = axum::http::HeaderValue::from_str(uid) {

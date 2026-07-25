@@ -214,6 +214,11 @@ type RecordProtocolClock = {
 	tombstone: boolean;
 };
 
+type ProjectedRecordFence = {
+	readonly fields: Readonly<Record<string, ReplicaValue>>;
+	readonly clock: RecordProtocolClock;
+};
+
 type AnonymousRecordProtocolClock = {
 	model: string;
 	clock: RecordProtocolClock;
@@ -284,10 +289,7 @@ class DistributedReplicaImpl implements DistributedReplicaApi {
 	readonly #operationGenerations = new Map<string, number>();
 	readonly #recordClocks = new Map<string, RecordProtocolClock>();
 	readonly #recordKeysByScope = new Map<DistributedOpaqueString, string>();
-	readonly #projectedRecordFences = new Map<
-		string,
-		Readonly<Record<string, ReplicaValue>>
-	>();
+	readonly #projectedRecordFences = new Map<string, ProjectedRecordFence>();
 	readonly #anonymousRecordClocks = new Map<
 		DistributedOpaqueString,
 		AnonymousRecordProtocolClock
@@ -494,13 +496,21 @@ class DistributedReplicaImpl implements DistributedReplicaApi {
 		if (apply) {
 			/*
 			 * The command result is authoritative before an asynchronous read
-			 * model necessarily catches up. Retain its complete row as a write
-			 * fence until a query echoes the same fields; a numerically later
-			 * SQL revision can still contain an older projection.
+			 * model necessarily catches up. Retain its complete row and causal
+			 * clock as a write fence until a query acknowledges it or a newer
+			 * record/tombstone supersedes it.
 			 */
 			this.#projectedRecordFences.set(
 				recordKey,
-				Object.freeze({ ...fields })
+				Object.freeze({
+					fields: Object.freeze({ ...fields }),
+					clock: Object.freeze({
+						scopeToken: evidence.scopeToken,
+						incarnation: evidence.incarnation,
+						revision: evidence.revision,
+						tombstone: false
+					})
+				})
 			);
 		}
 	}
@@ -1328,7 +1338,7 @@ class DistributedReplicaImpl implements DistributedReplicaApi {
 		const pendingPathRecords = new Map<string, string>();
 		const pendingProjectedRecordFenceClears = new Map<
 			string,
-			Readonly<Record<string, ReplicaValue>>
+			ProjectedRecordFence
 		>();
 		const consumedRecordPaths = new Set<string>();
 		const observationsAdmissible =
@@ -1383,22 +1393,35 @@ class DistributedReplicaImpl implements DistributedReplicaApi {
 					);
 				}
 				consumedRecordPaths.add(encodedPath);
-				const projectedFields =
+				const projectedFence =
 					this.#projectedRecordFences.get(recordKey);
 				const projectedDisposition =
-					projectedFields === undefined
+					projectedFence === undefined
 						? undefined
 						: compareProjectedRecordFields(
-								projectedFields,
+								projectedFence.fields,
 								fields
 							);
+				const projectedClockComparison =
+					projectedFence === undefined
+						? undefined
+						: compareEvidenceToProjectedFence(
+								evidence,
+								projectedFence
+							);
 				if (
-					projectedDisposition === 'complete' &&
-					projectedFields !== undefined
+					projectedFence !== undefined &&
+					(
+						projectedClockComparison === 1 ||
+						(
+							projectedDisposition === 'complete' &&
+							projectedClockComparison === 0
+						)
+					)
 				) {
 					pendingProjectedRecordFenceClears.set(
 						recordKey,
-						projectedFields
+						projectedFence
 					);
 				}
 				const resolution = this.#resolveRecordEvidence(
@@ -1408,7 +1431,8 @@ class DistributedReplicaImpl implements DistributedReplicaApi {
 					pendingRecordScopes,
 					pendingAnonymousRecordClocks,
 					consumedAnonymousRecordClocks,
-					projectedDisposition === 'conflict'
+					projectedDisposition === 'conflict' &&
+						projectedClockComparison !== 1
 				);
 				pendingPathRecords.set(encodedPath, recordKey);
 				return Object.freeze({ evidence, apply: resolution });
@@ -1429,7 +1453,8 @@ class DistributedReplicaImpl implements DistributedReplicaApi {
 					pendingRecordScopes,
 					pendingAnonymousRecordClocks,
 					consumedAnonymousRecordClocks,
-					consumedRecordPaths
+					consumedRecordPaths,
+					pendingProjectedRecordFenceClears
 				);
 				const normalized = normalizeReplicaResult(
 					writer,
@@ -1453,7 +1478,8 @@ class DistributedReplicaImpl implements DistributedReplicaApi {
 					pendingRecordClocks,
 					pendingRecordScopes,
 					pendingAnonymousRecordClocks,
-					consumedAnonymousRecordClocks
+					consumedAnonymousRecordClocks,
+					pendingProjectedRecordFenceClears
 				);
 				return normalized;
 			};
@@ -2886,7 +2912,11 @@ class DistributedReplicaImpl implements DistributedReplicaApi {
 			AnonymousRecordProtocolClock
 		>,
 		consumedAnonymousClocks: Set<DistributedOpaqueString>,
-		consumedPaths: Set<string>
+		consumedPaths: Set<string>,
+		pendingProjectedRecordFenceClears: Map<
+			string,
+			ProjectedRecordFence
+		>
 	): void {
 		for (const evidence of evidenceItems) {
 			const encodedPath =
@@ -2906,6 +2936,24 @@ class DistributedReplicaImpl implements DistributedReplicaApi {
 				continue;
 			}
 			if (encodedPath !== undefined) consumedPaths.add(encodedPath);
+			const projectedFence =
+				this.#projectedRecordFences.get(recordKey);
+			const projectedClockComparison =
+				projectedFence === undefined
+					? undefined
+					: compareEvidenceToProjectedFence(
+							evidence,
+							projectedFence
+						);
+			if (
+				projectedFence !== undefined &&
+				projectedClockComparison === 1
+			) {
+				pendingProjectedRecordFenceClears.set(
+					recordKey,
+					projectedFence
+				);
+			}
 			if (
 				this.#resolveRecordEvidence(
 					recordKey,
@@ -2914,7 +2962,8 @@ class DistributedReplicaImpl implements DistributedReplicaApi {
 					pendingScopes,
 					pendingAnonymousClocks,
 					consumedAnonymousClocks,
-					this.#projectedRecordFences.has(recordKey)
+					projectedFence !== undefined &&
+						projectedClockComparison !== 1
 				)
 			) {
 				writer.tombstoneRecord(
@@ -2937,7 +2986,11 @@ class DistributedReplicaImpl implements DistributedReplicaApi {
 			DistributedOpaqueString,
 			AnonymousRecordProtocolClock
 		>,
-		consumedAnonymousClocks: Set<DistributedOpaqueString>
+		consumedAnonymousClocks: Set<DistributedOpaqueString>,
+		pendingProjectedRecordFenceClears: Map<
+			string,
+			ProjectedRecordFence
+		>
 	): void {
 		for (const evidence of evidenceItems) {
 			const recordKey =
@@ -2967,6 +3020,24 @@ class DistributedReplicaImpl implements DistributedReplicaApi {
 				}
 			}
 			if (certifiedByPath) continue;
+			const projectedFence =
+				this.#projectedRecordFences.get(recordKey);
+			const projectedClockComparison =
+				projectedFence === undefined
+					? undefined
+					: compareEvidenceToProjectedFence(
+							evidence,
+							projectedFence
+						);
+			if (
+				projectedFence !== undefined &&
+				projectedClockComparison === 1
+			) {
+				pendingProjectedRecordFenceClears.set(
+					recordKey,
+					projectedFence
+				);
+			}
 			if (
 				this.#resolveRecordEvidence(
 					recordKey,
@@ -2975,7 +3046,8 @@ class DistributedReplicaImpl implements DistributedReplicaApi {
 					pendingScopes,
 					pendingAnonymousClocks,
 					consumedAnonymousClocks,
-					this.#projectedRecordFences.has(recordKey)
+					projectedFence !== undefined &&
+						projectedClockComparison !== 1
 				)
 			) {
 				// A change-log upsert proves only that a newer row exists. It
@@ -3996,6 +4068,22 @@ function compareRecordClock(
 	return incarnation === 0
 		? compareDistributedDecimal(left.revision, right.revision)
 		: incarnation;
+}
+
+function compareEvidenceToProjectedFence(
+	evidence: DistributedRecordRevision,
+	fence: ProjectedRecordFence
+): -1 | 0 | 1 | undefined {
+	if (evidence.scopeToken !== fence.clock.scopeToken) return undefined;
+	return compareRecordClock(
+		{
+			scopeToken: evidence.scopeToken,
+			incarnation: evidence.incarnation,
+			revision: evidence.revision,
+			tombstone: evidence.tombstone
+		},
+		fence.clock
+	);
 }
 
 function sameRecordClock(

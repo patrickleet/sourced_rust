@@ -453,7 +453,9 @@ fn bearer_from_connection_init(payload: &serde_json::Value) -> Option<String> {
         if s.is_empty() {
             return None;
         }
-        if s.len() > 7 && s[..7].eq_ignore_ascii_case("bearer ") {
+        if s.get(..7)
+            .is_some_and(|prefix| prefix.eq_ignore_ascii_case("bearer "))
+        {
             Some(s.to_string())
         } else {
             Some(format!("Bearer {s}"))
@@ -703,5 +705,21 @@ mod connection_init_tests {
             Some("Bearer z")
         );
         assert!(bearer_from_connection_init(&json!({})).is_none());
+    }
+
+    #[test]
+    fn bearer_from_connection_init_accepts_non_ascii_authorization() {
+        assert_eq!(
+            bearer_from_connection_init(&json!({"authorization": "éééé"})).as_deref(),
+            Some("Bearer éééé")
+        );
+    }
+
+    #[test]
+    fn bearer_from_connection_init_accepts_non_ascii_access_token() {
+        assert_eq!(
+            bearer_from_connection_init(&json!({"access_token": "éééé"})).as_deref(),
+            Some("Bearer éééé")
+        );
     }
 }

@@ -100,9 +100,9 @@ pub use http::{graphiql_page, graphql_router, graphql_router_with_service};
 pub use identity::{
     extract_bearer, map_claims_to_session, public_oidc_identity_from_env,
     public_oidc_identity_from_env_vars, resolve_session, resolve_session_sync,
-    strip_identity_headers, AuthError, ClaimMapConfig, IdentityConfig, IdentityMode, OidcConfig,
-    OidcValidator, TrustedProxyConfig, ValidationError, DEFAULT_IDENTITY_STRIP_HEADERS,
-    UNSET_OIDC_AUDIENCE, UNSET_OIDC_ISSUER,
+    strip_identity_headers, AuthError, ClaimMapConfig, IdentityConfig, IdentityMode,
+    IdentityResolver, OidcConfig, OidcValidator, TrustedProxyConfig, ValidationError,
+    DEFAULT_IDENTITY_STRIP_HEADERS, UNSET_OIDC_AUDIENCE, UNSET_OIDC_ISSUER,
 };
 #[cfg(feature = "graphql")]
 pub use subscribe::ChangeHub;

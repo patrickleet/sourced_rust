@@ -893,11 +893,7 @@ fn insert_client_document_path(
     let canonical = fs::canonicalize(path)
         .map_err(|error| format!("resolve GraphQL document {}: {error}", path.display()))?;
     if !canonical.is_file() {
-        return Err(format!(
-            "GraphQL document {} is not a file",
-            path.display()
-        )
-        .into());
+        return Err(format!("GraphQL document {} is not a file", path.display()).into());
     }
     let relative = canonical.strip_prefix(project_root).map_err(|_| {
         format!(

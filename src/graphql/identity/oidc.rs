@@ -14,6 +14,7 @@ use super::claims::{map_claims_to_session_with_provenance, ClaimMapConfig};
 use crate::microsvc::Session;
 
 const DEFAULT_JWKS_CACHE_TTL: Duration = Duration::from_secs(300);
+const DEFAULT_JWKS_FORCED_REFRESH_COOLDOWN: Duration = Duration::from_secs(5);
 const OIDC_HTTP_TIMEOUT: Duration = Duration::from_secs(5);
 
 /// OIDC validation configuration (behavior normative; field names free).
@@ -27,6 +28,8 @@ pub struct OidcConfig {
     pub jwks_uri: Option<String>,
     /// How long live JWKS remain fresh before one request refreshes the cache.
     pub jwks_cache_ttl: Duration,
+    /// Minimum interval between refreshes forced by tokens with unknown key IDs.
+    pub jwks_forced_refresh_cooldown: Duration,
     pub clock_skew: Duration,
     pub alg_allowlist: Vec<String>,
     /// When true (default), missing Bearer → Unauthorized.
@@ -50,6 +53,7 @@ impl OidcConfig {
             extra_audiences: Vec::new(),
             jwks_uri: None,
             jwks_cache_ttl: DEFAULT_JWKS_CACHE_TTL,
+            jwks_forced_refresh_cooldown: DEFAULT_JWKS_FORCED_REFRESH_COOLDOWN,
             clock_skew: Duration::from_secs(60),
             alg_allowlist: vec!["RS256".into(), "ES256".into()],
             require_auth: true,
@@ -256,6 +260,7 @@ struct JwkKey {
 struct JwksCache {
     keys: HashMap<String, DecodingKey>,
     refreshed_at: Option<Instant>,
+    last_forced_refresh: Option<Instant>,
     generation: u64,
 }
 
@@ -284,6 +289,7 @@ impl OidcValidator {
             cache: RwLock::new(JwksCache {
                 keys: HashMap::new(),
                 refreshed_at: None,
+                last_forced_refresh: None,
                 generation: 0,
             }),
             refresh: AsyncMutex::new(()),
@@ -389,10 +395,19 @@ impl OidcValidator {
     ) -> Result<(), ValidationError> {
         let _refresh = self.refresh.lock().await;
         {
-            let cache = self.cache.read().map_err(|_| ValidationError::Jwks)?;
-            if cache.generation != observed_generation
-                || (!unknown_kid && cache.is_fresh(self.config.jwks_cache_ttl))
-            {
+            let mut cache = self.cache.write().map_err(|_| ValidationError::Jwks)?;
+            if cache.generation != observed_generation {
+                return Ok(());
+            }
+            if unknown_kid {
+                if cache.last_forced_refresh.is_some_and(|last_refresh| {
+                    last_refresh.elapsed() < self.config.jwks_forced_refresh_cooldown
+                }) {
+                    return Ok(());
+                }
+                // Bound outbound work even when the attempted refresh fails.
+                cache.last_forced_refresh = Some(Instant::now());
+            } else if cache.is_fresh(self.config.jwks_cache_ttl) {
                 return Ok(());
             }
         }
