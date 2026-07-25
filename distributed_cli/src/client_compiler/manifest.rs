@@ -2890,11 +2890,20 @@ fn validate_projectors(
                 format!("duplicate manifest projector `{}`", projector.name),
             ));
         }
-        if projector.facts.is_empty() || projector.models.is_empty() {
+        if projector.models.is_empty() {
             return Err(ClientCompileError::manifest(
                 "client.manifest.projector_inventory",
                 format!(
-                    "projector `{}` must declare at least one fact and model",
+                    "projection owner `{}` must declare at least one model",
+                    projector.name
+                ),
+            ));
+        }
+        if projector.facts.is_empty() && projector.causal_confirmation {
+            return Err(ClientCompileError::manifest(
+                "client.manifest.projector_inventory",
+                format!(
+                    "direct-only projection owner `{}` cannot provide asynchronous confirmation",
                     projector.name
                 ),
             ));

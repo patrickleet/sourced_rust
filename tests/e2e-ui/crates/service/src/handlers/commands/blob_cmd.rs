@@ -1,12 +1,12 @@
 //! Shared load + causal staging path for blob game commands.
 //!
 //! The returned [`BlobGameView`] is staged through
-//! [`CausalCommandContext::projected`], so the aggregate, outbox fact, command
-//! ledger, and exact projected row commit atomically.
+//! [`CausalCommandContext::projected`], so the aggregate, command ledger, and
+//! exact projected row commit atomically. The canonical game row has no
+//! asynchronous fact consumer or second writer.
 
 use blob_domain::{BlobGame, BlobGameFact};
 use distributed::microsvc::{AggregateCheckout, CausalCommandContext, HandlerError};
-use distributed::OutboxMessage;
 
 use crate::handlers::util::rejected;
 
@@ -19,23 +19,13 @@ pub async fn load_game(
         .ok_or_else(|| HandlerError::NotFound(game_id.to_string()))
 }
 
-/// Stage a domain event and its aggregate for the framework-owned causal
-/// commit. The caller seals the returned fact into the direct projection.
-pub fn stage_blob_event(
+/// Stage the aggregate for the framework-owned causal commit. The caller maps
+/// the returned snapshot into the direct projection.
+pub fn stage_blob(
     ctx: &CausalCommandContext<'_, BlobGame>,
     game: AggregateCheckout<BlobGame>,
-    event_name: &str,
 ) -> Result<BlobGameFact, HandlerError> {
     let fact = BlobGameFact::from_game(&game);
-    let payload =
-        serde_json::to_vec(&fact).map_err(|error| HandlerError::Other(Box::new(error)))?;
-    let outbox = OutboxMessage::create(
-        format!("{}:{}:{}", game.game_id, event_name, game.entity.version()),
-        event_name,
-        payload,
-    )
-    .map_err(|e| HandlerError::Other(Box::new(e)))?;
-    ctx.stage_outbox(outbox)?;
     ctx.stage(game)?;
     Ok(fact)
 }

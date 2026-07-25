@@ -501,7 +501,7 @@ fn projected_manifest() -> JsonValue {
     value["projectors"] = json!([{
         "version": 1,
         "name": "todos",
-        "facts": ["TodoProjected"],
+        "facts": [],
         "models": ["Todo"],
         "dependencies": ["todo_rows"],
         "causal_confirmation": false
@@ -2592,6 +2592,8 @@ fn projected_command_requires_exact_role_safe_direct_projection() {
     let value = projected_manifest();
     let parsed = ClientManifest::parse(value, &ClientSurfaceSelector::role("user"))
         .expect("valid projected direct target");
+    assert!(parsed.projectors[0].facts.is_empty());
+    assert!(!parsed.projectors[0].causal_confirmation);
     let direct = parsed.commands[0]
         .extensions
         .direct_projection
@@ -2632,6 +2634,16 @@ fn projected_command_requires_exact_role_safe_direct_projection() {
     let error = ClientManifest::parse(non_projected, &ClientSurfaceSelector::role("user"))
         .expect_err("accepted commands cannot carry direct projection metadata");
     assert_eq!(error.code, "client.manifest.direct_projection_unexpected");
+
+    let mut impossible_confirmation = projected_manifest();
+    impossible_confirmation["projectors"][0]["causal_confirmation"] = json!(true);
+    refresh_schema_fingerprint(&mut impossible_confirmation);
+    let error = ClientManifest::parse(
+        impossible_confirmation,
+        &ClientSurfaceSelector::role("user"),
+    )
+    .expect_err("a direct-only owner cannot confirm asynchronous work");
+    assert_eq!(error.code, "client.manifest.projector_inventory");
 
     let mut embedded = projected_manifest();
     embedded["models"][0]["normalization"] = json!({"kind": "embedded"});
