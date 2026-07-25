@@ -55,9 +55,9 @@ pub use sdl::{
 pub use surface::{
     build_surface, role_grants_for_role, surface_for_application, surface_for_role, RoleGrant,
     RootField, RootKind, Surface, SurfaceArgument, SurfaceArgumentKind, SurfaceCommand,
-    SurfaceCommandShape, SurfaceDialect, SurfaceModel, SurfaceOptions, SurfaceProjector,
-    SurfaceRelationshipAggregate, SurfaceRelationshipKeys, SurfaceRowPolicy, SurfaceTypeDef,
-    SurfaceTypeField,
+    SurfaceCommandShape, SurfaceDialect, SurfaceDirectProjection, SurfaceModel, SurfaceOptions,
+    SurfaceProjectionOwner, SurfaceProjector, SurfaceRelationshipAggregate,
+    SurfaceRelationshipKeys, SurfaceRowPolicy, SurfaceTypeDef, SurfaceTypeField,
 };
 
 pub use filter::{claim, col, lit, rel, ClaimRef, ColRef, FilterExpr, LitValue, Operand};

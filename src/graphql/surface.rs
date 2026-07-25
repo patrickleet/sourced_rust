@@ -8,6 +8,7 @@
 //! can share the same IR path.
 
 use std::collections::{BTreeMap, BTreeSet};
+use std::ops::Deref;
 
 use sha2::{Digest, Sha256};
 
@@ -237,37 +238,76 @@ pub struct SurfaceCommand {
     pub(crate) confirmation_unavailable: bool,
 }
 
-/// Projector topology declaration. Typed consistency/effects live on each
-/// executable command contract rather than in this topology record.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum SurfaceProjectionOwnerKind {
+    Direct,
+    Async,
+}
+
+/// Projection topology and complete read-model ownership declaration.
+///
+/// Construct an asynchronous owner through [`SurfaceProjector`] or a
+/// same-transaction-only owner through [`SurfaceDirectProjection`]. Keeping
+/// those public builder types separate prevents a direct owner from being
+/// registered as an asynchronous service route.
 #[derive(Clone, Debug, PartialEq, Eq)]
-pub struct SurfaceProjector {
+pub struct SurfaceProjectionOwner {
     pub name: String,
     pub facts: Vec<String>,
     pub models: Vec<String>,
     pub dependencies: Vec<String>,
     pub(crate) change_epoch: Option<String>,
     pub(crate) partition: ProjectionPartitionSpec,
+    kind: SurfaceProjectionOwnerKind,
+}
+
+impl SurfaceProjectionOwner {
+    pub fn is_direct(&self) -> bool {
+        matches!(self.kind, SurfaceProjectionOwnerKind::Direct)
+    }
+}
+
+/// Asynchronous fact-consuming projection declaration.
+///
+/// This is the only projection declaration accepted by
+/// [`crate::microsvc::Routes::causal_projector`]. Use
+/// [`SurfaceDirectProjection`] when `Projected<T>` owns the row entirely
+/// inside the command transaction.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct SurfaceProjector {
+    owner: SurfaceProjectionOwner,
+}
+
+impl Deref for SurfaceProjector {
+    type Target = SurfaceProjectionOwner;
+
+    fn deref(&self) -> &Self::Target {
+        &self.owner
+    }
 }
 
 impl SurfaceProjector {
     pub fn new(name: impl Into<String>) -> Self {
         Self {
-            name: name.into(),
-            facts: Vec::new(),
-            models: Vec::new(),
-            dependencies: Vec::new(),
-            change_epoch: None,
-            partition: ProjectionPartitionSpec::unit(),
+            owner: SurfaceProjectionOwner {
+                name: name.into(),
+                facts: Vec::new(),
+                models: Vec::new(),
+                dependencies: Vec::new(),
+                change_epoch: None,
+                partition: ProjectionPartitionSpec::unit(),
+                kind: SurfaceProjectionOwnerKind::Async,
+            },
         }
     }
 
     pub fn facts(mut self, facts: impl IntoIterator<Item = impl Into<String>>) -> Self {
-        self.facts = facts.into_iter().map(Into::into).collect();
+        self.owner.facts = facts.into_iter().map(Into::into).collect();
         self
     }
 
     pub fn models(mut self, models: impl IntoIterator<Item = impl Into<String>>) -> Self {
-        self.models = models.into_iter().map(Into::into).collect();
+        self.owner.models = models.into_iter().map(Into::into).collect();
         self
     }
 
@@ -276,7 +316,7 @@ impl SurfaceProjector {
     /// Epoch contents have no ordering meaning. They fence live resume and
     /// same-transaction record-change evidence across projector rebuilds.
     pub fn change_epoch(mut self, epoch: impl Into<String>) -> Self {
-        self.change_epoch = Some(epoch.into());
+        self.owner.change_epoch = Some(epoch.into());
         self
     }
 
@@ -286,13 +326,13 @@ impl SurfaceProjector {
     /// hashed into the durable topology. Reuse this exact projector value for
     /// GraphQL/direct binding and the asynchronous runtime.
     pub fn partition_by(mut self, path: impl IntoIterator<Item = impl Into<String>>) -> Self {
-        self.partition = ProjectionPartitionSpec::input_path(path);
+        self.owner.partition = ProjectionPartitionSpec::input_path(path);
         self
     }
 
     /// Use one deterministic constant partition (including explicit JSON null).
     pub fn partition_constant(mut self, value: serde_json::Value) -> Self {
-        self.partition = ProjectionPartitionSpec::constant(value);
+        self.owner.partition = ProjectionPartitionSpec::constant(value);
         self
     }
 
@@ -305,10 +345,10 @@ impl SurfaceProjector {
         key: TypedEffectKey<M>,
     ) -> CompiledProjectionConfirmation<I> {
         compiled_projection_confirmation(
-            &self.name,
-            &self.facts,
-            &self.models,
-            &self.partition,
+            &self.owner.name,
+            &self.owner.facts,
+            &self.owner.models,
+            &self.owner.partition,
             key,
         )
     }
@@ -321,12 +361,83 @@ impl SurfaceProjector {
         M: crate::read_model::RelationalReadModel + 'static,
     {
         compiled_direct_projection_target(
-            &self.name,
-            &self.facts,
-            &self.models,
-            &self.partition,
-            self.change_epoch.as_deref(),
+            &self.owner.name,
+            &self.owner.facts,
+            &self.owner.models,
+            &self.owner.partition,
+            self.owner.change_epoch.as_deref(),
         )
+    }
+}
+
+impl From<SurfaceProjector> for SurfaceProjectionOwner {
+    fn from(projector: SurfaceProjector) -> Self {
+        projector.owner
+    }
+}
+
+/// Same-transaction-only projection owner for `Projected<T>` commands.
+///
+/// It intentionally has no fact inventory and cannot be passed to an
+/// asynchronous projector route. The owner still supplies the complete model
+/// topology, partition codec, and change epoch used by direct commits, query
+/// evidence, live changes, and generated clients.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct SurfaceDirectProjection {
+    owner: SurfaceProjectionOwner,
+}
+
+impl SurfaceDirectProjection {
+    pub fn new(name: impl Into<String>) -> Self {
+        Self {
+            owner: SurfaceProjectionOwner {
+                name: name.into(),
+                facts: Vec::new(),
+                models: Vec::new(),
+                dependencies: Vec::new(),
+                change_epoch: None,
+                partition: ProjectionPartitionSpec::unit(),
+                kind: SurfaceProjectionOwnerKind::Direct,
+            },
+        }
+    }
+
+    pub fn models(mut self, models: impl IntoIterator<Item = impl Into<String>>) -> Self {
+        self.owner.models = models.into_iter().map(Into::into).collect();
+        self
+    }
+
+    /// Add one compile-checked relational model to this owner's inventory.
+    pub fn model<M>(mut self) -> Self
+    where
+        M: crate::read_model::RelationalReadModel,
+    {
+        self.owner.models.push(M::schema().model_name.clone());
+        self
+    }
+
+    /// Register the opaque change-log epoch for direct record evidence.
+    pub fn change_epoch(mut self, epoch: impl Into<String>) -> Self {
+        self.owner.change_epoch = Some(epoch.into());
+        self
+    }
+
+    /// Derive a stable direct-projection partition from a command input path.
+    pub fn partition_by(mut self, path: impl IntoIterator<Item = impl Into<String>>) -> Self {
+        self.owner.partition = ProjectionPartitionSpec::input_path(path);
+        self
+    }
+
+    /// Use one deterministic constant partition (including explicit JSON null).
+    pub fn partition_constant(mut self, value: serde_json::Value) -> Self {
+        self.owner.partition = ProjectionPartitionSpec::constant(value);
+        self
+    }
+}
+
+impl From<SurfaceDirectProjection> for SurfaceProjectionOwner {
+    fn from(projection: SurfaceDirectProjection) -> Self {
+        projection.owner
     }
 }
 
@@ -402,7 +513,7 @@ pub struct Surface {
     /// Distinguishes an explicitly attached empty registry from a Surface that
     /// has not selected its one authoritative command source yet.
     pub(crate) commands_attached: bool,
-    pub(crate) projectors: Vec<SurfaceProjector>,
+    pub(crate) projectors: Vec<SurfaceProjectionOwner>,
     pub(crate) projectors_attached: bool,
     /// Non-serializable provenance proving typed commands came from one
     /// executable Service inventory rather than a lookalike command list.
@@ -454,8 +565,16 @@ impl Surface {
         &self.commands
     }
 
-    pub fn projectors(&self) -> &[SurfaceProjector] {
+    pub fn projection_owners(&self) -> &[SurfaceProjectionOwner] {
         &self.projectors
+    }
+
+    /// Backward-compatible name for the complete projection-owner registry.
+    ///
+    /// Direct-only owners are included even though they are not asynchronous
+    /// projectors.
+    pub fn projectors(&self) -> &[SurfaceProjectionOwner] {
+        self.projection_owners()
     }
 
     /// Attach the crate-private typed command inventory to this unselected
@@ -528,12 +647,21 @@ impl Surface {
     /// Attach and validate projector topology against the already-built model
     /// graph, deriving physical dependencies exactly once.
     pub fn with_projectors(
-        mut self,
+        self,
         projectors: impl IntoIterator<Item = SurfaceProjector>,
+    ) -> Result<Self, String> {
+        self.with_projection_owners(projectors.into_iter().map(Into::into))
+    }
+
+    /// Attach and validate a mixed registry of asynchronous projectors and
+    /// same-transaction-only projection owners.
+    pub fn with_projection_owners(
+        mut self,
+        projectors: impl IntoIterator<Item = SurfaceProjectionOwner>,
     ) -> Result<Self, String> {
         if !matches!(self.selection, SurfaceSelection::Catalog) {
             return Err(
-                "projectors can only be attached to the unselected catalog Surface before authorization selection"
+                "projection owners can only be attached to the unselected catalog Surface before authorization selection"
                     .into(),
             );
         }
@@ -546,11 +674,20 @@ impl Surface {
             if !names.insert(projector.name.clone()) {
                 return Err(format!("duplicate projector name `{}`", projector.name));
             }
-            if projector.facts.is_empty() {
-                return Err(format!(
-                    "projector `{}` must declare at least one fact",
-                    projector.name
-                ));
+            match projector.kind {
+                SurfaceProjectionOwnerKind::Async if projector.facts.is_empty() => {
+                    return Err(format!(
+                        "projector `{}` must declare at least one fact",
+                        projector.name
+                    ));
+                }
+                SurfaceProjectionOwnerKind::Direct if !projector.facts.is_empty() => {
+                    return Err(format!(
+                        "direct projection owner `{}` cannot declare asynchronous facts",
+                        projector.name
+                    ));
+                }
+                SurfaceProjectionOwnerKind::Direct | SurfaceProjectionOwnerKind::Async => {}
             }
             validate_nonempty_unique_ids(
                 &projector.facts,
@@ -1172,13 +1309,14 @@ pub fn surface_for_role(
             .iter()
             .filter_map(|model| models.get(model).map(|model| model.table_name.clone()))
             .collect();
-        projectors.push(SurfaceProjector {
+        projectors.push(SurfaceProjectionOwner {
             name: projector.name.clone(),
             facts: projector.facts.clone(),
             models: projector.models.clone(),
             dependencies,
             change_epoch: projector.change_epoch.clone(),
             partition: projector.partition.clone(),
+            kind: projector.kind,
         });
     }
     sanitize_command_confirmations(&mut commands, &projectors, &models);
@@ -2042,7 +2180,7 @@ fn validate_command_confirmations(
 
 fn bind_surface_direct_projection_targets(
     commands: &mut [SurfaceCommand],
-    projectors: &[SurfaceProjector],
+    projectors: &[SurfaceProjectionOwner],
     models: &BTreeMap<String, SurfaceModel>,
 ) -> Result<(), String> {
     let mut compiled_projectors = BTreeMap::new();
@@ -2201,7 +2339,7 @@ fn bind_surface_direct_projection_targets(
 
 fn validate_command_confirmation_topology(
     commands: &[SurfaceCommand],
-    projectors: &[SurfaceProjector],
+    projectors: &[SurfaceProjectionOwner],
     models: &BTreeMap<String, SurfaceModel>,
 ) -> Result<(), String> {
     let mut compiled_projectors = BTreeMap::new();
@@ -2814,7 +2952,7 @@ fn sanitize_command_effects_for_models(
 
 fn sanitize_command_confirmations(
     commands: &mut [SurfaceCommand],
-    projectors: &[SurfaceProjector],
+    projectors: &[SurfaceProjectionOwner],
     models: &BTreeMap<String, SurfaceModel>,
 ) {
     for command in commands {
@@ -3499,6 +3637,31 @@ mod tests {
             .with_projectors([SurfaceProjector::new("orders").facts(["order.changed"])])
             .unwrap_err();
         assert!(no_models.contains("must declare at least one model"));
+    }
+
+    #[test]
+    fn direct_projection_owner_requires_models_but_not_facts() {
+        let surface = build_surface(&[orders()], &SurfaceOptions::sqlite())
+            .unwrap()
+            .with_projection_owners([SurfaceDirectProjection::new("orders")
+                .models(["OrderView"])
+                .change_epoch("orders-v1")
+                .into()])
+            .unwrap();
+        let [owner] = surface.projection_owners() else {
+            panic!("one direct owner should be retained");
+        };
+        assert!(owner.is_direct());
+        assert!(owner.facts.is_empty());
+        assert_eq!(owner.models, vec!["OrderView".to_string()]);
+
+        let error = build_surface(&[orders()], &SurfaceOptions::sqlite())
+            .unwrap()
+            .with_projection_owners([SurfaceDirectProjection::new("orders")
+                .change_epoch("orders-v1")
+                .into()])
+            .unwrap_err();
+        assert!(error.contains("must declare at least one model"));
     }
 
     #[test]

@@ -823,7 +823,7 @@ fn query_footprint_has_record_evidence(surface: &Surface) -> bool {
 
 fn projector_partition_matches_authorization(
     surface: &Surface,
-    projector: &super::surface::SurfaceProjector,
+    projector: &super::surface::SurfaceProjectionOwner,
 ) -> bool {
     projector.models.iter().all(|model| {
         surface

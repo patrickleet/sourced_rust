@@ -6,7 +6,7 @@ use distributed::microsvc::{CausalCommandContext, HandlerError};
 use e2e_readmodels::{map_blob_fact, BlobGameView};
 use serde::Deserialize;
 
-use crate::handlers::commands::blob_cmd::{load_game, map_domain, stage_blob_event};
+use crate::handlers::commands::blob_cmd::{load_game, map_domain, stage_blob};
 
 pub const COMMAND: &str = "blob.start_level";
 
@@ -24,6 +24,6 @@ pub async fn handle(
     // Fresh passable layout each level (like original generateLevel)
     game.start_next_generated_level(&owner)
         .map_err(map_domain)?;
-    let fact = stage_blob_event(ctx, game, "blob.level_started")?;
+    let fact = stage_blob(ctx, game)?;
     ctx.projected(map_blob_fact(&fact))
 }

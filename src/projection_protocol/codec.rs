@@ -195,11 +195,12 @@ impl CompiledProjectionTopology {
 /// Compile the exact protocol identity and model/table ownership for a
 /// projector declaration.
 ///
-/// The digest includes accepted fact names, a fixed version of the canonical
-/// partition/key codec, and each complete registered table schema. It therefore
-/// changes whenever a model's physical table, field/column mapping, primary-key
-/// scope, or other schema contract changes. Callers may supply schemas in any
-/// order; the compiler sorts facts and models and rejects duplicates.
+/// The digest includes the accepted fact inventory (empty for a direct-only
+/// owner), a fixed version of the canonical partition/key codec, and each
+/// complete registered table schema. It therefore changes whenever a model's
+/// physical table, field/column mapping, primary-key scope, or other schema
+/// contract changes. Callers may supply schemas in any order; the compiler
+/// sorts facts and models and rejects duplicates.
 pub(crate) fn compile_projection_topology<'a>(
     name: &str,
     facts: &[String],
@@ -208,11 +209,6 @@ pub(crate) fn compile_projection_topology<'a>(
     schemas: impl IntoIterator<Item = &'a TableSchema>,
 ) -> Result<(ProjectorTopologyId, Vec<ProjectionModelOwnership>), ProjectionProtocolError> {
     partition.validate()?;
-    if facts.is_empty() {
-        return Err(ProjectionProtocolError::InvalidBatch(format!(
-            "projector `{name}` must declare at least one accepted fact"
-        )));
-    }
     let mut facts = facts.to_vec();
     facts.sort();
     if facts.iter().any(|fact| fact.trim().is_empty()) {

@@ -3466,12 +3466,12 @@ mod tests {
     use super::*;
     #[cfg(feature = "graphql")]
     use crate::command_ledger::CausalGetStream;
-    #[cfg(feature = "graphql")]
-    use crate::graphql::SurfaceProjector;
     use crate::graphql::{
         typed_command, Accepted, GraphqlInputType, GraphqlOutputType, GraphqlTypeDef,
         GraphqlTypeField,
     };
+    #[cfg(feature = "graphql")]
+    use crate::graphql::{SurfaceDirectProjection, SurfaceProjector};
     #[cfg(feature = "graphql")]
     use crate::projection_protocol::{
         ProjectionChangeCursor, ProjectionChangeRead, ProjectionCheckpoint, ProjectionCommitBatch,
@@ -5067,12 +5067,9 @@ mod tests {
                     },
                 ),
         );
-        let projector = SurfaceProjector::new("project_causal_direct")
-            .facts(["causal.recorded"])
-            .models([
-                "CausalProjectionObligationView",
-                "CausalProjectionSiblingView",
-            ])
+        let projection = SurfaceDirectProjection::new("project_causal_direct")
+            .model::<CausalProjectionObligationView>()
+            .model::<CausalProjectionSiblingView>()
             .change_epoch("causal-direct-v1");
         let engine = crate::graphql::GraphqlEngine::builder(&repository)
             .protocol_token_key(TEST_PROTOCOL_TOKEN_KEY)
@@ -5085,7 +5082,7 @@ mod tests {
                     .grant("anonymous", crate::graphql::read().all_columns()),
             )
             .service(&service)
-            .client_projectors([projector])
+            .client_projection_owners([projection.into()])
             .build()
             .expect("ordinary Projected<M> declaration should auto-bind its unique owner");
         let service = service
@@ -5190,6 +5187,27 @@ mod tests {
         assert_eq!(evidence["records"].as_array().unwrap().len(), 1);
         assert_eq!(evidence["changes"].as_array().unwrap().len(), 1);
         assert_eq!(evidence["observations"].as_array().unwrap().len(), 1);
+        let async_input_rows: i64 = sqlx::query_scalar(
+            "SELECT \
+             (SELECT COUNT(*) FROM projection_input_identities) + \
+             (SELECT COUNT(*) FROM projection_input_cursors) + \
+             (SELECT COUNT(*) FROM projection_input_receipts)",
+        )
+        .fetch_one(repository.pool())
+        .await
+        .unwrap();
+        assert_eq!(
+            async_input_rows, 0,
+            "a direct-only projection must not create async input identities, cursors, or receipts"
+        );
+        let outbox_rows: i64 = sqlx::query_scalar("SELECT COUNT(*) FROM outbox_messages")
+            .fetch_one(repository.pool())
+            .await
+            .unwrap();
+        assert_eq!(
+            outbox_rows, 0,
+            "a direct-only projection must not require an outbox fact"
+        );
 
         let replayed = service
             .dispatch_causal(
