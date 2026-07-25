@@ -284,6 +284,10 @@ class DistributedReplicaImpl implements DistributedReplicaApi {
 	readonly #operationGenerations = new Map<string, number>();
 	readonly #recordClocks = new Map<string, RecordProtocolClock>();
 	readonly #recordKeysByScope = new Map<DistributedOpaqueString, string>();
+	readonly #projectedRecordFences = new Map<
+		string,
+		Readonly<Record<string, ReplicaValue>>
+	>();
 	readonly #anonymousRecordClocks = new Map<
 		DistributedOpaqueString,
 		AnonymousRecordProtocolClock
@@ -486,6 +490,18 @@ class DistributedReplicaImpl implements DistributedReplicaApi {
 		}
 		for (const scopeToken of consumedAnonymousRecordClocks) {
 			this.#anonymousRecordClocks.delete(scopeToken);
+		}
+		if (apply) {
+			/*
+			 * The command result is authoritative before an asynchronous read
+			 * model necessarily catches up. Retain its complete row as a write
+			 * fence until a query echoes the same fields; a numerically later
+			 * SQL revision can still contain an older projection.
+			 */
+			this.#projectedRecordFences.set(
+				recordKey,
+				Object.freeze({ ...fields })
+			);
 		}
 	}
 
@@ -1310,6 +1326,10 @@ class DistributedReplicaImpl implements DistributedReplicaApi {
 			DistributedOpaqueString
 		>();
 		const pendingPathRecords = new Map<string, string>();
+		const pendingProjectedRecordFenceClears = new Map<
+			string,
+			Readonly<Record<string, ReplicaValue>>
+		>();
 		const consumedRecordPaths = new Set<string>();
 		const observationsAdmissible =
 			snapshot.recordsComplete &&
@@ -1339,7 +1359,8 @@ class DistributedReplicaImpl implements DistributedReplicaApi {
 			record: (
 				path,
 				model,
-				recordKey
+				recordKey,
+				fields
 			): ReplicaProtocolRecordResolution | undefined => {
 				const encodedPath = responsePathKey(path);
 				const evidence = recordEvidence.byPath.get(encodedPath);
@@ -1362,13 +1383,32 @@ class DistributedReplicaImpl implements DistributedReplicaApi {
 					);
 				}
 				consumedRecordPaths.add(encodedPath);
+				const projectedFields =
+					this.#projectedRecordFences.get(recordKey);
+				const projectedDisposition =
+					projectedFields === undefined
+						? undefined
+						: compareProjectedRecordFields(
+								projectedFields,
+								fields
+							);
+				if (
+					projectedDisposition === 'complete' &&
+					projectedFields !== undefined
+				) {
+					pendingProjectedRecordFenceClears.set(
+						recordKey,
+						projectedFields
+					);
+				}
 				const resolution = this.#resolveRecordEvidence(
 					recordKey,
 					evidence,
 					pendingRecordClocks,
 					pendingRecordScopes,
 					pendingAnonymousRecordClocks,
-					consumedAnonymousRecordClocks
+					consumedAnonymousRecordClocks,
+					projectedDisposition === 'conflict'
 				);
 				pendingPathRecords.set(encodedPath, recordKey);
 				return Object.freeze({ evidence, apply: resolution });
@@ -1457,6 +1497,11 @@ class DistributedReplicaImpl implements DistributedReplicaApi {
 		}
 		for (const [path, recordKey] of pendingPathRecords) {
 			operationState.pathRecords.set(path, recordKey);
+		}
+		for (const [recordKey, projectedFields] of pendingProjectedRecordFenceClears) {
+			if (this.#projectedRecordFences.get(recordKey) === projectedFields) {
+				this.#projectedRecordFences.delete(recordKey);
+			}
 		}
 		for (const [id, receipt] of receiptPlan.updates) {
 			if (receiptPlan.satisfied.includes(id)) {
@@ -2157,6 +2202,7 @@ class DistributedReplicaImpl implements DistributedReplicaApi {
 		this.#operationGenerations.clear();
 		this.#recordClocks.clear();
 		this.#recordKeysByScope.clear();
+		this.#projectedRecordFences.clear();
 		this.#anonymousRecordClocks.clear();
 		this.#optimisticReceipts.clear();
 		this.#diagnosticLayers?.clear();
@@ -2668,7 +2714,8 @@ class DistributedReplicaImpl implements DistributedReplicaApi {
 			DistributedOpaqueString,
 			AnonymousRecordProtocolClock
 		>,
-		consumedAnonymousClocks: Set<DistributedOpaqueString>
+		consumedAnonymousClocks: Set<DistributedOpaqueString>,
+		projectedConflict = false
 	): boolean {
 		if (!recordKeyMatchesModel(recordKey, evidence.model)) {
 			protocolInvalid('extensions.distributed.snapshot.records.model');
@@ -2734,6 +2781,10 @@ class DistributedReplicaImpl implements DistributedReplicaApi {
 		}
 		if (current.scopeToken !== incoming.scopeToken) {
 			protocolInvalid('extensions.distributed.snapshot.records.scopeToken');
+		}
+		if (projectedConflict) {
+			pendingClocks.set(recordKey, current);
+			return false;
 		}
 		const comparison = compareRecordClock(incoming, current);
 		if (comparison < 0) {
@@ -2862,7 +2913,8 @@ class DistributedReplicaImpl implements DistributedReplicaApi {
 					pendingClocks,
 					pendingScopes,
 					pendingAnonymousClocks,
-					consumedAnonymousClocks
+					consumedAnonymousClocks,
+					this.#projectedRecordFences.has(recordKey)
 				)
 			) {
 				writer.tombstoneRecord(
@@ -2922,7 +2974,8 @@ class DistributedReplicaImpl implements DistributedReplicaApi {
 					pendingClocks,
 					pendingScopes,
 					pendingAnonymousClocks,
-					consumedAnonymousClocks
+					consumedAnonymousClocks,
+					this.#projectedRecordFences.has(recordKey)
 				)
 			) {
 				// A change-log upsert proves only that a newer row exists. It
@@ -5369,6 +5422,21 @@ function protocolOperationSource(
 	source: ReplicaWriteSource
 ): OperationProtocolSource {
 	return source === 'live' ? 'live' : 'query';
+}
+
+function compareProjectedRecordFields(
+	projected: Readonly<Record<string, ReplicaValue>>,
+	incoming: Readonly<Record<string, CacheValue>>
+): 'conflict' | 'partial' | 'complete' {
+	let complete = true;
+	for (const [field, value] of Object.entries(projected)) {
+		if (!Object.prototype.hasOwnProperty.call(incoming, field)) {
+			complete = false;
+			continue;
+		}
+		if (!deepEqual(value, incoming[field])) return 'conflict';
+	}
+	return complete ? 'complete' : 'partial';
 }
 
 function deepEqual(left: unknown, right: unknown): boolean {

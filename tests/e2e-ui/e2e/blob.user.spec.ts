@@ -164,7 +164,7 @@ test.describe('blob game (alice)', () => {
 		expect(await cells.count()).toBeGreaterThanOrEqual(16);
 	});
 
-	test('an older revalidation cannot roll back a newer projected move', async ({ page }) => {
+	test('a revalidation started before a projected move cannot roll it back with later evidence', async ({ page }) => {
 		await page.goto('/blob');
 		await expect(page.locator('[data-blob-hydrated="1"]')).toBeVisible({ timeout: 15_000 });
 		const start = page.getByTestId('blob-start-game');
@@ -199,6 +199,8 @@ test.describe('blob game (alice)', () => {
 		});
 		let held = false;
 		let released = false;
+		let raisedHeldRevision = false;
+		let newerPlayerLabel: string | null = null;
 
 		await page.route('**/graphql', async (route) => {
 			const requestBody = route.request().postData() ?? '';
@@ -211,18 +213,54 @@ test.describe('blob game (alice)', () => {
 				data?: {
 					blob_games?: Array<{ game_id: string; map_json: string }>;
 				};
+				extensions?: {
+					distributed?: {
+						snapshot?: {
+							records?: Array<{
+								path?: Array<string | number>;
+								revision: string;
+							}>;
+						};
+					};
+				};
 			};
-			const game = payload.data?.blob_games?.find((row) => row.game_id === gameId);
-			let playerColumn = -1;
+			const gameIndex =
+				payload.data?.blob_games?.findIndex((row) => row.game_id === gameId) ?? -1;
+			const game = gameIndex < 0 ? undefined : payload.data?.blob_games?.[gameIndex];
+			let playerLabel: string | null = null;
 			if (game !== undefined) {
 				const rows = JSON.parse(game.map_json) as number[][];
-				playerColumn = rows[0]?.indexOf(9) ?? -1;
+				for (const [rowIndex, row] of rows.entries()) {
+					const columnIndex = row.indexOf(9);
+					if (columnIndex >= 0) {
+						playerLabel = `r${rowIndex} c${columnIndex}`;
+						break;
+					}
+				}
 			}
-			if (!held && playerColumn === 2) {
+			if (!held && playerLabel === 'r0 c1') {
 				held = true;
+				const gameRecord = payload.extensions?.distributed?.snapshot?.records?.find(
+					(record) =>
+						record.path?.[0] === 'blob_games' &&
+						Number(record.path[1]) === gameIndex
+				);
+				if (gameRecord !== undefined) {
+					/*
+					 * Reproduce the server race: this SQL body was read before
+					 * the next command, but response evidence was issued after
+					 * it and is therefore numerically newer.
+					 */
+					gameRecord.revision = '999999999999999999';
+					raisedHeldRevision = true;
+				}
 				heldQueryReady();
 				await heldQueryRelease;
-			} else if (released && playerColumn >= 3) {
+			} else if (
+				released &&
+				newerPlayerLabel !== null &&
+				playerLabel === newerPlayerLabel
+			) {
 				newerQueryReady();
 			}
 			await route.fulfill({
@@ -236,13 +274,12 @@ test.describe('blob game (alice)', () => {
 		});
 
 		await page.evaluate(() => {
-			const samples: number[] = [];
+			const samples: string[] = [];
 			const sample = () => {
 				const label = document
 					.querySelector('.blob-board .tile-player')
 					?.getAttribute('aria-label');
-				const match = label?.match(/^r0 c(\d+)$/);
-				samples.push(match === null || match === undefined ? -1 : Number(match[1]));
+				samples.push(label ?? 'missing');
 			};
 			sample();
 			const observer = new MutationObserver(sample);
@@ -258,30 +295,44 @@ test.describe('blob game (alice)', () => {
 			});
 		});
 
-		const moveRight = async (column: number) => {
+		const move = async (key: 'ArrowRight' | 'ArrowDown', expectedLabel: string) => {
 			const response = page.waitForResponse(
 				(candidate) =>
 					candidate.url().includes('/graphql') &&
 					(candidate.request().postData() ?? '').includes('blob_games_move'),
 				{ timeout: 20_000 }
 			);
-			await page.keyboard.press('ArrowRight');
+			await page.keyboard.press(key);
 			expect((await response).ok()).toBeTruthy();
 			await expect(page.locator('.blob-board .tile-player')).toHaveAttribute(
 				'aria-label',
-				`r0 c${column}`
+				expectedLabel
 			);
 		};
 
-		await moveRight(1);
-		await moveRight(2);
+		await move('ArrowRight', 'r0 c1');
 		await heldQuery;
-		await moveRight(3);
+		expect(
+			raisedHeldRevision,
+			'the held response must carry deliberately later record evidence'
+		).toBe(true);
+		const rightClass =
+			(await page
+				.locator('.blob-board .cell[aria-label="r0 c2"]')
+				.getAttribute('class')) ?? '';
+		const nextMove = rightClass.includes('tile-hole')
+			? ({ key: 'ArrowDown', label: 'r1 c1' } as const)
+			: ({ key: 'ArrowRight', label: 'r0 c2' } as const);
+		await expect(
+			page.locator(`.blob-board .cell[aria-label="${nextMove.label}"]`)
+		).not.toHaveClass(/tile-hole/);
+		newerPlayerLabel = nextMove.label;
+		await move(nextMove.key, nextMove.label);
 		const releaseSampleIndex = await page.evaluate(
 			() =>
 				(
 					globalThis as typeof globalThis & {
-						__distributedBlobRaceSamples: number[];
+						__distributedBlobRaceSamples: string[];
 					}
 				).__distributedBlobRaceSamples.length
 		);
@@ -290,12 +341,12 @@ test.describe('blob game (alice)', () => {
 		await newerQuery;
 		await expect(page.locator('.blob-board .tile-player')).toHaveAttribute(
 			'aria-label',
-			'r0 c3'
+			nextMove.label
 		);
 
 		const postReleaseSamples = await page.evaluate((startIndex) => {
 			const state = globalThis as typeof globalThis & {
-				__distributedBlobRaceSamples: number[];
+				__distributedBlobRaceSamples: string[];
 				__distributedBlobRaceObserver: MutationObserver;
 			};
 			state.__distributedBlobRaceObserver.disconnect();
@@ -304,13 +355,13 @@ test.describe('blob game (alice)', () => {
 		expect(
 			postReleaseSamples,
 			'an older query response must never hide or move the projected player'
-		).not.toContain(-1);
-		expect(Math.min(...postReleaseSamples)).toBeGreaterThanOrEqual(3);
+		).not.toContain('missing');
+		expect(postReleaseSamples).not.toContain('r0 c1');
 
 		await page.reload();
 		await expect(page.locator('.blob-board .tile-player')).toHaveAttribute(
 			'aria-label',
-			'r0 c3'
+			nextMove.label
 		);
 		await page.unrouteAll({ behavior: 'wait' });
 	});

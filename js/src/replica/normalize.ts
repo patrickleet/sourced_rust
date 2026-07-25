@@ -52,7 +52,8 @@ export type ReplicaNormalizationProtocol = {
 	readonly record: (
 		path: readonly string[],
 		model: string,
-		key: string
+		key: string,
+		fields: Readonly<Record<string, CacheValue>>
 	) => ReplicaProtocolRecordResolution | undefined;
 };
 
@@ -336,7 +337,8 @@ function normalizeObject(
 		resolution = protocol.record(
 			path.map(String),
 			selection.storage.model,
-			key
+			key,
+			fields
 		);
 		if (resolution === undefined) {
 			if (!protocol.allowSnapshotOnlyRecords) {

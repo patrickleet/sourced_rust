@@ -1143,6 +1143,111 @@ test('Projected<T> advances record clocks so older query responses stay complete
 	assert.equal(snapshot.complete, true);
 	assert.equal(snapshot.data.todos[0].title, 'projected-newer');
 	assert.equal(replica.inspectRecord(Todo, 'todo-1').revision, '3');
+
+	replica.writeResult(
+		scopeOperation,
+		{},
+		scopeTodoSnapshotEnvelope('4', 'projected-newer'),
+		'network'
+	);
+	replica.writeResult(
+		scopeOperation,
+		{},
+		scopeTodoSnapshotEnvelope('5', 'server-newest'),
+		'network'
+	);
+	assert.equal(replica.read(scopeOperation, {}).data.todos[0].title, 'server-newest');
+	runtime.dispose();
+});
+
+test('Projected<T> retains its authoritative row while a later revalidation reads a lagging projection', async () => {
+	let resolveFetch;
+	let markFetchStarted;
+	const fetchStarted = new Promise((resolve) => {
+		markFetchStarted = resolve;
+	});
+	const fetchResult = new Promise((resolve) => {
+		resolveFetch = resolve;
+	});
+	const replica = createDistributedReplica({
+		transport: {
+			fetch: () => {
+				markFetchStarted();
+				return fetchResult;
+			}
+		}
+	});
+	const scopeOperation = scopeQueryArtifact();
+	const projectedArtifact = artifact({
+		name: 'todo.project',
+		mutationField: 'createTodo',
+		document:
+			'mutation Client_createTodo($commandId: ID!, $input: TodoInput!) { createTodo(commandId: $commandId, input: $input) { id title } }',
+		output: Object.freeze({ kind: 'object', definition: TodoOutput }),
+		consistency: 'projected',
+		confirmations: undefined,
+		directProjection: Object.freeze({
+			topology: Object.freeze({
+				version: 1,
+				name: 'todos',
+				digest: HASH_C
+			}),
+			model: Todo.id,
+			identityFields: Todo.identityFields,
+			changeEpoch: 'todos-v1'
+		})
+	});
+	const runtime = createReplicaCommandRuntime(
+		replica,
+		{
+			dispatch: (request) =>
+				Promise.resolve(
+					commandEnvelope(request.commandId, {
+						state: 'projected',
+						consistency: 'projected',
+						expects: [],
+						data: {
+							createTodo: {
+								id: 'todo-1',
+								title: 'projected-newer'
+							}
+						},
+						records: [
+							{
+								model: Todo.id,
+								scopeToken: 'record:todo-1',
+								incarnation: '1',
+								revision: '6',
+								tombstone: false
+							}
+						]
+					})
+				)
+		},
+		{ projectTodo: projectedArtifact }
+	);
+
+	replica.writeResult(
+		scopeOperation,
+		{},
+		scopeTodoSnapshotEnvelope('4', 'initial'),
+		'network'
+	);
+	const watch = replica.watch(scopeOperation, {});
+	await runtime.commands.projectTodo(
+		{ id: 'todo-1', title: 'projected-newer' },
+		{ commandId: COMMAND_A }
+	);
+	const refresh = watch.refresh();
+	await fetchStarted;
+	resolveFetch(scopeTodoSnapshotEnvelope('7', 'stale-snapshot'));
+	await refresh;
+
+	const snapshot = watch.get();
+	assert.equal(snapshot.complete, true);
+	assert.equal(snapshot.data.todos[0].title, 'projected-newer');
+	assert.equal(replica.inspectRecord(Todo, 'todo-1').revision, '6');
+	watch.destroy();
 	runtime.dispose();
 });
 
