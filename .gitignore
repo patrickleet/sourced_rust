@@ -30,3 +30,4 @@ target/llvm-cov/
 .tmp/
 
 .claude/worktrees
+.dispatch-prefetch
