@@ -490,6 +490,12 @@ where
         F: Fn(CausalProjectorContext, I) -> Fut + Send + Sync + 'static,
         Fut: Future<Output = Result<(), HandlerError>> + Send + 'static,
     {
+        if self.declaration.facts.is_empty() {
+            panic!(
+                "causal projector `{}` requires at least one accepted fact",
+                self.declaration.name
+            );
+        }
         let change_epoch = self.declaration.change_epoch.as_ref().unwrap_or_else(|| {
             panic!(
                 "causal projector `{}` requires a change-log epoch",

@@ -13,7 +13,8 @@ use distributed::graphql::{
     build_surface, graphql_router_with_service, read, surface_for_role, typed_command, Accepted,
     DistributedClientSurfaceExport, EffectInputFieldMarker, EffectModelFieldMarker, Fact,
     GraphqlEngine, GraphqlInputType, GraphqlOutputType, GraphqlTypeDef, GraphqlTypeField,
-    ModelPermissions, PreparedCommand, Projected, RoleGrant, SurfaceOptions, SurfaceProjector,
+    ModelPermissions, PreparedCommand, Projected, RoleGrant, SurfaceDirectProjection,
+    SurfaceOptions, SurfaceProjector,
 };
 use distributed::microsvc::{CausalCommandContext, HandlerError, Routes, Service};
 use distributed::microsvc::{Context, Session};
@@ -536,10 +537,9 @@ fn plan_projector() -> SurfaceProjector {
         .partition_by(["id"])
 }
 
-fn direct_plan_projector() -> SurfaceProjector {
-    SurfaceProjector::new("project_plan")
-        .facts(["plan.changed"])
-        .models(["PlanView"])
+fn direct_plan_projection() -> SurfaceDirectProjection {
+    SurfaceDirectProjection::new("project_plan")
+        .model::<PlanView>()
         .change_epoch("plan-direct-v1")
 }
 
@@ -783,7 +783,7 @@ async fn projected_command_binding_rejects_a_raw_pool_source() {
         .protocol_token_key(TEST_PROTOCOL_TOKEN_KEY)
         .model::<PlanView>(plan_permissions("anonymous"))
         .service(&service)
-        .client_projectors([direct_plan_projector()])
+        .client_projection_owners([direct_plan_projection().into()])
         .build()
         .expect("a raw pool may build an engine before repository identity validation");
 
@@ -809,7 +809,7 @@ async fn projected_command_binding_rejects_an_independent_repository_over_the_sa
         .protocol_token_key(TEST_PROTOCOL_TOKEN_KEY)
         .model::<PlanView>(plan_permissions("anonymous"))
         .service(&service)
-        .client_projectors([direct_plan_projector()])
+        .client_projection_owners([direct_plan_projection().into()])
         .build()
         .expect("the independently constructed repository still provides a valid pool");
 
@@ -834,7 +834,7 @@ async fn projected_command_binding_accepts_a_clone_of_the_same_repository_handle
         .protocol_token_key(TEST_PROTOCOL_TOKEN_KEY)
         .model::<PlanView>(plan_permissions("anonymous"))
         .service(&service)
-        .client_projectors([direct_plan_projector()])
+        .client_projection_owners([direct_plan_projection().into()])
         .build()
         .expect("the repository-derived GraphQL pool should build");
 

@@ -45,7 +45,7 @@ use super::schema as dyn_schema;
 use super::sdl::{graphql_sdl_for_tables_with_options, graphql_sdl_from_surface, SdlOptions};
 use super::surface::{
     build_surface, surface_for_application, surface_for_role, Surface, SurfaceDialect,
-    SurfaceOptions, SurfaceProjector, SurfaceSelection,
+    SurfaceOptions, SurfaceProjectionOwner, SurfaceProjector, SurfaceSelection,
 };
 
 const GRAPHIQL_INTROSPECTION_MAX_DEPTH_FLOOR: usize = 15;
@@ -322,7 +322,7 @@ pub struct GraphqlEngineBuilder {
     statement_timeout: Duration,
     graphiql: bool,
     typed_commands: TypedCommandInventory,
-    projectors: Vec<SurfaceProjector>,
+    projectors: Vec<SurfaceProjectionOwner>,
     change_rx: Option<tokio::sync::broadcast::Receiver<ReadModelChange>>,
     pending_errors: Vec<String>,
     identity: IdentityConfig,
@@ -1802,6 +1802,16 @@ impl GraphqlEngineBuilder {
         mut self,
         projectors: impl IntoIterator<Item = SurfaceProjector>,
     ) -> Self {
+        self.projectors = projectors.into_iter().map(Into::into).collect();
+        self
+    }
+
+    /// Declare a mixed client/query registry of async projectors and
+    /// same-transaction-only projection owners.
+    pub fn client_projection_owners(
+        mut self,
+        projectors: impl IntoIterator<Item = SurfaceProjectionOwner>,
+    ) -> Self {
         self.projectors = projectors.into_iter().collect();
         self
     }
@@ -1989,7 +1999,7 @@ impl GraphqlEngineBuilder {
                 .with_typed_commands(&self.typed_commands)
                 .map_err(GraphqlBuildError)?
                 .with_service_binding(self.command_binding.clone())
-                .with_projectors(self.projectors.clone())
+                .with_projection_owners(self.projectors.clone())
                 .map_err(GraphqlBuildError)?,
         );
         let query_protocol = if self.protocol_token_key.is_some() {
