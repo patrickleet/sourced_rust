@@ -458,6 +458,41 @@ fn generate_then_check_accepts_the_exact_artifact_tree() {
 }
 
 #[test]
+fn exact_document_path_with_glob_metacharacters_generates_and_checks_portably() {
+    let project = project_dir("client-exact-glob-metacharacters");
+    let document_path = "src/routes/blob/[[gameId]]/+page.graphql";
+    write_document(&project, document_path, TODOS_QUERY);
+
+    let generated = generate(&project, document_path, &[]);
+    assert_success(&generated, "exact metacharacter-path generation");
+    let manifest: serde_json::Value = serde_json::from_str(
+        &fs::read_to_string(project.join("generated/manifest.json"))
+            .expect("read generated manifest"),
+    )
+    .expect("parse generated manifest");
+    let source_paths = manifest["operations"]
+        .as_array()
+        .expect("manifest operations")
+        .iter()
+        .map(|operation| {
+            operation["source_path"]
+                .as_str()
+                .expect("operation source path")
+        })
+        .collect::<Vec<_>>();
+    assert_eq!(source_paths, vec![document_path]);
+
+    let checked = generate(&project, document_path, &["--check"]);
+    assert_success(&checked, "exact metacharacter-path check");
+    assert!(
+        String::from_utf8_lossy(&checked.stdout)
+            .contains("Distributed client artifacts are current"),
+        "stdout: {}",
+        String::from_utf8_lossy(&checked.stdout)
+    );
+}
+
+#[test]
 fn check_reports_tampering_without_rewriting_any_artifact() {
     let project = project_dir("client-check-tampered");
     write_document(&project, "queries/todos.graphql", TODOS_QUERY);
