@@ -118,8 +118,13 @@ fn pool_free_client_surface(application: &str, roles: &[&str]) -> DistributedCli
 }
 
 /// Pool-free normal application export consumed by `dctl client-manifest`.
+///
+/// Includes both `user` and `admin`: an admin is still a person using todos/
+/// chat/blob. Elevated-only ops stay on [`distributed_admin_client_surface`].
+/// Differing row policies (owner vs all) become `ServerOnly` on the shared
+/// surface so the server re-checks membership per concrete role.
 pub fn distributed_client_surface() -> DistributedClientSurfaceExport {
-    pool_free_client_surface(DISTRIBUTED_CLIENT_SURFACE, &["user"])
+    pool_free_client_surface(DISTRIBUTED_CLIENT_SURFACE, &["admin", "user"])
 }
 
 /// Pool-free elevated application export for admin-only routes.
@@ -413,7 +418,9 @@ fn build_graphql_engine_with_graphiql(
     let mut b = GraphqlEngine::builder(pool)
         .protocol_token_key(E2E_PROTOCOL_TOKEN_KEY)
         .roles(&["user", "admin"])
-        .client_application_surface(DISTRIBUTED_CLIENT_SURFACE, ["user"])
+        // fieldnote: everyone who can sign in (admin is a superset of user).
+        // fieldnote-admin: elevated ops only (/admin).
+        .client_application_surface(DISTRIBUTED_CLIENT_SURFACE, ["admin", "user"])
         .client_application_surface(DISTRIBUTED_ADMIN_CLIENT_SURFACE, ["admin"])
         // user: only own rows. admin: all owners (UI: /admin all-notes view).
         .model::<TodoView>(

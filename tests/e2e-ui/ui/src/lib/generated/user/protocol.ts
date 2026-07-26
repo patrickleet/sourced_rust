@@ -5,9 +5,9 @@ import type { ReplicaCommandStatusArtifact } from '@hops-ops/distributed/replica
 export const CLIENT_PROTOCOL = {
 	version: 2,
 	serviceId: "e2e-ui",
-	schemaHash: "sha256:6cc9d1fc85cd92135d7505c0ee5f664ff87d5a802648bd3927264fc45217ce8d",
+	schemaHash: "sha256:8cd8e91927aad9ec164eb874c5c77c5cc883f0fdae8805280b423e4925d644b9",
 	protocolHash: "sha256:7631d15b16e327ff08d728e97ac5f90f5150d00774938e720bbbc6830b77e0cf",
-	surface: {"kind":"application","name":"fieldnote","roles":["user"]},
+	surface: {"kind":"application","name":"fieldnote","roles":["admin","user"]},
 	trustedPresets: [
   {
     "name": "x-user-id",
@@ -32,11 +32,12 @@ export const COMMAND_STATUS: ReplicaCommandStatusArtifact = {
   "protocol": {
     "operation": "sha256:eb3ce6a8b306d935fc9f3d6f071804ce3ec415d209594c04015fa35b080282ef",
     "protocolHash": "sha256:7631d15b16e327ff08d728e97ac5f90f5150d00774938e720bbbc6830b77e0cf",
-    "schemaHash": "sha256:6cc9d1fc85cd92135d7505c0ee5f664ff87d5a802648bd3927264fc45217ce8d",
+    "schemaHash": "sha256:8cd8e91927aad9ec164eb874c5c77c5cc883f0fdae8805280b423e4925d644b9",
     "surface": {
       "kind": "application",
       "name": "fieldnote",
       "roles": [
+        "admin",
         "user"
       ]
     },
