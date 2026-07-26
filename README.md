@@ -1,67 +1,86 @@
 # Distributed
 
-Distributed is a **full-stack CQRS and event-sourcing platform**: a Rust backend
-framework plus a GraphQL query/command edge and a TypeScript client
-(`@hops-ops/distributed`) for browser apps (SvelteKit and React adapters).
+**Event-sourced Rust backends. Deny-by-default GraphQL. A causal TypeScript
+replica for real apps.** One platform from aggregate tests to SvelteKit SSR.
 
-On the write side it keeps your domain model as a plain struct (Plain Old Rust
-Struct, or PORS), inspired by POCO/POJO, with append-only aggregate event
-records, replay, snapshots, an outbox, a multi-transport service bus, and a
-small async command-handler framework (`microsvc`).
+Plain domain structs on the write side. Relational read models on the query
+side. The browser talks **one protocol** — GraphQL queries, live subscriptions,
+and typed command mutations — through `@hops-ops/distributed`.
 
-On the read/UI side it adds:
+---
 
-- **GraphQL over relational read models** — filters, order, pagination,
-  relationships, deny-by-default RBAC, OIDC/Bearer identity, live subscriptions,
-  and typed **causal command mutations** (including atomic `Projected<T>`).
-- **npm JS/TS client** — compiler-owned query/command artifacts (`dctl client`),
-  typed GraphQL HTTP/WS transport, a **normalized causal replica**, diagnostics,
-  and SvelteKit/React adapters under [`js/`](js/).
-- **Copyable product template** — multi-crate domains, GraphQL-only edge, OIDC,
-  SSR, and live UI in [`tests/e2e-ui/`](tests/e2e-ui/).
+## See it run
 
-The core idea is explicit boundaries: aggregate event records are the write-side
-source of truth, read models serve queries, published messages go through the
-outbox, and the browser talks one protocol (GraphQL) to a deny-by-default edge.
+### Fieldnote — full product template (`tests/e2e-ui`)
 
-It is built with stateless vertical and horizontal scaling in cloud-native
-environments in mind. You can start with a single in-memory service and split it
-later into partitioned services backed by Postgres and a real broker — without
-rewriting the domain model.
+A **copyable** multi-crate app: pure domains, GraphQL-only edge, Zitadel OIDC,
+SvelteKit SSR, generated clients, and live WebSocket updates.
 
-### Multi-crate layout + UI e2e reference
+```bash
+cd tests/e2e-ui
+make up                                    # Postgres + Zitadel + bootstrap
+set -a && source e2e-ui.env && set +a
+make run                                   # API :8791 + UI :5180
+```
 
-See **`tests/e2e-ui/`** for a nested workspace you can copy: pure domain crates
-(`todo-domain`, `chat-domain`, `blob-domain`), read models (projectors and/or
-direct `Projected` rows), thin command handlers, a GraphQL-only public API,
-behavioral suite, and a SvelteKit UI with OIDC (Zitadel), request-scoped SSR from
-co-located `+page.graphql` operations, normalized hydration, generated optimistic
-commands, and live **subscriptions** over WebSocket (`/graphql/ws`). Reusable
-GraphQL transport, the normalized causal replica, command runtime, diagnostics,
-and framework adapters live in [`js/`](js/) as `@hops-ops/distributed`; the e2e UI
-is its in-repository integration consumer. Details:
-[`tests/e2e-ui/README.md`](tests/e2e-ui/README.md), [`js/README.md`](js/README.md),
-the `distributed-usage` skill, and [GraphQL query service](#graphql-query-service)
-below.
+| Open | What you are looking at |
+|---|---|
+| http://127.0.0.1:5180/todos | Owner-scoped todos, SSR from co-located `+page.graphql`, no loading flash |
+| http://127.0.0.1:5180/chat | Live lobby chat — post once, every client updates over `/graphql/ws` |
+| http://127.0.0.1:5180/blob | **Blob game** — each arrow key is an aggregate command with atomic `Projected` map/score (no dual-write) |
+| http://127.0.0.1:5180/admin | Elevated surface (separate generated client; not bundled into the user app) |
+| http://127.0.0.1:8791/graphql | GraphiQL against the same deny-by-default engine |
+| http://127.0.0.1:5180/login | Real OIDC (Auth.js + Zitadel Login V2) — try `alice` / `Password1!` |
+
+```text
+  SvelteKit UI  ──GraphQL HTTP/WS──►  Rust edge (GraphqlEngine + microsvc)
+       │                                    │
+       │  @hops-ops/distributed             ├── command mutations → aggregates
+       │  causal replica + commands         ├── Projected rows (blob) in the
+       │  generated from dctl client        │   same transaction as events
+       └────────────────────────────────────┴── projector rows (todos, chat)
+```
+
+Details: [`tests/e2e-ui/README.md`](tests/e2e-ui/README.md) ·
+[`js/README.md`](js/README.md)
+
+### GraphiQL playground (engine only)
+
+Zero UI scaffolding — seed data and the query surface in one command:
+
+```bash
+cargo run --example graphiql --features "graphql,sqlite"
+# → http://127.0.0.1:4000/graphql
+```
+
+### What the demos prove
+
+| Capability | Where it shows up |
+|---|---|
+| Model-first aggregates + event store | Domain crates under `tests/e2e-ui/crates/*-domain` |
+| Atomic `Projected<T>` (command + read model in one commit) | Blob moves — UI updates from the mutation payload |
+| Eventual projectors + outbox | Todos / chat after command acceptance |
+| Deny-by-default GraphQL RLS | Alice never sees Bob’s todos; admin surface is separate |
+| Live subscriptions | Chat list continues over WebSocket after projector commits |
+| Compiler-owned browser clients | `make gen-client` / `dctl client` → typed ops + optimistic commands |
+| Causal replica (no stale rollback of your own write) | Blob revalidation races covered by Playwright |
+
+---
 
 ## At a Glance
 
 | Capability | What it gives you |
 |---|---|
-| Plain Rust aggregates | Domain state stays in ordinary structs with explicit command methods. |
-| Model-first TDD | Specify the aggregate API in fast, exhaustive unit tests before writing handlers or choosing infrastructure. |
-| Event-sourced persistence | Append-only `EventRecord`s, replay, optimistic commit, and pluggable async repositories. |
-| Typed macros | `#[sourced]`, `#[digest]`, and `aggregate!()` remove boilerplate while keeping replay explicit. |
-| Snapshots | `#[derive(Snapshot)]` and a snapshot cache speed up hydration for long streams. |
-| Outbox | Durable publication records committed atomically with aggregates. |
-| Read models | Query-optimized relational projections, committed atomically or updated eventually. |
-| GraphQL query service | Auto-generated GraphQL over read models: filters, order, pagination, relationships, role RBAC, live subscriptions, and typed causal command mutations that dispatch through `microsvc`. |
-| npm JS client | Compiler-owned query/command artifacts, typed GraphQL HTTP/WS transport, a normalized causal replica, diagnostics, and SvelteKit/React adapters under [`js/`](js/). |
-| Service bus facade | `send`/`listen` (point-to-point) and `publish`/`subscribe` (fan-out) over a swappable transport. |
-| Transports | In-memory, SQLite, Postgres, NATS JetStream, RabbitMQ, Kafka, and Knative/CloudEvents — one constructor line apart. |
-| Microservice framework | Convention-based async handlers exposed over HTTP, gRPC, the bus, GraphQL mutations, or direct dispatch. |
-| Service CLI | `dctl` scaffolds services, describes manifests, renders SQL/Atlas/GraphQL SDL, and compiles **client surfaces** (`client-manifest` / `client`) for the JS package. |
-| Pluggable infrastructure | Traits for storage, messaging, read models, snapshots, outbox publishing, and locking. |
+| **Full-stack path** | Rust domains → GraphQL edge → `@hops-ops/distributed` → SvelteKit/React |
+| Plain Rust aggregates | Domain state in ordinary structs with explicit command methods |
+| Model-first TDD | Exhaustive unit tests before handlers or infrastructure |
+| Event-sourced persistence | Append-only records, replay, optimistic commit, pluggable async repos |
+| Outbox + multi-transport bus | Durable publish; swap in-memory / SQL / NATS / RabbitMQ / Kafka / Knative |
+| Read models | Relational projections — atomic with the command **or** eventual from projectors |
+| GraphQL query service | Filters, order, pagination, relationships, RBAC, live subs, causal mutations |
+| npm JS client | Artifacts, HTTP/WS transport, **causal replica**, diagnostics, SvelteKit/React |
+| microsvc | One handler inventory on HTTP, gRPC, bus, GraphQL, or direct dispatch |
+| `dctl` | Scaffold, SQL/Atlas/SDL, **client-manifest / client** codegen |
 
 ## Use as a Dependency
 
@@ -155,9 +174,10 @@ you are working on the macro crate itself. The `distributed_cli` crate installs
 the `dctl` tooling and is not needed as a runtime dependency unless you are
 embedding the CLI in another command such as `hops service`.
 
-## Quick Start
+## Quick Start (library)
 
-Five steps: specify the model API in tests, implement the model, add a thin
+Want the product demo first? Use [See it run](#see-it-run) above. This section is
+the minimal **in-crate** path: specify the model API in tests, implement the model, add a thin
 command handler, serve it, then swap in production persistence and transports
 without changing the proven domain behavior.
 
@@ -2037,22 +2057,23 @@ CI also publishes `lcov.info` as a workflow artifact and attempts an optional Co
 
 ## Examples
 
-- `tests/sourced/` — `#[sourced]` macro with typed event enum, `TryFrom`, and aggregate hydration
-- `tests/sourced_upcasting/` — `#[sourced]` with upcasters (v1→v2→v3 chains)
-- `tests/sourced_enqueue/` — `#[sourced(entity, enqueue)]` integrated choreography (`--features emitter`)
-- `tests/sourced_snapshot/` — `#[derive(Snapshot)]` with custom ID keys, `serde(skip)` exclusion, and custom entity fields
-- `tests/snapshots/` — snapshot creation, loading, and partial replay
-- `tests/upcasting/` — event versioning with v1→v2→v3 upcasters, chaining, and snapshot integration
-- `tests/read_models/` — relational read-model projections and atomic commits
-- `tests/distributed_read_model/` — multi-service projection over the bus + persistence matrix
-- `tests/microsvc/` — async handlers, dispatch, session, convention, HTTP, gRPC, and bus transports
-- `tests/graphql_*` — GraphQL engine, HTTP/WS, SDL, dialects, hardening, identity, multi-IdP OIDC
-- `tests/e2e-ui/` — multi-crate domain + GraphQL-only edge + SvelteKit OIDC template (nested workspace)
-- `js/` — publishable transport, causal replica, command runtime, diagnostics, and SvelteKit/React adapters
-- `examples/graphiql.rs` — seeded GraphiQL playground (`--features "graphql,sqlite"`)
-- `tests/sagas/` — saga orchestration and choreography with the outbox pattern
-- `tests/sqlite_repository/`, `tests/postgres_repository/` — durable SQL adapters
-- `tests/transport_conformance/`, `tests/{nats,rabbitmq,kafka,postgres,sqlite}_transport/`, `tests/knative_cloudevents/` — transport adapters and the shared conformance harness
+**Start here (product demos):** [See it run](#see-it-run) — Fieldnote (`tests/e2e-ui`),
+Blob game, live chat, GraphiQL.
+
+| Path | What it showcases |
+|---|---|
+| [`tests/e2e-ui/`](tests/e2e-ui/) | Full-stack CQRS + GraphQL + OIDC + SvelteKit (todos, chat, blob) |
+| [`js/`](js/) | `@hops-ops/distributed` — transport, causal replica, SvelteKit/React |
+| [`examples/graphiql.rs`](examples/graphiql.rs) | Seeded GraphQL playground (`--features "graphql,sqlite"`) |
+| `tests/graphql_*` | Engine, HTTP/WS, harden, identity, multi-IdP OIDC |
+| `tests/typed_commands/` | Causal command / `Projected` / `Fact` registration |
+| `tests/microsvc/` | Handlers on HTTP, gRPC, bus, session |
+| `tests/read_models/`, `tests/distributed_read_model/` | Atomic vs eventual projections |
+| `tests/sourced*` / `tests/snapshots/` / `tests/upcasting/` | Macros, snapshots, event versioning |
+| `tests/sagas/` | Orchestration + choreography with the outbox |
+| `tests/*_transport/`, `tests/knative_cloudevents/` | Broker adapters + conformance |
+
+## License
 
 ## License
 
