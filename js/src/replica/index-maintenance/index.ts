@@ -1,8 +1,7 @@
-/** Index maintenance registry and plan evaluation; implementation in ./index-maintenance/. */
 export {
 	createReplicaIndexMaintenanceRegistry,
 	formatReplicaIndexStaleReason
-} from './index-maintenance/index.js';
+} from './implementation.js';
 export type {
 	ReplicaIndexDependencyChange,
 	ReplicaIndexMaintenanceDecision,
@@ -17,4 +16,4 @@ export type {
 	ReplicaIndexRelationshipChange,
 	ReplicaIndexSemanticChange,
 	ReplicaIndexSemanticLayer
-} from './index-maintenance/index.js';
+} from './implementation.js';

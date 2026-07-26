@@ -1,10 +1,9 @@
-/** Replica diagnostics sink and artifact inspection; implementation in ./diagnostics/. */
 export {
 	createReplicaDevelopmentCapability,
 	createReplicaDiagnostics,
 	inspectReplicaCommandArtifact,
 	inspectReplicaOperationArtifact
-} from './diagnostics/index.js';
+} from './implementation.js';
 export type {
 	ReplicaArtifactSourceLocation,
 	ReplicaCommandArtifactInspection,
@@ -34,4 +33,4 @@ export type {
 	ReplicaOperationArtifactInspection,
 	ReplicaOperationIndexInspection,
 	ReplicaOperationInjectedFieldInspection
-} from './diagnostics/index.js';
+} from './implementation.js';
