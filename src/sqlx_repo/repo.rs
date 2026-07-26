@@ -30,7 +30,8 @@ use sqlx::{Encode, Executor, IntoArguments, Pool, QueryBuilder, Row, Transaction
 use crate::entity::{Entity, EventRecord, BITCODE_PAYLOAD_CODEC};
 use crate::outbox::{OutboxMessage, OutboxMessageStatus};
 use crate::outbox_worker::{
-    ensure_active_claim, ClaimOutboxMessages, OutboxBacklogStats, OutboxClaimRef, OutboxStore,
+    ensure_active_claim, ClaimOutboxMessages, OutboxBacklogStats, OutboxClaimRef,
+    OutboxRuntimeStats, OutboxStore,
 };
 use crate::read_model::{ReadModelLoadGraph, ReadModelLoadRequest, ReadModelQueryCapabilities};
 use crate::repository::{
@@ -144,6 +145,8 @@ pub trait SqlxRepoBackend: SqlxReadModelBackend {
     /// `SELECT` expression for `MIN(created_at)` surfaced as
     /// `oldest_created_at` in this backend's timestamp representation.
     const OUTBOX_OLDEST_CREATED_AT_SELECT: &'static str;
+    /// SQL expression that reads `created_at` as epoch seconds.
+    const OUTBOX_CREATED_AT_EPOCH_EXPR: &'static str;
     /// Dialect for table/read-model schema artifact generation.
     const TABLE_DIALECT: TableSqlDialect;
 
@@ -425,7 +428,7 @@ where
     for<'c> &'c Pool<DB>: Executor<'c, Database = DB>,
     DB::Arguments: IntoArguments<DB>,
     for<'q> i64: Encode<'q, DB> + Type<DB> + sqlx::Decode<'q, DB>,
-    for<'q> f64: Encode<'q, DB> + Type<DB>,
+    for<'q> f64: Encode<'q, DB> + Type<DB> + sqlx::Decode<'q, DB>,
     for<'q> String: Encode<'q, DB> + Type<DB> + sqlx::Decode<'q, DB>,
     for<'q> Vec<u8>: Type<DB> + sqlx::Decode<'q, DB>,
     for<'q> &'q str: Encode<'q, DB> + Type<DB>,
@@ -580,7 +583,7 @@ where
     for<'c> &'c Pool<DB>: Executor<'c, Database = DB>,
     DB::Arguments: IntoArguments<DB>,
     for<'q> i64: Encode<'q, DB> + Type<DB> + sqlx::Decode<'q, DB>,
-    for<'q> f64: Encode<'q, DB> + Type<DB>,
+    for<'q> f64: Encode<'q, DB> + Type<DB> + sqlx::Decode<'q, DB>,
     for<'q> String: Encode<'q, DB> + Type<DB> + sqlx::Decode<'q, DB>,
     for<'q> Vec<u8>: Type<DB> + sqlx::Decode<'q, DB>,
     for<'q> &'q str: Encode<'q, DB> + Type<DB>,
@@ -886,6 +889,53 @@ impl OutboxTransition<'_> {
     }
 }
 
+fn push_count_case<DB>(
+    builder: &mut QueryBuilder<DB>,
+    alias: &'static str,
+    condition: impl FnOnce(&mut QueryBuilder<DB>),
+) where
+    DB: SqlxRepoBackend,
+{
+    builder.push("COALESCE(SUM(CASE WHEN ");
+    condition(builder);
+    builder.push(" THEN 1 ELSE 0 END), 0) AS ");
+    builder.push(alias);
+}
+
+fn decode_count<DB>(row: &DB::Row, column: &'static str) -> Result<usize, RepositoryError>
+where
+    DB: SqlxRepoBackend,
+    for<'q> i64: Type<DB> + sqlx::Decode<'q, DB>,
+    for<'r> &'r str: sqlx::ColumnIndex<DB::Row>,
+{
+    let count: i64 = row
+        .try_get(column)
+        .map_err(|err| repository_storage_error::<DB>(&format!("decode {column} row"), err))?;
+    repository_u64_from_i64(DB::BACKEND, count, column).and_then(|value| {
+        usize::try_from(value).map_err(|_| {
+            RepositoryError::Model(format!(
+                "{} count `{column}` value {value} is invalid",
+                DB::BACKEND
+            ))
+        })
+    })
+}
+
+fn decode_optional_epoch_timestamp<DB>(
+    row: &DB::Row,
+    column: &'static str,
+) -> Result<Option<SystemTime>, RepositoryError>
+where
+    DB: SqlxRepoBackend,
+    for<'q> f64: Type<DB> + sqlx::Decode<'q, DB>,
+    for<'r> &'r str: sqlx::ColumnIndex<DB::Row>,
+{
+    row.try_get::<Option<f64>, _>(column)
+        .map_err(|err| repository_storage_error::<DB>(&format!("decode {column} row"), err))?
+        .map(system_time_from_epoch_secs::<DB>)
+        .transpose()
+}
+
 impl<DB> OutboxStore for SqlxOutboxStore<DB>
 where
     DB: SqlxRepoBackend,
@@ -893,7 +943,7 @@ where
     for<'c> &'c Pool<DB>: Executor<'c, Database = DB>,
     DB::Arguments: IntoArguments<DB>,
     for<'q> i64: Encode<'q, DB> + Type<DB> + sqlx::Decode<'q, DB>,
-    for<'q> f64: Encode<'q, DB> + Type<DB>,
+    for<'q> f64: Encode<'q, DB> + Type<DB> + sqlx::Decode<'q, DB>,
     for<'q> String: Encode<'q, DB> + Type<DB> + sqlx::Decode<'q, DB>,
     for<'q> Vec<u8>: Type<DB> + sqlx::Decode<'q, DB>,
     for<'q> &'q str: Encode<'q, DB> + Type<DB>,
@@ -959,6 +1009,80 @@ where
             Ok(OutboxBacklogStats {
                 pending,
                 oldest_created_at,
+            })
+        }
+    }
+
+    fn runtime_stats(
+        &self,
+    ) -> impl Future<Output = Result<OutboxRuntimeStats, RepositoryError>> + Send + '_ {
+        async move {
+            let now_epoch = system_time_epoch_secs::<DB>(SystemTime::now())?;
+            let mut builder = QueryBuilder::<DB>::new("SELECT ");
+            push_count_case(&mut builder, "pending_count", |builder| {
+                builder.push("status = ");
+                builder.push_bind(OutboxMessageStatus::Pending.as_str());
+            });
+            builder.push(", MIN(CASE WHEN status = ");
+            builder.push_bind(OutboxMessageStatus::Pending.as_str());
+            builder.push(" THEN ");
+            builder.push(DB::OUTBOX_CREATED_AT_EPOCH_EXPR);
+            builder.push(" END) AS oldest_pending_created_at, ");
+            push_count_case(&mut builder, "claimable_count", |builder| {
+                builder.push("(status = ");
+                builder.push_bind(OutboxMessageStatus::Pending.as_str());
+                builder.push(" AND ");
+                DB::push_timestamp_cmp(builder, "next_available_at", "<=", now_epoch);
+                builder.push(") OR (status = ");
+                builder.push_bind(OutboxMessageStatus::InFlight.as_str());
+                builder.push(" AND (claimed_until IS NULL OR ");
+                DB::push_timestamp_cmp(builder, "claimed_until", "<=", now_epoch);
+                builder.push("))");
+            });
+            builder.push(", ");
+            push_count_case(&mut builder, "in_flight_count", |builder| {
+                builder.push("status = ");
+                builder.push_bind(OutboxMessageStatus::InFlight.as_str());
+            });
+            builder.push(", MIN(CASE WHEN status = ");
+            builder.push_bind(OutboxMessageStatus::InFlight.as_str());
+            builder.push(" THEN ");
+            builder.push(DB::OUTBOX_CREATED_AT_EPOCH_EXPR);
+            builder.push(" END) AS oldest_in_flight_created_at, ");
+            push_count_case(&mut builder, "stale_lease_count", |builder| {
+                builder.push("status = ");
+                builder.push_bind(OutboxMessageStatus::InFlight.as_str());
+                builder.push(" AND (claimed_until IS NULL OR ");
+                DB::push_timestamp_cmp(builder, "claimed_until", "<=", now_epoch);
+                builder.push(")");
+            });
+            builder.push(" FROM outbox_messages WHERE status IN (");
+            builder.push_bind(OutboxMessageStatus::Pending.as_str());
+            builder.push(", ");
+            builder.push_bind(OutboxMessageStatus::InFlight.as_str());
+            builder.push(")");
+
+            let row =
+                builder.build().fetch_one(&self.pool).await.map_err(|err| {
+                    repository_storage_error::<DB>("load outbox runtime stats", err)
+                })?;
+
+            let pending = decode_count::<DB>(&row, "pending_count")?;
+            let claimable = decode_count::<DB>(&row, "claimable_count")?;
+            let in_flight = decode_count::<DB>(&row, "in_flight_count")?;
+            let stale_leases = decode_count::<DB>(&row, "stale_lease_count")?;
+            let oldest_pending_created_at =
+                decode_optional_epoch_timestamp::<DB>(&row, "oldest_pending_created_at")?;
+            let oldest_in_flight_created_at =
+                decode_optional_epoch_timestamp::<DB>(&row, "oldest_in_flight_created_at")?;
+
+            Ok(OutboxRuntimeStats {
+                pending,
+                oldest_pending_created_at,
+                claimable,
+                in_flight,
+                oldest_in_flight_created_at,
+                stale_leases,
             })
         }
     }
@@ -1852,6 +1976,18 @@ pub(crate) fn system_time_epoch_secs<DB: SqlxRepoBackend>(
         ))
     })?;
     Ok(duration.as_secs_f64())
+}
+
+fn system_time_from_epoch_secs<DB: SqlxRepoBackend>(
+    value: f64,
+) -> Result<SystemTime, RepositoryError> {
+    if !value.is_finite() || value < 0.0 {
+        return Err(RepositoryError::Model(format!(
+            "{} stored timestamp epoch `{value}` is invalid",
+            DB::BACKEND
+        )));
+    }
+    Ok(UNIX_EPOCH + Duration::from_secs_f64(value))
 }
 
 pub(crate) fn repository_storage_error<DB: SqlxRepoBackend>(

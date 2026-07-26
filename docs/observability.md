@@ -80,6 +80,7 @@ Framework span names are intentionally bounded:
 - `distributed.microsvc.dispatch`
 - `distributed.handler`
 - `distributed.transport.receive`
+- `distributed.outbox.claim`
 - `distributed.outbox.publish`
 
 Each span uses the same framework-owned message attributes:
@@ -88,9 +89,34 @@ Each span uses the same framework-owned message attributes:
 - `distributed.message.kind`
 - `messaging.message.id`
 
+Outbox claim spans add:
+
+- `distributed.outbox.claim.source`
+- `distributed.outbox.claim.requested`
+- `distributed.outbox.claim.claimed`
+- `distributed.outbox.claim.lease_seconds`
+- `distributed.outbox.outcome`
+
+Outbox publish spans add:
+
+- `distributed.outbox.publish.attempt`
+- `distributed.outbox.message_age_seconds`
+- `distributed.outbox.outcome`
+- `distributed.failure.class` on publish errors
+
+Transport receive spans add:
+
+- `distributed.transport.name`
+- `distributed.transport.delivery_attempt` when supplied by the adapter
+- `distributed.transport.message_age_seconds` when supplied by the adapter
+- `distributed.transport.lag` when supplied by the adapter with documented units
+- `distributed.transport.outcome`
+
 Future spans should use the same helper path so new attributes are reviewed in
 one place. Do not add payload fields, user ids, aggregate ids, or raw metadata
-values as framework span attributes.
+values as framework span attributes. Worker IDs, destinations, topics, queues,
+subjects, raw error strings, metadata values, and payload values also stay out
+of framework span attributes.
 
 Recommended environment variables for OTLP exporters:
 
@@ -154,7 +180,9 @@ CI verifies the observability surface at the docker level (see
   would, dispatches a message carrying a W3C `traceparent`, and asserts a real
   OpenTelemetry Collector received `distributed.microsvc.dispatch` parented to
   the incoming span (skips when `OTEL_EXPORTER_OTLP_TRACES_ENDPOINT` /
-  `OTEL_COLLECTOR_TRACES_FILE` are unset).
+  `OTEL_COLLECTOR_TRACES_FILE` are unset). The same test binary also uses an
+  in-process tracing subscriber layer, with no exporter setup, to assert
+  `distributed.outbox.claim` and the enriched outbox/transport span attributes.
 - The scaffolded `ServiceMonitor` / `PrometheusRule` / OTLP env output is
   rendered with `helm template` and validated against published CRD schemas
   with `kubeconform`.

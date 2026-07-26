@@ -206,7 +206,7 @@ impl SqlBusDialect for PostgresBusDialect {
                       AND (locked_until IS NULL OR locked_until <= now()) \
                 ORDER BY seq FOR UPDATE SKIP LOCKED LIMIT $3 \
              ) \
-             RETURNING seq, claim_token, name, message_id, kind, payload, content_type, metadata",
+             RETURNING seq, claim_token, name, message_id, kind, payload, content_type, metadata, attempts",
         )
         .bind(lease_secs)
         .bind(names)
@@ -235,7 +235,8 @@ impl SqlBusDialect for PostgresBusDialect {
         limit: i64,
     ) -> Result<Vec<ReceivedRow>, TransportError> {
         let rows = sqlx::query(
-            "SELECT seq, name, message_id, kind, payload, content_type, metadata FROM bus_log \
+            "SELECT seq, name, message_id, kind, payload, content_type, metadata, \
+                    EXTRACT(EPOCH FROM appended_at)::double precision AS producer_timestamp FROM bus_log \
              WHERE (name = ANY($1) OR name IS NULL) \
                    AND seq > COALESCE((SELECT last_seq FROM bus_offset WHERE consumer = $2), 0) \
              ORDER BY seq LIMIT $3",

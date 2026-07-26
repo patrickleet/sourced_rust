@@ -86,7 +86,8 @@ pub use outbox::{
 // at the crate root.
 pub use outbox_worker::{
     BusOutboxPublishHook, BusPublisher, ClaimOutboxMessages, OutboxClaimRef, OutboxDispatchOutcome,
-    OutboxDispatcher, OutboxPublishFailureAction, OutboxSource, OutboxStore, ReceivedOutboxMessage,
+    OutboxDispatcher, OutboxPublishFailureAction, OutboxRuntimeStats, OutboxSource, OutboxStore,
+    ReceivedOutboxMessage,
 };
 
 pub use queued_repo::{

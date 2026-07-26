@@ -214,7 +214,7 @@ impl SqlBusDialect for SqliteBusDialect {
         query.push_bind(limit);
         query.push(
             ") \
-             RETURNING seq, claim_token, name, message_id, kind, payload, content_type, metadata",
+             RETURNING seq, claim_token, name, message_id, kind, payload, content_type, metadata, attempts",
         );
 
         let rows = query
@@ -243,7 +243,8 @@ impl SqlBusDialect for SqliteBusDialect {
         limit: i64,
     ) -> Result<Vec<ReceivedRow>, TransportError> {
         let mut query = QueryBuilder::<Sqlite>::new(
-            "SELECT seq, name, message_id, kind, payload, content_type, metadata \
+            "SELECT seq, name, message_id, kind, payload, content_type, metadata, \
+                    appended_at AS producer_timestamp \
              FROM bus_log \
              WHERE ",
         );

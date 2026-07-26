@@ -18,7 +18,9 @@ use std::process::{Command, Stdio};
 use std::sync::{Arc, Mutex};
 use std::time::Duration;
 
-use distributed::bus::{MessagePublisher, TransportError};
+use distributed::bus::{
+    Bus, BusConsumer, InMemoryBus, MessagePublisher, RunOptions, TransportError,
+};
 use distributed::microsvc::{self, Context, Message, Routes, Service};
 use distributed::outbox_worker::OutboxDispatcher;
 use distributed::{CommitBatch, InMemoryRepository, OutboxMessage, TransactionalCommit};
@@ -61,6 +63,25 @@ async fn spawn_http_service(name: &str) -> String {
     format!("http://{addr}")
 }
 
+async fn drive_transport(service_name: &str) {
+    let bus = InMemoryBus::new();
+    bus.publish("orders.delivered", b"{}".to_vec())
+        .await
+        .unwrap();
+    let service = Arc::new(
+        Service::new().named(service_name).routes(
+            Routes::new()
+                .with_dependencies(())
+                .event("orders.delivered")
+                .handle(|_ctx: &Context<()>| async move { Ok(json!({"ok": true})) }),
+        ),
+    );
+
+    bus.subscribe(service, RunOptions::idempotent())
+        .await
+        .unwrap();
+}
+
 /// Stage outbox rows through a commit and drain them through the dispatcher so
 /// `distributed_outbox_messages_total` and the backlog gauges are populated.
 async fn drive_outbox(service_name: &str) {
@@ -87,6 +108,9 @@ async fn drive_outbox(service_name: &str) {
     let outcome = dispatcher.dispatch_batch(10).await.unwrap();
     assert_eq!(outcome.published, 2);
     assert_eq!(outcome.released, 1);
+    let retry = dispatcher.dispatch_batch(10).await.unwrap();
+    assert_eq!(retry.published, 0);
+    assert_eq!(retry.released, 1);
 }
 
 #[tokio::test]
@@ -113,6 +137,7 @@ async fn exposition_covers_framework_families_and_passes_promtool() {
         .unwrap();
     assert_ne!(resp.status(), 200);
 
+    drive_transport("orders-exposition").await;
     drive_outbox("orders-exposition").await;
 
     let scrape = client.get(format!("{base}/metrics")).send().await.unwrap();
@@ -135,10 +160,26 @@ async fn exposition_covers_framework_families_and_passes_promtool() {
         "distributed_microsvc_dispatch_duration_seconds_bucket{service=\"orders-exposition\"",
         "distributed_microsvc_dispatch_duration_seconds_sum{service=\"orders-exposition\"",
         "distributed_microsvc_dispatch_duration_seconds_count{service=\"orders-exposition\"",
+        "distributed_transport_messages_total{service=\"orders-exposition\",transport=\"in_memory\",message_kind=\"event\",outcome=\"ack\"} 1",
+        "distributed_transport_receive_duration_seconds_count{service=\"orders-exposition\",transport=\"in_memory\",outcome=\"message\"} 1",
+        "distributed_transport_receive_duration_seconds_count{service=\"orders-exposition\",transport=\"in_memory\",outcome=\"drained\"} 1",
+        "distributed_transport_in_flight_duration_seconds_count{service=\"orders-exposition\",transport=\"in_memory\",message_kind=\"event\",outcome=\"ack\"} 1",
+        "# HELP distributed_transport_message_age_seconds",
+        "# HELP distributed_transport_delivery_attempts_total",
         "distributed_outbox_messages_total{service=\"orders-exposition\",outcome=\"published\"} 2",
-        "distributed_outbox_messages_total{service=\"orders-exposition\",outcome=\"released\"} 1",
+        "distributed_outbox_messages_total{service=\"orders-exposition\",outcome=\"released\"} 2",
         "distributed_outbox_pending_messages{service=\"orders-exposition\"} 1",
         "distributed_outbox_oldest_pending_age_seconds{service=\"orders-exposition\"}",
+        "distributed_outbox_claim_duration_seconds_count{service=\"orders-exposition\",source=\"dispatcher_batch\",outcome=\"success\"} 2",
+        "distributed_outbox_claimed_messages_total{service=\"orders-exposition\",source=\"dispatcher_batch\"} 4",
+        "distributed_outbox_publish_duration_seconds_count{service=\"orders-exposition\",message_kind=\"event\",outcome=\"published\"} 2",
+        "distributed_outbox_publish_duration_seconds_count{service=\"orders-exposition\",message_kind=\"event\",outcome=\"released\"} 2",
+        "distributed_outbox_message_age_seconds_count{service=\"orders-exposition\",phase=\"claimed\",outcome=\"success\"} 4",
+        "distributed_outbox_message_age_seconds_count{service=\"orders-exposition\",phase=\"settled\",outcome=\"released\"} 2",
+        "distributed_outbox_retry_messages_total{service=\"orders-exposition\",outcome=\"released\",attempt_bucket=\"2\"} 1",
+        "distributed_outbox_claimable_messages{service=\"orders-exposition\"} 1",
+        "distributed_outbox_in_flight_messages{service=\"orders-exposition\"} 0",
+        "distributed_outbox_stale_leases{service=\"orders-exposition\"} 0",
     ] {
         assert!(
             body.contains(family),

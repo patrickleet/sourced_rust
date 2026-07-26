@@ -11,9 +11,7 @@
 //! [`dispatch_ids`]: OutboxDispatcher::dispatch_ids
 
 use std::num::NonZeroUsize;
-use std::time::Duration;
-#[cfg(feature = "metrics")]
-use std::time::SystemTime;
+use std::time::{Duration, Instant, SystemTime};
 
 use futures_util::stream::{self, StreamExt};
 
@@ -217,11 +215,18 @@ where
         &self,
         ids: &[String],
     ) -> Result<OutboxDispatchOutcome, TransportError> {
+        let requested = ids.len();
         let request =
             ClaimOutboxMessages::for_ids(self.worker_id.clone(), ids.to_vec(), self.lease);
-        let claimed = self.store.claim(request).await?;
+        let claimed = self
+            .claim_with_telemetry(
+                request,
+                crate::telemetry::outbox_claim_source::DISPATCHER_IDS,
+                requested,
+            )
+            .await?;
         let mut outcome = self.dispatch_claimed(claimed).await?;
-        outcome.requested = ids.len();
+        outcome.requested = requested;
         self.record_outbox_backlog().await;
         Ok(outcome)
     }
@@ -232,11 +237,74 @@ where
         batch_size: usize,
     ) -> Result<OutboxDispatchOutcome, TransportError> {
         let request = ClaimOutboxMessages::new(self.worker_id.clone(), batch_size, self.lease);
-        let claimed = self.store.claim(request).await?;
+        let claimed = self
+            .claim_with_telemetry(
+                request,
+                crate::telemetry::outbox_claim_source::DISPATCHER_BATCH,
+                batch_size,
+            )
+            .await?;
         let mut outcome = self.dispatch_claimed(claimed).await?;
         outcome.requested = batch_size;
         self.record_outbox_backlog().await;
         Ok(outcome)
+    }
+
+    async fn claim_with_telemetry(
+        &self,
+        request: ClaimOutboxMessages,
+        source: &'static str,
+        requested: usize,
+    ) -> Result<Vec<OutboxMessage>, TransportError> {
+        let started = Instant::now();
+        #[cfg(feature = "otel")]
+        let span = crate::telemetry::outbox_claim_span(source, requested, self.lease);
+        #[cfg(not(feature = "otel"))]
+        let _ = requested;
+
+        #[cfg(feature = "otel")]
+        let result = {
+            use tracing::Instrument as _;
+            self.store.claim(request).instrument(span.clone()).await
+        };
+        #[cfg(not(feature = "otel"))]
+        let result = self.store.claim(request).await;
+
+        let duration = started.elapsed();
+        match result {
+            Ok(claimed) => {
+                let outcome = if claimed.is_empty() {
+                    crate::telemetry::outbox_claim_outcome::EMPTY
+                } else {
+                    crate::telemetry::outbox_claim_outcome::SUCCESS
+                };
+                record_outbox_claim_metrics(
+                    self.service_name.as_deref(),
+                    source,
+                    &claimed,
+                    outcome,
+                    duration,
+                );
+                #[cfg(feature = "otel")]
+                {
+                    span.record("distributed.outbox.claim.claimed", claimed.len() as i64);
+                    span.record("distributed.outbox.outcome", outcome);
+                }
+                Ok(claimed)
+            }
+            Err(error) => {
+                record_outbox_claim_error(self.service_name.as_deref(), source, duration);
+                #[cfg(feature = "otel")]
+                {
+                    span.record("distributed.outbox.claim.claimed", 0_i64);
+                    span.record(
+                        "distributed.outbox.outcome",
+                        crate::telemetry::outbox_claim_outcome::ERROR,
+                    );
+                }
+                Err(error.into())
+            }
+        }
     }
 
     /// The shared settle path: map → publish → complete on success, or
@@ -253,6 +321,7 @@ where
             claimed,
             self.max_attempts,
             self.publish_concurrency,
+            self.service_name.as_deref(),
         )
         .await?;
         self.record_outbox_outcomes(&settled);
@@ -306,11 +375,22 @@ where
 /// update rather than failing dispatch.
 #[cfg(feature = "metrics")]
 pub(crate) async fn record_backlog_gauges<S: OutboxStore>(store: &S, service: Option<&str>) {
-    if let Ok(stats) = store.backlog_stats().await {
+    if let Ok(stats) = store.runtime_stats().await {
         let oldest_pending_age = stats
-            .oldest_created_at
+            .oldest_pending_created_at
             .and_then(|created_at| SystemTime::now().duration_since(created_at).ok());
-        crate::metrics::set_outbox_backlog(service, stats.pending, oldest_pending_age);
+        let oldest_in_flight_age = stats
+            .oldest_in_flight_created_at
+            .and_then(|created_at| SystemTime::now().duration_since(created_at).ok());
+        crate::metrics::set_outbox_runtime_backlog(
+            service,
+            stats.pending,
+            oldest_pending_age,
+            stats.claimable,
+            stats.in_flight,
+            oldest_in_flight_age,
+            stats.stale_leases,
+        );
     }
 }
 
@@ -323,6 +403,29 @@ pub(crate) struct SettleOutcome {
     pub released: usize,
     /// Rows permanently failed after exhausting attempts.
     pub failed: usize,
+}
+
+struct PublishWork {
+    claim: OutboxClaimRef,
+    message: Message,
+    kind: MessageKind,
+    attempt: u32,
+    age: Option<Duration>,
+}
+
+struct PublishResult {
+    claim: OutboxClaimRef,
+    kind: MessageKind,
+    attempt: u32,
+    age: Option<Duration>,
+    duration: Duration,
+    result: Result<(), TransportError>,
+}
+
+struct PublishedClaim {
+    claim: OutboxClaimRef,
+    attempt: u32,
+    age: Option<Duration>,
 }
 
 /// Publish already-claimed outbox rows through `publisher` and settle their
@@ -355,6 +458,7 @@ pub(crate) async fn publish_and_settle<S, P>(
     claimed: Vec<OutboxMessage>,
     max_attempts: u32,
     publish_concurrency: NonZeroUsize,
+    service: Option<&str>,
 ) -> Result<SettleOutcome, RepositoryError>
 where
     S: OutboxStore,
@@ -363,41 +467,94 @@ where
     let mut work = Vec::with_capacity(claimed.len());
     for message in claimed {
         let claim = OutboxClaimRef::from_message(&message)?;
-        work.push((claim, Message::from(message)));
+        let kind = outbox_message_kind(&message);
+        let attempt = message.attempts;
+        let age = message_age(message.created_at);
+        work.push(PublishWork {
+            claim,
+            message: Message::from(message),
+            kind,
+            attempt,
+            age,
+        });
     }
 
     // Publish phase: up to `publish_concurrency` publishes in flight. With the
     // default of 1 this awaits each publish before starting the next, so rows
     // go out strictly in claim (created-at) order.
-    let results: Vec<(OutboxClaimRef, Result<(), TransportError>)> =
-        stream::iter(work.into_iter().map(|(claim, message)| async move {
-            let result = publish_with_span(publisher, message).await;
-            (claim, result)
-        }))
-        .buffer_unordered(publish_concurrency.get())
-        .collect()
-        .await;
+    let results: Vec<PublishResult> = stream::iter(work.into_iter().map(|work| async move {
+        let started = Instant::now();
+        let result = publish_with_span(publisher, work.message, work.attempt, work.age).await;
+        PublishResult {
+            claim: work.claim,
+            kind: work.kind,
+            attempt: work.attempt,
+            age: work.age,
+            duration: started.elapsed(),
+            result,
+        }
+    }))
+    .buffer_unordered(publish_concurrency.get())
+    .collect()
+    .await;
 
     // Settle phase: failures are the exception and settle individually;
     // successes settle in one batched complete.
     let mut outcome = SettleOutcome::default();
     let mut published = Vec::with_capacity(results.len());
-    for (claim, result) in results {
-        match result {
-            Ok(()) => published.push(claim),
+    for result in results {
+        match result.result {
+            Ok(()) => {
+                record_outbox_publish_metrics(
+                    service,
+                    result.kind,
+                    crate::telemetry::outbox_outcome::PUBLISHED,
+                    result.duration,
+                );
+                published.push(PublishedClaim {
+                    claim: result.claim,
+                    attempt: result.attempt,
+                    age: result.age,
+                });
+            }
             Err(publish_error) => {
-                match store
-                    .record_failure(&claim, &publish_error.to_string(), max_attempts)
+                let settle_outcome = match store
+                    .record_failure(&result.claim, &publish_error.to_string(), max_attempts)
                     .await?
                 {
-                    OutboxPublishFailureAction::Released => outcome.released += 1,
-                    OutboxPublishFailureAction::Failed => outcome.failed += 1,
-                }
+                    OutboxPublishFailureAction::Released => {
+                        outcome.released += 1;
+                        crate::telemetry::outbox_outcome::RELEASED
+                    }
+                    OutboxPublishFailureAction::Failed => {
+                        outcome.failed += 1;
+                        crate::telemetry::outbox_outcome::FAILED
+                    }
+                };
+                record_outbox_publish_metrics(
+                    service,
+                    result.kind,
+                    settle_outcome,
+                    result.duration,
+                );
+                record_outbox_settled_metrics(service, settle_outcome, result.attempt, result.age);
             }
         }
     }
-    store.complete_many(&published).await?;
+    let published_claims = published
+        .iter()
+        .map(|published| published.claim.clone())
+        .collect::<Vec<_>>();
+    store.complete_many(&published_claims).await?;
     outcome.published = published.len();
+    for published in published {
+        record_outbox_settled_metrics(
+            service,
+            crate::telemetry::outbox_outcome::PUBLISHED,
+            published.attempt,
+            published.age,
+        );
+    }
     Ok(outcome)
 }
 
@@ -406,28 +563,138 @@ where
 async fn publish_with_span<P: MessagePublisher>(
     publisher: &P,
     message: Message,
+    attempt: u32,
+    age: Option<Duration>,
 ) -> Result<(), TransportError> {
     #[cfg(feature = "otel")]
     {
         use tracing::Instrument as _;
 
-        let span = outbox_publish_span(&message);
+        let span = outbox_publish_span(&message, attempt, age);
         crate::trace_context::set_span_parent_from_metadata_if_no_current_span(
             &span,
             &message.metadata,
         );
-        return publisher.publish(message).instrument(span).await;
+        let result = publisher.publish(message).instrument(span.clone()).await;
+        match &result {
+            Ok(()) => {
+                span.record(
+                    "distributed.outbox.outcome",
+                    crate::telemetry::outbox_outcome::PUBLISHED,
+                );
+            }
+            Err(error) => {
+                span.record(
+                    "distributed.outbox.outcome",
+                    crate::telemetry::outbox_outcome::ERROR,
+                );
+                span.record(
+                    "distributed.failure.class",
+                    crate::telemetry::transport_failure_class_label(error.kind()),
+                );
+            }
+        }
+        return result;
     }
 
     #[cfg(not(feature = "otel"))]
     {
+        let _ = (attempt, age);
         publisher.publish(message).await
     }
 }
 
 #[cfg(feature = "otel")]
-fn outbox_publish_span(message: &Message) -> tracing::Span {
-    crate::telemetry::outbox_publish_span(message)
+fn outbox_publish_span(message: &Message, attempt: u32, age: Option<Duration>) -> tracing::Span {
+    crate::telemetry::outbox_publish_span(
+        message,
+        attempt,
+        age.map(|duration| duration.as_secs_f64()),
+    )
+}
+
+fn outbox_message_kind(message: &OutboxMessage) -> MessageKind {
+    if message.destination.is_some() {
+        MessageKind::Command
+    } else {
+        MessageKind::Event
+    }
+}
+
+fn message_age(created_at: SystemTime) -> Option<Duration> {
+    SystemTime::now().duration_since(created_at).ok()
+}
+
+fn record_outbox_claim_metrics(
+    service: Option<&str>,
+    source: &str,
+    claimed: &[OutboxMessage],
+    outcome: &str,
+    duration: Duration,
+) {
+    #[cfg(feature = "metrics")]
+    {
+        crate::metrics::record_outbox_claim(service, source, claimed.len(), outcome, duration);
+        for message in claimed {
+            if let Some(age) = message_age(message.created_at) {
+                crate::metrics::record_outbox_message_age(
+                    service,
+                    crate::telemetry::outbox_message_phase::CLAIMED,
+                    outcome,
+                    age,
+                );
+            }
+        }
+    }
+    #[cfg(not(feature = "metrics"))]
+    let _ = (service, source, claimed, outcome, duration);
+}
+
+fn record_outbox_claim_error(service: Option<&str>, source: &str, duration: Duration) {
+    #[cfg(feature = "metrics")]
+    crate::metrics::record_outbox_claim(
+        service,
+        source,
+        0,
+        crate::telemetry::outbox_claim_outcome::ERROR,
+        duration,
+    );
+    #[cfg(not(feature = "metrics"))]
+    let _ = (service, source, duration);
+}
+
+fn record_outbox_publish_metrics(
+    service: Option<&str>,
+    kind: MessageKind,
+    outcome: &str,
+    duration: Duration,
+) {
+    #[cfg(feature = "metrics")]
+    crate::metrics::record_outbox_publish_duration(service, kind, outcome, duration);
+    #[cfg(not(feature = "metrics"))]
+    let _ = (service, kind, outcome, duration);
+}
+
+fn record_outbox_settled_metrics(
+    service: Option<&str>,
+    outcome: &str,
+    attempt: u32,
+    age: Option<Duration>,
+) {
+    #[cfg(feature = "metrics")]
+    {
+        if let Some(age) = age {
+            crate::metrics::record_outbox_message_age(
+                service,
+                crate::telemetry::outbox_message_phase::SETTLED,
+                outcome,
+                age,
+            );
+        }
+        crate::metrics::record_outbox_retry(service, outcome, attempt);
+    }
+    #[cfg(not(feature = "metrics"))]
+    let _ = (service, outcome, attempt, age);
 }
 
 #[cfg(test)]
@@ -785,8 +1052,16 @@ mod tests {
         crate::metrics::reset_for_tests();
 
         let repo = InMemoryRepository::new();
-        let id = store_message(&repo, outbox("evt-1"));
+        let mut publishable = outbox("evt-1");
+        publishable.created_at = SystemTime::UNIX_EPOCH + Duration::from_secs(1);
+        let id = store_message(&repo, publishable);
         let _pending = store_message(&repo, outbox("evt-2"));
+        let mut stale = outbox("evt-stale");
+        stale.created_at = SystemTime::UNIX_EPOCH + Duration::from_secs(2);
+        stale
+            .claim_at("worker-1", Duration::from_secs(1), SystemTime::UNIX_EPOCH)
+            .unwrap();
+        store_message(&repo, stale);
         let dispatcher = dispatcher(&repo, false, 3).with_service("orders");
 
         block_on(dispatcher.dispatch_ids(std::slice::from_ref(&id))).unwrap();
@@ -801,6 +1076,82 @@ mod tests {
         assert!(
             text.contains("distributed_outbox_pending_messages{service=\"orders\"} 1"),
             "metrics should include pending outbox gauge:\n{text}"
+        );
+        assert!(
+            text.contains(
+                "distributed_outbox_claim_duration_seconds_count{service=\"orders\",source=\"dispatcher_ids\",outcome=\"success\"} 1"
+            ),
+            "metrics should include claim timing:\n{text}"
+        );
+        assert!(
+            text.contains(
+                "distributed_outbox_claimed_messages_total{service=\"orders\",source=\"dispatcher_ids\"} 1"
+            ),
+            "metrics should include claimed count:\n{text}"
+        );
+        assert!(
+            text.contains(
+                "distributed_outbox_publish_duration_seconds_count{service=\"orders\",message_kind=\"event\",outcome=\"published\"} 1"
+            ),
+            "metrics should include publish timing:\n{text}"
+        );
+        assert!(
+            text.contains(
+                "distributed_outbox_message_age_seconds_count{service=\"orders\",phase=\"claimed\",outcome=\"success\"} 1"
+            ),
+            "metrics should include claimed message age:\n{text}"
+        );
+        assert!(
+            text.contains(
+                "distributed_outbox_message_age_seconds_count{service=\"orders\",phase=\"settled\",outcome=\"published\"} 1"
+            ),
+            "metrics should include settled message age:\n{text}"
+        );
+        assert!(
+            text.contains("distributed_outbox_claimable_messages{service=\"orders\"} 2"),
+            "metrics should include claimable outbox gauge:\n{text}"
+        );
+        assert!(
+            text.contains("distributed_outbox_in_flight_messages{service=\"orders\"} 1"),
+            "metrics should include in-flight outbox gauge:\n{text}"
+        );
+        assert!(
+            text.contains("distributed_outbox_oldest_in_flight_age_seconds{service=\"orders\"}"),
+            "metrics should include oldest in-flight age gauge:\n{text}"
+        );
+        assert!(
+            text.contains("distributed_outbox_stale_leases{service=\"orders\"} 1"),
+            "metrics should include stale lease gauge:\n{text}"
+        );
+    }
+
+    #[cfg(feature = "metrics")]
+    #[test]
+    fn metrics_record_retry_buckets_for_retry_attempts() {
+        let _guard = crate::metrics::lock_for_tests();
+        crate::metrics::reset_for_tests();
+
+        let repo = InMemoryRepository::new();
+        store_message(&repo, outbox("evt-retry"));
+        let dispatcher = dispatcher(&repo, true, 3).with_service("orders-retry");
+
+        let first = block_on(dispatcher.dispatch_batch(1)).unwrap();
+        assert_eq!(first.released, 1);
+        let second = block_on(dispatcher.dispatch_batch(1)).unwrap();
+        assert_eq!(second.released, 1);
+
+        let text = crate::metrics::prometheus_text();
+        assert!(
+            text.contains(
+                "distributed_outbox_retry_messages_total{service=\"orders-retry\",outcome=\"released\",attempt_bucket=\"2\"} 1"
+            ),
+            "metrics should bucket retry attempts without message ids:\n{text}"
+        );
+        assert!(
+            text.contains(
+                "distributed_outbox_publish_duration_seconds_count{service=\"orders-retry\",message_kind=\"event\",outcome=\"released\"} 2"
+            ),
+            "metrics should include failed publish timings:\n{text}"
         );
     }
 

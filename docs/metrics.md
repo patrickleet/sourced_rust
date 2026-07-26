@@ -64,9 +64,15 @@ Metric labels are intentionally bounded:
 - `action`: failure-policy action such as `nack`, `dead_letter`, `park`,
   `log_and_ack`, `stop`, `recv_error`, or a settle failure label such as
   `settle_ack`.
+- `source`: bounded outbox claim source: `dispatcher_batch`,
+  `dispatcher_ids`, or `transport_source`.
+- `phase`: outbox age observation phase: `claimed` or `settled`.
+- `attempt_bucket`: retry attempt bucket: `2`, `3`, `4_10`, or `gt10`.
 
 Do not add IDs, trace IDs, user IDs, aggregate IDs, or other high-cardinality
-values as framework labels.
+values as framework labels. Framework labels also must not include worker IDs,
+destinations, topics, queues, subjects, raw error strings, metadata values, or
+payload values.
 
 The label names, framework status values, transport outcomes, failure actions,
 and outbox outcomes live in one internal telemetry vocabulary. New framework
@@ -83,9 +89,30 @@ metrics should use that vocabulary rather than introducing ad hoc labels.
   counter.
 - `distributed_transport_failures_total{service,transport,failure_class,action}`
   counter.
+- `distributed_transport_receive_duration_seconds{service,transport,outcome}`
+  histogram for `recv()` calls. Outcomes are `message`, `drained`, and `error`.
+- `distributed_transport_in_flight_duration_seconds{service,transport,message_kind,outcome}`
+  histogram from receive to successful settlement, settle failure, or stop.
+- `distributed_transport_message_age_seconds{service,transport,message_kind}`
+  histogram when an adapter supplies a reliable producer/store timestamp.
+- `distributed_transport_delivery_attempts_total{service,transport,message_kind,attempt_bucket,outcome}`
+  counter when an adapter supplies a delivery attempt. First deliveries are not
+  recorded; retries start at bucket `2`.
 - `distributed_outbox_messages_total{service,outcome}` counter.
 - `distributed_outbox_pending_messages{service}` gauge.
 - `distributed_outbox_oldest_pending_age_seconds{service}` gauge.
+- `distributed_outbox_claim_duration_seconds{service,source,outcome}`
+  histogram for claim calls. Outcomes are `success`, `empty`, and `error`.
+- `distributed_outbox_claimed_messages_total{service,source}` counter.
+- `distributed_outbox_publish_duration_seconds{service,message_kind,outcome}`
+  histogram for outbox publish attempts.
+- `distributed_outbox_message_age_seconds{service,phase,outcome}` histogram.
+- `distributed_outbox_retry_messages_total{service,outcome,attempt_bucket}`
+  counter for retry attempts only.
+- `distributed_outbox_claimable_messages{service}` gauge.
+- `distributed_outbox_in_flight_messages{service}` gauge.
+- `distributed_outbox_oldest_in_flight_age_seconds{service}` gauge.
+- `distributed_outbox_stale_leases{service}` gauge.
 
 The registry also exposes an internal typed snapshot shape used by tests and
 future private diagnostics. The snapshot contains metric families, bounded
@@ -99,11 +126,20 @@ The `metrics` feature owns Prometheus text exposition for framework metrics. It
 does not install an OpenTelemetry metrics SDK, emit request-level HTTP metrics,
 or record user payload data.
 
-Direct transport receive paths emit receive/settle counters and failure
-counters. Outbox dispatch emits publish outcomes and backlog gauges. Direct
+Direct transport receive paths emit receive/settle counters, receive and
+in-flight histograms, optional adapter-supplied age/attempt signals, and failure
+counters. Outbox dispatch emits claim timing, publish timing, message age, retry
+buckets, publish outcomes, and backlog/runtime gauges. Direct
 `MessagePublisher` calls outside the outbox path do not emit publish metrics in
 this release; instrumenting those calls should use the same bounded vocabulary
 and should stay separate from outbox publish outcomes.
+
+Backlog gauges are cheap store summaries. They do not poll broker admin APIs and
+default store implementations stay bounded; SQL stores use aggregate queries.
+Alert on sustained trends rather than a single scrape: old pending age can spike
+during planned deploy pauses, stale leases imply a worker died or exceeded its
+lease, and retry buckets indicate repeated publish/settle attempts rather than a
+unique-message count.
 
 ## Scaffolded GitOps
 
@@ -129,4 +165,7 @@ The generated `PrometheusRule` contains conservative starting alerts for:
 
 - elevated microsvc dispatch error rate;
 - oldest pending outbox message age;
+- stale outbox leases and growing in-flight/backlog depth;
+- slow outbox claims or publishes;
+- slow transport receive/in-flight windows;
 - repeated retryable transport failures.

@@ -54,6 +54,18 @@ no registered handler (so fan-out transports can over-deliver), stops gracefully
 when the source drains, and never swallows receive/settle errors. Inbox mode
 (`RunOptions::inbox(hook)`) enforces a stable message id before dispatch.
 
+`ReceivedMessage` has optional telemetry hooks for adapter-owned data:
+
+- `delivery_attempt()` for broker/store delivery attempts;
+- `producer_timestamp()` for message age;
+- `transport_lag()` for adapter-documented lag values.
+
+The defaults return `None`, so adapters that cannot provide these values without
+extra broker/admin calls do nothing. When an adapter can supply them cheaply,
+`run_source` records bounded receive/in-flight metrics and span attributes using
+the existing `service`, `transport`, `message_kind`, `outcome`, and retry-bucket
+labels. Lag units are adapter-defined; document them before returning a value.
+
 ## Publishing: `MessagePublisher` + outbox
 
 `MessagePublisher` is the single publish boundary; each adapter documents
@@ -73,8 +85,10 @@ metadata (codec, destination, source aggregate) is namespaced under the reserved
 `x-sourced-` prefix so it cannot be shadowed by user metadata.
 
 Telemetry follows the same boundary. Consumer-side direct transports report
-receive/settle outcomes and classified failures. Producer-side outbox dispatch
-reports `published`, `released`, `failed`, and backlog gauges. A direct
+receive/settle outcomes, receive duration, in-flight duration, optional
+adapter-supplied age/attempt/lag signals, and classified failures.
+Producer-side outbox dispatch reports claim timing, publish timing, message age,
+retry buckets, `published`, `released`, `failed`, and backlog/runtime gauges. A direct
 `MessagePublisher` call outside the outbox path is not counted as an outbox
 publish and currently has no direct publish metric; adding that should be a
 separate producer telemetry path with its own bounded labels.

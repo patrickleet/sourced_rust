@@ -36,6 +36,22 @@ const TRANSPORT_FAILURES_TOTAL_FAMILY: MetricFamily = MetricFamily::counter(
     metric_names::TRANSPORT_FAILURES_TOTAL,
     "Total transport failures by class and chosen action.",
 );
+const TRANSPORT_RECEIVE_DURATION_FAMILY: MetricFamily = MetricFamily::histogram(
+    metric_names::TRANSPORT_RECEIVE_DURATION_SECONDS,
+    "Transport receive call duration in seconds.",
+);
+const TRANSPORT_IN_FLIGHT_DURATION_FAMILY: MetricFamily = MetricFamily::histogram(
+    metric_names::TRANSPORT_IN_FLIGHT_DURATION_SECONDS,
+    "Duration in seconds from transport receive to successful settlement or failure action.",
+);
+const TRANSPORT_MESSAGE_AGE_FAMILY: MetricFamily = MetricFamily::histogram(
+    metric_names::TRANSPORT_MESSAGE_AGE_SECONDS,
+    "Age in seconds of received transport messages when the adapter supplies a reliable timestamp.",
+);
+const TRANSPORT_DELIVERY_ATTEMPTS_TOTAL_FAMILY: MetricFamily = MetricFamily::counter(
+    metric_names::TRANSPORT_DELIVERY_ATTEMPTS_TOTAL,
+    "Total transport redeliveries by delivery-attempt bucket and outcome.",
+);
 const OUTBOX_MESSAGES_TOTAL_FAMILY: MetricFamily = MetricFamily::counter(
     metric_names::OUTBOX_MESSAGES_TOTAL,
     "Total outbox publish outcomes.",
@@ -47,6 +63,42 @@ const OUTBOX_PENDING_MESSAGES_FAMILY: MetricFamily = MetricFamily::gauge(
 const OUTBOX_OLDEST_PENDING_AGE_FAMILY: MetricFamily = MetricFamily::gauge(
     metric_names::OUTBOX_OLDEST_PENDING_AGE_SECONDS,
     "Age in seconds of the oldest pending outbox message.",
+);
+const OUTBOX_CLAIM_DURATION_FAMILY: MetricFamily = MetricFamily::histogram(
+    metric_names::OUTBOX_CLAIM_DURATION_SECONDS,
+    "Outbox claim call duration in seconds.",
+);
+const OUTBOX_CLAIMED_MESSAGES_TOTAL_FAMILY: MetricFamily = MetricFamily::counter(
+    metric_names::OUTBOX_CLAIMED_MESSAGES_TOTAL,
+    "Total outbox messages claimed by claim source.",
+);
+const OUTBOX_PUBLISH_DURATION_FAMILY: MetricFamily = MetricFamily::histogram(
+    metric_names::OUTBOX_PUBLISH_DURATION_SECONDS,
+    "Outbox transport publish duration in seconds.",
+);
+const OUTBOX_MESSAGE_AGE_FAMILY: MetricFamily = MetricFamily::histogram(
+    metric_names::OUTBOX_MESSAGE_AGE_SECONDS,
+    "Age in seconds of outbox messages at claim and settlement phases.",
+);
+const OUTBOX_RETRY_MESSAGES_TOTAL_FAMILY: MetricFamily = MetricFamily::counter(
+    metric_names::OUTBOX_RETRY_MESSAGES_TOTAL,
+    "Total outbox messages processed on retry attempts.",
+);
+const OUTBOX_CLAIMABLE_MESSAGES_FAMILY: MetricFamily = MetricFamily::gauge(
+    metric_names::OUTBOX_CLAIMABLE_MESSAGES,
+    "Outbox messages currently claimable.",
+);
+const OUTBOX_IN_FLIGHT_MESSAGES_FAMILY: MetricFamily = MetricFamily::gauge(
+    metric_names::OUTBOX_IN_FLIGHT_MESSAGES,
+    "Outbox messages currently leased in flight.",
+);
+const OUTBOX_OLDEST_IN_FLIGHT_AGE_FAMILY: MetricFamily = MetricFamily::gauge(
+    metric_names::OUTBOX_OLDEST_IN_FLIGHT_AGE_SECONDS,
+    "Age in seconds of the oldest in-flight outbox message.",
+);
+const OUTBOX_STALE_LEASES_FAMILY: MetricFamily = MetricFamily::gauge(
+    metric_names::OUTBOX_STALE_LEASES,
+    "Outbox in-flight leases that are stale and claimable again.",
 );
 
 static REGISTRY: OnceLock<MetricsRegistry> = OnceLock::new();
@@ -107,6 +159,76 @@ pub fn record_transport_failure(
     });
 }
 
+/// Record how long one transport receive call took.
+pub fn record_transport_receive_duration(
+    service: Option<&str>,
+    transport: &str,
+    outcome: &str,
+    duration: Duration,
+) {
+    registry().record_transport_receive_duration(TransportReceiveDurationKey {
+        service: service_label(service),
+        transport: transport.to_string(),
+        outcome: outcome.to_string(),
+        duration_seconds: duration.as_secs_f64(),
+    });
+}
+
+/// Record the duration from a received message becoming in-flight until its
+/// final runner outcome.
+pub fn record_transport_in_flight_duration(
+    service: Option<&str>,
+    transport: &str,
+    kind: MessageKind,
+    outcome: &str,
+    duration: Duration,
+) {
+    registry().record_transport_in_flight_duration(TransportInFlightDurationKey {
+        service: service_label(service),
+        transport: transport.to_string(),
+        message_kind: kind.as_str().to_string(),
+        outcome: outcome.to_string(),
+        duration_seconds: duration.as_secs_f64(),
+    });
+}
+
+/// Record received message age when the adapter supplies a reliable timestamp.
+pub fn record_transport_message_age(
+    service: Option<&str>,
+    transport: &str,
+    kind: MessageKind,
+    age: Duration,
+) {
+    registry().record_transport_message_age(TransportMessageAgeKey {
+        service: service_label(service),
+        transport: transport.to_string(),
+        message_kind: kind.as_str().to_string(),
+        age_seconds: age.as_secs_f64(),
+    });
+}
+
+/// Record a transport redelivery attempt when the adapter supplies an attempt
+/// count. First deliveries are intentionally omitted because the bucket
+/// vocabulary is for retries.
+pub fn record_transport_delivery_attempt(
+    service: Option<&str>,
+    transport: &str,
+    kind: MessageKind,
+    attempt: u32,
+    outcome: &str,
+) {
+    let Some(attempt_bucket) = crate::telemetry::attempt_bucket(attempt) else {
+        return;
+    };
+    registry().record_transport_delivery_attempt(TransportDeliveryAttemptKey {
+        service: service_label(service),
+        transport: transport.to_string(),
+        message_kind: kind.as_str().to_string(),
+        attempt_bucket: attempt_bucket.to_string(),
+        outcome: outcome.to_string(),
+    });
+}
+
 /// Record one outbox dispatch state transition.
 pub fn record_outbox_message(service: Option<&str>, outcome: &str) {
     record_outbox_messages(service, outcome, 1);
@@ -126,6 +248,60 @@ pub fn record_outbox_messages(service: Option<&str>, outcome: &str, count: usize
     );
 }
 
+/// Record how long an outbox claim call took and how many rows it claimed.
+pub fn record_outbox_claim(
+    service: Option<&str>,
+    source: &str,
+    claimed: usize,
+    outcome: &str,
+    duration: Duration,
+) {
+    registry().record_outbox_claim(OutboxClaimKey {
+        service: service_label(service),
+        source: source.to_string(),
+        outcome: outcome.to_string(),
+        claimed,
+        duration_seconds: duration.as_secs_f64(),
+    });
+}
+
+/// Record one outbox transport publish attempt duration.
+pub fn record_outbox_publish_duration(
+    service: Option<&str>,
+    kind: MessageKind,
+    outcome: &str,
+    duration: Duration,
+) {
+    registry().record_outbox_publish_duration(OutboxPublishDurationKey {
+        service: service_label(service),
+        message_kind: kind.as_str().to_string(),
+        outcome: outcome.to_string(),
+        duration_seconds: duration.as_secs_f64(),
+    });
+}
+
+/// Record outbox message age at claim or settlement.
+pub fn record_outbox_message_age(service: Option<&str>, phase: &str, outcome: &str, age: Duration) {
+    registry().record_outbox_message_age(OutboxMessageAgeKey {
+        service: service_label(service),
+        phase: phase.to_string(),
+        outcome: outcome.to_string(),
+        age_seconds: age.as_secs_f64(),
+    });
+}
+
+/// Record an outbox row processed on a retry attempt.
+pub fn record_outbox_retry(service: Option<&str>, outcome: &str, attempt: u32) {
+    let Some(attempt_bucket) = crate::telemetry::attempt_bucket(attempt) else {
+        return;
+    };
+    registry().record_outbox_retry(OutboxRetryKey {
+        service: service_label(service),
+        outcome: outcome.to_string(),
+        attempt_bucket: attempt_bucket.to_string(),
+    });
+}
+
 /// Set outbox backlog gauges for a service.
 pub fn set_outbox_backlog(
     service: Option<&str>,
@@ -136,6 +312,27 @@ pub fn set_outbox_backlog(
         service_label(service),
         pending as f64,
         oldest_pending_age.map(|duration| duration.as_secs_f64()),
+    );
+}
+
+/// Set the extended outbox backlog/runtime gauges for a service.
+pub fn set_outbox_runtime_backlog(
+    service: Option<&str>,
+    pending: usize,
+    oldest_pending_age: Option<Duration>,
+    claimable: usize,
+    in_flight: usize,
+    oldest_in_flight_age: Option<Duration>,
+    stale_leases: usize,
+) {
+    registry().set_outbox_runtime_backlog(
+        service_label(service),
+        pending as f64,
+        oldest_pending_age.map(|duration| duration.as_secs_f64()),
+        claimable as f64,
+        in_flight as f64,
+        oldest_in_flight_age.map(|duration| duration.as_secs_f64()),
+        stale_leases as f64,
     );
 }
 
@@ -392,9 +589,22 @@ struct MetricsRegistry {
     dispatch_duration: Mutex<BTreeMap<DispatchHistogramKey, Histogram>>,
     transport_messages_total: Mutex<BTreeMap<TransportMessageKey, u64>>,
     transport_failures_total: Mutex<BTreeMap<TransportFailureKey, u64>>,
+    transport_receive_duration: Mutex<BTreeMap<TransportReceiveDurationHistogramKey, Histogram>>,
+    transport_in_flight_duration: Mutex<BTreeMap<TransportInFlightDurationHistogramKey, Histogram>>,
+    transport_message_age: Mutex<BTreeMap<TransportMessageAgeHistogramKey, Histogram>>,
+    transport_delivery_attempts_total: Mutex<BTreeMap<TransportDeliveryAttemptKey, u64>>,
     outbox_messages_total: Mutex<BTreeMap<OutboxMessageKey, u64>>,
     outbox_pending_messages: Mutex<BTreeMap<String, f64>>,
     outbox_oldest_pending_age_seconds: Mutex<BTreeMap<String, f64>>,
+    outbox_claim_duration: Mutex<BTreeMap<OutboxClaimDurationHistogramKey, Histogram>>,
+    outbox_claimed_messages_total: Mutex<BTreeMap<OutboxClaimedKey, u64>>,
+    outbox_publish_duration: Mutex<BTreeMap<OutboxPublishDurationHistogramKey, Histogram>>,
+    outbox_message_age: Mutex<BTreeMap<OutboxMessageAgeHistogramKey, Histogram>>,
+    outbox_retry_messages_total: Mutex<BTreeMap<OutboxRetryKey, u64>>,
+    outbox_claimable_messages: Mutex<BTreeMap<String, f64>>,
+    outbox_in_flight_messages: Mutex<BTreeMap<String, f64>>,
+    outbox_oldest_in_flight_age_seconds: Mutex<BTreeMap<String, f64>>,
+    outbox_stale_leases: Mutex<BTreeMap<String, f64>>,
 }
 
 impl MetricsRegistry {
@@ -433,12 +643,90 @@ impl MetricsRegistry {
         self.note_service(service);
     }
 
+    fn record_transport_receive_duration(&self, key: TransportReceiveDurationKey) {
+        let service = key.service.clone();
+        self.lock(&self.transport_receive_duration)
+            .entry(key.histogram_key())
+            .or_insert_with(Histogram::new)
+            .observe(key.duration_seconds);
+        self.note_service(service);
+    }
+
+    fn record_transport_in_flight_duration(&self, key: TransportInFlightDurationKey) {
+        let service = key.service.clone();
+        self.lock(&self.transport_in_flight_duration)
+            .entry(key.histogram_key())
+            .or_insert_with(Histogram::new)
+            .observe(key.duration_seconds);
+        self.note_service(service);
+    }
+
+    fn record_transport_message_age(&self, key: TransportMessageAgeKey) {
+        let service = key.service.clone();
+        self.lock(&self.transport_message_age)
+            .entry(key.histogram_key())
+            .or_insert_with(Histogram::new)
+            .observe(key.age_seconds);
+        self.note_service(service);
+    }
+
+    fn record_transport_delivery_attempt(&self, key: TransportDeliveryAttemptKey) {
+        let service = key.service.clone();
+        self.lock(&self.transport_delivery_attempts_total)
+            .entry(key)
+            .and_modify(|value| *value += 1)
+            .or_insert(1);
+        self.note_service(service);
+    }
+
     fn record_outbox_messages(&self, key: OutboxMessageKey, count: u64) {
         let service = key.service.clone();
         self.lock(&self.outbox_messages_total)
             .entry(key)
             .and_modify(|value| *value += count)
             .or_insert(count);
+        self.note_service(service);
+    }
+
+    fn record_outbox_claim(&self, key: OutboxClaimKey) {
+        let service = key.service.clone();
+        self.lock(&self.outbox_claim_duration)
+            .entry(key.duration_key())
+            .or_insert_with(Histogram::new)
+            .observe(key.duration_seconds);
+        if key.claimed > 0 {
+            self.lock(&self.outbox_claimed_messages_total)
+                .entry(key.claimed_key())
+                .and_modify(|value| *value += key.claimed as u64)
+                .or_insert(key.claimed as u64);
+        }
+        self.note_service(service);
+    }
+
+    fn record_outbox_publish_duration(&self, key: OutboxPublishDurationKey) {
+        let service = key.service.clone();
+        self.lock(&self.outbox_publish_duration)
+            .entry(key.histogram_key())
+            .or_insert_with(Histogram::new)
+            .observe(key.duration_seconds);
+        self.note_service(service);
+    }
+
+    fn record_outbox_message_age(&self, key: OutboxMessageAgeKey) {
+        let service = key.service.clone();
+        self.lock(&self.outbox_message_age)
+            .entry(key.histogram_key())
+            .or_insert_with(Histogram::new)
+            .observe(key.age_seconds);
+        self.note_service(service);
+    }
+
+    fn record_outbox_retry(&self, key: OutboxRetryKey) {
+        let service = key.service.clone();
+        self.lock(&self.outbox_retry_messages_total)
+            .entry(key)
+            .and_modify(|value| *value += 1)
+            .or_insert(1);
         self.note_service(service);
     }
 
@@ -455,16 +743,58 @@ impl MetricsRegistry {
         self.note_service(service);
     }
 
+    fn set_outbox_runtime_backlog(
+        &self,
+        service: String,
+        pending: f64,
+        oldest_pending_age: Option<f64>,
+        claimable: f64,
+        in_flight: f64,
+        oldest_in_flight_age: Option<f64>,
+        stale_leases: f64,
+    ) {
+        self.set_outbox_backlog(service.clone(), pending, oldest_pending_age);
+        self.lock(&self.outbox_claimable_messages)
+            .insert(service.clone(), claimable);
+        self.lock(&self.outbox_in_flight_messages)
+            .insert(service.clone(), in_flight);
+        if let Some(age) = oldest_in_flight_age {
+            self.lock(&self.outbox_oldest_in_flight_age_seconds)
+                .insert(service.clone(), age);
+        } else {
+            self.lock(&self.outbox_oldest_in_flight_age_seconds)
+                .remove(&service);
+        }
+        self.lock(&self.outbox_stale_leases)
+            .insert(service.clone(), stale_leases);
+        self.note_service(service);
+    }
+
     fn snapshot(&self) -> MetricsSnapshot {
         let service_info = self.clone_locked(&self.service_info);
         let dispatch_total = self.clone_locked(&self.dispatch_total);
         let dispatch_duration = self.clone_locked(&self.dispatch_duration);
         let transport_messages_total = self.clone_locked(&self.transport_messages_total);
         let transport_failures_total = self.clone_locked(&self.transport_failures_total);
+        let transport_receive_duration = self.clone_locked(&self.transport_receive_duration);
+        let transport_in_flight_duration = self.clone_locked(&self.transport_in_flight_duration);
+        let transport_message_age = self.clone_locked(&self.transport_message_age);
+        let transport_delivery_attempts_total =
+            self.clone_locked(&self.transport_delivery_attempts_total);
         let outbox_messages_total = self.clone_locked(&self.outbox_messages_total);
         let outbox_pending_messages = self.clone_locked(&self.outbox_pending_messages);
         let outbox_oldest_pending_age_seconds =
             self.clone_locked(&self.outbox_oldest_pending_age_seconds);
+        let outbox_claim_duration = self.clone_locked(&self.outbox_claim_duration);
+        let outbox_claimed_messages_total = self.clone_locked(&self.outbox_claimed_messages_total);
+        let outbox_publish_duration = self.clone_locked(&self.outbox_publish_duration);
+        let outbox_message_age = self.clone_locked(&self.outbox_message_age);
+        let outbox_retry_messages_total = self.clone_locked(&self.outbox_retry_messages_total);
+        let outbox_claimable_messages = self.clone_locked(&self.outbox_claimable_messages);
+        let outbox_in_flight_messages = self.clone_locked(&self.outbox_in_flight_messages);
+        let outbox_oldest_in_flight_age_seconds =
+            self.clone_locked(&self.outbox_oldest_in_flight_age_seconds);
+        let outbox_stale_leases = self.clone_locked(&self.outbox_stale_leases);
 
         MetricsSnapshot {
             families: vec![
@@ -509,6 +839,30 @@ impl MetricsRegistry {
                         .map(|(key, value)| MetricSample::counter(key.labels(), *value))
                         .collect(),
                 ),
+                TRANSPORT_RECEIVE_DURATION_FAMILY.snapshot(
+                    transport_receive_duration
+                        .iter()
+                        .map(|(key, histogram)| MetricSample::histogram(key.labels(), histogram))
+                        .collect(),
+                ),
+                TRANSPORT_IN_FLIGHT_DURATION_FAMILY.snapshot(
+                    transport_in_flight_duration
+                        .iter()
+                        .map(|(key, histogram)| MetricSample::histogram(key.labels(), histogram))
+                        .collect(),
+                ),
+                TRANSPORT_MESSAGE_AGE_FAMILY.snapshot(
+                    transport_message_age
+                        .iter()
+                        .map(|(key, histogram)| MetricSample::histogram(key.labels(), histogram))
+                        .collect(),
+                ),
+                TRANSPORT_DELIVERY_ATTEMPTS_TOTAL_FAMILY.snapshot(
+                    transport_delivery_attempts_total
+                        .iter()
+                        .map(|(key, value)| MetricSample::counter(key.labels(), *value))
+                        .collect(),
+                ),
                 OUTBOX_MESSAGES_TOTAL_FAMILY.snapshot(
                     outbox_messages_total
                         .iter()
@@ -531,6 +885,68 @@ impl MetricsRegistry {
                         })
                         .collect(),
                 ),
+                OUTBOX_CLAIM_DURATION_FAMILY.snapshot(
+                    outbox_claim_duration
+                        .iter()
+                        .map(|(key, histogram)| MetricSample::histogram(key.labels(), histogram))
+                        .collect(),
+                ),
+                OUTBOX_CLAIMED_MESSAGES_TOTAL_FAMILY.snapshot(
+                    outbox_claimed_messages_total
+                        .iter()
+                        .map(|(key, value)| MetricSample::counter(key.labels(), *value))
+                        .collect(),
+                ),
+                OUTBOX_PUBLISH_DURATION_FAMILY.snapshot(
+                    outbox_publish_duration
+                        .iter()
+                        .map(|(key, histogram)| MetricSample::histogram(key.labels(), histogram))
+                        .collect(),
+                ),
+                OUTBOX_MESSAGE_AGE_FAMILY.snapshot(
+                    outbox_message_age
+                        .iter()
+                        .map(|(key, histogram)| MetricSample::histogram(key.labels(), histogram))
+                        .collect(),
+                ),
+                OUTBOX_RETRY_MESSAGES_TOTAL_FAMILY.snapshot(
+                    outbox_retry_messages_total
+                        .iter()
+                        .map(|(key, value)| MetricSample::counter(key.labels(), *value))
+                        .collect(),
+                ),
+                OUTBOX_CLAIMABLE_MESSAGES_FAMILY.snapshot(
+                    outbox_claimable_messages
+                        .iter()
+                        .map(|(service, value)| {
+                            MetricSample::gauge(service_labels(service), *value)
+                        })
+                        .collect(),
+                ),
+                OUTBOX_IN_FLIGHT_MESSAGES_FAMILY.snapshot(
+                    outbox_in_flight_messages
+                        .iter()
+                        .map(|(service, value)| {
+                            MetricSample::gauge(service_labels(service), *value)
+                        })
+                        .collect(),
+                ),
+                OUTBOX_OLDEST_IN_FLIGHT_AGE_FAMILY.snapshot(
+                    outbox_oldest_in_flight_age_seconds
+                        .iter()
+                        .map(|(service, value)| {
+                            MetricSample::gauge(service_labels(service), *value)
+                        })
+                        .collect(),
+                ),
+                OUTBOX_STALE_LEASES_FAMILY.snapshot(
+                    outbox_stale_leases
+                        .iter()
+                        .map(|(service, value)| {
+                            MetricSample::gauge(service_labels(service), *value)
+                        })
+                        .collect(),
+                ),
             ],
         }
     }
@@ -542,9 +958,22 @@ impl MetricsRegistry {
         self.lock(&self.dispatch_duration).clear();
         self.lock(&self.transport_messages_total).clear();
         self.lock(&self.transport_failures_total).clear();
+        self.lock(&self.transport_receive_duration).clear();
+        self.lock(&self.transport_in_flight_duration).clear();
+        self.lock(&self.transport_message_age).clear();
+        self.lock(&self.transport_delivery_attempts_total).clear();
         self.lock(&self.outbox_messages_total).clear();
         self.lock(&self.outbox_pending_messages).clear();
         self.lock(&self.outbox_oldest_pending_age_seconds).clear();
+        self.lock(&self.outbox_claim_duration).clear();
+        self.lock(&self.outbox_claimed_messages_total).clear();
+        self.lock(&self.outbox_publish_duration).clear();
+        self.lock(&self.outbox_message_age).clear();
+        self.lock(&self.outbox_retry_messages_total).clear();
+        self.lock(&self.outbox_claimable_messages).clear();
+        self.lock(&self.outbox_in_flight_messages).clear();
+        self.lock(&self.outbox_oldest_in_flight_age_seconds).clear();
+        self.lock(&self.outbox_stale_leases).clear();
     }
 
     fn note_service(&self, service: String) {
@@ -679,6 +1108,148 @@ impl TransportFailureKey {
     }
 }
 
+#[derive(Clone)]
+struct TransportReceiveDurationKey {
+    service: String,
+    transport: String,
+    outcome: String,
+    duration_seconds: f64,
+}
+
+impl TransportReceiveDurationKey {
+    fn histogram_key(&self) -> TransportReceiveDurationHistogramKey {
+        TransportReceiveDurationHistogramKey {
+            service: self.service.clone(),
+            transport: self.transport.clone(),
+            outcome: self.outcome.clone(),
+        }
+    }
+}
+
+#[derive(Clone, Debug, PartialEq, Eq, PartialOrd, Ord)]
+struct TransportReceiveDurationHistogramKey {
+    service: String,
+    transport: String,
+    outcome: String,
+}
+
+impl TransportReceiveDurationHistogramKey {
+    fn labels(&self) -> Vec<(String, String)> {
+        vec![
+            (metric_labels::SERVICE.to_string(), self.service.clone()),
+            (metric_labels::TRANSPORT.to_string(), self.transport.clone()),
+            (metric_labels::OUTCOME.to_string(), self.outcome.clone()),
+        ]
+    }
+}
+
+#[derive(Clone)]
+struct TransportInFlightDurationKey {
+    service: String,
+    transport: String,
+    message_kind: String,
+    outcome: String,
+    duration_seconds: f64,
+}
+
+impl TransportInFlightDurationKey {
+    fn histogram_key(&self) -> TransportInFlightDurationHistogramKey {
+        TransportInFlightDurationHistogramKey {
+            service: self.service.clone(),
+            transport: self.transport.clone(),
+            message_kind: self.message_kind.clone(),
+            outcome: self.outcome.clone(),
+        }
+    }
+}
+
+#[derive(Clone, Debug, PartialEq, Eq, PartialOrd, Ord)]
+struct TransportInFlightDurationHistogramKey {
+    service: String,
+    transport: String,
+    message_kind: String,
+    outcome: String,
+}
+
+impl TransportInFlightDurationHistogramKey {
+    fn labels(&self) -> Vec<(String, String)> {
+        vec![
+            (metric_labels::SERVICE.to_string(), self.service.clone()),
+            (metric_labels::TRANSPORT.to_string(), self.transport.clone()),
+            (
+                metric_labels::MESSAGE_KIND.to_string(),
+                self.message_kind.clone(),
+            ),
+            (metric_labels::OUTCOME.to_string(), self.outcome.clone()),
+        ]
+    }
+}
+
+#[derive(Clone)]
+struct TransportMessageAgeKey {
+    service: String,
+    transport: String,
+    message_kind: String,
+    age_seconds: f64,
+}
+
+impl TransportMessageAgeKey {
+    fn histogram_key(&self) -> TransportMessageAgeHistogramKey {
+        TransportMessageAgeHistogramKey {
+            service: self.service.clone(),
+            transport: self.transport.clone(),
+            message_kind: self.message_kind.clone(),
+        }
+    }
+}
+
+#[derive(Clone, Debug, PartialEq, Eq, PartialOrd, Ord)]
+struct TransportMessageAgeHistogramKey {
+    service: String,
+    transport: String,
+    message_kind: String,
+}
+
+impl TransportMessageAgeHistogramKey {
+    fn labels(&self) -> Vec<(String, String)> {
+        vec![
+            (metric_labels::SERVICE.to_string(), self.service.clone()),
+            (metric_labels::TRANSPORT.to_string(), self.transport.clone()),
+            (
+                metric_labels::MESSAGE_KIND.to_string(),
+                self.message_kind.clone(),
+            ),
+        ]
+    }
+}
+
+#[derive(Clone, Debug, PartialEq, Eq, PartialOrd, Ord)]
+struct TransportDeliveryAttemptKey {
+    service: String,
+    transport: String,
+    message_kind: String,
+    attempt_bucket: String,
+    outcome: String,
+}
+
+impl TransportDeliveryAttemptKey {
+    fn labels(&self) -> Vec<(String, String)> {
+        vec![
+            (metric_labels::SERVICE.to_string(), self.service.clone()),
+            (metric_labels::TRANSPORT.to_string(), self.transport.clone()),
+            (
+                metric_labels::MESSAGE_KIND.to_string(),
+                self.message_kind.clone(),
+            ),
+            (
+                metric_labels::ATTEMPT_BUCKET.to_string(),
+                self.attempt_bucket.clone(),
+            ),
+            (metric_labels::OUTCOME.to_string(), self.outcome.clone()),
+        ]
+    }
+}
+
 #[derive(Clone, Debug, PartialEq, Eq, PartialOrd, Ord)]
 struct OutboxMessageKey {
     service: String,
@@ -690,6 +1261,157 @@ impl OutboxMessageKey {
         vec![
             (metric_labels::SERVICE.to_string(), self.service.clone()),
             (metric_labels::OUTCOME.to_string(), self.outcome.clone()),
+        ]
+    }
+}
+
+#[derive(Clone)]
+struct OutboxClaimKey {
+    service: String,
+    source: String,
+    outcome: String,
+    claimed: usize,
+    duration_seconds: f64,
+}
+
+impl OutboxClaimKey {
+    fn duration_key(&self) -> OutboxClaimDurationHistogramKey {
+        OutboxClaimDurationHistogramKey {
+            service: self.service.clone(),
+            source: self.source.clone(),
+            outcome: self.outcome.clone(),
+        }
+    }
+
+    fn claimed_key(&self) -> OutboxClaimedKey {
+        OutboxClaimedKey {
+            service: self.service.clone(),
+            source: self.source.clone(),
+        }
+    }
+}
+
+#[derive(Clone, Debug, PartialEq, Eq, PartialOrd, Ord)]
+struct OutboxClaimDurationHistogramKey {
+    service: String,
+    source: String,
+    outcome: String,
+}
+
+impl OutboxClaimDurationHistogramKey {
+    fn labels(&self) -> Vec<(String, String)> {
+        vec![
+            (metric_labels::SERVICE.to_string(), self.service.clone()),
+            (metric_labels::SOURCE.to_string(), self.source.clone()),
+            (metric_labels::OUTCOME.to_string(), self.outcome.clone()),
+        ]
+    }
+}
+
+#[derive(Clone, Debug, PartialEq, Eq, PartialOrd, Ord)]
+struct OutboxClaimedKey {
+    service: String,
+    source: String,
+}
+
+impl OutboxClaimedKey {
+    fn labels(&self) -> Vec<(String, String)> {
+        vec![
+            (metric_labels::SERVICE.to_string(), self.service.clone()),
+            (metric_labels::SOURCE.to_string(), self.source.clone()),
+        ]
+    }
+}
+
+#[derive(Clone)]
+struct OutboxPublishDurationKey {
+    service: String,
+    message_kind: String,
+    outcome: String,
+    duration_seconds: f64,
+}
+
+impl OutboxPublishDurationKey {
+    fn histogram_key(&self) -> OutboxPublishDurationHistogramKey {
+        OutboxPublishDurationHistogramKey {
+            service: self.service.clone(),
+            message_kind: self.message_kind.clone(),
+            outcome: self.outcome.clone(),
+        }
+    }
+}
+
+#[derive(Clone, Debug, PartialEq, Eq, PartialOrd, Ord)]
+struct OutboxPublishDurationHistogramKey {
+    service: String,
+    message_kind: String,
+    outcome: String,
+}
+
+impl OutboxPublishDurationHistogramKey {
+    fn labels(&self) -> Vec<(String, String)> {
+        vec![
+            (metric_labels::SERVICE.to_string(), self.service.clone()),
+            (
+                metric_labels::MESSAGE_KIND.to_string(),
+                self.message_kind.clone(),
+            ),
+            (metric_labels::OUTCOME.to_string(), self.outcome.clone()),
+        ]
+    }
+}
+
+#[derive(Clone)]
+struct OutboxMessageAgeKey {
+    service: String,
+    phase: String,
+    outcome: String,
+    age_seconds: f64,
+}
+
+impl OutboxMessageAgeKey {
+    fn histogram_key(&self) -> OutboxMessageAgeHistogramKey {
+        OutboxMessageAgeHistogramKey {
+            service: self.service.clone(),
+            phase: self.phase.clone(),
+            outcome: self.outcome.clone(),
+        }
+    }
+}
+
+#[derive(Clone, Debug, PartialEq, Eq, PartialOrd, Ord)]
+struct OutboxMessageAgeHistogramKey {
+    service: String,
+    phase: String,
+    outcome: String,
+}
+
+impl OutboxMessageAgeHistogramKey {
+    fn labels(&self) -> Vec<(String, String)> {
+        vec![
+            (metric_labels::SERVICE.to_string(), self.service.clone()),
+            (metric_labels::PHASE.to_string(), self.phase.clone()),
+            (metric_labels::OUTCOME.to_string(), self.outcome.clone()),
+        ]
+    }
+}
+
+#[derive(Clone, Debug, PartialEq, Eq, PartialOrd, Ord)]
+struct OutboxRetryKey {
+    service: String,
+    outcome: String,
+    attempt_bucket: String,
+}
+
+impl OutboxRetryKey {
+    fn labels(&self) -> Vec<(String, String)> {
+        vec![
+            (metric_labels::SERVICE.to_string(), self.service.clone()),
+            (metric_labels::OUTCOME.to_string(), self.outcome.clone()),
+            (
+                metric_labels::ATTEMPT_BUCKET.to_string(),
+                self.attempt_bucket.clone(),
+            ),
         ]
     }
 }
@@ -846,8 +1568,8 @@ fn format_float(value: f64) -> String {
 mod tests {
     use super::*;
     use crate::telemetry::{
-        dispatch_status, failure_action, failure_class, metric_labels, metric_names,
-        outbox_outcome, transport_outcome,
+        dispatch_status, failure_action, metric_labels, metric_names, outbox_outcome,
+        transport_outcome,
     };
     use std::collections::BTreeSet;
 
@@ -915,14 +1637,63 @@ mod tests {
             MessageKind::Event,
             transport_outcome::ACK,
         );
-        record_transport_failure(
+        record_transport_failure(Some("orders"), "nats", "retryable", failure_action::NACK);
+        record_transport_receive_duration(
             Some("orders"),
             "nats",
-            failure_class::RETRYABLE,
-            failure_action::NACK,
+            crate::telemetry::transport_receive_outcome::MESSAGE,
+            Duration::from_millis(3),
+        );
+        record_transport_in_flight_duration(
+            Some("orders"),
+            "nats",
+            MessageKind::Event,
+            transport_outcome::ACK,
+            Duration::from_millis(4),
+        );
+        record_transport_message_age(
+            Some("orders"),
+            "nats",
+            MessageKind::Event,
+            Duration::from_secs(5),
+        );
+        record_transport_delivery_attempt(
+            Some("orders"),
+            "nats",
+            MessageKind::Event,
+            2,
+            transport_outcome::ACK,
         );
         record_outbox_messages(Some("orders"), outbox_outcome::PUBLISHED, 2);
-        set_outbox_backlog(Some("orders"), 3, Some(Duration::from_secs(4)));
+        record_outbox_claim(
+            Some("orders"),
+            crate::telemetry::outbox_claim_source::DISPATCHER_BATCH,
+            2,
+            crate::telemetry::outbox_claim_outcome::SUCCESS,
+            Duration::from_millis(1),
+        );
+        record_outbox_publish_duration(
+            Some("orders"),
+            MessageKind::Event,
+            outbox_outcome::PUBLISHED,
+            Duration::from_millis(2),
+        );
+        record_outbox_message_age(
+            Some("orders"),
+            crate::telemetry::outbox_message_phase::SETTLED,
+            outbox_outcome::PUBLISHED,
+            Duration::from_secs(8),
+        );
+        record_outbox_retry(Some("orders"), outbox_outcome::RELEASED, 2);
+        set_outbox_runtime_backlog(
+            Some("orders"),
+            3,
+            Some(Duration::from_secs(4)),
+            3,
+            1,
+            Some(Duration::from_secs(9)),
+            1,
+        );
 
         let snapshot = snapshot();
         let family_names = snapshot
@@ -939,9 +1710,22 @@ mod tests {
                 metric_names::MICROSVC_DISPATCH_DURATION_SECONDS,
                 metric_names::TRANSPORT_MESSAGES_TOTAL,
                 metric_names::TRANSPORT_FAILURES_TOTAL,
+                metric_names::TRANSPORT_RECEIVE_DURATION_SECONDS,
+                metric_names::TRANSPORT_IN_FLIGHT_DURATION_SECONDS,
+                metric_names::TRANSPORT_MESSAGE_AGE_SECONDS,
+                metric_names::TRANSPORT_DELIVERY_ATTEMPTS_TOTAL,
                 metric_names::OUTBOX_MESSAGES_TOTAL,
                 metric_names::OUTBOX_PENDING_MESSAGES,
                 metric_names::OUTBOX_OLDEST_PENDING_AGE_SECONDS,
+                metric_names::OUTBOX_CLAIM_DURATION_SECONDS,
+                metric_names::OUTBOX_CLAIMED_MESSAGES_TOTAL,
+                metric_names::OUTBOX_PUBLISH_DURATION_SECONDS,
+                metric_names::OUTBOX_MESSAGE_AGE_SECONDS,
+                metric_names::OUTBOX_RETRY_MESSAGES_TOTAL,
+                metric_names::OUTBOX_CLAIMABLE_MESSAGES,
+                metric_names::OUTBOX_IN_FLIGHT_MESSAGES,
+                metric_names::OUTBOX_OLDEST_IN_FLIGHT_AGE_SECONDS,
+                metric_names::OUTBOX_STALE_LEASES,
             ]
         );
 
@@ -995,11 +1779,65 @@ mod tests {
         record_transport_failure(
             Some("orders"),
             "rabbitmq",
-            failure_class::PERMANENT,
+            "permanent",
             failure_action::DEAD_LETTER,
         );
+        record_transport_receive_duration(
+            Some("orders"),
+            "rabbitmq",
+            crate::telemetry::transport_receive_outcome::MESSAGE,
+            Duration::from_millis(1),
+        );
+        record_transport_in_flight_duration(
+            Some("orders"),
+            "rabbitmq",
+            MessageKind::Command,
+            transport_outcome::DEAD_LETTER,
+            Duration::from_millis(2),
+        );
+        record_transport_message_age(
+            Some("orders"),
+            "rabbitmq",
+            MessageKind::Command,
+            Duration::from_secs(11),
+        );
+        record_transport_delivery_attempt(
+            Some("orders"),
+            "rabbitmq",
+            MessageKind::Command,
+            4,
+            transport_outcome::DEAD_LETTER,
+        );
         record_outbox_messages(Some("orders"), outbox_outcome::RELEASED, 1);
-        set_outbox_backlog(Some("orders"), 1, Some(Duration::from_secs(30)));
+        record_outbox_claim(
+            Some("orders"),
+            crate::telemetry::outbox_claim_source::DISPATCHER_IDS,
+            1,
+            crate::telemetry::outbox_claim_outcome::SUCCESS,
+            Duration::from_millis(1),
+        );
+        record_outbox_publish_duration(
+            Some("orders"),
+            MessageKind::Command,
+            outbox_outcome::RELEASED,
+            Duration::from_millis(2),
+        );
+        record_outbox_message_age(
+            Some("orders"),
+            crate::telemetry::outbox_message_phase::CLAIMED,
+            crate::telemetry::outbox_claim_outcome::SUCCESS,
+            Duration::from_secs(12),
+        );
+        record_outbox_retry(Some("orders"), outbox_outcome::RELEASED, 10);
+        set_outbox_runtime_backlog(
+            Some("orders"),
+            1,
+            Some(Duration::from_secs(30)),
+            1,
+            1,
+            Some(Duration::from_secs(40)),
+            1,
+        );
 
         let text = prometheus_text();
         let label_names = rendered_label_names(&text);
