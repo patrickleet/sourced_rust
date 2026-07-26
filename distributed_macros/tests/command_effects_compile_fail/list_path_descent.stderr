@@ -12,7 +12,7 @@ error[E0277]: the trait bound `distributed::graphql::EffectInputTerminalKind: di
    | |_____^ the trait `distributed::graphql::EffectInputDescendableKind` is not implemented for `distributed::graphql::EffectInputTerminalKind`
    |
 help: the trait `distributed::graphql::EffectInputFieldMarker` is implemented for `distributed::graphql::EffectInputPath<Outer, Inner>`
-  --> $WORKSPACE/src/graphql/command_contract.rs
+  --> $WORKSPACE/src/graphql/command_contract/effect_wire.rs
    |
    | / impl<Outer, Inner> EffectInputFieldMarker for EffectInputPath<Outer, Inner>
    | | where
