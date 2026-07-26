@@ -177,10 +177,24 @@
 </AppPage>
 
 <style>
+	/* Lobby shell + messages — page-local only */
+	.ch-shell {
+		--edge: var(--wf-line, #e2e0d9);
+		--ink: var(--wf-ink, #1c1c1a);
+		--ink-soft: var(--wf-ink-soft, #5c5c56);
+		--accent: var(--wf-accent, #3d5a80);
+		--surface: var(--wf-bg-elevated, #fff);
+		--bubble: #f0efe9;
+		--bubble-mine: var(--wf-ink, #1c1c1a);
 
-
-
-
+		display: flex;
+		flex-direction: column;
+		min-height: min(62vh, 34rem);
+		border-radius: var(--df-radius-lg, 10px);
+		border: 1px solid var(--edge);
+		background: var(--surface);
+		overflow: hidden;
+	}
 
 	.ch-status {
 		display: inline-flex;
@@ -193,11 +207,11 @@
 		letter-spacing: 0.04em;
 		text-transform: uppercase;
 		background: transparent;
-		border: 1px solid var(--edge);
-		color: var(--ink-soft);
+		border: 1px solid var(--wf-line, #e2e0d9);
+		color: var(--wf-ink-soft, #5c5c56);
 	}
 
-	.ch-status[data-state='live'] {
+	.ch-status[data-state='active'] {
 		color: var(--wf-success, #2f6f4e);
 		background: rgba(47, 111, 78, 0.1);
 		border-color: rgba(47, 111, 78, 0.22);
@@ -210,9 +224,9 @@
 	}
 
 	.ch-status[data-state='connecting'] {
-		color: var(--accent);
+		color: var(--wf-accent, #3d5a80);
 		background: var(--wf-accent-soft, rgba(61, 90, 128, 0.08));
-		border-color: var(--edge);
+		border-color: var(--wf-line, #e2e0d9);
 	}
 
 	.ch-pulse {
@@ -222,7 +236,7 @@
 		background: currentColor;
 	}
 
-	.ch-status[data-state='live'] .ch-pulse {
+	.ch-status[data-state='active'] .ch-pulse {
 		box-shadow: 0 0 0 0 rgba(47, 111, 78, 0.45);
 		animation: ch-pulse 1.6s ease infinite;
 	}
@@ -236,11 +250,8 @@
 		}
 	}
 
-
-
-
 	.ch-link-btn {
-		margin-left: auto;
+		margin-left: 0.75rem;
 		border: none;
 		background: transparent;
 		color: inherit;
@@ -248,17 +259,6 @@
 		font-weight: 600;
 		text-decoration: underline;
 		cursor: pointer;
-	}
-
-	.ch-shell {
-		display: flex;
-		flex-direction: column;
-		min-height: min(62vh, 34rem);
-		border-radius: var(--df-radius-lg, 10px);
-		border: 1px solid var(--edge);
-		background: var(--surface);
-		box-shadow: none;
-		overflow: hidden;
 	}
 
 	.ch-log {
@@ -359,9 +359,6 @@
 		border-color: var(--accent);
 		box-shadow: 0 0 0 3px var(--wf-accent-soft, rgba(61, 90, 128, 0.12));
 	}
-
-
-
 
 	.ch-sr {
 		position: absolute;

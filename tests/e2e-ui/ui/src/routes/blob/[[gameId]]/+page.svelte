@@ -209,156 +209,159 @@
 
 <AppPage>
 	<div class="blob-page" data-blob-hydrated={hydrated ? '1' : '0'}>
-	<div class="blob-title-row">
-		<PageHeader
-			kicker="URL select · generated replica · projected commands"
-			title="Blob Game"
-		>
-			Board and history render from the same generated <code>BlobGames</code>
-			operation. Typed projected commands update that replica before they resolve.
-		</PageHeader>
-		<Button
-			type="button"
-			variant="ink"
-			data-testid="blob-new-game"
-			onclick={() => void startGame()}
-			disabled={!hydrated}
-		>
-			New game
-		</Button>
-	</div>
-
-	{#if data.gqlError}
-		<InlineAlert label="SSR GraphQL">{data.gqlError}</InlineAlert>
-	{/if}
-	{#if actionError}
-		<InlineAlert label="Command">{actionError}</InlineAlert>
-	{/if}
-
-	{#if routeGameId && $list.loading && !selected && !data.gqlError}
-		<div class="blob-empty">
-			<p class="blob-empty-copy">Loading game…</p>
-		</div>
-	{:else if routeGameId && !hasBoard && !data.gqlError}
-		<div class="blob-empty">
-			<p class="blob-empty-copy">
-				Game <code>{routeGameId}</code> not found (or not yours).
-			</p>
-			<Button href="/blob" variant="ink">All games</Button>
-		</div>
-	{:else if !hasBoard}
-		<div class="blob-empty">
-			<p class="blob-empty-copy">No game selected. Start one to play.</p>
+		<div class="blob-title-row">
+			<PageHeader
+				kicker="URL select · generated replica · projected commands"
+				title="Blob Game"
+			>
+				Board and history render from the same generated <code>BlobGames</code>
+				operation. Typed projected commands update that replica before they resolve.
+			</PageHeader>
 			<Button
 				type="button"
 				variant="ink"
-				data-testid="blob-start-game"
+				data-testid="blob-new-game"
 				onclick={() => void startGame()}
-				disabled={commandPending || !hydrated}
+				disabled={!hydrated}
 			>
-				Start game
+				New game
 			</Button>
 		</div>
-	{:else}
-		<div class="blob-stage">
-			<div class="blob-hud">
-				<div class="hud-stat">
-					<span class="hud-label">Score</span>
-					<strong class="hud-value">{score}</strong>
-				</div>
-				<div class="hud-stat">
-					<span class="hud-label">Level</span>
-					<strong class="hud-value">{currentLevel}</strong>
-				</div>
-				<div class="hud-stat">
-					<span class="hud-label">Status</span>
-					<strong class="hud-value hud-status-{status}">{status}</strong>
-				</div>
-				{#if playerDead}
-					<span class="hud-banner dead">You died — start a new game</span>
-				{:else if levelComplete}
-					<span class="hud-banner win">Level complete</span>
-					<Button
-						type="button"
-						variant="ink"
-						onclick={() => void nextLevel()}
-						disabled={commandPending}
-					>
-						Next level
-					</Button>
-				{/if}
-			</div>
 
-			<div class="blob-board" style="--cols: {cols}" role="grid" aria-label="Blob game board">
-				{#each board as row, r}
-					{#each row as cell, c}
-						<div class="cell {tileClass(cell)}" role="gridcell" aria-label="r{r} c{c}">
-							{tileLabel(cell)}
-						</div>
-					{/each}
-				{/each}
-			</div>
+		{#if data.gqlError}
+			<InlineAlert label="SSR GraphQL">{data.gqlError}</InlineAlert>
+		{/if}
+		{#if actionError}
+			<InlineAlert label="Command">{actionError}</InlineAlert>
+		{/if}
 
-			<div class="blob-legend" aria-hidden="true">
-				<span><i class="swatch tile-player"></i> You</span>
-				<span><i class="swatch tile-unvisited"></i> Unvisited</span>
-				<span><i class="swatch tile-visited"></i> Visited</span>
-				<span><i class="swatch tile-hole"></i> Hole</span>
-				<span><i class="swatch tile-dead-hole"></i> Death</span>
+		{#if routeGameId && $list.loading && !selected && !data.gqlError}
+			<div class="blob-empty">
+				<p class="blob-empty-copy">Loading game…</p>
 			</div>
-
-			<div class="blob-pad" aria-label="Move controls">
-				<button type="button" class="pad-btn" onclick={() => void move('up')} disabled={playerDead || levelComplete}
-					>↑</button
+		{:else if routeGameId && !hasBoard && !data.gqlError}
+			<div class="blob-empty">
+				<p class="blob-empty-copy">
+					Game <code>{routeGameId}</code> not found (or not yours).
+				</p>
+				<Button href="/blob" variant="ink">All games</Button>
+			</div>
+		{:else if !hasBoard}
+			<div class="blob-empty">
+				<p class="blob-empty-copy">No game selected. Start one to play.</p>
+				<Button
+					type="button"
+					variant="ink"
+					data-testid="blob-start-game"
+					onclick={() => void startGame()}
+					disabled={commandPending || !hydrated}
 				>
-				<div class="pad-row">
+					Start game
+				</Button>
+			</div>
+		{:else}
+			<div class="blob-stage">
+				<div class="blob-hud">
+					<div class="hud-stat">
+						<span class="hud-label">Score</span>
+						<strong class="hud-value">{score}</strong>
+					</div>
+					<div class="hud-stat">
+						<span class="hud-label">Level</span>
+						<strong class="hud-value">{currentLevel}</strong>
+					</div>
+					<div class="hud-stat">
+						<span class="hud-label">Status</span>
+						<strong class="hud-value hud-status-{status}">{status}</strong>
+					</div>
+					{#if playerDead}
+						<span class="hud-banner dead">You died — start a new game</span>
+					{:else if levelComplete}
+						<span class="hud-banner win">Level complete</span>
+						<Button
+							type="button"
+							variant="ink"
+							onclick={() => void nextLevel()}
+							disabled={commandPending}
+						>
+							Next level
+						</Button>
+					{/if}
+				</div>
+
+				<div class="blob-board" style="--cols: {cols}" role="grid" aria-label="Blob game board">
+					{#each board as row, r}
+						{#each row as cell, c}
+							<div class="cell {tileClass(cell)}" role="gridcell" aria-label="r{r} c{c}">
+								{tileLabel(cell)}
+							</div>
+						{/each}
+					{/each}
+				</div>
+
+				<div class="blob-legend" aria-hidden="true">
+					<span><i class="swatch tile-player"></i> You</span>
+					<span><i class="swatch tile-unvisited"></i> Unvisited</span>
+					<span><i class="swatch tile-visited"></i> Visited</span>
+					<span><i class="swatch tile-hole"></i> Hole</span>
+					<span><i class="swatch tile-dead-hole"></i> Death</span>
+				</div>
+
+				<div class="blob-pad" aria-label="Move controls">
 					<button
 						type="button"
 						class="pad-btn"
-						onclick={() => void move('left')}
-						disabled={playerDead || levelComplete}>←</button
+						onclick={() => void move('up')}
+						disabled={playerDead || levelComplete}>↑</button
 					>
-					<button
-						type="button"
-						class="pad-btn"
-						onclick={() => void move('down')}
-						disabled={playerDead || levelComplete}>↓</button
-					>
-					<button
-						type="button"
-						class="pad-btn"
-						onclick={() => void move('right')}
-						disabled={playerDead || levelComplete}>→</button
-					>
+					<div class="pad-row">
+						<button
+							type="button"
+							class="pad-btn"
+							onclick={() => void move('left')}
+							disabled={playerDead || levelComplete}>←</button
+						>
+						<button
+							type="button"
+							class="pad-btn"
+							onclick={() => void move('down')}
+							disabled={playerDead || levelComplete}>↓</button
+						>
+						<button
+							type="button"
+							class="pad-btn"
+							onclick={() => void move('right')}
+							disabled={playerDead || levelComplete}>→</button
+						>
+					</div>
 				</div>
 			</div>
-		</div>
-	{/if}
+		{/if}
 
-	{#if games.length > 0}
-		<section class="blob-history">
-			<h2>Your games</h2>
-			<ul>
-				{#each games as g (g.game_id)}
-					<li>
-						<a
-							href={gamePath(g.game_id)}
-							class="history-item"
-							class:active={g.game_id === routeGameId}
-							onclick={(e) => {
-								e.preventDefault();
-								selectGame(g.game_id);
-							}}
-						>
-							<span class="history-id">{g.game_id.slice(0, 14)}…</span>
-							<span>score {g.score}</span>
-							<span class="hud-status-{g.status}">{g.status}</span>
-						</a>
-					</li>
-				{/each}
-			</ul>
-		</section>
-	{/if}
+		{#if games.length > 0}
+			<section class="blob-history">
+				<h2>Your games</h2>
+				<ul>
+					{#each games as g (g.game_id)}
+						<li>
+							<a
+								href={gamePath(g.game_id)}
+								class="history-item"
+								class:active={g.game_id === routeGameId}
+								onclick={(e) => {
+									e.preventDefault();
+									selectGame(g.game_id);
+								}}
+							>
+								<span class="history-id">{g.game_id.slice(0, 14)}…</span>
+								<span>score {g.score}</span>
+								<span class="hud-status-{g.status}">{g.status}</span>
+							</a>
+						</li>
+					{/each}
+				</ul>
+			</section>
+		{/if}
 	</div>
 </AppPage>
 
