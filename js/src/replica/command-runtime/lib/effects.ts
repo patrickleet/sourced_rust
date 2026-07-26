@@ -2,14 +2,14 @@ import {
 	type ReplicaPreparedCommand,
 	type ReplicaPreparedCommandEffect,
 	type ReplicaPreparedEffectKey
-} from '../commands.js';
-import { replicaRecordKey } from '../identity.js';
-import type { ReplicaIndexSemanticChange } from '../index-maintenance.js';
+} from '../../commands.js';
+import { replicaRecordKey } from '../../identity.js';
+import type { ReplicaIndexSemanticChange } from '../../index-maintenance.js';
 import type {
 	ReplicaModelArtifact,
 	ReplicaOptimisticWriter,
 	ReplicaValue
-} from '../types.js';
+} from '../../types.js';
 
 export function applyOptimisticEffects(
 	writer: ReplicaOptimisticWriter,

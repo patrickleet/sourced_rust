@@ -1,23 +1,22 @@
 import {
 	type DistributedCommandMetadata
-} from '../../protocol.js';
+} from '../../../protocol.js';
 import {
 	type ReplicaCommandArtifact
-} from '../commands.js';
+} from '../../commands.js';
 import type {
 	ReplicaValue
-} from '../types.js';
+} from '../../types.js';
 import {
 	MAX_OUTPUT_DEPTH
-} from './constants.js';
-import { ReplicaCommandRuntimeError } from './errors.js';
-import { compareCodeUnits } from '../../lib/compare-code-units.js';
-import { isPlainRecord } from '../../lib/is-plain-record.js';
+} from '../constants.js';
+import { ReplicaCommandRuntimeError } from '../errors.js';
+import { compareCodeUnits } from '../../../lib/compare-code-units.js';
+import { isPlainRecord } from '../../../lib/is-plain-record.js';
 import {
 	comparePropertyKeys,
 	outputInvalid
-} from './helpers-util.js'
-
+} from './util.js';
 export function projectionExpectationFingerprint(
 	value: DistributedCommandMetadata['expects'][number]
 ): string {

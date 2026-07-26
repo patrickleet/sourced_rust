@@ -1,13 +1,13 @@
 import {
 	parseGraphqlResponseExtensions,
 	type DistributedProtocolEnvelope
-} from '../../protocol.js';
-import type { GqlError } from '../../types.js';
+} from '../../../protocol.js';
+import type { GqlError } from '../../../types.js';
 import {
 	verifyReplicaCommandReceipt,
 	type ReplicaPreparedCommand
-} from '../commands.js';
-import { ReplicaCommandRuntimeError } from './errors.js';
+} from '../../commands.js';
+import { ReplicaCommandRuntimeError } from '../errors.js';
 import type {
 	CapturedAuthority,
 	ReplicaCommandStatusArtifact,
@@ -15,12 +15,11 @@ import type {
 	ReplicaCommandTransport,
 	ReplicaCommandTransportRequest,
 	ReplicaCommandTransportResult
-} from './types.js';
+} from '../types.js';
 import {
 	cloneSurface,
 	waitForCommandOperation
-} from './helpers-util.js'
-
+} from './util.js';
 export function commandTransportRequest<TInput, TOutput>(
 	prepared: ReplicaPreparedCommand<TInput, TOutput>,
 	signal: AbortSignal | undefined

@@ -1,20 +1,20 @@
 import {
 	type DistributedCommandMetadata
-} from '../../protocol.js';
+} from '../../../protocol.js';
 import {
 	type ReplicaPreparedCommand
-} from '../commands.js';
+} from '../../commands.js';
 import type {
 	ReplicaBaseWriter,
 	ReplicaModelArtifact,
 	ReplicaValue
-} from '../types.js';
+} from '../../types.js';
 import {
 	INITIAL_STATUS_POLL_MS,
 	MAX_STATUS_POLL_MS
-} from './constants.js';
-import { ReplicaCommandRuntimeError } from './errors.js';
-import { replicaCommandDirectProjection } from './symbols.js';
+} from '../constants.js';
+import { ReplicaCommandRuntimeError } from '../errors.js';
+import { replicaCommandDirectProjection } from '../symbols.js';
 import type {
 	CapturedAuthority,
 	CommandStatusTracker,
@@ -22,12 +22,11 @@ import type {
 	ReplicaCommandAuthorityHost,
 	ReplicaCommandProjectedOutcome,
 	ReplicaCommandStatus
-} from './types.js';
-import { isPlainRecord } from '../../lib/is-plain-record.js';
+} from '../types.js';
+import { isPlainRecord } from '../../../lib/is-plain-record.js';
 import {
 	cloneOutputJson
-} from './helpers-output.js'
-
+} from './output.js';
 export function confirmDirectProjection<TInput, TOutput>(
 	replica: ReplicaCommandAuthorityHost,
 	prepared: ReplicaPreparedCommand<TInput, TOutput>,

@@ -1,28 +1,27 @@
 import {
 	isDistributedTrustedPresetCodec
-} from '../../protocol.js';
+} from '../../../protocol.js';
 import {
 	type ReplicaTrustedPresetDescriptor
-} from '../commands.js';
+} from '../../commands.js';
 import {
 	SHA256
-} from './constants.js';
+} from '../constants.js';
 import type {
 	AnyCommandArtifact,
 	CommandEntry,
 	ReplicaCommandStatusArtifact,
 	ReplicaCommandSurfaceContract
-} from './types.js';
-import { compareCodeUnits } from '../../lib/compare-code-units.js';
+} from '../types.js';
+import { compareCodeUnits } from '../../../lib/compare-code-units.js';
 import {
 	commandNamespaceCollision,
 	commandPathSegments
-} from './helpers-binding.js'
+} from './binding.js';
 import {
 	cloneSurface,
 	sameSurface
-} from './helpers-util.js'
-
+} from './util.js';
 export function normalizeInventory<TEntries extends Readonly<Record<string, CommandEntry>>>(
 	entries: TEntries
 ): readonly { readonly key: string; readonly artifact: AnyCommandArtifact }[] {

@@ -1,9 +1,9 @@
-/** Barrel for command-runtime helpers (split by concern modules). */
-export * from './helpers-inventory.js';
-export * from './helpers-binding.js';
-export * from './helpers-effects.js';
-export * from './helpers-transport.js';
-export * from './helpers-status.js';
-export * from './helpers-output.js';
-export * from './helpers-projection.js';
-export * from './helpers-util.js';
+/** Barrel for command-runtime helpers (bodies in lib/). */
+export * from './lib/inventory.js';
+export * from './lib/binding.js';
+export * from './lib/effects.js';
+export * from './lib/transport.js';
+export * from './lib/status.js';
+export * from './lib/output.js';
+export * from './lib/projection.js';
+export * from './lib/util.js';

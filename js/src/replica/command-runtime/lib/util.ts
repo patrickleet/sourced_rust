@@ -1,13 +1,13 @@
 import type {
 	ReplicaAuthoritativeScope,
 	ReplicaClientSurface
-} from '../types.js';
+} from '../../types.js';
 import {
 	MAX_TRANSPORT_RETRIES
-} from './constants.js';
-import { ReplicaCommandRuntimeError } from './errors.js';
-import { compareCodeUnits } from '../../lib/compare-code-units.js';
-import { isPlainRecord } from '../../lib/is-plain-record.js';
+} from '../constants.js';
+import { ReplicaCommandRuntimeError } from '../errors.js';
+import { compareCodeUnits } from '../../../lib/compare-code-units.js';
+import { isPlainRecord } from '../../../lib/is-plain-record.js';
 
 export function normalizeRetries(value: number | undefined): number {
 	if (value === undefined) return 0;

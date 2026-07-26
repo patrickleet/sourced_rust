@@ -1,4 +1,4 @@
-import { isPlainRecord } from '../../lib/is-plain-record.js';
+import { isPlainRecord } from '../../../lib/is-plain-record.js';
 
 export function defineBoundCommand(
 	root: Record<string, unknown>,

@@ -2,28 +2,27 @@ import {
 	parseGraphqlResponseExtensions,
 	type DistributedCommandMetadata,
 	type DistributedCommandState
-} from '../../protocol.js';
+} from '../../../protocol.js';
 import {
 	matchReplicaTrustedPresetInventory,
 	verifyReplicaCommandReceipt,
 	type ReplicaPreparedCommand
-} from '../commands.js';
+} from '../../commands.js';
 import type {
 	CapturedAuthority,
 	ReplicaCommandStatus,
 	ReplicaCommandStatusArtifact,
 	ReplicaCommandSurfaceContract,
 	ReplicaCommandTransportResult
-} from './types.js';
-import { isPlainRecord } from '../../lib/is-plain-record.js';
+} from '../types.js';
+import { isPlainRecord } from '../../../lib/is-plain-record.js';
 import {
 	isStringSubset,
 	projectionExpectationFingerprint,
 	projectionObservationFingerprint,
 	recordRevisionFingerprint,
 	sameStringMultiset
-} from './helpers-output.js'
-
+} from './output.js';
 export function requireStatusEnvelope<TInput, TOutput>(
 	result: ReplicaCommandTransportResult,
 	artifact: ReplicaCommandStatusArtifact,
