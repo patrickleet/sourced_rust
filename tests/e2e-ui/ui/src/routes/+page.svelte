@@ -1,8 +1,9 @@
 <script lang="ts">
 	/**
-	 * Distributed framework template home.
-	 * Living map of how e2e-ui actually works: OIDC → GraphQL RLS → replica cache →
-	 * typed commands → aggregates → projectors (or same-tx RM for blob) → reads.
+	 * Fieldnote home — living walkthrough of how e2e-ui actually works.
+	 *
+	 * Keep samples honest: one file / one concept per code block, and match the
+	 * checked-in handlers, GraphQL docs, and dual client surfaces.
 	 */
 	import { page } from '$app/state';
 	import Footer from '$lib/components/shared/Footer.svelte';
@@ -18,41 +19,41 @@
 	const demos = [
 		{
 			href: '/todos',
-			title: 'Todos — your own field notes',
+			title: 'Todos — owner-scoped field notes',
 			blurb:
-				'Create, complete, reopen, archive. The UI updates immediately; the server catches up a moment later. You only ever see your own notes unless you are admin.',
-			where: '/todos · personal list · optimistic UI',
+				'Create, complete, reopen, archive. UI paints from generated optimistic effects; a projector confirms the row. You only see your own notes unless you are admin.',
+			where: '/todos · Fact + effects · personal RLS',
 			label: 'Open todos'
 		},
 		{
 			href: '/chat',
-			title: 'Lobby chat — live with everyone',
+			title: 'Lobby chat — one doc for SSR and live',
 			blurb:
-				'A shared room that updates as people post. Names come from the identity directory, not hard-coded strings. Feel the subscription path without inventing a second chat stack.',
-			where: '/chat · live room · author names',
+				'One @load @live query seeds HTML and continues over GraphQL WebSocket. Post is a command; everyone else arrives as live frames — not a second chat stack.',
+			where: '/chat · @load @live · shared room',
 			label: 'Open chat'
 		},
 		{
 			href: '/blob',
-			title: 'Blob game — when the answer must be right now',
+			title: 'Blob game — Projected board in the response',
 			blurb:
-				'Moves return the full board state in the same request. Compare this to todos: sometimes you want “strong” command results, sometimes eventual is enough.',
-			where: '/blob · board + history · strong return',
+				'Each move is an aggregate command that returns Projected<BlobGameView>. Map and score commit with the event; the replica applies the payload before the call resolves.',
+			where: '/blob · Projected · no dual-write',
 			label: 'Play blob'
 		},
 		{
 			href: '/admin',
-			title: 'Admin — same app, wider lens',
+			title: 'Admin — separate generated surface',
 			blurb:
-				'See every owner’s notes and force-archive when needed. Teaches that “what the API allows” follows the signed-in role, not whatever the UI bundle happens to contain.',
-			where: '/admin · all owners · admin only',
+				'fieldnote-admin is a second client (nested layout + role gate). Elevated ops are not discoverable from the user $distributed tree.',
+			where: '/admin · fieldnote-admin · force-archive',
 			label: 'Open admin'
 		},
 		{
 			href: '/session',
 			title: 'Session — who am I to the API?',
 			blurb:
-				'Peek at the signed-in user, groups, and tokens the browser actually holds. Useful when GraphQL “suddenly” returns empty or 401 — start here.',
+				'User, groups → engine role, and the tokens the browser actually holds. Start here when GraphQL is empty or 401.',
 			where: '/session · identity · tokens',
 			label: 'Inspect session'
 		}
@@ -62,31 +63,31 @@
 	const frameworkPrinciples = [
 		{
 			title: 'Simplest DX is the goal',
-			body: 'Event sourcing and CQRS are easy to overbuild into a maze of frameworks-on-frameworks. Distributed’s job is the opposite: let you write clear domain intent and ordinary UI, while the library carries the heavy patterns. If a path is all ceremony and no clarity, it is the wrong path.'
+			body: 'Event sourcing and CQRS are easy to overbuild. Distributed’s job is the opposite: plain domain intent and ordinary UI, while the library carries history, projection, GraphQL, and the browser replica. Ceremony without clarity is the wrong path.'
 		},
 		{
 			title: 'Start with the domain, not the database',
-			body: 'Model a todo or a game as a plain Rust type with methods and unit tests. No HTTP, no SQL, no “handler context” required to prove the rules. When the behavior is solid, plug infrastructure around it — not the other way around.'
+			body: 'Model a todo or game as a plain Rust type with methods and unit tests. No HTTP, no SQL, no handler context to prove the rules. Infrastructure plugs in after the behavior is solid.'
 		},
 		{
 			title: 'Know which side of the fence you are on',
-			body: 'Writes produce a durable history of what happened. Reads use tables shaped for queries. Messages you publish to other systems go through an outbox on purpose. Handlers stay thin; something else materializes query data; the UI observes. Confusion usually means those lines got blurred.'
+			body: 'Writes produce durable history. Reads use query-shaped tables. Publish goes through an outbox on purpose. Handlers stay thin; projectors or Projected materialize reads; the UI observes. Confusion usually means those lines blurred.'
 		},
 		{
 			title: 'You keep the interesting code',
-			body: 'Macros own the boring event plumbing — recording facts, replaying history, wiring table metadata — so your methods and tests stay readable. You still own the rules (“only the owner can complete this”). The scaffolding disappears; the decisions do not.'
+			body: 'Macros own recording facts and replaying history so methods stay readable. You still own “only the owner can complete this.” Scaffolding disappears; decisions do not.'
 		},
 		{
 			title: 'Register once, ship everywhere',
-			body: 'A command or read model should not be re-described in three hand-maintained places. You register it in the typed Service inventory; generation fans out the GraphQL surface, operation artifacts, command helpers, and checks. When something drifts, CI fails on purpose — better than a quiet production mismatch.'
+			body: 'Commands and read models live once in the typed Service inventory. Generation fans out GraphQL fields, operation artifacts, optimistic effects, confirmations, and dual application surfaces. Drift fails CI on purpose.'
 		},
 		{
 			title: 'Familiar patterns, short handles',
-			body: 'Load an aggregate, apply a command, save events and “please publish this,” project into a query table, send a message on the bus — design patterns you already know, as small swappable APIs. Swap memory for Postgres without rewriting the domain.'
+			body: 'Load aggregate → apply command → stage events (+ outbox) → Fact or Projected result. Swap memory for Postgres without rewriting the domain.'
 		},
 		{
-			title: 'Grow without rewriting what you already proved',
-			body: 'Start as one process on a laptop. Later split services or change brokers. Transports and features change; the domain types and facts you already tested should not have to be rewritten to match.'
+			title: 'Grow without rewriting what you proved',
+			body: 'Start as one process on a laptop. Later split services or change brokers. Domain types and facts you already tested should not need a rewrite.'
 		}
 	];
 
@@ -94,15 +95,15 @@
 	const dxStack = [
 		{
 			title: 'You write plain domain code',
-			body: 'When you model a todo or a game, you write ordinary methods and tests. Macros attach history and replay so you do not hand-roll “record this fact, rebuild state later.” You still see and own the behavior — the scaffolding gets out of the way.'
+			body: 'Ordinary methods and tests. Public command methods enforce rules; private #[event] helpers record history. You own the behavior — the scaffolding gets out of the way.'
 		},
 		{
-			title: 'One registration, many surfaces',
-			body: 'You describe commands and readable tables once in the typed Rust Service inventory. Generation turns the selected application surface into GraphQL operations, typed UI helpers, optimistic behavior, and checks that fail on drift. You stop maintaining parallel catalogs that slowly disagree.'
+			title: 'One inventory, many surfaces',
+			body: 'Describe commands and readable tables once. Application surfaces (fieldnote vs fieldnote-admin) select roles and fields. Generation turns that into GraphQL, typed UI helpers, optimistic effects, and drift checks.'
 		},
 		{
 			title: 'Patterns as short, swappable verbs',
-			body: '“Load it, apply the command, save events and a message to publish” is one small path. Projecting events into query tables and talking on a bus use the same idea: real design patterns, thin handles, backends you can swap when you grow.'
+			body: 'CausalCommandContext: load / create / stage / projected. Real design patterns, thin handles, backends you can swap when you grow.'
 		}
 	];
 
@@ -110,54 +111,54 @@
 	const principles = [
 		{
 			title: 'Commands change the world; tables are for reading',
-			body: 'Do not invent a second write path that updates query tables from the UI “because it’s easier.” Send a command, let the server record history, and let projection (or a deliberate same-request write for games like blob) fill the tables the UI queries.'
+			body: 'Do not dual-write query tables from the UI. Send a command. Todos/chat return Fact and project eventually; blob returns Projected in the same transaction as the event.'
 		},
 		{
 			title: 'Trust the signed-in person, not the request body',
-			body: 'Who owns a note or who authored a chat message comes from the session. Clients never get to pass “I am alice” as a free-form field. That is how multi-tenant mistakes and spoofing happen.'
+			body: 'Owner and author come from the session (ctx.user_id()). Clients never pass “I am alice” as free-form input.'
 		},
 		{
-			title: 'One client story for data',
-			body: 'This app creates one client in the root layout, then reads every route through its replica cache. SSR hydration, HTTP reads, live frames, command results, and optimistic effects all update that same state.'
+			title: 'One replica story for user data',
+			body: 'Root layout creates one client. SSR hydration, HTTP reads, @live frames, command results, and optimistic effects all update that same replica. Admin is a second nested client on purpose.'
 		},
 		{
-			title: 'Let the server say how the UI should catch up',
-			body: 'Some commands return a full projected row (blob). Others return a fact and wait for a projection or live frame (todos, chat). The typed Service declares that result and optimistic contract so screens do not invent reconciliation logic.'
+			title: 'Let the Service declare how the UI catches up',
+			body: 'command_effects + command_confirmations (Fact) vs Projected payload (blob). Screens do not invent reconciliation. Revalidation may lag; fences keep your own write from rolling back.'
 		},
 		{
-			title: 'Roles are real, not decorative',
-			body: 'An admin can see more and call a few extra mutations. A normal user cannot, even if a type name appears in the generated bundle. Always test with the role you care about.'
+			title: 'Roles and surfaces are real',
+			body: 'Engine RLS filters rows. Elevated mutations live only on fieldnote-admin. A type name in a bundle is not authorization.'
 		},
 		{
 			title: 'Regenerate after you change the contract',
-			body: 'If you add a command or edit a query document, regenerate and commit the artifacts. Hand-editing generated files is how the next person (or CI) discovers drift the hard way.'
+			body: 'Inventory, command contract, or +page.graphql change → make gen-client / check-client and commit artifacts. Hand-editing generated files is how drift wins.'
 		}
 	];
 
 	const crates = [
 		{
 			name: 'todo-domain / chat-domain / blob-domain',
-			role: 'The pure rules — what a todo or game can do, with unit tests and no network'
+			role: 'Pure rules — methods + unit tests, no network'
 		},
 		{
 			name: 'e2e-readmodels',
-			role: 'How those facts look when you query them (tables, joins, display fields)'
+			role: 'Query tables, joins (author / owner → auth_users)'
 		},
 		{
 			name: 'e2e-service',
-			role: 'Thin handlers, projectors, identity import, GraphQL surface'
+			role: 'Handlers, projectors, Projected blob, dual client surfaces, GraphQL'
 		},
 		{
 			name: 'e2e-runner → e2e-ui',
-			role: 'The process you run — API on :8791'
+			role: 'Process on :8791 (Postgres + OidcBearer or SQLite + DevHeaders)'
 		},
 		{
 			name: 'e2e-suite',
-			role: 'Automated proof that the paths still work offline and with real OIDC'
+			role: 'Behavioral + gated OIDC proof'
 		},
 		{
 			name: 'ui/',
-			role: 'SvelteKit app: sign-in, SSR lists, live chat, demos you can click'
+			role: 'SvelteKit: OIDC, SSR @load, live chat, blob, admin surface'
 		}
 	];
 
@@ -172,37 +173,42 @@
 		{
 			n: 'C1',
 			title: 'Declare reads beside the route',
-			why: 'A page owns a small GraphQL document and marks when it should load or stay live. The compiler discovers those directives and emits the typed operation plus a static route registry — there is no second list of loaders to maintain.',
-			path: 'routes/**/+page.graphql · generated/user/routes.ts',
+			why: 'A page owns a small GraphQL document. @load seeds SSR; @live continues the same operation over WebSocket. The compiler emits the typed op and the static route registry — no second loader list.',
+			path: 'routes/**/+page.graphql · generated/user/',
 			label: '@load + @live',
 			blocks: [
 				{
 					file: 'routes/chat/+page.graphql',
 					label: 'Co-located read',
-					code: `query ChatMessages @load @live {
+					code: `// One declaration owns SSR, cache reads, and the live companion.
+query ChatMessages @load @live {
   chat_messages(where: { room_id: { _eq: "lobby" } }) {
     message_id
-    body
+    room_id
     author_id
-    author { display_name }
+    body
+    created_at
   }
 }`
 				},
 				{
-					file: '$distributed',
-					label: 'Compiler output',
-					code: `export const ChatMessages =
-  defineDistributedSvelteKitOperation(Operation_ChatMessages);
-export { DISTRIBUTED_ROUTE_OPERATIONS } from './routes.js';
-export function provideDistributed(options) { … }
-export function useCommands() { … }`
+					file: 'routes/blob/[[gameId]]/+page.graphql',
+					label: 'Join on load',
+					code: `query BlobGames @load {
+  blob_games(order_by: [{ game_id: asc }]) {
+    game_id
+    score
+    map_json
+    owner { user_id display_name }
+  }
+}`
 				}
 			]
 		},
 		{
 			n: 'C2',
 			title: 'The root layout owns SSR',
-			why: 'The server adapter matches the current route against the generated registry, runs each declared read once, and serializes reachable replica state. Routes with no declared read do no GraphQL work.',
+			why: 'createDistributedSvelteKitServer matches the route against DISTRIBUTED_ROUTE_OPERATIONS, runs each declared read once, and returns replica hydration plus a separate authority proof. Routes with no @load do no GraphQL work.',
 			path: 'routes/+layout.server.ts',
 			label: 'Static route loader',
 			blocks: [
@@ -218,14 +224,14 @@ export function useCommands() { … }`
 });
 
 export const load = distributed.load;
-// Returns replica hydration and a separate authority proof.`
+// → data.distributed + data.distributedAuthority`
 				}
 			]
 		},
 		{
 			n: 'C3',
 			title: 'Hydrate one browser replica',
-			why: 'The root layout creates one client and one session source for reads, live transport, commands, and authorization invalidation. Trusted SSR state becomes the first browser snapshot, so subscribing does not repeat the HTTP read.',
+			why: 'provideDistributed wires one client for HTTP, WebSocket connection_init, commands, and auth-scope invalidation. SSR state is the first snapshot so subscribing does not re-fetch the same HTTP read.',
 			path: 'routes/+layout.svelte · $distributed',
 			label: 'One client',
 			blocks: [
@@ -238,13 +244,14 @@ const client = provideDistributed({
   browser,
   hydration: data.distributed,
   authority: data.distributedAuthority
-});`
+});
+// Navigation: client.hydrate(…) after the session fence`
 				},
 				{
 					file: 'WS auth',
 					label: 'connection_init',
-					code: `// The same session source supplies HTTP, WS, and commands.
-// A browser token is sent in the first WS message:
+					code: `// Same session source for HTTP, WS, and commands.
+// Token goes in the first WS message — not the upgrade URL:
 { type: 'connection_init',
   payload: { authorization: \`Bearer \${accessToken}\` } }`
 				}
@@ -253,30 +260,68 @@ const client = provideDistributed({
 		{
 			n: 'C4',
 			title: 'Read and write through generated artifacts',
-			why: 'A route consumes its generated operation with one use call. Generated commands carry optimistic and causal projection metadata into the same replica, so every mounted view observes the change without page-specific cache surgery.',
+			why: 'Todos.use() / ChatMessages.use() / BlobGames.use() bind the tree-local replica. useCommands() carries optimistic effects and Projected/Fact metadata so every mounted view observes the change without page-specific cache surgery.',
 			path: 'routes/todos/+page.svelte · $distributed',
 			label: 'Operation + commands',
 			blocks: [
 				{
 					file: 'todos/+page.svelte',
-					label: 'Replica read',
+					label: 'Replica read + command',
 					code: `import { Todos, useCommands } from '$distributed';
 
-const todos = Todos.use();
+const list = Todos.use();
 const commands = useCommands();
+const rows = $derived($list.complete ? $list.data.todos : []);
 
-// Template reads the tree-local shared replica: {$todos.data.todos}`
+await commands.todo.create({ title });
+// todo_id defaults to uuid_v7() from the inventory
+await commands.todo.complete({ todo_id });
+// Optimism already visible; projector confirms later`
 				},
 				{
-					file: 'todos/+page.svelte',
-					label: 'Causal command',
-					code: `const receipt = await commands.todo.complete({
-  todo_id
-});
+					file: 'blob/[[gameId]]/+page.svelte',
+					label: 'Projected move',
+					code: `const list = BlobGames.use();
+const commands = useCommands();
 
-// Optimism is already visible in every matching Todos view.
-// Await this only when later work requires the projection:
-await receipt.projected;`
+const receipt = await commands.blob.move({
+  game_id,
+  direction: 'up'
+});
+// consistency: "projected" — board hits the replica
+// from the mutation payload before this resolves`
+				}
+			]
+		},
+		{
+			n: 'C5',
+			title: 'Elevated work is a second surface',
+			why: 'fieldnote-admin is generated separately. The nested /admin layout role-gates before any GraphQL, then provides its own client. User pages cannot import force_archive through $distributed.',
+			path: 'routes/admin/+layout.server.ts · $distributed/admin',
+			label: 'Dual surface',
+			blocks: [
+				{
+					file: 'admin/+layout.server.ts',
+					label: 'Role gate + admin registry',
+					code: `import { DISTRIBUTED_ROUTE_OPERATIONS } from '$distributed/admin';
+
+const distributed = createDistributedSvelteKitServer({
+  routes: DISTRIBUTED_ROUTE_OPERATIONS,
+  getRole: (session) => {
+    const role = engineRoleFromGroups(session?.user?.groups);
+    if (!isAdminEngineRole(role)) error(403, 'Admin role required');
+    return role;
+  },
+  // …
+});`
+				},
+				{
+					file: 'admin page',
+					label: 'Elevated commands only',
+					code: `import { useCommands } from '$distributed/admin';
+const commands = useCommands();
+await commands.todo.force_archive({ todo_id });
+// Not present on the user command tree`
 				}
 			]
 		}
@@ -292,22 +337,21 @@ await receipt.projected;`
 	}> = [
 		{
 			n: '01',
-			title: 'Sign in — your app hosts the form, the IdP issues tokens',
-			why: 'People type a password on Fieldnote’s own login page. Zitadel still issues the OIDC tokens; Auth.js keeps them in an encrypted cookie. SSR and GraphQL both use that access token as Bearer.',
-			path: 'ui/src/auth.ts · routes/login · Session API v2',
+			title: 'Sign in — your form, IdP tokens',
+			why: 'Custom Login V2 hosts the password form; Zitadel issues OIDC tokens; Auth.js keeps them in an encrypted cookie. SSR and GraphQL use the access token as Bearer. Groups map to engine roles.',
+			path: 'ui/src/auth.ts · routes/login · zitadel-session.ts',
 			label: 'Auth session',
 			blocks: [
 				{
 					file: 'ui/src/auth.ts',
 					label: 'Session callbacks',
 					code: `// Auth.js OIDC (Zitadel) — PKCE + state
-// Tokens live in an encrypted JWT session cookie (httpOnly)
+// Tokens in encrypted JWT session cookie (httpOnly)
 callbacks: {
   async jwt({ token, account }) {
     if (account) {
       token.accessToken = account.access_token;
       token.refreshToken = account.refresh_token;
-      token.idToken = account.id_token;
       token.expiresAt = account.expires_at ?? …;
     }
     // silent refresh before expiry when refresh_token present
@@ -316,6 +360,7 @@ callbacks: {
   async session({ session, token }) {
     session.accessToken = token.accessToken; // API Bearer
     session.user.id = token.sub;
+    session.user.groups = /* from IdP claims */;
     return session;
   }
 }`
@@ -324,22 +369,26 @@ callbacks: {
 		},
 		{
 			n: '02',
-			title: 'The first HTML already has your data',
-			why: 'The page loader calls GraphQL with your token. The engine checks who you are and only returns rows you may see (for example, notes you own). No empty shell that fetches after paint for the happy path.',
-			path: 'service.rs · +page.server.ts',
-			label: 'SSR + RBAC',
+			title: 'SSR GraphQL is deny-by-default RLS',
+			why: 'The root loader calls GraphQL with your token. OidcBearer maps JWT → x-user-id + roles. Model permissions filter rows — alice never sees bob’s todos or blob games.',
+			path: 'crates/service/src/service.rs · +page.graphql',
+			label: 'SSR + RLS',
 			blocks: [
 				{
 					file: 'crates/service/src/service.rs',
-					label: 'Row-level RLS',
+					label: 'Row-level grants',
 					code: `// OidcBearer → x-user-id (sub) + engine roles
 .model::<TodoView>(
   ModelPermissions::new()
-    .role("user", select().all_columns().filter(
-      col("owner_id").eq(claim("x-user-id")),
-    ))
-    .role("admin", select().all_columns()),
-)`
+    .grant(
+      "user",
+      read().all_columns().rows(
+        col("owner_id").eq(claim("x-user-id")),
+      ),
+    )
+    .grant("admin", read().all_columns()),
+)
+// Same pattern for BlobGameView; ChatMessageView is room-shared`
 				},
 				{
 					file: 'todos/+page.graphql',
@@ -357,38 +406,52 @@ callbacks: {
 		},
 		{
 			n: '03',
-			title: 'Mutations are commands, not table edits',
-			why: 'When the UI says “create todo,” the server runs the domain command and records history. It does not treat GraphQL as a free-form UPDATE of the todos table. Owner always comes from the session.',
-			path: 'typed Service inventory · handlers/commands/*',
+			title: 'Mutations are commands — Fact or Projected',
+			why: 'The typed Service inventory declares input, result shape, roles, optimistic effects, and projector confirmations. Handlers never accept owner_id from the client.',
+			path: 'service.rs · handlers/commands/*',
 			label: 'Commands',
 			blocks: [
 				{
-					file: '$distributed',
-					label: 'Generated command tree',
-					code: `const commands = useCommands();
-await commands.todo.create({ title: "Ship it" });
-// Also: todo.complete | reopen | archive | rename
-// Admin-only: todo.force_archive (only in fieldnote-admin)
-// Blob: blob.start | move | start_level
-// Chat: chat.post
-// owner_id / author_id are NOT client inputs.`
+					file: 'handlers/commands/create.rs',
+					label: 'Fact + session owner',
+					code: `pub async fn handle(
+  ctx: &CausalCommandContext<'_, Todo>,
+  input: TodoCreateInput,
+) -> Result<PreparedCommand<Fact<TodoCreatePayload>>, HandlerError> {
+  let owner = ctx.user_id()?.to_string(); // never from input
+  let mut todo = ctx.create();
+  todo.create(&input.todo_id, &owner, &input.title)?;
+  let fact = stage_todo_event(ctx, todo, "todo.created")?;
+  PreparedCommand::<Fact<TodoCreatePayload>>::prepare(/* … */)
+}`
 				},
 				{
-					file: 'handlers/commands/create.rs',
-					label: 'Owner from session',
-					code: `let owner = require_user(ctx.session())?;
-let input = ctx.input::<TodoCreateInput>()?;
-todo.create(&input.todo_id, &owner, &input.title)?;
-// commit event store + outbox → todo.created
-// return fact JSON (status fields) — not a dual-written RM row`
+					file: 'service.rs · typed_command',
+					label: 'Effects + confirmations',
+					code: `typed_command::<TodoCreateInput, Fact<TodoCreatePayload>>(…)
+  .effects(command_effects! {
+    upsert TodoView {
+      key { todo_id: input.todo_id },
+      set {
+        owner_id: trusted("x-user-id"),
+        title: input.title,
+        status: "open"
+      }
+    };
+  })
+  .confirmations(command_confirmations! {
+    confirm todo_projection -> TodoView {
+      key { todo_id: input.todo_id }
+    };
+  })`
 				}
 			]
 		},
 		{
 			n: '04',
-			title: 'Usually: history first, query tables a moment later',
-			why: 'For todos and chat, the command saves the event. A projector turns that event into a row you can query. The UI can show the change optimistically and catch up when the projector lands (or via a live subscription).',
-			path: 'handlers/events/project_todo.rs',
+			title: 'Eventual path: history first, then projector',
+			why: 'Todos and chat stage events (+ outbox). A projector upserts the query row and ChangeHub wakes @live subscribers. The UI already applied optimistic effects from the inventory.',
+			path: 'handlers/events/project_todo.rs · project_chat.rs',
 			label: 'Projector',
 			blocks: [
 				{
@@ -405,48 +468,57 @@ todo.create(&input.todo_id, &owner, &input.title)?;
 		},
 		{
 			n: '05',
-			title: 'Sometimes: return the full picture in the same request',
-			why: 'Games feel broken if the board lags. After blob commits its event, the handler also writes the query row immediately and returns that full row. The UI can trust the response. That is a deliberate “strong” choice — not the default for every feature.',
-			path: 'handlers/commands/blob_cmd.rs',
-			label: 'CAP · strong',
+			title: 'Strong path: Projected in the same transaction',
+			why: 'Blob maps must not lag. The handler returns PreparedCommand<Projected<BlobGameView>> and stages the row with ctx.projected — aggregate, ledger, and query row commit together. No second writer, no dual-write from the UI.',
+			path: 'handlers/commands/blob_move.rs · blob_cmd.rs',
+			label: 'Projected',
 			blocks: [
 				{
-					file: 'blob_cmd.rs',
-					label: 'Commit + RM',
-					code: `ctx.repo().outbox(outbox).commit(game).await?;
-// Same request: write the query row so the mutation can return it
-let row = map_blob_fact(&fact);
-plan.upsert(&row)?;
-plan.commit(ctx.read_model_store()).await?;
-// GraphQL payload = full board (map, score, status, …)`
+					file: 'handlers/commands/blob_move.rs',
+					label: 'Projected result',
+					code: `pub async fn handle(
+  ctx: &CausalCommandContext<'_, BlobGame>,
+  input: BlobMoveInput,
+) -> Result<PreparedCommand<Projected<BlobGameView>>, HandlerError> {
+  let owner = ctx.user_id()?.to_string();
+  let mut game = load_game(ctx, &input.game_id).await?;
+  game.move_dir(&owner, dir).map_err(map_domain)?;
+  let fact = stage_blob(ctx, game)?;
+  ctx.projected(map_blob_fact(&fact))
+}`
+				},
+				{
+					file: 'service.rs · SurfaceDirectProjection',
+					label: 'Client topology',
+					code: `fn blob_projection() -> SurfaceDirectProjection {
+  SurfaceDirectProjection::new("project_blob")
+    .model::<BlobGameView>()
+    .change_epoch("e2e-ui-blob-v1")
+}
+// typed_command::<…, Projected<BlobGameView>>(…)`
 				}
 			]
 		},
 		{
 			n: '06',
 			title: 'People have names — join the identity directory',
-			why: 'Chat should show “Alice,” not a raw id. Users are imported from Zitadel into an auth directory table; messages and games join to that. If a user is missing from the directory, fix ingest/scrape — do not invent a second copy of display names on every aggregate.',
+			why: 'Import users from Zitadel into auth_users; join from chat.author and blob.owner. Fix missing people at ingest/scrape — do not copy display names onto every aggregate.',
 			path: 'handlers/ingestors/zitadel · AuthUserView',
 			label: 'Joins',
 			blocks: [
 				{
-					file: 'chat_message_view.rs',
+					file: 'readmodels/…/blob_game_view.rs',
 					label: 'belongs_to',
-					code: `#[readmodel(belongs_to = "AuthUserView", foreign_key = "author_id")]
-pub author: Option<AuthUserView>,
-// Query selects author { display_name email status }`
+					code: `#[readmodel(belongs_to = "AuthUserView", foreign_key = "owner_id")]
+pub owner: Option<AuthUserView>,
+// GraphQL: owner { user_id display_name email status }`
 				},
 				{
-					file: 'chat/+page.graphql',
-					label: 'Selection',
-					code: `query ChatMessages @load @live {
-  chat_messages(where: { room_id: { _eq: "lobby" } }) {
-    message_id
-    body
-    author_id
-    author { user_id display_name email status }
-  }
-}`
+					file: 'readmodels/…/chat_message_view.rs',
+					label: 'author join ready',
+					code: `#[readmodel(belongs_to = "AuthUserView", foreign_key = "author_id")]
+pub author: Option<AuthUserView>,
+// Select author { … } when the route needs labels`
 				}
 			]
 		}
@@ -484,11 +556,11 @@ pub author: Option<AuthUserView>,
 				A <em>framework template</em> you run as full e2e tests — a map you can learn from.
 			</h1>
 			<p class="wf-lede">
-				<strong>Simplest DX is the goal.</strong> You should not re-implement event history,
-				repositories, and GraphQL wiring for every feature. Distributed carries that weight so you
-				can focus on domain rules and a clear UI. This folder is a living suite you can click
-				through and copy — sign-in, personal lists, live chat, a game with strong command returns —
-				proved by <code>make test</code> offline and <code>make test-live</code> with real OIDC.
+				<strong>Simplest DX is the goal.</strong> Plain domains, deny-by-default GraphQL with
+				first-class OIDC, dual generated clients, and a causal browser replica. Click through todos
+				(<code>Fact</code> + projector), chat (<code>@load @live</code>), blob
+				(<code>Projected</code>), and admin (separate surface) — proved by
+				<code>make test</code> offline and Playwright with real OIDC.
 			</p>
 			<div class="wf-actions">
 				{#if signedIn}
@@ -512,7 +584,7 @@ pub author: Option<AuthUserView>,
 				<a href="#demos">Demos</a>
 				<a href="#architecture">Architecture</a>
 				<a href="#client-dx">Client DX</a>
-				<a href="#cap">CAP</a>
+				<a href="#cap">Fact vs Projected</a>
 				<a href="#server-flow">Server</a>
 				<a href="#codegen">Codegen</a>
 			</nav>
@@ -542,16 +614,15 @@ pub author: Option<AuthUserView>,
 				<div class="wf-card">
 					<h3>Kept honest by tests</h3>
 					<p>
-						The same folder has behavioral tests and gated OIDC checks. Offline for day-to-day;
-						live stack when you need the real token path. The demos are not slides — they break if
-						the library lies.
+						Domain tests, behavioral suite, gated OIDC, and Playwright browser flows. The demos are
+						not slides — they break if the library lies.
 					</p>
 				</div>
 				<div class="wf-card">
 					<h3>A map you can extend</h3>
 					<p>
-						Domain crates, read models, thin handlers, suite, Svelte UI. Point env at your database
-						and IdP when you are ready; the shape of “command → history → query” stays the same.
+						Domain crates, read models, thin handlers, dual client surfaces, Svelte UI. Point env at
+						your database and IdP; the shape of command → history → query stays the same.
 					</p>
 				</div>
 			</div>
@@ -606,24 +677,31 @@ pub author: Option<AuthUserView>,
 				<span class="wf-label">When you are ready for the code</span>
 				<h3>Domain first — macros fill the seams</h3>
 				<p>
-					Below is what “plain domain + less noise” looks like in this fixture. Read the method
-					bodies as the product rules; the attributes are how history gets recorded and replayed
-					without you writing that plumbing twice.
+					Public methods enforce rules; private <code>#[event]</code> helpers record history. Unit
+					tests call the domain directly — red/green before any handler exists.
 				</p>
 			</div>
 			<div class="wf-code-stack">
 				<div class="wf-code">
 					<div class="wf-code-bar">
 						<span>todo-domain · models/todo.rs</span>
-						<em>one command, one function</em>
+						<em>rules then record</em>
 					</div>
-					<pre><code>{`// One function. #[event] records history and applies state.
-// when = skips the command when it must not fire (wrong owner / not open).
-#[event("todo.completed", when = self.owner_id == owner_id && self.is_open())]
-pub fn complete(&mut self, owner_id: String) {
+					<pre><code>{`pub fn complete(&mut self, owner_id: &str) -> Result<(), TodoError> {
+  self.ensure_owner(owner_id)?;
+  self.require_mutable()?;
+  if matches!(self.status, TodoStatus::Completed) {
+    return Err(TodoError::AlreadyCompleted);
+  }
+  self.record_completed()?;
+  Ok(())
+}
+
+#[event("todo.completed")]
+fn record_completed(&mut self) {
   self.status = TodoStatus::Completed;
 }
-// Unit tests call complete() directly — red/green before any handler exists.`}</code></pre>
+// Unit tests call complete() directly — no handler required.`}</code></pre>
 				</div>
 				<div class="wf-code">
 					<div class="wf-code-bar">
@@ -639,7 +717,7 @@ pub struct TodoView {
   pub title: String,
   pub status: String,
 }
-// GraphQL can list and filter this table — you did not hand-write resolvers.`}</code></pre>
+// GraphQL lists/filters this table — you did not hand-write resolvers.`}</code></pre>
 				</div>
 				<div class="wf-code">
 					<div class="wf-code-bar">
@@ -647,10 +725,12 @@ pub struct TodoView {
 						<em>GraphqlInput</em>
 					</div>
 					<pre><code>{`#[derive(Debug, Deserialize, distributed::GraphqlInput)]
-pub struct TodoCompleteInput {
+pub struct TodoCreateInput {
   pub todo_id: String,
+  pub title: String,
 }
-// Same type for GraphQL input and the handler. Register once; codegen follows.`}</code></pre>
+// owner_id is NOT an input — handler uses ctx.user_id().
+// Same type for GraphQL input and the handler.`}</code></pre>
 				</div>
 			</div>
 
@@ -658,57 +738,49 @@ pub struct TodoCompleteInput {
 				<span class="wf-label">Patterns you already know</span>
 				<h3>Short verbs you can swap under the hood</h3>
 				<p>
-					You do not need a new vocabulary for every service. Load something from history, apply a
-					command, save events and “please publish this,” turn events into query rows, expose
-					handlers. Same ideas as textbooks — thin APIs, backends you can change later.
+					Load from history, apply a command, stage events (and outbox), return
+					<code>Fact</code> or <code>Projected</code>. Same ideas as textbooks — thin APIs, backends
+					you can change later.
 				</p>
 			</div>
 			<div class="wf-code-stack">
 				<div class="wf-code">
 					<div class="wf-code-bar">
-						<span>Load → decide → save history</span>
-						<em>repository</em>
+						<span>Load → decide → stage history</span>
+						<em>CausalCommandContext</em>
 					</div>
-					<pre><code>{`// Load from event history (not from a mutable "current row" only)
-let mut todo = ctx.repo().get(todo_id).await?
-  .ok_or_else(|| HandlerError::NotFound(todo_id.into()))?;
-
-todo.complete(&owner)?; // domain rules only
-
-// One commit: new events + "please publish this fact"
-let fact = TodoFact::from_todo(&todo);
-let outbox = OutboxMessage::encode(
-  format!("{}:todo.completed:{}", todo.todo_id, todo.entity.version()),
-  "todo.completed",
-  &fact,
-)?;
-ctx.repo().outbox(outbox).commit(&mut todo).await?;
-// Memory, SQLite, or Postgres — same handler shape.`}</code></pre>
+					<pre><code>{`let mut todo = load_todo(ctx, &input.todo_id).await?;
+todo.complete(&owner).map_err(map_domain)?;
+let fact = stage_todo_event(ctx, todo, "todo.completed")?;
+// stage_todo_event: OutboxMessage + ctx.stage(aggregate)
+// Framework commits event store + outbox together
+PreparedCommand::<Fact<TodoStatusPayload>>::prepare(/* from fact */)`}</code></pre>
 				</div>
 				<div class="wf-code">
 					<div class="wf-code-bar">
-						<span>Turn a fact into something you can query</span>
-						<em>projection</em>
+						<span>Projected — same transaction</span>
+						<em>blob</em>
 					</div>
-					<pre><code>{`// After (or with) the event: upsert a row shaped for reads
-let row = map_todo_fact(&fact);
-let mut plan = ReadModelWritePlanBuilder::new();
-plan.upsert(&row)?;
-plan.commit(ctx.read_model_store()).await?;
-// Same idea for "eventually" (projector) and "right now" (blob).`}</code></pre>
+					<pre><code>{`let fact = stage_blob(ctx, game)?;
+ctx.projected(map_blob_fact(&fact))
+// → PreparedCommand<Projected<BlobGameView>>
+// Aggregate + command ledger + query row commit atomically.
+// No manual ReadModelWritePlan in the handler.`}</code></pre>
 				</div>
 				<div class="wf-code">
 					<div class="wf-code-bar">
-						<span>One handler, many doors</span>
+						<span>One handler inventory, GraphQL door</span>
 						<em>service</em>
 					</div>
-					<pre><code>{`// This fixture exposes commands over GraphQL only (no raw POST /todo.*)
+					<pre><code>{`// This fixture exposes commands over GraphQL only
+// (POST /todo.* must 404 — suite proves it)
 Service::new()
   .named("e2e-ui")
   .without_http_command_routes()
-  // … register handlers + readable models …
-// Later you can also hang the same work off a bus or gRPC
-// without rewriting Todo::complete.`}</code></pre>
+  .routes(todos)
+  .routes(chat)
+  .routes(blob);
+// Later: bus / gRPC without rewriting Todo::complete`}</code></pre>
 				</div>
 			</div>
 
@@ -719,10 +791,10 @@ Service::new()
 			<ol class="wf-flow-map">
 				<li>Write tests for what the model should allow and refuse</li>
 				<li>Implement the plain type until those tests pass</li>
-				<li>Add a thin handler: who is calling → load → domain → save history</li>
-				<li>Project into query tables (or same-request for strong UX)</li>
-				<li>Expose reads and commands with the right permissions</li>
-				<li>Regenerate the client helpers and wire a small UI path</li>
+				<li>Thin handler: session → load/create → domain → stage (+ Fact or Projected)</li>
+				<li>Projector for eventual models; SurfaceDirectProjection for Projected</li>
+				<li>Permissions + client application surface(s)</li>
+				<li>Co-located <code>+page.graphql</code>, <code>make gen-client</code>, thin UI</li>
 				<li>Swap storage or messaging when you outgrow the laptop setup</li>
 			</ol>
 		</div>
@@ -755,7 +827,7 @@ Service::new()
 					<h3>Prove it</h3>
 					<p>
 						<code>make test</code> · <code>make test-live</code> ·
-						<code>make check-client</code>
+						<code>make test-browser</code> · <code>make check-client</code>
 					</p>
 				</div>
 			</div>
@@ -796,7 +868,7 @@ Service::new()
 				<h2>Practice arenas, not slides</h2>
 				<p>
 					After <code>make up && make run</code>, sign in and click. Each route is a small story about
-					one way the stack behaves — personal data, live rooms, strong returns, admin power,
+					one way the stack behaves — personal data, live rooms, Projected returns, elevated surface,
 					identity.
 				</p>
 			</div>
@@ -820,11 +892,12 @@ Service::new()
 		<div class="wf-band-inner">
 			<div class="wf-section-head">
 				<span class="wf-label">Architecture</span>
-				<h2>One direction — with two ways to “see the result”</h2>
+				<h2>One direction — two result shapes</h2>
 				<p>
 					The UI never “updates the todos table” as if GraphQL were a database. It asks for work
-					(commands) and reads query-shaped data (lists, joins). Most features let query data catch
-					up a moment later; the game can return the full board in the same request on purpose.
+					(commands) and reads query-shaped data. Most features return a <code>Fact</code> and let
+					projectors catch up; blob returns <code>Projected</code> so the board is in the mutation
+					payload.
 				</p>
 			</div>
 			<div class="wf-code wf-code-lead">
@@ -834,16 +907,17 @@ Service::new()
 				</div>
 				<pre><code>{`You (browser)
   Sign in → cookie with access token
-  Load pages with GraphQL (Bearer)
-  Live rooms over WebSocket (token in first message)
+  @load pages → GraphQL (Bearer) → SSR hydrate replica
+  @live rooms → WebSocket (token in connection_init)
+  commands.* → same replica (effects / Projected payload)
 
 Service
-  Knows who you are and which role you have
-  Commands: change domain history (+ optional “publish this”)
-       ├─ todos / chat: project into query tables shortly after  (eventual)
-       └─ blob:         also write query row before responding   (strong)
-  Queries / live updates: filtered by who you are
-  People directory imported from Zitadel for display names`}</code></pre>
+  OidcBearer → x-user-id + roles · deny-by-default RLS
+  typed Service inventory → GraphQL mutations + client surfaces
+       ├─ todos / chat: Fact + projector (+ @live)     (eventual)
+       └─ blob:         Projected<BlobGameView>         (atomic)
+  fieldnote vs fieldnote-admin application surfaces
+  auth_users imported from Zitadel for joins`}</code></pre>
 			</div>
 			<div class="wf-subhead">
 				<span class="wf-label">Crate map</span>
@@ -867,8 +941,9 @@ Service
 				<h2>Habits that keep this demo (and your copy of it) healthy</h2>
 				<p>
 					The principles above are Distributed as a whole. These are the extra habits
-					<strong>this fixture</strong> teaches for GraphQL, sign-in, and the Svelte client. Follow
-					them and the demos feel calm; fight them and you spend the day on thrash and spoofing.
+					<strong>this fixture</strong> teaches for GraphQL, sign-in, dual surfaces, and the Svelte
+					client. Follow them and the demos feel calm; fight them and you spend the day on thrash and
+					spoofing.
 				</p>
 			</div>
 			<ol class="wf-principles">
@@ -893,18 +968,18 @@ Service
 				<p>
 					You should not wire a new HTTP client per page. The root layout creates one replica from
 					one session source; the server hydrates it, <code>@live</code> operations continue it, and
-					typed commands update it optimistically before causal projection catches up. Query
-					documents live next to routes, while command and optimistic contracts come from the same
-					typed Rust Service inventory the API runs.
+					typed commands update it (optimistic effects or Projected payload). Query documents live
+					next to routes; command contracts come from the same typed Rust inventory the API runs.
+					Admin is a second generated surface under <code>/admin</code>.
 				</p>
 			</div>
 			<ol class="wf-flow-map">
 				<li>Declare route reads with <code>@load</code> and <code>@live</code></li>
 				<li>Let the generated static registry drive SSR</li>
 				<li>Hydrate one browser replica with separate authority proof</li>
-				<li>Read with generated <code>Todos.use()</code></li>
+				<li>Read with generated <code>Todos.use()</code> / <code>BlobGames.use()</code></li>
 				<li>Write through generated nested commands</li>
-				<li>Let one auth source fence HTTP, WebSocket, commands, and cached scope</li>
+				<li>Elevated ops only via <code>$distributed/admin</code></li>
 			</ol>
 
 			<div class="wf-chapter">
@@ -936,8 +1011,8 @@ Service
 	<section class="wf-band wf-band-dark" id="cap">
 		<div class="wf-band-inner">
 			<div class="wf-section-head">
-				<span class="wf-label">When should the answer be “now”?</span>
-				<h2>Two honest styles — pick per feature</h2>
+				<span class="wf-label">Result shapes</span>
+				<h2>Fact vs Projected — pick per feature</h2>
 				<p>
 					Not every screen needs the same consistency story. This fixture shows both on purpose so
 					you can feel the tradeoff instead of arguing in the abstract.
@@ -945,29 +1020,31 @@ Service
 			</div>
 			<div class="wf-cards">
 				<div class="wf-card wf-card-accent">
-					<span class="wf-card-kicker">Strong</span>
-					<h3>Blob — the board is the truth of the response</h3>
+					<span class="wf-card-kicker">Projected</span>
+					<h3>Blob — row commits with the command</h3>
 					<p>
-						After a move, the mutation comes back with the full board. Waiting on a background
-						projector would feel like lag. The UI keeps one cache for board and history so they
-						cannot disagree.
+						<code>PreparedCommand&lt;Projected&lt;BlobGameView&gt;&gt;</code> +
+						<code>ctx.projected</code>. Map/score are in the mutation payload; the replica applies
+						them before the call resolves. Revalidation may still race — fences keep your own write
+						from rolling back under a lagging stamp.
 					</p>
 				</div>
 				<div class="wf-card">
-					<span class="wf-card-kicker">Eventual</span>
-					<h3>Todos — feel instant, settle a moment later</h3>
+					<span class="wf-card-kicker">Fact + effects</span>
+					<h3>Todos — paint now, confirm later</h3>
 					<p>
-						Completing a note can paint as done immediately. The server still records history first;
-						the generated optimistic effect remains in the replica until a causal result or later
-						projection proves the query table caught up.
+						Command returns a fact. Inventory <code>command_effects</code> paint the replica;
+						<code>command_confirmations</code> wait for the projector epoch. History is still the
+						source of truth — the query table catches up.
 					</p>
 				</div>
 				<div class="wf-card">
-					<span class="wf-card-kicker">Eventual + live</span>
+					<span class="wf-card-kicker">Fact + live</span>
 					<h3>Chat — other people are the clock</h3>
 					<p>
-						Your post can show immediately; everyone else’s posts arrive over a live subscription.
-						That open connection is how the room converges — not a frantic poll loop.
+						Your post can show immediately; everyone else’s posts arrive over the
+						<code>@live</code> companion. That open connection is how the room converges — not a
+						poll loop.
 					</p>
 				</div>
 			</div>
@@ -986,12 +1063,12 @@ Service
 			</div>
 			<ol class="wf-flow-map">
 				<li>Person signs in; session holds a token</li>
-				<li>Page load queries with that token (only their rows)</li>
-				<li>UI sends a command, not a free-form table update</li>
-				<li>Handler loads history, applies domain rules, saves events</li>
-				<li>Query tables update eventually — or immediately for strong UX</li>
+				<li>Page load queries with that token (RLS-filtered rows)</li>
+				<li>UI sends a typed command, not a free-form table update</li>
+				<li>Handler: session → load/create → domain → stage</li>
+				<li>Return Fact (projector later) or Projected (same transaction)</li>
 				<li>Display names join from the identity directory</li>
-				<li>Queries and live rooms show the new world</li>
+				<li>Queries and @live rooms show the new world</li>
 			</ol>
 
 			<div class="wf-chapter">
@@ -1024,37 +1101,36 @@ Service
 		<div class="wf-band-inner">
 			<div class="wf-section-head">
 				<span class="wf-label">Keeping the UI honest</span>
-				<h2>One inventory in, one complete client out</h2>
+				<h2>One inventory in, complete clients out</h2>
 				<p>
 					The typed Rust Service inventory defines readable models, commands, permissions, results,
-					and optimistic effects. <code>dctl client-manifest</code> extracts a selected application
-					surface without a database; <code>dctl client</code> combines it with co-located route
-					reads. Drift fails a check instead of becoming a production surprise.
+					effects, and confirmations. <code>dctl client-manifest</code> extracts a selected
+					application surface without a database; <code>dctl client</code> combines it with
+					co-located route reads. Drift fails a check instead of becoming a production surprise.
 				</p>
 			</div>
 			<div class="wf-cards wf-cards-tight">
 				<div class="wf-card">
 					<h3>Application surfaces are capabilities</h3>
 					<p>
-						The pool-free <code>distributed_client_surface</code> exports
-						<code>fieldnote</code> for admin and user roles. A separate
-						<code>fieldnote-admin</code> export is consumed only by the nested admin layout.
+						<code>distributed_client_surface</code> → <code>fieldnote</code> (user + admin roles for
+						the normal shell). <code>distributed_admin_client_surface</code> →
+						<code>fieldnote-admin</code>, consumed only by the nested admin layout.
 					</p>
 				</div>
 				<div class="wf-card">
 					<h3>Routes declare reads, Rust declares writes</h3>
 					<p>
-						Use <code>+page.graphql</code> with <code>@load</code> or
-						<code>@live</code>. Generation emits inspectable artifacts, tree-local operation
-						wrappers, the static route registry, and causal command bindings.
+						Use <code>+page.graphql</code> with <code>@load</code> / <code>@live</code>. Generation
+						emits operations, command tree, static route registry, and SvelteKit adapter.
 					</p>
 				</div>
 				<div class="wf-card">
 					<h3>After you change the contract</h3>
 					<p>
-						Run <code>make gen-client</code>, inspect and commit the generated artifacts, then let
-						<code>make check-client</code> enforce byte and file-set drift. Durable design belongs
-						in the Distributed GitKB; this fixture stays an executable example.
+						Run <code>make gen-client</code>, inspect and commit artifacts, let
+						<code>make check-client</code> enforce drift. Durable design belongs in the Distributed
+						GitKB; this fixture stays executable.
 					</p>
 				</div>
 			</div>
@@ -1073,7 +1149,7 @@ await commands.todo.reopen({ todo_id });
 await commands.chat.post({ message_id, body, room_id, created_at });
 await commands.blob.move({ game_id, direction: 'up' });
 
-// Inside the nested admin tree:
+// Inside the nested admin tree only:
 import { useCommands as useAdminCommands } from '$distributed/admin';
 await useAdminCommands().todo.force_archive({ todo_id });`}</code></pre>
 			</div>
@@ -1102,15 +1178,16 @@ await useAdminCommands().todo.force_archive({ todo_id });`}</code></pre>
 				<div class="wf-card">
 					<h3>Join for labels</h3>
 					<p>
-						Chat shows an author; blob can show an owner. Those are relationships to the directory
-						— so a rename or status change does not require rewriting history.
+						Blob’s <code>+page.graphql</code> selects the owner join on load. Chat’s
+						<code>author</code> relationship is on the read model — add it to the query when a route
+						needs labels.
 					</p>
 				</div>
 				<div class="wf-card">
 					<h3>Roles in practice</h3>
 					<p>
 						alice and bob are normal users (their own todos). admin sees everyone and can
-						force-archive. Groups on the session map into those engine roles.
+						force-archive via the elevated surface. Groups on the session map into engine roles.
 					</p>
 				</div>
 			</div>
@@ -1134,16 +1211,16 @@ await useAdminCommands().todo.force_archive({ todo_id });`}</code></pre>
 				<div class="wf-card">
 					<h3>Two lists for the same data</h3>
 					<p>
-						A local array “for convenience” plus the shared cache for the same list is how board
-						and history disagree. Use one replica-backed operation view for that data.
+						A local array “for convenience” plus the shared cache for the same list is how board and
+						history disagree. Use one replica-backed operation view.
 					</p>
 				</div>
 				<div class="wf-card">
 					<h3>Hard refetch that yanks the optimistic UI</h3>
 					<p>
-						Blasting a full reload the instant a command returns can flash, reorder, or erase the
-						row you just painted. Let generated causal optimism remain until the replica observes
-						projection or a live frame.
+						Blasting a full reload the instant a command returns can flash or erase the row you just
+						painted. Let effects / Projected payload stand until the replica observes confirmation
+						or a live frame — and respect causal fences on revalidation.
 					</p>
 				</div>
 				<div class="wf-card">
@@ -1154,17 +1231,24 @@ await useAdminCommands().todo.force_archive({ todo_id });`}</code></pre>
 					</p>
 				</div>
 				<div class="wf-card">
+					<h3>Elevated ops in the user client</h3>
+					<p>
+						Do not smuggle force-archive into the normal <code>fieldnote</code> surface “for
+						convenience.” Dual surfaces exist so capability matches generation.
+					</p>
+				</div>
+				<div class="wf-card">
 					<h3>Hand-editing generated files</h3>
 					<p>
-						Change the real source (Rust registry or co-located query), regenerate, commit. CI
+						Change the real source (Rust inventory or co-located query), regenerate, commit. CI
 						checks exist so drift does not wait for a human on-call.
 					</p>
 				</div>
 				<div class="wf-card">
 					<h3>Tokens in the wrong place on WebSockets</h3>
 					<p>
-						Browsers cannot set Authorization on the upgrade the way they do on HTTP. Put the
-						token in the first connection message — never in a long-lived URL query string.
+						Browsers cannot set Authorization on the upgrade the way they do on HTTP. Put the token
+						in the first connection message — never in a long-lived URL query string.
 					</p>
 				</div>
 			</div>
@@ -1180,9 +1264,12 @@ await useAdminCommands().todo.force_archive({ todo_id });`}</code></pre>
 			<ol class="wf-flow-map">
 				<li>Model the rules in a pure domain crate with tests</li>
 				<li>Describe how those facts look when queried (and any joins)</li>
-				<li>Thin command handler + register its typed result and optimistic contract</li>
-				<li>Projector — unless you deliberately write the query row in-request</li>
-				<li>Permissions: who may read which rows</li>
+				<li>
+					Thin command handler + register typed result (<code>Fact</code> or
+					<code>Projected</code>) + effects/confirmations as needed
+				</li>
+				<li>Projector — or SurfaceDirectProjection for Projected models</li>
+				<li>Permissions + which application surface exports the op</li>
 				<li>Add a co-located <code>+page.graphql</code> and regenerate client artifacts</li>
 				<li>Small UI path: generated <code>View.use()</code> + generated command</li>
 				<li>A test that would fail if you regressed the story</li>
@@ -1194,8 +1281,9 @@ await useAdminCommands().todo.force_archive({ todo_id });`}</code></pre>
 		<div class="wf-band-inner wf-cta">
 			<h2>Go click around</h2>
 			<p>
-				Sign in (alice / bob / admin · Password1!). Feel todos settle after a moment, blob answer
-				immediately, chat fill from others, admin see everyone, session explain who you are.
+				Sign in (alice / bob / admin · Password1!). Feel todos settle after a moment, blob answer in
+				the Projected payload, chat fill from others, admin use a separate surface, session explain
+				who you are.
 			</p>
 			<div class="wf-actions">
 				{#if signedIn}
