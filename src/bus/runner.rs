@@ -13,6 +13,10 @@ use std::sync::Arc;
 use super::source::{MessageSource, ReceivedMessage};
 use super::{FailureAction, MessageRouter, RunOptions, TransportError, TransportErrorKind};
 use super::{Message, MessageKind};
+use crate::failure_log::{
+    FailureAction as FailureLogAction, FailureCategory, FailureComponent, FailureMessageFields,
+    FailureOperation, FailureRecord, FailureRetryClass,
+};
 
 /// Run the receive loop for a direct transport source.
 ///
@@ -71,6 +75,8 @@ where
             let action = options.failure_policy.resolve(error);
             record_transport_failure(service, transport, error.kind(), action);
             let kind = received.message().kind;
+            let message = FailureMessageFields::from_message(received.message());
+            emit_decode_failure(service, transport, message.clone(), error, action);
             match action {
                 FailureAction::Nack => {
                     let reason = error.to_string();
@@ -78,6 +84,7 @@ where
                         service,
                         transport,
                         kind,
+                        message,
                         crate::telemetry::transport_outcome::NACK,
                         crate::telemetry::transport_outcome::NACK,
                         || received.nack(&reason),
@@ -90,6 +97,7 @@ where
                         service,
                         transport,
                         kind,
+                        message,
                         crate::telemetry::transport_outcome::DEAD_LETTER,
                         crate::telemetry::transport_outcome::DEAD_LETTER,
                         || received.dead_letter(&reason),
@@ -102,6 +110,7 @@ where
                         service,
                         transport,
                         kind,
+                        message,
                         crate::telemetry::transport_outcome::PARK,
                         crate::telemetry::transport_outcome::PARK,
                         || received.park(&reason),
@@ -109,11 +118,11 @@ where
                     .await?;
                 }
                 FailureAction::LogAndAck => {
-                    eprintln!("[bus::runner] dropping undecodable message after permanent failure: {error}");
                     settle_and_record(
                         service,
                         transport,
                         kind,
+                        message,
                         crate::telemetry::transport_outcome::ACK,
                         crate::telemetry::transport_outcome::LOG_AND_ACK,
                         || received.ack(),
@@ -132,6 +141,7 @@ where
                 service,
                 transport,
                 kind,
+                FailureMessageFields::from_message(received.message()),
                 crate::telemetry::transport_outcome::ACK,
                 crate::telemetry::transport_outcome::IGNORED,
                 || received.ack(),
@@ -142,10 +152,12 @@ where
         let kind = received.message().kind;
         match dispatch(router.as_ref(), &options, received.message()).await {
             Ok(()) => {
+                let message = FailureMessageFields::from_message(received.message());
                 settle_and_record(
                     service,
                     transport,
                     kind,
+                    message,
                     crate::telemetry::transport_outcome::ACK,
                     crate::telemetry::transport_outcome::ACK,
                     || received.ack(),
@@ -155,11 +167,14 @@ where
             Err(error) => match options.failure_policy.resolve(&error) {
                 action @ FailureAction::Nack => {
                     record_transport_failure(service, transport, error.kind(), action);
+                    let message = FailureMessageFields::from_message(received.message());
+                    emit_transport_failure(service, transport, message.clone(), &error, action);
                     let reason = error.to_string();
                     settle_and_record(
                         service,
                         transport,
                         kind,
+                        message,
                         crate::telemetry::transport_outcome::NACK,
                         crate::telemetry::transport_outcome::NACK,
                         || received.nack(&reason),
@@ -168,11 +183,14 @@ where
                 }
                 action @ FailureAction::DeadLetter => {
                     record_transport_failure(service, transport, error.kind(), action);
+                    let message = FailureMessageFields::from_message(received.message());
+                    emit_transport_failure(service, transport, message.clone(), &error, action);
                     let reason = error.to_string();
                     settle_and_record(
                         service,
                         transport,
                         kind,
+                        message,
                         crate::telemetry::transport_outcome::DEAD_LETTER,
                         crate::telemetry::transport_outcome::DEAD_LETTER,
                         || received.dead_letter(&reason),
@@ -181,11 +199,14 @@ where
                 }
                 action @ FailureAction::Park => {
                     record_transport_failure(service, transport, error.kind(), action);
+                    let message = FailureMessageFields::from_message(received.message());
+                    emit_transport_failure(service, transport, message.clone(), &error, action);
                     let reason = error.to_string();
                     settle_and_record(
                         service,
                         transport,
                         kind,
+                        message,
                         crate::telemetry::transport_outcome::PARK,
                         crate::telemetry::transport_outcome::PARK,
                         || received.park(&reason),
@@ -199,14 +220,19 @@ where
                         error.kind(),
                         FailureAction::LogAndAck,
                     );
-                    eprintln!(
-                        "[bus::runner] dropping message '{}' after permanent failure: {error}",
-                        received.message().name()
+                    let message = FailureMessageFields::from_message(received.message());
+                    emit_transport_failure(
+                        service,
+                        transport,
+                        message.clone(),
+                        &error,
+                        FailureAction::LogAndAck,
                     );
                     settle_and_record(
                         service,
                         transport,
                         kind,
+                        message,
                         crate::telemetry::transport_outcome::ACK,
                         crate::telemetry::transport_outcome::LOG_AND_ACK,
                         || received.ack(),
@@ -215,6 +241,13 @@ where
                 }
                 FailureAction::Stop => {
                     record_transport_failure(service, transport, error.kind(), FailureAction::Stop);
+                    emit_transport_failure(
+                        service,
+                        transport,
+                        FailureMessageFields::from_message(received.message()),
+                        &error,
+                        FailureAction::Stop,
+                    );
                     return Err(error);
                 }
             },
@@ -227,6 +260,7 @@ async fn settle_and_record<F, Fut>(
     service: Option<&str>,
     transport: &str,
     kind: MessageKind,
+    message: FailureMessageFields,
     settle_action: &'static str,
     outcome: &'static str,
     settle: F,
@@ -247,6 +281,7 @@ where
                 error.kind(),
                 crate::telemetry::settle_failure_action(settle_action),
             );
+            emit_transport_settle_failure(service, transport, message, settle_action, &error);
             Err(error)
         }
     }
@@ -266,6 +301,15 @@ async fn recv_next<S: MessageSource>(
                 error.kind(),
                 crate::telemetry::failure_action::RECV_ERROR,
             );
+            FailureRecord::from_transport_error(
+                FailureComponent::Transport,
+                FailureOperation::Receive,
+                FailureLogAction::RecvError,
+                &error,
+            )
+            .with_service(service)
+            .with_transport(transport)
+            .emit();
             Err(error)
         }
     }
@@ -361,6 +405,86 @@ impl IntoFailureActionLabel for FailureAction {
 impl IntoFailureActionLabel for &'static str {
     fn into_failure_action_label(self) -> &'static str {
         self
+    }
+}
+
+fn emit_decode_failure(
+    service: Option<&str>,
+    transport: &str,
+    message: FailureMessageFields,
+    error: &TransportError,
+    action: FailureAction,
+) {
+    FailureRecord::new(
+        FailureComponent::Transport,
+        FailureOperation::Receive,
+        FailureCategory::Decode,
+        failure_log_action(action),
+        FailureRetryClass::from(error.kind()),
+        "TransportError::Decode",
+        error.message(),
+    )
+    .with_service(service)
+    .with_transport(transport)
+    .with_message(message)
+    .emit();
+}
+
+fn emit_transport_failure(
+    service: Option<&str>,
+    transport: &str,
+    message: FailureMessageFields,
+    error: &TransportError,
+    action: FailureAction,
+) {
+    FailureRecord::from_transport_error(
+        FailureComponent::Transport,
+        FailureOperation::Receive,
+        failure_log_action(action),
+        error,
+    )
+    .with_service(service)
+    .with_transport(transport)
+    .with_message(message)
+    .emit();
+}
+
+fn emit_transport_settle_failure(
+    service: Option<&str>,
+    transport: &str,
+    message: FailureMessageFields,
+    settle_action: &'static str,
+    error: &TransportError,
+) {
+    FailureRecord::from_transport_error(
+        FailureComponent::Transport,
+        FailureOperation::Settle,
+        settle_failure_log_action(settle_action),
+        error,
+    )
+    .with_service(service)
+    .with_transport(transport)
+    .with_message(message)
+    .emit();
+}
+
+fn failure_log_action(action: FailureAction) -> FailureLogAction {
+    match action {
+        FailureAction::Nack => FailureLogAction::Nack,
+        FailureAction::DeadLetter => FailureLogAction::DeadLetter,
+        FailureAction::Park => FailureLogAction::Park,
+        FailureAction::LogAndAck => FailureLogAction::LogAndAck,
+        FailureAction::Stop => FailureLogAction::Stop,
+    }
+}
+
+fn settle_failure_log_action(settle_action: &'static str) -> FailureLogAction {
+    match settle_action {
+        crate::telemetry::transport_outcome::ACK => FailureLogAction::SettleAck,
+        crate::telemetry::transport_outcome::NACK => FailureLogAction::SettleNack,
+        crate::telemetry::transport_outcome::DEAD_LETTER => FailureLogAction::SettleDeadLetter,
+        crate::telemetry::transport_outcome::PARK => FailureLogAction::SettlePark,
+        _ => FailureLogAction::SettleAck,
     }
 }
 
@@ -909,6 +1033,123 @@ mod tests {
             result.events.is_empty(),
             "stop does not settle the corrupt row"
         );
+    }
+
+    #[cfg(feature = "failure-logs")]
+    #[test]
+    fn failure_logs_cover_runner_failure_paths_with_consistent_fields() {
+        fn assert_event(
+            events: &[crate::failure_log::testing::CapturedEvent],
+            action: &str,
+            retry_class: &str,
+            operation: &str,
+        ) {
+            let event = events
+                .iter()
+                .find(|event| {
+                    event.field("distributed.failure.action") == Some(action)
+                        && event.field("error.retry_class") == Some(retry_class)
+                        && event.field("distributed.operation") == Some(operation)
+                })
+                .unwrap_or_else(|| {
+                    panic!(
+                        "missing action {action} with retry class {retry_class} and operation {operation}: {events:?}"
+                    )
+                });
+            assert_eq!(event.field("distributed.failure.schema_version"), Some("1"));
+            assert_eq!(event.field("distributed.component"), Some("transport"));
+            assert_eq!(event.field("distributed.operation"), Some(operation));
+            assert_eq!(event.field("distributed.message.kind"), Some("event"));
+            assert_eq!(event.field("messaging.system"), Some("unknown"));
+            assert_eq!(event.field("error.retry_class"), Some(retry_class));
+        }
+
+        {
+            let capture = crate::failure_log::testing::capture_failures();
+            let result = run(
+                vec![event_message("retryable", Some("retryable-message-id"))],
+                RunOptions::idempotent(),
+            );
+            assert!(result.outcome.is_ok());
+            assert_event(&capture.failure_events(), "nack", "retryable", "receive");
+            let rendered = format!("{:?}", capture.failure_events());
+            assert!(!rendered.contains("retryable-message-id"));
+        }
+
+        {
+            let capture = crate::failure_log::testing::capture_failures();
+            let result = run(
+                vec![event_message("permanent", None)],
+                RunOptions::idempotent(),
+            );
+            assert!(result.outcome.is_ok());
+            assert_event(
+                &capture.failure_events(),
+                "dead_letter",
+                "permanent",
+                "receive",
+            );
+        }
+
+        {
+            let capture = crate::failure_log::testing::capture_failures();
+            let result = run_decode_error(vec![event_message("", None)], RunOptions::idempotent());
+            assert!(result.outcome.is_ok());
+            assert_event(
+                &capture.failure_events(),
+                "dead_letter",
+                "permanent",
+                "receive",
+            );
+            let decode = capture
+                .failure_events()
+                .into_iter()
+                .find(|event| event.field("error.category") == Some("decode"))
+                .expect("decode failure event");
+            assert_eq!(decode.field("error.type"), Some("TransportError::Decode"));
+        }
+
+        {
+            let capture = crate::failure_log::testing::capture_failures();
+            let result = run_with(
+                vec![event_message("ok", None)],
+                RunOptions::idempotent(),
+                false,
+                false,
+            );
+            assert!(result.outcome.expect_err("settle failure").is_retryable());
+            assert_event(
+                &capture.failure_events(),
+                "settle_ack",
+                "retryable",
+                "settle",
+            );
+        }
+
+        {
+            let capture = crate::failure_log::testing::capture_failures();
+            let result = run(
+                vec![event_message("permanent", None)],
+                RunOptions::idempotent().with_failure_policy(FailurePolicy::LogAndAck),
+            );
+            assert!(result.outcome.is_ok());
+            assert_event(
+                &capture.failure_events(),
+                "log_and_ack",
+                "permanent",
+                "receive",
+            );
+        }
+
+        {
+            let capture = crate::failure_log::testing::capture_failures();
+            let result = run(
+                vec![event_message("permanent", None)],
+                RunOptions::idempotent().with_failure_policy(FailurePolicy::Stop),
+            );
+            assert!(result.outcome.expect_err("stop failure").is_permanent());
+            assert_event(&capture.failure_events(), "stop", "permanent", "receive");
+        }
     }
 
     #[test]

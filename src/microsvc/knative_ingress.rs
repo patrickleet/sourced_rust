@@ -32,6 +32,10 @@ use base64::Engine;
 use serde_json::{json, Value};
 
 use crate::bus::{validate_message_name, Message, MessageKind};
+use crate::failure_log::{
+    FailureAction, FailureCategory, FailureComponent, FailureMessageFields, FailureOperation,
+    FailureRecord, FailureRetryClass,
+};
 use crate::microsvc::{Service, MAX_HTTP_BODY_BYTES};
 use crate::trace_context::{TraceContext, TRACEPARENT, TRACESTATE};
 
@@ -69,7 +73,21 @@ async fn ingress_handler(
 ) -> Response {
     let message = match parse_cloud_event(&headers, &body) {
         Ok(message) => message,
-        Err(reason) => return (StatusCode::BAD_REQUEST, reason).into_response(),
+        Err(reason) => {
+            FailureRecord::new(
+                FailureComponent::Knative,
+                FailureOperation::Ingress,
+                FailureCategory::Decode,
+                FailureAction::Return400,
+                FailureRetryClass::Permanent,
+                "CloudEventDecodeError",
+                &reason,
+            )
+            .with_service(service.name())
+            .with_http_status(StatusCode::BAD_REQUEST.as_u16())
+            .emit();
+            return (StatusCode::BAD_REQUEST, reason).into_response();
+        }
     };
 
     match service.dispatch_message(&message).await {
@@ -82,12 +100,16 @@ async fn ingress_handler(
             } else {
                 StatusCode::UNPROCESSABLE_ENTITY
             };
-            // Mask internal faults (the same redaction the HTTP ingress applies):
-            // `err.to_string()` can carry SQL/driver/path detail. Log the real
-            // error server-side; return only a safe message on the wire.
-            if err.status_code() >= 500 {
-                eprintln!("knative ingress `{}` failed: {err}", message.name());
-            }
+            FailureRecord::from_handler_error(
+                FailureComponent::Knative,
+                FailureOperation::Ingress,
+                &err,
+            )
+            .with_service(service.name())
+            .with_message(FailureMessageFields::from_message(&message))
+            .with_action(FailureAction::for_status(status.as_u16()))
+            .with_http_status(status.as_u16())
+            .emit();
             (
                 status,
                 Json(json!({ "error": err.client_facing_message() })),
@@ -406,5 +428,78 @@ mod tests {
         );
         let err = parse_cloud_event(&h, &body).unwrap_err();
         assert!(err.contains("invalid cloudevent type"), "got {err}");
+    }
+
+    #[cfg(feature = "failure-logs")]
+    #[tokio::test]
+    async fn ingress_masks_retryable_5xx_and_emits_sanitized_failure_event() {
+        let service = Arc::new(
+            Service::new().named("orders-knative").routes(
+                crate::microsvc::Routes::new()
+                    .with_dependencies(())
+                    .event("order.temporarily_failed")
+                    .handle(|_: &crate::microsvc::Context<()>| async move {
+                        let io = std::io::Error::new(
+                            std::io::ErrorKind::ConnectionRefused,
+                            "connection refused password=hunter2 postgres://user:pass@db/app",
+                        );
+                        Err(crate::microsvc::HandlerError::Repository(
+                            crate::RepositoryError::retryable_storage("load stream", io),
+                        ))
+                    }),
+            ),
+        );
+        let h = headers(&[
+            ("ce-id", "evt-secret-id"),
+            ("ce-type", "order.temporarily_failed"),
+            ("ce-source", "/orders"),
+            (
+                "traceparent",
+                "00-4bf92f3577b34da6a3ce929d0e0e4736-00f067aa0ba902b7-01",
+            ),
+            ("tracestate", "vendor=raw-state"),
+            ("content-type", "application/json"),
+        ]);
+        let capture = crate::failure_log::testing::capture_failures();
+
+        let response = ingress_handler(
+            State(service),
+            h,
+            Bytes::from_static(br#"{"request_body":"payload-secret"}"#),
+        )
+        .await;
+
+        assert_eq!(response.status(), StatusCode::SERVICE_UNAVAILABLE);
+        let body = axum::body::to_bytes(response.into_body(), usize::MAX)
+            .await
+            .unwrap();
+        let body: Value = serde_json::from_slice(&body).unwrap();
+        assert_eq!(body, json!({ "error": "Internal server error" }));
+
+        let events = capture.failure_events();
+        let knative = events
+            .iter()
+            .find(|event| event.field("distributed.component") == Some("knative"))
+            .expect("knative failure event");
+        assert_eq!(
+            knative.field("distributed.failure.action"),
+            Some("return_503")
+        );
+        assert_eq!(knative.field("http.response.status_code"), Some("503"));
+        assert_eq!(knative.field("error.retry_class"), Some("retryable"));
+
+        let rendered = format!("{events:?}");
+        for forbidden in [
+            "payload-secret",
+            "hunter2",
+            "postgres://user:pass@db/app",
+            "raw-state",
+            "evt-secret-id",
+        ] {
+            assert!(
+                !rendered.contains(forbidden),
+                "failure event leaked `{forbidden}`: {rendered}"
+            );
+        }
     }
 }

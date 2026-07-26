@@ -41,6 +41,11 @@ use tonic::{Request, Response, Status};
 
 use super::service::Service;
 use super::session::Session;
+use crate::bus::MessageKind;
+use crate::failure_log::{
+    FailureAction, FailureCategory, FailureComponent, FailureMessageFields, FailureOperation,
+    FailureRecord, FailureRetryClass,
+};
 
 // ---------------------------------------------------------------------------
 // Message types (prost — standard protobuf wire format)
@@ -156,6 +161,22 @@ impl CommandService for GrpcHandler {
         let input: serde_json::Value = match serde_json::from_str(&req.input) {
             Ok(value) => value,
             Err(e) => {
+                FailureRecord::new(
+                    FailureComponent::Grpc,
+                    FailureOperation::Ingress,
+                    FailureCategory::Decode,
+                    FailureAction::Return400,
+                    FailureRetryClass::Permanent,
+                    "serde_json::Error",
+                    format!("invalid JSON input: {e}"),
+                )
+                .with_service(self.service.name())
+                .with_message(FailureMessageFields::for_name(
+                    MessageKind::Command,
+                    &req.command,
+                ))
+                .with_grpc_status(400)
+                .emit();
                 return Ok(Response::new(GrpcResponse {
                     status: 400,
                     body: json!({ "error": format!("invalid JSON input: {e}") }).to_string(),
@@ -168,6 +189,7 @@ impl CommandService for GrpcHandler {
         // payload is client-controlled and MUST NOT override it. See
         // [`build_session`] and the `Session` trust-boundary docs.
         let session = build_session(&metadata, req.session_variables);
+        let failure_metadata = session_metadata(&session);
 
         match self.service.dispatch(&req.command, input, session).await {
             Ok(value) => Ok(Response::new(GrpcResponse {
@@ -179,9 +201,24 @@ impl CommandService for GrpcHandler {
                 // (SQL/driver text) to clients. Server-internal failures are
                 // masked; client-fault errors keep their descriptive message.
                 let status = e.status_code();
-                if status >= 500 {
-                    eprintln!("microsvc command `{}` failed: {e}", req.command);
-                }
+                let message = if matches!(e, super::error::HandlerError::UnknownCommand(_)) {
+                    FailureMessageFields::unknown()
+                } else {
+                    FailureMessageFields::for_name_with_metadata(
+                        MessageKind::Command,
+                        &req.command,
+                        &failure_metadata,
+                    )
+                };
+                FailureRecord::from_handler_error(
+                    FailureComponent::Grpc,
+                    FailureOperation::Ingress,
+                    &e,
+                )
+                .with_service(self.service.name())
+                .with_message(message)
+                .with_grpc_status(status)
+                .emit();
                 Ok(Response::new(GrpcResponse {
                     status: status as u32,
                     body: json!({ "error": e.client_facing_message() }).to_string(),
@@ -248,6 +285,14 @@ fn build_session(
     Session::from_map(vars)
 }
 
+fn session_metadata(session: &Session) -> Vec<(String, String)> {
+    session
+        .variables()
+        .iter()
+        .map(|(key, value)| (key.clone(), value.clone()))
+        .collect()
+}
+
 // ---------------------------------------------------------------------------
 // Convenience constructors
 // ---------------------------------------------------------------------------
@@ -274,4 +319,83 @@ pub async fn serve_grpc(service: Arc<Service>, addr: &str) -> Result<(), GrpcSer
         .serve(addr)
         .await?;
     Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[cfg(feature = "failure-logs")]
+    #[tokio::test]
+    async fn dispatch_masks_5xx_and_emits_sanitized_failure_event() {
+        use crate::microsvc::{Context, HandlerError, Routes};
+        use crate::RepositoryError;
+
+        let service = Arc::new(
+            Service::new().named("orders-grpc").routes(
+                Routes::new()
+                    .with_dependencies(())
+                    .command("orders.create")
+                    .handle(|_: &Context<()>| async move {
+                        Err(HandlerError::Repository(RepositoryError::Model(
+                            "storage failed token=raw-token mysql://user:pass@db/app".into(),
+                        )))
+                    }),
+            ),
+        );
+        let handler = GrpcHandler::new(service);
+        let mut payload_vars = HashMap::new();
+        payload_vars.insert("x-hasura-user-id".to_string(), "user-secret".to_string());
+        let mut request = Request::new(GrpcRequest {
+            command: "orders.create".to_string(),
+            input: json!({ "request_body": "payload-secret" }).to_string(),
+            session_variables: payload_vars,
+        });
+        request
+            .metadata_mut()
+            .insert("authorization", "Bearer raw-auth".parse().unwrap());
+        request.metadata_mut().insert(
+            "traceparent",
+            "00-4bf92f3577b34da6a3ce929d0e0e4736-00f067aa0ba902b7-01"
+                .parse()
+                .unwrap(),
+        );
+        request
+            .metadata_mut()
+            .insert("tracestate", "vendor=raw-state".parse().unwrap());
+        let capture = crate::failure_log::testing::capture_failures();
+
+        let response = handler.dispatch(request).await.unwrap().into_inner();
+
+        assert_eq!(response.status, 500);
+        let body: serde_json::Value = serde_json::from_str(&response.body).unwrap();
+        assert_eq!(body, json!({ "error": "Internal server error" }));
+
+        let events = capture.failure_events();
+        let grpc = events
+            .iter()
+            .find(|event| event.field("distributed.component") == Some("grpc"))
+            .expect("grpc failure event");
+        assert_eq!(grpc.field("distributed.failure.action"), Some("return_500"));
+        assert_eq!(grpc.field("rpc.grpc.status_code"), Some("500"));
+        assert_eq!(
+            grpc.field("trace.trace_id"),
+            Some("4bf92f3577b34da6a3ce929d0e0e4736")
+        );
+
+        let rendered = format!("{events:?}");
+        for forbidden in [
+            "payload-secret",
+            "raw-token",
+            "mysql://user:pass@db/app",
+            "user-secret",
+            "raw-auth",
+            "raw-state",
+        ] {
+            assert!(
+                !rendered.contains(forbidden),
+                "failure event leaked `{forbidden}`: {rendered}"
+            );
+        }
+    }
 }

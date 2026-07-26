@@ -93,6 +93,11 @@ labels, and numeric samples only; diagnostics must not add payloads, metadata,
 trace ids, aggregate ids, user ids, raw HTTP targets, or request ids to that
 shape.
 
+Structured failure diagnostics are emitted as `tracing` events by the optional
+`failure-logs` feature, not as metrics. Do not add trace ids, message ids,
+users, aggregate identifiers, raw paths, payloads, error strings, or SQL state
+labels to Prometheus series to mirror those logs.
+
 ## Boundaries
 
 The `metrics` feature owns Prometheus text exposition for framework metrics. It

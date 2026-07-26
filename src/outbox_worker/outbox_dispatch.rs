@@ -19,16 +19,24 @@ use futures_util::stream::{self, StreamExt};
 
 use super::{ClaimOutboxMessages, OutboxClaimRef, OutboxPublishFailureAction, OutboxStore};
 use crate::bus::{Message, MessageKind, MessagePublisher, TransportError, TransportErrorKind};
+use crate::failure_log::{
+    FailureAction, FailureCategory, FailureComponent, FailureMessageFields, FailureOperation,
+    FailureRecord,
+};
 use crate::outbox::OutboxMessage;
 use crate::repository::RepositoryError;
 
-/// Repository/store failures (lock contention, storage hiccups, stale-claim
-/// conflicts) are retryable: usually transient, resolved by a later re-claim. This
-/// conversion lives with the outbox bridge — which legitimately knows both the
-/// store and the bus — so bus core stays free of `RepositoryError`.
+/// Convert repository/store failures into the transport vocabulary while
+/// preserving the repository retry classification. This conversion lives with
+/// the outbox bridge — which legitimately knows both the store and the bus — so
+/// bus core stays free of `RepositoryError`.
 impl From<RepositoryError> for TransportError {
     fn from(error: RepositoryError) -> Self {
-        TransportError::new(TransportErrorKind::Retryable, error.to_string()).with_source(error)
+        let kind = match error.kind() {
+            crate::lock::RetryClass::Retryable => TransportErrorKind::Retryable,
+            crate::lock::RetryClass::Permanent => TransportErrorKind::Permanent,
+        };
+        TransportError::new(kind, error.to_string()).with_source(error)
     }
 }
 
@@ -219,7 +227,19 @@ where
     ) -> Result<OutboxDispatchOutcome, TransportError> {
         let request =
             ClaimOutboxMessages::for_ids(self.worker_id.clone(), ids.to_vec(), self.lease);
-        let claimed = self.store.claim(request).await?;
+        let claimed = match self.store.claim(request).await {
+            Ok(claimed) => claimed,
+            Err(error) => {
+                emit_outbox_repository_failure(
+                    self.service_name.as_deref(),
+                    FailureOperation::Claim,
+                    FailureAction::Stop,
+                    &error,
+                    None,
+                );
+                return Err(error.into());
+            }
+        };
         let mut outcome = self.dispatch_claimed(claimed).await?;
         outcome.requested = ids.len();
         self.record_outbox_backlog().await;
@@ -232,7 +252,19 @@ where
         batch_size: usize,
     ) -> Result<OutboxDispatchOutcome, TransportError> {
         let request = ClaimOutboxMessages::new(self.worker_id.clone(), batch_size, self.lease);
-        let claimed = self.store.claim(request).await?;
+        let claimed = match self.store.claim(request).await {
+            Ok(claimed) => claimed,
+            Err(error) => {
+                emit_outbox_repository_failure(
+                    self.service_name.as_deref(),
+                    FailureOperation::Claim,
+                    FailureAction::Stop,
+                    &error,
+                    None,
+                );
+                return Err(error.into());
+            }
+        };
         let mut outcome = self.dispatch_claimed(claimed).await?;
         outcome.requested = batch_size;
         self.record_outbox_backlog().await;
@@ -252,6 +284,7 @@ where
             &self.publisher,
             claimed,
             self.max_attempts,
+            self.service_name.as_deref(),
             self.publish_concurrency,
         )
         .await?;
@@ -354,6 +387,7 @@ pub(crate) async fn publish_and_settle<S, P>(
     publisher: &P,
     claimed: Vec<OutboxMessage>,
     max_attempts: u32,
+    service_name: Option<&str>,
     publish_concurrency: NonZeroUsize,
 ) -> Result<SettleOutcome, RepositoryError>
 where
@@ -363,42 +397,203 @@ where
     let mut work = Vec::with_capacity(claimed.len());
     for message in claimed {
         let claim = OutboxClaimRef::from_message(&message)?;
-        work.push((claim, Message::from(message)));
+        let message = Message::from(message);
+        let context = OutboxFailureContext::from_message(&claim, max_attempts, &message);
+        work.push((claim, context, message));
     }
 
     // Publish phase: up to `publish_concurrency` publishes in flight. With the
     // default of 1 this awaits each publish before starting the next, so rows
     // go out strictly in claim (created-at) order.
-    let results: Vec<(OutboxClaimRef, Result<(), TransportError>)> =
-        stream::iter(work.into_iter().map(|(claim, message)| async move {
-            let result = publish_with_span(publisher, message).await;
-            (claim, result)
-        }))
-        .buffer_unordered(publish_concurrency.get())
-        .collect()
-        .await;
+    let results: Vec<(
+        OutboxClaimRef,
+        OutboxFailureContext,
+        Result<(), TransportError>,
+    )> = stream::iter(
+        work.into_iter()
+            .map(|(claim, context, message)| async move {
+                let result = publish_with_span(publisher, message).await;
+                (claim, context, result)
+            }),
+    )
+    .buffer_unordered(publish_concurrency.get())
+    .collect()
+    .await;
 
     // Settle phase: failures are the exception and settle individually;
     // successes settle in one batched complete.
     let mut outcome = SettleOutcome::default();
     let mut published = Vec::with_capacity(results.len());
-    for (claim, result) in results {
+    let mut first_published_context = None;
+    for (claim, context, result) in results {
         match result {
-            Ok(()) => published.push(claim),
+            Ok(()) => {
+                if first_published_context.is_none() {
+                    first_published_context = Some(context);
+                }
+                published.push(claim);
+            }
             Err(publish_error) => {
+                let intended_action = context.action_for_attempt();
                 match store
                     .record_failure(&claim, &publish_error.to_string(), max_attempts)
-                    .await?
+                    .await
                 {
-                    OutboxPublishFailureAction::Released => outcome.released += 1,
-                    OutboxPublishFailureAction::Failed => outcome.failed += 1,
+                    Ok(OutboxPublishFailureAction::Released) => {
+                        outcome.released += 1;
+                        context.emit_publish_failure(
+                            service_name,
+                            FailureAction::Release,
+                            "released",
+                            &publish_error,
+                        );
+                    }
+                    Ok(OutboxPublishFailureAction::Failed) => {
+                        outcome.failed += 1;
+                        context.emit_publish_failure(
+                            service_name,
+                            FailureAction::Fail,
+                            "failed",
+                            &publish_error,
+                        );
+                    }
+                    Err(error) => {
+                        context.emit_repository_settle_failure(
+                            service_name,
+                            intended_action,
+                            &error,
+                        );
+                        return Err(error);
+                    }
                 }
             }
         }
     }
-    store.complete_many(&published).await?;
+    if let Err(error) = store.complete_many(&published).await {
+        emit_outbox_repository_failure(
+            service_name,
+            FailureOperation::Settle,
+            FailureAction::SettleAck,
+            &error,
+            first_published_context,
+        );
+        return Err(error);
+    }
     outcome.published = published.len();
     Ok(outcome)
+}
+
+#[derive(Debug, Clone)]
+struct OutboxFailureContext {
+    message: FailureMessageFields,
+    attempt: u32,
+    max_attempts: u32,
+    source_aggregate_type: String,
+    source_sequence: String,
+}
+
+impl OutboxFailureContext {
+    fn from_message(claim: &OutboxClaimRef, max_attempts: u32, message: &Message) -> Self {
+        Self {
+            message: FailureMessageFields::from_message(message),
+            attempt: claim.attempt,
+            max_attempts,
+            source_aggregate_type: message
+                .metadata("x-sourced-source-aggregate-type")
+                .unwrap_or_default()
+                .to_string(),
+            source_sequence: message
+                .metadata("x-sourced-source-sequence")
+                .unwrap_or_default()
+                .to_string(),
+        }
+    }
+
+    fn action_for_attempt(&self) -> FailureAction {
+        if self.attempt >= self.max_attempts {
+            FailureAction::Fail
+        } else {
+            FailureAction::Release
+        }
+    }
+
+    fn emit_publish_failure(
+        &self,
+        service_name: Option<&str>,
+        action: FailureAction,
+        status: &'static str,
+        error: &TransportError,
+    ) {
+        FailureRecord::from_transport_error(
+            FailureComponent::Outbox,
+            FailureOperation::Publish,
+            action,
+            error,
+        )
+        .with_service(service_name)
+        .with_message(self.message.clone())
+        .with_category(FailureCategory::OutboxPublish)
+        .with_outbox_fields(
+            self.attempt,
+            self.max_attempts,
+            status,
+            self.source_aggregate_type.clone(),
+            self.source_sequence.clone(),
+        )
+        .emit();
+    }
+
+    fn emit_repository_settle_failure(
+        &self,
+        service_name: Option<&str>,
+        action: FailureAction,
+        error: &RepositoryError,
+    ) {
+        FailureRecord::from_repository_error(
+            FailureComponent::Outbox,
+            FailureOperation::Settle,
+            action,
+            error,
+        )
+        .with_service(service_name)
+        .with_message(self.message.clone())
+        .with_category(FailureCategory::OutboxSettle)
+        .with_outbox_fields(
+            self.attempt,
+            self.max_attempts,
+            action.as_str(),
+            self.source_aggregate_type.clone(),
+            self.source_sequence.clone(),
+        )
+        .emit();
+    }
+}
+
+fn emit_outbox_repository_failure(
+    service_name: Option<&str>,
+    operation: FailureOperation,
+    action: FailureAction,
+    error: &RepositoryError,
+    context: Option<OutboxFailureContext>,
+) {
+    let mut record =
+        FailureRecord::from_repository_error(FailureComponent::Outbox, operation, action, error)
+            .with_service(service_name);
+    if matches!(operation, FailureOperation::Settle) {
+        record = record.with_category(FailureCategory::OutboxSettle);
+    }
+    if let Some(context) = context {
+        record = record
+            .with_message(context.message.clone())
+            .with_outbox_fields(
+                context.attempt,
+                context.max_attempts,
+                action.as_str(),
+                context.source_aggregate_type,
+                context.source_sequence,
+            );
+    }
+    record.emit();
 }
 
 /// Publish one mapped outbox message, wrapped in a framework span when the
@@ -628,6 +823,73 @@ mod tests {
         assert_eq!(outcome.failed, 1);
         assert_eq!(outcome.released, 0);
         assert!(load(&repo, &id).is_failed());
+    }
+
+    #[cfg(feature = "failure-logs")]
+    #[test]
+    fn publish_failures_emit_release_and_fail_without_payload_leakage() {
+        let capture = crate::failure_log::testing::capture_failures();
+
+        let release_repo = InMemoryRepository::new();
+        let mut release = outbox("evt-release-secret");
+        release.payload = b"payload-secret-release".to_vec();
+        release
+            .metadata
+            .insert("authorization".to_string(), "raw-auth".to_string());
+        release
+            .metadata
+            .insert("arbitrary".to_string(), "metadata-secret".to_string());
+        let release_id = store_message(&release_repo, release);
+        let release_dispatcher = dispatcher(&release_repo, true, 3).with_service("orders");
+
+        let release_outcome =
+            block_on(release_dispatcher.dispatch_ids(std::slice::from_ref(&release_id))).unwrap();
+        assert_eq!(release_outcome.released, 1);
+
+        let fail_repo = InMemoryRepository::new();
+        let mut fail = outbox("evt-fail-secret");
+        fail.payload = b"payload-secret-fail".to_vec();
+        let fail_id = store_message(&fail_repo, fail);
+        let fail_dispatcher = dispatcher(&fail_repo, true, 1).with_service("orders");
+
+        let fail_outcome =
+            block_on(fail_dispatcher.dispatch_ids(std::slice::from_ref(&fail_id))).unwrap();
+        assert_eq!(fail_outcome.failed, 1);
+
+        let events = capture.failure_events();
+        let released = events
+            .iter()
+            .find(|event| event.field("distributed.failure.action") == Some("release"))
+            .expect("release failure event");
+        assert_eq!(released.field("distributed.component"), Some("outbox"));
+        assert_eq!(released.field("distributed.operation"), Some("publish"));
+        assert_eq!(released.field("error.category"), Some("outbox_publish"));
+        assert_eq!(released.field("outbox.attempt"), Some("1"));
+        assert_eq!(released.field("outbox.max_attempts"), Some("3"));
+        assert_eq!(released.field("outbox.status"), Some("released"));
+
+        let failed = events
+            .iter()
+            .find(|event| event.field("distributed.failure.action") == Some("fail"))
+            .expect("fail failure event");
+        assert_eq!(failed.field("outbox.attempt"), Some("1"));
+        assert_eq!(failed.field("outbox.max_attempts"), Some("1"));
+        assert_eq!(failed.field("outbox.status"), Some("failed"));
+
+        let rendered = format!("{events:?}");
+        for forbidden in [
+            "payload-secret-release",
+            "payload-secret-fail",
+            "raw-auth",
+            "metadata-secret",
+            "evt-release-secret",
+            "evt-fail-secret",
+        ] {
+            assert!(
+                !rendered.contains(forbidden),
+                "failure event leaked `{forbidden}`: {rendered}"
+            );
+        }
     }
 
     #[test]

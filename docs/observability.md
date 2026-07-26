@@ -92,6 +92,80 @@ Future spans should use the same helper path so new attributes are reviewed in
 one place. Do not add payload fields, user ids, aggregate ids, or raw metadata
 values as framework span attributes.
 
+## Structured Failure Events
+
+The `failure-logs` feature emits framework-owned `tracing` events for failures
+and deliberate drops. It does not install a subscriber, formatter, exporter, or
+global logging backend; service binaries keep control of routing and retention.
+The `otel` feature enables `failure-logs` as well, so span-enabled services also
+emit the same structured failure vocabulary.
+
+```toml
+[dependencies]
+distributed = { version = "0.1", features = ["http", "failure-logs"] }
+```
+
+All failure events use target `distributed.failure`, field
+`event.name = "distributed.failure"`, and
+`distributed.failure.schema_version = 1`.
+
+Core fields:
+
+- `distributed.service.name`
+- `distributed.component`: `microsvc`, `http`, `grpc`, `knative`,
+  `transport`, `outbox`, or `repository`
+- `distributed.operation`: `dispatch`, `handler`, `ingress`, `receive`,
+  `settle`, `publish`, `claim`, or `commit`
+- `distributed.message.kind`: `command` or `event`
+- `distributed.message.name`: registered bounded name or `unknown`
+- `messaging.message.id_hash`: stable hash only, never the raw id
+- `distributed.correlation_id` and `distributed.causation_id`
+- `trace.trace_id`, `trace.parent_span_id`, `trace.trace_flags`,
+  `trace.traceparent_valid`, and `trace.tracestate_present`
+- `error.type`, `error.category`, `error.retry_class`, and sanitized
+  `error.message`
+- `distributed.failure.action`: `nack`, `dead_letter`, `park`,
+  `log_and_ack`, `stop`, `release`, `fail`, `return_400`, `return_401`,
+  `return_404`, `return_422`, `return_500`, `return_503`, `recv_error`,
+  `settle_ack`, `settle_nack`, `settle_dead_letter`, or `settle_park`
+
+Boundary-specific fields are populated when relevant:
+
+- `http.response.status_code`
+- `rpc.grpc.status_code`
+- `messaging.system`
+- `outbox.attempt`, `outbox.max_attempts`, `outbox.status`,
+  `outbox.source_aggregate_type`, and `outbox.source_sequence`
+- `payload.size_bytes`, `payload.content_type`, and `payload.codec`
+
+Example event shape:
+
+```text
+target=distributed.failure event.name=distributed.failure
+distributed.failure.schema_version=1
+distributed.service.name=orders
+distributed.component=http
+distributed.operation=ingress
+distributed.message.kind=command
+distributed.message.name=orders.create
+error.type=RepositoryError::StorageRetryable
+error.category=storage
+error.retry_class=retryable
+error.message="storage error (retryable) during load stream: connection refused"
+distributed.failure.action=return_500
+http.response.status_code=500
+trace.trace_id=4bf92f3577b34da6a3ce929d0e0e4736
+trace.tracestate_present=true
+payload.size_bytes=42
+payload.content_type=application/json
+```
+
+Payloads, decoded handler inputs, request bodies, arbitrary headers, arbitrary
+metadata values, session maps, cookies, tokens, secrets, DB URLs, raw SQL, raw
+message ids, raw outbox ids, source aggregate ids, and raw `tracestate` are not
+emitted. Message ids are hashed by default; `tracestate` is reduced to a boolean
+presence field.
+
 Recommended environment variables for OTLP exporters:
 
 ```text
@@ -170,10 +244,10 @@ The `metrics` feature records framework metrics and renders Prometheus text. It
 does not expose OpenTelemetry metrics or request-level HTTP telemetry.
 
 The `otel` feature creates framework spans and parents them from W3C metadata
-when available. It does not install subscribers, exporters, sampling rules, or
-resource attributes.
+when available. It also enables `failure-logs`. It does not install subscribers,
+exporters, sampling rules, or resource attributes.
 
-Future `logs` or private `diagnostics` features should build on the same
-bounded telemetry vocabulary. Logs may carry structured failure context, but
-must not log payloads or secrets by default. Diagnostics should read typed
-snapshots of framework state rather than parsing public Prometheus text.
+Future private `diagnostics` features should build on the same bounded
+telemetry vocabulary and may consume the sanitized failure classification.
+Diagnostics should read typed snapshots of framework state rather than parsing
+public Prometheus text.

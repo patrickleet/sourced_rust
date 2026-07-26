@@ -65,6 +65,7 @@ where
                 &self.publisher,
                 claimed,
                 self.max_attempts,
+                self.service_name.as_deref(),
                 std::num::NonZeroUsize::MIN,
             )
             .await?;
