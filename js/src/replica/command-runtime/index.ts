@@ -1,13 +1,9 @@
-/** Public entry for command runtime; implementation lives in ./command-runtime/. */
 export {
-	createReplicaCommandRuntime,
-	ReplicaCommandRuntimeError,
 	replicaCommandAuthority,
 	replicaCommandDirectProjection,
 	replicaCommandProjectedLifecycle,
-	replicaCommandProjectedLifecycleOf,
 	replicaResultObservation
-} from './command-runtime/index.js';
+} from './symbols.js';
 export type {
 	ReplicaBoundCommand,
 	ReplicaBoundCommands,
@@ -30,4 +26,7 @@ export type {
 	ReplicaCommandTransportRequest,
 	ReplicaCommandTransportResult,
 	ReplicaResultObservationRegistration
-} from './command-runtime/index.js';
+} from './types.js';
+export { ReplicaCommandRuntimeError } from './errors.js';
+export { replicaCommandProjectedLifecycleOf } from './lifecycle.js';
+export { createReplicaCommandRuntime } from './create.js';
