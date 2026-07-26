@@ -168,6 +168,7 @@ function extractGroups(claims: Record<string, unknown>, groupClaims: string[]) {
 		} else if (typeof value === 'string' && value.trim()) {
 			groups.add(value);
 		} else if (value && typeof value === 'object') {
+			// Zitadel project roles: { "admin": { "<projectId>": "..." }, ... }
 			for (const key of Object.keys(value)) groups.add(key);
 		}
 	}
@@ -175,7 +176,38 @@ function extractGroups(claims: Record<string, unknown>, groupClaims: string[]) {
 	return [...groups].sort();
 }
 
+function groupClaimPaths() {
+	return envCsv('OIDC_GROUP_CLAIMS', DEFAULT_GROUP_CLAIMS);
+}
+
+/**
+ * Roles often live on the **access** token (Zitadel `urn:zitadel:iam:org:project:roles`)
+ * while the id_token only has profile claims. Merge both payloads so admin grants
+ * are not dropped when an id_token is present.
+ */
+function groupsFromTokens(token: TokenRecord): string[] {
+	const paths = groupClaimPaths();
+	const groups = new Set<string>();
+
+	for (const jwt of [token.idToken, token.accessToken, token.id_token, token.access_token]) {
+		const claims = decodeJwtPayload(jwt);
+		if (!claims) continue;
+		for (const g of extractGroups(claims, paths)) groups.add(g);
+	}
+
+	// Auth.js may have stored profile groups on the JWT cookie (first sign-in).
+	const stored = token.groups;
+	if (Array.isArray(stored)) {
+		for (const item of stored) {
+			if (typeof item === 'string' && item.trim()) groups.add(item);
+		}
+	}
+
+	return [...groups].sort();
+}
+
 function userClaims(token: TokenRecord) {
+	// Profile fields: prefer id_token, fall back to access token.
 	return decodeJwtPayload(token.idToken) ?? decodeJwtPayload(token.accessToken) ?? {};
 }
 
@@ -214,7 +246,7 @@ export const { handle, signIn, signOut } = SvelteKitAuth({
 		} as any
 	],
 	callbacks: {
-		async jwt({ token, account }) {
+		async jwt({ token, account, user, profile }) {
 			if (account) {
 				token.accessToken = account.access_token;
 				token.refreshToken = account.refresh_token;
@@ -224,20 +256,37 @@ export const { handle, signIn, signOut } = SvelteKitAuth({
 					Math.floor(Date.now() / 1000) + ((account.expires_in as number | undefined) ?? 3600);
 			}
 
-			const expiresAt = typeof token.expiresAt === 'number' ? token.expiresAt : 0;
-			if (expiresAt && Date.now() < (expiresAt - ACCESS_TOKEN_REFRESH_SKEW_SECONDS) * 1000) {
-				return token;
+			// Profile/userinfo may carry groups even when tokens are still empty.
+			const profileGroups = extractGroups(
+				(profile as Record<string, unknown> | undefined) ?? {},
+				groupClaimPaths()
+			);
+			if (profileGroups.length) token.groups = profileGroups;
+			if (user && Array.isArray(user.groups) && user.groups.length) {
+				token.groups = user.groups;
 			}
 
-			if (token.refreshToken) {
+			const expiresAt = typeof token.expiresAt === 'number' ? token.expiresAt : 0;
+			const stillFresh =
+				expiresAt && Date.now() < (expiresAt - ACCESS_TOKEN_REFRESH_SKEW_SECONDS) * 1000;
+
+			if (!stillFresh && token.refreshToken) {
 				try {
-					return await refreshAccessToken(token as TokenRecord);
+					const refreshed = await refreshAccessToken(token as TokenRecord);
+					// Re-extract roles from the new access token.
+					const groups = groupsFromTokens(refreshed as TokenRecord);
+					if (groups.length) refreshed.groups = groups;
+					return refreshed;
 				} catch (error) {
 					console.error('Token refresh failed:', error);
 					token.error = 'RefreshAccessTokenError';
 					return token;
 				}
 			}
+
+			// Always refresh groups from current tokens (access token has Zitadel roles).
+			const groups = groupsFromTokens(token as TokenRecord);
+			if (groups.length) token.groups = groups;
 
 			return token;
 		},
@@ -260,8 +309,8 @@ export const { handle, signIn, signOut } = SvelteKitAuth({
 			};
 
 			const claims = userClaims(token as TokenRecord);
-			const groups = extractGroups(claims, envCsv('OIDC_GROUP_CLAIMS', DEFAULT_GROUP_CLAIMS));
-			if (groups.length) session.user.groups = groups;
+			// Merge id + access token role claims (Zitadel puts project roles on access).
+			session.user.groups = groupsFromTokens(token as TokenRecord);
 
 			const username = claimString(claims, 'preferred_username');
 			if (username) session.user.username = username;

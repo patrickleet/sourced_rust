@@ -2,6 +2,7 @@
 	import { browser } from '$app/environment';
 	import { BadgeCheck, LockKeyhole, LogOut, ShieldCheck, UserRound } from '@lucide/svelte';
 	import { Button, SimplePage } from '$lib/components/shared/ui';
+	import { engineRoleFromGroups, isAdminEngineRole } from '$lib/roles';
 	import TokenInspector from './TokenInspector.svelte';
 	import type { PageData } from './$types';
 
@@ -36,7 +37,11 @@
 	const expiresAtLabel = $derived(formatExpiresAt(expiresAt, session?.expires));
 	const expiresIn = $derived(formatCountdown(expiresAt, now));
 	const isExpired = $derived(expiresAt !== undefined && expiresAt <= now);
-	const isAdmin = $derived(Boolean(user?.groups?.includes('admins')));
+	const engineRole = $derived(
+		(data as { engineRole?: string | null }).engineRole ??
+			engineRoleFromGroups(user?.groups ?? undefined)
+	);
+	const isAdmin = $derived(isAdminEngineRole(engineRole));
 
 	$effect(() => {
 		if (!browser) return;

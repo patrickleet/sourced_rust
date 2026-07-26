@@ -2,13 +2,22 @@
 	import { page } from '$app/state';
 	import Auth from '$lib/components/shared/header/Auth.svelte';
 	import AccountMenu from '$lib/components/shared/menus/AccountMenu.svelte';
+	import { engineRoleFromGroups, isAdminEngineRole } from '$lib/roles';
 
 	let isMenuOpen = $state(false);
 	let scrolled = $state(false);
 	let accountMenuOpen = $state(false);
 
 	const isAuthenticated = $derived(!!page.data.session?.user);
-	const isAdmin = $derived(page.data.engineRole === 'admin');
+	/** Prefer layout `engineRole`; fall back to session groups (Zitadel project roles). */
+	const isAdmin = $derived(
+		isAdminEngineRole(page.data.engineRole) ||
+			isAdminEngineRole(
+				engineRoleFromGroups(
+					(page.data.session?.user as { groups?: string[] } | undefined)?.groups
+				)
+			)
+	);
 	const currentPath = $derived(page.url.pathname);
 
 	const isActive = (path: string) => {
