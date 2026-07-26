@@ -3,14 +3,11 @@ import {
 	parseGraphqlResponseExtensions,
 	type DistributedCommandMetadata,
 	type DistributedCommandState,
-	type DistributedProtocolEnvelope,
-	type DistributedRecordRevision,
-	type DistributedTrustedPreset
+	type DistributedProtocolEnvelope
 } from '../../protocol.js';
 import type { GqlError } from '../../types.js';
 import {
 	matchReplicaTrustedPresetInventory,
-	prepareReplicaCommandWithTrustedPresets,
 	verifyReplicaCommandReceipt,
 	type ReplicaCommandArtifact,
 	type ReplicaPreparedCommand,
@@ -21,14 +18,11 @@ import {
 import { replicaRecordKey } from '../identity.js';
 import type { ReplicaIndexSemanticChange } from '../index-maintenance.js';
 import type {
-	DistributedReplica,
 	ReplicaAuthoritativeScope,
 	ReplicaBaseWriter,
 	ReplicaClientSurface,
-	ReplicaIdentity,
 	ReplicaModelArtifact,
 	ReplicaOptimisticWriter,
-	ReplicaResultEnvelope,
 	ReplicaValue
 } from '../types.js';
 import {
@@ -46,20 +40,15 @@ import type {
 	CommandEntry,
 	CommandStatusTracker,
 	PendingProjection,
-	ReplicaBoundCommand,
 	ReplicaCommandAuthorityHost,
-	ReplicaCommandCallOptions,
-	ReplicaCommandDirectProjection,
 	ReplicaCommandProjectedOutcome,
-	ReplicaCommandReceipt,
 	ReplicaCommandStatus,
 	ReplicaCommandStatusArtifact,
 	ReplicaCommandStatusRequest,
 	ReplicaCommandSurfaceContract,
 	ReplicaCommandTransport,
 	ReplicaCommandTransportRequest,
-	ReplicaCommandTransportResult,
-	SemanticReplica
+	ReplicaCommandTransportResult
 } from './types.js';
 
 import { compareCodeUnits } from '../../lib/compare-code-units.js';

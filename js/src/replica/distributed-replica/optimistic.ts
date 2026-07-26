@@ -2,16 +2,13 @@ import {
 	type CacheIndexMetadata,
 	type CacheValue,
 	type OptimisticCacheWriter,
-	type OptimisticIndexWrite,
-	type OptimisticLayerView,
-	type OptimisticRecordWrite,
 	type RecordLink
 } from '../../internal/cache-engine.js';
 import type {
 	DistributedCommandMetadata,
 	DistributedOpaqueString
 } from '../../protocol.js';
-import type { ReplicaDiagnosticReceiptInput } from '../diagnostics.js';
+
 import { cloneJsonValue, replicaRecordKey } from '../identity.js';
 import type { ReplicaIndexSemanticChange } from '../index-maintenance.js';
 import type {

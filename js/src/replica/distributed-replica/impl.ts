@@ -4,27 +4,16 @@ import {
 	type BaseCacheWriter,
 	type CacheEngine,
 	type CacheEngineSnapshot,
-	type CacheIndexCoverage,
-	type CacheIndexMetadata,
-	type CacheValue,
 	type DerivedIndexMutation,
 	type DerivedIndexReconciler,
-	type OptimisticCacheWriter,
-	type OptimisticIndexWrite,
-	type OptimisticLayerView,
-	type OptimisticRecordWrite,
-	type RecordLink
+	type OptimisticLayerView
 } from '../../internal/cache-engine.js';
-import type { GqlError, GraphqlVariables } from '../../types.js';
+import type { GraphqlVariables } from '../../types.js';
 import {
 	compareDistributedDecimal,
 	DistributedProtocolError,
-	isDistributedTrustedPresetCodec,
-	parseDistributedTrustedPresetInventory,
 	parseGraphqlResponseExtensions,
 	type DistributedCommandMetadata,
-	type DistributedDecimalString,
-	type DistributedIndexRevision,
 	type DistributedLiveCursor,
 	type DistributedOpaqueString,
 	type DistributedProjectionObservation,
@@ -34,8 +23,7 @@ import {
 	type DistributedTrustedPreset
 } from '../../protocol.js';
 import {
-	matchReplicaTrustedPresetInventory,
-	type ReplicaTrustedPresetDescriptor
+	matchReplicaTrustedPresetInventory
 } from '../commands.js';
 import type {
 	ReplicaDiagnosticEventInput,
@@ -55,8 +43,6 @@ import {
 } from '../command-runtime.js';
 import {
 	canonicalizeOperationVariables,
-	canonicalVariables,
-	cloneJsonValue,
 	replicaIndexKey,
 	replicaRecordKey,
 	resolveArguments
@@ -72,19 +58,15 @@ import {
 } from '../normalize.js';
 import { createReplicaRevalidationMatcher } from '../revalidation.js';
 import {
-	validateReplicaOperationBinding as validatedArtifactBinding,
-	type ValidatedReplicaOperationBinding
+	validateReplicaOperationBinding as validatedArtifactBinding
 } from '../operation-binding.js';
 import {
 	createReplicaIndexMaintenanceRegistry,
 	formatReplicaIndexStaleReason,
-	type ReplicaIndexMaintenanceSnapshot,
 	type ReplicaIndexPlanRegistration,
-	type ReplicaIndexSemanticChange,
-	type ReplicaIndexSemanticLayer
+	type ReplicaIndexSemanticChange
 } from '../index-maintenance.js';
 import {
-	embeddedRecordKey,
 	runtimeRoot,
 	type RuntimeObjectBranch,
 	type RuntimeObjectSelection,
@@ -99,17 +81,14 @@ import type {
 	ReplicaIdentity,
 	ReplicaIndexInspection,
 	ReplicaIndexTarget,
-	ReplicaLiveState,
 	ReplicaModelArtifact,
 	ReplicaOperationArtifact,
 	ReplicaOptimisticWriter,
 	ReplicaRecordInspection,
-	ReplicaRecordPatch,
 	ReplicaRevalidationPlan,
 	ReplicaRevision,
 	ReplicaResultEnvelope,
 	ReplicaSnapshot,
-	ReplicaStatus,
 	ReplicaTransport,
 	ReplicaValue,
 	ReplicaWatch,
@@ -120,8 +99,7 @@ import {
 	EMPTY_CACHE_SNAPSHOT,
 	EMPTY_ERRORS,
 	EMPTY_TRUSTED_PRESETS,
-	MAX_ANONYMOUS_RECORD_CLOCKS,
-	SHA256
+	MAX_ANONYMOUS_RECORD_CLOCKS
 } from './constants.js';
 import type {
 	AnonymousRecordProtocolClock,

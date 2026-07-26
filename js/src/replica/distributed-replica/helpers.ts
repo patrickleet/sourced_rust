@@ -9,9 +9,6 @@ import {
 import type { GqlError, GraphqlVariables } from '../../types.js';
 import {
 	isDistributedTrustedPresetCodec,
-	type DistributedCommandMetadata,
-	type DistributedOpaqueString,
-	type DistributedProtocolEnvelope,
 	type DistributedQuerySnapshot,
 	type DistributedRecordRevision,
 	type DistributedTrustedPreset
@@ -19,7 +16,6 @@ import {
 import type { ReplicaTrustedPresetDescriptor } from '../commands.js';
 import type { ReplicaCommandSurfaceContract } from '../command-runtime.js';
 import {
-	canonicalizeOperationVariables,
 	canonicalVariables,
 	cloneJsonValue,
 	replicaIndexKey,
@@ -27,8 +23,6 @@ import {
 	resolveArguments
 } from '../identity.js';
 import {
-	createReplicaIndexMaintenanceRegistry,
-	formatReplicaIndexStaleReason,
 	type ReplicaIndexMaintenanceSnapshot,
 	type ReplicaIndexSemanticChange,
 	type ReplicaIndexSemanticLayer
@@ -53,7 +47,6 @@ import type {
 	ReplicaRevision,
 	ReplicaSnapshot,
 	ReplicaStatus,
-	ReplicaValue,
 	ReplicaWriteSource
 } from '../types.js';
 import {
@@ -66,8 +59,7 @@ import { EMPTY_ERRORS, SHA256 } from './constants.js';
 import type {
 	OperationProtocolSource,
 	QueryState,
-	RegisteredCommandAuthorityContract,
-	ReplicaArtifactBinding
+	RegisteredCommandAuthorityContract
 } from './types.js';
 
 import { reportSafely, reportUnhandledError } from '../../lib/report.js';

@@ -1,7 +1,6 @@
 import type {
 	DistributedCommandMetadata,
 	DistributedCommandState,
-	DistributedProtocolEnvelope,
 	DistributedRecordRevision,
 	DistributedTrustedPreset
 } from '../../protocol.js';
@@ -224,7 +223,6 @@ export type ReplicaCommandRuntimeErrorCode =
 	| 'REPLICA_COMMAND_SCOPE_INVALIDATED'
 	| 'REPLICA_COMMAND_STATUS_UNAVAILABLE'
 	| 'REPLICA_COMMAND_TRANSPORT_AMBIGUOUS';
-
 
 export type AnyCommandArtifact = ReplicaCommandArtifact<unknown, unknown>;
 export type CommandEntry =

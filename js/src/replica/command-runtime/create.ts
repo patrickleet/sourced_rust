@@ -1,6 +1,5 @@
 import {
 	parseGraphqlResponseExtensions,
-	type DistributedCommandMetadata,
 	type DistributedProtocolEnvelope
 } from '../../protocol.js';
 import {

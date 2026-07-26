@@ -1,20 +1,10 @@
-import type { GraphqlVariables } from '../../types.js';
+
 import type { DistributedTrustedPreset } from '../../protocol.js';
 import type {
-	ReplicaArgumentValue,
-	ReplicaFilterArtifact,
 	ReplicaFilterExpression,
 	ReplicaFilterFieldArtifact,
 	ReplicaFilterLiteral,
-	ReplicaFilterOperand,
-	ReplicaFilterOperator,
-	ReplicaIndexCoverage,
-	ReplicaOrderArtifact,
-	ReplicaOrderFieldArtifact,
-	ReplicaPaginationArtifact,
-	ReplicaPaginationDisposition,
 	ReplicaRelationshipArtifact,
-	ReplicaRelationshipKeyMapping,
 	ReplicaSurfaceTrustedPresetDescriptor,
 	ReplicaValue
 } from '../types.js';

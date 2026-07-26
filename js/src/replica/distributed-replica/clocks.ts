@@ -2,10 +2,8 @@ import type { CacheValue } from '../../internal/cache-engine.js';
 import {
 	compareDistributedDecimal,
 	DistributedProtocolError,
-	type DistributedDecimalString,
 	type DistributedIndexRevision,
 	type DistributedLiveCursor,
-	type DistributedOpaqueString,
 	type DistributedProtocolEnvelope,
 	type DistributedQuerySnapshot,
 	type DistributedRecordRevision

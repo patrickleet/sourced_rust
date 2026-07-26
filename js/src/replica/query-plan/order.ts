@@ -13,12 +13,9 @@ import type {
 	ReplicaQueryPlanReason
 } from './types.js';
 import {
-	isFiniteNumber,
-	isInt32,
 	isName,
 	isPortableNumericCodec,
 	isRecord,
-	isSafeIntegerNumber,
 	isScalarCodecPair,
 	reason
 } from './util.js';

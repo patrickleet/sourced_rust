@@ -1,11 +1,10 @@
 import type { GraphqlVariables } from '../../types.js';
-import type { DistributedTrustedPreset } from '../../protocol.js';
+
 import type {
 	ReplicaFilterArtifact,
 	ReplicaFilterExpression,
 	ReplicaFilterFieldArtifact,
 	ReplicaFilterLiteral,
-	ReplicaFilterOperand,
 	ReplicaFilterOperator,
 	ReplicaRelationshipArtifact,
 	ReplicaRelationshipKeyMapping,
@@ -27,7 +26,6 @@ import type {
 	ReplicaFilterEvaluationOptions,
 	ReplicaQueryPlanPath,
 	ReplicaQueryPlanReason,
-	ReplicaRelationshipFilterRequest,
 	ResolvedOperand
 } from './types.js';
 import {
@@ -36,7 +34,6 @@ import {
 	isName,
 	isPortableNumericCodec,
 	isRecord,
-	isReplicaValue,
 	isSafeIntegerNumber,
 	isScalarCodecPair,
 	reason

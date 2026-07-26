@@ -3,7 +3,6 @@ import type { DistributedTrustedPreset } from '../../protocol.js';
 import type {
 	ReplicaArgumentValue,
 	ReplicaFilterFieldArtifact,
-	ReplicaFilterLiteral,
 	ReplicaFilterOperand,
 	ReplicaSurfaceTrustedPresetDescriptor,
 	ReplicaValue
@@ -21,7 +20,6 @@ import {
 	isName,
 	isRecord,
 	isReplicaValue,
-	isSafeIntegerNumber,
 	reason
 } from './util.js';
 

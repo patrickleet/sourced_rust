@@ -1,16 +1,13 @@
 import type { CacheEngineSnapshot } from '../../internal/cache-engine.js';
 import {
 	compareDistributedDecimal,
-	isDistributedTrustedPresetCodec,
 	parseDistributedTrustedPresetInventory,
 	type DistributedDecimalString,
-	type DistributedLiveCursor,
-	type DistributedOpaqueString,
-	type DistributedTrustedPreset
+	type DistributedOpaqueString
 } from '../../protocol.js';
-import type { ReplicaAuthoritativeScope } from '../types.js';
-import { freezeRecordClock, modelFromRecordKey } from './clocks.js';
-import { MAX_ANONYMOUS_RECORD_CLOCKS } from './constants.js';
+
+import { modelFromRecordKey } from './clocks.js';
+
 import { canonicalTrustedPresets } from './helpers.js';
 import type {
 	AnonymousRecordProtocolClock,
