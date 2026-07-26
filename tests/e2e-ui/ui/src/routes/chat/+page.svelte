@@ -12,6 +12,8 @@
 		useCommands,
 		type Operation_ChatMessages_Data
 	} from '$distributed';
+	import { Button } from '$lib/components/shared/ui';
+	import { AppPage, InlineAlert, PageHeader } from '$lib/components/product';
 	import { isOwnAuthor, sessionDisplayName, sessionPrincipalId } from '$lib/session';
 
 	type ChatMsg = Operation_ChatMessages_Data['chat_messages'][number];
@@ -91,13 +93,9 @@
 	}
 </script>
 
-<section class="ch-page">
-	<header class="ch-header">
-		<div class="ch-title-row">
-			<div>
-				<div class="ch-kicker">Room · {LOBBY_ROOM}</div>
-				<h1 class="ch-title">Lobby</h1>
-			</div>
+<AppPage>
+	<PageHeader kicker="Room · {LOBBY_ROOM}" title="Lobby">
+		{#snippet meta()}
 			<div class="ch-status" data-state={$lobby.live}>
 				<span class="ch-pulse" aria-hidden="true"></span>
 				{#if $lobby.live === 'active'}
@@ -110,32 +108,23 @@
 					Idle
 				{/if}
 			</div>
-		</div>
-		<p class="ch-lede">
-			The generated <code>@load @live</code> artifact owns SSR and reconnect. A typed
-			<code>chat.post</code> command updates the same normalized state. Signed in as
-			<strong>{displayName}</strong>.
-		</p>
-	</header>
+		{/snippet}
+		The generated <code>@load @live</code> artifact owns SSR and reconnect. A typed
+		<code>chat.post</code> command updates the same normalized state. Signed in as
+		<strong>{displayName}</strong>.
+	</PageHeader>
 
 	{#if data.gqlError}
-		<div class="ch-alert" role="alert">
-			<strong>SSR GraphQL</strong>
-			<span>{data.gqlError}</span>
-		</div>
+		<InlineAlert label="SSR GraphQL">{data.gqlError}</InlineAlert>
 	{/if}
 	{#if $lobby.error}
-		<div class="ch-alert" role="alert">
-			<strong>Subscription</strong>
-			<span>{$lobby.error.message}</span>
+		<InlineAlert label="Subscription">
+			{$lobby.error.message}
 			<button type="button" class="ch-link-btn" onclick={() => void lobby.refetch()}>Retry</button>
-		</div>
+		</InlineAlert>
 	{/if}
 	{#if sendError}
-		<div class="ch-alert" role="alert">
-			<strong>Mutation</strong>
-			<span>{sendError}</span>
-		</div>
+		<InlineAlert label="Mutation">{sendError}</InlineAlert>
 	{/if}
 
 	<div class="ch-shell">
@@ -171,7 +160,7 @@
 				autocomplete="off"
 				bind:value={draft}
 			/>
-			<button class="ch-send" type="submit" disabled={!draft.trim() || busy}>
+			<Button type="submit" variant="ink" disabled={!draft.trim() || busy}>
 				Send
 				<svg width="16" height="16" viewBox="0 0 24 24" fill="none" aria-hidden="true">
 					<path
@@ -182,57 +171,16 @@
 						stroke-linejoin="round"
 					/>
 				</svg>
-			</button>
+			</Button>
 		</form>
 	</div>
-</section>
+</AppPage>
 
 <style>
-	.ch-page {
-		--ink: var(--wf-ink, #1c1c1a);
-		--ink-soft: var(--wf-ink-soft, #5c5c56);
-		--surface: var(--wf-bg-elevated, #fff);
-		--bubble: #fff;
-		--bubble-mine: var(--wf-ink, #1c1c1a);
-		--edge: var(--wf-line, #e2e0d9);
-		--accent: var(--wf-accent, #3d5a80);
 
-		max-width: 42rem;
-		margin: 0 auto;
-		padding: 6.5rem 1.25rem 3.5rem;
-		font-family: var(--wf-sans, system-ui, sans-serif);
-		color: var(--ink);
-	}
 
-	.ch-header {
-		margin-bottom: 1.25rem;
-	}
 
-	.ch-title-row {
-		display: flex;
-		align-items: flex-start;
-		justify-content: space-between;
-		gap: 1rem;
-		flex-wrap: wrap;
-	}
 
-	.ch-kicker {
-		font-size: 0.72rem;
-		font-weight: 600;
-		letter-spacing: 0.1em;
-		text-transform: uppercase;
-		color: var(--ink-soft);
-		margin-bottom: 0.4rem;
-	}
-
-	.ch-title {
-		margin: 0;
-		font-family: var(--wf-serif, Georgia, serif);
-		font-size: clamp(1.65rem, 4vw, 2.15rem);
-		font-weight: 500;
-		letter-spacing: -0.02em;
-		line-height: 1.1;
-	}
 
 	.ch-status {
 		display: inline-flex;
@@ -288,34 +236,8 @@
 		}
 	}
 
-	.ch-lede {
-		margin: 0.75rem 0 0;
-		font-size: 0.95rem;
-		line-height: 1.5;
-		color: var(--ink-soft);
-	}
 
-	.ch-lede code {
-		font-family: var(--wf-mono, ui-monospace, monospace);
-		font-size: 0.85em;
-		padding: 0.08em 0.3em;
-		border-radius: 4px;
-		background: var(--wf-accent-soft, rgba(61, 90, 128, 0.08));
-	}
 
-	.ch-alert {
-		display: flex;
-		flex-wrap: wrap;
-		align-items: center;
-		gap: 0.5rem 0.75rem;
-		padding: 0.75rem 0.95rem;
-		margin-bottom: 0.85rem;
-		border-radius: var(--wf-radius, 6px);
-		background: rgba(179, 58, 58, 0.08);
-		border: 1px solid rgba(179, 58, 58, 0.22);
-		color: var(--wf-danger, #b33a3a);
-		font-size: 0.9rem;
-	}
 
 	.ch-link-btn {
 		margin-left: auto;
@@ -438,30 +360,8 @@
 		box-shadow: 0 0 0 3px var(--wf-accent-soft, rgba(61, 90, 128, 0.12));
 	}
 
-	.ch-send {
-		display: inline-flex;
-		align-items: center;
-		gap: 0.35rem;
-		border: none;
-		border-radius: var(--wf-radius, 6px);
-		padding: 0 1rem;
-		font: inherit;
-		font-weight: 600;
-		font-size: 0.9rem;
-		cursor: pointer;
-		background: var(--ink);
-		color: #fff;
-		transition: background 0.15s ease, opacity 0.15s ease;
-	}
 
-	.ch-send:hover:not(:disabled) {
-		background: #2a2a28;
-	}
 
-	.ch-send:disabled {
-		opacity: 0.45;
-		cursor: not-allowed;
-	}
 
 	.ch-sr {
 		position: absolute;

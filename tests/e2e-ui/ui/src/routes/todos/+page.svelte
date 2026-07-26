@@ -6,6 +6,14 @@
 	 * compiler artifact tells the replica how command facts affect this query.
 	 */
 	import { Todos, useCommands } from '$distributed';
+	import { Button } from '$lib/components/shared/ui';
+	import {
+		AppPage,
+		InlineAlert,
+		PageHeader,
+		Panel,
+		StatRow
+	} from '$lib/components/product';
 	import { sessionDisplayName } from '$lib/session';
 
 	let { data } = $props();
@@ -18,8 +26,6 @@
 	const list = Todos.use();
 	const commands = useCommands();
 
-	// The generated query/index plan owns collection order. Components only
-	// derive presentation groups from the reactive result.
 	const rows = $derived($list.complete ? $list.data.todos : []);
 	const open = $derived(rows.filter((todo) => todo.status === 'open'));
 	const done = $derived(rows.filter((todo) => todo.status === 'completed'));
@@ -76,45 +82,32 @@
 	}
 </script>
 
-<section class="fn-page">
-	<header class="fn-header">
-		<div class="fn-kicker">
-			<span class="fn-dot" aria-hidden="true"></span>
-			Personal · owner-scoped
-		</div>
-		<h1 class="fn-title">Field notes</h1>
-		<p class="fn-lede">
-			Tasks for <strong>{who}</strong>. One generated <code>@load</code> operation feeds
-			SSR, navigation, and cache reads; typed commands update that same state
-			optimistically and retire it when projection catches up.
-		</p>
-	</header>
+<AppPage>
+	<PageHeader kicker="Personal · owner-scoped" title="Field notes">
+		Tasks for <strong>{who}</strong>. One generated <code>@load</code> operation feeds SSR,
+		navigation, and cache reads; typed commands update that same state optimistically and
+		retire it when projection catches up.
+	</PageHeader>
 
 	{#if data.gqlError}
-		<div class="fn-alert" role="alert">
-			<span class="fn-alert-label">SSR GraphQL</span>
-			{data.gqlError}
-		</div>
+		<InlineAlert label="SSR GraphQL">{data.gqlError}</InlineAlert>
 	{/if}
 	{#if actionError}
-		<div class="fn-alert" role="alert">
-			<span class="fn-alert-label">Mutation</span>
-			{actionError}
-		</div>
+		<InlineAlert label="Mutation">{actionError}</InlineAlert>
 	{/if}
 
-	<form class="fn-composer" onsubmit={onCreate}>
-		<label class="fn-sr" for="todo-title">New task</label>
+	<form class="composer" onsubmit={onCreate}>
+		<label class="sr" for="todo-title">New task</label>
 		<input
 			id="todo-title"
-			class="fn-input"
+			class="input"
 			name="title"
 			placeholder="Capture something that needs doing…"
 			required
 			autocomplete="off"
 			bind:value={title}
 		/>
-		<button class="fn-btn fn-btn-primary" type="submit" disabled={!title.trim()}>
+		<Button type="submit" variant="ink" disabled={!title.trim()}>
 			<span>Add</span>
 			<svg width="16" height="16" viewBox="0 0 24 24" fill="none" aria-hidden="true">
 				<path
@@ -124,88 +117,67 @@
 					stroke-linecap="round"
 				/>
 			</svg>
-		</button>
+		</Button>
 	</form>
 
-	<div class="fn-stats">
-		<div class="fn-stat">
-			<span class="fn-stat-n">{open.length}</span>
-			<span class="fn-stat-l">open</span>
-		</div>
-		<div class="fn-stat">
-			<span class="fn-stat-n">{done.length}</span>
-			<span class="fn-stat-l">done</span>
-		</div>
-		<div class="fn-stat">
-			<span class="fn-stat-n">{archived.length}</span>
-			<span class="fn-stat-l">archived</span>
-		</div>
-	</div>
+	<StatRow
+		stats={[
+			{ value: open.length, label: 'open' },
+			{ value: done.length, label: 'done' },
+			{ value: archived.length, label: 'archived' }
+		]}
+	/>
 
-	<div class="fn-board">
-		<section class="fn-panel" style="--stagger: 0">
-			<div class="fn-panel-head">
-				<h2>Open</h2>
-				<span class="fn-count">{open.length}</span>
-			</div>
+	<div class="board">
+		<Panel title="Open" count={open.length}>
 			{#if open.length === 0}
-				<p class="fn-empty">Nothing open — write one above.</p>
+				<p class="empty">Nothing open — write one above.</p>
 			{:else}
-				<ul class="fn-list">
+				<ul class="list">
 					{#each open as t, i (t.todo_id)}
-						<li class="fn-item" style="--i: {i}" data-todo-id={t.todo_id}>
-							<div class="fn-item-main">
+						<li class="item" style="--i: {i}" data-todo-id={t.todo_id}>
+							<div class="item-main">
 								<button
-									class="fn-check"
+									class="check"
 									type="button"
 									title="Mark done"
 									aria-label="Mark done: {t.title}"
 									onclick={() => onComplete(t.todo_id)}
 								></button>
-								<span class="fn-item-title">{t.title}</span>
+								<span class="item-title">{t.title}</span>
 							</div>
-							<div class="fn-item-actions">
-								<button
-									class="fn-btn fn-btn-ghost"
+							<div class="item-actions">
+								<Button
+									variant="ghost"
+									size="sm"
 									type="button"
 									title="Mark done"
-									onclick={() => onComplete(t.todo_id)}
+									onclick={() => onComplete(t.todo_id)}>Done</Button
 								>
-									Done
-								</button>
-								<button
-									class="fn-btn fn-btn-quiet"
+								<Button
+									variant="quiet"
+									size="sm"
 									type="button"
 									title="Archive"
-									onclick={() => onArchive(t.todo_id)}
+									onclick={() => onArchive(t.todo_id)}>Archive</Button
 								>
-									Archive
-								</button>
 							</div>
 						</li>
 					{/each}
 				</ul>
 			{/if}
-		</section>
+		</Panel>
 
-		<section class="fn-panel fn-panel-muted" style="--stagger: 1">
-			<div class="fn-panel-head">
-				<h2>Done</h2>
-				<span class="fn-count">{done.length}</span>
-			</div>
+		<Panel title="Done" count={done.length} muted>
 			{#if done.length === 0}
-				<p class="fn-empty">Completed tasks land here.</p>
+				<p class="empty">Completed tasks land here.</p>
 			{:else}
-				<ul class="fn-list">
+				<ul class="list">
 					{#each done as t, i (t.todo_id)}
-						<li
-							class="fn-item fn-item-done"
-							style="--i: {i}"
-							data-todo-id={t.todo_id}
-						>
-							<div class="fn-item-main">
+						<li class="item item-done" style="--i: {i}" data-todo-id={t.todo_id}>
+							<div class="item-main">
 								<button
-									class="fn-check fn-check-on"
+									class="check check-on"
 									type="button"
 									title="Reopen"
 									aria-label="Reopen: {t.title}"
@@ -221,148 +193,60 @@
 										/>
 									</svg>
 								</button>
-								<span class="fn-item-title">{t.title}</span>
+								<span class="item-title">{t.title}</span>
 							</div>
-							<div class="fn-item-actions">
-								<button
-									class="fn-btn fn-btn-ghost"
+							<div class="item-actions">
+								<Button
+									variant="ghost"
+									size="sm"
 									type="button"
 									title="Reopen"
-									onclick={() => onReopen(t.todo_id)}
+									onclick={() => onReopen(t.todo_id)}>Reopen</Button
 								>
-									Reopen
-								</button>
-								<button
-									class="fn-btn fn-btn-quiet"
+								<Button
+									variant="quiet"
+									size="sm"
 									type="button"
-									onclick={() => onArchive(t.todo_id)}
+									onclick={() => onArchive(t.todo_id)}>Archive</Button
 								>
-									Archive
-								</button>
 							</div>
 						</li>
 					{/each}
 				</ul>
 			{/if}
-		</section>
+		</Panel>
 	</div>
 
 	{#if archived.length}
-		<details class="fn-archive">
+		<details class="archive">
 			<summary>Archived ({archived.length})</summary>
-			<ul class="fn-list fn-list-compact">
+			<ul class="list list-compact">
 				{#each archived as t (t.todo_id)}
-					<li class="fn-item fn-item-archived" data-todo-id={t.todo_id}>
-						<span class="fn-item-title">{t.title}</span>
-						<span class="fn-badge">archived</span>
+					<li class="item item-archived" data-todo-id={t.todo_id}>
+						<span class="item-title">{t.title}</span>
+						<span class="badge">archived</span>
 					</li>
 				{/each}
 			</ul>
 		</details>
 	{/if}
-</section>
+</AppPage>
 
 <style>
-	.fn-page {
-		--surface: var(--wf-bg-elevated, #fff);
-		--surface-edge: var(--wf-line, #e2e0d9);
-		--ink: var(--wf-ink, #1c1c1a);
-		--ink-soft: var(--wf-ink-soft, #5c5c56);
-		--accent: var(--wf-accent, #3d5a80);
-		--shadow: var(--df-shadow-sm, 0 1px 2px rgba(28, 28, 26, 0.04));
-
-		position: relative;
-		max-width: 52rem;
-		margin: 0 auto;
-		padding: 6.5rem 1.25rem 4rem;
-		font-family: var(--wf-sans, var(--font-body, system-ui, sans-serif));
-		color: var(--ink);
-	}
-
-	.fn-header {
-		margin-bottom: 1.75rem;
-	}
-
-	.fn-kicker {
-		display: inline-flex;
-		align-items: center;
-		gap: 0.45rem;
-		font-size: 0.72rem;
-		font-weight: 600;
-		letter-spacing: 0.1em;
-		text-transform: uppercase;
-		color: var(--ink-soft);
-		margin-bottom: 0.65rem;
-	}
-
-	.fn-dot {
-		width: 0.4rem;
-		height: 0.4rem;
-		border-radius: 50%;
-		background: var(--accent);
-	}
-
-	.fn-title {
-		font-family: var(--wf-serif, Georgia, serif);
-		font-size: clamp(1.65rem, 4vw, 2.15rem);
-		font-weight: 500;
-		letter-spacing: -0.02em;
-		line-height: 1.1;
-		margin: 0 0 0.65rem;
-		color: var(--ink);
-	}
-
-	.fn-lede {
-		margin: 0;
-		max-width: 36rem;
-		font-size: 1rem;
-		line-height: 1.55;
-		color: var(--ink-soft);
-	}
-
-	.fn-lede code {
-		font-family: var(--wf-mono, var(--font-mono, ui-monospace, monospace));
-		font-size: 0.88em;
-		padding: 0.1em 0.35em;
-		border-radius: 4px;
-		background: var(--wf-accent-soft, rgba(61, 90, 128, 0.08));
-	}
-
-	.fn-alert {
-		display: flex;
-		gap: 0.75rem;
-		align-items: flex-start;
-		padding: 0.85rem 1rem;
-		margin-bottom: 1rem;
-		border-radius: var(--wf-radius, 6px);
-		background: rgba(179, 58, 58, 0.08);
-		border: 1px solid rgba(179, 58, 58, 0.22);
-		color: var(--wf-danger, #b33a3a);
-		font-size: 0.92rem;
-	}
-
-	.fn-alert-label {
-		font-weight: 700;
-		font-size: 0.7rem;
-		letter-spacing: 0.08em;
-		text-transform: uppercase;
-		opacity: 0.8;
-		padding-top: 0.15rem;
-	}
-
-	.fn-composer {
+	/* Route-local: composer + task list interaction (not shared chrome) */
+	.composer {
 		display: flex;
 		gap: 0.65rem;
 		flex-wrap: wrap;
 		padding: 0.65rem 0.75rem;
 		margin-bottom: 1.25rem;
-		background: var(--surface);
-		border: 1px solid var(--surface-edge);
+		background: var(--wf-bg-elevated, #fff);
+		border: 1px solid var(--wf-line, #e2e0d9);
 		border-radius: var(--df-radius-lg, 10px);
-		box-shadow: var(--shadow);
+		box-shadow: var(--df-shadow-sm, 0 1px 2px rgba(28, 28, 26, 0.04));
 	}
 
-	.fn-input {
+	.input {
 		flex: 1;
 		min-width: 12rem;
 		border: none;
@@ -370,160 +254,33 @@
 		padding: 0.55rem 0.65rem;
 		font: inherit;
 		font-size: 1rem;
-		color: var(--ink);
+		color: var(--wf-ink, #1c1c1a);
 		outline: none;
 	}
 
-	.fn-input::placeholder {
+	.input::placeholder {
 		color: var(--wf-ink-muted, #8a8a82);
 	}
 
-	.fn-btn {
-		display: inline-flex;
-		align-items: center;
-		justify-content: center;
-		gap: 0.4rem;
-		border: none;
-		font: inherit;
-		font-weight: 600;
-		font-size: 0.9rem;
-		cursor: pointer;
-		border-radius: var(--wf-radius, 6px);
-		padding: 0.55rem 0.95rem;
-		transition: background 0.15s ease, color 0.15s ease;
-	}
-
-	.fn-btn-primary {
-		background: var(--ink);
-		color: #fff;
-	}
-
-	.fn-btn-primary:hover:not(:disabled) {
-		background: var(--hops-navy-light, #2a2a28);
-	}
-
-	.fn-btn:disabled {
-		opacity: 0.5;
-		cursor: not-allowed;
-	}
-
-	.fn-btn-ghost {
-		background: var(--wf-accent-soft, rgba(61, 90, 128, 0.08));
-		color: var(--accent);
-		padding: 0.35rem 0.7rem;
-		font-size: 0.8rem;
-	}
-
-	.fn-btn-ghost:hover:not(:disabled) {
-		background: rgba(61, 90, 128, 0.14);
-	}
-
-	.fn-btn-quiet {
-		background: transparent;
-		color: var(--ink-soft);
-		padding: 0.35rem 0.6rem;
-		font-size: 0.8rem;
-		font-weight: 500;
-	}
-
-	.fn-btn-quiet:hover:not(:disabled) {
-		background: rgba(28, 28, 26, 0.05);
-		color: var(--ink);
-	}
-
-	.fn-stats {
-		display: flex;
-		gap: 0.5rem;
-		margin-bottom: 1.25rem;
-		flex-wrap: wrap;
-	}
-
-	.fn-stat {
-		display: flex;
-		align-items: baseline;
-		gap: 0.35rem;
-		padding: 0.35rem 0.7rem;
-		border-radius: 999px;
-		background: transparent;
-		border: 1px solid var(--surface-edge);
-	}
-
-	.fn-stat-n {
-		font-weight: 700;
-		font-size: 0.95rem;
-		font-variant-numeric: tabular-nums;
-		color: var(--ink);
-	}
-
-	.fn-stat-l {
-		font-size: 0.72rem;
-		font-weight: 500;
-		letter-spacing: 0.03em;
-		text-transform: uppercase;
-		color: var(--ink-soft);
-	}
-
-	.fn-board {
+	.board {
 		display: grid;
 		gap: 1rem;
 	}
 
 	@media (min-width: 768px) {
-		.fn-board {
+		.board {
 			grid-template-columns: 1fr 1fr;
 			align-items: start;
 		}
 	}
 
-	.fn-panel {
-		background: var(--surface);
-		border: 1px solid var(--surface-edge);
-		border-radius: var(--df-radius-lg, 10px);
-		padding: 1rem 1.05rem 0.75rem;
-		box-shadow: none;
-	}
-
-	.fn-panel-muted {
-		background: var(--surface);
-	}
-
-	.fn-panel-head {
-		display: flex;
-		align-items: center;
-		justify-content: space-between;
-		margin-bottom: 0.65rem;
-		padding-bottom: 0.5rem;
-		border-bottom: 1px solid var(--surface-edge);
-	}
-
-	.fn-panel-head h2 {
-		margin: 0;
-		font-size: 0.72rem;
-		font-weight: 700;
-		letter-spacing: 0.1em;
-		text-transform: uppercase;
-		color: var(--ink-soft);
-	}
-
-	.fn-count {
-		font-variant-numeric: tabular-nums;
-		font-weight: 600;
-		font-size: 0.75rem;
-		min-width: 1.4rem;
-		text-align: center;
-		padding: 0.1rem 0.4rem;
-		border-radius: 999px;
-		background: var(--ink);
-		color: #fff;
-	}
-
-	.fn-empty {
+	.empty {
 		margin: 0.5rem 0 0.75rem;
 		font-size: 0.9rem;
-		color: var(--ink-soft);
+		color: var(--wf-ink-soft, #5c5c56);
 	}
 
-	.fn-list {
+	.list {
 		list-style: none;
 		margin: 0;
 		padding: 0;
@@ -532,7 +289,7 @@
 		gap: 0.15rem;
 	}
 
-	.fn-item {
+	.item {
 		display: flex;
 		flex-wrap: wrap;
 		align-items: center;
@@ -543,11 +300,11 @@
 		transition: background 0.12s ease;
 	}
 
-	.fn-item:hover {
+	.item:hover {
 		background: rgba(28, 28, 26, 0.04);
 	}
 
-	.fn-item-main {
+	.item-main {
 		display: flex;
 		align-items: flex-start;
 		gap: 0.6rem;
@@ -555,7 +312,7 @@
 		min-width: 0;
 	}
 
-	.fn-check {
+	.check {
 		flex-shrink: 0;
 		display: grid;
 		place-items: center;
@@ -565,7 +322,7 @@
 		padding: 0;
 		border-radius: 4px;
 		border: 1.5px solid var(--wf-line-strong, #cdcabe);
-		background: var(--surface);
+		background: var(--wf-bg-elevated, #fff);
 		color: inherit;
 		cursor: pointer;
 		appearance: none;
@@ -574,80 +331,75 @@
 			background 0.12s ease;
 	}
 
-	.fn-check:hover:not(:disabled) {
-		border-color: var(--accent);
+	.check:hover:not(:disabled) {
+		border-color: var(--wf-accent, #3d5a80);
 		background: var(--wf-accent-soft, rgba(61, 90, 128, 0.08));
 	}
 
-	.fn-check:disabled {
-		opacity: 0.5;
-		cursor: not-allowed;
-	}
-
-	.fn-check-on {
+	.check-on {
 		border-color: var(--wf-success, #2f6f4e);
 		background: rgba(47, 111, 78, 0.1);
 		color: var(--wf-success, #2f6f4e);
 	}
 
-	.fn-check-on:hover:not(:disabled) {
+	.check-on:hover:not(:disabled) {
 		border-color: var(--wf-ink-soft, #5c5c56);
 		background: rgba(28, 28, 26, 0.06);
-		color: var(--ink-soft);
+		color: var(--wf-ink-soft, #5c5c56);
 	}
 
-	.fn-item-title {
+	.item-title {
 		font-size: 0.95rem;
 		font-weight: 450;
 		line-height: 1.4;
 		word-break: break-word;
 	}
 
-	.fn-item-done .fn-item-title {
+	.item-done .item-title {
 		text-decoration: line-through;
 		text-decoration-thickness: 1px;
-		color: var(--ink-soft);
+		color: var(--wf-ink-soft, #5c5c56);
 	}
 
-	.fn-item-actions {
+	.item-actions {
 		display: flex;
 		gap: 0.2rem;
 		flex-shrink: 0;
 	}
 
-	.fn-archive {
+	.archive {
 		margin-top: 1.25rem;
 		padding: 0.75rem 0.95rem;
 		border-radius: var(--df-radius-lg, 10px);
-		border: 1px solid var(--surface-edge);
-		background: var(--surface);
+		border: 1px solid var(--wf-line, #e2e0d9);
+		background: var(--wf-bg-elevated, #fff);
 	}
 
-	.fn-archive summary {
+	.archive summary {
 		cursor: pointer;
 		font-weight: 600;
 		font-size: 0.8rem;
 		letter-spacing: 0.03em;
 		text-transform: uppercase;
-		color: var(--ink-soft);
+		color: var(--wf-ink-soft, #5c5c56);
 		list-style: none;
 	}
 
-	.fn-archive summary::-webkit-details-marker {
+	.archive summary::-webkit-details-marker {
 		display: none;
 	}
 
-	.fn-list-compact {
+	.list-compact {
 		margin-top: 0.65rem;
 	}
 
-	.fn-item-archived {
+	.item-archived {
 		opacity: 0.7;
 		justify-content: flex-start;
 		gap: 0.75rem;
 	}
 
-	.fn-badge {
+	.badge {
 		font-size: 0.65rem;
 		font-weight: 600;
 		letter-spacing: 0.05em;
@@ -655,10 +407,10 @@
 		padding: 0.12rem 0.4rem;
 		border-radius: 999px;
 		background: rgba(28, 28, 26, 0.06);
-		color: var(--ink-soft);
+		color: var(--wf-ink-soft, #5c5c56);
 	}
 
-	.fn-sr {
+	.sr {
 		position: absolute;
 		width: 1px;
 		height: 1px;

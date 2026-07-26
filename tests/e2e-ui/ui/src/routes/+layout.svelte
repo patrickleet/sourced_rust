@@ -1,5 +1,6 @@
 <script lang="ts">
 	import '../app.css';
+	import '$lib/styles/chrome.css';
 	import { browser } from '$app/environment';
 	import { onDestroy, untrack } from 'svelte';
 	import type { Snippet } from 'svelte';

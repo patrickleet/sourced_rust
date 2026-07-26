@@ -1,0 +1,1060 @@
+/* Fieldnote home — imported by routes/+page.svelte only */
+/* —— Home: solid alternating bands ——
+   Shared horizontal rhythm: hero + every band use the same gutter + --wf-max column.
+   Dark tokens are slightly lifted from pure ink so cream headings never match the ground. */
+.wf-home {
+	--wf-band-dark-bg: #262624;
+	--wf-band-dark-ink: #f4f2ec;
+	--wf-band-dark-soft: rgba(244, 242, 236, 0.72);
+	--wf-band-dark-muted: rgba(244, 242, 236, 0.48);
+	--wf-band-dark-line: rgba(244, 242, 236, 0.1);
+	--wf-band-dark-elev: #30302c;
+	--wf-measure: 38rem;
+
+	padding-top: 4.75rem;
+	background: var(--wf-bg);
+}
+
+.wf-band {
+	padding: var(--wf-section-y) var(--wf-gutter);
+}
+
+.wf-band-inner {
+	/* Same content column as hero-inner — continuous left edge */
+	max-width: var(--wf-max);
+	margin: 0 auto;
+}
+
+.wf-band-light {
+	background: var(--wf-bg);
+	color: var(--wf-ink);
+	border-bottom: 1px solid var(--wf-line);
+}
+
+.wf-band-dark {
+	background: var(--wf-band-dark-bg);
+	color: var(--wf-band-dark-ink);
+	border-bottom: 1px solid var(--wf-band-dark-line);
+}
+
+/* Hero: light + local soft grid; left-aligned to the shared band column */
+.wf-hero {
+	position: relative;
+	padding: calc(var(--wf-section-y) * 0.85) var(--wf-gutter) calc(var(--wf-section-y) * 0.95);
+	background: var(--wf-bg);
+	/* Soft bridge into the first dark band — no hard hairline snap */
+	border-bottom: none;
+	overflow: hidden;
+}
+
+.wf-hero::before {
+	content: '';
+	position: absolute;
+	inset: 0;
+	pointer-events: none;
+	background-image:
+		linear-gradient(var(--wf-line) 1px, transparent 1px),
+		linear-gradient(90deg, var(--wf-line) 1px, transparent 1px);
+	background-size: 48px 48px;
+	opacity: 0.4;
+	mask-image: linear-gradient(180deg, #000 30%, transparent 92%);
+}
+
+.wf-hero-inner {
+	position: relative;
+	/* Match .wf-band-inner width so copy shares the left edge with sections below */
+	max-width: var(--wf-max);
+	margin: 0 auto;
+	text-align: left;
+}
+
+.wf-hero-inner > .wf-lede,
+.wf-hero-inner > h1 {
+	max-width: var(--wf-measure);
+}
+
+.wf-kicker {
+	display: inline-block;
+	font-family: var(--wf-mono);
+	font-size: 0.72rem;
+	font-weight: 500;
+	letter-spacing: 0.08em;
+	text-transform: uppercase;
+	color: var(--wf-ink-muted);
+	margin-bottom: 1.35rem;
+	padding-bottom: 0.35rem;
+	border-bottom: 1px solid var(--wf-line-strong);
+}
+
+.wf-hero h1 {
+	margin: 0 0 1.2rem;
+	font-family: var(--wf-serif);
+	font-size: clamp(2.05rem, 4.6vw, 2.85rem);
+	font-weight: 500;
+	letter-spacing: -0.025em;
+	line-height: 1.16;
+	color: var(--wf-ink);
+}
+
+.wf-hero h1 em {
+	font-style: italic;
+	font-weight: 400;
+	color: var(--wf-ink-soft);
+}
+
+.wf-lede {
+	margin: 0 0 1.85rem;
+	font-size: 1.06rem;
+	line-height: 1.65;
+	color: var(--wf-ink-soft);
+}
+
+.wf-lede code {
+	font-size: 0.88em;
+	background: rgba(28, 28, 26, 0.05);
+	padding: 0.12em 0.35em;
+	border-radius: 3px;
+	border: 1px solid var(--wf-line);
+	color: var(--wf-ink);
+}
+
+.wf-actions {
+	display: flex;
+	flex-wrap: wrap;
+	gap: 0.75rem;
+	margin-bottom: 1.85rem;
+}
+
+.wf-btn {
+	display: inline-flex;
+	align-items: center;
+	justify-content: center;
+	padding: 0.7rem 1.15rem;
+	font-family: var(--wf-sans);
+	font-weight: 600;
+	font-size: 0.9rem;
+	text-decoration: none;
+	border-radius: 5px;
+	border: 1px solid transparent;
+	cursor: pointer;
+	transition:
+		background 0.18s var(--ease),
+		border-color 0.18s var(--ease),
+		color 0.18s var(--ease);
+}
+
+.wf-btn-primary {
+	background: var(--wf-ink);
+	color: #f6f5f2;
+	border-color: var(--wf-ink);
+}
+
+.wf-btn-primary:hover {
+	background: #2a2a28;
+}
+
+.wf-btn-ghost {
+	background: transparent;
+	color: var(--wf-ink);
+	border-color: var(--wf-line-strong);
+}
+
+.wf-btn-ghost:hover {
+	border-color: var(--wf-ink-muted);
+	background: rgba(28, 28, 26, 0.03);
+}
+
+.wf-meta {
+	display: flex;
+	flex-wrap: wrap;
+	gap: 0.55rem 1.25rem;
+	font-family: var(--wf-mono);
+	font-size: 0.72rem;
+	color: var(--wf-ink-muted);
+	letter-spacing: 0.02em;
+}
+
+/* Sections / heads — light defaults (dark overrides follow with higher specificity) */
+.wf-section {
+	padding: var(--wf-section-y) var(--wf-gutter);
+	max-width: var(--wf-max);
+	margin: 0 auto;
+	border-bottom: 1px solid var(--wf-line);
+}
+
+.wf-section-head {
+	margin-bottom: 2.5rem;
+	max-width: var(--wf-measure);
+}
+
+.wf-label {
+	display: block;
+	font-family: var(--wf-mono);
+	font-size: 0.7rem;
+	font-weight: 500;
+	letter-spacing: 0.1em;
+	text-transform: uppercase;
+	color: var(--wf-ink-muted);
+	margin-bottom: 0.8rem;
+}
+
+.wf-section-head h2 {
+	margin: 0 0 0.8rem;
+	font-family: var(--wf-serif);
+	font-size: clamp(1.5rem, 2.8vw, 1.95rem);
+	font-weight: 500;
+	letter-spacing: -0.02em;
+	line-height: 1.22;
+	color: var(--wf-ink);
+}
+
+.wf-section-head p {
+	margin: 0;
+	font-size: 1.02rem;
+	line-height: 1.65;
+	color: var(--wf-ink-soft);
+}
+
+.wf-section-head code {
+	font-size: 0.88em;
+	background: rgba(28, 28, 26, 0.05);
+	padding: 0.1em 0.3em;
+	border-radius: 3px;
+}
+
+.wf-flow-map {
+	margin: 0;
+	padding-left: 1.25rem;
+	display: grid;
+	gap: 0.6rem;
+	font-size: 0.97rem;
+	line-height: 1.45;
+	max-width: 40rem;
+	color: var(--wf-ink-soft);
+}
+
+@media (min-width: 768px) {
+	.wf-flow-map {
+		grid-template-columns: 1fr 1fr;
+		column-gap: 2.25rem;
+		row-gap: 0.7rem;
+	}
+}
+
+.wf-story-step {
+	display: grid;
+	gap: 1.75rem;
+}
+
+@media (min-width: 960px) {
+	.wf-story-step {
+		grid-template-columns: minmax(15rem, 0.9fr) 1.4fr;
+		gap: 2.75rem;
+		align-items: start;
+	}
+}
+
+.wf-story-copy h2 {
+	margin: 0 0 0.9rem;
+	font-family: var(--wf-serif);
+	font-size: clamp(1.4rem, 2.6vw, 1.8rem);
+	font-weight: 500;
+	letter-spacing: -0.02em;
+	line-height: 1.22;
+	color: var(--wf-ink);
+}
+
+.wf-why {
+	margin: 0 0 1.15rem;
+	font-size: 1.01rem;
+	line-height: 1.65;
+	color: var(--wf-ink-soft);
+}
+
+.wf-sample-path {
+	font-family: var(--wf-mono);
+	font-size: 0.72rem;
+	color: var(--wf-ink-muted);
+	display: block;
+	line-height: 1.45;
+}
+
+.wf-cta-band .wf-cta {
+	text-align: left;
+	max-width: var(--wf-measure);
+	margin: 0;
+}
+
+.wf-cta-band h2 {
+	margin: 0 0 0.75rem;
+	font-family: var(--wf-serif);
+	font-size: clamp(1.5rem, 3vw, 1.9rem);
+	font-weight: 500;
+	color: var(--wf-band-dark-ink);
+}
+
+.wf-cta-band p {
+	margin: 0 0 1.65rem;
+	color: var(--wf-band-dark-soft);
+}
+
+.wf-cta-band .wf-actions {
+	justify-content: flex-start;
+	margin-bottom: 0;
+}
+
+/* Story cards — airy */
+.wf-cards {
+	display: grid;
+	gap: 1.25rem;
+}
+
+@media (min-width: 768px) {
+	.wf-cards {
+		grid-template-columns: repeat(3, 1fr);
+		gap: 1.5rem;
+	}
+}
+
+.wf-card {
+	background: var(--wf-bg-elevated);
+	border: 1px solid var(--wf-line);
+	border-radius: var(--wf-radius);
+	padding: 1.75rem 1.5rem;
+}
+
+.wf-card h3 {
+	margin: 0 0 0.65rem;
+	font-size: 1rem;
+	font-weight: 600;
+	letter-spacing: -0.015em;
+}
+
+.wf-card p {
+	margin: 0;
+	font-size: 0.94rem;
+	line-height: 1.6;
+	color: var(--wf-ink-soft);
+}
+
+.wf-card code {
+	font-size: 0.86em;
+	background: rgba(28, 28, 26, 0.05);
+	padding: 0.08em 0.28em;
+	border-radius: 3px;
+}
+
+.wf-card-list {
+	margin: 0;
+	padding-left: 1.1rem;
+	display: grid;
+	gap: 0.45rem;
+	font-size: 0.9rem;
+	line-height: 1.5;
+	color: var(--wf-ink-soft);
+}
+
+.wf-card-list li::marker {
+	color: var(--wf-ink-muted);
+}
+
+/* —— Home field guide (long-form index) —— */
+.wf-toc {
+	display: flex;
+	flex-wrap: wrap;
+	gap: 0.35rem 0.15rem;
+	margin-top: 2.25rem;
+	padding-top: 1.35rem;
+	border-top: 1px solid var(--wf-line);
+	max-width: none;
+}
+
+.wf-toc a {
+	font-family: var(--wf-mono);
+	font-size: 0.68rem;
+	font-weight: 500;
+	letter-spacing: 0.04em;
+	text-transform: uppercase;
+	text-decoration: none;
+	color: var(--wf-ink-muted);
+	padding: 0.35rem 0.55rem;
+	border-radius: 4px;
+	border: 1px solid transparent;
+	transition:
+		color 0.15s var(--ease),
+		background 0.15s var(--ease),
+		border-color 0.15s var(--ease);
+}
+
+.wf-toc a:hover {
+	color: var(--wf-ink);
+	background: rgba(28, 28, 26, 0.04);
+	border-color: var(--wf-line);
+}
+
+.wf-section-head-wide {
+	max-width: min(48rem, 100%);
+}
+
+.wf-principles {
+	list-style: none;
+	margin: 0;
+	padding: 0;
+	display: flex;
+	flex-direction: column;
+	border-top: 1px solid var(--wf-line);
+}
+
+.wf-principle {
+	display: grid;
+	grid-template-columns: 2.5rem minmax(0, 1fr);
+	gap: 0.85rem 1.25rem;
+	padding: 1.35rem 0;
+	border-bottom: 1px solid var(--wf-line);
+}
+
+@media (min-width: 768px) {
+	.wf-principle {
+		grid-template-columns: 3rem minmax(0, 1fr);
+		gap: 1rem 1.75rem;
+		padding: 1.55rem 0;
+	}
+}
+
+.wf-principle-n {
+	font-family: var(--wf-mono);
+	font-size: 0.72rem;
+	font-weight: 500;
+	letter-spacing: 0.06em;
+	color: var(--wf-ink-muted);
+	padding-top: 0.2rem;
+}
+
+.wf-principle h3 {
+	margin: 0 0 0.4rem;
+	font-family: var(--wf-serif);
+	font-size: 1.12rem;
+	font-weight: 500;
+	letter-spacing: -0.02em;
+	line-height: 1.25;
+	color: var(--wf-ink);
+}
+
+.wf-principle p {
+	margin: 0;
+	max-width: 44rem;
+	font-size: 0.95rem;
+	line-height: 1.6;
+	color: var(--wf-ink-soft);
+}
+
+.wf-subhead {
+	margin: 3.25rem 0 1.35rem;
+	max-width: var(--wf-measure);
+	padding-top: 0.25rem;
+	border-top: 1px solid var(--wf-line);
+	padding-top: 1.75rem;
+}
+
+.wf-subhead h3 {
+	margin: 0 0 0.55rem;
+	font-family: var(--wf-serif);
+	font-size: clamp(1.2rem, 2.2vw, 1.45rem);
+	font-weight: 500;
+	letter-spacing: -0.02em;
+	line-height: 1.25;
+	color: var(--wf-ink);
+}
+
+.wf-subhead p {
+	margin: 0;
+	font-size: 0.98rem;
+	line-height: 1.6;
+	color: var(--wf-ink-soft);
+}
+
+.wf-subhead code {
+	font-size: 0.88em;
+	background: rgba(28, 28, 26, 0.05);
+	padding: 0.1em 0.3em;
+	border-radius: 3px;
+}
+
+.wf-layers {
+	display: grid;
+	gap: 1rem;
+}
+
+@media (min-width: 900px) {
+	.wf-layers {
+		grid-template-columns: repeat(3, 1fr);
+		gap: 1.15rem;
+	}
+}
+
+.wf-layer {
+	position: relative;
+	padding: 1.35rem 1.25rem 1.4rem;
+	background: var(--wf-bg-elevated);
+	border: 1px solid var(--wf-line);
+	border-radius: var(--wf-radius);
+	border-top: 2px solid var(--wf-ink);
+}
+
+.wf-layer-n {
+	display: block;
+	font-family: var(--wf-mono);
+	font-size: 0.68rem;
+	letter-spacing: 0.1em;
+	color: var(--wf-ink-muted);
+	margin-bottom: 0.65rem;
+}
+
+.wf-layer h4 {
+	margin: 0 0 0.75rem;
+	font-size: 1.02rem;
+	font-weight: 600;
+	letter-spacing: -0.015em;
+	line-height: 1.3;
+	color: var(--wf-ink);
+}
+
+.wf-layer-body {
+	margin: 0;
+	font-size: 0.92rem;
+	line-height: 1.6;
+	color: var(--wf-ink-soft);
+}
+
+.wf-cards-tight {
+	gap: 1rem;
+}
+
+.wf-card-kicker {
+	display: block;
+	font-family: var(--wf-mono);
+	font-size: 0.65rem;
+	font-weight: 500;
+	letter-spacing: 0.1em;
+	text-transform: uppercase;
+	color: var(--wf-ink-muted);
+	margin-bottom: 0.55rem;
+}
+
+.wf-card-accent {
+	border-top: 2px solid var(--wf-accent);
+}
+
+.wf-code-lead {
+	margin-bottom: 0.25rem;
+}
+
+.wf-code-follow {
+	margin-top: 1.5rem;
+}
+
+.wf-crate-map {
+	margin: 0;
+	padding: 0;
+	border-top: 1px solid var(--wf-line);
+}
+
+.wf-crate {
+	display: grid;
+	gap: 0.25rem;
+	padding: 0.95rem 0;
+	border-bottom: 1px solid var(--wf-line);
+}
+
+@media (min-width: 720px) {
+	.wf-crate {
+		grid-template-columns: minmax(12rem, 0.42fr) minmax(0, 1fr);
+		gap: 1.25rem 2rem;
+		align-items: baseline;
+		padding: 1.05rem 0;
+	}
+}
+
+.wf-crate dt {
+	margin: 0;
+	font-family: var(--wf-mono);
+	font-size: 0.78rem;
+	font-weight: 500;
+	letter-spacing: 0.02em;
+	color: var(--wf-ink);
+}
+
+.wf-crate dd {
+	margin: 0;
+	font-size: 0.92rem;
+	line-height: 1.5;
+	color: var(--wf-ink-soft);
+}
+
+.wf-chapter {
+	margin-top: 2.75rem;
+	display: flex;
+	flex-direction: column;
+	gap: 0;
+	border-top: 1px solid var(--wf-line);
+}
+
+.wf-chapter .wf-story-step {
+	padding: 2.25rem 0;
+	border-bottom: 1px solid var(--wf-line);
+}
+
+.wf-chapter .wf-story-step:last-child {
+	border-bottom: none;
+	padding-bottom: 0.5rem;
+}
+
+.wf-step-title {
+	margin: 0 0 0.85rem;
+	font-family: var(--wf-serif);
+	font-size: clamp(1.25rem, 2.4vw, 1.55rem);
+	font-weight: 500;
+	letter-spacing: -0.02em;
+	line-height: 1.22;
+	color: var(--wf-ink);
+}
+
+/* Run steps */
+.wf-run {
+	background: var(--wf-bg-elevated);
+	border-top: 1px solid var(--wf-line);
+	border-bottom: 1px solid var(--wf-line);
+	padding: var(--wf-section-y) var(--wf-gutter);
+}
+
+.wf-run-inner {
+	max-width: var(--wf-max);
+	margin: 0 auto;
+}
+
+.wf-run .wf-section-head {
+	margin-bottom: 2.5rem;
+}
+
+.wf-steps {
+	display: grid;
+	gap: 1.5rem;
+	counter-reset: step;
+}
+
+@media (min-width: 768px) {
+	.wf-steps {
+		grid-template-columns: repeat(3, 1fr);
+		gap: 2rem;
+	}
+}
+
+.wf-step {
+	counter-increment: step;
+	padding-top: 0.25rem;
+	border-top: 1px solid var(--wf-line-strong);
+}
+
+.wf-step::before {
+	content: '0' counter(step);
+	display: block;
+	font-family: var(--wf-mono);
+	font-size: 0.7rem;
+	letter-spacing: 0.08em;
+	color: var(--wf-ink-muted);
+	margin: 1rem 0 0.85rem;
+}
+
+.wf-step h3 {
+	margin: 0 0 0.5rem;
+	font-size: 1rem;
+	font-weight: 600;
+}
+
+.wf-step p {
+	margin: 0;
+	font-size: 0.92rem;
+	line-height: 1.6;
+	color: var(--wf-ink-soft);
+}
+
+.wf-step code {
+	font-size: 0.86em;
+	background: rgba(28, 28, 26, 0.05);
+	padding: 0.08em 0.28em;
+	border-radius: 3px;
+}
+
+/* Demo list */
+.wf-demos {
+	display: flex;
+	flex-direction: column;
+	gap: 0;
+}
+
+.wf-demo {
+	display: grid;
+	gap: 0.5rem 1.5rem;
+	padding: 1.75rem 0;
+	border-bottom: 1px solid var(--wf-line);
+	text-decoration: none;
+	color: inherit;
+}
+
+.wf-demo:first-child {
+	border-top: 1px solid var(--wf-line);
+}
+
+.wf-demo:hover h3 {
+	color: var(--wf-accent);
+}
+
+@media (min-width: 768px) {
+	.wf-demo {
+		grid-template-columns: 2.5rem 1fr auto;
+		align-items: start;
+		padding: 2rem 0;
+		gap: 1.5rem 2rem;
+	}
+}
+
+.wf-demo-i {
+	font-family: var(--wf-mono);
+	font-size: 0.75rem;
+	color: var(--wf-ink-muted);
+	padding-top: 0.2rem;
+}
+
+.wf-demo h3 {
+	margin: 0 0 0.4rem;
+	font-size: 1.05rem;
+	font-weight: 600;
+	letter-spacing: -0.015em;
+	color: var(--wf-ink);
+	transition: color 0.15s ease;
+}
+
+.wf-demo p {
+	margin: 0 0 0.5rem;
+	font-size: 0.94rem;
+	line-height: 1.55;
+	color: var(--wf-ink-soft);
+	max-width: 38rem;
+}
+
+.wf-demo-where {
+	font-family: var(--wf-mono);
+	font-size: 0.7rem;
+	color: var(--wf-ink-muted);
+}
+
+.wf-demo-go {
+	font-size: 0.875rem;
+	font-weight: 600;
+	color: var(--wf-accent);
+	white-space: nowrap;
+	padding-top: 0.15rem;
+}
+
+/* Architecture code samples */
+.wf-arch {
+	display: flex;
+	flex-direction: column;
+	gap: 2.75rem;
+}
+
+.wf-sample {
+	display: grid;
+	gap: 1rem;
+}
+
+@media (min-width: 900px) {
+	.wf-sample {
+		grid-template-columns: minmax(12rem, 0.85fr) 1.4fr;
+		gap: 2.5rem;
+		align-items: start;
+	}
+}
+
+.wf-sample-meta h3 {
+	margin: 0 0 0.5rem;
+	font-size: 1.05rem;
+	font-weight: 600;
+	letter-spacing: -0.015em;
+}
+
+.wf-sample-meta p {
+	margin: 0 0 0.75rem;
+	font-size: 0.92rem;
+	line-height: 1.55;
+	color: var(--wf-ink-soft);
+}
+
+.wf-sample-path {
+	font-family: var(--wf-mono);
+	font-size: 0.7rem;
+	color: var(--wf-ink-muted);
+	display: block;
+	line-height: 1.45;
+}
+
+/* Stack of single-file samples (one concept per block) */
+.wf-code-stack {
+	display: flex;
+	flex-direction: column;
+	gap: 1rem;
+	min-width: 0;
+}
+
+.wf-code {
+	background: var(--wf-code-bg);
+	border: 1px solid #2a2a28;
+	border-radius: var(--wf-radius);
+	overflow: hidden;
+}
+
+.wf-code-bar {
+	display: flex;
+	align-items: center;
+	justify-content: space-between;
+	padding: 0.5rem 0.9rem;
+	border-bottom: 1px solid #2a2a28;
+	background: #141412;
+}
+
+.wf-code-bar span {
+	font-family: var(--wf-mono);
+	font-size: 0.68rem;
+	color: var(--wf-code-muted);
+}
+
+.wf-code-bar em {
+	font-style: normal;
+	font-family: var(--wf-mono);
+	font-size: 0.62rem;
+	letter-spacing: 0.08em;
+	text-transform: uppercase;
+	color: #9ec5e8;
+}
+
+.wf-code pre {
+	margin: 0;
+	padding: 1.15rem 1.1rem 1.25rem;
+	overflow-x: auto;
+	font-size: 0.78rem;
+	line-height: 1.6;
+	color: var(--wf-code-fg);
+	background: transparent;
+	tab-size: 2;
+}
+
+/* No pill/highlight on block samples — only the .wf-code surface */
+.wf-code code {
+	background: transparent;
+	border: none;
+	padding: 0;
+	border-radius: 0;
+	color: inherit;
+	font-size: inherit;
+}
+
+/* CTA (standalone light-page variant; band CTA uses .wf-cta-band overrides) */
+.wf-cta:not(.wf-band-inner) {
+	padding: var(--wf-section-y) var(--wf-gutter);
+	text-align: center;
+	max-width: var(--wf-max);
+	margin: 0 auto;
+}
+
+.wf-cta:not(.wf-band-inner) h2 {
+	margin: 0 0 0.75rem;
+	font-family: var(--wf-serif);
+	font-size: clamp(1.5rem, 3vw, 1.9rem);
+	font-weight: 500;
+	letter-spacing: -0.02em;
+}
+
+.wf-cta:not(.wf-band-inner) p {
+	margin: 0 auto 1.75rem;
+	max-width: 28rem;
+	color: var(--wf-ink-soft);
+	font-size: 1rem;
+	line-height: 1.6;
+}
+
+.wf-cta:not(.wf-band-inner) .wf-actions {
+	justify-content: center;
+	margin-bottom: 0;
+}
+
+/*
+ * Dark-band type cascade — LAST among home rules so it beats later light defaults
+ * (.wf-section-head h2, .wf-demo h3, .wf-story-copy h2, etc.).
+ * Headings use cream ink on lifted charcoal ground — never same as band bg.
+ */
+.wf-band-dark .wf-label {
+	color: var(--wf-band-dark-muted);
+}
+
+/* Triple-class selectors outrank any later single-class h2 ink rules */
+.wf-home .wf-band-dark h2,
+.wf-home .wf-band-dark .wf-section-head h2,
+.wf-home .wf-band-dark .wf-story-copy h2,
+.wf-home .wf-band-dark .wf-cta h2,
+.wf-home .wf-band-dark.wf-cta-band h2 {
+	color: var(--wf-band-dark-ink);
+}
+
+.wf-band-dark .wf-section-head p,
+.wf-band-dark .wf-why,
+.wf-band-dark .wf-step p,
+.wf-band-dark .wf-demo p,
+.wf-band-dark .wf-card p,
+.wf-band-dark .wf-card-list,
+.wf-band-dark .wf-layer-body,
+.wf-band-dark .wf-flow-map,
+.wf-band-dark .wf-cta p,
+.wf-band-dark .wf-principle p,
+.wf-band-dark .wf-subhead p,
+.wf-band-dark .wf-crate dd,
+.wf-band-dark .wf-why {
+	color: var(--wf-band-dark-soft);
+}
+
+.wf-band-dark .wf-demo-where,
+.wf-band-dark .wf-sample-path,
+.wf-band-dark .wf-demo-i,
+.wf-band-dark .wf-meta,
+.wf-band-dark .wf-step::before,
+.wf-band-dark .wf-principle-n,
+.wf-band-dark .wf-layer-n,
+.wf-band-dark .wf-card-kicker,
+.wf-band-dark .wf-toc a {
+	color: var(--wf-band-dark-muted);
+}
+
+.wf-band-dark .wf-card,
+.wf-band-dark .wf-layer {
+	background: var(--wf-band-dark-elev);
+	border-color: var(--wf-band-dark-line);
+}
+
+.wf-band-dark .wf-layer {
+	border-top-color: var(--wf-band-dark-ink);
+}
+
+.wf-band-dark .wf-card-accent {
+	border-top-color: #9ec5e8;
+}
+
+.wf-band-dark .wf-card h3,
+.wf-band-dark .wf-step h3,
+.wf-band-dark .wf-demo h3,
+.wf-band-dark .wf-principle h3,
+.wf-band-dark .wf-subhead h3,
+.wf-band-dark .wf-layer h4,
+.wf-band-dark .wf-step-title,
+.wf-band-dark .wf-crate dt {
+	color: var(--wf-band-dark-ink);
+}
+
+.wf-band-dark .wf-principles,
+.wf-band-dark .wf-principle,
+.wf-band-dark .wf-crate-map,
+.wf-band-dark .wf-crate,
+.wf-band-dark .wf-subhead,
+.wf-band-dark .wf-chapter,
+.wf-band-dark .wf-chapter .wf-story-step {
+	border-color: var(--wf-band-dark-line);
+}
+
+.wf-band-dark .wf-toc {
+	border-top-color: var(--wf-band-dark-line);
+}
+
+.wf-band-dark .wf-toc a:hover {
+	color: var(--wf-band-dark-ink);
+	background: rgba(255, 255, 255, 0.05);
+	border-color: var(--wf-band-dark-line);
+}
+
+.wf-band-dark .wf-subhead code {
+	background: rgba(255, 255, 255, 0.07);
+	border: 1px solid var(--wf-band-dark-line);
+	color: var(--wf-band-dark-ink);
+}
+
+.wf-band-dark .wf-step {
+	border-top-color: var(--wf-band-dark-line);
+}
+
+.wf-band-dark .wf-demo {
+	border-bottom-color: var(--wf-band-dark-line);
+}
+
+.wf-band-dark .wf-demo:first-child {
+	border-top-color: var(--wf-band-dark-line);
+}
+
+.wf-band-dark .wf-demo:hover h3 {
+	color: #b8d4ef;
+}
+
+.wf-band-dark .wf-demo-go {
+	color: #b8d4ef;
+}
+
+.wf-band-dark .wf-btn-ghost {
+	color: var(--wf-band-dark-ink);
+	border-color: rgba(244, 242, 236, 0.28);
+}
+
+.wf-band-dark .wf-btn-ghost:hover {
+	border-color: rgba(244, 242, 236, 0.55);
+	background: rgba(255, 255, 255, 0.05);
+}
+
+.wf-band-dark .wf-btn-primary {
+	background: var(--wf-band-dark-ink);
+	color: var(--wf-band-dark-bg);
+	border-color: var(--wf-band-dark-ink);
+}
+
+.wf-band-dark .wf-btn-primary:hover {
+	background: #fff;
+	border-color: #fff;
+}
+
+/* Inline code only — never paint a second bg on .wf-code pre > code */
+.wf-band-dark :not(pre) > code,
+.wf-band-dark .wf-section-head code,
+.wf-band-dark .wf-step code,
+.wf-band-dark .wf-card code,
+.wf-band-dark .wf-why code,
+.wf-band-dark .wf-story-copy code {
+	background: rgba(255, 255, 255, 0.07);
+	border: 1px solid var(--wf-band-dark-line);
+	color: var(--wf-band-dark-ink);
+}
+
+.wf-band-dark .wf-flow-map li::marker {
+	color: #9ec5e8;
+}
+
+.wf-band-light .wf-code {
+	box-shadow: 0 12px 32px rgba(28, 28, 26, 0.08);
+}
+
+.wf-band-dark .wf-code {
+	border-color: #1a1a18;
+	box-shadow: 0 16px 40px rgba(0, 0, 0, 0.28);
+}
+
+/* Keep block samples free of dark-band inline-code chrome */
+.wf-band-dark .wf-code code,
+.wf-band-dark .wf-code pre {
+	background: transparent;
+	border: none;
+	color: var(--wf-code-fg);
+}
+

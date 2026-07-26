@@ -5,6 +5,7 @@
 	 * Keep samples honest: one file / one concept per code block, and match the
 	 * checked-in handlers, GraphQL docs, and dual client surfaces.
 	 */
+	import '$lib/styles/home.css';
 	import { page } from '$app/state';
 	import Footer from '$lib/components/shared/Footer.svelte';
 

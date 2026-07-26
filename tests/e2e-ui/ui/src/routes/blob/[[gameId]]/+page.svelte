@@ -10,6 +10,8 @@
 	import { goto } from '$app/navigation';
 	import { page } from '$app/state';
 	import { BlobGames, useCommands } from '$distributed';
+	import { Button } from '$lib/components/shared/ui';
+	import { AppPage, InlineAlert, PageHeader } from '$lib/components/product';
 
 	const TILE = {
 		player: 9,
@@ -205,43 +207,32 @@
 	<title>Blob Game · e2e-ui</title>
 </svelte:head>
 
-<section class="fn-page blob-page" data-blob-hydrated={hydrated ? '1' : '0'}>
-	<header class="fn-header">
-		<div class="fn-kicker">
-			<span class="fn-dot" aria-hidden="true"></span>
-			URL select · generated replica · projected commands
-		</div>
-		<div class="blob-title-row">
-			<div>
-				<h1 class="fn-title">Blob Game</h1>
-				<p class="fn-lede">
-					Board and history render from the same generated <code>BlobGames</code>
-					operation. Typed projected commands update that replica before they resolve.
-				</p>
-			</div>
-			<button
-				class="fn-btn fn-btn-primary"
-				type="button"
-				data-testid="blob-new-game"
-				onclick={() => void startGame()}
-				disabled={!hydrated}
-			>
-				New game
-			</button>
-		</div>
-	</header>
+<AppPage>
+	<div class="blob-page" data-blob-hydrated={hydrated ? '1' : '0'}>
+	<div class="blob-title-row">
+		<PageHeader
+			kicker="URL select · generated replica · projected commands"
+			title="Blob Game"
+		>
+			Board and history render from the same generated <code>BlobGames</code>
+			operation. Typed projected commands update that replica before they resolve.
+		</PageHeader>
+		<Button
+			type="button"
+			variant="ink"
+			data-testid="blob-new-game"
+			onclick={() => void startGame()}
+			disabled={!hydrated}
+		>
+			New game
+		</Button>
+	</div>
 
 	{#if data.gqlError}
-		<div class="fn-alert" role="alert">
-			<span class="fn-alert-label">SSR GraphQL</span>
-			{data.gqlError}
-		</div>
+		<InlineAlert label="SSR GraphQL">{data.gqlError}</InlineAlert>
 	{/if}
 	{#if actionError}
-		<div class="fn-alert" role="alert">
-			<span class="fn-alert-label">Command</span>
-			{actionError}
-		</div>
+		<InlineAlert label="Command">{actionError}</InlineAlert>
 	{/if}
 
 	{#if routeGameId && $list.loading && !selected && !data.gqlError}
@@ -253,20 +244,20 @@
 			<p class="blob-empty-copy">
 				Game <code>{routeGameId}</code> not found (or not yours).
 			</p>
-			<a class="fn-btn fn-btn-primary" href="/blob">All games</a>
+			<Button href="/blob" variant="ink">All games</Button>
 		</div>
 	{:else if !hasBoard}
 		<div class="blob-empty">
 			<p class="blob-empty-copy">No game selected. Start one to play.</p>
-			<button
-				class="fn-btn fn-btn-primary"
+			<Button
 				type="button"
+				variant="ink"
 				data-testid="blob-start-game"
 				onclick={() => void startGame()}
 				disabled={commandPending || !hydrated}
 			>
 				Start game
-			</button>
+			</Button>
 		</div>
 	{:else}
 		<div class="blob-stage">
@@ -287,14 +278,14 @@
 					<span class="hud-banner dead">You died — start a new game</span>
 				{:else if levelComplete}
 					<span class="hud-banner win">Level complete</span>
-					<button
-						class="fn-btn fn-btn-primary"
+					<Button
 						type="button"
+						variant="ink"
 						onclick={() => void nextLevel()}
 						disabled={commandPending}
 					>
 						Next level
-					</button>
+					</Button>
 				{/if}
 			</div>
 
@@ -368,15 +359,12 @@
 			</ul>
 		</section>
 	{/if}
-</section>
+	</div>
+</AppPage>
 
 <style>
 	.blob-page {
 		position: relative;
-		max-width: 48rem;
-		margin: 0 auto;
-		padding: 6.5rem 1.25rem 4rem;
-		color: var(--wf-ink, #1c1c1a);
 	}
 	.blob-title-row {
 		display: flex;
@@ -384,76 +372,6 @@
 		align-items: flex-start;
 		justify-content: space-between;
 		gap: 1rem;
-	}
-	.fn-title {
-		margin: 0 0 0.4rem;
-		font-family: var(--wf-serif, Georgia, serif);
-		font-size: clamp(1.75rem, 4vw, 2.15rem);
-		font-weight: 500;
-		letter-spacing: -0.02em;
-	}
-	.fn-lede {
-		margin: 0;
-		max-width: 34rem;
-		font-size: 0.95rem;
-		line-height: 1.5;
-		color: var(--wf-ink-soft, #5c5c56);
-	}
-	.fn-kicker {
-		display: inline-flex;
-		align-items: center;
-		gap: 0.45rem;
-		font-size: 0.72rem;
-		font-weight: 700;
-		letter-spacing: 0.12em;
-		text-transform: uppercase;
-		color: var(--wf-ink-soft, #5c5c56);
-		margin-bottom: 0.65rem;
-	}
-	.fn-dot {
-		width: 0.45rem;
-		height: 0.45rem;
-		border-radius: 50%;
-		background: var(--wf-accent, #3d5a80);
-	}
-	.fn-btn {
-		appearance: none;
-		border: none;
-		border-radius: 8px;
-		padding: 0.65rem 1.1rem;
-		font: inherit;
-		font-weight: 600;
-		font-size: 0.92rem;
-		cursor: pointer;
-		flex-shrink: 0;
-		text-decoration: none;
-		display: inline-flex;
-		align-items: center;
-	}
-	.fn-btn-primary {
-		background: var(--wf-accent, #3d5a80);
-		color: #fff;
-	}
-	.fn-btn:disabled {
-		opacity: 0.5;
-		cursor: not-allowed;
-	}
-	.fn-alert {
-		margin: 0 0 1rem;
-		padding: 0.75rem 1rem;
-		border-radius: 8px;
-		background: rgba(179, 58, 58, 0.08);
-		border: 1px solid rgba(179, 58, 58, 0.28);
-		color: var(--wf-danger, #b33a3a);
-		font-size: 0.9rem;
-	}
-	.fn-alert-label {
-		display: block;
-		font-size: 0.7rem;
-		font-weight: 700;
-		letter-spacing: 0.08em;
-		text-transform: uppercase;
-		margin-bottom: 0.25rem;
 	}
 	.blob-empty {
 		display: flex;
