@@ -67,8 +67,8 @@ pub(crate) use query::{
     ProjectionLiveRecordBatch, ProjectionLiveRecordBatchRequest, ProjectionLiveRecordRequest,
     ProjectionObligationEvidence, ProjectionObligationEvidenceBatch,
     ProjectionObligationEvidenceBatchRequest, ProjectionObligationEvidenceRequest,
-    ProjectionPartitionRuntimeState, ProjectionPendingRetry, ProjectionQuerySnapshot,
-    ProjectionQuerySnapshotBatch, ProjectionQuerySnapshotBatchRequest,
+    ProjectionPartitionRuntimeState, ProjectionPartitionSnapshot, ProjectionPendingRetry,
+    ProjectionQuerySnapshot, ProjectionQuerySnapshotBatch, ProjectionQuerySnapshotBatchRequest,
     ProjectionQuerySnapshotRequest,
 };
 pub use r#trait::ProjectionChangeRead;
