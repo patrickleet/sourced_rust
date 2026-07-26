@@ -1,11 +1,16 @@
-/** Command artifacts and prepare/verify; implementation in ./commands/. */
 export {
-	matchReplicaTrustedPresetInventory,
 	prepareReplicaCommand,
-	prepareReplicaCommandWithTrustedPresets,
-	ReplicaCommandContractError,
+	prepareReplicaCommandWithTrustedPresets
+} from './prepare.js';
+export {
+	matchReplicaTrustedPresetInventory
+} from './presets.js';
+export {
 	verifyReplicaCommandReceipt
-} from './commands/index.js';
+} from './receipt.js';
+export {
+	ReplicaCommandContractError
+} from './errors.js';
 export type {
 	PrepareReplicaCommandOptions,
 	ReplicaCommandArtifact,
@@ -37,4 +42,4 @@ export type {
 	ReplicaPreparedEffectKey,
 	ReplicaReceiptVerification,
 	ReplicaTrustedPresetDescriptor
-} from './commands/index.js';
+} from './types.js';
