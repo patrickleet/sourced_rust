@@ -202,10 +202,12 @@
 		padding: 6.5rem 1.25rem 3.5rem;
 		font-family: var(--wf-sans, system-ui, sans-serif);
 		color: var(--ink);
+
 	}
 
 	.ch-header {
 		margin-bottom: 1.25rem;
+
 	}
 
 	.ch-title-row {
@@ -214,6 +216,7 @@
 		justify-content: space-between;
 		gap: 1rem;
 		flex-wrap: wrap;
+
 	}
 
 	.ch-kicker {
@@ -223,6 +226,7 @@
 		text-transform: uppercase;
 		color: var(--ink-soft);
 		margin-bottom: 0.4rem;
+
 	}
 
 	.ch-title {
@@ -232,6 +236,7 @@
 		font-weight: 500;
 		letter-spacing: -0.02em;
 		line-height: 1.1;
+
 	}
 
 	.ch-status {
@@ -247,24 +252,25 @@
 		background: transparent;
 		border: 1px solid var(--edge);
 		color: var(--ink-soft);
-	}
 
-	.ch-status[data-state='live'] {
-		color: var(--wf-success, #2f6f4e);
-		background: rgba(47, 111, 78, 0.1);
-		border-color: rgba(47, 111, 78, 0.22);
-	}
+		&[data-state='live'] {
+			color: var(--wf-success, #2f6f4e);
+			background: rgba(47, 111, 78, 0.1);
+			border-color: rgba(47, 111, 78, 0.22);
 
-	.ch-status[data-state='error'] {
-		color: var(--wf-danger, #b33a3a);
-		background: rgba(179, 58, 58, 0.08);
-		border-color: rgba(179, 58, 58, 0.22);
-	}
+		}
+		&[data-state='error'] {
+			color: var(--wf-danger, #b33a3a);
+			background: rgba(179, 58, 58, 0.08);
+			border-color: rgba(179, 58, 58, 0.22);
 
-	.ch-status[data-state='connecting'] {
-		color: var(--accent);
-		background: var(--wf-accent-soft, rgba(61, 90, 128, 0.08));
-		border-color: var(--edge);
+		}
+		&[data-state='connecting'] {
+			color: var(--accent);
+			background: var(--wf-accent-soft, rgba(61, 90, 128, 0.08));
+			border-color: var(--edge);
+
+		}
 	}
 
 	.ch-pulse {
@@ -272,11 +278,13 @@
 		height: 0.45rem;
 		border-radius: 50%;
 		background: currentColor;
+
 	}
 
 	.ch-status[data-state='live'] .ch-pulse {
 		box-shadow: 0 0 0 0 rgba(47, 111, 78, 0.45);
 		animation: ch-pulse 1.6s ease infinite;
+
 	}
 
 	@keyframes ch-pulse {
@@ -286,6 +294,7 @@
 		100% {
 			box-shadow: 0 0 0 0 transparent;
 		}
+
 	}
 
 	.ch-lede {
@@ -293,14 +302,15 @@
 		font-size: 0.95rem;
 		line-height: 1.5;
 		color: var(--ink-soft);
-	}
 
-	.ch-lede code {
-		font-family: var(--wf-mono, ui-monospace, monospace);
-		font-size: 0.85em;
-		padding: 0.08em 0.3em;
-		border-radius: 4px;
-		background: var(--wf-accent-soft, rgba(61, 90, 128, 0.08));
+		code {
+			font-family: var(--wf-mono, ui-monospace, monospace);
+			font-size: 0.85em;
+			padding: 0.08em 0.3em;
+			border-radius: 4px;
+			background: var(--wf-accent-soft, rgba(61, 90, 128, 0.08));
+
+		}
 	}
 
 	.ch-alert {
@@ -315,6 +325,7 @@
 		border: 1px solid rgba(179, 58, 58, 0.22);
 		color: var(--wf-danger, #b33a3a);
 		font-size: 0.9rem;
+
 	}
 
 	.ch-link-btn {
@@ -326,6 +337,7 @@
 		font-weight: 600;
 		text-decoration: underline;
 		cursor: pointer;
+
 	}
 
 	.ch-shell {
@@ -337,6 +349,7 @@
 		background: var(--surface);
 		box-shadow: none;
 		overflow: hidden;
+
 	}
 
 	.ch-log {
@@ -347,6 +360,7 @@
 		flex-direction: column;
 		gap: 0.55rem;
 		scroll-behavior: smooth;
+
 	}
 
 	.ch-empty {
@@ -354,12 +368,13 @@
 		text-align: center;
 		color: var(--ink-soft);
 		padding: 2rem 1rem;
-	}
 
-	.ch-empty-icon {
-		font-size: 1.35rem;
-		opacity: 0.35;
-		margin-bottom: 0.5rem;
+		&-icon {
+			font-size: 1.35rem;
+			opacity: 0.35;
+			margin-bottom: 0.5rem;
+
+		}
 	}
 
 	.ch-msg {
@@ -369,22 +384,23 @@
 		border-radius: 10px 10px 10px 4px;
 		background: var(--bubble);
 		border: 1px solid var(--edge);
-	}
 
-	.ch-msg.mine {
-		align-self: flex-end;
-		border-radius: 10px 10px 4px 10px;
-		background: var(--bubble-mine);
-		border-color: transparent;
-		color: #f6f5f2;
-	}
+		&.mine {
+			align-self: flex-end;
+			border-radius: 10px 10px 4px 10px;
+			background: var(--bubble-mine);
+			border-color: transparent;
+			color: #f6f5f2;
 
-	.ch-msg-meta {
-		display: flex;
-		align-items: baseline;
-		justify-content: space-between;
-		gap: 0.75rem;
-		margin-bottom: 0.2rem;
+		}
+		&-meta {
+			display: flex;
+			align-items: baseline;
+			justify-content: space-between;
+			gap: 0.75rem;
+			margin-bottom: 0.2rem;
+
+		}
 	}
 
 	.ch-author {
@@ -393,12 +409,14 @@
 		letter-spacing: 0.04em;
 		text-transform: uppercase;
 		opacity: 0.65;
+
 	}
 
 	.ch-when {
 		font-size: 0.68rem;
 		font-variant-numeric: tabular-nums;
 		opacity: 0.5;
+
 	}
 
 	.ch-body {
@@ -407,6 +425,7 @@
 		line-height: 1.45;
 		white-space: pre-wrap;
 		word-break: break-word;
+
 	}
 
 	.ch-composer {
@@ -415,6 +434,7 @@
 		padding: 0.75rem;
 		border-top: 1px solid var(--edge);
 		background: rgba(28, 28, 26, 0.02);
+
 	}
 
 	.ch-input {
@@ -431,11 +451,12 @@
 		transition:
 			border-color 0.15s ease,
 			box-shadow 0.15s ease;
-	}
 
-	.ch-input:focus {
-		border-color: var(--accent);
-		box-shadow: 0 0 0 3px var(--wf-accent-soft, rgba(61, 90, 128, 0.12));
+		&:focus {
+			border-color: var(--accent);
+			box-shadow: 0 0 0 3px var(--wf-accent-soft, rgba(61, 90, 128, 0.12));
+
+		}
 	}
 
 	.ch-send {
@@ -452,15 +473,16 @@
 		background: var(--ink);
 		color: #fff;
 		transition: background 0.15s ease, opacity 0.15s ease;
-	}
 
-	.ch-send:hover:not(:disabled) {
-		background: #2a2a28;
-	}
+		&:hover:not(:disabled) {
+			background: #2a2a28;
 
-	.ch-send:disabled {
-		opacity: 0.45;
-		cursor: not-allowed;
+		}
+		&:disabled {
+			opacity: 0.45;
+			cursor: not-allowed;
+
+		}
 	}
 
 	.ch-sr {
@@ -472,5 +494,6 @@
 		overflow: hidden;
 		clip: rect(0, 0, 0, 0);
 		border: 0;
+
 	}
 </style>

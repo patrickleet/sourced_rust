@@ -148,10 +148,12 @@
 		padding: 6.5rem 1.25rem 4rem;
 		font-family: var(--wf-sans, system-ui, sans-serif);
 		color: var(--ink);
+
 	}
 
 	.ad-header {
 		margin-bottom: 1.5rem;
+
 	}
 
 	.ad-kicker {
@@ -164,6 +166,7 @@
 		text-transform: uppercase;
 		color: var(--ink-soft);
 		margin-bottom: 0.65rem;
+
 	}
 
 	.ad-badge {
@@ -173,6 +176,7 @@
 		border-radius: 4px;
 		letter-spacing: 0.08em;
 		font-weight: 700;
+
 	}
 
 	.ad-title {
@@ -181,6 +185,7 @@
 		font-weight: 500;
 		letter-spacing: -0.02em;
 		margin: 0 0 0.65rem;
+
 	}
 
 	.ad-lede {
@@ -189,14 +194,15 @@
 		line-height: 1.55;
 		color: var(--ink-soft);
 		font-size: 0.98rem;
-	}
 
-	.ad-lede code {
-		font-family: var(--wf-mono, ui-monospace, monospace);
-		font-size: 0.88em;
-		padding: 0.1em 0.3em;
-		border-radius: 4px;
-		background: var(--wf-accent-soft, rgba(61, 90, 128, 0.08));
+		code {
+			font-family: var(--wf-mono, ui-monospace, monospace);
+			font-size: 0.88em;
+			padding: 0.1em 0.3em;
+			border-radius: 4px;
+			background: var(--wf-accent-soft, rgba(61, 90, 128, 0.08));
+
+		}
 	}
 
 	.ad-alert {
@@ -209,6 +215,7 @@
 		border: 1px solid rgba(179, 58, 58, 0.22);
 		color: var(--wf-danger, #b33a3a);
 		font-size: 0.92rem;
+
 	}
 
 	.ad-stats {
@@ -216,6 +223,7 @@
 		gap: 0.5rem;
 		margin-bottom: 1.25rem;
 		flex-wrap: wrap;
+
 	}
 
 	.ad-stat {
@@ -226,23 +234,25 @@
 		border-radius: 999px;
 		background: transparent;
 		border: 1px solid var(--edge);
-	}
 
-	.ad-stat-n {
-		font-weight: 700;
-		font-variant-numeric: tabular-nums;
-	}
+		&-n {
+			font-weight: 700;
+			font-variant-numeric: tabular-nums;
 
-	.ad-stat-l {
-		font-size: 0.72rem;
-		font-weight: 500;
-		text-transform: uppercase;
-		letter-spacing: 0.03em;
-		color: var(--ink-soft);
+		}
+		&-l {
+			font-size: 0.72rem;
+			font-weight: 500;
+			text-transform: uppercase;
+			letter-spacing: 0.03em;
+			color: var(--ink-soft);
+
+		}
 	}
 
 	.ad-empty {
 		color: var(--ink-soft);
+
 	}
 
 	.ad-cap {
@@ -253,11 +263,12 @@
 		border-radius: var(--wf-radius, 6px);
 		background: var(--wf-accent-soft, rgba(61, 90, 128, 0.08));
 		border: 1px solid var(--edge);
-	}
 
-	.ad-cap code {
-		font-family: var(--wf-mono, ui-monospace, monospace);
-		font-size: 0.9em;
+		code {
+			font-family: var(--wf-mono, ui-monospace, monospace);
+			font-size: 0.9em;
+
+		}
 	}
 
 	.ad-table-wrap {
@@ -266,43 +277,45 @@
 		border: 1px solid var(--edge);
 		background: var(--surface);
 		box-shadow: none;
+
 	}
 
 	.ad-table {
 		width: 100%;
 		border-collapse: collapse;
 		font-size: 0.9rem;
-	}
 
-	.ad-table th,
-	.ad-table td {
-		text-align: left;
-		padding: 0.65rem 0.85rem;
-		border-bottom: 1px solid var(--edge);
-		vertical-align: middle;
-	}
+		th, td {
+			text-align: left;
+			padding: 0.65rem 0.85rem;
+			border-bottom: 1px solid var(--edge);
+			vertical-align: middle;
 
-	.ad-table th {
-		font-size: 0.68rem;
-		font-weight: 700;
-		letter-spacing: 0.08em;
-		text-transform: uppercase;
-		color: var(--ink-soft);
-		background: rgba(28, 28, 26, 0.03);
-	}
+		}
+		th {
+			font-size: 0.68rem;
+			font-weight: 700;
+			letter-spacing: 0.08em;
+			text-transform: uppercase;
+			color: var(--ink-soft);
+			background: rgba(28, 28, 26, 0.03);
 
-	.ad-table tr:last-child td {
-		border-bottom: none;
-	}
+		}
+		tr:last-child td {
+			border-bottom: none;
 
-	.ad-table tbody tr:hover td {
-		background: rgba(28, 28, 26, 0.02);
+		}
+		tbody tr:hover td {
+			background: rgba(28, 28, 26, 0.02);
+
+		}
 	}
 
 	.ad-owner {
 		font-weight: 600;
 		font-family: var(--wf-mono, ui-monospace, monospace);
 		font-size: 0.85em;
+
 	}
 
 	.ad-id {
@@ -312,6 +325,7 @@
 		max-width: 7rem;
 		overflow: hidden;
 		text-overflow: ellipsis;
+
 	}
 
 	.ad-status {
@@ -323,25 +337,27 @@
 		border-radius: 999px;
 		background: rgba(28, 28, 26, 0.06);
 		color: var(--ink-soft);
-	}
 
-	.ad-status[data-status='open'] {
-		background: var(--wf-accent-soft, rgba(61, 90, 128, 0.08));
-		color: var(--wf-accent, #3d5a80);
-	}
+		&[data-status='open'] {
+			background: var(--wf-accent-soft, rgba(61, 90, 128, 0.08));
+			color: var(--wf-accent, #3d5a80);
 
-	.ad-status[data-status='completed'] {
-		background: rgba(47, 111, 78, 0.12);
-		color: var(--wf-success, #2f6f4e);
-	}
+		}
+		&[data-status='completed'] {
+			background: rgba(47, 111, 78, 0.12);
+			color: var(--wf-success, #2f6f4e);
 
-	.ad-status[data-status='archived'] {
-		background: rgba(28, 28, 26, 0.06);
-		color: var(--wf-ink-muted, #8a8a82);
+		}
+		&[data-status='archived'] {
+			background: rgba(28, 28, 26, 0.06);
+			color: var(--wf-ink-muted, #8a8a82);
+
+		}
 	}
 
 	.ad-actions {
 		white-space: nowrap;
+
 	}
 
 	.ad-btn {
@@ -354,20 +370,22 @@
 		cursor: pointer;
 		background: rgba(179, 58, 58, 0.1);
 		color: var(--wf-danger, #b33a3a);
-	}
 
-	.ad-btn:hover:not(:disabled) {
-		background: rgba(179, 58, 58, 0.18);
-	}
+		&:hover:not(:disabled) {
+			background: rgba(179, 58, 58, 0.18);
 
-	.ad-btn:disabled {
-		opacity: 0.5;
-		cursor: not-allowed;
+		}
+		&:disabled {
+			opacity: 0.5;
+			cursor: not-allowed;
+
+		}
 	}
 
 	.ad-muted {
 		color: var(--ink-soft);
 		font-size: 0.85rem;
+
 	}
 
 	.ad-foot {
@@ -375,10 +393,11 @@
 		font-size: 0.88rem;
 		line-height: 1.5;
 		color: var(--ink-soft);
-	}
 
-	.ad-foot code {
-		font-family: var(--wf-mono, ui-monospace, monospace);
-		font-size: 0.9em;
+		code {
+			font-family: var(--wf-mono, ui-monospace, monospace);
+			font-size: 0.9em;
+
+		}
 	}
 </style>

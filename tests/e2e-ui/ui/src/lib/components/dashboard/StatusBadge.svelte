@@ -30,35 +30,35 @@
 </span>
 
 <style>
-.status-badge {
-	display: inline-flex;
-	align-items: center;
-	gap: 0.35rem;
-	padding: 0.3rem 0.65rem;
-	border-radius: 6px;
-	font-size: 0.7rem;
-	font-weight: 600;
-	text-transform: uppercase;
-	letter-spacing: 0.03em;
-}
+	.status-badge {
+		display: inline-flex;
+		align-items: center;
+		gap: 0.35rem;
+		padding: 0.3rem 0.65rem;
+		border-radius: 6px;
+		font-size: 0.7rem;
+		font-weight: 600;
+		text-transform: uppercase;
+		letter-spacing: 0.03em;
+	}
 
-.success {
-	background: rgba(56, 161, 105, 0.12);
-	color: var(--hops-success);
-}
+	.success {
+		background: rgba(56, 161, 105, 0.12);
+		color: var(--hops-success);
+	}
 
-.warning {
-	background: rgba(221, 107, 32, 0.12);
-	color: var(--hops-warning);
-}
+	.warning {
+		background: rgba(221, 107, 32, 0.12);
+		color: var(--hops-warning);
+	}
 
-.error {
-	background: rgba(229, 62, 62, 0.12);
-	color: var(--hops-danger);
-}
+	.error {
+		background: rgba(229, 62, 62, 0.12);
+		color: var(--hops-danger);
+	}
 
-.neutral {
-	background: var(--hops-bg-light);
-	color: var(--hops-text-muted);
-}
+	.neutral {
+		background: var(--hops-bg-light);
+		color: var(--hops-text-muted);
+	}
 </style>
