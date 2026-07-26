@@ -14,42 +14,46 @@ mutations — through `@hops-ops/distributed`.
 
 ## See it run
 
-### Fieldnote — full product template (`tests/e2e-ui`)
+### Fieldnote — read the code (`tests/e2e-ui`)
 
-A **copyable** multi-crate app: pure domains, GraphQL-only edge, Zitadel OIDC,
-SvelteKit SSR, generated clients, and live WebSocket updates.
+A copyable multi-crate product: pure domains, GraphQL-only edge, Zitadel OIDC,
+SvelteKit SSR, generated clients, live WS. Full runbook + deeper map:
+**[`tests/e2e-ui/README.md`](tests/e2e-ui/README.md)**.
 
 ```bash
-cd tests/e2e-ui
-make up                                    # Postgres + Zitadel + bootstrap
-set -a && source e2e-ui.env && set +a
-make run                                   # API :8791 + UI :5180
+cd tests/e2e-ui && make up && set -a && source e2e-ui.env && set +a && make run
+# UI :5180 · API :8791/graphql · login alice / Password1!
 ```
 
-| Open | What you are looking at |
+What makes it feel like a real app is not a second framework — it is a short
+stack of deliberate files. Start here:
+
+| File | Why it is nice |
 |---|---|
-| http://127.0.0.1:5180/todos | Owner-scoped todos, SSR from co-located `+page.graphql`, no loading flash |
-| http://127.0.0.1:5180/chat | Live lobby chat — post once, every client updates over `/graphql/ws` |
-| http://127.0.0.1:5180/blob | **Blob game** — each arrow key is an aggregate command with atomic `Projected` map/score (no dual-write) |
-| http://127.0.0.1:5180/admin | Elevated surface (separate generated client; not bundled into the user app) |
-| http://127.0.0.1:8791/graphql | GraphiQL against the same deny-by-default engine |
-| http://127.0.0.1:5180/login | Real OIDC (Auth.js + Zitadel Login V2) — try `alice` / `Password1!` |
+| [`ui/src/routes/todos/+page.graphql`](tests/e2e-ui/ui/src/routes/todos/+page.graphql) | Co-located read. `@load` → SSR seed; no hand-written load function for the list. |
+| [`ui/src/routes/todos/+page.svelte`](tests/e2e-ui/ui/src/routes/todos/+page.svelte) | `Todos.use()` + `useCommands()` — page never invents a cache or optimistic recipe. |
+| [`ui/src/routes/chat/+page.graphql`](tests/e2e-ui/ui/src/routes/chat/+page.graphql) | Same document does SSR **and** live: `@load @live`. No second subscription file. |
+| [`ui/src/routes/blob/[[gameId]]/+page.svelte`](tests/e2e-ui/ui/src/routes/blob/[[gameId]]/+page.svelte) | Arrow keys → `commands.blob.move`; board from `BlobGames.use()` — projected payload hits the replica before the call resolves. |
+| [`ui/src/routes/+layout.server.ts`](tests/e2e-ui/ui/src/routes/+layout.server.ts) | One root loader, generated route registry, session → engine role. No loading flash for declared ops. |
+| [`ui/src/routes/+layout.svelte`](tests/e2e-ui/ui/src/routes/+layout.svelte) | `provideDistributed` + SSR hydration into the causal replica. |
+| [`ui/src/routes/admin/+layout.server.ts`](tests/e2e-ui/ui/src/routes/admin/+layout.server.ts) | Elevated surface is a **second** generated client + role gate — not smuggled into the user bundle. |
+| [`crates/service/src/service.rs`](tests/e2e-ui/crates/service/src/service.rs) | Inventory, RLS (`owner_id = claim(x-user-id)`), dual client surfaces (`fieldnote` / `fieldnote-admin`), OIDC claim map. |
+| [`crates/service/src/handlers/commands/blob_move.rs`](tests/e2e-ui/crates/service/src/handlers/commands/blob_move.rs) | `PreparedCommand<Projected<BlobGameView>>` — map/score written with the event, not dual-written later. |
+| [`crates/todo-domain/src/models/todo.rs`](tests/e2e-ui/crates/todo-domain/src/models/todo.rs) | Plain aggregate: `create` / `ensure_owner` / `@sourced` events — no GraphQL in the domain. |
+| [`crates/readmodels/src/models/blob_game_view.rs`](tests/e2e-ui/crates/readmodels/src/models/blob_game_view.rs) | `#[table]` + `belongs_to` owner join — GraphQL shape from the read model. |
+| [`ui/src/auth.ts`](tests/e2e-ui/ui/src/auth.ts) | Real Auth.js + Zitadel scopes/groups → engine roles. |
 
 ```text
-  SvelteKit UI  ──GraphQL HTTP/WS──►  Rust edge (GraphqlEngine + microsvc)
-       │                                    │
-       │  @hops-ops/distributed             ├── command mutations → aggregates
-       │  causal replica + commands         ├── Projected rows (blob) in the
-       │  generated from dctl client        │   same transaction as events
-       └────────────────────────────────────┴── projector rows (todos, chat)
+  SvelteKit  ──GraphQL HTTP/WS──►  Rust edge (GraphqlEngine + microsvc)
+       │                                │
+       │  @hops-ops/distributed         ├── mutations → aggregates
+       │  causal replica + commands     ├── Projected rows (blob) with events
+       │  dctl-generated ops            └── projector rows (todos, chat)
 ```
 
-Details: [`tests/e2e-ui/README.md`](tests/e2e-ui/README.md) ·
-[`js/README.md`](js/README.md)
+JS package deep-dive: [`js/README.md`](js/README.md).
 
 ### GraphiQL playground (engine only)
-
-Zero UI scaffolding — seed data and the query surface in one command:
 
 ```bash
 cargo run --example graphiql --features "graphql,sqlite"
@@ -58,36 +62,20 @@ cargo run --example graphiql --features "graphql,sqlite"
 
 ### First-class OIDC (Zitadel, Keycloak, Authentik)
 
-GraphQL identity is **built into the engine** (`OidcBearer`: JWKS fetch, iss/aud/exp
-validation, claim → role/session mapping). The same surface is proven live
-against three local IdPs — not mocks only:
+GraphQL identity is **built into the engine** (`OidcBearer`: JWKS, iss/aud/exp,
+claim → role/session). Live against three local IdPs — not mocks only:
 
-| Provider | Compose + bootstrap | Live test binary | Gate |
+| Provider | Compose + bootstrap | Live test | Gate |
 |---|---|---|---|
 | **[Zitadel](tests/graphql_oidc_zitadel/)** (reference) | `./scripts/oidc-zitadel-up.sh` | `cargo test --test graphql_oidc_zitadel --features graphql,sqlite` | `ZITADEL_E2E=1` |
 | **[Keycloak](tests/graphql_oidc_keycloak/)** | `./scripts/oidc-keycloak-up.sh` | `cargo test --test graphql_oidc_keycloak --features graphql,sqlite` | `KEYCLOAK_E2E=1` |
 | **[Authentik](tests/graphql_oidc_authentik/)** | `./scripts/oidc-authentik-up.sh` | `cargo test --test graphql_oidc_authentik --features graphql,sqlite` | `AUTHENTIK_E2E=1` |
 
-Shared contract **E1–E8** lives in [`tests/graphql_oidc_common/`](tests/graphql_oidc_common/)
-(token mint, role isolation, expired/forged rejection). Without the gate env
-vars the binaries **skip cleanly**. Offline always-on coverage:
-`cargo test --test graphql_identity --features graphql,sqlite` (mock JWKS).
+Shared **E1–E8** in [`tests/graphql_oidc_common/`](tests/graphql_oidc_common/).
+Gated binaries skip cleanly when unset. Offline: `cargo test --test graphql_identity --features graphql,sqlite`.
 
-Fieldnote (`make up`) boots **Zitadel** for a full browser login path; the three
-compose stacks prove the **same `OidcBearer` edge** is not vendor-locked.
-
-### What the demos prove
-
-| Capability | Where it shows up |
-|---|---|
-| Model-first aggregates + event store | Domain crates under `tests/e2e-ui/crates/*-domain` |
-| Atomic `Projected<T>` (command + read model in one commit) | Blob moves — UI updates from the mutation payload |
-| Eventual projectors + outbox | Todos / chat after command acceptance |
-| **First-class OIDC on the GraphQL edge** | `OidcBearer` + live Zitadel / Keycloak / Authentik e2e |
-| Deny-by-default GraphQL RLS | Alice never sees Bob’s todos; admin surface is separate |
-| Live subscriptions | Chat list continues over WebSocket after projector commits |
-| Compiler-owned browser clients | `make gen-client` / `dctl client` → typed ops + optimistic commands |
-| Causal replica (no stale rollback of your own write) | Blob revalidation races covered by Playwright |
+Fieldnote boots **Zitadel** for the browser path; the three stacks prove the same
+`OidcBearer` edge is not vendor-locked.
 
 ---
 
