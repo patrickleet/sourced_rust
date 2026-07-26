@@ -1,26 +1,47 @@
 # Distributed
 
-Distributed is a CQRS and event-sourcing framework for Rust applications that want simple domain models, replayable aggregate history, durable publication, and pluggable infrastructure.
+Distributed is a **full-stack CQRS and event-sourcing platform**: a Rust backend
+framework plus a GraphQL query/command edge and a TypeScript client
+(`@hops-ops/distributed`) for browser apps (SvelteKit and React adapters).
 
-It keeps your domain model as a plain struct (Plain Old Rust Struct, or PORS), inspired by POCO/POJO, while giving you append-only aggregate event records, replay, snapshots, read models, an outbox, a multi-transport service bus, and a small async command-handler framework.
+On the write side it keeps your domain model as a plain struct (Plain Old Rust
+Struct, or PORS), inspired by POCO/POJO, with append-only aggregate event
+records, replay, snapshots, an outbox, a multi-transport service bus, and a
+small async command-handler framework (`microsvc`).
 
-The core idea is explicit boundaries: aggregate event records are the write-side source of truth, read models serve queries, and published domain or integration messages are created deliberately through the outbox.
+On the read/UI side it adds:
 
-It is built with stateless vertical and horizontal scaling in cloud-native environments in mind. You can start with a single in-memory service and split it later into partitioned services backed by Postgres and a real broker — without rewriting the domain model.
+- **GraphQL over relational read models** — filters, order, pagination,
+  relationships, deny-by-default RBAC, OIDC/Bearer identity, live subscriptions,
+  and typed **causal command mutations** (including atomic `Projected<T>`).
+- **npm JS/TS client** — compiler-owned query/command artifacts (`dctl client`),
+  typed GraphQL HTTP/WS transport, a **normalized causal replica**, diagnostics,
+  and SvelteKit/React adapters under [`js/`](js/).
+- **Copyable product template** — multi-crate domains, GraphQL-only edge, OIDC,
+  SSR, and live UI in [`tests/e2e-ui/`](tests/e2e-ui/).
+
+The core idea is explicit boundaries: aggregate event records are the write-side
+source of truth, read models serve queries, published messages go through the
+outbox, and the browser talks one protocol (GraphQL) to a deny-by-default edge.
+
+It is built with stateless vertical and horizontal scaling in cloud-native
+environments in mind. You can start with a single in-memory service and split it
+later into partitioned services backed by Postgres and a real broker — without
+rewriting the domain model.
 
 ### Multi-crate layout + UI e2e reference
 
 See **`tests/e2e-ui/`** for a nested workspace you can copy: pure domain crates
-(`todo-domain`, `chat-domain`), projectors-only read models, thin command
-handlers, a GraphQL-only public API, behavioral suite, and a SvelteKit UI with
-OIDC (Zitadel), request-scoped SSR from co-located `+page.graphql` operations,
-normalized hydration, generated optimistic commands, and live **subscriptions**
-over WebSocket (`/graphql/ws`) after projector commits. Reusable GraphQL
-transport, the normalized causal replica, command runtime, diagnostics, and
-framework adapters live in [`js/`](js/) as `@hops-ops/distributed`; the e2e UI
+(`todo-domain`, `chat-domain`, `blob-domain`), read models (projectors and/or
+direct `Projected` rows), thin command handlers, a GraphQL-only public API,
+behavioral suite, and a SvelteKit UI with OIDC (Zitadel), request-scoped SSR from
+co-located `+page.graphql` operations, normalized hydration, generated optimistic
+commands, and live **subscriptions** over WebSocket (`/graphql/ws`). Reusable
+GraphQL transport, the normalized causal replica, command runtime, diagnostics,
+and framework adapters live in [`js/`](js/) as `@hops-ops/distributed`; the e2e UI
 is its in-repository integration consumer. Details:
-[`tests/e2e-ui/README.md`](tests/e2e-ui/README.md), the
-`distributed-usage` skill, and [GraphQL query service](#graphql-query-service)
+[`tests/e2e-ui/README.md`](tests/e2e-ui/README.md), [`js/README.md`](js/README.md),
+the `distributed-usage` skill, and [GraphQL query service](#graphql-query-service)
 below.
 
 ## At a Glance
@@ -39,7 +60,7 @@ below.
 | Service bus facade | `send`/`listen` (point-to-point) and `publish`/`subscribe` (fan-out) over a swappable transport. |
 | Transports | In-memory, SQLite, Postgres, NATS JetStream, RabbitMQ, Kafka, and Knative/CloudEvents — one constructor line apart. |
 | Microservice framework | Convention-based async handlers exposed over HTTP, gRPC, the bus, GraphQL mutations, or direct dispatch. |
-| Service CLI | `dctl` scaffolds service crates, describes manifests, and renders SQL, Atlas, or GraphQL SDL artifacts. |
+| Service CLI | `dctl` scaffolds services, describes manifests, renders SQL/Atlas/GraphQL SDL, and compiles **client surfaces** (`client-manifest` / `client`) for the JS package. |
 | Pluggable infrastructure | Traits for storage, messaging, read models, snapshots, outbox publishing, and locking. |
 
 ## Use as a Dependency
@@ -404,6 +425,12 @@ Distributed is inspired by the original [sourced](https://github.com/mateodelnor
 - Keep storage and messaging pluggable and testable behind async traits.
 - Make the transport a wiring choice, not a handler change.
 - Add optional queue-based locking for serialized workflows.
+- Expose a deny-by-default GraphQL edge over relational read models (not ad-hoc
+  handler SQL) with identity injected, not reinvented.
+- Keep browser apps on one protocol: typed GraphQL queries, live subscriptions,
+  and causal command mutations with a normalized client replica.
+- Prefer generated client artifacts and explicit projection contracts over
+  hand-written fetch/cache glue.
 
 ## Feature Flags
 
@@ -1442,14 +1469,18 @@ let loaded = repo
 
 ## GraphQL query service
 
-Auto-generated GraphQL over relational read models — Hasura-style
-filtering, ordering, pagination, relationships, role-based column allowlists and
-row filters, live subscriptions after projector commits, and typed causal
-command mutations derived from the executable `Service`.
+Auto-generated GraphQL over relational read models — Hasura-style filtering,
+ordering, pagination, relationships, role-based column allowlists and row
+filters, live subscriptions after write-plan commits, and typed **causal command
+mutations** derived from the executable `Service` (including atomic
+`Projected<T>` and eventual `Fact` + projector paths).
 
-End-to-end template: [`tests/e2e-ui/`](tests/e2e-ui/) (see its README). Scaffold
-with `dctl scaffold … --query-api`. Example playground:
-`cargo run --example graphiql --features "graphql,sqlite"`.
+This is the public query/command edge for full-stack apps. The companion
+TypeScript package [`@hops-ops/distributed`](js/) (see
+[`js/README.md`](js/README.md)) supplies transport, a normalized causal replica,
+command runtime, diagnostics, and SvelteKit/React adapters. End-to-end template:
+[`tests/e2e-ui/`](tests/e2e-ui/). Scaffold with `dctl scaffold … --query-api`.
+Example playground: `cargo run --example graphiql --features "graphql,sqlite"`.
 
 ### Enable
 
@@ -1633,34 +1664,63 @@ flow.
 
 ### Full-stack template (`tests/e2e-ui`)
 
+Copyable product shape (not a toy workshop): multi-crate domains, GraphQL-only
+edge, real OIDC, SSR, live subscriptions, and a teaching **Blob** aggregate that
+uses atomic `Projected<BlobGameView>` (direct-only — no async blob projector).
+
 | Piece | Role |
 |---|---|
-| Domain crates | Pure aggregates (todos, chat) |
-| Projectors | Read models only — commands never dual-write |
-| GraphQL edge | Owner RLS, admin all-owners + force-archive, chat sub |
-| SvelteKit | `$distributed` / `$distributed/admin`, Auth.js + Zitadel, request-scoped SSR, normalized hydration, co-located `+page.graphql`, generated live operations and commands |
-| Suite | GraphQL-only edge, IDOR, SDL split, OIDC isolation |
+| Domain crates | Pure aggregates: todos, chat, blob |
+| Read models | Projector-owned rows *and* direct `Projected` rows (blob) — no dual-write from handlers |
+| GraphQL edge | Owner RLS, admin surfaces, joins to `auth_users`, chat live sub, blob commands |
+| Identity | Zitadel + Auth.js (PKCE), optional Zitadel user-scrape → `auth_users` |
+| SvelteKit | `$distributed` / `$distributed/admin`, SSR from co-located `+page.graphql`, hydration, generated live ops + optimistic commands |
+| Suite | GraphQL-only edge, IDOR, OIDC isolation, Playwright (incl. projected-move races) |
 
 ```bash
 cd tests/e2e-ui
 make up && set -a && source e2e-ui.env && set +a && make run
 # UI http://127.0.0.1:5180  ·  API GraphQL http://127.0.0.1:8791/graphql
-make test         # domain + behavioral + JS-backed UI build/typecheck/tests (no Docker)
+# /todos  /chat  /blob  /admin  /login
+make test         # domain + behavioral + JS-backed UI build/typecheck/tests
 make check-client # generated user/admin clients are current
 ```
+
+### TypeScript client (`js/` → `@hops-ops/distributed`)
+
+| Export | Purpose |
+|---|---|
+| `@hops-ops/distributed` | Typed documents, HTTP GraphQL client, identity helpers |
+| `…/replica` | Normalized causal replica, command runtime, projected fences |
+| `…/sveltekit` | Vite virtual modules, SSR load/hydrate, app shells |
+| `…/react` | Optional React hooks adapter |
+| `…/diagnostics` | Client diagnostics helpers |
+
+Generate app clients from the Rust surface:
+
+```bash
+dctl client-manifest …   # export role/app surface IR
+dctl client …            # compile co-located .graphql → typed modules
+```
+
+See [`js/README.md`](js/README.md) for package API and packaging.
 
 ### Tests in this repo
 
 | Suite | Focus |
 |---|---|
-| `tests/graphql_*` | Engine, HTTP, SDL, dialects, harden (authz/DoS/inject), identity, OIDC providers |
-| `tests/e2e-ui` | Multi-crate product template + SvelteKit + behavioral security |
+| `tests/graphql_*` | Engine, HTTP, SDL, dialects, harden (authz/DoS/inject), identity, OIDC providers, causal transport |
+| `tests/typed_commands` | Causal command / Projected / Fact registration |
+| `tests/e2e-ui` | Multi-crate product template + SvelteKit + OIDC + Playwright |
+| `js/tests` | Replica, command runtime, adapters |
 | `examples/graphiql.rs` | Seeded local playground |
 
 ```bash
 cargo test --test graphql_engine --features "graphql,sqlite"
 cargo test --test graphql_harden --features "graphql,sqlite"
+cd js && npm run quality
 # OIDC provider tests need Docker IdPs — see each test's module docs
+# Full UI matrix: cd tests/e2e-ui && make test
 ```
 
 ## Snapshots
