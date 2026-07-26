@@ -47,6 +47,8 @@ use super::MAX_HTTP_BODY_BYTES;
 
 /// Build an axum `Router` that dispatches commands via the given service.
 pub fn router(service: Arc<Service>) -> Router {
+    let telemetry =
+        crate::http_telemetry::HttpTelemetryState::new(service.name().map(str::to_string));
     let router = Router::new()
         .route("/health", get(health_handler))
         .route("/{command}", axum::routing::post(command_handler));
@@ -57,6 +59,10 @@ pub fn router(service: Arc<Service>) -> Router {
         // Pin the body limit explicitly rather than relying on axum's default;
         // the command handler buffers the JSON body into memory.
         .layer(DefaultBodyLimit::max(MAX_HTTP_BODY_BYTES))
+        .layer(axum::middleware::from_fn_with_state(
+            telemetry,
+            crate::http_telemetry::middleware,
+        ))
         .with_state(service)
 }
 

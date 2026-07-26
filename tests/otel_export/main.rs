@@ -21,7 +21,7 @@
 use std::sync::Arc;
 use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 
-use distributed::microsvc::{Context, Message, MessageKind, Routes, Service};
+use distributed::microsvc::{self, Context, Message, MessageKind, Routes, Service};
 use opentelemetry::propagation::{Extractor, TextMapPropagator as _};
 use opentelemetry::trace::TracerProvider as _;
 use opentelemetry_otlp::WithExportConfig as _;
@@ -112,6 +112,18 @@ async fn dispatch_span_reaches_collector_with_propagated_parent() {
         .await
         .expect("nested dispatch succeeds");
 
+    let http_trace_id = fresh_trace_id(31);
+    let http_traceparent = format!("00-{http_trace_id}-{REMOTE_PARENT_SPAN_ID}-01");
+    let base = spawn_http_service(service.clone()).await;
+    let response = reqwest::Client::new()
+        .post(format!("{base}/orders.create"))
+        .header("traceparent", &http_traceparent)
+        .json(&json!({"id": "o-http"}))
+        .send()
+        .await
+        .expect("http request succeeds");
+    assert_eq!(response.status(), 200);
+
     provider.force_flush().expect("flush spans to collector");
     provider.shutdown().expect("shutdown provider");
 
@@ -149,6 +161,72 @@ async fn dispatch_span_reaches_collector_with_propagated_parent() {
         outer_span["spanId"].as_str(),
         "dispatch span must preserve the active local span hierarchy: {nested_dispatch_span}"
     );
+
+    let http_span = poll_for_span(
+        &traces_file,
+        &http_trace_id,
+        "POST /{command}",
+        Duration::from_secs(20),
+    );
+    let http_dispatch_span = poll_for_span(
+        &traces_file,
+        &http_trace_id,
+        "distributed.microsvc.dispatch",
+        Duration::from_secs(20),
+    );
+    assert_eq!(
+        http_span["parentSpanId"].as_str(),
+        Some(REMOTE_PARENT_SPAN_ID),
+        "HTTP request span must be parented to incoming traceparent: {http_span}"
+    );
+    assert_eq!(
+        http_span["kind"].as_i64(),
+        Some(2),
+        "HTTP request span must be exported as SERVER kind: {http_span}"
+    );
+    assert_eq!(
+        span_string_attribute(&http_span, "http.request.method"),
+        Some("POST"),
+        "HTTP request span should record bounded method attribute: {http_span}"
+    );
+    assert_eq!(
+        span_string_attribute(&http_span, "http.route"),
+        Some("/{command}"),
+        "HTTP request span should record bounded route template: {http_span}"
+    );
+    assert_eq!(
+        span_string_attribute(&http_span, "network.protocol.name"),
+        Some("http"),
+        "HTTP request span should record the protocol name: {http_span}"
+    );
+    assert_eq!(
+        span_int_attribute(&http_span, "http.response.status_code"),
+        Some(200),
+        "HTTP request span should record the response status: {http_span}"
+    );
+    assert!(
+        span_attribute(&http_span, "url.query").is_none()
+            && span_attribute(&http_span, "url.path").is_none(),
+        "HTTP request span must not emit raw URL path or query attributes: {http_span}"
+    );
+    assert_eq!(
+        http_dispatch_span["parentSpanId"].as_str(),
+        http_span["spanId"].as_str(),
+        "dispatch span must be a child of the HTTP request span: {http_dispatch_span}"
+    );
+}
+
+async fn spawn_http_service(service: Arc<Service>) -> String {
+    let listener = tokio::net::TcpListener::bind("127.0.0.1:0")
+        .await
+        .expect("bind http listener");
+    let addr = listener.local_addr().expect("local addr");
+    tokio::spawn(async move {
+        axum::serve(listener, microsvc::router(service))
+            .await
+            .expect("serve http router");
+    });
+    format!("http://{addr}")
 }
 
 /// Poll the collector's file-exporter output until the framework dispatch span
@@ -195,6 +273,25 @@ fn find_span(batch: &Value, trace_id: &str, span_name: &str) -> Option<Value> {
         }
     }
     None
+}
+
+fn span_attribute<'a>(span: &'a Value, key: &str) -> Option<&'a Value> {
+    span["attributes"]
+        .as_array()?
+        .iter()
+        .find(|attribute| attribute["key"].as_str() == Some(key))
+        .and_then(|attribute| attribute.get("value"))
+}
+
+fn span_string_attribute<'a>(span: &'a Value, key: &str) -> Option<&'a str> {
+    span_attribute(span, key)?.get("stringValue")?.as_str()
+}
+
+fn span_int_attribute(span: &Value, key: &str) -> Option<i64> {
+    let value = span_attribute(span, key)?.get("intValue")?;
+    value
+        .as_i64()
+        .or_else(|| value.as_str().and_then(|value| value.parse().ok()))
 }
 
 fn fresh_trace_id(salt: u128) -> String {

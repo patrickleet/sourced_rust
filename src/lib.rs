@@ -12,6 +12,8 @@ pub mod repository;
 mod commit_builder;
 #[cfg(feature = "emitter")]
 pub mod emitter;
+#[cfg(feature = "http")]
+mod http_telemetry;
 mod in_memory_repo;
 pub mod lock;
 pub mod manifest;

@@ -28,6 +28,14 @@ const MICROSVC_DISPATCH_DURATION_FAMILY: MetricFamily = MetricFamily::histogram(
     metric_names::MICROSVC_DISPATCH_DURATION_SECONDS,
     "Microsvc dispatch duration in seconds.",
 );
+const HTTP_SERVER_REQUESTS_TOTAL_FAMILY: MetricFamily = MetricFamily::counter(
+    metric_names::HTTP_SERVER_REQUESTS_TOTAL,
+    "Total HTTP server requests by service, method, route, and status code.",
+);
+const HTTP_SERVER_REQUEST_DURATION_FAMILY: MetricFamily = MetricFamily::histogram(
+    metric_names::HTTP_SERVER_REQUEST_DURATION_SECONDS,
+    "HTTP server request duration in seconds.",
+);
 const TRANSPORT_MESSAGES_TOTAL_FAMILY: MetricFamily = MetricFamily::counter(
     metric_names::TRANSPORT_MESSAGES_TOTAL,
     "Total transport receive/settle outcomes.",
@@ -73,6 +81,23 @@ pub fn record_microsvc_dispatch(
         message_kind: kind.as_str().to_string(),
         message: message.to_string(),
         status: status.to_string(),
+        duration_seconds: duration.as_secs_f64(),
+    });
+}
+
+/// Record one Distributed-owned HTTP server request.
+pub fn record_http_server_request(
+    service: Option<&str>,
+    method: &str,
+    route: &str,
+    status_code: u16,
+    duration: Duration,
+) {
+    registry().record_http_server_request(HttpServerRequestKey {
+        service: service_label(service),
+        method: normalize_http_method(method).to_string(),
+        route: normalize_http_route(route).to_string(),
+        status_code: status_code.to_string(),
         duration_seconds: duration.as_secs_f64(),
     });
 }
@@ -237,8 +262,13 @@ struct MetricsHttpState {
 
 #[cfg(feature = "http")]
 fn http_router_with_state(state: MetricsHttpState) -> axum::Router {
+    let telemetry = crate::http_telemetry::HttpTelemetryState::new(state.service.clone());
     axum::Router::new()
         .route("/metrics", axum::routing::get(metrics_http_handler))
+        .layer(axum::middleware::from_fn_with_state(
+            telemetry,
+            crate::http_telemetry::middleware,
+        ))
         .with_state(state)
 }
 
@@ -390,6 +420,8 @@ struct MetricsRegistry {
     service_info: Mutex<BTreeMap<String, ()>>,
     dispatch_total: Mutex<BTreeMap<DispatchCounterKey, u64>>,
     dispatch_duration: Mutex<BTreeMap<DispatchHistogramKey, Histogram>>,
+    http_server_requests_total: Mutex<BTreeMap<HttpServerRequestCounterKey, u64>>,
+    http_server_request_duration: Mutex<BTreeMap<HttpServerRequestHistogramKey, Histogram>>,
     transport_messages_total: Mutex<BTreeMap<TransportMessageKey, u64>>,
     transport_failures_total: Mutex<BTreeMap<TransportFailureKey, u64>>,
     outbox_messages_total: Mutex<BTreeMap<OutboxMessageKey, u64>>,
@@ -409,6 +441,19 @@ impl MetricsRegistry {
             .and_modify(|value| *value += 1)
             .or_insert(1);
         self.lock(&self.dispatch_duration)
+            .entry(key.histogram_key())
+            .or_insert_with(Histogram::new)
+            .observe(key.duration_seconds);
+        self.note_service(service);
+    }
+
+    fn record_http_server_request(&self, key: HttpServerRequestKey) {
+        let service = key.service.clone();
+        self.lock(&self.http_server_requests_total)
+            .entry(key.counter_key())
+            .and_modify(|value| *value += 1)
+            .or_insert(1);
+        self.lock(&self.http_server_request_duration)
             .entry(key.histogram_key())
             .or_insert_with(Histogram::new)
             .observe(key.duration_seconds);
@@ -459,6 +504,8 @@ impl MetricsRegistry {
         let service_info = self.clone_locked(&self.service_info);
         let dispatch_total = self.clone_locked(&self.dispatch_total);
         let dispatch_duration = self.clone_locked(&self.dispatch_duration);
+        let http_server_requests_total = self.clone_locked(&self.http_server_requests_total);
+        let http_server_request_duration = self.clone_locked(&self.http_server_request_duration);
         let transport_messages_total = self.clone_locked(&self.transport_messages_total);
         let transport_failures_total = self.clone_locked(&self.transport_failures_total);
         let outbox_messages_total = self.clone_locked(&self.outbox_messages_total);
@@ -493,6 +540,18 @@ impl MetricsRegistry {
                 ),
                 MICROSVC_DISPATCH_DURATION_FAMILY.snapshot(
                     dispatch_duration
+                        .iter()
+                        .map(|(key, histogram)| MetricSample::histogram(key.labels(), histogram))
+                        .collect(),
+                ),
+                HTTP_SERVER_REQUESTS_TOTAL_FAMILY.snapshot(
+                    http_server_requests_total
+                        .iter()
+                        .map(|(key, value)| MetricSample::counter(key.labels(), *value))
+                        .collect(),
+                ),
+                HTTP_SERVER_REQUEST_DURATION_FAMILY.snapshot(
+                    http_server_request_duration
                         .iter()
                         .map(|(key, histogram)| MetricSample::histogram(key.labels(), histogram))
                         .collect(),
@@ -540,6 +599,8 @@ impl MetricsRegistry {
         self.lock(&self.service_info).clear();
         self.lock(&self.dispatch_total).clear();
         self.lock(&self.dispatch_duration).clear();
+        self.lock(&self.http_server_requests_total).clear();
+        self.lock(&self.http_server_request_duration).clear();
         self.lock(&self.transport_messages_total).clear();
         self.lock(&self.transport_failures_total).clear();
         self.lock(&self.outbox_messages_total).clear();
@@ -635,6 +696,63 @@ impl DispatchHistogramKey {
     }
 }
 
+#[derive(Clone)]
+struct HttpServerRequestKey {
+    service: String,
+    method: String,
+    route: String,
+    status_code: String,
+    duration_seconds: f64,
+}
+
+impl HttpServerRequestKey {
+    fn counter_key(&self) -> HttpServerRequestCounterKey {
+        HttpServerRequestCounterKey {
+            service: self.service.clone(),
+            method: self.method.clone(),
+            route: self.route.clone(),
+            status_code: self.status_code.clone(),
+        }
+    }
+
+    fn histogram_key(&self) -> HttpServerRequestHistogramKey {
+        HttpServerRequestHistogramKey {
+            service: self.service.clone(),
+            method: self.method.clone(),
+            route: self.route.clone(),
+            status_code: self.status_code.clone(),
+        }
+    }
+}
+
+#[derive(Clone, Debug, PartialEq, Eq, PartialOrd, Ord)]
+struct HttpServerRequestCounterKey {
+    service: String,
+    method: String,
+    route: String,
+    status_code: String,
+}
+
+impl HttpServerRequestCounterKey {
+    fn labels(&self) -> Vec<(String, String)> {
+        http_server_request_labels(&self.service, &self.method, &self.route, &self.status_code)
+    }
+}
+
+#[derive(Clone, Debug, PartialEq, Eq, PartialOrd, Ord)]
+struct HttpServerRequestHistogramKey {
+    service: String,
+    method: String,
+    route: String,
+    status_code: String,
+}
+
+impl HttpServerRequestHistogramKey {
+    fn labels(&self) -> Vec<(String, String)> {
+        http_server_request_labels(&self.service, &self.method, &self.route, &self.status_code)
+    }
+}
+
 #[derive(Clone, Debug, PartialEq, Eq, PartialOrd, Ord)]
 struct TransportMessageKey {
     service: String,
@@ -723,6 +841,49 @@ impl Histogram {
 
 fn service_labels(service: &str) -> Vec<(String, String)> {
     vec![(metric_labels::SERVICE.to_string(), service.to_string())]
+}
+
+fn http_server_request_labels(
+    service: &str,
+    method: &str,
+    route: &str,
+    status_code: &str,
+) -> Vec<(String, String)> {
+    vec![
+        (metric_labels::SERVICE.to_string(), service.to_string()),
+        (metric_labels::METHOD.to_string(), method.to_string()),
+        (metric_labels::ROUTE.to_string(), route.to_string()),
+        (
+            metric_labels::STATUS_CODE.to_string(),
+            status_code.to_string(),
+        ),
+    ]
+}
+
+fn normalize_http_method(method: &str) -> &'static str {
+    match method {
+        "GET" => "GET",
+        "HEAD" => "HEAD",
+        "POST" => "POST",
+        "PUT" => "PUT",
+        "PATCH" => "PATCH",
+        "DELETE" => "DELETE",
+        "OPTIONS" => "OPTIONS",
+        "TRACE" => "TRACE",
+        "CONNECT" => "CONNECT",
+        _ => "_OTHER",
+    }
+}
+
+fn normalize_http_route(route: &str) -> &'static str {
+    match route {
+        "/health" => "/health",
+        "/metrics" => "/metrics",
+        "/{command}" => "/{command}",
+        "/" => "/",
+        "/cloudevent/{type}" => "/cloudevent/{type}",
+        _ => "unmatched",
+    }
 }
 
 fn render_prometheus(snapshot: &MetricsSnapshot) -> String {
@@ -909,6 +1070,13 @@ mod tests {
             dispatch_status::SUCCESS,
             Duration::from_millis(7),
         );
+        record_http_server_request(
+            Some("orders"),
+            "POST",
+            "/{command}",
+            200,
+            Duration::from_millis(11),
+        );
         record_transport_message(
             Some("orders"),
             "nats",
@@ -937,6 +1105,8 @@ mod tests {
                 metric_names::SERVICE_INFO,
                 metric_names::MICROSVC_DISPATCH_TOTAL,
                 metric_names::MICROSVC_DISPATCH_DURATION_SECONDS,
+                metric_names::HTTP_SERVER_REQUESTS_TOTAL,
+                metric_names::HTTP_SERVER_REQUEST_DURATION_SECONDS,
                 metric_names::TRANSPORT_MESSAGES_TOTAL,
                 metric_names::TRANSPORT_FAILURES_TOTAL,
                 metric_names::OUTBOX_MESSAGES_TOTAL,
@@ -971,6 +1141,40 @@ mod tests {
             &duration_family.samples[0].value,
             MetricSampleValue::Histogram(_)
         ));
+
+        let http_duration_family = snapshot
+            .families()
+            .iter()
+            .find(|family| family.family.name == metric_names::HTTP_SERVER_REQUEST_DURATION_SECONDS)
+            .expect("http duration family is present");
+        assert!(matches!(
+            &http_duration_family.samples[0].value,
+            MetricSampleValue::Histogram(_)
+        ));
+    }
+
+    #[test]
+    fn http_request_metrics_clamp_method_and_route_labels() {
+        let _guard = lock_for_tests();
+        reset_for_tests();
+
+        record_http_server_request(
+            Some("orders"),
+            "BREW",
+            "/orders/o-1?user_id=alice",
+            418,
+            Duration::from_millis(3),
+        );
+
+        let text = prometheus_text();
+
+        assert!(text.contains(
+            "distributed_http_server_requests_total{service=\"orders\",method=\"_OTHER\",route=\"unmatched\",status_code=\"418\"} 1"
+        ));
+        assert!(
+            !text.contains("orders/o-1") && !text.contains("user_id"),
+            "raw path and query values must not appear in metrics:\n{text}"
+        );
     }
 
     #[test]
@@ -985,6 +1189,13 @@ mod tests {
             "orders.create",
             dispatch_status::SUCCESS,
             Duration::from_millis(2),
+        );
+        record_http_server_request(
+            Some("orders"),
+            "POST",
+            "/{command}",
+            200,
+            Duration::from_millis(4),
         );
         record_transport_message(
             Some("orders"),

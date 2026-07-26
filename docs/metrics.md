@@ -24,7 +24,8 @@ distributed::microsvc::serve(service, "0.0.0.0:3000").await?;
 
 Prometheus can scrape `GET /metrics` on the service's HTTP port. Hops
 ObserveStack should use the same scrape target and labels; dashboards can join
-these metrics with trace data by the stable `service` and message labels.
+HTTP request metrics with dispatch metrics and trace data by the stable
+`service` label.
 
 The scrape route is unauthenticated by design. Do not expose `/metrics` on a
 public listener; keep it behind a private network, ingress policy, security
@@ -50,6 +51,12 @@ This listener exposes only `GET /metrics`; it does not expose command dispatch.
 Metric labels are intentionally bounded:
 
 - `service`: `Service::named(...)`, or `unnamed` when no service name was set.
+- `method`: normalized HTTP method. Standard methods keep their uppercase token;
+  non-standard methods are bucketed as `_OTHER`.
+- `route`: Distributed-owned HTTP route template only: `/health`, `/metrics`,
+  `/{command}`, `/`, `/cloudevent/{type}`, or `unmatched`. Raw paths are never
+  recorded.
+- `status_code`: numeric HTTP response status as a string.
 - `message_kind`: `command` or `event`.
 - `message`: registered command/event name; unknown-command failures are
   bucketed as `unknown` rather than recording the unrecognized input.
@@ -65,8 +72,9 @@ Metric labels are intentionally bounded:
   `log_and_ack`, `stop`, `recv_error`, or a settle failure label such as
   `settle_ack`.
 
-Do not add IDs, trace IDs, user IDs, aggregate IDs, or other high-cardinality
-values as framework labels.
+Do not add raw URI paths, query strings, IDs, trace IDs, request IDs, user IDs,
+aggregate IDs, headers, cookies, session variables, payload data, arbitrary
+metadata values, or other high-cardinality values as framework labels.
 
 The label names, framework status values, transport outcomes, failure actions,
 and outbox outcomes live in one internal telemetry vocabulary. New framework
@@ -75,6 +83,10 @@ metrics should use that vocabulary rather than introducing ad hoc labels.
 ## Metric Families
 
 - `distributed_service_info{service,version}` gauge.
+- `distributed_http_server_requests_total{service,method,route,status_code}`
+  counter.
+- `distributed_http_server_request_duration_seconds{service,method,route,status_code}`
+  histogram.
 - `distributed_microsvc_dispatch_total{service,message_kind,message,status}`
   counter.
 - `distributed_microsvc_dispatch_duration_seconds{service,message_kind,message,status}`
@@ -96,8 +108,16 @@ shape.
 ## Boundaries
 
 The `metrics` feature owns Prometheus text exposition for framework metrics. It
-does not install an OpenTelemetry metrics SDK, emit request-level HTTP metrics,
-or record user payload data.
+does not install an OpenTelemetry metrics SDK or record user payload data.
+
+HTTP request metrics measure the Distributed-owned HTTP boundary: health checks,
+metrics scrapes, command ingress, CloudEvents ingress, and framework rejections
+that happen before dispatch such as malformed JSON or body-limit failures.
+Dispatch metrics measure the command/event routing and handler boundary after a
+request has been accepted. A single successful `POST /{command}` normally
+records both HTTP request metrics and `distributed_microsvc_dispatch_*`; a bad
+JSON body records only HTTP request metrics because no command dispatch occurs.
+Unknown command dispatches still use `message="unknown"` in dispatch metrics.
 
 Direct transport receive paths emit receive/settle counters and failure
 counters. Outbox dispatch emits publish outcomes and backlog gauges. Direct

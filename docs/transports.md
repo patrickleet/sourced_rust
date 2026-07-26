@@ -180,6 +180,10 @@ in-process consume loop: `KnativeBus::manifests(&plan, &subscriptions)` renders
 the role-based `Broker` + per-name `Trigger` YAML (subscriber URIs
 `/cloudevent/<type>`, with a `.local(addr)` kubefwd variant), and the service
 mounts `cloud_events_router` so those Triggers reach `dispatch_message`.
+When `metrics` is enabled, the router also exposes `GET /metrics` and records
+bounded HTTP request metrics for `/`, `/cloudevent/{type}`, and `/metrics`;
+dispatch metrics remain separate and describe the command/event handler
+boundary after a CloudEvent is parsed.
 
 `PostgresBus` uses the claim-lease work queue (not `sqlxmq`) for the same reason
 the low-level adapter does — sqlxmq's always-on push runner doesn't compose with

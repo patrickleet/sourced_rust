@@ -160,13 +160,35 @@ async fn metrics_endpoint_exposes_cloud_event_dispatch_counters() {
         .unwrap();
     assert_eq!(resp.status(), 200);
 
-    let resp = client.get(format!("{url}metrics")).send().await.unwrap();
-    assert_eq!(resp.status(), 200);
+    let per_type = client
+        .post(format!("{url}cloudevent/order.initialized"))
+        .header("ce-id", "evt-metrics-typed")
+        .header("ce-type", "order.initialized")
+        .header("ce-source", "/orders")
+        .header("content-type", "application/json")
+        .body(r#"{"order":"o-metrics-typed"}"#)
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(per_type.status(), 200);
 
-    let body = resp.text().await.unwrap();
+    let first_scrape = client.get(format!("{url}metrics")).send().await.unwrap();
+    assert_eq!(first_scrape.status(), 200);
+    let final_scrape = client.get(format!("{url}metrics")).send().await.unwrap();
+    assert_eq!(final_scrape.status(), 200);
+
+    let body = final_scrape.text().await.unwrap();
     assert!(
         body.contains("distributed_microsvc_dispatch_total{service=\"unnamed\",message_kind=\"event\",message=\"order.initialized\",status=\"success\"}"),
         "metrics body should include the CloudEvents dispatch counter:\n{body}"
+    );
+    assert!(
+        body.contains("distributed_http_server_requests_total{service=\"unnamed\",method=\"POST\",route=\"/\",status_code=\"200\"}"),
+        "metrics body should include the shared CloudEvents ingress route:\n{body}"
+    );
+    assert!(
+        body.contains("distributed_http_server_requests_total{service=\"unnamed\",method=\"POST\",route=\"/cloudevent/{type}\",status_code=\"200\"}"),
+        "metrics body should include the per-type CloudEvents ingress route:\n{body}"
     );
 }
 
