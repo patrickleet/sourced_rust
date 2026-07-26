@@ -1,9 +1,3 @@
-/** Private cache engine; implementation lives in ./cache-engine/. */
-export {
-	CacheRevisionConflictError,
-	cacheIndexKey,
-	createCacheEngine
-} from './cache-engine/index.js';
 export type {
 	BaseCacheWriter,
 	BaseRecordClock,
@@ -35,4 +29,6 @@ export type {
 	SparseRecord,
 	SparseRecordMeta,
 	WatchOptions
-} from './cache-engine/index.js';
+} from './types.js';
+export { CacheRevisionConflictError } from './errors.js';
+export { cacheIndexKey, createCacheEngine } from './create.js';
