@@ -21,6 +21,7 @@
 use std::sync::Arc;
 use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 
+use distributed::bus::{Bus, InMemoryBus, Message as BusMessage, MessageKind as BusMessageKind};
 use distributed::microsvc::{Context, Message, MessageKind, Routes, Service};
 use opentelemetry::propagation::{Extractor, TextMapPropagator as _};
 use opentelemetry::trace::TracerProvider as _;
@@ -112,6 +113,42 @@ async fn dispatch_span_reaches_collector_with_propagated_parent() {
         .await
         .expect("nested dispatch succeeds");
 
+    let bus = InMemoryBus::new();
+    let publish_trace_id = fresh_trace_id(3);
+    let publish_traceparent = format!("00-{publish_trace_id}-{REMOTE_PARENT_SPAN_ID}-01");
+    let publish_message = BusMessage::new(
+        "orders.created",
+        BusMessageKind::Event,
+        br#"{"id":"o-1"}"#.to_vec(),
+    )
+    .with_id("evt-direct-publish")
+    .with_metadata("traceparent", &publish_traceparent);
+    bus.publish_message(publish_message)
+        .await
+        .expect("direct publish succeeds");
+
+    let nested_publish_trace_id = fresh_trace_id(19);
+    let nested_publish_traceparent =
+        format!("00-{nested_publish_trace_id}-{REMOTE_PARENT_SPAN_ID}-01");
+    let publish_outer_span = tracing::info_span!("test.publish.outer");
+    let parent_context = opentelemetry_sdk::propagation::TraceContextPropagator::new().extract(
+        &TraceparentExtractor {
+            traceparent: &nested_publish_traceparent,
+        },
+    );
+    let _ = publish_outer_span.set_parent(parent_context);
+    let nested_publish_message = BusMessage::new(
+        "orders.create",
+        BusMessageKind::Command,
+        br#"{"id":"o-2"}"#.to_vec(),
+    )
+    .with_id("evt-direct-send")
+    .with_metadata("traceparent", &nested_publish_traceparent);
+    bus.send_message(nested_publish_message)
+        .instrument(publish_outer_span)
+        .await
+        .expect("nested direct send succeeds");
+
     provider.force_flush().expect("flush spans to collector");
     provider.shutdown().expect("shutdown provider");
 
@@ -148,6 +185,61 @@ async fn dispatch_span_reaches_collector_with_propagated_parent() {
         nested_dispatch_span["parentSpanId"].as_str(),
         outer_span["spanId"].as_str(),
         "dispatch span must preserve the active local span hierarchy: {nested_dispatch_span}"
+    );
+
+    let publish_span = poll_for_span(
+        &traces_file,
+        &publish_trace_id,
+        "distributed.transport.publish",
+        Duration::from_secs(20),
+    );
+    assert_eq!(
+        publish_span["parentSpanId"].as_str(),
+        Some(REMOTE_PARENT_SPAN_ID),
+        "direct publish span must be parented to the incoming traceparent: {publish_span}"
+    );
+    assert_eq!(
+        span_attribute_str(&publish_span, "distributed.transport.name"),
+        Some("in_memory"),
+        "direct publish span must include the transport name: {publish_span}"
+    );
+    assert_eq!(
+        span_attribute_str(&publish_span, "distributed.bus.operation"),
+        Some("publish"),
+        "direct publish span must include the bus operation: {publish_span}"
+    );
+    assert_eq!(
+        span_attribute_str(&publish_span, "distributed.producer.source"),
+        Some("direct"),
+        "direct publish span must identify the producer source: {publish_span}"
+    );
+
+    let publish_outer_span = poll_for_span(
+        &traces_file,
+        &nested_publish_trace_id,
+        "test.publish.outer",
+        Duration::from_secs(20),
+    );
+    let nested_publish_span = poll_for_span(
+        &traces_file,
+        &nested_publish_trace_id,
+        "distributed.transport.publish",
+        Duration::from_secs(20),
+    );
+    assert_eq!(
+        publish_outer_span["parentSpanId"].as_str(),
+        Some(REMOTE_PARENT_SPAN_ID),
+        "publish outer span must keep the incoming traceparent as its parent: {publish_outer_span}"
+    );
+    assert_eq!(
+        nested_publish_span["parentSpanId"].as_str(),
+        publish_outer_span["spanId"].as_str(),
+        "direct publish span must preserve the active local span hierarchy: {nested_publish_span}"
+    );
+    assert_eq!(
+        span_attribute_str(&nested_publish_span, "distributed.bus.operation"),
+        Some("send"),
+        "direct send span must include the bus operation: {nested_publish_span}"
     );
 }
 
@@ -195,6 +287,14 @@ fn find_span(batch: &Value, trace_id: &str, span_name: &str) -> Option<Value> {
         }
     }
     None
+}
+
+fn span_attribute_str<'a>(span: &'a Value, key: &str) -> Option<&'a str> {
+    span["attributes"]
+        .as_array()?
+        .iter()
+        .find(|attribute| attribute["key"].as_str() == Some(key))?["value"]["stringValue"]
+        .as_str()
 }
 
 fn fresh_trace_id(salt: u128) -> String {

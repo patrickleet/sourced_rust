@@ -28,6 +28,7 @@ use async_nats::jetstream::consumer::pull::Config as PullConfig;
 use async_nats::jetstream::stream::{Config as StreamConfig, Stream};
 
 use super::nats::{NatsJetStreamSource, NatsPublisher};
+use super::producer_telemetry::{record_direct_publish, BusOperation};
 use super::{
     retryable, run_source, Bus, BusConsumer, BusTopologyConfig, MessagePublisher, MessageRouter,
     RunOptions, TransportError,
@@ -270,11 +271,39 @@ impl NatsBus {
 
 impl Bus for NatsBus {
     async fn send_message(&self, message: Message) -> Result<(), TransportError> {
+        record_direct_publish(None, "nats", BusOperation::Send, message, |message| async {
+            self.send_message_raw(message).await
+        })
+        .await
+    }
+
+    async fn publish_message(&self, message: Message) -> Result<(), TransportError> {
+        record_direct_publish(
+            None,
+            "nats",
+            BusOperation::Publish,
+            message,
+            |message| async { self.publish_message_raw(message).await },
+        )
+        .await
+    }
+
+    async fn send_outbox_message(&self, message: Message) -> Result<(), TransportError> {
+        self.send_message_raw(message).await
+    }
+
+    async fn publish_outbox_message(&self, message: Message) -> Result<(), TransportError> {
+        self.publish_message_raw(message).await
+    }
+}
+
+impl NatsBus {
+    async fn send_message_raw(&self, message: Message) -> Result<(), TransportError> {
         self.validated_namespace()?;
         self.cmd_publisher.publish(message).await
     }
 
-    async fn publish_message(&self, message: Message) -> Result<(), TransportError> {
+    async fn publish_message_raw(&self, message: Message) -> Result<(), TransportError> {
         self.validated_namespace()?;
         self.evt_publisher.publish(message).await
     }

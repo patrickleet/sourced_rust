@@ -59,6 +59,30 @@ pub trait Bus: Send + Sync {
         &self,
         message: Message,
     ) -> impl Future<Output = Result<(), TransportError>> + Send;
+
+    /// Send an outbox-derived command without direct producer telemetry.
+    ///
+    /// This default preserves downstream custom bus compatibility. Built-in
+    /// buses override it to bypass their direct producer instrumentation so the
+    /// outbox remains the authoritative producer signal for outbox rows.
+    fn send_outbox_message(
+        &self,
+        message: Message,
+    ) -> impl Future<Output = Result<(), TransportError>> + Send {
+        self.send_message(message)
+    }
+
+    /// Publish an outbox-derived event without direct producer telemetry.
+    ///
+    /// See [`send_outbox_message`](Self::send_outbox_message) for why this
+    /// exists as a provided compatibility method instead of a required trait
+    /// method.
+    fn publish_outbox_message(
+        &self,
+        message: Message,
+    ) -> impl Future<Output = Result<(), TransportError>> + Send {
+        self.publish_message(message)
+    }
 }
 
 /// Consume side of the bus — pull transports that run a [`run_source`] loop.

@@ -23,6 +23,7 @@ use std::time::Duration;
 use std::collections::HashSet;
 
 use super::knative::unique_k8s_name;
+use super::producer_telemetry::{record_direct_publish, BusOperation};
 use super::{Bus, TransportError};
 use super::{Message, SubscriptionPlan};
 
@@ -223,10 +224,42 @@ impl KnativeBus {
 
 impl Bus for KnativeBus {
     async fn send_message(&self, message: Message) -> Result<(), TransportError> {
-        self.post_cloud_event(&self.commands_broker, &message).await
+        record_direct_publish(
+            None,
+            "knative",
+            BusOperation::Send,
+            message,
+            |message| async { self.send_message_raw(message).await },
+        )
+        .await
     }
 
     async fn publish_message(&self, message: Message) -> Result<(), TransportError> {
+        record_direct_publish(
+            None,
+            "knative",
+            BusOperation::Publish,
+            message,
+            |message| async { self.publish_message_raw(message).await },
+        )
+        .await
+    }
+
+    async fn send_outbox_message(&self, message: Message) -> Result<(), TransportError> {
+        self.send_message_raw(message).await
+    }
+
+    async fn publish_outbox_message(&self, message: Message) -> Result<(), TransportError> {
+        self.publish_message_raw(message).await
+    }
+}
+
+impl KnativeBus {
+    async fn send_message_raw(&self, message: Message) -> Result<(), TransportError> {
+        self.post_cloud_event(&self.commands_broker, &message).await
+    }
+
+    async fn publish_message_raw(&self, message: Message) -> Result<(), TransportError> {
         self.post_cloud_event(&self.events_broker, &message).await
     }
 }

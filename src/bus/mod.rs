@@ -103,6 +103,7 @@ mod nats;
 mod nats_bus;
 #[cfg(feature = "postgres")]
 mod postgres_bus;
+mod producer_telemetry;
 mod publisher;
 #[cfg(feature = "rabbitmq")]
 mod rabbitmq;

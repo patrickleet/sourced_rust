@@ -60,9 +60,10 @@ metadata already stored with events.
 ## Optional Span Feature
 
 The `otel` feature adds framework-owned `tracing` spans around dispatch,
-handler execution, transport receive, and outbox publish boundaries. When the
-incoming message carries W3C `traceparent` / `tracestate`, Distributed extracts
-that context and sets it as the OpenTelemetry parent for the framework span:
+handler execution, direct transport publish, transport receive, and outbox
+publish boundaries. When the incoming message carries W3C `traceparent` /
+`tracestate`, Distributed extracts that context and sets it as the
+OpenTelemetry parent for the framework span:
 
 ```toml
 [dependencies]
@@ -79,6 +80,7 @@ Framework span names are intentionally bounded:
 
 - `distributed.microsvc.dispatch`
 - `distributed.handler`
+- `distributed.transport.publish`
 - `distributed.transport.receive`
 - `distributed.outbox.publish`
 
@@ -87,6 +89,17 @@ Each span uses the same framework-owned message attributes:
 - `distributed.message.name`
 - `distributed.message.kind`
 - `messaging.message.id`
+
+Direct producer spans also include:
+
+- `distributed.transport.name`
+- `distributed.bus.operation`: `send` or `publish`
+- `distributed.producer.source`: `direct`
+
+Outbox rows keep using `distributed.outbox.publish` as their producer span and
+do not emit `distributed.transport.publish`, so traces match the metrics
+boundary: direct bus calls are direct producer telemetry; outbox dispatch is
+outbox producer telemetry.
 
 Future spans should use the same helper path so new attributes are reviewed in
 one place. Do not add payload fields, user ids, aggregate ids, or raw metadata
@@ -151,10 +164,13 @@ CI verifies the observability surface at the docker level (see
   `GET /metrics`, and lints the exposition with `promtool check metrics`
   (skips when `PROMTOOL` is unset).
 - `tests/otel_export` builds a real OTLP pipeline the way a service binary
-  would, dispatches a message carrying a W3C `traceparent`, and asserts a real
-  OpenTelemetry Collector received `distributed.microsvc.dispatch` parented to
-  the incoming span (skips when `OTEL_EXPORTER_OTLP_TRACES_ENDPOINT` /
-  `OTEL_COLLECTOR_TRACES_FILE` are unset).
+  would, dispatches and directly publishes messages carrying W3C `traceparent`,
+  and asserts a real OpenTelemetry Collector received
+  `distributed.microsvc.dispatch` and `distributed.transport.publish` parented
+  to the incoming span. It also verifies active local spans remain the direct
+  parent for nested framework spans (skips when
+  `OTEL_EXPORTER_OTLP_TRACES_ENDPOINT` / `OTEL_COLLECTOR_TRACES_FILE` are
+  unset).
 - The scaffolded `ServiceMonitor` / `PrometheusRule` / OTLP env output is
   rendered with `helm template` and validated against published CRD schemas
   with `kubeconform`.

@@ -24,6 +24,7 @@ use std::sync::Arc;
 use std::time::Duration;
 
 use super::kafka::{KafkaPublisher, KafkaSource};
+use super::producer_telemetry::{record_direct_publish, BusOperation};
 use super::{
     run_source, Bus, BusConsumer, BusTopologyConfig, MessagePublisher, MessageRouter, RunOptions,
     TransportError,
@@ -185,13 +186,45 @@ impl KafkaBus {
 }
 
 impl Bus for KafkaBus {
-    async fn send_message(&self, mut message: Message) -> Result<(), TransportError> {
+    async fn send_message(&self, message: Message) -> Result<(), TransportError> {
+        record_direct_publish(
+            None,
+            "kafka",
+            BusOperation::Send,
+            message,
+            |message| async { self.send_message_raw(message).await },
+        )
+        .await
+    }
+
+    async fn publish_message(&self, message: Message) -> Result<(), TransportError> {
+        record_direct_publish(
+            None,
+            "kafka",
+            BusOperation::Publish,
+            message,
+            |message| async { self.publish_message_raw(message).await },
+        )
+        .await
+    }
+
+    async fn send_outbox_message(&self, message: Message) -> Result<(), TransportError> {
+        self.send_message_raw(message).await
+    }
+
+    async fn publish_outbox_message(&self, message: Message) -> Result<(), TransportError> {
+        self.publish_message_raw(message).await
+    }
+}
+
+impl KafkaBus {
+    async fn send_message_raw(&self, mut message: Message) -> Result<(), TransportError> {
         // The publisher uses the message name as the topic; namespace it.
         message.name = format!("{}{}", self.command_prefix()?, message.name);
         self.publisher.publish(message).await
     }
 
-    async fn publish_message(&self, mut message: Message) -> Result<(), TransportError> {
+    async fn publish_message_raw(&self, mut message: Message) -> Result<(), TransportError> {
         message.name = format!("{}{}", self.event_prefix()?, message.name);
         self.publisher.publish(message).await
     }

@@ -75,9 +75,18 @@ metadata (codec, destination, source aggregate) is namespaced under the reserved
 Telemetry follows the same boundary. Consumer-side direct transports report
 receive/settle outcomes and classified failures. Producer-side outbox dispatch
 reports `published`, `released`, `failed`, and backlog gauges. A direct
-`MessagePublisher` call outside the outbox path is not counted as an outbox
-publish and currently has no direct publish metric; adding that should be a
-separate producer telemetry path with its own bounded labels.
+`Bus::send`, `Bus::publish`, `send_message`, or `publish_message` call on a
+built-in bus reports `distributed_transport_publish_*` metrics and, with
+`otel`, a `distributed.transport.publish` span. Direct publish success means the
+same adapter durable publish threshold resolved `Ok`; a failed threshold records
+`outcome="failed"` and a `retryable` or `permanent` failure class from
+`TransportErrorKind`.
+
+Outbox-derived publishes use the buses' raw outbox path through
+`BusPublisher`/`DynBusPublisher`, so they do not increment direct publish
+metrics. That avoids double-counting and keeps `distributed_outbox_*` metrics
+plus `distributed.outbox.publish` as the authoritative producer signal for
+outbox rows.
 
 Trace context is normal metadata. Distributed preserves W3C `traceparent` and
 `tracestate` across `Message`, `EventRecord`, and `OutboxMessage` carriers

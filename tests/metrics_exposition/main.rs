@@ -18,10 +18,15 @@ use std::process::{Command, Stdio};
 use std::sync::{Arc, Mutex};
 use std::time::Duration;
 
-use distributed::bus::{MessagePublisher, TransportError};
+use distributed::bus::{
+    Bus, InMemoryBus, Message as BusMessage, MessageKind as BusMessageKind, MessagePublisher,
+    TransportError,
+};
 use distributed::microsvc::{self, Context, Message, Routes, Service};
 use distributed::outbox_worker::OutboxDispatcher;
-use distributed::{CommitBatch, InMemoryRepository, OutboxMessage, TransactionalCommit};
+use distributed::{
+    BusPublisher, CommitBatch, InMemoryRepository, OutboxMessage, TransactionalCommit,
+};
 use serde_json::json;
 
 #[path = "../support/env.rs"]
@@ -61,6 +66,30 @@ async fn spawn_http_service(name: &str) -> String {
     format!("http://{addr}")
 }
 
+/// Drive direct producer traffic through the in-memory bus. The message names,
+/// ids, and trace ids are intentionally unique so the exposition assertions can
+/// prove direct publish metrics do not use high-cardinality labels.
+async fn drive_direct_bus() {
+    let bus = InMemoryBus::new();
+    bus.send("metrics.direct.command", b"{}".to_vec())
+        .await
+        .unwrap();
+    bus.publish_message(
+        BusMessage::new(
+            "metrics.direct.event",
+            BusMessageKind::Event,
+            b"{}".to_vec(),
+        )
+        .with_id("direct-message-id")
+        .with_metadata(
+            "traceparent",
+            "00-4bf92f3577b34da6a3ce929d0e0e4736-00f067aa0ba902b7-01",
+        ),
+    )
+    .await
+    .unwrap();
+}
+
 /// Stage outbox rows through a commit and drain them through the dispatcher so
 /// `distributed_outbox_messages_total` and the backlog gauges are populated.
 async fn drive_outbox(service_name: &str) {
@@ -89,6 +118,30 @@ async fn drive_outbox(service_name: &str) {
     assert_eq!(outcome.released, 1);
 }
 
+/// Drain an outbox row through the `Bus` -> `MessagePublisher` bridge. This must
+/// contribute to outbox metrics without increasing direct producer metrics.
+async fn drive_outbox_via_bus_publisher(service_name: &str) {
+    let repo = InMemoryRepository::new();
+    let mut batch = CommitBatch::empty();
+    batch.outbox_messages.push(
+        OutboxMessage::create("evt-bus-publisher", "orders.bus-published", b"{}".to_vec()).unwrap(),
+    );
+    repo.commit_batch(batch).await.unwrap();
+
+    let publisher = BusPublisher::new(Arc::new(InMemoryBus::new()));
+    let dispatcher = OutboxDispatcher::new(
+        repo.outbox_store(),
+        publisher,
+        "metrics-exposition:bus-publisher",
+        Duration::from_secs(60),
+        3,
+    )
+    .with_service(service_name);
+
+    let outcome = dispatcher.dispatch_batch(10).await.unwrap();
+    assert_eq!(outcome.published, 1);
+}
+
 #[tokio::test]
 async fn exposition_covers_framework_families_and_passes_promtool() {
     let base = spawn_http_service("orders-exposition").await;
@@ -113,7 +166,9 @@ async fn exposition_covers_framework_families_and_passes_promtool() {
         .unwrap();
     assert_ne!(resp.status(), 200);
 
+    drive_direct_bus().await;
     drive_outbox("orders-exposition").await;
+    drive_outbox_via_bus_publisher("orders-bus-publisher").await;
 
     let scrape = client.get(format!("{base}/metrics")).send().await.unwrap();
     assert_eq!(scrape.status(), 200);
@@ -135,14 +190,30 @@ async fn exposition_covers_framework_families_and_passes_promtool() {
         "distributed_microsvc_dispatch_duration_seconds_bucket{service=\"orders-exposition\"",
         "distributed_microsvc_dispatch_duration_seconds_sum{service=\"orders-exposition\"",
         "distributed_microsvc_dispatch_duration_seconds_count{service=\"orders-exposition\"",
+        "distributed_transport_publish_total{service=\"unnamed\",transport=\"in_memory\",message_kind=\"command\",outcome=\"published\"} 1",
+        "distributed_transport_publish_total{service=\"unnamed\",transport=\"in_memory\",message_kind=\"event\",outcome=\"published\"} 1",
+        "distributed_transport_publish_duration_seconds_count{service=\"unnamed\",transport=\"in_memory\",message_kind=\"command\",outcome=\"published\"} 1",
+        "distributed_transport_publish_duration_seconds_count{service=\"unnamed\",transport=\"in_memory\",message_kind=\"event\",outcome=\"published\"} 1",
         "distributed_outbox_messages_total{service=\"orders-exposition\",outcome=\"published\"} 2",
         "distributed_outbox_messages_total{service=\"orders-exposition\",outcome=\"released\"} 1",
+        "distributed_outbox_messages_total{service=\"orders-bus-publisher\",outcome=\"published\"} 1",
         "distributed_outbox_pending_messages{service=\"orders-exposition\"} 1",
         "distributed_outbox_oldest_pending_age_seconds{service=\"orders-exposition\"}",
     ] {
         assert!(
             body.contains(family),
             "scrape must contain `{family}`:\n{body}"
+        );
+    }
+    for forbidden in [
+        "metrics.direct.command",
+        "metrics.direct.event",
+        "direct-message-id",
+        "4bf92f3577b34da6a3ce929d0e0e4736",
+    ] {
+        assert!(
+            !body.contains(forbidden),
+            "direct publish metrics must not expose high-cardinality value `{forbidden}`:\n{body}"
         );
     }
 
