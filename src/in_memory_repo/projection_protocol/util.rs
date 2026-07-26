@@ -1,13 +1,5 @@
 use super::*;
 
-pub(super) fn table_model_name(mutation: &TableMutation) -> &str {
-    match mutation {
-        TableMutation::UpsertRow(mutation) => &mutation.schema.model_name,
-        TableMutation::PatchRow(mutation) => &mutation.schema.model_name,
-        TableMutation::DeleteRow(mutation) => &mutation.schema.model_name,
-    }
-}
-
 pub(super) fn storage_key_belongs_to_table(storage_key: &str, table: &str) -> bool {
     let Some(mut fingerprint) = storage_key
         .strip_prefix(table)
@@ -37,16 +29,6 @@ pub(super) fn storage_key_belongs_to_table(storage_key: &str, table: &str) -> bo
         fingerprint = &fingerprint[part_end + 1..];
     }
     true
-}
-
-pub(super) fn checked_next(
-    value: u64,
-    domain: &'static str,
-) -> Result<u64, ProjectionProtocolError> {
-    if value >= MAX_PROJECTION_POSITION {
-        return Err(ProjectionProtocolError::PositionOverflow { domain });
-    }
-    Ok(value + 1)
 }
 
 pub(super) fn failure_matches_batch(

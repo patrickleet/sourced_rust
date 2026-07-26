@@ -26,6 +26,7 @@ use crate::table::{
     RowKey, RowValues, TableMutation, TableSchema, TableStoreError, TableWritePlan,
 };
 
+mod backend_helpers;
 mod commit;
 mod error;
 mod helpers;
@@ -43,6 +44,7 @@ use identity::{
     MAX_FAILURE_DETAIL_BYTES, MAX_FAILURE_ID_BYTES, MAX_MESSAGE_ID_BYTES,
 };
 
+pub(crate) use backend_helpers::{change_kind_for_mutation, checked_next, table_model_name};
 pub(crate) use commit::{
     ProjectionCommitBatch, ProjectionFailureBatch, SameTransactionProjectionBatch,
 };
