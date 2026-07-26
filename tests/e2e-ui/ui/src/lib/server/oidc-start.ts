@@ -9,6 +9,7 @@
 import { error, redirect } from '@sveltejs/kit';
 import { env } from '$env/dynamic/private';
 import { cleanEnvValue } from '$lib/clean-env';
+import { oidcScopes } from '$lib/server/oidc-scopes';
 
 export function safeCallbackUrl(url: URL) {
 	const callbackUrl = url.searchParams.get('callbackUrl');
@@ -72,13 +73,18 @@ export async function startOidcSignIn(
 	await assertOidcReady();
 
 	const callbackUrl = safeCallbackUrl(event.url);
+	// Pass scope explicitly so Auth.js authorization params include Zitadel role
+	// scopes even if the provider config was frozen with a bare openid default.
 	const response = await event.fetch('/auth/signin/oidc', {
 		method: 'POST',
 		headers: {
 			'Content-Type': 'application/x-www-form-urlencoded',
 			'X-Auth-Return-Redirect': '1'
 		},
-		body: new URLSearchParams({ callbackUrl })
+		body: new URLSearchParams({
+			callbackUrl,
+			scope: oidcScopes()
+		})
 	});
 
 	const payload = (await response.json().catch(() => null)) as { url?: unknown } | null;

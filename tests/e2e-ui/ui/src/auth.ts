@@ -1,6 +1,7 @@
 import { SvelteKitAuth } from '@auth/sveltekit';
 import { env } from '$env/dynamic/private';
 import { cleanEnvValue } from '$lib/clean-env';
+import { oidcAudience, oidcScopes } from '$lib/server/oidc-scopes';
 
 declare module '@auth/sveltekit' {
 	interface Session {
@@ -22,8 +23,22 @@ declare module '@auth/sveltekit' {
 	}
 }
 
-const DEFAULT_OIDC_SCOPES = 'openid profile email offline_access';
-const DEFAULT_GROUP_CLAIMS = ['groups', 'roles', 'urn:zitadel:iam:org:project:roles'];
+/**
+ * Where we look for role keys after Zitadel asserts them on the token.
+ * Zitadel term is **project roles** (role keys), not IdP "groups" — we map those
+ * keys into `session.user.groups` for the rest of the app.
+ *
+ * Claims (object whose keys are role names, e.g. `{ "admin": { "<orgId>": "…" } }`):
+ * - `urn:zitadel:iam:org:project:roles` — current project
+ * - `urn:zitadel:iam:org:project:{projectId}:roles` — explicit project id
+ * - `urn:zitadel:iam:org:projects:roles` — all projects
+ */
+const DEFAULT_GROUP_CLAIMS = [
+	'groups',
+	'roles',
+	'urn:zitadel:iam:org:project:roles',
+	'urn:zitadel:iam:org:projects:roles'
+];
 const ACCESS_TOKEN_REFRESH_SKEW_SECONDS = 60;
 const TOKEN_AUTH_BASIC = 'client_secret_basic';
 const TOKEN_AUTH_POST = 'client_secret_post';
@@ -64,17 +79,6 @@ function oidcClientId() {
 
 function oidcClientSecret() {
 	return envFirst(['OIDC_CLIENT_SECRET', 'ZITADEL_CLIENT_SECRET']);
-}
-
-function oidcScopes() {
-	const fromEnv = envFirst(['OIDC_SCOPES']);
-	if (fromEnv) return fromEnv;
-	// Ensure project-scoped audience on access tokens when OIDC_AUDIENCE is known.
-	const aud = envFirst(['OIDC_AUDIENCE', 'ZITADEL_PROJECT_ID']);
-	if (aud) {
-		return `${DEFAULT_OIDC_SCOPES} urn:zitadel:iam:org:project:id:${aud}:aud urn:zitadel:iam:org:project:roles`;
-	}
-	return DEFAULT_OIDC_SCOPES;
 }
 
 function oidcTokenAuthMethod() {
@@ -177,7 +181,15 @@ function extractGroups(claims: Record<string, unknown>, groupClaims: string[]) {
 }
 
 function groupClaimPaths() {
-	return envCsv('OIDC_GROUP_CLAIMS', DEFAULT_GROUP_CLAIMS);
+	const paths = envCsv('OIDC_GROUP_CLAIMS', DEFAULT_GROUP_CLAIMS);
+	const aud = oidcAudience() || envFirst(['OIDC_AUDIENCE', 'ZITADEL_PROJECT_ID']);
+	if (aud) {
+		const projectClaim = `urn:zitadel:iam:org:project:${aud}:roles`;
+		const projectIdClaim = `urn:zitadel:iam:org:project:id:${aud}:roles`;
+		if (!paths.includes(projectClaim)) paths.push(projectClaim);
+		if (!paths.includes(projectIdClaim)) paths.push(projectIdClaim);
+	}
+	return paths;
 }
 
 /**
@@ -220,6 +232,9 @@ export const { handle, signIn, signOut } = SvelteKitAuth({
 			issuer: oidcIssuer(),
 			clientId: oidcClientId(),
 			clientSecret: oidcClientSecret(),
+			// Scope is resolved when this module loads (UI process must have OIDC_* env
+			// from `make run` / sourced e2e-ui.env). oidcScopes() always merges Zitadel
+			// project audience + roles scopes so bare OIDC_SCOPES=openid still works.
 			authorization: {
 				params: {
 					scope: oidcScopes()
