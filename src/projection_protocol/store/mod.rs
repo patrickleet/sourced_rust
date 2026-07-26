@@ -1,0 +1,76 @@
+//! Sealed projection commit vocabulary shared by repository adapters.
+//!
+//! Application projectors never construct these batches directly. A
+//! framework-owned workspace validates scopes and stages row mutations, then
+//! hands one closed batch to a repository. This keeps row data, dedupe,
+//! revisions, observations, checkpoints, and change publication inside one
+//! adapter transaction.
+
+use std::fmt;
+use std::future::Future;
+use std::num::NonZeroU64;
+use std::sync::Arc;
+
+use serde::{Deserialize, Serialize};
+use sha2::{Digest, Sha256};
+
+use super::{
+    ProjectionChangeCursor, ProjectionCheckpoint, ProjectionCommitOutcome, ProjectionEpoch,
+    ProjectionInputCursor, ProjectionPartition, ProjectionProtocolValidationError,
+    ProjectionRecordScope, ProjectionScopeCodec, ProjectionSource, ProjectorTopologyId,
+    RecordRevision, MAX_PROJECTION_PARTITION_BYTES, MAX_PROJECTION_POSITION,
+    MAX_PROJECTION_RECORD_KEY_BYTES,
+};
+use crate::repository::{InboxReceipt, RepositoryError};
+use crate::table::{
+    RowKey, RowValues, TableMutation, TableSchema, TableStoreError, TableWritePlan,
+};
+
+mod commit;
+mod error;
+mod helpers;
+mod identity;
+mod query;
+mod replay;
+mod r#trait;
+
+#[cfg(test)]
+mod tests;
+
+use helpers::{bounded_name, bounded_opaque, digest_hex, domain_separated_digest, validate_scope};
+use identity::{
+    FAILURE_FINGERPRINT_DOMAIN, MAX_CAUSATION_ID_BYTES, MAX_FAILURE_CODE_BYTES,
+    MAX_FAILURE_DETAIL_BYTES, MAX_FAILURE_ID_BYTES, MAX_MESSAGE_ID_BYTES,
+};
+
+pub(crate) use commit::{
+    ProjectionCommitBatch, ProjectionFailureBatch, SameTransactionProjectionBatch,
+};
+pub use error::ProjectionProtocolError;
+pub use identity::{
+    ProjectionChangeRetention, ProjectionGeneration, ProjectionInputFingerprint,
+    ProjectionObservationKind, DEFAULT_MAX_RETAINED_PROJECTION_CHANGES,
+};
+pub(crate) use identity::{
+    ProjectionInputDisposition, ProjectionModelOwnership, ProjectionMutationKind,
+    ProjectionObservationRequest, ProjectionObservationTarget, ProjectionRecordExpectation,
+    ProjectionRecordMutation, TrustedProjectionInput, MAX_PROJECTION_EVIDENCE_BATCH_ITEMS,
+    MAX_PROJECTION_QUERY_BATCH_CHECKPOINT_PROBES, MAX_PROJECTION_QUERY_BATCH_ROWS,
+    MAX_PROJECTION_QUERY_CHECKPOINT_PROBES,
+};
+pub use query::{
+    ProjectionChange, ProjectionChangeKind, ProjectionCommitResult, ProjectionFailure,
+    ProjectionObservation, ProjectionRecordMetadata,
+};
+pub(crate) use query::{
+    ProjectionCheckpointProbe, ProjectionCheckpointSnapshot, ProjectionFailureLocation,
+    ProjectionLiveRecordBatch, ProjectionLiveRecordBatchRequest, ProjectionLiveRecordRequest,
+    ProjectionObligationEvidence, ProjectionObligationEvidenceBatch,
+    ProjectionObligationEvidenceBatchRequest, ProjectionObligationEvidenceRequest,
+    ProjectionPartitionRuntimeState, ProjectionPendingRetry, ProjectionQuerySnapshot,
+    ProjectionQuerySnapshotBatch, ProjectionQuerySnapshotBatchRequest,
+    ProjectionQuerySnapshotRequest,
+};
+pub use r#trait::ProjectionChangeRead;
+pub(crate) use r#trait::ProjectionProtocolStore;
+pub(crate) use replay::SameTransactionProjectionEvidence;
