@@ -69,7 +69,16 @@ where
         // same as a permanent dispatch failure, so it is dead-lettered/parked.
         if let Some(error) = received.decode_error() {
             let action = options.failure_policy.resolve(error);
-            record_transport_failure(service, transport, error.kind(), action);
+            let message_context =
+                crate::diagnostics::FailureMessageContext::from_message(received.message());
+            record_transport_failure(
+                service,
+                transport,
+                Some(&message_context),
+                error.kind(),
+                action,
+                Some(error.message()),
+            );
             let kind = received.message().kind;
             match action {
                 FailureAction::Nack => {
@@ -154,7 +163,16 @@ where
             }
             Err(error) => match options.failure_policy.resolve(&error) {
                 action @ FailureAction::Nack => {
-                    record_transport_failure(service, transport, error.kind(), action);
+                    let message_context =
+                        crate::diagnostics::FailureMessageContext::from_message(received.message());
+                    record_transport_failure(
+                        service,
+                        transport,
+                        Some(&message_context),
+                        error.kind(),
+                        action,
+                        Some(error.message()),
+                    );
                     let reason = error.to_string();
                     settle_and_record(
                         service,
@@ -167,7 +185,16 @@ where
                     .await?;
                 }
                 action @ FailureAction::DeadLetter => {
-                    record_transport_failure(service, transport, error.kind(), action);
+                    let message_context =
+                        crate::diagnostics::FailureMessageContext::from_message(received.message());
+                    record_transport_failure(
+                        service,
+                        transport,
+                        Some(&message_context),
+                        error.kind(),
+                        action,
+                        Some(error.message()),
+                    );
                     let reason = error.to_string();
                     settle_and_record(
                         service,
@@ -180,7 +207,16 @@ where
                     .await?;
                 }
                 action @ FailureAction::Park => {
-                    record_transport_failure(service, transport, error.kind(), action);
+                    let message_context =
+                        crate::diagnostics::FailureMessageContext::from_message(received.message());
+                    record_transport_failure(
+                        service,
+                        transport,
+                        Some(&message_context),
+                        error.kind(),
+                        action,
+                        Some(error.message()),
+                    );
                     let reason = error.to_string();
                     settle_and_record(
                         service,
@@ -196,8 +232,12 @@ where
                     record_transport_failure(
                         service,
                         transport,
+                        Some(&crate::diagnostics::FailureMessageContext::from_message(
+                            received.message(),
+                        )),
                         error.kind(),
                         FailureAction::LogAndAck,
+                        Some(error.message()),
                     );
                     eprintln!(
                         "[bus::runner] dropping message '{}' after permanent failure: {error}",
@@ -214,7 +254,16 @@ where
                     .await?;
                 }
                 FailureAction::Stop => {
-                    record_transport_failure(service, transport, error.kind(), FailureAction::Stop);
+                    let message_context =
+                        crate::diagnostics::FailureMessageContext::from_message(received.message());
+                    record_transport_failure(
+                        service,
+                        transport,
+                        Some(&message_context),
+                        error.kind(),
+                        FailureAction::Stop,
+                        Some(error.message()),
+                    );
                     return Err(error);
                 }
             },
@@ -244,8 +293,10 @@ where
             record_transport_failure(
                 service,
                 transport,
+                None,
                 error.kind(),
                 crate::telemetry::settle_failure_action(settle_action),
+                Some(error.message()),
             );
             Err(error)
         }
@@ -263,8 +314,10 @@ async fn recv_next<S: MessageSource>(
             record_transport_failure(
                 service,
                 transport,
+                None,
                 error.kind(),
                 crate::telemetry::failure_action::RECV_ERROR,
+                Some(error.message()),
             );
             Err(error)
         }
@@ -329,23 +382,33 @@ fn record_transport_message(
 fn record_transport_failure<A>(
     service: Option<&str>,
     transport: &str,
+    message: Option<&crate::diagnostics::FailureMessageContext>,
     kind: TransportErrorKind,
     action: A,
+    error_summary: Option<&str>,
 ) where
     A: IntoFailureActionLabel,
 {
+    let action = action.into_failure_action_label();
     #[cfg(feature = "metrics")]
     crate::metrics::record_transport_failure(
         service,
         transport,
         crate::telemetry::transport_failure_class(kind),
-        action.into_failure_action_label(),
+        action,
     );
     #[cfg(not(feature = "metrics"))]
     {
         let _ = (service, transport, kind);
-        let _ = action.into_failure_action_label();
     }
+    crate::diagnostics::record_transport_failure(
+        service,
+        transport,
+        message,
+        kind,
+        action,
+        error_summary,
+    );
 }
 
 trait IntoFailureActionLabel {

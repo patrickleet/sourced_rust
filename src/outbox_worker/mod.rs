@@ -38,7 +38,7 @@ mod testing;
 pub(crate) use store::ensure_active_claim;
 pub use store::{
     ClaimOutboxMessages, OutboxBacklogStats, OutboxClaimRef, OutboxPublishFailureAction,
-    OutboxStore,
+    OutboxStore, BACKLOG_STATS_SCAN_LIMIT,
 };
 
 // Outbox -> bus bridge (moved out of the bus module; depends up on bus traits).

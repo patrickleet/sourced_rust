@@ -93,6 +93,10 @@ labels, and numeric samples only; diagnostics must not add payloads, metadata,
 trace ids, aggregate ids, user ids, raw HTTP targets, or request ids to that
 shape.
 
+Private diagnostics are a separate opt-in JSON endpoint, not a Prometheus
+scrape route. Do not expose `/_distributed/diagnostics` with the unauthenticated
+`/metrics` posture; see [`diagnostics.md`](diagnostics.md).
+
 ## Boundaries
 
 The `metrics` feature owns Prometheus text exposition for framework metrics. It

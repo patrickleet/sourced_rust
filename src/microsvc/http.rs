@@ -34,7 +34,7 @@
 use std::sync::Arc;
 
 use axum::extract::{DefaultBodyLimit, Path, State};
-use axum::http::{HeaderMap, StatusCode};
+use axum::http::{header, HeaderMap, HeaderValue, StatusCode};
 use axum::response::IntoResponse;
 use axum::routing::get;
 use axum::{Json, Router};
@@ -44,6 +44,7 @@ use super::error::HandlerError;
 use super::service::Service;
 use super::session::Session;
 use super::MAX_HTTP_BODY_BYTES;
+use crate::diagnostics::{Diagnostics, DiagnosticsOptions};
 
 /// Build an axum `Router` that dispatches commands via the given service.
 pub fn router(service: Arc<Service>) -> Router {
@@ -58,6 +59,26 @@ pub fn router(service: Arc<Service>) -> Router {
         // the command handler buffers the JSON body into memory.
         .layer(DefaultBodyLimit::max(MAX_HTTP_BODY_BYTES))
         .with_state(service)
+}
+
+/// Build an axum `Router` with command dispatch plus the private diagnostics
+/// endpoint.
+///
+/// Diagnostics are disabled in [`router`] and [`serve`]. Use this helper only
+/// on private listeners or with a configured access hook; the endpoint exposes
+/// service inventory and recent sanitized failures.
+pub fn router_with_diagnostics(service: Arc<Service>, options: DiagnosticsOptions) -> Router {
+    let options = options.with_transport("http");
+    let path = options.diagnostics_path().to_string();
+    let diagnostics = Diagnostics::new(options);
+    let diagnostics_router = Router::new()
+        .route(&path, get(diagnostics_handler))
+        .with_state(DiagnosticsHttpState {
+            service: service.clone(),
+            diagnostics,
+        });
+
+    router(service).merge(diagnostics_router)
 }
 
 /// Serve the service over HTTP at the given address (e.g. `"0.0.0.0:3000"`).
@@ -81,6 +102,31 @@ async fn health_handler(State(service): State<Arc<Service>>) -> impl IntoRespons
 #[cfg(feature = "metrics")]
 async fn metrics_handler(State(service): State<Arc<Service>>) -> impl IntoResponse {
     crate::metrics::prometheus_response(service.name())
+}
+
+#[derive(Clone)]
+struct DiagnosticsHttpState {
+    service: Arc<Service>,
+    diagnostics: Diagnostics,
+}
+
+async fn diagnostics_handler(
+    State(state): State<DiagnosticsHttpState>,
+    headers: HeaderMap,
+) -> impl IntoResponse {
+    let mut response = if state.diagnostics.authorized(&headers) {
+        Json(state.diagnostics.snapshot(&state.service).await).into_response()
+    } else {
+        (
+            StatusCode::UNAUTHORIZED,
+            Json(json!({ "error": "unauthorized" })),
+        )
+            .into_response()
+    };
+    response
+        .headers_mut()
+        .insert(header::CACHE_CONTROL, HeaderValue::from_static("no-store"));
+    response
 }
 
 /// `POST /{command}` — dispatch a command with JSON body and headers as session.
