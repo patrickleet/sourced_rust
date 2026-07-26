@@ -272,9 +272,9 @@ export const { handle, signIn, signOut } = SvelteKitAuth({
 
 			if (!stillFresh && token.refreshToken) {
 				try {
-					const refreshed = await refreshAccessToken(token as TokenRecord);
+					const refreshed = (await refreshAccessToken(token as TokenRecord)) as TokenRecord;
 					// Re-extract roles from the new access token.
-					const groups = groupsFromTokens(refreshed as TokenRecord);
+					const groups = groupsFromTokens(refreshed);
 					if (groups.length) refreshed.groups = groups;
 					return refreshed;
 				} catch (error) {
