@@ -9,7 +9,7 @@ error[E0308]: mismatched types
    = note: expected struct `CompiledCommandEffects<InputA>`
               found struct `CompiledCommandEffects<InputB>`
 note: method defined here
-  --> $WORKSPACE/src/graphql/command_contract.rs
+  --> $WORKSPACE/src/graphql/command_contract/typed_command.rs
    |
    |     pub fn effects(mut self, effects: CompiledCommandEffects<I>) -> Self {
    |            ^^^^^^^

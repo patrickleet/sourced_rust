@@ -4,10 +4,10 @@ error[E0599]: the associated function or constant `prepare` exists for struct `P
 12 |     let _ = PreparedCommand::<Projected<Output>>::prepare(Output { id: "one".into() });
    |                                                   ^^^^^^^ associated function or constant cannot be called due to unsatisfied trait bounds
    |
-  ::: $WORKSPACE/src/graphql/command_contract.rs
+  ::: $WORKSPACE/src/graphql/command_contract/outcomes.rs
    |
    | pub struct Projected<T> {
    | ----------------------- doesn't satisfy `_: PreparableOutcome`
    |
    = note: the following trait bounds were not satisfied:
-           `distributed::graphql::Projected<Output>: graphql::command_contract::sealed::PreparableOutcome`
+           `distributed::graphql::Projected<Output>: graphql::command_contract::outcomes::sealed::PreparableOutcome`
