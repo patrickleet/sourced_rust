@@ -41,7 +41,7 @@ import {
 	settleTrackedProjection,
 	validateStatusProgression,
 	waitForCommandOperation
-} from './helpers.js';
+} from './lib/index.js';
 import { ReplicaCommandRuntimeError } from './errors.js';
 import {
 	replicaCommandAuthority,
