@@ -217,6 +217,7 @@ type RecordProtocolClock = {
 type ProjectedRecordFence = {
 	readonly fields: Readonly<Record<string, ReplicaValue>>;
 	readonly clock: RecordProtocolClock;
+	readonly projectionGeneration: number;
 };
 
 type AnonymousRecordProtocolClock = {
@@ -316,6 +317,7 @@ class DistributedReplicaImpl implements DistributedReplicaApi {
 	#artifactBinding: ReplicaArtifactBinding | undefined;
 	#protocolGeneration: ProtocolGeneration | undefined;
 	#protocolGenerationSequence = 0;
+	#projectionGeneration = 0;
 	#nextIndexRevision = '0';
 	#diagnosticLayerSequence = 0;
 
@@ -494,6 +496,7 @@ class DistributedReplicaImpl implements DistributedReplicaApi {
 			this.#anonymousRecordClocks.delete(scopeToken);
 		}
 		if (apply) {
+			this.#projectionGeneration += 1;
 			/*
 			 * The command result is authoritative before an asynchronous read
 			 * model necessarily catches up. Retain its complete row and causal
@@ -509,7 +512,8 @@ class DistributedReplicaImpl implements DistributedReplicaApi {
 						incarnation: evidence.incarnation,
 						revision: evidence.revision,
 						tombstone: false
-					})
+					}),
+					projectionGeneration: this.#projectionGeneration
 				})
 			);
 		}
@@ -1087,7 +1091,8 @@ class DistributedReplicaImpl implements DistributedReplicaApi {
 		stableVariables: TVariables,
 		envelope: ReplicaResultEnvelope<TData>,
 		source: ReplicaWriteSource,
-		requestRevision?: string
+		requestRevision?: string,
+		responseProjectionGeneration?: number
 	): DistributedProtocolEnvelope {
 		const extensions = parseGraphqlResponseExtensions(envelope.extensions);
 		const parsedEnvelope: ReplicaResultEnvelope<TData> = Object.freeze({
@@ -1106,7 +1111,8 @@ class DistributedReplicaImpl implements DistributedReplicaApi {
 			parsedEnvelope,
 			source,
 			distributed,
-			requestRevision
+			requestRevision,
+			responseProjectionGeneration
 		);
 		if (accepted) this.#notifyResultObservers(parsedEnvelope);
 		return distributed;
@@ -1119,7 +1125,8 @@ class DistributedReplicaImpl implements DistributedReplicaApi {
 		envelope: ReplicaResultEnvelope<TData>,
 		source: ReplicaWriteSource,
 		distributed: DistributedProtocolEnvelope,
-		requestRevision: string | undefined
+		requestRevision: string | undefined,
+		responseProjectionGeneration: number | undefined
 	): boolean {
 			this.#validateProtocolBinding(artifact, distributed, source);
 			const previousProtocolGeneration = this.#protocolGeneration;
@@ -1409,13 +1416,21 @@ class DistributedReplicaImpl implements DistributedReplicaApi {
 								evidence,
 								projectedFence
 							);
+				const newerPostProjectionRow =
+					projectedFence !== undefined &&
+					projectedDisposition === 'conflict' &&
+					projectedClockComparison === 1 &&
+					responseProjectionGeneration !== undefined &&
+					responseProjectionGeneration >=
+						projectedFence.projectionGeneration;
 				/*
 				 * Snapshot bodies can race: SQL may be read before a command
 				 * while response evidence is stamped after it. Conflicting
-				 * field bodies therefore never clear or override a projected
-				 * fence, even when the evidence revision is numerically later.
-				 * An exact field echo, a newer partial selection, a newer
-				 * tombstone, or pathless supersession can release the fence.
+				 * pre-command responses therefore cannot override a projected
+				 * fence, even when their evidence revision is numerically later.
+				 * A causally newer row from an HTTP request or live frame that
+				 * began after the command is an atomic supersession and may
+				 * release the fence without first echoing the projected body.
 				 */
 				if (projectedFence !== undefined) {
 					const exactEcho =
@@ -1427,7 +1442,7 @@ class DistributedReplicaImpl implements DistributedReplicaApi {
 					const newerPartial =
 						projectedDisposition === 'partial' &&
 						projectedClockComparison === 1;
-					if (exactEcho || newerPartial) {
+					if (exactEcho || newerPartial || newerPostProjectionRow) {
 						pendingProjectedRecordFenceClears.set(
 							recordKey,
 							projectedFence
@@ -1441,7 +1456,8 @@ class DistributedReplicaImpl implements DistributedReplicaApi {
 					pendingRecordScopes,
 					pendingAnonymousRecordClocks,
 					consumedAnonymousRecordClocks,
-					projectedDisposition === 'conflict'
+					projectedDisposition === 'conflict' &&
+						!newerPostProjectionRow
 				);
 				pendingPathRecords.set(encodedPath, recordKey);
 				return Object.freeze({ evidence, apply: resolution });
@@ -2248,6 +2264,7 @@ class DistributedReplicaImpl implements DistributedReplicaApi {
 		this.#readOperationKeys.clear();
 		this.#watchRenderCounts.clear();
 		this.#trustedPresets = EMPTY_TRUSTED_PRESETS;
+		this.#projectionGeneration = 0;
 		this.#nextIndexRevision = '0';
 		this.#protocolGeneration = undefined;
 		this.#engine.restore(EMPTY_CACHE_SNAPSHOT);
@@ -3286,11 +3303,13 @@ class DistributedReplicaImpl implements DistributedReplicaApi {
 		this.#emitState(watch.key, false);
 		const operationGeneration = this.#operationGeneration(watch.key);
 		const authorizationGeneration = this.#protocolGenerationSequence;
+		const projectionGeneration = this.#projectionGeneration;
 		/*
-		 * Reserve local ordering when the request starts, not when it finishes.
-		 * Distinct operation artifacts may share the same semantic index key;
-		 * a slower earlier request must not replace a later-started result merely
-		 * because its response arrived last.
+		 * Reserve local index ordering and the projection-fence generation when
+		 * the request starts, not when it finishes. Distinct operation artifacts
+		 * may share the same semantic index key; a slower earlier request must
+		 * not replace a later-started result merely because its response arrived
+		 * last, nor may it supersede a direct projection installed in between.
 		 */
 		const requestRevision = this.#allocateIndexRevision();
 		const controller = new AbortController();
@@ -3351,7 +3370,8 @@ class DistributedReplicaImpl implements DistributedReplicaApi {
 					watch.variables,
 					result,
 					'network',
-					requestRevision
+					requestRevision,
+					projectionGeneration
 				);
 			})
 			.catch((error: unknown) => {
@@ -3426,6 +3446,8 @@ class DistributedReplicaImpl implements DistributedReplicaApi {
 				}),
 				{
 					next: (result) => {
+						// A live frame begins at this synchronous ingress boundary.
+						const projectionGeneration = this.#projectionGeneration;
 						if (
 							entry.protocolGeneration !== this.#protocolGenerationSequence
 						) {
@@ -3484,7 +3506,9 @@ class DistributedReplicaImpl implements DistributedReplicaApi {
 								watch.artifact,
 								watch.variables,
 								result,
-								'live'
+								'live',
+								undefined,
+								projectionGeneration
 							);
 							if (distributed.live?.supported === false) {
 								this.#fallbackFromLive(watch, entry);

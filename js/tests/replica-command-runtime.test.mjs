@@ -312,6 +312,29 @@ function scopeTodoIdSnapshotEnvelope(position, operation) {
 	return envelope;
 }
 
+function scopeLiveQueryArtifact() {
+	return Object.freeze({
+		...scopeQueryArtifact(),
+		live: Object.freeze({
+			id: HASH_E,
+			document: 'subscription ClientScopeLive { todos { id title } }'
+		})
+	});
+}
+
+function scopeLiveTodoSnapshotEnvelope(position, title) {
+	const envelope = scopeTodoSnapshotEnvelope(position, title, {
+		operation: HASH_E
+	});
+	const resume = envelope.extensions.distributed.snapshot.indexes[0].resume;
+	envelope.extensions.distributed.live = {
+		supported: true,
+		reset: true,
+		cursors: [resume]
+	};
+	return envelope;
+}
+
 function projectedTodoArtifact() {
 	return artifact({
 		name: 'todo.project',
@@ -1280,6 +1303,114 @@ test('Projected<T> rejects a conflicting snapshot body even with later evidence'
 		'projected-newer'
 	);
 	assert.equal(replica.inspectRecord(Todo, 'todo-1').revision, '3');
+	runtime.dispose();
+});
+
+test('Projected<T> rejects a conflicting HTTP response started before the projection', async () => {
+	let resolveFetch;
+	let markFetchStarted;
+	const fetchStarted = new Promise((resolve) => {
+		markFetchStarted = resolve;
+	});
+	const fetchResult = new Promise((resolve) => {
+		resolveFetch = resolve;
+	});
+	const replica = createDistributedReplica({
+		transport: {
+			fetch: () => {
+				markFetchStarted();
+				return fetchResult;
+			}
+		}
+	});
+	const scopeOperation = scopeQueryArtifact();
+	replica.writeResult(
+		scopeOperation,
+		{},
+		scopeTodoSnapshotEnvelope('1', 'initial'),
+		'network'
+	);
+	const watch = replica.watch(scopeOperation, {});
+	const refresh = watch.refresh();
+	await fetchStarted;
+	const runtime = await directlyProjectTodo(replica);
+
+	resolveFetch(
+		scopeTodoSnapshotEnvelope('4', 'pre-command-body', {
+			recordRevision: '999999999999999999'
+		})
+	);
+	await refresh;
+
+	assert.equal(watch.get().data.todos[0].title, 'projected-newer');
+	assert.equal(replica.inspectRecord(Todo, 'todo-1').revision, '3');
+	watch.destroy();
+	runtime.dispose();
+});
+
+test('Projected<T> accepts a causally newer post-command HTTP row before the projected echo', async () => {
+	let resolveFetch;
+	let markFetchStarted;
+	const fetchStarted = new Promise((resolve) => {
+		markFetchStarted = resolve;
+	});
+	const fetchResult = new Promise((resolve) => {
+		resolveFetch = resolve;
+	});
+	const replica = createDistributedReplica({
+		transport: {
+			fetch: () => {
+				markFetchStarted();
+				return fetchResult;
+			}
+		}
+	});
+	const scopeOperation = scopeQueryArtifact();
+	replica.writeResult(
+		scopeOperation,
+		{},
+		scopeTodoSnapshotEnvelope('1', 'initial'),
+		'network'
+	);
+	const watch = replica.watch(scopeOperation, {});
+	const runtime = await directlyProjectTodo(replica);
+	const refresh = watch.refresh();
+	await fetchStarted;
+
+	resolveFetch(scopeTodoSnapshotEnvelope('4', 'server-newer'));
+	await refresh;
+
+	assert.equal(watch.get().data.todos[0].title, 'server-newer');
+	assert.equal(replica.inspectRecord(Todo, 'todo-1').revision, '4');
+	watch.destroy();
+	runtime.dispose();
+});
+
+test('Projected<T> accepts a causally newer live row before the projected echo', async () => {
+	let liveObserver;
+	const replica = createDistributedReplica({
+		transport: {
+			subscribe: (_request, observer) => {
+				liveObserver = observer;
+				return () => {};
+			}
+		}
+	});
+	const scopeOperation = scopeLiveQueryArtifact();
+	replica.writeResult(
+		scopeOperation,
+		{},
+		scopeTodoSnapshotEnvelope('1', 'initial'),
+		'network'
+	);
+	const watch = replica.watch(scopeOperation, {}, { live: true });
+	const runtime = await directlyProjectTodo(replica);
+
+	liveObserver.next(scopeLiveTodoSnapshotEnvelope('4', 'server-newer'));
+
+	assert.equal(watch.get().data.todos[0].title, 'server-newer');
+	assert.equal(replica.inspectRecord(Todo, 'todo-1').revision, '4');
+	watch.destroy();
 	runtime.dispose();
 });
 
