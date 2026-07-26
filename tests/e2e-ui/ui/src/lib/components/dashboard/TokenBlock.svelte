@@ -48,80 +48,82 @@
 </div>
 
 <style>
-	.token-block {
-		border: 1px solid var(--hops-border);
-		border-radius: 8px;
-		overflow: hidden;
-	}
+.token-block {
+	border: 1px solid var(--hops-border);
+	border-radius: 8px;
+	overflow: hidden;
+}
 
-	.token-header {
-		display: flex;
-		justify-content: space-between;
-		align-items: center;
-		padding: 0.6rem 0.875rem;
-		background: var(--hops-bg-light);
-		border-bottom: 1px solid var(--hops-border);
-	}
+.token-header {
+	display: flex;
+	justify-content: space-between;
+	align-items: center;
+	padding: 0.6rem 0.875rem;
+	background: var(--hops-bg-light);
+	border-bottom: 1px solid var(--hops-border);
+}
 
-	.token-label {
-		font-size: 0.75rem;
-		font-weight: 600;
-		color: var(--hops-text-secondary);
-		text-transform: uppercase;
-		letter-spacing: 0.04em;
-	}
+.token-label {
+	font-size: 0.75rem;
+	font-weight: 600;
+	color: var(--hops-text-secondary);
+	text-transform: uppercase;
+	letter-spacing: 0.04em;
+}
 
-	.token-actions {
-		display: flex;
-		align-items: center;
-		gap: 0.5rem;
-	}
+.token-actions {
+	display: flex;
+	align-items: center;
+	gap: 0.5rem;
+}
 
-	.token-hint {
-		font-size: 0.65rem;
-		font-family: var(--font-mono);
-		color: var(--hops-text-muted);
-		background: var(--hops-bg-white);
-		padding: 0.2rem 0.4rem;
-		border-radius: 4px;
-		border: 1px solid var(--hops-border);
-	}
+.token-hint {
+	font-size: 0.65rem;
+	font-family: var(--font-mono);
+	color: var(--hops-text-muted);
+	background: var(--hops-bg-white);
+	padding: 0.2rem 0.4rem;
+	border-radius: 4px;
+	border: 1px solid var(--hops-border);
+}
 
-	.copy-btn {
-		display: flex;
-		align-items: center;
-		justify-content: center;
-		width: 28px;
-		height: 28px;
-		background: var(--hops-bg-white);
-		border: 1px solid var(--hops-border);
-		border-radius: 6px;
-		cursor: pointer;
-		color: var(--hops-text-muted);
-		transition: all 0.15s ease;
-		&:hover {
-			background: var(--hops-bg-white);
-			border-color: var(--hops-navy);
-			color: var(--hops-navy);
-		}
-		&.copied {
-			background: var(--hops-success);
-			border-color: var(--hops-success);
-			color: white;
-		}
-	}
+.copy-btn {
+	display: flex;
+	align-items: center;
+	justify-content: center;
+	width: 28px;
+	height: 28px;
+	background: var(--hops-bg-white);
+	border: 1px solid var(--hops-border);
+	border-radius: 6px;
+	cursor: pointer;
+	color: var(--hops-text-muted);
+	transition: all 0.15s ease;
+}
 
-	.token-value {
-		font-family: var(--font-mono);
-		font-size: 0.7rem;
-		color: #a0aec0;
-		background: var(--hops-navy-deep);
-		padding: 0.875rem;
-		margin: 0;
-		word-break: break-all;
-		white-space: pre-wrap;
-		line-height: 1.6;
-		max-height: 88px;
-		overflow-y: auto;
-	}
+.copy-btn:hover {
+	background: var(--hops-bg-white);
+	border-color: var(--hops-navy);
+	color: var(--hops-navy);
+}
+
+.copy-btn.copied {
+	background: var(--hops-success);
+	border-color: var(--hops-success);
+	color: white;
+}
+
+.token-value {
+	font-family: var(--font-mono);
+	font-size: 0.7rem;
+	color: #a0aec0;
+	background: var(--hops-navy-deep);
+	padding: 0.875rem;
+	margin: 0;
+	word-break: break-all;
+	white-space: pre-wrap;
+	line-height: 1.6;
+	max-height: 88px;
+	overflow-y: auto;
+}
 </style>

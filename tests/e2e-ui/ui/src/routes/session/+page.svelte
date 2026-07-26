@@ -221,7 +221,6 @@
 	.session-view {
 		width: 100%;
 		text-align: left;
-
 	}
 
 	.session-profile {
@@ -233,7 +232,6 @@
 		background: var(--wf-bg-elevated, #fff);
 		border: 1px solid var(--wf-line, #e2e0d9);
 		border-radius: var(--df-radius-lg, 10px);
-
 	}
 
 	.session-avatar {
@@ -248,32 +246,30 @@
 		font-size: 1.2rem;
 		font-weight: 600;
 		letter-spacing: 0.02em;
-
 	}
 
 	.session-identity {
 		min-width: 0;
+	}
 
-		h1 {
-			margin: 0 0 0.2rem;
-			font-family: var(--wf-serif, Georgia, serif);
-			font-size: clamp(1.5rem, 3vw, 1.85rem);
-			font-weight: 500;
-			letter-spacing: -0.02em;
-			line-height: 1.1;
-			color: var(--wf-ink, #1c1c1a);
+	.session-identity h1 {
+		margin: 0 0 0.2rem;
+		font-family: var(--wf-serif, Georgia, serif);
+		font-size: clamp(1.5rem, 3vw, 1.85rem);
+		font-weight: 500;
+		letter-spacing: -0.02em;
+		line-height: 1.1;
+		color: var(--wf-ink, #1c1c1a);
+	}
 
-		}
-		h2 {
-			margin: 0;
-			color: var(--wf-ink, #1c1c1a);
-			font-family: var(--wf-sans, system-ui, sans-serif);
-			font-size: 1.15rem;
-			font-weight: 600;
-			line-height: 1.25;
-			overflow-wrap: anywhere;
-
-		}
+	.session-identity h2 {
+		margin: 0;
+		color: var(--wf-ink, #1c1c1a);
+		font-family: var(--wf-sans, system-ui, sans-serif);
+		font-size: 1.15rem;
+		font-weight: 600;
+		line-height: 1.25;
+		overflow-wrap: anywhere;
 	}
 
 	.muted {
@@ -281,7 +277,6 @@
 		color: var(--wf-ink-muted, #8a8a82);
 		font-size: 0.95rem;
 		overflow-wrap: anywhere;
-
 	}
 
 	.pill-row {
@@ -289,7 +284,6 @@
 		flex-wrap: wrap;
 		gap: 0.4rem;
 		margin-top: 0.75rem;
-
 	}
 
 	.group-pill {
@@ -305,7 +299,6 @@
 		font-size: 0.75rem;
 		font-weight: 600;
 		overflow-wrap: anywhere;
-
 	}
 
 	.session-alert {
@@ -317,7 +310,6 @@
 		color: var(--wf-ink, #1c1c1a);
 		font-size: 0.92rem;
 		font-weight: 500;
-
 	}
 
 	.session-grid {
@@ -325,11 +317,6 @@
 		grid-template-columns: repeat(2, minmax(0, 1fr));
 		gap: 0.65rem;
 		margin-top: 1rem;
-
-		@media (--tablet) {
-			grid-template-columns: 1fr;
-
-		}
 	}
 
 	.session-row {
@@ -342,44 +329,41 @@
 		background: var(--wf-bg-elevated, #fff);
 		border: 1px solid var(--wf-line, #e2e0d9);
 		border-radius: var(--wf-radius, 6px);
+	}
 
-		span {
-			color: var(--wf-ink-muted, #8a8a82);
-			font-size: 0.72rem;
-			font-weight: 600;
-			text-transform: uppercase;
-			letter-spacing: 0.05em;
+	.session-row span {
+		color: var(--wf-ink-muted, #8a8a82);
+		font-size: 0.72rem;
+		font-weight: 600;
+		text-transform: uppercase;
+		letter-spacing: 0.05em;
+	}
 
-		}
-		strong {
-			display: inline-flex;
-			align-items: center;
-			gap: 0.35rem;
-			min-width: 0;
-			color: var(--wf-ink, #1c1c1a);
-			font-size: 0.95rem;
-			font-weight: 600;
-			line-height: 1.35;
-			overflow-wrap: anywhere;
+	.session-row strong {
+		display: inline-flex;
+		align-items: center;
+		gap: 0.35rem;
+		min-width: 0;
+		color: var(--wf-ink, #1c1c1a);
+		font-size: 0.95rem;
+		font-weight: 600;
+		line-height: 1.35;
+		overflow-wrap: anywhere;
+	}
 
-		}
-		.mono {
-			font-family: var(--wf-mono, ui-monospace, monospace);
-			font-size: 0.85rem;
-			font-weight: 500;
-
-		}
+	.session-row .mono {
+		font-family: var(--wf-mono, ui-monospace, monospace);
+		font-size: 0.85rem;
+		font-weight: 500;
 	}
 
 	.session-row .verified,
-		.session-countdown {
+	.session-countdown {
 		color: var(--wf-success, #2f6f4e);
-
 	}
 
 	.session-countdown.expired {
 		color: var(--wf-danger, #b33a3a);
-
 	}
 
 	.token-inspector-list {
@@ -387,7 +371,6 @@
 		flex-direction: column;
 		gap: 0.75rem;
 		margin-top: 1rem;
-
 	}
 
 	.button-row {
@@ -395,17 +378,15 @@
 		flex-wrap: wrap;
 		gap: 0.65rem;
 		margin-top: 1.25rem;
+	}
 
-		&.center {
-			justify-content: center;
-
-		}
+	.button-row.center {
+		justify-content: center;
 	}
 
 	.empty-state {
 		text-align: center;
 		padding: 3.5rem 1.5rem;
-
 	}
 
 	.empty-icon {
@@ -419,7 +400,6 @@
 		align-items: center;
 		justify-content: center;
 		color: var(--wf-ink, #1c1c1a);
-
 	}
 
 	.empty-title {
@@ -429,7 +409,6 @@
 		font-size: clamp(1.5rem, 4vw, 2rem);
 		font-weight: 500;
 		letter-spacing: -0.02em;
-
 	}
 
 	.empty-text {
@@ -437,7 +416,12 @@
 		margin: 0 auto 1.75rem;
 		color: var(--wf-ink-soft, #5c5c56);
 		font-size: 0.98rem;
+	}
 
+	@media (--tablet) {
+		.session-grid {
+			grid-template-columns: 1fr;
+		}
 	}
 
 	@media (--mobile) {
@@ -445,24 +429,23 @@
 			grid-template-columns: 1fr;
 			justify-items: center;
 			text-align: center;
-
 		}
+
 		.session-identity h2 {
 			font-size: 1.05rem;
-
 		}
+
 		.pill-row {
 			justify-content: center;
-
 		}
+
 		.session-row {
 			grid-template-columns: 1fr;
 			gap: 0.3rem;
-
 		}
+
 		.button-row {
 			align-items: stretch;
-
 		}
 	}
 </style>

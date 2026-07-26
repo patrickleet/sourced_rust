@@ -35,64 +35,55 @@
 </div>
 
 <style>
-	.avatar {
-		display: flex;
-		align-items: center;
-		justify-content: center;
-		background: linear-gradient(135deg, var(--hops-navy) 0%, var(--hops-navy-light) 100%);
-		border-radius: 12px;
-		flex-shrink: 0;
-		overflow: hidden;
-		img {
-			width: 100%;
-			height: 100%;
-			object-fit: cover;
-		}
-	}
+.avatar {
+	display: flex;
+	align-items: center;
+	justify-content: center;
+	background: linear-gradient(135deg, var(--hops-navy) 0%, var(--hops-navy-light) 100%);
+	border-radius: 12px;
+	flex-shrink: 0;
+	overflow: hidden;
+}
 
-	.size-sm {
-		width: 40px;
-		height: 40px;
-		border-radius: 10px;
-		.initials {
-			font-size: 0.875rem; 
-		}
-		.icon {
-			width: 20px; height: 20px; 
-		}
-	}
+.size-sm {
+	width: 40px;
+	height: 40px;
+	border-radius: 10px;
+}
 
-	.size-md {
-		width: 56px;
-		height: 56px;
-		.initials {
-			font-size: 1.125rem; 
-		}
-		.icon {
-			width: 28px; height: 28px; 
-		}
-	}
+.size-md {
+	width: 56px;
+	height: 56px;
+}
 
-	.size-lg {
-		width: 72px;
-		height: 72px;
-		border-radius: 16px;
-		.initials {
-			font-size: 1.5rem; 
-		}
-		.icon {
-			width: 36px; height: 36px; 
-		}
-	}
+.size-lg {
+	width: 72px;
+	height: 72px;
+	border-radius: 16px;
+}
 
-	.initials {
-		font-family: var(--font-display);
-		font-weight: 700;
-		color: var(--hops-text-inverse);
-		letter-spacing: 0.02em;
-	}
+.avatar img {
+	width: 100%;
+	height: 100%;
+	object-fit: cover;
+}
 
-	.icon {
-		color: rgba(255, 255, 255, 0.7);
-	}
+.initials {
+	font-family: var(--font-display);
+	font-weight: 700;
+	color: var(--hops-text-inverse);
+	letter-spacing: 0.02em;
+}
+
+.size-sm .initials { font-size: 0.875rem; }
+.size-md .initials { font-size: 1.125rem; }
+.size-lg .initials { font-size: 1.5rem; }
+
+.icon {
+	color: rgba(255, 255, 255, 0.7);
+}
+
+.size-sm .icon { width: 20px; height: 20px; }
+.size-md .icon { width: 28px; height: 28px; }
+.size-lg .icon { width: 36px; height: 36px; }
 </style>

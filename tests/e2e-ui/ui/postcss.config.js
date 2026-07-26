@@ -6,10 +6,7 @@ export default {
 		'postcss-preset-env': {
 			stage: 2,
 			features: {
-				// Native CSS nesting is Baseline — leave it alone. Transforming
-				// `&-suffix` BEM children via postcss-nesting mis-expands to
-				// `-suffix.parent` under current preset-env.
-				'nesting-rules': false,
+				'nesting-rules': true,
 				'custom-media-queries': true,
 				'media-query-ranges': true
 			}

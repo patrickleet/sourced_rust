@@ -50,117 +50,113 @@
 </section>
 
 <style>
-	.marketing-section {
-		padding: var(--section-padding) 0;
-		position: relative;
+.marketing-section {
+	padding: var(--section-padding) 0;
+	position: relative;
+}
+
+/* Themes - color schemes */
+.theme-light-primary {
+	background: var(--hops-bg-white);
+	color: var(--hops-text-primary);
+}
+
+.theme-light-secondary {
+	background: var(--hops-bg-light);
+	color: var(--hops-text-primary);
+}
+
+.theme-dark {
+	background: var(--hops-navy);
+	color: var(--hops-text-inverse);
+}
+
+.theme-transparent-light {
+	background: transparent;
+	color: var(--hops-text-primary);
+}
+
+.theme-transparent-dark {
+	background: transparent;
+	color: var(--hops-text-inverse);
+}
+
+/* Section with scroll indicator */
+.has-arrow {
+	padding-bottom: calc(var(--section-padding) + 4rem);
+}
+
+.scroll-indicator {
+	position: absolute;
+	bottom: calc(var(--section-padding) / 2);
+	left: 50%;
+	transform: translateX(-50%);
+	color: var(--hops-orange);
+
+	& svg {
+		width: 44px;
+		height: 44px;
+		animation: bounce 2s ease-in-out infinite;
 	}
 
-	/* Themes - color schemes */
-
-	.theme-light-primary {
-		background: var(--hops-bg-white);
-		color: var(--hops-text-primary);
+	&.is-light {
+		color: rgba(255, 255, 255, 0.7);
 	}
+}
 
-	.theme-light-secondary {
-		background: var(--hops-bg-light);
-		color: var(--hops-text-primary);
+@keyframes bounce {
+	0%, 100% {
+		transform: translateY(0);
+		opacity: 0.6;
 	}
-
-	.theme-dark {
-		background: var(--hops-navy);
-		color: var(--hops-text-inverse);
-		:global(.section-title) {
-			color: var(--hops-text-inverse);
-		}
-		:global(.section-subtitle) {
-			color: rgba(255, 255, 255, 0.7);
-		}
+	50% {
+		transform: translateY(10px);
+		opacity: 1;
 	}
+}
 
-	.theme-transparent-light {
-		background: transparent;
-		color: var(--hops-text-primary);
-	}
+/* Dark theme title overrides */
+.theme-dark :global(.section-title) {
+	color: var(--hops-text-inverse);
+}
 
-	.theme-transparent-dark {
-		background: transparent;
-		color: var(--hops-text-inverse);
-	}
+.theme-dark :global(.section-subtitle) {
+	color: rgba(255, 255, 255, 0.7);
+}
 
-	/* Section with scroll indicator */
+/* Effect: Callout diagonal transitions */
+.has-effect {
+	--diagonal-height: 4rem;
+	position: relative;
+	z-index: 1;
+	margin-top: calc(-1 * var(--diagonal-height));
+	margin-bottom: calc(-1 * var(--diagonal-height));
+	padding-top: calc(var(--section-padding) + var(--diagonal-height));
+	padding-bottom: calc(var(--section-padding) + var(--diagonal-height));
+}
 
-	.has-arrow {
-		padding-bottom: calc(var(--section-padding) + 4rem);
-	}
+/* Callout right: grows left to right (top angles down-left, bottom angles down-right) */
+.effect-callout-right {
+	clip-path: polygon(
+		0 var(--diagonal-height),
+		100% 0,
+		100% 100%,
+		0 calc(100% - var(--diagonal-height))
+	);
+}
 
-	.scroll-indicator {
-		position: absolute;
-		bottom: calc(var(--section-padding) / 2);
-		left: 50%;
-		transform: translateX(-50%);
-		color: var(--hops-orange);
+/* Callout left: grows right to left (mirrored) */
+.effect-callout-left {
+	clip-path: polygon(
+		0 0,
+		100% var(--diagonal-height),
+		100% calc(100% - var(--diagonal-height)),
+		0 100%
+	);
+}
 
-		& svg {
-			width: 44px;
-			height: 44px;
-			animation: bounce 2s ease-in-out infinite;
-		}
-
-		&.is-light {
-			color: rgba(255, 255, 255, 0.7);
-		}
-	}
-
-	@keyframes bounce {
-		0%, 100% {
-			transform: translateY(0);
-			opacity: 0.6;
-		}
-		50% {
-			transform: translateY(10px);
-			opacity: 1;
-		}
-	}
-
-	/* Dark theme title overrides */
-
-	/* Effect: Callout diagonal transitions */
-
-	.has-effect {
-		--diagonal-height: 4rem;
-		position: relative;
-		z-index: 1;
-		margin-top: calc(-1 * var(--diagonal-height));
-		margin-bottom: calc(-1 * var(--diagonal-height));
-		padding-top: calc(var(--section-padding) + var(--diagonal-height));
-		padding-bottom: calc(var(--section-padding) + var(--diagonal-height));
-		&.has-arrow {
-			padding-bottom: calc(var(--section-padding) + var(--diagonal-height) + 4rem);
-		}
-	}
-
-	/* Callout right: grows left to right (top angles down-left, bottom angles down-right) */
-
-	.effect-callout-right {
-		clip-path: polygon(
-			0 var(--diagonal-height),
-			100% 0,
-			100% 100%,
-			0 calc(100% - var(--diagonal-height))
-		);
-	}
-
-	/* Callout left: grows right to left (mirrored) */
-
-	.effect-callout-left {
-		clip-path: polygon(
-			0 0,
-			100% var(--diagonal-height),
-			100% calc(100% - var(--diagonal-height)),
-			0 100%
-		);
-	}
-
-	/* When effect has arrow, add extra padding */
+/* When effect has arrow, add extra padding */
+.has-effect.has-arrow {
+	padding-bottom: calc(var(--section-padding) + var(--diagonal-height) + 4rem);
+}
 </style>

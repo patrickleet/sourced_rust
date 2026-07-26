@@ -207,16 +207,15 @@
 		border: 1px solid var(--wf-line, #e2e0d9);
 		border-radius: var(--df-radius-lg, 10px);
 		overflow: hidden;
+	}
 
-		&-header {
-			display: flex;
-			align-items: center;
-			justify-content: space-between;
-			gap: 1rem;
-			min-height: 60px;
-			padding: 0.85rem 1rem;
-
-		}
+	.token-card-header {
+		display: flex;
+		align-items: center;
+		justify-content: space-between;
+		gap: 1rem;
+		min-height: 60px;
+		padding: 0.85rem 1rem;
 	}
 
 	.token-title-block {
@@ -225,14 +224,12 @@
 		flex-wrap: wrap;
 		gap: 0.55rem;
 		min-width: 0;
-
 	}
 
 	.token-label {
 		color: var(--wf-ink, #1c1c1a);
 		font-size: 0.95rem;
 		font-weight: 600;
-
 	}
 
 	.token-status {
@@ -245,19 +242,18 @@
 		font-weight: 600;
 		text-transform: uppercase;
 		letter-spacing: 0.04em;
+	}
 
-		&.present {
-			background: rgba(47, 111, 78, 0.1);
-			border: 1px solid rgba(47, 111, 78, 0.22);
-			color: var(--wf-success, #2f6f4e);
+	.token-status.present {
+		background: rgba(47, 111, 78, 0.1);
+		border: 1px solid rgba(47, 111, 78, 0.22);
+		color: var(--wf-success, #2f6f4e);
+	}
 
-		}
-		&.missing {
-			background: rgba(179, 58, 58, 0.08);
-			border: 1px solid rgba(179, 58, 58, 0.2);
-			color: var(--wf-danger, #b33a3a);
-
-		}
+	.token-status.missing {
+		background: rgba(179, 58, 58, 0.08);
+		border: 1px solid rgba(179, 58, 58, 0.2);
+		color: var(--wf-danger, #b33a3a);
 	}
 
 	.token-actions {
@@ -266,11 +262,10 @@
 		justify-content: flex-end;
 		flex-wrap: wrap;
 		gap: 0.4rem;
-
 	}
 
 	.token-icon-button,
-		.token-decode-button {
+	.token-decode-button {
 		display: inline-flex;
 		align-items: center;
 		justify-content: center;
@@ -282,14 +277,12 @@
 			background 0.15s ease,
 			border-color 0.15s ease,
 			color 0.15s ease;
-
 	}
 
 	.token-icon-button {
 		width: 34px;
 		height: 34px;
 		border-radius: var(--wf-radius, 6px);
-
 	}
 
 	.token-decode-button {
@@ -299,31 +292,27 @@
 		border-radius: var(--wf-radius, 6px);
 		font-weight: 600;
 		font-size: 0.85rem;
-
 	}
 
 	.token-icon-button:hover,
-		.token-decode-button:hover {
+	.token-decode-button:hover {
 		background: var(--wf-ink, #1c1c1a);
 		border-color: var(--wf-ink, #1c1c1a);
 		color: var(--wf-bg, #f6f5f2);
-
 	}
 
 	.token-reveal,
-		.token-decoded {
+	.token-decoded {
 		border-top: 1px solid var(--wf-line, #e2e0d9);
-
 	}
 
 	.token-reveal {
 		padding: 0.85rem 1rem;
 		background: var(--wf-code-bg, #1c1c1a);
-
 	}
 
 	.token-code,
-		.token-json {
+	.token-json {
 		margin: 0;
 		overflow-x: auto;
 		white-space: pre-wrap;
@@ -331,18 +320,16 @@
 		font-size: 0.82rem;
 		line-height: 1.65;
 		overflow-wrap: anywhere;
-
 	}
 
 	.token-code :global(code),
-		.token-json :global(code) {
+	.token-json :global(code) {
 		display: block;
 		padding: 0 !important;
 		background: transparent !important;
 		color: inherit !important;
 		border-radius: 0 !important;
 		font: inherit;
-
 	}
 
 	.token-code {
@@ -351,29 +338,22 @@
 		color: var(--wf-code-fg, #e8e6e0);
 		overflow: visible;
 		word-break: break-all;
-
 	}
 
 	.token-code::after,
-		.token-json::after {
+	.token-json::after {
 		display: none !important;
-
 	}
 
 	.token-decoded {
 		padding: 0.95rem 1rem;
 		background: rgba(28, 28, 26, 0.02);
+	}
 
-		&-grid {
-			display: grid;
-			grid-template-columns: repeat(2, minmax(0, 1fr));
-			gap: 0.75rem;
-
-			@media (--tablet) {
-				grid-template-columns: 1fr;
-
-			}
-		}
+	.token-decoded-grid {
+		display: grid;
+		grid-template-columns: repeat(2, minmax(0, 1fr));
+		gap: 0.75rem;
 	}
 
 	.token-json-label {
@@ -384,7 +364,6 @@
 		font-weight: 600;
 		text-transform: uppercase;
 		letter-spacing: 0.06em;
-
 	}
 
 	.token-json {
@@ -396,28 +375,24 @@
 		border-radius: var(--wf-radius, 6px);
 		background: var(--wf-code-bg, #1c1c1a);
 		color: var(--wf-code-fg, #e8e6e0);
-
 	}
 
 	.token-meta,
-		.token-unavailable,
-		.token-decode-error {
+	.token-unavailable,
+	.token-decode-error {
 		margin: 0;
 		color: var(--wf-ink-soft, #5c5c56);
 		font-size: 0.88rem;
 		line-height: 1.5;
-
 	}
 
 	.token-meta {
 		margin-top: 0.7rem;
 		font-family: var(--wf-mono, ui-monospace, monospace);
-
 	}
 
 	.token-unavailable {
 		padding: 0 1rem 0.95rem;
-
 	}
 
 	.token-decode-error {
@@ -425,19 +400,23 @@
 		border-top: 1px solid var(--wf-line, #e2e0d9);
 		color: var(--wf-danger, #b33a3a);
 		font-weight: 600;
+	}
 
+	@media (--tablet) {
+		.token-decoded-grid {
+			grid-template-columns: 1fr;
+		}
 	}
 
 	@media (--mobile) {
 		.token-card-header {
 			align-items: flex-start;
 			flex-direction: column;
-
 		}
+
 		.token-actions {
 			width: 100%;
 			justify-content: flex-start;
-
 		}
 	}
 </style>

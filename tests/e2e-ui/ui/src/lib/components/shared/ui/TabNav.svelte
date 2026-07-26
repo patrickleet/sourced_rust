@@ -44,94 +44,93 @@
 </div>
 
 <style>
-	.tab-nav {
-		display: flex;
-		justify-content: center;
-		gap: 0.5rem;
-		margin-bottom: 2.5rem;
-		flex-wrap: wrap;
-	}
+.tab-nav {
+	display: flex;
+	justify-content: center;
+	gap: 0.5rem;
+	margin-bottom: 2.5rem;
+	flex-wrap: wrap;
+}
 
-	.tab {
-		display: flex;
-		align-items: center;
-		gap: 0.5rem;
-		padding: 0.625rem 1rem;
-		border-radius: 100px;
-		font-family: var(--font-body);
-		font-size: 0.8rem;
-		font-weight: 600;
-		cursor: pointer;
-		transition: all 0.3s var(--ease-out-expo);
-		&-icon {
-			font-size: 1.25rem;
-			line-height: 1;
-		}
-		&-label {
-			display: none;
-			white-space: nowrap;
+.tab {
+	display: flex;
+	align-items: center;
+	gap: 0.5rem;
+	padding: 0.625rem 1rem;
+	border-radius: 100px;
+	font-family: var(--font-body);
+	font-size: 0.8rem;
+	font-weight: 600;
+	cursor: pointer;
+	transition: all 0.3s var(--ease-out-expo);
+}
 
-			@media (--tablet-up) {
-				display: inline;
-			}
-		}
-	}
+.tab-icon {
+	font-size: 1.25rem;
+	line-height: 1;
+}
+
+.tab-label {
+	display: none;
+	white-space: nowrap;
 
 	@media (--tablet-up) {
-		.tab {
-			padding: 0.75rem 1.25rem;
-			font-size: 0.9rem;
+		display: inline;
+	}
+}
 
-		}
-		.tab-icon {
-			font-size: 1.1rem;
-
-		}
+@media (--tablet-up) {
+	.tab {
+		padding: 0.75rem 1.25rem;
+		font-size: 0.9rem;
 	}
 
-	/* Dark theme */
+	.tab-icon {
+		font-size: 1.1rem;
+	}
+}
 
-	.theme-dark {
-		& .tab {
-			background: rgba(255, 255, 255, 0.05);
-			border: 1px solid rgba(255, 255, 255, 0.1);
-			color: rgba(255, 255, 255, 0.7);
+/* Dark theme */
+.theme-dark {
+	& .tab {
+		background: rgba(255, 255, 255, 0.05);
+		border: 1px solid rgba(255, 255, 255, 0.1);
+		color: rgba(255, 255, 255, 0.7);
 
-			&:hover {
-				background: rgba(255, 255, 255, 0.1);
-				border-color: rgba(255, 255, 255, 0.2);
-				color: var(--hops-text-inverse);
-			}
+		&:hover {
+			background: rgba(255, 255, 255, 0.1);
+			border-color: rgba(255, 255, 255, 0.2);
+			color: var(--hops-text-inverse);
+		}
 
-			&.active {
-				background: var(--hops-orange);
-				border-color: var(--hops-orange);
-				color: var(--hops-text-inverse);
-				box-shadow: 0 4px 20px rgba(230, 154, 45, 0.4);
-			}
+		&.active {
+			background: var(--hops-orange);
+			border-color: var(--hops-orange);
+			color: var(--hops-text-inverse);
+			box-shadow: 0 4px 20px rgba(230, 154, 45, 0.4);
 		}
 	}
+}
 
-	/* Light theme */
+/* Light theme */
+.theme-light {
+	& .tab {
+		background: var(--hops-bg-white);
+		border: 1px solid var(--hops-border);
+		color: var(--hops-text-secondary);
 
-	.theme-light {
-		& .tab {
-			background: var(--hops-bg-white);
-			border: 1px solid var(--hops-border);
-			color: var(--hops-text-secondary);
+		&:hover {
+			background: var(--hops-bg-cream);
+			border-color: var(--hops-border-strong);
+			color: var(--hops-navy);
+		}
 
-			&:hover {
-				background: var(--hops-bg-cream);
-				border-color: var(--hops-border-strong);
-				color: var(--hops-navy);
-			}
-
-			&.active {
-				background: var(--hops-orange);
-				border-color: var(--hops-orange);
-				color: var(--hops-text-inverse);
-				box-shadow: 0 4px 20px rgba(230, 154, 45, 0.3);
-			}
+		&.active {
+			background: var(--hops-orange);
+			border-color: var(--hops-orange);
+			color: var(--hops-text-inverse);
+			box-shadow: 0 4px 20px rgba(230, 154, 45, 0.3);
 		}
 	}
+}
 </style>
