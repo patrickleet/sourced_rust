@@ -52,7 +52,7 @@ test.describe('blob game (alice)', () => {
 		await page.waitForTimeout(250);
 		page.off('request', countWallMoves);
 		expect(wallMoveRequests, 'a board-edge move should not reach GraphQL').toBe(0);
-		await expect(page.locator('.fn-alert')).toHaveCount(0);
+		await expect(page.locator('.inline-alert')).toHaveCount(0);
 
 		const navigations: string[] = [];
 		page.on('framenavigated', (frame) => {
@@ -113,7 +113,7 @@ test.describe('blob game (alice)', () => {
 		expect(moveResp.ok(), `blob_games_move HTTP ${moveResp.status()}`).toBeTruthy();
 		await page.unrouteAll({ behavior: 'wait' });
 		await expect(board).toBeVisible();
-		await expect(page.locator('.fn-alert, .blob-empty')).toHaveCount(0);
+		await expect(page.locator('.inline-alert, .blob-empty')).toHaveCount(0);
 
 		// History lists this game
 		await expect(page.getByRole('heading', { name: /your games/i })).toBeVisible({

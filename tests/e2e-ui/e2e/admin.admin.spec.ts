@@ -40,11 +40,23 @@ test.describe('admin (admin user)', () => {
 		await expect(page.getByRole('heading', { name: /all field notes/i })).toBeVisible({
 			timeout: 20_000
 		});
+		// Wait for the nested fieldnote-admin client to hydrate before invoking
+		// elevated commands (SSR markup alone has no Svelte handlers).
+		await page.waitForLoadState('networkidle');
+		const forceButtons = page.getByRole('button', { name: /force archive/i });
+		await expect(forceButtons.first()).toBeEnabled({ timeout: 20_000 });
 
-		const forceBtn = page.getByRole('button', { name: /force archive/i }).first();
-		if ((await forceBtn.count()) === 0) {
+		const targetRow = page
+			.locator('.ad-table tbody tr')
+			.filter({ has: page.getByRole('button', { name: /force archive/i }) })
+			.first();
+		if ((await targetRow.count()) === 0) {
 			test.skip(true, 'no non-archived todos to force-archive');
 		}
+
+		const todoId = await targetRow.getAttribute('data-todo-id');
+		expect(todoId, 'admin row must expose data-todo-id').toBeTruthy();
+		const forceBtn = targetRow.getByRole('button', { name: /force archive/i });
 
 		const navigations: string[] = [];
 		page.on('framenavigated', (frame) => {
@@ -55,7 +67,11 @@ test.describe('admin (admin user)', () => {
 			const observer = new MutationObserver(() => {
 				samples.push(document.querySelectorAll('.ad-table tbody tr').length);
 			});
-			observer.observe(document.querySelector('.ad-table-wrap')!, {
+			const wrap = document.querySelector('.ad-table-wrap');
+			if (wrap === null) {
+				throw new Error('admin table wrap missing before force archive');
+			}
+			observer.observe(wrap, {
 				childList: true,
 				subtree: true,
 				characterData: true
@@ -66,10 +82,31 @@ test.describe('admin (admin user)', () => {
 			});
 		});
 
+		const forceResponse = page.waitForResponse(
+			(response) =>
+				response.url().includes('graphql') &&
+				(response.request().postData() ?? '').includes('todos_force_archive'),
+			{ timeout: 20_000 }
+		);
 		await forceBtn.click();
-		await expect(forceBtn).toBeHidden({ timeout: 15_000 }).catch(async () => {
-			await expect(page.getByText(/archived/i).first()).toBeVisible();
+		const response = await forceResponse;
+		const responseBody = await response.text();
+		expect(
+			response.ok(),
+			`todos_force_archive HTTP ${response.status()}: ${responseBody.slice(0, 400)}`
+		).toBeTruthy();
+		expect(
+			responseBody,
+			`todos_force_archive GraphQL errors: ${responseBody.slice(0, 600)}`
+		).not.toMatch(/"errors"\s*:\s*\[/);
+
+		// Scope to the clicked row: other rows may still show Force archive.
+		const archivedRow = page.locator(`.ad-table tbody tr[data-todo-id="${todoId}"]`);
+		await expect(archivedRow.locator('[data-status="archived"]')).toBeVisible({
+			timeout: 15_000
 		});
+		await expect(archivedRow.getByRole('button', { name: /force archive/i })).toHaveCount(0);
+
 		const samples = await page.evaluate(() => {
 			const state = globalThis as typeof globalThis & {
 				__distributedAdminContinuitySamples: number[];
