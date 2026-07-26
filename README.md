@@ -1,11 +1,14 @@
 # Distributed
 
-**Event-sourced Rust backends. Deny-by-default GraphQL. A causal TypeScript
-replica for real apps.** One platform from aggregate tests to SvelteKit SSR.
+**Event-sourced Rust backends. Deny-by-default GraphQL with first-class OIDC.
+A causal TypeScript replica for real apps.** One platform from aggregate tests
+to SvelteKit SSR.
 
 Plain domain structs on the write side. Relational read models on the query
-side. The browser talks **one protocol** — GraphQL queries, live subscriptions,
-and typed command mutations — through `@hops-ops/distributed`.
+side. The GraphQL edge validates Bearer tokens (JWKS) and maps claims into
+session roles/RLS — not a bolted-on middleware afterthought. The browser talks
+**one protocol** — GraphQL queries, live subscriptions, and typed command
+mutations — through `@hops-ops/distributed`.
 
 ---
 
@@ -53,6 +56,26 @@ cargo run --example graphiql --features "graphql,sqlite"
 # → http://127.0.0.1:4000/graphql
 ```
 
+### First-class OIDC (Zitadel, Keycloak, Authentik)
+
+GraphQL identity is **built into the engine** (`OidcBearer`: JWKS fetch, iss/aud/exp
+validation, claim → role/session mapping). The same surface is proven live
+against three local IdPs — not mocks only:
+
+| Provider | Compose + bootstrap | Live test binary | Gate |
+|---|---|---|---|
+| **[Zitadel](tests/graphql_oidc_zitadel/)** (reference) | `./scripts/oidc-zitadel-up.sh` | `cargo test --test graphql_oidc_zitadel --features graphql,sqlite` | `ZITADEL_E2E=1` |
+| **[Keycloak](tests/graphql_oidc_keycloak/)** | `./scripts/oidc-keycloak-up.sh` | `cargo test --test graphql_oidc_keycloak --features graphql,sqlite` | `KEYCLOAK_E2E=1` |
+| **[Authentik](tests/graphql_oidc_authentik/)** | `./scripts/oidc-authentik-up.sh` | `cargo test --test graphql_oidc_authentik --features graphql,sqlite` | `AUTHENTIK_E2E=1` |
+
+Shared contract **E1–E8** lives in [`tests/graphql_oidc_common/`](tests/graphql_oidc_common/)
+(token mint, role isolation, expired/forged rejection). Without the gate env
+vars the binaries **skip cleanly**. Offline always-on coverage:
+`cargo test --test graphql_identity --features graphql,sqlite` (mock JWKS).
+
+Fieldnote (`make up`) boots **Zitadel** for a full browser login path; the three
+compose stacks prove the **same `OidcBearer` edge** is not vendor-locked.
+
 ### What the demos prove
 
 | Capability | Where it shows up |
@@ -60,6 +83,7 @@ cargo run --example graphiql --features "graphql,sqlite"
 | Model-first aggregates + event store | Domain crates under `tests/e2e-ui/crates/*-domain` |
 | Atomic `Projected<T>` (command + read model in one commit) | Blob moves — UI updates from the mutation payload |
 | Eventual projectors + outbox | Todos / chat after command acceptance |
+| **First-class OIDC on the GraphQL edge** | `OidcBearer` + live Zitadel / Keycloak / Authentik e2e |
 | Deny-by-default GraphQL RLS | Alice never sees Bob’s todos; admin surface is separate |
 | Live subscriptions | Chat list continues over WebSocket after projector commits |
 | Compiler-owned browser clients | `make gen-client` / `dctl client` → typed ops + optimistic commands |
@@ -72,6 +96,7 @@ cargo run --example graphiql --features "graphql,sqlite"
 | Capability | What it gives you |
 |---|---|
 | **Full-stack path** | Rust domains → GraphQL edge → `@hops-ops/distributed` → SvelteKit/React |
+| **First-class OIDC** | Built-in `OidcBearer` (JWKS, claims → roles); live e2e for **Zitadel, Keycloak, Authentik** |
 | Plain Rust aggregates | Domain state in ordinary structs with explicit command methods |
 | Model-first TDD | Exhaustive unit tests before handlers or infrastructure |
 | Event-sourced persistence | Append-only records, replay, optimistic commit, pluggable async repos |
@@ -446,7 +471,9 @@ Distributed is inspired by the original [sourced](https://github.com/mateodelnor
 - Make the transport a wiring choice, not a handler change.
 - Add optional queue-based locking for serialized workflows.
 - Expose a deny-by-default GraphQL edge over relational read models (not ad-hoc
-  handler SQL) with identity injected, not reinvented.
+  handler SQL).
+- Ship **first-class OIDC** on that edge (`OidcBearer` + claim mapping), with
+  optional trusted-proxy modes — not “bring your own JWT middleware.”
 - Keep browser apps on one protocol: typed GraphQL queries, live subscriptions,
   and causal command mutations with a normalized client replica.
 - Prefer generated client artifacts and explicit projection contracts over
@@ -1521,7 +1548,8 @@ distributed = { version = "0.1", features = ["graphql", "postgres"] }
 | In | Out |
 |---|---|
 | `SELECT`-only query surface from `TableSchema` / read models | Table mutations / write-to-projection via GraphQL |
-| Role column allowlists + row filters (`claim(...)`) | Built-in user auth product (identity is injected) |
+| Role column allowlists + row filters (`claim(...)`) | Full IdP product UI (login pages live in your app / Auth.js) |
+| **First-class OIDC Bearer validation** (JWKS, iss/aud/exp, claim → session) | Assuming raw HTTP microsvc routes authenticate without a proxy or GraphQL edge |
 | SQLite + Postgres dialects | Cross-service federation / remote schemas |
 | Typed causal command mutations (`Service` → GraphQL) | Raw JSON GraphQL command registries |
 | Live list subscriptions via commit-path invalidation | Querying outbox / event-store operational tables |
@@ -1603,26 +1631,38 @@ ModelPermissions::new()
 Row predicates can bind session claims (`claim("x-user-id")`, …) so multi-tenant
 RLS lives in the engine, not ad-hoc handler SQL.
 
-### Identity
+### Identity (first-class OIDC)
 
-GraphQL does not invent a second session model. It builds a `microsvc::Session`
-claim map using an [`IdentityMode`](src/graphql/identity/):
+Auth is a **built-in GraphQL concern**, not a separate product you wire after the
+fact. The engine validates tokens, maps claims into a `microsvc::Session`, and
+feeds the same claim map into RLS (`claim("x-user-id")`, roles, …). Modes live
+under [`src/graphql/identity/`](src/graphql/identity/):
 
 | Mode | When to use |
 |---|---|
-| **`OidcBearer`** | Production public edge: validate JWT (`Authorization: Bearer …`); require auth for protected ops. Scaffolds / e2e-ui prefer this when `OIDC_*` is set. |
-| **`TrustedProxy`** | Mesh/gateway injects trusted headers; client-supplied identity headers are stripped. |
+| **`OidcBearer`** | **Default for public edges:** JWT access tokens (`Authorization: Bearer …`), JWKS (incl. discovery), iss/aud/exp/nbf, alg allowlist (no `alg=none`), claim → engine roles. Configure with `OIDC_ISSUER` / `OIDC_AUDIENCE` (and related). |
+| **`TrustedProxy`** | Mesh/gateway already authenticated; inject trusted headers, strip client spoofing. |
 | **`Hybrid`** | Bearer when present, else trusted proxy headers. |
-| **`DevHeaders`** | Local only: trust ambient `x-user-id` / `x-role` (and friends). **Never** on a public edge. |
+| **`DevHeaders`** | Local only: ambient `x-user-id` / `x-role`. **Never** on a public edge. |
 
-Session convenience keys for domain code are neutral (`x-user-id`, `x-role`);
-gateway-specific claim names remain readable via `Session::get(...)`. See the
-microsvc session docs above.
+Scaffolds prefer **`OidcBearer`** whenever OIDC env is set — not DevHeaders.
+
+**Provider-portable by design.** Live compose + bootstrap + e2e binaries ship for:
+
+- **Zitadel** — `tests/graphql_oidc_zitadel` + `scripts/oidc-zitadel-up.sh` (JWT-bearer mint; also powers Fieldnote UI login)
+- **Keycloak** — `tests/graphql_oidc_keycloak` + `scripts/oidc-keycloak-up.sh` (client_credentials + realm roles)
+- **Authentik** — `tests/graphql_oidc_authentik` + `scripts/oidc-authentik-up.sh` (client_credentials + groups)
+
+Shared assertions (E1–E8): discovery/JWKS, happy path, role isolation, multi-audience / `azp`, expired and forged tokens, etc. Generic OIDC also works for SaaS IdPs (e.g. Okta) without a dedicated compose stack.
 
 **WebSocket subscriptions:** browsers cannot set `Authorization` on the upgrade.
 Clients send the access token in `connection_init` (`authorization` /
 `accessToken` / nested headers). Do not put long-lived tokens in query strings
 for production. e2e-ui chat demonstrates the OIDC path.
+
+> **Note:** Raw microsvc HTTP/gRPC routes still treat `Session` as opaque unless
+> you terminate auth at a proxy **or** put the public API on GraphQL
+> (`OidcBearer`). The GraphQL edge is where first-class token validation lives.
 
 ### Command mutations vs HTTP commands
 
@@ -1729,17 +1769,22 @@ See [`js/README.md`](js/README.md) for package API and packaging.
 
 | Suite | Focus |
 |---|---|
-| `tests/graphql_*` | Engine, HTTP, SDL, dialects, harden (authz/DoS/inject), identity, OIDC providers, causal transport |
+| `tests/graphql_*` | Engine, HTTP, SDL, dialects, harden (authz/DoS/inject), causal transport |
+| `tests/graphql_identity` | Always-on OIDC/JWT matrix (mock JWKS; no Docker) |
+| `tests/graphql_oidc_{zitadel,keycloak,authentik}` | **Live** multi-IdP e2e (compose + real JWKS; gated) |
 | `tests/typed_commands` | Causal command / Projected / Fact registration |
-| `tests/e2e-ui` | Multi-crate product template + SvelteKit + OIDC + Playwright |
+| `tests/e2e-ui` | Multi-crate product template + SvelteKit + Zitadel UI login + Playwright |
 | `js/tests` | Replica, command runtime, adapters |
 | `examples/graphiql.rs` | Seeded local playground |
 
 ```bash
 cargo test --test graphql_engine --features "graphql,sqlite"
+cargo test --test graphql_identity --features "graphql,sqlite"
 cargo test --test graphql_harden --features "graphql,sqlite"
 cd js && npm run quality
-# OIDC provider tests need Docker IdPs — see each test's module docs
+# Live IdPs (optional):
+#   ./scripts/oidc-zitadel-up.sh && set -a && source graphql-oidc.env && set +a
+#   cargo test --test graphql_oidc_zitadel --features graphql,sqlite
 # Full UI matrix: cd tests/e2e-ui && make test
 ```
 
