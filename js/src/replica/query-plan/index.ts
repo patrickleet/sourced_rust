@@ -1,9 +1,3 @@
-/** Query plan evaluation; implementation lives in ./query-plan/. */
-export {
-	compareReplicaOrder,
-	decideReplicaPaginationMaintenance,
-	evaluateReplicaFilter
-} from './query-plan/index.js';
 export type {
 	ReplicaFilterEvaluation,
 	ReplicaFilterEvaluationOptions,
@@ -14,4 +8,7 @@ export type {
 	ReplicaQueryPlanReason,
 	ReplicaQueryPlanReasonCode,
 	ReplicaRelationshipFilterRequest
-} from './query-plan/index.js';
+} from './types.js';
+export { evaluateReplicaFilter } from './filter.js';
+export { compareReplicaOrder } from './order.js';
+export { decideReplicaPaginationMaintenance } from './pagination.js';
