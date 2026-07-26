@@ -22,6 +22,11 @@ import type {
 	VisibleRecord
 } from './types.js';
 
+import { assertName } from '../../lib/assert-name.js';
+import { deepEqual } from '../../lib/deep-equal.js';
+import { freezeRecord } from '../../lib/freeze-record.js';
+import { reportSafely, reportUnhandledError } from '../../lib/report.js';
+
 export function parseSnapshot(snapshot: CacheEngineSnapshot): {
 	records: Map<RecordKey, StoredRecord>;
 	indexes: Map<IndexKey, StoredIndex>;
@@ -528,46 +533,12 @@ export function assertSynchronousResult(result: unknown, description: string): v
 	}
 }
 
-export function reportUnhandledWatcherError(error: AggregateError): void {
-	const reportError = (globalThis as { reportError?: (cause: unknown) => void }).reportError;
-	if (typeof reportError === 'function') {
-		reportError(error);
-		return;
-	}
-	queueMicrotask(() => {
-		throw error;
-	});
-}
-
-export function reportSafely(
-	reporter: (error: AggregateError) => void,
-	error: AggregateError
-): void {
-	try {
-		reporter(error);
-	} catch (reporterError) {
-		// Observer diagnostics must never change a transaction's success semantics.
-		queueMicrotask(() => {
-			throw new AggregateError(
-				[error, reporterError],
-				'cache watcher error reporter failed'
-			);
-		});
-	}
-}
-
 export function validateRecordKeys(keys: readonly RecordKey[]): void {
 	const seen = new Set<RecordKey>();
 	for (const key of keys) {
 		validateRecordKey(key);
 		if (seen.has(key)) throw new TypeError(`duplicate record in index: ${key}`);
 		seen.add(key);
-	}
-}
-
-export function assertName(value: string, description: string): void {
-	if (typeof value !== 'string' || value.length === 0) {
-		throw new TypeError(`${description} must be a non-empty string`);
 	}
 }
 
@@ -678,19 +649,6 @@ export function cloneCacheValue(value: CacheValue, ancestors = new Set<object>()
 	return cloned;
 }
 
-export function freezeRecord<T>(entries: readonly (readonly [string, T])[]): Readonly<Record<string, T>> {
-	const result: Record<string, T> = {};
-	for (const [key, value] of entries) {
-		Object.defineProperty(result, key, {
-			value,
-			enumerable: true,
-			configurable: false,
-			writable: false
-		});
-	}
-	return Object.freeze(result);
-}
-
 export function canonicalValue(value: CacheValue): string {
 	if (value === null || typeof value !== 'object') return JSON.stringify(value);
 	if (Array.isArray(value)) return `[${value.map(canonicalValue).join(',')}]`;
@@ -701,25 +659,6 @@ export function canonicalValue(value: CacheValue): string {
 		.join(',')}}`;
 }
 
-export function deepEqual(left: unknown, right: unknown): boolean {
-	if (Object.is(left, right)) return true;
-	if (typeof left !== typeof right || left === null || right === null) return false;
-	if (typeof left !== 'object' || typeof right !== 'object') return false;
-	if (Array.isArray(left) || Array.isArray(right)) {
-		if (!Array.isArray(left) || !Array.isArray(right) || left.length !== right.length) return false;
-		return left.every((value, index) => deepEqual(value, right[index]));
-	}
-	const leftRecord = left as Record<string, unknown>;
-	const rightRecord = right as Record<string, unknown>;
-	const leftKeys = Object.keys(leftRecord);
-	const rightKeys = Object.keys(rightRecord);
-	if (leftKeys.length !== rightKeys.length) return false;
-	return leftKeys.every(
-		(key) => Object.prototype.hasOwnProperty.call(rightRecord, key) && deepEqual(leftRecord[key], rightRecord[key])
-	);
-}
-
-/** Canonical identity for a root or relationship index and its exact arguments. */
 export function cacheIndexKey(input: {
 	parent?: RecordKey;
 	field: string;
@@ -730,3 +669,6 @@ export function cacheIndexKey(input: {
 	const argumentsValue = cloneCacheValue(input.arguments ?? {});
 	return `${input.parent ?? '$root'}.${input.field}(${canonicalValue(argumentsValue)})`;
 }
+
+export { assertName, deepEqual, freezeRecord, reportSafely };
+export const reportUnhandledWatcherError = reportUnhandledError;

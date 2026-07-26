@@ -70,6 +70,8 @@ import type {
 	ReplicaArtifactBinding
 } from './types.js';
 
+import { reportSafely, reportUnhandledError } from '../../lib/report.js';
+
 export { deepEqual } from './clocks.js';
 
 export function prepareRecordEvidence(
@@ -741,29 +743,5 @@ export function protocolOperationSource(
 	return source === 'live' ? 'live' : 'query';
 }
 
-export function reportUnhandledObserverError(error: AggregateError): void {
-	const reportError = (globalThis as { reportError?: (cause: unknown) => void }).reportError;
-	if (typeof reportError === 'function') {
-		reportError(error);
-		return;
-	}
-	queueMicrotask(() => {
-		throw error;
-	});
-}
-
-export function reportSafely(
-	reporter: (error: AggregateError) => void,
-	error: AggregateError
-): void {
-	try {
-		reporter(error);
-	} catch (reporterError) {
-		queueMicrotask(() => {
-			throw new AggregateError(
-				[error, reporterError],
-				'replica observer error reporter failed'
-			);
-		});
-	}
-}
+export { reportSafely };
+export const reportUnhandledObserverError = reportUnhandledError;

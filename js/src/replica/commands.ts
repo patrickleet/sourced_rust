@@ -9,6 +9,8 @@ import {
 import type { ReplicaClientSurface, ReplicaValue } from './types.js';
 import { createReplicaCommandId } from './command-id.js';
 
+import { isPlainRecord } from '../lib/is-plain-record.js';
+
 const SHA256 = /^sha256:[0-9a-f]{64}$/;
 const UUID_V7 =
 	/^[0-9a-f]{8}-[0-9a-f]{4}-7[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i;
@@ -1870,14 +1872,6 @@ function samePath(left: readonly string[], right: readonly string[]): boolean {
 
 function isSupportedCodec(value: string): value is ReplicaCommandScalarCodec {
 	return isDistributedTrustedPresetCodec(value);
-}
-
-function isPlainRecord(value: unknown): value is Record<string, unknown> {
-	if (value === null || typeof value !== 'object' || Array.isArray(value)) {
-		return false;
-	}
-	const prototype = Object.getPrototypeOf(value);
-	return prototype === Object.prototype || prototype === null;
 }
 
 function defineEnumerable<T>(

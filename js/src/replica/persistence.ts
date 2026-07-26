@@ -12,6 +12,8 @@ import type {
 	ReplicaDehydratedState
 } from './types.js';
 
+import { freezeRecord } from '../lib/freeze-record.js';
+
 const DATABASE_VERSION = 1;
 const ENTRY_FORMAT_VERSION = 1;
 const STORE_NAME = 'confirmed-replicas';
@@ -1326,21 +1328,6 @@ function compareDecimal(left: string, right: string): -1 | 0 | 1 {
 	const leftValue = BigInt(left);
 	const rightValue = BigInt(right);
 	return leftValue < rightValue ? -1 : leftValue > rightValue ? 1 : 0;
-}
-
-function freezeRecord<T>(
-	entries: readonly (readonly [string, T])[]
-): Readonly<Record<string, T>> {
-	const result: Record<string, T> = {};
-	for (const [key, value] of entries) {
-		Object.defineProperty(result, key, {
-			value,
-			enumerable: true,
-			configurable: false,
-			writable: false
-		});
-	}
-	return Object.freeze(result);
 }
 
 function openDatabase(

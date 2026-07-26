@@ -27,6 +27,8 @@ import type {
 	ReplicaValue
 } from './types.js';
 
+import { compareCodeUnits } from '../lib/compare-code-units.js';
+
 export type {
 	ReplicaIndexDependencyChange,
 	ReplicaIndexRecordChange,
@@ -1271,10 +1273,6 @@ function canonicalValue(value: unknown): string {
 			.join(',')}}`;
 	}
 	throw new TypeError('canonical values must be JSON-compatible');
-}
-
-function compareCodeUnits(left: string, right: string): number {
-	return left < right ? -1 : left > right ? 1 : 0;
 }
 
 function validateName(value: string, description: string): void {

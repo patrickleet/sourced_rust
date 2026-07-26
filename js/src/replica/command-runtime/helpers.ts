@@ -62,6 +62,9 @@ import type {
 	SemanticReplica
 } from './types.js';
 
+import { compareCodeUnits } from '../../lib/compare-code-units.js';
+import { isPlainRecord } from '../../lib/is-plain-record.js';
+
 export function defineBoundCommand(
 	root: Record<string, unknown>,
 	path: string,
@@ -1504,26 +1507,14 @@ export function waitForCommandOperation<T>(
 	});
 }
 
-export function isPlainRecord(
-	value: unknown
-): value is Readonly<Record<string, unknown>> {
-	if (value === null || typeof value !== 'object' || Array.isArray(value)) {
-		return false;
-	}
-	const prototype = Object.getPrototypeOf(value);
-	return prototype === Object.prototype || prototype === null;
-}
-
 export function outputInvalid(path: string): never {
 	throw new ReplicaCommandRuntimeError('REPLICA_COMMAND_PROTOCOL_INVALID', {
 		cause: new TypeError(`invalid command output at ${path}`)
 	});
 }
 
-export function compareCodeUnits(left: string, right: string): number {
-	return left < right ? -1 : left > right ? 1 : 0;
-}
-
 export function comparePropertyKeys(left: PropertyKey, right: PropertyKey): number {
 	return compareCodeUnits(String(left), String(right));
 }
+
+export { compareCodeUnits, isPlainRecord };

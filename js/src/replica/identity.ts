@@ -19,6 +19,11 @@ import type {
 } from './types.js';
 import { validateReplicaOperationBinding } from './operation-binding.js';
 
+import { assertName } from '../lib/assert-name.js';
+import { compareCodeUnits } from '../lib/compare-code-units.js';
+import { freezeRecord } from '../lib/freeze-record.js';
+import { isPlainRecord } from '../lib/is-plain-record.js';
+
 const GRAPHQL_NAME = /^[_A-Za-z][_0-9A-Za-z]*$/;
 const MAX_VARIABLE_CODEC_DEPTH = 64;
 const FILTER_OPERATORS = new Set([
@@ -1261,24 +1266,12 @@ function checkFilterDepth(
 	}
 }
 
-function compareCodeUnits(left: string, right: string): number {
-	return left < right ? -1 : left > right ? 1 : 0;
-}
-
 function variableCodecInvalid(path: string): never {
 	throw new TypeError(`invalid replica variable codec at ${path}`);
 }
 
 function variableValueInvalid(path: string, detail: string): never {
 	throw new TypeError(`invalid GraphQL operation input at ${path}: ${detail}`);
-}
-
-function isPlainRecord(value: unknown): value is Record<string, unknown> {
-	if (value === null || typeof value !== 'object' || Array.isArray(value)) {
-		return false;
-	}
-	const prototype = Object.getPrototypeOf(value);
-	return prototype === Object.prototype || prototype === null;
 }
 
 export function canonicalVariables(variables: GraphqlVariables): string {
@@ -1483,23 +1476,3 @@ function numericArgument(
 	return value as number;
 }
 
-function freezeRecord<T>(
-	entries: readonly (readonly [string, T])[]
-): Readonly<Record<string, T>> {
-	const record: Record<string, T> = {};
-	for (const [key, value] of entries) {
-		Object.defineProperty(record, key, {
-			value,
-			enumerable: true,
-			configurable: false,
-			writable: false
-		});
-	}
-	return Object.freeze(record);
-}
-
-function assertName(value: string, description: string): void {
-	if (typeof value !== 'string' || value.length === 0) {
-		throw new TypeError(`${description} must be a non-empty string`);
-	}
-}

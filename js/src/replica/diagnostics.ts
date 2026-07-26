@@ -12,6 +12,10 @@ import type {
 	ReplicaWriteSource
 } from './types.js';
 
+import { reportUnhandledError } from '../lib/report.js';
+
+const reportUnhandledObserverError = reportUnhandledError;
+
 /**
  * This marker is intentionally referenced by the bundle test. The package is
  * side-effect free, so a production client which does not import diagnostics
@@ -1199,14 +1203,3 @@ function nonempty(value: unknown): value is string {
 	return typeof value === 'string' && value.length > 0;
 }
 
-function reportUnhandledObserverError(error: AggregateError): void {
-	const reportError = (globalThis as { reportError?: (cause: unknown) => void })
-		.reportError;
-	if (typeof reportError === 'function') {
-		reportError(error);
-		return;
-	}
-	queueMicrotask(() => {
-		throw error;
-	});
-}

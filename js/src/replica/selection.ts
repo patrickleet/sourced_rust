@@ -6,6 +6,8 @@ import type {
 	ReplicaSelectionStorage
 } from './types.js';
 
+import { assertName } from '../lib/assert-name.js';
+
 export type RuntimeScalarSelection = ReplicaScalarSelection & {
 	readonly nullable: boolean;
 };
@@ -181,8 +183,3 @@ function freezeStorage(storage: ReplicaSelectionStorage): ReplicaSelectionStorag
 	});
 }
 
-function assertName(value: unknown, description: string): asserts value is string {
-	if (typeof value !== 'string' || value.length === 0) {
-		throw new TypeError(`${description} must be a non-empty string`);
-	}
-}
