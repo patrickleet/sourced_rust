@@ -72,24 +72,6 @@ pub(super) fn verify_digest(
     verify_bytes(actual, &expected, field)
 }
 
-pub(super) fn checked_next(
-    value: u64,
-    domain: &'static str,
-) -> Result<u64, ProjectionProtocolError> {
-    if value >= MAX_PROJECTION_POSITION {
-        return Err(ProjectionProtocolError::PositionOverflow { domain });
-    }
-    Ok(value + 1)
-}
-
-pub(super) fn table_model_name(mutation: &TableMutation) -> &str {
-    match mutation {
-        TableMutation::UpsertRow(mutation) => &mutation.schema.model_name,
-        TableMutation::PatchRow(mutation) => &mutation.schema.model_name,
-        TableMutation::DeleteRow(mutation) => &mutation.schema.model_name,
-    }
-}
-
 pub(super) async fn physical_row_exists_in_tx<DB>(
     tx: &mut Transaction<'_, DB>,
     mutation: &TableMutation,
@@ -107,14 +89,6 @@ where
         TableMutation::DeleteRow(mutation) => (mutation.schema, &mutation.key),
     };
     Ok(row_version_in_tx(tx, schema, key).await?.is_some())
-}
-
-pub(super) fn change_kind_for_mutation(kind: ProjectionMutationKind) -> ProjectionChangeKind {
-    match kind {
-        ProjectionMutationKind::Upsert => ProjectionChangeKind::RecordUpsert,
-        ProjectionMutationKind::Delete => ProjectionChangeKind::RecordDelete,
-        ProjectionMutationKind::Recreate => ProjectionChangeKind::RecordRecreate,
-    }
 }
 
 pub(super) fn decode_change_kind(

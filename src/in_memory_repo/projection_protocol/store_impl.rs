@@ -207,15 +207,10 @@ impl ProjectionProtocolStore for InMemoryRepository {
                     mutation.kind,
                     staged_rows.contains_key(&mutation.mutation.lock_key()),
                 )?;
-                let kind = match mutation.kind {
-                    ProjectionMutationKind::Upsert => ProjectionChangeKind::RecordUpsert,
-                    ProjectionMutationKind::Delete => ProjectionChangeKind::RecordDelete,
-                    ProjectionMutationKind::Recreate => ProjectionChangeKind::RecordRecreate,
-                };
                 let change = staged_protocol.append_change(
                     &partition_key,
                     PendingChange {
-                        kind,
+                        kind: change_kind_for_mutation(mutation.kind),
                         causation_id: batch.input.causation_id.clone(),
                         observation_kind: None,
                         scope: Some(mutation.scope.clone()),

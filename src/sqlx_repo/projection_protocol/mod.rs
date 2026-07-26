@@ -18,21 +18,21 @@ use std::pin::Pin;
 use sqlx::{Encode, Executor, IntoArguments, Pool, QueryBuilder, Row, Transaction, Type};
 
 use crate::projection_protocol::{
-    ProjectionChange, ProjectionChangeCursor, ProjectionChangeKind, ProjectionChangeRead,
-    ProjectionChangeRetention, ProjectionCheckpoint, ProjectionCommitBatch,
-    ProjectionCommitOutcome, ProjectionCommitResult, ProjectionEpoch, ProjectionFailure,
-    ProjectionFailureBatch, ProjectionFailureLocation, ProjectionGeneration, ProjectionInputCursor,
-    ProjectionInputDisposition, ProjectionInputFingerprint, ProjectionLiveRecordBatch,
-    ProjectionLiveRecordBatchRequest, ProjectionModelOwnership, ProjectionMutationKind,
-    ProjectionObligationEvidence, ProjectionObligationEvidenceBatch,
-    ProjectionObligationEvidenceBatchRequest, ProjectionObservation, ProjectionObservationKind,
-    ProjectionObservationTarget, ProjectionPartition, ProjectionPartitionRuntimeState,
-    ProjectionPartitionSnapshot, ProjectionPendingRetry, ProjectionProtocolError,
-    ProjectionProtocolStore, ProjectionQuerySnapshot, ProjectionQuerySnapshotBatch,
-    ProjectionQuerySnapshotBatchRequest, ProjectionQuerySnapshotRequest,
-    ProjectionRecordExpectation, ProjectionRecordMetadata, ProjectionRecordScope, ProjectionSource,
-    ProjectorTopologyId, RecordRevision, SameTransactionProjectionBatch,
-    SameTransactionProjectionEvidence, TrustedProjectionInput, MAX_PROJECTION_POSITION,
+    change_kind_for_mutation, checked_next, table_model_name, ProjectionChange,
+    ProjectionChangeCursor, ProjectionChangeKind, ProjectionChangeRead, ProjectionChangeRetention,
+    ProjectionCheckpoint, ProjectionCommitBatch, ProjectionCommitOutcome, ProjectionCommitResult,
+    ProjectionEpoch, ProjectionFailure, ProjectionFailureBatch, ProjectionFailureLocation,
+    ProjectionGeneration, ProjectionInputCursor, ProjectionInputDisposition,
+    ProjectionInputFingerprint, ProjectionLiveRecordBatch, ProjectionLiveRecordBatchRequest,
+    ProjectionModelOwnership, ProjectionMutationKind, ProjectionObligationEvidence,
+    ProjectionObligationEvidenceBatch, ProjectionObligationEvidenceBatchRequest,
+    ProjectionObservation, ProjectionObservationKind, ProjectionObservationTarget,
+    ProjectionPartition, ProjectionPartitionRuntimeState, ProjectionPartitionSnapshot,
+    ProjectionPendingRetry, ProjectionProtocolError, ProjectionProtocolStore,
+    ProjectionQuerySnapshot, ProjectionQuerySnapshotBatch, ProjectionQuerySnapshotBatchRequest,
+    ProjectionQuerySnapshotRequest, ProjectionRecordExpectation, ProjectionRecordMetadata,
+    ProjectionRecordScope, ProjectionSource, ProjectorTopologyId, RecordRevision,
+    SameTransactionProjectionBatch, SameTransactionProjectionEvidence, TrustedProjectionInput,
 };
 use crate::repository::RepositoryError;
 use crate::sqlx_repo::read_model::{
