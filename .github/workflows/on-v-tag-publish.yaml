@@ -9,9 +9,7 @@ permissions:
   contents: read
 
 jobs:
-  # Keep every registry write behind an explicit one-time npm bootstrap gate.
-  # This prevents the Rust crates from publishing when the new npm package or
-  # its trusted-publisher configuration is not ready yet.
+  # Fail closed before crates publish if the public npm package is missing.
   release-preflight:
     name: Verify release registries are ready
     runs-on: ubuntu-latest
@@ -25,18 +23,9 @@ jobs:
             exit 1
           fi
 
-      - name: Require completed npm bootstrap
-        env:
-          NPM_RELEASE_READY: ${{ vars.NPM_RELEASE_READY }}
-        run: |
-          if [[ "$NPM_RELEASE_READY" != "true" ]]; then
-            echo "Set the repository Actions variable NPM_RELEASE_READY=true only after the npm bootstrap and trusted-publisher setup are complete." >&2
-            exit 1
-          fi
-
       - name: Verify npm package exists
         run: |
-          package_name="$(npm view @hops-ops/distributed@0.0.0 name)"
+          package_name="$(npm view @hops-ops/distributed name)"
           if [[ "$package_name" != "@hops-ops/distributed" ]]; then
             echo "Expected @hops-ops/distributed on npm, got: $package_name" >&2
             exit 1
