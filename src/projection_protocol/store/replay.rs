@@ -404,27 +404,13 @@ fn decode_replay_hex_nibble(value: u8) -> Option<u8> {
 }
 
 fn decode_replay_change_kind(value: &str) -> Result<ProjectionChangeKind, String> {
-    match value {
-        "checkpoint" => Ok(ProjectionChangeKind::Checkpoint),
-        "record_upsert" => Ok(ProjectionChangeKind::RecordUpsert),
-        "record_delete" => Ok(ProjectionChangeKind::RecordDelete),
-        "record_recreate" => Ok(ProjectionChangeKind::RecordRecreate),
-        "observation" => Ok(ProjectionChangeKind::Observation),
-        "failure" => Ok(ProjectionChangeKind::Failure),
-        _ => Err(format!(
-            "direct projection evidence has unknown change kind `{value}`"
-        )),
-    }
+    ProjectionChangeKind::from_storage_str(value)
+        .ok_or_else(|| format!("direct projection evidence has unknown change kind `{value}`"))
 }
 
 fn decode_replay_observation_kind(value: &str) -> Result<ProjectionObservationKind, String> {
-    match value {
-        "record" => Ok(ProjectionObservationKind::Record),
-        "dependency" => Ok(ProjectionObservationKind::Dependency),
-        _ => Err(format!(
-            "direct projection evidence has unknown observation kind `{value}`"
-        )),
-    }
+    ProjectionObservationKind::from_storage_str(value)
+        .ok_or_else(|| format!("direct projection evidence has unknown observation kind `{value}`"))
 }
 
 fn validate_same_transaction_replay_evidence(

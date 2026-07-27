@@ -31,6 +31,7 @@ mod commit;
 mod error;
 mod helpers;
 mod identity;
+mod kind_codec;
 mod query;
 mod replay;
 mod r#trait;
