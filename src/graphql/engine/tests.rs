@@ -1133,7 +1133,7 @@ mod client_surface_parity_tests {
         assert_eq!(manifest.service_id, "orders-service");
         assert_eq!(
             manifest.schema_fingerprint,
-            "sha256:03989d3af1e3b65c42f84adc0b1f87f0cce9ee65fbc1dad691649b14eda4d8db"
+            "sha256:03fa90383fc0b6aa6a53784cffb83f1fa0c1674c381f4ec175897ffec280ec8b"
         );
     }
 
