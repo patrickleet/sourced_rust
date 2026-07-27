@@ -21,7 +21,7 @@ const Query = Object.freeze({
 		trustedPresets: Object.freeze([])
 	}),
 	variableCodec: Object.freeze({
-		version: 2,
+		version: 1,
 		limits: Object.freeze({
 			maxDepth: 8,
 			maxBoolWidth: 32,
@@ -248,7 +248,7 @@ test('receipt-only protocol frames notify only after the authoritative scope com
 			trustedPresets: Object.freeze([])
 		}),
 		variableCodec: Object.freeze({
-			version: 2,
+			version: 1,
 			limits: Object.freeze({
 				maxDepth: 8,
 				maxBoolWidth: 32,

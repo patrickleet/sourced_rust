@@ -80,7 +80,7 @@ export function validateVariableCodec(codec: ReplicaVariableCodecArtifact): Vari
 		'artifact.variableCodec',
 		['version', 'limits', 'variables', 'inputs']
 	);
-	if (root.version !== 2) variableCodecInvalid('artifact.variableCodec.version');
+	if (root.version !== 1) variableCodecInvalid('artifact.variableCodec.version');
 	const rawLimits = artifactRecord(
 		root.limits,
 		'artifact.variableCodec.limits',

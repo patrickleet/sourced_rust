@@ -163,7 +163,7 @@ fn command() -> ManifestCommand {
         operation: operation.into(),
         operation_hash: hash_bytes(operation.as_bytes()),
         extensions: ManifestCommandExtensions {
-            version: 3,
+            version: 1,
             consistency: ManifestCommandConsistency {
                 version: 1,
                 kind: ManifestConsistencyKind::Fact,

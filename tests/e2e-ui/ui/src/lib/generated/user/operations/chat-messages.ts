@@ -26,7 +26,7 @@ export const Operation_ChatMessages: ReplicaOperationArtifact<Operation_ChatMess
     "column": 1
   },
   "variableCodec": {
-    "version": 2,
+    "version": 1,
     "limits": {
       "maxDepth": 8,
       "maxBoolWidth": 256,

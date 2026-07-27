@@ -26,7 +26,7 @@ export const Operation_RustRuntimeBridge: ReplicaOperationArtifact<Operation_Rus
     "column": 3
   },
   "variableCodec": {
-    "version": 2,
+    "version": 1,
     "limits": {
       "maxDepth": 8,
       "maxBoolWidth": 256,
@@ -117,7 +117,7 @@ export const Operation_RustRuntimeBridge: ReplicaOperationArtifact<Operation_Rus
   ],
   "protocol": {
     "version": 1,
-    "schemaHash": "sha256:429ac6940d4080c4be1c738901accaa6a93ae6ba0900e0ab64335f14aedc7aba",
+    "schemaHash": "sha256:7441d46de81cf919ae22ce29884bdbd7ba436d4f7bf56721156e9b1b8cbc3834",
     "surface": {
       "kind": "role",
       "name": "user"

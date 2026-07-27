@@ -72,8 +72,8 @@ export const Command_importTodos: ReplicaCommandArtifact<Command_importTodos_Inp
   },
   "protocol": {
     "operation": "sha256:e8e54238fd7618fa94e90ae60b1dfac8833943027d04e71be84cb03702f1cebf",
-    "protocolHash": "sha256:949e333655c4dea41520cb8fce13ae9ac76c97e5e879a82cff4fb9051a290209",
-    "schemaHash": "sha256:46711a1bbb103b8f4bda1adec4e9a118dfa863fac1ed906e568fa849abd8933e",
+    "protocolHash": "sha256:30f19c9f4d29280a02ddf67c4df62cdc92c4e8090792f43d6b1bdafea3e31273",
+    "schemaHash": "sha256:e384dd6cdb8281665ceb58e3d51292e3d3c965972dfd2f70ebd3fbef89dd9c40",
     "surface": {
       "kind": "role",
       "name": "user"
@@ -141,8 +141,8 @@ export const Command_pingTodos: ReplicaCommandArtifact<Command_pingTodos_Input, 
   },
   "protocol": {
     "operation": "sha256:3cb3c1e96331b4e98191cc725ab6b01c0e9b04cc7cc0f37f4fa0ef394fee9acf",
-    "protocolHash": "sha256:949e333655c4dea41520cb8fce13ae9ac76c97e5e879a82cff4fb9051a290209",
-    "schemaHash": "sha256:46711a1bbb103b8f4bda1adec4e9a118dfa863fac1ed906e568fa849abd8933e",
+    "protocolHash": "sha256:30f19c9f4d29280a02ddf67c4df62cdc92c4e8090792f43d6b1bdafea3e31273",
+    "schemaHash": "sha256:e384dd6cdb8281665ceb58e3d51292e3d3c965972dfd2f70ebd3fbef89dd9c40",
     "surface": {
       "kind": "role",
       "name": "user"
@@ -288,8 +288,8 @@ export const Command_projectTodo: ReplicaCommandArtifact<Command_projectTodo_Inp
   },
   "protocol": {
     "operation": "sha256:f986d060555cdedfe94621914116306af704d8bb90e75289722a3b7119211d32",
-    "protocolHash": "sha256:949e333655c4dea41520cb8fce13ae9ac76c97e5e879a82cff4fb9051a290209",
-    "schemaHash": "sha256:46711a1bbb103b8f4bda1adec4e9a118dfa863fac1ed906e568fa849abd8933e",
+    "protocolHash": "sha256:30f19c9f4d29280a02ddf67c4df62cdc92c4e8090792f43d6b1bdafea3e31273",
+    "schemaHash": "sha256:e384dd6cdb8281665ceb58e3d51292e3d3c965972dfd2f70ebd3fbef89dd9c40",
     "surface": {
       "kind": "role",
       "name": "user"

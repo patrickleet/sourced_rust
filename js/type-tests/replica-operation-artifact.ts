@@ -44,7 +44,7 @@ export const protocolWithoutTrustedPresets: ReplicaOperationProtocol = {
 };
 
 const variableCodec = {
-	version: 2,
+	version: 1,
 	limits: {
 		maxDepth: 16,
 		maxBoolWidth: 32,

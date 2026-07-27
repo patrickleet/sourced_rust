@@ -195,7 +195,7 @@ export type ReplicaVariableCodecLimits = {
 
 /** Exact variable codec emitted beside a generated operation artifact. */
 export type ReplicaVariableCodecArtifact = {
-	readonly version: 2;
+	readonly version: 1;
 	readonly limits: ReplicaVariableCodecLimits;
 	readonly variables: Readonly<Record<string, ReplicaVariableInputRef>>;
 	readonly inputs: Readonly<Record<string, ReplicaVariableInputDefinition>>;

@@ -128,11 +128,11 @@ fn validate_command(
     validate_exact_operation_hash(&command.operation, &command.operation_hash, "command")?;
 
     let extensions = &command.extensions;
-    if extensions.version != 3 {
+    if extensions.version != 1 {
         return Err(command_error(
             command,
             "client.manifest.command_extensions",
-            "extensions.version must be 3",
+            "extensions.version must be 1",
         ));
     }
     let consistency = &extensions.consistency;

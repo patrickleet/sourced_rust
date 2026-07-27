@@ -210,7 +210,7 @@ function scopeQueryArtifact(options = {}) {
 			])
 		}),
 		variableCodec: Object.freeze({
-			version: 2,
+			version: 1,
 			limits: Object.freeze({
 				maxDepth: 8,
 				maxBoolWidth: 32,
@@ -585,7 +585,7 @@ test('real replica authority gates commands on its server-issued scope inventory
 			])
 		}),
 		variableCodec: Object.freeze({
-			version: 2,
+			version: 1,
 			limits: Object.freeze({
 				maxDepth: 8,
 				maxBoolWidth: 32,

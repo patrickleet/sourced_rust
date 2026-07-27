@@ -68,13 +68,12 @@ pub use types::{
 };
 pub(crate) use validation::trusted_preset_descriptors;
 
-pub const DISTRIBUTED_CLIENT_MANIFEST_VERSION: u32 = 7;
+pub const DISTRIBUTED_CLIENT_MANIFEST_VERSION: u32 = 1;
 pub const DISTRIBUTED_CLIENT_PROTOCOL_VERSION: u32 = 1;
 // Protocol v1 is the first public wire family. The independent fingerprint below
-// changes when its generated command/scope contract changes, including the v7
-// trusted-preset descriptor slot.
-const DISTRIBUTED_CLIENT_PROTOCOL_MANIFEST_EPOCH: u32 = 6;
-const COMMAND_EXTENSION_SLOTS_VERSION: u32 = 3;
+// changes when its generated command/scope contract changes, including trusted-preset descriptor slots.
+const DISTRIBUTED_CLIENT_PROTOCOL_MANIFEST_EPOCH: u32 = 1;
+const COMMAND_EXTENSION_SLOTS_VERSION: u32 = 1;
 const COMMAND_CONFIRMATIONS_VERSION: u32 = 1;
 const PROJECTOR_ENTRY_VERSION: u32 = 1;
 const PROTOCOL_OPERATIONS_VERSION: u32 = 1;

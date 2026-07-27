@@ -13,10 +13,10 @@ pub(crate) use projectors::*;
 pub(crate) use roots::*;
 pub(crate) use util::{validate_hash, validate_nonempty};
 
-const MANIFEST_VERSION: u64 = 7;
+const MANIFEST_VERSION: u64 = 1;
 const PROTOCOL_VERSION: u64 = 1;
 const PROTOCOL_FINGERPRINT: &str =
-    "sha256:949e333655c4dea41520cb8fce13ae9ac76c97e5e879a82cff4fb9051a290209";
+    "sha256:30f19c9f4d29280a02ddf67c4df62cdc92c4e8090792f43d6b1bdafea3e31273";
 
 pub(crate) use types::*;
 pub(crate) use util::{canonical_json_value, hash_bytes, validate_exact_operation_hash};

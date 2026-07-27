@@ -169,7 +169,7 @@ export const Operation_ScalarInputs: ReplicaOperationArtifact<Operation_ScalarIn
     "column": 3
   },
   "variableCodec": {
-    "version": 2,
+    "version": 1,
     "limits": {
       "maxDepth": 8,
       "maxBoolWidth": 256,
@@ -826,7 +826,7 @@ export const Operation_ScalarInputs: ReplicaOperationArtifact<Operation_ScalarIn
   ],
   "protocol": {
     "version": 1,
-    "schemaHash": "sha256:3096a50b2ca35698fc099ac7f22695cf5844d7dadd896128c35021f22b386205",
+    "schemaHash": "sha256:9d0d6ec390c7402779a98490ce3e046de73c59f1e2534928927495e1407547fe",
     "surface": {
       "kind": "role",
       "name": "user"

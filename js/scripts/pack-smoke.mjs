@@ -201,7 +201,7 @@ const operation: ReplicaOperationArtifact<TodosData, TodosVariables> = {
     trustedPresets: []
   },
   variableCodec: {
-    version: 2,
+    version: 1,
     limits: { maxDepth: 8, maxBoolWidth: 32, maxInList: 64 },
     variables: {
       limit: {
@@ -298,7 +298,7 @@ const operation = Object.freeze({
     trustedPresets: Object.freeze([])
   }),
   variableCodec: Object.freeze({
-    version: 2,
+    version: 1,
     limits: Object.freeze({
       maxDepth: 8,
       maxBoolWidth: 32,
