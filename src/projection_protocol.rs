@@ -14,7 +14,6 @@ use std::fmt;
 use std::num::{NonZeroU32, NonZeroU64};
 
 use serde::{Deserialize, Serialize};
-use sha2::{Digest, Sha256};
 
 mod codec;
 mod store;
@@ -24,6 +23,7 @@ pub(crate) use codec::{
     compile_projection_topology, CompiledProjectionTopology, ProjectionPartitionSpec,
     ProjectionScopeCodec, ProjectionScopeCodecError,
 };
+use store::domain_separated_digest;
 pub use store::*;
 pub use workspace::ProjectionWorkspace;
 
@@ -988,14 +988,6 @@ fn validate_portable_position(
         });
     }
     Ok(())
-}
-
-fn domain_separated_digest(domain: &[u8], canonical_bytes: &[u8]) -> [u8; 32] {
-    let mut digest = Sha256::new();
-    digest.update(domain);
-    digest.update((canonical_bytes.len() as u64).to_be_bytes());
-    digest.update(canonical_bytes);
-    digest.finalize().into()
 }
 
 fn append_length_prefixed(target: &mut Vec<u8>, value: &[u8]) {
