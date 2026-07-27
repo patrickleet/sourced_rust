@@ -39,10 +39,11 @@ mod runtime;
 pub use causal::GraphqlServiceBindError;
 #[cfg(feature = "graphql")]
 pub(crate) use causal::{
-    CausalCommandProjectionEvidence, CausalCommandProjectionObligation, CausalCommandPublicState,
-    CausalCommandPublicStatus, CausalCommandReceiptSource, CausalDispatchError,
-    CausalDispatchResult, CausalProjectionEvidenceState,
+    CausalCommandProjectionObligation, CausalCommandPublicState, CausalCommandPublicStatus,
+    CausalCommandReceiptSource, CausalProjectionEvidenceState,
 };
+#[cfg(all(feature = "graphql", test))]
+pub(crate) use causal::CausalCommandProjectionEvidence;
 pub use handlers::{CausalCommandContext, PreparedCommandHandler};
 pub use request::{CommandRequest, CommandResponse};
 pub(crate) use routes::DynBusPublisher;

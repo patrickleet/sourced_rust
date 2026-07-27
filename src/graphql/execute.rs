@@ -205,7 +205,6 @@ async fn execute_postgres(
     plan: &SqlPlan,
     timeout: std::time::Duration,
 ) -> Result<ExecutedSql, String> {
-    use sqlx::Row;
     let mut tx = pool
         .begin()
         .await

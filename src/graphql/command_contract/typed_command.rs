@@ -118,6 +118,7 @@ impl TypedCommandContract {
     /// field order are retained exactly as declared. Input values and constants
     /// are cloned without a Rust DTO or SQL codec round trip, while explicit
     /// null remains distinguishable from an undeclared partition.
+    #[allow(dead_code)]
     pub(crate) fn resolve_projection_obligations(
         &self,
         canonical_wire_input: &serde_json::Value,

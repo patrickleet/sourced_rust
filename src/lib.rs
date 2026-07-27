@@ -1,5 +1,17 @@
 #![allow(clippy::module_inception)]
 #![doc = include_str!("../README.md")]
+// Projection + GraphQL client surfaces always compile (dctl / shared types), but many
+// call sites live behind optional features. Without those features rustc reports
+// false "never used" warnings for the protocol store helpers. CI builds with features.
+#![cfg_attr(
+    not(any(
+        feature = "graphql",
+        feature = "sqlite",
+        feature = "postgres",
+        test
+    )),
+    allow(dead_code)
+)]
 
 // Allow proc-macros to reference this crate by name even when used internally
 extern crate self as distributed;

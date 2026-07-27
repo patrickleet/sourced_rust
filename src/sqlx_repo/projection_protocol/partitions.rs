@@ -180,6 +180,7 @@ where
         .transpose()
 }
 
+#[allow(dead_code)]
 pub(super) async fn load_partition<DB>(
     pool: &Pool<DB>,
     topology: &ProjectorTopologyId,

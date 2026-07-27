@@ -11,7 +11,7 @@ mod tests;
 mod token;
 mod types;
 
-pub(crate) use accumulator::{ProtocolAccumulatorError, ProtocolResponseAccumulator};
+pub(crate) use accumulator::ProtocolResponseAccumulator;
 pub(crate) use token::{
     OpaqueProtocolToken, ProtocolTokenCodec, ProtocolTokenError, ProtocolTokenPurpose,
     MAX_LIVE_RESUME_CURSORS,

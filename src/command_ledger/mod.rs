@@ -20,9 +20,14 @@ mod traits;
 mod tests;
 
 pub(crate) use error::CommandLedgerError;
+// PrincipalPartitionId is consumed by graphql/sqlx modules; unused on default features.
+#[cfg_attr(
+    not(any(feature = "graphql", feature = "sqlite", feature = "postgres")),
+    allow(unused_imports)
+)]
 pub(crate) use ids::{
     AttemptToken, CanonicalInputHash, CausalStorageIdentity, CausationId,
-    CommandContractFingerprint, CommandId, CommandLedgerKey, SHA256_BYTES,
+    CommandContractFingerprint, CommandId, CommandLedgerKey, PrincipalPartitionId, SHA256_BYTES,
 };
 pub(crate) use record::{CommandLedgerRecord, ReservationDecision};
 pub(crate) use reservation::{

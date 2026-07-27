@@ -240,6 +240,7 @@ impl QueryProtocolRuntime {
         }
     }
 
+    #[allow(dead_code)]
     pub(crate) fn is_empty(&self) -> bool {
         self.projectors.is_empty()
     }

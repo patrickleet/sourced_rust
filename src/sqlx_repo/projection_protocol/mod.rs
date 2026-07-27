@@ -65,7 +65,6 @@ pub(crate) use reads::{
     read_projection_live_record_batch_in_executor,
     read_projection_obligation_evidence_batch_in_executor,
     read_projection_query_snapshot_in_executor, with_projection_read_snapshot,
-    ProjectionReadSnapshotFuture,
 };
 use types::*;
 use writes::*;

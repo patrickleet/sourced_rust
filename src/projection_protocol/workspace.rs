@@ -238,6 +238,7 @@ impl ProjectionWorkspace {
         )
     }
 
+    #[allow(dead_code)]
     pub(crate) fn confirm_existing(
         &mut self,
         schema: &'static TableSchema,
@@ -251,6 +252,7 @@ impl ProjectionWorkspace {
         Ok(self)
     }
 
+    #[allow(dead_code)]
     pub(crate) fn confirm_dependency(
         &mut self,
         schema: &'static TableSchema,

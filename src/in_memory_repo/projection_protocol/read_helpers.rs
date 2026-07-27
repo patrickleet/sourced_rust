@@ -249,6 +249,7 @@ pub(super) fn read_projection_obligation_evidence_from_state(
     }
 }
 
+#[allow(dead_code)]
 pub(super) fn read_projection_live_record_from_state(
     protocol: &InMemoryProjectionProtocolState,
     request: &crate::projection_protocol::ProjectionLiveRecordRequest,

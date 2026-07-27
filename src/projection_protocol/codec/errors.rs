@@ -21,6 +21,7 @@ pub(crate) enum ProjectionScopeCodecError {
         expected: String,
         actual: String,
     },
+    #[allow(dead_code)]
     StoredScopeMismatch {
         projector: String,
         model: String,

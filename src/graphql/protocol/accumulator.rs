@@ -200,6 +200,7 @@ impl ProtocolResponseAccumulator {
 
     /// Stable exact-index scope. The current head is excluded so later
     /// positions within the same projector/partition/query window compare.
+    #[allow(dead_code)]
     pub(crate) fn issue_index_scope(
         &self,
         snapshot_scope: &OpaqueProtocolToken,
@@ -252,6 +253,7 @@ impl ProtocolResponseAccumulator {
         })?
     }
 
+    #[allow(dead_code)]
     pub(crate) fn issue_live_resume(
         &self,
         projection: &str,
@@ -295,6 +297,7 @@ impl ProtocolResponseAccumulator {
     /// Verify a client-returned cursor against one server-derived static
     /// projector scope. The public projection/position fields select the
     /// finite candidate; hidden topology/partition/epoch remain MAC-bound.
+    #[allow(dead_code)]
     pub(crate) fn verify_live_resume(
         &self,
         supplied: &DistributedLiveCursor,
@@ -654,6 +657,7 @@ impl ProtocolResponseAccumulator {
         Ok(())
     }
 
+    #[allow(dead_code)]
     pub(crate) fn snapshot(&self) -> Result<DistributedEnvelopeV1, ProtocolAccumulatorError> {
         self.inner
             .envelope

@@ -32,6 +32,9 @@ pub(crate) async fn commit_read_model_tx<DB: SqlxReadModelBackend>(
         .map_err(|err| read_model_storage_error(DB::BACKEND, "commit transaction", err))
 }
 
+/// Full pool→tx→commit helper kept for adapter authors; production paths use the
+/// split begin/apply/commit helpers above.
+#[allow(dead_code)]
 pub(crate) async fn commit_read_model_write_plan<DB>(
     pool: &sqlx::Pool<DB>,
     plan: TableWritePlan,

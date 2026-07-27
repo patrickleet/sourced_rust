@@ -102,6 +102,7 @@ impl ProjectionScopeCodec {
     }
 
     /// Lower a command-ledger obligation into its exact durable record scope.
+    #[allow(dead_code)]
     pub(crate) fn encode_obligation_scope(
         &self,
         obligation: &ResolvedProjectionObligation,

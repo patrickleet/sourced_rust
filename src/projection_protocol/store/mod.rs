@@ -6,6 +6,12 @@
 //! revisions, observations, checkpoints, and change publication inside one
 //! adapter transaction.
 
+// The store trait + query vocabulary is wider than the production call graph:
+// adapters implement the full surface, and many paths are only exercised by
+// adapter tests today. Keep the contract complete without drowning default
+// builds in dead_code noise.
+#![allow(dead_code)]
+
 use std::fmt;
 use std::future::Future;
 use std::num::NonZeroU64;
@@ -72,14 +78,19 @@ pub use query::{
     ProjectionChange, ProjectionChangeKind, ProjectionCommitResult, ProjectionFailure,
     ProjectionObservation, ProjectionRecordMetadata,
 };
+// Partition snapshot + batch query types are exercised by graphql/sqlx and adapter tests;
+// re-exports look unused on a default-features lib build.
+#[cfg_attr(
+    not(any(feature = "graphql", feature = "sqlite", feature = "postgres")),
+    allow(unused_imports)
+)]
 pub(crate) use query::{
-    ProjectionCheckpointSnapshot, ProjectionFailureLocation,
-    ProjectionLiveRecordBatch, ProjectionLiveRecordBatchRequest, ProjectionLiveRecordRequest,
-    ProjectionObligationEvidence, ProjectionObligationEvidenceBatch,
-    ProjectionObligationEvidenceBatchRequest, ProjectionObligationEvidenceRequest,
-    ProjectionPartitionRuntimeState, ProjectionPendingRetry,
-    ProjectionQuerySnapshot, ProjectionQuerySnapshotBatch, ProjectionQuerySnapshotBatchRequest,
-    ProjectionQuerySnapshotRequest,
+    ProjectionCheckpointSnapshot, ProjectionFailureLocation, ProjectionLiveRecordBatch,
+    ProjectionLiveRecordBatchRequest, ProjectionLiveRecordRequest, ProjectionObligationEvidence,
+    ProjectionObligationEvidenceBatch, ProjectionObligationEvidenceBatchRequest,
+    ProjectionObligationEvidenceRequest, ProjectionPartitionRuntimeState,
+    ProjectionPartitionSnapshot, ProjectionPendingRetry, ProjectionQuerySnapshot,
+    ProjectionQuerySnapshotBatch, ProjectionQuerySnapshotBatchRequest, ProjectionQuerySnapshotRequest,
 };
 pub use r#trait::ProjectionChangeRead;
 pub(crate) use r#trait::ProjectionProtocolStore;

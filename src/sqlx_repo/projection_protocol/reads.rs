@@ -1738,6 +1738,7 @@ where
 /// `after_state` is normally an immediately-ready future. Tests use it to
 /// commit compaction after the partition watermark has been observed but
 /// before retained rows are read, proving both statements remain one view.
+#[allow(dead_code)]
 pub(super) async fn read_projection_changes_in_snapshot<DB, AfterState>(
     pool: &Pool<DB>,
     topology: ProjectorTopologyId,
