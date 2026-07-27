@@ -1347,16 +1347,7 @@ pub(super) fn failure_matches_batch(
     failure: &StoredFailure,
     batch: &ProjectionFailureBatch,
 ) -> bool {
-    failure.failure.input == batch.input.cursor
-        && failure.failure.input_fingerprint == batch.input.fingerprint
-        && failure.failure.message_id == batch.input.message_id
-        && failure.failure.causation_id == batch.input.causation_id
-        && failure.failure.gap_free == batch.input.gap_free
-        && failure.failure.generation == batch.input.generation
-        && failure.failure.failure_code == batch.failure_code
-        && failure.failure.failure_bytes == batch.failure_bytes
-        && failure.failure.failure_digest == batch.failure_digest
-        && failure.failure.change.epoch() == &batch.change_epoch
+    crate::projection_protocol::failure_matches_batch(&failure.failure, batch)
 }
 
 pub(super) async fn ensure_pending_retry_input_in_tx<DB>(

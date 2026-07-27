@@ -8,17 +8,18 @@ use std::future::Future;
 
 use super::InMemoryRepository;
 use crate::projection_protocol::{
-    change_kind_for_mutation, checked_next, table_model_name, ProjectionChange,
-    ProjectionChangeCursor, ProjectionChangeKind, ProjectionChangeRead, ProjectionChangeRetention,
-    ProjectionCheckpoint, ProjectionCommitBatch, ProjectionCommitOutcome, ProjectionCommitResult,
-    ProjectionEpoch, ProjectionFailure, ProjectionFailureBatch, ProjectionFailureLocation,
-    ProjectionGeneration, ProjectionInputCursor, ProjectionInputDisposition,
-    ProjectionInputFingerprint, ProjectionLiveRecordBatch, ProjectionLiveRecordBatchRequest,
-    ProjectionMutationKind, ProjectionObligationEvidence, ProjectionObligationEvidenceBatch,
-    ProjectionObligationEvidenceBatchRequest, ProjectionObservation, ProjectionObservationKind,
-    ProjectionObservationTarget, ProjectionPartition, ProjectionPartitionRuntimeState,
-    ProjectionPendingRetry, ProjectionProtocolError, ProjectionProtocolStore,
-    ProjectionQuerySnapshot, ProjectionQuerySnapshotBatch, ProjectionQuerySnapshotBatchRequest,
+    change_kind_for_mutation, checked_next, failure_matches_batch, table_model_name,
+    ProjectionChange, ProjectionChangeCursor, ProjectionChangeKind, ProjectionChangeRead,
+    ProjectionChangeRetention, ProjectionCheckpoint, ProjectionCommitBatch,
+    ProjectionCommitOutcome, ProjectionCommitResult, ProjectionEpoch, ProjectionFailure,
+    ProjectionFailureBatch, ProjectionFailureLocation, ProjectionGeneration, ProjectionInputCursor,
+    ProjectionInputDisposition, ProjectionInputFingerprint, ProjectionLiveRecordBatch,
+    ProjectionLiveRecordBatchRequest, ProjectionMutationKind, ProjectionObligationEvidence,
+    ProjectionObligationEvidenceBatch, ProjectionObligationEvidenceBatchRequest,
+    ProjectionObservation, ProjectionObservationKind, ProjectionObservationTarget,
+    ProjectionPartition, ProjectionPartitionRuntimeState, ProjectionPendingRetry,
+    ProjectionProtocolError, ProjectionProtocolStore, ProjectionQuerySnapshot,
+    ProjectionQuerySnapshotBatch, ProjectionQuerySnapshotBatchRequest,
     ProjectionQuerySnapshotRequest, ProjectionRecordExpectation, ProjectionRecordMetadata,
     ProjectionRecordScope, ProjectionSource, ProjectorTopologyId, RecordRevision,
     RevisionComparison, SameTransactionProjectionBatch, SameTransactionProjectionEvidence,
@@ -45,7 +46,7 @@ use read_helpers::{
     read_projection_query_snapshot_from_state,
 };
 use state::*;
-use util::{failure_matches_batch, storage_key_belongs_to_table};
+use util::storage_key_belongs_to_table;
 
 #[cfg(test)]
 mod tests;
