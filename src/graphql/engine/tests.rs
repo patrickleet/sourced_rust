@@ -1133,7 +1133,7 @@ mod client_surface_parity_tests {
         assert_eq!(manifest.service_id, "orders-service");
         assert_eq!(
             manifest.schema_fingerprint,
-            "sha256:9b2118ae9fc68ebdcaf0029452bb5e3f3448a6774963c99f2fb20718817a608a"
+            "sha256:03989d3af1e3b65c42f84adc0b1f87f0cce9ee65fbc1dad691649b14eda4d8db"
         );
     }
 
@@ -1597,7 +1597,7 @@ mod client_surface_parity_tests {
 
     #[cfg(feature = "postgres")]
     const POSTGRES_ADMIN_GOLDENS: ArtifactGoldens = ArtifactGoldens {
-        manifest: "sha256:679e700c97004d6aeacb34595a10ddbf1b939b2d3fa8bb175aa63b8a78513016",
+        manifest: "sha256:5efb5ef587cbca8164c807c7f3e8c1c43787666a89ab02567ce7e76a82f45190",
         static_sdl: "sha256:5d3416d9926a5374ee95408c38e74bfd03b1b7ef4e2f7ee1f81752a102c4a989",
         runtime_sdl: "sha256:08e621d86f6606260e653c67d27899f9c93a2ac4545ec0741d78445981d3d46f",
     };
