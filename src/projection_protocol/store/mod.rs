@@ -38,7 +38,7 @@ mod r#trait;
 #[cfg(test)]
 mod tests;
 
-use helpers::{bounded_name, bounded_opaque, digest_hex, domain_separated_digest, validate_scope};
+use helpers::{bounded_name, bounded_opaque, digest_hex, validate_scope};
 use identity::{
     FAILURE_FINGERPRINT_DOMAIN, MAX_CAUSATION_ID_BYTES, MAX_FAILURE_CODE_BYTES,
     MAX_FAILURE_DETAIL_BYTES, MAX_FAILURE_ID_BYTES, MAX_MESSAGE_ID_BYTES,
@@ -49,6 +49,7 @@ pub(crate) use commit::{
     ProjectionCommitBatch, ProjectionFailureBatch, SameTransactionProjectionBatch,
 };
 pub use error::ProjectionProtocolError;
+pub(super) use helpers::domain_separated_digest;
 pub use identity::{
     ProjectionChangeRetention, ProjectionGeneration, ProjectionInputFingerprint,
     ProjectionObservationKind, DEFAULT_MAX_RETAINED_PROJECTION_CHANGES,

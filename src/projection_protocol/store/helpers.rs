@@ -51,7 +51,10 @@ pub(super) fn bounded_opaque(
     Ok(value)
 }
 
-pub(super) fn domain_separated_digest(domain: &[u8], bytes: &[u8]) -> [u8; 32] {
+pub(in crate::projection_protocol) fn domain_separated_digest(
+    domain: &[u8],
+    bytes: &[u8],
+) -> [u8; 32] {
     let mut digest = Sha256::new();
     digest.update(domain);
     digest.update((bytes.len() as u64).to_be_bytes());
