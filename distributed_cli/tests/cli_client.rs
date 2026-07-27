@@ -10,14 +10,14 @@ use std::process::{Command, Output};
 
 const ROLE_MANIFEST: &str = r#"{
   "manifest_version": 7,
-  "protocol_version": 2,
+  "protocol_version": 1,
   "service_id": "todos",
   "surface": {
     "kind": "role",
     "name": "user"
   },
-  "schema_fingerprint": "sha256:0d721d983c42fb732e10e8a2d45f0ab06497fb77fcddb9c9305f779b86c086c9",
-  "protocol_fingerprint": "sha256:7631d15b16e327ff08d728e97ac5f90f5150d00774938e720bbbc6830b77e0cf",
+  "schema_fingerprint": "sha256:661af7d73145bf777d7da72d86116e9dfb0ed38f26041703021a85fa01820ecf",
+  "protocol_fingerprint": "sha256:949e333655c4dea41520cb8fce13ae9ac76c97e5e879a82cff4fb9051a290209",
   "execution": {
     "max_depth": 8,
     "max_complexity": 500,

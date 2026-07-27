@@ -24,7 +24,7 @@ const Todos = Object.freeze({
 	id: 'Todos.v1',
 	document: 'query Todos { todos { id title } }',
 	protocol: Object.freeze({
-		version: 2,
+		version: 1,
 		schemaHash: DIAGNOSTIC_SCHEMA_HASH,
 		surface: Object.freeze({ kind: 'role', name: 'user' }),
 		operation: 'Todos.v1',
@@ -101,7 +101,7 @@ function todosFrame(revision, data, errors = undefined) {
 		...(errors === undefined ? {} : { errors }),
 		extensions: {
 			distributed: {
-				protocolVersion: 2,
+				protocolVersion: 1,
 				schemaHash: DIAGNOSTIC_SCHEMA_HASH,
 				cacheScope: 'scope:diagnostics-user',
 				operation: Todos.id,
@@ -139,7 +139,7 @@ const commandArtifact = Object.freeze({
 	document: 'mutation RenameTodo { renameTodo }',
 	operationHash: `sha256:${'a'.repeat(64)}`,
 	protocol: Object.freeze({
-		version: 2,
+		version: 1,
 		schemaHash: DIAGNOSTIC_SCHEMA_HASH,
 		protocolHash: `sha256:${'c'.repeat(64)}`,
 		surface: Object.freeze({ kind: 'role', name: 'user' }),
@@ -243,7 +243,7 @@ test('default snapshots redact identities, arguments, field values, and scope ma
 			scope: Object.freeze({
 				generation: 1,
 				established: true,
-				protocolVersion: 2,
+				protocolVersion: 1,
 				schemaHash: `sha256:${'d'.repeat(64)}`
 			}),
 			records: Object.freeze([
@@ -526,7 +526,7 @@ test('one diagnostics store receives both replica state and generated command ar
 			inputs: Object.freeze({})
 		}),
 		protocol: Object.freeze({
-			version: 2,
+			version: 1,
 			schemaHash: commandArtifact.protocol.schemaHash,
 			surface: commandArtifact.protocol.surface,
 			operation: operationHash,
@@ -685,7 +685,7 @@ test('event log is bounded and a scope generation change removes cross-scope sta
 			scope: Object.freeze({
 				generation: 2,
 				established: true,
-				protocolVersion: 2,
+				protocolVersion: 1,
 				schemaHash: `sha256:${'e'.repeat(64)}`
 			})
 		})

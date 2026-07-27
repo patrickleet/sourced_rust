@@ -14,9 +14,9 @@ pub(crate) use roots::*;
 pub(crate) use util::{validate_hash, validate_nonempty};
 
 const MANIFEST_VERSION: u64 = 7;
-const PROTOCOL_VERSION: u64 = 2;
+const PROTOCOL_VERSION: u64 = 1;
 const PROTOCOL_FINGERPRINT: &str =
-    "sha256:7631d15b16e327ff08d728e97ac5f90f5150d00774938e720bbbc6830b77e0cf";
+    "sha256:949e333655c4dea41520cb8fce13ae9ac76c97e5e879a82cff4fb9051a290209";
 
 pub(crate) use types::*;
 pub(crate) use util::{canonical_json_value, hash_bytes, validate_exact_operation_hash};

@@ -21,7 +21,7 @@ const COMMAND_ID = '018f47de-3d2a-7abc-8abc-0123456789ab';
 
 function envelope(overrides = {}) {
 	return {
-		protocolVersion: 2,
+		protocolVersion: 1,
 		schemaHash: HASH_A,
 		cacheScope: 'opaque:scope',
 		...overrides
@@ -41,7 +41,7 @@ function presetArtifact(overrides = {}) {
 			'mutation Client_assignTodo($commandId: ID!) { assignTodo(commandId: $commandId) }',
 		operationHash: HASH_A,
 		protocol: {
-			version: 2,
+			version: 1,
 			schemaHash: HASH_B,
 			protocolHash: HASH_C,
 			surface: { kind: 'role', name: 'user' },

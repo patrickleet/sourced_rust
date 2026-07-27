@@ -399,7 +399,7 @@ test('Svelte composition shares one diagnostics sink with operations and generat
 			'mutation RenameTodo($commandId: ID!, $input: RenameTodoInput!) { renameTodo(commandId: $commandId, input: $input) }',
 		operationHash,
 		protocol: Object.freeze({
-			version: 2,
+			version: 1,
 			schemaHash: REACT_FIXTURE_SCHEMA,
 			protocolHash: `sha256:${'c'.repeat(64)}`,
 			surface: Object.freeze({ kind: 'role', name: 'user' }),

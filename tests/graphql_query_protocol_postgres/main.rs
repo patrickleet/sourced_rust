@@ -214,7 +214,7 @@ async fn postgres_emits_exact_revisions_and_accepts_an_exact_live_resume() {
         "an omitted primary key leaked through Postgres protocol metadata: {query}"
     );
     let distributed = distributed_envelope(&query);
-    assert_eq!(distributed["protocolVersion"], 2);
+    assert_eq!(distributed["protocolVersion"], 1);
     assert_opaque_token(&distributed["cacheScope"], "cache-scope");
     let snapshot = &distributed["snapshot"];
     assert_eq!(snapshot["recordsComplete"], true);

@@ -513,7 +513,7 @@ export type ReplicaOperationSourceLocation = {
 };
 
 export type ReplicaOperationProtocol = {
-	readonly version: 2;
+	readonly version: 1;
 	/** Opaque service schema fingerprint, compared byte-for-byte. */
 	readonly schemaHash: string;
 	readonly surface: ReplicaClientSurface;
@@ -564,7 +564,7 @@ export type ReplicaWriteSource = 'network' | 'live' | 'ssr' | 'restore' | 'proje
 export type ReplicaResultEnvelope<TData = unknown> = {
 	readonly data?: TData | null;
 	readonly errors?: readonly GqlError[];
-	/** Strictly parsed Distributed v2 response metadata. */
+	/** Strictly parsed Distributed v1 response metadata. */
 	readonly extensions?: GraphqlResponseExtensions;
 };
 
@@ -690,7 +690,7 @@ export type DistributedReplicaOptions = {
 
 /** Server-issued authorization/cache namespace. Client-decoded claims never create one. */
 export type ReplicaAuthoritativeScope = {
-	readonly protocolVersion: 2;
+	readonly protocolVersion: 1;
 	readonly schemaHash: string;
 	readonly cacheScope: string;
 };

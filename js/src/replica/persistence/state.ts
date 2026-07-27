@@ -399,11 +399,11 @@ export function parseAuthoritativeScope(value: unknown): ReplicaAuthoritativeSco
 		'authoritative scope',
 		['protocolVersion', 'schemaHash', 'cacheScope']
 	);
-	if (scope.protocolVersion !== 2) {
+	if (scope.protocolVersion !== 1) {
 		throw new TypeError('unsupported authoritative protocol version');
 	}
 	return Object.freeze({
-		protocolVersion: 2 as const,
+		protocolVersion: 1 as const,
 		schemaHash: nonEmptyString(scope.schemaHash, 'authoritative scope schemaHash'),
 		cacheScope: nonEmptyString(scope.cacheScope, 'authoritative scope cacheScope')
 	});

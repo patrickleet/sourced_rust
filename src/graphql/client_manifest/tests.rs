@@ -563,11 +563,11 @@ fn role_manifest_is_deterministic_and_hides_denied_identity_and_commands() {
     assert_eq!(first.schema_fingerprint, second.schema_fingerprint);
     assert_eq!(
         first.schema_fingerprint,
-        "sha256:d73aafab6e4f2ec095387a8a0617488efd69d4fa157a6a87615e3d7e18b57966"
+        "sha256:40dd42e715a43b136ba9ef3c2857652d9682bb92aeed37c2f0ae542353e95099"
     );
     assert_eq!(
         first.protocol_fingerprint,
-        "sha256:7631d15b16e327ff08d728e97ac5f90f5150d00774938e720bbbc6830b77e0cf"
+        "sha256:949e333655c4dea41520cb8fce13ae9ac76c97e5e879a82cff4fb9051a290209"
     );
 
     let user = first
@@ -720,7 +720,7 @@ fn filter_execution_limits_are_schema_fingerprinted_without_changing_protocol_ep
         bool_manifest.schema_fingerprint,
         in_manifest.schema_fingerprint
     );
-    assert_eq!(baseline.protocol_version, 2);
+    assert_eq!(baseline.protocol_version, 1);
     assert_eq!(
         baseline.protocol_fingerprint,
         bool_manifest.protocol_fingerprint

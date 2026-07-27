@@ -31,7 +31,7 @@ const Todos = Object.freeze({
 	id: 'query:todos',
 	document: 'query Todos { todos { id title } }',
 	protocol: Object.freeze({
-		version: 2,
+		version: 1,
 		schemaHash: 'schema-a',
 		surface: Object.freeze({ kind: 'role', name: 'user' }),
 		operation: 'query:todos',
@@ -81,7 +81,7 @@ const TodosOtherOperation = Object.freeze({
 	...Todos,
 	id: 'query:todos-other',
 	protocol: Object.freeze({
-		version: 2,
+		version: 1,
 		schemaHash: 'schema-a',
 		surface: Object.freeze({ kind: 'role', name: 'user' }),
 		operation: 'query:todos-other',
@@ -190,7 +190,7 @@ const GamesWithOwner = Object.freeze({
 	id: 'query:games-with-owner',
 	document: 'query GamesWithOwner { games { id owner_id owner { id name } } }',
 	protocol: Object.freeze({
-		version: 2,
+		version: 1,
 		schemaHash: 'schema-a',
 		surface: Object.freeze({ kind: 'role', name: 'user' }),
 		operation: 'query:games-with-owner',
@@ -1137,7 +1137,7 @@ test('snapshot-only nested records do not invalidate exact membership', () => {
 	]);
 });
 
-test('v2 replica ingress rejects tampered decimals before exposing data', () => {
+test('v1 replica ingress rejects tampered decimals before exposing data', () => {
 	const replica = createDistributedReplica();
 	const tampered = wireFrame();
 	tampered.extensions.distributed.snapshot.indexes[0].position = 1;
@@ -1833,7 +1833,7 @@ test('scope and schema generations purge old state before accepting fresh eviden
 	assert.equal(replica.read(Todos, {}).complete, false);
 });
 
-test('protocol-bound artifacts reject results without a v2 envelope', () => {
+test('protocol-bound artifacts reject results without a v1 envelope', () => {
 	const replica = createDistributedReplica();
 	assert.throws(
 		() =>

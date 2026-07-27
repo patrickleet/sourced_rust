@@ -8,7 +8,7 @@
  */
 
 /** The only Distributed GraphQL protocol version understood by this package. */
-export const DISTRIBUTED_PROTOCOL_VERSION = 2 as const;
+export const DISTRIBUTED_PROTOCOL_VERSION = 1 as const;
 
 declare const opaqueDistributedString: unique symbol;
 declare const distributedDecimalString: unique symbol;

@@ -68,7 +68,7 @@ export function commandSurfaceContract(
 	const commandPresets = new Map<string, ReplicaTrustedPresetDescriptor>();
 	for (const artifact of artifacts) {
 		if (
-			artifact.protocol.version !== 2 ||
+			artifact.protocol.version !== 1 ||
 			artifact.protocol.schemaHash !== protocol.schemaHash ||
 			artifact.protocol.protocolHash !== protocol.protocolHash ||
 			!sameSurface(artifact.protocol.surface, protocol.surface) ||
@@ -122,7 +122,7 @@ export function commandSurfaceContract(
 		}
 	}
 	return Object.freeze({
-		protocolVersion: 2,
+		protocolVersion: 1,
 		schemaHash: protocol.schemaHash,
 		protocolHash: protocol.protocolHash,
 		surface: cloneSurface(protocol.surface),
@@ -145,7 +145,7 @@ export function commandStatusArtifact(
 		!SHA256.test(value.operationHash) ||
 		value.protocol === null ||
 		typeof value.protocol !== 'object' ||
-		value.protocol.version !== 2 ||
+		value.protocol.version !== 1 ||
 		value.protocol.operation !== value.operationHash ||
 		value.protocol.schemaHash !== contract.schemaHash ||
 		value.protocol.protocolHash !== contract.protocolHash ||
@@ -167,7 +167,7 @@ export function commandStatusArtifact(
 		document: value.document,
 		operationHash: value.operationHash,
 		protocol: Object.freeze({
-			version: 2,
+			version: 1,
 			schemaHash: contract.schemaHash,
 			protocolHash: contract.protocolHash,
 			surface: cloneSurface(contract.surface),

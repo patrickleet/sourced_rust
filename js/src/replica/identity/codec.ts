@@ -36,7 +36,7 @@ export function canonicalizeOperationVariables<
 	validateReplicaOperationBinding(artifact);
 	const codec = artifact.variableCodec;
 	if (codec === undefined) {
-		throw new TypeError('protocol-v2 replica artifact requires variableCodec');
+		throw new TypeError('protocol-v1 replica artifact requires variableCodec');
 	}
 
 	const registry = validateVariableCodec(codec);

@@ -1052,7 +1052,7 @@ mod causal_command_schema_tests {
     use super::*;
     use crate::graphql::command_contract::{CommandConsistency, CommandEffects};
     use crate::graphql::protocol::{
-        DistributedEnvelopeV2, ProtocolResponseAccumulator, ProtocolTokenCodec,
+        DistributedEnvelopeV1, ProtocolResponseAccumulator, ProtocolTokenCodec,
         ProtocolTokenPurpose,
     };
     use crate::graphql::sdl::graphql_sdl_from_surface;
@@ -1132,7 +1132,7 @@ mod causal_command_schema_tests {
             )
             .expect("test cache scope should encode");
         ProtocolResponseAccumulator::new(
-            DistributedEnvelopeV2::new("sha256:schema-unit-test", cache_scope, None),
+            DistributedEnvelopeV1::new("sha256:schema-unit-test", cache_scope, None),
             codec,
         )
     }

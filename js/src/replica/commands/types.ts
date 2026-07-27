@@ -164,7 +164,7 @@ export type ReplicaCommandArtifact<TInput = void, TOutput = unknown> = {
 	readonly document: string;
 	readonly operationHash: string;
 	readonly protocol: {
-		readonly version: 2;
+		readonly version: 1;
 		readonly schemaHash: string;
 		readonly protocolHash: string;
 		readonly surface: ReplicaClientSurface;

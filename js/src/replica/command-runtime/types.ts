@@ -31,7 +31,7 @@ import {
 } from './symbols.js';
 
 export type ReplicaCommandSurfaceContract = Readonly<{
-	protocolVersion: 2;
+	protocolVersion: 1;
 	schemaHash: string;
 	protocolHash: string;
 	surface: ReplicaClientSurface;
@@ -92,7 +92,7 @@ export type ReplicaCommandStatusArtifact = Readonly<{
 	document: string;
 	operationHash: string;
 	protocol: Readonly<{
-		version: 2;
+		version: 1;
 		schemaHash: string;
 		protocolHash: string;
 		surface: ReplicaClientSurface;

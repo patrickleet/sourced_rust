@@ -207,7 +207,7 @@ function todoArtifact({
 		id,
 		document: `query ${id} { ${responseKey}: todos { id } }`,
 		protocol: Object.freeze({
-			version: 2,
+			version: 1,
 			schemaHash: `sha256:${'1'.repeat(64)}`,
 			surface: Object.freeze({ kind: 'role', name: 'user' }),
 			operation: id,
@@ -995,7 +995,7 @@ function relationshipArtifact(
 		id,
 		document: `query ${id} { board { cards { id } } }`,
 		protocol: Object.freeze({
-			version: 2,
+			version: 1,
 			schemaHash: `sha256:${'1'.repeat(64)}`,
 			surface: Object.freeze({ kind: 'role', name: 'user' }),
 			operation: id,
@@ -1167,7 +1167,7 @@ test('aggregate snapshots invalidate from declared dependencies and registry cle
 		id: 'TodoAggregate',
 		document: 'query TodoAggregate { todos_aggregate { aggregate { count } } }',
 		protocol: Object.freeze({
-			version: 2,
+			version: 1,
 			schemaHash: `sha256:${'1'.repeat(64)}`,
 			surface: Object.freeze({ kind: 'role', name: 'user' }),
 			operation: 'TodoAggregate',

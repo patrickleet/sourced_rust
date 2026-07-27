@@ -17,7 +17,7 @@ type Variables = {
 };
 
 const protocol = {
-	version: 2,
+	version: 1,
 	schemaHash: 'schema:type-test',
 	surface: {
 		kind: 'role',
@@ -29,7 +29,7 @@ const protocol = {
 
 // @ts-expect-error Generated protocol artifacts always name their client surface.
 export const protocolWithoutSurface: ReplicaOperationProtocol = {
-	version: 2,
+	version: 1,
 	schemaHash: 'schema:type-test',
 	operation: 'query:type-test',
 	trustedPresets: []
@@ -37,7 +37,7 @@ export const protocolWithoutSurface: ReplicaOperationProtocol = {
 
 // @ts-expect-error Generated protocol artifacts always carry the exact preset union.
 export const protocolWithoutTrustedPresets: ReplicaOperationProtocol = {
-	version: 2,
+	version: 1,
 	schemaHash: 'schema:type-test',
 	surface: { kind: 'role', name: 'user' },
 	operation: 'query:type-test'
@@ -72,14 +72,14 @@ export const protocolArtifact: ReplicaProtocolOperationArtifact<Data, Variables>
 export const protocolArtifactViaUnion: ReplicaOperationArtifact<Data, Variables> =
 	protocolArtifact;
 
-// @ts-expect-error Artifacts without protocol-v2 binding are unsupported.
+// @ts-expect-error Artifacts without protocol-v1 binding are unsupported.
 export const unboundArtifact: ReplicaOperationArtifact<Data, Variables> = {
 	id: 'unbound:type-test',
 	document: 'query TypeTest { items { id } }',
 	roots: []
 };
 
-// @ts-expect-error Protocol-v2 artifacts must include their variable codec.
+// @ts-expect-error Protocol-v1 artifacts must include their variable codec.
 export const protocolWithoutCodec: ReplicaOperationArtifact<Data, Variables> = {
 	id: protocol.operation,
 	document: 'query TypeTest($id: ID!) { items(id: $id) { id } }',

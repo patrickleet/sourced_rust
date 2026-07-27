@@ -72,7 +72,7 @@ export type ReplicaDiagnosticsOptions = Readonly<{
 export type ReplicaDiagnosticScopeInput = Readonly<{
 	generation: number;
 	established: boolean;
-	protocolVersion?: 2;
+	protocolVersion?: 1;
 	schemaHash?: string;
 }>;
 

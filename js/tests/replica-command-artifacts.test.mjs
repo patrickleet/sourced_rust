@@ -111,7 +111,7 @@ function baseArtifact(overrides = {}) {
 			'mutation Client_createTodo($commandId: ID!, $input: CreateTodoInput!) { createTodo(commandId: $commandId, input: $input) }',
 		operationHash: HASH_A,
 		protocol: {
-			version: 2,
+			version: 1,
 			schemaHash: HASH_B,
 			protocolHash: HASH_C,
 			surface: { kind: 'role', name: 'user' },
@@ -569,7 +569,7 @@ test('unknown generators/effects and unresolved trusted presets fail before opti
 			prepareReplicaCommand(
 				baseArtifact({
 					protocol: {
-						version: 2,
+						version: 1,
 						schemaHash: HASH_B,
 						protocolHash: HASH_C,
 						operation: HASH_A,
@@ -588,7 +588,7 @@ test('unknown generators/effects and unresolved trusted presets fail before opti
 			prepareReplicaCommand(
 				baseArtifact({
 					protocol: {
-						version: 2,
+						version: 1,
 						schemaHash: HASH_B,
 						protocolHash: HASH_C,
 						surface: { kind: 'role', name: 'user' },

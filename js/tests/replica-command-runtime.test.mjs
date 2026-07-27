@@ -21,7 +21,7 @@ const COMMAND_B = '018f47de-3d2a-7def-8def-0123456789ab';
 const GENERATED_ID = '018f47de-3d2a-7123-8123-0123456789ab';
 const SURFACE = Object.freeze({ kind: 'role', name: 'user' });
 const SCOPE = Object.freeze({
-	protocolVersion: 2,
+	protocolVersion: 1,
 	schemaHash: HASH_B,
 	cacheScope: 'scope:user'
 });
@@ -33,7 +33,7 @@ const COMMAND_STATUS = Object.freeze({
 	document: STATUS_DOCUMENT,
 	operationHash: HASH_D,
 	protocol: Object.freeze({
-		version: 2,
+		version: 1,
 		schemaHash: HASH_B,
 		protocolHash: HASH_C,
 		surface: SURFACE,
@@ -83,7 +83,7 @@ function artifact(overrides = {}) {
 			'mutation Client_createTodo($commandId: ID!, $input: TodoInput!) { createTodo(commandId: $commandId, input: $input) }',
 		operationHash: HASH_A,
 		protocol: Object.freeze({
-			version: 2,
+			version: 1,
 			schemaHash: HASH_B,
 			protocolHash: HASH_C,
 			surface: SURFACE,
@@ -151,7 +151,7 @@ function commandEnvelope(commandId, options = {}) {
 		status: options.status ?? 200,
 		extensions: {
 			distributed: {
-				protocolVersion: 2,
+				protocolVersion: 1,
 				schemaHash: HASH_B,
 				cacheScope: 'scope:user',
 				operation: options.operation ?? HASH_A,
@@ -201,7 +201,7 @@ function scopeQueryArtifact(options = {}) {
 				? 'query ClientScopeId { todos { id } }'
 				: 'query ClientScope { todos { id title } }',
 		protocol: Object.freeze({
-			version: 2,
+			version: 1,
 			schemaHash: HASH_B,
 			surface: SURFACE,
 			operation,
@@ -250,7 +250,7 @@ function scopeSnapshotEnvelope(position, options = {}) {
 		data: { todos: [] },
 		extensions: {
 			distributed: {
-				protocolVersion: 2,
+				protocolVersion: 1,
 				schemaHash: HASH_B,
 				cacheScope: 'scope:user',
 				operation: options.operation ?? HASH_D,
@@ -576,7 +576,7 @@ test('real replica authority gates commands on its server-issued scope inventory
 		id: HASH_D,
 		document: 'query ClientScope { __typename }',
 		protocol: Object.freeze({
-			version: 2,
+			version: 1,
 			schemaHash: HASH_B,
 			surface: SURFACE,
 			operation: HASH_D,
@@ -663,7 +663,7 @@ test('real replica authority gates commands on its server-issued scope inventory
 		{
 			extensions: {
 				distributed: {
-					protocolVersion: 2,
+					protocolVersion: 1,
 					schemaHash: HASH_B,
 					cacheScope: 'scope:user',
 					operation: HASH_D,
@@ -688,7 +688,7 @@ test('real replica authority gates commands on its server-issued scope inventory
 			data: { todos: [] },
 			extensions: {
 				distributed: {
-					protocolVersion: 2,
+					protocolVersion: 1,
 					schemaHash: HASH_B,
 					cacheScope: 'scope:user',
 					operation: HASH_D,

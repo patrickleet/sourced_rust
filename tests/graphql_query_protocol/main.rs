@@ -460,7 +460,7 @@ async fn projected_query_emits_exact_record_and_index_revisions_without_key_leak
     );
 
     let distributed = distributed_envelope(&response);
-    assert_eq!(distributed["protocolVersion"], 2);
+    assert_eq!(distributed["protocolVersion"], 1);
     assert!(distributed.get("command").is_none());
     assert!(distributed.get("live").is_none());
     assert_opaque_token(&distributed["cacheScope"], "cache-scope");

@@ -299,7 +299,7 @@ export function dehydrateReplica(host: HydrationHost): ReplicaDehydratedState {
 	const state = Object.freeze({
 		version: 1 as const,
 		scope: Object.freeze({
-			protocolVersion: 2 as const,
+			protocolVersion: 1 as const,
 			schemaHash: scope.schemaHash,
 			cacheScope: scope.cacheScope
 		}),
@@ -427,7 +427,7 @@ export function hydrateReplica(
 	host.setProtocolGeneration(parsed.scope);
 	host.setArtifactBinding(
 		Object.freeze({
-			version: 2,
+			version: 1,
 			schemaHash: parsed.scope.schemaHash,
 			...(binding?.surfaceIdentity !== undefined
 				? { surfaceIdentity: binding.surfaceIdentity }

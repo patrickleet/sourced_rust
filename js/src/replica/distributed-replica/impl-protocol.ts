@@ -101,7 +101,7 @@ export function validateProtocolBinding<
 	if (binding === undefined) {
 		protocolInvalid('extensions.distributed');
 	}
-	if (binding.version !== 2) {
+	if (binding.version !== 1) {
 		throw new TypeError('replica artifact protocol version is unsupported');
 	}
 	if (binding.schemaHash !== envelope.schemaHash) {
@@ -123,7 +123,7 @@ export function stageProtocolGeneration(
 	envelope: DistributedProtocolEnvelope
 ): ProtocolGeneration {
 	const next: ProtocolGeneration = {
-		protocolVersion: 2,
+		protocolVersion: 1,
 		cacheScope: envelope.cacheScope,
 		schemaHash: envelope.schemaHash
 	};

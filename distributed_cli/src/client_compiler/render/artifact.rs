@@ -254,7 +254,7 @@ pub(super) fn render_operation_artifact_json(
         variable_codec: &operation.variable_codec,
         roots: vec![artifact_root(operation)],
         protocol: ArtifactProtocol {
-            version: 2,
+            version: 1,
             schema_hash: &manifest.schema_fingerprint,
             surface: &manifest.surface,
             operation: &operation.query_hash,

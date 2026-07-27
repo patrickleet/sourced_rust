@@ -521,7 +521,7 @@ export function validatedCommandAuthorityContract(
 	if (
 		value === null ||
 		typeof value !== 'object' ||
-		value.protocolVersion !== 2 ||
+		value.protocolVersion !== 1 ||
 		typeof value.schemaHash !== 'string' ||
 		!SHA256.test(value.schemaHash) ||
 		typeof value.protocolHash !== 'string' ||

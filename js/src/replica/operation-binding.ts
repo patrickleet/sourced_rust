@@ -7,7 +7,7 @@ import type {
 } from './types.js';
 
 export type ValidatedReplicaOperationBinding = {
-	readonly version: 2;
+	readonly version: 1;
 	readonly schemaHash: string;
 	readonly operation: string;
 	readonly surfaceIdentity: string;
@@ -30,7 +30,7 @@ export function validateReplicaOperationBinding<
 	const binding = artifact.protocol;
 	if (
 		binding === undefined ||
-		binding.version !== 2 ||
+		binding.version !== 1 ||
 		typeof binding.schemaHash !== 'string' ||
 		binding.schemaHash.length === 0 ||
 		typeof binding.operation !== 'string' ||
@@ -40,7 +40,7 @@ export function validateReplicaOperationBinding<
 		throw new TypeError('replica artifact protocol binding is invalid');
 	}
 	if (artifact.variableCodec === undefined) {
-		throw new TypeError('protocol-v2 replica artifact requires variableCodec');
+		throw new TypeError('protocol-v1 replica artifact requires variableCodec');
 	}
 	return Object.freeze({
 		version: binding.version,

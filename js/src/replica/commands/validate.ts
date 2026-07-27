@@ -41,7 +41,7 @@ export function validateArtifact<TInput, TOutput>(
 	}
 	nonempty(artifact.document, 'artifact.document');
 	hash(artifact.operationHash, 'artifact.operationHash');
-	if (artifact.protocol.version !== 2) artifactInvalid('artifact.protocol.version');
+	if (artifact.protocol.version !== 1) artifactInvalid('artifact.protocol.version');
 	hash(artifact.protocol.schemaHash, 'artifact.protocol.schemaHash');
 	hash(artifact.protocol.protocolHash, 'artifact.protocol.protocolHash');
 	validateClientSurface(artifact.protocol.surface, 'artifact.protocol.surface');

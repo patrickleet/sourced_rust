@@ -125,7 +125,7 @@ fn render_protocol(manifest: &ClientManifest) -> Result<String, ClientCompileErr
             "document": &status.operation,
             "operationHash": &status.operation_hash,
             "protocol": {
-                "version": 2,
+                "version": 1,
                 "schemaHash": &manifest.schema_fingerprint,
                 "protocolHash": &manifest.protocol_fingerprint,
                 "surface": &manifest.surface,
@@ -170,7 +170,7 @@ fn render_compiler_manifest(
     let provenance = CompilerManifest {
         compiler_manifest_version: 1,
         distributed_manifest_version: 7,
-        protocol_version: 2,
+        protocol_version: 1,
         service_id: &manifest.service_id,
         surface: &manifest.surface,
         schema_fingerprint: &manifest.schema_fingerprint,

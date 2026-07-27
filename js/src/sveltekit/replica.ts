@@ -814,7 +814,7 @@ function validatedHydrationAuthority(
 		value?.version !== 1 ||
 		scope === null ||
 		typeof scope !== 'object' ||
-		scope.protocolVersion !== 2 ||
+		scope.protocolVersion !== 1 ||
 		typeof scope.schemaHash !== 'string' ||
 		scope.schemaHash.length === 0 ||
 		typeof scope.cacheScope !== 'string' ||
