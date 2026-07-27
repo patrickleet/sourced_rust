@@ -56,7 +56,7 @@ fn client_manifest_uses_service_surface_export() {
     assert_eq!(manifest["surface"]["name"], "user");
     assert_eq!(
         manifest["schema_fingerprint"],
-        "sha256:b99b09420301b8e837cc5c734bff9114ce3de9c02429e1d05add1dda0ca2bf58"
+        "sha256:726e0295565525870532f0de8180bef9f49cb94edf0f553288f7378fcf52a822"
     );
     assert_eq!(
         manifest["protocol_fingerprint"],
