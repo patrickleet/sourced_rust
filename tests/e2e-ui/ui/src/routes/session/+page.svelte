@@ -1,6 +1,6 @@
 <script lang="ts">
 	import { browser } from '$app/environment';
-	import { BadgeCheck, LockKeyhole, LogOut, ShieldCheck, UserRound } from '@lucide/svelte';
+	import { BadgeCheck, LockKeyhole, LogOut, UserRound } from '@lucide/svelte';
 	import { Button, SimplePage } from '$lib/components/shared/ui';
 	import { engineRoleFromGroups, isAdminEngineRole } from '$lib/roles';
 	import TokenInspector from './TokenInspector.svelte';
@@ -194,10 +194,6 @@
 			</section>
 
 			<div class="button-row center">
-				<Button variant="secondary" href="/protected">
-					<ShieldCheck size={18} strokeWidth={2.2} aria-hidden="true" />
-					Protected Page
-				</Button>
 				{#if isAdmin}
 					<Button variant="secondary" href="/admin">
 						<UserRound size={18} strokeWidth={2.2} aria-hidden="true" />

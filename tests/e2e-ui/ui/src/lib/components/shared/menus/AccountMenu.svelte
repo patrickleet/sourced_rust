@@ -40,12 +40,6 @@
         Session Info
       </a>
       <a
-        href="http://localhost:18080/ui/console/users/me"
-        class="account-menu-btn account-menu-btn-secondary"
-      >
-        Manage Account
-      </a>
-      <a
         href="/signout"
         class="account-menu-btn account-menu-btn-danger"
       >
