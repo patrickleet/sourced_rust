@@ -558,7 +558,7 @@ function validateScope(scope: ReplicaDiagnosticScopeInput): void {
 		throw new TypeError('diagnostic scope generation must be an unsigned integer');
 	}
 	if (scope.established) {
-		if (scope.protocolVersion !== 2 || !nonempty(scope.schemaHash)) {
+		if (scope.protocolVersion !== 1 || !nonempty(scope.schemaHash)) {
 			throw new TypeError(
 				'established diagnostic scope requires protocol and schema hash'
 			);

@@ -32,7 +32,7 @@ function operation(id, field = 'todos', schemaHash = 'schema-a') {
 		id,
 		document: `query ${id.replaceAll(':', '_')} { ${field} { id title } }`,
 		protocol: Object.freeze({
-			version: 2,
+			version: 1,
 			schemaHash,
 			surface: USER_SURFACE,
 			operation: id,
@@ -152,7 +152,7 @@ function frame(
 		data: { [field]: rows },
 		extensions: {
 			distributed: {
-				protocolVersion: 2,
+				protocolVersion: 1,
 				schemaHash: artifact.protocol.schemaHash,
 				cacheScope,
 				operation: artifact.protocol.operation,
@@ -195,7 +195,7 @@ test('only a server response establishes a scope and permits SSR dehydration', (
 
 	write(replica, Todos, [{ id: 'todo-1', title: 'one' }]);
 	assert.deepEqual(replica.scope, {
-		protocolVersion: 2,
+		protocolVersion: 1,
 		schemaHash: 'schema-a',
 		cacheScope: 'cache:a'
 	});
@@ -254,7 +254,7 @@ test('query artifacts independently bind exact scope-preset inventories', () => 
 
 test('bound command authority is scope-derived, hydration-safe, and generation-fenced', () => {
 	const contract = Object.freeze({
-		protocolVersion: 2,
+		protocolVersion: 1,
 		schemaHash: AUTH_SCHEMA_HASH,
 		protocolHash: AUTH_PROTOCOL_HASH,
 		surface: USER_SURFACE,

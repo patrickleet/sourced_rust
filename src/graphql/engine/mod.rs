@@ -36,7 +36,7 @@ use super::permissions::{
     read, role_grants_from_model_role_perms, ModelPermissions, ReadPermission,
 };
 use super::protocol::{
-    DistributedEnvelopeV2, DistributedLiveCursor, DistributedTrustedPreset, OpaqueProtocolToken,
+    DistributedEnvelopeV1, DistributedLiveCursor, DistributedTrustedPreset, OpaqueProtocolToken,
     ProtocolResponseAccumulator, ProtocolTokenCodec, ProtocolTokenPurpose, RequestedLiveResume,
     MAX_LIVE_RESUME_CURSORS,
 };

@@ -34,7 +34,7 @@ export type LiveEntry = {
 };
 
 export type ProtocolGeneration = {
-	protocolVersion: 2;
+	protocolVersion: 1;
 	cacheScope: DistributedOpaqueString;
 	schemaHash: string;
 };
@@ -101,7 +101,7 @@ export type RegisteredCommandAuthorityContract = {
 };
 
 export type ReplicaArtifactBinding = {
-	version: 2;
+	version: 1;
 	schemaHash: string;
 	surfaceIdentity?: string;
 	trustedPresets?: readonly ReplicaTrustedPresetDescriptor[];

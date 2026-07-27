@@ -7,7 +7,7 @@ use serde::Serialize;
 
 use super::{
     DistributedCommandConsistency, DistributedCommandMetadata, DistributedCommandState,
-    DistributedEnvelopeV2, DistributedLiveCursor, DistributedLiveMetadata,
+    DistributedEnvelopeV1, DistributedLiveCursor, DistributedLiveMetadata,
     DistributedProjectionExpectation, DistributedProjectionObservation, DistributedQuerySnapshot,
     DistributedRecordRevision, OpaqueProtocolToken, ProtocolTokenCodec, ProtocolTokenError,
     ProtocolTokenPurpose, RequestedLiveResume,
@@ -40,18 +40,18 @@ pub(crate) struct ProtocolResponseAccumulator {
 
 #[derive(Debug)]
 struct ProtocolResponseState {
-    envelope: Mutex<DistributedEnvelopeV2>,
+    envelope: Mutex<DistributedEnvelopeV1>,
     query_snapshot_scope: Mutex<Option<OpaqueProtocolToken>>,
     requested_live_resume: Mutex<RequestedLiveResume>,
     /// `None` is one-shot HTTP execution. `Some` is a stream FIFO containing
     /// one immutable envelope per yielded GraphQL response.
-    stream_frames: Mutex<Option<VecDeque<DistributedEnvelopeV2>>>,
+    stream_frames: Mutex<Option<VecDeque<DistributedEnvelopeV1>>>,
     dispatch_claimed: Mutex<bool>,
     codec: ProtocolTokenCodec,
 }
 
 impl ProtocolResponseAccumulator {
-    pub(crate) fn new(envelope: DistributedEnvelopeV2, codec: ProtocolTokenCodec) -> Self {
+    pub(crate) fn new(envelope: DistributedEnvelopeV1, codec: ProtocolTokenCodec) -> Self {
         Self {
             inner: Arc::new(ProtocolResponseState {
                 envelope: Mutex::new(envelope),
@@ -428,7 +428,7 @@ impl ProtocolResponseAccumulator {
 
     fn with_envelope<T>(
         &self,
-        operation: impl FnOnce(&DistributedEnvelopeV2) -> T,
+        operation: impl FnOnce(&DistributedEnvelopeV1) -> T,
     ) -> Result<T, ProtocolAccumulatorError> {
         self.inner
             .envelope
@@ -654,7 +654,7 @@ impl ProtocolResponseAccumulator {
         Ok(())
     }
 
-    pub(crate) fn snapshot(&self) -> Result<DistributedEnvelopeV2, ProtocolAccumulatorError> {
+    pub(crate) fn snapshot(&self) -> Result<DistributedEnvelopeV1, ProtocolAccumulatorError> {
         self.inner
             .envelope
             .lock()

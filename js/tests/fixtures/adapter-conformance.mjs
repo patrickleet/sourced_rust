@@ -24,7 +24,7 @@ const RequiredRevalidationCommand = Object.freeze({
 		'mutation RevalidateTodos($commandId: ID!) { revalidateTodos(commandId: $commandId) }',
 	operationHash: `sha256:${'b'.repeat(64)}`,
 	protocol: Object.freeze({
-		version: 2,
+		version: 1,
 		schemaHash: REACT_FIXTURE_SCHEMA,
 		protocolHash: `sha256:${'c'.repeat(64)}`,
 		surface: REACT_FIXTURE_SURFACE,
@@ -125,7 +125,7 @@ export const TodosArtifact = Object.freeze({
 	id: 'query:react-fixture-todos',
 	document: 'query ReactFixtureTodos { todos { id title status } }',
 	protocol: Object.freeze({
-		version: 2,
+		version: 1,
 		schemaHash: REACT_FIXTURE_SCHEMA,
 		surface: REACT_FIXTURE_SURFACE,
 		operation: 'query:react-fixture-todos',
@@ -215,7 +215,7 @@ export const TodoByIdArtifact = Object.freeze({
 	document:
 		'query ReactFixtureTodoById($id: ID!) { todo(id: $id) { id title status } }',
 	protocol: Object.freeze({
-		version: 2,
+		version: 1,
 		schemaHash: REACT_FIXTURE_SCHEMA,
 		surface: REACT_FIXTURE_SURFACE,
 		operation: 'query:react-fixture-todo-by-id',
@@ -330,7 +330,7 @@ export function todoFrame(
 		...(errors === undefined ? {} : { errors }),
 		extensions: {
 			distributed: {
-				protocolVersion: 2,
+				protocolVersion: 1,
 				schemaHash: artifact.protocol.schemaHash,
 				cacheScope,
 				operation,

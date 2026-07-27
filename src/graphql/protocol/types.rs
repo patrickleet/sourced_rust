@@ -176,7 +176,7 @@ pub(crate) struct DistributedTrustedPreset {
 /// Canonical contents of GraphQL's top-level `extensions.distributed`.
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
-pub(crate) struct DistributedEnvelopeV2 {
+pub(crate) struct DistributedEnvelopeV1 {
     pub(crate) protocol_version: u32,
     pub(crate) schema_hash: String,
     pub(crate) cache_scope: OpaqueProtocolToken,
@@ -192,7 +192,7 @@ pub(crate) struct DistributedEnvelopeV2 {
     pub(crate) trusted_presets: Vec<DistributedTrustedPreset>,
 }
 
-impl DistributedEnvelopeV2 {
+impl DistributedEnvelopeV1 {
     pub(crate) fn new(
         schema_hash: impl Into<String>,
         cache_scope: OpaqueProtocolToken,

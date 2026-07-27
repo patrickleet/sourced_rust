@@ -1,7 +1,7 @@
 {
   "compiler_manifest_version": 1,
   "distributed_manifest_version": 7,
-  "protocol_version": 2,
+  "protocol_version": 1,
   "service_id": "e2e-ui",
   "surface": {
     "kind": "application",
@@ -12,7 +12,7 @@
     ]
   },
   "schema_fingerprint": "sha256:8cd8e91927aad9ec164eb874c5c77c5cc883f0fdae8805280b423e4925d644b9",
-  "protocol_fingerprint": "sha256:7631d15b16e327ff08d728e97ac5f90f5150d00774938e720bbbc6830b77e0cf",
+  "protocol_fingerprint": "sha256:949e333655c4dea41520cb8fce13ae9ac76c97e5e879a82cff4fb9051a290209",
   "scalar_codecs": {
     "BigInt": "json_number_precision_limited",
     "Boolean": "boolean",

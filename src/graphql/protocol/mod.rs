@@ -18,7 +18,7 @@ pub(crate) use token::{
 };
 pub(crate) use types::{
     DistributedCommandConsistency, DistributedCommandMetadata, DistributedCommandState,
-    DistributedEnvelopeV2, DistributedIndexRevision, DistributedLiveCursor,
+    DistributedEnvelopeV1, DistributedIndexRevision, DistributedLiveCursor,
     DistributedLiveMetadata, DistributedProjectionExpectation, DistributedProjectionObservation,
     DistributedQuerySnapshot, DistributedRecordRevision, DistributedTrustedPreset,
     RequestedLiveResume,

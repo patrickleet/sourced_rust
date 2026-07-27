@@ -478,7 +478,7 @@ export const Operation_BlobGames: ReplicaOperationArtifact<Operation_BlobGames_D
     }
   ],
   "protocol": {
-    "version": 2,
+    "version": 1,
     "schemaHash": "sha256:8cd8e91927aad9ec164eb874c5c77c5cc883f0fdae8805280b423e4925d644b9",
     "surface": {
       "kind": "application",

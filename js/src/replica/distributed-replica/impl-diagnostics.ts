@@ -149,7 +149,7 @@ export function syncDiagnostics(host: DiagnosticsHost): void {
 						: Object.freeze({
 								generation: host.getProtocolGenerationSequence(),
 								established: true,
-								protocolVersion: 2 as const,
+								protocolVersion: 1 as const,
 								schemaHash: scope.schemaHash
 							}),
 				records: Object.freeze(records),

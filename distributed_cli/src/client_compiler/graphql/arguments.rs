@@ -9,7 +9,7 @@ pub(super) fn single_root_field<'a>(
         return Err(source_error(
             "client.operation.single_root",
             format!(
-                "causal protocol v2 requires exactly one query root; found {}",
+                "causal protocol v1 requires exactly one query root; found {}",
                 fields.len()
             ),
             document,

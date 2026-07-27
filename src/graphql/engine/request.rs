@@ -172,7 +172,7 @@ impl GraphqlEngine {
             .codec
             .issue(ProtocolTokenPurpose::CacheScope, &material)
             .map_err(|_| ())?;
-        let envelope = DistributedEnvelopeV2::new(
+        let envelope = DistributedEnvelopeV1::new(
             surface_info.schema_fingerprint.clone(),
             cache_scope,
             // Generated artifacts submit this exact document. Hashing its

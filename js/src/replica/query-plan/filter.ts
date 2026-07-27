@@ -657,7 +657,7 @@ export function validateComparableValues(
 }
 
 /**
- * Protocol v2 orders strings by their unsigned UTF-8 bytes. The GraphQL SQL
+ * Protocol v1 orders strings by their unsigned UTF-8 bytes. The GraphQL SQL
  * compiler emits the matching binary collation for every textual ORDER BY,
  * making optimistic index maintenance identical on SQLite and PostgreSQL.
  */

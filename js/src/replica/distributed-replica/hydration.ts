@@ -91,11 +91,11 @@ export function parseAuthoritativeScope(
 			'authoritativeScope',
 			['protocolVersion', 'schemaHash', 'cacheScope']
 		);
-		if (scope.protocolVersion !== 2) {
+		if (scope.protocolVersion !== 1) {
 			hydrationInvalid('authoritativeScope.protocolVersion');
 		}
 		return Object.freeze({
-			protocolVersion: 2,
+			protocolVersion: 1,
 			schemaHash: hydrationString(
 				scope.schemaHash,
 				'authoritativeScope.schemaHash'
@@ -208,11 +208,11 @@ export function parseReplicaHydration(
 			'state.scope',
 			['protocolVersion', 'schemaHash', 'cacheScope']
 		);
-		if (scopeValue.protocolVersion !== 2) {
+		if (scopeValue.protocolVersion !== 1) {
 			hydrationInvalid('state.scope.protocolVersion');
 		}
 		const scope: ProtocolGeneration = Object.freeze({
-			protocolVersion: 2,
+			protocolVersion: 1,
 			schemaHash: hydrationString(
 				scopeValue.schemaHash,
 				'state.scope.schemaHash'

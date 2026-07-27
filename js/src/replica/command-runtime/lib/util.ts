@@ -21,7 +21,7 @@ export function normalizeRetries(value: number | undefined): number {
 
 export function cloneScope(scope: ReplicaAuthoritativeScope): ReplicaAuthoritativeScope {
 	return Object.freeze({
-		protocolVersion: 2,
+		protocolVersion: 1,
 		schemaHash: scope.schemaHash,
 		cacheScope: scope.cacheScope
 	});

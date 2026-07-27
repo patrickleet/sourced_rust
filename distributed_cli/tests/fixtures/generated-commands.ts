@@ -72,14 +72,14 @@ export const Command_importTodos: ReplicaCommandArtifact<Command_importTodos_Inp
   },
   "protocol": {
     "operation": "sha256:e8e54238fd7618fa94e90ae60b1dfac8833943027d04e71be84cb03702f1cebf",
-    "protocolHash": "sha256:7631d15b16e327ff08d728e97ac5f90f5150d00774938e720bbbc6830b77e0cf",
-    "schemaHash": "sha256:a2e5ecf4c03332180004b59dee01100b62160c65aa857b645ce6656b2c4b0346",
+    "protocolHash": "sha256:949e333655c4dea41520cb8fce13ae9ac76c97e5e879a82cff4fb9051a290209",
+    "schemaHash": "sha256:46711a1bbb103b8f4bda1adec4e9a118dfa863fac1ed906e568fa849abd8933e",
     "surface": {
       "kind": "role",
       "name": "user"
     },
     "trustedPresets": [],
-    "version": 2
+    "version": 1
   },
   "revalidation": {
     "dependencies": [
@@ -141,14 +141,14 @@ export const Command_pingTodos: ReplicaCommandArtifact<Command_pingTodos_Input, 
   },
   "protocol": {
     "operation": "sha256:3cb3c1e96331b4e98191cc725ab6b01c0e9b04cc7cc0f37f4fa0ef394fee9acf",
-    "protocolHash": "sha256:7631d15b16e327ff08d728e97ac5f90f5150d00774938e720bbbc6830b77e0cf",
-    "schemaHash": "sha256:a2e5ecf4c03332180004b59dee01100b62160c65aa857b645ce6656b2c4b0346",
+    "protocolHash": "sha256:949e333655c4dea41520cb8fce13ae9ac76c97e5e879a82cff4fb9051a290209",
+    "schemaHash": "sha256:46711a1bbb103b8f4bda1adec4e9a118dfa863fac1ed906e568fa849abd8933e",
     "surface": {
       "kind": "role",
       "name": "user"
     },
     "trustedPresets": [],
-    "version": 2
+    "version": 1
   },
   "revalidation": {
     "dependencies": [
@@ -288,14 +288,14 @@ export const Command_projectTodo: ReplicaCommandArtifact<Command_projectTodo_Inp
   },
   "protocol": {
     "operation": "sha256:f986d060555cdedfe94621914116306af704d8bb90e75289722a3b7119211d32",
-    "protocolHash": "sha256:7631d15b16e327ff08d728e97ac5f90f5150d00774938e720bbbc6830b77e0cf",
-    "schemaHash": "sha256:a2e5ecf4c03332180004b59dee01100b62160c65aa857b645ce6656b2c4b0346",
+    "protocolHash": "sha256:949e333655c4dea41520cb8fce13ae9ac76c97e5e879a82cff4fb9051a290209",
+    "schemaHash": "sha256:46711a1bbb103b8f4bda1adec4e9a118dfa863fac1ed906e568fa849abd8933e",
     "surface": {
       "kind": "role",
       "name": "user"
     },
     "trustedPresets": [],
-    "version": 2
+    "version": 1
   },
   "revalidation": {
     "dependencies": [

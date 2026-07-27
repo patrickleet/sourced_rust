@@ -265,11 +265,11 @@ fn aggregate_root() -> JsonValue {
 pub(super) fn manifest() -> JsonValue {
     let mut value = json!({
         "manifest_version": 7,
-        "protocol_version": 2,
+        "protocol_version": 1,
         "service_id": "todos-service",
         "surface": {"kind": "role", "name": "user"},
         "schema_fingerprint": fingerprint("schema"),
-        "protocol_fingerprint": "sha256:7631d15b16e327ff08d728e97ac5f90f5150d00774938e720bbbc6830b77e0cf",
+        "protocol_fingerprint": "sha256:949e333655c4dea41520cb8fce13ae9ac76c97e5e879a82cff4fb9051a290209",
         "execution": {
             "max_depth": 8,
             "max_complexity": 500,

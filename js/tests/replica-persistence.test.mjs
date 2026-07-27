@@ -44,7 +44,7 @@ const TodoPolicy = Object.freeze({
 
 function scope(cacheScope = 'cache:tenant-a', schemaHash = 'schema:a') {
 	return {
-		protocolVersion: 2,
+		protocolVersion: 1,
 		schemaHash,
 		cacheScope
 	};
@@ -298,7 +298,7 @@ test('restored trusted presets satisfy the generated command authority contract'
 
 	assert.equal(replica.hydrate(restored, authoritativeScope), true);
 	const registration = replica[replicaCommandAuthority]({
-		protocolVersion: 2,
+		protocolVersion: 1,
 		schemaHash,
 		protocolHash: `sha256:${'b'.repeat(64)}`,
 		surface: { kind: 'role', name: 'user' },

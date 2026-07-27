@@ -164,7 +164,7 @@ const CodecArtifact = Object.freeze({
 	document: 'query CodecItems { items { id title } }',
 	variableCodec,
 	protocol: Object.freeze({
-		version: 2,
+		version: 1,
 		schemaHash: 'schema-one',
 		surface: Object.freeze({ kind: 'role', name: 'user' }),
 		operation: 'query:codec-items',
@@ -255,7 +255,7 @@ function codecWireFrame(title = 'schema one') {
 		data: { items: [{ id: 'item-1', title }] },
 		extensions: {
 			distributed: {
-				protocolVersion: 2,
+				protocolVersion: 1,
 				schemaHash: 'schema-one',
 				cacheScope: 'cache:one',
 				operation: CodecArtifact.id,
@@ -738,7 +738,7 @@ test('protocol artifacts require a codec before binding, cache access, or transp
 			),
 		() => replica.watch(missingCodec, singletonVariables)
 	]) {
-		assert.throws(useArtifact, /protocol-v2 replica artifact requires variableCodec/);
+		assert.throws(useArtifact, /protocol-v1 replica artifact requires variableCodec/);
 	}
 	await flushMicrotasks();
 	assert.equal(fetches.length, 0);

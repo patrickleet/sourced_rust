@@ -194,7 +194,7 @@ const operation: ReplicaOperationArtifact<TodosData, TodosVariables> = {
   id: 'query:todos',
   document: 'query Todos($limit: Int!) { todos(limit: $limit) { id title } }',
   protocol: {
-    version: 2,
+    version: 1,
     schemaHash: \`sha256:\${'a'.repeat(64)}\`,
     surface: { kind: 'role', name: 'user' },
     operation: 'query:todos',
@@ -291,7 +291,7 @@ const operation = Object.freeze({
   id: 'query:todos',
   document: 'query Todos { todos { id title } }',
   protocol: Object.freeze({
-    version: 2,
+    version: 1,
     schemaHash,
     surface: Object.freeze({ kind: 'role', name: 'user' }),
     operation: 'query:todos',
@@ -346,7 +346,7 @@ replica.writeResult(operation, {}, {
   data: { todos: [{ id: 'todo-1', title: 'packed' }] },
   extensions: {
     distributed: {
-      protocolVersion: 2,
+      protocolVersion: 1,
       schemaHash,
       cacheScope: 'scope:user',
       operation: operation.id,

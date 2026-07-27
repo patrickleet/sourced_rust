@@ -1845,7 +1845,7 @@ mod tests {
     fn client_manifest_validator_accepts_only_current_version() {
         let manifest = serde_json::json!({
             "manifest_version": DISTRIBUTED_CLIENT_MANIFEST_VERSION,
-            "protocol_version": 2,
+            "protocol_version": 1,
             "service_id": "orders",
             "schema_fingerprint": "sha256:schema",
             "protocol_fingerprint": "sha256:protocol",

@@ -555,13 +555,13 @@ export class DistributedReplicaImpl implements DistributedReplicaApi {
 		const binding = this.#artifactBinding;
 		if (binding === undefined) {
 			this.#artifactBinding = Object.freeze({
-				version: 2,
+				version: 1,
 				schemaHash: next.schemaHash,
 				surfaceIdentity: next.surfaceIdentity,
 				trustedPresets: next.trustedPresets
 			});
 		} else if (
-			binding.version !== 2 ||
+			binding.version !== 1 ||
 			binding.schemaHash !== next.schemaHash ||
 			(
 				binding.surfaceIdentity !== undefined &&

@@ -116,8 +116,8 @@ export const Operation_RustRuntimeBridge: ReplicaOperationArtifact<Operation_Rus
     }
   ],
   "protocol": {
-    "version": 2,
-    "schemaHash": "sha256:932aaf585be36d8eb05c646a66a1c44c94303f398577c71512491d26347e78f5",
+    "version": 1,
+    "schemaHash": "sha256:429ac6940d4080c4be1c738901accaa6a93ae6ba0900e0ab64335f14aedc7aba",
     "surface": {
       "kind": "role",
       "name": "user"

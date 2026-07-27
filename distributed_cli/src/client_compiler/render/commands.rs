@@ -308,7 +308,7 @@ fn command_artifact_json(
     artifact.insert(
         "protocol".into(),
         serde_json::json!({
-            "version": 2,
+            "version": 1,
             "schemaHash": manifest.schema_fingerprint,
             "protocolHash": manifest.protocol_fingerprint,
             "surface": &manifest.surface,

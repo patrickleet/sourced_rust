@@ -14,7 +14,7 @@ const Query = Object.freeze({
 	id: 'query:items',
 	document: 'query Items { items { id value } }',
 	protocol: Object.freeze({
-		version: 2,
+		version: 1,
 		schemaHash: SCHEMA_HASH,
 		surface: Object.freeze({ kind: 'role', name: 'user' }),
 		operation: 'query:items',
@@ -74,7 +74,7 @@ function frame(revision, value, operation = Query.id) {
 		data: { items: [{ id: 'item-1', value }] },
 		extensions: {
 			distributed: {
-				protocolVersion: 2,
+				protocolVersion: 1,
 				schemaHash: SCHEMA_HASH,
 				cacheScope: 'scope:user',
 				operation,
@@ -241,7 +241,7 @@ test('receipt-only protocol frames notify only after the authoritative scope com
 		id: operationHash,
 		document: 'query Scope { __typename }',
 		protocol: Object.freeze({
-			version: 2,
+			version: 1,
 			schemaHash,
 			surface: Object.freeze({ kind: 'role', name: 'user' }),
 			operation: operationHash,
@@ -271,7 +271,7 @@ test('receipt-only protocol frames notify only after the authoritative scope com
 		{
 			extensions: {
 				distributed: {
-					protocolVersion: 2,
+					protocolVersion: 1,
 					schemaHash,
 					cacheScope: 'scope:user',
 					operation: operationHash,
@@ -291,7 +291,7 @@ test('receipt-only protocol frames notify only after the authoritative scope com
 				{
 					extensions: {
 						distributed: {
-							protocolVersion: 2,
+							protocolVersion: 1,
 							schemaHash: `sha256:${'c'.repeat(64)}`,
 							cacheScope: 'scope:forged',
 							operation: operationHash,

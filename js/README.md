@@ -385,7 +385,7 @@ explicit redactor.
 
 ## Protocol and security boundaries
 
-Every accepted artifact and response is protocol v2 and carries an exact
+Every accepted artifact and response is protocol v1 and carries an exact
 schema/client-surface binding. Every response is also bound to a server-issued
 cache scope, operation ID, and trusted-preset inventory; any supplied record
 clocks or index vector are bound to that same scope. Missing, malformed,
@@ -433,7 +433,7 @@ To move an existing pilot application:
    policies;
 4. discard prior browser cache and SSR payloads rather than migrating them.
 
-Only protocol-v2 generated artifacts and server envelopes are accepted.
+Only protocol-v1 generated artifacts and server envelopes are accepted.
 
 ## Verification and release
 
