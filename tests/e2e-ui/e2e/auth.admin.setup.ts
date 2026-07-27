@@ -12,7 +12,7 @@ setup('authenticate as admin', async ({ page }) => {
 	// Land on todos first so login always has a real destination; admin role is checked on /admin.
 	await loginAs(page, 'admin', process.env.E2E_HUMAN_PASSWORD || 'Password1!', '/todos');
 	await page.waitForURL(/\/todos/, { timeout: 30_000 });
-	await expect(page.getByRole('heading', { name: /field notes/i })).toBeVisible({
+	await expect(page.getByRole('heading', { name: /todos/i })).toBeVisible({
 		timeout: 20_000
 	});
 	await page.context().storageState({ path: adminFile });

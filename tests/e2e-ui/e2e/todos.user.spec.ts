@@ -103,7 +103,7 @@ test.describe('todos (alice)', () => {
 		const title = `e2e todo ${Date.now()}`;
 
 		await page.goto('/todos');
-		await expect(page.getByRole('heading', { name: /field notes/i })).toBeVisible();
+		await expect(page.getByRole('heading', { name: /todos/i })).toBeVisible();
 
 		// Create
 		await page.locator('#todo-title').fill(title);
@@ -166,7 +166,7 @@ test.describe('todos (alice)', () => {
 
 	test('commands preserve rendered cache while revalidating', async ({ page }) => {
 		await page.goto('/todos');
-		await expect(page.getByRole('heading', { name: /field notes/i })).toBeVisible();
+		await expect(page.getByRole('heading', { name: /todos/i })).toBeVisible();
 
 		// Establish one row that must remain visible while later commands update.
 		const baseline = `continuity baseline ${Date.now()}`;
@@ -229,7 +229,7 @@ test.describe('todos (alice)', () => {
 		page
 	}) => {
 		await page.goto('/todos');
-		await expect(page.getByRole('heading', { name: /field notes/i })).toBeVisible();
+		await expect(page.getByRole('heading', { name: /todos/i })).toBeVisible();
 
 		await page.route('**/graphql', async (route) => {
 			const body = route.request().postData() ?? '';

@@ -25,7 +25,7 @@
 		</div>
 		<h1 class="auth-title">Create account</h1>
 		<p class="auth-lead">
-			Register on Fieldnote. Your password is verified via Zitadel Session API; Auth.js still
+			Register on Todos. Your password is verified via Zitadel Session API; Auth.js still
 			holds the OIDC session cookie.
 		</p>
 

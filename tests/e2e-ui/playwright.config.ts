@@ -30,7 +30,7 @@ loadEnvFile(path.join(root, 'e2e-ui.env'));
 const baseURL = process.env.E2E_UI_ORIGIN || process.env.UI_URL || 'http://localhost:5180';
 
 /**
- * Browser tests for Fieldnote e2e-ui.
+ * Browser tests for Todos e2e-ui.
  *
  * Requires a live stack (Postgres + Zitadel + API + UI):
  *   make up && make run

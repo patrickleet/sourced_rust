@@ -20,7 +20,7 @@ export const distributedClients = Object.freeze([
 	Object.freeze({
 		module: '$distributed',
 		manifest: Object.freeze({ args: Object.freeze(manifestArgs) }),
-		surface: 'fieldnote',
+		surface: 'todos',
 		documents: Object.freeze([
 			'src/routes/todos/+page.graphql',
 			'src/routes/chat/+page.graphql',
@@ -37,7 +37,7 @@ export const distributedClients = Object.freeze([
 				'e2e_service::distributed_admin_client_surface'
 			])
 		}),
-		surface: 'fieldnote-admin',
+		surface: 'todos-admin',
 		documents: Object.freeze(['src/routes/admin/+page.graphql']),
 		out: 'src/lib/generated/admin'
 	})

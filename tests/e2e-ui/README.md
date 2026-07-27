@@ -1,4 +1,4 @@
-# Fieldnote — e2e-ui template
+# Todos — e2e-ui template
 
 Copyable **Distributed** service + SvelteKit UI. This README is the **code
 index**: where each “that feels like a real product” behavior lives, then how
@@ -52,8 +52,8 @@ Generated (do not hand-edit; `make gen-client`):
 
 | Path | Role |
 |------|------|
-| [`ui/src/lib/generated/user/`](ui/src/lib/generated/user/) | Ops, commands, route registry, SvelteKit adapter for `fieldnote` |
-| [`ui/src/lib/generated/admin/`](ui/src/lib/generated/admin/) | Same for `fieldnote-admin` |
+| [`ui/src/lib/generated/user/`](ui/src/lib/generated/user/) | Ops, commands, route registry, SvelteKit adapter for `todos` |
+| [`ui/src/lib/generated/admin/`](ui/src/lib/generated/admin/) | Same for `todos-admin` |
 
 `$distributed` re-exports the user surface; admin layout imports `$distributed/admin`.
 
@@ -129,7 +129,7 @@ Browser (SSR + client)
   GraphQL WS    connection_init.authorization
 
 Zitadel edge (:18080)
-  Login V2 baseUri → Fieldnote UI origin
+  Login V2 baseUri → Todos UI origin
 
 e2e-runner
   OidcBearer (or DevHeaders offline)
@@ -149,8 +149,8 @@ Rust `Service` inventory is source of truth. Two pool-free exports:
 
 | Entrypoint | Application | Roles | Used by |
 |------------|-------------|-------|---------|
-| `e2e_service::distributed_client_surface` | `fieldnote` | `admin`, `user` | App shell + user routes |
-| `e2e_service::distributed_admin_client_surface` | `fieldnote-admin` | `admin` | Nested `/admin` only |
+| `e2e_service::distributed_client_surface` | `todos` | `admin`, `user` | App shell + user routes |
+| `e2e_service::distributed_admin_client_surface` | `todos-admin` | `admin` | Nested `/admin` only |
 
 ```bash
 make gen-client      # both surfaces from ui/distributed.config.js

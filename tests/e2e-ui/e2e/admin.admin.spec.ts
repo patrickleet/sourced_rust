@@ -25,7 +25,7 @@ test.describe('admin (admin user)', () => {
 			return;
 		}
 
-		await expect(page.getByRole('heading', { name: /all field notes/i })).toBeVisible({
+		await expect(page.getByRole('heading', { name: /all todos/i })).toBeVisible({
 			timeout: 20_000
 		});
 		await expect(page.getByText(/force archive/i).first()).toBeVisible();
@@ -37,10 +37,10 @@ test.describe('admin (admin user)', () => {
 			test.skip(true, 'admin engine role not granted in this environment');
 		}
 
-		await expect(page.getByRole('heading', { name: /all field notes/i })).toBeVisible({
+		await expect(page.getByRole('heading', { name: /all todos/i })).toBeVisible({
 			timeout: 20_000
 		});
-		// Wait for the nested fieldnote-admin client to hydrate before invoking
+		// Wait for the nested todos-admin client to hydrate before invoking
 		// elevated commands (SSR markup alone has no Svelte handlers).
 		await page.waitForLoadState('networkidle');
 		const forceButtons = page.getByRole('button', { name: /force archive/i });

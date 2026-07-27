@@ -266,7 +266,7 @@ export const Operation_AdminAllTodos: ReplicaOperationArtifact<Operation_AdminAl
     "schemaHash": "sha256:d68acc1bf021f40b10fe434ce06c22bfb97f23352ab500376adc2aab6b61385e",
     "surface": {
       "kind": "application",
-      "name": "fieldnote-admin",
+      "name": "todos-admin",
       "roles": [
         "admin"
       ]

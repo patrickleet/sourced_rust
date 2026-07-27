@@ -1,6 +1,6 @@
 <script lang="ts">
 	/**
-	 * Field notes — generated operation state + generated causal commands.
+	 * Todos — generated operation state + generated causal commands.
 	 *
 	 * There is no app cache adapter or manual optimistic recipe here. The
 	 * compiler artifact tells the replica how command facts affect this query.
@@ -83,7 +83,7 @@
 </script>
 
 <AppPage>
-	<PageHeader kicker="Personal · owner-scoped" title="Field notes">
+	<PageHeader kicker="Personal · owner-scoped" title="Todos">
 		Tasks for <strong>{who}</strong>. One generated <code>@load</code> operation feeds SSR,
 		navigation, and cache reads; typed commands update that same state optimistically and
 		retire it when projection catches up.

@@ -7,7 +7,7 @@ export const CLIENT_PROTOCOL = {
 	serviceId: "e2e-ui",
 	schemaHash: "sha256:9be67c0b4e41678de4d594780fc3124c7d2ee7ba21b2a237f137051adcf8a08c",
 	protocolHash: "sha256:30f19c9f4d29280a02ddf67c4df62cdc92c4e8090792f43d6b1bdafea3e31273",
-	surface: {"kind":"application","name":"fieldnote","roles":["admin","user"]},
+	surface: {"kind":"application","name":"todos","roles":["admin","user"]},
 	trustedPresets: [
   {
     "name": "x-user-id",
@@ -35,7 +35,7 @@ export const COMMAND_STATUS: ReplicaCommandStatusArtifact = {
     "schemaHash": "sha256:9be67c0b4e41678de4d594780fc3124c7d2ee7ba21b2a237f137051adcf8a08c",
     "surface": {
       "kind": "application",
-      "name": "fieldnote",
+      "name": "todos",
       "roles": [
         "admin",
         "user"

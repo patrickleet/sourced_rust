@@ -5,7 +5,7 @@
   "service_id": "e2e-ui",
   "surface": {
     "kind": "application",
-    "name": "fieldnote-admin",
+    "name": "todos-admin",
     "roles": [
       "admin"
     ]

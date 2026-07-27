@@ -46,10 +46,10 @@
 </script>
 
 <AppPage width="wide">
-	<PageHeader kicker="admin · Role-scoped GraphQL" title="All field notes">
+	<PageHeader kicker="admin · Role-scoped GraphQL" title="All todos">
 		Signed in as <strong>{who}</strong> with engine role
 		<code>{data.engineRole}</code>. This nested layout installs a separate
-		<code>fieldnote-admin</code> client, so elevated query and command artifacts cannot leak
+		<code>todos-admin</code> client, so elevated query and command artifacts cannot leak
 		into the normal application bundle.
 	</PageHeader>
 
@@ -119,7 +119,7 @@
 	{/if}
 
 	<p class="ad-foot">
-		The normal <code>fieldnote</code> surface cannot even name
+		The normal <code>todos</code> surface cannot even name
 		<code>todo.force_archive</code>. The elevated artifact is generated only for this
 		admin-gated component tree.
 	</p>

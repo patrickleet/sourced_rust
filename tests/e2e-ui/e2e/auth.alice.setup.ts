@@ -12,6 +12,6 @@ setup('authenticate as alice', async ({ page }) => {
 	const user = process.env.E2E_HUMAN_ALICE || 'alice';
 	await loginAs(page, user, process.env.E2E_HUMAN_PASSWORD || 'Password1!', '/todos');
 	await page.waitForURL(/\/todos/, { timeout: 30_000 });
-	await page.getByRole('heading', { name: /field notes/i }).waitFor({ timeout: 20_000 });
+	await page.getByRole('heading', { name: /todos/i }).waitFor({ timeout: 20_000 });
 	await page.context().storageState({ path: aliceFile });
 });

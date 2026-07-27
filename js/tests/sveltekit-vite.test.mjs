@@ -117,14 +117,14 @@ function clients() {
 		{
 			module: '$distributed',
 			manifest: { args: ['client-manifest', '--entrypoint', 'user'] },
-			surface: 'fieldnote',
+			surface: 'todos',
 			documents: ['src/routes/todos/+page.graphql'],
 			out: 'src/generated/user'
 		},
 		{
 			module: '$distributed/admin',
 			manifest: { args: ['client-manifest', '--entrypoint', 'admin'] },
-			surface: 'fieldnote-admin',
+			surface: 'todos-admin',
 			documents: ['src/routes/admin/+page.graphql'],
 			out: 'src/generated/admin'
 		}
@@ -179,7 +179,7 @@ test('Vite compiles and resolves isolated user/admin physical entrypoints', asyn
 	);
 	assert.match(
 		await readFile(join(root, 'src/generated/admin/sveltekit.ts'), 'utf8'),
-		/fieldnote-admin/
+		/todos-admin/
 	);
 
 	const initial = await commandLog(log);
@@ -191,7 +191,7 @@ test('Vite compiles and resolves isolated user/admin physical entrypoints', asyn
 		initial
 			.filter((args) => args[0] === 'client')
 			.map((args) => args[args.indexOf('--surface') + 1]),
-		['fieldnote', 'fieldnote-admin']
+		['todos', 'todos-admin']
 	);
 
 	const added = [];
@@ -256,7 +256,7 @@ test('Vite compiles and resolves isolated user/admin physical entrypoints', asyn
 	await generateDistributedSvelteKit(options);
 	assert.match(
 		await readFile(join(root, 'src/generated/user/sveltekit.ts'), 'utf8'),
-		/fieldnote/
+		/todos/
 	);
 });
 
@@ -340,7 +340,7 @@ test('multi-surface failure leaves old outputs intact and redacts stdout', async
 	await mkdir(adminOut, { recursive: true });
 	await writeFile(join(userOut, 'sveltekit.ts'), 'old-user\n');
 	await writeFile(join(adminOut, 'sveltekit.ts'), 'old-admin\n');
-	process.env.DISTRIBUTED_FAKE_FAIL_SURFACE = 'fieldnote-admin';
+	process.env.DISTRIBUTED_FAKE_FAIL_SURFACE = 'todos-admin';
 
 	const plugin = distributedSvelteKit(pluginOptions(root, script));
 	await assert.rejects(
@@ -385,7 +385,7 @@ test('configuration rejects ambiguous surfaces, aliases, and output containment 
 				clients: [
 					{
 						...clients()[0],
-						surface: 'fieldnote',
+						surface: 'todos',
 						role: 'user'
 					}
 				]

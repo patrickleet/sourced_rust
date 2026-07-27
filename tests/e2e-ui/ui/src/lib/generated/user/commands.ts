@@ -160,7 +160,7 @@ export const Command_blob_games_move: ReplicaCommandArtifact<Command_blob_games_
     "schemaHash": "sha256:9be67c0b4e41678de4d594780fc3124c7d2ee7ba21b2a237f137051adcf8a08c",
     "surface": {
       "kind": "application",
-      "name": "fieldnote",
+      "name": "todos",
       "roles": [
         "admin",
         "user"
@@ -328,7 +328,7 @@ export const Command_blob_games_start: ReplicaCommandArtifact<Command_blob_games
     "schemaHash": "sha256:9be67c0b4e41678de4d594780fc3124c7d2ee7ba21b2a237f137051adcf8a08c",
     "surface": {
       "kind": "application",
-      "name": "fieldnote",
+      "name": "todos",
       "roles": [
         "admin",
         "user"
@@ -496,7 +496,7 @@ export const Command_blob_games_start_level: ReplicaCommandArtifact<Command_blob
     "schemaHash": "sha256:9be67c0b4e41678de4d594780fc3124c7d2ee7ba21b2a237f137051adcf8a08c",
     "surface": {
       "kind": "application",
-      "name": "fieldnote",
+      "name": "todos",
       "roles": [
         "admin",
         "user"
@@ -730,7 +730,7 @@ export const Command_chat_messages_post: ReplicaCommandArtifact<Command_chat_mes
     "schemaHash": "sha256:9be67c0b4e41678de4d594780fc3124c7d2ee7ba21b2a237f137051adcf8a08c",
     "surface": {
       "kind": "application",
-      "name": "fieldnote",
+      "name": "todos",
       "roles": [
         "admin",
         "user"
@@ -889,7 +889,7 @@ export const Command_todos_archive: ReplicaCommandArtifact<Command_todos_archive
     "schemaHash": "sha256:9be67c0b4e41678de4d594780fc3124c7d2ee7ba21b2a237f137051adcf8a08c",
     "surface": {
       "kind": "application",
-      "name": "fieldnote",
+      "name": "todos",
       "roles": [
         "admin",
         "user"
@@ -1042,7 +1042,7 @@ export const Command_todos_complete: ReplicaCommandArtifact<Command_todos_comple
     "schemaHash": "sha256:9be67c0b4e41678de4d594780fc3124c7d2ee7ba21b2a237f137051adcf8a08c",
     "surface": {
       "kind": "application",
-      "name": "fieldnote",
+      "name": "todos",
       "roles": [
         "admin",
         "user"
@@ -1249,7 +1249,7 @@ export const Command_todos_create: ReplicaCommandArtifact<Command_todos_create_I
     "schemaHash": "sha256:9be67c0b4e41678de4d594780fc3124c7d2ee7ba21b2a237f137051adcf8a08c",
     "surface": {
       "kind": "application",
-      "name": "fieldnote",
+      "name": "todos",
       "roles": [
         "admin",
         "user"
@@ -1428,7 +1428,7 @@ export const Command_todos_rename: ReplicaCommandArtifact<Command_todos_rename_I
     "schemaHash": "sha256:9be67c0b4e41678de4d594780fc3124c7d2ee7ba21b2a237f137051adcf8a08c",
     "surface": {
       "kind": "application",
-      "name": "fieldnote",
+      "name": "todos",
       "roles": [
         "admin",
         "user"
@@ -1581,7 +1581,7 @@ export const Command_todos_reopen: ReplicaCommandArtifact<Command_todos_reopen_I
     "schemaHash": "sha256:9be67c0b4e41678de4d594780fc3124c7d2ee7ba21b2a237f137051adcf8a08c",
     "surface": {
       "kind": "application",
-      "name": "fieldnote",
+      "name": "todos",
       "roles": [
         "admin",
         "user"

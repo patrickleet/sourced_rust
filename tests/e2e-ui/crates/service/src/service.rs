@@ -29,9 +29,9 @@ use crate::handlers;
 const E2E_PROTOCOL_TOKEN_KEY: [u8; 32] = [0xe2; 32];
 
 /// Stable normal-application surface shared by user and admin sessions.
-pub const DISTRIBUTED_CLIENT_SURFACE: &str = "fieldnote";
+pub const DISTRIBUTED_CLIENT_SURFACE: &str = "todos";
 /// Stable elevated surface for routes that intentionally include admin-only fields.
-pub const DISTRIBUTED_ADMIN_CLIENT_SURFACE: &str = "fieldnote-admin";
+pub const DISTRIBUTED_ADMIN_CLIENT_SURFACE: &str = "todos-admin";
 
 #[derive(Clone, Default)]
 struct ClientSurfaceLocks(Arc<InMemoryLockManager>);
@@ -418,8 +418,8 @@ fn build_graphql_engine_with_graphiql(
     let mut b = GraphqlEngine::builder(pool)
         .protocol_token_key(E2E_PROTOCOL_TOKEN_KEY)
         .roles(&["user", "admin"])
-        // fieldnote: everyone who can sign in (admin is a superset of user).
-        // fieldnote-admin: elevated ops only (/admin).
+        // todos: everyone who can sign in (admin is a superset of user).
+        // todos-admin: elevated ops only (/admin).
         .client_application_surface(DISTRIBUTED_CLIENT_SURFACE, ["admin", "user"])
         .client_application_surface(DISTRIBUTED_ADMIN_CLIENT_SURFACE, ["admin"])
         // user: only own rows. admin: all owners (UI: /admin all-notes view).
