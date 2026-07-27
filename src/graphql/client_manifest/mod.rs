@@ -49,6 +49,9 @@ use codec::*;
 use commands::*;
 use validation::validate_surface_structure;
 
+// Used by unit tests (and still a thin production-friendly wrapper).
+#[cfg_attr(not(test), allow(unused_imports))]
+pub(crate) use build::client_manifest_from_surface;
 pub use error::ClientManifestError;
 pub use export::DistributedClientSurfaceExport;
 pub use identity::ClientSurfaceIdentity;

@@ -53,6 +53,11 @@ pub use outcomes::{
 pub(crate) use projection_obligations::{
     validate_projection_confirmation_count, CommandInputDefault, CommandProjectionConfirmation,
 };
+// Re-exported for unit tests that resolve obligations through this module path.
+#[cfg_attr(not(test), allow(unused_imports))]
+pub(crate) use projection_obligations::{
+    ProjectionObligationResolutionError, ProjectorTopologyIdentity,
+};
 pub(crate) use projection_proof::{CommandCommitProofError, ProjectionCommitProof};
 pub use typed_command::{typed_command, TypedCommand};
 pub(crate) use typed_command::{TypedCommandContract, TypedServiceCommandBinding};
