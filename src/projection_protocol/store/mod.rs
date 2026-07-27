@@ -37,6 +37,8 @@ mod replay;
 mod r#trait;
 
 #[cfg(test)]
+pub(crate) mod scenario_tests;
+#[cfg(test)]
 mod tests;
 
 use helpers::{bounded_name, bounded_opaque, digest_hex, validate_scope};
