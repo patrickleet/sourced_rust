@@ -109,27 +109,21 @@ exact GitHub Actions coordinates:
 - Allowed action: `npm publish`
 
 Trusted Publisher configuration is available only after the npm package exists.
-Complete these one-time steps before allowing a version-tag release:
+One-time bootstrap (already completed for this repo):
 
-1. Authenticated as an npm maintainer, bootstrap the scoped package with a
-   throwaway non-release version such as `0.0.0` and the `bootstrap` dist-tag.
-   Use a temporary checkout so changing package metadata cannot dirty a working
-   branch. From `js/`, run `npm ci`, `npm run quality`,
-   `npm version 0.0.0 --no-git-tag-version`, and then
-   `npm publish --access public --tag bootstrap`.
-2. Configure the npm Trusted Publisher using the exact coordinates above.
-3. Create the GitHub `npm` deployment environment, restrict its deployment tags
-   to `v*`, and add required reviewers. This keeps a write-capable actor from
-   publishing solely by pushing a matching tag.
-4. Set the repository Actions variable `NPM_RELEASE_READY=true`.
+1. Publish a throwaway non-release version such as `0.0.0` for
+   `@hops-ops/distributed` on the public npm registry.
+2. Configure the npm Trusted Publisher using the exact coordinates above
+   (`npm trust github @hops-ops/distributed --file on-v-tag-publish.yaml
+   --repo hops-ops/distributed --env npm --allow-publish`).
+3. Create the GitHub `npm` deployment environment (optional protection rules:
+   tag pattern `v*`, required reviewers).
 
-The shared release preflight checks both that variable and public package
-existence before any npm or crates.io write starts. Until setup is complete a
-tag fails safely before publishing a partial release; the workflow can be rerun
-after setup. Tagged npm releases then authenticate through GitHub Actions OIDC.
-The workflow intentionally has job-scoped `id-token: write`, uses npm 11.5.1 or
-newer, and does **not** require or accept a long-lived `NPM_TOKEN` repository
-secret.
+Release preflight validates the tag form and that `@hops-ops/distributed`
+exists on the public registry before any npm or crates.io write starts. Tagged
+npm releases authenticate through GitHub Actions OIDC. The workflow
+intentionally has job-scoped `id-token: write`, uses npm 11.5.1 or newer, and
+does **not** require or accept a long-lived `NPM_TOKEN` repository secret.
 
 ## Why this monorepo doesn’t call `quality.yaml`
 
