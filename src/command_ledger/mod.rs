@@ -22,7 +22,7 @@ mod tests;
 pub(crate) use error::CommandLedgerError;
 pub(crate) use ids::{
     AttemptToken, CanonicalInputHash, CausalStorageIdentity, CausationId,
-    CommandContractFingerprint, CommandId, CommandLedgerKey, PrincipalPartitionId, SHA256_BYTES,
+    CommandContractFingerprint, CommandId, CommandLedgerKey, SHA256_BYTES,
 };
 pub(crate) use record::{CommandLedgerRecord, ReservationDecision};
 pub(crate) use reservation::{

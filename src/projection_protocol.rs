@@ -21,7 +21,7 @@ mod workspace;
 
 pub(crate) use codec::{
     compile_projection_topology, CompiledProjectionTopology, ProjectionPartitionSpec,
-    ProjectionScopeCodec, ProjectionScopeCodecError,
+    ProjectionScopeCodec,
 };
 use store::domain_separated_digest;
 pub use store::*;

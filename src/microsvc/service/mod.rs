@@ -43,7 +43,7 @@ pub(crate) use causal::{
     CausalCommandPublicStatus, CausalCommandReceiptSource, CausalDispatchError,
     CausalDispatchResult, CausalProjectionEvidenceState,
 };
-pub use handlers::{CausalCommandContext, Handler, PreparedCommandHandler};
+pub use handlers::{CausalCommandContext, PreparedCommandHandler};
 pub use request::{CommandRequest, CommandResponse};
 pub(crate) use routes::DynBusPublisher;
 pub use routes::{

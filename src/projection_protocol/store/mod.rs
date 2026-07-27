@@ -73,11 +73,11 @@ pub use query::{
     ProjectionObservation, ProjectionRecordMetadata,
 };
 pub(crate) use query::{
-    ProjectionCheckpointProbe, ProjectionCheckpointSnapshot, ProjectionFailureLocation,
+    ProjectionCheckpointSnapshot, ProjectionFailureLocation,
     ProjectionLiveRecordBatch, ProjectionLiveRecordBatchRequest, ProjectionLiveRecordRequest,
     ProjectionObligationEvidence, ProjectionObligationEvidenceBatch,
     ProjectionObligationEvidenceBatchRequest, ProjectionObligationEvidenceRequest,
-    ProjectionPartitionRuntimeState, ProjectionPartitionSnapshot, ProjectionPendingRetry,
+    ProjectionPartitionRuntimeState, ProjectionPendingRetry,
     ProjectionQuerySnapshot, ProjectionQuerySnapshotBatch, ProjectionQuerySnapshotBatchRequest,
     ProjectionQuerySnapshotRequest,
 };

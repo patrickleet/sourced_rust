@@ -49,7 +49,6 @@ use codec::*;
 use commands::*;
 use validation::validate_surface_structure;
 
-pub(crate) use build::client_manifest_from_surface;
 pub use error::ClientManifestError;
 pub use export::DistributedClientSurfaceExport;
 pub use identity::ClientSurfaceIdentity;

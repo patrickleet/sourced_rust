@@ -52,7 +52,6 @@ pub use outcomes::{
 };
 pub(crate) use projection_obligations::{
     validate_projection_confirmation_count, CommandInputDefault, CommandProjectionConfirmation,
-    ProjectionObligationResolutionError, ProjectorTopologyIdentity,
 };
 pub(crate) use projection_proof::{CommandCommitProofError, ProjectionCommitProof};
 pub use typed_command::{typed_command, TypedCommand};
