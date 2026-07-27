@@ -117,14 +117,14 @@ function clients() {
 		{
 			module: '$distributed',
 			manifest: { args: ['client-manifest', '--entrypoint', 'user'] },
-			surface: 'todos',
+			surface: 'e2e-ui',
 			documents: ['src/routes/todos/+page.graphql'],
 			out: 'src/generated/user'
 		},
 		{
 			module: '$distributed/admin',
 			manifest: { args: ['client-manifest', '--entrypoint', 'admin'] },
-			surface: 'todos-admin',
+			surface: 'e2e-ui-admin',
 			documents: ['src/routes/admin/+page.graphql'],
 			out: 'src/generated/admin'
 		}
@@ -179,7 +179,7 @@ test('Vite compiles and resolves isolated user/admin physical entrypoints', asyn
 	);
 	assert.match(
 		await readFile(join(root, 'src/generated/admin/sveltekit.ts'), 'utf8'),
-		/todos-admin/
+		/e2e-ui-admin/
 	);
 
 	const initial = await commandLog(log);
@@ -191,7 +191,7 @@ test('Vite compiles and resolves isolated user/admin physical entrypoints', asyn
 		initial
 			.filter((args) => args[0] === 'client')
 			.map((args) => args[args.indexOf('--surface') + 1]),
-		['todos', 'todos-admin']
+		['e2e-ui', 'e2e-ui-admin']
 	);
 
 	const added = [];
@@ -340,7 +340,7 @@ test('multi-surface failure leaves old outputs intact and redacts stdout', async
 	await mkdir(adminOut, { recursive: true });
 	await writeFile(join(userOut, 'sveltekit.ts'), 'old-user\n');
 	await writeFile(join(adminOut, 'sveltekit.ts'), 'old-admin\n');
-	process.env.DISTRIBUTED_FAKE_FAIL_SURFACE = 'todos-admin';
+	process.env.DISTRIBUTED_FAKE_FAIL_SURFACE = 'e2e-ui-admin';
 
 	const plugin = distributedSvelteKit(pluginOptions(root, script));
 	await assert.rejects(
@@ -385,7 +385,7 @@ test('configuration rejects ambiguous surfaces, aliases, and output containment 
 				clients: [
 					{
 						...clients()[0],
-						surface: 'todos',
+						surface: 'e2e-ui',
 						role: 'user'
 					}
 				]

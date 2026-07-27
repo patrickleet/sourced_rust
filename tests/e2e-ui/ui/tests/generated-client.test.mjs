@@ -59,10 +59,10 @@ test('normal and elevated command inventories cannot be mixed', () => {
 	assert.match(user, /"name": "blob\.move"/);
 	assert.doesNotMatch(user, /"name": "todo\.force_archive"/);
 	assert.match(user, /"kind": "application"/);
-	assert.match(user, /"name": "todos"/);
+	assert.match(user, /"name": "e2e-ui"/);
 
 	assert.match(admin, /"name": "todo\.force_archive"/);
-	assert.match(admin, /"name": "todos-admin"/);
+	assert.match(admin, /"name": "e2e-ui-admin"/);
 	assert.match(admin, /"roles": \[\s*"admin"\s*\]/);
 });
 
@@ -176,8 +176,8 @@ test('fixture generation is one dctl pipeline over typed Service inventory', () 
 		'Make must not duplicate distributed.config.js'
 	);
 	assert.match(config, /client-manifest/);
-	assert.match(config, /surface: 'todos'/);
-	assert.match(config, /surface: 'todos-admin'/);
+	assert.match(config, /surface: 'e2e-ui'/);
+	assert.match(config, /surface: 'e2e-ui-admin'/);
 	assert.match(runner, /generateDistributedSvelteKit/);
 	assert.match(runner, /checkDistributedSvelteKit/);
 	assert.doesNotMatch(

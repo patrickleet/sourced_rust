@@ -482,7 +482,7 @@ export const Operation_BlobGames: ReplicaOperationArtifact<Operation_BlobGames_D
     "schemaHash": "sha256:9be67c0b4e41678de4d594780fc3124c7d2ee7ba21b2a237f137051adcf8a08c",
     "surface": {
       "kind": "application",
-      "name": "todos",
+      "name": "e2e-ui",
       "roles": [
         "admin",
         "user"

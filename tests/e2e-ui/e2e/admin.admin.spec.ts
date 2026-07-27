@@ -40,7 +40,7 @@ test.describe('admin (admin user)', () => {
 		await expect(page.getByRole('heading', { name: /all todos/i })).toBeVisible({
 			timeout: 20_000
 		});
-		// Wait for the nested todos-admin client to hydrate before invoking
+		// Wait for the nested e2e-ui-admin client to hydrate before invoking
 		// elevated commands (SSR markup alone has no Svelte handlers).
 		await page.waitForLoadState('networkidle');
 		const forceButtons = page.getByRole('button', { name: /force archive/i });

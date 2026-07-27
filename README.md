@@ -14,7 +14,7 @@ mutations — through `@hops-ops/distributed`.
 
 ## See it run
 
-### Todos — read the code (`tests/e2e-ui`)
+### e2e-ui — read the code (`tests/e2e-ui`)
 
 A copyable multi-crate product: pure domains, GraphQL-only edge, Zitadel OIDC,
 SvelteKit SSR, generated clients, live WS. Full runbook + deeper map:
@@ -37,7 +37,7 @@ stack of deliberate files. Start here:
 | [`ui/src/routes/+layout.server.ts`](tests/e2e-ui/ui/src/routes/+layout.server.ts) | One root loader, generated route registry, session → engine role. No loading flash for declared ops. |
 | [`ui/src/routes/+layout.svelte`](tests/e2e-ui/ui/src/routes/+layout.svelte) | `provideDistributed` + SSR hydration into the causal replica. |
 | [`ui/src/routes/admin/+layout.server.ts`](tests/e2e-ui/ui/src/routes/admin/+layout.server.ts) | Elevated surface is a **second** generated client + role gate — not smuggled into the user bundle. |
-| [`crates/service/src/service.rs`](tests/e2e-ui/crates/service/src/service.rs) | Inventory, RLS (`owner_id = claim(x-user-id)`), dual client surfaces (`todos` / `todos-admin`), OIDC claim map. |
+| [`crates/service/src/service.rs`](tests/e2e-ui/crates/service/src/service.rs) | Inventory, RLS (`owner_id = claim(x-user-id)`), dual client surfaces (`e2e-ui` / `e2e-ui-admin`), OIDC claim map. |
 | [`crates/service/src/handlers/commands/blob_move.rs`](tests/e2e-ui/crates/service/src/handlers/commands/blob_move.rs) | `PreparedCommand<Projected<BlobGameView>>` — map/score written with the event, not dual-written later. |
 | [`crates/todo-domain/src/models/todo.rs`](tests/e2e-ui/crates/todo-domain/src/models/todo.rs) | Plain aggregate: `create` / `ensure_owner` / `@sourced` events — no GraphQL in the domain. |
 | [`crates/readmodels/src/models/blob_game_view.rs`](tests/e2e-ui/crates/readmodels/src/models/blob_game_view.rs) | `#[table]` + `belongs_to` owner join — GraphQL shape from the read model. |
@@ -74,7 +74,7 @@ claim → role/session). Live against three local IdPs — not mocks only:
 Shared **E1–E8** in [`tests/graphql_oidc_common/`](tests/graphql_oidc_common/).
 Gated binaries skip cleanly when unset. Offline: `cargo test --test graphql_identity --features graphql,sqlite`.
 
-Todos boots **Zitadel** for the browser path; the three stacks prove the same
+e2e-ui boots **Zitadel** for the browser path; the three stacks prove the same
 `OidcBearer` edge is not vendor-locked.
 
 ---
@@ -1637,7 +1637,7 @@ Scaffolds prefer **`OidcBearer`** whenever OIDC env is set — not DevHeaders.
 
 **Provider-portable by design.** Live compose + bootstrap + e2e binaries ship for:
 
-- **Zitadel** — `tests/graphql_oidc_zitadel` + `scripts/oidc-zitadel-up.sh` (JWT-bearer mint; also powers Todos UI login)
+- **Zitadel** — `tests/graphql_oidc_zitadel` + `scripts/oidc-zitadel-up.sh` (JWT-bearer mint; also powers e2e-ui login)
 - **Keycloak** — `tests/graphql_oidc_keycloak` + `scripts/oidc-keycloak-up.sh` (client_credentials + realm roles)
 - **Authentik** — `tests/graphql_oidc_authentik` + `scripts/oidc-authentik-up.sh` (client_credentials + groups)
 
@@ -2090,7 +2090,7 @@ CI also publishes `lcov.info` as a workflow artifact and attempts an optional Co
 
 ## Examples
 
-**Start here (product demos):** [See it run](#see-it-run) — Todos (`tests/e2e-ui`),
+**Start here (product demos):** [See it run](#see-it-run) — e2e-ui (`tests/e2e-ui`),
 Blob game, live chat, GraphiQL.
 
 | Path | What it showcases |

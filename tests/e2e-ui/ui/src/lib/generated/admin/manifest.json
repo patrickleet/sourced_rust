@@ -5,7 +5,7 @@
   "service_id": "e2e-ui",
   "surface": {
     "kind": "application",
-    "name": "todos-admin",
+    "name": "e2e-ui-admin",
     "roles": [
       "admin"
     ]

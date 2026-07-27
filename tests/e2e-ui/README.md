@@ -1,4 +1,4 @@
-# Todos — e2e-ui template
+# e2e-ui template
 
 Copyable **Distributed** service + SvelteKit UI. This README is the **code
 index**: where each “that feels like a real product” behavior lives, then how
@@ -13,7 +13,7 @@ make run         # API :8791 + UI :5180
 
 | URL | What |
 |-----|------|
-| http://127.0.0.1:5180/todos | Owner-scoped notes |
+| http://127.0.0.1:5180/todos | Owner-scoped todos |
 | http://127.0.0.1:5180/chat | Lobby + live WS |
 | http://127.0.0.1:5180/blob | Projected map game |
 | http://127.0.0.1:5180/admin | Elevated client surface |
@@ -52,8 +52,8 @@ Generated (do not hand-edit; `make gen-client`):
 
 | Path | Role |
 |------|------|
-| [`ui/src/lib/generated/user/`](ui/src/lib/generated/user/) | Ops, commands, route registry, SvelteKit adapter for `todos` |
-| [`ui/src/lib/generated/admin/`](ui/src/lib/generated/admin/) | Same for `todos-admin` |
+| [`ui/src/lib/generated/user/`](ui/src/lib/generated/user/) | Ops, commands, route registry, SvelteKit adapter for `e2e-ui` |
+| [`ui/src/lib/generated/admin/`](ui/src/lib/generated/admin/) | Same for `e2e-ui-admin` |
 
 `$distributed` re-exports the user surface; admin layout imports `$distributed/admin`.
 
@@ -149,8 +149,8 @@ Rust `Service` inventory is source of truth. Two pool-free exports:
 
 | Entrypoint | Application | Roles | Used by |
 |------------|-------------|-------|---------|
-| `e2e_service::distributed_client_surface` | `todos` | `admin`, `user` | App shell + user routes |
-| `e2e_service::distributed_admin_client_surface` | `todos-admin` | `admin` | Nested `/admin` only |
+| `e2e_service::distributed_client_surface` | `e2e-ui` | `admin`, `user` | App shell + user routes |
+| `e2e_service::distributed_admin_client_surface` | `e2e-ui-admin` | `admin` | Nested `/admin` only |
 
 ```bash
 make gen-client      # both surfaces from ui/distributed.config.js

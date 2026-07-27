@@ -99,7 +99,7 @@ export const distributedClients = [
   {
     module: '$distributed',
     manifest: { args: serviceManifestArgs },
-    surface: 'todos',
+    surface: 'e2e-ui',
     documents: ['src/routes/(app)/**/*.graphql'],
     out: 'src/lib/generated/distributed'
   },
@@ -112,7 +112,7 @@ export const distributedClients = [
         'service::distributed_admin_client_surface'
       ]
     },
-    surface: 'todos-admin',
+    surface: 'e2e-ui-admin',
     documents: ['src/routes/admin/**/*.graphql'],
     out: 'src/lib/generated/distributed-admin'
   }

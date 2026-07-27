@@ -1,6 +1,6 @@
 <script lang="ts">
 	/**
-	 * Todos home — living walkthrough of how e2e-ui actually works.
+	 * e2e-ui home — living walkthrough of how e2e-ui actually works.
 	 *
 	 * Keep samples honest: one file / one concept per code block, and match the
 	 * checked-in handlers, GraphQL docs, and dual client surfaces.
@@ -46,8 +46,8 @@
 			href: '/admin',
 			title: 'Admin — separate generated surface',
 			blurb:
-				'todos-admin is a second client (nested layout + role gate). Elevated ops are not discoverable from the user $distributed tree.',
-			where: '/admin · todos-admin · force-archive',
+				'e2e-ui-admin is a second client (nested layout + role gate). Elevated ops are not discoverable from the user $distributed tree.',
+			where: '/admin · e2e-ui-admin · force-archive',
 			label: 'Open admin'
 		},
 		{
@@ -100,7 +100,7 @@
 		},
 		{
 			title: 'One inventory, many surfaces',
-			body: 'Describe commands and readable tables once. Application surfaces (todos vs todos-admin) select roles and fields. Generation turns that into GraphQL, typed UI helpers, optimistic effects, and drift checks.'
+			body: 'Describe commands and readable tables once. Application surfaces (e2e-ui vs e2e-ui-admin) select roles and fields. Generation turns that into GraphQL, typed UI helpers, optimistic effects, and drift checks.'
 		},
 		{
 			title: 'Patterns as short, swappable verbs',
@@ -128,7 +128,7 @@
 		},
 		{
 			title: 'Roles and surfaces are real',
-			body: 'Engine RLS filters rows. Elevated mutations live only on todos-admin. A type name in a bundle is not authorization.'
+			body: 'Engine RLS filters rows. Elevated mutations live only on e2e-ui-admin. A type name in a bundle is not authorization.'
 		},
 		{
 			title: 'Regenerate after you change the contract',
@@ -297,7 +297,7 @@ const receipt = await commands.blob.move({
 		{
 			n: 'C5',
 			title: 'Elevated work is a second surface',
-			why: 'todos-admin is generated separately. The nested /admin layout role-gates before any GraphQL, then provides its own client. User pages cannot import force_archive through $distributed.',
+			why: 'e2e-ui-admin is generated separately. The nested /admin layout role-gates before any GraphQL, then provides its own client. User pages cannot import force_archive through $distributed.',
 			path: 'routes/admin/+layout.server.ts · $distributed/admin',
 			label: 'Dual surface',
 			blocks: [
@@ -917,7 +917,7 @@ Service
   typed Service inventory → GraphQL mutations + client surfaces
        ├─ todos / chat: Fact + projector (+ @live)     (eventual)
        └─ blob:         Projected<BlobGameView>         (atomic)
-  todos vs todos-admin application surfaces
+  e2e-ui vs e2e-ui-admin application surfaces
   auth_users imported from Zitadel for joins`}</code></pre>
 			</div>
 			<div class="wf-subhead">
@@ -1114,9 +1114,9 @@ Service
 				<div class="wf-card">
 					<h3>Application surfaces are capabilities</h3>
 					<p>
-						<code>distributed_client_surface</code> → <code>todos</code> (user + admin roles for
+						<code>distributed_client_surface</code> → <code>e2e-ui</code> (user + admin roles for
 						the normal shell). <code>distributed_admin_client_surface</code> →
-						<code>todos-admin</code>, consumed only by the nested admin layout.
+						<code>e2e-ui-admin</code>, consumed only by the nested admin layout.
 					</p>
 				</div>
 				<div class="wf-card">
@@ -1234,7 +1234,7 @@ await useAdminCommands().todo.force_archive({ todo_id });`}</code></pre>
 				<div class="wf-card">
 					<h3>Elevated ops in the user client</h3>
 					<p>
-						Do not smuggle force-archive into the normal <code>todos</code> surface “for
+						Do not smuggle force-archive into the normal <code>e2e-ui</code> surface “for
 						convenience.” Dual surfaces exist so capability matches generation.
 					</p>
 				</div>

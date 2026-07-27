@@ -3,7 +3,7 @@ import type { Page } from '@playwright/test';
 export const DEMO_PASSWORD = process.env.E2E_HUMAN_PASSWORD || 'Password1!';
 
 /**
- * Full OIDC path through Todos custom Login V2:
+ * Full OIDC path through e2e-ui custom Login V2:
  * protected route → /login → Auth.js → Zitadel authorize → /login?authRequest=…
  * → password form → Auth.js callback → destination.
  */

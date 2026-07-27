@@ -160,7 +160,7 @@ export const Command_blob_games_move: ReplicaCommandArtifact<Command_blob_games_
     "schemaHash": "sha256:d68acc1bf021f40b10fe434ce06c22bfb97f23352ab500376adc2aab6b61385e",
     "surface": {
       "kind": "application",
-      "name": "todos-admin",
+      "name": "e2e-ui-admin",
       "roles": [
         "admin"
       ]
@@ -327,7 +327,7 @@ export const Command_blob_games_start: ReplicaCommandArtifact<Command_blob_games
     "schemaHash": "sha256:d68acc1bf021f40b10fe434ce06c22bfb97f23352ab500376adc2aab6b61385e",
     "surface": {
       "kind": "application",
-      "name": "todos-admin",
+      "name": "e2e-ui-admin",
       "roles": [
         "admin"
       ]
@@ -494,7 +494,7 @@ export const Command_blob_games_start_level: ReplicaCommandArtifact<Command_blob
     "schemaHash": "sha256:d68acc1bf021f40b10fe434ce06c22bfb97f23352ab500376adc2aab6b61385e",
     "surface": {
       "kind": "application",
-      "name": "todos-admin",
+      "name": "e2e-ui-admin",
       "roles": [
         "admin"
       ]
@@ -727,7 +727,7 @@ export const Command_chat_messages_post: ReplicaCommandArtifact<Command_chat_mes
     "schemaHash": "sha256:d68acc1bf021f40b10fe434ce06c22bfb97f23352ab500376adc2aab6b61385e",
     "surface": {
       "kind": "application",
-      "name": "todos-admin",
+      "name": "e2e-ui-admin",
       "roles": [
         "admin"
       ]
@@ -885,7 +885,7 @@ export const Command_todos_archive: ReplicaCommandArtifact<Command_todos_archive
     "schemaHash": "sha256:d68acc1bf021f40b10fe434ce06c22bfb97f23352ab500376adc2aab6b61385e",
     "surface": {
       "kind": "application",
-      "name": "todos-admin",
+      "name": "e2e-ui-admin",
       "roles": [
         "admin"
       ]
@@ -1037,7 +1037,7 @@ export const Command_todos_complete: ReplicaCommandArtifact<Command_todos_comple
     "schemaHash": "sha256:d68acc1bf021f40b10fe434ce06c22bfb97f23352ab500376adc2aab6b61385e",
     "surface": {
       "kind": "application",
-      "name": "todos-admin",
+      "name": "e2e-ui-admin",
       "roles": [
         "admin"
       ]
@@ -1243,7 +1243,7 @@ export const Command_todos_create: ReplicaCommandArtifact<Command_todos_create_I
     "schemaHash": "sha256:d68acc1bf021f40b10fe434ce06c22bfb97f23352ab500376adc2aab6b61385e",
     "surface": {
       "kind": "application",
-      "name": "todos-admin",
+      "name": "e2e-ui-admin",
       "roles": [
         "admin"
       ]
@@ -1419,7 +1419,7 @@ export const Command_todos_force_archive: ReplicaCommandArtifact<Command_todos_f
     "schemaHash": "sha256:d68acc1bf021f40b10fe434ce06c22bfb97f23352ab500376adc2aab6b61385e",
     "surface": {
       "kind": "application",
-      "name": "todos-admin",
+      "name": "e2e-ui-admin",
       "roles": [
         "admin"
       ]
@@ -1591,7 +1591,7 @@ export const Command_todos_rename: ReplicaCommandArtifact<Command_todos_rename_I
     "schemaHash": "sha256:d68acc1bf021f40b10fe434ce06c22bfb97f23352ab500376adc2aab6b61385e",
     "surface": {
       "kind": "application",
-      "name": "todos-admin",
+      "name": "e2e-ui-admin",
       "roles": [
         "admin"
       ]
@@ -1743,7 +1743,7 @@ export const Command_todos_reopen: ReplicaCommandArtifact<Command_todos_reopen_I
     "schemaHash": "sha256:d68acc1bf021f40b10fe434ce06c22bfb97f23352ab500376adc2aab6b61385e",
     "surface": {
       "kind": "application",
-      "name": "todos-admin",
+      "name": "e2e-ui-admin",
       "roles": [
         "admin"
       ]

@@ -1,4 +1,4 @@
-# Todos e2e-ui template — run from this directory.
+# e2e-ui template — run from this directory.
 #
 #   make up          # Docker: Postgres + Zitadel + bootstrap env
 #   make run         # API + UI (uses e2e-ui.env if present)
@@ -163,7 +163,7 @@ clean: stop
 	rm -rf ui/node_modules ui/build ui/.svelte-kit
 
 help:
-	@echo "Todos e2e-ui"
+	@echo "e2e-ui"
 	@echo "  make up         Postgres + Zitadel + OIDC bootstrap → e2e-ui.env"
 	@echo "  make run        API + UI (source e2e-ui.env when present)"
 	@echo "  make test       offline suite + UI structural"

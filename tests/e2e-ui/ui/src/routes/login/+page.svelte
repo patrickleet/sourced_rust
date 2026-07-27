@@ -22,7 +22,7 @@
 		</div>
 		<h1 class="auth-title">Sign in</h1>
 		<p class="auth-lead">
-			Your credentials stay on Todos pages. Zitadel only issues the OIDC tokens after Auth.js
+			Your credentials stay on these pages. Zitadel only issues the OIDC tokens after Auth.js
 			completes the code flow.
 		</p>
 

@@ -141,7 +141,7 @@ test('replica GraphQL live work merges surface binding with resume and closes on
 	const extensions = {
 		distributed: {
 			client: {
-				surface: { kind: 'application', name: 'todos', roles: ['admin', 'user'] },
+				surface: { kind: 'application', name: 'e2e-ui', roles: ['admin', 'user'] },
 				schemaHash: `sha256:${'d'.repeat(64)}`
 			}
 		}
