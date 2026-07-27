@@ -25,7 +25,7 @@ export const Operation_AdminAllTodos: ReplicaOperationArtifact<Operation_AdminAl
     "column": 1
   },
   "variableCodec": {
-    "version": 2,
+    "version": 1,
     "limits": {
       "maxDepth": 8,
       "maxBoolWidth": 256,

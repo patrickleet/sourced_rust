@@ -31,7 +31,7 @@ const Todos = Object.freeze({
 		trustedPresets: Object.freeze([])
 	}),
 	variableCodec: Object.freeze({
-		version: 2,
+		version: 1,
 		limits: Object.freeze({
 			maxDepth: 8,
 			maxBoolWidth: 32,
@@ -516,7 +516,7 @@ test('one diagnostics store receives both replica state and generated command ar
 		id: operationHash,
 		live: undefined,
 		variableCodec: Object.freeze({
-			version: 2,
+			version: 1,
 			limits: Object.freeze({
 				maxDepth: 8,
 				maxBoolWidth: 32,

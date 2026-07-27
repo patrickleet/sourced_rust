@@ -15,7 +15,7 @@ const codecLimits = Object.freeze({
 });
 
 const variableCodec = Object.freeze({
-	version: 2,
+	version: 1,
 	limits: codecLimits,
 	variables: Object.freeze({
 		big: Object.freeze({
@@ -593,7 +593,7 @@ test('per-variable maxItems applies after coercion while null skips it', () => {
 
 test('codec limits and per-variable constraints must be exact JS integers', () => {
 	const invalidCodecs = [
-		{ ...variableCodec, version: 1 },
+		{ ...variableCodec, version: 2 },
 		{
 			...variableCodec,
 			limits: { ...codecLimits, maxDepth: Number.MAX_SAFE_INTEGER + 1 }
@@ -652,7 +652,7 @@ test('cyclic or incompatible codec artifacts fail without walking forever', () =
 	const cyclicArtifact = {
 		...CodecArtifact,
 		variableCodec: {
-			version: 2,
+			version: 1,
 			limits: codecLimits,
 			variables: { value: cyclicRef },
 			inputs: {}
@@ -666,7 +666,7 @@ test('cyclic or incompatible codec artifacts fail without walking forever', () =
 	const incompatibleArtifact = {
 		...CodecArtifact,
 		variableCodec: {
-			version: 2,
+			version: 1,
 			limits: codecLimits,
 			variables: {
 				where: {

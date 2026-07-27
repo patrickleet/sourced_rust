@@ -101,7 +101,7 @@ fn render_protocol(manifest: &ClientManifest) -> Result<String, ClientCompileErr
     }
     sections.push(format!(
         "export const CLIENT_PROTOCOL = {{\n\
-         \tversion: 2,\n\
+         \tversion: 1,\n\
          \tserviceId: {},\n\
          \tschemaHash: {},\n\
          \tprotocolHash: {},\n\
@@ -169,7 +169,7 @@ fn render_compiler_manifest(
 ) -> Result<String, ClientCompileError> {
     let provenance = CompilerManifest {
         compiler_manifest_version: 1,
-        distributed_manifest_version: 7,
+        distributed_manifest_version: 1,
         protocol_version: 1,
         service_id: &manifest.service_id,
         surface: &manifest.surface,

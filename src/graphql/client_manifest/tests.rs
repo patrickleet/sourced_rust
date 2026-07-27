@@ -559,15 +559,15 @@ fn role_manifest_is_deterministic_and_hides_denied_identity_and_commands() {
     let first = export.manifest().unwrap();
     let second = export.manifest().unwrap();
     assert_eq!(first, second);
-    assert_eq!(first.manifest_version, 7);
+    assert_eq!(first.manifest_version, 1);
     assert_eq!(first.schema_fingerprint, second.schema_fingerprint);
     assert_eq!(
         first.schema_fingerprint,
-        "sha256:40dd42e715a43b136ba9ef3c2857652d9682bb92aeed37c2f0ae542353e95099"
+        "sha256:62d5744879f473776824e00c101e5d323c27e37bd7a3ba610847cf0130861f93"
     );
     assert_eq!(
         first.protocol_fingerprint,
-        "sha256:949e333655c4dea41520cb8fce13ae9ac76c97e5e879a82cff4fb9051a290209"
+        "sha256:30f19c9f4d29280a02ddf67c4df62cdc92c4e8090792f43d6b1bdafea3e31273"
     );
 
     let user = first

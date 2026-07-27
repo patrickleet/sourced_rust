@@ -264,12 +264,12 @@ fn aggregate_root() -> JsonValue {
 
 pub(super) fn manifest() -> JsonValue {
     let mut value = json!({
-        "manifest_version": 7,
+        "manifest_version": 1,
         "protocol_version": 1,
         "service_id": "todos-service",
         "surface": {"kind": "role", "name": "user"},
         "schema_fingerprint": fingerprint("schema"),
-        "protocol_fingerprint": "sha256:949e333655c4dea41520cb8fce13ae9ac76c97e5e879a82cff4fb9051a290209",
+        "protocol_fingerprint": "sha256:30f19c9f4d29280a02ddf67c4df62cdc92c4e8090792f43d6b1bdafea3e31273",
         "execution": {
             "max_depth": 8,
             "max_complexity": 500,
@@ -484,7 +484,7 @@ fn projected_manifest() -> JsonValue {
         "operation": mutation,
         "operation_hash": fingerprint(mutation),
         "extensions": {
-            "version": 3,
+            "version": 1,
             "consistency": {"version": 1, "kind": "projected"},
             "direct_projection": {
                 "topology": {
@@ -561,7 +561,7 @@ fn generated_command_types_manifest() -> JsonValue {
             "operation": import,
             "operation_hash": fingerprint(import),
             "extensions": {
-                "version": 3,
+                "version": 1,
                 "consistency": {"version": 1, "kind": "accepted"}
             }
         }),
@@ -588,7 +588,7 @@ fn generated_command_types_manifest() -> JsonValue {
             "operation": ping,
             "operation_hash": fingerprint(ping),
             "extensions": {
-                "version": 3,
+                "version": 1,
                 "consistency": {"version": 1, "kind": "accepted"}
             }
         }),
@@ -1332,12 +1332,12 @@ fn emits_executable_filter_order_and_pagination_plans_with_hidden_dependencies()
     assert!(generated.contains("type Operation_Planned_Input_todo_order_by_Direction ="));
     assert!(generated.contains("readonly \"order\"?: Operation_Planned_Input_todo_order_by | readonly Operation_Planned_Input_todo_order_by[] | null;"));
     assert!(generated.contains("\"variableCodec\": {"));
-    assert!(generated.contains("\"version\": 2"));
+    assert!(generated.contains("\"version\": 1"));
     assert!(generated.contains("\"maxBoolWidth\": 256"));
     assert!(generated.contains("\"maxInList\": 1000"));
     let provenance: JsonValue =
         serde_json::from_str(file(&project, "manifest.json")).expect("compiler manifest JSON");
-    assert_eq!(provenance["distributed_manifest_version"], 7);
+    assert_eq!(provenance["distributed_manifest_version"], 1);
     assert!(generated.contains(
         "\"target\": {\n              \"kind\": \"input\",\n              \"name\": \"todo_bool_exp\""
     ));
@@ -1382,7 +1382,7 @@ fn generated_variable_codec_types_recursive_inputs_and_custom_scalars() {
 
     let artifact = operation_artifact(&project);
     assert_eq!(artifact["protocol"]["trustedPresets"], json!([]));
-    assert_eq!(artifact["variableCodec"]["version"], 2);
+    assert_eq!(artifact["variableCodec"]["version"], 1);
     assert_eq!(
         artifact["variableCodec"]["limits"],
         json!({
@@ -2420,7 +2420,7 @@ fn command_protocol_and_extensions_are_preserved_exactly() {
         "operation": mutation,
         "operation_hash": fingerprint(mutation),
         "extensions": {
-            "version": 3,
+            "version": 1,
             "consistency": {"version": 1, "kind": "fact"},
             "input_defaults": {
                 "version": 1,
@@ -2559,7 +2559,7 @@ fn generated_command_typescript_covers_typed_json_fields_and_no_input_wrappers()
     ))
     .expect("compile generated command type fixture");
     let commands = file(&project, "commands.ts");
-    assert_eq!(
+assert_eq!(
         commands,
         include_str!("../../tests/fixtures/generated-commands.ts")
     );
@@ -2732,7 +2732,7 @@ fn rejects_commands_without_causal_identity_or_normative_input_defaults() {
             "operation": operation,
             "operation_hash": fingerprint(operation),
             "extensions": {
-                "version": 3,
+                "version": 1,
                 "consistency": {"version": 1, "kind": "projected"},
                 "input_defaults": {
                     "version": 1,

@@ -159,7 +159,7 @@ pub(super) fn compile_variable_codec(
         compiled_variables.insert(variable.name.clone(), input_type);
     }
     Ok(CompiledVariableCodec {
-        version: 2,
+        version: 1,
         limits: CompiledVariableCodecLimits {
             max_depth: manifest.execution.max_depth,
             max_bool_width: manifest.execution.max_bool_width,

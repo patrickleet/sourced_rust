@@ -17,7 +17,7 @@ const Todo = Object.freeze({
 });
 
 const NoVariables = Object.freeze({
-	version: 2,
+	version: 1,
 	limits: Object.freeze({
 		maxDepth: 8,
 		maxBoolWidth: 256,

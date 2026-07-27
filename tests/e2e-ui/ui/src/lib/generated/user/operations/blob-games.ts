@@ -35,7 +35,7 @@ export const Operation_BlobGames: ReplicaOperationArtifact<Operation_BlobGames_D
     "column": 1
   },
   "variableCodec": {
-    "version": 2,
+    "version": 1,
     "limits": {
       "maxDepth": 8,
       "maxBoolWidth": 256,
