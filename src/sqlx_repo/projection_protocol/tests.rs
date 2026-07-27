@@ -29,6 +29,10 @@ mod tests {
         ProjectorTopologyId::new(1, "sql_todo_projector", [17; 32]).unwrap()
     }
 
+    fn other_topology() -> ProjectorTopologyId {
+        ProjectorTopologyId::new(1, "other_sql_todo_projector", [99; 32]).unwrap()
+    }
+
     fn partition() -> ProjectionPartition {
         ProjectionScopeCodec::new(topology())
             .encode_partition(Some(&serde_json::json!("tenant-sql")))
@@ -156,6 +160,52 @@ mod tests {
 
     fn ownership() -> ProjectionModelOwnership {
         ProjectionModelOwnership::new("SqlTodoView", "sql_todo_views").unwrap()
+    }
+
+    #[derive(Clone, Copy)]
+    struct ProjectionScenario;
+
+    impl crate::projection_protocol::scenario_tests::ProjectionProtocolScenario for ProjectionScenario {
+        type Store = SqlxRepository<sqlx::Sqlite>;
+
+        fn repository(&self) -> impl std::future::Future<Output = Self::Store> + Send {
+            repository()
+        }
+
+        fn topology(&self) -> ProjectorTopologyId {
+            topology()
+        }
+
+        fn other_topology(&self) -> ProjectorTopologyId {
+            other_topology()
+        }
+
+        fn partition(&self) -> ProjectionPartition {
+            partition()
+        }
+
+        fn change_epoch(&self) -> ProjectionEpoch {
+            change_epoch()
+        }
+
+        fn ownership(&self) -> ProjectionModelOwnership {
+            ownership()
+        }
+
+        fn mutation(
+            &self,
+            expectation: ProjectionRecordExpectation,
+            kind: ProjectionMutationKind,
+        ) -> ProjectionRecordMutation {
+            mutation(expectation, kind)
+        }
+
+        fn row_exists<'a>(
+            &'a self,
+            repository: &'a Self::Store,
+        ) -> impl std::future::Future<Output = bool> + Send + 'a {
+            async move { self::row_exists(repository).await }
+        }
     }
 
     async fn repository() -> SqlxRepository<sqlx::Sqlite> {
@@ -437,168 +487,10 @@ mod tests {
 
     #[tokio::test]
     async fn sqlite_input_disposition_is_read_only_exact_and_repair_fenced() {
-        let repository = repository().await;
-        let first_input = input(
-            1,
-            b"preflight-one",
-            "preflight-message-1",
-            "preflight-cause-1",
-            ProjectionGeneration::initial(),
-        );
-        assert_eq!(
-            repository
-                .projection_input_disposition(&first_input)
-                .await
-                .unwrap(),
-            ProjectionInputDisposition::Pending
-        );
-        assert_eq!(
-            repository
-                .projection_partition_runtime_state(&topology(), &partition())
-                .await
-                .unwrap(),
-            None,
-            "a preflight read must not create a projection partition"
-        );
-        let capability_count: i64 =
-            sqlx::query_scalar("SELECT COUNT(*) FROM projection_source_capabilities")
-                .fetch_one(repository.pool())
-                .await
-                .unwrap();
-        assert_eq!(
-            capability_count, 0,
-            "a preflight read must not register a source capability"
-        );
-
-        let applied = repository
-            .commit_projection(batch(first_input.clone(), Vec::new(), Vec::new()))
-            .await
-            .unwrap();
-        assert_eq!(
-            repository
-                .projection_input_disposition(&first_input)
-                .await
-                .unwrap(),
-            ProjectionInputDisposition::Duplicate(applied.checkpoint.unwrap())
-        );
-        let stale = input(
-            0,
-            b"preflight-stale",
-            "preflight-message-0",
-            "preflight-cause-0",
-            ProjectionGeneration::initial(),
-        );
-        assert!(matches!(
-            repository
-                .projection_input_disposition(&stale)
-                .await
-                .unwrap(),
-            ProjectionInputDisposition::Stale(checkpoint)
-                if checkpoint.input().position() == 1
-        ));
-        let corrupted = input(
-            1,
-            b"preflight-corrupt",
-            "preflight-message-1",
-            "preflight-cause-1",
-            ProjectionGeneration::initial(),
-        );
-        assert!(matches!(
-            repository.projection_input_disposition(&corrupted).await,
-            Err(ProjectionProtocolError::InputCorruption)
-        ));
-        let reused_message = input(
-            2,
-            b"preflight-two",
-            "preflight-message-1",
-            "preflight-cause-2",
-            ProjectionGeneration::initial(),
-        );
-        assert!(matches!(
-            repository
-                .projection_input_disposition(&reused_message)
-                .await,
-            Err(ProjectionProtocolError::MessageIdReuse { message_id })
-                if message_id == "preflight-message-1"
-        ));
-
-        let failed_input = input(
-            2,
-            b"preflight-two",
-            "preflight-message-2",
-            "preflight-cause-2",
-            ProjectionGeneration::initial(),
-        );
-        repository
-            .record_projection_failure(
-                ProjectionFailureBatch::new(
-                    failed_input.clone(),
-                    change_epoch(),
-                    "preflight-failure-2",
-                    "decode_error",
-                    b"bad payload".to_vec(),
-                )
-                .unwrap(),
-            )
-            .await
-            .unwrap();
-        assert!(matches!(
-            repository
-                .projection_input_disposition(&failed_input)
-                .await,
-            Err(ProjectionProtocolError::PartitionStopped { failure_id })
-                if failure_id == "preflight-failure-2"
-        ));
-
-        let generation = repository
-            .repair_projection(&topology(), &partition(), "preflight-failure-2")
-            .await
-            .unwrap();
-        let retry = input(
-            2,
-            b"preflight-two",
-            "preflight-message-2",
-            "preflight-cause-2",
-            generation,
-        );
-        assert_eq!(
-            repository
-                .projection_input_disposition(&retry)
-                .await
-                .unwrap(),
-            ProjectionInputDisposition::Pending
-        );
-        assert!(matches!(
-            repository.projection_input_disposition(&first_input).await,
-            Err(ProjectionProtocolError::GenerationFenced {
-                expected: 2,
-                actual: 1
-            })
-        ));
-        assert!(matches!(
-            repository
-                .projection_input_disposition(&input(
-                    3,
-                    b"preflight-later",
-                    "preflight-message-3",
-                    "preflight-cause-3",
-                    generation,
-                ))
-                .await,
-            Err(ProjectionProtocolError::IncomparableInput)
-        ));
-
-        let repaired = repository
-            .commit_projection(batch(retry.clone(), Vec::new(), Vec::new()))
-            .await
-            .unwrap();
-        assert_eq!(
-            repository
-                .projection_input_disposition(&retry)
-                .await
-                .unwrap(),
-            ProjectionInputDisposition::Duplicate(repaired.checkpoint.unwrap())
-        );
+        crate::projection_protocol::scenario_tests::input_disposition_is_read_only_exact_and_repair_fenced(
+            ProjectionScenario,
+        )
+        .await;
     }
 
     #[tokio::test]
@@ -1119,49 +1011,18 @@ mod tests {
 
     #[tokio::test]
     async fn sqlite_message_identity_is_topology_wide_across_projection_partitions() {
-        let repository = repository().await;
-        repository
-            .commit_projection(batch(
-                input(
-                    1,
-                    b"topology-wide-message",
-                    "topology-wide-message",
-                    "topology-wide-cause",
-                    ProjectionGeneration::initial(),
-                ),
-                Vec::new(),
-                Vec::new(),
-            ))
-            .await
-            .unwrap();
-
-        let other_partition = ProjectionScopeCodec::new(topology())
-            .encode_partition(Some(&serde_json::json!("tenant-b")))
-            .unwrap();
-        let remapped = TrustedProjectionInput::mint(
-            ProjectionInputCursor::new(
-                topology(),
-                other_partition,
-                source("todo_stream", b"todo-1"),
-                ProjectionEpoch::new("source-v1").unwrap(),
-                1,
-            )
-            .unwrap(),
-            ProjectionInputFingerprint::from_canonical_bytes(b"topology-wide-message"),
-            "topology-wide-message",
-            "topology-wide-cause",
-            ProjectionGeneration::initial(),
-            true,
+        crate::projection_protocol::scenario_tests::message_identity_is_topology_wide_across_projection_partitions(
+            ProjectionScenario,
         )
-        .unwrap();
+        .await;
+    }
 
-        assert!(matches!(
-            repository
-                .commit_projection(batch(remapped, Vec::new(), Vec::new()))
-                .await,
-            Err(ProjectionProtocolError::MessageIdReuse { message_id })
-                if message_id == "topology-wide-message"
-        ));
+    #[tokio::test]
+    async fn sqlite_failure_recording_is_idempotent_for_exact_batch() {
+        crate::projection_protocol::scenario_tests::failure_recording_is_idempotent_for_exact_batch(
+            ProjectionScenario,
+        )
+        .await;
     }
 
     #[tokio::test]
@@ -1814,15 +1675,29 @@ mod tests {
         ));
 
         let registered = repository().await;
-        let other_topology =
-            ProjectorTopologyId::new(1, "other_sql_todo_projector", [99; 32]).unwrap();
         assert!(matches!(
             registered
-                .register_projection_models(&other_topology, &[ownership()])
+                .register_projection_models(&other_topology(), &[ownership()])
                 .await,
             Err(ProjectionProtocolError::InvalidBatch(message))
                 if message.contains("authoritatively owned")
         ));
+    }
+
+    #[tokio::test]
+    async fn sqlite_shared_registered_table_ownership_rejects_other_topology() {
+        crate::projection_protocol::scenario_tests::registered_table_ownership_rejects_other_topology(
+            ProjectionScenario,
+        )
+        .await;
+    }
+
+    #[tokio::test]
+    async fn sqlite_tombstone_requires_explicit_exact_recreation() {
+        crate::projection_protocol::scenario_tests::tombstone_requires_explicit_exact_recreation(
+            ProjectionScenario,
+        )
+        .await;
     }
 
     #[tokio::test]
