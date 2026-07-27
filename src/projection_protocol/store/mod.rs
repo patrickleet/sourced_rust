@@ -32,6 +32,7 @@ mod error;
 mod helpers;
 mod identity;
 mod kind_codec;
+mod ownership;
 mod query;
 mod replay;
 mod r#trait;
@@ -64,6 +65,7 @@ pub(crate) use identity::{
     MAX_PROJECTION_QUERY_BATCH_CHECKPOINT_PROBES, MAX_PROJECTION_QUERY_BATCH_ROWS,
     MAX_PROJECTION_QUERY_CHECKPOINT_PROBES,
 };
+pub(crate) use ownership::validate_ownership_batch;
 pub use query::{
     ProjectionChange, ProjectionChangeKind, ProjectionCommitResult, ProjectionFailure,
     ProjectionObservation, ProjectionRecordMetadata,

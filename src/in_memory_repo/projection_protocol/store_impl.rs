@@ -12,6 +12,7 @@ impl ProjectionProtocolStore for InMemoryRepository {
                     "projection topology bootstrap requires at least one model/table owner".into(),
                 ));
             }
+            crate::projection_protocol::validate_ownership_batch(ownership)?;
             // Serialize bootstrap against raw row writers. Once this returns,
             // every repository-level legacy path observes the causal marker
             // before it can acquire the row map for mutation.
@@ -26,29 +27,7 @@ impl ProjectionProtocolStore for InMemoryRepository {
                 .map_err(|_| RepositoryError::LockPoisoned("projection ownership write"))?;
             let mut staged = protocol.clone();
             staged.registered_topologies.insert(topology.clone());
-            let mut batch_models = HashMap::new();
-            let mut batch_tables = HashMap::new();
             for declaration in ownership {
-                if let Some(previous) =
-                    batch_models.insert(declaration.model.as_str(), declaration.table.as_str())
-                {
-                    if previous != declaration.table {
-                        return Err(ProjectionProtocolError::InvalidBatch(format!(
-                            "projection model `{}` declares both table `{previous}` and `{}`",
-                            declaration.model, declaration.table
-                        )));
-                    }
-                }
-                if let Some(previous) =
-                    batch_tables.insert(declaration.table.as_str(), declaration.model.as_str())
-                {
-                    if previous != declaration.model {
-                        return Err(ProjectionProtocolError::InvalidBatch(format!(
-                            "projection table `{}` is declared by both model `{previous}` and `{}`",
-                            declaration.table, declaration.model
-                        )));
-                    }
-                }
                 let key = RegisteredModelKey {
                     topology: topology.clone(),
                     model: declaration.model.clone(),

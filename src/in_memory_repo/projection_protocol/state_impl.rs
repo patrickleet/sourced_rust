@@ -357,8 +357,6 @@ impl InMemoryProjectionProtocolState {
         partition: &PartitionKey,
         batch: &ProjectionCommitBatch,
     ) -> Result<(), ProjectionProtocolError> {
-        let mut declared_models = HashMap::new();
-        let mut declared_tables = HashMap::new();
         for declaration in &batch.ownership {
             let registered_key = RegisteredModelKey {
                 topology: partition.topology.clone(),
@@ -385,27 +383,11 @@ impl InMemoryProjectionProtocolState {
                     declaration.table, declaration.model
                 )));
             }
-            if let Some(previous) =
-                declared_models.insert(declaration.model.as_str(), declaration.table.as_str())
-            {
-                if previous != declaration.table {
-                    return Err(ProjectionProtocolError::InvalidBatch(format!(
-                        "projection model `{}` declares both table `{previous}` and `{}`",
-                        declaration.model, declaration.table
-                    )));
-                }
-            }
-            if let Some(previous) =
-                declared_tables.insert(declaration.table.as_str(), declaration.model.as_str())
-            {
-                if previous != declaration.model {
-                    return Err(ProjectionProtocolError::InvalidBatch(format!(
-                        "projection table `{}` is declared by both model `{previous}` and `{}`",
-                        declaration.table, declaration.model
-                    )));
-                }
-            }
+        }
 
+        crate::projection_protocol::validate_ownership_batch(&batch.ownership)?;
+
+        for declaration in &batch.ownership {
             let key = OwnershipKey {
                 partition: partition.clone(),
                 model: declaration.model.clone(),
