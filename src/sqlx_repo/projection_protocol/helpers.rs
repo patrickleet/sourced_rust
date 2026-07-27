@@ -94,27 +94,13 @@ where
 pub(super) fn decode_change_kind(
     value: &str,
 ) -> Result<ProjectionChangeKind, ProjectionProtocolError> {
-    match value {
-        "checkpoint" => Ok(ProjectionChangeKind::Checkpoint),
-        "record_upsert" => Ok(ProjectionChangeKind::RecordUpsert),
-        "record_delete" => Ok(ProjectionChangeKind::RecordDelete),
-        "record_recreate" => Ok(ProjectionChangeKind::RecordRecreate),
-        "observation" => Ok(ProjectionChangeKind::Observation),
-        "failure" => Ok(ProjectionChangeKind::Failure),
-        other => Err(corrupt_storage(format!(
-            "unknown projection change kind `{other}`"
-        ))),
-    }
+    ProjectionChangeKind::from_storage_str(value)
+        .ok_or_else(|| corrupt_storage(format!("unknown projection change kind `{value}`")))
 }
 
 pub(super) fn decode_observation_kind(
     value: &str,
 ) -> Result<ProjectionObservationKind, ProjectionProtocolError> {
-    match value {
-        "record" => Ok(ProjectionObservationKind::Record),
-        "dependency" => Ok(ProjectionObservationKind::Dependency),
-        other => Err(corrupt_storage(format!(
-            "unknown projection observation kind `{other}`"
-        ))),
-    }
+    ProjectionObservationKind::from_storage_str(value)
+        .ok_or_else(|| corrupt_storage(format!("unknown projection observation kind `{value}`")))
 }
