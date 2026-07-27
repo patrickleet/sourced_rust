@@ -300,7 +300,7 @@ export const Operation_ChatMessages: ReplicaOperationArtifact<Operation_ChatMess
   ],
   "protocol": {
     "version": 1,
-    "schemaHash": "sha256:8cd8e91927aad9ec164eb874c5c77c5cc883f0fdae8805280b423e4925d644b9",
+    "schemaHash": "sha256:9be67c0b4e41678de4d594780fc3124c7d2ee7ba21b2a237f137051adcf8a08c",
     "surface": {
       "kind": "application",
       "name": "fieldnote",

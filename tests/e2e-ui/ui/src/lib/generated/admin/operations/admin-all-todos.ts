@@ -263,7 +263,7 @@ export const Operation_AdminAllTodos: ReplicaOperationArtifact<Operation_AdminAl
   ],
   "protocol": {
     "version": 1,
-    "schemaHash": "sha256:a49ec7d69faf022136beb5789c6030a235c05b73021d082c04a41cf0c1a10e73",
+    "schemaHash": "sha256:d68acc1bf021f40b10fe434ce06c22bfb97f23352ab500376adc2aab6b61385e",
     "surface": {
       "kind": "application",
       "name": "fieldnote-admin",
