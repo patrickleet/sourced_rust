@@ -586,6 +586,10 @@ fn lower_arm(
 ) -> Result<(), ClientCompileError> {
     let partition = evaluate_partition(&arm.partition, slots, event);
     for operation in &arm.operations {
+        let model = manifest
+            .models
+            .get(&operation.model)
+            .expect("manifest validation proved operation model");
         lower_record(
             occurrence_ordinal,
             projection_ref,
@@ -594,7 +598,7 @@ fn lower_arm(
             &partition,
             slots,
             command,
-            manifest,
+            model,
             operations,
             recoveries,
         )?;
@@ -688,7 +692,7 @@ fn lower_record(
     partition: &Option<PreviewPartition>,
     slots: &BTreeMap<&str, Knowledge>,
     command: &ManifestCommand,
-    manifest: &ClientManifest,
+    model: &ManifestModel,
     operations: &mut Vec<PreviewOperation>,
     recoveries: &mut Vec<PreviewRecovery>,
 ) -> Result<(), ClientCompileError> {
@@ -721,10 +725,6 @@ fn lower_record(
         )?;
         return Ok(());
     };
-    let model = manifest
-        .models
-        .get(&operation.model)
-        .expect("manifest validation proved operation model");
     let replacement_fields = model
         .fields
         .iter()
@@ -1296,8 +1296,13 @@ fn evaluate_expression(
             for argument in arguments {
                 match evaluate_expression(argument, slots, event) {
                     Knowledge::Known(value) => resolved.push(value),
-                    Knowledge::Absent | Knowledge::Unset
+                    Knowledge::Absent
                         if *transform == ManifestProjectionScalarTransform::FirstPresent => {}
+                    Knowledge::Unset
+                        if *transform == ManifestProjectionScalarTransform::FirstPresent =>
+                    {
+                        return Knowledge::Unknown;
+                    }
                     other => return other,
                 }
             }
@@ -1629,6 +1634,45 @@ mod tests {
         }
     }
 
+    fn projection_model() -> ManifestModel {
+        ManifestModel {
+            id: "Todo".into(),
+            typename: "Todo".into(),
+            source_table: "todos".into(),
+            dependencies: vec!["todos".into()],
+            normalization: ManifestNormalization::Normalized {
+                fields: vec![ManifestKeyField {
+                    name: "id".into(),
+                    codec: "string".into(),
+                }],
+                encoding: "tuple_v1".into(),
+            },
+            fields: vec![
+                ManifestField {
+                    name: "id".into(),
+                    scalar: "ID".into(),
+                    codec: "string".into(),
+                    nullable: false,
+                },
+                ManifestField {
+                    name: "metadata".into(),
+                    scalar: "JSON".into(),
+                    codec: "json".into(),
+                    nullable: true,
+                },
+            ],
+            relationships: Vec::new(),
+            filter_input: ManifestFilterInput {
+                type_name: "TodoBoolExp".into(),
+                fields: Vec::new(),
+                relationships: Vec::new(),
+            },
+            row_policy: ManifestRowPolicy::Unrestricted,
+            record_revisions: false,
+            tombstones: false,
+        }
+    }
+
     fn preview_scope(model: &str) -> PreviewScope {
         PreviewScope {
             partition: PreviewPartition::Unit,
@@ -1821,6 +1865,113 @@ mod tests {
         assert_eq!(
             evaluate_expression(&all_absent, &slots, &event()),
             Knowledge::Absent
+        );
+    }
+
+    #[test]
+    fn first_present_fails_closed_instead_of_skipping_an_unset_argument() {
+        let expression = ManifestProjectionExpression::Transform {
+            transform: ManifestProjectionScalarTransform::FirstPresent,
+            arguments: vec![
+                ManifestProjectionExpression::Slot {
+                    slot: "unset".into(),
+                    value_type: ManifestProjectionValueType::String,
+                },
+                ManifestProjectionExpression::Slot {
+                    slot: "known".into(),
+                    value_type: ManifestProjectionValueType::String,
+                },
+            ],
+        };
+        let slots = BTreeMap::from([
+            ("unset", Knowledge::Unset),
+            (
+                "known",
+                Knowledge::Known(PreviewExpression::Input {
+                    path: vec!["target".into()],
+                }),
+            ),
+        ]);
+        assert_eq!(
+            evaluate_expression(&expression, &slots, &event()),
+            Knowledge::Unknown
+        );
+    }
+
+    #[test]
+    fn first_present_unset_lowers_to_record_recovery_without_a_write_or_clear() {
+        let slot = |name: &str| ManifestProjectionExpression::Slot {
+            slot: name.into(),
+            value_type: ManifestProjectionValueType::String,
+        };
+        let operation = ManifestProjectionOperation {
+            operation: "upsert-todo".into(),
+            ordinal: 0,
+            kind: ManifestProjectionMutationKind::Upsert,
+            model: "Todo".into(),
+            key: vec![ManifestProjectionKeyField {
+                ordinal: 0,
+                name: "id".into(),
+                expression: slot("source"),
+            }],
+            fields: vec![ManifestProjectionField {
+                ordinal: 0,
+                name: "metadata".into(),
+                assignment: ManifestProjectionAssignment::Set {
+                    expression: ManifestProjectionExpression::Transform {
+                        transform: ManifestProjectionScalarTransform::FirstPresent,
+                        arguments: vec![slot("unset"), slot("known")],
+                    },
+                },
+            }],
+            relationships: Vec::new(),
+            invalidations: Vec::new(),
+        };
+        let slots = BTreeMap::from([
+            (
+                "source",
+                Knowledge::Known(PreviewExpression::Input {
+                    path: vec!["source".into()],
+                }),
+            ),
+            ("unset", Knowledge::Unset),
+            (
+                "known",
+                Knowledge::Known(PreviewExpression::Input {
+                    path: vec!["target".into()],
+                }),
+            ),
+        ]);
+        let mut operations = Vec::new();
+        let mut recoveries = Vec::new();
+        lower_record(
+            0,
+            0,
+            &event(),
+            &operation,
+            &Some(PreviewPartition::Unit),
+            &slots,
+            &key_command(),
+            &projection_model(),
+            &mut operations,
+            &mut recoveries,
+        )
+        .unwrap();
+
+        assert_eq!(
+            (
+                operations.len(),
+                recoveries.len(),
+                matches!(
+                    recoveries.first(),
+                    Some(PreviewRecovery {
+                        condition: PreviewRecoveryCondition::Always,
+                        target: PreviewRecoveryTarget::Record { .. },
+                        ..
+                    })
+                ),
+            ),
+            (0, 1, true)
         );
     }
 
