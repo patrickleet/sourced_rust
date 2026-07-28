@@ -14,7 +14,8 @@ pub use canonical::{
 };
 pub use descriptor::{
     DomainDeletion, DomainDeletionError, DomainEvent, DomainEventBodyDescriptor,
-    DomainEventBodyKind, DomainEventDescriptor, DomainState, DomainStateDescriptor,
+    DomainEventBodyKind, DomainEventContract, DomainEventDescriptor, DomainState,
+    DomainStateDescriptor,
 };
 pub use occurrence::{
     DomainEventCaptureError, DomainEventCaptureOutcome, DomainEventCapturePoison,

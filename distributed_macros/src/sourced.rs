@@ -323,6 +323,7 @@ fn expand_domain_capture(
                     "bare `domain` and `domain = state` require `domain_state = StateType` in #[sourced(...)]",
                 )
             })?;
+            let event_type = identity_domain_event_type(aggregate, event_name)?;
             let capture = domain_capture_error(quote! {
                 self.#entity_field.capture_domain_state(
                     #aggregate_type,
@@ -339,7 +340,23 @@ fn expand_domain_capture(
                         #capture
                     }
                 },
-                generated_type: None,
+                generated_type: Some(quote! {
+                    /// Exact outward event marker for this state-backed transition.
+                    pub enum #event_type {}
+
+                    impl distributed::domain_event::DomainEventContract for #event_type {
+                        type Body = #state;
+                        const EVENT_NAME: &'static str = #event_name;
+                        const EVENT_VERSION: u64 = #version;
+
+                        fn descriptor() -> distributed::DomainEventDescriptor {
+                            distributed::DomainEventDescriptor::state::<#state>(
+                                #event_name,
+                                #version,
+                            )
+                        }
+                    }
+                }),
                 uses_deletion_identity: false,
             })
         }
@@ -393,6 +410,16 @@ fn expand_domain_capture(
                         };
                 }
 
+                impl distributed::domain_event::DomainEventContract for #body_type {
+                    type Body = Self;
+                    const EVENT_NAME: &'static str = #event_name;
+                    const EVENT_VERSION: u64 = #version;
+
+                    fn descriptor() -> distributed::DomainEventDescriptor {
+                        <Self as distributed::DomainEvent>::DESCRIPTOR.clone()
+                    }
+                }
+
                 impl distributed::projection::lower::ProjectionBodyMetadata for #body_type {
                     #projection_metadata
                 }
@@ -423,6 +450,7 @@ fn expand_domain_capture(
         }
         DomainMode::Deleted => {
             let identity = format_ident!("{aggregate}DomainIdentity");
+            let event_type = identity_domain_event_type(aggregate, event_name)?;
             let deletion_type_name = format!("DomainDeletion<{identity}>");
             let schema = canonical_object_schema(
                 "domain_deletion",
@@ -442,6 +470,30 @@ fn expand_domain_capture(
             let deletion_type_name = LitStr::new(&deletion_type_name, event_name.span());
             let schema = LitStr::new(&schema, event_name.span());
             let fingerprint = LitStr::new(&fingerprint, event_name.span());
+            let generated_type = quote! {
+                /// Exact outward event marker for this deletion transition.
+                pub enum #event_type {}
+
+                impl distributed::domain_event::DomainEventContract for #event_type {
+                    type Body = distributed::DomainDeletion<#identity>;
+                    const EVENT_NAME: &'static str = #event_name;
+                    const EVENT_VERSION: u64 = #version;
+
+                    fn descriptor() -> distributed::DomainEventDescriptor {
+                        distributed::DomainEventDescriptor {
+                            name: std::borrow::Cow::Borrowed(#event_name),
+                            version: #version,
+                            body: distributed::DomainEventBodyDescriptor::distributed_json(
+                                distributed::DomainEventBodyKind::Deletion,
+                                #deletion_type_name,
+                                1,
+                                #schema,
+                                #fingerprint,
+                            ),
+                        }
+                    }
+                }
+            };
             let capture = domain_capture_error(quote! {
                 self.#entity_field.capture_domain_deletion(
                     #aggregate_type,
@@ -476,7 +528,7 @@ fn expand_domain_capture(
                         #capture
                     }
                 },
-                generated_type: None,
+                generated_type: Some(generated_type),
                 uses_deletion_identity: true,
             })
         }
@@ -513,7 +565,40 @@ fn expand_domain_capture(
                         #capture
                     }
                 },
-                generated_type: None,
+                generated_type: Some(quote! {
+                    const _: () = {
+                        const fn __distributed_same_str(
+                            left: &str,
+                            right: &str,
+                        ) -> bool {
+                            let left = left.as_bytes();
+                            let right = right.as_bytes();
+                            if left.len() != right.len() {
+                                return false;
+                            }
+                            let mut index = 0;
+                            while index < left.len() {
+                                if left[index] != right[index] {
+                                    return false;
+                                }
+                                index += 1;
+                            }
+                            true
+                        }
+
+                        if !__distributed_same_str(
+                            <#output as distributed::domain_event::DomainEventContract>::EVENT_NAME,
+                            #event_name,
+                        ) {
+                            panic!("domain adapter output event name differs from #[event]");
+                        }
+                        if <#output as distributed::domain_event::DomainEventContract>::EVENT_VERSION
+                            != #version
+                        {
+                            panic!("domain adapter output event version differs from #[event]");
+                        }
+                    };
+                }),
                 uses_deletion_identity: false,
             })
         }

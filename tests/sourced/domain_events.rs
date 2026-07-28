@@ -1,14 +1,14 @@
 use std::cell::Cell;
 
 use distributed::{
-    AggregateBuilder, DomainDeletion, DomainEvent, DomainEventBodyKind, DomainState, Entity,
-    InMemoryRepository,
+    domain_event::DomainEventContract, AggregateBuilder, DomainDeletion, DomainEvent,
+    DomainEventBodyKind, DomainState, Entity, InMemoryRepository,
 };
 use serde::{Deserialize, Serialize};
 
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize, distributed_macros::DomainState)]
 #[domain_state(version = 3)]
-struct DomainTodoState {
+pub struct DomainTodoState {
     todo_id: String,
     title: String,
     completed: bool,
@@ -95,6 +95,34 @@ impl DomainTodo {
 
     #[event("todo.audit-touched")]
     fn touch_audit(&mut self) {}
+}
+
+#[test]
+fn sourced_transitions_export_exact_non_publishable_event_contract_markers() {
+    fn assert_state<C>()
+    where
+        C: DomainEventContract<Body = DomainTodoState>,
+    {
+    }
+    fn assert_deletion<C>()
+    where
+        C: DomainEventContract<Body = DomainDeletion<DomainTodoDomainIdentity>>,
+    {
+    }
+
+    assert_state::<DomainTodoCreatedDomainEvent>();
+    assert_state::<DomainTodoCompletedDomainEvent>();
+    assert_deletion::<DomainTodoPurgedDomainEvent>();
+
+    let completed = DomainTodoCompletedDomainEvent::descriptor();
+    assert_eq!(completed.name, "todo.completed");
+    assert_eq!(completed.version, 1);
+    assert_eq!(completed.body.kind, DomainEventBodyKind::State);
+
+    let purged = DomainTodoPurgedDomainEvent::descriptor();
+    assert_eq!(purged.name, "todo.purged");
+    assert_eq!(purged.version, 1);
+    assert_eq!(purged.body.kind, DomainEventBodyKind::Deletion);
 }
 
 #[test]

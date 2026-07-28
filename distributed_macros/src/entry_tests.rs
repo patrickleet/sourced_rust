@@ -199,6 +199,11 @@ mod tests {
         assert!(digest < transition);
         assert!(transition < capture);
         assert!(output.contains("is_replaying"));
+        assert!(output.contains("pub enum TodoCompletedDomainEvent"));
+        assert!(output.contains(
+            "impl distributed :: domain_event :: DomainEventContract for TodoCompletedDomainEvent"
+        ));
+        assert!(output.contains("type Body = TodoState"));
     }
 
     #[test]
@@ -219,6 +224,9 @@ mod tests {
         let output = sourced::expand_sourced(attr, item).unwrap().to_string();
 
         assert!(output.contains("pub struct TodoRenamedDomainEvent"));
+        assert!(output.contains(
+            "impl distributed :: domain_event :: DomainEventContract for TodoRenamedDomainEvent"
+        ));
         assert!(output.contains("DomainEventBodyDescriptor :: distributed_json"));
         assert!(output.contains("capture_domain_event"));
         assert!(!output.contains("payload_bytes"));
@@ -242,6 +250,10 @@ mod tests {
         let output = sourced::expand_sourced(attr, item).unwrap().to_string();
 
         assert!(output.contains("pub struct TodoDomainIdentity"));
+        assert!(output.contains("pub enum TodoPurgedDomainEvent"));
+        assert!(output.contains(
+            "type Body = distributed :: DomainDeletion < TodoDomainIdentity >"
+        ));
         assert!(output.contains("self . entity . version ()"));
         assert!(output.contains("capture_domain_deletion"));
         assert!(!output.contains("capture_domain_state"));
@@ -273,6 +285,8 @@ mod tests {
         ));
         assert!(output.contains("if let Some"));
         assert!(output.contains("capture_domain_event"));
+        assert!(output.contains("DomainEventContract > :: EVENT_NAME"));
+        assert!(output.contains("DomainEventContract > :: EVENT_VERSION"));
     }
 
     #[test]

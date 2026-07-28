@@ -150,6 +150,26 @@ pub trait DomainEvent: Serialize {
     const DESCRIPTOR: DomainEventDescriptor;
 }
 
+/// Exact typed contract for one outward event a command may declare.
+///
+/// Unlike [`DomainEvent`], the contract type does not have to be the value
+/// serialized on the wire. Sourced state and deletion transitions therefore
+/// use uninhabited marker types whose `Body` is the actual state/deletion DTO.
+#[doc(hidden)]
+pub trait DomainEventContract {
+    /// Exact serialized outward body.
+    type Body: Serialize;
+
+    /// Stable semantic event name.
+    const EVENT_NAME: &'static str;
+
+    /// Independently versioned semantic event version.
+    const EVENT_VERSION: u64;
+
+    /// Exact semantic event and body descriptor.
+    fn descriptor() -> DomainEventDescriptor;
+}
+
 /// Stable deletion body used when no live post-state exists.
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub struct DomainDeletion<K> {
