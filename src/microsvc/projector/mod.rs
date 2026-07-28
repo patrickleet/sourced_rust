@@ -8,11 +8,15 @@
 
 mod context;
 mod errors;
+mod graph_workspace;
 mod handle;
 mod registration;
 mod runtime;
 
 pub use context::{CausalProjectorContext, LoadedProjection};
+pub use graph_workspace::{
+    LoadedProjectionGraph, ProjectionGraphLoadBuilder, ProjectionReadModelWorkspace,
+};
 pub use handle::{ProjectionRepairHandle, ProjectionRepairHandleParseError};
 pub use registration::CausalProjectorRouteBuilder;
 

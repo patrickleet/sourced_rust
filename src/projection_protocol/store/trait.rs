@@ -65,6 +65,42 @@ pub(crate) trait ProjectionProtocolStore: Send + Sync {
         request: &'a ProjectionQuerySnapshotBatchRequest,
     ) -> impl Future<Output = Result<ProjectionQuerySnapshotBatch, ProjectionProtocolError>> + Send + 'a;
 
+    /// Read every execution target from one adapter snapshot and echo each
+    /// exact requested scope in the result.
+    ///
+    /// Adapters opt into this contract in their projection-protocol
+    /// implementation. The default keeps older adapters fail-closed until they
+    /// can prove a coherent batch snapshot.
+    fn projection_execution_snapshot_batch<'a>(
+        &'a self,
+        _request: &'a ProjectionExecutionSnapshotBatchRequest,
+    ) -> impl Future<Output = Result<ProjectionExecutionSnapshotBatch, ProjectionProtocolError>>
+           + Send
+           + 'a {
+        async {
+            Err(ProjectionProtocolError::InvalidBatch(
+                "projection adapter does not support coherent execution snapshots".into(),
+            ))
+        }
+    }
+
+    /// Read one root graph, its includes, and every exact protocol revision
+    /// from one adapter snapshot.
+    ///
+    /// Implementations must enforce `request.max_unique_record_scopes` before
+    /// materializing or returning an oversized root/include result.
+    fn projection_graph_snapshot<'a>(
+        &'a self,
+        _request: &'a ProjectionGraphSnapshotRequest,
+    ) -> impl Future<Output = Result<ProjectionGraphSnapshot, ProjectionProtocolError>> + Send + 'a
+    {
+        async {
+            Err(ProjectionProtocolError::InvalidBatch(
+                "projection adapter does not support coherent graph snapshots".into(),
+            ))
+        }
+    }
+
     fn projection_obligation_evidence_batch<'a>(
         &'a self,
         request: &'a ProjectionObligationEvidenceBatchRequest,

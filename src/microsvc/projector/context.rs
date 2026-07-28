@@ -1,16 +1,72 @@
+use std::collections::HashSet;
 use std::future::Future;
 use std::pin::Pin;
 use std::sync::{Arc, Mutex};
 
 use crate::bus::Message;
 use crate::projection_protocol::{
-    ProjectionProtocolError, ProjectionProtocolStore, ProjectionQuerySnapshot,
-    ProjectionQuerySnapshotRequest, ProjectionWorkspace, RecordRevision,
+    ProjectionExecutionSnapshotBatch, ProjectionExecutionSnapshotBatchRequest,
+    ProjectionGraphSnapshot, ProjectionGraphSnapshotRequest, ProjectionProtocolError,
+    ProjectionProtocolStore, ProjectionQuerySnapshot, ProjectionQuerySnapshotRequest,
+    ProjectionRecordScope, ProjectionWorkspace, RecordRevision, MAX_PROJECTION_QUERY_BATCH_ROWS,
 };
 use crate::read_model::RelationalReadModel;
-use crate::table::{RowKey, RowPatch};
+use crate::table::{key_from_row, RowKey, RowPatch};
 
 use super::super::HandlerError;
+use super::graph_workspace::ProjectionReadModelWorkspace;
+
+#[derive(Default)]
+pub(super) struct ProjectionQueryScopeBudget {
+    scopes: Mutex<HashSet<ProjectionRecordScope>>,
+}
+
+impl ProjectionQueryScopeBudget {
+    pub(super) fn reserve<'a>(
+        &self,
+        scopes: impl IntoIterator<Item = &'a ProjectionRecordScope>,
+    ) -> Result<(), ProjectionProtocolError> {
+        let mut current = self.scopes.lock().map_err(|_| {
+            ProjectionProtocolError::InvalidBatch(
+                "projection query-scope budget is unavailable".into(),
+            )
+        })?;
+        let additions = scopes
+            .into_iter()
+            .filter(|scope| !current.contains(*scope))
+            .cloned()
+            .collect::<HashSet<_>>();
+        let next_len = current.len().checked_add(additions.len()).ok_or_else(|| {
+            ProjectionProtocolError::InvalidBatch(
+                "projection context query-scope count overflowed".into(),
+            )
+        })?;
+        if next_len > MAX_PROJECTION_QUERY_BATCH_ROWS {
+            return Err(ProjectionProtocolError::InvalidBatch(format!(
+                "projection context has {next_len} unique query scopes; maximum is {MAX_PROJECTION_QUERY_BATCH_ROWS}"
+            )));
+        }
+        current.extend(additions);
+        Ok(())
+    }
+
+    pub(super) fn reserve_graph_root(
+        &self,
+        root: &ProjectionRecordScope,
+    ) -> Result<usize, ProjectionProtocolError> {
+        self.reserve([root])?;
+        let count = self
+            .scopes
+            .lock()
+            .map_err(|_| {
+                ProjectionProtocolError::InvalidBatch(
+                    "projection query-scope budget is unavailable".into(),
+                )
+            })?
+            .len();
+        Ok(MAX_PROJECTION_QUERY_BATCH_ROWS - count + 1)
+    }
+}
 
 pub(super) trait ProjectionSnapshotReader: Send + Sync {
     fn snapshot<'a>(
@@ -19,6 +75,28 @@ pub(super) trait ProjectionSnapshotReader: Send + Sync {
     ) -> Pin<
         Box<
             dyn Future<Output = Result<ProjectionQuerySnapshot, ProjectionProtocolError>>
+                + Send
+                + 'a,
+        >,
+    >;
+
+    fn execution_snapshots<'a>(
+        &'a self,
+        request: &'a ProjectionExecutionSnapshotBatchRequest,
+    ) -> Pin<
+        Box<
+            dyn Future<Output = Result<ProjectionExecutionSnapshotBatch, ProjectionProtocolError>>
+                + Send
+                + 'a,
+        >,
+    >;
+
+    fn graph_snapshot<'a>(
+        &'a self,
+        request: &'a ProjectionGraphSnapshotRequest,
+    ) -> Pin<
+        Box<
+            dyn Future<Output = Result<ProjectionGraphSnapshot, ProjectionProtocolError>>
                 + Send
                 + 'a,
         >,
@@ -40,6 +118,32 @@ where
         >,
     > {
         Box::pin(self.projection_query_snapshot(request))
+    }
+
+    fn execution_snapshots<'a>(
+        &'a self,
+        request: &'a ProjectionExecutionSnapshotBatchRequest,
+    ) -> Pin<
+        Box<
+            dyn Future<Output = Result<ProjectionExecutionSnapshotBatch, ProjectionProtocolError>>
+                + Send
+                + 'a,
+        >,
+    > {
+        Box::pin(self.projection_execution_snapshot_batch(request))
+    }
+
+    fn graph_snapshot<'a>(
+        &'a self,
+        request: &'a ProjectionGraphSnapshotRequest,
+    ) -> Pin<
+        Box<
+            dyn Future<Output = Result<ProjectionGraphSnapshot, ProjectionProtocolError>>
+                + Send
+                + 'a,
+        >,
+    > {
+        Box::pin(self.projection_graph_snapshot(request))
     }
 }
 
@@ -63,6 +167,7 @@ pub struct CausalProjectorContext {
     causation_id: String,
     snapshots: Arc<dyn ProjectionSnapshotReader>,
     workspace: Arc<Mutex<Option<ProjectionWorkspace>>>,
+    query_scopes: Arc<ProjectionQueryScopeBudget>,
 }
 
 impl CausalProjectorContext {
@@ -88,6 +193,7 @@ impl CausalProjectorContext {
                     .to_string(),
                 snapshots: Arc::new(snapshots),
                 workspace: Arc::clone(&workspace),
+                query_scopes: Arc::new(ProjectionQueryScopeBudget::default()),
             },
             workspace,
         )
@@ -103,6 +209,102 @@ impl CausalProjectorContext {
 
     pub fn causation_id(&self) -> &str {
         &self.causation_id
+    }
+
+    /// Start a stateful read-model graph workspace with no commit capability.
+    pub fn read_models(&self) -> ProjectionReadModelWorkspace {
+        ProjectionReadModelWorkspace::new(Arc::clone(&self.snapshots), Arc::clone(&self.workspace))
+            .with_query_scope_budget(Arc::clone(&self.query_scopes))
+    }
+
+    /// Apply a stateful graph diff through the framework-owned causal
+    /// workspace.
+    ///
+    /// This stages only. The projector runtime seals and commits the complete
+    /// inbox/revision/checkpoint/observation batch after the handler returns.
+    pub async fn apply(
+        &self,
+        read_models: ProjectionReadModelWorkspace,
+    ) -> Result<&Self, HandlerError> {
+        if !read_models.belongs_to(&self.workspace) {
+            return Err(ProjectionProtocolError::InvalidBatch(
+                "projection read-model workspace belongs to a different causal context".into(),
+            )
+            .into());
+        }
+        let (plan, cached) = read_models.into_execution_parts()?;
+        let prepared = {
+            let workspace = self
+                .workspace
+                .lock()
+                .map_err(|_| unavailable_workspace("prepare graph projection"))?;
+            let workspace = workspace
+                .as_ref()
+                .ok_or_else(|| unavailable_workspace("prepare graph projection"))?;
+            crate::projection::executor::prepare_graph_projection(workspace, plan, cached)?
+        };
+        let snapshots = if prepared.needs_snapshot_read() {
+            self.query_scopes.reserve(
+                prepared
+                    .snapshot_request()
+                    .requests
+                    .iter()
+                    .map(|request| &request.scope),
+            )?;
+            self.snapshots
+                .execution_snapshots(prepared.snapshot_request())
+                .await?
+        } else {
+            ProjectionExecutionSnapshotBatch::default()
+        };
+        prepared.stage(
+            self.workspace
+                .lock()
+                .map_err(|_| unavailable_workspace("apply graph projection"))?
+                .as_mut()
+                .ok_or_else(|| unavailable_workspace("apply graph projection"))?,
+            snapshots,
+        )?;
+        Ok(self)
+    }
+
+    pub(crate) async fn apply_portable(
+        &self,
+        plan: crate::projection::lower::LoweredProjectionPlan,
+    ) -> Result<&Self, HandlerError> {
+        let prepared = {
+            let workspace = self
+                .workspace
+                .lock()
+                .map_err(|_| unavailable_workspace("prepare portable projection"))?;
+            let workspace = workspace
+                .as_ref()
+                .ok_or_else(|| unavailable_workspace("prepare portable projection"))?;
+            crate::projection::executor::prepare_portable_projection(workspace, plan)?
+        };
+        let snapshots = if prepared.needs_snapshot_read() {
+            self.query_scopes.reserve(
+                prepared
+                    .snapshot_request()
+                    .requests
+                    .iter()
+                    .map(|request| &request.scope),
+            )?;
+            self.snapshots
+                .execution_snapshots(prepared.snapshot_request())
+                .await?
+        } else {
+            ProjectionExecutionSnapshotBatch::default()
+        };
+        prepared.stage(
+            self.workspace
+                .lock()
+                .map_err(|_| unavailable_workspace("apply portable projection"))?
+                .as_mut()
+                .ok_or_else(|| unavailable_workspace("apply portable projection"))?,
+            snapshots,
+        )?;
+        Ok(self)
     }
 
     /// Load one live row and its exact revision from one adapter snapshot.
@@ -121,7 +323,9 @@ impl CausalProjectorContext {
             .as_ref()
             .ok_or_else(|| unavailable_workspace("build projection load"))?
             .query_snapshot_request::<M>(key)?;
+        self.query_scopes.reserve([&request.scope])?;
         let snapshot = self.snapshots.snapshot(&request).await?;
+        validate_query_snapshot(&request, &snapshot)?;
         match (snapshot.row, snapshot.record) {
             (None, None) => Ok(None),
             (Some(row), Some(record)) if !record.tombstone => Ok(Some(LoadedProjection {
@@ -161,7 +365,9 @@ impl CausalProjectorContext {
             .as_ref()
             .ok_or_else(|| unavailable_workspace("build projection tombstone load"))?
             .query_snapshot_request::<M>(key)?;
+        self.query_scopes.reserve([&request.scope])?;
         let snapshot = self.snapshots.snapshot(&request).await?;
+        validate_query_snapshot(&request, &snapshot)?;
         match (snapshot.row, snapshot.record) {
             (None, None) => Ok(None),
             (Some(_), Some(record)) if !record.tombstone => Ok(None),
@@ -191,7 +397,9 @@ impl CausalProjectorContext {
             .as_ref()
             .ok_or_else(|| unavailable_workspace("build projection upsert"))?
             .query_snapshot_request::<M>(key)?;
+        self.query_scopes.reserve([&request.scope])?;
         let snapshot = self.snapshots.snapshot(&request).await?;
+        validate_query_snapshot(&request, &snapshot)?;
         let mut workspace = self
             .workspace
             .lock()
@@ -296,6 +504,27 @@ impl CausalProjectorContext {
             .recreate(model, expected_tombstone)?;
         Ok(self)
     }
+}
+
+fn validate_query_snapshot(
+    request: &ProjectionQuerySnapshotRequest,
+    snapshot: &ProjectionQuerySnapshot,
+) -> Result<(), HandlerError> {
+    let scoped = crate::projection_protocol::ProjectionScopedRowSnapshot {
+        scope: request.scope.clone(),
+        row: snapshot.row.clone(),
+        record: snapshot.record.clone(),
+    };
+    crate::projection::executor::validate_snapshot_scope(&scoped)?;
+    if let Some(row) = &snapshot.row {
+        if key_from_row(&request.schema, row)? != request.key {
+            return Err(ProjectionProtocolError::ScopeMismatch {
+                field: "projection query snapshot row key",
+            }
+            .into());
+        }
+    }
+    Ok(())
 }
 
 pub(super) fn unavailable_workspace(operation: &'static str) -> HandlerError {

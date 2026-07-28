@@ -80,15 +80,17 @@ pub use query::{
 };
 // Several of these are only constructed from adapter unit tests; re-export for the
 // store surface and silence unused_imports on non-test lib builds.
-#[cfg_attr(not(test), allow(unused_imports))]
+#[allow(unused_imports)]
 pub(crate) use query::{
-    ProjectionCheckpointProbe, ProjectionCheckpointSnapshot, ProjectionFailureLocation,
-    ProjectionLiveRecordBatch, ProjectionLiveRecordBatchRequest, ProjectionLiveRecordRequest,
-    ProjectionObligationEvidence, ProjectionObligationEvidenceBatch,
+    ProjectionCheckpointProbe, ProjectionCheckpointSnapshot, ProjectionExecutionSnapshotBatch,
+    ProjectionExecutionSnapshotBatchRequest, ProjectionFailureLocation,
+    ProjectionGraphIncludeRequest, ProjectionGraphIncludeSnapshot, ProjectionGraphSnapshot,
+    ProjectionGraphSnapshotRequest, ProjectionLiveRecordBatch, ProjectionLiveRecordBatchRequest,
+    ProjectionLiveRecordRequest, ProjectionObligationEvidence, ProjectionObligationEvidenceBatch,
     ProjectionObligationEvidenceBatchRequest, ProjectionObligationEvidenceRequest,
     ProjectionPartitionRuntimeState, ProjectionPartitionSnapshot, ProjectionPendingRetry,
     ProjectionQuerySnapshot, ProjectionQuerySnapshotBatch, ProjectionQuerySnapshotBatchRequest,
-    ProjectionQuerySnapshotRequest,
+    ProjectionQuerySnapshotRequest, ProjectionScopedRowSnapshot,
 };
 pub use r#trait::ProjectionChangeRead;
 pub(crate) use r#trait::ProjectionProtocolStore;

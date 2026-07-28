@@ -75,7 +75,8 @@ pub use dependencies::{
 };
 pub use error::HandlerError;
 pub use projector::{
-    CausalProjectorContext, CausalProjectorRouteBuilder, LoadedProjection, ProjectionRepairHandle,
+    CausalProjectorContext, CausalProjectorRouteBuilder, LoadedProjection, LoadedProjectionGraph,
+    ProjectionGraphLoadBuilder, ProjectionReadModelWorkspace, ProjectionRepairHandle,
     ProjectionRepairHandleParseError,
 };
 pub use runtime::{DEFAULT_MAX_PUBLISH_ATTEMPTS, DEFAULT_PUBLISH_LEASE};

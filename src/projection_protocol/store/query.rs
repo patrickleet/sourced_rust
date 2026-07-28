@@ -210,6 +210,175 @@ pub(crate) struct ProjectionQuerySnapshotBatch {
     pub(crate) snapshots: Vec<ProjectionQuerySnapshot>,
 }
 
+/// One explicitly scoped physical-row/protocol snapshot.
+///
+/// Execution paths use this wrapper instead of trusting positional alignment
+/// from an adapter batch. Missing rows still retain the requested scope, so a
+/// store cannot accidentally answer one key with another key's absence.
+#[derive(Clone, Debug, PartialEq)]
+pub(crate) struct ProjectionScopedRowSnapshot {
+    pub(crate) scope: ProjectionRecordScope,
+    pub(crate) row: Option<RowValues>,
+    pub(crate) record: Option<ProjectionRecordMetadata>,
+}
+
+/// One bounded, duplicate-free execution preflight.
+#[derive(Clone, Debug, PartialEq)]
+pub(crate) struct ProjectionExecutionSnapshotBatchRequest {
+    pub(crate) requests: Vec<ProjectionQuerySnapshotRequest>,
+}
+
+impl ProjectionExecutionSnapshotBatchRequest {
+    pub(crate) fn new(
+        requests: Vec<ProjectionQuerySnapshotRequest>,
+    ) -> Result<Self, ProjectionProtocolError> {
+        let request = Self { requests };
+        request.validate()?;
+        Ok(request)
+    }
+
+    pub(crate) fn validate(&self) -> Result<(), ProjectionProtocolError> {
+        if self.requests.len() > MAX_PROJECTION_QUERY_BATCH_ROWS {
+            return Err(ProjectionProtocolError::InvalidBatch(format!(
+                "projection execution snapshot batch has {} scopes; maximum is {}",
+                self.requests.len(),
+                MAX_PROJECTION_QUERY_BATCH_ROWS
+            )));
+        }
+        let mut scopes = std::collections::HashSet::new();
+        for request in &self.requests {
+            request.validate()?;
+            if !scopes.insert(request.scope.clone()) {
+                return Err(ProjectionProtocolError::InvalidBatch(format!(
+                    "projection execution snapshot batch repeats model `{}` record scope",
+                    request.scope.model()
+                )));
+            }
+        }
+        Ok(())
+    }
+}
+
+/// Explicitly scoped results for one execution preflight.
+#[derive(Clone, Debug, Default, PartialEq)]
+pub(crate) struct ProjectionExecutionSnapshotBatch {
+    pub(crate) snapshots: Vec<ProjectionScopedRowSnapshot>,
+}
+
+/// One validated relationship include in a coherent graph query.
+#[derive(Clone, Debug, PartialEq)]
+pub(crate) struct ProjectionGraphIncludeRequest {
+    pub(crate) relationship: crate::table::RelationshipDef,
+    pub(crate) target_schema: std::sync::Arc<TableSchema>,
+}
+
+/// One coherent root/include graph query.
+#[derive(Clone, Debug, PartialEq)]
+pub(crate) struct ProjectionGraphSnapshotRequest {
+    pub(crate) root: ProjectionQuerySnapshotRequest,
+    pub(crate) includes: std::collections::BTreeMap<String, ProjectionGraphIncludeRequest>,
+    /// Maximum unique root/included record scopes the adapter may return.
+    ///
+    /// This is the caller's remaining execution budget, not a pagination hint:
+    /// adapters must reject a result that would exceed it.
+    pub(crate) max_unique_record_scopes: usize,
+}
+
+impl ProjectionGraphSnapshotRequest {
+    pub(crate) fn new(
+        root: ProjectionQuerySnapshotRequest,
+        includes: impl IntoIterator<Item = (String, std::sync::Arc<TableSchema>)>,
+        max_unique_record_scopes: usize,
+    ) -> Result<Self, ProjectionProtocolError> {
+        root.validate()?;
+        if max_unique_record_scopes == 0
+            || max_unique_record_scopes > MAX_PROJECTION_QUERY_BATCH_ROWS
+        {
+            return Err(ProjectionProtocolError::InvalidBatch(format!(
+                "projection graph snapshot record-scope budget is {max_unique_record_scopes}; expected 1..={MAX_PROJECTION_QUERY_BATCH_ROWS}"
+            )));
+        }
+        let includes = includes.into_iter().collect::<Vec<_>>();
+        let query_scopes = includes.len().checked_add(1).ok_or_else(|| {
+            ProjectionProtocolError::InvalidBatch(
+                "projection graph snapshot query-scope count overflowed".into(),
+            )
+        })?;
+        if query_scopes > MAX_PROJECTION_QUERY_BATCH_ROWS {
+            return Err(ProjectionProtocolError::InvalidBatch(format!(
+                "projection graph snapshot has {query_scopes} query scopes; maximum is {}",
+                MAX_PROJECTION_QUERY_BATCH_ROWS
+            )));
+        }
+        let mut validated = std::collections::BTreeMap::new();
+        for (include, target_schema) in includes {
+            let relationship = root
+                .schema
+                .relationships
+                .iter()
+                .find(|relationship| relationship.field_name == include)
+                .cloned()
+                .ok_or_else(|| {
+                    ProjectionProtocolError::InvalidBatch(format!(
+                        "projection graph snapshot model `{}` has no relationship `{include}`",
+                        root.schema.model_name
+                    ))
+                })?;
+            if matches!(
+                relationship.kind,
+                crate::table::RelationshipKind::ManyToMany
+            ) {
+                return Err(ProjectionProtocolError::InvalidBatch(format!(
+                    "projection graph relationship `{include}` is many-to-many; project an explicit join read model instead"
+                )));
+            }
+            target_schema.validate()?;
+            if relationship.target_model != target_schema.model_name {
+                return Err(ProjectionProtocolError::InvalidBatch(format!(
+                    "projection graph relationship `{include}` targets `{}` but registered schema is `{}`",
+                    relationship.target_model, target_schema.model_name
+                )));
+            }
+            if validated
+                .insert(
+                    include,
+                    ProjectionGraphIncludeRequest {
+                        relationship,
+                        target_schema,
+                    },
+                )
+                .is_some()
+            {
+                return Err(ProjectionProtocolError::InvalidBatch(format!(
+                    "projection graph snapshot repeats an include for model `{}`",
+                    root.schema.model_name
+                )));
+            }
+        }
+        Ok(Self {
+            root,
+            includes: validated,
+            max_unique_record_scopes,
+        })
+    }
+}
+
+/// Included rows and exact protocol revisions returned by one graph snapshot.
+#[derive(Clone, Debug, PartialEq)]
+pub(crate) struct ProjectionGraphIncludeSnapshot {
+    pub(crate) relationship: crate::table::RelationshipDef,
+    pub(crate) target_schema: TableSchema,
+    pub(crate) rows: Vec<ProjectionScopedRowSnapshot>,
+}
+
+/// Root and included rows read with protocol metadata from one adapter
+/// snapshot.
+#[derive(Clone, Debug, PartialEq)]
+pub(crate) struct ProjectionGraphSnapshot {
+    pub(crate) root: ProjectionScopedRowSnapshot,
+    pub(crate) includes: std::collections::BTreeMap<String, ProjectionGraphIncludeSnapshot>,
+}
+
 /// One exact command obligation evidence probe.
 ///
 /// The scope is already compiler-bound and canonical. A store must compare all
