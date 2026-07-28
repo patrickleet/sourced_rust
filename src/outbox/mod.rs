@@ -41,6 +41,7 @@ mod message;
 mod table;
 
 // Outbox message record
+pub(crate) use message::PreparedDomainEvent;
 pub use message::{OutboxMessage, OutboxMessageStatus};
 pub(crate) use table::validate_outbox_message_table_write;
 pub use table::{

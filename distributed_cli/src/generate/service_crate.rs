@@ -591,14 +591,12 @@ pub async fn handle(
         None => ctx.create(),
     }};
     aggregate.record_command(COMMAND.to_string(), input.id.clone(), input.name.clone())?;
-    ctx.stage(aggregate)?;
-    PreparedCommand::<Succeeded<CommandOutput>>::prepare(CommandOutput {{
+    ctx.commit(aggregate)?.succeeded(CommandOutput {{
         command: COMMAND.to_string(),
         id: input.id,
         model: MODEL.to_string(),
         name: input.name,
     }})
-    .map_err(|error| HandlerError::Other(Box::new(error)))
 }}
 "#,
                 message_name = rust_string(&handler.message_name),

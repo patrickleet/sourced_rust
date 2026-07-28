@@ -6,7 +6,7 @@ use serde::Deserialize;
 use todo_domain::Todo;
 
 use crate::handlers::commands::payloads::TodoStatusPayload;
-use crate::handlers::commands::todo_cmd::{load_todo, map_domain, stage_todo_event};
+use crate::handlers::commands::todo_cmd::{commit_todo_event, load_todo, map_domain};
 
 pub const COMMAND: &str = "todo.archive";
 
@@ -25,10 +25,8 @@ pub async fn handle(
     let owner = ctx.user_id()?.to_string();
     let mut todo = load_todo(ctx, &input.todo_id).await?;
     todo.archive(&owner).map_err(map_domain)?;
-    let fact = stage_todo_event(ctx, todo, "todo.archived")?;
-    PreparedCommand::<Causal<TodoArchivePayload>>::prepare(TodoArchivePayload {
+    commit_todo_event(ctx, todo, "todo.archived", |fact| TodoArchivePayload {
         todo_id: fact.todo_id,
         status: fact.status,
     })
-    .map_err(|error| HandlerError::Other(Box::new(error)))
 }

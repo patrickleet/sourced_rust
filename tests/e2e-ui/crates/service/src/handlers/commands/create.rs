@@ -8,7 +8,7 @@ use distributed::microsvc::{CausalCommandContext, HandlerError};
 use serde::{Deserialize, Serialize};
 use todo_domain::Todo;
 
-use crate::handlers::commands::todo_cmd::{map_domain, stage_todo_event};
+use crate::handlers::commands::todo_cmd::{commit_todo_event, map_domain};
 
 pub const COMMAND: &str = "todo.create";
 
@@ -46,13 +46,10 @@ pub async fn handle(
     todo.create(&input.todo_id, &owner, &input.title)
         .map_err(map_domain)?;
 
-    let fact = stage_todo_event(ctx, todo, "todo.created")?;
-
-    PreparedCommand::<Causal<TodoCreatePayload>>::prepare(TodoCreatePayload {
+    commit_todo_event(ctx, todo, "todo.created", |fact| TodoCreatePayload {
         todo_id: fact.todo_id,
         owner_id: fact.owner_id,
         title: fact.title,
         status: fact.status,
     })
-    .map_err(|error| HandlerError::Other(Box::new(error)))
 }

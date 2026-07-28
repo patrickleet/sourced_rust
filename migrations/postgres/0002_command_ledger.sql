@@ -32,8 +32,8 @@ CREATE TABLE IF NOT EXISTS command_ledger (
   CHECK (state IN (
     'in_progress',
     'retryable_unknown',
-    'accepted',
-    'accepted_pending_projection',
+    'succeeded',
+    'succeeded_pending_projection',
     'projected',
     'rejected',
     'projection_failed',
@@ -55,8 +55,8 @@ CREATE TABLE IF NOT EXISTS command_ledger (
       AND compacted_at IS NULL)
     OR
     (state IN (
-        'accepted',
-        'accepted_pending_projection',
+        'succeeded',
+        'succeeded_pending_projection',
         'projected',
         'rejected',
         'projection_failed'

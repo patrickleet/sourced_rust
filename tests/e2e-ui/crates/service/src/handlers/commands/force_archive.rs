@@ -9,7 +9,7 @@ use distributed::microsvc::{CausalCommandContext, HandlerError};
 use serde::{Deserialize, Serialize};
 use todo_domain::Todo;
 
-use crate::handlers::commands::todo_cmd::{load_todo, map_domain, stage_todo_event};
+use crate::handlers::commands::todo_cmd::{commit_todo_event, load_todo, map_domain};
 
 pub const COMMAND: &str = "todo.force_archive";
 
@@ -40,13 +40,12 @@ pub async fn handle(
     // Domain archive is owner-scoped; use the aggregate's real owner (not admin id).
     let owner = todo.owner_id.clone();
     todo.archive(&owner).map_err(map_domain)?;
-    let fact = stage_todo_event(ctx, todo, FORCE_ARCHIVED_EVENT)?;
-
-    PreparedCommand::<Causal<TodoForceArchivePayload>>::prepare(TodoForceArchivePayload {
-        todo_id: fact.todo_id,
-        owner_id: fact.owner_id,
-        status: fact.status,
-        archived_by: admin,
+    commit_todo_event(ctx, todo, FORCE_ARCHIVED_EVENT, |fact| {
+        TodoForceArchivePayload {
+            todo_id: fact.todo_id,
+            owner_id: fact.owner_id,
+            status: fact.status,
+            archived_by: admin,
+        }
     })
-    .map_err(|error| HandlerError::Other(Box::new(error)))
 }

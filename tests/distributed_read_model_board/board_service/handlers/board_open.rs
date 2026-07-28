@@ -1,7 +1,7 @@
 use distributed::microsvc::{Context, HandlerError};
-use distributed::OutboxMessage;
 use serde_json::{json, Value};
 
+use crate::board_service::handlers::board_state_message;
 use crate::board_service::{Board, BoardRepo, OpenBoard};
 
 pub const COMMAND: &str = "board.open";
@@ -22,7 +22,7 @@ pub async fn handle(ctx: &Context<'_, BoardRepo>) -> Result<Value, HandlerError>
     let mut board = Board::default();
     board.open(input.id.clone(), input.name.clone())?;
 
-    let outbox = OutboxMessage::domain_event("board.opened", &board)?;
+    let outbox = board_state_message(&board, "board.opened")?;
     ctx.repo().outbox(outbox).commit(&mut board).await?;
 
     Ok(json!({ "id": input.id }))

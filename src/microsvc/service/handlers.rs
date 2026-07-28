@@ -1,18 +1,21 @@
 use std::future::Future;
+use std::marker::PhantomData;
 use std::pin::Pin;
 use std::sync::Arc;
 
+use serde::Serialize;
 use serde_json::Value;
 
 use crate::aggregate::Aggregate;
 use crate::bus::Message;
+use crate::domain_event::DomainEvent;
 use crate::graphql::command_contract::CommandOutcome;
-use crate::graphql::{GraphqlOutputType, PreparedCommand, Projected};
-use crate::microsvc::causal::{CausalWorkspace, CausalWorkspaceError};
+use crate::graphql::{Causal, GraphqlOutputType, PreparedCommand, Projected, Succeeded};
+use crate::microsvc::causal::{AggregatePublication, CausalWorkspace, CausalWorkspaceError};
 use crate::microsvc::context::Context;
 use crate::microsvc::error::HandlerError;
 use crate::microsvc::session::Session;
-use crate::outbox::OutboxMessage;
+use crate::outbox::{OutboxMessage, PreparedDomainEvent};
 use crate::read_model::{ReadModelWritePlanBuilder, RelationalReadModel};
 
 pub(super) type GuardFn<D> = dyn Fn(&Context<D>) -> bool + Send + Sync;
@@ -53,6 +56,331 @@ where
     message: &'a Message,
     session: &'a Session,
     workspace: &'a CausalWorkspace<'a, A>,
+}
+
+/// Type-state marker for a unit of work with no publication leg.
+#[doc(hidden)]
+pub struct NoPublication;
+
+/// Type-state marker proving that a unit of work declared durable publication.
+#[doc(hidden)]
+pub struct WithPublication;
+
+/// Type-state marker for a unit of work with no direct projection intent.
+#[doc(hidden)]
+pub struct NoDirectProjection;
+
+/// Narrow same-transaction projection token for one exact returned read model.
+///
+/// This preserves the current one-complete-row-upsert proof while allowing the
+/// fluent `project(PROJECTION)` position to be replaced by a modeled projection
+/// adapter later.
+///
+/// Arbitrary application tokens cannot manufacture projection evidence:
+///
+/// ```compile_fail
+/// use distributed::microsvc::PreparedCausalCommit;
+/// use distributed::Aggregate;
+///
+/// struct ForgedProjection;
+///
+/// fn cannot_project<A>(
+///     commit: PreparedCausalCommit<'_, '_, A, (), ForgedProjection>,
+/// ) where
+///     A: Aggregate + Send + Sync + 'static,
+/// {
+///     let _ = commit.projected(());
+/// }
+/// ```
+pub struct DirectReadModelProjection<M>(PhantomData<fn() -> M>);
+
+impl<M> DirectReadModelProjection<M> {
+    /// Select the existing exact returned-row direct projection proof.
+    pub const fn new() -> Self {
+        Self(PhantomData)
+    }
+}
+
+impl<M> Default for DirectReadModelProjection<M> {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
+/// Construct the current narrow direct-projection token for `M`.
+pub const fn direct_read_model<M>() -> DirectReadModelProjection<M> {
+    DirectReadModelProjection::new()
+}
+
+/// Fluent, handler-facing causal unit of work.
+///
+/// Its `commit` method performs no repository I/O. It only seals owned
+/// aggregate checkouts and transaction participants into the framework-owned
+/// workspace; the dispatcher later validates the ledger fence and performs the
+/// sole durable commit.
+pub struct CausalCommitBuilder<
+    'context,
+    'route,
+    A,
+    Publication = NoPublication,
+    Projection = NoDirectProjection,
+> where
+    A: Aggregate + Send + Sync + 'static,
+{
+    context: &'context CausalCommandContext<'route, A>,
+    publish_captured_events: bool,
+    explicit_events: Vec<PreparedDomainEvent>,
+    outbox_messages: Vec<OutboxMessage>,
+    read_model_plans: Vec<ReadModelWritePlanBuilder>,
+    error: Option<HandlerError>,
+    projection: Projection,
+    _publication: PhantomData<fn() -> Publication>,
+}
+
+impl<'context, 'route, A>
+    CausalCommitBuilder<'context, 'route, A, NoPublication, NoDirectProjection>
+where
+    A: Aggregate + Send + Sync + 'static,
+{
+    fn empty(context: &'context CausalCommandContext<'route, A>) -> Self {
+        Self {
+            context,
+            publish_captured_events: false,
+            explicit_events: Vec::new(),
+            outbox_messages: Vec::new(),
+            read_model_plans: Vec::new(),
+            error: None,
+            projection: NoDirectProjection,
+            _publication: PhantomData,
+        }
+    }
+}
+
+impl<'context, 'route, A, Publication, Projection>
+    CausalCommitBuilder<'context, 'route, A, Publication, Projection>
+where
+    A: Aggregate + Send + Sync + 'static,
+{
+    /// Publish captured domain-event occurrences for every aggregate staged by
+    /// this builder.
+    pub fn publish_events(
+        self,
+    ) -> CausalCommitBuilder<'context, 'route, A, WithPublication, Projection> {
+        CausalCommitBuilder {
+            context: self.context,
+            publish_captured_events: true,
+            explicit_events: self.explicit_events,
+            outbox_messages: self.outbox_messages,
+            read_model_plans: self.read_model_plans,
+            error: self.error,
+            projection: self.projection,
+            _publication: PhantomData,
+        }
+    }
+
+    /// Publish an explicit typed outward event from its own public DTO.
+    ///
+    /// The event is bound to the next aggregate passed to
+    /// [`aggregate`](Self::aggregate) or [`commit`](Self::commit).
+    pub fn publish<E: DomainEvent>(
+        mut self,
+        event: E,
+    ) -> CausalCommitBuilder<'context, 'route, A, WithPublication, Projection> {
+        if self.error.is_none() {
+            match PreparedDomainEvent::new(event) {
+                Ok(event) => self.explicit_events.push(event),
+                Err(error) => {
+                    self.error = Some(HandlerError::Other(Box::new(error)));
+                }
+            }
+        }
+        CausalCommitBuilder {
+            context: self.context,
+            publish_captured_events: self.publish_captured_events,
+            explicit_events: self.explicit_events,
+            outbox_messages: self.outbox_messages,
+            read_model_plans: self.read_model_plans,
+            error: self.error,
+            projection: self.projection,
+            _publication: PhantomData,
+        }
+    }
+
+    /// Stage a low-level integration envelope.
+    ///
+    /// Ordinary aggregate-derived publication should use
+    /// [`publish_events`](Self::publish_events) or [`publish`](Self::publish).
+    pub fn outbox(
+        mut self,
+        message: OutboxMessage,
+    ) -> CausalCommitBuilder<'context, 'route, A, WithPublication, Projection> {
+        self.outbox_messages.push(message);
+        CausalCommitBuilder {
+            context: self.context,
+            publish_captured_events: self.publish_captured_events,
+            explicit_events: self.explicit_events,
+            outbox_messages: self.outbox_messages,
+            read_model_plans: self.read_model_plans,
+            error: self.error,
+            projection: self.projection,
+            _publication: PhantomData,
+        }
+    }
+
+    /// Add an arbitrary existing multi-table relational write plan.
+    ///
+    /// This leg is strongly committed on the server but does not by itself
+    /// unlock the `projected` terminal.
+    pub fn read_models(mut self, plan: ReadModelWritePlanBuilder) -> Self {
+        self.read_model_plans.push(plan);
+        self
+    }
+
+    /// Stage another aggregate while keeping this builder open.
+    ///
+    /// Explicit events currently waiting on the builder bind to this aggregate;
+    /// `publish_events` remains active for every later aggregate.
+    pub fn aggregate(
+        mut self,
+        checkout: crate::microsvc::AggregateCheckout<A>,
+    ) -> Result<Self, HandlerError> {
+        self.stage_aggregate(checkout)?;
+        Ok(self)
+    }
+
+    /// Seal this unit of work by staging its final aggregate.
+    ///
+    /// This method is synchronous and performs no repository I/O.
+    pub fn commit(
+        mut self,
+        checkout: crate::microsvc::AggregateCheckout<A>,
+    ) -> Result<PreparedCausalCommit<'context, 'route, A, Publication, Projection>, HandlerError>
+    {
+        self.stage_aggregate(checkout)?;
+        if let Some(error) = self.error.take() {
+            return Err(error);
+        }
+        for message in self.outbox_messages {
+            self.context
+                .workspace
+                .stage_outbox(message)
+                .map_err(workspace_handler_error)?;
+        }
+        for plan in self.read_model_plans {
+            self.context
+                .workspace
+                .stage_read_models(plan)
+                .map_err(workspace_handler_error)?;
+        }
+        Ok(PreparedCausalCommit {
+            context: self.context,
+            projection: self.projection,
+            _publication: PhantomData,
+        })
+    }
+
+    fn stage_aggregate(
+        &mut self,
+        checkout: crate::microsvc::AggregateCheckout<A>,
+    ) -> Result<(), HandlerError> {
+        if let Some(error) = self.error.take() {
+            return Err(error);
+        }
+        self.context
+            .workspace
+            .stage_with_publication(
+                checkout,
+                AggregatePublication {
+                    publish_captured_events: self.publish_captured_events,
+                    explicit_events: std::mem::take(&mut self.explicit_events),
+                },
+            )
+            .map_err(workspace_handler_error)
+    }
+}
+
+impl<'context, 'route, A, Publication>
+    CausalCommitBuilder<'context, 'route, A, Publication, NoDirectProjection>
+where
+    A: Aggregate + Send + Sync + 'static,
+{
+    /// Select a declaration that may satisfy the narrow direct projection
+    /// proof. Ordinary `read_models(plan)` remains independent from this leg.
+    pub fn project<Projection>(
+        self,
+        projection: Projection,
+    ) -> CausalCommitBuilder<'context, 'route, A, Publication, Projection> {
+        CausalCommitBuilder {
+            context: self.context,
+            publish_captured_events: self.publish_captured_events,
+            explicit_events: self.explicit_events,
+            outbox_messages: self.outbox_messages,
+            read_model_plans: self.read_model_plans,
+            error: self.error,
+            projection,
+            _publication: PhantomData,
+        }
+    }
+}
+
+/// A causal unit of work sealed by a handler but not yet durably committed.
+pub struct PreparedCausalCommit<'context, 'route, A, Publication, Projection>
+where
+    A: Aggregate + Send + Sync + 'static,
+{
+    context: &'context CausalCommandContext<'route, A>,
+    projection: Projection,
+    _publication: PhantomData<fn() -> Publication>,
+}
+
+impl<A, Publication, Projection> PreparedCausalCommit<'_, '_, A, Publication, Projection>
+where
+    A: Aggregate + Send + Sync + 'static,
+{
+    /// Prepare a successful command result with no causal visibility promise.
+    pub fn succeeded<T>(self, payload: T) -> Result<PreparedCommand<Succeeded<T>>, HandlerError>
+    where
+        T: GraphqlOutputType + Serialize + Send + Sync + 'static,
+    {
+        let _ = self.projection;
+        PreparedCommand::prepare(payload).map_err(|error| HandlerError::Other(Box::new(error)))
+    }
+}
+
+impl<A, Projection> PreparedCausalCommit<'_, '_, A, WithPublication, Projection>
+where
+    A: Aggregate + Send + Sync + 'static,
+{
+    /// Prepare a causal result. This terminal exists only after a publication
+    /// leg; the dispatcher additionally proves actual durable outbox coverage.
+    pub fn causal<T>(self, payload: T) -> Result<PreparedCommand<Causal<T>>, HandlerError>
+    where
+        T: GraphqlOutputType + Serialize + Send + Sync + 'static,
+    {
+        let _ = self.projection;
+        PreparedCommand::prepare(payload).map_err(|error| HandlerError::Other(Box::new(error)))
+    }
+}
+
+impl<A, Publication, M> PreparedCausalCommit<'_, '_, A, Publication, DirectReadModelProjection<M>>
+where
+    A: Aggregate + Send + Sync + 'static,
+{
+    /// Prepare the exact existing one-row direct projection result.
+    ///
+    /// This method is available only when the preceding `project(...)` token is
+    /// eligible for `M`. Dispatcher proof validation still rejects missing
+    /// ownership, conflicts, partial rows, or a mismatched returned value.
+    pub fn projected(self, payload: M) -> Result<PreparedCommand<Projected<M>>, HandlerError>
+    where
+        M: GraphqlOutputType + RelationalReadModel + Serialize + Send + Sync + 'static,
+    {
+        let _ = self.projection;
+        self.context
+            .workspace
+            .prepare_projected(payload)
+            .map_err(workspace_handler_error)
+    }
 }
 
 impl<'a, A> CausalCommandContext<'a, A>
@@ -123,38 +451,60 @@ where
         self.workspace.create()
     }
 
-    /// Stage a checkout for the framework-owned atomic commit.
-    pub fn stage(
+    /// Start an empty fluent unit of work and stage its final aggregate.
+    pub fn commit(
         &self,
         checkout: crate::microsvc::AggregateCheckout<A>,
-    ) -> Result<(), HandlerError> {
-        self.workspace
-            .stage(checkout)
-            .map_err(workspace_handler_error)
+    ) -> Result<PreparedCausalCommit<'_, 'a, A, NoPublication, NoDirectProjection>, HandlerError>
+    {
+        CausalCommitBuilder::empty(self).commit(checkout)
     }
 
-    /// Stage one durable outbox fact in the command transaction.
-    pub fn stage_outbox(&self, message: OutboxMessage) -> Result<(), HandlerError> {
+    /// Start a unit of work that publishes captured domain-event occurrences.
+    pub fn publish_events(
+        &self,
+    ) -> CausalCommitBuilder<'_, 'a, A, WithPublication, NoDirectProjection> {
+        CausalCommitBuilder::empty(self).publish_events()
+    }
+
+    /// Start a unit of work with one explicit typed outward event.
+    pub fn publish<E: DomainEvent>(
+        &self,
+        event: E,
+    ) -> CausalCommitBuilder<'_, 'a, A, WithPublication, NoDirectProjection> {
+        CausalCommitBuilder::empty(self).publish(event)
+    }
+
+    /// Start a unit of work with an arbitrary existing multi-table relational
+    /// plan. This does not unlock the `projected` terminal.
+    pub fn read_models(
+        &self,
+        writes: ReadModelWritePlanBuilder,
+    ) -> CausalCommitBuilder<'_, 'a, A, NoPublication, NoDirectProjection> {
+        CausalCommitBuilder::empty(self).read_models(writes)
+    }
+
+    /// Start a low-level integration-envelope publication unit of work.
+    pub fn outbox(
+        &self,
+        message: OutboxMessage,
+    ) -> CausalCommitBuilder<'_, 'a, A, WithPublication, NoDirectProjection> {
+        CausalCommitBuilder::empty(self).outbox(message)
+    }
+
+    /// Start a direct projection-intent unit of work.
+    pub fn project<Projection>(
+        &self,
+        projection: Projection,
+    ) -> CausalCommitBuilder<'_, 'a, A, NoPublication, Projection> {
+        CausalCommitBuilder::empty(self).project(projection)
+    }
+
+    /// Low-level outbox staging retained for framework internals.
+    #[cfg(all(test, feature = "graphql", feature = "sqlite"))]
+    pub(crate) fn stage_outbox(&self, message: OutboxMessage) -> Result<(), HandlerError> {
         self.workspace
             .stage_outbox(message)
-            .map_err(workspace_handler_error)
-    }
-
-    /// Stage a validated relational read-model write plan.
-    pub fn stage_read_models(&self, writes: ReadModelWritePlanBuilder) -> Result<(), HandlerError> {
-        self.workspace
-            .stage_read_models(writes)
-            .map_err(workspace_handler_error)
-    }
-
-    /// Stage the exact returned model as a full-row upsert and prepare a sealed
-    /// same-transaction projection result.
-    pub fn projected<M>(&self, model: M) -> Result<PreparedCommand<Projected<M>>, HandlerError>
-    where
-        M: GraphqlOutputType + RelationalReadModel + serde::Serialize + Send + Sync + 'static,
-    {
-        self.workspace
-            .prepare_projected(model)
             .map_err(workspace_handler_error)
     }
 }

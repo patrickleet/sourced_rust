@@ -67,17 +67,13 @@ pub async fn handle(
     )
     .map_err(|e| HandlerError::Other(Box::new(e)))?;
 
-    ctx.stage_outbox(outbox)?;
-    ctx.stage(msg)?;
-
-    PreparedCommand::<Causal<ChatPostPayload>>::prepare(ChatPostPayload {
+    ctx.outbox(outbox).commit(msg)?.causal(ChatPostPayload {
         message_id: fact.message_id,
         room_id: fact.room_id,
         author_id: fact.author_id,
         body: fact.body,
         created_at: fact.created_at,
     })
-    .map_err(|error| HandlerError::Other(Box::new(error)))
 }
 
 fn canonical_near_unix_millis(value: &str) -> Result<String, HandlerError> {

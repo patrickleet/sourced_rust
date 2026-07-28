@@ -18,12 +18,13 @@ use serde::Serialize;
 
 use crate::aggregate::{hydrate, Aggregate, AggregateRepository};
 use crate::command_ledger::CausalGetStream;
+use crate::domain_event::{DomainEventCaptureError, DomainEventCommitGuardError};
 use crate::graphql::command_contract::{
     CommandCommitProofError, CommandOutcome, ProjectionCommitProof, ResolvedDirectProjectionTarget,
     TypedCommandContract,
 };
 use crate::graphql::{GraphqlOutputType, PrepareCommandError, PreparedCommand, Projected};
-use crate::outbox::OutboxMessage;
+use crate::outbox::{OutboxMessage, PreparedDomainEvent};
 use crate::projection_protocol::SameTransactionProjectionBatch;
 use crate::read_model::{ReadModelWritePlanBuilder, RelationalReadModel};
 use crate::repository::{CommitBatch, RepositoryError, SnapshotWrite, StreamIdentity, StreamWrite};
@@ -135,6 +136,8 @@ impl<A: Aggregate> DerefMut for AggregateCheckout<A> {
 pub(crate) enum CausalWorkspaceError {
     Repository(RepositoryError),
     Table(TableStoreError),
+    DomainEventCapture(DomainEventCaptureError),
+    DomainEventGuard(DomainEventCommitGuardError),
     Prepare(PrepareCommandError),
     Poisoned,
     IdentityChanged {
@@ -148,6 +151,8 @@ pub(crate) enum CausalWorkspaceError {
     },
     DuplicateStream(StreamIdentity),
     ProjectionAlreadyStaged,
+    DomainPublicationRequired(StreamIdentity),
+    DomainPublicationsAlreadyPrepared,
     CommitBatchAlreadyPrepared,
 }
 
@@ -156,6 +161,12 @@ impl std::fmt::Display for CausalWorkspaceError {
         match self {
             Self::Repository(error) => write!(formatter, "causal aggregate load failed: {error}"),
             Self::Table(error) => write!(formatter, "causal read-model staging failed: {error}"),
+            Self::DomainEventCapture(error) => {
+                write!(formatter, "causal domain-event publication failed: {error}")
+            }
+            Self::DomainEventGuard(error) => {
+                write!(formatter, "causal domain-event commit guard failed: {error}")
+            }
             Self::Prepare(error) => write!(formatter, "causal result preparation failed: {error}"),
             Self::Poisoned => formatter.write_str("causal workspace lock poisoned"),
             Self::IdentityChanged { original, current } => write!(
@@ -176,6 +187,13 @@ impl std::fmt::Display for CausalWorkspaceError {
             Self::ProjectionAlreadyStaged => formatter.write_str(
                 "a causal command may prepare only one same-transaction projected result",
             ),
+            Self::DomainPublicationRequired(identity) => write!(
+                formatter,
+                "aggregate `{identity}` captured domain events; add `publish_events()` to its commit"
+            ),
+            Self::DomainPublicationsAlreadyPrepared => {
+                formatter.write_str("causal domain-event publications were already prepared")
+            }
             Self::CommitBatchAlreadyPrepared => {
                 formatter.write_str("causal workspace commit batch was already prepared")
             }
@@ -188,12 +206,16 @@ impl std::error::Error for CausalWorkspaceError {
         match self {
             Self::Repository(error) => Some(error),
             Self::Table(error) => Some(error),
+            Self::DomainEventCapture(error) => Some(error),
+            Self::DomainEventGuard(error) => Some(error),
             Self::Prepare(error) => Some(error),
             Self::Poisoned
             | Self::IdentityChanged { .. }
             | Self::CommittedVersionChanged { .. }
             | Self::DuplicateStream(_)
             | Self::ProjectionAlreadyStaged
+            | Self::DomainPublicationRequired(_)
+            | Self::DomainPublicationsAlreadyPrepared
             | Self::CommitBatchAlreadyPrepared => None,
         }
     }
@@ -211,6 +233,18 @@ impl From<TableStoreError> for CausalWorkspaceError {
     }
 }
 
+impl From<DomainEventCaptureError> for CausalWorkspaceError {
+    fn from(error: DomainEventCaptureError) -> Self {
+        Self::DomainEventCapture(error)
+    }
+}
+
+impl From<DomainEventCommitGuardError> for CausalWorkspaceError {
+    fn from(error: DomainEventCommitGuardError) -> Self {
+        Self::DomainEventGuard(error)
+    }
+}
+
 impl From<PrepareCommandError> for CausalWorkspaceError {
     fn from(error: PrepareCommandError) -> Self {
         Self::Prepare(error)
@@ -221,6 +255,14 @@ struct StagedAggregate<A> {
     identity: StreamIdentity,
     aggregate: A,
     snapshot_version: Option<u64>,
+    publication: AggregatePublication,
+}
+
+/// Publication work attached to one exact staged aggregate.
+#[derive(Clone, Debug, Default)]
+pub(crate) struct AggregatePublication {
+    pub(crate) publish_captured_events: bool,
+    pub(crate) explicit_events: Vec<PreparedDomainEvent>,
 }
 
 struct WorkspaceState<A> {
@@ -290,7 +332,16 @@ where
 
     /// Return a checkout to the unit of work after validating the original
     /// identity/version fence and duplicate stream membership.
+    #[cfg(test)]
     pub(crate) fn stage(&self, checkout: AggregateCheckout<A>) -> Result<(), CausalWorkspaceError> {
+        self.stage_with_publication(checkout, AggregatePublication::default())
+    }
+
+    pub(crate) fn stage_with_publication(
+        &self,
+        checkout: AggregateCheckout<A>,
+        publication: AggregatePublication,
+    ) -> Result<(), CausalWorkspaceError> {
         let AggregateCheckout { aggregate, origin } = checkout;
         let identity = StreamIdentity::new(A::aggregate_type(), aggregate.entity().id())?;
         let committed_version = aggregate.entity().committed_version();
@@ -338,6 +389,7 @@ where
             identity,
             aggregate,
             snapshot_version,
+            publication,
         });
         Ok(())
     }
@@ -409,6 +461,7 @@ where
             outbox_messages: state.outbox_messages,
             read_model_plans: state.read_model_plans,
             snapshots: state.snapshots,
+            publications_prepared: false,
             batch_prepared: false,
         })
     }
@@ -421,6 +474,7 @@ pub(crate) struct CausalWorkspaceParts<A> {
     outbox_messages: Vec<OutboxMessage>,
     read_model_plans: Vec<TableWritePlan>,
     snapshots: Vec<SnapshotWrite>,
+    publications_prepared: bool,
     batch_prepared: bool,
 }
 
@@ -428,6 +482,58 @@ impl<A> CausalWorkspaceParts<A>
 where
     A: Aggregate,
 {
+    /// Bind publication intent to each aggregate's exact final transition after
+    /// applying the ledger's authoritative causation ID.
+    pub(crate) fn prepare_domain_publications(
+        &mut self,
+        causation_id: &str,
+    ) -> Result<(), CausalWorkspaceError> {
+        if self.publications_prepared {
+            return Err(CausalWorkspaceError::DomainPublicationsAlreadyPrepared);
+        }
+        self.publications_prepared = true;
+
+        for staged in &mut self.aggregates {
+            staged
+                .aggregate
+                .entity_mut()
+                .overwrite_new_event_causation_id(causation_id);
+            let entity = staged.aggregate.entity();
+            entity.domain_event_commit_guard()?;
+            let pending = entity.pending_domain_events_for_commit()?;
+            if !pending.is_empty() && !staged.publication.publish_captured_events {
+                return Err(CausalWorkspaceError::DomainPublicationRequired(
+                    staged.identity.clone(),
+                ));
+            }
+
+            if staged.publication.publish_captured_events {
+                self.outbox_messages.extend(
+                    pending
+                        .iter()
+                        .map(OutboxMessage::from_domain_event_occurrence)
+                        .collect::<Result<Vec<_>, _>>()?,
+                );
+            }
+
+            let current_sequence = staged.aggregate.entity().version();
+            let ordinal_base = pending
+                .iter()
+                .filter(|occurrence| occurrence.aggregate_sequence() == current_sequence)
+                .count();
+            for (offset, event) in staged.publication.explicit_events.iter().enumerate() {
+                let ordinal: u32 = ordinal_base
+                    .checked_add(offset)
+                    .and_then(|ordinal| ordinal.try_into().ok())
+                    .ok_or(DomainEventCaptureError::PublicationOrdinalOverflow)?;
+                let occurrence = event.bind(&staged.aggregate, ordinal)?;
+                self.outbox_messages
+                    .push(OutboxMessage::from_domain_event_occurrence(&occurrence)?);
+            }
+        }
+        Ok(())
+    }
+
     pub(crate) fn validate_prepared<K: CommandOutcome>(
         &self,
         contract: &TypedCommandContract,
@@ -463,14 +569,18 @@ where
         }
         self.batch_prepared = true;
 
-        // Preserve ordinary AggregateCommit source metadata when the causal
-        // unit of work has one unambiguous source aggregate. A multi-aggregate
-        // command must associate each message explicitly (for example through
-        // OutboxMessage::domain_event); guessing would create false ordering
-        // evidence for downstream projectors.
+        // Preserve ordinary AggregateCommit source metadata for low-level
+        // messages only when the source is unambiguous. Canonical domain-event
+        // rows already carry their exact occurrence source and are never
+        // overwritten.
         if let [staged] = self.aggregates.as_slice() {
             for message in &mut self.outbox_messages {
-                message.set_source(&staged.aggregate);
+                if message.source_aggregate_type.is_none()
+                    && message.source_aggregate_id.is_none()
+                    && message.source_sequence.is_none()
+                {
+                    message.set_source(&staged.aggregate);
+                }
             }
         }
 
@@ -487,12 +597,17 @@ where
     }
 
     /// Apply snapshot cache bookkeeping only after the fenced commit succeeds.
-    pub(crate) fn mark_snapshot_versions_committed(&mut self) {
+    pub(crate) fn mark_committed_state(&mut self) -> Result<(), CausalWorkspaceError> {
         for staged in &mut self.aggregates {
             if let Some(version) = staged.snapshot_version {
                 staged.aggregate.entity_mut().set_snapshot_version(version);
             }
+            staged
+                .aggregate
+                .entity_mut()
+                .mark_domain_events_committed()?;
         }
+        Ok(())
     }
 
     #[cfg(test)]
@@ -535,6 +650,59 @@ mod tests {
 
         fn replay_event(&mut self, _event: &EventRecord) -> Result<(), Self::ReplayError> {
             Ok(())
+        }
+    }
+
+    #[derive(
+        Clone, Debug, PartialEq, Eq, serde::Serialize, serde::Deserialize, crate::DomainState,
+    )]
+    #[domain_state(version = 1)]
+    struct CausalPublishedState {
+        id: String,
+        title: String,
+    }
+
+    #[derive(Clone, Default)]
+    struct CausalPublishedAggregate {
+        entity: Entity,
+        title: String,
+    }
+
+    impl From<&CausalPublishedAggregate> for CausalPublishedState {
+        fn from(aggregate: &CausalPublishedAggregate) -> Self {
+            Self {
+                id: aggregate.entity.id().to_string(),
+                title: aggregate.title.clone(),
+            }
+        }
+    }
+
+    #[crate::sourced(
+        entity,
+        aggregate_type = "causal_published",
+        domain_state = CausalPublishedState
+    )]
+    impl CausalPublishedAggregate {
+        #[event("causal.created", version = 1, domain)]
+        fn create(&mut self, id: String, title: String) {
+            self.entity.set_id(id);
+            self.title = title;
+        }
+    }
+
+    #[derive(crate::DomainEvent)]
+    #[domain_event(name = "causal.poisoned", version = 1)]
+    struct PoisonedOutwardEvent {
+        marker: bool,
+    }
+
+    impl Serialize for PoisonedOutwardEvent {
+        fn serialize<S>(&self, _serializer: S) -> Result<S::Ok, S::Error>
+        where
+            S: serde::Serializer,
+        {
+            let _ = self.marker;
+            Err(serde::ser::Error::custom("intentional poison"))
         }
     }
 
@@ -739,6 +907,111 @@ mod tests {
             parts.prepare_commit_batch(),
             Err(CausalWorkspaceError::CommitBatchAlreadyPrepared)
         ));
+    }
+
+    #[tokio::test]
+    async fn multiple_aggregates_publish_occurrences_with_their_exact_sources() {
+        let repository = AggregateRepository::<_, CausalPublishedAggregate>::new(TestRepo {
+            entity: Arc::new(Entity::with_id("unused")),
+        });
+        let workspace = CausalWorkspace::new(&repository);
+
+        for (id, title) in [("causal-1", "first"), ("causal-2", "second")] {
+            let mut aggregate = workspace.create();
+            aggregate.create(id.into(), title.into()).unwrap();
+            workspace
+                .stage_with_publication(
+                    aggregate,
+                    AggregatePublication {
+                        publish_captured_events: true,
+                        explicit_events: Vec::new(),
+                    },
+                )
+                .unwrap();
+        }
+
+        let mut parts = workspace.into_parts().unwrap();
+        parts
+            .prepare_domain_publications("ledger-attempt-1")
+            .unwrap();
+        let expected_ids = ["causal-1", "causal-2"];
+        {
+            let batch = parts.prepare_commit_batch().unwrap();
+            assert_eq!(batch.streams.len(), 2);
+            assert_eq!(batch.outbox_messages.len(), 2);
+            for (message, expected_id) in batch.outbox_messages.iter().zip(expected_ids) {
+                let occurrence = message.domain_event_occurrence().unwrap();
+                assert_eq!(occurrence.aggregate_type(), "causal_published");
+                assert_eq!(occurrence.aggregate_id(), expected_id);
+                assert_eq!(
+                    occurrence
+                        .metadata()
+                        .get(crate::CAUSATION_ID)
+                        .map(String::as_str),
+                    Some("ledger-attempt-1")
+                );
+                assert_eq!(message.source_aggregate_id.as_deref(), Some(expected_id));
+                assert_eq!(message.source_sequence, Some(1));
+            }
+        }
+
+        assert!(parts.aggregates.iter().all(|staged| staged
+            .aggregate
+            .entity
+            .pending_domain_events()
+            .len()
+            == 1));
+        parts.mark_committed_state().unwrap();
+        assert!(parts.aggregates.iter().all(|staged| staged
+            .aggregate
+            .entity
+            .pending_domain_events()
+            .is_empty()));
+    }
+
+    #[tokio::test]
+    async fn poisoned_capture_stops_causal_publication_before_batch_preparation() {
+        let repository = loaded_repo();
+        let workspace = CausalWorkspace::new(&repository);
+        let mut aggregate = workspace.create();
+        aggregate.entity_mut().set_id("poisoned");
+        aggregate.entity_mut().digest_empty("Changed").unwrap();
+        assert!(aggregate
+            .entity_mut()
+            .capture_domain_event(
+                TestAggregate::aggregate_type(),
+                &PoisonedOutwardEvent { marker: false },
+            )
+            .is_err());
+        workspace
+            .stage_with_publication(
+                aggregate,
+                AggregatePublication {
+                    publish_captured_events: true,
+                    explicit_events: Vec::new(),
+                },
+            )
+            .unwrap();
+
+        let mut parts = workspace.into_parts().unwrap();
+        assert!(matches!(
+            parts.prepare_domain_publications("ledger-attempt-poisoned"),
+            Err(CausalWorkspaceError::DomainEventGuard(_))
+        ));
+        assert!(parts.outbox_messages.is_empty());
+        assert_eq!(
+            parts.aggregates[0]
+                .aggregate
+                .entity
+                .pending_domain_events()
+                .len(),
+            0
+        );
+        assert!(parts.aggregates[0]
+            .aggregate
+            .entity
+            .domain_event_poison()
+            .is_some());
     }
 
     #[tokio::test]

@@ -272,8 +272,17 @@ its command methods into recorded, replayable events; `#[derive(Snapshot)]` adds
 hydration cache for long streams.
 
 ```rust,ignore
-use serde::Deserialize;
-use distributed::{sourced, Entity, Snapshot};
+use serde::{Deserialize, Serialize};
+use distributed::{sourced, DomainState, Entity, Snapshot};
+
+#[derive(Clone, Serialize, DomainState)]
+#[domain_state(version = 1)]
+struct TodoState {
+    id: String,
+    user_id: String,
+    task: String,
+    completed: bool,
+}
 
 #[derive(Default, Snapshot)]
 struct Todo {
@@ -283,16 +292,27 @@ struct Todo {
     completed: bool,
 }
 
-#[sourced(entity, aggregate_type = "todo")]
+impl From<&Todo> for TodoState {
+    fn from(todo: &Todo) -> Self {
+        Self {
+            id: todo.entity.id().to_string(),
+            user_id: todo.user_id.clone(),
+            task: todo.task.clone(),
+            completed: todo.completed,
+        }
+    }
+}
+
+#[sourced(entity, aggregate_type = "todo", domain_state = TodoState)]
 impl Todo {
-    #[event("initialized")]
+    #[event("todo.initialized", version = 1, domain)]
     fn initialize(&mut self, id: String, user_id: String, task: String) {
         self.entity.set_id(&id);
         self.user_id = user_id;
         self.task = task;
     }
 
-    #[event("completed", when = !self.completed)]
+    #[event("todo.completed", version = 1, when = !self.completed, domain)]
     fn complete(&mut self) {
         self.completed = true;
     }
@@ -320,7 +340,6 @@ events — optionally alongside a durable outbox message in the same transaction
 // handlers/todo_create.rs
 use serde_json::{json, Value};
 use distributed::microsvc::{Context, HandlerError};
-use distributed::OutboxMessage;
 
 use super::Repo; // an AggregateRepository<_, Todo> alias
 
@@ -336,11 +355,9 @@ pub async fn handle(ctx: &Context<'_, Repo>) -> Result<Value, HandlerError> {
     let mut todo = Todo::default();
     todo.initialize(input.id.clone(), input.user_id, input.task)?;
 
-    // Record a fact for other services. The outbox row commits atomically with
-    // the aggregate's events. Once a bus is attached (step 4) this `commit`
-    // publishes the row immediately; with no bus it stays pending for a worker.
-    let message = OutboxMessage::domain_event("todo.initialized", &todo)?;
-    ctx.repo().outbox(message).commit(&mut todo).await?;
+    // Publish the canonical TodoState occurrence captured by the domain-marked
+    // transition. History + occurrence + outbox commit atomically.
+    ctx.repo().publish_events().commit(&mut todo).await?;
 
     Ok(json!({ "id": input.id }))
 }
@@ -990,25 +1007,27 @@ implement the same traits with `sqlx`.
 
 ## Outbox Pattern
 
-Each outbox message is a durable delivery row committed alongside your domain entity. Aggregate event records are write-side replay history; they become domain events, integration events, commands, or transport messages only when application code creates an `OutboxMessage` for that purpose.
+Each outbox message is a durable delivery row committed alongside your domain
+entity. Aggregate event records are write-side replay history. A
+domain-marked transition captures a separate canonical outward occurrence,
+which is published only when the unit of work selects `publish_events()`.
 
 ```rust,ignore
-use distributed::OutboxMessage;
-
 let mut todo = Todo::default();
 todo.entity.set_correlation_id("req-abc");
 todo.initialize("todo-1".into(), "user-1".into(), "Buy milk".into())?;
 
-// Derives id, snapshot payload, and metadata from the aggregate automatically
-let message = OutboxMessage::domain_event("todo.initialized", &todo)?;
-
-// Commit both in one repository transaction
-repo.outbox(message).commit(&mut todo).await?;
+// Commit replay history + the typed TodoState occurrence + outbox atomically.
+// Snapshots remain a private hydration cache and are never published implicitly.
+repo.publish_events().commit(&mut todo).await?;
 ```
 
-For custom payloads or IDs, use `encode_for_entity`:
+For an explicitly authored outward DTO, use `publish(event)`. For low-level
+integration envelopes or custom IDs, use `encode_for_entity`:
 
 ```rust,ignore
+use distributed::OutboxMessage;
+
 let message = OutboxMessage::encode_for_entity(
     format!("{}:init", todo.entity.id()),
     "todo.initialized",
@@ -1252,8 +1271,6 @@ For larger services, organize handlers into separate files. Each handler module 
 use serde::Deserialize;
 use serde_json::{json, Value};
 use distributed::microsvc::{Context, HandlerError};
-use distributed::OutboxMessage;
-
 use super::Repo;
 use crate::models::counter::Counter;
 
@@ -1276,8 +1293,8 @@ pub async fn handle(ctx: &Context<'_, Repo>) -> Result<Value, HandlerError> {
     let mut counter = Counter::default();
     counter.create(input.id.clone())?;
 
-    let message = OutboxMessage::domain_event("counter.initialized", &counter)?;
-    ctx.repo().outbox(message).commit(&mut counter).await?;
+    // `counter.initialized` is domain-marked on the aggregate.
+    ctx.repo().publish_events().commit(&mut counter).await?;
 
     Ok(json!({ "id": input.id }))
 }

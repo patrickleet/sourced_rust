@@ -4,7 +4,8 @@ use std::sync::Arc;
 use std::time::{Duration, SystemTime};
 
 use crate::aggregate::{Aggregate, AggregateRepository};
-use crate::outbox::OutboxMessage;
+use crate::domain_event::{DomainEvent, DomainEventCaptureError, DomainEventCommitGuardError};
+use crate::outbox::{OutboxMessage, PreparedDomainEvent};
 use crate::read_model::ReadModelWritePlanBuilder;
 use crate::repository::{
     CommitBatch, RepositoryError, StreamIdentity, StreamWrite, TransactionalCommit,
@@ -88,6 +89,8 @@ impl CommitReceipt {
 /// `.commit(&mut aggregate)`.
 pub struct AggregateCommit<'a, R, A> {
     repo: &'a AggregateRepository<R, A>,
+    publish_captured_events: bool,
+    explicit_domain_events: Vec<PreparedDomainEvent>,
     outbox_messages: Vec<OutboxMessage>,
     read_model_plans: Vec<TableWritePlan>,
     error: Option<RepositoryError>,
@@ -97,13 +100,41 @@ impl<'a, R, A> AggregateCommit<'a, R, A> {
     fn empty(repo: &'a AggregateRepository<R, A>) -> Self {
         Self {
             repo,
+            publish_captured_events: false,
+            explicit_domain_events: Vec::new(),
             outbox_messages: Vec::new(),
             read_model_plans: Vec::new(),
             error: None,
         }
     }
 
+    /// Publish every canonical domain-event occurrence captured by the
+    /// aggregate transitions committed by this unit of work.
+    pub fn publish_events(mut self) -> Self {
+        self.publish_captured_events = true;
+        self
+    }
+
+    /// Publish one explicit outward event, bound to the aggregate's final newly
+    /// recorded transition when [`commit`](Self::commit) is called.
+    ///
+    /// Serialization is attempted before repository I/O and retained as a
+    /// builder error so the fluent chain remains linear.
+    pub fn publish<E: DomainEvent>(mut self, event: E) -> Self {
+        if self.error.is_none() {
+            match PreparedDomainEvent::new(event) {
+                Ok(event) => self.explicit_domain_events.push(event),
+                Err(error) => self.error = Some(domain_event_repository_error(error)),
+            }
+        }
+        self
+    }
+
     /// Stage an outbox message to publish/enqueue with the commit.
+    ///
+    /// This is the low-level integration-envelope escape hatch. Ordinary
+    /// aggregate-derived publication should use [`publish_events`](Self::publish_events)
+    /// or [`publish`](Self::publish).
     pub fn outbox(mut self, message: OutboxMessage) -> Self {
         self.outbox_messages.push(message);
         self
@@ -144,8 +175,14 @@ where
         if let Some(err) = self.error.take() {
             return Err(err);
         }
+        self.prepare_domain_publications(aggregate)?;
         for message in &mut self.outbox_messages {
-            message.set_source(aggregate);
+            if message.source_aggregate_type.is_none()
+                && message.source_aggregate_id.is_none()
+                && message.source_sequence.is_none()
+            {
+                message.set_source(aggregate);
+            }
         }
         let outbox_message_ids: Vec<String> = self
             .outbox_messages
@@ -182,6 +219,10 @@ where
         if let Some(version) = snapshot_version {
             aggregate.entity_mut().set_snapshot_version(version);
         }
+        aggregate
+            .entity_mut()
+            .mark_domain_events_committed()
+            .map_err(domain_event_guard_repository_error)?;
 
         // Best-effort immediate publish. A failure leaves the claimed rows for
         // an independently running polling worker and never fails the
@@ -192,9 +233,69 @@ where
 
         Ok(CommitReceipt { outbox_message_ids })
     }
+
+    fn prepare_domain_publications(&mut self, aggregate: &A) -> Result<(), RepositoryError> {
+        let entity = aggregate.entity();
+        entity
+            .domain_event_commit_guard()
+            .map_err(domain_event_guard_repository_error)?;
+        let pending = entity
+            .pending_domain_events_for_commit()
+            .map_err(domain_event_guard_repository_error)?;
+        if !pending.is_empty() && !self.publish_captured_events {
+            return Err(RepositoryError::Model(
+                "aggregate has captured domain events; add `publish_events()` to the commit".into(),
+            ));
+        }
+
+        if self.publish_captured_events {
+            self.outbox_messages.extend(
+                pending
+                    .iter()
+                    .map(OutboxMessage::from_domain_event_occurrence)
+                    .collect::<Result<Vec<_>, _>>()
+                    .map_err(domain_event_repository_error)?,
+            );
+        }
+
+        let current_sequence = aggregate.entity().version();
+        let ordinal_base = pending
+            .iter()
+            .filter(|occurrence| occurrence.aggregate_sequence() == current_sequence)
+            .count();
+        for (offset, event) in self.explicit_domain_events.iter().enumerate() {
+            let ordinal: u32 = ordinal_base
+                .checked_add(offset)
+                .and_then(|ordinal| ordinal.try_into().ok())
+                .ok_or_else(|| {
+                    domain_event_repository_error(
+                        DomainEventCaptureError::PublicationOrdinalOverflow,
+                    )
+                })?;
+            let occurrence = event
+                .bind(aggregate, ordinal)
+                .map_err(domain_event_repository_error)?;
+            self.outbox_messages.push(
+                OutboxMessage::from_domain_event_occurrence(&occurrence)
+                    .map_err(domain_event_repository_error)?,
+            );
+        }
+        Ok(())
+    }
 }
 
 impl<R, A> AggregateRepository<R, A> {
+    /// Start an aggregate commit that publishes its exact captured domain
+    /// events.
+    pub fn publish_events(&self) -> AggregateCommit<'_, R, A> {
+        AggregateCommit::empty(self).publish_events()
+    }
+
+    /// Start an aggregate commit with one explicitly authored outward event.
+    pub fn publish<E: DomainEvent>(&self, event: E) -> AggregateCommit<'_, R, A> {
+        AggregateCommit::empty(self).publish(event)
+    }
+
     /// Start a commit with an outbox message attached.
     pub fn outbox(&self, message: OutboxMessage) -> AggregateCommit<'_, R, A> {
         AggregateCommit::empty(self).outbox(message)
@@ -205,6 +306,16 @@ impl<R, A> AggregateRepository<R, A> {
     pub fn read_models(&self, read_models: ReadModelWritePlanBuilder) -> AggregateCommit<'_, R, A> {
         AggregateCommit::empty(self).read_models(read_models)
     }
+}
+
+fn domain_event_repository_error(error: DomainEventCaptureError) -> RepositoryError {
+    RepositoryError::Model(format!(
+        "domain-event publication preparation failed: {error}"
+    ))
+}
+
+fn domain_event_guard_repository_error(error: DomainEventCommitGuardError) -> RepositoryError {
+    RepositoryError::Model(format!("domain-event commit guard failed: {error}"))
 }
 
 #[cfg(test)]
@@ -231,6 +342,7 @@ mod tests {
     #[derive(Default)]
     struct FailingOutboxRepo {
         seen_ids: Mutex<Vec<String>>,
+        seen_outbox: Mutex<Vec<OutboxMessage>>,
     }
 
     impl TransactionalCommit for FailingOutboxRepo {
@@ -247,6 +359,7 @@ mod tests {
                             .map(|message| message.id().to_string()),
                     )
                     .collect();
+                *self.seen_outbox.lock().unwrap() = batch.outbox_messages.clone();
 
                 Err(RepositoryError::Model("outbox write failed".into()))
             }
@@ -300,6 +413,180 @@ mod tests {
             repo.repo().seen_ids.lock().unwrap().as_slice(),
             &["dummy-1".to_string(), "msg-fail".to_string()]
         );
+    }
+
+    #[derive(
+        Clone, Debug, PartialEq, Eq, serde::Serialize, serde::Deserialize, crate::DomainState,
+    )]
+    #[domain_state(version = 1)]
+    struct PublishedCounterState {
+        id: String,
+        value: i64,
+    }
+
+    #[derive(Default)]
+    struct PublishedCounter {
+        entity: Entity,
+        value: i64,
+    }
+
+    impl From<&PublishedCounter> for PublishedCounterState {
+        fn from(counter: &PublishedCounter) -> Self {
+            Self {
+                id: counter.entity.id().to_string(),
+                value: counter.value,
+            }
+        }
+    }
+
+    #[sourced(
+        entity,
+        aggregate_type = "published_counter",
+        domain_state = PublishedCounterState
+    )]
+    impl PublishedCounter {
+        #[event("counter.opened", version = 1, domain)]
+        fn open(&mut self, id: String) {
+            self.entity.set_id(id);
+        }
+
+        #[event("counter.bumped", version = 1, domain)]
+        fn bump(&mut self) {
+            self.value += 1;
+        }
+    }
+
+    #[derive(
+        Clone, Debug, PartialEq, Eq, serde::Serialize, serde::Deserialize, crate::DomainEvent,
+    )]
+    #[domain_event(name = "counter.notified", version = 1)]
+    struct CounterNotified {
+        public_value: i64,
+    }
+
+    #[tokio::test]
+    async fn publish_events_commits_canonical_occurrences_and_clears_them_once() {
+        let repo = InMemoryRepository::new().aggregate::<PublishedCounter>();
+        let mut counter = PublishedCounter::default();
+        counter.open("counter-1".into()).unwrap();
+        counter.bump().unwrap();
+
+        let captured = counter.entity.pending_domain_events().to_vec();
+        assert_eq!(captured.len(), 2);
+
+        let receipt = repo.publish_events().commit(&mut counter).await.unwrap();
+        assert_eq!(receipt.outbox_message_ids().len(), 2);
+        assert!(counter.entity.pending_domain_events().is_empty());
+
+        let pending = repo
+            .repo()
+            .outbox_store()
+            .pending(usize::MAX)
+            .await
+            .unwrap();
+        assert_eq!(pending.len(), 2);
+        for (message, expected) in pending.iter().zip(captured) {
+            let occurrence = message.domain_event_occurrence().unwrap();
+            assert_eq!(occurrence, expected);
+            assert_eq!(
+                message.source_aggregate_type.as_deref(),
+                Some("published_counter")
+            );
+            assert_eq!(message.source_aggregate_id.as_deref(), Some("counter-1"));
+        }
+    }
+
+    #[tokio::test]
+    async fn publication_failure_retains_identical_occurrences_for_retry() {
+        let repo = AggregateRepository::<_, PublishedCounter>::new(FailingOutboxRepo::default());
+        let mut counter = PublishedCounter::default();
+        counter.open("counter-fail".into()).unwrap();
+        let before = counter.entity.pending_domain_events()[0].clone();
+        let before_bytes = before.canonical_bytes().unwrap();
+
+        let error = repo
+            .publish_events()
+            .commit(&mut counter)
+            .await
+            .unwrap_err();
+        assert!(matches!(
+            error,
+            RepositoryError::Model(ref message) if message == "outbox write failed"
+        ));
+        assert_eq!(counter.entity.committed_version(), 0);
+        assert_eq!(counter.entity.pending_domain_events(), [before]);
+
+        let seen = repo.repo().seen_outbox.lock().unwrap();
+        assert_eq!(seen.len(), 1);
+        assert_eq!(seen[0].payload, before_bytes);
+        assert_eq!(
+            seen[0].domain_event_occurrence().unwrap(),
+            counter.entity.pending_domain_events()[0]
+        );
+    }
+
+    #[tokio::test]
+    async fn captured_occurrences_require_an_explicit_publication_leg() {
+        let repo = InMemoryRepository::new().aggregate::<PublishedCounter>();
+        let mut counter = PublishedCounter::default();
+        counter.open("counter-guard".into()).unwrap();
+
+        let error = repo
+            .read_models(ReadModelWritePlanBuilder::new())
+            .commit(&mut counter)
+            .await
+            .unwrap_err();
+        assert!(matches!(
+            error,
+            RepositoryError::Model(ref message)
+                if message.contains("add `publish_events()`")
+        ));
+        assert_eq!(counter.entity.committed_version(), 0);
+        assert_eq!(counter.entity.pending_domain_events().len(), 1);
+        assert!(repo
+            .repo()
+            .outbox_store()
+            .pending(usize::MAX)
+            .await
+            .unwrap()
+            .is_empty());
+    }
+
+    #[tokio::test]
+    async fn explicit_publish_serializes_its_dto_instead_of_replay_bytes() {
+        use crate::DomainEventBodyKind;
+
+        let repo = InMemoryRepository::new().aggregate::<Dummy>();
+        let mut aggregate = Dummy::default();
+        aggregate.touch().unwrap();
+        let replay_bytes = aggregate.entity.new_events()[0].payload_bytes().to_vec();
+
+        repo.publish(CounterNotified { public_value: 7 })
+            .commit(&mut aggregate)
+            .await
+            .unwrap();
+
+        let pending = repo
+            .repo()
+            .outbox_store()
+            .pending(usize::MAX)
+            .await
+            .unwrap();
+        let occurrence = pending[0].domain_event_occurrence().unwrap();
+        assert_eq!(
+            occurrence
+                .decode_body::<CounterNotified>()
+                .unwrap()
+                .public_value,
+            7
+        );
+        assert_eq!(
+            occurrence.descriptor().body.kind,
+            DomainEventBodyKind::Event
+        );
+        assert_ne!(occurrence.body_bytes(), replay_bytes);
+        assert_eq!(occurrence.aggregate_id(), "dummy-1");
+        assert_eq!(occurrence.aggregate_sequence(), 1);
     }
 
     #[derive(Clone, Debug, PartialEq, serde::Serialize, serde::Deserialize, crate::ReadModel)]

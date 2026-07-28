@@ -35,6 +35,8 @@ mod request;
 mod routes;
 mod runtime;
 
+#[cfg(all(feature = "graphql", test))]
+pub(crate) use causal::CausalCommandProjectionEvidence;
 #[cfg(feature = "graphql")]
 pub use causal::GraphqlServiceBindError;
 #[cfg(feature = "graphql")]
@@ -42,9 +44,10 @@ pub(crate) use causal::{
     CausalCommandProjectionObligation, CausalCommandPublicState, CausalCommandPublicStatus,
     CausalCommandReceiptSource, CausalProjectionEvidenceState,
 };
-#[cfg(all(feature = "graphql", test))]
-pub(crate) use causal::CausalCommandProjectionEvidence;
-pub use handlers::{CausalCommandContext, PreparedCommandHandler};
+pub use handlers::{
+    direct_read_model, CausalCommandContext, CausalCommitBuilder, DirectReadModelProjection,
+    PreparedCausalCommit, PreparedCommandHandler,
+};
 pub use request::{CommandRequest, CommandResponse};
 pub(crate) use routes::DynBusPublisher;
 pub use routes::{

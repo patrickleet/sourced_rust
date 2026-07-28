@@ -6,11 +6,10 @@
 //! - `handle` — the command handler
 
 use distributed::microsvc::{Context, HandlerError};
-use distributed::OutboxMessage;
 use serde::Deserialize;
 use serde_json::{json, Value};
 
-use super::Repo;
+use super::{counter_state_message, Repo};
 use crate::models::counter::Counter;
 
 pub const COMMAND: &str = "counter.initialize";
@@ -37,7 +36,7 @@ pub async fn handle(ctx: &Context<'_, Repo>) -> Result<Value, HandlerError> {
     let mut counter = Counter::default();
     counter.create(input.id.clone())?;
 
-    let message = OutboxMessage::domain_event("counter.initialized", &counter)?;
+    let message = counter_state_message(&counter, "counter.initialized")?;
 
     ctx.repo().outbox(message).commit(&mut counter).await?;
 

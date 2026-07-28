@@ -5,7 +5,7 @@ use distributed::microsvc::{CausalCommandContext, HandlerError};
 use serde::{Deserialize, Serialize};
 use todo_domain::Todo;
 
-use crate::handlers::commands::todo_cmd::{load_todo, map_domain, stage_todo_event};
+use crate::handlers::commands::todo_cmd::{commit_todo_event, load_todo, map_domain};
 
 pub const COMMAND: &str = "todo.rename";
 
@@ -29,11 +29,9 @@ pub async fn handle(
     let owner = ctx.user_id()?.to_string();
     let mut todo = load_todo(ctx, &input.todo_id).await?;
     todo.rename(&owner, &input.title).map_err(map_domain)?;
-    let fact = stage_todo_event(ctx, todo, "todo.renamed")?;
-    PreparedCommand::<Causal<TodoRenamePayload>>::prepare(TodoRenamePayload {
+    commit_todo_event(ctx, todo, "todo.renamed", |fact| TodoRenamePayload {
         todo_id: fact.todo_id,
         title: fact.title,
         status: fact.status,
     })
-    .map_err(|error| HandlerError::Other(Box::new(error)))
 }

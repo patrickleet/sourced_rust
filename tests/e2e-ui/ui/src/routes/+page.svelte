@@ -422,8 +422,12 @@ callbacks: {
   let owner = ctx.user_id()?.to_string(); // never from input
   let mut todo = ctx.create();
   todo.create(&input.todo_id, &owner, &input.title)?;
-  let fact = stage_todo_event(ctx, todo, "todo.created")?;
-  PreparedCommand::<Causal<TodoCreatePayload>>::prepare(/* … */)
+  commit_todo_event(ctx, todo, "todo.created", |fact| {
+    TodoCreatePayload {
+      todo_id: fact.todo_id, owner_id: fact.owner_id,
+      title: fact.title, status: fact.status,
+    }
+  })
 }`
 				},
 				{
@@ -470,7 +474,7 @@ callbacks: {
 		{
 			n: '05',
 			title: 'Strong path: Projected in the same transaction',
-			why: 'Blob maps must not lag. The handler returns PreparedCommand<Projected<BlobGameView>> and stages the row with ctx.projected — aggregate, ledger, and query row commit together. No second writer, no dual-write from the UI.',
+			why: 'Blob maps must not lag. The handler returns PreparedCommand<Projected<BlobGameView>> through the fluent direct-projection commit — aggregate, ledger, and query row commit together. No second writer, no dual-write from the UI.',
 			path: 'handlers/commands/blob_move.rs · blob_cmd.rs',
 			label: 'Projected',
 			blocks: [
@@ -484,8 +488,7 @@ callbacks: {
   let owner = ctx.user_id()?.to_string();
   let mut game = load_game(ctx, &input.game_id).await?;
   game.move_dir(&owner, dir).map_err(map_domain)?;
-  let fact = stage_blob(ctx, game)?;
-  ctx.projected(map_blob_fact(&fact))
+  commit_blob(ctx, game)
 }`
 				},
 				{
@@ -752,18 +755,20 @@ pub struct TodoCreateInput {
 					</div>
 					<pre><code>{`let mut todo = load_todo(ctx, &input.todo_id).await?;
 todo.complete(&owner).map_err(map_domain)?;
-let fact = stage_todo_event(ctx, todo, "todo.completed")?;
-// stage_todo_event: OutboxMessage + ctx.stage(aggregate)
-// Framework commits event store + outbox together
-PreparedCommand::<Causal<TodoStatusPayload>>::prepare(/* from domain event */)`}</code></pre>
+commit_todo_event(ctx, todo, "todo.completed", |fact| {
+  TodoStatusPayload { todo_id: fact.todo_id, status: fact.status }
+})
+// .outbox(...).commit(aggregate)?.causal(payload)
+// Framework commits history + publication + ledger together.`}</code></pre>
 				</div>
 				<div class="wf-code">
 					<div class="wf-code-bar">
 						<span>Projected — same transaction</span>
 						<em>blob</em>
 					</div>
-					<pre><code>{`let fact = stage_blob(ctx, game)?;
-ctx.projected(map_blob_fact(&fact))
+					<pre><code>{`ctx.project(direct_read_model::<BlobGameView>())
+  .commit(game)?
+  .projected(view)
 // → PreparedCommand<Projected<BlobGameView>>
 // Aggregate + command ledger + query row commit atomically.
 // No manual ReadModelWritePlan in the handler.`}</code></pre>
@@ -1025,9 +1030,9 @@ Service
 					<h3>Blob — row commits with the command</h3>
 					<p>
 						<code>PreparedCommand&lt;Projected&lt;BlobGameView&gt;&gt;</code> +
-						<code>ctx.projected</code>. Map/score are in the mutation payload; the replica applies
-						them before the call resolves. Revalidation may still race — fences keep your own write
-						from rolling back under a lagging stamp.
+						<code>project(direct_read_model()).commit().projected()</code>. Map/score are in the
+						mutation payload; the replica applies them before the call resolves. Revalidation may
+						still race — fences keep your own write from rolling back under a lagging stamp.
 					</p>
 				</div>
 				<div class="wf-card">

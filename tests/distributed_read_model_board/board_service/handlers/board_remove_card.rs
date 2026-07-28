@@ -1,7 +1,7 @@
 use distributed::microsvc::{Context, HandlerError};
-use distributed::OutboxMessage;
 use serde_json::{json, Value};
 
+use crate::board_service::handlers::board_state_message;
 use crate::board_service::{Board, BoardRepo, RemoveCard};
 
 pub const COMMAND: &str = "board.remove_card";
@@ -20,7 +20,7 @@ pub async fn handle(ctx: &Context<'_, BoardRepo>) -> Result<Value, HandlerError>
         .ok_or_else(|| HandlerError::NotFound(input.id.clone()))?;
     board.remove_card(input.card_id.clone())?;
 
-    let outbox = OutboxMessage::domain_event("board.card_removed", &board)?;
+    let outbox = board_state_message(&board, "board.card_removed")?;
     ctx.repo().outbox(outbox).commit(&mut board).await?;
 
     Ok(json!({ "id": input.id, "card_id": input.card_id }))

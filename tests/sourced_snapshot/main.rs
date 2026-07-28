@@ -2,8 +2,8 @@ mod aggregates;
 
 use aggregates::*;
 use distributed::{
-    Aggregate, AggregateBuilder, DomainState, InMemoryRepository, OutboxMessage, OutboxStore,
-    SnapshotStore, Snapshottable, StreamIdentity, DOMAIN_EVENT_BODY_CODEC,
+    Aggregate, AggregateBuilder, DomainState, InMemoryRepository, OutboxStore, SnapshotStore,
+    Snapshottable, StreamIdentity, DOMAIN_EVENT_BODY_CODEC,
 };
 use serde::Serialize;
 
@@ -241,60 +241,31 @@ fn custom_entity_field_restore() {
     assert_eq!(widget.weight, 1.0);
 }
 
-// ============================================================================
-// OutboxMessage::domain_event
-// ============================================================================
-
-#[test]
-fn domain_event_derives_id_and_payload() {
-    let mut todo = Todo::new();
-    todo.initialize("t1".into(), "alice".into(), "Buy milk".into())
-        .unwrap();
-
-    let outbox = OutboxMessage::domain_event("todo.initialized", &todo).unwrap();
-    assert_eq!(outbox.id(), "t1:todo.initialized:1");
-    assert_eq!(outbox.event_type, "todo.initialized");
-
-    let decoded: TodoSnapshot = outbox.decode().unwrap();
-    assert_eq!(decoded.id, "t1");
-    assert_eq!(decoded.user_id, "alice");
-    assert_eq!(decoded.task, "Buy milk");
-}
-
-#[test]
-fn domain_event_propagates_metadata() {
-    let mut todo = Todo::new();
-    todo.entity.set_correlation_id("req-abc");
-    todo.entity.set_causation_id("cmd-create");
-    todo.entity.set_meta("user_id", "u-42");
-    todo.initialize("t1".into(), "alice".into(), "Buy milk".into())
-        .unwrap();
-
-    let outbox = OutboxMessage::domain_event("todo.initialized", &todo).unwrap();
-    assert_eq!(outbox.correlation_id(), Some("req-abc"));
-    assert_eq!(outbox.causation_id(), Some("cmd-create"));
-    assert_eq!(outbox.meta("user_id"), Some("u-42"));
-}
-
 #[tokio::test]
-async fn domain_event_commits_with_outbox() {
-    let repo = InMemoryRepository::new().aggregate::<Todo>();
+async fn snapshot_commit_does_not_implicitly_publish() {
+    let repo = InMemoryRepository::new()
+        .aggregate::<Todo>()
+        .with_snapshots(1);
 
     let mut todo = Todo::new();
     todo.initialize("t1".into(), "alice".into(), "Ship it".into())
         .unwrap();
-
-    let outbox = OutboxMessage::domain_event("todo.initialized", &todo).unwrap();
-    repo.outbox(outbox).commit(&mut todo).await.unwrap();
+    repo.commit(&mut todo).await.unwrap();
 
     let loaded = repo.get("t1").await.unwrap().unwrap();
     assert_eq!(loaded.snapshot().task, "Ship it");
+    assert!(repo
+        .repo()
+        .snapshot_store()
+        .get_snapshot(&StreamIdentity::new(Todo::aggregate_type(), "t1").unwrap())
+        .await
+        .unwrap()
+        .is_some());
     let pending = repo
         .repo()
         .outbox_store()
         .pending(usize::MAX)
         .await
         .unwrap();
-    assert_eq!(pending.len(), 1);
-    assert!(pending[0].is_pending());
+    assert!(pending.is_empty());
 }

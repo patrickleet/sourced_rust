@@ -501,6 +501,23 @@ mod tests {
             !service.contains("Routes::new().with_dependencies(InMemoryRepository::new())"),
             "build_with_graphql must not route commands to an in-memory repository: {service}"
         );
+        let command_handler = project
+            .files
+            .iter()
+            .find(|file| {
+                file.path.starts_with("src/handlers/")
+                    && file.path != "src/handlers/mod.rs"
+                    && file.contents.contains("CausalCommandContext")
+            })
+            .expect("query-api scaffold must emit a typed causal command handler");
+        assert!(
+            command_handler
+                .contents
+                .contains("ctx.commit(aggregate)?.succeeded(")
+                && !command_handler.contents.contains("ctx.stage("),
+            "generated typed handlers must use the public fluent commit API: {}",
+            command_handler.contents
+        );
         let main = contents(&project, "src/main.rs");
         assert!(
             main.contains("build_with_graphql"),

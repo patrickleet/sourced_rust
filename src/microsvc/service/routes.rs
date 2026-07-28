@@ -967,6 +967,15 @@ where
                     .await
                 }
             };
+            if let Err(error) = parts.prepare_domain_publications(attempt.causation_id().as_str()) {
+                return abandon_causal_attempt(
+                    repository,
+                    attempt,
+                    self.contract.consistency,
+                    error.to_string(),
+                )
+                .await;
+            }
             if let Err(error) = parts.validate_prepared(&self.contract, &prepared) {
                 return abandon_causal_attempt(
                     repository,
@@ -1067,7 +1076,11 @@ where
             };
             match repository.commit_causal_batch(causal_batch).await {
                 Ok(()) => {
-                    parts.mark_snapshot_versions_committed();
+                    parts.mark_committed_state().map_err(|error| {
+                        CausalDispatchError::Internal(format!(
+                            "committed causal workspace cleanup failed: {error}"
+                        ))
+                    })?;
                     if let Some(config) = publisher {
                         let _ = config.hook.publish_claimed(claimed).await;
                     }

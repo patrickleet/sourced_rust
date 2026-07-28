@@ -69,7 +69,7 @@ Generated (do not hand-edit; `make gen-client`):
 | [`crates/readmodels/src/models/chat_message_view.rs`](crates/readmodels/src/models/chat_message_view.rs) | Chat row + author join. |
 | [`crates/service/src/service.rs`](crates/service/src/service.rs) | **Center of gravity**: dual client surfaces, projectors vs direct projection, RLS grants, typed commands, OIDC claim map. |
 | [`crates/service/src/handlers/commands/create.rs`](crates/service/src/handlers/commands/create.rs) | `owner_id` from trusted claim — never from client input. |
-| [`crates/service/src/handlers/commands/blob_move.rs`](crates/service/src/handlers/commands/blob_move.rs) | `PreparedCommand<Projected<BlobGameView>>` + `ctx.projected(...)`. |
+| [`crates/service/src/handlers/commands/blob_move.rs`](crates/service/src/handlers/commands/blob_move.rs) | `PreparedCommand<Projected<BlobGameView>>` + fluent direct projection commit. |
 | [`crates/service/src/handlers/events/project_todo.rs`](crates/service/src/handlers/events/project_todo.rs) | Eventual projector path (todos). |
 | [`crates/service/src/handlers/events/project_chat.rs`](crates/service/src/handlers/events/project_chat.rs) | Eventual projector path (chat → live). |
 | [`crates/service/src/handlers/ingestors/zitadel/`](crates/service/src/handlers/ingestors/zitadel/) | Ingress + scrape → `auth_users` ([runbook](docs/zitadel-ingestor.md)). |

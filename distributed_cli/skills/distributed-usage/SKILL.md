@@ -97,6 +97,14 @@ its impl block turns `#[event("...")]` methods into recorded events and
 generates the typed event enum + `Aggregate` impl.
 
 ```rust
+#[derive(Clone, Serialize, DomainState)]
+#[domain_state(version = 1)]
+struct TodoState {
+    id: String,
+    task: String,
+    completed: bool,
+}
+
 #[derive(Default, Snapshot)]
 struct Todo {
     entity: Entity,
@@ -104,15 +112,25 @@ struct Todo {
     completed: bool,
 }
 
-#[sourced(entity, aggregate_type = "todo")]
+impl From<&Todo> for TodoState {
+    fn from(todo: &Todo) -> Self {
+        Self {
+            id: todo.entity.id().to_string(),
+            task: todo.task.clone(),
+            completed: todo.completed,
+        }
+    }
+}
+
+#[sourced(entity, aggregate_type = "todo", domain_state = TodoState)]
 impl Todo {
-    #[event("initialized")]
+    #[event("todo.initialized", version = 1, domain)]
     fn initialize(&mut self, id: String, task: String) {
         self.entity.set_id(&id);
         self.task = task;
     }
 
-    #[event("completed", when = !self.completed)]
+    #[event("todo.completed", version = 1, when = !self.completed, domain)]
     fn complete(&mut self) {
         self.completed = true;
     }
@@ -166,8 +184,7 @@ pub async fn handle(ctx: &Context<'_, Repo>) -> Result<Value, HandlerError> {
     let input = ctx.input::<CreateTodo>()?;
     let mut todo = Todo::default();
     todo.initialize(input.id.clone(), input.task)?;
-    let message = OutboxMessage::domain_event("todo.initialized", &todo)?;
-    ctx.repo().outbox(message).commit(&mut todo).await?;
+    ctx.repo().publish_events().commit(&mut todo).await?;
     Ok(json!({ "id": input.id }))
 }
 ```
@@ -189,16 +206,17 @@ service.with_bus(bus).run(RunOptions::idempotent()).await?;
 ## Publication is explicit (outbox)
 
 An `EventRecord` is write-side replay history, **not** automatically a domain
-event other services see. To publish a fact, create an `OutboxMessage` and
-commit it with the aggregate — one transaction, durable delivery:
+event other services see. A domain-marked transition captures its separate
+canonical outward occurrence. Publish that occurrence and the aggregate in one
+transaction:
 
 ```rust
-let message = OutboxMessage::domain_event("todo.initialized", &todo)?;
-repo.outbox(message).commit(&mut todo).await?;
+repo.publish_events().commit(&mut todo).await?;
 ```
 
 With a bus attached (`service.with_bus(bus)`), commit publishes immediately;
-without one, rows stay pending for an `OutboxDispatcher` worker. Use
+without one, rows stay pending for an `OutboxDispatcher` worker. Snapshots are
+private hydration caches and are never published implicitly. Use
 `OutboxMessage::encode_for_entity(id, name, &payload, &entity)` for custom
 payloads and automatic correlation/causation metadata propagation.
 

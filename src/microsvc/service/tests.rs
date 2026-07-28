@@ -201,7 +201,7 @@ impl RouteComboAggregate {
 }
 
 #[cfg(feature = "graphql")]
-#[derive(Default)]
+#[derive(Default, crate::Snapshot)]
 struct CausalDispatcherAggregate {
     entity: Entity,
 }
@@ -1222,7 +1222,6 @@ async fn causal_dispatch_overwrites_event_and_outbox_causation_with_ledger_ident
                         checkout
                             .record(input.id.clone())
                             .map_err(|error| HandlerError::Other(Box::new(error)))?;
-                        context.stage(checkout)?;
 
                         let mut outbox = OutboxMessage::create(
                             format!("{}:fact", input.id),
@@ -1231,14 +1230,10 @@ async fn causal_dispatch_overwrites_event_and_outbox_causation_with_ledger_ident
                         )
                         .map_err(|error| HandlerError::Other(Box::new(error)))?;
                         outbox.set_causation_id("handler-supplied-outbox-causation");
-                        context.stage_outbox(outbox)?;
-
-                        Ok(
-                            PreparedCommand::<Succeeded<TypedOutput>>::prepare(TypedOutput {
-                                id: input.id,
-                            })
-                            .unwrap(),
-                        )
+                        context
+                            .outbox(outbox)
+                            .commit(checkout)?
+                            .succeeded(TypedOutput { id: input.id })
                     })();
                     async move { result }
                 },
@@ -1335,26 +1330,22 @@ async fn causal_dispatch_uses_the_configured_immediate_outbox_publisher() {
                 .handle(
                     |context: &CausalCommandContext<'_, CausalDispatcherAggregate>,
                      input: CausalTestInput| {
-                        let result =
-                            (|| {
-                                let mut checkout = context.create();
-                                checkout
-                                    .record(input.id.clone())
-                                    .map_err(|error| HandlerError::Other(Box::new(error)))?;
-                                context.stage(checkout)?;
-                                context.stage_outbox(
-                                    OutboxMessage::create(
-                                        format!("{}:immediate-fact", input.id),
-                                        "causal.immediate_fact",
-                                        input.label.as_bytes().to_vec(),
-                                    )
-                                    .map_err(|error| HandlerError::Other(Box::new(error)))?,
-                                )?;
-                                Ok(PreparedCommand::<Succeeded<TypedOutput>>::prepare(
-                                    TypedOutput { id: input.id },
-                                )
-                                .unwrap())
-                            })();
+                        let result = (|| {
+                            let mut checkout = context.create();
+                            checkout
+                                .record(input.id.clone())
+                                .map_err(|error| HandlerError::Other(Box::new(error)))?;
+                            let outbox = OutboxMessage::create(
+                                format!("{}:immediate-fact", input.id),
+                                "causal.immediate_fact",
+                                input.label.as_bytes().to_vec(),
+                            )
+                            .map_err(|error| HandlerError::Other(Box::new(error)))?;
+                            context
+                                .outbox(outbox)
+                                .commit(checkout)?
+                                .succeeded(TypedOutput { id: input.id })
+                        })();
                         async move { result }
                     },
                 )
@@ -1437,6 +1428,160 @@ async fn causal_dispatch_uses_the_configured_immediate_outbox_publisher() {
         ]),
         "the post-commit clone must carry authoritative causation and aggregate source metadata",
     );
+}
+
+#[cfg(feature = "graphql")]
+#[tokio::test]
+async fn causal_prepared_batch_failure_rolls_back_every_atomic_participant() {
+    use crate::{ReadModelWorkspaceExt, RowKey, RowPatch, RowValue, SnapshotStore};
+
+    let repository = InMemoryRepository::new();
+    repository
+        .model_store()
+        .register_schema::<CausalProjectionObligationView>()
+        .unwrap();
+    repository
+        .model_store()
+        .register_schema::<CausalProjectionSiblingView>()
+        .unwrap();
+    let service = Service::new().named("causal-atomic-rollback").routes(
+        Routes::new()
+            .with_repo(
+                repository
+                    .clone()
+                    .aggregate::<CausalDispatcherAggregate>()
+                    .with_snapshots(1),
+            )
+            .typed_command(typed_command::<CausalTestInput, Succeeded<TypedOutput>>(
+                "causal.atomic_rollback",
+            ))
+            .handle(
+                |context: &CausalCommandContext<'_, CausalDispatcherAggregate>,
+                 input: CausalTestInput| {
+                    let result = (|| {
+                        let mut checkout = context.create();
+                        checkout
+                            .record(input.id.clone())
+                            .map_err(|error| HandlerError::Other(Box::new(error)))?;
+
+                        let committed_row_id = format!("{}:committed-row", input.id);
+                        let mut read_models = crate::ReadModelWritePlanBuilder::new();
+                        read_models
+                            .upsert(&CausalProjectionObligationView {
+                                id: committed_row_id,
+                            })
+                            .map_err(|error| HandlerError::Other(Box::new(error)))?;
+                        read_models
+                            .upsert(&CausalProjectionSiblingView {
+                                id: format!("{}:sibling-row", input.id),
+                            })
+                            .map_err(|error| HandlerError::Other(Box::new(error)))?;
+                        read_models
+                            .patch::<CausalProjectionObligationView>(
+                                RowKey::new([(
+                                    "id",
+                                    RowValue::String(format!("{}:missing-row", input.id)),
+                                )]),
+                                RowPatch::new().set(
+                                    "id",
+                                    RowValue::String(format!("{}:still-missing", input.id)),
+                                ),
+                            )
+                            .map_err(|error| HandlerError::Other(Box::new(error)))?;
+
+                        let outbox = OutboxMessage::create(
+                            format!("{}:atomic-fact", input.id),
+                            "causal.atomic_fact",
+                            input.label.as_bytes().to_vec(),
+                        )
+                        .map_err(|error| HandlerError::Other(Box::new(error)))?;
+
+                        context
+                            .outbox(outbox)
+                            .read_models(read_models)
+                            .commit(checkout)?
+                            .succeeded(TypedOutput { id: input.id })
+                    })();
+                    async move { result }
+                },
+            ),
+    );
+    let command_id = causal_test_command_id();
+    let principal = causal_test_principal();
+    let aggregate_id = "atomic-rollback-aggregate";
+
+    let error = service
+        .dispatch_causal(
+            "causal.atomic_rollback",
+            &command_id,
+            causal_test_input(aggregate_id, "payload"),
+            Session::new(),
+            principal.clone(),
+        )
+        .await
+        .expect_err("the update-existing patch against a missing row must fail the batch");
+    assert_eq!(error.code(), "INTERNAL");
+
+    let identity =
+        crate::StreamIdentity::new(CausalDispatcherAggregate::aggregate_type(), aggregate_id)
+            .unwrap();
+    assert!(
+        repository.get_stream(&identity).await.unwrap().is_none(),
+        "aggregate stream must roll back"
+    );
+    assert!(
+        repository
+            .outbox_store()
+            .pending(usize::MAX)
+            .await
+            .unwrap()
+            .is_empty(),
+        "outbox row must roll back"
+    );
+    assert!(
+        repository.get_snapshot(&identity).await.unwrap().is_none(),
+        "snapshot must roll back"
+    );
+    let projected = repository
+        .model_store()
+        .workspace()
+        .load::<CausalProjectionObligationView>(RowKey::new([(
+            "id",
+            RowValue::String(format!("{aggregate_id}:committed-row")),
+        )]))
+        .one()
+        .await
+        .unwrap();
+    assert!(
+        projected.is_none(),
+        "earlier read-model writes must roll back"
+    );
+    let sibling = repository
+        .model_store()
+        .workspace()
+        .load::<CausalProjectionSiblingView>(RowKey::new([(
+            "id",
+            RowValue::String(format!("{aggregate_id}:sibling-row")),
+        )]))
+        .one()
+        .await
+        .unwrap();
+    assert!(
+        sibling.is_none(),
+        "multi-table writes must roll back together"
+    );
+    assert!(matches!(
+        service
+            .lookup_causal_command(
+                "causal.atomic_rollback",
+                &command_id,
+                &Session::new(),
+                principal,
+            )
+            .await
+            .unwrap(),
+        CommandLookup::RetryableUnknown { .. }
+    ));
 }
 
 #[cfg(all(feature = "graphql", feature = "sqlite"))]
@@ -1614,8 +1759,10 @@ async fn projected_command_auto_binds_bootstraps_and_replays_exact_direct_eviden
                         checkout
                             .record(input.id.clone())
                             .map_err(|error| HandlerError::Other(Box::new(error)))?;
-                        context.stage(checkout)?;
-                        context.projected(CausalProjectionObligationView { id: input.id })
+                        context
+                            .project(direct_read_model::<CausalProjectionObligationView>())
+                            .commit(checkout)?
+                            .projected(CausalProjectionObligationView { id: input.id })
                     })();
                     async move { result }
                 },

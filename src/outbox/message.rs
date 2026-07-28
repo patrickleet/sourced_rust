@@ -4,9 +4,63 @@ use std::time::{Duration, SystemTime};
 use serde::{Deserialize, Serialize};
 
 use crate::aggregate::Aggregate;
+use crate::domain_event::{
+    DomainEvent, DomainEventCaptureError, DomainEventDescriptor, DomainEventEnvelope,
+    DomainEventOccurrence,
+};
 use crate::entity::{BitcodePayloadCodec, Entity, EventRecordError, PayloadCodec};
 use crate::trace_context::{TraceContext, CAUSATION_ID, CORRELATION_ID, TRACEPARENT, TRACESTATE};
 use crate::SourcedResult;
+
+/// An explicitly authored outward event waiting to be bound to the aggregate
+/// transition committed by a fluent unit of work.
+///
+/// The value is serialized immediately from `E`; replay payload bytes and
+/// aggregate snapshots never participate in this path.
+#[derive(Clone, Debug)]
+pub(crate) struct PreparedDomainEvent {
+    descriptor: DomainEventDescriptor,
+    body: serde_json::Value,
+}
+
+impl PreparedDomainEvent {
+    pub(crate) fn new<E: DomainEvent>(event: E) -> Result<Self, DomainEventCaptureError> {
+        let body = serde_json::to_value(event)
+            .map_err(|error| DomainEventCaptureError::BodyEncoding(error.to_string()))?;
+        Ok(Self {
+            descriptor: E::DESCRIPTOR,
+            body,
+        })
+    }
+
+    pub(crate) fn bind<A: Aggregate>(
+        &self,
+        aggregate: &A,
+        publication_ordinal: u32,
+    ) -> Result<DomainEventOccurrence, DomainEventCaptureError> {
+        let entity = aggregate.entity();
+        let event = entity
+            .new_events()
+            .last()
+            .ok_or(DomainEventCaptureError::NoPendingAggregateEvent)?;
+        DomainEventOccurrence::capture(
+            self.descriptor.clone(),
+            DomainEventEnvelope {
+                aggregate_type: A::aggregate_type().to_string(),
+                aggregate_id: entity.id().to_string(),
+                aggregate_sequence: event.sequence,
+                publication_ordinal,
+                occurred_at: event.timestamp,
+                metadata: event
+                    .metadata
+                    .iter()
+                    .map(|(key, value)| (key.clone(), value.clone()))
+                    .collect(),
+            },
+            &self.body,
+        )
+    }
+}
 
 /// Status of an outbox message.
 #[derive(Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
@@ -99,6 +153,10 @@ impl Default for OutboxMessage {
 impl OutboxMessage {
     pub const RAW_PAYLOAD_CODEC: &'static str = "bytes";
     pub const RAW_PAYLOAD_CODEC_VERSION: u16 = 1;
+    /// Canonical JSON encoding of a complete [`DomainEventOccurrence`].
+    pub const DOMAIN_EVENT_PAYLOAD_CODEC: &'static str = "distributed.domain-event-occurrence+json";
+    /// Version of [`Self::DOMAIN_EVENT_PAYLOAD_CODEC`].
+    pub const DOMAIN_EVENT_PAYLOAD_CODEC_VERSION: u16 = 1;
 
     pub fn new() -> Self {
         Self::default()
@@ -207,31 +265,61 @@ impl OutboxMessage {
         Self::create_encoded_bytes(id, event_type, bytes, None, entity.metadata().clone())
     }
 
-    /// Create a domain-event style message from a `Snapshottable` aggregate.
+    /// Create a durable outbox row from one exact canonical outward occurrence.
     ///
-    /// This is the recommended way to publish an aggregate-derived fact. It
-    /// derives everything from the aggregate automatically:
-    /// - **id**: `"{entity_id}:{event_type}:{version}"`
-    /// - **payload**: the aggregate's snapshot (via `create_snapshot()`)
-    /// - **metadata**: propagated from the entity (correlation IDs, trace context, etc.)
+    /// The payload is the complete occurrence envelope, not an aggregate replay
+    /// payload or snapshot. Its source identity is copied from the occurrence
+    /// itself so a multi-aggregate commit cannot stamp one aggregate onto every
+    /// message.
     ///
-    /// ```ignore
-    /// let outbox = OutboxMessage::domain_event("TodoInitialized", &todo)?;
-    /// repo.outbox(outbox).commit(&mut todo).await?;
-    /// ```
-    pub fn domain_event<A: crate::Snapshottable>(
-        event_type: impl Into<String>,
-        aggregate: &A,
-    ) -> SourcedResult<Self> {
-        let event_type = event_type.into();
-        let entity = aggregate.entity();
-        let id = format!("{}:{}:{}", entity.id(), event_type, entity.version());
-        let snapshot = aggregate.create_snapshot();
-        let bytes = BitcodePayloadCodec::encode(&snapshot).map_err(EventRecordError::encode)?;
-        let mut message =
-            Self::create_encoded_bytes(id, event_type, bytes, None, entity.metadata().clone())?;
-        message.set_source(aggregate);
+    /// # Errors
+    ///
+    /// Returns the occurrence's typed canonical-encoding error.
+    pub fn from_domain_event_occurrence(
+        occurrence: &DomainEventOccurrence,
+    ) -> Result<Self, DomainEventCaptureError> {
+        let bytes = occurrence.canonical_bytes()?;
+        let mut message = Self::new();
+        message
+            .initialize_with_codec(
+                occurrence.id().to_string(),
+                occurrence.descriptor().name.to_string(),
+                bytes,
+                None,
+                occurrence
+                    .metadata()
+                    .iter()
+                    .map(|(key, value)| (key.clone(), value.clone()))
+                    .collect(),
+                (
+                    Self::DOMAIN_EVENT_PAYLOAD_CODEC.to_string(),
+                    Self::DOMAIN_EVENT_PAYLOAD_CODEC_VERSION,
+                ),
+            )
+            .map_err(|error| DomainEventCaptureError::BodyEncoding(error.to_string()))?;
+        message.source_aggregate_type = Some(occurrence.aggregate_type().to_string());
+        message.source_aggregate_id = Some(occurrence.aggregate_id().to_string());
+        message.source_sequence = Some(occurrence.aggregate_sequence());
         Ok(message)
+    }
+
+    /// Decode and validate this row's canonical outward occurrence.
+    ///
+    /// # Errors
+    ///
+    /// Rejects non-domain-event codecs and malformed or non-canonical payloads.
+    pub fn domain_event_occurrence(
+        &self,
+    ) -> Result<DomainEventOccurrence, DomainEventCaptureError> {
+        if self.payload_codec != Self::DOMAIN_EVENT_PAYLOAD_CODEC
+            || self.payload_codec_version != Self::DOMAIN_EVENT_PAYLOAD_CODEC_VERSION
+        {
+            return Err(DomainEventCaptureError::UnsupportedBodyCodec {
+                codec: self.payload_codec.clone(),
+                version: self.payload_codec_version,
+            });
+        }
+        DomainEventOccurrence::from_canonical_bytes(&self.payload)
     }
 
     /// Decode the payload from the default binary codec.

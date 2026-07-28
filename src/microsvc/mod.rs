@@ -84,7 +84,8 @@ pub(crate) use service::CausalCommandProjectionEvidence;
 #[cfg(feature = "graphql")]
 pub use service::GraphqlServiceBindError;
 pub use service::{
-    CausalCommandContext, CommandRequest, CommandResponse, DeliveryKind, HandlerNames, HandlerSpec,
+    direct_read_model, CausalCommandContext, CausalCommitBuilder, CommandRequest, CommandResponse,
+    DeliveryKind, DirectReadModelProjection, HandlerNames, HandlerSpec, PreparedCausalCommit,
     PreparedCommandHandler, RouteBuilder, Routes, Service, TypedRouteBuilder,
 };
 #[cfg(feature = "graphql")]

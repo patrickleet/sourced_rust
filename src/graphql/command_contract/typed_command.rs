@@ -648,8 +648,9 @@ where
     /// Attach compiler-generated direct projection ownership metadata.
     ///
     /// Application handlers do not call this; generated service inventory
-    /// binds it from the registered projector declaration and handlers retain
-    /// the `context.projected(view)` API.
+    /// binds it from the registered projector declaration and handlers use the
+    /// fluent `project(direct_read_model::<M>()).commit(...).projected(view)`
+    /// API.
     #[doc(hidden)]
     pub fn __direct_projection(mut self, target: CompiledDirectProjectionTarget<I, M>) -> Self {
         if let Some(projected) = &mut self.contract.projected_model {

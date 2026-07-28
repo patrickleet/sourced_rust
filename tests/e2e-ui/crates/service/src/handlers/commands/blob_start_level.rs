@@ -3,10 +3,10 @@
 use blob_domain::BlobGame;
 use distributed::graphql::{PreparedCommand, Projected};
 use distributed::microsvc::{CausalCommandContext, HandlerError};
-use e2e_readmodels::{map_blob_fact, BlobGameView};
+use e2e_readmodels::BlobGameView;
 use serde::Deserialize;
 
-use crate::handlers::commands::blob_cmd::{load_game, map_domain, stage_blob};
+use crate::handlers::commands::blob_cmd::{commit_blob, load_game, map_domain};
 
 pub const COMMAND: &str = "blob.start_level";
 
@@ -24,6 +24,5 @@ pub async fn handle(
     // Fresh passable layout each level (like original generateLevel)
     game.start_next_generated_level(&owner)
         .map_err(map_domain)?;
-    let fact = stage_blob(ctx, game)?;
-    ctx.projected(map_blob_fact(&fact))
+    commit_blob(ctx, game)
 }
