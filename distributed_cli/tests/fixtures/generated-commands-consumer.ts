@@ -1,34 +1,30 @@
 import {
-	createCommands,
-	type GeneratedCommands,
-	type GeneratedCommandRuntime
+	COMMAND_ARTIFACTS,
+	COMMAND_RUNTIME_REQUIRES_ARTIFACT_V2,
+	COMMANDS,
+	Command_projectTodo,
+	type Command_projectTodo_Input,
+	type Command_projectTodo_Output,
+	type CompilerReplicaCommandArtifactV2
 } from './generated-commands.js';
-import type {
-	DistributedReplica,
-	ReplicaCommandTransport
-} from '@hops-ops/distributed/replica';
 
-declare const replica: DistributedReplica;
-declare const transport: ReplicaCommandTransport;
+const artifact: CompilerReplicaCommandArtifactV2<
+	Command_projectTodo_Input,
+	Command_projectTodo_Output
+> = Command_projectTodo;
+const artifactVersion: 2 = artifact.version;
+const inventoryVersion: 2 = COMMANDS['todo.project'].version;
+const runtimeDeferred: true = COMMAND_RUNTIME_REQUIRES_ARTIFACT_V2;
+const input: Command_projectTodo_Input = {
+	id: 'todo-1',
+	tenantId: 'tenant-1'
+};
+const artifactCount: number = COMMAND_ARTIFACTS.length;
 
-const runtime: GeneratedCommandRuntime = createCommands(replica, transport);
-const commands: GeneratedCommands = runtime.commands;
-
-commands.todo.import({ source: 'fixture' });
-commands.todo.ping();
-commands.todo.project({ id: 'todo-1', tenantId: 'tenant-1' }).then(
-	(receipt) => {
-		const title: string | null = receipt.result.title;
-		return title;
-	}
-);
-
-runtime.observeResult({});
-runtime.dispose();
-
-// @ts-expect-error Generated object inputs remain exact and required.
-commands.todo.project({ id: 'todo-1' });
-// @ts-expect-error A no-input command accepts options, not domain input.
-commands.todo.ping({ id: 'todo-1' });
-// @ts-expect-error Descriptor inventory is not presented as callable commands.
-createCommands(replica, transport).commands.todo.project.artifact;
+void [
+	artifactVersion,
+	inventoryVersion,
+	runtimeDeferred,
+	input,
+	artifactCount
+];

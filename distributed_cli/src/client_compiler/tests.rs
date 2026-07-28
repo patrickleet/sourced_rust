@@ -2672,6 +2672,30 @@ fn command_protocol_and_extensions_are_preserved_exactly() {
     absent_value["commands"][0]["extensions"]["projection"]["preview_occurrences"][0]["values"]
         [4]["source"] = json!({"kind": "absent"});
     refresh_schema_fingerprint(&mut absent_value);
+    let mut absent_object_value = absent_value.clone();
+    absent_object_value["projection_programs"][0]["arms"][0]["operations"][0]["fields"][2]
+        ["assignment"]["expression"] = json!({
+        "kind": "object",
+        "fields": [
+            {
+                "name": "missing",
+                "value": {
+                    "kind": "slot",
+                    "slot": "state.title",
+                    "value_type": {"type": "string"}
+                }
+            },
+            {
+                "name": "present",
+                "value": {
+                    "kind": "slot",
+                    "slot": "state.tenantId",
+                    "value_type": {"type": "string"}
+                }
+            }
+        ]
+    });
+    refresh_schema_fingerprint(&mut absent_object_value);
     let mut null_value = value.clone();
     null_value["commands"][0]["extensions"]["projection"]["preview_occurrences"][0]["values"][4]
         ["source"] = json!({"kind": "null"});
@@ -2905,9 +2929,11 @@ fn command_protocol_and_extensions_are_preserved_exactly() {
     .expect("compile commands");
     let commands = file(&project, "commands.ts");
     let protocol = file(&project, "protocol.ts");
+    let sveltekit = file(&project, "sveltekit.ts");
     assert!(commands.contains(mutation));
-    assert!(commands.contains("createReplicaCommandRuntime"));
-    assert!(commands.contains("import type {\n  DistributedReplica,"));
+    assert!(!commands.contains("createReplicaCommandRuntime"));
+    assert!(!commands.contains("prepareReplicaCommand"));
+    assert!(commands.contains("import type {\n  ReplicaCommandArtifact,"));
     assert!(commands.contains("export type Command_createTodo_Input"));
     assert!(commands.contains("readonly \"id\"?: string;"));
     assert!(commands.contains("readonly \"tenantId\": string;"));
@@ -2928,23 +2954,13 @@ fn command_protocol_and_extensions_are_preserved_exactly() {
     assert!(commands.contains("\"consistency\": \"causal\""));
     assert!(commands.contains("\"revalidation\""));
     assert!(commands.contains("\"trustedPresets\": []"));
-    assert!(commands.contains("export function prepareCommand_createTodo"));
+    assert!(!commands.contains("export function prepareCommand_createTodo"));
     assert!(commands.contains("export const COMMAND_ARTIFACTS = [Command_createTodo] as const;"));
     assert!(commands.contains("export const COMMANDS = {"));
     assert!(commands.contains("\"todo.create\": Command_createTodo"));
-    assert!(commands
-        .contains("export type GeneratedCommandRuntime = ReplicaCommandRuntime<typeof COMMANDS>;"));
-    assert!(
-        commands.contains("export type GeneratedCommands = GeneratedCommandRuntime['commands'];")
-    );
-    assert!(commands.contains(
-        "export type GeneratedCommandRuntimeOptions = Omit<ReplicaCommandRuntimeOptions, 'status'>;"
-    ));
-    assert!(commands.contains("export function createCommands("));
-    assert!(commands.contains("import { COMMAND_STATUS } from './protocol.js';"));
-    assert!(commands.contains(
-        "return createReplicaCommandRuntime(replica, transport, COMMANDS, {\n    ...options,\n    status: COMMAND_STATUS\n  });"
-    ));
+    assert!(commands.contains("export const COMMAND_RUNTIME_REQUIRES_ARTIFACT_V2 = true as const;"));
+    assert!(!commands.contains("export function createCommands("));
+    assert!(!commands.contains("import { COMMAND_STATUS } from './protocol.js';"));
     assert!(!commands.contains("export const commands ="));
     assert!(!commands.contains("{ artifact: Command_createTodo"));
     assert!(!commands.contains("Command_todo.create"));
@@ -2959,6 +2975,8 @@ fn command_protocol_and_extensions_are_preserved_exactly() {
     assert!(protocol.contains("\"surface\": {"));
     assert!(protocol.contains("\"trustedPresets\": []"));
     assert!(protocol.contains("\ttrustedPresets: []"));
+    assert!(sveltekit.contains("export type GeneratedCommands = Readonly<Record<never, never>>;"));
+    assert!(!sveltekit.contains("createGeneratedCommands"));
 
     let partial = compile_client(ClientCompileInput::new(
         partial_value,
@@ -2991,6 +3009,21 @@ fn command_protocol_and_extensions_are_preserved_exactly() {
     assert!(absent_commands.contains("\"field\": \"priority\""));
     assert!(absent_commands.contains("\"condition\": \"if_record_missing\""));
     assert!(!absent_commands.contains("\"op\": \"upsert\""));
+
+    let absent_object = compile_client(ClientCompileInput::new(
+        absent_object_value,
+        ClientSurfaceSelector::role("user"),
+        vec![ClientDocument::new(
+            "src/routes/todos/+page.graphql",
+            "query Todos { todos { id } }",
+        )],
+    ))
+    .expect("compile object-member absence as a whole-expression absence");
+    let absent_object_commands = file(&absent_object, "commands.ts");
+    assert!(absent_object_commands.contains("\"op\": \"patch\""));
+    assert!(absent_object_commands.contains("\"condition\": \"if_record_missing\""));
+    assert!(!absent_object_commands.contains("\"name\": \"missing\""));
+    assert!(!absent_object_commands.contains("\"op\": \"upsert\""));
 
     let null = compile_client(ClientCompileInput::new(
         null_value,

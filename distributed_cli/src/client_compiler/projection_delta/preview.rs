@@ -1272,14 +1272,17 @@ fn evaluate_expression(
             Knowledge::Known(PreviewExpression::List { values: resolved })
         }
         ManifestProjectionExpression::Object { fields } => {
-            let mut resolved = Vec::new();
+            let mut resolved = Vec::with_capacity(fields.len());
             for field in fields {
                 match evaluate_expression(&field.value, slots, event) {
                     Knowledge::Known(value) => resolved.push(PreviewObjectField {
                         name: field.name.clone(),
                         value,
                     }),
-                    Knowledge::Absent | Knowledge::Unset => {}
+                    // Frozen server semantics reject Unset inside a composite.
+                    // The client cannot reproduce that command-side error, so
+                    // preserve cache state and recover instead.
+                    Knowledge::Unset => return Knowledge::Unknown,
                     other => return other,
                 }
             }
@@ -1755,7 +1758,7 @@ mod tests {
     }
 
     #[test]
-    fn absent_composes_without_becoming_an_unset() {
+    fn object_expression_is_absent_when_any_member_is_absent() {
         let slots = BTreeMap::from([
             ("absent", Knowledge::Absent),
             (
@@ -1781,11 +1784,27 @@ mod tests {
                 },
             ],
         };
-        assert!(matches!(
+        assert_eq!(
             evaluate_expression(&object, &slots, &event()),
-            Knowledge::Known(PreviewExpression::Object { fields }) if fields.len() == 1
-        ));
+            Knowledge::Absent
+        );
+    }
 
+    #[test]
+    fn first_present_skips_absent_arguments_without_inventing_an_unset() {
+        let slots = BTreeMap::from([
+            ("absent", Knowledge::Absent),
+            (
+                "known",
+                Knowledge::Known(PreviewExpression::Input {
+                    path: vec!["known".into()],
+                }),
+            ),
+        ]);
+        let slot = |name: &str| ManifestProjectionExpression::Slot {
+            slot: name.into(),
+            value_type: ManifestProjectionValueType::String,
+        };
         let first_present = ManifestProjectionExpression::Transform {
             transform: ManifestProjectionScalarTransform::FirstPresent,
             arguments: vec![slot("absent"), slot("known")],
@@ -1802,6 +1821,41 @@ mod tests {
         assert_eq!(
             evaluate_expression(&all_absent, &slots, &event()),
             Knowledge::Absent
+        );
+    }
+
+    #[test]
+    fn object_expression_fails_closed_when_a_member_is_unset() {
+        let expression = ManifestProjectionExpression::Object {
+            fields: vec![ManifestProjectionObjectField {
+                name: "cleared".into(),
+                value: slot(),
+            }],
+        };
+        let slots = BTreeMap::from([("value", Knowledge::Unset)]);
+        assert_eq!(
+            evaluate_expression(&expression, &slots, &event()),
+            Knowledge::Unknown
+        );
+    }
+
+    #[test]
+    fn unset_object_member_lowers_to_uncertainty_without_a_write_or_clear() {
+        let expression = ManifestProjectionExpression::Object {
+            fields: vec![ManifestProjectionObjectField {
+                name: "cleared".into(),
+                value: slot(),
+            }],
+        };
+        let slots = BTreeMap::from([("value", Knowledge::Unset)]);
+        let fields = vec![ManifestProjectionField {
+            ordinal: 0,
+            name: "metadata".into(),
+            assignment: ManifestProjectionAssignment::Set { expression },
+        }];
+        assert_eq!(
+            evaluate_fields(&fields, &slots, &event()),
+            (Vec::new(), Vec::new(), true)
         );
     }
 

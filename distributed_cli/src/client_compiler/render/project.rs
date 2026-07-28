@@ -298,11 +298,10 @@ fn render_sveltekit(
         "useCommands".to_string(),
     ]);
     if !manifest.commands.is_empty() {
-        value_exports.insert("createCommands".into());
+        value_exports.insert("COMMAND_RUNTIME_REQUIRES_ARTIFACT_V2".into());
     }
     for command in &manifest.commands {
         value_exports.insert(format!("Command_{}", command.mutation_field));
-        value_exports.insert(format!("prepareCommand_{}", command.mutation_field));
     }
     for operation in operations {
         value_exports.insert(operation.export_name.clone());
@@ -342,20 +341,7 @@ fn render_sveltekit(
         .join("\n"),
     ];
 
-    if manifest.commands.is_empty() {
-        sections
-            .push("export type GeneratedCommands = Readonly<Record<never, never>>;".to_string());
-    } else {
-        sections.push(
-            [
-                "import { createCommands as createGeneratedCommands } from './commands.js';",
-                "import type { GeneratedCommands as ServiceGeneratedCommands } from './commands.js';",
-                "",
-                "export type GeneratedCommands = ServiceGeneratedCommands;",
-            ]
-            .join("\n"),
-        );
-    }
+    sections.push("export type GeneratedCommands = Readonly<Record<never, never>>;".to_string());
 
     for (index, operation) in operations.iter().enumerate() {
         let module = operation
@@ -395,12 +381,7 @@ fn render_sveltekit(
         "  return provideDistributedSvelteKitClient(".to_string(),
         "    createDistributedSvelteKit<GeneratedCommands>({".to_string(),
     ];
-    if manifest.commands.is_empty() {
-        bindings.push("      ...options".to_string());
-    } else {
-        bindings.push("      ...options,".to_string());
-        bindings.push("      createCommands: createGeneratedCommands".to_string());
-    }
+    bindings.push("      ...options".to_string());
     bindings.extend(
         [
             "    })",
