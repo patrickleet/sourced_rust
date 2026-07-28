@@ -15,7 +15,7 @@ use crate::projection_protocol::{
 };
 use crate::read_model::RelationalReadModel;
 use crate::table::{TableMutation, TableSchema};
-use crate::ResolvedProjectionPlan;
+use crate::{ProjectionProgramId, ResolvedProjectionPlan};
 
 /// Compiler-retained relational identity for one ordinary `Projected<M>`
 /// declaration before the GraphQL Surface resolves its unique physical owner.
@@ -60,6 +60,10 @@ impl CommandProjectedModel {
         }
     }
 
+    #[expect(
+        clippy::too_many_arguments,
+        reason = "the private binding freezes independent topology and modeled-program pins"
+    )]
     pub(crate) fn bind(
         &self,
         projector: &str,
@@ -69,6 +73,7 @@ impl CommandProjectedModel {
         change_epoch: Option<&str>,
         mut ownership: Vec<ProjectionModelOwnership>,
         protocol_topology: Option<ProjectorTopologyId>,
+        modeled_program_id: Option<ProjectionProgramId>,
     ) -> CommandDirectProjectionTarget {
         ownership.sort_by(|left, right| {
             (left.model.as_str(), left.table.as_str())
@@ -90,6 +95,7 @@ impl CommandProjectedModel {
             change_epoch: change_epoch.map(str::to_string),
             schema: self.schema,
             ownership,
+            modeled_program_id,
         }
     }
 }
@@ -118,6 +124,12 @@ pub(crate) struct CommandDirectProjectionTarget {
     /// projector topology. Bootstrap claims this entire set atomically even
     /// though the direct command mutates exactly one output model.
     pub(crate) ownership: Vec<ProjectionModelOwnership>,
+    /// Exact active modeled program accepted by this compiler-bound owner.
+    ///
+    /// Legacy direct owners retain `None`; the modeled handler path requires
+    /// `Some` and compares it with the descriptor supplied by application
+    /// code before the direct participant can be sealed.
+    modeled_program_id: Option<ProjectionProgramId>,
 }
 
 impl CommandDirectProjectionTarget {
@@ -138,6 +150,7 @@ impl CommandDirectProjectionTarget {
                 "model": owner.model,
                 "table": owner.table,
             })).collect::<Vec<_>>(),
+            "modeled_program_id": self.modeled_program_id.map(|program| program.to_string()),
         }))
     }
 
@@ -237,6 +250,7 @@ impl CommandDirectProjectionTarget {
             table: self.table.clone(),
             schema: self.schema,
             ownership: self.ownership.clone(),
+            modeled_program_id: self.modeled_program_id,
         })
     }
 }
@@ -290,6 +304,7 @@ where
                     .expect("validated relational schema has bounded model/table names"),
             ],
             None,
+            None,
         ),
         PhantomData,
     )
@@ -304,6 +319,7 @@ pub(crate) struct ResolvedDirectProjectionTarget {
     table: String,
     schema: &'static TableSchema,
     ownership: Vec<ProjectionModelOwnership>,
+    modeled_program_id: Option<ProjectionProgramId>,
 }
 
 impl ResolvedDirectProjectionTarget {
@@ -315,6 +331,7 @@ impl ResolvedDirectProjectionTarget {
         &self,
         projection_name: &str,
         projection_epoch: &str,
+        program_id: ProjectionProgramId,
     ) -> Result<(), ProjectionProtocolError> {
         if self.codec.topology().name() != projection_name {
             return Err(ProjectionProtocolError::InvalidBatch(format!(
@@ -327,6 +344,19 @@ impl ResolvedDirectProjectionTarget {
                 "modeled direct projection epoch `{projection_epoch}` does not match compiled owner epoch `{}`",
                 self.change_epoch.as_str()
             )));
+        }
+        match self.modeled_program_id {
+            Some(expected) if expected == program_id => {}
+            Some(expected) => {
+                return Err(ProjectionProtocolError::InvalidBatch(format!(
+                    "modeled direct projection program `{program_id}` does not match compiled owner program `{expected}`"
+                )));
+            }
+            None => {
+                return Err(ProjectionProtocolError::InvalidBatch(
+                    "modeled direct projection requires an exact active program binding".into(),
+                ));
+            }
         }
         Ok(())
     }

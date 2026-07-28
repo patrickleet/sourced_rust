@@ -182,6 +182,20 @@ const CAUSAL_DIRECT_PROJECTION: crate::projection::lower::ProjectionDescriptor<
 };
 
 #[cfg(feature = "graphql")]
+const CAUSAL_ROGUE_DIRECT_PROJECTION: crate::projection::lower::ProjectionDescriptor<
+    crate::projection::lower::DirectCandidate,
+> = distributed_macros::projection! {
+    name: "project_causal_direct";
+    version: 2;
+    epoch: "causal-direct-v1";
+    partition: unit;
+
+    on "causal.direct-recorded" version 1 (state: CausalDirectState) {
+        upsert CausalProjectionObligationView from state as view;
+    }
+};
+
+#[cfg(feature = "graphql")]
 impl GraphqlOutputType for CausalProjectionObligationView {
     fn graphql_type() -> GraphqlTypeDef {
         one_string_field("CausalProjectionObligationView", "id")
@@ -1805,10 +1819,61 @@ async fn projected_command_auto_binds_bootstraps_and_replays_exact_direct_eviden
                 },
             ),
     );
-    let projection = SurfaceDirectProjection::new("project_causal_direct")
-        .model::<CausalProjectionObligationView>()
-        .model::<CausalProjectionSiblingView>()
-        .change_epoch("causal-direct-v1");
+    let binding = crate::projection::placement::ProjectionBinding::materialize_direct(
+        CAUSAL_DIRECT_PROJECTION.direct(),
+        crate::projection::placement::ProjectionSourceBinding::try_new(
+            "causal-domain",
+            "ordered-domain-events",
+            1,
+        )
+        .unwrap(),
+        crate::projection::placement::ProjectionOwner::try_new("project_causal_direct").unwrap(),
+        "distributed-projection-partition",
+        crate::projection::placement::PROJECTION_PARTITION_CODEC_VERSION,
+        vec![crate::projection::placement::ProjectionOutput::try_new(
+            "CausalProjectionObligationView",
+            "causal_projection_obligation_views",
+            <CausalProjectionObligationView as crate::read_model::RelationalReadModel>::schema()
+                .clone(),
+        )
+        .unwrap()],
+        vec![],
+        Some(
+            crate::projection::placement::ProjectionPhysicalTopology::from_protocol(
+                &ProjectorTopologyId::new(1, "project_causal_direct", [0x7a; 32]).unwrap(),
+            ),
+        ),
+    )
+    .unwrap();
+    let catalog =
+        crate::projection::catalog::ProjectionCatalog::try_new(vec![binding.clone()]).unwrap();
+    let active = catalog
+        .activate(
+            vec![
+                crate::projection::catalog::ProjectionBindingActivation::new(
+                    binding.id(),
+                    binding.program_id(),
+                    crate::projection_protocol::ProjectionEpoch::new("causal-direct-v1").unwrap(),
+                    crate::projection::placement::ProjectionBindingState::Active,
+                    Some(
+                        crate::projection::placement::ProjectionExecutorRoute::local(
+                            "causal-direct",
+                        )
+                        .unwrap(),
+                    ),
+                ),
+            ],
+            None,
+        )
+        .unwrap();
+    let modeled = crate::graphql::SurfaceModeledProjection::try_from_descriptor(
+        CAUSAL_DIRECT_PROJECTION,
+        &catalog,
+        &active,
+        binding.id(),
+    )
+    .unwrap();
+    let projection = SurfaceDirectProjection::new("project_causal_direct").modeled(modeled);
     let engine = crate::graphql::GraphqlEngine::builder(&repository)
         .protocol_token_key(TEST_PROTOCOL_TOKEN_KEY)
         .model::<CausalProjectionObligationView>(
@@ -1832,12 +1897,32 @@ async fn projected_command_auto_binds_bootstraps_and_replays_exact_direct_eviden
         .as_ref()
         .expect("engine binding must populate the private direct target");
     assert_eq!(target.projector, "project_causal_direct");
-    assert_eq!(
-        target.ownership.len(),
-        2,
-        "one direct route must freeze its owner's complete model inventory"
-    );
+    assert_eq!(target.ownership.len(), 1);
     assert!(target.partition.is_none(), "zero-config partition is unit");
+    let legitimate_executor = CAUSAL_DIRECT_PROJECTION.server_executor().unwrap();
+    target
+        .resolve(&json!({}), Some(&Session::new()))
+        .unwrap()
+        .validate_modeled_owner(
+            legitimate_executor.name,
+            legitimate_executor.epoch,
+            legitimate_executor.program_id,
+        )
+        .unwrap();
+    let rogue_executor = CAUSAL_ROGUE_DIRECT_PROJECTION.server_executor().unwrap();
+    let rogue_error = target
+        .resolve(&json!({}), Some(&Session::new()))
+        .unwrap()
+        .validate_modeled_owner(
+            rogue_executor.name,
+            rogue_executor.epoch,
+            rogue_executor.program_id,
+        )
+        .unwrap_err();
+    assert!(
+        rogue_error.to_string().contains("program"),
+        "same name/epoch/schema must not authorize a different program: {rogue_error}"
+    );
 
     let command_id = causal_test_command_id();
     let input = json!({
@@ -1886,10 +1971,7 @@ async fn projected_command_auto_binds_bootstraps_and_replays_exact_direct_eviden
     .fetch_one(repository.pool())
     .await
     .unwrap();
-    assert_eq!(
-        registered, 2,
-        "lazy bootstrap must atomically register the owner's full inventory"
-    );
+    assert_eq!(registered, 1);
     let sibling_rows: i64 =
         sqlx::query_scalar("SELECT COUNT(*) FROM causal_projection_sibling_views")
             .fetch_one(repository.pool())

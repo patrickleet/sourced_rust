@@ -235,6 +235,59 @@ impl SurfaceProjectionOwner {
     pub fn is_direct(&self) -> bool {
         matches!(self.kind, SurfaceProjectionOwnerKind::Direct)
     }
+
+    pub(crate) fn binding_models(&self) -> Vec<String> {
+        if self.modeled.is_empty() {
+            return self.models.clone();
+        }
+        self.modeled
+            .iter()
+            .flat_map(|modeled| modeled.output_models().iter().cloned())
+            .collect::<BTreeSet<_>>()
+            .into_iter()
+            .collect()
+    }
+
+    pub(crate) fn binding_facts(&self) -> Vec<String> {
+        if self.modeled.is_empty() {
+            return self.facts.clone();
+        }
+        if self.kind == SurfaceProjectionOwnerKind::Direct {
+            return Vec::new();
+        }
+        self.modeled
+            .iter()
+            .flat_map(SurfaceModeledProjection::event_names)
+            .collect::<BTreeSet<_>>()
+            .into_iter()
+            .collect()
+    }
+
+    pub(crate) fn binding_change_epoch(&self) -> Option<String> {
+        if self.modeled.is_empty() {
+            return self.change_epoch.clone();
+        }
+        self.modeled
+            .iter()
+            .find(|modeled| {
+                modeled.state() == crate::projection::placement::ProjectionBindingState::Active
+            })
+            .or_else(|| self.modeled.first())
+            .map(|modeled| modeled.epoch().as_str().to_owned())
+    }
+
+    pub(crate) fn active_modeled_program_id_for(
+        &self,
+        model: &str,
+    ) -> Option<crate::ProjectionProgramId> {
+        self.modeled
+            .iter()
+            .find(|modeled| {
+                modeled.state() == crate::projection::placement::ProjectionBindingState::Active
+                    && modeled.output_models().iter().any(|output| output == model)
+            })
+            .map(SurfaceModeledProjection::program_id)
+    }
 }
 
 /// Asynchronous fact-consuming projection declaration.
@@ -705,31 +758,9 @@ impl Surface {
                         }
                     }
                 }
-                projector.models = projector
-                    .modeled
-                    .iter()
-                    .flat_map(|modeled| modeled.output_models().iter().cloned())
-                    .collect::<BTreeSet<_>>()
-                    .into_iter()
-                    .collect();
-                if projector.kind == SurfaceProjectionOwnerKind::Async {
-                    projector.facts = projector
-                        .modeled
-                        .iter()
-                        .flat_map(SurfaceModeledProjection::event_names)
-                        .collect::<BTreeSet<_>>()
-                        .into_iter()
-                        .collect();
-                }
-                projector.change_epoch = projector
-                    .modeled
-                    .iter()
-                    .find(|modeled| {
-                        modeled.state()
-                            == crate::projection::placement::ProjectionBindingState::Active
-                    })
-                    .or_else(|| projector.modeled.first())
-                    .map(|modeled| modeled.epoch().as_str().to_owned());
+                projector.models = projector.binding_models();
+                projector.facts = projector.binding_facts();
+                projector.change_epoch = projector.binding_change_epoch();
             }
             match projector.kind {
                 SurfaceProjectionOwnerKind::Async if projector.facts.is_empty() => {

@@ -666,7 +666,7 @@ where
             target
                 .as_ref()
                 .ok_or(CommandCommitProofError::MissingDirectProjectionTarget)?
-                .validate_modeled_owner(executor.name, executor.epoch)
+                .validate_modeled_owner(executor.name, executor.epoch, executor.program_id)
                 .map_err(|error| CommandCommitProofError::DirectProjection(error.to_string()))?;
         }
         prepared.seal_direct_projection(

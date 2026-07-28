@@ -107,8 +107,9 @@ impl TypedCommandInventory {
     ) -> Result<(), String> {
         let mut compiled_projectors = BTreeMap::new();
         for projector in projectors {
-            let schemas = projector
-                .models
+            let binding_models = projector.binding_models();
+            let binding_facts = projector.binding_facts();
+            let schemas = binding_models
                 .iter()
                 .map(|model| {
                     model_schemas.get(model).ok_or_else(|| {
@@ -121,8 +122,8 @@ impl TypedCommandInventory {
                 .collect::<Result<Vec<_>, _>>()?;
             let compiled = compile_projection_topology(
                 &projector.name,
-                &projector.facts,
-                &projector.models,
+                &binding_facts,
+                &binding_models,
                 &projector.partition,
                 schemas,
             )
@@ -147,10 +148,12 @@ impl TypedCommandInventory {
                             confirmation.projector
                         )
                     })?;
+                let binding_facts = projector.binding_facts();
+                let binding_models = projector.binding_models();
                 if !confirmation.topology_matches(
                     &projector.name,
-                    &projector.facts,
-                    &projector.models,
+                    &binding_facts,
+                    &binding_models,
                     &projector.partition,
                 ) {
                     return Err(format!(
@@ -164,8 +167,7 @@ impl TypedCommandInventory {
                         confirmation.projector
                     ));
                 }
-                if !projector
-                    .models
+                if !binding_models
                     .iter()
                     .any(|model| model == &confirmation.model)
                 {
@@ -192,7 +194,7 @@ impl TypedCommandInventory {
                 .iter()
                 .filter(|projector| {
                     projector
-                        .models
+                        .binding_models()
                         .iter()
                         .any(|model| model == &projected.model)
                 })
@@ -217,7 +219,8 @@ impl TypedCommandInventory {
                     ));
                 }
             };
-            if projector.change_epoch.is_none() {
+            let binding_change_epoch = projector.binding_change_epoch();
+            if binding_change_epoch.is_none() {
                 return Err(format!(
                     "typed projected command `{name}` owner `{}` has no registered change-log epoch",
                     projector.name
@@ -241,14 +244,17 @@ impl TypedCommandInventory {
             let (protocol_topology, ownership) = compiled_projectors
                 .get(&projector.name)
                 .expect("every registered projector was compiled above");
+            let binding_facts = projector.binding_facts();
+            let binding_models = projector.binding_models();
             contract.direct_projection = Some(projected.bind(
                 &projector.name,
-                &projector.facts,
-                &projector.models,
+                &binding_facts,
+                &binding_models,
                 &projector.partition,
-                projector.change_epoch.as_deref(),
+                binding_change_epoch.as_deref(),
                 ownership.clone(),
                 Some(protocol_topology.clone()),
+                projector.active_modeled_program_id_for(&projected.model),
             ));
         }
         Ok(())
