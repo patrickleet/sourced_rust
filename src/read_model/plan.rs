@@ -5,10 +5,11 @@ use std::collections::BTreeMap;
 
 use crate::repository::ReadModelWritePlanStore;
 use crate::table::{
-    column_name_for, key_fingerprint, key_from_row, validate_expected_version, validate_key,
-    DeleteTableRowMutation, ExpectedVersion, PatchMode, PatchTableRowMutation, RelationshipDef,
-    RowKey, RowPatch, RowValues, RowWriteMode, TableCommitOutcome, TableMutation, TableRowMutation,
-    TableSchema, TableStoreError, TableWritePlan,
+    column_name_for, has_many_join_columns, key_fingerprint, key_from_row,
+    validate_expected_version, validate_key, DeleteTableRowMutation, ExpectedVersion, PatchMode,
+    PatchTableRowMutation, RelationshipDef, RelationshipKind, RowKey, RowPatch, RowValues,
+    RowWriteMode, TableCommitOutcome, TableMutation, TableRowMutation, TableSchema,
+    TableStoreError, TableWritePlan,
 };
 
 use super::{ReadModelLoadRequest, RelationalReadModel, Versioned};
@@ -493,6 +494,12 @@ pub(crate) fn delegated_relationship_columns(
     relationship: &RelationshipDef,
     child_schema: &TableSchema,
 ) -> Result<Vec<(String, String)>, TableStoreError> {
+    if !matches!(relationship.kind, RelationshipKind::HasMany) {
+        return Err(TableStoreError::Metadata(format!(
+            "relationship `{}` must be has_many to delegate target columns",
+            relationship.field_name
+        )));
+    }
     let mut mappings = Vec::new();
     for column in child_schema
         .columns
@@ -518,26 +525,8 @@ pub(crate) fn delegated_relationship_columns(
         mappings.push((column.column_name.clone(), source_column));
     }
     if mappings.is_empty() {
-        let foreign_key = relationship.foreign_key.as_deref().ok_or_else(|| {
-            TableStoreError::Metadata(format!(
-                "read model `{}` relationship `{}` must declare a foreign key",
-                parent_schema.model_name, relationship.field_name
-            ))
-        })?;
-        let child_column = column_name_for(child_schema, foreign_key).ok_or_else(|| {
-            TableStoreError::Metadata(format!(
-                "relationship `{}` foreign key `{}` is not a child column",
-                relationship.field_name, foreign_key
-            ))
-        })?;
-        let parent_column = column_name_for(parent_schema, foreign_key)
-            .or_else(|| parent_schema.primary_key.columns.first().cloned())
-            .ok_or_else(|| {
-                TableStoreError::Metadata(format!(
-                    "relationship `{}` has no parent key to delegate",
-                    relationship.field_name
-                ))
-            })?;
+        let (child_column, parent_column) =
+            has_many_join_columns(parent_schema, relationship, child_schema)?;
         mappings.push((child_column, parent_column));
     }
     Ok(mappings)

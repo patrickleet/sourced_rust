@@ -5,7 +5,9 @@ use std::cmp::Ordering;
 
 use serde::Serialize;
 
-use super::{RelationshipDef, RowKey, RowValue, RowValues, TableSchema, TableStoreError};
+use super::{
+    RelationshipDef, RelationshipKind, RowKey, RowValue, RowValues, TableSchema, TableStoreError,
+};
 
 /// Expected optimistic version carried by a staged table write.
 #[derive(Clone, Debug, Default, PartialEq, Eq)]
@@ -370,6 +372,12 @@ pub(crate) fn has_many_join_columns(
     relationship: &RelationshipDef,
     target_schema: &TableSchema,
 ) -> Result<(String, String), TableStoreError> {
+    if !matches!(relationship.kind, RelationshipKind::HasMany) {
+        return Err(TableStoreError::Metadata(format!(
+            "relationship `{}` must be has_many to delegate a target foreign key",
+            relationship.field_name
+        )));
+    }
     let foreign_key = relationship.foreign_key.as_deref().ok_or_else(|| {
         TableStoreError::Metadata(format!(
             "relationship `{}` must declare a foreign key",
@@ -476,8 +484,7 @@ mod tests {
         assert_ne!(key_fingerprint(&integer), key_fingerprint(&string));
     }
 
-    #[test]
-    fn has_many_join_uses_the_target_foreign_key_reference_over_a_name_collision() {
+    fn colliding_has_many_schemas() -> (TableSchema, TableSchema, RelationshipDef) {
         let root = TableSchema {
             model_name: "Parent".into(),
             table_name: "parents".into(),
@@ -523,10 +530,45 @@ mod tests {
             through: None,
             target_foreign_key: None,
         };
+        (root, target, relationship)
+    }
 
+    #[test]
+    fn has_many_join_uses_the_target_foreign_key_reference_over_a_name_collision() {
+        let (root, target, relationship) = colliding_has_many_schemas();
         assert_eq!(
             has_many_join_columns(&root, &relationship, &target).unwrap(),
             ("parent_id".into(), "id".into())
+        );
+    }
+
+    #[test]
+    fn has_many_join_rejects_other_relationship_kinds() {
+        let (root, target, mut relationship) = colliding_has_many_schemas();
+        relationship.kind = RelationshipKind::BelongsTo;
+
+        let error = has_many_join_columns(&root, &relationship, &target).unwrap_err();
+
+        assert!(
+            matches!(error, TableStoreError::Metadata(message) if message.contains("must be has_many"))
+        );
+    }
+
+    #[test]
+    fn has_many_join_rejects_ambiguous_composite_root_fallback() {
+        let (mut root, mut target, relationship) = colliding_has_many_schemas();
+        root.primary_key = PrimaryKey::new(["id", "parent_id"]);
+        target
+            .columns
+            .iter_mut()
+            .find(|column| column.column_name == "parent_id")
+            .expect("target foreign-key column")
+            .foreign_key = None;
+
+        let error = has_many_join_columns(&root, &relationship, &target).unwrap_err();
+
+        assert!(
+            matches!(error, TableStoreError::Metadata(message) if message.contains("composite key"))
         );
     }
 }

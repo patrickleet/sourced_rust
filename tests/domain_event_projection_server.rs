@@ -8,7 +8,7 @@ use distributed::{
     Entity, InMemoryRepository, ProjectionArm, ProjectionEventSet, ProjectionExpression,
     ProjectionMutationKind, ProjectionPartition, ProjectionPlanTemplate, ProjectionProgram,
     ProjectionProgramError, ProjectionValue, ReadModelWorkspaceExt, ReadModelWritePlanBuilder,
-    ReadModelWritePlanStore, RowKey, RowValue,
+    ReadModelWritePlanStore, RowKey, RowValue, TableMutation, TableWritePlan,
 };
 use serde::{Deserialize, Serialize};
 
@@ -103,6 +103,23 @@ struct PlayerWeaponLinks {
 struct PlayerSummary {
     player_id: String,
     weapon_count: u64,
+}
+
+#[derive(Clone, Debug, Default, PartialEq, Serialize, Deserialize, distributed::ReadModel)]
+#[readmodel(table = "projection_collision_parents", primary_key = ["id"])]
+struct CollisionParent {
+    id: String,
+    parent_id: String,
+    #[readmodel(has_many = "CollisionChild", foreign_key = "parent_id")]
+    children: Vec<CollisionChild>,
+}
+
+#[derive(Clone, Debug, Default, PartialEq, Serialize, Deserialize, distributed::ReadModel)]
+#[readmodel(table = "projection_collision_children", primary_key = ["child_id"])]
+struct CollisionChild {
+    child_id: String,
+    #[readmodel(foreign_key = "projection_collision_parents.id")]
+    parent_id: String,
 }
 
 struct PlayerEvents;
@@ -219,6 +236,24 @@ fn occurrence() -> distributed::DomainEventOccurrence {
         .clone()
 }
 
+fn collision_occurrence() -> distributed::DomainEventOccurrence {
+    let mut aggregate = PlayerAggregate::default();
+    aggregate
+        .load(
+            "parent-1".into(),
+            "Ada".into(),
+            "child-1".into(),
+            "2026-07-28T00:00:00Z".into(),
+        )
+        .expect("capture collision state-bearing domain event");
+    aggregate
+        .entity
+        .pending_domain_events()
+        .last()
+        .expect("collision outward occurrence")
+        .clone()
+}
+
 fn expected_models() -> (Players, PlayerWeapons, PlayerSummary, PlayerWeaponLinks) {
     (
         Players {
@@ -269,6 +304,90 @@ fn portable_and_fluent_plans() -> (distributed::TableWritePlan, distributed::Tab
     )
 }
 
+fn collision_projection_plan() -> TableWritePlan {
+    let parent = model_operation::<CollisionParent>(
+        "upsert-collision-parent",
+        0,
+        ProjectionMutationKind::Upsert,
+        vec![ProjectionAuthoringField::set(
+            "id",
+            body_path::<PlayerState>("player_id").expect("player ID path"),
+        )],
+        vec![ProjectionAuthoringField::set(
+            "parent_id",
+            ProjectionExpression::constant(ProjectionValue::string("wrong-parent")),
+        )],
+    )
+    .expect("collision parent operation");
+    let child = related_operation::<__DistributedCollisionParentEffectRelationship_children>(
+        "upsert-collision-child",
+        1,
+        ProjectionMutationKind::UpsertRelated,
+        &parent,
+        vec![ProjectionAuthoringField::set(
+            "child_id",
+            body_path::<PlayerState>("weapon_id").expect("child ID path"),
+        )],
+        Vec::new(),
+    )
+    .expect("collision child operation");
+    let program = ProjectionProgram::try_new(
+        "collision-relationship",
+        1,
+        ProjectionPartition::Unit,
+        vec![ProjectionArm::try_new(
+            "collision-loaded",
+            state_selector::<PlayerState>("player.loaded", 1).expect("state selector"),
+            vec![parent, child],
+        )
+        .expect("collision arm")],
+    )
+    .expect("collision program");
+    let resolved = ProjectionPlanTemplate::<PlayerEvents>::try_new(program)
+        .expect("collision event set")
+        .resolve(&collision_occurrence())
+        .expect("collision projection resolves");
+    let mut builder = ReadModelWritePlanBuilder::new();
+    for mutation in resolved.mutations() {
+        let operation = mutation
+            .provenance()
+            .operation_ids()
+            .first()
+            .map(String::as_str)
+            .expect("collision operation provenance");
+        match operation {
+            "upsert-collision-parent" => {
+                lower_model_mutation::<CollisionParent>(&mut builder, mutation)
+                    .expect("lower collision parent");
+            }
+            "upsert-collision-child" => {
+                lower_related_mutation::<__DistributedCollisionParentEffectRelationship_children>(
+                    &mut builder,
+                    &resolved,
+                    mutation,
+                    "upsert-collision-parent",
+                )
+                .expect("lower collision child");
+            }
+            other => panic!("unexpected collision operation `{other}`"),
+        }
+    }
+    finish_lowering(builder, &resolved)
+        .expect("finish collision lowering")
+        .write_plan
+}
+
+fn child_parent_id(plan: &TableWritePlan) -> Option<&RowValue> {
+    plan.mutations.iter().find_map(|mutation| {
+        let TableMutation::UpsertRow(row) = mutation else {
+            return None;
+        };
+        (row.schema.table_name == "projection_collision_children")
+            .then(|| row.values.get("parent_id"))
+            .flatten()
+    })
+}
+
 async fn assert_in_memory_rows(repository: &InMemoryRepository) {
     let (player, weapon, summary, link) = expected_models();
     let mut workspace = repository.workspace();
@@ -306,6 +425,68 @@ async fn assert_in_memory_rows(repository: &InMemoryRepository) {
             .expect("join exists")
             .data,
         link
+    );
+}
+
+#[tokio::test]
+async fn explicit_child_fk_reference_beats_a_same_named_parent_column_everywhere() {
+    let parent = CollisionParent {
+        id: "parent-1".into(),
+        parent_id: "wrong-parent".into(),
+        children: Vec::new(),
+    };
+    let child = CollisionChild {
+        child_id: "child-1".into(),
+        parent_id: String::new(),
+    };
+
+    let mut fluent = ReadModelWritePlanBuilder::new();
+    fluent
+        .upsert_related(&parent, "children", &child)
+        .expect("fluent relationship write");
+    let fluent = fluent.into_write_plan().expect("fluent plan");
+    assert_eq!(
+        child_parent_id(&fluent),
+        Some(&RowValue::String("parent-1".into()))
+    );
+
+    let portable = collision_projection_plan();
+    assert_eq!(
+        child_parent_id(&portable),
+        Some(&RowValue::String("parent-1".into()))
+    );
+
+    let repository = InMemoryRepository::new();
+    repository
+        .model_store()
+        .register_schema::<CollisionParent>()
+        .expect("register collision parent");
+    repository
+        .model_store()
+        .register_schema::<CollisionChild>()
+        .expect("register collision child");
+    let mut seed = ReadModelWritePlanBuilder::new();
+    seed.upsert(&parent).expect("seed collision parent");
+    repository
+        .commit_write_plan(seed.into_write_plan().expect("seed plan"))
+        .await
+        .expect("seed parent");
+
+    let mut workspace = repository.workspace();
+    let mut loaded = workspace
+        .load::<CollisionParent>(RowKey::new([("id", RowValue::String("parent-1".into()))]))
+        .include("children")
+        .one()
+        .await
+        .expect("load collision parent")
+        .expect("collision parent exists")
+        .data;
+    loaded.children.push(child);
+    workspace.sync(loaded).expect("sync collision child");
+    let synced = workspace.into_write_plan().expect("sync plan");
+    assert_eq!(
+        child_parent_id(&synced),
+        Some(&RowValue::String("parent-1".into()))
     );
 }
 
