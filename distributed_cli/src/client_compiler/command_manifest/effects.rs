@@ -3,7 +3,8 @@ use std::collections::{BTreeMap, BTreeSet};
 use crate::client_compiler::manifest::{
     ManifestCommand, ManifestCommandShape, ManifestEffect, ManifestEffectExpression,
     ManifestEffectField, ManifestEffectKey, ManifestEffectRelationship, ManifestField,
-    ManifestInputDefault, ManifestModel, ManifestNormalization, ManifestTypeField,
+    ManifestInputDefault, ManifestModel, ManifestNormalization, ManifestProjectionPreviewSource,
+    ManifestTypeField,
 };
 use crate::client_compiler::ClientCompileError;
 
@@ -59,6 +60,15 @@ pub(super) fn validate_trusted_preset_inventory(
     if let Some(direct) = &command.extensions.direct_projection {
         if let Some(partition) = &direct.partition {
             expression_names(partition, &mut referenced);
+        }
+    }
+    if let Some(projection) = &command.extensions.projection {
+        for occurrence in &projection.preview_occurrences {
+            for value in &occurrence.values {
+                if let ManifestProjectionPreviewSource::TrustedPreset { name, .. } = &value.source {
+                    referenced.insert(name);
+                }
+            }
         }
     }
 

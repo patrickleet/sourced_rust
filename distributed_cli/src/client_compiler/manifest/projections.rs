@@ -149,6 +149,19 @@ pub(crate) fn validate_command_projections(
                 "projection event_set and program_arms must be non-empty",
             ));
         }
+        if projection.event_set.len() > MAX_PROJECTION_ITEMS
+            || projection.program_arms.len() > MAX_PROJECTION_ITEMS
+            || projection.preview_occurrences.len() > MAX_PROJECTION_ITEMS
+        {
+            return Err(command_projection_error(
+                command,
+                "client.manifest.command_projection_inventory",
+                format!(
+                    "projection event_set, program_arms, and preview occurrences cannot exceed \
+                     {MAX_PROJECTION_ITEMS} entries"
+                ),
+            ));
+        }
         if projection
             .event_set
             .windows(2)
@@ -185,7 +198,10 @@ pub(crate) fn validate_command_projections(
             ));
         }
 
-        let mut selected_slots = BTreeMap::<ManifestProjectionEventRef, BTreeSet<String>>::new();
+        let mut selected_slots = BTreeMap::<
+            ManifestProjectionEventRef,
+            BTreeMap<String, ManifestProjectionValueType>,
+        >::new();
         let mut selected_programs = BTreeSet::new();
         for selected in &projection.program_arms {
             validate_event_ref(&selected.event)?;
@@ -234,13 +250,23 @@ pub(crate) fn validate_command_projections(
             collect_arm_slots(
                 arm,
                 selected_slots.entry(selected.event.clone()).or_default(),
-            );
+            )?;
         }
 
         if projection.preview_occurrences.is_empty() {
             requiring_revalidation.insert(command.name.clone());
         }
         for (index, occurrence) in projection.preview_occurrences.iter().enumerate() {
+            if occurrence.values.len() > MAX_PROJECTION_ITEMS {
+                return Err(command_projection_error(
+                    command,
+                    "client.manifest.command_projection_preview_inventory",
+                    format!(
+                        "one projection preview occurrence cannot exceed \
+                         {MAX_PROJECTION_ITEMS} values"
+                    ),
+                ));
+            }
             if occurrence.ordinal as usize != index {
                 return Err(command_projection_error(
                     command,
@@ -260,12 +286,13 @@ pub(crate) fn validate_command_projections(
                 .iter()
                 .map(|value| value.slot.clone())
                 .collect::<BTreeSet<_>>();
+            let expected_slot_names = expected_slots.keys().cloned().collect::<BTreeSet<_>>();
             if occurrence
                 .values
                 .windows(2)
                 .any(|pair| pair[0].slot >= pair[1].slot)
                 || actual_slots.len() != occurrence.values.len()
-                || &actual_slots != expected_slots
+                || actual_slots != expected_slot_names
             {
                 return Err(command_projection_error(
                     command,
@@ -274,7 +301,10 @@ pub(crate) fn validate_command_projections(
                 ));
             }
             for value in &occurrence.values {
-                validate_preview_source(command, &value.source)?;
+                let expected = expected_slots
+                    .get(&value.slot)
+                    .expect("exact slot coverage was validated");
+                validate_preview_source(command, &value.source, expected)?;
                 if matches!(
                     value.source,
                     ManifestProjectionPreviewSource::Unknown
@@ -770,13 +800,15 @@ fn validate_value(value: &ManifestProjectionValue, depth: usize) -> Result<(), C
 fn validate_preview_source(
     command: &ManifestCommand,
     source: &ManifestProjectionPreviewSource,
+    expected: &ManifestProjectionValueType,
 ) -> Result<(), ClientCompileError> {
     match source {
         ManifestProjectionPreviewSource::Input { path } => {
-            validate_shape_path(&command.input, path, "input")
+            let field = validate_shape_path(&command.input, path, "input")?;
+            validate_input_source_type(command, field, expected, "input")
         }
         ManifestProjectionPreviewSource::GeneratedDefault { path } => {
-            validate_shape_path(&command.input, path, "generated default")?;
+            let field = validate_shape_path(&command.input, path, "generated default")?;
             let declared = command
                 .extensions
                 .input_defaults
@@ -794,7 +826,7 @@ fn validate_preview_source(
                     "projection preview references a path not owned by input_defaults",
                 ));
             }
-            Ok(())
+            validate_input_source_type(command, field, expected, "generated default")
         }
         ManifestProjectionPreviewSource::TrustedPreset { name, codec } => {
             let declared = command
@@ -809,20 +841,37 @@ fn validate_preview_source(
                     "projection preview references an undeclared trusted scoped preset",
                 ));
             }
+            if !codec_compatible(codec, expected) {
+                return Err(command_projection_error(
+                    command,
+                    "client.manifest.command_projection_source_type",
+                    "projection preview trusted preset codec does not match the selected slot type",
+                ));
+            }
             Ok(())
         }
-        ManifestProjectionPreviewSource::Constant { value } => validate_value(value, 1),
+        ManifestProjectionPreviewSource::Constant { value } => {
+            validate_value(value, 1)?;
+            if !constant_compatible(value, expected) {
+                return Err(command_projection_error(
+                    command,
+                    "client.manifest.command_projection_source_type",
+                    "projection preview constant tag does not match the selected slot type",
+                ));
+            }
+            Ok(())
+        }
         ManifestProjectionPreviewSource::Null
         | ManifestProjectionPreviewSource::Absent
         | ManifestProjectionPreviewSource::Unknown => Ok(()),
     }
 }
 
-fn validate_shape_path(
-    shape: &ManifestCommandShape,
+fn validate_shape_path<'a>(
+    shape: &'a ManifestCommandShape,
     path: &[String],
     label: &str,
-) -> Result<(), ClientCompileError> {
+) -> Result<&'a ManifestTypeField, ClientCompileError> {
     let ManifestCommandShape::Object { definition } = shape else {
         return Err(projection_error(
             "client.manifest.command_projection_path",
@@ -848,7 +897,7 @@ fn validate_shape_path(
                 )
             })?;
         if index + 1 == path.len() {
-            return Ok(());
+            return Ok(field);
         }
         current = field.nested.as_deref().ok_or_else(|| {
             projection_error(
@@ -857,20 +906,103 @@ fn validate_shape_path(
             )
         })?;
     }
+    unreachable!("a non-empty shape path returns from its final segment")
+}
+
+fn validate_input_source_type(
+    command: &ManifestCommand,
+    field: &ManifestTypeField,
+    expected: &ManifestProjectionValueType,
+    label: &str,
+) -> Result<(), ClientCompileError> {
+    let compatible = !field.list
+        && field.nested.is_none()
+        && field
+            .codec
+            .as_deref()
+            .is_some_and(|codec| input_codec_compatible(&field.type_name, codec, expected));
+    if !compatible {
+        return Err(command_projection_error(
+            command,
+            "client.manifest.command_projection_source_type",
+            format!("projection preview {label} must resolve to a compatible non-list scalar leaf"),
+        ));
+    }
     Ok(())
 }
 
-fn collect_arm_slots(arm: &ManifestProjectionArm, slots: &mut BTreeSet<String>) {
+fn input_codec_compatible(
+    type_name: &str,
+    codec: &str,
+    expected: &ManifestProjectionValueType,
+) -> bool {
+    match expected {
+        ManifestProjectionValueType::Boolean => type_name == "Boolean" && codec == "boolean",
+        ManifestProjectionValueType::I64 => matches!(
+            (type_name, codec),
+            ("Int", "int32") | ("BigInt", "json_number_precision_limited")
+        ),
+        // Both numeric command codecs admit negative values. Without a
+        // non-negative refinement in the frozen manifest, neither proves U64.
+        ManifestProjectionValueType::U64 => false,
+        ManifestProjectionValueType::F64 => type_name == "Float" && codec == "float64",
+        ManifestProjectionValueType::String => matches!(
+            (type_name, codec),
+            ("ID" | "String", "string") | ("Timestamptz", "string_unvalidated_timestamp")
+        ),
+        ManifestProjectionValueType::Enum(enum_type) => type_name == enum_type && codec == "string",
+        ManifestProjectionValueType::Json => type_name == "JSON" && codec == "json",
+    }
+}
+
+fn codec_compatible(codec: &str, expected: &ManifestProjectionValueType) -> bool {
+    match expected {
+        ManifestProjectionValueType::Boolean => codec == "boolean",
+        ManifestProjectionValueType::I64 => {
+            matches!(codec, "int32" | "json_number_precision_limited")
+        }
+        ManifestProjectionValueType::U64 => false,
+        ManifestProjectionValueType::F64 => codec == "float64",
+        ManifestProjectionValueType::String | ManifestProjectionValueType::Enum(_) => {
+            codec == "string"
+        }
+        ManifestProjectionValueType::Json => codec == "json",
+    }
+}
+
+fn constant_compatible(
+    value: &ManifestProjectionValue,
+    expected: &ManifestProjectionValueType,
+) -> bool {
+    match (value, expected) {
+        (ManifestProjectionValue::Boolean(_), ManifestProjectionValueType::Boolean)
+        | (ManifestProjectionValue::I64(_), ManifestProjectionValueType::I64)
+        | (ManifestProjectionValue::U64(_), ManifestProjectionValueType::U64)
+        | (ManifestProjectionValue::F64(_), ManifestProjectionValueType::F64)
+        | (ManifestProjectionValue::String(_), ManifestProjectionValueType::String) => true,
+        (
+            ManifestProjectionValue::Enum { enum_type, .. },
+            ManifestProjectionValueType::Enum(expected),
+        ) => enum_type == expected,
+        (_, ManifestProjectionValueType::Json) => true,
+        _ => false,
+    }
+}
+
+fn collect_arm_slots(
+    arm: &ManifestProjectionArm,
+    slots: &mut BTreeMap<String, ManifestProjectionValueType>,
+) -> Result<(), ClientCompileError> {
     if let ManifestProjectionPartition::Expression { expression } = &arm.partition {
-        collect_expression_slots(expression, slots);
+        collect_expression_slots(expression, slots)?;
     }
     for operation in &arm.operations {
         for field in &operation.key {
-            collect_expression_slots(&field.expression, slots);
+            collect_expression_slots(&field.expression, slots)?;
         }
         for field in &operation.fields {
             if let ManifestProjectionAssignment::Set { expression } = &field.assignment {
-                collect_expression_slots(expression, slots);
+                collect_expression_slots(expression, slots)?;
             }
         }
         for relationship in &operation.relationships {
@@ -879,39 +1011,49 @@ fn collect_arm_slots(arm: &ManifestProjectionArm, slots: &mut BTreeSet<String>) 
                 .iter()
                 .chain(&relationship.target_key)
             {
-                collect_expression_slots(&field.expression, slots);
+                collect_expression_slots(&field.expression, slots)?;
             }
         }
     }
+    Ok(())
 }
 
 fn collect_expression_slots(
     expression: &ManifestProjectionExpression,
-    slots: &mut BTreeSet<String>,
-) {
+    slots: &mut BTreeMap<String, ManifestProjectionValueType>,
+) -> Result<(), ClientCompileError> {
     match expression {
-        ManifestProjectionExpression::Slot { slot, .. } => {
-            slots.insert(slot.clone());
+        ManifestProjectionExpression::Slot { slot, value_type } => {
+            if slots
+                .insert(slot.clone(), value_type.clone())
+                .is_some_and(|existing| existing != *value_type)
+            {
+                return Err(projection_error(
+                    "client.manifest.command_projection_slot_type",
+                    format!("projection slot `{slot}` has conflicting value types"),
+                ));
+            }
         }
         ManifestProjectionExpression::List { values } => {
             for value in values {
-                collect_expression_slots(value, slots);
+                collect_expression_slots(value, slots)?;
             }
         }
         ManifestProjectionExpression::Object { fields } => {
             for field in fields {
-                collect_expression_slots(&field.value, slots);
+                collect_expression_slots(&field.value, slots)?;
             }
         }
         ManifestProjectionExpression::Transform { arguments, .. } => {
             for argument in arguments {
-                collect_expression_slots(argument, slots);
+                collect_expression_slots(argument, slots)?;
             }
         }
         ManifestProjectionExpression::Envelope { .. }
         | ManifestProjectionExpression::Constant { .. }
         | ManifestProjectionExpression::Enum { .. } => {}
     }
+    Ok(())
 }
 
 fn validate_event_ref(event: &ManifestProjectionEventRef) -> Result<(), ClientCompileError> {

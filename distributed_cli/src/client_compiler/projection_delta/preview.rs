@@ -585,10 +585,8 @@ fn lower_arm(
         lower_invalidations(
             occurrence_ordinal,
             projection_ref,
-            event,
             operation,
             &partition,
-            slots,
             operations,
             recoveries,
         )?;
@@ -658,9 +656,9 @@ fn lower_record(
             let mapped = set
                 .iter()
                 .map(|field| field.field.as_str())
-                .chain(unset.iter().map(String::as_str))
                 .collect::<BTreeSet<_>>();
             let complete = !uncertain
+                && unset.is_empty()
                 && replacement_fields
                     .iter()
                     .map(String::as_str)
@@ -823,10 +821,8 @@ fn lower_relationships(
 fn lower_invalidations(
     occurrence_ordinal: u32,
     projection_ref: u32,
-    event: &ManifestProjectionEventRef,
     operation: &ManifestProjectionOperation,
     partition: &Option<PreviewPartition>,
-    slots: &BTreeMap<&str, Knowledge>,
     operations: &mut Vec<PreviewOperation>,
     recoveries: &mut Vec<PreviewRecovery>,
 ) -> Result<(), ClientCompileError> {
@@ -868,39 +864,34 @@ fn lower_invalidations(
             ManifestProjectionInvalidation::Relationship {
                 source_model,
                 relationship,
-                target_model: _,
+                target_model,
             } => {
-                let source = partition
-                    .clone()
-                    .zip(evaluate_key(&operation.key, slots, event))
-                    .map(|(partition, key)| PreviewScope {
-                        partition,
-                        model: source_model.clone(),
-                        key,
-                    });
-                if let Some(source) = source {
-                    operations.push(PreviewOperation {
-                        occurrence_ordinal,
-                        projection_refs: vec![projection_ref],
-                        mutation: PreviewMutation::InvalidateRelationship {
-                            relationship: relationship.clone(),
-                            source: source.clone(),
-                        },
-                    });
-                    recoveries.push(relationship_recovery(
-                        occurrence_ordinal,
-                        projection_ref,
-                        relationship.clone(),
-                        source,
-                    ));
-                } else {
-                    recoveries.push(model_recovery(
-                        occurrence_ordinal,
-                        projection_ref,
-                        source_model.clone(),
-                        partition.clone(),
-                    ));
+                let has_keyed_effect = operation.relationships.iter().any(|effect| {
+                    effect.kind == ManifestProjectionRelationshipEffectKind::Invalidate
+                        && effect.source_model == *source_model
+                        && effect.relationship == *relationship
+                        && effect.target_model == *target_model
+                });
+                if has_keyed_effect {
+                    continue;
                 }
+                // A provenance-only relationship invalidation has no source
+                // key of its own. The record operation key may belong to a
+                // different model and is never authority for an edge scope.
+                operations.push(PreviewOperation {
+                    occurrence_ordinal,
+                    projection_refs: vec![projection_ref],
+                    mutation: PreviewMutation::InvalidateModel {
+                        partition: partition.clone(),
+                        model: source_model.clone(),
+                    },
+                });
+                recoveries.push(model_recovery(
+                    occurrence_ordinal,
+                    projection_ref,
+                    source_model.clone(),
+                    partition.clone(),
+                ));
             }
         }
     }
@@ -1687,6 +1678,79 @@ mod tests {
         assert!(matches!(
             recoveries[0].target,
             PreviewRecoveryTarget::Model { .. }
+        ));
+    }
+
+    #[test]
+    fn relationship_invalidation_uses_only_its_explicit_keyed_effect() {
+        let known = |path: &str| {
+            Knowledge::Known(PreviewExpression::Input {
+                path: vec![path.into()],
+            })
+        };
+        let partition = Some(PreviewPartition::Unit);
+        let slots = BTreeMap::from([("source", known("source")), ("target", known("target"))]);
+        let mut operation = relationship_operation();
+        operation.relationships[0].kind = ManifestProjectionRelationshipEffectKind::Invalidate;
+        operation.invalidations = vec![ManifestProjectionInvalidation::Relationship {
+            source_model: "Todo".into(),
+            relationship: "owner".into(),
+            target_model: "User".into(),
+        }];
+        let mut operations = Vec::new();
+        let mut recoveries = Vec::new();
+        lower_relationships(
+            0,
+            0,
+            &event(),
+            &operation,
+            &partition,
+            &slots,
+            &mut operations,
+            &mut recoveries,
+        )
+        .unwrap();
+        lower_invalidations(
+            0,
+            0,
+            &operation,
+            &partition,
+            &mut operations,
+            &mut recoveries,
+        )
+        .unwrap();
+        assert_eq!(operations.len(), 1);
+        assert_eq!(recoveries.len(), 1);
+        assert!(matches!(
+            operations[0].mutation,
+            PreviewMutation::InvalidateRelationship { .. }
+        ));
+        assert!(matches!(
+            recoveries[0].target,
+            PreviewRecoveryTarget::Relationship { .. }
+        ));
+
+        operation.relationships.clear();
+        operations.clear();
+        recoveries.clear();
+        lower_invalidations(
+            0,
+            0,
+            &operation,
+            &partition,
+            &mut operations,
+            &mut recoveries,
+        )
+        .unwrap();
+        assert_eq!(operations.len(), 1);
+        assert_eq!(recoveries.len(), 1);
+        assert!(matches!(
+            &operations[0].mutation,
+            PreviewMutation::InvalidateModel { model, .. } if model == "Todo"
+        ));
+        assert!(matches!(
+            &recoveries[0].target,
+            PreviewRecoveryTarget::Model { model, .. } if model == "Todo"
         ));
     }
 }

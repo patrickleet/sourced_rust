@@ -2613,6 +2613,14 @@ fn command_protocol_and_extensions_are_preserved_exactly() {
     partial_value["commands"][0]["extensions"]["projection"]["preview_occurrences"][0]["values"]
         [4]["source"] = json!({"kind": "unknown"});
     refresh_schema_fingerprint(&mut partial_value);
+    let mut absent_value = value.clone();
+    absent_value["commands"][0]["extensions"]["projection"]["preview_occurrences"][0]["values"]
+        [4]["source"] = json!({"kind": "absent"});
+    refresh_schema_fingerprint(&mut absent_value);
+    let mut null_value = value.clone();
+    null_value["commands"][0]["extensions"]["projection"]["preview_occurrences"][0]["values"][4]
+        ["source"] = json!({"kind": "null"});
+    refresh_schema_fingerprint(&mut null_value);
     let mut unknown_key_value = value.clone();
     unknown_key_value["commands"][0]["extensions"]["projection"]["preview_occurrences"][0]
         ["values"][1]["source"] = json!({"kind": "unknown"});
@@ -2650,6 +2658,62 @@ fn command_protocol_and_extensions_are_preserved_exactly() {
         .unwrap()
         .push(second_operation);
     refresh_schema_fingerprint(&mut multi_model_value);
+    let mut input_i64_value = value.clone();
+    input_i64_value["commands"][0]["input"]["definition"]["fields"]
+        .as_array_mut()
+        .unwrap()
+        .insert(
+            1,
+            json!({
+                "name": "priority",
+                "type_name": "Int",
+                "nullable": false,
+                "list": false,
+                "item_nullable": false,
+                "codec": "int32"
+            }),
+        );
+    input_i64_value["commands"][0]["extensions"]["projection"]["preview_occurrences"][0]
+        ["values"][2]["source"] = json!({"kind": "input", "path": ["priority"]});
+    refresh_schema_fingerprint(&mut input_i64_value);
+    let mut preset_i64_value = value.clone();
+    preset_i64_value["commands"][0]["extensions"]["trusted_presets"] =
+        json!([{"name": "priority", "codec": "int32"}]);
+    preset_i64_value["commands"][0]["extensions"]["projection"]["preview_occurrences"][0]
+        ["values"][2]["source"] =
+        json!({"kind": "trusted_preset", "name": "priority", "codec": "int32"});
+    refresh_schema_fingerprint(&mut preset_i64_value);
+    let mut invalid_u64_source = input_i64_value.clone();
+    invalid_u64_source["projection_programs"][0]["arms"][0]["operations"][0]["fields"][1]
+        ["assignment"]["expression"]["value_type"] = json!({"type": "u64"});
+    refresh_schema_fingerprint(&mut invalid_u64_source);
+    let mut invalid_constant_source = value.clone();
+    invalid_constant_source["commands"][0]["extensions"]["projection"]["preview_occurrences"][0]
+        ["values"][2]["source"] =
+        json!({"kind": "constant", "value": {"type": "string", "value": "zero"}});
+    refresh_schema_fingerprint(&mut invalid_constant_source);
+    let mut invalid_default_source = value.clone();
+    invalid_default_source["commands"][0]["extensions"]["projection"]["preview_occurrences"][0]
+        ["values"][2]["source"] = json!({"kind": "generated_default", "path": ["id"]});
+    refresh_schema_fingerprint(&mut invalid_default_source);
+    let mut invalid_list_source = input_i64_value.clone();
+    invalid_list_source["commands"][0]["input"]["definition"]["fields"][1]["list"] = json!(true);
+    refresh_schema_fingerprint(&mut invalid_list_source);
+    let mut invalid_preset_source = value.clone();
+    invalid_preset_source["commands"][0]["extensions"]["trusted_presets"] =
+        json!([{"name": "priority", "codec": "json"}]);
+    invalid_preset_source["commands"][0]["extensions"]["projection"]["preview_occurrences"][0]
+        ["values"][2]["source"] =
+        json!({"kind": "trusted_preset", "name": "priority", "codec": "json"});
+    refresh_schema_fingerprint(&mut invalid_preset_source);
+    let mut conflicting_slot_type = value.clone();
+    conflicting_slot_type["projection_programs"][0]["arms"][0]["operations"][0]["fields"][2]
+        ["assignment"]["expression"] = json!({
+        "kind": "slot",
+        "slot": "state.id",
+        "value_type": {"type": "boolean"}
+    });
+    refresh_schema_fingerprint(&mut conflicting_slot_type);
     let project = compile_client(ClientCompileInput::new(
         value,
         ClientSurfaceSelector::role("user"),
@@ -2731,6 +2795,35 @@ fn command_protocol_and_extensions_are_preserved_exactly() {
     assert!(partial_commands.contains("\"condition\": \"if_record_missing\""));
     assert!(partial_commands.contains("\"kind\": \"record\""));
 
+    let absent = compile_client(ClientCompileInput::new(
+        absent_value,
+        ClientSurfaceSelector::role("user"),
+        vec![ClientDocument::new(
+            "src/routes/todos/+page.graphql",
+            "query Todos { todos { id } }",
+        )],
+    ))
+    .expect("compile explicitly absent projection field");
+    let absent_commands = file(&absent, "commands.ts");
+    assert!(absent_commands.contains("\"op\": \"patch\""));
+    assert!(absent_commands.contains("\"unset\": [\n              \"title\"\n"));
+    assert!(absent_commands.contains("\"condition\": \"if_record_missing\""));
+    assert!(!absent_commands.contains("\"op\": \"upsert\""));
+
+    let null = compile_client(ClientCompileInput::new(
+        null_value,
+        ClientSurfaceSelector::role("user"),
+        vec![ClientDocument::new(
+            "src/routes/todos/+page.graphql",
+            "query Todos { todos { id } }",
+        )],
+    ))
+    .expect("compile known null as a complete projection value");
+    let null_commands = file(&null, "commands.ts");
+    assert!(null_commands.contains("\"op\": \"upsert\""));
+    assert!(null_commands.contains("\"kind\": \"null\""));
+    assert!(!null_commands.contains("\"condition\": \"if_record_missing\""));
+
     for fallback in [unknown_key_value, unknown_partition_value] {
         let project = compile_client(ClientCompileInput::new(
             fallback,
@@ -2778,6 +2871,48 @@ fn command_protocol_and_extensions_are_preserved_exactly() {
     );
     assert!(multi_model_commands.contains("\"model\": \"Todo\""));
     assert!(multi_model_commands.contains("\"model\": \"User\""));
+
+    for valid_i64 in [input_i64_value, preset_i64_value] {
+        compile_client(ClientCompileInput::new(
+            valid_i64,
+            ClientSurfaceSelector::role("user"),
+            vec![ClientDocument::new(
+                "src/routes/todos/+page.graphql",
+                "query Todos { todos { id } }",
+            )],
+        ))
+        .expect("signed Int/int32 sources prove an I64 preview slot");
+    }
+
+    for invalid_source in [
+        invalid_u64_source,
+        invalid_constant_source,
+        invalid_default_source,
+        invalid_list_source,
+        invalid_preset_source,
+    ] {
+        let error = compile_client(ClientCompileInput::new(
+            invalid_source,
+            ClientSurfaceSelector::role("user"),
+            vec![ClientDocument::new(
+                "src/routes/todos/+page.graphql",
+                "query Todos { todos { id } }",
+            )],
+        ))
+        .expect_err("tampered projection preview source type must fail closed");
+        assert_eq!(error.code, "client.manifest.command_projection_source_type");
+    }
+
+    let error = compile_client(ClientCompileInput::new(
+        conflicting_slot_type,
+        ClientSurfaceSelector::role("user"),
+        vec![ClientDocument::new(
+            "src/routes/todos/+page.graphql",
+            "query Todos { todos { id } }",
+        )],
+    ))
+    .expect_err("one opaque slot cannot claim conflicting value types");
+    assert_eq!(error.code, "client.manifest.command_projection_slot_type");
 }
 
 #[test]
