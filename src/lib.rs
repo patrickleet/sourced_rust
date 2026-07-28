@@ -32,6 +32,7 @@ pub mod outbox;
 pub mod outbox_worker;
 #[cfg(feature = "postgres")]
 pub mod postgres_repo;
+pub mod projection;
 pub mod projection_protocol;
 pub mod queued_repo;
 pub mod read_model;
@@ -59,6 +60,23 @@ pub use domain_event::{
     DomainEventEnvelope, DomainEventOccurrence, DomainState, DomainStateDescriptor,
     DOMAIN_EVENT_BODY_CODEC, DOMAIN_EVENT_BODY_CODEC_VERSION, DOMAIN_EVENT_OCCURRENCE_VERSION,
     MAX_DOMAIN_EVENT_BODY_BYTES, MAX_DOMAIN_EVENT_OCCURRENCE_WIRE_BYTES,
+};
+
+// Logical projection contracts. Physical read-model lowering deliberately lives
+// behind adapters and is not part of this semantic surface.
+pub use projection::{
+    ProjectionArm, ProjectionAssignment, ProjectionEnvelopeField, ProjectionEventSelector,
+    ProjectionEventSet, ProjectionExpression, ProjectionField, ProjectionInvalidation,
+    ProjectionKeyField, ProjectionMutationKind, ProjectionMutationProvenance,
+    ProjectionObjectValueField, ProjectionOccurrenceProvenance, ProjectionOperation,
+    ProjectionPartition, ProjectionPlanTemplate, ProjectionProgram, ProjectionProgramError,
+    ProjectionProgramId, ProjectionProgramLimits, ProjectionRelationship,
+    ProjectionRelationshipEffect, ProjectionRelationshipEffectKind, ProjectionScalarTransform,
+    ProjectionTarget, ProjectionValue, ProjectionValueRef, ProjectionValueType,
+    ResolvedProjectionKey, ResolvedProjectionMutation, ResolvedProjectionMutationScope,
+    ResolvedProjectionPartition, ResolvedProjectionPartitionRef, ResolvedProjectionPlan,
+    ResolvedProjectionRelationshipEffect, ResolvedProjectionValue, MAX_PROJECTION_EXPRESSION_DEPTH,
+    MAX_PROJECTION_OPERATIONS_PER_OCCURRENCE, MAX_PROJECTION_PATH_SEGMENTS,
 };
 
 pub type SourcedResult<T = ()> = std::result::Result<T, EventRecordError>;
@@ -188,7 +206,7 @@ pub use microsvc::{ROLE_KEY, USER_ID_KEY};
 // Re-export proc macros
 pub use distributed_macros::{
     aggregate, command_confirmations, command_effects, command_input_defaults, digest, sourced,
-    GraphqlInput, GraphqlOutput, ReadModel, Snapshot,
+    DomainEvent, DomainState, GraphqlInput, GraphqlOutput, ReadModel, Snapshot,
 };
 
 // Re-export enqueue macro (requires "emitter" feature)
