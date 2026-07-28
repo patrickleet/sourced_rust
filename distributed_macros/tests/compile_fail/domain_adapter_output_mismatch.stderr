@@ -1,0 +1,11 @@
+error[E0308]: mismatched types
+  --> tests/compile_fail/domain_adapter_output_mismatch.rs:23:38
+   |
+19 | #[sourced(entity, events = "TodoReplayEvent", aggregate_type = "todo")]
+   | ----------------------------------------------------------------------- expected due to this
+...
+23 |         domain = with(TodoCompleted, wrong_output)
+   |                                      ^^^^^^^^^^^^ expected fn pointer, found fn item
+   |
+   = note: expected fn pointer `for<'a, 'b> fn(&'a Todo, &'b TodoReplayEvent) -> TodoCompleted`
+                 found fn item `for<'a, 'b> fn(&'a Todo, &'b TodoReplayEvent) -> std::string::String {wrong_output}`

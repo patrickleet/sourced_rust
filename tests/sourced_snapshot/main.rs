@@ -2,25 +2,16 @@ mod aggregates;
 
 use aggregates::*;
 use distributed::{
-    Aggregate, AggregateBuilder, DomainState, DomainStateDescriptor, InMemoryRepository,
-    OutboxMessage, OutboxStore, SnapshotStore, Snapshottable, StreamIdentity,
-    DOMAIN_EVENT_BODY_CODEC,
+    Aggregate, AggregateBuilder, DomainState, InMemoryRepository, OutboxMessage, OutboxStore,
+    SnapshotStore, Snapshottable, StreamIdentity, DOMAIN_EVENT_BODY_CODEC,
 };
 use serde::Serialize;
 
-#[derive(Serialize)]
+#[derive(Serialize, distributed_macros::DomainState)]
+#[domain_state(version = 7)]
 struct TodoPublicState {
     id: String,
     completed: bool,
-}
-
-impl DomainState for TodoPublicState {
-    const DESCRIPTOR: DomainStateDescriptor = DomainStateDescriptor::distributed_json(
-        "TodoPublicState",
-        7,
-        "todo-public-state-v7",
-        "sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
-    );
 }
 
 #[test]
@@ -40,7 +31,7 @@ fn snapshot_and_domain_state_evolve_as_distinct_contracts() {
     assert_ne!("bitcode", DOMAIN_EVENT_BODY_CODEC);
     assert_eq!(
         TodoPublicState::DESCRIPTOR.fingerprint,
-        "sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+        "sha256:81106056db3388a39aa45258729a992e4d072ed66eb269d977b8026d94db9e66"
     );
 }
 

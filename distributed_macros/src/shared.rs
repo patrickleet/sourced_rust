@@ -1,5 +1,6 @@
-use quote::quote;
-use syn::{Expr, FnArg, Ident, LitStr, Pat, ReturnType, Type};
+use quote::{quote, ToTokens};
+use sha2::{Digest, Sha256};
+use syn::{Attribute, Expr, FnArg, Ident, LitStr, Pat, ReturnType, Type};
 
 // Shared helpers
 // ============================================================================
@@ -104,6 +105,23 @@ pub(crate) fn wrap_result_body_with_guard(
     original_block: &syn::Block,
     signature_synthesized: bool,
 ) -> syn::Block {
+    wrap_result_body_with_guard_and_postlude(
+        guard,
+        prepend,
+        original_block,
+        proc_macro2::TokenStream::new(),
+        signature_synthesized,
+    )
+}
+
+/// Wrap a sourced method with an optional guard and successful postlude.
+pub(crate) fn wrap_result_body_with_guard_and_postlude(
+    guard: Option<&Expr>,
+    prepend: proc_macro2::TokenStream,
+    original_block: &syn::Block,
+    append: proc_macro2::TokenStream,
+    signature_synthesized: bool,
+) -> syn::Block {
     match (guard, signature_synthesized) {
         (Some(guard), true) => {
             syn::parse_quote! {
@@ -111,6 +129,7 @@ pub(crate) fn wrap_result_body_with_guard(
                     if #guard {
                         #prepend
                         #original_block;
+                        #append
                     }
                     Ok(())
                 }
@@ -122,6 +141,7 @@ pub(crate) fn wrap_result_body_with_guard(
                     if #guard {
                         #prepend
                         (|| #original_block)()?;
+                        #append
                     }
                     Ok(())
                 }
@@ -132,6 +152,7 @@ pub(crate) fn wrap_result_body_with_guard(
                 {
                     #prepend
                     #original_block;
+                    #append
                     Ok(())
                 }
             }
@@ -141,6 +162,7 @@ pub(crate) fn wrap_result_body_with_guard(
                 {
                     #prepend
                     (|| #original_block)()?;
+                    #append
                     Ok(())
                 }
             }
@@ -167,5 +189,130 @@ pub(crate) fn generate_enqueue_call(
         if !self.#entity_field.is_replaying() {
             #enqueue_expr
         };
+    }
+}
+
+/// Build a deterministic schema string for one named JSON object.
+pub(crate) fn canonical_object_schema(
+    role: &str,
+    type_name: &str,
+    version: u64,
+    container_attrs: &[Attribute],
+    fields: impl IntoIterator<Item = (String, Type, Vec<Attribute>)>,
+) -> String {
+    let serde_container = canonical_serde_attrs(container_attrs);
+    let fields = fields
+        .into_iter()
+        .map(|(name, ty, attrs)| {
+            let ty = compact_tokens(&ty);
+            let serde = canonical_serde_attrs(&attrs);
+            format!(
+                "{}:{}|{}:{}|{}:{}",
+                name.len(),
+                name,
+                ty.len(),
+                ty,
+                serde.len(),
+                serde
+            )
+        })
+        .collect::<Vec<_>>();
+
+    format!(
+        "distributed.schema/v1|role={}:{}|type={}:{}|version={version}|serde={}:{}|fields={}:{}",
+        role.len(),
+        role,
+        type_name.len(),
+        type_name,
+        serde_container.len(),
+        serde_container,
+        fields.len(),
+        fields.join("|")
+    )
+}
+
+fn canonical_serde_attrs(attrs: &[Attribute]) -> String {
+    attrs
+        .iter()
+        .filter(|attr| attr.path().is_ident("serde"))
+        .map(compact_tokens)
+        .collect::<Vec<_>>()
+        .join(",")
+}
+
+fn compact_tokens(tokens: &impl ToTokens) -> String {
+    tokens
+        .to_token_stream()
+        .to_string()
+        .chars()
+        .filter(|character| !character.is_whitespace())
+        .collect()
+}
+
+/// Return a lowercase SHA-256 descriptor fingerprint.
+pub(crate) fn schema_fingerprint(schema: &str) -> String {
+    let digest = Sha256::digest(schema.as_bytes());
+    format!("sha256:{digest:x}")
+}
+
+pub(crate) fn validate_domain_event_name_literal(name: &LitStr) -> syn::Result<()> {
+    const MAX_MESSAGE_NAME_BYTES: usize = 256;
+
+    let value = name.value();
+    if value.trim().is_empty() {
+        return Err(syn::Error::new(
+            name.span(),
+            "domain-event name must not be empty",
+        ));
+    }
+    if value.len() > MAX_MESSAGE_NAME_BYTES {
+        return Err(syn::Error::new(
+            name.span(),
+            format!(
+                "domain-event name is {} bytes, exceeding the maximum of {MAX_MESSAGE_NAME_BYTES}",
+                value.len()
+            ),
+        ));
+    }
+    if value.chars().any(char::is_control) {
+        return Err(syn::Error::new(
+            name.span(),
+            "domain-event name must not contain control characters",
+        ));
+    }
+    if let Some(wildcard) = value
+        .chars()
+        .find(|character| matches!(character, '*' | '#' | '>'))
+    {
+        return Err(syn::Error::new(
+            name.span(),
+            format!(
+                "domain-event name contains broker wildcard `{wildcard}`; `*`, `#`, and `>` are reserved routing operators"
+            ),
+        ));
+    }
+    Ok(())
+}
+
+#[cfg(test)]
+mod schema_tests {
+    use super::{schema_fingerprint, validate_domain_event_name_literal};
+    use syn::LitStr;
+
+    #[test]
+    fn schema_fingerprint_matches_sha256_reference_vector() {
+        assert_eq!(
+            schema_fingerprint("abc"),
+            "sha256:ba7816bf8f01cfea414140de5dae2223b00361a396177a9cb410ff61f20015ad"
+        );
+    }
+
+    #[test]
+    fn domain_event_name_validation_matches_runtime_boundaries() {
+        let boundary = LitStr::new(&"a".repeat(256), proc_macro2::Span::call_site());
+        let over = LitStr::new(&"a".repeat(257), proc_macro2::Span::call_site());
+
+        assert!(validate_domain_event_name_literal(&boundary).is_ok());
+        assert!(validate_domain_event_name_literal(&over).is_err());
     }
 }

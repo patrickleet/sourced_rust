@@ -100,6 +100,34 @@ mod tests {
         );
     }
 
+    #[test]
+    fn parse_event_args_keeps_replay_names_separate_from_domain_names() {
+        sourced::parse_event_args
+            .parse2(quote! { "private.*", version = 0 })
+            .expect("unmarked replay events do not use public domain-event constraints");
+    }
+
+    #[test]
+    fn parse_event_args_validates_domain_name_and_version() {
+        let name_error = sourced::parse_event_args
+            .parse2(quote! { "public.*", domain })
+            .err()
+            .expect("domain event names must be publication-safe");
+        assert!(
+            name_error.to_string().contains("wildcard"),
+            "got: {name_error}"
+        );
+
+        let version_error = sourced::parse_event_args
+            .parse2(quote! { "todo.completed", version = 0, domain })
+            .err()
+            .expect("domain event versions must be nonzero");
+        assert!(
+            version_error.to_string().contains("greater than zero"),
+            "got: {version_error}"
+        );
+    }
+
     // ---- sourced ---------------------------------------------------------
 
     #[test]
@@ -145,6 +173,106 @@ mod tests {
             out.contains("impl distributed :: Aggregate for Todo"),
             "got: {out}"
         );
+    }
+
+    #[test]
+    fn expand_sourced_places_state_capture_after_transition_body() {
+        let attr = quote! {
+            entity,
+            aggregate_type = "todo",
+            domain_state = TodoState,
+        };
+        let item = quote! {
+            impl Todo {
+                #[event("todo.completed", version = 1, domain)]
+                pub fn complete(&mut self) {
+                    self.completed = true;
+                }
+            }
+        };
+
+        let output = sourced::expand_sourced(attr, item).unwrap().to_string();
+        let digest = output.find("digest_v").unwrap();
+        let transition = output.find("self . completed = true").unwrap();
+        let capture = output.find("capture_domain_state").unwrap();
+
+        assert!(digest < transition);
+        assert!(transition < capture);
+        assert!(output.contains("is_replaying"));
+    }
+
+    #[test]
+    fn expand_sourced_identity_mode_generates_independent_public_descriptor() {
+        let attr = quote! {
+            entity,
+            aggregate_type = "todo",
+        };
+        let item = quote! {
+            impl Todo {
+                #[event("todo.renamed", version = 2, domain = event)]
+                pub fn rename(&mut self, title: String) {
+                    self.title = title;
+                }
+            }
+        };
+
+        let output = sourced::expand_sourced(attr, item).unwrap().to_string();
+
+        assert!(output.contains("pub struct TodoRenamedDomainEvent"));
+        assert!(output.contains("DomainEventBodyDescriptor :: distributed_json"));
+        assert!(output.contains("capture_domain_event"));
+        assert!(!output.contains("payload_bytes"));
+    }
+
+    #[test]
+    fn expand_sourced_deletion_uses_aggregate_sequence_as_incarnation() {
+        let attr = quote! {
+            entity,
+            aggregate_type = "todo",
+        };
+        let item = quote! {
+            impl Todo {
+                #[event("todo.purged", domain = deleted)]
+                pub fn purge(&mut self) {
+                    self.purged = true;
+                }
+            }
+        };
+
+        let output = sourced::expand_sourced(attr, item).unwrap().to_string();
+
+        assert!(output.contains("pub struct TodoDomainIdentity"));
+        assert!(output.contains("self . entity . version ()"));
+        assert!(output.contains("capture_domain_deletion"));
+        assert!(!output.contains("capture_domain_state"));
+    }
+
+    #[test]
+    fn expand_sourced_custom_mode_type_checks_a_pure_function_pointer() {
+        let attr = quote! {
+            entity,
+            events = "TodoReplayEvent",
+            aggregate_type = "todo",
+        };
+        let item = quote! {
+            impl Todo {
+                #[event(
+                    "todo.completed",
+                    domain = with(TodoCompleted, TodoCompleted::capture_after)
+                )]
+                pub fn complete(&mut self) {
+                    self.completed = true;
+                }
+            }
+        };
+
+        let output = sourced::expand_sourced(attr, item).unwrap().to_string();
+
+        assert!(output.contains(
+            "fn (& Todo , & TodoReplayEvent) -> TodoCompleted = TodoCompleted :: capture_after"
+        ));
+        assert!(output.contains("if let Some"));
+        assert!(output.contains("capture_domain_event"));
     }
 
     #[test]

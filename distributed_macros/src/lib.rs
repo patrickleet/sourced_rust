@@ -1,6 +1,8 @@
 mod aggregate;
 mod command_effects;
 mod digest;
+mod domain_event;
+mod domain_state;
 mod enqueue;
 mod graphql_types;
 mod read_model;
@@ -35,8 +37,15 @@ pub fn aggregate(input: TokenStream) -> TokenStream {
         .into()
 }
 
-/// Attribute macro that generates a typed event enum, `TryFrom<&EventRecord>`,
-/// and `impl Aggregate` from annotated methods in an impl block.
+/// Generate aggregate replay code and optionally capture typed outward domain events.
+///
+/// Configure a [`DomainState`] body once with
+/// `#[sourced(entity, aggregate_type = "todo", domain_state = TodoState)]`.
+/// Then `#[event("todo.completed", domain)]` captures the post-transition
+/// state, `domain = event` re-encodes the typed method arguments,
+/// `domain = deleted` captures the aggregate identity, and
+/// `domain = with(Output, adapter)` invokes a typed post-transition adapter.
+/// An unmarked `#[event]` remains aggregate-history-only.
 #[proc_macro_attribute]
 pub fn sourced(attr: TokenStream, item: TokenStream) -> TokenStream {
     sourced::expand_sourced(attr.into(), item.into())
@@ -58,6 +67,24 @@ pub fn derive_read_model(input: TokenStream) -> TokenStream {
 #[proc_macro_derive(Snapshot, attributes(snapshot))]
 pub fn derive_snapshot(input: TokenStream) -> TokenStream {
     snapshot::derive_snapshot(input)
+}
+
+/// Derive the independently versioned public state-body descriptor.
+///
+/// Use `#[domain_state(version = N)]`; the semantic outward event name belongs
+/// on each domain-marked `#[event(...)]`, not on the state DTO.
+#[proc_macro_derive(DomainState, attributes(domain_state, serde))]
+pub fn derive_domain_state(input: TokenStream) -> TokenStream {
+    domain_state::derive_domain_state(input)
+}
+
+/// Derive a typed explicit outward domain-event descriptor.
+///
+/// Use `#[domain_event(name = "todo.completed", version = N)]` for adapter
+/// output DTOs whose public contract differs from aggregate replay data.
+#[proc_macro_derive(DomainEvent, attributes(domain_event, serde))]
+pub fn derive_domain_event(input: TokenStream) -> TokenStream {
+    domain_event::derive_domain_event(input)
 }
 
 /// Compile a portable, type-checked optimistic command-effect declaration.

@@ -1,0 +1,5 @@
+error: bare `domain` and `domain = state` require `domain_state = StateType` in #[sourced(...)]
+ --> tests/compile_fail/domain_missing_state.rs:9:13
+  |
+9 |     #[event("todo.completed", domain)]
+  |             ^^^^^^^^^^^^^^^^

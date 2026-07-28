@@ -1,0 +1,5 @@
+error: domain state is a body schema, not an event; remove `name` and keep the semantic name on #[event(...)]
+ --> tests/compile_fail/domain_state_fake_event_name.rs:4:16
+  |
+4 | #[domain_state(name = "todo.state", version = 1)]
+  |                ^^^^
