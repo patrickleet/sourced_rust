@@ -375,7 +375,7 @@ enum ProjectionExpressionKind {
         values: Vec<ProjectionExpression>,
     },
     Object {
-        fields: Vec<ProjectionObjectField>,
+        fields: Vec<ProjectionExpressionObjectField>,
     },
     Transform {
         transform: ProjectionScalarTransform,
@@ -383,10 +383,69 @@ enum ProjectionExpressionKind {
     },
 }
 
+/// One canonical object member in a portable projection expression.
 #[derive(Clone, Debug, PartialEq, Eq, Serialize)]
-struct ProjectionObjectField {
+pub(crate) struct ProjectionExpressionObjectField {
     name: String,
     value: ProjectionExpression,
+}
+
+impl ProjectionExpressionObjectField {
+    /// Return the canonical member name.
+    pub(crate) fn name(&self) -> &str {
+        &self.name
+    }
+
+    /// Return the member expression.
+    pub(crate) fn value(&self) -> &ProjectionExpression {
+        &self.value
+    }
+}
+
+/// Exhaustive borrowed view of one portable projection expression.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(crate) enum ProjectionExpressionRef<'a> {
+    /// Read one typed outward-event body path.
+    BodyPath {
+        /// Raw body path, retained only on the server.
+        path: &'a [String],
+        /// Portable body value type.
+        value_type: &'a ProjectionValueType,
+    },
+    /// Read one retry-stable occurrence-envelope field.
+    Envelope {
+        /// Selected field.
+        field: ProjectionEnvelopeField,
+    },
+    /// Embed one portable typed constant.
+    Constant {
+        /// Constant value.
+        value: &'a ProjectionValue,
+    },
+    /// Embed one typed enum variant.
+    Enum {
+        /// Enum type.
+        enum_type: &'a str,
+        /// Enum variant.
+        variant: &'a str,
+    },
+    /// Construct an ordered list.
+    List {
+        /// Child expressions.
+        values: &'a [ProjectionExpression],
+    },
+    /// Construct a canonical object.
+    Object {
+        /// Canonical object members.
+        fields: &'a [ProjectionExpressionObjectField],
+    },
+    /// Apply one portable scalar transform.
+    Transform {
+        /// Closed transform.
+        transform: ProjectionScalarTransform,
+        /// Ordered arguments.
+        arguments: &'a [ProjectionExpression],
+    },
 }
 
 impl ProjectionExpression {
@@ -480,7 +539,7 @@ impl ProjectionExpression {
         let mut fields = fields
             .into_iter()
             .map(|(name, value)| {
-                Ok(ProjectionObjectField {
+                Ok(ProjectionExpressionObjectField {
                     name: non_empty(name.into(), "object field")?,
                     value,
                 })
@@ -525,6 +584,35 @@ impl ProjectionExpression {
         };
         expression.validate_depth()?;
         Ok(expression)
+    }
+
+    /// Borrow the complete portable expression without JSON re-parsing.
+    pub(crate) fn as_ref(&self) -> ProjectionExpressionRef<'_> {
+        match &self.expression {
+            ProjectionExpressionKind::BodyPath { path, value_type } => {
+                ProjectionExpressionRef::BodyPath { path, value_type }
+            }
+            ProjectionExpressionKind::Envelope { field } => {
+                ProjectionExpressionRef::Envelope { field: *field }
+            }
+            ProjectionExpressionKind::Constant { value } => {
+                ProjectionExpressionRef::Constant { value }
+            }
+            ProjectionExpressionKind::Enum { enum_type, variant } => {
+                ProjectionExpressionRef::Enum { enum_type, variant }
+            }
+            ProjectionExpressionKind::List { values } => ProjectionExpressionRef::List { values },
+            ProjectionExpressionKind::Object { fields } => {
+                ProjectionExpressionRef::Object { fields }
+            }
+            ProjectionExpressionKind::Transform {
+                transform,
+                arguments,
+            } => ProjectionExpressionRef::Transform {
+                transform: *transform,
+                arguments,
+            },
+        }
     }
 
     pub(crate) fn resolve(
@@ -743,7 +831,24 @@ pub enum ProjectionAssignment {
     Unset,
 }
 
+/// Exhaustive borrowed view of a portable field assignment.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(crate) enum ProjectionAssignmentRef<'a> {
+    /// Evaluate and assign an expression.
+    Set(&'a ProjectionExpression),
+    /// Explicitly remove the field.
+    Unset,
+}
+
 impl ProjectionAssignment {
+    /// Borrow set versus unset without serializing the assignment.
+    pub(crate) fn as_ref(&self) -> ProjectionAssignmentRef<'_> {
+        match self {
+            Self::Set(expression) => ProjectionAssignmentRef::Set(expression),
+            Self::Unset => ProjectionAssignmentRef::Unset,
+        }
+    }
+
     pub(crate) fn resolve(
         &self,
         occurrence: &DomainEventOccurrence,
@@ -913,5 +1018,67 @@ pub(crate) fn non_empty(
         Err(ProjectionProgramError::EmptyName(kind))
     } else {
         Ok(value)
+    }
+}
+
+#[cfg(test)]
+mod borrowed_view_tests {
+    use super::*;
+
+    fn kind(expression: &ProjectionExpression) -> &'static str {
+        match expression.as_ref() {
+            ProjectionExpressionRef::BodyPath { .. } => "body_path",
+            ProjectionExpressionRef::Envelope { .. } => "envelope",
+            ProjectionExpressionRef::Constant { .. } => "constant",
+            ProjectionExpressionRef::Enum { .. } => "enum",
+            ProjectionExpressionRef::List { .. } => "list",
+            ProjectionExpressionRef::Object { .. } => "object",
+            ProjectionExpressionRef::Transform { .. } => "transform",
+        }
+    }
+
+    #[test]
+    fn borrowed_expression_and_assignment_views_are_exhaustive() {
+        let body =
+            ProjectionExpression::body_path(ProjectionValueType::String, ["state", "todo_id"])
+                .unwrap();
+        let expressions = [
+            body.clone(),
+            ProjectionExpression::envelope(ProjectionEnvelopeField::OccurrenceId),
+            ProjectionExpression::constant(ProjectionValue::string("fixed")),
+            ProjectionExpression::enum_variant("TodoStatus", "Completed").unwrap(),
+            ProjectionExpression::list(vec![body.clone()]).unwrap(),
+            ProjectionExpression::object([("id", body.clone())]).unwrap(),
+            ProjectionExpression::transform(ProjectionScalarTransform::FirstPresent, vec![body])
+                .unwrap(),
+        ];
+        assert_eq!(
+            expressions.iter().map(kind).collect::<Vec<_>>(),
+            [
+                "body_path",
+                "envelope",
+                "constant",
+                "enum",
+                "list",
+                "object",
+                "transform"
+            ]
+        );
+        assert!(matches!(
+            ProjectionAssignment::Set(expressions[0].clone()).as_ref(),
+            ProjectionAssignmentRef::Set(_)
+        ));
+        assert_eq!(
+            ProjectionAssignment::Unset.as_ref(),
+            ProjectionAssignmentRef::Unset
+        );
+        let ProjectionExpressionRef::Object { fields } = expressions[5].as_ref() else {
+            panic!("expected object view");
+        };
+        assert_eq!(fields[0].name(), "id");
+        assert!(matches!(
+            fields[0].value().as_ref(),
+            ProjectionExpressionRef::BodyPath { .. }
+        ));
     }
 }

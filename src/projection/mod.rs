@@ -29,6 +29,9 @@ pub use expression::{
     ProjectionValueType, ResolvedProjectionValue, MAX_PROJECTION_EXPRESSION_DEPTH,
     MAX_PROJECTION_PATH_SEGMENTS,
 };
+pub(crate) use expression::{
+    ProjectionAssignmentRef, ProjectionExpressionObjectField, ProjectionExpressionRef,
+};
 pub use plan::{
     ProjectionMutationProvenance, ProjectionOccurrenceProvenance, ResolvedProjectionField,
     ResolvedProjectionKey, ResolvedProjectionKeyField, ResolvedProjectionMutation,
