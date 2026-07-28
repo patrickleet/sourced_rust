@@ -2,9 +2,47 @@ mod aggregates;
 
 use aggregates::*;
 use distributed::{
-    Aggregate, AggregateBuilder, InMemoryRepository, OutboxMessage, OutboxStore, SnapshotStore,
-    Snapshottable, StreamIdentity,
+    Aggregate, AggregateBuilder, DomainState, DomainStateDescriptor, InMemoryRepository,
+    OutboxMessage, OutboxStore, SnapshotStore, Snapshottable, StreamIdentity,
+    DOMAIN_EVENT_BODY_CODEC,
 };
+use serde::Serialize;
+
+#[derive(Serialize)]
+struct TodoPublicState {
+    id: String,
+    completed: bool,
+}
+
+impl DomainState for TodoPublicState {
+    const DESCRIPTOR: DomainStateDescriptor = DomainStateDescriptor::distributed_json(
+        "TodoPublicState",
+        7,
+        "todo-public-state-v7",
+        "sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+    );
+}
+
+#[test]
+fn snapshot_and_domain_state_evolve_as_distinct_contracts() {
+    let mut todo = Todo::new();
+    todo.initialize("t1".into(), "alice".into(), "Buy milk".into())
+        .unwrap();
+    let snapshot = serde_json::to_value(todo.snapshot()).unwrap();
+    let public_state = serde_json::to_value(TodoPublicState {
+        id: "t1".into(),
+        completed: false,
+    })
+    .unwrap();
+
+    assert_ne!(snapshot, public_state);
+    assert_ne!(Todo::SNAPSHOT_VERSION, TodoPublicState::DESCRIPTOR.version);
+    assert_ne!("bitcode", DOMAIN_EVENT_BODY_CODEC);
+    assert_eq!(
+        TodoPublicState::DESCRIPTOR.fingerprint,
+        "sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+    );
+}
 
 // ============================================================================
 // Default case: id + all fields

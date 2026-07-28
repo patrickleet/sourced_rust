@@ -4,6 +4,12 @@ use std::time::SystemTime;
 
 use serde::{Deserialize, Serialize};
 
+use crate::domain_event::{
+    state_descriptor_matches, DomainDeletion, DomainEvent, DomainEventBodyKind,
+    DomainEventCaptureError, DomainEventCaptureOutcome, DomainEventCapturePoison,
+    DomainEventCommitGuardError, DomainEventDescriptor, DomainEventEnvelope, DomainEventOccurrence,
+    DomainState,
+};
 use crate::trace_context::{TraceContext, CAUSATION_ID, CORRELATION_ID};
 use crate::SourcedResult;
 
@@ -32,6 +38,10 @@ pub struct Entity {
     /// command methods to attach correlation IDs, user context, etc.
     #[serde(skip, default)]
     metadata: HashMap<String, String>,
+    #[serde(skip, default)]
+    pending_domain_events: Vec<DomainEventOccurrence>,
+    #[serde(skip, default)]
+    domain_event_poison: Option<DomainEventCapturePoison>,
 }
 
 impl Default for Entity {
@@ -46,6 +56,8 @@ impl Default for Entity {
             committed_version: 0,
             timestamp: SystemTime::now(),
             metadata: HashMap::new(),
+            pending_domain_events: Vec::new(),
+            domain_event_poison: None,
         }
     }
 }
@@ -62,6 +74,8 @@ impl fmt::Debug for Entity {
             .field("committed_version", &self.committed_version)
             .field("timestamp", &self.timestamp)
             .field("metadata", &self.metadata)
+            .field("pending_domain_events", &self.pending_domain_events.len())
+            .field("domain_event_poison", &self.domain_event_poison)
             .finish()
     }
 }
@@ -78,6 +92,8 @@ impl Clone for Entity {
             committed_version: self.committed_version,
             timestamp: self.timestamp,
             metadata: self.metadata.clone(),
+            pending_domain_events: self.pending_domain_events.clone(),
+            domain_event_poison: self.domain_event_poison.clone(),
         }
     }
 }
@@ -137,6 +153,141 @@ impl Entity {
 
     pub fn events(&self) -> &[EventRecord] {
         &self.events
+    }
+
+    /// Return exact outward occurrences awaiting atomic persistence.
+    pub fn pending_domain_events(&self) -> &[DomainEventOccurrence] {
+        &self.pending_domain_events
+    }
+
+    /// Return the sticky first domain-event capture poison, if any.
+    pub fn domain_event_poison(&self) -> Option<&DomainEventCapturePoison> {
+        self.domain_event_poison.as_ref()
+    }
+
+    /// Reject manual commit preparation when transition-time capture failed.
+    ///
+    /// Task-owned repository integrations must call this before I/O. A failure
+    /// is sticky so an aggregate replay event cannot commit without its intended
+    /// outward occurrence.
+    pub fn domain_event_commit_guard(&self) -> Result<(), DomainEventCommitGuardError> {
+        match &self.domain_event_poison {
+            Some(poison) => Err(DomainEventCommitGuardError::new(poison.clone())),
+            None => Ok(()),
+        }
+    }
+
+    /// Borrow the exact occurrence batch after applying the manual poison guard.
+    ///
+    /// # Errors
+    ///
+    /// Returns the sticky capture poison. Merely borrowing this batch never
+    /// removes it, so a persistence failure retains identical bytes for retry.
+    pub fn pending_domain_events_for_commit(
+        &self,
+    ) -> Result<&[DomainEventOccurrence], DomainEventCommitGuardError> {
+        self.domain_event_commit_guard()?;
+        Ok(&self.pending_domain_events)
+    }
+
+    /// Clear pending outward occurrences after their atomic persistence succeeds.
+    ///
+    /// # Errors
+    ///
+    /// Refuses to clear a poisoned buffer. Failed persistence must not call this
+    /// method; leaving the entity untouched retains exact bytes for retry.
+    pub fn mark_domain_events_committed(&mut self) -> Result<(), DomainEventCommitGuardError> {
+        self.domain_event_commit_guard()?;
+        self.pending_domain_events.clear();
+        Ok(())
+    }
+
+    /// Capture a public post-transition state for one semantic event.
+    ///
+    /// # Errors
+    ///
+    /// Records a sticky typed poison when descriptor validation or canonical
+    /// serialization fails.
+    pub fn capture_domain_state<S: DomainState>(
+        &mut self,
+        aggregate_type: &str,
+        descriptor: DomainEventDescriptor,
+        state: &S,
+    ) -> Result<DomainEventCaptureOutcome, DomainEventCaptureError> {
+        if self.replaying {
+            return Ok(DomainEventCaptureOutcome::SuppressedDuringReplay);
+        }
+        if !state_descriptor_matches(&descriptor, &S::DESCRIPTOR) {
+            return self
+                .capture_failed(descriptor, DomainEventCaptureError::StateDescriptorMismatch);
+        }
+        self.capture_typed(aggregate_type, descriptor, state)
+    }
+
+    /// Capture a sparse or explicitly adapted typed domain event.
+    ///
+    /// Aggregate replay payload bytes do not implement [`DomainEvent`], so they
+    /// cannot become an implicit outward body:
+    ///
+    /// ```compile_fail
+    /// use distributed::Entity;
+    ///
+    /// let mut entity = Entity::with_id("todo-1");
+    /// let replay_payload = vec![0_u8; 4];
+    /// entity.capture_domain_event("todo", &replay_payload);
+    /// ```
+    ///
+    /// # Errors
+    ///
+    /// Records a sticky typed poison when descriptor validation or canonical
+    /// serialization fails.
+    pub fn capture_domain_event<E: DomainEvent>(
+        &mut self,
+        aggregate_type: &str,
+        event: &E,
+    ) -> Result<DomainEventCaptureOutcome, DomainEventCaptureError> {
+        if self.replaying {
+            return Ok(DomainEventCaptureOutcome::SuppressedDuringReplay);
+        }
+        let descriptor = E::DESCRIPTOR.clone();
+        if descriptor.body.kind != DomainEventBodyKind::Event {
+            return self.capture_failed(
+                descriptor,
+                DomainEventCaptureError::BodyKindMismatch {
+                    expected: DomainEventBodyKind::Event,
+                    actual: E::DESCRIPTOR.body.kind,
+                },
+            );
+        }
+        self.capture_typed(aggregate_type, descriptor, event)
+    }
+
+    /// Capture a typed deletion identity and incarnation.
+    ///
+    /// # Errors
+    ///
+    /// Records a sticky typed poison when descriptor validation or canonical
+    /// serialization fails.
+    pub fn capture_domain_deletion<K: Serialize>(
+        &mut self,
+        aggregate_type: &str,
+        descriptor: DomainEventDescriptor,
+        deletion: &DomainDeletion<K>,
+    ) -> Result<DomainEventCaptureOutcome, DomainEventCaptureError> {
+        if self.replaying {
+            return Ok(DomainEventCaptureOutcome::SuppressedDuringReplay);
+        }
+        if descriptor.body.kind != DomainEventBodyKind::Deletion {
+            let actual = descriptor.body.kind;
+            return self.capture_failed(
+                descriptor,
+                DomainEventCaptureError::BodyKindMismatch {
+                    expected: DomainEventBodyKind::Deletion,
+                    actual,
+                },
+            );
+        }
+        self.capture_typed(aggregate_type, descriptor, deletion)
     }
 
     /// Take the in-memory events out of the entity, leaving it empty.
@@ -219,6 +370,9 @@ impl Entity {
         let start = (self.committed_version - self.prefix_version) as usize;
         for event in &mut self.events[start..] {
             event.overwrite_causation_id(id);
+        }
+        for occurrence in &mut self.pending_domain_events {
+            occurrence.overwrite_causation_id(id);
         }
         self.metadata
             .retain(|key, _| !key.eq_ignore_ascii_case(CAUSATION_ID));
@@ -362,6 +516,79 @@ impl Entity {
 
     pub(crate) fn set_replaying(&mut self, replaying: bool) {
         self.replaying = replaying;
+    }
+
+    fn capture_typed(
+        &mut self,
+        aggregate_type: &str,
+        descriptor: DomainEventDescriptor,
+        body: &impl Serialize,
+    ) -> Result<DomainEventCaptureOutcome, DomainEventCaptureError> {
+        if self.domain_event_poison.is_some() {
+            return Err(DomainEventCaptureError::EntityAlreadyPoisoned);
+        }
+        let Some(causing_event) = self.events.last() else {
+            return self
+                .capture_failed(descriptor, DomainEventCaptureError::NoPendingAggregateEvent);
+        };
+        if self.version == self.committed_version || causing_event.sequence != self.version {
+            return self
+                .capture_failed(descriptor, DomainEventCaptureError::NoPendingAggregateEvent);
+        }
+        let ordinal_count = self
+            .pending_domain_events
+            .iter()
+            .filter(|occurrence| occurrence.aggregate_sequence() == self.version)
+            .count();
+        let Ok(ordinal) = ordinal_count.try_into() else {
+            return self.capture_failed(
+                descriptor,
+                DomainEventCaptureError::PublicationOrdinalOverflow,
+            );
+        };
+        let envelope = DomainEventEnvelope {
+            aggregate_type: aggregate_type.to_string(),
+            aggregate_id: self.id.clone(),
+            aggregate_sequence: self.version,
+            publication_ordinal: ordinal,
+            occurred_at: causing_event.timestamp,
+            metadata: causing_event
+                .metadata
+                .iter()
+                .map(|(key, value)| (key.clone(), value.clone()))
+                .collect(),
+        };
+        match DomainEventOccurrence::capture(descriptor.clone(), envelope, body) {
+            Ok(occurrence) => {
+                let id = occurrence.id().to_string();
+                self.pending_domain_events.push(occurrence);
+                Ok(DomainEventCaptureOutcome::Captured { id })
+            }
+            Err(error) => self.capture_failed(descriptor, error),
+        }
+    }
+
+    fn capture_failed<T>(
+        &mut self,
+        descriptor: DomainEventDescriptor,
+        error: DomainEventCaptureError,
+    ) -> Result<T, DomainEventCaptureError> {
+        if self.domain_event_poison.is_none() {
+            let publication_ordinal = self
+                .pending_domain_events
+                .iter()
+                .filter(|occurrence| occurrence.aggregate_sequence() == self.version)
+                .count()
+                .try_into()
+                .unwrap_or(u32::MAX);
+            self.domain_event_poison = Some(DomainEventCapturePoison {
+                descriptor,
+                aggregate_sequence: self.version,
+                publication_ordinal,
+                error: error.clone(),
+            });
+        }
+        Err(error)
     }
 }
 

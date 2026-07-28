@@ -4,12 +4,7 @@
 // call sites live behind optional features. Without those features rustc reports
 // false "never used" warnings for the protocol store helpers. CI builds with features.
 #![cfg_attr(
-    not(any(
-        feature = "graphql",
-        feature = "sqlite",
-        feature = "postgres",
-        test
-    )),
+    not(any(feature = "graphql", feature = "sqlite", feature = "postgres", test)),
     allow(dead_code)
 )]
 
@@ -18,6 +13,7 @@ extern crate self as distributed;
 
 pub mod aggregate;
 pub mod bus;
+pub mod domain_event;
 pub mod entity;
 pub mod repository;
 
@@ -53,6 +49,16 @@ pub use entity::{
     upcast_events, upcast_events_for_replay, upcast_payload, BitcodePayloadCodec, Entity,
     EventRecord, EventRecordError, EventUpcaster, PayloadCodec, UpcastError, BITCODE_PAYLOAD_CODEC,
     BITCODE_PAYLOAD_CODEC_VERSION,
+};
+
+// Domain events: typed outward contracts distinct from replay events/snapshots.
+pub use domain_event::{
+    DomainDeletion, DomainDeletionError, DomainEvent, DomainEventBodyDescriptor,
+    DomainEventBodyKind, DomainEventCaptureError, DomainEventCaptureOutcome,
+    DomainEventCapturePoison, DomainEventCommitGuardError, DomainEventDescriptor,
+    DomainEventEnvelope, DomainEventOccurrence, DomainState, DomainStateDescriptor,
+    DOMAIN_EVENT_BODY_CODEC, DOMAIN_EVENT_BODY_CODEC_VERSION, DOMAIN_EVENT_OCCURRENCE_VERSION,
+    MAX_DOMAIN_EVENT_BODY_BYTES, MAX_DOMAIN_EVENT_OCCURRENCE_WIRE_BYTES,
 };
 
 pub type SourcedResult<T = ()> = std::result::Result<T, EventRecordError>;
