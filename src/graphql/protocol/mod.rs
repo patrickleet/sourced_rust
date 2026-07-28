@@ -12,7 +12,7 @@ mod tests;
 mod token;
 mod types;
 
-pub(crate) use accumulator::ProtocolResponseAccumulator;
+pub(crate) use accumulator::{issue_projection_obligation_token, ProtocolResponseAccumulator};
 pub(crate) use projection_metadata::{
     CommandProjectionMetadataError, CommandProjectionMetadataV1, CommandProjectionObligationV1,
     COMMAND_PROJECTION_METADATA_WIRE_VERSION, MAX_COMMAND_PROJECTION_OBLIGATIONS,

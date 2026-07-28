@@ -1,5 +1,7 @@
 use std::time::{Duration, SystemTime};
 
+use base64::engine::general_purpose::URL_SAFE_NO_PAD;
+use base64::Engine as _;
 use serde_json::Value;
 
 use crate::projection_protocol::{ResolvedProjectionObligation, SameTransactionProjectionEvidence};
@@ -363,14 +365,53 @@ impl CommandLedgerRecord {
                 self.key.command_id()
             )));
         }
-        validate_projection_obligation_semantics(self.state, &projection_obligations).map_err(
-            |error| {
-                CommandLedgerError::Corrupt(format!(
-                    "command `{}` replay projection obligations are inconsistent: {error}",
-                    self.key.command_id()
-                ))
-            },
-        )?;
+        let projection_metadata = envelope
+            .remove("projection_metadata")
+            .map(|value| {
+                let encoded = value.as_str().ok_or_else(|| {
+                    CommandLedgerError::Corrupt(format!(
+                        "command `{}` replay projection metadata is not an opaque string",
+                        self.key.command_id()
+                    ))
+                })?;
+                let bytes = URL_SAFE_NO_PAD.decode(encoded).map_err(|_| {
+                    CommandLedgerError::Corrupt(format!(
+                        "command `{}` replay projection metadata is not canonical base64url",
+                        self.key.command_id()
+                    ))
+                })?;
+                if URL_SAFE_NO_PAD.encode(&bytes) != encoded {
+                    return Err(CommandLedgerError::Corrupt(format!(
+                        "command `{}` replay projection metadata uses noncanonical base64url",
+                        self.key.command_id()
+                    )));
+                }
+                super::reservation::validate_projection_metadata_bytes(self.state, Some(&bytes))
+                    .map_err(|error| {
+                        CommandLedgerError::Corrupt(format!(
+                            "command `{}` replay projection metadata is invalid: {error}",
+                            self.key.command_id()
+                        ))
+                    })?;
+                Ok(bytes)
+            })
+            .transpose()?;
+        if projection_metadata.is_some() && !projection_obligations.is_empty() {
+            return Err(CommandLedgerError::Corrupt(format!(
+                "command `{}` replay mixes legacy and modeled projection obligations",
+                self.key.command_id()
+            )));
+        }
+        if projection_metadata.is_none() {
+            validate_projection_obligation_semantics(self.state, &projection_obligations).map_err(
+                |error| {
+                    CommandLedgerError::Corrupt(format!(
+                        "command `{}` replay projection obligations are inconsistent: {error}",
+                        self.key.command_id()
+                    ))
+                },
+            )?;
+        }
         let direct_projection = envelope.remove("direct_projection");
         match (&direct_projection, self.state) {
             (Some(value), CommandLedgerState::Projected) => {
@@ -409,6 +450,7 @@ impl CommandLedgerRecord {
             causation_id: self.causation_id.clone(),
             outcome,
             projection_obligations,
+            projection_metadata,
             direct_projection,
         })
     }

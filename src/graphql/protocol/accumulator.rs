@@ -20,6 +20,45 @@ use crate::microsvc::{
 };
 
 #[derive(Serialize)]
+struct ProjectionObligationTokenMaterial<'a> {
+    domain: &'static str,
+    version: u32,
+    cache_scope: &'a str,
+    schema_hash: &'a str,
+    causation_id: &'a str,
+    projector: &'a str,
+    model: &'a str,
+    observation_kind: &'static str,
+    scope: &'a crate::projection_protocol::ProjectionRecordScope,
+}
+
+pub(crate) fn issue_projection_obligation_token(
+    codec: &ProtocolTokenCodec,
+    cache_scope: &str,
+    schema_hash: &str,
+    causation_id: &str,
+    projector: &str,
+    model: &str,
+    observation_kind: crate::projection_protocol::ProjectionObservationKind,
+    scope: &crate::projection_protocol::ProjectionRecordScope,
+) -> Result<OpaqueProtocolToken, ProtocolTokenError> {
+    codec.issue(
+        ProtocolTokenPurpose::ProjectionObligation,
+        &ProjectionObligationTokenMaterial {
+            domain: "distributed.graphql.projection-obligation",
+            version: 1,
+            cache_scope,
+            schema_hash,
+            causation_id,
+            projector,
+            model,
+            observation_kind: observation_kind.as_storage_str(),
+            scope,
+        },
+    )
+}
+
+#[derive(Serialize)]
 struct LiveResumeTokenMaterial<'a> {
     domain: &'static str,
     version: u32,
@@ -395,37 +434,18 @@ impl ProtocolResponseAccumulator {
         observation_kind: crate::projection_protocol::ProjectionObservationKind,
         scope: &crate::projection_protocol::ProjectionRecordScope,
     ) -> Result<OpaqueProtocolToken, ProtocolAccumulatorError> {
-        #[derive(Serialize)]
-        struct TokenMaterial<'a> {
-            domain: &'static str,
-            version: u32,
-            cache_scope: &'a str,
-            schema_hash: &'a str,
-            causation_id: &'a str,
-            projector: &'a str,
-            model: &'a str,
-            observation_kind: &'static str,
-            scope: &'a crate::projection_protocol::ProjectionRecordScope,
-        }
-
         self.with_envelope(|envelope| {
-            self.inner
-                .codec
-                .issue(
-                    ProtocolTokenPurpose::ProjectionObligation,
-                    &TokenMaterial {
-                        domain: "distributed.graphql.projection-obligation",
-                        version: 1,
-                        cache_scope: envelope.cache_scope.as_str(),
-                        schema_hash: &envelope.schema_hash,
-                        causation_id,
-                        projector,
-                        model,
-                        observation_kind: observation_kind.as_storage_str(),
-                        scope,
-                    },
-                )
-                .map_err(|_| ProtocolAccumulatorError::Encoding)
+            issue_projection_obligation_token(
+                &self.inner.codec,
+                envelope.cache_scope.as_str(),
+                &envelope.schema_hash,
+                causation_id,
+                projector,
+                model,
+                observation_kind,
+                scope,
+            )
+            .map_err(|_| ProtocolAccumulatorError::Encoding)
         })?
     }
 
@@ -475,6 +495,7 @@ impl ProtocolResponseAccumulator {
             command_state(receipt.state),
             receipt.consistency,
             &receipt.obligations,
+            receipt.projection_metadata.as_ref(),
             receipt.direct_projection.as_ref(),
             &observed,
         )?)
@@ -507,6 +528,7 @@ impl ProtocolResponseAccumulator {
             public_command_state(status.state),
             consistency,
             &status.obligations,
+            status.projection_metadata.as_ref(),
             status.direct_projection.as_ref(),
             &observed,
         )?)
@@ -519,6 +541,7 @@ impl ProtocolResponseAccumulator {
         state: DistributedCommandState,
         consistency: CommandConsistency,
         obligations: &[CausalCommandProjectionObligation],
+        projection_metadata: Option<&super::CommandProjectionMetadataV1>,
         direct_projection: Option<&crate::projection_protocol::SameTransactionProjectionEvidence>,
         observed_obligation_indices: &[usize],
     ) -> Result<DistributedCommandMetadata, ProtocolAccumulatorError> {
@@ -584,6 +607,7 @@ impl ProtocolResponseAccumulator {
             state,
             consistency: command_consistency(consistency),
             expects,
+            projection: projection_metadata.cloned(),
             observations,
             records,
         })

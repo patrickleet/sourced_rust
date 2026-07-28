@@ -1,6 +1,8 @@
 use std::fmt;
 use std::time::Duration;
 
+use base64::engine::general_purpose::URL_SAFE_NO_PAD;
+use base64::Engine as _;
 use serde_json::Value;
 
 use crate::projection_protocol::{
@@ -167,7 +169,7 @@ impl CommandAttempt {
         outcome: Value,
         retention: Duration,
     ) -> Result<CommandCompletion, CommandLedgerError> {
-        self.complete_with_obligations(state, outcome, Vec::new(), retention)
+        self.complete_with_replay_metadata(state, outcome, Vec::new(), None, retention)
     }
 
     pub(crate) fn complete_with_obligations(
@@ -177,15 +179,73 @@ impl CommandAttempt {
         projection_obligations: Vec<ResolvedProjectionObligation>,
         retention: Duration,
     ) -> Result<CommandCompletion, CommandLedgerError> {
+        self.complete_with_replay_metadata(state, outcome, projection_obligations, None, retention)
+    }
+
+    /// Complete a command with exact already-canonical role-safe projection
+    /// metadata.
+    ///
+    /// The ledger intentionally treats the bytes as opaque. GraphQL validates
+    /// the versioned delta/obligation schema before calling this method; the
+    /// ledger preserves those bytes exactly and applies only generic size and
+    /// state invariants.
+    pub(crate) fn complete_with_projection_metadata(
+        self,
+        state: TerminalCommandState,
+        outcome: Value,
+        projection_metadata: Vec<u8>,
+        retention: Duration,
+    ) -> Result<CommandCompletion, CommandLedgerError> {
+        self.complete_with_replay_metadata(
+            state,
+            outcome,
+            Vec::new(),
+            Some(projection_metadata),
+            retention,
+        )
+    }
+
+    fn complete_with_replay_metadata(
+        self,
+        state: TerminalCommandState,
+        outcome: Value,
+        projection_obligations: Vec<ResolvedProjectionObligation>,
+        projection_metadata: Option<Vec<u8>>,
+        retention: Duration,
+    ) -> Result<CommandCompletion, CommandLedgerError> {
         validate_positive_duration("command replay retention", retention)?;
-        validate_projection_obligation_semantics(state.into(), &projection_obligations)
-            .map_err(CommandLedgerError::Invalid)?;
-        let replay = serde_json::to_string(&serde_json::json!({
-            "version": COMMAND_REPLAY_VERSION,
-            "outcome": outcome,
-            "projection_obligations": projection_obligations,
-        }))
-        .map_err(|error| {
+        if projection_metadata.is_none() {
+            validate_projection_obligation_semantics(state.into(), &projection_obligations)
+                .map_err(CommandLedgerError::Invalid)?;
+        }
+        validate_projection_metadata_bytes(state.into(), projection_metadata.as_deref())?;
+        if projection_metadata.is_some() && !projection_obligations.is_empty() {
+            return Err(CommandLedgerError::Invalid(
+                "command replay cannot mix legacy and modeled projection obligations".into(),
+            ));
+        }
+        let mut replay = serde_json::Map::from_iter([
+            (
+                "version".into(),
+                Value::from(u64::from(COMMAND_REPLAY_VERSION)),
+            ),
+            ("outcome".into(), outcome),
+            (
+                "projection_obligations".into(),
+                serde_json::to_value(projection_obligations).map_err(|error| {
+                    CommandLedgerError::Invalid(format!(
+                        "command replay obligations failed to serialize before commit: {error}"
+                    ))
+                })?,
+            ),
+        ]);
+        if let Some(projection_metadata) = projection_metadata {
+            replay.insert(
+                "projection_metadata".into(),
+                Value::String(URL_SAFE_NO_PAD.encode(projection_metadata)),
+            );
+        }
+        let replay = serde_json::to_string(&Value::Object(replay)).map_err(|error| {
             CommandLedgerError::Invalid(format!(
                 "command replay serialization failed before commit: {error}"
             ))
@@ -274,12 +334,41 @@ pub(crate) struct CommandReplay {
     pub(crate) causation_id: CausationId,
     pub(crate) outcome: Value,
     pub(crate) projection_obligations: Vec<ResolvedProjectionObligation>,
+    /// Exact canonical role-safe delta and opaque obligation bytes.
+    pub(crate) projection_metadata: Option<Vec<u8>>,
     /// Exact original direct-projection revision/change evidence.
     ///
     /// This is intentionally retained as the validated canonical replay value:
     /// clients replay the original command outcome, while framework recovery
     /// and diagnostics can prove which record version that transaction minted.
     pub(crate) direct_projection: Option<Value>,
+}
+
+pub(super) fn validate_projection_metadata_bytes(
+    state: CommandLedgerState,
+    projection_metadata: Option<&[u8]>,
+) -> Result<(), CommandLedgerError> {
+    let Some(bytes) = projection_metadata else {
+        return Ok(());
+    };
+    if bytes.is_empty() || bytes.len() > crate::MAX_DOMAIN_EVENT_BODY_BYTES {
+        return Err(CommandLedgerError::Invalid(format!(
+            "command projection metadata must contain 1..={} bytes",
+            crate::MAX_DOMAIN_EVENT_BODY_BYTES
+        )));
+    }
+    if !matches!(
+        state,
+        CommandLedgerState::Succeeded
+            | CommandLedgerState::SucceededPendingProjection
+            | CommandLedgerState::ProjectionFailed
+    ) {
+        return Err(CommandLedgerError::Invalid(format!(
+            "state `{}` cannot contain modeled projection metadata",
+            state.as_str()
+        )));
+    }
+    Ok(())
 }
 
 /// Result of one short reservation transaction.

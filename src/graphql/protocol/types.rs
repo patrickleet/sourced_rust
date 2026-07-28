@@ -43,6 +43,10 @@ pub(crate) struct DistributedCommandMetadata {
     pub(crate) state: DistributedCommandState,
     pub(crate) consistency: DistributedCommandConsistency,
     pub(crate) expects: Vec<DistributedProjectionExpectation>,
+    /// Exact role-safe actual delta and opaque modeled obligations. Legacy
+    /// compiler confirmations remain in `expects` during the migration.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub(crate) projection: Option<super::CommandProjectionMetadataV1>,
     /// Exact finite obligations already observed for this authorized command.
     /// Tokens are identical to their matching `expects` entry, so the client
     /// can retire optimism without reconstructing any hidden scope material.

@@ -20,10 +20,18 @@ use crate::graphql::protocol::{
     CommandProjectionMetadataV1, CommandProjectionObligationV1, OpaqueProtocolToken,
     ProtocolTokenCodec, ProtocolTokenError, ProtocolTokenPurpose,
 };
-use crate::graphql::surface::Surface;
+use crate::graphql::surface::{Surface, SurfaceModeledProjection};
 use crate::{
     ResolvedProjectionMutation, ResolvedProjectionPartition, ResolvedProjectionRelationshipEffect,
 };
+
+/// Maximum lifetime of a request-scoped modeled projection authority.
+///
+/// The command ledger's default replay retention is thirty days. Keeping the
+/// token ceiling at that same boundary prevents a caller from minting
+/// effectively permanent scope material while still allowing the complete
+/// default replay window.
+pub(crate) const MAX_PROJECTION_AUTHORITY_LIFETIME_MS: u64 = 30 * 24 * 60 * 60 * 1_000;
 
 /// Production request authority for actual role-safe projection lowering.
 ///
@@ -52,11 +60,19 @@ impl ProtocolProjectionDeltaRequestAuthority {
         authorization_generation: impl Into<String>,
         cache_scope: &OpaqueProtocolToken,
         causation_id: CausationId,
+        now_unix_ms: u64,
         issued_at_unix_ms: u64,
         expires_at_unix_ms: u64,
     ) -> Result<Self, ProjectionRuntimeAuthorityError> {
         let authorization_generation = authorization_generation.into();
-        if authorization_generation.trim().is_empty() || issued_at_unix_ms >= expires_at_unix_ms {
+        let lifetime = expires_at_unix_ms.checked_sub(issued_at_unix_ms);
+        if authorization_generation.trim().is_empty()
+            || issued_at_unix_ms > now_unix_ms
+            || now_unix_ms >= expires_at_unix_ms
+            || !lifetime.is_some_and(|lifetime| {
+                lifetime > 0 && lifetime <= MAX_PROJECTION_AUTHORITY_LIFETIME_MS
+            })
+        {
             return Err(ProjectionRuntimeAuthorityError::InvalidAuthority);
         }
         export
@@ -91,6 +107,7 @@ impl ProtocolProjectionDeltaRequestAuthority {
     pub(crate) fn metadata(
         &self,
         delta: ProjectionDelta,
+        eligible: &[&SurfaceModeledProjection],
     ) -> Result<CommandProjectionMetadataV1, ProjectionRuntimeAuthorityError> {
         delta
             .validate_replay_scope(
@@ -101,6 +118,7 @@ impl ProtocolProjectionDeltaRequestAuthority {
                 self,
             )
             .map_err(ProjectionRuntimeAuthorityError::Delta)?;
+        self.validate_active_projection_inventory(&delta, eligible)?;
 
         let mut obligations = Vec::new();
         for operation in &delta.operations {
@@ -164,6 +182,13 @@ impl ProtocolProjectionDeltaRequestAuthority {
         if now_unix_ms >= self.expires_at_unix_ms {
             return Err(ProjectionRuntimeAuthorityError::Expired);
         }
+        let manifest = self
+            .export
+            .manifest()
+            .map_err(|_| ProjectionRuntimeAuthorityError::InvalidAuthority)?;
+        if surface != &ProjectionDeltaSurfaceIdentity::from(&manifest.surface) {
+            return Err(ProjectionRuntimeAuthorityError::InvalidAuthority);
+        }
         let token =
             OpaqueProtocolToken::parse(token).map_err(ProjectionRuntimeAuthorityError::Token)?;
         self.codec
@@ -182,6 +207,37 @@ impl ProtocolProjectionDeltaRequestAuthority {
                 },
             )
             .map_err(ProjectionRuntimeAuthorityError::Token)
+    }
+
+    fn validate_active_projection_inventory(
+        &self,
+        delta: &ProjectionDelta,
+        eligible: &[&SurfaceModeledProjection],
+    ) -> Result<(), ProjectionRuntimeAuthorityError> {
+        let mut expected = eligible
+            .iter()
+            .map(|projection| {
+                if !projection.is_causally_eligible() {
+                    return Err(ProjectionRuntimeAuthorityError::IneligibleProjection);
+                }
+                let selected = projection
+                    .selected_program()
+                    .ok_or(ProjectionRuntimeAuthorityError::IneligibleProjection)?;
+                Ok(super::ProjectionDeltaProjectionIdentity {
+                    program_id: projection.program_id().to_string(),
+                    binding_id: projection.binding_id().to_string(),
+                    epoch: projection.epoch().as_str().to_owned(),
+                    program_ir_version: selected.ir_version,
+                    operation_semantics_version: selected.operation_semantics_version,
+                })
+            })
+            .collect::<Result<Vec<_>, _>>()?;
+        expected.sort();
+        expected.dedup();
+        if expected != delta.projections {
+            return Err(ProjectionRuntimeAuthorityError::IneligibleProjection);
+        }
+        Ok(())
     }
 }
 
@@ -325,6 +381,7 @@ impl<'a> ObservableScope<'a> {
 pub(crate) enum ProjectionRuntimeAuthorityError {
     InvalidAuthority,
     Expired,
+    IneligibleProjection,
     Delta(ProjectionDeltaError),
     Token(ProtocolTokenError),
     InvalidMetadata,
@@ -335,6 +392,9 @@ impl std::fmt::Display for ProjectionRuntimeAuthorityError {
         formatter.write_str(match self {
             Self::InvalidAuthority => "invalid projection request authority",
             Self::Expired => "projection request authority has expired",
+            Self::IneligibleProjection => {
+                "projection is not active and causally eligible for this request"
+            }
             Self::Delta(_) => "projection delta validation failed",
             Self::Token(_) => "projection scope token validation failed",
             Self::InvalidMetadata => "command projection metadata is invalid",

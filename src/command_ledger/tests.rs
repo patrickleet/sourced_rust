@@ -1236,6 +1236,72 @@ fn replay_validates_envelope_and_returns_only_the_outcome() {
 }
 
 #[test]
+fn modeled_projection_metadata_replays_exact_bytes_without_plaintext_scope_material() {
+    let id = Uuid::now_v7().to_string();
+    let reservation = reservation(&id, 11, 12).unwrap();
+    let started = SystemTime::UNIX_EPOCH + Duration::from_secs(100);
+    let mut row = CommandLedgerRecord::initial(&reservation, started).unwrap();
+    let metadata =
+        br#"{"role_safe":true,"opaque_scope":"v1.projection-obligation.token"}"#.to_vec();
+    let completion = row
+        .acquired_attempt()
+        .unwrap()
+        .complete_with_projection_metadata(
+            TerminalCommandState::SucceededPendingProjection,
+            serde_json::json!({"todo_id": "todo-1"}),
+            metadata.clone(),
+            Duration::from_secs(300),
+        )
+        .unwrap();
+    row.complete(&completion, started + Duration::from_secs(1))
+        .unwrap();
+
+    let stored = row.outcome_json.as_deref().unwrap();
+    assert!(!stored.contains("opaque_scope"));
+    let first = row.replay().unwrap();
+    let second = row.replay().unwrap();
+    assert_eq!(
+        first.projection_metadata.as_deref(),
+        Some(metadata.as_slice())
+    );
+    assert_eq!(first.projection_metadata, second.projection_metadata);
+    assert!(first.projection_obligations.is_empty());
+
+    row.outcome_json = Some(
+        r#"{"version":2,"outcome":null,"projection_obligations":[],"projection_metadata":"not/canonical"}"#
+            .into(),
+    );
+    assert!(matches!(row.replay(), Err(CommandLedgerError::Corrupt(_))));
+}
+
+#[test]
+fn modeled_projection_metadata_bounds_fail_before_completion() {
+    for metadata in [
+        Vec::new(),
+        vec![b'x'; crate::MAX_DOMAIN_EVENT_BODY_BYTES + 1],
+    ] {
+        assert!(matches!(
+            fresh_attempt().complete_with_projection_metadata(
+                TerminalCommandState::Succeeded,
+                serde_json::json!({"ok": true}),
+                metadata,
+                Duration::from_secs(300),
+            ),
+            Err(CommandLedgerError::Invalid(_))
+        ));
+    }
+    assert!(matches!(
+        fresh_attempt().complete_with_projection_metadata(
+            TerminalCommandState::Projected,
+            serde_json::json!({"ok": true}),
+            b"{}".to_vec(),
+            Duration::from_secs(300),
+        ),
+        Err(CommandLedgerError::Invalid(_))
+    ));
+}
+
+#[test]
 fn causal_batch_applies_the_authoritative_stamp_at_the_final_boundary() {
     use crate::outbox::OutboxMessage;
     use crate::repository::StreamWrite;

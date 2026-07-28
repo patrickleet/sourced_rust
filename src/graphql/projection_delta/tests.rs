@@ -231,9 +231,11 @@ fn sealed_authority_lowers_actual_full_state_and_memoizes_partition() {
 }
 
 #[test]
+#[cfg(feature = "graphql")]
 fn production_authority_binds_partition_and_obligation_tokens_to_request_scope() {
     use super::runtime::{
         ProjectionRuntimeAuthorityError, ProtocolProjectionDeltaRequestAuthority,
+        MAX_PROJECTION_AUTHORITY_LIFETIME_MS,
     };
     use crate::graphql::protocol::{
         CommandProjectionMetadataV1, ProtocolTokenCodec, ProtocolTokenPurpose,
@@ -261,6 +263,7 @@ fn production_authority_binds_partition_and_obligation_tokens_to_request_scope()
         "auth-generation-7",
         &cache_scope,
         causation,
+        1_000,
         1_000,
         2_000,
     )
@@ -300,8 +303,19 @@ fn production_authority_binds_partition_and_obligation_tokens_to_request_scope()
         ),
         Err(ProjectionRuntimeAuthorityError::Expired)
     );
+    assert_eq!(
+        request.verify_partition_token(
+            &partition_token,
+            &ProjectionDeltaSurfaceIdentity::Role {
+                name: "other-role".into(),
+            },
+            plan.partition(),
+            1_500,
+        ),
+        Err(ProjectionRuntimeAuthorityError::InvalidAuthority)
+    );
 
-    let metadata = request.metadata(delta).unwrap();
+    let metadata = request.metadata(delta, &[&modeled]).unwrap();
     assert!(!metadata.obligations.is_empty());
     assert!(metadata.obligations.iter().all(|obligation| obligation
         .scope_token
@@ -315,11 +329,12 @@ fn production_authority_binds_partition_and_obligation_tokens_to_request_scope()
 
     let other_request = ProtocolProjectionDeltaRequestAuthority::try_new(
         request.export().clone(),
-        codec,
-        principal,
+        codec.clone(),
+        principal.clone(),
         "auth-generation-8",
         &cache_scope,
         crate::command_ledger::CausationId::parse_stored(TEST_CAUSATION_ID.to_owned()).unwrap(),
+        1_000,
         1_000,
         2_000,
     )
@@ -332,6 +347,131 @@ fn production_authority_binds_partition_and_obligation_tokens_to_request_scope()
             1_500,
         ),
         Err(ProjectionRuntimeAuthorityError::Token(_))
+    ));
+
+    let other_principal = ProtocolProjectionDeltaRequestAuthority::try_new(
+        request.export().clone(),
+        codec.clone(),
+        crate::command_ledger::PrincipalPartitionId::new("principal-scope-other").unwrap(),
+        "auth-generation-7",
+        &cache_scope,
+        crate::command_ledger::CausationId::parse_stored(TEST_CAUSATION_ID.to_owned()).unwrap(),
+        1_000,
+        1_000,
+        2_000,
+    )
+    .unwrap();
+    assert!(matches!(
+        other_principal.verify_partition_token(
+            &partition_token,
+            &metadata.delta.identity.surface,
+            plan.partition(),
+            1_500,
+        ),
+        Err(ProjectionRuntimeAuthorityError::Token(_))
+    ));
+
+    let other_cache_scope = codec
+        .issue(ProtocolTokenPurpose::CacheScope, &("other-cache", 1))
+        .unwrap();
+    let other_cache = ProtocolProjectionDeltaRequestAuthority::try_new(
+        request.export().clone(),
+        codec.clone(),
+        principal,
+        "auth-generation-7",
+        &other_cache_scope,
+        crate::command_ledger::CausationId::parse_stored(TEST_CAUSATION_ID.to_owned()).unwrap(),
+        1_000,
+        1_000,
+        2_000,
+    )
+    .unwrap();
+    assert!(matches!(
+        other_cache.verify_partition_token(
+            &partition_token,
+            &metadata.delta.identity.surface,
+            plan.partition(),
+            1_500,
+        ),
+        Err(ProjectionRuntimeAuthorityError::Token(_))
+    ));
+    assert!(matches!(
+        metadata.validate_not_expired(2_000),
+        Err(crate::graphql::protocol::CommandProjectionMetadataError::Expired)
+    ));
+    assert!(matches!(
+        ProtocolProjectionDeltaRequestAuthority::try_new(
+            request.export().clone(),
+            codec.clone(),
+            crate::command_ledger::PrincipalPartitionId::new("principal-expired").unwrap(),
+            "auth-generation-7",
+            &cache_scope,
+            crate::command_ledger::CausationId::parse_stored(TEST_CAUSATION_ID.to_owned()).unwrap(),
+            2_000,
+            1_000,
+            2_000,
+        ),
+        Err(ProjectionRuntimeAuthorityError::InvalidAuthority)
+    ));
+    assert!(matches!(
+        ProtocolProjectionDeltaRequestAuthority::try_new(
+            request.export().clone(),
+            codec,
+            crate::command_ledger::PrincipalPartitionId::new("principal-overlong").unwrap(),
+            "auth-generation-7",
+            &cache_scope,
+            crate::command_ledger::CausationId::parse_stored(TEST_CAUSATION_ID.to_owned()).unwrap(),
+            1_000,
+            1_000,
+            1_001 + MAX_PROJECTION_AUTHORITY_LIFETIME_MS,
+        ),
+        Err(ProjectionRuntimeAuthorityError::InvalidAuthority)
+    ));
+}
+
+#[test]
+#[cfg(feature = "graphql")]
+fn draining_actual_delta_can_apply_but_cannot_mint_new_obligations() {
+    use super::runtime::{
+        ProjectionRuntimeAuthorityError, ProtocolProjectionDeltaRequestAuthority,
+    };
+    use crate::graphql::protocol::{ProtocolTokenCodec, ProtocolTokenPurpose};
+
+    let fixture = modeled_fixture(
+        ProjectionBindingState::Draining,
+        ProjectionExecutionClass::Causal,
+    );
+    let selected = selected_export(&fixture.surface);
+    let codec = ProtocolTokenCodec::new([0x5b; 32]);
+    let cache_scope = codec
+        .issue(ProtocolTokenPurpose::CacheScope, &("draining", 1))
+        .unwrap();
+    let request = ProtocolProjectionDeltaRequestAuthority::try_new(
+        selected,
+        codec,
+        crate::command_ledger::PrincipalPartitionId::new("principal-draining").unwrap(),
+        "auth-generation-7",
+        &cache_scope,
+        crate::command_ledger::CausationId::parse_stored(TEST_CAUSATION_ID.to_owned()).unwrap(),
+        1_000,
+        1_000,
+        2_000,
+    )
+    .unwrap();
+    let authority = ProjectionDeltaAuthority::try_new(request.export(), &request).unwrap();
+    let modeled = request.export().surface().projectors[0].modeled[0].clone();
+    let source = authority.source(&modeled).unwrap();
+    let plan = crate::ResolvedProjectionPlan::resolve(
+        &fixture.program,
+        &state_occurrence(7, "todo-1", "title"),
+    )
+    .unwrap();
+    let occurrence = ProjectionDeltaPlanOccurrence::actual(vec![(&source, &plan)]).unwrap();
+    let delta = authority.lower(&[occurrence]).unwrap();
+
+    assert!(matches!(
+        request.metadata(delta, &[&modeled]),
+        Err(ProjectionRuntimeAuthorityError::IneligibleProjection)
     ));
 }
 

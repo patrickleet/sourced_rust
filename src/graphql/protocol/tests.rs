@@ -94,6 +94,7 @@ fn command(id: &str) -> DistributedCommandMetadata {
                 .issue(ProtocolTokenPurpose::ProjectionObligation, &(id, 42_u64))
                 .unwrap(),
         }],
+        projection: None,
         observations: Vec::new(),
         records: Vec::new(),
     }
@@ -122,6 +123,7 @@ fn receipt() -> CausalCommandReceiptSource {
             scope,
             observation_kind: ProjectionObservationKind::Record,
         }],
+        projection_metadata: None,
         direct_projection: None,
     }
 }
@@ -324,6 +326,7 @@ fn unknown_status_does_not_fabricate_receipt_identity() {
             consistency: None,
             outcome: None,
             obligations: Vec::new(),
+            projection_metadata: None,
             evidence: Vec::new(),
             direct_projection: None,
         })
@@ -344,6 +347,7 @@ fn projected_status_exposes_only_matching_opaque_observations() {
             consistency: Some(source.consistency),
             outcome: Some(source.outcome),
             obligations: source.obligations,
+            projection_metadata: None,
             evidence: vec![crate::microsvc::CausalCommandProjectionEvidence {
                 obligation_index: 0,
                 state: CausalProjectionEvidenceState::Observed,

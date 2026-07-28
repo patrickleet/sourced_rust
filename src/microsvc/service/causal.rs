@@ -152,6 +152,7 @@ pub(crate) struct CausalCommandReceiptSource {
     pub(crate) state: CommandLedgerState,
     pub(crate) outcome: Value,
     pub(crate) obligations: Vec<CausalCommandProjectionObligation>,
+    pub(crate) projection_metadata: Option<crate::graphql::protocol::CommandProjectionMetadataV1>,
     pub(crate) direct_projection: Option<SameTransactionProjectionEvidence>,
 }
 
@@ -184,6 +185,16 @@ impl CausalCommandReceiptSource {
                 observation_kind: ProjectionObservationKind::Record,
             })
             .collect();
+        let projection_metadata = replay
+            .projection_metadata
+            .as_deref()
+            .map(crate::graphql::protocol::CommandProjectionMetadataV1::from_json)
+            .transpose()
+            .map_err(|error| {
+                CausalDispatchError::Internal(format!(
+                    "stored command projection metadata is invalid: {error}"
+                ))
+            })?;
         Ok(Self {
             command_id: replay.command_id.as_str().to_string(),
             causation_id: replay.causation_id.as_str().to_string(),
@@ -191,6 +202,7 @@ impl CausalCommandReceiptSource {
             state: replay.state,
             outcome: replay.outcome,
             obligations,
+            projection_metadata,
             direct_projection,
         })
     }
@@ -269,6 +281,7 @@ pub(crate) struct CausalCommandPublicStatus {
     pub(crate) consistency: Option<CommandConsistency>,
     pub(crate) outcome: Option<Value>,
     pub(crate) obligations: Vec<CausalCommandProjectionObligation>,
+    pub(crate) projection_metadata: Option<crate::graphql::protocol::CommandProjectionMetadataV1>,
     pub(crate) evidence: Vec<CausalCommandProjectionEvidence>,
     pub(crate) direct_projection: Option<SameTransactionProjectionEvidence>,
 }
@@ -283,6 +296,7 @@ impl CausalCommandPublicStatus {
             consistency: None,
             outcome: None,
             obligations: Vec::new(),
+            projection_metadata: None,
             evidence: Vec::new(),
             direct_projection: None,
         }
@@ -562,6 +576,7 @@ where
             consistency: Some(consistency),
             outcome: None,
             obligations: Vec::new(),
+            projection_metadata: None,
             evidence: Vec::new(),
             direct_projection: None,
         }),
@@ -573,6 +588,7 @@ where
             consistency: Some(consistency),
             outcome: None,
             obligations: Vec::new(),
+            projection_metadata: None,
             evidence: Vec::new(),
             direct_projection: None,
         }),
@@ -621,6 +637,7 @@ where
                 consistency: Some(receipt.consistency),
                 outcome: Some(receipt.outcome),
                 obligations: receipt.obligations,
+                projection_metadata: receipt.projection_metadata,
                 evidence,
                 direct_projection: receipt.direct_projection,
             })

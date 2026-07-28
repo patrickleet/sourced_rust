@@ -153,6 +153,7 @@ pub(crate) enum CausalWorkspaceError {
     ProjectionAlreadyStaged,
     DomainPublicationRequired(StreamIdentity),
     DomainPublicationsAlreadyPrepared,
+    DomainPublicationsNotPrepared,
     CommitBatchAlreadyPrepared,
 }
 
@@ -194,6 +195,9 @@ impl std::fmt::Display for CausalWorkspaceError {
             Self::DomainPublicationsAlreadyPrepared => {
                 formatter.write_str("causal domain-event publications were already prepared")
             }
+            Self::DomainPublicationsNotPrepared => {
+                formatter.write_str("causal domain-event publications are not prepared")
+            }
             Self::CommitBatchAlreadyPrepared => {
                 formatter.write_str("causal workspace commit batch was already prepared")
             }
@@ -216,6 +220,7 @@ impl std::error::Error for CausalWorkspaceError {
             | Self::ProjectionAlreadyStaged
             | Self::DomainPublicationRequired(_)
             | Self::DomainPublicationsAlreadyPrepared
+            | Self::DomainPublicationsNotPrepared
             | Self::CommitBatchAlreadyPrepared => None,
         }
     }
@@ -461,6 +466,7 @@ where
             outbox_messages: state.outbox_messages,
             read_model_plans: state.read_model_plans,
             snapshots: state.snapshots,
+            domain_event_occurrences: Vec::new(),
             publications_prepared: false,
             batch_prepared: false,
         })
@@ -474,6 +480,8 @@ pub(crate) struct CausalWorkspaceParts<A> {
     outbox_messages: Vec<OutboxMessage>,
     read_model_plans: Vec<TableWritePlan>,
     snapshots: Vec<SnapshotWrite>,
+    /// Exact ledger-causation-stamped outward occurrences in publication order.
+    domain_event_occurrences: Vec<crate::DomainEventOccurrence>,
     publications_prepared: bool,
     batch_prepared: bool,
 }
@@ -508,6 +516,8 @@ where
             }
 
             if staged.publication.publish_captured_events {
+                self.domain_event_occurrences
+                    .extend(pending.iter().cloned());
                 self.outbox_messages.extend(
                     pending
                         .iter()
@@ -527,11 +537,23 @@ where
                     .and_then(|ordinal| ordinal.try_into().ok())
                     .ok_or(DomainEventCaptureError::PublicationOrdinalOverflow)?;
                 let occurrence = event.bind(&staged.aggregate, ordinal)?;
+                self.domain_event_occurrences.push(occurrence.clone());
                 self.outbox_messages
                     .push(OutboxMessage::from_domain_event_occurrence(&occurrence)?);
             }
         }
         Ok(())
+    }
+
+    /// Return the exact outward occurrence sequence after authoritative
+    /// causation and publication ordinals have been sealed.
+    pub(crate) fn prepared_domain_occurrences(
+        &self,
+    ) -> Result<&[crate::DomainEventOccurrence], CausalWorkspaceError> {
+        if !self.publications_prepared {
+            return Err(CausalWorkspaceError::DomainPublicationsNotPrepared);
+        }
+        Ok(&self.domain_event_occurrences)
     }
 
     pub(crate) fn validate_prepared<K: CommandOutcome>(
