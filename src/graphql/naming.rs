@@ -131,8 +131,8 @@ pub const DISTRIBUTED_COMMAND_STATE_TYPE: &str = "DistributedCommandState";
 /// Stable public command-state vocabulary. Lowercase values are intentional.
 pub const DISTRIBUTED_COMMAND_STATE_VALUES: &[&str] = &[
     "in_progress",
-    "accepted",
-    "accepted_pending_projection",
+    "succeeded",
+    "succeeded_pending_projection",
     "projected",
     "rejected",
     "projection_failed",
@@ -242,8 +242,8 @@ mod tests {
             DISTRIBUTED_COMMAND_STATE_VALUES,
             &[
                 "in_progress",
-                "accepted",
-                "accepted_pending_projection",
+                "succeeded",
+                "succeeded_pending_projection",
                 "projected",
                 "rejected",
                 "projection_failed",

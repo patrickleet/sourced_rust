@@ -696,8 +696,8 @@ impl ProtocolResponseAccumulator {
 
 fn command_consistency(value: CommandConsistency) -> DistributedCommandConsistency {
     match value {
-        CommandConsistency::Accepted => DistributedCommandConsistency::Accepted,
-        CommandConsistency::Fact => DistributedCommandConsistency::Fact,
+        CommandConsistency::Succeeded => DistributedCommandConsistency::Succeeded,
+        CommandConsistency::Causal => DistributedCommandConsistency::Causal,
         CommandConsistency::Projected => DistributedCommandConsistency::Projected,
     }
 }
@@ -707,9 +707,9 @@ fn command_state(value: CommandLedgerState) -> DistributedCommandState {
         CommandLedgerState::InProgress | CommandLedgerState::RetryableUnknown => {
             DistributedCommandState::InProgress
         }
-        CommandLedgerState::Accepted => DistributedCommandState::Accepted,
-        CommandLedgerState::AcceptedPendingProjection => {
-            DistributedCommandState::AcceptedPendingProjection
+        CommandLedgerState::Succeeded => DistributedCommandState::Succeeded,
+        CommandLedgerState::SucceededPendingProjection => {
+            DistributedCommandState::SucceededPendingProjection
         }
         CommandLedgerState::Projected => DistributedCommandState::Projected,
         CommandLedgerState::Rejected => DistributedCommandState::Rejected,
@@ -721,9 +721,9 @@ fn command_state(value: CommandLedgerState) -> DistributedCommandState {
 fn public_command_state(value: CausalCommandPublicState) -> DistributedCommandState {
     match value {
         CausalCommandPublicState::InProgress => DistributedCommandState::InProgress,
-        CausalCommandPublicState::Accepted => DistributedCommandState::Accepted,
-        CausalCommandPublicState::AcceptedPendingProjection => {
-            DistributedCommandState::AcceptedPendingProjection
+        CausalCommandPublicState::Succeeded => DistributedCommandState::Succeeded,
+        CausalCommandPublicState::SucceededPendingProjection => {
+            DistributedCommandState::SucceededPendingProjection
         }
         CausalCommandPublicState::Projected => DistributedCommandState::Projected,
         CausalCommandPublicState::Rejected => DistributedCommandState::Rejected,

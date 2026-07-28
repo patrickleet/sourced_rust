@@ -562,7 +562,7 @@ fn generated_command_types_manifest() -> JsonValue {
             "operation_hash": fingerprint(import),
             "extensions": {
                 "version": 1,
-                "consistency": {"version": 1, "kind": "accepted"}
+                "consistency": {"version": 1, "kind": "succeeded"}
             }
         }),
         json!({
@@ -589,7 +589,7 @@ fn generated_command_types_manifest() -> JsonValue {
             "operation_hash": fingerprint(ping),
             "extensions": {
                 "version": 1,
-                "consistency": {"version": 1, "kind": "accepted"}
+                "consistency": {"version": 1, "kind": "succeeded"}
             }
         }),
     ]);
@@ -2421,7 +2421,7 @@ fn command_protocol_and_extensions_are_preserved_exactly() {
         "operation_hash": fingerprint(mutation),
         "extensions": {
             "version": 1,
-            "consistency": {"version": 1, "kind": "fact"},
+            "consistency": {"version": 1, "kind": "causal"},
             "input_defaults": {
                 "version": 1,
                 "defaults": [{"path": ["id"], "generator": "uuid_v7"}]
@@ -2511,7 +2511,7 @@ fn command_protocol_and_extensions_are_preserved_exactly() {
     assert!(commands.contains("\"inputDefaults\""));
     assert!(commands.contains("\"effects\""));
     assert!(commands.contains("\"confirmations\""));
-    assert!(commands.contains("\"consistency\": \"fact\""));
+    assert!(commands.contains("\"consistency\": \"causal\""));
     assert!(commands.contains("\"revalidation\""));
     assert!(commands.contains("\"trustedPresets\": []"));
     assert!(commands.contains("export function prepareCommand_createTodo"));
@@ -2629,10 +2629,10 @@ fn projected_command_requires_exact_role_safe_direct_projection() {
     assert_eq!(error.code, "client.manifest.direct_projection_required");
 
     let mut non_projected = projected_manifest();
-    non_projected["commands"][0]["extensions"]["consistency"]["kind"] = json!("accepted");
+    non_projected["commands"][0]["extensions"]["consistency"]["kind"] = json!("succeeded");
     refresh_schema_fingerprint(&mut non_projected);
     let error = ClientManifest::parse(non_projected, &ClientSurfaceSelector::role("user"))
-        .expect_err("accepted commands cannot carry direct projection metadata");
+        .expect_err("succeeded commands cannot carry direct projection metadata");
     assert_eq!(error.code, "client.manifest.direct_projection_unexpected");
 
     let mut impossible_confirmation = projected_manifest();

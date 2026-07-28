@@ -127,7 +127,7 @@ function baseArtifact(overrides = {}) {
 				{ path: ['id'], generator: 'uuid_v7' }
 			]
 		},
-		consistency: 'fact',
+		consistency: 'causal',
 		effects: {
 			version: 1,
 			operations: [
@@ -308,7 +308,7 @@ test('none inputs and typed JSON fields produce exact canonical transport variab
 				'mutation Client_rebuildTodos($commandId: ID!) { rebuildTodos(commandId: $commandId) }',
 			input: { kind: 'none' },
 			inputDefaults: undefined,
-			consistency: 'accepted',
+			consistency: 'succeeded',
 			effects: { version: 1, operations: [], fallback: 'revalidate' },
 			confirmations: undefined,
 			revalidation: {
@@ -333,7 +333,7 @@ test('none inputs and typed JSON fields produce exact canonical transport variab
 				'mutation Client_importTodos($commandId: ID!, $input: ImportTodosInput!) { importTodos(commandId: $commandId, input: $input) }',
 			input: JSON_IMPORT_INPUT,
 			inputDefaults: undefined,
-			consistency: 'accepted',
+			consistency: 'succeeded',
 			effects: { version: 1, operations: [], fallback: 'revalidate' },
 			confirmations: undefined,
 			revalidation: {
@@ -364,7 +364,7 @@ test('none inputs and typed JSON fields produce exact canonical transport variab
 						'mutation Client_importTodos($commandId: ID!, $input: ImportTodosInput!) { importTodos(commandId: $commandId, input: $input) }',
 					input: JSON_IMPORT_INPUT,
 					inputDefaults: undefined,
-					consistency: 'accepted',
+					consistency: 'succeeded',
 					effects: { version: 1, operations: [], fallback: 'revalidate' },
 					confirmations: undefined,
 					revalidation: {
@@ -724,7 +724,7 @@ test('finite receipts compare projector/model as an exact multiset including mul
 	assert.deepEqual(
 		verifyReplicaCommandReceipt(
 			prepared,
-			receipt(prepared, 'accepted_pending_projection', {
+			receipt(prepared, 'succeeded_pending_projection', {
 				expects: [
 					expectation('search', 'TodoSearch', 'token-3'),
 					expectation('todos', 'Todo', 'token-1'),
@@ -738,7 +738,7 @@ test('finite receipts compare projector/model as an exact multiset including mul
 		() =>
 			verifyReplicaCommandReceipt(
 				prepared,
-				receipt(prepared, 'accepted_pending_projection', {
+				receipt(prepared, 'succeeded_pending_projection', {
 					expects: [
 						expectation('search', 'TodoSearch', 'token-3'),
 						expectation('todos', 'Todo', 'token-1')
@@ -754,7 +754,7 @@ test('finite receipts compare projector/model as an exact multiset including mul
 		() =>
 			verifyReplicaCommandReceipt(
 				prepared,
-				receipt(prepared, 'accepted_pending_projection')
+				receipt(prepared, 'succeeded_pending_projection')
 			),
 		(error) =>
 			error instanceof ReplicaCommandContractError &&
@@ -763,7 +763,7 @@ test('finite receipts compare projector/model as an exact multiset including mul
 	assert.throws(
 		() =>
 			verifyReplicaCommandReceipt(prepared, {
-				...receipt(prepared, 'accepted_pending_projection'),
+				...receipt(prepared, 'succeeded_pending_projection'),
 				commandId: OTHER_COMMAND_ID
 			}),
 		(error) =>
@@ -773,8 +773,8 @@ test('finite receipts compare projector/model as an exact multiset including mul
 	assert.throws(
 		() =>
 			verifyReplicaCommandReceipt(prepared, {
-				...receipt(prepared, 'accepted_pending_projection'),
-				consistency: 'accepted'
+				...receipt(prepared, 'succeeded_pending_projection'),
+				consistency: 'succeeded'
 			}),
 		(error) =>
 			error instanceof ReplicaCommandContractError &&
@@ -784,7 +784,7 @@ test('finite receipts compare projector/model as an exact multiset including mul
 
 test('unavailable confirmation contracts always force conservative revalidation', () => {
 	const artifact = baseArtifact({
-		consistency: 'accepted',
+		consistency: 'succeeded',
 		confirmations: {
 			version: 1,
 			kind: 'unavailable',
@@ -814,7 +814,7 @@ test('unavailable confirmation contracts always force conservative revalidation'
 	assert.deepEqual(
 		verifyReplicaCommandReceipt(
 			prepared,
-			receipt(prepared, 'accepted', {
+			receipt(prepared, 'succeeded', {
 				expects: [expectation('hidden', 'Hidden', 'opaque')]
 			})
 		),
@@ -826,9 +826,9 @@ test('unavailable confirmation contracts always force conservative revalidation'
 	);
 });
 
-test('accepted commands without finite confirmations require canonical revalidation', () => {
+test('succeeded commands without finite confirmations require canonical revalidation', () => {
 	const invalid = baseArtifact({
-		consistency: 'accepted',
+		consistency: 'succeeded',
 		confirmations: undefined
 	});
 	const input = { meta: { count: 1 }, title: 'No finite fence' };
@@ -848,7 +848,7 @@ test('accepted commands without finite confirmations require canonical revalidat
 	);
 
 	const valid = baseArtifact({
-		consistency: 'accepted',
+		consistency: 'succeeded',
 		confirmations: undefined,
 		revalidation: {
 			...invalid.revalidation,

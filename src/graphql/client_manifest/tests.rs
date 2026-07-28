@@ -1,8 +1,8 @@
 use super::*;
 use crate::graphql::{
     build_surface, claim, col, rel, surface_for_application, surface_for_role, typed_command,
-    Accepted, GraphqlInputType, GraphqlOutputType, GraphqlTypeDef, GraphqlTypeField,
-    PreparedCommand, RoleGrant, SurfaceCommand, SurfaceOptions, SurfaceProjector, SurfaceTypeField,
+    GraphqlInputType, GraphqlOutputType, GraphqlTypeDef, GraphqlTypeField, PreparedCommand,
+    RoleGrant, Succeeded, SurfaceCommand, SurfaceOptions, SurfaceProjector, SurfaceTypeField,
 };
 use crate::microsvc::{CausalCommandContext, HandlerError, Routes, Service};
 use crate::table::{
@@ -231,9 +231,9 @@ impl crate::Aggregate for ManifestAggregate {
 async fn complete_handler(
     _context: &CausalCommandContext<'_, ManifestAggregate>,
     _input: CompleteInput,
-) -> Result<PreparedCommand<Accepted<CompletePayload>>, HandlerError> {
+) -> Result<PreparedCommand<Succeeded<CompletePayload>>, HandlerError> {
     Ok(
-        PreparedCommand::<Accepted<CompletePayload>>::prepare(CompletePayload)
+        PreparedCommand::<Succeeded<CompletePayload>>::prepare(CompletePayload)
             .expect("serializable command payload"),
     )
 }
@@ -245,13 +245,13 @@ fn full_surface() -> Surface {
                 crate::InMemoryRepository::new(),
             ))
             .typed_command(
-                typed_command::<CompleteInput, Accepted<CompletePayload>>("todo.complete")
+                typed_command::<CompleteInput, Succeeded<CompletePayload>>("todo.complete")
                     .field_name("todos_complete")
                     .roles(["admin", "user"]),
             )
             .handle(complete_handler)
             .typed_command(
-                typed_command::<CompleteInput, Accepted<CompletePayload>>("todo.force_archive")
+                typed_command::<CompleteInput, Succeeded<CompletePayload>>("todo.force_archive")
                     .field_name("todos_force_archive")
                     .roles(["admin"]),
             )
@@ -563,7 +563,7 @@ fn role_manifest_is_deterministic_and_hides_denied_identity_and_commands() {
     assert_eq!(first.schema_fingerprint, second.schema_fingerprint);
     assert_eq!(
         first.schema_fingerprint,
-        "sha256:62d5744879f473776824e00c101e5d323c27e37bd7a3ba610847cf0130861f93"
+        "sha256:d2a890402634708d74f3edd895b7985fa0e3a86f6787730798b7d8c94f078db8"
     );
     assert_eq!(
         first.protocol_fingerprint,
@@ -663,7 +663,7 @@ fn role_manifest_is_deterministic_and_hides_denied_identity_and_commands() {
         .any(|command| command.name == "todo.force_archive"));
     assert_eq!(first.commands[0].grants, vec!["user"]);
     assert!(first.commands.iter().all(|command| {
-        command.extensions.consistency.kind == "accepted"
+        command.extensions.consistency.kind == "succeeded"
             && command.extensions.effects.as_ref().is_some_and(|effects| {
                 effects.operations.is_empty() && effects.fallback == "revalidate"
             })

@@ -1,6 +1,6 @@
 //! Command: `todo.rename` — owner-only (aggregate enforces).
 
-use distributed::graphql::{Fact, PreparedCommand};
+use distributed::graphql::{Causal, PreparedCommand};
 use distributed::microsvc::{CausalCommandContext, HandlerError};
 use serde::{Deserialize, Serialize};
 use todo_domain::Todo;
@@ -25,12 +25,12 @@ pub struct TodoRenamePayload {
 pub async fn handle(
     ctx: &CausalCommandContext<'_, Todo>,
     input: TodoRenameInput,
-) -> Result<PreparedCommand<Fact<TodoRenamePayload>>, HandlerError> {
+) -> Result<PreparedCommand<Causal<TodoRenamePayload>>, HandlerError> {
     let owner = ctx.user_id()?.to_string();
     let mut todo = load_todo(ctx, &input.todo_id).await?;
     todo.rename(&owner, &input.title).map_err(map_domain)?;
     let fact = stage_todo_event(ctx, todo, "todo.renamed")?;
-    PreparedCommand::<Fact<TodoRenamePayload>>::prepare(TodoRenamePayload {
+    PreparedCommand::<Causal<TodoRenamePayload>>::prepare(TodoRenamePayload {
         todo_id: fact.todo_id,
         title: fact.title,
         status: fact.status,

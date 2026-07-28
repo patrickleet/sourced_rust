@@ -90,7 +90,7 @@ async function mountReactQuery({
 function noOpCommands() {
 	return Object.freeze({
 		todo: Object.freeze({
-			complete: async () => Object.freeze({ state: 'accepted' })
+			complete: async () => Object.freeze({ state: 'succeeded' })
 		})
 	});
 }
@@ -159,7 +159,7 @@ test('minimal React fixture shares normalized detail/list state and generated co
 						}
 					});
 				});
-				return { state: 'accepted_pending_projection' };
+				return { state: 'succeeded_pending_projection' };
 			}
 		}
 	};

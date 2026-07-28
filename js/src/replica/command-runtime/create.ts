@@ -349,8 +349,8 @@ export function createReplicaCommandRuntime<
 						)
 					);
 					break;
-				case 'accepted':
-				case 'accepted_pending_projection':
+				case 'succeeded':
+				case 'succeeded_pending_projection':
 				case 'projected': {
 					const metadata = status.metadata!;
 					const remainsPending = replica.markOptimisticLayerAccepted(
@@ -364,14 +364,14 @@ export function createReplicaCommandRuntime<
 						}
 					} else if (
 						metadata.state === 'projected' ||
-						(metadata.state === 'accepted' &&
+						(metadata.state === 'succeeded' &&
 							prepared.confirmations === undefined &&
 							prepared.revalidation.required)
 					) {
 						/*
 						 * Status is causal truth, but it carries no canonical
 						 * query payload. `projected` fences asynchronous
-						 * projection; `accepted` is terminal when the generated
+						 * projection; `succeeded` is terminal when the generated
 						 * contract has no confirmations. In both cases, only a
 						 * query started after that fence may retire optimism.
 						 */
@@ -829,7 +829,7 @@ export function createReplicaCommandRuntime<
 			receiptValue
 		) as ReplicaCommandReceipt<TOutput>;
 		try {
-			await callOptions.onAccepted?.(receipt);
+			await callOptions.onSucceeded?.(receipt);
 		} catch (error) {
 			options.onBackgroundError?.(error);
 		}

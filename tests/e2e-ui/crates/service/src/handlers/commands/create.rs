@@ -3,7 +3,7 @@
 //! GraphQL: exposed as mutation field `todos_create` (roles: user, admin).
 //! Owner cannot be spoofed via input — only `require_user(session)` is written.
 
-use distributed::graphql::{Fact, PreparedCommand};
+use distributed::graphql::{Causal, PreparedCommand};
 use distributed::microsvc::{CausalCommandContext, HandlerError};
 use serde::{Deserialize, Serialize};
 use todo_domain::Todo;
@@ -31,7 +31,7 @@ pub struct TodoCreatePayload {
 pub async fn handle(
     ctx: &CausalCommandContext<'_, Todo>,
     input: TodoCreateInput,
-) -> Result<PreparedCommand<Fact<TodoCreatePayload>>, HandlerError> {
+) -> Result<PreparedCommand<Causal<TodoCreatePayload>>, HandlerError> {
     // Owner is always the authenticated principal — not client-supplied.
     let owner = ctx.user_id()?.to_string();
 
@@ -48,7 +48,7 @@ pub async fn handle(
 
     let fact = stage_todo_event(ctx, todo, "todo.created")?;
 
-    PreparedCommand::<Fact<TodoCreatePayload>>::prepare(TodoCreatePayload {
+    PreparedCommand::<Causal<TodoCreatePayload>>::prepare(TodoCreatePayload {
         todo_id: fact.todo_id,
         owner_id: fact.owner_id,
         title: fact.title,

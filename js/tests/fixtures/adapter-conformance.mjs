@@ -38,7 +38,7 @@ const RequiredRevalidationCommand = Object.freeze({
 			name: 'RevalidateTodosResult',
 			fields: Object.freeze([
 				Object.freeze({
-					name: 'accepted',
+					name: 'succeeded',
 					typeName: 'Boolean',
 					nullable: false,
 					list: false,
@@ -48,7 +48,7 @@ const RequiredRevalidationCommand = Object.freeze({
 			])
 		})
 	}),
-	consistency: 'accepted',
+	consistency: 'succeeded',
 	effects: Object.freeze({
 		version: 1,
 		operations: Object.freeze([]),

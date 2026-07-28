@@ -207,9 +207,9 @@ pub(in crate::graphql::surface) fn validate_command_confirmations(
 ) -> Result<(), String> {
     validate_projection_confirmation_count(&command.command_name, command.confirmations.len())?;
     match command.consistency {
-        CommandConsistency::Fact if command.confirmations.is_empty() => {
+        CommandConsistency::Causal if command.confirmations.is_empty() => {
             return Err(format!(
-                "typed fact command `{}` must declare at least one expected projector confirmation",
+                "typed causal command `{}` must declare at least one expected projector confirmation",
                 command.command_name
             ));
         }
@@ -225,7 +225,7 @@ pub(in crate::graphql::surface) fn validate_command_confirmations(
                 command.command_name
             ));
         }
-        CommandConsistency::Accepted | CommandConsistency::Fact
+        CommandConsistency::Succeeded | CommandConsistency::Causal
             if command.projected_model.is_some() || command.direct_projection.is_some() =>
         {
             return Err(format!(

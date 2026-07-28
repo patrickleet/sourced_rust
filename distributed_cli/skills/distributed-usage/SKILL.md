@@ -138,7 +138,7 @@ Rules that prevent real bugs:
 For a browser-facing GraphQL service, use the typed causal command path instead
 of exposing a raw `Context`/`serde_json::Value` handler as the mutation contract:
 
-- declare `.typed_command(typed_command::<Input, Accepted<Payload> | Fact<Payload> | Projected<Model>>(...))`
+- declare `.typed_command(typed_command::<Input, Succeeded<Payload> | Causal<Payload> | Projected<Model>>(...))`
   on the executable route;
 - implement the handler with `CausalCommandContext` and return a
   `PreparedCommand<_>` so the framework owns commit, ledger, outbox, and

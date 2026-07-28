@@ -98,8 +98,8 @@ export function commandStatusOutput(
 	}
 	switch (value.state) {
 		case 'in_progress':
-		case 'accepted':
-		case 'accepted_pending_projection':
+		case 'succeeded':
+		case 'succeeded_pending_projection':
 		case 'projected':
 		case 'rejected':
 		case 'projection_failed':
@@ -178,11 +178,11 @@ export function isStatusTransition(
 			return true;
 		case 'in_progress':
 			return next !== 'unknown';
-		case 'accepted':
-			return next === 'accepted' || next === 'expired';
-		case 'accepted_pending_projection':
+		case 'succeeded':
+			return next === 'succeeded' || next === 'expired';
+		case 'succeeded_pending_projection':
 			return (
-				next === 'accepted_pending_projection' ||
+				next === 'succeeded_pending_projection' ||
 				next === 'projected' ||
 				next === 'projection_failed' ||
 				next === 'expired'
@@ -197,4 +197,3 @@ export function isStatusTransition(
 			return next === 'expired';
 	}
 }
-

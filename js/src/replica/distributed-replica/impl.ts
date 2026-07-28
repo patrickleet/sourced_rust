@@ -1425,8 +1425,8 @@ export class DistributedReplicaImpl implements DistributedReplicaApi {
 							command: id,
 							state:
 								counts.obligations === 0
-									? ('accepted' as const)
-									: ('accepted_pending_projection' as const),
+									? ('succeeded' as const)
+									: ('succeeded_pending_projection' as const),
 							obligations: counts.obligations,
 							observed: counts.observed
 						})

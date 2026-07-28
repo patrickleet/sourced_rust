@@ -19,8 +19,8 @@ function distributedEnvelope() {
 		command: {
 			commandId: 'opaque-command-id',
 			causationId: 'opaque-causation-id',
-			state: 'accepted_pending_projection',
-			consistency: 'fact',
+			state: 'succeeded_pending_projection',
+			consistency: 'causal',
 			expects: [
 				{
 					projection: 'todos',
@@ -149,6 +149,25 @@ test('protocol parser validates receipts while retaining future metadata opaquel
 			error.code === 'DISTRIBUTED_PROTOCOL_INVALID' &&
 			error.path.endsWith('.scopeToken')
 	);
+	for (const [field, value] of [
+		['state', 'accepted_pending_projection'],
+		['consistency', 'fact']
+	]) {
+		assert.throws(
+			() =>
+				parseDistributedProtocolEnvelope({
+					...distributedEnvelope(),
+					command: {
+						...distributedEnvelope().command,
+						[field]: value
+					}
+				}),
+			(error) =>
+				error instanceof DistributedProtocolError &&
+				error.code === 'DISTRIBUTED_PROTOCOL_INVALID' &&
+				error.path.endsWith(`.${field}`)
+		);
+	}
 	assert.throws(
 		() =>
 			parseDistributedProtocolEnvelope({

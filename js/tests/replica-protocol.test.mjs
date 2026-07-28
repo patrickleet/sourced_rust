@@ -468,8 +468,8 @@ function commandMetadata(options = {}) {
 		command: {
 			commandId: options.commandId ?? 'cmd-1',
 			causationId: options.causationId ?? 'cause-1',
-			state: options.state ?? 'accepted_pending_projection',
-			consistency: 'fact',
+			state: options.state ?? 'succeeded_pending_projection',
+			consistency: 'causal',
 			expects: [
 				{
 					projection: 'todos-projector',

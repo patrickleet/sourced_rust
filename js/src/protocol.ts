@@ -25,8 +25,8 @@ export type DistributedDecimalString = string & {
 
 export type DistributedCommandState =
 	| 'in_progress'
-	| 'accepted'
-	| 'accepted_pending_projection'
+	| 'succeeded'
+	| 'succeeded_pending_projection'
 	| 'projected'
 	| 'rejected'
 	| 'projection_failed'
@@ -34,8 +34,8 @@ export type DistributedCommandState =
 	| 'unknown';
 
 export type DistributedCommandConsistency =
-	| 'accepted'
-	| 'fact'
+	| 'succeeded'
+	| 'causal'
 	| 'projected';
 
 /** Closed wire codecs for server-derived, client-visible trusted presets. */
@@ -216,8 +216,8 @@ export class DistributedProtocolError extends Error {
 
 const COMMAND_STATES = new Set<DistributedCommandState>([
 	'in_progress',
-	'accepted',
-	'accepted_pending_projection',
+	'succeeded',
+	'succeeded_pending_projection',
 	'projected',
 	'rejected',
 	'projection_failed',
@@ -226,8 +226,8 @@ const COMMAND_STATES = new Set<DistributedCommandState>([
 ]);
 
 const COMMAND_CONSISTENCIES = new Set<DistributedCommandConsistency>([
-	'accepted',
-	'fact',
+	'succeeded',
+	'causal',
 	'projected'
 ]);
 

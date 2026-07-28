@@ -128,8 +128,8 @@ export function syncDiagnostics(host: DiagnosticsHost): void {
 						receipt === undefined
 							? ('optimistic' as const)
 							: receipt.expectations.size === 0
-								? ('accepted' as const)
-								: ('accepted_pending_projection' as const),
+								? ('succeeded' as const)
+								: ('succeeded_pending_projection' as const),
 					expectations:
 						receipt === undefined
 							? Object.freeze([])

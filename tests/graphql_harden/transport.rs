@@ -4,8 +4,8 @@ use std::sync::Arc;
 
 use async_graphql::Request;
 use distributed::graphql::{
-    graphiql_enabled_from_env_vars, read, typed_command, Accepted, GraphqlEngine, ModelPermissions,
-    PreparedCommand,
+    graphiql_enabled_from_env_vars, read, typed_command, GraphqlEngine, ModelPermissions,
+    PreparedCommand, Succeeded,
 };
 use distributed::microsvc::{router, CausalCommandContext, HandlerError, Routes, Service, Session};
 use distributed::{
@@ -57,9 +57,9 @@ struct T4CommandOutput {
 async fn t4_command_handler(
     _context: &CausalCommandContext<'_, T4Aggregate>,
     input: T4CommandInput,
-) -> Result<PreparedCommand<Accepted<T4CommandOutput>>, HandlerError> {
+) -> Result<PreparedCommand<Succeeded<T4CommandOutput>>, HandlerError> {
     Ok(
-        PreparedCommand::<Accepted<T4CommandOutput>>::prepare(T4CommandOutput {
+        PreparedCommand::<Succeeded<T4CommandOutput>>::prepare(T4CommandOutput {
             id: input.id,
             name: input.name,
         })
@@ -217,7 +217,7 @@ async fn t4_mutation_absent_without_command_grant() {
     let routes: Routes<AggregateRepository<InMemoryRepository, T4Aggregate>> = Routes::new()
         .with_repo(AggregateRepository::new(InMemoryRepository::new()))
         .typed_command(
-            typed_command::<T4CommandInput, Accepted<T4CommandOutput>>("item.create")
+            typed_command::<T4CommandInput, Succeeded<T4CommandOutput>>("item.create")
                 .field_name("createItem")
                 .roles(["admin"]),
         )

@@ -570,7 +570,7 @@ impl {model_struct} {{
                 .map(|model| (model.type_ident.as_str(), model.name.as_str()))
                 .unwrap_or(("CommandAggregate", "CommandAggregate"));
             return format!(
-                r#"use distributed::graphql::{{typed_command, Accepted, PreparedCommand, TypedCommand}};
+                r#"use distributed::graphql::{{typed_command, Succeeded, PreparedCommand, TypedCommand}};
 use distributed::microsvc::{{CausalCommandContext, HandlerError}};
 
 use crate::models::{{CommandInput, CommandOutput, {model_type}}};
@@ -578,21 +578,21 @@ use crate::models::{{CommandInput, CommandOutput, {model_type}}};
 pub const COMMAND: &str = {message_name};
 pub const MODEL: &str = {model_name};
 
-pub fn command() -> TypedCommand<CommandInput, Accepted<CommandOutput>> {{
-    typed_command::<CommandInput, Accepted<CommandOutput>>(COMMAND).roles(["user"])
+pub fn command() -> TypedCommand<CommandInput, Succeeded<CommandOutput>> {{
+    typed_command::<CommandInput, Succeeded<CommandOutput>>(COMMAND).roles(["user"])
 }}
 
 pub async fn handle(
     ctx: &CausalCommandContext<'_, {model_type}>,
     input: CommandInput,
-) -> Result<PreparedCommand<Accepted<CommandOutput>>, HandlerError> {{
+) -> Result<PreparedCommand<Succeeded<CommandOutput>>, HandlerError> {{
     let mut aggregate = match ctx.load(&input.id).await? {{
         Some(aggregate) => aggregate,
         None => ctx.create(),
     }};
     aggregate.record_command(COMMAND.to_string(), input.id.clone(), input.name.clone())?;
     ctx.stage(aggregate)?;
-    PreparedCommand::<Accepted<CommandOutput>>::prepare(CommandOutput {{
+    PreparedCommand::<Succeeded<CommandOutput>>::prepare(CommandOutput {{
         command: COMMAND.to_string(),
         id: input.id,
         model: MODEL.to_string(),

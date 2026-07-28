@@ -10,11 +10,11 @@ use async_graphql::Request;
 use axum::body::Body;
 use axum::http::Request as HttpRequest;
 use distributed::graphql::{
-    build_surface, graphql_router_with_service, read, surface_for_role, typed_command, Accepted,
-    DistributedClientSurfaceExport, EffectInputFieldMarker, EffectModelFieldMarker, Fact,
-    GraphqlEngine, GraphqlInputType, GraphqlOutputType, GraphqlTypeDef, GraphqlTypeField,
-    ModelPermissions, PreparedCommand, Projected, RoleGrant, SurfaceDirectProjection,
-    SurfaceOptions, SurfaceProjector,
+    build_surface, graphql_router_with_service, read, surface_for_role, typed_command, Causal,
+    DistributedClientSurfaceExport, EffectInputFieldMarker, EffectModelFieldMarker, GraphqlEngine,
+    GraphqlInputType, GraphqlOutputType, GraphqlTypeDef, GraphqlTypeField, ModelPermissions,
+    PreparedCommand, Projected, RoleGrant, Succeeded, SurfaceDirectProjection, SurfaceOptions,
+    SurfaceProjector,
 };
 use distributed::microsvc::{CausalCommandContext, HandlerError, Routes, Service};
 use distributed::microsvc::{Context, Session};
@@ -417,44 +417,44 @@ impl GraphqlOutputType for OutputB {
 async fn handler_a(
     _context: &CausalCommandContext<'_, FixtureAggregate>,
     input: InputA,
-) -> Result<PreparedCommand<Accepted<OutputA>>, HandlerError> {
+) -> Result<PreparedCommand<Succeeded<OutputA>>, HandlerError> {
     Ok(PreparedCommand::prepare(OutputA { id: input.id }).unwrap())
 }
 
 async fn guarded_handler_a(
     _context: &CausalCommandContext<'_, FixtureAggregate>,
     input: InputA,
-) -> Result<PreparedCommand<Accepted<OutputA>>, HandlerError> {
+) -> Result<PreparedCommand<Succeeded<OutputA>>, HandlerError> {
     GRAPHQL_TYPED_HANDLER_INVOKED.store(true, Ordering::SeqCst);
-    Ok(PreparedCommand::<Accepted<OutputA>>::prepare(OutputA { id: input.id }).unwrap())
+    Ok(PreparedCommand::<Succeeded<OutputA>>::prepare(OutputA { id: input.id }).unwrap())
 }
 
 async fn handler_b(
     _context: &CausalCommandContext<'_, FixtureAggregate>,
     input: InputB,
-) -> Result<PreparedCommand<Accepted<OutputB>>, HandlerError> {
-    Ok(PreparedCommand::<Accepted<OutputB>>::prepare(OutputB { id: input.id }).unwrap())
+) -> Result<PreparedCommand<Succeeded<OutputB>>, HandlerError> {
+    Ok(PreparedCommand::<Succeeded<OutputB>>::prepare(OutputB { id: input.id }).unwrap())
 }
 
-async fn accepted_plan_handler(
+async fn succeeded_plan_handler(
     _context: &CausalCommandContext<'_, FixtureAggregate>,
     input: PlanInput,
-) -> Result<PreparedCommand<Accepted<PlanOutput>>, HandlerError> {
-    Ok(PreparedCommand::<Accepted<PlanOutput>>::prepare(PlanOutput { id: input.id }).unwrap())
+) -> Result<PreparedCommand<Succeeded<PlanOutput>>, HandlerError> {
+    Ok(PreparedCommand::<Succeeded<PlanOutput>>::prepare(PlanOutput { id: input.id }).unwrap())
 }
 
 async fn renamed_default_handler(
     _context: &CausalCommandContext<'_, FixtureAggregate>,
     input: RenamedDefaultInput,
-) -> Result<PreparedCommand<Accepted<PlanOutput>>, HandlerError> {
-    Ok(PreparedCommand::<Accepted<PlanOutput>>::prepare(PlanOutput { id: input.id }).unwrap())
+) -> Result<PreparedCommand<Succeeded<PlanOutput>>, HandlerError> {
+    Ok(PreparedCommand::<Succeeded<PlanOutput>>::prepare(PlanOutput { id: input.id }).unwrap())
 }
 
 async fn fact_plan_handler(
     _context: &CausalCommandContext<'_, FixtureAggregate>,
     input: PlanInput,
-) -> Result<PreparedCommand<Fact<PlanOutput>>, HandlerError> {
-    Ok(PreparedCommand::<Fact<PlanOutput>>::prepare(PlanOutput { id: input.id }).unwrap())
+) -> Result<PreparedCommand<Causal<PlanOutput>>, HandlerError> {
+    Ok(PreparedCommand::<Causal<PlanOutput>>::prepare(PlanOutput { id: input.id }).unwrap())
 }
 
 async fn projected_plan_handler(
@@ -469,23 +469,23 @@ async fn projected_plan_handler(
 async fn forged_handler(
     _context: &CausalCommandContext<'_, FixtureAggregate>,
     input: ForgedInput,
-) -> Result<PreparedCommand<Accepted<PlanOutput>>, HandlerError> {
-    Ok(PreparedCommand::<Accepted<PlanOutput>>::prepare(PlanOutput { id: input.id }).unwrap())
+) -> Result<PreparedCommand<Succeeded<PlanOutput>>, HandlerError> {
+    Ok(PreparedCommand::<Succeeded<PlanOutput>>::prepare(PlanOutput { id: input.id }).unwrap())
 }
 
 async fn json_patch_handler(
     _context: &CausalCommandContext<'_, FixtureAggregate>,
     input: JsonPatchInput,
-) -> Result<PreparedCommand<Accepted<PlanOutput>>, HandlerError> {
-    Ok(PreparedCommand::<Accepted<PlanOutput>>::prepare(PlanOutput { id: input.id }).unwrap())
+) -> Result<PreparedCommand<Succeeded<PlanOutput>>, HandlerError> {
+    Ok(PreparedCommand::<Succeeded<PlanOutput>>::prepare(PlanOutput { id: input.id }).unwrap())
 }
 
 async fn bigint_key_handler(
     _context: &CausalCommandContext<'_, FixtureAggregate>,
     input: BigIntKeyInput,
-) -> Result<PreparedCommand<Accepted<PlanOutput>>, HandlerError> {
+) -> Result<PreparedCommand<Succeeded<PlanOutput>>, HandlerError> {
     Ok(
-        PreparedCommand::<Accepted<PlanOutput>>::prepare(PlanOutput {
+        PreparedCommand::<Succeeded<PlanOutput>>::prepare(PlanOutput {
             id: input.key.to_string(),
         })
         .unwrap(),
@@ -495,9 +495,9 @@ async fn bigint_key_handler(
 async fn nullable_key_handler(
     _context: &CausalCommandContext<'_, FixtureAggregate>,
     input: NullableKeyInput,
-) -> Result<PreparedCommand<Accepted<PlanOutput>>, HandlerError> {
+) -> Result<PreparedCommand<Succeeded<PlanOutput>>, HandlerError> {
     Ok(
-        PreparedCommand::<Accepted<PlanOutput>>::prepare(PlanOutput {
+        PreparedCommand::<Succeeded<PlanOutput>>::prepare(PlanOutput {
             id: input.key.unwrap_or_default(),
         })
         .unwrap(),
@@ -507,9 +507,9 @@ async fn nullable_key_handler(
 async fn bigint_relationship_handler(
     _context: &CausalCommandContext<'_, FixtureAggregate>,
     input: BigIntRelationshipInput,
-) -> Result<PreparedCommand<Accepted<PlanOutput>>, HandlerError> {
+) -> Result<PreparedCommand<Succeeded<PlanOutput>>, HandlerError> {
     Ok(
-        PreparedCommand::<Accepted<PlanOutput>>::prepare(PlanOutput {
+        PreparedCommand::<Succeeded<PlanOutput>>::prepare(PlanOutput {
             id: input.target_id,
         })
         .unwrap(),
@@ -519,15 +519,15 @@ async fn bigint_relationship_handler(
 async fn composite_key_handler(
     _context: &CausalCommandContext<'_, FixtureAggregate>,
     input: CompositeKeyInput,
-) -> Result<PreparedCommand<Accepted<PlanOutput>>, HandlerError> {
-    Ok(PreparedCommand::<Accepted<PlanOutput>>::prepare(PlanOutput { id: input.id }).unwrap())
+) -> Result<PreparedCommand<Succeeded<PlanOutput>>, HandlerError> {
+    Ok(PreparedCommand::<Succeeded<PlanOutput>>::prepare(PlanOutput { id: input.id }).unwrap())
 }
 
 async fn float_effect_handler(
     _context: &CausalCommandContext<'_, FixtureAggregate>,
     input: FloatEffectInput,
-) -> Result<PreparedCommand<Accepted<PlanOutput>>, HandlerError> {
-    Ok(PreparedCommand::<Accepted<PlanOutput>>::prepare(PlanOutput { id: input.id }).unwrap())
+) -> Result<PreparedCommand<Succeeded<PlanOutput>>, HandlerError> {
+    Ok(PreparedCommand::<Succeeded<PlanOutput>>::prepare(PlanOutput { id: input.id }).unwrap())
 }
 
 fn plan_projector() -> SurfaceProjector {
@@ -655,7 +655,7 @@ fn two_confirmation_plan(
 fn service_a(service_id: &str) -> Service {
     Service::new().named(service_id).routes(
         causal_routes()
-            .typed_command(typed_command::<InputA, Accepted<OutputA>>("todo.create"))
+            .typed_command(typed_command::<InputA, Succeeded<OutputA>>("todo.create"))
             .handle(handler_a),
     )
 }
@@ -663,7 +663,7 @@ fn service_a(service_id: &str) -> Service {
 fn service_b(service_id: &str) -> Service {
     Service::new().named(service_id).routes(
         causal_routes()
-            .typed_command(typed_command::<InputB, Accepted<OutputB>>("todo.create"))
+            .typed_command(typed_command::<InputB, Succeeded<OutputB>>("todo.create"))
             .handle(handler_b),
     )
 }
@@ -671,7 +671,7 @@ fn service_b(service_id: &str) -> Service {
 fn guarded_service_a(service_id: &str) -> Service {
     Service::new().named(service_id).routes(
         causal_routes()
-            .typed_command(typed_command::<InputA, Accepted<OutputA>>("todo.create"))
+            .typed_command(typed_command::<InputA, Succeeded<OutputA>>("todo.create"))
             .guarded(
                 |_| {
                     GRAPHQL_TYPED_GUARD_INVOKED.store(true, Ordering::SeqCst);
@@ -748,7 +748,7 @@ async fn attachment_checks_full_structure_and_service_identity() {
     let structurally_different = Service::new().named("todos").routes(
         causal_routes()
             .typed_command(
-                typed_command::<InputA, Accepted<OutputA>>("todo.create")
+                typed_command::<InputA, Succeeded<OutputA>>("todo.create")
                     .field_name("createSomethingElse"),
             )
             .handle(handler_a),
@@ -852,10 +852,10 @@ async fn projector_topology_identity_drift_changes_service_binding_fingerprint()
     let engine_source = Service::new().named("plans").routes(
         causal_routes()
             .typed_command(
-                typed_command::<PlanInput, Accepted<PlanOutput>>("plan.create")
+                typed_command::<PlanInput, Succeeded<PlanOutput>>("plan.create")
                     .confirmations(confirmations_for(&declared)),
             )
-            .handle(accepted_plan_handler),
+            .handle(succeeded_plan_handler),
     );
     let engine = GraphqlEngine::builder(pool())
         .model::<PlanView>(plan_permissions("anonymous"))
@@ -871,10 +871,10 @@ async fn projector_topology_identity_drift_changes_service_binding_fingerprint()
     let executable = Service::new().named("plans").routes(
         causal_routes()
             .typed_command(
-                typed_command::<PlanInput, Accepted<PlanOutput>>("plan.create")
+                typed_command::<PlanInput, Succeeded<PlanOutput>>("plan.create")
                     .confirmations(confirmations_for(&drifted)),
             )
-            .handle(accepted_plan_handler),
+            .handle(succeeded_plan_handler),
     );
     let error = executable
         .try_with_graphql(engine)
@@ -1030,10 +1030,10 @@ async fn query_only_service_binding_executes_without_a_command_committer() {
 fn pool_free_typed_export_preserves_service_provenance_and_rejects_relabeling() {
     let service = Service::new().named("plans").routes(
         causal_routes()
-            .typed_command(typed_command::<PlanInput, Accepted<PlanOutput>>(
+            .typed_command(typed_command::<PlanInput, Succeeded<PlanOutput>>(
                 "plan.create",
             ))
-            .handle(accepted_plan_handler),
+            .handle(succeeded_plan_handler),
     );
     let catalog = build_surface(&[PlanView::schema().clone()], &SurfaceOptions::sqlite())
         .unwrap()
@@ -1067,10 +1067,10 @@ fn pool_free_service_and_projector_topology_validate_in_both_call_orders() {
         Service::new().named("plans").routes(
             causal_routes()
                 .typed_command(
-                    typed_command::<PlanInput, Accepted<PlanOutput>>("plan.create")
+                    typed_command::<PlanInput, Succeeded<PlanOutput>>("plan.create")
                         .confirmations(plan_confirmations()),
                 )
-                .handle(accepted_plan_handler),
+                .handle(succeeded_plan_handler),
         )
     };
     let tables = [PlanView::schema().clone()];
@@ -1148,10 +1148,10 @@ fn pool_free_service_and_projector_topology_validate_in_both_call_orders() {
     let service = Service::new().named("plans").routes(
         causal_routes()
             .typed_command(
-                typed_command::<PlanInput, Accepted<PlanOutput>>("plan.create")
+                typed_command::<PlanInput, Succeeded<PlanOutput>>("plan.create")
                     .confirmations(confirmations_for(&captured_reordered)),
             )
-            .handle(accepted_plan_handler),
+            .handle(succeeded_plan_handler),
     );
     build_surface(
         &[PlanView::schema().clone(), ForgedView::schema().clone()],
@@ -1172,7 +1172,7 @@ fn pool_free_selection_rejects_omitted_confirmation_topology() {
     let service = Service::new().named("plans").routes(
         causal_routes()
             .typed_command(
-                typed_command::<PlanInput, Fact<PlanOutput>>("plan.fact")
+                typed_command::<PlanInput, Causal<PlanOutput>>("plan.fact")
                     .confirmations(plan_confirmations()),
             )
             .handle(fact_plan_handler),
@@ -1242,7 +1242,7 @@ async fn manifest_populates_typed_consistency_and_revalidation_effects() {
         .find(|command| command.name == "todo.create")
         .unwrap();
 
-    assert_eq!(command.extensions.consistency.kind, "accepted");
+    assert_eq!(command.extensions.consistency.kind, "succeeded");
     let effects = command.extensions.effects.as_ref().unwrap();
     assert!(effects.operations.is_empty());
     assert_eq!(effects.fallback, "revalidate");
@@ -1253,7 +1253,7 @@ async fn manifest_populates_typed_consistency_and_revalidation_effects() {
 #[tokio::test]
 async fn generated_input_default_is_reused_as_the_effect_key_and_fingerprinted() {
     let command_with_default = || {
-        typed_command::<PlanInput, Accepted<PlanOutput>>("plan.create")
+        typed_command::<PlanInput, Succeeded<PlanOutput>>("plan.create")
             .input_defaults(plan_input_defaults())
             .confirmations(plan_confirmations())
             .effects(command_effects! {
@@ -1267,7 +1267,7 @@ async fn generated_input_default_is_reused_as_the_effect_key_and_fingerprinted()
     let service_with_default = Service::new().named("plans").routes(
         causal_routes()
             .typed_command(command_with_default())
-            .handle(accepted_plan_handler),
+            .handle(succeeded_plan_handler),
     );
     let engine = GraphqlEngine::builder(pool())
         .model::<PlanView>(plan_permissions("anonymous"))
@@ -1297,7 +1297,7 @@ async fn generated_input_default_is_reused_as_the_effect_key_and_fingerprinted()
     let without_default = Service::new().named("plans").routes(
         causal_routes()
             .typed_command(
-                typed_command::<PlanInput, Accepted<PlanOutput>>("plan.create")
+                typed_command::<PlanInput, Succeeded<PlanOutput>>("plan.create")
                     .confirmations(plan_confirmations())
                     .effects(command_effects! {
                         input: PlanInput;
@@ -1307,7 +1307,7 @@ async fn generated_input_default_is_reused_as_the_effect_key_and_fingerprinted()
                         };
                     }),
             )
-            .handle(accepted_plan_handler),
+            .handle(succeeded_plan_handler),
     );
     let manifest_without_default = GraphqlEngine::builder(pool())
         .model::<PlanView>(plan_permissions("anonymous"))
@@ -1335,10 +1335,10 @@ async fn forged_input_default_marker_is_revalidated_against_wire_shape() {
     let service = Service::new().named("plans").routes(
         causal_routes()
             .typed_command(
-                typed_command::<PlanInput, Accepted<PlanOutput>>("plan.create")
+                typed_command::<PlanInput, Succeeded<PlanOutput>>("plan.create")
                     .input_defaults(forged_input_defaults()),
             )
-            .handle(accepted_plan_handler),
+            .handle(succeeded_plan_handler),
     );
     let error = GraphqlEngine::builder(pool())
         .service(&service)
@@ -1355,7 +1355,7 @@ async fn generated_input_default_uses_the_canonical_renamed_wire_path() {
     let service = Service::new().named("todos").routes(
         causal_routes()
             .typed_command(
-                typed_command::<RenamedDefaultInput, Accepted<PlanOutput>>("todo.create")
+                typed_command::<RenamedDefaultInput, Succeeded<PlanOutput>>("todo.create")
                     .input_defaults(command_input_defaults! {
                         input: RenamedDefaultInput;
                         default input.id = uuid_v7();
@@ -1382,7 +1382,7 @@ async fn json_container_leaves_reach_the_manifest() {
     let json_service = Service::new().named("json").routes(
         causal_routes()
             .typed_command(
-                typed_command::<JsonPatchInput, Accepted<PlanOutput>>("json.patch").effects(
+                typed_command::<JsonPatchInput, Succeeded<PlanOutput>>("json.patch").effects(
                     command_effects! {
                         input: JsonPatchInput;
                         patch JsonView {
@@ -1424,7 +1424,7 @@ async fn embedded_primary_keys_reject_keyed_effects_while_composite_keys_remain_
     let bigint_service = Service::new().named("bigint").routes(
         causal_routes()
             .typed_command(
-                typed_command::<BigIntKeyInput, Accepted<PlanOutput>>("bigint.upsert").effects(
+                typed_command::<BigIntKeyInput, Succeeded<PlanOutput>>("bigint.upsert").effects(
                     command_effects! {
                         input: BigIntKeyInput;
                         upsert BigIntKeyView {
@@ -1447,7 +1447,7 @@ async fn embedded_primary_keys_reject_keyed_effects_while_composite_keys_remain_
     let relationship_service = Service::new().named("bigint-relationship").routes(
         causal_routes()
             .typed_command(
-                typed_command::<BigIntRelationshipInput, Accepted<PlanOutput>>("bigint.link")
+                typed_command::<BigIntRelationshipInput, Succeeded<PlanOutput>>("bigint.link")
                     .effects(command_effects! {
                         input: BigIntRelationshipInput;
                         link BigIntRelationshipSource.targets -> BigIntRelationshipTarget {
@@ -1482,12 +1482,11 @@ async fn embedded_primary_keys_reject_keyed_effects_while_composite_keys_remain_
     let nullable_service = Service::new().named("nullable").routes(
         causal_routes()
             .typed_command(
-                typed_command::<NullableKeyInput, Accepted<PlanOutput>>("nullable.delete").effects(
-                    command_effects! {
+                typed_command::<NullableKeyInput, Succeeded<PlanOutput>>("nullable.delete")
+                    .effects(command_effects! {
                         input: NullableKeyInput;
                         delete NullableKeyView { key { key: input.key } };
-                    },
-                ),
+                    }),
             )
             .handle(nullable_key_handler),
     );
@@ -1504,7 +1503,7 @@ async fn embedded_primary_keys_reject_keyed_effects_while_composite_keys_remain_
     let composite_service = Service::new().named("composite").routes(
         causal_routes()
             .typed_command(
-                typed_command::<CompositeKeyInput, Accepted<PlanOutput>>("composite.patch")
+                typed_command::<CompositeKeyInput, Succeeded<PlanOutput>>("composite.patch")
                     .effects(command_effects! {
                         input: CompositeKeyInput;
                         patch CompositeKeyView {
@@ -1558,7 +1557,7 @@ async fn embedded_models_retain_global_invalidation_and_server_resolved_confirma
     let service = Service::new().named("bigint").routes(
         causal_routes()
             .typed_command(
-                typed_command::<BigIntKeyInput, Accepted<PlanOutput>>("bigint.invalidate")
+                typed_command::<BigIntKeyInput, Succeeded<PlanOutput>>("bigint.invalidate")
                     .confirmations(confirmations)
                     .effects(command_effects! {
                         input: BigIntKeyInput;
@@ -1599,10 +1598,10 @@ async fn upsert_and_patch_effects_cannot_assign_primary_key_fields() {
     let service = Service::new().named("plans").routes(
         causal_routes()
             .typed_command(
-                typed_command::<PlanInput, Accepted<PlanOutput>>("plan.bad_patch")
+                typed_command::<PlanInput, Succeeded<PlanOutput>>("plan.bad_patch")
                     .effects(forged_primary_key_assignment_effects()),
             )
-            .handle(accepted_plan_handler),
+            .handle(succeeded_plan_handler),
     );
     let error = GraphqlEngine::builder(pool())
         .model::<PlanView>(plan_permissions("anonymous"))
@@ -1616,8 +1615,8 @@ async fn upsert_and_patch_effects_cannot_assign_primary_key_fields() {
 }
 
 #[tokio::test]
-async fn accepted_finite_confirmation_is_exported_and_marks_the_projector_causal() {
-    let command = typed_command::<PlanInput, Accepted<PlanOutput>>("plan.create")
+async fn succeeded_finite_confirmation_is_exported_and_marks_the_projector_causal() {
+    let command = typed_command::<PlanInput, Succeeded<PlanOutput>>("plan.create")
         .input_defaults(plan_input_defaults())
         .confirmations(plan_confirmations())
         .effects(command_effects! {
@@ -1630,7 +1629,7 @@ async fn accepted_finite_confirmation_is_exported_and_marks_the_projector_causal
     let service = Service::new().named("plans").routes(
         causal_routes()
             .typed_command(command)
-            .handle(accepted_plan_handler),
+            .handle(succeeded_plan_handler),
     );
     let engine = GraphqlEngine::builder(pool())
         .model::<PlanView>(plan_permissions("anonymous"))
@@ -1667,7 +1666,7 @@ async fn accepted_finite_confirmation_is_exported_and_marks_the_projector_causal
 #[tokio::test]
 async fn text_backed_enum_constant_reaches_a_valid_client_manifest() {
     let command =
-        typed_command::<PlanInput, Accepted<PlanOutput>>("plan.close").effects(command_effects! {
+        typed_command::<PlanInput, Succeeded<PlanOutput>>("plan.close").effects(command_effects! {
             input: PlanInput;
             patch PlanView {
                 key { id: input.id },
@@ -1677,7 +1676,7 @@ async fn text_backed_enum_constant_reaches_a_valid_client_manifest() {
     let service = Service::new().named("plans").routes(
         causal_routes()
             .typed_command(command)
-            .handle(accepted_plan_handler),
+            .handle(succeeded_plan_handler),
     );
     let engine = GraphqlEngine::builder(pool())
         .model::<PlanView>(plan_permissions("anonymous"))
@@ -1701,7 +1700,7 @@ async fn fallible_constant_serialization_returns_a_build_error_without_panicking
         let service = Service::new().named("broken").routes(
             causal_routes()
                 .typed_command(
-                    typed_command::<PlanInput, Accepted<PlanOutput>>("broken.patch").effects(
+                    typed_command::<PlanInput, Succeeded<PlanOutput>>("broken.patch").effects(
                         command_effects! {
                             input: PlanInput;
                             patch BrokenConstantView {
@@ -1711,7 +1710,7 @@ async fn fallible_constant_serialization_returns_a_build_error_without_panicking
                         },
                     ),
                 )
-                .handle(accepted_plan_handler),
+                .handle(succeeded_plan_handler),
         );
         GraphqlEngine::builder(pool())
             .model::<BrokenConstantView>(
@@ -1733,7 +1732,7 @@ async fn nonfinite_float_constant_is_rejected_but_explicit_null_is_portable() {
     let nonfinite = Service::new().named("floats").routes(
         causal_routes()
             .typed_command(
-                typed_command::<FloatEffectInput, Accepted<PlanOutput>>("float.nan").effects(
+                typed_command::<FloatEffectInput, Succeeded<PlanOutput>>("float.nan").effects(
                     command_effects! {
                         input: FloatEffectInput;
                         patch FloatEffectView {
@@ -1758,7 +1757,7 @@ async fn nonfinite_float_constant_is_rejected_but_explicit_null_is_portable() {
     let explicit_null = Service::new().named("floats").routes(
         causal_routes()
             .typed_command(
-                typed_command::<FloatEffectInput, Accepted<PlanOutput>>("float.clear").effects(
+                typed_command::<FloatEffectInput, Succeeded<PlanOutput>>("float.clear").effects(
                     command_effects! {
                         input: FloatEffectInput;
                         patch FloatEffectView {
@@ -1793,7 +1792,7 @@ async fn json_backed_constants_reject_nonfinite_floats_but_preserve_json_null() 
     let nonfinite_f32 = Service::new().named("json-floats").routes(
         causal_routes()
             .typed_command(
-                typed_command::<FloatEffectInput, Accepted<PlanOutput>>("json-float.infinity")
+                typed_command::<FloatEffectInput, Succeeded<PlanOutput>>("json-float.infinity")
                     .effects(command_effects! {
                         input: FloatEffectInput;
                         patch JsonFloatEffectView {
@@ -1819,7 +1818,7 @@ async fn json_backed_constants_reject_nonfinite_floats_but_preserve_json_null() 
     let nonfinite_f64 = Service::new().named("json-floats").routes(
         causal_routes()
             .typed_command(
-                typed_command::<FloatEffectInput, Accepted<PlanOutput>>("json-float.nan").effects(
+                typed_command::<FloatEffectInput, Succeeded<PlanOutput>>("json-float.nan").effects(
                     command_effects! {
                         input: FloatEffectInput;
                         patch JsonFloatEffectView {
@@ -1846,7 +1845,7 @@ async fn json_backed_constants_reject_nonfinite_floats_but_preserve_json_null() 
     let nested_nonfinite = Service::new().named("json-floats").routes(
         causal_routes()
             .typed_command(
-                typed_command::<FloatEffectInput, Accepted<PlanOutput>>("json-float.nested")
+                typed_command::<FloatEffectInput, Succeeded<PlanOutput>>("json-float.nested")
                     .effects(command_effects! {
                         input: FloatEffectInput;
                         patch JsonFloatEffectView {
@@ -1872,7 +1871,7 @@ async fn json_backed_constants_reject_nonfinite_floats_but_preserve_json_null() 
     let json_null = Service::new().named("json-floats").routes(
         causal_routes()
             .typed_command(
-                typed_command::<FloatEffectInput, Accepted<PlanOutput>>("json.clear").effects(
+                typed_command::<FloatEffectInput, Succeeded<PlanOutput>>("json.clear").effects(
                     command_effects! {
                         input: FloatEffectInput;
                         patch JsonFloatEffectView {
@@ -1907,7 +1906,7 @@ async fn json_backed_constants_reject_nonfinite_floats_but_preserve_json_null() 
 async fn consistency_confirmation_matrix_fails_closed() {
     let missing_fact = Service::new().named("plans").routes(
         causal_routes()
-            .typed_command(typed_command::<PlanInput, Fact<PlanOutput>>("plan.fact"))
+            .typed_command(typed_command::<PlanInput, Causal<PlanOutput>>("plan.fact"))
             .handle(fact_plan_handler),
     );
     let error = GraphqlEngine::builder(pool())
@@ -1939,7 +1938,7 @@ async fn consistency_confirmation_matrix_fails_closed() {
 
 #[tokio::test]
 async fn role_redaction_erases_the_whole_confirmation_and_optimistic_plan() {
-    let command = typed_command::<PlanInput, Accepted<PlanOutput>>("plan.create")
+    let command = typed_command::<PlanInput, Succeeded<PlanOutput>>("plan.create")
         .input_defaults(plan_input_defaults())
         .confirmations(plan_confirmations())
         .effects(command_effects! {
@@ -1952,7 +1951,7 @@ async fn role_redaction_erases_the_whole_confirmation_and_optimistic_plan() {
     let service = Service::new().named("plans").routes(
         causal_routes()
             .typed_command(command)
-            .handle(accepted_plan_handler),
+            .handle(succeeded_plan_handler),
     );
     let engine = GraphqlEngine::builder(pool())
         .model::<PlanView>(ModelPermissions::new().grant("user", read().columns(["title"])))
@@ -1981,7 +1980,7 @@ async fn forged_name_valid_marker_types_are_rejected_from_wire_metadata() {
     let service = Service::new().named("forged").routes(
         causal_routes()
             .typed_command(
-                typed_command::<ForgedInput, Accepted<PlanOutput>>("forged.patch")
+                typed_command::<ForgedInput, Succeeded<PlanOutput>>("forged.patch")
                     .effects(forged_effects()),
             )
             .handle(forged_handler),
@@ -2002,10 +2001,10 @@ async fn confirmation_set_order_does_not_change_manifest_fingerprint() {
         let service = Service::new().named("plans").routes(
             causal_routes()
                 .typed_command(
-                    typed_command::<PlanInput, Accepted<PlanOutput>>("plan.create")
+                    typed_command::<PlanInput, Succeeded<PlanOutput>>("plan.create")
                         .confirmations(two_confirmation_plan(reverse)),
                 )
-                .handle(accepted_plan_handler),
+                .handle(succeeded_plan_handler),
         );
         GraphqlEngine::builder(pool())
             .model::<PlanView>(plan_permissions("anonymous"))

@@ -778,7 +778,7 @@ mod tests {
 
         assert!(matches!(
             parts.validate_prepared(&contract, &prepared),
-            Err(CommandCommitProofError::DurableFactMissing)
+            Err(CommandCommitProofError::DurableEventMissing)
         ));
     }
 

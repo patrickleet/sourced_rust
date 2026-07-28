@@ -316,8 +316,8 @@ pub(super) fn client_manifest_from_surface_with_execution(
         let consistency = CommandConsistencyExtension {
             version: 1,
             kind: match command.consistency {
-                CommandConsistency::Accepted => "accepted",
-                CommandConsistency::Fact => "fact",
+                CommandConsistency::Succeeded => "succeeded",
+                CommandConsistency::Causal => "causal",
                 CommandConsistency::Projected => "projected",
             }
             .into(),
@@ -363,7 +363,7 @@ pub(super) fn client_manifest_from_surface_with_execution(
                 fallback: "revalidate".into(),
             })
         } else {
-            (!command.confirmations.is_empty() || command.consistency == CommandConsistency::Fact)
+            (!command.confirmations.is_empty() || command.consistency == CommandConsistency::Causal)
                 .then(|| {
                     command
                         .confirmations

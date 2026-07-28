@@ -111,7 +111,7 @@ export function pendingProjection(
 	);
 	/*
 	 * Authority loss or a terminal status can arrive before application code
-	 * receives the accepted receipt. Mark the internal lifecycle promise handled
+	 * receives the succeeded receipt. Mark the internal lifecycle promise handled
 	 * eagerly while preserving its rejection for every explicit awaiter.
 	 */
 	void promise.catch(() => undefined);
@@ -130,7 +130,7 @@ export function pendingProjection(
 }
 
 /**
- * Generated fact commands converge without application polling. Durable status
+ * Generated causal commands converge without application polling. Durable status
  * is the only completion signal; timers merely schedule reads and never infer a
  * successful outcome.
  */
@@ -297,7 +297,7 @@ export function callerProjectedPromise(
 		}
 	);
 	/*
-	 * An AbortSignal can fire during an async `onAccepted` callback, before the
+	 * An AbortSignal can fire during an async `onSucceeded` callback, before the
 	 * receipt reaches caller code. Keep that legitimate rejection observable
 	 * without creating a process-level unhandled-rejection race.
 	 */
@@ -357,4 +357,3 @@ export function failTrackedProjection(
 	settleProjectionFailure(controller, error);
 	pending.delete(controller.commandId);
 }
-

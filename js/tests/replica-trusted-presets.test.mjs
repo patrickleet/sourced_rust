@@ -58,7 +58,7 @@ function presetArtifact(overrides = {}) {
 				name: 'AssignTodoResult',
 				fields: [
 					{
-						name: 'accepted',
+						name: 'succeeded',
 						typeName: 'Boolean',
 						nullable: false,
 						list: false,
@@ -68,7 +68,7 @@ function presetArtifact(overrides = {}) {
 				]
 			}
 		},
-		consistency: 'accepted',
+		consistency: 'succeeded',
 		effects: {
 			version: 1,
 			operations: [

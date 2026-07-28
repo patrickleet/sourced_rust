@@ -126,8 +126,8 @@ export type ReplicaDiagnosticReceiptExpectationInput = Readonly<{
 
 export type ReplicaDiagnosticReceiptInput = Readonly<{
 	commandId: string;
-	state: 'optimistic' | 'accepted' | 'accepted_pending_projection';
-	consistency?: 'accepted' | 'fact' | 'projected';
+	state: 'optimistic' | 'succeeded' | 'succeeded_pending_projection';
+	consistency?: 'succeeded' | 'causal' | 'projected';
 	expectations: readonly ReplicaDiagnosticReceiptExpectationInput[];
 }>;
 
@@ -174,8 +174,8 @@ export type ReplicaDiagnosticEventInput =
 			command: string;
 			state:
 				| 'optimistic'
-				| 'accepted'
-				| 'accepted_pending_projection'
+				| 'succeeded'
+				| 'succeeded_pending_projection'
 				| 'projected'
 				| 'rejected';
 			obligations: number;
@@ -255,8 +255,8 @@ export type ReplicaDiagnosticLayer = Readonly<{
 
 export type ReplicaDiagnosticReceipt = Readonly<{
 	commandId: string;
-	state: 'optimistic' | 'accepted' | 'accepted_pending_projection';
-	consistency?: 'accepted' | 'fact' | 'projected';
+	state: 'optimistic' | 'succeeded' | 'succeeded_pending_projection';
+	consistency?: 'succeeded' | 'causal' | 'projected';
 	expectations: readonly ReplicaDiagnosticReceiptExpectationInput[];
 }>;
 
@@ -317,7 +317,7 @@ export type ReplicaCommandArtifactInspection = Readonly<{
 	kind: 'command';
 	name: string;
 	operation: string;
-	consistency: 'accepted' | 'fact' | 'projected';
+	consistency: 'succeeded' | 'causal' | 'projected';
 	effects: readonly ReplicaCommandEffectInspection[];
 	revalidation: Readonly<{
 		required: boolean;

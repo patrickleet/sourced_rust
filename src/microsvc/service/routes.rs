@@ -994,11 +994,11 @@ where
             };
 
             let terminal_state = match self.contract.consistency {
-                CommandConsistency::Accepted if self.contract.confirmations.is_empty() => {
-                    TerminalCommandState::Accepted
+                CommandConsistency::Succeeded if self.contract.confirmations.is_empty() => {
+                    TerminalCommandState::Succeeded
                 }
-                CommandConsistency::Accepted | CommandConsistency::Fact => {
-                    TerminalCommandState::AcceptedPendingProjection
+                CommandConsistency::Succeeded | CommandConsistency::Causal => {
+                    TerminalCommandState::SucceededPendingProjection
                 }
                 CommandConsistency::Projected => TerminalCommandState::Projected,
             };

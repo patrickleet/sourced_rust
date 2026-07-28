@@ -316,7 +316,7 @@ where
     let expected_outcome = serde_json::json!({"order_id": "same-input"});
     let completion = attempt
         .complete(
-            TerminalCommandState::Accepted,
+            TerminalCommandState::Succeeded,
             expected_outcome.clone(),
             Duration::from_secs(300),
         )
@@ -378,7 +378,7 @@ where
         CommandLookup::Replay(lookup_replay.clone())
     );
     assert_eq!(reserved_replay, lookup_replay);
-    assert_eq!(reserved_replay.state, CommandLedgerState::Accepted);
+    assert_eq!(reserved_replay.state, CommandLedgerState::Succeeded);
     assert_eq!(reserved_replay.causation_id, causation);
     assert_eq!(reserved_replay.outcome, expected_outcome);
     assert!(reserved_replay.projection_obligations.is_empty());
@@ -410,7 +410,7 @@ where
 
     let completion = winner
         .complete(
-            TerminalCommandState::Accepted,
+            TerminalCommandState::Succeeded,
             serde_json::json!({"concurrent_winner": true}),
             Duration::from_secs(300),
         )
@@ -447,7 +447,7 @@ where
 
     let completion = second
         .complete(
-            TerminalCommandState::Accepted,
+            TerminalCommandState::Succeeded,
             serde_json::json!({"lease_reclaimed": true}),
             Duration::from_secs(300),
         )
@@ -462,10 +462,13 @@ where
     R: CommandLedgerAdapterConformance,
 {
     let terminal_states = [
-        (TerminalCommandState::Accepted, CommandLedgerState::Accepted),
         (
-            TerminalCommandState::AcceptedPendingProjection,
-            CommandLedgerState::AcceptedPendingProjection,
+            TerminalCommandState::Succeeded,
+            CommandLedgerState::Succeeded,
+        ),
+        (
+            TerminalCommandState::SucceededPendingProjection,
+            CommandLedgerState::SucceededPendingProjection,
         ),
         (
             TerminalCommandState::Projected,
@@ -485,7 +488,7 @@ where
             "index": index,
         });
         let expected_obligations =
-            if terminal_state == TerminalCommandState::AcceptedPendingProjection {
+            if terminal_state == TerminalCommandState::SucceededPendingProjection {
                 vec![resolved_obligation(&format!("terminal-{index}"))]
             } else {
                 Vec::new()
@@ -544,7 +547,7 @@ where
     let expected_obligations = vec![resolved_obligation("response-loss")];
     let completion = attempt
         .complete_with_obligations(
-            TerminalCommandState::AcceptedPendingProjection,
+            TerminalCommandState::SucceededPendingProjection,
             expected_outcome.clone(),
             expected_obligations.clone(),
             Duration::from_secs(300),
@@ -563,7 +566,7 @@ where
         .unwrap()
     {
         ReservationOutcome::Replay(replay) => {
-            assert_eq!(replay.state, CommandLedgerState::AcceptedPendingProjection);
+            assert_eq!(replay.state, CommandLedgerState::SucceededPendingProjection);
             assert_eq!(replay.causation_id, causation);
             assert_eq!(replay.outcome, expected_outcome);
             assert_eq!(replay.projection_obligations, expected_obligations);
@@ -601,7 +604,7 @@ where
     assert_ne!(second.attempt_token().as_str(), first_token);
     let completion = second
         .complete(
-            TerminalCommandState::Accepted,
+            TerminalCommandState::Succeeded,
             serde_json::json!({"reclaimed": true}),
             Duration::from_secs(300),
         )
@@ -624,7 +627,7 @@ where
     let first_outcome = serde_json::json!({"partition": "a"});
     let completion = first
         .complete(
-            TerminalCommandState::Accepted,
+            TerminalCommandState::Succeeded,
             first_outcome.clone(),
             Duration::from_secs(300),
         )
@@ -667,7 +670,7 @@ where
         CommandLookup::Replay(replay) => replay,
         other => panic!("second principal should retain its replay, got {other:?}"),
     };
-    assert_eq!(first_replay.state, CommandLedgerState::Accepted);
+    assert_eq!(first_replay.state, CommandLedgerState::Succeeded);
     assert_eq!(first_replay.outcome, first_outcome);
     assert_eq!(first_replay.causation_id, first_causation);
     assert_eq!(second_replay.state, CommandLedgerState::Rejected);
@@ -702,7 +705,7 @@ where
 
     let completion = attempt
         .complete(
-            TerminalCommandState::Accepted,
+            TerminalCommandState::Succeeded,
             serde_json::json!({"causation": "committed"}),
             Duration::from_secs(300),
         )
@@ -791,7 +794,7 @@ where
 
     let stale_completion = first
         .complete(
-            TerminalCommandState::Accepted,
+            TerminalCommandState::Succeeded,
             serde_json::json!({"winner": false}),
             Duration::from_secs(300),
         )
@@ -847,7 +850,7 @@ where
 
     let live_completion = second
         .complete(
-            TerminalCommandState::Accepted,
+            TerminalCommandState::Succeeded,
             serde_json::json!({"winner": true}),
             Duration::from_secs(300),
         )
@@ -870,7 +873,7 @@ where
     let attempt = acquire(repo, request).await;
     let completion = attempt
         .complete(
-            TerminalCommandState::Accepted,
+            TerminalCommandState::Succeeded,
             serde_json::json!({"short_lived": true}),
             Duration::from_millis(100),
         )
@@ -1027,7 +1030,7 @@ fn stale_attempt_cannot_complete_after_reclaim() {
         .unwrap();
     let completion = stale
         .complete(
-            TerminalCommandState::Accepted,
+            TerminalCommandState::Succeeded,
             serde_json::json!({"ok": true}),
             Duration::from_secs(300),
         )
@@ -1042,7 +1045,7 @@ fn stale_attempt_cannot_complete_after_reclaim() {
 #[test]
 fn completion_rejects_inconsistent_projection_obligation_states() {
     for state in [
-        TerminalCommandState::Accepted,
+        TerminalCommandState::Succeeded,
         TerminalCommandState::Projected,
         TerminalCommandState::Rejected,
     ] {
@@ -1059,7 +1062,7 @@ fn completion_rejects_inconsistent_projection_obligation_states() {
 
     assert!(matches!(
         fresh_attempt().complete_with_obligations(
-            TerminalCommandState::AcceptedPendingProjection,
+            TerminalCommandState::SucceededPendingProjection,
             serde_json::json!({"ok": true}),
             Vec::new(),
             Duration::from_secs(300),
@@ -1068,7 +1071,7 @@ fn completion_rejects_inconsistent_projection_obligation_states() {
     ));
 
     for state in [
-        TerminalCommandState::Accepted,
+        TerminalCommandState::Succeeded,
         TerminalCommandState::Projected,
         TerminalCommandState::Rejected,
     ] {
@@ -1082,7 +1085,7 @@ fn completion_rejects_inconsistent_projection_obligation_states() {
     }
     assert!(fresh_attempt()
         .complete_with_obligations(
-            TerminalCommandState::AcceptedPendingProjection,
+            TerminalCommandState::SucceededPendingProjection,
             serde_json::json!({"ok": true}),
             vec![resolved_obligation("pending")],
             Duration::from_secs(300),
@@ -1115,7 +1118,7 @@ fn completion_rejects_malformed_projection_obligations() {
     ] {
         assert!(matches!(
             fresh_attempt().complete_with_obligations(
-                TerminalCommandState::AcceptedPendingProjection,
+                TerminalCommandState::SucceededPendingProjection,
                 serde_json::json!({"ok": true}),
                 vec![malformed],
                 Duration::from_secs(300),
@@ -1128,7 +1131,7 @@ fn completion_rejects_malformed_projection_obligations() {
 #[test]
 fn replay_rejects_inconsistent_projection_obligation_states() {
     for state in [
-        CommandLedgerState::Accepted,
+        CommandLedgerState::Succeeded,
         CommandLedgerState::Projected,
         CommandLedgerState::Rejected,
     ] {
@@ -1138,7 +1141,7 @@ fn replay_rejects_inconsistent_projection_obligation_states() {
     }
 
     for state in [
-        CommandLedgerState::AcceptedPendingProjection,
+        CommandLedgerState::SucceededPendingProjection,
         CommandLedgerState::ProjectionFailed,
     ] {
         let row = completed_replay_record(state, Vec::new());
@@ -1179,7 +1182,7 @@ fn replay_rejects_malformed_projection_obligations() {
         duplicate_field,
     ] {
         let row = completed_replay_record(
-            CommandLedgerState::AcceptedPendingProjection,
+            CommandLedgerState::SucceededPendingProjection,
             vec![malformed],
         );
         assert!(row.validate_stored_shape().is_ok());
@@ -1198,7 +1201,7 @@ fn replay_validates_envelope_and_returns_only_the_outcome() {
         .acquired_attempt()
         .unwrap()
         .complete_with_obligations(
-            TerminalCommandState::AcceptedPendingProjection,
+            TerminalCommandState::SucceededPendingProjection,
             serde_json::json!({"order_id": "o-1"}),
             vec![obligation.clone()],
             Duration::from_secs(300),
@@ -1244,7 +1247,7 @@ fn causal_batch_applies_the_authoritative_stamp_at_the_final_boundary() {
     let causation = attempt.causation_id().as_str().to_string();
     let completion = attempt
         .complete(
-            TerminalCommandState::Accepted,
+            TerminalCommandState::Succeeded,
             serde_json::json!({"ok": true}),
             Duration::from_secs(300),
         )
@@ -1369,7 +1372,7 @@ async fn sqlite_terminal_replay_survives_pool_drop_and_reopen() {
 
     let completion = attempt
         .complete_with_obligations(
-            TerminalCommandState::AcceptedPendingProjection,
+            TerminalCommandState::SucceededPendingProjection,
             expected_outcome.clone(),
             expected_obligations.clone(),
             Duration::from_secs(300),
@@ -1395,7 +1398,7 @@ async fn sqlite_terminal_replay_survives_pool_drop_and_reopen() {
         CommandLookup::Replay(replay) => replay,
         other => panic!("reopened SQLite ledger should replay, got {other:?}"),
     };
-    assert_eq!(replay.state, CommandLedgerState::AcceptedPendingProjection);
+    assert_eq!(replay.state, CommandLedgerState::SucceededPendingProjection);
     assert_eq!(replay.causation_id, expected_causation);
     assert_eq!(replay.outcome, expected_outcome);
     assert_eq!(replay.projection_obligations, expected_obligations);
@@ -1493,7 +1496,7 @@ async fn in_memory_adapter_reclaims_and_replays_with_a_stable_causation() {
 
     let completion = second
         .complete(
-            TerminalCommandState::Accepted,
+            TerminalCommandState::Succeeded,
             serde_json::json!({"ok": true}),
             Duration::from_secs(300),
         )
@@ -1575,7 +1578,7 @@ async fn sqlite_adapter_enforces_attempt_fence_and_replays() {
 
     let stale = first
         .complete(
-            TerminalCommandState::Accepted,
+            TerminalCommandState::Succeeded,
             serde_json::json!({"winner": false}),
             Duration::from_secs(300),
         )
@@ -1639,4 +1642,23 @@ fn expiry_is_a_permanent_compact_tombstone() {
     assert!(row.outcome_json.is_none());
     assert!(row.attempt_token.is_none());
     assert_eq!(row.lookup().unwrap(), CommandLookup::Expired);
+}
+
+#[test]
+fn durable_success_states_use_only_the_succeeded_vocabulary() {
+    let cases = [
+        (CommandLedgerState::Succeeded, "succeeded"),
+        (
+            CommandLedgerState::SucceededPendingProjection,
+            "succeeded_pending_projection",
+        ),
+        (CommandLedgerState::Projected, "projected"),
+    ];
+
+    for (state, encoded) in cases {
+        assert_eq!(state.as_str(), encoded);
+        assert_eq!(CommandLedgerState::parse(encoded).unwrap(), state);
+    }
+    assert!(CommandLedgerState::parse("accepted").is_err());
+    assert!(CommandLedgerState::parse("accepted_pending_projection").is_err());
 }

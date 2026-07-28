@@ -114,7 +114,7 @@ export type SveltekitQuerySnapshot<TData> = ReplicaSnapshot<TData> &
 	Readonly<{
 	loading: boolean;
 	error?: GqlError;
-	/** Causally accepted commands still waiting for projection visibility. */
+	/** Successful causal commands still waiting for projection visibility. */
 	pending: readonly ReplicaCommandReceipt<unknown>[];
 	refetch(): Promise<void>;
 }>;

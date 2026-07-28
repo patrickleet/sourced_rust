@@ -87,7 +87,7 @@ Command result shapes:
 | Domain | Result | UI effect |
 |--------|--------|-----------|
 | blob | `Projected<BlobGameView>` | Replica writes map/score with the mutation (no dual-write) |
-| todo / chat | Fact + projector | Accept command → projector → optional `@live` push |
+| todo / chat | Causal + projector | Accept command → projector → optional `@live` push |
 
 ### Browser e2e (what CI trusts)
 

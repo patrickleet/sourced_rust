@@ -17,8 +17,8 @@ use crate::graphql::command_contract::CommandConsistency;
 #[cfg(feature = "graphql")]
 use crate::graphql::identity::VerifiedPrincipal;
 use crate::graphql::{
-    typed_command, Accepted, GraphqlInputType, GraphqlOutputType, GraphqlTypeDef, GraphqlTypeField,
-    PreparedCommand,
+    typed_command, GraphqlInputType, GraphqlOutputType, GraphqlTypeDef, GraphqlTypeField,
+    PreparedCommand, Succeeded,
 };
 #[cfg(feature = "graphql")]
 use crate::graphql::{Projected, SurfaceDirectProjection, SurfaceProjector};
@@ -182,7 +182,7 @@ static TYPED_GUARD_INVOKED: AtomicBool = AtomicBool::new(false);
 async fn typed_handler(
     _context: &CausalCommandContext<'_, RouteComboAggregate>,
     input: TypedInput,
-) -> Result<PreparedCommand<Accepted<TypedOutput>>, HandlerError> {
+) -> Result<PreparedCommand<Succeeded<TypedOutput>>, HandlerError> {
     TYPED_HANDLER_INVOKED.store(true, Ordering::SeqCst);
     Ok(PreparedCommand::prepare(TypedOutput { id: input.id }).unwrap())
 }
@@ -573,7 +573,7 @@ async fn typed_direct_dispatch_fails_before_invoking_handler() {
                     .queued()
                     .aggregate::<RouteComboAggregate>(),
             )
-            .typed_command(typed_command::<TypedInput, Accepted<TypedOutput>>(
+            .typed_command(typed_command::<TypedInput, Succeeded<TypedOutput>>(
                 "todo.create",
             ))
             .handle(typed_handler),
@@ -599,7 +599,7 @@ async fn typed_direct_dispatch_fails_before_invoking_guard_or_handler() {
                     .queued()
                     .aggregate::<RouteComboAggregate>(),
             )
-            .typed_command(typed_command::<TypedInput, Accepted<TypedOutput>>(
+            .typed_command(typed_command::<TypedInput, Succeeded<TypedOutput>>(
                 "todo.guarded_create",
             ))
             .guarded(
@@ -634,7 +634,7 @@ async fn causal_dispatch_replays_canonical_equivalent_input_without_reinvoking_h
     let service = Service::new().named("causal-tests").routes(
         Routes::new()
             .with_repo(repository.clone().aggregate::<CausalDispatcherAggregate>())
-            .typed_command(typed_command::<CausalTestInput, Accepted<TypedOutput>>(
+            .typed_command(typed_command::<CausalTestInput, Succeeded<TypedOutput>>(
                 "causal.replay",
             ))
             .handle(
@@ -645,7 +645,7 @@ async fn causal_dispatch_replays_canonical_equivalent_input_without_reinvoking_h
                         calls.fetch_add(1, Ordering::SeqCst);
                         let _label = input.label;
                         Ok(
-                            PreparedCommand::<Accepted<TypedOutput>>::prepare(TypedOutput {
+                            PreparedCommand::<Succeeded<TypedOutput>>::prepare(TypedOutput {
                                 id: input.id,
                             })
                             .unwrap(),
@@ -693,7 +693,7 @@ async fn causal_dispatch_receipt_and_status_use_the_exact_durable_replay() {
     let service = Service::new().named("causal-tests").routes(
         Routes::new()
             .with_repo(InMemoryRepository::new().aggregate::<CausalDispatcherAggregate>())
-            .typed_command(typed_command::<CausalTestInput, Accepted<TypedOutput>>(
+            .typed_command(typed_command::<CausalTestInput, Succeeded<TypedOutput>>(
                 "causal.receipt",
             ))
             .handle(
@@ -703,7 +703,7 @@ async fn causal_dispatch_receipt_and_status_use_the_exact_durable_replay() {
                     async move {
                         calls.fetch_add(1, Ordering::SeqCst);
                         Ok(
-                            PreparedCommand::<Accepted<TypedOutput>>::prepare(TypedOutput {
+                            PreparedCommand::<Succeeded<TypedOutput>>::prepare(TypedOutput {
                                 id: input.id,
                             })
                             .unwrap(),
@@ -739,8 +739,8 @@ async fn causal_dispatch_receipt_and_status_use_the_exact_durable_replay() {
     assert_eq!(first, replay);
     assert_eq!(first.payload, json!({ "id": "todo-receipt" }));
     assert_eq!(first.receipt.command_id, command_id);
-    assert_eq!(first.receipt.state, CommandLedgerState::Accepted);
-    assert_eq!(first.receipt.consistency, CommandConsistency::Accepted);
+    assert_eq!(first.receipt.state, CommandLedgerState::Succeeded);
+    assert_eq!(first.receipt.consistency, CommandConsistency::Succeeded);
     assert!(first.receipt.obligations.is_empty());
     assert!(first.receipt.direct_projection.is_none());
     assert_eq!(handler_calls.load(Ordering::SeqCst), 1);
@@ -749,13 +749,13 @@ async fn causal_dispatch_receipt_and_status_use_the_exact_durable_replay() {
         .causal_command_status(&command_id, &Session::new(), principal)
         .await
         .expect("same principal and current grant should resolve status");
-    assert_eq!(status.state, CausalCommandPublicState::Accepted);
+    assert_eq!(status.state, CausalCommandPublicState::Succeeded);
     assert_eq!(status.command_id, first.receipt.command_id);
     assert_eq!(
         status.causation_id.as_deref(),
         Some(first.receipt.causation_id.as_str())
     );
-    assert_eq!(status.consistency, Some(CommandConsistency::Accepted));
+    assert_eq!(status.consistency, Some(CommandConsistency::Succeeded));
     assert_eq!(status.outcome, Some(first.payload));
     assert!(status.obligations.is_empty());
     assert!(status.evidence.is_empty());
@@ -792,11 +792,11 @@ fn causal_status_projection_failure_precedes_observed_and_pending_evidence() {
             item(0, CausalProjectionEvidenceState::Observed),
             item(1, CausalProjectionEvidenceState::Pending),
         ]),
-        CausalCommandPublicState::AcceptedPendingProjection
+        CausalCommandPublicState::SucceededPendingProjection
     );
     assert_eq!(
         collapse_projection_evidence(&[]),
-        CausalCommandPublicState::AcceptedPendingProjection
+        CausalCommandPublicState::SucceededPendingProjection
     );
 }
 
@@ -809,7 +809,7 @@ async fn causal_dispatch_rejects_same_command_id_with_different_input() {
     let service = Service::new().named("causal-tests").routes(
         Routes::new()
             .with_repo(repository.clone().aggregate::<CausalDispatcherAggregate>())
-            .typed_command(typed_command::<CausalTestInput, Accepted<TypedOutput>>(
+            .typed_command(typed_command::<CausalTestInput, Succeeded<TypedOutput>>(
                 "causal.reuse",
             ))
             .handle(
@@ -820,7 +820,7 @@ async fn causal_dispatch_rejects_same_command_id_with_different_input() {
                         calls.fetch_add(1, Ordering::SeqCst);
                         let _label = input.label;
                         Ok(
-                            PreparedCommand::<Accepted<TypedOutput>>::prepare(TypedOutput {
+                            PreparedCommand::<Succeeded<TypedOutput>>::prepare(TypedOutput {
                                 id: input.id,
                             })
                             .unwrap(),
@@ -869,7 +869,7 @@ async fn causal_guard_rejection_is_replayed_without_guard_or_handler_callback() 
     let service = Service::new().named("causal-tests").routes(
         Routes::new()
             .with_repo(repository.clone().aggregate::<CausalDispatcherAggregate>())
-            .typed_command(typed_command::<CausalTestInput, Accepted<TypedOutput>>(
+            .typed_command(typed_command::<CausalTestInput, Succeeded<TypedOutput>>(
                 "causal.guard_rejection",
             ))
             .guarded(
@@ -883,7 +883,7 @@ async fn causal_guard_rejection_is_replayed_without_guard_or_handler_callback() 
                     async move {
                         calls.fetch_add(1, Ordering::SeqCst);
                         Ok(
-                            PreparedCommand::<Accepted<TypedOutput>>::prepare(TypedOutput {
+                            PreparedCommand::<Succeeded<TypedOutput>>::prepare(TypedOutput {
                                 id: input.id,
                             })
                             .unwrap(),
@@ -934,7 +934,7 @@ async fn causal_handler_rejection_is_replayed_without_reinvoking_handler() {
     let service = Service::new().named("causal-tests").routes(
         Routes::new()
             .with_repo(repository.clone().aggregate::<CausalDispatcherAggregate>())
-            .typed_command(typed_command::<CausalTestInput, Accepted<TypedOutput>>(
+            .typed_command(typed_command::<CausalTestInput, Succeeded<TypedOutput>>(
                 "causal.handler_rejection",
             ))
             .handle(
@@ -943,7 +943,7 @@ async fn causal_handler_rejection_is_replayed_without_reinvoking_handler() {
                     let calls = Arc::clone(&route_handler_calls);
                     async move {
                         calls.fetch_add(1, Ordering::SeqCst);
-                        Err::<PreparedCommand<Accepted<TypedOutput>>, HandlerError>(
+                        Err::<PreparedCommand<Succeeded<TypedOutput>>, HandlerError>(
                             HandlerError::Rejected("deterministic refusal".into()),
                         )
                     }
@@ -995,7 +995,7 @@ async fn causal_dispatch_checks_current_role_before_reservation_guard_and_handle
         Routes::new()
             .with_repo(repository.clone().aggregate::<CausalDispatcherAggregate>())
             .typed_command(
-                typed_command::<CausalTestInput, Accepted<TypedOutput>>("causal.role_guarded")
+                typed_command::<CausalTestInput, Succeeded<TypedOutput>>("causal.role_guarded")
                     .roles(["admin"]),
             )
             .guarded(
@@ -1009,7 +1009,7 @@ async fn causal_dispatch_checks_current_role_before_reservation_guard_and_handle
                     async move {
                         calls.fetch_add(1, Ordering::SeqCst);
                         Ok(
-                            PreparedCommand::<Accepted<TypedOutput>>::prepare(TypedOutput {
+                            PreparedCommand::<Succeeded<TypedOutput>>::prepare(TypedOutput {
                                 id: input.id,
                             })
                             .unwrap(),
@@ -1081,14 +1081,14 @@ async fn causal_status_lookup_does_not_disclose_another_routes_command() {
         Routes::new()
             .with_repo(repository.aggregate::<CausalDispatcherAggregate>())
             .typed_command(
-                typed_command::<CausalTestInput, Accepted<TypedOutput>>("causal.admin_only")
+                typed_command::<CausalTestInput, Succeeded<TypedOutput>>("causal.admin_only")
                     .roles(["admin"]),
             )
             .handle(
                 |_context: &CausalCommandContext<'_, CausalDispatcherAggregate>,
                  input: CausalTestInput| async move {
                     Ok(
-                        PreparedCommand::<Accepted<TypedOutput>>::prepare(TypedOutput {
+                        PreparedCommand::<Succeeded<TypedOutput>>::prepare(TypedOutput {
                             id: input.id,
                         })
                         .unwrap(),
@@ -1096,14 +1096,14 @@ async fn causal_status_lookup_does_not_disclose_another_routes_command() {
                 },
             )
             .typed_command(
-                typed_command::<CausalTestInput, Accepted<TypedOutput>>("causal.user_allowed")
+                typed_command::<CausalTestInput, Succeeded<TypedOutput>>("causal.user_allowed")
                     .roles(["user"]),
             )
             .handle(
                 |_context: &CausalCommandContext<'_, CausalDispatcherAggregate>,
                  input: CausalTestInput| async move {
                     Ok(
-                        PreparedCommand::<Accepted<TypedOutput>>::prepare(TypedOutput {
+                        PreparedCommand::<Succeeded<TypedOutput>>::prepare(TypedOutput {
                             id: input.id,
                         })
                         .unwrap(),
@@ -1151,7 +1151,7 @@ async fn causal_status_lookup_does_not_disclose_another_routes_command() {
         .causal_command_status(&command_id, &session_with_role("admin"), principal.clone())
         .await
         .expect("current admin grant should recover the command without its route name");
-    assert_eq!(authorized.state, CausalCommandPublicState::Accepted);
+    assert_eq!(authorized.state, CausalCommandPublicState::Succeeded);
     assert_eq!(authorized.command_id, command_id);
 
     let revoked = service
@@ -1201,7 +1201,7 @@ async fn causal_dispatch_overwrites_event_and_outbox_causation_with_ledger_ident
     let service = Service::new().named("causal-tests").routes(
         Routes::new()
             .with_repo(repository.clone().aggregate::<CausalDispatcherAggregate>())
-            .typed_command(typed_command::<CausalTestInput, Accepted<TypedOutput>>(
+            .typed_command(typed_command::<CausalTestInput, Succeeded<TypedOutput>>(
                 "causal.persist",
             ))
             .handle(
@@ -1234,7 +1234,7 @@ async fn causal_dispatch_overwrites_event_and_outbox_causation_with_ledger_ident
                         context.stage_outbox(outbox)?;
 
                         Ok(
-                            PreparedCommand::<Accepted<TypedOutput>>::prepare(TypedOutput {
+                            PreparedCommand::<Succeeded<TypedOutput>>::prepare(TypedOutput {
                                 id: input.id,
                             })
                             .unwrap(),
@@ -1329,33 +1329,32 @@ async fn causal_dispatch_uses_the_configured_immediate_outbox_publisher() {
         .routes(
             Routes::new()
                 .with_repo(repository.clone().aggregate::<CausalDispatcherAggregate>())
-                .typed_command(typed_command::<CausalTestInput, Accepted<TypedOutput>>(
+                .typed_command(typed_command::<CausalTestInput, Succeeded<TypedOutput>>(
                     "causal.publish_immediately",
                 ))
                 .handle(
                     |context: &CausalCommandContext<'_, CausalDispatcherAggregate>,
                      input: CausalTestInput| {
-                        let result = (|| {
-                            let mut checkout = context.create();
-                            checkout
-                                .record(input.id.clone())
-                                .map_err(|error| HandlerError::Other(Box::new(error)))?;
-                            context.stage(checkout)?;
-                            context.stage_outbox(
-                                OutboxMessage::create(
-                                    format!("{}:immediate-fact", input.id),
-                                    "causal.immediate_fact",
-                                    input.label.as_bytes().to_vec(),
+                        let result =
+                            (|| {
+                                let mut checkout = context.create();
+                                checkout
+                                    .record(input.id.clone())
+                                    .map_err(|error| HandlerError::Other(Box::new(error)))?;
+                                context.stage(checkout)?;
+                                context.stage_outbox(
+                                    OutboxMessage::create(
+                                        format!("{}:immediate-fact", input.id),
+                                        "causal.immediate_fact",
+                                        input.label.as_bytes().to_vec(),
+                                    )
+                                    .map_err(|error| HandlerError::Other(Box::new(error)))?,
+                                )?;
+                                Ok(PreparedCommand::<Succeeded<TypedOutput>>::prepare(
+                                    TypedOutput { id: input.id },
                                 )
-                                .map_err(|error| HandlerError::Other(Box::new(error)))?,
-                            )?;
-                            Ok(
-                                PreparedCommand::<Accepted<TypedOutput>>::prepare(TypedOutput {
-                                    id: input.id,
-                                })
-                                .unwrap(),
-                            )
-                        })();
+                                .unwrap())
+                            })();
                         async move { result }
                     },
                 )
@@ -1461,7 +1460,7 @@ async fn causal_dispatch_replay_contains_resolved_projection_obligation() {
         Routes::new()
             .with_repo(repository.clone().aggregate::<CausalDispatcherAggregate>())
             .typed_command(
-                typed_command::<CausalProjectionInput, Accepted<TypedOutput>>(
+                typed_command::<CausalProjectionInput, Succeeded<TypedOutput>>(
                     "causal.projection_obligation",
                 )
                 .confirmations(confirmations),
@@ -1482,7 +1481,7 @@ async fn causal_dispatch_replay_contains_resolved_projection_obligation() {
                             .map_err(|error| HandlerError::Other(Box::new(error)))?,
                         )?;
                         Ok(
-                            PreparedCommand::<Accepted<TypedOutput>>::prepare(TypedOutput {
+                            PreparedCommand::<Succeeded<TypedOutput>>::prepare(TypedOutput {
                                 id: input.id,
                             })
                             .unwrap(),
@@ -1529,9 +1528,9 @@ async fn causal_dispatch_replay_contains_resolved_projection_obligation() {
         .expect("status should evaluate the stored finite obligation batch");
     assert_eq!(
         status.state,
-        CausalCommandPublicState::AcceptedPendingProjection
+        CausalCommandPublicState::SucceededPendingProjection
     );
-    assert_eq!(status.consistency, Some(CommandConsistency::Accepted));
+    assert_eq!(status.consistency, Some(CommandConsistency::Succeeded));
     assert_eq!(status.obligations.len(), 1);
     assert_eq!(status.obligations[0].projector, "project_causal_obligation");
     assert_eq!(status.evidence.len(), 1);
@@ -1555,7 +1554,7 @@ async fn causal_dispatch_replay_contains_resolved_projection_obligation() {
     let CommandLookup::Replay(replay) = lookup else {
         panic!("completed command should be replayable");
     };
-    assert_eq!(replay.state, CommandLedgerState::AcceptedPendingProjection);
+    assert_eq!(replay.state, CommandLedgerState::SucceededPendingProjection);
     assert_eq!(replay.projection_obligations.len(), 1);
 
     let obligation = &replay.projection_obligations[0];
@@ -1801,7 +1800,7 @@ async fn causal_dispatch_recovers_committed_replay_after_commit_acknowledgement_
     let service = Service::new().named("causal-tests").routes(
         Routes::new()
             .with_repo(repository.aggregate::<CausalDispatcherAggregate>())
-            .typed_command(typed_command::<CausalTestInput, Accepted<TypedOutput>>(
+            .typed_command(typed_command::<CausalTestInput, Succeeded<TypedOutput>>(
                 "causal.ambiguous_committed",
             ))
             .handle(
@@ -1811,7 +1810,7 @@ async fn causal_dispatch_recovers_committed_replay_after_commit_acknowledgement_
                     async move {
                         calls.fetch_add(1, Ordering::SeqCst);
                         Ok(
-                            PreparedCommand::<Accepted<TypedOutput>>::prepare(TypedOutput {
+                            PreparedCommand::<Succeeded<TypedOutput>>::prepare(TypedOutput {
                                 id: input.id,
                             })
                             .unwrap(),
@@ -1874,7 +1873,7 @@ async fn causal_dispatch_reclaims_retryable_attempt_after_precommit_failure() {
     let service = Service::new().named("causal-tests").routes(
         Routes::new()
             .with_repo(repository.aggregate::<CausalDispatcherAggregate>())
-            .typed_command(typed_command::<CausalTestInput, Accepted<TypedOutput>>(
+            .typed_command(typed_command::<CausalTestInput, Succeeded<TypedOutput>>(
                 "causal.ambiguous_retry",
             ))
             .handle(
@@ -1884,7 +1883,7 @@ async fn causal_dispatch_reclaims_retryable_attempt_after_precommit_failure() {
                     async move {
                         calls.fetch_add(1, Ordering::SeqCst);
                         Ok(
-                            PreparedCommand::<Accepted<TypedOutput>>::prepare(TypedOutput {
+                            PreparedCommand::<Succeeded<TypedOutput>>::prepare(TypedOutput {
                                 id: input.id,
                             })
                             .unwrap(),

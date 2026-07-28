@@ -166,7 +166,7 @@ fn command() -> ManifestCommand {
             version: 1,
             consistency: ManifestCommandConsistency {
                 version: 1,
-                kind: ManifestConsistencyKind::Fact,
+                kind: ManifestConsistencyKind::Causal,
             },
             direct_projection: None,
             input_defaults: Some(ManifestInputDefaults {
@@ -315,11 +315,12 @@ fn missing_effects_and_nonfinite_confirmations_require_revalidation() {
         .commands_requiring_revalidation
         .contains("CreateTodo"));
 
-    let mut accepted_without_confirmations = command();
-    accepted_without_confirmations.extensions.consistency.kind = ManifestConsistencyKind::Accepted;
-    accepted_without_confirmations.extensions.confirmations = None;
-    let report = validate(&accepted_without_confirmations)
-        .expect("accepted effects may omit a finite confirmation contract");
+    let mut succeeded_without_confirmations = command();
+    succeeded_without_confirmations.extensions.consistency.kind =
+        ManifestConsistencyKind::Succeeded;
+    succeeded_without_confirmations.extensions.confirmations = None;
+    let report = validate(&succeeded_without_confirmations)
+        .expect("succeeded effects may omit a finite confirmation contract");
     assert!(report
         .commands_requiring_revalidation
         .contains("CreateTodo"));

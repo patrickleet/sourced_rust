@@ -152,7 +152,7 @@ export type ReplicaCommandReceipt<TOutput> = Readonly<{
 	commandId: string;
 	state: Extract<
 		DistributedCommandState,
-		'accepted' | 'accepted_pending_projection' | 'projected'
+		'succeeded' | 'succeeded_pending_projection' | 'projected'
 	>;
 	/** Typed application payload returned by the generated mutation. */
 	result: TOutput;
@@ -207,7 +207,7 @@ export type ReplicaCommandCallOptions<TOutput> = PrepareReplicaCommandOptions &
 		signal?: AbortSignal;
 		/** Exact same prepared request retries after thrown/ambiguous transport. */
 		transportRetries?: number;
-		onAccepted?: (
+		onSucceeded?: (
 			receipt: ReplicaCommandReceipt<TOutput>
 		) => void | Promise<void>;
 	}>;

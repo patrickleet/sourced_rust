@@ -22,11 +22,11 @@ pub(super) fn validate_confirmations(
 ) -> Result<(), ClientCompileError> {
     let confirmations = command.extensions.confirmations.as_ref();
     match (command.extensions.consistency.kind, confirmations) {
-        (ManifestConsistencyKind::Fact, None) => {
+        (ManifestConsistencyKind::Causal, None) => {
             return Err(command_error(
                 command,
                 "client.manifest.command_confirmations",
-                "fact consistency requires confirmations",
+                "causal consistency requires confirmations",
             ));
         }
         (ManifestConsistencyKind::Projected, Some(_)) => {
@@ -39,7 +39,7 @@ pub(super) fn validate_confirmations(
         _ => {}
     }
     let Some(confirmations) = confirmations else {
-        if command.extensions.consistency.kind == ManifestConsistencyKind::Accepted {
+        if command.extensions.consistency.kind == ManifestConsistencyKind::Succeeded {
             report
                 .commands_requiring_revalidation
                 .insert(command.name.clone());

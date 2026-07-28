@@ -9,8 +9,8 @@ use super::OpaqueProtocolToken;
 #[serde(rename_all = "snake_case")]
 pub(crate) enum DistributedCommandState {
     InProgress,
-    Accepted,
-    AcceptedPendingProjection,
+    Succeeded,
+    SucceededPendingProjection,
     Projected,
     Rejected,
     ProjectionFailed,
@@ -22,8 +22,8 @@ pub(crate) enum DistributedCommandState {
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub(crate) enum DistributedCommandConsistency {
-    Accepted,
-    Fact,
+    Succeeded,
+    Causal,
     Projected,
 }
 

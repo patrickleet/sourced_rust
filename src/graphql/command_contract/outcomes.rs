@@ -15,11 +15,11 @@ use crate::table::{TableSchema, TableWritePlan};
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum CommandConsistency {
-    /// The command was accepted. With no confirmation plan this is terminal;
-    /// with an explicit finite plan it is accepted pending projection.
-    Accepted,
-    /// A durable fact was committed and declared projectors are expected.
-    Fact,
+    /// The command transaction succeeded. With no confirmation plan this is
+    /// terminal; with an explicit finite plan it is pending projection.
+    Succeeded,
+    /// Domain events were committed and declared projectors are expected.
+    Causal,
     /// The returned view was committed in the command transaction.
     Projected,
 }
@@ -29,21 +29,21 @@ mod sealed {
     pub trait PreparableOutcome {}
 }
 
-/// A committed accepted command result.
+/// A successfully committed command result.
 ///
 /// There is intentionally no public constructor. The durable command
 /// committer is the only framework component allowed to create this wrapper.
 #[derive(Clone, Debug, PartialEq, Eq)]
-pub struct Accepted<T> {
+pub struct Succeeded<T> {
     payload: T,
 }
 
-/// A committed durable-fact command result.
+/// A committed command result with finite causal projection obligations.
 ///
 /// There is intentionally no public constructor. The durable command
 /// committer is the only framework component allowed to create this wrapper.
 #[derive(Clone, Debug, PartialEq, Eq)]
-pub struct Fact<T> {
+pub struct Causal<T> {
     payload: T,
 }
 
@@ -80,8 +80,8 @@ macro_rules! committed_outcome {
     };
 }
 
-committed_outcome!(Accepted, CommandConsistency::Accepted);
-committed_outcome!(Fact, CommandConsistency::Fact);
+committed_outcome!(Succeeded, CommandConsistency::Succeeded);
+committed_outcome!(Causal, CommandConsistency::Causal);
 
 impl<T> sealed::Outcome for Projected<T> where T: RelationalReadModel {}
 
@@ -116,8 +116,8 @@ macro_rules! crate_committed_constructor {
     };
 }
 
-crate_committed_constructor!(Accepted);
-crate_committed_constructor!(Fact);
+crate_committed_constructor!(Succeeded);
+crate_committed_constructor!(Causal);
 
 impl<T> Projected<T>
 where
@@ -129,8 +129,8 @@ where
     }
 }
 
-impl<T> sealed::PreparableOutcome for Accepted<T> {}
-impl<T> sealed::PreparableOutcome for Fact<T> {}
+impl<T> sealed::PreparableOutcome for Succeeded<T> {}
+impl<T> sealed::PreparableOutcome for Causal<T> {}
 
 /// Sealed type-level contract implemented by committed command outcomes.
 pub trait CommandOutcome: sealed::Outcome + Send + Sync + 'static {
@@ -144,7 +144,7 @@ pub trait CommandOutcome: sealed::Outcome + Send + Sync + 'static {
 
     /// Compiler-only model identity retained by an ordinary
     /// `typed_command::<I, Projected<M>>` declaration. The sealed default keeps
-    /// accepted/fact outcomes unbound while `Projected<M>` supplies its exact
+    /// succeeded/causal outcomes unbound while `Projected<M>` supplies its exact
     /// relational schema without an application-facing projection target API.
     #[doc(hidden)]
     fn __projected_model() -> Option<(TypeId, &'static TableSchema)> {
@@ -234,7 +234,7 @@ impl<K: CommandOutcome> PreparedCommand<K> {
         }
 
         match K::CONSISTENCY {
-            CommandConsistency::Accepted | CommandConsistency::Fact => {
+            CommandConsistency::Succeeded | CommandConsistency::Causal => {
                 if self.projection_proof.is_some() {
                     return Err(CommandCommitProofError::UnexpectedProjectionProof);
                 }
@@ -242,7 +242,7 @@ impl<K: CommandOutcome> PreparedCommand<K> {
             }
             CommandConsistency::Projected => {
                 if !has_staged_aggregate_events && outbox_messages.is_empty() {
-                    return Err(CommandCommitProofError::DurableFactMissing);
+                    return Err(CommandCommitProofError::DurableEventMissing);
                 }
                 if !contract.confirmations.is_empty() {
                     return Err(CommandCommitProofError::ProjectedHasConfirmations);
@@ -266,7 +266,7 @@ impl<K: CommandOutcome> PreparedCommand<K> {
     /// Remove the proof-matched projected upsert from ordinary table plans and
     /// seal it as the repository's causal direct-projection participant.
     ///
-    /// Accepted and Fact commands return no participant. A Projected command
+    /// Succeeded and Causal commands return no participant. A Projected command
     /// must have exactly one resolved declaration-owned target; the extracted
     /// mutation is never also submitted through the legacy/raw plan path.
     pub(crate) fn seal_direct_projection(
@@ -276,7 +276,7 @@ impl<K: CommandOutcome> PreparedCommand<K> {
         causation_id: &str,
     ) -> Result<Option<SameTransactionProjectionBatch>, CommandCommitProofError> {
         match K::CONSISTENCY {
-            CommandConsistency::Accepted | CommandConsistency::Fact => {
+            CommandConsistency::Succeeded | CommandConsistency::Causal => {
                 if target.is_some() {
                     return Err(CommandCommitProofError::UnexpectedDirectProjectionTarget);
                 }
@@ -324,7 +324,7 @@ impl<K> PreparedCommand<K>
 where
     K: CommandOutcome + sealed::PreparableOutcome,
 {
-    /// Prepare an accepted or fact payload for the durable committer.
+    /// Prepare a succeeded or causal payload for the durable committer.
     /// Projected results require a staged transactional proof and do
     /// not implement the private preparation capability.
     pub fn prepare(payload: K::Payload) -> Result<Self, PrepareCommandError> {

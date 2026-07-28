@@ -10,8 +10,8 @@ use super::CommandLedgerError;
 pub(crate) enum CommandLedgerState {
     InProgress,
     RetryableUnknown,
-    Accepted,
-    AcceptedPendingProjection,
+    Succeeded,
+    SucceededPendingProjection,
     Projected,
     Rejected,
     ProjectionFailed,
@@ -23,8 +23,8 @@ impl CommandLedgerState {
         match self {
             Self::InProgress => "in_progress",
             Self::RetryableUnknown => "retryable_unknown",
-            Self::Accepted => "accepted",
-            Self::AcceptedPendingProjection => "accepted_pending_projection",
+            Self::Succeeded => "succeeded",
+            Self::SucceededPendingProjection => "succeeded_pending_projection",
             Self::Projected => "projected",
             Self::Rejected => "rejected",
             Self::ProjectionFailed => "projection_failed",
@@ -36,8 +36,8 @@ impl CommandLedgerState {
         match value {
             "in_progress" => Ok(Self::InProgress),
             "retryable_unknown" => Ok(Self::RetryableUnknown),
-            "accepted" => Ok(Self::Accepted),
-            "accepted_pending_projection" => Ok(Self::AcceptedPendingProjection),
+            "succeeded" => Ok(Self::Succeeded),
+            "succeeded_pending_projection" => Ok(Self::SucceededPendingProjection),
             "projected" => Ok(Self::Projected),
             "rejected" => Ok(Self::Rejected),
             "projection_failed" => Ok(Self::ProjectionFailed),
@@ -51,8 +51,8 @@ impl CommandLedgerState {
     pub(super) fn is_replayable(self) -> bool {
         matches!(
             self,
-            Self::Accepted
-                | Self::AcceptedPendingProjection
+            Self::Succeeded
+                | Self::SucceededPendingProjection
                 | Self::Projected
                 | Self::Rejected
                 | Self::ProjectionFailed
@@ -63,8 +63,8 @@ impl CommandLedgerState {
 /// States the command dispatcher may commit through an attempt fence.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub(crate) enum TerminalCommandState {
-    Accepted,
-    AcceptedPendingProjection,
+    Succeeded,
+    SucceededPendingProjection,
     Projected,
     Rejected,
 }
@@ -72,8 +72,8 @@ pub(crate) enum TerminalCommandState {
 impl From<TerminalCommandState> for CommandLedgerState {
     fn from(value: TerminalCommandState) -> Self {
         match value {
-            TerminalCommandState::Accepted => Self::Accepted,
-            TerminalCommandState::AcceptedPendingProjection => Self::AcceptedPendingProjection,
+            TerminalCommandState::Succeeded => Self::Succeeded,
+            TerminalCommandState::SucceededPendingProjection => Self::SucceededPendingProjection,
             TerminalCommandState::Projected => Self::Projected,
             TerminalCommandState::Rejected => Self::Rejected,
         }
@@ -85,7 +85,7 @@ pub(super) fn validate_projection_obligation_semantics(
     obligations: &[ResolvedProjectionObligation],
 ) -> Result<(), String> {
     match state {
-        CommandLedgerState::Accepted
+        CommandLedgerState::Succeeded
         | CommandLedgerState::Projected
         | CommandLedgerState::Rejected => {
             if !obligations.is_empty() {
@@ -95,7 +95,7 @@ pub(super) fn validate_projection_obligation_semantics(
                 ));
             }
         }
-        CommandLedgerState::AcceptedPendingProjection | CommandLedgerState::ProjectionFailed => {
+        CommandLedgerState::SucceededPendingProjection | CommandLedgerState::ProjectionFailed => {
             if obligations.is_empty() {
                 return Err(format!(
                     "state `{}` must contain at least one projection obligation",

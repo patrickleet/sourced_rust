@@ -209,8 +209,8 @@ pub(crate) struct CausalDispatchResult {
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub(crate) enum CausalCommandPublicState {
     InProgress,
-    Accepted,
-    AcceptedPendingProjection,
+    Succeeded,
+    SucceededPendingProjection,
     Projected,
     Rejected,
     ProjectionFailed,
@@ -223,8 +223,8 @@ impl CausalCommandPublicState {
     pub(crate) const fn as_str(self) -> &'static str {
         match self {
             Self::InProgress => "in_progress",
-            Self::Accepted => "accepted",
-            Self::AcceptedPendingProjection => "accepted_pending_projection",
+            Self::Succeeded => "succeeded",
+            Self::SucceededPendingProjection => "succeeded_pending_projection",
             Self::Projected => "projected",
             Self::Rejected => "rejected",
             Self::ProjectionFailed => "projection_failed",
@@ -349,8 +349,8 @@ pub(super) fn replay_result(
     replay: CommandReplay,
 ) -> Result<CausalDispatchResult, CausalDispatchError> {
     match replay.state {
-        CommandLedgerState::Accepted
-        | CommandLedgerState::AcceptedPendingProjection
+        CommandLedgerState::Succeeded
+        | CommandLedgerState::SucceededPendingProjection
         | CommandLedgerState::Projected
         | CommandLedgerState::ProjectionFailed => {
             let receipt = CausalCommandReceiptSource::from_replay(consistency, replay)?;
@@ -579,7 +579,7 @@ where
         CommandLookup::Replay(replay) => {
             let receipt = CausalCommandReceiptSource::from_replay(consistency, replay)?;
             let (state, evidence) = match receipt.state {
-                CommandLedgerState::Accepted => (CausalCommandPublicState::Accepted, Vec::new()),
+                CommandLedgerState::Succeeded => (CausalCommandPublicState::Succeeded, Vec::new()),
                 CommandLedgerState::Projected => (
                     CausalCommandPublicState::Projected,
                     receipt
@@ -602,7 +602,7 @@ where
                 CommandLedgerState::ProjectionFailed => {
                     (CausalCommandPublicState::ProjectionFailed, Vec::new())
                 }
-                CommandLedgerState::AcceptedPendingProjection => {
+                CommandLedgerState::SucceededPendingProjection => {
                     evaluate_pending_projection_evidence(repository, &receipt).await?
                 }
                 CommandLedgerState::InProgress
@@ -758,6 +758,6 @@ pub(super) fn collapse_projection_evidence(
     {
         CausalCommandPublicState::Projected
     } else {
-        CausalCommandPublicState::AcceptedPendingProjection
+        CausalCommandPublicState::SucceededPendingProjection
     }
 }

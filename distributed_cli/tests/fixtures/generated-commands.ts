@@ -28,7 +28,7 @@ export type Command_importTodos_Output = {
 
 /** Exact typed causal command descriptor and full mutation bytes. */
 export const Command_importTodos: ReplicaCommandArtifact<Command_importTodos_Input, Command_importTodos_Output> = {
-  "consistency": "accepted",
+  "consistency": "succeeded",
   "document": "mutation Client_importTodos($commandId: ID!, $input: ImportTodosInput!) { importTodos(commandId: $commandId, input: $input) { result } }",
   "effects": {
     "fallback": "revalidate",
@@ -73,7 +73,7 @@ export const Command_importTodos: ReplicaCommandArtifact<Command_importTodos_Inp
   "protocol": {
     "operation": "sha256:e8e54238fd7618fa94e90ae60b1dfac8833943027d04e71be84cb03702f1cebf",
     "protocolHash": "sha256:30f19c9f4d29280a02ddf67c4df62cdc92c4e8090792f43d6b1bdafea3e31273",
-    "schemaHash": "sha256:e384dd6cdb8281665ceb58e3d51292e3d3c965972dfd2f70ebd3fbef89dd9c40",
+    "schemaHash": "sha256:1c798ef001a557124c53e8eeb2300d980e71d712458aa51d6d3f083f6ac2d077",
     "surface": {
       "kind": "role",
       "name": "user"
@@ -110,7 +110,7 @@ export type Command_pingTodos_Output = {
 
 /** Exact typed causal command descriptor and full mutation bytes. */
 export const Command_pingTodos: ReplicaCommandArtifact<Command_pingTodos_Input, Command_pingTodos_Output> = {
-  "consistency": "accepted",
+  "consistency": "succeeded",
   "document": "mutation Client_pingTodos($commandId: ID!) { pingTodos(commandId: $commandId) { ok } }",
   "effects": {
     "fallback": "revalidate",
@@ -142,7 +142,7 @@ export const Command_pingTodos: ReplicaCommandArtifact<Command_pingTodos_Input, 
   "protocol": {
     "operation": "sha256:3cb3c1e96331b4e98191cc725ab6b01c0e9b04cc7cc0f37f4fa0ef394fee9acf",
     "protocolHash": "sha256:30f19c9f4d29280a02ddf67c4df62cdc92c4e8090792f43d6b1bdafea3e31273",
-    "schemaHash": "sha256:e384dd6cdb8281665ceb58e3d51292e3d3c965972dfd2f70ebd3fbef89dd9c40",
+    "schemaHash": "sha256:1c798ef001a557124c53e8eeb2300d980e71d712458aa51d6d3f083f6ac2d077",
     "surface": {
       "kind": "role",
       "name": "user"
@@ -289,7 +289,7 @@ export const Command_projectTodo: ReplicaCommandArtifact<Command_projectTodo_Inp
   "protocol": {
     "operation": "sha256:f986d060555cdedfe94621914116306af704d8bb90e75289722a3b7119211d32",
     "protocolHash": "sha256:30f19c9f4d29280a02ddf67c4df62cdc92c4e8090792f43d6b1bdafea3e31273",
-    "schemaHash": "sha256:e384dd6cdb8281665ceb58e3d51292e3d3c965972dfd2f70ebd3fbef89dd9c40",
+    "schemaHash": "sha256:1c798ef001a557124c53e8eeb2300d980e71d712458aa51d6d3f083f6ac2d077",
     "surface": {
       "kind": "role",
       "name": "user"

@@ -15,8 +15,8 @@ pub(crate) enum CommandCommitProofError {
         prepared: CommandConsistency,
     },
     OutputTypeMismatch,
-    DurableFactMissing,
-    FactHasNoConfirmations,
+    DurableEventMissing,
+    CausalHasNoConfirmations,
     UnreachableConfirmation {
         projector: String,
         expected_facts: Vec<String>,
@@ -50,11 +50,11 @@ impl std::fmt::Display for CommandCommitProofError {
             Self::OutputTypeMismatch => {
                 formatter.write_str("prepared command output type does not match its declaration")
             }
-            Self::DurableFactMissing => formatter.write_str(
-                "fact and projected commands require a staged aggregate event or outbox fact",
+            Self::DurableEventMissing => formatter.write_str(
+                "causal and projected commands require a staged aggregate event or domain event",
             ),
-            Self::FactHasNoConfirmations => formatter.write_str(
-                "a fact command requires at least one finite projector confirmation",
+            Self::CausalHasNoConfirmations => formatter.write_str(
+                "a causal command requires at least one finite projector confirmation",
             ),
             Self::UnreachableConfirmation {
                 projector,
@@ -65,7 +65,7 @@ impl std::fmt::Display for CommandCommitProofError {
                 "projector `{projector}` cannot be reached: expected one of {expected_facts:?}, staged outbox facts were {staged_facts:?}"
             ),
             Self::UnexpectedProjectionProof => formatter.write_str(
-                "accepted and fact commands cannot carry a same-transaction projection proof",
+                "succeeded and causal commands cannot carry a same-transaction projection proof",
             ),
             Self::MissingProjectionProof => formatter.write_str(
                 "projected command did not stage its returned read model as an exact upsert",
@@ -92,7 +92,7 @@ impl std::fmt::Display for CommandCommitProofError {
                 "projected command has no declaration-owned direct projection target",
             ),
             Self::UnexpectedDirectProjectionTarget => formatter.write_str(
-                "accepted and fact commands cannot carry a direct projection target",
+                "succeeded and causal commands cannot carry a direct projection target",
             ),
             Self::DirectProjection(error) => {
                 write!(formatter, "direct projection target could not be sealed: {error}")

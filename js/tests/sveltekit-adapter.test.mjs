@@ -245,10 +245,10 @@ test('caller projection cancellation does not hide a globally pending command', 
 	});
 	const receiptValue = {
 		commandId: 'command-pending-after-caller-deadline',
-		state: 'accepted_pending_projection',
+		state: 'succeeded_pending_projection',
 		result: { accepted: true },
 		metadata: {},
-		status: () => Promise.resolve({ state: 'accepted_pending_projection' }),
+		status: () => Promise.resolve({ state: 'succeeded_pending_projection' }),
 		projected: callerProjected
 	};
 	Object.defineProperty(receiptValue, replicaCommandProjectedLifecycle, {
@@ -428,7 +428,7 @@ test('Svelte composition shares one diagnostics sink with operations and generat
 				name: 'RenameTodoResult',
 				fields: Object.freeze([
 					Object.freeze({
-						name: 'accepted',
+						name: 'succeeded',
 						typeName: 'Boolean',
 						nullable: false,
 						list: false,
@@ -438,7 +438,7 @@ test('Svelte composition shares one diagnostics sink with operations and generat
 				])
 			})
 		}),
-		consistency: 'accepted',
+		consistency: 'succeeded',
 		effects: Object.freeze({
 			version: 1,
 			operations: Object.freeze([

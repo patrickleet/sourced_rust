@@ -719,7 +719,7 @@ mod tests {
         };
         let completion = attempt
             .complete(
-                TerminalCommandState::Accepted,
+                TerminalCommandState::Succeeded,
                 serde_json::json!({"accepted": true}),
                 Duration::from_secs(300),
             )

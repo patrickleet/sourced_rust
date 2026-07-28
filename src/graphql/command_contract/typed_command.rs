@@ -245,8 +245,8 @@ impl TypedCommandContract {
         &self,
         outbox_messages: &[OutboxMessage],
     ) -> Result<(), CommandCommitProofError> {
-        if self.consistency == CommandConsistency::Fact && self.confirmations.is_empty() {
-            return Err(CommandCommitProofError::FactHasNoConfirmations);
+        if self.consistency == CommandConsistency::Causal && self.confirmations.is_empty() {
+            return Err(CommandCommitProofError::CausalHasNoConfirmations);
         }
 
         let staged_facts = outbox_messages
@@ -393,9 +393,9 @@ impl TypedServiceCommandBinding {
                 ));
             }
             match contract.consistency {
-                CommandConsistency::Fact if contract.confirmations.is_empty() => {
+                CommandConsistency::Causal if contract.confirmations.is_empty() => {
                     return Err(format!(
-                        "typed fact command `{}` must declare at least one expected projector confirmation",
+                        "typed causal command `{}` must declare at least one expected projector confirmation",
                         contract.name
                     ));
                 }
@@ -411,7 +411,7 @@ impl TypedServiceCommandBinding {
                         contract.name
                     ));
                 }
-                CommandConsistency::Accepted | CommandConsistency::Fact
+                CommandConsistency::Succeeded | CommandConsistency::Causal
                     if contract.projected_model.is_some()
                         || contract.direct_projection.is_some() =>
                 {
@@ -420,8 +420,8 @@ impl TypedServiceCommandBinding {
                         contract.name
                     ));
                 }
-                CommandConsistency::Fact
-                | CommandConsistency::Accepted
+                CommandConsistency::Causal
+                | CommandConsistency::Succeeded
                 | CommandConsistency::Projected => {}
             }
             if let Some(projected) = &contract.projected_model {
@@ -612,9 +612,10 @@ impl<I, K: CommandOutcome> TypedCommand<I, K> {
         self
     }
 
-    /// Declare the finite projector/model/key progress that confirms this fact.
-    /// `Fact<_>` commands require at least one confirmation. `Accepted<_>` may
-    /// omit the plan (terminal accepted) or provide one (pending projection).
+    /// Declare the finite projector/model/key progress that confirms this
+    /// causal outcome.
+    /// `Causal<_>` commands require at least one confirmation. `Succeeded<_>` may
+    /// omit the plan (terminal succeeded) or provide one (pending projection).
     /// `Projected<_>` commands cannot carry asynchronous confirmations.
     pub fn confirmations(mut self, confirmations: CompiledConfirmationPlan<I>) -> Self {
         self.contract.confirmations = confirmations.0;

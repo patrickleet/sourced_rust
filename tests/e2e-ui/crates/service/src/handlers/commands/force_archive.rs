@@ -4,7 +4,7 @@
 //! trails can tell admin intervention from self-service archive. Projector
 //! still upserts the same read-model shape.
 
-use distributed::graphql::{Fact, PreparedCommand};
+use distributed::graphql::{Causal, PreparedCommand};
 use distributed::microsvc::{CausalCommandContext, HandlerError};
 use serde::{Deserialize, Serialize};
 use todo_domain::Todo;
@@ -33,7 +33,7 @@ pub struct TodoForceArchivePayload {
 pub async fn handle(
     ctx: &CausalCommandContext<'_, Todo>,
     input: TodoForceArchiveInput,
-) -> Result<PreparedCommand<Fact<TodoForceArchivePayload>>, HandlerError> {
+) -> Result<PreparedCommand<Causal<TodoForceArchivePayload>>, HandlerError> {
     let admin = ctx.user_id()?.to_string();
     let mut todo = load_todo(ctx, &input.todo_id).await?;
 
@@ -42,7 +42,7 @@ pub async fn handle(
     todo.archive(&owner).map_err(map_domain)?;
     let fact = stage_todo_event(ctx, todo, FORCE_ARCHIVED_EVENT)?;
 
-    PreparedCommand::<Fact<TodoForceArchivePayload>>::prepare(TodoForceArchivePayload {
+    PreparedCommand::<Causal<TodoForceArchivePayload>>::prepare(TodoForceArchivePayload {
         todo_id: fact.todo_id,
         owner_id: fact.owner_id,
         status: fact.status,

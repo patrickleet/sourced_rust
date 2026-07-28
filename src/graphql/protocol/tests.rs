@@ -1,5 +1,5 @@
-use super::*;
 use super::accumulator::ProtocolAccumulatorError;
+use super::*;
 use crate::command_ledger::CommandLedgerState;
 use crate::graphql::command_contract::CommandConsistency;
 use crate::microsvc::{
@@ -85,8 +85,8 @@ fn command(id: &str) -> DistributedCommandMetadata {
     DistributedCommandMetadata {
         command_id: id.into(),
         causation_id: "cause-17".into(),
-        state: DistributedCommandState::AcceptedPendingProjection,
-        consistency: DistributedCommandConsistency::Fact,
+        state: DistributedCommandState::SucceededPendingProjection,
+        consistency: DistributedCommandConsistency::Causal,
         expects: vec![DistributedProjectionExpectation {
             projection: "todos".into(),
             model: "TodoView".into(),
@@ -113,8 +113,8 @@ fn receipt() -> CausalCommandReceiptSource {
     CausalCommandReceiptSource {
         command_id: "0190a000-0000-7000-8000-000000000042".into(),
         causation_id: "0190a000-0000-7000-8000-000000000017".into(),
-        consistency: CommandConsistency::Fact,
-        state: CommandLedgerState::AcceptedPendingProjection,
+        consistency: CommandConsistency::Causal,
+        state: CommandLedgerState::SucceededPendingProjection,
         outcome: serde_json::json!({ "accepted": true }),
         obligations: vec![CausalCommandProjectionObligation {
             projector: "todos".into(),
@@ -241,7 +241,7 @@ fn accumulator_is_idempotent_and_rejects_ambiguous_receipts() {
     assert_eq!(json["schemaHash"], "sha256:schema");
     assert_eq!(json["operation"], "sha256:operation");
     assert_eq!(json["command"]["commandId"], "cmd-1");
-    assert_eq!(json["command"]["state"], "accepted_pending_projection");
+    assert_eq!(json["command"]["state"], "succeeded_pending_projection");
     assert_eq!(json["command"]["expects"][0]["model"], "TodoView");
     assert!(json["command"]["expects"][0]["scopeToken"]
         .as_str()
@@ -258,8 +258,8 @@ fn durable_receipts_issue_stable_generation_bound_non_disclosing_obligations() {
     let first_token = first["command"]["expects"][0]["scopeToken"]
         .as_str()
         .unwrap();
-    assert_eq!(first["command"]["state"], "accepted_pending_projection");
-    assert_eq!(first["command"]["consistency"], "fact");
+    assert_eq!(first["command"]["state"], "succeeded_pending_projection");
+    assert_eq!(first["command"]["consistency"], "causal");
     assert!(!first_token.contains("tenant-private"));
     assert!(!first_token.contains("9223372036854775807"));
     assert!(!first_token.contains("child-private"));

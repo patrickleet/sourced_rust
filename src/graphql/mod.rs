@@ -38,9 +38,9 @@ pub use command_contract::{
     EffectWireTimestamp, EffectWireUnsupported,
 };
 pub use command_contract::{
-    typed_command, Accepted, CommandConsistency, CompiledCommandEffects, CompiledConfirmationPlan,
-    CompiledDirectProjectionTarget, CompiledInputDefaults, Fact, PrepareCommandError,
-    PreparedCommand, Projected, TypedCommand, TypedEffectExpression, TypedEffectKey,
+    typed_command, Causal, CommandConsistency, CompiledCommandEffects, CompiledConfirmationPlan,
+    CompiledDirectProjectionTarget, CompiledInputDefaults, PrepareCommandError, PreparedCommand,
+    Projected, Succeeded, TypedCommand, TypedEffectExpression, TypedEffectKey,
     TypedEffectRelationship,
 };
 pub use naming::{

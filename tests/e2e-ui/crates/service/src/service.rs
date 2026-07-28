@@ -7,7 +7,7 @@ use blob_domain::BlobGame;
 use chat_domain::ChatMessage;
 use distributed::graphql::{
     build_surface, read, surface_for_application, typed_command, DistributedClientSurfaceExport,
-    Fact, GraphqlEngine, GraphqlPoolSource, IdentityConfig, ModelPermissions, OidcConfig,
+    Causal, GraphqlEngine, GraphqlPoolSource, IdentityConfig, ModelPermissions, OidcConfig,
     Projected, RoleGrant, SurfaceDirectProjection, SurfaceOptions, SurfaceProjector,
 };
 use distributed::microsvc::{
@@ -163,7 +163,7 @@ where
         .with_repo(repo.clone().queued_with(locks.clone()).aggregate::<Todo>())
         .with_read_model_store(read_models.clone())
         .typed_command(
-            typed_command::<create::TodoCreateInput, Fact<create::TodoCreatePayload>>(
+            typed_command::<create::TodoCreateInput, Causal<create::TodoCreatePayload>>(
                 create::COMMAND,
             )
             .field_name("todos_create")
@@ -192,7 +192,7 @@ where
         )
         .handle(create::handle)
         .typed_command(
-            typed_command::<rename::TodoRenameInput, Fact<rename::TodoRenamePayload>>(
+            typed_command::<rename::TodoRenameInput, Causal<rename::TodoRenamePayload>>(
                 rename::COMMAND,
             )
             .field_name("todos_rename")
@@ -213,7 +213,7 @@ where
         )
         .handle(rename::handle)
         .typed_command(
-            typed_command::<complete::TodoCompleteInput, Fact<payloads::TodoStatusPayload>>(
+            typed_command::<complete::TodoCompleteInput, Causal<payloads::TodoStatusPayload>>(
                 complete::COMMAND,
             )
             .field_name("todos_complete")
@@ -234,7 +234,7 @@ where
         )
         .handle(complete::handle)
         .typed_command(
-            typed_command::<reopen::TodoReopenInput, Fact<reopen::TodoReopenPayload>>(
+            typed_command::<reopen::TodoReopenInput, Causal<reopen::TodoReopenPayload>>(
                 reopen::COMMAND,
             )
             .field_name("todos_reopen")
@@ -255,7 +255,7 @@ where
         )
         .handle(reopen::handle)
         .typed_command(
-            typed_command::<archive::TodoArchiveInput, Fact<archive::TodoArchivePayload>>(
+            typed_command::<archive::TodoArchiveInput, Causal<archive::TodoArchivePayload>>(
                 archive::COMMAND,
             )
             .field_name("todos_archive")
@@ -278,7 +278,7 @@ where
         .typed_command(
             typed_command::<
                 force_archive::TodoForceArchiveInput,
-                Fact<force_archive::TodoForceArchivePayload>,
+                Causal<force_archive::TodoForceArchivePayload>,
             >(force_archive::COMMAND)
             .field_name("todos_force_archive")
             .roles(["admin"])
@@ -310,7 +310,7 @@ where
         )
         .with_read_model_store(read_models.clone())
         .typed_command(
-            typed_command::<chat_post::ChatPostInput, Fact<chat_post::ChatPostPayload>>(
+            typed_command::<chat_post::ChatPostInput, Causal<chat_post::ChatPostPayload>>(
                 chat_post::COMMAND,
             )
             .field_name("chat_messages_post")

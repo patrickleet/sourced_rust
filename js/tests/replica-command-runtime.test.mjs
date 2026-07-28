@@ -94,7 +94,7 @@ function artifact(overrides = {}) {
 		}),
 		input: Object.freeze({ kind: 'object', definition: TodoInput }),
 		output: Object.freeze({ kind: 'object', definition: CommandOutput }),
-		consistency: 'fact',
+		consistency: 'causal',
 		effects: Object.freeze({
 			version: 1,
 			operations: Object.freeze([
@@ -137,8 +137,8 @@ function artifact(overrides = {}) {
 }
 
 function commandEnvelope(commandId, options = {}) {
-	const state = options.state ?? 'accepted_pending_projection';
-	const consistency = options.consistency ?? 'fact';
+	const state = options.state ?? 'succeeded_pending_projection';
+	const consistency = options.consistency ?? 'causal';
 	const expects = options.expects ?? [
 		{ projection: 'todos', model: 'Todo', scopeToken: 'todo:scope' }
 	];
@@ -399,7 +399,7 @@ async function directlyProjectTodo(
 }
 
 function statusEnvelope(commandId, options = {}) {
-	const state = options.state ?? 'accepted_pending_projection';
+	const state = options.state ?? 'succeeded_pending_projection';
 	const envelope = commandEnvelope(commandId, {
 		...options,
 		state,
@@ -1000,7 +1000,7 @@ test('explicit rejection removes only its own layer and rebases later work', asy
 		mutationField: 'renameTodo',
 		document:
 			'mutation Client_renameTodo($commandId: ID!, $input: TodoInput!) { renameTodo(commandId: $commandId, input: $input) }',
-		consistency: 'accepted',
+		consistency: 'succeeded',
 		trustedPresets: Object.freeze([]),
 		confirmations: undefined,
 		revalidation: Object.freeze({
@@ -1041,7 +1041,7 @@ test('explicit rejection removes only its own layer and rebases later work', asy
 	resolveDispatch(
 		commandEnvelope(COMMAND_A, {
 			state: 'rejected',
-			consistency: 'accepted',
+			consistency: 'succeeded',
 			expects: [],
 			operation: HASH_A,
 			data: null,
@@ -1612,7 +1612,7 @@ test('relationship and invalidation effects stay semantic instead of guessing li
 		mutationField: 'relateTodo',
 		document:
 			'mutation Client_relateTodo($commandId: ID!, $input: TodoInput!) { relateTodo(commandId: $commandId, input: $input) }',
-		consistency: 'accepted',
+		consistency: 'succeeded',
 		trustedPresets: Object.freeze([]),
 		confirmations: undefined,
 		revalidation: Object.freeze({
@@ -1648,8 +1648,8 @@ test('relationship and invalidation effects stay semantic instead of guessing li
 		dispatch: (request) =>
 			Promise.resolve(
 				commandEnvelope(request.commandId, {
-					state: 'accepted',
-					consistency: 'accepted',
+					state: 'succeeded',
+					consistency: 'succeeded',
 					expects: [],
 					data: { relateTodo: { ok: true } }
 				})
@@ -1762,7 +1762,7 @@ test('caller abort after acceptance only rejects its projection wait while causa
 	);
 
 	const status = await receipt.status();
-	assert.equal(status.state, 'accepted_pending_projection');
+	assert.equal(status.state, 'succeeded_pending_projection');
 	assert.equal(statusRequests.length, 1);
 	assert.notEqual(
 		statusRequests[0].signal,
@@ -2081,7 +2081,7 @@ test('projected recovery status revalidates and retires optimism without a proje
 	runtime.dispose();
 });
 
-test('terminal accepted recovery revalidates before retiring optimism', async () => {
+test('terminal succeeded recovery revalidates before retiring optimism', async () => {
 	const replica = new FakeReplica();
 	let resolveRefresh;
 	const refresh = new Promise((resolve) => {
@@ -2089,7 +2089,7 @@ test('terminal accepted recovery revalidates before retiring optimism', async ()
 	});
 	replica.onRevalidate = () => refresh;
 	const accepted = artifact({
-		consistency: 'accepted',
+		consistency: 'succeeded',
 		confirmations: undefined,
 		revalidation: Object.freeze({
 			version: 1,
@@ -2102,12 +2102,12 @@ test('terminal accepted recovery revalidates before retiring optimism', async ()
 	const runtime = createReplicaCommandRuntime(
 		replica,
 		{
-			dispatch: () => Promise.reject(new Error('accepted response lost')),
+			dispatch: () => Promise.reject(new Error('succeeded response lost')),
 			status: (request) =>
 				Promise.resolve(
 					statusEnvelope(request.commandId, {
-						state: 'accepted',
-						consistency: 'accepted',
+						state: 'succeeded',
+						consistency: 'succeeded',
 						expects: []
 					})
 				)
@@ -2143,7 +2143,7 @@ test('terminal accepted recovery revalidates before retiring optimism', async ()
 	);
 
 	resolveRefresh();
-	assert.equal((await status).state, 'accepted');
+	assert.equal((await status).state, 'succeeded');
 	assert.equal(replica.layers.has(COMMAND_A), false);
 	runtime.dispose();
 });
@@ -2168,7 +2168,7 @@ test('completed dispatch and status reads release linked abort listeners', async
 	let runtime;
 	try {
 		const accepted = artifact({
-			consistency: 'accepted',
+			consistency: 'succeeded',
 			confirmations: undefined,
 			revalidation: Object.freeze({
 				version: 1,
@@ -2184,16 +2184,16 @@ test('completed dispatch and status reads release linked abort listeners', async
 				dispatch: (request) =>
 					Promise.resolve(
 						commandEnvelope(request.commandId, {
-							state: 'accepted',
-							consistency: 'accepted',
+							state: 'succeeded',
+							consistency: 'succeeded',
 							expects: []
 						})
 					),
 				status: (request) =>
 					Promise.resolve(
 						statusEnvelope(request.commandId, {
-							state: 'accepted',
-							consistency: 'accepted',
+							state: 'succeeded',
+							consistency: 'succeeded',
 							expects: []
 						})
 					)
@@ -2208,7 +2208,7 @@ test('completed dispatch and status reads release linked abort listeners', async
 		assert.equal(activeAbortListeners.size, 0);
 
 		for (let read = 0; read < 32; read += 1) {
-			assert.equal((await receipt.status()).state, 'accepted');
+			assert.equal((await receipt.status()).state, 'succeeded');
 			assert.equal(
 				activeAbortListeners.size,
 				0,
@@ -2273,7 +2273,7 @@ test('optimistic layer creation failure releases linked abort listeners', async 
 	}
 });
 
-test('accepted facts poll durable status and revalidate before retiring optimism', async () => {
+test('causal outcomes poll durable status and revalidate before retiring optimism', async () => {
 	const replica = new FakeReplica();
 	let statusReads = 0;
 	const runtime = createReplicaCommandRuntime(
@@ -2287,7 +2287,7 @@ test('accepted facts poll durable status and revalidate before retiring optimism
 					statusEnvelope(request.commandId, {
 						state:
 							statusReads === 1
-								? 'accepted_pending_projection'
+								? 'succeeded_pending_projection'
 								: 'projected',
 						observations:
 							statusReads === 1
@@ -2737,7 +2737,7 @@ test('ambiguous and in-progress dispatches expose recovery without retiring opti
 	assert.equal(inProgress.code, 'REPLICA_COMMAND_OUTCOME_PENDING');
 	assert.equal(inProgress.recovery.commandId, COMMAND_B);
 	assert.equal(replica.layers.get(COMMAND_B).state, 'optimistic');
-	assert.equal((await inProgress.recovery.status()).state, 'accepted_pending_projection');
+	assert.equal((await inProgress.recovery.status()).state, 'succeeded_pending_projection');
 	assert.equal(replica.layers.get(COMMAND_B).state, 'accepted');
 
 	replica.rejectOptimisticLayer(COMMAND_A);
@@ -2815,7 +2815,7 @@ test('post-dispatch protocol failure retains a reachable generated recovery hand
 	assert.equal(failure.code, 'REPLICA_COMMAND_PROTOCOL_INVALID');
 	assert.equal(failure.recovery.commandId, COMMAND_A);
 	assert.equal(replica.layers.get(COMMAND_A).state, 'accepted');
-	assert.equal((await failure.recovery.status()).state, 'accepted_pending_projection');
+	assert.equal((await failure.recovery.status()).state, 'succeeded_pending_projection');
 	replica.rejectOptimisticLayer(COMMAND_A);
 	runtime.dispose();
 });

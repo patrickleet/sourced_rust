@@ -120,7 +120,7 @@ Declare each GraphQL mutation on the executable route:
 let routes = Routes::new()
     .with_repo(repository.aggregate::<Order>())
     .typed_command(
-        typed_command::<CreateOrderInput, Fact<CreateOrderPayload>>("order.create")
+        typed_command::<CreateOrderInput, Causal<CreateOrderPayload>>("order.create")
             .roles(["user"])
             .confirmations(/* finite projector proof */),
     )
@@ -128,8 +128,8 @@ let routes = Routes::new()
 ```
 
 Handlers accept `CausalCommandContext`, stage aggregate/outbox/projection work on
-that context, and return `PreparedCommand<Accepted<_>>`,
-`PreparedCommand<Fact<_>>`, or `PreparedCommand<Projected<M>>`. Never commit
+that context, and return `PreparedCommand<Succeeded<_>>`,
+`PreparedCommand<Causal<_>>`, or `PreparedCommand<Projected<M>>`. Never commit
 outside the framework-owned causal boundary.
 
 ### Command consistency modes
@@ -138,16 +138,16 @@ outside the framework-owned causal boundary.
 
 | Contract | Meaning |
 |----------|---------|
-| `Accepted<T>` | Durable command accepted; no projection visibility is promised. |
-| `Fact<T>` | Durable fact returned with finite registered projector confirmations. |
+| `Succeeded<T>` | Command transaction succeeded; no projection visibility is promised. |
+| `Causal<T>` | Domain events committed with finite registered projector confirmations. |
 | `Projected<M>` | Exact read-model row is staged in the same transaction. |
 
 Rules:
 
 1. Use `Projected<M>` only when the exact row is staged with the command.
-2. Use `Fact<T>` only with finite confirmation topology registered on the same
+2. Use `Causal<T>` only with finite confirmation topology registered on the same
    service.
-3. Otherwise use `Accepted<T>`; never invent a projected row.
+3. Otherwise use `Succeeded<T>`; never invent a projected row.
 
 Surface IR: SDL is built via `build_surface` → `graphql_sdl_from_surface` (shared inventory
 for dialect-honest comparison ops, role grants, typed commands, and generated

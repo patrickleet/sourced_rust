@@ -389,8 +389,8 @@ impl CommandCompletion {
         match (self.state, self.direct_projection.is_some()) {
             (TerminalCommandState::Projected, true)
             | (
-                TerminalCommandState::Accepted
-                | TerminalCommandState::AcceptedPendingProjection
+                TerminalCommandState::Succeeded
+                | TerminalCommandState::SucceededPendingProjection
                 | TerminalCommandState::Rejected,
                 false,
             ) => Ok(()),

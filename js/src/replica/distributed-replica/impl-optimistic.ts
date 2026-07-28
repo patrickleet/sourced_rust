@@ -142,7 +142,7 @@ export function markOptimisticLayerAcceptedOn(
 				Object.freeze({
 					kind: 'receipt',
 					command: id,
-					state: 'accepted',
+					state: 'succeeded',
 					obligations: 0,
 					observed: 0
 				})
@@ -168,8 +168,8 @@ export function markOptimisticLayerAcceptedOn(
 				command: id,
 				state:
 					counts.obligations === 0
-						? ('accepted' as const)
-						: ('accepted_pending_projection' as const),
+						? ('succeeded' as const)
+						: ('succeeded_pending_projection' as const),
 				obligations: counts.obligations,
 				observed: counts.observed
 			})
@@ -285,8 +285,8 @@ export function applyReceiptOnly(
 					command: id,
 					state:
 						counts.obligations === 0
-							? ('accepted' as const)
-							: ('accepted_pending_projection' as const),
+							? ('succeeded' as const)
+							: ('succeeded_pending_projection' as const),
 					obligations: counts.obligations,
 					observed: counts.observed
 				})

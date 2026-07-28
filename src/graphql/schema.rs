@@ -1102,7 +1102,7 @@ mod causal_command_schema_tests {
                         nested: None,
                     }],
                 }),
-                consistency: CommandConsistency::Accepted,
+                consistency: CommandConsistency::Succeeded,
                 input_defaults: Vec::new(),
                 effects: Some(CommandEffects::revalidate()),
                 confirmations: Vec::new(),

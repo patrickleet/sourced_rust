@@ -56,15 +56,34 @@ impl GraphqlOutputType for Payload {
 
 #[test]
 fn preparation_serializes_and_retains_the_typed_payload_until_commit() {
-    let prepared = PreparedCommand::<Fact<Payload>>::prepare(Payload {
+    let prepared = PreparedCommand::<Causal<Payload>>::prepare(Payload {
         id: "todo-1".into(),
     })
     .unwrap();
-    assert_eq!(prepared.consistency(), CommandConsistency::Fact);
+    assert_eq!(prepared.consistency(), CommandConsistency::Causal);
     assert_eq!(prepared.serialized_payload()["id"], "todo-1");
     let (committed, serialized) = prepared.finalize_after_commit();
     assert_eq!(committed.payload().id, "todo-1");
     assert_eq!(serialized["id"], "todo-1");
+}
+
+#[test]
+fn successful_consistency_wire_vocabulary_is_exact_and_breaking() {
+    let cases = [
+        (CommandConsistency::Succeeded, "\"succeeded\""),
+        (CommandConsistency::Causal, "\"causal\""),
+        (CommandConsistency::Projected, "\"projected\""),
+    ];
+
+    for (consistency, encoded) in cases {
+        assert_eq!(serde_json::to_string(&consistency).unwrap(), encoded);
+        assert_eq!(
+            serde_json::from_str::<CommandConsistency>(encoded).unwrap(),
+            consistency
+        );
+    }
+    assert!(serde_json::from_str::<CommandConsistency>("\"accepted\"").is_err());
+    assert!(serde_json::from_str::<CommandConsistency>("\"fact\"").is_err());
 }
 
 fn confirmation_with_facts(facts: &[&str]) -> CommandProjectionConfirmation {
@@ -146,7 +165,7 @@ fn confirmation_with_key(
 
 #[test]
 fn projection_obligations_resolve_nested_canonical_wire_paths_in_declaration_order() {
-    let mut contract = typed_command::<Input, Accepted<Payload>>("todo.update").into_contract();
+    let mut contract = typed_command::<Input, Succeeded<Payload>>("todo.update").into_contract();
     contract.confirmations = vec![
         confirmation_with_key(
             "project_second",
@@ -213,7 +232,7 @@ fn projection_obligations_resolve_nested_canonical_wire_paths_in_declaration_ord
 
 #[test]
 fn projection_obligations_preserve_constants_and_nulls_through_serde() {
-    let mut contract = typed_command::<Input, Accepted<Payload>>("todo.update").into_contract();
+    let mut contract = typed_command::<Input, Succeeded<Payload>>("todo.update").into_contract();
     let constant = serde_json::json!({
         "nested": [1, "two", null],
         "large": u64::MAX,
@@ -244,7 +263,7 @@ fn projection_obligations_preserve_constants_and_nulls_through_serde() {
 
 #[test]
 fn projection_obligation_resolution_fails_on_absent_input_paths() {
-    let mut contract = typed_command::<Input, Accepted<Payload>>("todo.update").into_contract();
+    let mut contract = typed_command::<Input, Succeeded<Payload>>("todo.update").into_contract();
     contract.confirmations = vec![confirmation_with_key(
         "project_todos",
         [(
@@ -269,7 +288,7 @@ fn projection_obligation_resolution_fails_on_absent_input_paths() {
 
 #[test]
 fn projection_obligation_resolution_rejects_unresolved_private_expressions() {
-    let mut contract = typed_command::<Input, Accepted<Payload>>("todo.update").into_contract();
+    let mut contract = typed_command::<Input, Succeeded<Payload>>("todo.update").into_contract();
     contract.confirmations = vec![confirmation_with_key(
         "project_todos",
         [(
@@ -319,7 +338,7 @@ fn projection_obligation_resolution_rejects_unresolved_private_expressions() {
 
 #[test]
 fn projection_obligation_resolution_is_empty_without_confirmations() {
-    let contract = typed_command::<Input, Accepted<Payload>>("todo.check").into_contract();
+    let contract = typed_command::<Input, Succeeded<Payload>>("todo.check").into_contract();
 
     assert!(contract
         .resolve_projection_obligations(&serde_json::json!("unused"))
@@ -329,9 +348,9 @@ fn projection_obligation_resolution_is_empty_without_confirmations() {
 
 #[test]
 fn finite_confirmation_requires_a_reachable_staged_outbox_fact() {
-    let mut contract = typed_command::<Input, Accepted<Payload>>("todo.create").into_contract();
+    let mut contract = typed_command::<Input, Succeeded<Payload>>("todo.create").into_contract();
     contract.confirmations = vec![confirmation_with_facts(&["todo.created", "todo.recreated"])];
-    let prepared = PreparedCommand::<Accepted<Payload>>::prepare(Payload {
+    let prepared = PreparedCommand::<Succeeded<Payload>>::prepare(Payload {
         id: "todo-1".into(),
     })
     .unwrap();
@@ -379,9 +398,9 @@ fn finite_confirmation_requires_a_reachable_staged_outbox_fact() {
 }
 
 #[test]
-fn accepted_without_confirmations_allows_an_empty_domain_batch() {
-    let contract = typed_command::<Input, Accepted<Payload>>("todo.check").into_contract();
-    let prepared = PreparedCommand::<Accepted<Payload>>::prepare(Payload {
+fn succeeded_without_confirmations_allows_an_empty_domain_batch() {
+    let contract = typed_command::<Input, Succeeded<Payload>>("todo.check").into_contract();
+    let prepared = PreparedCommand::<Succeeded<Payload>>::prepare(Payload {
         id: "todo-1".into(),
     })
     .unwrap();
@@ -392,9 +411,9 @@ fn accepted_without_confirmations_allows_an_empty_domain_batch() {
 }
 
 #[test]
-fn fact_without_a_finite_confirmation_fails_at_commit_validation() {
-    let contract = typed_command::<Input, Fact<Payload>>("todo.create").into_contract();
-    let prepared = PreparedCommand::<Fact<Payload>>::prepare(Payload {
+fn causal_without_a_finite_confirmation_fails_at_commit_validation() {
+    let contract = typed_command::<Input, Causal<Payload>>("todo.create").into_contract();
+    let prepared = PreparedCommand::<Causal<Payload>>::prepare(Payload {
         id: "todo-1".into(),
     })
     .unwrap();
@@ -404,19 +423,19 @@ fn fact_without_a_finite_confirmation_fails_at_commit_validation() {
         prepared
             .validate_commit_evidence(&contract, false, &[fact], &[])
             .unwrap_err(),
-        CommandCommitProofError::FactHasNoConfirmations
+        CommandCommitProofError::CausalHasNoConfirmations
     );
 }
 
 #[test]
 fn per_route_fingerprint_is_stable_and_contract_sensitive() {
-    let first = typed_command::<Input, Accepted<Payload>>("todo.create")
+    let first = typed_command::<Input, Succeeded<Payload>>("todo.create")
         .roles(["writer", "admin"])
         .into_contract();
-    let reordered = typed_command::<Input, Accepted<Payload>>("todo.create")
+    let reordered = typed_command::<Input, Succeeded<Payload>>("todo.create")
         .roles(["admin", "writer"])
         .into_contract();
-    let renamed = typed_command::<Input, Accepted<Payload>>("todo.rename")
+    let renamed = typed_command::<Input, Succeeded<Payload>>("todo.rename")
         .roles(["admin", "writer"])
         .into_contract();
 
@@ -434,7 +453,8 @@ fn command_fingerprints_canonicalize_nested_json_object_keys() {
                 serde_json::json!(if key == "a" { 1 } else { 2 }),
             );
         }
-        let mut contract = typed_command::<Input, Accepted<Payload>>("todo.update").into_contract();
+        let mut contract =
+            typed_command::<Input, Succeeded<Payload>>("todo.update").into_contract();
         contract.effects = CommandEffects::new([CommandEffect::Patch {
             model: "Todo".into(),
             key: EffectKey {
@@ -484,15 +504,15 @@ fn command_fingerprints_canonicalize_nested_json_object_keys() {
             reverse_binding.structural_fingerprint.as_str(),
         ),
         (
-            "sha256:1414f9c1c33dc256953744dc606d4d15879577c52fa2bbbe1fa24ad0103433e3",
-            "sha256:f40799bf6540528956fc50722ef607ed731d0707b8ebe0c169ef55bc2805d456",
+            "sha256:17dd2ae5f736befcd5b70b39a594782cb8cc3b090ee0c9b9ae2089a3e156583d",
+            "sha256:d51e11ca2bbd5c32c5463839f8c3dc8f5bbc9a005b4e2ba3adf2e32fed0d2d2e",
         )
     );
 }
 
 #[test]
 fn binding_rejects_missing_graphql_type_ids() {
-    let mut contract = typed_command::<Input, Accepted<Payload>>("todo.create").into_contract();
+    let mut contract = typed_command::<Input, Succeeded<Payload>>("todo.create").into_contract();
     contract.input.type_id = None;
     let error = TypedServiceCommandBinding::from_contracts("todos", &[contract]).unwrap_err();
     assert!(error.contains("input GraphQL metadata is missing"));
@@ -500,7 +520,7 @@ fn binding_rejects_missing_graphql_type_ids() {
 
 #[test]
 fn binding_canonicalizes_fields_and_roles_but_preserves_effect_order() {
-    let mut first = typed_command::<Input, Accepted<Payload>>("todo.create")
+    let mut first = typed_command::<Input, Succeeded<Payload>>("todo.create")
         .roles(["writer", "admin"])
         .into_contract();
     first.input.fields.push(GraphqlTypeField {
@@ -527,7 +547,7 @@ fn binding_canonicalizes_fields_and_roles_but_preserves_effect_order() {
     let second = TypedServiceCommandBinding::from_contracts("todos", &[second]).unwrap();
     assert_eq!(first, second);
 
-    let mut reordered = typed_command::<Input, Accepted<Payload>>("todo.create")
+    let mut reordered = typed_command::<Input, Succeeded<Payload>>("todo.create")
         .roles(["writer", "admin"])
         .into_contract();
     reordered.input.fields.push(GraphqlTypeField {

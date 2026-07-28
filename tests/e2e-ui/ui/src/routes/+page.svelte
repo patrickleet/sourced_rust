@@ -23,7 +23,7 @@
 			title: 'Todos — owner-scoped list',
 			blurb:
 				'Create, complete, reopen, archive. UI paints from generated optimistic effects; a projector confirms the row. You only see your own todos unless you are admin.',
-			where: '/todos · Fact + effects · personal RLS',
+			where: '/todos · Causal + effects · personal RLS',
 			label: 'Open todos'
 		},
 		{
@@ -84,7 +84,7 @@
 		},
 		{
 			title: 'Familiar patterns, short handles',
-			body: 'Load aggregate → apply command → stage events (+ outbox) → Fact or Projected result. Swap memory for Postgres without rewriting the domain.'
+			body: 'Load aggregate → apply command → stage events (+ outbox) → Causal or Projected result. Swap memory for Postgres without rewriting the domain.'
 		},
 		{
 			title: 'Grow without rewriting what you proved',
@@ -112,7 +112,7 @@
 	const principles = [
 		{
 			title: 'Commands change the world; tables are for reading',
-			body: 'Do not dual-write query tables from the UI. Send a command. Todos/chat return Fact and project eventually; blob returns Projected in the same transaction as the event.'
+			body: 'Do not dual-write query tables from the UI. Send a command. Todos/chat return Causal and project eventually; blob returns Projected in the same transaction as the event.'
 		},
 		{
 			title: 'Trust the signed-in person, not the request body',
@@ -124,7 +124,7 @@
 		},
 		{
 			title: 'Let the Service declare how the UI catches up',
-			body: 'command_effects + command_confirmations (Fact) vs Projected payload (blob). Screens do not invent reconciliation. Revalidation may lag; fences keep your own write from rolling back.'
+			body: 'command_effects + command_confirmations (Causal) vs Projected payload (blob). Screens do not invent reconciliation. Revalidation may lag; fences keep your own write from rolling back.'
 		},
 		{
 			title: 'Roles and surfaces are real',
@@ -261,7 +261,7 @@ const client = provideDistributed({
 		{
 			n: 'C4',
 			title: 'Read and write through generated artifacts',
-			why: 'Todos.use() / ChatMessages.use() / BlobGames.use() bind the tree-local replica. useCommands() carries optimistic effects and Projected/Fact metadata so every mounted view observes the change without page-specific cache surgery.',
+			why: 'Todos.use() / ChatMessages.use() / BlobGames.use() bind the tree-local replica. useCommands() carries optimistic effects and Projected/Causal metadata so every mounted view observes the change without page-specific cache surgery.',
 			path: 'routes/todos/+page.svelte · $distributed',
 			label: 'Operation + commands',
 			blocks: [
@@ -407,29 +407,29 @@ callbacks: {
 		},
 		{
 			n: '03',
-			title: 'Mutations are commands — Fact or Projected',
+			title: 'Mutations are commands — Causal or Projected',
 			why: 'The typed Service inventory declares input, result shape, roles, optimistic effects, and projector confirmations. Handlers never accept owner_id from the client.',
 			path: 'service.rs · handlers/commands/*',
 			label: 'Commands',
 			blocks: [
 				{
 					file: 'handlers/commands/create.rs',
-					label: 'Fact + session owner',
+					label: 'Causal + session owner',
 					code: `pub async fn handle(
   ctx: &CausalCommandContext<'_, Todo>,
   input: TodoCreateInput,
-) -> Result<PreparedCommand<Fact<TodoCreatePayload>>, HandlerError> {
+) -> Result<PreparedCommand<Causal<TodoCreatePayload>>, HandlerError> {
   let owner = ctx.user_id()?.to_string(); // never from input
   let mut todo = ctx.create();
   todo.create(&input.todo_id, &owner, &input.title)?;
   let fact = stage_todo_event(ctx, todo, "todo.created")?;
-  PreparedCommand::<Fact<TodoCreatePayload>>::prepare(/* … */)
+  PreparedCommand::<Causal<TodoCreatePayload>>::prepare(/* … */)
 }`
 				},
 				{
 					file: 'service.rs · typed_command',
 					label: 'Effects + confirmations',
-					code: `typed_command::<TodoCreateInput, Fact<TodoCreatePayload>>(…)
+					code: `typed_command::<TodoCreateInput, Causal<TodoCreatePayload>>(…)
   .effects(command_effects! {
     upsert TodoView {
       key { todo_id: input.todo_id },
@@ -559,7 +559,7 @@ pub author: Option<AuthUserView>,
 			<p class="wf-lede">
 				<strong>Simplest DX is the goal.</strong> Plain domains, deny-by-default GraphQL with
 				first-class OIDC, dual generated clients, and a causal browser replica. Click through todos
-				(<code>Fact</code> + projector), chat (<code>@load @live</code>), blob
+				(<code>Causal</code> + projector), chat (<code>@load @live</code>), blob
 				(<code>Projected</code>), and admin (separate surface) — proved by
 				<code>make test</code> offline and Playwright with real OIDC.
 			</p>
@@ -585,7 +585,7 @@ pub author: Option<AuthUserView>,
 				<a href="#demos">Demos</a>
 				<a href="#architecture">Architecture</a>
 				<a href="#client-dx">Client DX</a>
-				<a href="#cap">Fact vs Projected</a>
+				<a href="#cap">Causal vs Projected</a>
 				<a href="#server-flow">Server</a>
 				<a href="#codegen">Codegen</a>
 			</nav>
@@ -740,7 +740,7 @@ pub struct TodoCreateInput {
 				<h3>Short verbs you can swap under the hood</h3>
 				<p>
 					Load from history, apply a command, stage events (and outbox), return
-					<code>Fact</code> or <code>Projected</code>. Same ideas as textbooks — thin APIs, backends
+					<code>Causal</code> or <code>Projected</code>. Same ideas as textbooks — thin APIs, backends
 					you can change later.
 				</p>
 			</div>
@@ -755,7 +755,7 @@ todo.complete(&owner).map_err(map_domain)?;
 let fact = stage_todo_event(ctx, todo, "todo.completed")?;
 // stage_todo_event: OutboxMessage + ctx.stage(aggregate)
 // Framework commits event store + outbox together
-PreparedCommand::<Fact<TodoStatusPayload>>::prepare(/* from fact */)`}</code></pre>
+PreparedCommand::<Causal<TodoStatusPayload>>::prepare(/* from domain event */)`}</code></pre>
 				</div>
 				<div class="wf-code">
 					<div class="wf-code-bar">
@@ -792,7 +792,7 @@ Service::new()
 			<ol class="wf-flow-map">
 				<li>Write tests for what the model should allow and refuse</li>
 				<li>Implement the plain type until those tests pass</li>
-				<li>Thin handler: session → load/create → domain → stage (+ Fact or Projected)</li>
+				<li>Thin handler: session → load/create → domain → stage (+ Causal or Projected)</li>
 				<li>Projector for eventual models; SurfaceDirectProjection for Projected</li>
 				<li>Permissions + client application surface(s)</li>
 				<li>Co-located <code>+page.graphql</code>, <code>make gen-client</code>, thin UI</li>
@@ -896,7 +896,7 @@ Service::new()
 				<h2>One direction — two result shapes</h2>
 				<p>
 					The UI never “updates the todos table” as if GraphQL were a database. It asks for work
-					(commands) and reads query-shaped data. Most features return a <code>Fact</code> and let
+					(commands) and reads query-shaped data. Most features return a <code>Causal</code> and let
 					projectors catch up; blob returns <code>Projected</code> so the board is in the mutation
 					payload.
 				</p>
@@ -915,7 +915,7 @@ Service::new()
 Service
   OidcBearer → x-user-id + roles · deny-by-default RLS
   typed Service inventory → GraphQL mutations + client surfaces
-       ├─ todos / chat: Fact + projector (+ @live)     (eventual)
+       ├─ todos / chat: Causal + projector (+ @live)     (eventual)
        └─ blob:         Projected<BlobGameView>         (atomic)
   e2e-ui vs e2e-ui-admin application surfaces
   auth_users imported from Zitadel for joins`}</code></pre>
@@ -1013,7 +1013,7 @@ Service
 		<div class="wf-band-inner">
 			<div class="wf-section-head">
 				<span class="wf-label">Result shapes</span>
-				<h2>Fact vs Projected — pick per feature</h2>
+				<h2>Causal vs Projected — pick per feature</h2>
 				<p>
 					Not every screen needs the same consistency story. This fixture shows both on purpose so
 					you can feel the tradeoff instead of arguing in the abstract.
@@ -1031,16 +1031,16 @@ Service
 					</p>
 				</div>
 				<div class="wf-card">
-					<span class="wf-card-kicker">Fact + effects</span>
+					<span class="wf-card-kicker">Causal + effects</span>
 					<h3>Todos — paint now, confirm later</h3>
 					<p>
-						Command returns a fact. Inventory <code>command_effects</code> paint the replica;
+						Command returns a causal result. Inventory <code>command_effects</code> paint the replica;
 						<code>command_confirmations</code> wait for the projector epoch. History is still the
 						source of truth — the query table catches up.
 					</p>
 				</div>
 				<div class="wf-card">
-					<span class="wf-card-kicker">Fact + live</span>
+					<span class="wf-card-kicker">Causal + live</span>
 					<h3>Chat — other people are the clock</h3>
 					<p>
 						Your post can show immediately; everyone else’s posts arrive over the
@@ -1067,7 +1067,7 @@ Service
 				<li>Page load queries with that token (RLS-filtered rows)</li>
 				<li>UI sends a typed command, not a free-form table update</li>
 				<li>Handler: session → load/create → domain → stage</li>
-				<li>Return Fact (projector later) or Projected (same transaction)</li>
+				<li>Return Causal (projector later) or Projected (same transaction)</li>
 				<li>Display names join from the identity directory</li>
 				<li>Queries and @live rooms show the new world</li>
 			</ol>
@@ -1266,7 +1266,7 @@ await useAdminCommands().todo.force_archive({ todo_id });`}</code></pre>
 				<li>Model the rules in a pure domain crate with tests</li>
 				<li>Describe how those facts look when queried (and any joins)</li>
 				<li>
-					Thin command handler + register typed result (<code>Fact</code> or
+					Thin command handler + register typed result (<code>Causal</code> or
 					<code>Projected</code>) + effects/confirmations as needed
 				</li>
 				<li>Projector — or SurfaceDirectProjection for Projected models</li>

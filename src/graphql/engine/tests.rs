@@ -75,7 +75,7 @@ mod client_surface_parity_tests {
             output: O::graphql_type().with_type_id(TypeId::of::<O>()),
             input_type_id: TypeId::of::<I>(),
             output_type_id: TypeId::of::<O>(),
-            consistency: CommandConsistency::Accepted,
+            consistency: CommandConsistency::Succeeded,
             input_defaults: Vec::new(),
             effects: CommandEffects::revalidate(),
             confirmations: Vec::new(),

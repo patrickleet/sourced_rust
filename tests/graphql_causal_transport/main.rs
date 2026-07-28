@@ -5,7 +5,7 @@ use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
 use base64::Engine as _;
 use distributed::graphql::{
-    typed_command, Accepted, GraphqlEngine, IdentityConfig, OidcConfig, PreparedCommand,
+    typed_command, GraphqlEngine, IdentityConfig, OidcConfig, PreparedCommand, Succeeded,
 };
 use distributed::microsvc::{CausalCommandContext, HandlerError, Routes, Service};
 use distributed::{
@@ -89,9 +89,9 @@ struct TransportCommandOutput {
 async fn accept_command(
     _context: &CausalCommandContext<'_, TransportAggregate>,
     input: TransportCommandInput,
-) -> Result<PreparedCommand<Accepted<TransportCommandOutput>>, HandlerError> {
+) -> Result<PreparedCommand<Succeeded<TransportCommandOutput>>, HandlerError> {
     Ok(
-        PreparedCommand::<Accepted<TransportCommandOutput>>::prepare(TransportCommandOutput {
+        PreparedCommand::<Succeeded<TransportCommandOutput>>::prepare(TransportCommandOutput {
             id: input.id,
         })
         .expect("the fixture output is JSON-serializable"),
@@ -102,15 +102,19 @@ fn causal_service() -> Service {
     let routes: Routes<AggregateRepository<InMemoryRepository, TransportAggregate>> = Routes::new()
         .with_repo(AggregateRepository::new(InMemoryRepository::new()))
         .typed_command(
-            typed_command::<TransportCommandInput, Accepted<TransportCommandOutput>>("todo.create")
-                .roles(["writer"]),
+            typed_command::<TransportCommandInput, Succeeded<TransportCommandOutput>>(
+                "todo.create",
+            )
+            .roles(["writer"]),
         )
         .handle(accept_command)
         // Keep commandStatus present on the downgraded role's schema while
         // withholding the target command's current grant.
         .typed_command(
-            typed_command::<TransportCommandInput, Accepted<TransportCommandOutput>>("reader.ping")
-                .roles(["reader"]),
+            typed_command::<TransportCommandInput, Succeeded<TransportCommandOutput>>(
+                "reader.ping",
+            )
+            .roles(["reader"]),
         )
         .handle(accept_command);
     Service::new().named(SERVICE_ID).routes(routes)
@@ -434,8 +438,8 @@ async fn causal_receipt_status_replay_and_nonenumeration_match_http_and_ws() {
     );
     let receipt = &distributed_envelope(&http_mutation)["command"];
     assert_eq!(receipt["commandId"], TARGET_COMMAND_ID);
-    assert_eq!(receipt["state"], "accepted");
-    assert_eq!(receipt["consistency"], "accepted");
+    assert_eq!(receipt["state"], "succeeded");
+    assert_eq!(receipt["consistency"], "succeeded");
     assert_eq!(receipt["expects"], json!([]));
     assert!(
         receipt["causationId"]
@@ -450,7 +454,7 @@ async fn causal_receipt_status_replay_and_nonenumeration_match_http_and_ws() {
         assert_http_ws_status_pair(&server, &writer_a, TARGET_COMMAND_ID).await;
     assert_eq!(
         http_status["data"],
-        json!({ "commandStatus": { "state": "accepted" } }),
+        json!({ "commandStatus": { "state": "succeeded" } }),
         "status data stays intentionally minimal"
     );
     assert_eq!(http_status["data"], ws_status["data"]);
@@ -522,7 +526,7 @@ async fn expired_command_status_is_typed_and_transport_independent() {
     .await;
     assert_eq!(
         distributed_envelope(&accepted)["command"]["state"],
-        "accepted"
+        "succeeded"
     );
 
     tokio::time::sleep(Duration::from_millis(150)).await;

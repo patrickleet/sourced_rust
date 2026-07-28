@@ -178,7 +178,7 @@ const commandArtifact = Object.freeze({
 			])
 		})
 	}),
-	consistency: 'fact',
+	consistency: 'causal',
 	effects: Object.freeze({
 		version: 1,
 		operations: Object.freeze([
@@ -290,7 +290,7 @@ test('default snapshots redact identities, arguments, field values, and scope ma
 			receipts: Object.freeze([
 				Object.freeze({
 					commandId: 'private-command-id',
-					state: 'accepted_pending_projection',
+					state: 'succeeded_pending_projection',
 					expectations: Object.freeze([
 						Object.freeze({
 							projection: 'todos',
@@ -594,8 +594,8 @@ test('replica integration exposes structural normalization, index, layer, receip
 	replica.markOptimisticLayerAccepted('command-private-a', {
 		commandId: 'command-private-a',
 		causationId: 'private-causation',
-		state: 'accepted_pending_projection',
-		consistency: 'fact',
+		state: 'succeeded_pending_projection',
+		consistency: 'causal',
 		expects: [
 			{
 				projection: 'todos',
@@ -609,9 +609,9 @@ test('replica integration exposes structural normalization, index, layer, receip
 	const acceptedReceipt = diagnostics
 		.snapshot()
 		.receipts.find(
-			(receipt) => receipt.state === 'accepted_pending_projection'
+			(receipt) => receipt.state === 'succeeded_pending_projection'
 		);
-	assert.equal(acceptedReceipt?.state, 'accepted_pending_projection');
+	assert.equal(acceptedReceipt?.state, 'succeeded_pending_projection');
 	assert.equal(acceptedReceipt?.expectations[0].projection, 'todos');
 	replica.rejectOptimisticLayer('command-private-a');
 	replica.gc();

@@ -73,8 +73,8 @@ export function validateArtifact<TInput, TOutput>(
 	if (artifact.output.kind === 'none') artifactInvalid('artifact.output.kind');
 	validateDefaults(artifact.input, artifact.inputDefaults);
 	if (
-		artifact.consistency !== 'accepted' &&
-		artifact.consistency !== 'fact' &&
+		artifact.consistency !== 'succeeded' &&
+		artifact.consistency !== 'causal' &&
 		artifact.consistency !== 'projected'
 	) {
 		artifactInvalid('artifact.consistency');
@@ -327,7 +327,7 @@ export function validateConfirmations<TInput, TOutput>(
 ): void {
 	const confirmations = artifact.confirmations;
 	if (confirmations === undefined) {
-		if (artifact.consistency === 'fact') {
+		if (artifact.consistency === 'causal') {
 			artifactInvalid('artifact.confirmations');
 		}
 		return;
@@ -636,4 +636,3 @@ export function validateArtifactJson(
 	}
 	active.delete(value);
 }
-
