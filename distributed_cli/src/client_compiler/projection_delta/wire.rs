@@ -818,6 +818,22 @@ mod tests {
     }
 
     #[test]
+    fn projection_delta_f64_notation_matches_serde_json_ryu() {
+        let canonical = |value: f64| {
+            serde_json::Number::from_f64(value)
+                .expect("test values are finite")
+                .to_string()
+        };
+        assert_eq!(canonical(1.0), "1.0");
+        assert_eq!(canonical(1.5), "1.5");
+        assert_eq!(canonical(1e20), "1e+20");
+        assert_eq!(canonical(1e-6), "1e-6");
+        assert_eq!(canonical(1e-5), "0.00001");
+        assert_eq!(canonical(1e15), "1000000000000000.0");
+        assert_eq!(canonical(1e16), "1e+16");
+    }
+
+    #[test]
     fn projection_delta_wire_rejects_unknown_fields_and_versions() {
         let file = include_bytes!("../../../../tests/fixtures/projection-delta-v1.json");
         let canonical = file.strip_suffix(b"\n").unwrap();

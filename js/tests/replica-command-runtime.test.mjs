@@ -71,6 +71,12 @@ function scope(value) {
 function projection(operation = 'upsert') {
 	const event = Object.freeze({ id: 'event-1', name: 'todo.changed', version: 1 });
 	const previewScope = scope(input(['id']));
+	const targetScope = scope(
+		Object.freeze({
+			kind: 'constant',
+			value: Object.freeze({ type: 'string', value: 'target' })
+		})
+	);
 	let mutation;
 	if (operation === 'upsert') {
 		mutation = Object.freeze({
@@ -91,9 +97,67 @@ function projection(operation = 'upsert') {
 			unset: Object.freeze([]),
 			if_present: true
 		});
-	} else {
+	} else if (operation === 'delete') {
 		mutation = Object.freeze({ op: 'delete', scope: previewScope });
+	} else if (operation === 'link' || operation === 'unlink') {
+		mutation = Object.freeze({
+			op: operation,
+			relationship: 'related',
+			source: previewScope,
+			target: targetScope
+		});
+	} else if (operation === 'invalidate_model') {
+		mutation = Object.freeze({
+			op: 'invalidate_model',
+			partition: unit,
+			model: Todo.id
+		});
+	} else {
+		mutation = Object.freeze({
+			op: 'invalidate_relationship',
+			relationship: 'related',
+			source: previewScope
+		});
 	}
+	const capability =
+		operation === 'link' || operation === 'unlink'
+			? Object.freeze({
+					kind: 'relationship',
+					relationship: 'related',
+					source_model: Todo.id,
+					source_key: Object.freeze(['id']),
+					target_model: Todo.id,
+					target_key: Object.freeze(['id']),
+					link: operation === 'link',
+					unlink: operation === 'unlink'
+				})
+			: operation === 'invalidate_model'
+				? Object.freeze({ kind: 'model', model: Todo.id })
+				: operation === 'invalidate_relationship'
+					? Object.freeze({
+							kind: 'relationship',
+							relationship: 'related',
+							source_model: Todo.id,
+							source_key: Object.freeze(['id']),
+							target_model: Todo.id,
+							target_key: Object.freeze(['id']),
+							link: false,
+							unlink: false
+						})
+					: Object.freeze({
+							kind: 'record',
+							model: Todo.id,
+							key: Object.freeze(['id']),
+							fields: Object.freeze(
+								operation === 'delete' ? [] : ['title']
+							),
+							replace: Object.freeze(
+								operation === 'upsert' ? ['title'] : []
+							),
+							upsert: operation === 'upsert',
+							patch: operation === 'patch',
+							delete: operation === 'delete'
+						});
 	return Object.freeze({
 		version: 2,
 		deltaWireVersion: 1,
@@ -109,6 +173,18 @@ function projection(operation = 'upsert') {
 			})
 		]),
 		eventSet: Object.freeze([event]),
+		capabilities: Object.freeze({
+			version: 1,
+			arms: Object.freeze([
+				Object.freeze({
+					event,
+					projection_ref: 0,
+					arm: `todo_${operation}`,
+					partition: unit,
+					mutations: Object.freeze([capability])
+				})
+			])
+		}),
 		preview: Object.freeze({
 			version: 1,
 			occurrences: Object.freeze([
@@ -156,7 +232,19 @@ function artifact(options = {}) {
 			required: options.revalidate ?? false,
 			dependencies: Object.freeze(['todos']),
 			models: Object.freeze([Todo.id]),
-			relationships: Object.freeze([])
+			relationships: Object.freeze(
+				operation === 'link' ||
+					operation === 'unlink' ||
+					operation === 'invalidate_relationship'
+					? [
+							Object.freeze({
+								sourceModel: Todo.id,
+								field: 'related',
+								targetModel: Todo.id
+							})
+						]
+					: []
+			)
 		})
 	});
 }
@@ -200,7 +288,23 @@ function deltaMutation(request, options = {}) {
 			if_present: true
 		};
 	}
-	return { op: 'delete', scope: actualScope };
+	if (operation === 'delete') return { op: 'delete', scope: actualScope };
+	if (operation === 'link' || operation === 'unlink') {
+		return {
+			op: operation,
+			relationship: 'related',
+			source: actualScope,
+			target: scope({ type: 'string', value: 'target' })
+		};
+	}
+	if (operation === 'invalidate_model') {
+		return { op: 'invalidate_model', partition: unit, model: Todo.id };
+	}
+	return {
+		op: 'invalidate_relationship',
+		relationship: 'related',
+		source: actualScope
+	};
 }
 
 function commandMetadata(request, options = {}) {
@@ -221,7 +325,7 @@ function commandMetadata(request, options = {}) {
 		{ length: options.obligations ?? 1 },
 		(_, index) => ({
 			projectionRef: 0,
-			model: Todo.id,
+			model: options.obligationModel ?? Todo.id,
 			scopeToken: token('projection-obligation', index + 3)
 		})
 	);
@@ -292,6 +396,7 @@ function envelope(request, options = {}) {
 		commandMetadata(request, options);
 	return {
 		status: 200,
+		...(options.errors === undefined ? {} : { errors: options.errors }),
 		data:
 			options.data ??
 			{ [request.mutationField]: { ok: true } },
@@ -351,6 +456,10 @@ class TestReplica {
 	revalidations = [];
 	replacements = [];
 	direct = [];
+	semanticChanges = [];
+	acceptances = 0;
+	confirmations = 0;
+	rejections = 0;
 	#controller = new AbortController();
 
 	[replicaCommandAuthority]() {
@@ -365,7 +474,8 @@ class TestReplica {
 		});
 	}
 
-	createOptimisticLayer(id, update) {
+	createOptimisticLayer(id, update, semanticChanges = []) {
+		this.semanticChanges.push(...semanticChanges);
 		this.engine.createOptimisticLayer(id, (writer) =>
 			update(replicaWriter(writer))
 		);
@@ -391,14 +501,17 @@ class TestReplica {
 	}
 
 	markOptimisticLayerAccepted(id) {
+		this.acceptances += 1;
 		return this.engine.markOptimisticLayerAccepted(id);
 	}
 
 	confirmOptimisticLayer(id, update) {
+		this.confirmations += 1;
 		return this.engine.confirmOptimisticLayer(id, update);
 	}
 
 	rejectOptimisticLayer(id) {
+		this.rejections += 1;
 		return this.engine.rejectOptimisticLayer(id);
 	}
 
@@ -658,6 +771,203 @@ test('status replay is idempotent only for byte-identical actual metadata', asyn
 	runtime.dispose();
 });
 
+test('status causation is validated before actual delta mutation and rolls back preview', async () => {
+	const replica = new TestReplica();
+	const runtime = createReplicaCommandRuntime(
+		replica,
+		{
+			dispatch: (request) =>
+				Promise.resolve(
+					envelope(request, {
+						command: commandMetadata(request, {
+							state: 'in_progress',
+							projection: false
+						})
+					})
+				),
+			status(request) {
+				const commandRequest = {
+					commandId: request.commandId,
+					mutationField: 'changeTodo',
+					operationHash: HASH_A,
+					variables: { input: { id: 'todo-1', title: 'preview' } }
+				};
+				return Promise.resolve(
+					statusEnvelope(
+						request,
+						commandMetadata(commandRequest, {
+							causationId: 'cause:wrong',
+							actualTitle: 'must-not-apply'
+						})
+					)
+				);
+			}
+		},
+		{ change: artifact() },
+		{ status: STATUS }
+	);
+	let recovery;
+	await assert.rejects(
+		runtime.commands.change(
+			{ id: 'todo-1', title: 'preview' },
+			{ commandId: COMMAND_A }
+		),
+		(error) => {
+			recovery = error.recovery;
+			return error.code === 'REPLICA_COMMAND_OUTCOME_PENDING';
+		}
+	);
+	await assert.rejects(recovery.status(), {
+		code: 'REPLICA_COMMAND_PROTOCOL_INVALID'
+	});
+	assert.equal(replica.record('todo-1'), undefined);
+	assert.equal(replica.replacements.length, 0);
+	runtime.dispose();
+});
+
+test('live causation is validated before actual delta mutation and rejects its layer', async () => {
+	const replica = new TestReplica();
+	let request;
+	const runtime = createReplicaCommandRuntime(
+		replica,
+		{
+			dispatch(candidate) {
+				request = candidate;
+				return Promise.resolve(envelope(candidate, { actualTitle: 'accepted' }));
+			}
+		},
+		{ change: artifact() }
+	);
+	const receipt = await runtime.commands.change(
+		{ id: 'todo-1', title: 'preview' },
+		{ commandId: COMMAND_A }
+	);
+	const projected = assert.rejects(receipt.projected, {
+		code: 'REPLICA_COMMAND_PROTOCOL_INVALID'
+	});
+	runtime.observeResult({
+		extensions: envelope(request, {
+			causationId: 'cause:wrong',
+			actualTitle: 'must-not-apply'
+		}).extensions
+	});
+	await projected;
+	assert.equal(replica.record('todo-1'), undefined);
+	assert.equal(replica.replacements.length, 1);
+	runtime.dispose();
+});
+
+test('terminal live deltas never replace optimism before rollback', async () => {
+	const replica = new TestReplica();
+	let request;
+	const runtime = createReplicaCommandRuntime(
+		replica,
+		{
+			dispatch(candidate) {
+				request = candidate;
+				return Promise.resolve(envelope(candidate, { actualTitle: 'accepted' }));
+			}
+		},
+		{ change: artifact() }
+	);
+	const receipt = await runtime.commands.change(
+		{ id: 'todo-1', title: 'preview' },
+		{ commandId: COMMAND_A }
+	);
+	const projected = assert.rejects(receipt.projected, {
+		code: 'REPLICA_COMMAND_PROJECTION_FAILED'
+	});
+	runtime.observeResult({
+		extensions: envelope(request, {
+			state: 'projection_failed',
+			actualTitle: 'must-not-apply'
+		}).extensions
+	});
+	await projected;
+	assert.equal(replica.record('todo-1'), undefined);
+	assert.equal(replica.replacements.length, 1);
+	runtime.dispose();
+});
+
+test('an allowed unpreviewed event arm can authoritatively replace the preview', async () => {
+	const modeled = structuredClone(artifact());
+	const event = { id: 'event-2', name: 'todo.corrected', version: 1 };
+	modeled.projection.eventSet.push(event);
+	modeled.projection.capabilities.arms.push({
+		event,
+		projection_ref: 0,
+		arm: 'todo_patch',
+		partition: { kind: 'unit' },
+		mutations: [
+			{
+				kind: 'record',
+				model: Todo.id,
+				key: ['id'],
+				fields: ['title'],
+				replace: [],
+				upsert: false,
+				patch: true,
+				delete: false
+			}
+		]
+	});
+	const replica = new TestReplica();
+	replica.engine.batch((writer) =>
+		writer.writeRecord({
+			key: replicaRecordKey(Todo, ['todo-1']),
+			revision: 1,
+			fields: { __typename: Todo.id, id: 'todo-1', title: 'base' }
+		})
+	);
+	const runtime = createReplicaCommandRuntime(
+		replica,
+		{
+			dispatch: (request) =>
+				Promise.resolve(
+					envelope(request, {
+						operation: 'patch',
+						actualTitle: 'server-correction'
+					})
+				)
+		},
+		{ change: modeled }
+	);
+	await runtime.commands.change(
+		{ id: 'todo-1', title: 'preview' },
+		{ commandId: COMMAND_A }
+	);
+	assert.equal(replica.record('todo-1').fields.title, 'server-correction');
+	assert.equal(replica.replacements.length, 1);
+	runtime.dispose();
+});
+
+test('actual deltas outside every selected-arm capability fail closed', async () => {
+	const replica = new TestReplica();
+	const runtime = createReplicaCommandRuntime(
+		replica,
+		{
+			dispatch: (request) =>
+				Promise.resolve(
+					envelope(request, {
+						operation: 'patch',
+						actualTitle: 'forged'
+					})
+				)
+		},
+		{ change: artifact() }
+	);
+	await assert.rejects(
+		runtime.commands.change(
+			{ id: 'todo-1', title: 'preview' },
+			{ commandId: COMMAND_A }
+		),
+		{ code: 'REPLICA_COMMAND_PROTOCOL_INVALID' }
+	);
+	assert.equal(replica.record('todo-1'), undefined);
+	assert.equal(replica.replacements.length, 0);
+	runtime.dispose();
+});
+
 test('surface, digest, scope, causation, and expiry mismatches fail before mutation', async () => {
 	for (const override of [
 		{ surface: { kind: 'role', name: 'admin' } },
@@ -865,3 +1175,669 @@ test('pre-abort and disposal cancel work without leaking optimistic layers', asy
 	await assert.rejects(inFlight, { code: 'REPLICA_COMMAND_DISPOSED' });
 	assert.equal(replica.layer(COMMAND_B), undefined);
 });
+
+for (const operation of [
+	'link',
+	'unlink',
+	'invalidate_model',
+	'invalidate_relationship'
+]) {
+	test(`${operation} remains a semantic projection change`, async () => {
+		const replica = new TestReplica();
+		const runtime = createReplicaCommandRuntime(
+			replica,
+			{
+				dispatch: (request) =>
+					Promise.resolve(
+						envelope(request, {
+							operation,
+							...(
+								operation === 'invalidate_model' ||
+								operation === 'invalidate_relationship'
+									? { obligations: 0 }
+									: {}
+							)
+						})
+					)
+			},
+			{
+				change: artifact({
+					name: `todo.${operation}`,
+					operation
+				})
+			}
+		);
+		await runtime.commands.change(
+			{ id: 'todo-1', title: 'unused' },
+			{ commandId: COMMAND_A }
+		);
+		assert.deepEqual(
+			replica.semanticChanges.map(({ kind }) => kind),
+			[
+				operation === 'link' || operation === 'unlink'
+					? operation
+					: 'invalidate'
+			]
+		);
+		assert.equal(replica.record('todo-1'), undefined);
+		runtime.dispose();
+	});
+}
+
+test('transport retries reuse one frozen prepared command unit', async () => {
+	const replica = new TestReplica();
+	const requests = [];
+	const runtime = createReplicaCommandRuntime(
+		replica,
+		{
+			dispatch(request) {
+				requests.push(request);
+				if (requests.length === 1) return Promise.reject(new Error('retry'));
+				return Promise.resolve(envelope(request));
+			}
+		},
+		{ change: artifact() }
+	);
+	await runtime.commands.change(
+		{ id: 'todo-1', title: 'once' },
+		{ commandId: COMMAND_A, transportRetries: 1 }
+	);
+	assert.equal(requests.length, 2);
+	assert.equal(requests[0].commandId, requests[1].commandId);
+	assert.equal(requests[0].variables, requests[1].variables);
+	assert.equal(replica.semanticChanges.length, 0);
+	runtime.dispose();
+});
+
+test('generated status reads coalesce while one exact read is in flight', async () => {
+	const replica = new TestReplica();
+	const statusResult = deferred();
+	let statusCalls = 0;
+	let metadata;
+	const runtime = createReplicaCommandRuntime(
+		replica,
+		{
+			dispatch(request) {
+				metadata = commandMetadata(request);
+				return Promise.resolve(envelope(request, { command: metadata }));
+			},
+			status(request) {
+				statusCalls += 1;
+				return statusResult.promise.then(() =>
+					statusEnvelope(request, metadata)
+				);
+			}
+		},
+		{ change: artifact() },
+		{ status: STATUS }
+	);
+	const receipt = await runtime.commands.change(
+		{ id: 'todo-1', title: 'accepted' },
+		{ commandId: COMMAND_A }
+	);
+	const first = receipt.status();
+	const second = receipt.status();
+	assert.equal(first, second);
+	assert.equal(statusCalls, 1);
+	statusResult.resolve();
+	assert.equal((await first).state, 'succeeded_pending_projection');
+	runtime.dispose();
+});
+
+test('ambiguous dispatch exposes generated recovery and retains optimism', async () => {
+	const replica = new TestReplica();
+	const runtime = createReplicaCommandRuntime(
+		replica,
+		{
+			dispatch: () => Promise.reject(new Error('ambiguous')),
+			status: () => Promise.reject(new Error('not read'))
+		},
+		{ change: artifact() },
+		{ status: STATUS }
+	);
+	let recovery;
+	await assert.rejects(
+		runtime.commands.change(
+			{ id: 'todo-1', title: 'preview' },
+			{ commandId: COMMAND_A }
+		),
+		(error) => {
+			recovery = error.recovery;
+			return error.code === 'REPLICA_COMMAND_TRANSPORT_AMBIGUOUS';
+		}
+	);
+	assert.equal(typeof recovery.status, 'function');
+	assert.equal(replica.layer(COMMAND_A), 'optimistic');
+	runtime.dispose();
+});
+
+test('terminal status rolls back only its tracked optimistic layer', async () => {
+	const replica = new TestReplica();
+	const runtime = createReplicaCommandRuntime(
+		replica,
+		{
+			dispatch: (request) =>
+				Promise.resolve(
+					envelope(request, {
+						command: commandMetadata(request, {
+							state: 'in_progress',
+							projection: false
+						})
+					})
+				),
+			status(request) {
+				const commandRequest = {
+					commandId: request.commandId,
+					mutationField: 'changeTodo',
+					operationHash: HASH_A,
+					variables: { input: { id: 'todo-1', title: 'preview' } }
+				};
+				return Promise.resolve(
+					statusEnvelope(
+						request,
+						commandMetadata(commandRequest, { state: 'rejected' })
+					)
+				);
+			}
+		},
+		{ change: artifact() },
+		{ status: STATUS }
+	);
+	let recovery;
+	await assert.rejects(
+		runtime.commands.change(
+			{ id: 'todo-1', title: 'preview' },
+			{ commandId: COMMAND_A }
+		),
+		(error) => {
+			recovery = error.recovery;
+			return error.code === 'REPLICA_COMMAND_OUTCOME_PENDING';
+		}
+	);
+	assert.equal((await recovery.status()).state, 'rejected');
+	assert.equal(replica.layer(COMMAND_A), undefined);
+	runtime.dispose();
+});
+
+test('caller abort after acceptance only bounds its projected awaitable', async () => {
+	const replica = new TestReplica();
+	const caller = new AbortController();
+	const runtime = createReplicaCommandRuntime(
+		replica,
+		{ dispatch: (request) => Promise.resolve(envelope(request)) },
+		{ change: artifact() }
+	);
+	const receipt = await runtime.commands.change(
+		{ id: 'todo-1', title: 'accepted' },
+		{ commandId: COMMAND_A, signal: caller.signal }
+	);
+	caller.abort(new Error('caller stopped waiting'));
+	await assert.rejects(receipt.projected, {
+		code: 'REPLICA_COMMAND_ABORTED'
+	});
+	assert.equal(replica.layer(COMMAND_A), 'accepted');
+	runtime.dispose();
+});
+
+test('required revalidation requires a replica coordinator at construction', () => {
+	const replica = new TestReplica();
+	replica.revalidate = undefined;
+	assert.throws(
+		() =>
+			createReplicaCommandRuntime(
+				replica,
+				{ dispatch: () => Promise.reject(new Error('unused')) },
+				{
+					change: artifact({
+						modeled: false,
+						revalidate: true
+					})
+				}
+			),
+		/generated command revalidation plan/
+	);
+});
+
+test('generated status artifacts require a status transport at construction', () => {
+	const replica = new TestReplica();
+	assert.throws(
+		() =>
+			createReplicaCommandRuntime(
+				replica,
+				{ dispatch: () => Promise.reject(new Error('unused')) },
+				{ change: artifact() },
+				{ status: STATUS }
+			),
+		/requires transport.status/
+	);
+});
+
+test('disposing aborts an in-flight generated status read', async () => {
+	const replica = new TestReplica();
+	const statusResult = deferred();
+	let metadata;
+	const runtime = createReplicaCommandRuntime(
+		replica,
+		{
+			dispatch(request) {
+				metadata = commandMetadata(request);
+				return Promise.resolve(envelope(request, { command: metadata }));
+			},
+			status: () => statusResult.promise
+		},
+		{ change: artifact() },
+		{ status: STATUS }
+	);
+	const receipt = await runtime.commands.change(
+		{ id: 'todo-1', title: 'accepted' },
+		{ commandId: COMMAND_A }
+	);
+	const status = receipt.status();
+	runtime.dispose();
+	await assert.rejects(status, { code: 'REPLICA_COMMAND_DISPOSED' });
+	assert.equal(replica.layer(COMMAND_A), undefined);
+});
+
+test('authority invalidation aborts an in-flight generated status read', async () => {
+	const replica = new TestReplica();
+	const statusResult = deferred();
+	const runtime = createReplicaCommandRuntime(
+		replica,
+		{
+			dispatch: (request) => Promise.resolve(envelope(request)),
+			status: () => statusResult.promise
+		},
+		{ change: artifact() },
+		{ status: STATUS }
+	);
+	const receipt = await runtime.commands.change(
+		{ id: 'todo-1', title: 'accepted' },
+		{ commandId: COMMAND_A }
+	);
+	const status = receipt.status();
+	replica.invalidate();
+	await assert.rejects(status, {
+		code: 'REPLICA_COMMAND_SCOPE_INVALIDATED'
+	});
+	runtime.dispose();
+});
+
+test('a throwing background reporter cannot reject successful command work', async () => {
+	const replica = new TestReplica();
+	replica.revalidate = () => Promise.reject(new Error('refresh failed'));
+	const runtime = createReplicaCommandRuntime(
+		replica,
+		{
+			dispatch: (request) =>
+				Promise.resolve(envelope(request, { obligations: 0 }))
+		},
+		{ change: artifact() },
+		{
+			onBackgroundError() {
+				throw new Error('reporter failed');
+			}
+		}
+	);
+	const receipt = await runtime.commands.change(
+		{ id: 'todo-1', title: 'accepted' },
+		{ commandId: COMMAND_A }
+	);
+	assert.equal(receipt.state, 'succeeded_pending_projection');
+	await tick();
+	runtime.dispose();
+});
+
+test('dotted generated names become deeply frozen command namespaces', () => {
+	const replica = new TestReplica();
+	const runtime = createReplicaCommandRuntime(
+		replica,
+		{ dispatch: () => Promise.reject(new Error('unused')) },
+		{
+			'todos.create': artifact({ name: 'todos.create' }),
+			'todos.admin.remove': artifact({
+				name: 'todos.admin.remove',
+				operation: 'delete'
+			})
+		}
+	);
+	assert.equal(typeof runtime.commands.todos.create, 'function');
+	assert.equal(typeof runtime.commands.todos.admin.remove, 'function');
+	assert.equal(Object.isFrozen(runtime.commands.todos.admin), true);
+	assert.equal(Object.isFrozen(runtime.commands.todos), true);
+	runtime.dispose();
+});
+
+test('generated command namespaces reject prefix collisions', () => {
+	const replica = new TestReplica();
+	assert.throws(() =>
+		createReplicaCommandRuntime(
+			replica,
+			{ dispatch: () => Promise.reject(new Error('unused')) },
+			{
+				todos: artifact({ name: 'todos' }),
+				'todos.create': artifact({ name: 'todos.create' })
+			}
+		)
+	);
+});
+
+test('post-dispatch protocol failure retains recovery while rolling back its layer', async () => {
+	const replica = new TestReplica();
+	const runtime = createReplicaCommandRuntime(
+		replica,
+		{
+			dispatch: (request) =>
+				Promise.resolve(
+					envelope(request, {
+						command: commandMetadata(request, {
+							bindingId: `pb1:sha256:${'9'.repeat(64)}`
+						})
+					})
+				),
+			status: () => Promise.reject(new Error('unused'))
+		},
+		{ change: artifact() },
+		{ status: STATUS }
+	);
+	await assert.rejects(
+		runtime.commands.change(
+			{ id: 'todo-1', title: 'preview' },
+			{ commandId: COMMAND_A }
+		),
+		(error) =>
+			error.code === 'REPLICA_COMMAND_PROTOCOL_INVALID' &&
+			typeof error.recovery?.status === 'function'
+	);
+	assert.equal(replica.layer(COMMAND_A), undefined);
+	runtime.dispose();
+});
+
+for (const state of ['projection_failed', 'expired']) {
+	test(`${state} dispatch rolls back optimism and requests canonical recovery`, async () => {
+		const replica = new TestReplica();
+		const runtime = createReplicaCommandRuntime(
+			replica,
+			{
+				dispatch: (request) =>
+					Promise.resolve(envelope(request, { state }))
+			},
+			{ change: artifact() }
+		);
+		await assert.rejects(
+			runtime.commands.change(
+				{ id: 'todo-1', title: 'preview' },
+				{ commandId: COMMAND_A }
+			),
+			{ code: 'REPLICA_COMMAND_PROJECTION_FAILED' }
+		);
+		assert.equal(replica.layer(COMMAND_A), undefined);
+		assert.equal(replica.revalidations.length, 1);
+		runtime.dispose();
+	});
+}
+
+test('GraphQL errors attached to a successful command receipt fail closed', async () => {
+	const replica = new TestReplica();
+	const runtime = createReplicaCommandRuntime(
+		replica,
+		{
+			dispatch: (request) =>
+				Promise.resolve(
+					envelope(request, {
+						errors: [{ message: 'unexpected resolver error' }]
+					})
+				)
+		},
+		{ change: artifact() }
+	);
+	await assert.rejects(
+		runtime.commands.change(
+			{ id: 'todo-1', title: 'preview' },
+			{ commandId: COMMAND_A }
+		),
+		{ code: 'REPLICA_COMMAND_PROTOCOL_INVALID' }
+	);
+	assert.equal(replica.layer(COMMAND_A), undefined);
+	runtime.dispose();
+});
+
+test('malformed command output rolls back its optimistic layer', async () => {
+	const replica = new TestReplica();
+	const runtime = createReplicaCommandRuntime(
+		replica,
+		{
+			dispatch: (request) =>
+				Promise.resolve(envelope(request, { data: { changeTodo: null } }))
+		},
+		{ change: artifact() }
+	);
+	await assert.rejects(
+		runtime.commands.change(
+			{ id: 'todo-1', title: 'preview' },
+			{ commandId: COMMAND_A }
+		),
+		{ code: 'REPLICA_COMMAND_PROTOCOL_INVALID' }
+	);
+	assert.equal(replica.layer(COMMAND_A), undefined);
+	runtime.dispose();
+});
+
+test('onSucceeded failures are reported without changing a valid receipt', async () => {
+	const replica = new TestReplica();
+	const reported = [];
+	const runtime = createReplicaCommandRuntime(
+		replica,
+		{ dispatch: (request) => Promise.resolve(envelope(request)) },
+		{ change: artifact() },
+		{ onBackgroundError: (error) => reported.push(error) }
+	);
+	const receipt = await runtime.commands.change(
+		{ id: 'todo-1', title: 'accepted' },
+		{
+			commandId: COMMAND_A,
+			onSucceeded() {
+				throw new Error('observer failed');
+			}
+		}
+	);
+	assert.equal(receipt.commandId, COMMAND_A);
+	assert.equal(reported.length, 1);
+	runtime.dispose();
+});
+
+test('disposing an accepted command rejects its causal lifecycle and layer', async () => {
+	const replica = new TestReplica();
+	const runtime = createReplicaCommandRuntime(
+		replica,
+		{ dispatch: (request) => Promise.resolve(envelope(request)) },
+		{ change: artifact() }
+	);
+	const receipt = await runtime.commands.change(
+		{ id: 'todo-1', title: 'accepted' },
+		{ commandId: COMMAND_A }
+	);
+	const projected = assert.rejects(receipt.projected, {
+		code: 'REPLICA_COMMAND_DISPOSED'
+	});
+	runtime.dispose();
+	await projected;
+	assert.equal(replica.layer(COMMAND_A), undefined);
+});
+
+test('commands fail before optimism when no authoritative scope is available', async () => {
+	const replica = new TestReplica();
+	replica.scope = undefined;
+	const runtime = createReplicaCommandRuntime(
+		replica,
+		{ dispatch: () => Promise.reject(new Error('must not dispatch')) },
+		{ change: artifact() }
+	);
+	await assert.rejects(
+		runtime.commands.change(
+			{ id: 'todo-1', title: 'preview' },
+			{ commandId: COMMAND_A }
+		),
+		{ code: 'REPLICA_COMMAND_AUTHORITY_UNAVAILABLE' }
+	);
+	assert.equal(replica.layer(COMMAND_A), undefined);
+	runtime.dispose();
+});
+
+for (const scenario of ['older-row', 'newer-row', 'newer-tombstone']) {
+	test(`Projected direct path fences ${scenario}`, async () => {
+		const { replica, runtime } = await directProjectionRuntime();
+		replica.engine.batch((writer) => {
+			if (scenario === 'newer-tombstone') {
+				writer.tombstoneRecord(
+					replicaRecordKey(Todo, ['todo-1']),
+					'3'
+				);
+				return;
+			}
+			writer.writeRecord({
+				key: replicaRecordKey(Todo, ['todo-1']),
+				revision: scenario === 'older-row' ? '1' : '3',
+				fields: {
+					__typename: Todo.id,
+					id: 'todo-1',
+					title: scenario
+				}
+			});
+		});
+		const record = replica.record('todo-1');
+		if (scenario === 'older-row') {
+			assert.equal(record.fields.title, 'canonical');
+		} else if (scenario === 'newer-row') {
+			assert.equal(record.fields.title, 'newer-row');
+		} else {
+			assert.equal(record, undefined);
+		}
+		runtime.dispose();
+	});
+}
+
+test('link obligations may name any server-selected affected model', async () => {
+	const replica = new TestReplica();
+	const runtime = createReplicaCommandRuntime(
+		replica,
+		{
+			dispatch: (request) =>
+				Promise.resolve(
+					envelope(request, {
+						operation: 'link',
+						obligationModel: 'RelationshipSummary'
+					})
+				)
+		},
+		{
+			change: artifact({
+				name: 'todo.link',
+				operation: 'link'
+			})
+		}
+	);
+	const receipt = await runtime.commands.change(
+		{ id: 'todo-1', title: 'unused' },
+		{ commandId: COMMAND_A }
+	);
+	assert.equal(
+		receipt.metadata.projection.obligations[0].model,
+		'RelationshipSummary'
+	);
+	runtime.dispose();
+});
+
+test('ambiguous selected-arm capabilities fail before actual mutation', async () => {
+	const modeled = structuredClone(artifact());
+	const event = { id: 'event-2', name: 'todo.duplicated', version: 1 };
+	modeled.projection.eventSet.push(event);
+	modeled.projection.capabilities.arms.push({
+		...structuredClone(modeled.projection.capabilities.arms[0]),
+		event,
+		arm: 'todo_upsert_duplicate'
+	});
+	const replica = new TestReplica();
+	const runtime = createReplicaCommandRuntime(
+		replica,
+		{ dispatch: (request) => Promise.resolve(envelope(request)) },
+		{ change: modeled }
+	);
+	await assert.rejects(
+		runtime.commands.change(
+			{ id: 'todo-1', title: 'preview' },
+			{ commandId: COMMAND_A }
+		),
+		{ code: 'REPLICA_COMMAND_PROTOCOL_INVALID' }
+	);
+	assert.equal(replica.replacements.length, 0);
+	assert.equal(replica.record('todo-1'), undefined);
+	runtime.dispose();
+});
+
+async function directProjectionRuntime() {
+	const replica = new TestReplica();
+	const directArtifact = Object.freeze({
+		...artifact({
+			name: 'todo.project',
+			consistency: 'projected',
+			modeled: false,
+			directProjection: Object.freeze({
+				topology: Object.freeze({
+					version: 1,
+					name: 'todos',
+					digest: HASH_D
+				}),
+				model: Todo.id,
+				identityFields: Todo.identityFields,
+				changeEpoch: 'todos-v1'
+			})
+		}),
+		output: Object.freeze({
+			kind: 'object',
+			definition: Object.freeze({
+				name: Todo.id,
+				fields: Object.freeze([scalar('id', 'ID'), scalar('title')])
+			})
+		})
+	});
+	const runtime = createReplicaCommandRuntime(
+		replica,
+		{
+			dispatch(request) {
+				return Promise.resolve(
+					envelope(request, {
+						command: {
+							commandId: request.commandId,
+							causationId: `cause:${request.commandId}`,
+							state: 'projected',
+							consistency: 'projected',
+							expects: [],
+							observations: [],
+							records: [
+								{
+									model: Todo.id,
+									scopeToken: token('record-scope', 7),
+									incarnation: '1',
+									revision: '2',
+									tombstone: false
+								}
+							]
+						},
+						data: {
+							[request.mutationField]: {
+								id: 'todo-1',
+								title: 'canonical'
+							}
+						}
+					})
+				);
+			}
+		},
+		{ project: directArtifact }
+	);
+	await runtime.commands.project(
+		{ id: 'todo-1', title: 'preview' },
+		{ commandId: COMMAND_A }
+	);
+	return { replica, runtime };
+}

@@ -1,5 +1,6 @@
 import type { GraphqlVariables } from '../../types.js';
 import type { ReplicaCommandArtifact } from '../commands.js';
+import type { ProjectionPreviewValue } from '../projection-delta/index.js';
 import type {
 	ReplicaObjectSelection,
 	ReplicaOperationArtifact,
@@ -62,23 +63,36 @@ export function inspectReplicaCommandArtifact<TInput, TOutput>(
 		if (effect.op === 'invalidate_model') models.add(effect.model);
 		if ('scope' in effect) {
 			models.add(effect.scope.model);
-			for (const field of effect.scope.key) fields.add(field.field);
+			for (const field of effect.scope.key) {
+				fields.add(field.field);
+				collectPreviewValueSources(field.value, sources);
+			}
 		}
 		if ('source' in effect) {
 			models.add(effect.source.model);
-			for (const field of effect.source.key) fields.add(field.field);
+			for (const field of effect.source.key) {
+				fields.add(field.field);
+				collectPreviewValueSources(field.value, sources);
+			}
 		}
 		if ('target' in effect) {
 			models.add(effect.target.model);
-			for (const field of effect.target.key) fields.add(field.field);
+			for (const field of effect.target.key) {
+				fields.add(field.field);
+				collectPreviewValueSources(field.value, sources);
+			}
 		}
 		if ('fields' in effect) {
 			for (const field of effect.fields) {
 				fields.add(field.field);
+				collectPreviewValueSources(field.value, sources);
 			}
 		}
 		if ('set' in effect) {
-			for (const field of effect.set) fields.add(field.field);
+			for (const field of effect.set) {
+				fields.add(field.field);
+				collectPreviewValueSources(field.value, sources);
+			}
 		}
 		return Object.freeze({
 			kind: effect.op,
@@ -101,6 +115,40 @@ export function inspectReplicaCommandArtifact<TInput, TOutput>(
 			models: Object.freeze([...artifact.revalidation.models].sort())
 		})
 	});
+}
+
+function collectPreviewValueSources(
+	value: ProjectionPreviewValue,
+	out: Set<ReplicaCommandEffectInspection['valueSources'][number]>
+): void {
+	switch (value.kind) {
+		case 'input':
+		case 'generated_default':
+			out.add('input');
+			return;
+		case 'trusted_preset':
+			out.add('trusted_preset');
+			return;
+		case 'constant':
+			out.add('constant');
+			return;
+		case 'null':
+			out.add('null');
+			return;
+		case 'list':
+			for (const item of value.values) collectPreviewValueSources(item, out);
+			return;
+		case 'object':
+			for (const field of value.fields) {
+				collectPreviewValueSources(field.value, out);
+			}
+			return;
+		case 'transform':
+			for (const argument of value.arguments) {
+				collectPreviewValueSources(argument, out);
+			}
+			return;
+	}
 }
 
 function inspectRoot(

@@ -71,7 +71,13 @@ import type {
 import {
 	operationsFromProjectionDelta,
 	validateProjectionMetadataAuthority,
+	type ProjectionCapabilityArm,
+	type ProjectionCapabilityMutation,
 	type ProjectionDelta,
+	type ProjectionDeltaMutation,
+	type ProjectionDeltaRecoveryTarget,
+	type ProjectionDeltaScope,
+	type PreparedProjectionOperation,
 	type ReplicaCommandProjection
 } from '../projection-delta/index.js';
 
@@ -79,75 +85,223 @@ function assertActualProjectionCapabilities(
 	contract: ReplicaCommandProjection,
 	delta: ProjectionDelta
 ): void {
-	for (const { mutation } of delta.operations) {
-		const matched = contract.preview.operations.some(({ mutation: preview }) => {
-			if (preview.op !== mutation.op) return false;
-			switch (mutation.op) {
-				case 'upsert':
-					return (
-						preview.op === 'upsert' &&
-						sameScopeCapability(preview.scope, mutation.scope) &&
-						sameStrings(preview.replace, mutation.replace) &&
-						sameStrings(
-							preview.fields.map(({ field }) => field),
-							mutation.fields.map(({ field }) => field)
-						)
-					);
-				case 'patch':
-					return (
-						preview.op === 'patch' &&
-						sameScopeCapability(preview.scope, mutation.scope) &&
-						sameStrings(preview.unset, mutation.unset) &&
-						sameStrings(
-							preview.set.map(({ field }) => field),
-							mutation.set.map(({ field }) => field)
-						)
-					);
-				case 'delete':
-					return (
-						preview.op === 'delete' &&
-						sameScopeCapability(preview.scope, mutation.scope)
-					);
-				case 'link':
-				case 'unlink':
-					return (
-						preview.op === mutation.op &&
-						preview.relationship === mutation.relationship &&
-						sameScopeCapability(preview.source, mutation.source) &&
-						sameScopeCapability(preview.target, mutation.target)
-					);
-				case 'invalidate_model':
-					return (
-						preview.op === 'invalidate_model' &&
-						preview.model === mutation.model &&
-						(preview.partition === undefined) ===
-							(mutation.partition === undefined)
-					);
-				case 'invalidate_relationship':
-					return (
-						preview.op === 'invalidate_relationship' &&
-						preview.relationship === mutation.relationship &&
-						sameScopeCapability(preview.source, mutation.source)
-					);
+	for (let ordinal = 0; ordinal < delta.occurrences.length; ordinal += 1) {
+		const references = new Set<number>();
+		for (const item of [...delta.operations, ...delta.recoveries]) {
+			if (item.occurrence_ordinal !== ordinal) continue;
+			for (const reference of item.projection_refs) references.add(reference);
+		}
+		let selectedEvent: ProjectionCapabilityArm['event'] | undefined;
+		for (const reference of references) {
+			const operations = delta.operations.filter(
+				(item) =>
+					item.occurrence_ordinal === ordinal &&
+					item.projection_refs.includes(reference)
+			);
+			const recoveries = delta.recoveries.filter(
+				(item) =>
+					item.occurrence_ordinal === ordinal &&
+					item.projection_refs.includes(reference)
+			);
+			const candidates = contract.capabilities.arms.filter(
+				(arm) =>
+					arm.projection_ref === reference &&
+					operations.every(({ mutation }) =>
+						capabilityAllowsMutation(arm, mutation)
+					) &&
+					recoveries.every(({ target }) =>
+						capabilityAllowsRecovery(arm, target)
+					)
+			);
+			if (candidates.length !== 1) {
+				throw new Error(
+					'actual projection delta does not identify one generated event arm'
+				);
 			}
-		});
-		if (!matched) {
-			throw new Error('actual projection delta exceeds generated capabilities');
+			const event = candidates[0]!.event;
+			if (
+				selectedEvent !== undefined &&
+				(event.id !== selectedEvent.id ||
+					event.name !== selectedEvent.name ||
+					event.version !== selectedEvent.version)
+			) {
+				throw new Error(
+					'actual projection refs disagree on their generated event arm'
+				);
+			}
+			selectedEvent = event;
 		}
 	}
 }
 
-function sameScopeCapability(
-	left: { readonly model: string; readonly key: readonly { readonly field: string }[] },
-	right: { readonly model: string; readonly key: readonly { readonly field: string }[] }
+function capabilityAllowsMutation(
+	arm: ProjectionCapabilityArm,
+	mutation: ProjectionDeltaMutation
+): boolean {
+	switch (mutation.op) {
+		case 'upsert': {
+			const capabilities = recordCapabilities(arm, mutation.scope);
+			const replace = capabilities[0]?.replace;
+			return (
+				capabilities.some(({ upsert }) => upsert) &&
+				replace !== undefined &&
+				capabilities.every((capability) =>
+					sameStrings(capability.replace, replace)
+				) &&
+				sameStrings(mutation.replace, replace) &&
+				sameStrings(
+					mutation.fields.map(({ field }) => field),
+					replace
+				) &&
+				sameStrings(
+					unionNames(capabilities.flatMap(({ fields }) => fields)),
+					replace
+				)
+			);
+		}
+		case 'patch': {
+			const capabilities = recordCapabilities(arm, mutation.scope);
+			const allowed = new Set(
+				capabilities
+					.filter(({ patch }) => patch)
+					.flatMap(({ fields }) => fields)
+			);
+			return (
+				allowed.size !== 0 &&
+				[...mutation.set.map(({ field }) => field), ...mutation.unset].every(
+					(field) => allowed.has(field)
+				)
+			);
+		}
+		case 'delete':
+			return recordCapabilities(arm, mutation.scope).some(
+				({ delete: allowed }) => allowed
+			);
+		case 'link':
+		case 'unlink':
+			return arm.mutations.some(
+				(capability) =>
+					capability.kind === 'relationship' &&
+					capability.relationship === mutation.relationship &&
+					(mutation.op === 'link' ? capability.link : capability.unlink) &&
+					capabilityAllowsScope(
+						arm,
+						mutation.source,
+						capability.source_model,
+						capability.source_key
+					) &&
+					capabilityAllowsScope(
+						arm,
+						mutation.target,
+						capability.target_model,
+						capability.target_key
+					)
+			);
+		case 'invalidate_model':
+			return (
+				capabilityAllowsPartition(arm, mutation.partition) &&
+				arm.mutations.some(
+					(capability) =>
+						capability.kind === 'model' &&
+						capability.model === mutation.model
+				)
+			);
+		case 'invalidate_relationship':
+			return arm.mutations.some(
+				(capability) =>
+					capability.kind === 'relationship' &&
+					capability.relationship === mutation.relationship &&
+					capabilityAllowsScope(
+						arm,
+						mutation.source,
+						capability.source_model,
+						capability.source_key
+					)
+			);
+	}
+}
+
+function capabilityAllowsRecovery(
+	arm: ProjectionCapabilityArm,
+	target: ProjectionDeltaRecoveryTarget
+): boolean {
+	switch (target.kind) {
+		case 'record':
+			return recordCapabilities(arm, target.scope).length !== 0;
+		case 'relationship':
+			return arm.mutations.some(
+				(capability) =>
+					capability.kind === 'relationship' &&
+					capability.relationship === target.relationship &&
+					capabilityAllowsScope(
+						arm,
+						target.source,
+						capability.source_model,
+						capability.source_key
+					)
+			);
+		case 'model':
+			return (
+				capabilityAllowsPartition(arm, target.partition) &&
+				arm.mutations.some(
+					(capability) =>
+						capability.kind === 'model' &&
+						capability.model === target.model
+				)
+			);
+	}
+}
+
+function recordCapabilities(
+	arm: ProjectionCapabilityArm,
+	scope: ProjectionDeltaScope
+): readonly Extract<ProjectionCapabilityMutation, { readonly kind: 'record' }>[] {
+	if (!capabilityAllowsPartition(arm, scope.partition)) return [];
+	return arm.mutations.filter(
+		(capability): capability is Extract<
+			ProjectionCapabilityMutation,
+			{ readonly kind: 'record' }
+		> =>
+			capability.kind === 'record' &&
+			capability.model === scope.model &&
+			sameStrings(
+				capability.key,
+				scope.key.map(({ field }) => field)
+			)
+	);
+}
+
+function capabilityAllowsScope(
+	arm: ProjectionCapabilityArm,
+	scope: ProjectionDeltaScope,
+	model: string,
+	key: readonly string[]
 ): boolean {
 	return (
-		left.model === right.model &&
+		capabilityAllowsPartition(arm, scope.partition) &&
+		scope.model === model &&
 		sameStrings(
-			left.key.map(({ field }) => field),
-			right.key.map(({ field }) => field)
+			key,
+			scope.key.map(({ field }) => field)
 		)
 	);
+}
+
+function capabilityAllowsPartition(
+	arm: ProjectionCapabilityArm,
+	partition: ProjectionDeltaScope['partition'] | undefined
+): boolean {
+	return arm.partition.kind === 'unit'
+		? partition?.kind === 'unit'
+		: partition === undefined || partition.kind === 'opaque';
+}
+
+function unionNames(values: readonly string[]): readonly string[] {
+	return Object.freeze([...new Set(values)].sort(compareCodeUnits));
+}
+
+function compareCodeUnits(left: string, right: string): number {
+	return left < right ? -1 : left > right ? 1 : 0;
 }
 
 function sameStrings(left: readonly string[], right: readonly string[]): boolean {
@@ -207,19 +361,22 @@ export function createReplicaCommandRuntime<
 	const runtimeAbort = new AbortController();
 	let disposed = false;
 
-	const applyActualProjection = (
+	type ValidatedActualProjection = Readonly<{
+		canonical?: string;
+		operations?: readonly PreparedProjectionOperation[];
+		requiresRevalidation: boolean;
+	}>;
+
+	const validateActualProjection = (
 		prepared: ReplicaPreparedCommand<unknown, unknown>,
 		metadata: import('../../protocol.js').DistributedCommandMetadata,
 		authority: CapturedAuthority
-	): boolean => {
+	): ValidatedActualProjection => {
 		if (prepared.projection === undefined) {
 			if (metadata.projection !== undefined || metadata.expects.length !== 0) {
 				throw new Error('unmodeled command returned a projection delta');
 			}
-			return false;
-		}
-		if (metadata.state === 'in_progress' && metadata.projection === undefined) {
-			return false;
+			return Object.freeze({ requiresRevalidation: false });
 		}
 		const actual = metadata.projection;
 		if (actual === undefined) {
@@ -261,7 +418,10 @@ export function createReplicaCommandRuntime<
 			if (previous !== canonical) {
 				throw new Error('projection delta changed during command replay');
 			}
-			return actual.revalidate || actual.obligations.length === 0;
+			return Object.freeze({
+				requiresRevalidation:
+					actual.revalidate || actual.obligations.length === 0
+			});
 		}
 		assertActualProjectionCapabilities(
 			prepared.projection.contract,
@@ -272,22 +432,70 @@ export function createReplicaCommandRuntime<
 		if (seam === undefined) {
 			throw new Error('replica does not implement projection delta replacement');
 		}
+		return Object.freeze({
+			canonical,
+			operations,
+			requiresRevalidation:
+				actual.revalidate || actual.obligations.length === 0
+		});
+	};
+
+	const commitActualProjection = (
+		prepared: ReplicaPreparedCommand<unknown, unknown>,
+		validated: ValidatedActualProjection
+	): boolean => {
+		if (
+			validated.canonical === undefined ||
+			validated.operations === undefined
+		) {
+			return validated.requiresRevalidation;
+		}
+		const seam = replica[replicaCommandProjectionDelta]!;
 		const actualPrepared = Object.freeze({
 			...prepared,
 			optimistic: Object.freeze({
 				version: 1 as const,
-				operations,
+				operations: validated.operations,
 				fallback: 'revalidate' as const
 			})
 		});
 		seam.call(
 			replica,
 			prepared.commandId,
-			(writer) => applyOptimisticEffects(writer, operations),
+			(writer) => applyOptimisticEffects(writer, validated.operations!),
 			preparedSemanticChanges(actualPrepared)
 		);
-		projectionReplays.set(prepared.commandId, canonical);
-		return actual.revalidate || actual.obligations.length === 0;
+		projectionReplays.set(prepared.commandId, validated.canonical);
+		return validated.requiresRevalidation;
+	};
+
+	const applyActualProjection = (
+		prepared: ReplicaPreparedCommand<unknown, unknown>,
+		metadata: import('../../protocol.js').DistributedCommandMetadata,
+		authority: CapturedAuthority
+	): boolean =>
+		commitActualProjection(
+			prepared,
+			validateActualProjection(prepared, metadata, authority)
+		);
+
+	const validateProjectionForState = (
+		prepared: ReplicaPreparedCommand<unknown, unknown>,
+		metadata: import('../../protocol.js').DistributedCommandMetadata,
+		authority: CapturedAuthority
+	): ValidatedActualProjection => {
+		switch (metadata.state) {
+			case 'succeeded':
+			case 'succeeded_pending_projection':
+			case 'projected':
+				return validateActualProjection(prepared, metadata, authority);
+			case 'in_progress':
+			case 'rejected':
+			case 'projection_failed':
+			case 'expired':
+			case 'unknown':
+				return Object.freeze({ requiresRevalidation: false });
+		}
 	};
 
 	const rejectUnmanagedLayer = (commandId: string): boolean => {
@@ -479,18 +687,34 @@ export function createReplicaCommandRuntime<
 				);
 				validateStatusProgression(tracker.state, tracker.metadata, status);
 				if (status.metadata !== undefined) {
-					statusRequiresRevalidation = applyActualProjection(
+					if (
+						tracker.pending !== undefined &&
+						status.metadata.causationId !==
+							tracker.pending.causationId
+					) {
+						throw new Error(
+							'command status changed pending causation identity'
+						);
+					}
+					const validated = validateProjectionForState(
 						prepared as ReplicaPreparedCommand<unknown, unknown>,
 						status.metadata,
 						authority
 					);
+					statusRequiresRevalidation = commitActualProjection(
+						prepared as ReplicaPreparedCommand<unknown, unknown>,
+						validated
+					);
 				}
 			} catch (error) {
-				revalidateInBackground(prepared, authority);
-				throw new ReplicaCommandRuntimeError(
+				const failure = new ReplicaCommandRuntimeError(
 					'REPLICA_COMMAND_PROTOCOL_INVALID',
 					{ commandId: prepared.commandId, cause: error }
 				);
+				rejectUnmanagedLayer(prepared.commandId);
+				revalidateInBackground(prepared, authority);
+				failTrackedProjection(tracker, pending, failure);
+				throw failure;
 			}
 			tracker.state = status.state;
 			if (status.metadata !== undefined) {
@@ -874,16 +1098,17 @@ export function createReplicaCommandRuntime<
 				result.data,
 				prepared.transport.mutationField
 			) as TOutput;
-		} catch (error) {
-			rejectUnmanagedLayer(prepared.commandId);
-			revalidateInBackground(prepared, authority);
-			throw new ReplicaCommandRuntimeError(
-				'REPLICA_COMMAND_PROTOCOL_INVALID',
-				{
-					commandId: prepared.commandId,
-					cause: error
-				}
-			);
+			} catch (error) {
+				rejectUnmanagedLayer(prepared.commandId);
+				revalidateInBackground(prepared, authority);
+				throw new ReplicaCommandRuntimeError(
+					'REPLICA_COMMAND_PROTOCOL_INVALID',
+					{
+						commandId: prepared.commandId,
+						cause: error,
+						...(statusArtifact === undefined ? {} : { recovery })
+					}
+				);
 		}
 		let actualRequiresRevalidation = false;
 		try {
@@ -894,11 +1119,15 @@ export function createReplicaCommandRuntime<
 			);
 		} catch (error) {
 			rejectUnmanagedLayer(prepared.commandId);
-			revalidateInBackground(prepared, authority);
-			throw new ReplicaCommandRuntimeError(
-				'REPLICA_COMMAND_PROTOCOL_INVALID',
-				{ commandId: prepared.commandId, cause: error }
-			);
+				revalidateInBackground(prepared, authority);
+				throw new ReplicaCommandRuntimeError(
+					'REPLICA_COMMAND_PROTOCOL_INVALID',
+					{
+						commandId: prepared.commandId,
+						cause: error,
+						...(statusArtifact === undefined ? {} : { recovery })
+					}
+				);
 		}
 		let projected:
 			| Promise<ReplicaCommandProjectedOutcome<TOutput>>
@@ -925,7 +1154,11 @@ export function createReplicaCommandRuntime<
 				revalidateInBackground(prepared, authority);
 				throw new ReplicaCommandRuntimeError(
 					'REPLICA_COMMAND_PROTOCOL_INVALID',
-					{ commandId: prepared.commandId, cause: error }
+					{
+						commandId: prepared.commandId,
+						cause: error,
+						...(statusArtifact === undefined ? {} : { recovery })
+					}
 				);
 			}
 			projected = Promise.resolve(
@@ -1069,12 +1302,19 @@ export function createReplicaCommandRuntime<
 			if (command?.commandId === commandId) {
 				try {
 					verifyReplicaCommandReceipt(controller.prepared, command);
-					applyActualProjection(
+					if (command.causationId !== controller.causationId) {
+						throw new Error(
+							'live command changed pending causation identity'
+						);
+					}
+					const validated = validateProjectionForState(
 						controller.prepared,
 						command,
 						controller.authority
 					);
+					commitActualProjection(controller.prepared, validated);
 				} catch (error) {
+					replica.rejectOptimisticLayer(commandId);
 					revalidateInBackground(
 						controller.prepared,
 						controller.authority
@@ -1084,17 +1324,6 @@ export function createReplicaCommandRuntime<
 						new ReplicaCommandRuntimeError(
 							'REPLICA_COMMAND_PROTOCOL_INVALID',
 							{ commandId, cause: error }
-						)
-					);
-					pending.delete(commandId);
-					continue;
-				}
-				if (command.causationId !== controller.causationId) {
-					settleProjectionFailure(
-						controller,
-						new ReplicaCommandRuntimeError(
-							'REPLICA_COMMAND_PROTOCOL_INVALID',
-							{ commandId }
 						)
 					);
 					pending.delete(commandId);

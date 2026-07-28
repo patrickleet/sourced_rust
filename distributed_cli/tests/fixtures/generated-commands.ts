@@ -272,6 +272,51 @@ export const Command_projectTodo: ReplicaCommandArtifact<Command_projectTodo_Inp
     "kind": "object"
   },
   "projection": {
+    "capabilities": {
+      "arms": [
+        {
+          "arm": "todo-created",
+          "event": {
+            "id": "event:todo.created:v1",
+            "name": "todo.created",
+            "version": 1
+          },
+          "mutations": [
+            {
+              "delete": false,
+              "fields": [
+                "completed",
+                "priority",
+                "title"
+              ],
+              "key": [
+                "tenantId",
+                "id"
+              ],
+              "kind": "record",
+              "model": "Todo",
+              "patch": true,
+              "replace": [
+                "completed",
+                "priority",
+                "title"
+              ],
+              "upsert": true
+            },
+            {
+              "kind": "model",
+              "model": "Todo"
+            }
+          ],
+          "partition": {
+            "expression_fingerprint": "sha256:129a821dac4ec2bb0a8a1dccacdcb62a87ad8cac25fc9933f341b0fc7a6169f3",
+            "kind": "opaque"
+          },
+          "projection_ref": 0
+        }
+      ],
+      "version": 1
+    },
     "deltaWireVersion": 1,
     "eventSet": [
       {

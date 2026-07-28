@@ -76,6 +76,7 @@ pub(crate) struct CompiledCommandProjection {
     operation_semantics_version: u16,
     projections: Vec<PreviewProjectionIdentity>,
     event_set: Vec<ManifestProjectionEventRef>,
+    capabilities: ProjectionCapabilities,
     preview: PreviewPlan,
     fallback: ManifestProjectionFallback,
     #[serde(skip)]
@@ -145,6 +146,54 @@ struct PreviewProjectionIdentity {
     epoch: String,
     program_ir_version: u16,
     operation_semantics_version: u16,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq, Serialize)]
+struct ProjectionCapabilities {
+    version: u16,
+    arms: Vec<ProjectionCapabilityArm>,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq, Serialize)]
+struct ProjectionCapabilityArm {
+    event: ManifestProjectionEventRef,
+    projection_ref: u32,
+    arm: String,
+    partition: ProjectionCapabilityPartition,
+    mutations: Vec<ProjectionCapabilityMutation>,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq, PartialOrd, Ord, Serialize)]
+#[serde(tag = "kind", rename_all = "snake_case")]
+enum ProjectionCapabilityPartition {
+    Unit,
+    Opaque { expression_fingerprint: String },
+}
+
+#[derive(Clone, Debug, PartialEq, Eq, PartialOrd, Ord, Serialize)]
+#[serde(tag = "kind", rename_all = "snake_case")]
+enum ProjectionCapabilityMutation {
+    Record {
+        model: String,
+        key: Vec<String>,
+        fields: Vec<String>,
+        replace: Vec<String>,
+        upsert: bool,
+        patch: bool,
+        delete: bool,
+    },
+    Relationship {
+        relationship: String,
+        source_model: String,
+        source_key: Vec<String>,
+        target_model: String,
+        target_key: Vec<String>,
+        link: bool,
+        unlink: bool,
+    },
+    Model {
+        model: String,
+    },
 }
 
 #[derive(Clone, Debug, PartialEq, Eq, Serialize)]
@@ -512,6 +561,24 @@ pub(crate) fn compile_command_preview(
             .expect("manifest validation proved selected arm");
         collect_selected_models(arm, &mut selected_models);
     }
+    let capabilities = extension
+        .program_arms
+        .iter()
+        .map(|selected| {
+            let program = programs[selected.program_id.as_str()];
+            let arm = program
+                .arms
+                .iter()
+                .find(|arm| arm.arm == selected.arm && arm.event == selected.event)
+                .expect("manifest validation proved selected arm");
+            compile_capability_arm(
+                selected.event.clone(),
+                projection_refs[selected.program_id.as_str()],
+                arm,
+                manifest,
+            )
+        })
+        .collect::<Result<Vec<_>, _>>()?;
 
     let mut occurrences = Vec::new();
     let mut operations = Vec::new();
@@ -561,6 +628,10 @@ pub(crate) fn compile_command_preview(
         operation_semantics_version: PROJECTION_OPERATION_SEMANTICS_VERSION,
         projections: identities,
         event_set: extension.event_set.clone(),
+        capabilities: ProjectionCapabilities {
+            version: 1,
+            arms: capabilities,
+        },
         preview: PreviewPlan {
             version: PREVIEW_PLAN_VERSION,
             occurrences,
@@ -570,6 +641,150 @@ pub(crate) fn compile_command_preview(
         fallback: extension.fallback,
         selected_models,
     }))
+}
+
+fn compile_capability_arm(
+    event: ManifestProjectionEventRef,
+    projection_ref: u32,
+    arm: &ManifestProjectionArm,
+    manifest: &ClientManifest,
+) -> Result<ProjectionCapabilityArm, ClientCompileError> {
+    let partition = match &arm.partition {
+        ManifestProjectionPartition::Unit => ProjectionCapabilityPartition::Unit,
+        ManifestProjectionPartition::Expression { expression } => {
+            let encoded = serde_json::to_vec(expression).map_err(|error| {
+                ClientCompileError::manifest(
+                    "client.projection_capability.partition",
+                    format!("cannot fingerprint projection partition expression: {error}"),
+                )
+            })?;
+            ProjectionCapabilityPartition::Opaque {
+                expression_fingerprint: hash_bytes(&encoded),
+            }
+        }
+    };
+    let mut mutations = Vec::new();
+    for operation in &arm.operations {
+        let model = manifest
+            .models
+            .get(&operation.model)
+            .expect("manifest validation proved operation model");
+        if !matches!(
+            operation.kind,
+            ManifestProjectionMutationKind::InvalidateModel
+                | ManifestProjectionMutationKind::InvalidateRelationship
+        ) {
+            let identity = model
+                .identity()
+                .expect("projection model has normalized identity");
+            let identity_names = identity
+                .iter()
+                .map(|field| field.name.as_str())
+                .collect::<BTreeSet<_>>();
+            let mut replace = model
+                .fields
+                .iter()
+                .filter(|field| !identity_names.contains(field.name.as_str()))
+                .map(|field| field.name.clone())
+                .collect::<Vec<_>>();
+            replace.sort();
+            let replacement = replace.iter().map(String::as_str).collect::<BTreeSet<_>>();
+            let mut fields = operation
+                .fields
+                .iter()
+                .map(|field| field.name.clone())
+                .filter(|field| replacement.contains(field.as_str()))
+                .collect::<Vec<_>>();
+            fields.sort();
+            fields.dedup();
+            let complete = matches!(
+                operation.kind,
+                ManifestProjectionMutationKind::Insert
+                    | ManifestProjectionMutationKind::Upsert
+                    | ManifestProjectionMutationKind::Recreate
+                    | ManifestProjectionMutationKind::InsertRelated
+                    | ManifestProjectionMutationKind::UpsertRelated
+            );
+            mutations.push(ProjectionCapabilityMutation::Record {
+                model: operation.model.clone(),
+                key: operation
+                    .key
+                    .iter()
+                    .map(|field| field.name.clone())
+                    .collect(),
+                fields: fields.clone(),
+                replace: replace.clone(),
+                upsert: complete,
+                patch: !fields.is_empty(),
+                delete: operation.kind == ManifestProjectionMutationKind::Delete,
+            });
+            mutations.push(ProjectionCapabilityMutation::Model {
+                model: operation.model.clone(),
+            });
+        }
+        if operation.kind == ManifestProjectionMutationKind::InvalidateModel {
+            mutations.push(ProjectionCapabilityMutation::Model {
+                model: operation.model.clone(),
+            });
+        }
+        for effect in &operation.relationships {
+            mutations.push(ProjectionCapabilityMutation::Relationship {
+                relationship: effect.relationship.clone(),
+                source_model: effect.source_model.clone(),
+                source_key: effect
+                    .source_key
+                    .iter()
+                    .map(|field| field.name.clone())
+                    .collect(),
+                target_model: effect.target_model.clone(),
+                target_key: effect
+                    .target_key
+                    .iter()
+                    .map(|field| field.name.clone())
+                    .collect(),
+                link: effect.kind == ManifestProjectionRelationshipEffectKind::Link,
+                unlink: effect.kind == ManifestProjectionRelationshipEffectKind::Unlink,
+            });
+            mutations.push(ProjectionCapabilityMutation::Model {
+                model: effect.source_model.clone(),
+            });
+        }
+        for invalidation in &operation.invalidations {
+            match invalidation {
+                ManifestProjectionInvalidation::Model { model } => {
+                    mutations.push(ProjectionCapabilityMutation::Model {
+                        model: model.clone(),
+                    });
+                }
+                ManifestProjectionInvalidation::Relationship {
+                    source_model,
+                    relationship,
+                    target_model,
+                } => {
+                    let keyed = operation.relationships.iter().any(|effect| {
+                        effect.kind == ManifestProjectionRelationshipEffectKind::Invalidate
+                            && effect.source_model == *source_model
+                            && effect.relationship == *relationship
+                            && effect.target_model == *target_model
+                    });
+                    if !keyed {
+                        mutations.push(ProjectionCapabilityMutation::Model {
+                            model: source_model.clone(),
+                        });
+                    }
+                }
+            }
+        }
+    }
+    mutations.sort();
+    mutations.dedup();
+    Ok(ProjectionCapabilityArm {
+        event,
+        projection_ref,
+        arm: arm.arm.clone(),
+        partition,
+        mutations,
+    })
 }
 
 #[allow(clippy::too_many_arguments)]

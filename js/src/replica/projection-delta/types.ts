@@ -196,6 +196,41 @@ export type ProjectionPreviewField = Readonly<{
 	value: ProjectionPreviewValue;
 }>;
 
+export type ProjectionCapabilityPartition =
+	| Readonly<{ kind: 'unit' }>
+	| Readonly<{ kind: 'opaque'; expression_fingerprint: string }>;
+
+export type ProjectionCapabilityMutation =
+	| Readonly<{
+			kind: 'record';
+			model: string;
+			key: readonly string[];
+			fields: readonly string[];
+			replace: readonly string[];
+			upsert: boolean;
+			patch: boolean;
+			delete: boolean;
+	  }>
+	| Readonly<{
+			kind: 'relationship';
+			relationship: string;
+			source_model: string;
+			source_key: readonly string[];
+			target_model: string;
+			target_key: readonly string[];
+			link: boolean;
+			unlink: boolean;
+	  }>
+	| Readonly<{ kind: 'model'; model: string }>;
+
+export type ProjectionCapabilityArm = Readonly<{
+	event: Readonly<{ id: string; name: string; version: number }>;
+	projection_ref: number;
+	arm: string;
+	partition: ProjectionCapabilityPartition;
+	mutations: readonly ProjectionCapabilityMutation[];
+}>;
+
 export type ProjectionPreviewMutation =
 	| Readonly<{
 			op: 'upsert';
@@ -258,6 +293,10 @@ export type ReplicaCommandProjection = Readonly<{
 		name: string;
 		version: number;
 	}>[];
+	capabilities: Readonly<{
+		version: 1;
+		arms: readonly ProjectionCapabilityArm[];
+	}>;
 	preview: Readonly<{
 		version: 1;
 		occurrences: readonly Readonly<{

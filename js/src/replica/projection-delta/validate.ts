@@ -14,6 +14,9 @@ import {
 	PROJECTION_PROGRAM_VERSION,
 	type CommandProjectionMetadata,
 	type CommandProjectionObligation,
+	type ProjectionCapabilityArm,
+	type ProjectionCapabilityMutation,
+	type ProjectionCapabilityPartition,
 	type ProjectionDelta,
 	type ProjectionDeltaField,
 	type ProjectionDeltaMutation,
@@ -40,6 +43,7 @@ const MAX_PARTITION_BYTES = 4 * 1024;
 const MAX_IDENTITY_BYTES = 4 * 1024;
 const PROGRAM_ID = /^pp1:sha256:[0-9a-f]{64}$/;
 const BINDING_ID = /^pb1:sha256:[0-9a-f]{64}$/;
+const SHA256 = /^sha256:[0-9a-f]{64}$/;
 const U64_MAX = 18_446_744_073_709_551_615n;
 const I64_MIN = -9_223_372_036_854_775_808n;
 const I64_MAX = 9_223_372_036_854_775_807n;
@@ -350,10 +354,11 @@ export function validateCommandProjectionArtifact(
 			'version',
 			'deltaWireVersion',
 			'projectionProgramVersion',
-			'operationSemanticsVersion',
-			'projections',
-			'eventSet',
-			'preview',
+				'operationSemanticsVersion',
+				'projections',
+				'eventSet',
+				'capabilities',
+				'preview',
 			'fallback'
 		],
 		[],
@@ -398,7 +403,7 @@ export function validateCommandProjectionArtifact(
 			return Object.freeze({
 				programId: identityString(identity.programId, `${itemPath}.programId`),
 				bindingId: identityString(identity.bindingId, `${itemPath}.bindingId`),
-				epoch: identityString(identity.epoch, `${itemPath}.epoch`),
+				epoch: projectionEpoch(identity.epoch, `${itemPath}.epoch`),
 				programIrVersion: 1 as const,
 				operationSemanticsVersion: 1 as const
 			});
@@ -435,6 +440,57 @@ export function validateCommandProjectionArtifact(
 				[right.id, right.name, right.version]
 			),
 		`${path}.eventSet`
+	);
+	const capabilitiesValue = exactRecord(
+		projection.capabilities,
+		['version', 'arms'],
+		[],
+		`${path}.capabilities`
+	);
+	if (capabilitiesValue.version !== 1) {
+		invalid(`${path}.capabilities.version`);
+	}
+	const capabilityArms = boundedArray(
+		capabilitiesValue.arms,
+		`${path}.capabilities.arms`
+	).map((item, index) =>
+		parseCapabilityArm(
+			item,
+			index,
+			projections.length,
+			eventSet,
+			`${path}.capabilities.arms[${index}]`
+		)
+	);
+	if (
+		capabilityArms.length === 0 ||
+		eventSet.some(
+			(event) =>
+				!capabilityArms.some((arm) => sameEventRef(arm.event, event))
+		)
+	) {
+		invalid(`${path}.capabilities.arms`);
+	}
+	assertStrictOrder(
+		capabilityArms,
+		(left, right) =>
+			compareTuple(
+				[
+					left.event.id,
+					left.event.name,
+					left.event.version,
+					left.projection_ref,
+					left.arm
+				],
+				[
+					right.event.id,
+					right.event.name,
+					right.event.version,
+					right.projection_ref,
+					right.arm
+				]
+			),
+		`${path}.capabilities.arms`
 	);
 	const previewValue = exactRecord(
 		projection.preview,
@@ -589,22 +645,30 @@ export function validateCommandProjectionArtifact(
 				invalid(`${path}.preview.recoveries`);
 			}
 		}
-		return Object.freeze({
-		version: 2 as const,
-		deltaWireVersion: 1 as const,
-		projectionProgramVersion: 2 as const,
+			const parsed = Object.freeze({
+			version: 2 as const,
+			deltaWireVersion: 1 as const,
+			projectionProgramVersion: 2 as const,
 		operationSemanticsVersion: 1 as const,
-		projections: Object.freeze(projections),
-		eventSet: Object.freeze(eventSet),
-		preview: Object.freeze({
+			projections: Object.freeze(projections),
+			eventSet: Object.freeze(eventSet),
+			capabilities: Object.freeze({
+				version: 1 as const,
+				arms: Object.freeze(capabilityArms)
+			}),
+			preview: Object.freeze({
 			version: 1 as const,
 			occurrences: Object.freeze(occurrences),
 			operations: Object.freeze(operations),
 			recoveries: Object.freeze(recoveries)
 		}),
-		fallback: 'revalidate' as const
-	});
-}
+			fallback: 'revalidate' as const
+			});
+			if (encoder.encode(JSON.stringify(parsed)).byteLength > MAX_BODY_BYTES) {
+				invalid(path);
+			}
+			return parsed;
+	}
 
 export function validateProjectionMetadataAuthority(
 	metadata: CommandProjectionMetadata,
@@ -689,7 +753,7 @@ function parseProjectionIdentity(
 	return Object.freeze({
 		program_id: identity.program_id,
 		binding_id: identity.binding_id,
-		epoch: identityString(identity.epoch, `${path}.epoch`),
+		epoch: projectionEpoch(identity.epoch, `${path}.epoch`),
 		program_ir_version: 1 as const,
 		operation_semantics_version: 1 as const
 	});
@@ -817,7 +881,7 @@ function parseMutation(value: unknown, path: string): ProjectionDeltaMutation {
 								`${path}.partition`
 							)
 						}),
-				model: identityString(mutation.model, `${path}.model`)
+				model: projectionModel(mutation.model, `${path}.model`)
 			});
 		}
 		case 'invalidate_relationship': {
@@ -874,7 +938,7 @@ function parseScope(value: unknown, path: string): ProjectionDeltaScope {
 	}
 	return Object.freeze({
 		partition: parsePartition(scope.partition, `${path}.partition`),
-		model: identityString(scope.model, `${path}.model`),
+		model: projectionModel(scope.model, `${path}.model`),
 		key: Object.freeze(key)
 	});
 }
@@ -1111,7 +1175,7 @@ function parseRecoveryTarget(
 								`${path}.partition`
 							)
 						}),
-				model: identityString(target.model, `${path}.model`)
+				model: projectionModel(target.model, `${path}.model`)
 			});
 		}
 		default:
@@ -1135,7 +1199,7 @@ function parseObligation(
 		obligation.projectionRef,
 		`${path}.projectionRef`
 	);
-	const model = identityString(obligation.model, `${path}.model`);
+	const model = obligationModel(obligation.model, `${path}.model`);
 	if (
 		projectionRef >= delta.projections.length ||
 		!delta.operations.some(
@@ -1166,13 +1230,246 @@ function operationCanObserveModel(
 		case 'patch':
 		case 'delete':
 			return mutation.scope.model === model;
-		case 'link':
-		case 'unlink':
-			return mutation.source.model === model || mutation.target.model === model;
-		case 'invalidate_model':
-		case 'invalidate_relationship':
-			return false;
+			case 'link':
+			case 'unlink':
+				return true;
+			case 'invalidate_model':
+			case 'invalidate_relationship':
+				return false;
+		}
 	}
+
+function parseCapabilityArm(
+	value: unknown,
+	_index: number,
+	projectionCount: number,
+	eventSet: readonly Readonly<{ id: string; name: string; version: number }>[],
+	path: string
+): ProjectionCapabilityArm {
+	const arm = exactRecord(
+		value,
+		['event', 'projection_ref', 'arm', 'partition', 'mutations'],
+		[],
+		path
+	);
+	const event = parseEventRef(arm.event, `${path}.event`);
+	const projectionRef = boundedOrdinal(
+		arm.projection_ref,
+		`${path}.projection_ref`
+	);
+	if (
+		projectionRef >= projectionCount ||
+		!eventSet.some((candidate) => sameEventRef(candidate, event))
+	) {
+		invalid(path);
+	}
+	const mutations = boundedArray(
+		arm.mutations,
+		`${path}.mutations`
+	).map((item, index) =>
+		parseCapabilityMutation(item, `${path}.mutations[${index}]`)
+	);
+	if (mutations.length === 0) invalid(`${path}.mutations`);
+	assertStrictOrder(
+		mutations,
+		(left, right) =>
+			compareTuple(
+				capabilityMutationKey(left),
+				capabilityMutationKey(right)
+			),
+		`${path}.mutations`
+	);
+	return Object.freeze({
+		event,
+		projection_ref: projectionRef,
+		arm: identityString(arm.arm, `${path}.arm`),
+		partition: parseCapabilityPartition(arm.partition, `${path}.partition`),
+		mutations: Object.freeze(mutations)
+	});
+}
+
+function parseCapabilityPartition(
+	value: unknown,
+	path: string
+): ProjectionCapabilityPartition {
+	if (!isPlainRecord(value) || typeof value.kind !== 'string') invalid(path);
+	if (value.kind === 'unit') {
+		exactRecord(value, ['kind'], [], path);
+		return Object.freeze({ kind: 'unit' as const });
+	}
+	if (value.kind === 'opaque') {
+		const partition = exactRecord(
+			value,
+			['kind', 'expression_fingerprint'],
+			[],
+			path
+		);
+		if (
+			typeof partition.expression_fingerprint !== 'string' ||
+			!SHA256.test(partition.expression_fingerprint)
+		) {
+			invalid(`${path}.expression_fingerprint`);
+		}
+		return Object.freeze({
+			kind: 'opaque' as const,
+			expression_fingerprint: partition.expression_fingerprint
+		});
+	}
+	invalid(`${path}.kind`);
+}
+
+function parseCapabilityMutation(
+	value: unknown,
+	path: string
+): ProjectionCapabilityMutation {
+	if (!isPlainRecord(value) || typeof value.kind !== 'string') invalid(path);
+	switch (value.kind) {
+		case 'record': {
+			const mutation = exactRecord(
+				value,
+				[
+					'kind',
+					'model',
+					'key',
+					'fields',
+					'replace',
+					'upsert',
+					'patch',
+					'delete'
+				],
+				[],
+				path
+			);
+			if (
+				typeof mutation.upsert !== 'boolean' ||
+				typeof mutation.patch !== 'boolean' ||
+				typeof mutation.delete !== 'boolean'
+			) {
+				invalid(path);
+			}
+			const key = uniqueNames(mutation.key, `${path}.key`);
+			const fields = sortedNames(mutation.fields, `${path}.fields`);
+			const replace = sortedNames(mutation.replace, `${path}.replace`);
+			if (
+				key.length === 0 ||
+				(mutation.patch && fields.length === 0)
+			) {
+				invalid(path);
+			}
+			return Object.freeze({
+				kind: 'record' as const,
+				model: projectionModel(mutation.model, `${path}.model`),
+				key,
+				fields,
+				replace,
+				upsert: mutation.upsert,
+				patch: mutation.patch,
+				delete: mutation.delete
+			});
+		}
+		case 'relationship': {
+			const mutation = exactRecord(
+				value,
+				[
+					'kind',
+					'relationship',
+					'source_model',
+					'source_key',
+					'target_model',
+					'target_key',
+					'link',
+					'unlink'
+				],
+				[],
+				path
+			);
+			if (
+				typeof mutation.link !== 'boolean' ||
+				typeof mutation.unlink !== 'boolean'
+			) {
+				invalid(path);
+			}
+			const sourceKey = uniqueNames(
+				mutation.source_key,
+				`${path}.source_key`
+			);
+			const targetKey = uniqueNames(
+				mutation.target_key,
+				`${path}.target_key`
+			);
+			if (sourceKey.length === 0 || targetKey.length === 0) invalid(path);
+			return Object.freeze({
+				kind: 'relationship' as const,
+				relationship: identityString(
+					mutation.relationship,
+					`${path}.relationship`
+				),
+				source_model: projectionModel(
+					mutation.source_model,
+					`${path}.source_model`
+				),
+				source_key: sourceKey,
+				target_model: projectionModel(
+					mutation.target_model,
+					`${path}.target_model`
+				),
+				target_key: targetKey,
+				link: mutation.link,
+				unlink: mutation.unlink
+			});
+		}
+		case 'model': {
+			const mutation = exactRecord(value, ['kind', 'model'], [], path);
+			return Object.freeze({
+				kind: 'model' as const,
+				model: projectionModel(mutation.model, `${path}.model`)
+			});
+		}
+		default:
+			invalid(`${path}.kind`);
+	}
+}
+
+function capabilityMutationKey(
+	mutation: ProjectionCapabilityMutation
+): readonly unknown[] {
+	switch (mutation.kind) {
+		case 'record':
+			return [
+				0,
+				mutation.model,
+				mutation.key,
+				mutation.fields,
+				mutation.replace,
+				mutation.upsert,
+				mutation.patch,
+				mutation.delete
+			];
+		case 'relationship':
+			return [
+				1,
+				mutation.relationship,
+				mutation.source_model,
+				mutation.source_key,
+				mutation.target_model,
+				mutation.target_key,
+				mutation.link,
+				mutation.unlink
+			];
+		case 'model':
+			return [2, mutation.model];
+	}
+}
+
+function sameEventRef(
+	left: Readonly<{ id: string; name: string; version: number }>,
+	right: Readonly<{ id: string; name: string; version: number }>
+): boolean {
+	return (
+		left.id === right.id &&
+		left.name === right.name &&
+		left.version === right.version
+	);
 }
 
 function parsePreviewMutation(
@@ -1264,7 +1561,7 @@ function parsePreviewMutation(
 								`${path}.partition`
 							)
 						}),
-				model: identityString(mutation.model, `${path}.model`)
+				model: projectionModel(mutation.model, `${path}.model`)
 			});
 		}
 		case 'invalidate_relationship': {
@@ -1314,9 +1611,16 @@ function parsePreviewScope(
 		key.map(({ field }) => field),
 		`${path}.key`
 	);
+	if (encoder.encode(JSON.stringify(key)).byteLength > MAX_KEY_BYTES) {
+		invalid(`${path}.key`);
+	}
+	const partition = parsePreviewPartition(
+		scope.partition,
+		`${path}.partition`
+	);
 	return Object.freeze({
-		partition: parsePreviewPartition(scope.partition, `${path}.partition`),
-		model: identityString(scope.model, `${path}.model`),
+		partition,
+		model: projectionModel(scope.model, `${path}.model`),
 		key: Object.freeze(key)
 	});
 }
@@ -1328,7 +1632,11 @@ function parsePreviewPartition(
 	if (!isPlainRecord(value) || typeof value.kind !== 'string') invalid(path);
 	if (value.kind === 'unit') {
 		exactRecord(value, ['kind'], [], path);
-		return Object.freeze({ kind: 'unit' as const });
+		const parsed = Object.freeze({ kind: 'unit' as const });
+		if (encoder.encode(JSON.stringify(parsed)).byteLength > MAX_PARTITION_BYTES) {
+			invalid(path);
+		}
+		return parsed;
 	}
 	if (value.kind === 'expression') {
 		const partition = exactRecord(
@@ -1340,7 +1648,7 @@ function parsePreviewPartition(
 		if (partition.requires !== 'current_cache_partition') {
 			invalid(`${path}.requires`);
 		}
-		return Object.freeze({
+		const parsed = Object.freeze({
 			kind: 'expression' as const,
 			expression: parsePreviewValue(
 				partition.expression,
@@ -1349,6 +1657,10 @@ function parsePreviewPartition(
 			),
 			requires: 'current_cache_partition' as const
 		});
+		if (encoder.encode(JSON.stringify(parsed)).byteLength > MAX_PARTITION_BYTES) {
+			invalid(path);
+		}
+		return parsed;
 	}
 	invalid(`${path}.kind`);
 }
@@ -1531,7 +1843,7 @@ function parsePreviewRecoveryTarget(
 							`${path}.partition`
 						)
 					}),
-			model: identityString(target.model, `${path}.model`)
+			model: projectionModel(target.model, `${path}.model`)
 		});
 	}
 	invalid(`${path}.kind`);
@@ -1856,6 +2168,43 @@ function identityString(value: unknown, path: string): string {
 	return value;
 }
 
+function projectionEpoch(value: unknown, path: string): string {
+	const epoch = identityString(value, path);
+	if (
+		encoder.encode(epoch).byteLength > 128 ||
+		[...epoch].some((character) => /\p{Cc}/u.test(character))
+	) {
+		invalid(path);
+	}
+	return epoch;
+}
+
+function projectionModel(value: unknown, path: string): string {
+	const model = identityString(value, path);
+	if (
+		encoder.encode(model).byteLength > 128 ||
+		[...model].some(
+			(character) =>
+				/\p{Cc}/u.test(character) || /\p{White_Space}/u.test(character)
+		)
+	) {
+		invalid(path);
+	}
+	return model;
+}
+
+function obligationModel(value: unknown, path: string): string {
+	if (
+		typeof value !== 'string' ||
+		value.length === 0 ||
+		value.trim() !== value ||
+		encoder.encode(value).byteLength > 255
+	) {
+		invalid(path);
+	}
+	return value;
+}
+
 function protocolToken(
 	value: unknown,
 	purpose: string,
@@ -1913,15 +2262,39 @@ function canonicalFloat(value: unknown, path: string): string {
 	if (typeof value !== 'string' || value.length === 0) invalid(path);
 	const parsed = Number(value);
 	if (!Number.isFinite(parsed)) invalid(path);
-	let canonical: string;
-	if (Object.is(parsed, -0) || parsed === 0) canonical = '0.0';
-	else if (Number.isInteger(parsed) && Math.abs(parsed) < 1e21) {
-		canonical = `${parsed}.0`;
-	} else {
-		canonical = String(parsed);
-	}
+	const canonical = rustRyuFloat(parsed);
 	if (canonical !== value) invalid(path);
 	return value;
+}
+
+/**
+ * ECMAScript and Rust Ryu choose the same shortest round-tripping digits but
+ * use different fixed/scientific notation windows. serde_json's finite f64
+ * representation is fixed for decimal exponents -5..=15 and scientific
+ * outside that range; integral fixed values retain `.0`.
+ */
+function rustRyuFloat(value: number): string {
+	if (Object.is(value, -0) || value === 0) return '0.0';
+	const scientific = value.toExponential();
+	const match = /^(-?)([0-9])(?:\.([0-9]+))?e([+-][0-9]+)$/.exec(scientific);
+	if (match === null) throw new TypeError('invalid finite float');
+	const sign = match[1]!;
+	const digits = `${match[2]!}${match[3] ?? ''}`;
+	const exponent = Number(match[4]);
+	if (exponent < -5 || exponent > 15) {
+		const fraction = digits.slice(1);
+		return `${sign}${digits[0]!}${fraction.length === 0 ? '' : `.${fraction}`}e${
+			exponent >= 0 ? '+' : ''
+		}${exponent}`;
+	}
+	const point = exponent + 1;
+	if (point <= 0) {
+		return `${sign}0.${'0'.repeat(-point)}${digits}`;
+	}
+	if (point >= digits.length) {
+		return `${sign}${digits}${'0'.repeat(point - digits.length)}.0`;
+	}
+	return `${sign}${digits.slice(0, point)}.${digits.slice(point)}`;
 }
 
 function sortedNames(value: unknown, path: string): readonly string[] {
@@ -1929,6 +2302,14 @@ function sortedNames(value: unknown, path: string): readonly string[] {
 		identityString(item, `${path}[${index}]`)
 	);
 	assertStrictOrder(names, compareUtf8, path);
+	return Object.freeze(names);
+}
+
+function uniqueNames(value: unknown, path: string): readonly string[] {
+	const names = boundedArray(value, path).map((item, index) =>
+		identityString(item, `${path}[${index}]`)
+	);
+	assertUnique(names, path);
 	return Object.freeze(names);
 }
 

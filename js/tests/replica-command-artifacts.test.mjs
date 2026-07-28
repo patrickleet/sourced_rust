@@ -10,6 +10,8 @@ import {
 const HASH_A = `sha256:${'a'.repeat(64)}`;
 const HASH_B = `sha256:${'b'.repeat(64)}`;
 const HASH_C = `sha256:${'c'.repeat(64)}`;
+const PROGRAM = `pp1:sha256:${'1'.repeat(64)}`;
+const BINDING = `pb1:sha256:${'2'.repeat(64)}`;
 const COMMAND_ID = '018f47de-3d2a-7abc-8abc-0123456789ab';
 const OTHER_COMMAND_ID = '018f47de-3d2a-7def-8def-0123456789ab';
 const GENERATED_UUID = '018f47de-3d2a-7123-8123-0123456789ab';
@@ -92,9 +94,113 @@ const PROJECTED_OUTPUT = Object.freeze({
 });
 
 const inputValue = (path) => Object.freeze({ kind: 'input', path: Object.freeze(path) });
-const constantValue = (value) => Object.freeze({ kind: 'constant', value });
-const effectField = (field, value) => Object.freeze({ field, value });
-const key = (...fields) => Object.freeze({ fields: Object.freeze(fields) });
+const constantValue = (value) =>
+	Object.freeze({
+		kind: 'constant',
+		value:
+			typeof value === 'string'
+				? Object.freeze({ type: 'string', value })
+				: Object.freeze({ type: 'i64', value: String(value) })
+	});
+const projectionField = (field, value) => Object.freeze({ field, value });
+const unit = Object.freeze({ kind: 'unit' });
+const EVENT = Object.freeze({
+	id: 'todo-event',
+	name: 'todo.changed',
+	version: 1
+});
+
+function projectionScope(model, ...fields) {
+	return Object.freeze({
+		partition: unit,
+		model,
+		key: Object.freeze(
+			fields.map(({ field, value }, ordinal) =>
+				Object.freeze({ ordinal, field, value })
+			)
+		)
+	});
+}
+
+function projectionArtifact(operations, capabilities) {
+	return Object.freeze({
+		version: 2,
+		deltaWireVersion: 1,
+		projectionProgramVersion: 2,
+		operationSemanticsVersion: 1,
+		projections: Object.freeze([
+			Object.freeze({
+				programId: PROGRAM,
+				bindingId: BINDING,
+				epoch: 'todos-v1',
+				programIrVersion: 1,
+				operationSemanticsVersion: 1
+			})
+		]),
+		eventSet: Object.freeze([EVENT]),
+		capabilities: Object.freeze({
+			version: 1,
+			arms: Object.freeze([
+				Object.freeze({
+					event: EVENT,
+					projection_ref: 0,
+					arm: 'todo_changed',
+					partition: unit,
+					mutations: Object.freeze(capabilities)
+				})
+			])
+		}),
+		preview: Object.freeze({
+			version: 1,
+			occurrences: Object.freeze([
+				Object.freeze({ ordinal: 0, event: EVENT })
+			]),
+			operations: Object.freeze(
+				operations.map((mutation) =>
+					Object.freeze({
+						occurrence_ordinal: 0,
+						projection_refs: Object.freeze([0]),
+						mutation
+					})
+				)
+			),
+			recoveries: Object.freeze([])
+		}),
+		fallback: 'revalidate'
+	});
+}
+
+function baseProjection() {
+	const scope = projectionScope(
+		'Todo',
+		projectionField('id', inputValue(['id']))
+	);
+	return projectionArtifact(
+		[
+			Object.freeze({
+				op: 'upsert',
+				scope,
+				fields: Object.freeze([
+					projectionField('count', inputValue(['meta', 'count'])),
+					projectionField('title', inputValue(['title']))
+				]),
+				replace: Object.freeze(['count', 'title'])
+			})
+		],
+		[
+			Object.freeze({
+				kind: 'record',
+				model: 'Todo',
+				key: Object.freeze(['id']),
+				fields: Object.freeze(['count', 'title']),
+				replace: Object.freeze(['count', 'title']),
+				upsert: true,
+				patch: false,
+				delete: false
+			})
+		]
+	);
+}
 
 const TODO_RELATIONSHIP = Object.freeze({
 	sourceModel: 'Todo',
@@ -104,7 +210,7 @@ const TODO_RELATIONSHIP = Object.freeze({
 
 function baseArtifact(overrides = {}) {
 	return {
-		version: 1,
+		version: 2,
 		name: 'todo.create',
 		mutationField: 'createTodo',
 		document:
@@ -128,33 +234,7 @@ function baseArtifact(overrides = {}) {
 			]
 		},
 		consistency: 'causal',
-		effects: {
-			version: 1,
-			operations: [
-				{
-					kind: 'upsert',
-					model: 'Todo',
-					key: key(effectField('id', inputValue(['id']))),
-					fields: [
-						effectField('title', inputValue(['title'])),
-						effectField('count', inputValue(['meta', 'count']))
-					]
-				}
-			],
-			fallback: 'revalidate'
-		},
-		confirmations: {
-			version: 1,
-			kind: 'finite',
-			expected: [
-				{
-					projector: 'todos',
-					model: 'Todo',
-					key: key(effectField('id', inputValue(['id'])))
-				}
-			],
-			fallback: 'revalidate'
-		},
+		projection: baseProjection(),
 		revalidation: {
 			version: 1,
 			required: false,
@@ -170,7 +250,7 @@ function projectedArtifact(directOverrides = {}) {
 	return baseArtifact({
 		output: PROJECTED_OUTPUT,
 		consistency: 'projected',
-		confirmations: undefined,
+		projection: undefined,
 		directProjection: {
 			topology: {
 				version: 1,
@@ -239,20 +319,22 @@ test('preparation fills omitted UUIDv7/ULID defaults once and closes every input
 	});
 	assert.deepEqual(prepared.optimistic.operations[0], {
 		kind: 'upsert',
-		model: 'Todo',
-		key: { fields: [{ field: 'id', value: GENERATED_UUID }] },
-		fields: [
-			{ field: 'title', value: 'Ship it' },
-			{ field: 'count', value: 3 }
-		]
+		scope: {
+			model: 'Todo',
+			key: [{ field: 'id', value: GENERATED_UUID }]
+		},
+		fields: { count: 3, title: 'Ship it' },
+		replace: ['count', 'title']
 	});
-	assert.equal(prepared.confirmations.expected[0].key.fields[0].value, GENERATED_UUID);
 	assert.equal(uuidCalls, 1);
 	assert.equal(ulidCalls, 1);
 
 	// The prepared value itself is the retry unit; reading/reusing it performs no work.
 	assert.equal(prepared.transport.variables.input.id, GENERATED_UUID);
-	assert.equal(prepared.optimistic.operations[0].key.fields[0].value, GENERATED_UUID);
+	assert.equal(
+		prepared.optimistic.operations[0].scope.key[0].value,
+		GENERATED_UUID
+	);
 	assert.equal(uuidCalls, 1);
 	assert.equal(ulidCalls, 1);
 });
@@ -309,8 +391,7 @@ test('none inputs and typed JSON fields produce exact canonical transport variab
 			input: { kind: 'none' },
 			inputDefaults: undefined,
 			consistency: 'succeeded',
-			effects: { version: 1, operations: [], fallback: 'revalidate' },
-			confirmations: undefined,
+			projection: undefined,
 			revalidation: {
 				version: 1,
 				required: true,
@@ -334,8 +415,7 @@ test('none inputs and typed JSON fields produce exact canonical transport variab
 			input: JSON_IMPORT_INPUT,
 			inputDefaults: undefined,
 			consistency: 'succeeded',
-			effects: { version: 1, operations: [], fallback: 'revalidate' },
-			confirmations: undefined,
+			projection: undefined,
 			revalidation: {
 				version: 1,
 				required: true,
@@ -365,8 +445,7 @@ test('none inputs and typed JSON fields produce exact canonical transport variab
 					input: JSON_IMPORT_INPUT,
 					inputDefaults: undefined,
 					consistency: 'succeeded',
-					effects: { version: 1, operations: [], fallback: 'revalidate' },
-					confirmations: undefined,
+					projection: undefined,
 					revalidation: {
 						version: 1,
 						required: true,
@@ -405,38 +484,49 @@ test('nested paths resolve exactly and missing or type-invalid values fail close
 				]
 			}
 		},
-		effects: {
-			version: 1,
-			operations: [
-				{
-					kind: 'patch',
-					model: 'Todo',
-					key: key(effectField('id', inputValue(['id']))),
-					fields: [effectField('note', inputValue(['meta', 'note']))]
-				}
+		projection: projectionArtifact(
+			[
+				Object.freeze({
+					op: 'patch',
+					scope: projectionScope(
+						'Todo',
+						projectionField('id', inputValue(['id']))
+					),
+					set: Object.freeze([
+						projectionField('note', inputValue(['meta', 'note']))
+					]),
+					unset: Object.freeze([]),
+					if_present: true
+				})
 			],
-			fallback: 'revalidate'
-		}
+			[
+				Object.freeze({
+					kind: 'record',
+					model: 'Todo',
+					key: Object.freeze(['id']),
+					fields: Object.freeze(['note']),
+					replace: Object.freeze([]),
+					upsert: false,
+					patch: true,
+					delete: false
+				})
+			]
+		)
 	});
 
-	assert.throws(
-		() =>
-			prepareReplicaCommand(
-				artifact,
-				{ meta: { count: 1 }, title: 'Absent note' },
-				{
-					commandId: COMMAND_ID,
-					generators: {
-						uuidV7: () => GENERATED_UUID,
-						ulid: () => GENERATED_ULID
-					}
-				}
-			),
-		(error) =>
-			error instanceof ReplicaCommandContractError &&
-			error.code === 'REPLICA_COMMAND_INPUT_INVALID' &&
-			error.path === 'input.meta.note'
+	const unresolved = prepareReplicaCommand(
+		artifact,
+		{ meta: { count: 1 }, title: 'Absent note' },
+		{
+			commandId: COMMAND_ID,
+			generators: {
+				uuidV7: () => GENERATED_UUID,
+				ulid: () => GENERATED_ULID
+			}
+		}
 	);
+	assert.deepEqual(unresolved.optimistic.operations, []);
+	assert.equal(unresolved.projection.revalidate, true);
 	assert.throws(
 		() =>
 			prepareReplicaCommand(
@@ -476,52 +566,121 @@ test('nested paths resolve exactly and missing or type-invalid values fail close
 
 test('the closed optimistic IR supports every declared effect kind', () => {
 	const artifact = baseArtifact({
-		effects: {
-			version: 1,
-			operations: [
-				{
-					kind: 'upsert',
-					model: 'Todo',
-					key: key(effectField('id', inputValue(['id']))),
-					fields: [effectField('title', inputValue(['title']))]
-				},
-				{
-					kind: 'patch',
-					model: 'Todo',
-					key: key(effectField('id', inputValue(['id']))),
-					fields: [effectField('rank', constantValue(2))]
-				},
-				{
-					kind: 'delete',
-					model: 'Todo',
-					key: key(effectField('id', inputValue(['id'])))
-				},
-				{
-					kind: 'link',
-					relationship: TODO_RELATIONSHIP,
-					source: key(effectField('id', inputValue(['id']))),
-					target: key(effectField('id', constantValue('target')))
-				},
-				{
-					kind: 'unlink',
-					relationship: TODO_RELATIONSHIP,
-					source: key(effectField('id', inputValue(['id']))),
-					target: key(effectField('id', constantValue('target')))
-				},
-				{ kind: 'invalidate_model', model: 'Todo' },
-				{
-					kind: 'invalidate_relationship',
-					relationship: TODO_RELATIONSHIP,
-					source: key(effectField('id', inputValue(['id'])))
-				}
+		projection: projectionArtifact(
+			[
+				Object.freeze({
+					op: 'upsert',
+					scope: projectionScope(
+						'TodoCreate',
+						projectionField('id', inputValue(['id']))
+					),
+					fields: Object.freeze([
+						projectionField('title', inputValue(['title']))
+					]),
+					replace: Object.freeze(['title'])
+				}),
+				Object.freeze({
+					op: 'patch',
+					scope: projectionScope(
+						'TodoPatch',
+						projectionField('id', inputValue(['id']))
+					),
+					set: Object.freeze([
+						projectionField('rank', constantValue(2))
+					]),
+					unset: Object.freeze([]),
+					if_present: true
+				}),
+				Object.freeze({
+					op: 'delete',
+					scope: projectionScope(
+						'TodoRemove',
+						projectionField('id', inputValue(['id']))
+					)
+				}),
+				Object.freeze({
+					op: 'link',
+					relationship: TODO_RELATIONSHIP.field,
+					source: projectionScope(
+						'Todo',
+						projectionField('id', inputValue(['id']))
+					),
+					target: projectionScope(
+						'Todo',
+						projectionField('id', constantValue('target-a'))
+					)
+				}),
+				Object.freeze({
+					op: 'unlink',
+					relationship: TODO_RELATIONSHIP.field,
+					source: projectionScope(
+						'Todo',
+						projectionField('id', inputValue(['id']))
+					),
+					target: projectionScope(
+						'Todo',
+						projectionField('id', constantValue('target-b'))
+					)
+				}),
+				Object.freeze({ op: 'invalidate_model', model: 'Todo' }),
+				Object.freeze({
+					op: 'invalidate_relationship',
+					relationship: TODO_RELATIONSHIP.field,
+					source: projectionScope(
+						'Todo',
+						projectionField('id', inputValue(['id']))
+					)
+				})
 			],
-			fallback: 'revalidate'
-		},
+			[
+				Object.freeze({
+					kind: 'record',
+					model: 'TodoCreate',
+					key: Object.freeze(['id']),
+					fields: Object.freeze(['title']),
+					replace: Object.freeze(['title']),
+					upsert: true,
+					patch: false,
+					delete: false
+				}),
+				Object.freeze({
+					kind: 'record',
+					model: 'TodoPatch',
+					key: Object.freeze(['id']),
+					fields: Object.freeze(['rank']),
+					replace: Object.freeze([]),
+					upsert: false,
+					patch: true,
+					delete: false
+				}),
+				Object.freeze({
+					kind: 'record',
+					model: 'TodoRemove',
+					key: Object.freeze(['id']),
+					fields: Object.freeze([]),
+					replace: Object.freeze([]),
+					upsert: false,
+					patch: false,
+					delete: true
+				}),
+				Object.freeze({
+					kind: 'relationship',
+					relationship: TODO_RELATIONSHIP.field,
+					source_model: 'Todo',
+					source_key: Object.freeze(['id']),
+					target_model: 'Todo',
+					target_key: Object.freeze(['id']),
+					link: true,
+					unlink: true
+				}),
+				Object.freeze({ kind: 'model', model: 'Todo' })
+			]
+		),
 		revalidation: {
 			version: 1,
 			required: false,
 			dependencies: ['todo_rows', 'todo_links'],
-			models: ['Todo'],
+			models: ['Todo', 'TodoCreate', 'TodoPatch', 'TodoRemove'],
 			relationships: [TODO_RELATIONSHIP]
 		}
 	});
@@ -549,9 +708,15 @@ test('the closed optimistic IR supports every declared effect kind', () => {
 			'invalidate_relationship'
 		]
 	);
-	assert.equal(prepared.optimistic.operations[0].key.fields[0].value, GENERATED_UUID);
-	assert.equal(prepared.optimistic.operations[1].fields[0].value, 2);
-	assert.equal(prepared.optimistic.operations[3].target.fields[0].value, 'target');
+	assert.equal(
+		prepared.optimistic.operations[0].scope.key[0].value,
+		GENERATED_UUID
+	);
+	assert.equal(prepared.optimistic.operations[1].fields.rank, 2);
+	assert.equal(
+		prepared.optimistic.operations[3].target.key[0].value,
+		'target-a'
+	);
 });
 
 test('unknown generators/effects and unresolved trusted presets fail before optimism', () => {
@@ -623,40 +788,58 @@ test('unknown generators/effects and unresolved trusted presets fail before opti
 		() =>
 			prepareReplicaCommand(
 				baseArtifact({
-					effects: {
-						version: 1,
-						operations: [{ kind: 'explode' }],
-						fallback: 'revalidate'
-					}
+					projection: projectionArtifact(
+						[Object.freeze({ op: 'explode' })],
+						[Object.freeze({ kind: 'model', model: 'Todo' })]
+					)
 				}),
 				input,
 				options
 			),
 		(error) =>
 			error instanceof ReplicaCommandContractError &&
-			error.path === 'artifact.effects.operations[0].kind'
+			error.path ===
+				'artifact.projection.preview.operations[0].mutation.op'
 	);
 	assert.throws(
 		() =>
 			prepareReplicaCommand(
 				baseArtifact({
-					effects: {
-						version: 1,
-						operations: [
-							{
-								kind: 'patch',
-								model: 'Todo',
-								key: key(effectField('id', inputValue(['id']))),
-								fields: [
-									effectField('owner', {
-										kind: 'trusted_preset',
-										name: 'current_tenant'
-									})
-								]
-							}
+					projection: projectionArtifact(
+						[
+							Object.freeze({
+								op: 'patch',
+								scope: projectionScope(
+									'Todo',
+									projectionField('id', inputValue(['id']))
+								),
+								set: Object.freeze([
+									projectionField(
+										'owner',
+										Object.freeze({
+											kind: 'trusted_preset',
+											name: 'current_tenant',
+											codec: 'string'
+										})
+									)
+								]),
+								unset: Object.freeze([]),
+								if_present: true
+							})
 						],
-						fallback: 'revalidate'
-					}
+						[
+							Object.freeze({
+								kind: 'record',
+								model: 'Todo',
+								key: Object.freeze(['id']),
+								fields: Object.freeze(['owner']),
+								replace: Object.freeze([]),
+								upsert: false,
+								patch: true,
+								delete: false
+							})
+						]
+					)
 				}),
 				input,
 				options
@@ -680,33 +863,9 @@ test('unknown generators/effects and unresolved trusted presets fail before opti
 	);
 });
 
-test('finite receipts compare projector/model as an exact multiset including multiplicity', () => {
-	const finiteArtifact = baseArtifact({
-		confirmations: {
-			version: 1,
-			kind: 'finite',
-			expected: [
-				{
-					projector: 'todos',
-					model: 'Todo',
-					key: key(effectField('id', inputValue(['id'])))
-				},
-				{
-					projector: 'todos',
-					model: 'Todo',
-					key: key(effectField('id', inputValue(['code'])))
-				},
-				{
-					projector: 'search',
-					model: 'TodoSearch',
-					key: key(effectField('id', inputValue(['id'])))
-				}
-			],
-			fallback: 'revalidate'
-		}
-	});
+test('modeled receipts defer without a delta and take obligations from server metadata', () => {
 	const prepared = prepareReplicaCommand(
-		finiteArtifact,
+		baseArtifact(),
 		{ meta: { count: 1 }, title: 'Receipt' },
 		{
 			commandId: COMMAND_ID,
@@ -729,26 +888,24 @@ test('finite receipts compare projector/model as an exact multiset including mul
 					expectation('search', 'TodoSearch', 'token-3'),
 					expectation('todos', 'Todo', 'token-1'),
 					expectation('todos', 'Todo', 'token-2')
-				]
+				],
+				projection: {}
 			})
 		),
 		{ kind: 'matched', revalidate: false }
 	);
-	assert.throws(
-		() =>
-			verifyReplicaCommandReceipt(
-				prepared,
-				receipt(prepared, 'succeeded_pending_projection', {
-					expects: [
-						expectation('search', 'TodoSearch', 'token-3'),
-						expectation('todos', 'Todo', 'token-1')
-					]
-				})
-			),
-		(error) =>
-			error instanceof ReplicaCommandContractError &&
-			error.code === 'REPLICA_COMMAND_RECEIPT_MISMATCH' &&
-			error.path === 'receipt.expects'
+	assert.deepEqual(
+		verifyReplicaCommandReceipt(
+			prepared,
+			receipt(prepared, 'succeeded_pending_projection', {
+				expects: [
+					expectation('search', 'TodoSearch', 'token-3'),
+					expectation('todos', 'Todo', 'token-1')
+				],
+				projection: {}
+			})
+		),
+		{ kind: 'matched', revalidate: false }
 	);
 	assert.throws(
 		() =>
@@ -785,12 +942,7 @@ test('finite receipts compare projector/model as an exact multiset including mul
 test('unavailable confirmation contracts always force conservative revalidation', () => {
 	const artifact = baseArtifact({
 		consistency: 'succeeded',
-		confirmations: {
-			version: 1,
-			kind: 'unavailable',
-			expected: [],
-			fallback: 'revalidate'
-		},
+		projection: undefined,
 		revalidation: {
 			version: 1,
 			required: true,
@@ -814,22 +966,16 @@ test('unavailable confirmation contracts always force conservative revalidation'
 	assert.deepEqual(
 		verifyReplicaCommandReceipt(
 			prepared,
-			receipt(prepared, 'succeeded', {
-				expects: [expectation('hidden', 'Hidden', 'opaque')]
-			})
+			receipt(prepared, 'succeeded')
 		),
-		{
-			kind: 'revalidate',
-			revalidate: true,
-			reason: 'confirmation_unavailable'
-		}
+		{ kind: 'matched', revalidate: true }
 	);
 });
 
 test('succeeded commands without finite confirmations require canonical revalidation', () => {
 	const invalid = baseArtifact({
 		consistency: 'succeeded',
-		confirmations: undefined
+		projection: undefined
 	});
 	const input = { meta: { count: 1 }, title: 'No finite fence' };
 	const options = {
@@ -849,7 +995,7 @@ test('succeeded commands without finite confirmations require canonical revalida
 
 	const valid = baseArtifact({
 		consistency: 'succeeded',
-		confirmations: undefined,
+		projection: undefined,
 		revalidation: {
 			...invalid.revalidation,
 			required: true
@@ -948,7 +1094,7 @@ test('projected command identity facts reject missing, unknown, and duplicate fi
 	);
 });
 
-test('prepared command input, variables, effects, confirmations, and plans are deeply frozen', () => {
+test('prepared command input, variables, projection, and plans are deeply frozen', () => {
 	const prepared = prepareReplicaCommand(
 		baseArtifact(),
 		{ meta: { count: 2, note: 'nested' }, title: 'Frozen' },
@@ -971,11 +1117,13 @@ test('prepared command input, variables, effects, confirmations, and plans are d
 		prepared.optimistic,
 		prepared.optimistic.operations,
 		prepared.optimistic.operations[0],
-		prepared.optimistic.operations[0].key,
-		prepared.optimistic.operations[0].key.fields,
-		prepared.confirmations,
-		prepared.confirmations.expected,
-		prepared.confirmations.expected[0],
+		prepared.optimistic.operations[0].scope,
+		prepared.optimistic.operations[0].scope.key,
+		prepared.optimistic.operations[0].fields,
+		prepared.projection,
+		prepared.projection.contract,
+		prepared.projection.contract.capabilities,
+		prepared.projection.contract.capabilities.arms,
 		prepared.revalidation,
 		prepared.revalidation.dependencies,
 		prepared.revalidation.models,

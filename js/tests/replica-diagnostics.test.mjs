@@ -133,7 +133,7 @@ function todosFrame(revision, data, errors = undefined) {
 }
 
 const commandArtifact = Object.freeze({
-	version: 1,
+	version: 2,
 	name: 'todo.rename',
 	mutationField: 'renameTodo',
 	document: 'mutation RenameTodo { renameTodo }',
@@ -144,7 +144,9 @@ const commandArtifact = Object.freeze({
 		protocolHash: `sha256:${'c'.repeat(64)}`,
 		surface: Object.freeze({ kind: 'role', name: 'user' }),
 		operation: `sha256:${'a'.repeat(64)}`,
-		trustedPresets: Object.freeze([])
+		trustedPresets: Object.freeze([
+			Object.freeze({ name: 'x-private-claim-name', codec: 'string' })
+		])
 	}),
 	input: Object.freeze({
 		kind: 'object',
@@ -179,43 +181,118 @@ const commandArtifact = Object.freeze({
 		})
 	}),
 	consistency: 'causal',
-	effects: Object.freeze({
-		version: 1,
-		operations: Object.freeze([
+	projection: Object.freeze({
+		version: 2,
+		deltaWireVersion: 1,
+		projectionProgramVersion: 2,
+		operationSemanticsVersion: 1,
+		projections: Object.freeze([
 			Object.freeze({
-				kind: 'patch',
-				model: 'Todo',
-				key: Object.freeze({
-					fields: Object.freeze([
-						Object.freeze({
-							field: 'id',
-							value: Object.freeze({
-								kind: 'input',
-								path: Object.freeze(['id'])
-							})
-						})
-					])
-				}),
-				fields: Object.freeze([
-					Object.freeze({
-						field: 'title',
-						value: Object.freeze({
-							kind: 'constant',
-							value: 'must-never-appear-in-inspection'
-						})
-					}),
-					Object.freeze({
-						field: 'owner_id',
-						value: Object.freeze({
-							kind: 'trusted_preset',
-							name: 'x-private-claim-name'
-						})
-					})
-				])
+				programId: `pp1:sha256:${'1'.repeat(64)}`,
+				bindingId: `pb1:sha256:${'2'.repeat(64)}`,
+				epoch: 'todos-v1',
+				programIrVersion: 1,
+				operationSemanticsVersion: 1
 			})
 		]),
+		eventSet: Object.freeze([
+			Object.freeze({
+				id: 'todo-renamed',
+				name: 'todo.renamed',
+				version: 1
+			})
+		]),
+		capabilities: Object.freeze({
+			version: 1,
+			arms: Object.freeze([
+				Object.freeze({
+					event: Object.freeze({
+						id: 'todo-renamed',
+						name: 'todo.renamed',
+						version: 1
+					}),
+					projection_ref: 0,
+					arm: 'todo_renamed',
+					partition: Object.freeze({ kind: 'unit' }),
+					mutations: Object.freeze([
+						Object.freeze({
+							kind: 'record',
+							model: 'Todo',
+							key: Object.freeze(['id']),
+							fields: Object.freeze(['owner_id', 'title']),
+							replace: Object.freeze([]),
+							upsert: false,
+							patch: true,
+							delete: false
+						})
+					])
+				})
+			])
+		}),
+		preview: Object.freeze({
+			version: 1,
+			occurrences: Object.freeze([
+				Object.freeze({
+					ordinal: 0,
+					event: Object.freeze({
+						id: 'todo-renamed',
+						name: 'todo.renamed',
+						version: 1
+					})
+				})
+			]),
+			operations: Object.freeze([
+				Object.freeze({
+					occurrence_ordinal: 0,
+					projection_refs: Object.freeze([0]),
+					mutation: Object.freeze({
+						op: 'patch',
+						scope: Object.freeze({
+							partition: Object.freeze({ kind: 'unit' }),
+							model: 'Todo',
+							key: Object.freeze([
+								Object.freeze({
+									ordinal: 0,
+									field: 'id',
+									value: Object.freeze({
+										kind: 'input',
+										path: Object.freeze(['id'])
+									})
+								})
+							])
+						}),
+						set: Object.freeze([
+							Object.freeze({
+								field: 'owner_id',
+								value: Object.freeze({
+									kind: 'trusted_preset',
+									name: 'x-private-claim-name',
+									codec: 'string'
+								})
+							}),
+							Object.freeze({
+								field: 'title',
+								value: Object.freeze({
+									kind: 'constant',
+									value: Object.freeze({
+										type: 'string',
+										value: 'must-never-appear-in-inspection'
+									})
+								})
+							})
+						]),
+						unset: Object.freeze([]),
+						if_present: true
+					})
+				})
+			]),
+			recoveries: Object.freeze([])
+		}),
 		fallback: 'revalidate'
 	}),
+	trustedPresets: Object.freeze([
+		Object.freeze({ name: 'x-private-claim-name', codec: 'string' })
+	]),
 	revalidation: Object.freeze({
 		version: 1,
 		required: false,
@@ -530,7 +607,7 @@ test('one diagnostics store receives both replica state and generated command ar
 			schemaHash: commandArtifact.protocol.schemaHash,
 			surface: commandArtifact.protocol.surface,
 			operation: operationHash,
-			trustedPresets: Object.freeze([])
+			trustedPresets: commandArtifact.protocol.trustedPresets
 		})
 	});
 	replica.read(protocolTodos, {});

@@ -29,12 +29,17 @@ function envelope(overrides = {}) {
 }
 
 function trusted(name) {
-	return { kind: 'trusted_preset', name };
+	return { kind: 'trusted_preset', name, codec: 'string' };
 }
 
 function presetArtifact(overrides = {}) {
+	const event = {
+		id: 'todo-assigned',
+		name: 'todo.assigned',
+		version: 1
+	};
 	return {
-		version: 1,
+		version: 2,
 		name: 'todo.assign',
 		mutationField: 'assignTodo',
 		document:
@@ -69,20 +74,77 @@ function presetArtifact(overrides = {}) {
 			}
 		},
 		consistency: 'succeeded',
-		effects: {
-			version: 1,
-			operations: [
+		projection: {
+			version: 2,
+			deltaWireVersion: 1,
+			projectionProgramVersion: 2,
+			operationSemanticsVersion: 1,
+			projections: [
 				{
-					kind: 'patch',
-					model: 'Todo',
-					key: {
-						fields: [{ field: 'tenantId', value: trusted('x-tenant') }]
-					},
-					fields: [
-						{ field: 'status', value: trusted('x-default-status') }
-					]
+					programId: `pp1:sha256:${'1'.repeat(64)}`,
+					bindingId: `pb1:sha256:${'2'.repeat(64)}`,
+					epoch: 'todos-v1',
+					programIrVersion: 1,
+					operationSemanticsVersion: 1
 				}
 			],
+			eventSet: [event],
+			capabilities: {
+				version: 1,
+				arms: [
+					{
+						event,
+						projection_ref: 0,
+						arm: 'todo_assigned',
+						partition: { kind: 'unit' },
+						mutations: [
+							{
+								kind: 'record',
+								model: 'Todo',
+								key: ['tenantId'],
+								fields: ['status'],
+								replace: [],
+								upsert: false,
+								patch: true,
+								delete: false
+							}
+						]
+					}
+				]
+			},
+			preview: {
+				version: 1,
+				occurrences: [{ ordinal: 0, event }],
+				operations: [
+					{
+						occurrence_ordinal: 0,
+						projection_refs: [0],
+						mutation: {
+							op: 'patch',
+							scope: {
+								partition: { kind: 'unit' },
+								model: 'Todo',
+								key: [
+									{
+										ordinal: 0,
+										field: 'tenantId',
+										value: trusted('x-tenant')
+									}
+								]
+							},
+							set: [
+								{
+									field: 'status',
+									value: trusted('x-default-status')
+								}
+							],
+							unset: [],
+							if_present: true
+						}
+					}
+				],
+				recoveries: []
+			},
 			fallback: 'revalidate'
 		},
 		trustedPresets: [
@@ -275,11 +337,13 @@ test('replica-bound preparation resolves only exact command descriptors while st
 	assert.deepEqual(prepared.optimistic.operations, [
 		{
 			kind: 'patch',
-			model: 'Todo',
-			key: {
-				fields: [{ field: 'tenantId', value: 'tenant-1' }]
+			scope: {
+				model: 'Todo',
+				key: [{ field: 'tenantId', value: 'tenant-1' }]
 			},
-			fields: [{ field: 'status', value: 'assigned' }]
+			fields: { status: 'assigned' },
+			unset: [],
+			ifPresent: true
 		}
 	]);
 
