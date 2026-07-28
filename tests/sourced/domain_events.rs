@@ -1,14 +1,14 @@
 use std::cell::Cell;
 
 use distributed::{
-    domain_event::DomainEventContract, AggregateBuilder, DomainDeletion, DomainEvent,
-    DomainEventBodyKind, DomainState, Entity, InMemoryRepository,
+    domain_event::{DomainEventBodyContract, DomainEventContract}, AggregateBuilder,
+    DomainDeletion, DomainEvent, DomainEventBodyKind, DomainState, Entity, InMemoryRepository,
 };
 use serde::{Deserialize, Serialize};
 
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize, distributed_macros::DomainState)]
 #[domain_state(version = 3)]
-pub struct DomainTodoState {
+struct DomainTodoState {
     todo_id: String,
     title: String,
     completed: bool,
@@ -101,12 +101,12 @@ impl DomainTodo {
 fn sourced_transitions_export_exact_non_publishable_event_contract_markers() {
     fn assert_state<C>()
     where
-        C: DomainEventContract<Body = DomainTodoState>,
+        C: DomainEventBodyContract<DomainTodoState>,
     {
     }
     fn assert_deletion<C>()
     where
-        C: DomainEventContract<Body = DomainDeletion<DomainTodoDomainIdentity>>,
+        C: DomainEventBodyContract<DomainDeletion<DomainTodoDomainIdentity>>,
     {
     }
 

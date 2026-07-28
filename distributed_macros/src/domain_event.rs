@@ -73,7 +73,6 @@ pub(crate) fn expand_domain_event(input: DeriveInput) -> syn::Result<proc_macro2
         }
 
         impl distributed::domain_event::DomainEventContract for #name {
-            type Body = Self;
             const EVENT_NAME: &'static str = #event_name;
             const EVENT_VERSION: u64 = #version;
 
@@ -81,6 +80,8 @@ pub(crate) fn expand_domain_event(input: DeriveInput) -> syn::Result<proc_macro2
                 <Self as distributed::DomainEvent>::DESCRIPTOR.clone()
             }
         }
+
+        impl distributed::domain_event::DomainEventBodyContract<Self> for #name {}
 
         impl distributed::projection::lower::ProjectionBodyMetadata for #name {
             #projection_metadata

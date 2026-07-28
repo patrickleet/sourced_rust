@@ -345,7 +345,6 @@ fn expand_domain_capture(
                     pub enum #event_type {}
 
                     impl distributed::domain_event::DomainEventContract for #event_type {
-                        type Body = #state;
                         const EVENT_NAME: &'static str = #event_name;
                         const EVENT_VERSION: u64 = #version;
 
@@ -355,6 +354,11 @@ fn expand_domain_capture(
                                 #version,
                             )
                         }
+                    }
+
+                    impl distributed::domain_event::DomainEventBodyContract<#state>
+                        for #event_type
+                    {
                     }
                 }),
                 uses_deletion_identity: false,
@@ -411,7 +415,6 @@ fn expand_domain_capture(
                 }
 
                 impl distributed::domain_event::DomainEventContract for #body_type {
-                    type Body = Self;
                     const EVENT_NAME: &'static str = #event_name;
                     const EVENT_VERSION: u64 = #version;
 
@@ -419,6 +422,8 @@ fn expand_domain_capture(
                         <Self as distributed::DomainEvent>::DESCRIPTOR.clone()
                     }
                 }
+
+                impl distributed::domain_event::DomainEventBodyContract<Self> for #body_type {}
 
                 impl distributed::projection::lower::ProjectionBodyMetadata for #body_type {
                     #projection_metadata
@@ -475,7 +480,6 @@ fn expand_domain_capture(
                 pub enum #event_type {}
 
                 impl distributed::domain_event::DomainEventContract for #event_type {
-                    type Body = distributed::DomainDeletion<#identity>;
                     const EVENT_NAME: &'static str = #event_name;
                     const EVENT_VERSION: u64 = #version;
 
@@ -492,6 +496,12 @@ fn expand_domain_capture(
                             ),
                         }
                     }
+                }
+
+                impl distributed::domain_event::DomainEventBodyContract<
+                    distributed::DomainDeletion<#identity>
+                > for #event_type
+                {
                 }
             };
             let capture = domain_capture_error(quote! {
@@ -558,7 +568,7 @@ fn expand_domain_capture(
                         fn __distributed_assert_domain_event_contract<T>()
                         where
                             T: distributed::DomainEvent
-                                + distributed::domain_event::DomainEventContract<Body = T>,
+                                + distributed::domain_event::DomainEventBodyContract<T>,
                         {
                         }
                         __distributed_assert_domain_event_contract::<#output>();

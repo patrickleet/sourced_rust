@@ -1,5 +1,5 @@
 use distributed::{
-    domain_event::DomainEventContract, sourced, DomainEvent, DomainEventBodyDescriptor,
+    domain_event::{DomainEventBodyContract, DomainEventContract}, sourced, DomainEvent, DomainEventBodyDescriptor,
     DomainEventBodyKind, DomainEventDescriptor, Entity,
 };
 use serde::Serialize;
@@ -22,7 +22,6 @@ impl DomainEvent for TodoCompleted {
 }
 
 impl DomainEventContract for TodoCompleted {
-    type Body = Self;
     const EVENT_NAME: &'static str = "todo.lied";
     const EVENT_VERSION: u64 = 1;
 
@@ -30,6 +29,8 @@ impl DomainEventContract for TodoCompleted {
         Self::DESCRIPTOR.clone()
     }
 }
+
+impl DomainEventBodyContract<Self> for TodoCompleted {}
 
 #[derive(Default)]
 struct Todo {

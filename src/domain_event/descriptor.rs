@@ -157,9 +157,6 @@ pub trait DomainEvent: Serialize {
 /// use uninhabited marker types whose `Body` is the actual state/deletion DTO.
 #[doc(hidden)]
 pub trait DomainEventContract {
-    /// Exact serialized outward body.
-    type Body: Serialize;
-
     /// Stable semantic event name.
     const EVENT_NAME: &'static str;
 
@@ -169,6 +166,13 @@ pub trait DomainEventContract {
     /// Exact semantic event and body descriptor.
     fn descriptor() -> DomainEventDescriptor;
 }
+
+/// Compile-time witness tying one exact event contract to its serialized body.
+///
+/// This separate generic witness preserves typed equality without exposing a
+/// private state DTO as an associated type on a public generated marker.
+#[doc(hidden)]
+pub trait DomainEventBodyContract<B: Serialize>: DomainEventContract {}
 
 /// Stable deletion body used when no live post-state exists.
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
