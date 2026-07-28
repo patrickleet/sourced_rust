@@ -29,12 +29,24 @@ import {
 	trustedPresetName
 } from './presets.js';
 import { fieldAtPath } from './resolve.js';
+import {
+	ProjectionDeltaValidationError,
+	validateCommandProjectionArtifact,
+	type ProjectionPreviewValue,
+	type ReplicaCommandProjection
+} from '../projection-delta/index.js';
 
 export function validateArtifact<TInput, TOutput>(
 	artifact: ReplicaCommandArtifact<TInput, TOutput>,
 	allowTrustedPresets: boolean
 ): readonly ReplicaTrustedPresetDescriptor[] {
-	if (artifact.version !== 1) artifactInvalid('artifact.version');
+	if (artifact.version !== 2) artifactInvalid('artifact.version');
+	if (
+		Object.prototype.hasOwnProperty.call(artifact, 'effects') ||
+		Object.prototype.hasOwnProperty.call(artifact, 'confirmations')
+	) {
+		artifactInvalid('artifact.version');
+	}
 	nonempty(artifact.name, 'artifact.name');
 	if (!GRAPHQL_NAME.test(artifact.mutationField)) {
 		artifactInvalid('artifact.mutationField');
@@ -79,21 +91,19 @@ export function validateArtifact<TInput, TOutput>(
 	) {
 		artifactInvalid('artifact.consistency');
 	}
-	if (artifact.effects.version !== 1) artifactInvalid('artifact.effects.version');
-	if (artifact.effects.fallback !== 'revalidate') {
-		artifactInvalid('artifact.effects.fallback');
+	if (artifact.projection !== undefined) {
+		try {
+			validateProjectionCapabilities(
+				validateCommandProjectionArtifact(artifact.projection),
+				artifact
+			);
+		} catch (error) {
+			if (error instanceof ProjectionDeltaValidationError) {
+				artifactInvalid(error.path);
+			}
+			throw error;
+		}
 	}
-	if (!Array.isArray(artifact.effects.operations)) {
-		artifactInvalid('artifact.effects.operations');
-	}
-	for (let index = 0; index < artifact.effects.operations.length; index += 1) {
-		validateEffectArtifact(
-			artifact.effects.operations[index]!,
-			artifact.input,
-			`artifact.effects.operations[${index}]`
-		);
-	}
-	validateConfirmations(artifact);
 	validateDirectProjection(artifact);
 	validateRevalidation(artifact);
 	validateTrustedPresetReferences(
@@ -159,54 +169,14 @@ export function collectTrustedPresetReferences<TInput, TOutput>(
 			out.push(Object.freeze({ name: value.name, path }));
 		}
 	};
-	const fields = (
-		value: readonly ReplicaCommandEffectField[],
-		path: string
-	): void => {
-		for (let index = 0; index < value.length; index += 1) {
-			expression(value[index]!.value, `${path}[${index}].value`);
-		}
-	};
-	const key = (value: ReplicaCommandEffectKey, path: string): void => {
-		fields(value.fields, `${path}.fields`);
-	};
-
-	for (let index = 0; index < artifact.effects.operations.length; index += 1) {
-		const effect = artifact.effects.operations[index]!;
-		const path = `artifact.effects.operations[${index}]`;
-		switch (effect.kind) {
-			case 'upsert':
-			case 'patch':
-				key(effect.key, `${path}.key`);
-				fields(effect.fields, `${path}.fields`);
-				break;
-			case 'delete':
-				key(effect.key, `${path}.key`);
-				break;
-			case 'link':
-			case 'unlink':
-				key(effect.source, `${path}.source`);
-				key(effect.target, `${path}.target`);
-				break;
-			case 'invalidate_relationship':
-				key(effect.source, `${path}.source`);
-				break;
-			case 'invalidate_model':
-				break;
-		}
-	}
-	if (artifact.confirmations?.kind === 'finite') {
-		for (
-			let index = 0;
-			index < artifact.confirmations.expected.length;
-			index += 1
-		) {
-			const confirmation = artifact.confirmations.expected[index]!;
-			const path = `artifact.confirmations.expected[${index}]`;
-			key(confirmation.key, `${path}.key`);
-			if (confirmation.partition !== undefined) {
-				expression(confirmation.partition, `${path}.partition`);
-			}
+	if (artifact.projection !== undefined) {
+		for (let index = 0; index < artifact.projection.preview.operations.length; index += 1) {
+			const mutation = artifact.projection.preview.operations[index]!.mutation;
+			collectPreviewMutationPresets(
+				mutation,
+				`artifact.projection.preview.operations[${index}].mutation`,
+				out
+			);
 		}
 	}
 	if (artifact.directProjection?.partition !== undefined) {
@@ -216,6 +186,123 @@ export function collectTrustedPresetReferences<TInput, TOutput>(
 		);
 	}
 	return Object.freeze(out);
+}
+
+function collectPreviewMutationPresets(
+	mutation: ReplicaCommandProjection['preview']['operations'][number]['mutation'],
+	path: string,
+	out: TrustedPresetReference[]
+): void {
+	const value = (expression: ProjectionPreviewValue, valuePath: string): void => {
+		switch (expression.kind) {
+			case 'trusted_preset':
+				out.push(Object.freeze({ name: expression.name, path: valuePath }));
+				break;
+			case 'list':
+				expression.values.forEach((item, index) =>
+					value(item, `${valuePath}.values[${index}]`)
+				);
+				break;
+			case 'object':
+				expression.fields.forEach((field, index) =>
+					value(field.value, `${valuePath}.fields[${index}].value`)
+				);
+				break;
+			case 'transform':
+				expression.arguments.forEach((item, index) =>
+					value(item, `${valuePath}.arguments[${index}]`)
+				);
+				break;
+			default:
+				break;
+		}
+	};
+	const scope = (
+		candidate: import('../projection-delta/index.js').ProjectionPreviewScope,
+		scopePath: string
+	): void => {
+		if (candidate.partition.kind === 'expression') {
+			value(candidate.partition.expression, `${scopePath}.partition.expression`);
+		}
+		candidate.key.forEach((field, index) =>
+			value(field.value, `${scopePath}.key[${index}].value`)
+		);
+	};
+	switch (mutation.op) {
+		case 'upsert':
+		case 'patch':
+			scope(mutation.scope, `${path}.scope`);
+			(mutation.op === 'upsert' ? mutation.fields : mutation.set).forEach(
+				(field, index) => value(field.value, `${path}.fields[${index}].value`)
+			);
+			break;
+		case 'delete':
+			scope(mutation.scope, `${path}.scope`);
+			break;
+		case 'link':
+		case 'unlink':
+			scope(mutation.source, `${path}.source`);
+			scope(mutation.target, `${path}.target`);
+			break;
+		case 'invalidate_relationship':
+			scope(mutation.source, `${path}.source`);
+			break;
+		case 'invalidate_model':
+			if (mutation.partition?.kind === 'expression') {
+				value(mutation.partition.expression, `${path}.partition.expression`);
+			}
+			break;
+	}
+}
+
+function validateProjectionCapabilities<TInput, TOutput>(
+	projection: ReplicaCommandProjection,
+	artifact: ReplicaCommandArtifact<TInput, TOutput>
+): void {
+	const models = new Set(artifact.revalidation.models);
+	const relationships = new Set(
+		artifact.revalidation.relationships.map(
+			(item) =>
+				`${item.sourceModel}\0${item.field}\0${item.targetModel}`
+		)
+	);
+	const requireModel = (model: string, path: string): void => {
+		if (!models.has(model)) artifactInvalid(path);
+	};
+	for (let index = 0; index < projection.preview.operations.length; index += 1) {
+		const mutation = projection.preview.operations[index]!.mutation;
+		const path = `artifact.projection.preview.operations[${index}].mutation`;
+		switch (mutation.op) {
+			case 'upsert':
+			case 'patch':
+			case 'delete':
+				requireModel(mutation.scope.model, `${path}.scope.model`);
+				break;
+			case 'link':
+			case 'unlink':
+				requireModel(mutation.source.model, `${path}.source.model`);
+				requireModel(mutation.target.model, `${path}.target.model`);
+				if (
+					!relationships.has(
+						`${mutation.source.model}\0${mutation.relationship}\0${mutation.target.model}`
+					)
+				) artifactInvalid(`${path}.relationship`);
+				break;
+			case 'invalidate_model':
+				requireModel(mutation.model, `${path}.model`);
+				break;
+			case 'invalidate_relationship':
+				requireModel(mutation.source.model, `${path}.source.model`);
+				if (
+					![...relationships].some((relationship) =>
+						relationship.startsWith(
+							`${mutation.source.model}\0${mutation.relationship}\0`
+						)
+					)
+				) artifactInvalid(`${path}.relationship`);
+				break;
+		}
+	}
 }
 
 export function validateShape(
@@ -323,7 +410,11 @@ export function validateDefaults(
 }
 
 export function validateConfirmations<TInput, TOutput>(
-	artifact: ReplicaCommandArtifact<TInput, TOutput>
+	artifact: Readonly<{
+		confirmations?: import('./types.js').ReplicaCommandConfirmations;
+		consistency: ReplicaCommandArtifact<TInput, TOutput>['consistency'];
+		input: ReplicaCommandArtifact<TInput, TOutput>['input'];
+	}>
 ): void {
 	const confirmations = artifact.confirmations;
 	if (confirmations === undefined) {
@@ -456,9 +547,8 @@ export function validateRevalidation<TInput, TOutput>(
 		);
 	}
 	if (
-		(artifact.effects.operations.length === 0 ||
-			(artifact.consistency !== 'projected' &&
-				artifact.confirmations?.kind !== 'finite')) &&
+		((artifact.projection?.preview.operations.length ?? 0) === 0 &&
+			artifact.consistency !== 'projected') &&
 		!plan.required
 	) {
 		artifactInvalid('artifact.revalidation.required');

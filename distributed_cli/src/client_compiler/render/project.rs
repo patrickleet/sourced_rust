@@ -298,10 +298,11 @@ fn render_sveltekit(
         "useCommands".to_string(),
     ]);
     if !manifest.commands.is_empty() {
-        value_exports.insert("COMMAND_RUNTIME_REQUIRES_ARTIFACT_V2".into());
+        value_exports.insert("createCommands".into());
     }
     for command in &manifest.commands {
         value_exports.insert(format!("Command_{}", command.mutation_field));
+        value_exports.insert(format!("prepareCommand_{}", command.mutation_field));
     }
     for operation in operations {
         value_exports.insert(operation.export_name.clone());

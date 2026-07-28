@@ -43,3 +43,8 @@ export type {
 	ReplicaReceiptVerification,
 	ReplicaTrustedPresetDescriptor
 } from './types.js';
+export type {
+	PreparedCommandProjection,
+	PreparedProjectionOperation,
+	ReplicaCommandProjection
+} from '../projection-delta/index.js';

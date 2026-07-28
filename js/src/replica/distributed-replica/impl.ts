@@ -33,6 +33,7 @@ import type {
 import {
 	replicaCommandAuthority,
 	replicaCommandDirectProjection,
+	replicaCommandProjectionDelta,
 	replicaResultObservation,
 	type ReplicaCommandAuthorityRegistration,
 	type ReplicaCommandAuthoritySnapshot,
@@ -170,6 +171,7 @@ import {
 	markOptimisticLayerAcceptedOn,
 	planOptimisticReceipts as planOptimisticReceiptsOn,
 	rejectOptimisticLayerOn,
+	replaceReplicaOptimisticLayerOn,
 	type OptimisticHost
 } from './impl-optimistic.js';
 import {
@@ -711,6 +713,19 @@ export class DistributedReplicaImpl implements DistributedReplicaApi {
 				})
 			);
 		}
+	}
+
+	[replicaCommandProjectionDelta](
+		commandId: string,
+		update: (writer: ReplicaOptimisticWriter) => void,
+		semanticChanges: readonly ReplicaIndexSemanticChange[]
+	): boolean {
+		return replaceReplicaOptimisticLayerOn(
+			this.#optimisticHost(),
+			commandId,
+			update,
+			semanticChanges
+		);
 	}
 
 	read<TData, TVariables extends GraphqlVariables>(

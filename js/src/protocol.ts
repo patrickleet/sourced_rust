@@ -6,6 +6,10 @@
  * positions remain opaque strings: the JavaScript client compares or returns
  * them, but never parses them as numbers or reconstructs server scopes.
  */
+import {
+	parseCommandProjectionMetadata,
+	type CommandProjectionMetadata
+} from './replica/projection-delta/index.js';
 
 /** The only Distributed GraphQL protocol version understood by this package. */
 export const DISTRIBUTED_PROTOCOL_VERSION = 1 as const;
@@ -168,6 +172,8 @@ export type DistributedCommandMetadata = Readonly<
 		observations: readonly DistributedProjectionObservation[];
 		/** Defaults to an empty array when omitted by the compact wire format. */
 		records: readonly DistributedRecordRevision[];
+		/** Exact modeled projection delta and opaque observation obligations. */
+		projection?: CommandProjectionMetadata;
 	}
 >;
 
@@ -447,6 +453,10 @@ function parseCommand(value: unknown): DistributedCommandMetadata {
 		'extensions.distributed.command.records',
 		parseRecordRevision
 	);
+	const projection =
+		command.projection === undefined
+			? undefined
+			: parseCommandProjectionMetadata(command.projection);
 	const commandId = opaqueString(
 		command.commandId,
 		'extensions.distributed.command.commandId'
@@ -477,7 +487,8 @@ function parseCommand(value: unknown): DistributedCommandMetadata {
 		consistency,
 		expects: Object.freeze(expects),
 		observations,
-		records
+		records,
+		...(projection === undefined ? {} : { projection })
 	}) as DistributedCommandMetadata;
 }
 

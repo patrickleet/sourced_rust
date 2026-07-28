@@ -364,13 +364,18 @@ export function applyLayers(
 				continue;
 			}
 			const current = records.get(change.key);
+			if (change.ifPresent === true && current === undefined) {
+				continue;
+			}
 			if (current !== undefined && current.model !== change.model) {
 				throw new TypeError(`record model changed for ${change.key}`);
 			}
+			const fields = { ...(current?.fields ?? {}), ...change.fields };
+			for (const field of change.unset ?? []) delete fields[field];
 			records.set(change.key, {
 				key: change.key,
 				model: change.model,
-				fields: { ...(current?.fields ?? {}), ...change.fields }
+				fields
 			});
 		}
 	}

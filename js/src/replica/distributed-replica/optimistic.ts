@@ -155,13 +155,24 @@ export function captureReplicaOptimisticUpdate(
 			const key = replicaRecordKey(model, identity);
 			const fields = cloneOptimisticFields(patch.fields);
 			const links = cloneOptimisticLinks(patch.links);
-			if (Object.keys(fields).length === 0 && Object.keys(links).length === 0) {
+			const unset = cloneOptimisticUnset(patch.unset, fields);
+			if (
+				Object.keys(fields).length === 0 &&
+				Object.keys(links).length === 0 &&
+				unset.length === 0
+			) {
 				return;
 			}
 			operations.push(
 				Object.freeze({
 					kind: 'write-record' as const,
-					write: Object.freeze({ key, fields, links })
+					write: Object.freeze({
+						key,
+						fields,
+						links,
+						...(unset.length === 0 ? {} : { unset }),
+						...(patch.ifPresent === true ? { ifPresent: true } : {})
+					})
 				})
 			);
 			changes.push(
@@ -169,7 +180,9 @@ export function captureReplicaOptimisticUpdate(
 					kind: 'upsert' as const,
 					model: model.id,
 					key,
-					fields
+					fields,
+					...(unset.length === 0 ? {} : { unset }),
+					...(patch.ifPresent === true ? { ifPresent: true } : {})
 				})
 			);
 		},
@@ -266,6 +279,25 @@ export function cloneOptimisticFields(
 			})
 		)
 	);
+}
+
+function cloneOptimisticUnset(
+	unset: ReplicaRecordPatch['unset'],
+	fields: Readonly<Record<string, CacheValue>>
+): readonly string[] {
+	if (unset === undefined) return Object.freeze([]);
+	if (!Array.isArray(unset)) throw new TypeError('record unset must be an array');
+	const result = unset.map((name) => {
+		assertReplicaName(name, 'record unset field');
+		if (Object.hasOwn(fields, name)) {
+			throw new TypeError('record field cannot be set and unset');
+		}
+		return name;
+	});
+	if (new Set(result).size !== result.length) {
+		throw new TypeError('record unset fields must be unique');
+	}
+	return Object.freeze(result);
 }
 
 export function cloneOptimisticLinks(

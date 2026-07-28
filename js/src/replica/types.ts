@@ -22,6 +22,8 @@ export type ReplicaIndexRecordChange =
 			readonly model: string;
 			readonly key: string;
 			readonly fields: Readonly<Record<string, ReplicaValue>>;
+			readonly unset?: readonly string[];
+			readonly ifPresent?: boolean;
 			readonly dependencies?: readonly string[];
 	  }
 	| {
@@ -761,6 +763,8 @@ export type ReplicaIndexTarget = {
 
 export type ReplicaRecordPatch = {
 	readonly fields?: Readonly<Record<string, ReplicaValue>>;
+	readonly unset?: readonly string[];
+	readonly ifPresent?: boolean;
 	readonly links?: Readonly<Record<string, string | readonly string[] | null>>;
 };
 

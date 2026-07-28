@@ -202,7 +202,8 @@ export class PurposeBuiltCacheEngine implements CacheEngine {
 
 	replaceOptimisticLayer(
 		id: string,
-		replacement: OptimisticLayerReplacement
+		replacement: OptimisticLayerReplacement,
+		context?: OptimisticLayerContext
 	): boolean {
 		assertName(id, 'optimistic layer id');
 		if (typeof replacement !== 'function') {
@@ -231,10 +232,17 @@ export class PurposeBuiltCacheEngine implements CacheEngine {
 				this.#readerFromGraph(prefix),
 				operations
 			);
-			if (deepEqual(operations, target.operations)) return false;
+			const stableContext =
+				context === undefined ? target.context : cloneCacheValue(context);
+			if (
+				deepEqual(operations, target.operations) &&
+				deepEqual(stableContext, target.context)
+			) return false;
 
 			const previousOperations = target.operations;
 			target.operations = operations;
+			if (stableContext === undefined) delete target.context;
+			else target.context = stableContext;
 			this.#reconcileDerivedIndexes();
 			const after = this.#materialize();
 			this.#markOverlayChanges(
@@ -726,6 +734,9 @@ export class PurposeBuiltCacheEngine implements CacheEngine {
 				for (const name of Object.keys(operation.write.fields ?? {})) {
 					this.#changedDependencies.add(recordFieldDependency(key, `field:${name}`));
 				}
+				for (const name of operation.write.unset ?? []) {
+					this.#changedDependencies.add(recordFieldDependency(key, `field:${name}`));
+				}
 				for (const name of Object.keys(operation.write.links ?? {})) {
 					this.#changedDependencies.add(recordFieldDependency(key, `link:${name}`));
 				}
@@ -773,8 +784,11 @@ export class PurposeBuiltCacheEngine implements CacheEngine {
 		operation: OverlayOperation
 	): void {
 		if (operation.kind === 'write-record') {
-			const { key, fields = {}, links = {} } = operation.write;
+			const { key, fields = {}, links = {}, unset = [] } = operation.write;
 			let record = records.get(key);
+			if (operation.write.ifPresent === true && (!record || record.tombstoned)) {
+				return;
+			}
 			let wrote = false;
 			for (const [name, value] of Object.entries(fields)) {
 				if (sequence <= this.#recordFieldFloor(key, `field:${name}`)) continue;
@@ -786,6 +800,12 @@ export class PurposeBuiltCacheEngine implements CacheEngine {
 				if (sequence <= this.#recordFieldFloor(key, `link:${name}`)) continue;
 				if (!record) record = emptyVisibleRecord();
 				record.links.set(name, value);
+				wrote = true;
+			}
+			for (const name of unset) {
+				if (sequence <= this.#recordFieldFloor(key, `field:${name}`)) continue;
+				if (!record || !record.fields.has(name)) continue;
+				record.fields.delete(name);
 				wrote = true;
 			}
 			if (wrote && record) {
@@ -1042,8 +1062,29 @@ export class PurposeBuiltCacheEngine implements CacheEngine {
 				validateRecordKey(write.key);
 				const fields = cloneFields(write.fields);
 				const links = cloneLinks(write.links);
-				if (Object.keys(fields).length === 0 && Object.keys(links).length === 0) return;
-				operations.push({ kind: 'write-record', write: { key: write.key, fields, links } });
+				const unset = Object.freeze([...(write.unset ?? [])]);
+				for (const name of unset) assertName(name, 'record field');
+				if (new Set(unset).size !== unset.length) {
+					throw new TypeError('record unset fields must be unique');
+				}
+				if (unset.some((name) => Object.hasOwn(fields, name))) {
+					throw new TypeError('record field cannot be set and unset');
+				}
+				if (
+					Object.keys(fields).length === 0 &&
+					Object.keys(links).length === 0 &&
+					unset.length === 0
+				) return;
+				operations.push({
+					kind: 'write-record',
+					write: {
+						key: write.key,
+						fields,
+						links,
+						...(unset.length === 0 ? {} : { unset }),
+						...(write.ifPresent === true ? { ifPresent: true } : {})
+					}
+				});
 			},
 			tombstoneRecord(key: RecordKey): void {
 				assertWriterActive(isActive());

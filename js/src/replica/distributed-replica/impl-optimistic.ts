@@ -122,10 +122,28 @@ export function createOptimisticLayerOn(
 export function replaceOptimisticLayerOn(
 	host: OptimisticHost,
 	id: string,
-	replacement: OptimisticLayerReplacement
+	replacement: OptimisticLayerReplacement,
+	context?: import('../../internal/cache-engine.js').OptimisticLayerContext
 ): boolean {
 	assertReplicaOptimisticLayerId(id);
-	return host.engine.replaceOptimisticLayer(id, replacement);
+	return host.engine.replaceOptimisticLayer(id, replacement, context);
+}
+
+/** Atomically replace both record operations and semantic index context. */
+export function replaceReplicaOptimisticLayerOn(
+	host: OptimisticHost,
+	id: string,
+	update: (writer: ReplicaOptimisticWriter) => void,
+	semanticChanges: readonly ReplicaIndexSemanticChange[]
+): boolean {
+	assertReplicaOptimisticLayerId(id);
+	const captured = captureReplicaOptimisticUpdate(id, update, semanticChanges);
+	return host.engine.replaceOptimisticLayer(
+		id,
+		(_reader, writer) =>
+			replayReplicaOptimisticUpdate(writer, captured.operations),
+		captured.context
+	);
 }
 
 export function markOptimisticLayerAcceptedOn(

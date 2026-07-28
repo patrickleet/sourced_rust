@@ -1,6 +1,7 @@
 export {
 	replicaCommandAuthority,
 	replicaCommandDirectProjection,
+	replicaCommandProjectionDelta,
 	replicaCommandProjectedLifecycle,
 	replicaResultObservation
 } from './symbols.js';

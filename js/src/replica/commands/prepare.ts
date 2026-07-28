@@ -11,10 +11,12 @@ import { validateArtifact } from './validate.js';
 import { selectReplicaTrustedPresetInventory } from './presets.js';
 import {
 	materializeInput,
-	resolveConfirmations,
-	resolveDirectProjection,
-	resolveEffect
+	resolveDirectProjection
 } from './resolve.js';
+import {
+	prepareCommandProjection,
+	validateCommandProjectionArtifact
+} from '../projection-delta/index.js';
 import {
 	cloneClientSurface,
 	cloneRevalidation,
@@ -88,21 +90,15 @@ export function prepareReplicaCommandInternal<TInput, TOutput>(
 		commandId,
 		...(artifact.input.kind === 'none' ? {} : { input: finalizedInput })
 	}) as ReplicaCommandVariables<TInput>;
-	const operations = Object.freeze(
-		artifact.effects.operations.map((effect, index) =>
-			resolveEffect(
-				effect,
-				finalizedInput,
-				`artifact.effects.operations[${index}]`,
-				trustedPresets
-			)
-		)
-	);
-	const confirmations = resolveConfirmations(
-		artifact.confirmations,
-		finalizedInput,
-		trustedPresets
-	);
+	const projection =
+		artifact.projection === undefined
+			? undefined
+			: prepareCommandProjection(
+					validateCommandProjectionArtifact(artifact.projection),
+					finalizedInput,
+					trustedPresets?.values ?? []
+				);
+	const operations = projection?.preview ?? Object.freeze([]);
 	const directProjection = resolveDirectProjection(
 		artifact.directProjection,
 		finalizedInput,
@@ -134,7 +130,7 @@ export function prepareReplicaCommandInternal<TInput, TOutput>(
 			operations,
 			fallback: 'revalidate' as const
 		}),
-		...(confirmations === undefined ? {} : { confirmations }),
+		...(projection === undefined ? {} : { projection }),
 		...(directProjection === undefined ? {} : { directProjection }),
 		revalidation
 	}) as ReplicaPreparedCommand<TInput, TOutput>;

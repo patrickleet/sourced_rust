@@ -30,6 +30,10 @@ export const replicaResultObservation = Symbol(
 export const replicaCommandDirectProjection = Symbol(
 	'distributed.replica.command-direct-projection'
 );
+/** @internal Atomic preview-to-actual optimistic layer replacement. */
+export const replicaCommandProjectionDelta = Symbol(
+	'distributed.replica.command-projection-delta'
+);
 /** @internal Package-private; intentionally absent from the public barrel. */
 export const replicaCommandProjectedLifecycle = Symbol(
 	'distributed.replica.command-projected-lifecycle'

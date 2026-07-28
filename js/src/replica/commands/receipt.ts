@@ -4,8 +4,7 @@ import type {
 	ReplicaReceiptVerification
 } from './types.js';
 import {
-	receiptMismatch,
-	sameProjectionMultiset
+	receiptMismatch
 } from './util.js';
 
 export function verifyReplicaCommandReceipt<TInput, TOutput>(
@@ -18,35 +17,25 @@ export function verifyReplicaCommandReceipt<TInput, TOutput>(
 	if (receipt.consistency !== prepared.consistency) {
 		receiptMismatch('receipt.consistency');
 	}
-
-	const contract = prepared.confirmations;
-	if (contract?.kind === 'unavailable') {
-		return Object.freeze({
-			kind: 'revalidate',
-			revalidate: true,
-			reason: 'confirmation_unavailable'
-		});
-	}
-
-	const expected =
-		contract?.kind === 'finite'
-			? contract.expected.map(({ projector, model }) => ({
-					projection: projector,
-					model
-				}))
-			: [];
 	if (receipt.state === 'in_progress' && receipt.expects.length === 0) {
 		return Object.freeze({
 			kind: 'deferred',
-			revalidate: prepared.revalidation.required
+			revalidate:
+				prepared.revalidation.required ||
+				prepared.projection?.revalidate === true
 		});
 	}
-	if (!sameProjectionMultiset(expected, receipt.expects)) {
+	if (prepared.projection === undefined) {
+		if (receipt.projection !== undefined || receipt.expects.length !== 0) {
+			receiptMismatch('receipt.expects');
+		}
+	} else if (receipt.projection === undefined) {
 		receiptMismatch('receipt.expects');
 	}
 	return Object.freeze({
 		kind: receipt.state === 'in_progress' ? 'deferred' : 'matched',
-		revalidate: prepared.revalidation.required
+		revalidate:
+			prepared.revalidation.required ||
+			prepared.projection?.revalidate === true
 	});
 }
-

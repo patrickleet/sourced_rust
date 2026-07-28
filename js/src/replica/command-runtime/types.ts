@@ -26,6 +26,7 @@ import type {
 import {
 	replicaCommandAuthority,
 	replicaCommandDirectProjection,
+	replicaCommandProjectionDelta,
 	replicaCommandProjectedLifecycle,
 	replicaResultObservation
 } from './symbols.js';
@@ -73,6 +74,11 @@ export type ReplicaCommandAuthorityHost = DistributedReplica & {
 		commandId: string,
 		projection: ReplicaCommandDirectProjection
 	) => void;
+	readonly [replicaCommandProjectionDelta]?: (
+		commandId: string,
+		update: (writer: ReplicaOptimisticWriter) => void,
+		semanticChanges: readonly ReplicaIndexSemanticChange[]
+	) => boolean;
 };
 
 export type ReplicaCommandTransportRequest = Readonly<{

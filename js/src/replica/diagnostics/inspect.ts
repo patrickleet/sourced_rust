@@ -1,8 +1,5 @@
 import type { GraphqlVariables } from '../../types.js';
-import type {
-	ReplicaCommandArtifact,
-	ReplicaCommandEffectExpression
-} from '../commands.js';
+import type { ReplicaCommandArtifact } from '../commands.js';
 import type {
 	ReplicaObjectSelection,
 	ReplicaOperationArtifact,
@@ -58,42 +55,33 @@ export function inspectReplicaOperationArtifact<
 export function inspectReplicaCommandArtifact<TInput, TOutput>(
 	artifact: ReplicaCommandArtifact<TInput, TOutput>
 ): ReplicaCommandArtifactInspection {
-	const effects = artifact.effects.operations.map((effect) => {
+	const effects = (artifact.projection?.preview.operations ?? []).map(({ mutation: effect }) => {
 		const models = new Set<string>();
 		const fields = new Set<string>();
 		const sources = new Set<ReplicaCommandEffectInspection['valueSources'][number]>();
-		if ('model' in effect) models.add(effect.model);
-		if ('relationship' in effect) {
-			models.add(effect.relationship.sourceModel);
-			models.add(effect.relationship.targetModel);
-			fields.add(effect.relationship.field);
-		}
-		if ('key' in effect) {
-			for (const field of effect.key.fields) {
-				fields.add(field.field);
-				sources.add(expressionSource(field.value));
-			}
+		if (effect.op === 'invalidate_model') models.add(effect.model);
+		if ('scope' in effect) {
+			models.add(effect.scope.model);
+			for (const field of effect.scope.key) fields.add(field.field);
 		}
 		if ('source' in effect) {
-			for (const field of effect.source.fields) {
-				fields.add(field.field);
-				sources.add(expressionSource(field.value));
-			}
+			models.add(effect.source.model);
+			for (const field of effect.source.key) fields.add(field.field);
 		}
 		if ('target' in effect) {
-			for (const field of effect.target.fields) {
-				fields.add(field.field);
-				sources.add(expressionSource(field.value));
-			}
+			models.add(effect.target.model);
+			for (const field of effect.target.key) fields.add(field.field);
 		}
 		if ('fields' in effect) {
 			for (const field of effect.fields) {
 				fields.add(field.field);
-				sources.add(expressionSource(field.value));
 			}
 		}
+		if ('set' in effect) {
+			for (const field of effect.set) fields.add(field.field);
+		}
 		return Object.freeze({
-			kind: effect.kind,
+			kind: effect.op,
 			models: Object.freeze([...models].sort()),
 			fields: Object.freeze([...fields].sort()),
 			valueSources: Object.freeze([...sources].sort())
@@ -224,10 +212,3 @@ function inspectSelection(
 		inspectSelection(member.selection, memberPath, injected, dependencies, indexes);
 	}
 }
-
-function expressionSource(
-	expression: ReplicaCommandEffectExpression
-): ReplicaCommandEffectInspection['valueSources'][number] {
-	return expression.kind;
-}
-

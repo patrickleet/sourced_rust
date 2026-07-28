@@ -113,6 +113,11 @@ export type {
 	ReplicaPreparedEffectKey,
 	ReplicaReceiptVerification
 } from './commands.js';
+export type {
+	PreparedCommandProjection,
+	PreparedProjectionOperation,
+	ReplicaCommandProjection
+} from './projection-delta/index.js';
 export {
 	compareReplicaOrder,
 	decideReplicaPaginationMaintenance,

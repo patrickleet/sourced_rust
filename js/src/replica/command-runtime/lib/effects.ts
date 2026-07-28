@@ -1,8 +1,10 @@
 import {
 	type ReplicaPreparedCommand,
-	type ReplicaPreparedCommandEffect,
-	type ReplicaPreparedEffectKey
 } from '../../commands.js';
+import type {
+	PreparedProjectionOperation,
+	PreparedProjectionScope
+} from '../../projection-delta/index.js';
 import { replicaRecordKey } from '../../identity.js';
 import type { ReplicaIndexSemanticChange } from '../../index-maintenance.js';
 import type {
@@ -13,22 +15,29 @@ import type {
 
 export function applyOptimisticEffects(
 	writer: ReplicaOptimisticWriter,
-	effects: readonly ReplicaPreparedCommandEffect[]
+	effects: readonly PreparedProjectionOperation[]
 ): void {
 	for (const effect of effects) {
 		switch (effect.kind) {
 			case 'upsert':
 			case 'patch': {
-				const model = modelFromKey(effect.model, effect.key);
-				writer.writeRecord(model, identityFromKey(effect.key), {
-					fields: fieldsFromEffect(effect.model, effect.key, effect.fields)
+				const model = modelFromKey(effect.scope);
+				const fields = fieldsFromEffect(effect.scope, effect.fields);
+				const unset =
+					effect.kind === 'upsert'
+						? effect.replace.filter((field) => !Object.hasOwn(effect.fields, field))
+						: effect.unset;
+				writer.writeRecord(model, identityFromKey(effect.scope), {
+					fields,
+					...(unset.length === 0 ? {} : { unset }),
+					...(effect.kind === 'patch' ? { ifPresent: true } : {})
 				});
 				break;
 			}
 			case 'delete':
 				writer.tombstoneRecord(
-					modelFromKey(effect.model, effect.key),
-					identityFromKey(effect.key)
+					modelFromKey(effect.scope),
+					identityFromKey(effect.scope)
 				);
 				break;
 			case 'link':
@@ -59,19 +68,17 @@ export function preparedSemanticChanges<TInput, TOutput>(
 			case 'link':
 			case 'unlink': {
 				const source = modelFromKey(
-					effect.relationship.sourceModel,
 					effect.source
 				);
 				const target = modelFromKey(
-					effect.relationship.targetModel,
 					effect.target
 				);
 				changes.push(
 					Object.freeze({
 						kind: effect.kind,
-						sourceModel: effect.relationship.sourceModel,
-						field: effect.relationship.field,
-						targetModel: effect.relationship.targetModel,
+						sourceModel: effect.source.model,
+						field: effect.relationship,
+						targetModel: effect.target.model,
 						sourceKey: replicaRecordKey(
 							source,
 							identityFromKey(effect.source)
@@ -100,34 +107,32 @@ export function preparedSemanticChanges<TInput, TOutput>(
 }
 
 export function modelFromKey(
-	model: string,
-	key: ReplicaPreparedEffectKey
+	scope: PreparedProjectionScope
 ): ReplicaModelArtifact {
 	return Object.freeze({
-		id: model,
-		identityFields: Object.freeze(key.fields.map(({ field }) => field))
+		id: scope.model,
+		identityFields: Object.freeze(scope.key.map(({ field }) => field))
 	});
 }
 
 export function identityFromKey(
-	key: ReplicaPreparedEffectKey
+	key: PreparedProjectionScope
 ): readonly ReplicaValue[] {
-	return Object.freeze(key.fields.map(({ value }) => value));
+	return Object.freeze(key.key.map(({ value }) => value));
 }
 
 export function fieldsFromEffect(
-	model: string,
-	key: ReplicaPreparedEffectKey,
-	fields: readonly { readonly field: string; readonly value: ReplicaValue }[]
+	scope: PreparedProjectionScope,
+	fields: Readonly<Record<string, ReplicaValue>>
 ): Readonly<Record<string, ReplicaValue>> {
 	const result: Record<string, ReplicaValue> = Object.create(null) as Record<
 		string,
 		ReplicaValue
 	>;
 	for (const field of [
-		{ field: '__typename', value: model },
-		...key.fields,
-		...fields
+		{ field: '__typename', value: scope.model },
+		...scope.key,
+		...Object.entries(fields).map(([field, value]) => ({ field, value }))
 	]) {
 		Object.defineProperty(result, field.field, {
 			enumerable: true,
@@ -138,4 +143,3 @@ export function fieldsFromEffect(
 	}
 	return Object.freeze(result);
 }
-

@@ -4,6 +4,7 @@ export {
 	ReplicaCommandRuntimeError,
 	replicaCommandAuthority,
 	replicaCommandDirectProjection,
+	replicaCommandProjectionDelta,
 	replicaCommandProjectedLifecycle,
 	replicaCommandProjectedLifecycleOf,
 	replicaResultObservation

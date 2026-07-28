@@ -45,6 +45,7 @@ import {
 import { ReplicaCommandRuntimeError } from './errors.js';
 import {
 	replicaCommandAuthority,
+	replicaCommandProjectionDelta,
 	replicaCommandProjectedLifecycle,
 	replicaResultObservation
 } from './symbols.js';
@@ -67,6 +68,94 @@ import type {
 	ReplicaCommandTransportResult,
 	SemanticReplica
 } from './types.js';
+import {
+	operationsFromProjectionDelta,
+	validateProjectionMetadataAuthority,
+	type ProjectionDelta,
+	type ReplicaCommandProjection
+} from '../projection-delta/index.js';
+
+function assertActualProjectionCapabilities(
+	contract: ReplicaCommandProjection,
+	delta: ProjectionDelta
+): void {
+	for (const { mutation } of delta.operations) {
+		const matched = contract.preview.operations.some(({ mutation: preview }) => {
+			if (preview.op !== mutation.op) return false;
+			switch (mutation.op) {
+				case 'upsert':
+					return (
+						preview.op === 'upsert' &&
+						sameScopeCapability(preview.scope, mutation.scope) &&
+						sameStrings(preview.replace, mutation.replace) &&
+						sameStrings(
+							preview.fields.map(({ field }) => field),
+							mutation.fields.map(({ field }) => field)
+						)
+					);
+				case 'patch':
+					return (
+						preview.op === 'patch' &&
+						sameScopeCapability(preview.scope, mutation.scope) &&
+						sameStrings(preview.unset, mutation.unset) &&
+						sameStrings(
+							preview.set.map(({ field }) => field),
+							mutation.set.map(({ field }) => field)
+						)
+					);
+				case 'delete':
+					return (
+						preview.op === 'delete' &&
+						sameScopeCapability(preview.scope, mutation.scope)
+					);
+				case 'link':
+				case 'unlink':
+					return (
+						preview.op === mutation.op &&
+						preview.relationship === mutation.relationship &&
+						sameScopeCapability(preview.source, mutation.source) &&
+						sameScopeCapability(preview.target, mutation.target)
+					);
+				case 'invalidate_model':
+					return (
+						preview.op === 'invalidate_model' &&
+						preview.model === mutation.model &&
+						(preview.partition === undefined) ===
+							(mutation.partition === undefined)
+					);
+				case 'invalidate_relationship':
+					return (
+						preview.op === 'invalidate_relationship' &&
+						preview.relationship === mutation.relationship &&
+						sameScopeCapability(preview.source, mutation.source)
+					);
+			}
+		});
+		if (!matched) {
+			throw new Error('actual projection delta exceeds generated capabilities');
+		}
+	}
+}
+
+function sameScopeCapability(
+	left: { readonly model: string; readonly key: readonly { readonly field: string }[] },
+	right: { readonly model: string; readonly key: readonly { readonly field: string }[] }
+): boolean {
+	return (
+		left.model === right.model &&
+		sameStrings(
+			left.key.map(({ field }) => field),
+			right.key.map(({ field }) => field)
+		)
+	);
+}
+
+function sameStrings(left: readonly string[], right: readonly string[]): boolean {
+	return (
+		left.length === right.length &&
+		left.every((value, index) => value === right[index])
+	);
+}
 
 export function createReplicaCommandRuntime<
 	const TEntries extends Readonly<Record<string, CommandEntry>>
@@ -113,9 +202,93 @@ export function createReplicaCommandRuntime<
 	}
 	const registration = replica[replicaCommandAuthority]?.(contract);
 	const pending = new Map<string, PendingProjection>();
+	const projectionReplays = new Map<string, string>();
 	const unmanagedLayers = new Set<string>();
 	const runtimeAbort = new AbortController();
 	let disposed = false;
+
+	const applyActualProjection = (
+		prepared: ReplicaPreparedCommand<unknown, unknown>,
+		metadata: import('../../protocol.js').DistributedCommandMetadata,
+		authority: CapturedAuthority
+	): boolean => {
+		if (prepared.projection === undefined) {
+			if (metadata.projection !== undefined || metadata.expects.length !== 0) {
+				throw new Error('unmodeled command returned a projection delta');
+			}
+			return false;
+		}
+		if (metadata.state === 'in_progress' && metadata.projection === undefined) {
+			return false;
+		}
+		const actual = metadata.projection;
+		if (actual === undefined) {
+			throw new Error('modeled command omitted its projection delta');
+		}
+		const canonical = validateProjectionMetadataAuthority(
+			actual,
+			prepared.projection.contract,
+			{
+				surface: prepared.transport.protocol.surface,
+				schemaHash: prepared.transport.protocol.schemaHash,
+				protocolHash: prepared.transport.protocol.protocolHash,
+				cacheScope: authority.scope.cacheScope,
+				causationId: metadata.causationId
+			}
+		);
+		const expected = actual.obligations.map((obligation) => ({
+			projection:
+				actual.delta.projections[obligation.projectionRef]!.program_id,
+			model: obligation.model,
+			scopeToken: obligation.scopeToken
+		}));
+		if (
+			expected.length !== metadata.expects.length ||
+			expected.some((item, index) => {
+				const candidate = metadata.expects[index];
+				return (
+					candidate === undefined ||
+					candidate.projection !== item.projection ||
+					candidate.model !== item.model ||
+					candidate.scopeToken !== item.scopeToken
+				);
+			})
+		) {
+			throw new Error('projection obligations do not match command expectations');
+		}
+		const previous = projectionReplays.get(prepared.commandId);
+		if (previous !== undefined) {
+			if (previous !== canonical) {
+				throw new Error('projection delta changed during command replay');
+			}
+			return actual.revalidate || actual.obligations.length === 0;
+		}
+		assertActualProjectionCapabilities(
+			prepared.projection.contract,
+			actual.delta
+		);
+		const operations = operationsFromProjectionDelta(actual.delta.operations);
+		const seam = replica[replicaCommandProjectionDelta];
+		if (seam === undefined) {
+			throw new Error('replica does not implement projection delta replacement');
+		}
+		const actualPrepared = Object.freeze({
+			...prepared,
+			optimistic: Object.freeze({
+				version: 1 as const,
+				operations,
+				fallback: 'revalidate' as const
+			})
+		});
+		seam.call(
+			replica,
+			prepared.commandId,
+			(writer) => applyOptimisticEffects(writer, operations),
+			preparedSemanticChanges(actualPrepared)
+		);
+		projectionReplays.set(prepared.commandId, canonical);
+		return actual.revalidate || actual.obligations.length === 0;
+	};
 
 	const rejectUnmanagedLayer = (commandId: string): boolean => {
 		unmanagedLayers.delete(commandId);
@@ -295,6 +468,7 @@ export function createReplicaCommandRuntime<
 				);
 			}
 			let status: ReplicaCommandStatus;
+			let statusRequiresRevalidation = false;
 			try {
 				status = requireStatusEnvelope(
 					result,
@@ -304,6 +478,13 @@ export function createReplicaCommandRuntime<
 					contract
 				);
 				validateStatusProgression(tracker.state, tracker.metadata, status);
+				if (status.metadata !== undefined) {
+					statusRequiresRevalidation = applyActualProjection(
+						prepared as ReplicaPreparedCommand<unknown, unknown>,
+						status.metadata,
+						authority
+					);
+				}
 			} catch (error) {
 				revalidateInBackground(prepared, authority);
 				throw new ReplicaCommandRuntimeError(
@@ -365,8 +546,9 @@ export function createReplicaCommandRuntime<
 					} else if (
 						metadata.state === 'projected' ||
 						(metadata.state === 'succeeded' &&
-							prepared.confirmations === undefined &&
-							prepared.revalidation.required)
+							metadata.expects.length === 0 &&
+							(prepared.revalidation.required ||
+								statusRequiresRevalidation))
 					) {
 						/*
 						 * Status is causal truth, but it carries no canonical
@@ -677,17 +859,11 @@ export function createReplicaCommandRuntime<
 			);
 		}
 		if ((result.errors?.length ?? 0) > 0) {
-			let retainedRecovery: ReplicaCommandRecoveryReceipt<TOutput> | undefined;
-			if (prepared.confirmations?.kind === 'finite') {
-				replica.markOptimisticLayerAccepted(prepared.commandId, metadata);
-				retainedRecovery = recoveryForRetainedLayer();
-			} else {
-				rejectUnmanagedLayer(prepared.commandId);
-			}
+			rejectUnmanagedLayer(prepared.commandId);
 			revalidateInBackground(prepared, authority);
 			throw new ReplicaCommandRuntimeError(
 				'REPLICA_COMMAND_PROTOCOL_INVALID',
-				{ commandId: prepared.commandId, recovery: retainedRecovery }
+				{ commandId: prepared.commandId }
 			);
 		}
 
@@ -699,24 +875,29 @@ export function createReplicaCommandRuntime<
 				prepared.transport.mutationField
 			) as TOutput;
 		} catch (error) {
-			let retainedRecovery: ReplicaCommandRecoveryReceipt<TOutput> | undefined;
-			if (
-				prepared.consistency === 'projected' ||
-				prepared.confirmations?.kind !== 'finite'
-			) {
-				rejectUnmanagedLayer(prepared.commandId);
-			} else {
-				replica.markOptimisticLayerAccepted(prepared.commandId, metadata);
-				retainedRecovery = recoveryForRetainedLayer();
-			}
+			rejectUnmanagedLayer(prepared.commandId);
 			revalidateInBackground(prepared, authority);
 			throw new ReplicaCommandRuntimeError(
 				'REPLICA_COMMAND_PROTOCOL_INVALID',
 				{
 					commandId: prepared.commandId,
-					cause: error,
-					recovery: retainedRecovery
+					cause: error
 				}
+			);
+		}
+		let actualRequiresRevalidation = false;
+		try {
+			actualRequiresRevalidation = applyActualProjection(
+				prepared as ReplicaPreparedCommand<unknown, unknown>,
+				metadata,
+				authority
+			);
+		} catch (error) {
+			rejectUnmanagedLayer(prepared.commandId);
+			revalidateInBackground(prepared, authority);
+			throw new ReplicaCommandRuntimeError(
+				'REPLICA_COMMAND_PROTOCOL_INVALID',
+				{ commandId: prepared.commandId, cause: error }
 			);
 		}
 		let projected:
@@ -760,7 +941,7 @@ export function createReplicaCommandRuntime<
 				prepared.commandId,
 				metadata
 			);
-			if (prepared.confirmations?.kind === 'finite') {
+			if (metadata.expects.length > 0) {
 				const controller = pendingProjection(
 					authority,
 					metadata,
@@ -805,7 +986,7 @@ export function createReplicaCommandRuntime<
 			}
 		}
 
-		if (prepared.revalidation.required) {
+		if (prepared.revalidation.required || actualRequiresRevalidation) {
 			revalidateAndConfirmUnmanagedInBackground(prepared, authority);
 		}
 
@@ -888,6 +1069,11 @@ export function createReplicaCommandRuntime<
 			if (command?.commandId === commandId) {
 				try {
 					verifyReplicaCommandReceipt(controller.prepared, command);
+					applyActualProjection(
+						controller.prepared,
+						command,
+						controller.authority
+					);
 				} catch (error) {
 					revalidateInBackground(
 						controller.prepared,

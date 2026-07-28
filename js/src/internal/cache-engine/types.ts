@@ -19,6 +19,10 @@ export type RecordWrite = {
 	incarnation?: Revision;
 	/** Omitted fields stay absent. A present `null` remains present. */
 	fields?: Readonly<Record<string, CacheValue>>;
+	/** Optimistic-only field removals; base writes never use this member. */
+	unset?: readonly string[];
+	/** Optimistic-only guard which suppresses the whole write when absent. */
+	ifPresent?: boolean;
 	/** Relationship identities are stored separately from scalar/JSON fields. */
 	links?: Readonly<Record<string, RecordLink>>;
 };
@@ -244,7 +248,8 @@ export interface CacheEngine {
 	 */
 	replaceOptimisticLayer(
 		id: string,
-		replacement: OptimisticLayerReplacement
+		replacement: OptimisticLayerReplacement,
+		context?: OptimisticLayerContext
 	): boolean;
 	setDerivedIndexReconciler(reconciler: DerivedIndexReconciler | undefined): void;
 	markOptimisticLayerAccepted(id: string): boolean;

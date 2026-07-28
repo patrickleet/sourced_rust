@@ -4,6 +4,11 @@ import type {
 	DistributedTrustedPresetCodec
 } from '../../protocol.js';
 import type { ReplicaClientSurface, ReplicaValue } from '../types.js';
+import type {
+	PreparedCommandProjection,
+	PreparedProjectionOperation,
+	ReplicaCommandProjection
+} from '../projection-delta/index.js';
 
 	/^[0-9a-f]{8}-[0-9a-f]{4}-7[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i;
 
@@ -158,7 +163,7 @@ export type ReplicaCommandRevalidationPlan = {
  * create optimistic cache truth.
  */
 export type ReplicaCommandArtifact<TInput = void, TOutput = unknown> = {
-	readonly version: 1;
+	readonly version: 2;
 	readonly name: string;
 	readonly mutationField: string;
 	readonly document: string;
@@ -176,8 +181,11 @@ export type ReplicaCommandArtifact<TInput = void, TOutput = unknown> = {
 	readonly output: ReplicaCommandShape;
 	readonly inputDefaults?: ReplicaCommandInputDefaults;
 	readonly consistency: DistributedCommandConsistency;
-	readonly effects: ReplicaCommandEffects;
-	readonly confirmations?: ReplicaCommandConfirmations;
+	/** Compiler-owned projection contract. Absence means no invented delta. */
+	readonly projection?: ReplicaCommandProjection;
+	/** Artifact v1 effects and confirmations are deliberately not decoded. */
+	readonly effects?: never;
+	readonly confirmations?: never;
 	readonly directProjection?: ReplicaCommandDirectProjection;
 	readonly trustedPresets?: readonly ReplicaTrustedPresetDescriptor[];
 	readonly revalidation: ReplicaCommandRevalidationPlan;
@@ -263,9 +271,10 @@ export type ReplicaPreparedCommand<TInput = void, TOutput = unknown> = {
 	};
 	readonly optimistic: {
 		readonly version: 1;
-		readonly operations: readonly ReplicaPreparedCommandEffect[];
+		readonly operations: readonly PreparedProjectionOperation[];
 		readonly fallback: 'revalidate';
 	};
+	readonly projection?: PreparedCommandProjection;
 	readonly confirmations?: ReplicaPreparedConfirmations;
 	readonly directProjection?: {
 		readonly topology: ReplicaCommandDirectProjection['topology'];

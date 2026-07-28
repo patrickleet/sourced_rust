@@ -1304,3 +1304,40 @@ test('aggregate snapshots invalidate from declared dependencies and registry cle
 	);
 	assert.deepEqual(decisions, []);
 });
+
+test('conditional patches do not synthesize a row when an earlier create is rejected', () => {
+	const engine = createCacheEngine();
+	const dependent = 'Todo:["dependent"]';
+	const independent = 'Todo:["independent"]';
+	engine.createOptimisticLayer('create', (writer) =>
+		writer.writeRecord({
+			key: dependent,
+			fields: { id: 'dependent', title: 'preview' }
+		})
+	);
+	engine.createOptimisticLayer('patch', (writer) =>
+		writer.writeRecord({
+			key: dependent,
+			fields: { status: 'completed' },
+			unset: ['title'],
+			ifPresent: true
+		})
+	);
+	engine.createOptimisticLayer('independent', (writer) =>
+		writer.writeRecord({
+			key: independent,
+			fields: { id: 'independent', title: 'safe' }
+		})
+	);
+	assert.deepEqual(engine.read((reader) => reader.record(dependent)?.fields), {
+		id: 'dependent',
+		status: 'completed'
+	});
+
+	assert.equal(engine.rejectOptimisticLayer('create'), true);
+	assert.equal(engine.read((reader) => reader.record(dependent)), undefined);
+	assert.deepEqual(engine.read((reader) => reader.record(independent)?.fields), {
+		id: 'independent',
+		title: 'safe'
+	});
+});
