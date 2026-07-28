@@ -8,6 +8,7 @@
 pub mod client_manifest;
 pub(crate) mod command_contract;
 pub mod naming;
+pub mod projection_delta;
 pub mod sdl;
 pub mod surface;
 
