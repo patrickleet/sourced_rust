@@ -1,8 +1,8 @@
 use std::fmt;
 use std::time::{Duration, SystemTime};
 
-use base64::Engine as _;
 use base64::engine::general_purpose::URL_SAFE_NO_PAD;
+use base64::Engine as _;
 use serde_json::Value;
 
 use crate::projection_protocol::{
@@ -11,9 +11,9 @@ use crate::projection_protocol::{
 use crate::repository::CommitBatch;
 
 use super::{
-    AttemptToken, CanonicalInputHash, CausationId, CommandContractFingerprint, CommandId,
-    CommandLedgerError, CommandLedgerKey, CommandLedgerState, SHA256_BYTES, TerminalCommandState,
-    ids::COMMAND_REPLAY_VERSION, state::validate_projection_obligation_semantics,
+    ids::COMMAND_REPLAY_VERSION, state::validate_projection_obligation_semantics, AttemptToken,
+    CanonicalInputHash, CausationId, CommandContractFingerprint, CommandId, CommandLedgerError,
+    CommandLedgerKey, CommandLedgerState, TerminalCommandState, SHA256_BYTES,
 };
 
 /// One validated reservation request. Fresh candidate IDs lose a race safely:

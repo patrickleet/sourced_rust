@@ -13,8 +13,8 @@ use super::lower::{
     ProjectionDeltaAuthority, ProjectionDeltaPlanOccurrence, ProjectionDeltaRequestAuthority,
 };
 use super::types::{
-    AuthorizationTransition, MAX_PROJECTION_DELTA_OPERATIONS, ProjectionDeltaCacheScopeToken,
-    ProjectionDeltaVisibility, ProjectionMutationSource,
+    AuthorizationTransition, ProjectionDeltaCacheScopeToken, ProjectionDeltaVisibility,
+    ProjectionMutationSource, MAX_PROJECTION_DELTA_OPERATIONS,
 };
 use super::{
     ProjectionDelta, ProjectionDeltaError, ProjectionDeltaMutation, ProjectionDeltaPartition,
@@ -23,8 +23,9 @@ use super::{
 use crate::command_ledger::{CausationId, PrincipalPartitionId};
 use crate::graphql::client_manifest::DistributedClientSurfaceExport;
 use crate::graphql::protocol::{
-    CommandProjectionMetadataV1, CommandProjectionObligationV1, MAX_COMMAND_PROJECTION_OBLIGATIONS,
-    OpaqueProtocolToken, ProtocolTokenCodec, ProtocolTokenError, ProtocolTokenPurpose,
+    CommandProjectionMetadataV1, CommandProjectionObligationV1, OpaqueProtocolToken,
+    ProtocolTokenCodec, ProtocolTokenError, ProtocolTokenPurpose,
+    MAX_COMMAND_PROJECTION_OBLIGATIONS,
 };
 use crate::graphql::surface::{Surface, SurfaceModeledProjection};
 use crate::projection::placement::{ProjectionBinding, ProjectionExecutorRoute};

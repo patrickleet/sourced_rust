@@ -5,8 +5,8 @@ use serde::de::{Error as _, IgnoredAny, SeqAccess, Visitor};
 use serde::{Deserialize, Deserializer, Serialize};
 
 use super::OpaqueProtocolToken;
-use crate::MAX_DOMAIN_EVENT_BODY_BYTES;
 use crate::graphql::projection_delta::{ProjectionDelta, ProjectionDeltaError};
+use crate::MAX_DOMAIN_EVENT_BODY_BYTES;
 
 /// Version of the command response/status projection metadata envelope.
 pub(crate) const COMMAND_PROJECTION_METADATA_WIRE_VERSION: u16 = 1;
@@ -349,10 +349,10 @@ mod tests {
         DISTRIBUTED_CLIENT_MANIFEST_VERSION, DISTRIBUTED_CLIENT_PROTOCOL_VERSION,
     };
     use crate::graphql::projection_delta::{
-        DeltaKeyField, DeltaValue, PROJECTION_DELTA_WIRE_VERSION, ProjectionDeltaIdentity,
-        ProjectionDeltaMutation, ProjectionDeltaOccurrence, ProjectionDeltaOperation,
-        ProjectionDeltaPartition, ProjectionDeltaProjectionIdentity, ProjectionDeltaScope,
-        ProjectionDeltaSurfaceIdentity,
+        DeltaKeyField, DeltaValue, ProjectionDeltaIdentity, ProjectionDeltaMutation,
+        ProjectionDeltaOccurrence, ProjectionDeltaOperation, ProjectionDeltaPartition,
+        ProjectionDeltaProjectionIdentity, ProjectionDeltaScope, ProjectionDeltaSurfaceIdentity,
+        PROJECTION_DELTA_WIRE_VERSION,
     };
     use crate::graphql::protocol::{ProtocolTokenCodec, ProtocolTokenPurpose};
     use sha2::{Digest, Sha256};

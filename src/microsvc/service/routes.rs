@@ -8,15 +8,15 @@ use std::time::SystemTime;
 
 #[cfg(feature = "graphql")]
 use super::causal::{
-    CausalCommandPublicStatus, CausalDispatchError, CausalDispatchResult, abandon_causal_attempt,
-    causal_handler_error_code, commit_causal_rejection, ensure_causal_grant,
-    evaluate_causal_command_status, internal_ledger_error, load_committed_dispatch_result,
-    recover_causal_commit_error, replay_result,
+    abandon_causal_attempt, causal_handler_error_code, commit_causal_rejection,
+    ensure_causal_grant, evaluate_causal_command_status, internal_ledger_error,
+    load_committed_dispatch_result, recover_causal_commit_error, replay_result,
+    CausalCommandPublicStatus, CausalDispatchError, CausalDispatchResult,
 };
 use super::handlers::{
-    CausalCommandContext, CausalGuardFn, GuardFn, Handler, HandlerFn, HandlerFuture,
-    PreparedCommandHandler, PreparedHandlerFn, ProjectorBootstrapFuture, boxed_causal_guard,
-    boxed_handler, boxed_prepared_handler,
+    boxed_causal_guard, boxed_handler, boxed_prepared_handler, CausalCommandContext, CausalGuardFn,
+    GuardFn, Handler, HandlerFn, HandlerFuture, PreparedCommandHandler, PreparedHandlerFn,
+    ProjectorBootstrapFuture,
 };
 use crate::aggregate::Aggregate;
 use crate::bus::{Bus, Message, MessageKind, MessagePublisher, OrderedDelivery, TransportError};
@@ -623,17 +623,14 @@ impl<D: Send + Sync + 'static> Routes<D> {
                     binding.id()
                 )
             });
-            let topology = ProjectorTopologyId::new(
-                physical.version(),
-                physical.name(),
-                physical.digest(),
-            )
-            .unwrap_or_else(|error| {
-                panic!(
+            let topology =
+                ProjectorTopologyId::new(physical.version(), physical.name(), physical.digest())
+                    .unwrap_or_else(|error| {
+                        panic!(
                     "local modeled projection binding `{}` has invalid physical topology: {error}",
                     binding.id()
                 )
-            });
+                    });
             let compiled = CompiledProjectionTopology::from_modeled_binding(
                 topology,
                 binding.outputs().iter().map(|output| {

@@ -21,11 +21,11 @@ use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
 
 use super::{
-    MAX_PROJECTION_PARTITION_BYTES, MAX_PROJECTION_POSITION, MAX_PROJECTION_RECORD_KEY_BYTES,
     ProjectionChangeCursor, ProjectionCheckpoint, ProjectionCommitOutcome, ProjectionEpoch,
     ProjectionInputCursor, ProjectionPartition, ProjectionProtocolValidationError,
     ProjectionRecordScope, ProjectionScopeCodec, ProjectionSource, ProjectorTopologyId,
-    RecordRevision,
+    RecordRevision, MAX_PROJECTION_PARTITION_BYTES, MAX_PROJECTION_POSITION,
+    MAX_PROJECTION_RECORD_KEY_BYTES,
 };
 use crate::repository::{InboxReceipt, RepositoryError};
 use crate::table::{
@@ -63,15 +63,15 @@ pub(crate) use commit::{
 pub use error::ProjectionProtocolError;
 pub(super) use helpers::domain_separated_digest;
 pub use identity::{
-    DEFAULT_MAX_RETAINED_PROJECTION_CHANGES, ProjectionChangeRetention, ProjectionGeneration,
-    ProjectionInputFingerprint, ProjectionObservationKind,
+    ProjectionChangeRetention, ProjectionGeneration, ProjectionInputFingerprint,
+    ProjectionObservationKind, DEFAULT_MAX_RETAINED_PROJECTION_CHANGES,
 };
 pub(crate) use identity::{
-    MAX_PROJECTION_EVIDENCE_BATCH_ITEMS, MAX_PROJECTION_QUERY_BATCH_CHECKPOINT_PROBES,
-    MAX_PROJECTION_QUERY_BATCH_ROWS, MAX_PROJECTION_QUERY_CHECKPOINT_PROBES,
     ProjectionInputDisposition, ProjectionModelOwnership, ProjectionMutationKind,
     ProjectionObservationRequest, ProjectionObservationTarget, ProjectionRecordExpectation,
-    ProjectionRecordMutation, TrustedProjectionInput,
+    ProjectionRecordMutation, TrustedProjectionInput, MAX_PROJECTION_EVIDENCE_BATCH_ITEMS,
+    MAX_PROJECTION_QUERY_BATCH_CHECKPOINT_PROBES, MAX_PROJECTION_QUERY_BATCH_ROWS,
+    MAX_PROJECTION_QUERY_CHECKPOINT_PROBES,
 };
 pub(crate) use ownership::validate_ownership_batch;
 pub use query::{
@@ -93,6 +93,6 @@ pub(crate) use query::{
     ProjectionQuerySnapshot, ProjectionQuerySnapshotBatch, ProjectionQuerySnapshotBatchRequest,
     ProjectionQuerySnapshotRequest, ProjectionScopedRowSnapshot,
 };
-pub(crate) use replay::SameTransactionProjectionEvidence;
 pub use r#trait::ProjectionChangeRead;
 pub(crate) use r#trait::ProjectionProtocolStore;
+pub(crate) use replay::SameTransactionProjectionEvidence;

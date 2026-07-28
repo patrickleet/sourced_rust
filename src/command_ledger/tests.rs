@@ -829,12 +829,10 @@ where
         .unwrap();
     assert!(repo.load_graph(load).await.unwrap().root.is_none());
     assert!(repo.get_snapshot(&identity).await.unwrap().is_none());
-    assert!(
-        !repo
-            .inbox_contains(&inbox_consumer, &inbox_message_id)
-            .await
-            .unwrap()
-    );
+    assert!(!repo
+        .inbox_contains(&inbox_consumer, &inbox_message_id)
+        .await
+        .unwrap());
     match repo
         .lookup_command(&key, CommandLookupScope::CommandName("order.create"))
         .await
@@ -920,11 +918,10 @@ where
             SystemTime::UNIX_EPOCH + Duration::from_secs(1),
         )
         .unwrap();
-    assert!(
-        repo.commit_causal_batch(CausalCommitBatch::new(CommitBatch::empty(), completion))
-            .await
-            .is_err()
-    );
+    assert!(repo
+        .commit_causal_batch(CausalCommitBatch::new(CommitBatch::empty(), completion))
+        .await
+        .is_err());
     assert_eq!(
         repo.lookup_command(&key, CommandLookupScope::CommandName("order.create"))
             .await
@@ -1105,26 +1102,22 @@ fn completion_rejects_inconsistent_projection_obligation_states() {
         TerminalCommandState::Projected,
         TerminalCommandState::Rejected,
     ] {
-        assert!(
-            fresh_attempt()
-                .complete(
-                    state,
-                    serde_json::json!({"ok": true}),
-                    Duration::from_secs(300),
-                )
-                .is_ok()
-        );
-    }
-    assert!(
-        fresh_attempt()
-            .complete_with_obligations(
-                TerminalCommandState::SucceededPendingProjection,
+        assert!(fresh_attempt()
+            .complete(
+                state,
                 serde_json::json!({"ok": true}),
-                vec![resolved_obligation("pending")],
                 Duration::from_secs(300),
             )
-            .is_ok()
-    );
+            .is_ok());
+    }
+    assert!(fresh_attempt()
+        .complete_with_obligations(
+            TerminalCommandState::SucceededPendingProjection,
+            serde_json::json!({"ok": true}),
+            vec![resolved_obligation("pending")],
+            Duration::from_secs(300),
+        )
+        .is_ok());
 }
 
 #[test]
@@ -1674,9 +1667,9 @@ async fn concurrent_in_memory_reservations_have_one_winner_and_one_cause() {
 #[cfg(feature = "sqlite")]
 #[tokio::test]
 async fn sqlite_adapter_enforces_attempt_fence_and_replays() {
-    use crate::SqliteRepository;
     use crate::outbox::{OutboxMessage, OutboxMessageStatus};
     use crate::outbox_worker::OutboxStore;
+    use crate::SqliteRepository;
 
     let repo = SqliteRepository::connect_and_migrate("sqlite::memory:")
         .await
@@ -1718,13 +1711,12 @@ async fn sqlite_adapter_enforces_attempt_fence_and_replays() {
             .await,
         Err(CommandLedgerError::AttemptFenced { .. })
     ));
-    assert!(
-        repo.outbox_store()
-            .messages_by_status(OutboxMessageStatus::Pending, 10)
-            .await
-            .unwrap()
-            .is_empty()
-    );
+    assert!(repo
+        .outbox_store()
+        .messages_by_status(OutboxMessageStatus::Pending, 10)
+        .await
+        .unwrap()
+        .is_empty());
 
     let completion = second
         .complete(

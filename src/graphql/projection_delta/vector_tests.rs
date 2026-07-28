@@ -1,4 +1,4 @@
-use serde_json::{Value, json};
+use serde_json::{json, Value};
 use sha2::{Digest, Sha256};
 
 use super::authorization::{
@@ -7,18 +7,18 @@ use super::authorization::{
 use super::canonical::{canonicalize_operations, canonicalize_recoveries};
 use super::lower::ProjectionDeltaRequestAuthority;
 use super::types::{
-    AuthorizationTransition, MAX_PROJECTION_DELTA_OPERATIONS, ProjectionDeltaCacheScopeToken,
-    ProjectionDeltaVisibility, ProjectionMutationSource,
+    AuthorizationTransition, ProjectionDeltaCacheScopeToken, ProjectionDeltaVisibility,
+    ProjectionMutationSource, MAX_PROJECTION_DELTA_OPERATIONS,
 };
 use super::*;
 use crate::graphql::client_manifest::{
     ClientCapabilities, ClientExecutionLimits, ClientProtocolOperations, ClientSurfaceIdentity,
-    DISTRIBUTED_CLIENT_MANIFEST_VERSION, DISTRIBUTED_CLIENT_PROTOCOL_VERSION,
-    DistributedClientManifest,
+    DistributedClientManifest, DISTRIBUTED_CLIENT_MANIFEST_VERSION,
+    DISTRIBUTED_CLIENT_PROTOCOL_VERSION,
 };
 use crate::{
-    MAX_DOMAIN_EVENT_BODY_BYTES, MAX_PROJECTION_EXPRESSION_DEPTH, ResolvedProjectionMutation,
-    ResolvedProjectionPartition, ResolvedProjectionRelationshipEffect,
+    ResolvedProjectionMutation, ResolvedProjectionPartition, ResolvedProjectionRelationshipEffect,
+    MAX_DOMAIN_EVENT_BODY_BYTES, MAX_PROJECTION_EXPRESSION_DEPTH,
 };
 
 const CACHE_SCOPE_TOKEN: &str = "v1.cache-scope.AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA";
@@ -82,11 +82,9 @@ fn golden_vector_preserves_presence_masks_relationships_and_numeric_bounds() {
         ]
     );
     assert!(fields.iter().all(|field| field.field != "archived_at"));
-    assert!(
-        fields
-            .iter()
-            .any(|field| field.field == "nullable_note" && field.value == DeltaValue::Null)
-    );
+    assert!(fields
+        .iter()
+        .any(|field| field.field == "nullable_note" && field.value == DeltaValue::Null));
     assert!(fields.iter().any(|field| {
         field.field == "title" && field.value == DeltaValue::String("Résumé 🚀".to_owned())
     }));
@@ -114,21 +112,18 @@ fn golden_vector_preserves_presence_masks_relationships_and_numeric_bounds() {
             )
     }));
 
-    assert!(
-        delta.operations.iter().any(|operation| {
-            matches!(operation.mutation, ProjectionDeltaMutation::Delete { .. })
-        })
-    );
-    assert!(
-        delta.operations.iter().any(|operation| {
-            matches!(operation.mutation, ProjectionDeltaMutation::Link { .. })
-        })
-    );
-    assert!(
-        delta.operations.iter().any(|operation| {
-            matches!(operation.mutation, ProjectionDeltaMutation::Unlink { .. })
-        })
-    );
+    assert!(delta
+        .operations
+        .iter()
+        .any(|operation| { matches!(operation.mutation, ProjectionDeltaMutation::Delete { .. }) }));
+    assert!(delta
+        .operations
+        .iter()
+        .any(|operation| { matches!(operation.mutation, ProjectionDeltaMutation::Link { .. }) }));
+    assert!(delta
+        .operations
+        .iter()
+        .any(|operation| { matches!(operation.mutation, ProjectionDeltaMutation::Unlink { .. }) }));
     assert!(delta.operations.iter().any(|operation| {
         matches!(
             operation.mutation,

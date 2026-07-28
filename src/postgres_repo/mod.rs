@@ -19,8 +19,8 @@ use crate::outbox_worker::ClaimOutboxMessages;
 use crate::repository::RepositoryError;
 use crate::sqlx_repo::read_model::quote_identifier;
 use crate::sqlx_repo::repo::{
-    SqlxOutboxStore, SqlxRepository, embedded_migrator, outbox_message_from_row,
-    system_time_epoch_secs,
+    embedded_migrator, outbox_message_from_row, system_time_epoch_secs, SqlxOutboxStore,
+    SqlxRepository,
 };
 use crate::sqlx_repo::{
     self, is_postgres_unique_violation, read_model_i64_from_u64 as sqlx_read_model_i64_from_u64,

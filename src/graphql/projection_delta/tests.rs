@@ -18,14 +18,14 @@ use super::types::{
 };
 use super::*;
 use crate::graphql::{
-    DistributedClientSurfaceExport, RoleGrant, SurfaceDirectProjection, SurfaceOptions,
-    SurfaceProjector, build_surface, surface_for_role,
+    build_surface, surface_for_role, DistributedClientSurfaceExport, RoleGrant,
+    SurfaceDirectProjection, SurfaceOptions, SurfaceProjector,
 };
 use crate::projection::catalog::ProjectionBindingActivation;
 use crate::projection::placement::{
-    PROJECTION_PARTITION_CODEC_VERSION, ProjectionBinding, ProjectionBindingState,
-    ProjectionExecutionClass, ProjectionExecutorRoute, ProjectionOutput, ProjectionOwner,
-    ProjectionPhysicalTopology, ProjectionRelationshipBinding, ProjectionSourceBinding,
+    ProjectionBinding, ProjectionBindingState, ProjectionExecutionClass, ProjectionExecutorRoute,
+    ProjectionOutput, ProjectionOwner, ProjectionPhysicalTopology, ProjectionRelationshipBinding,
+    ProjectionSourceBinding, PROJECTION_PARTITION_CODEC_VERSION,
 };
 use crate::projection::{
     ProjectionArm, ProjectionField, ProjectionOperation, ProjectionPartition, ProjectionTarget,
@@ -35,12 +35,12 @@ use crate::table::{
     ColumnType, PrimaryKey, RelationshipDef, RelationshipKind, TableColumn, TableKind, TableSchema,
 };
 use crate::{
-    DOMAIN_EVENT_BODY_CODEC, DOMAIN_EVENT_BODY_CODEC_VERSION, DomainEventBodyDescriptor,
-    DomainEventBodyKind, DomainEventDescriptor, DomainEventEnvelope, DomainEventOccurrence,
-    MAX_PROJECTION_EXPRESSION_DEPTH, ProjectionAssignment, ProjectionExpression,
-    ProjectionInvalidation, ProjectionKeyField, ProjectionMutationKind, ProjectionProgram,
-    ProjectionRelationship, ProjectionRelationshipEffect, ProjectionValue, ProjectionValueType,
-    ResolvedProjectionMutation, ResolvedProjectionRelationshipEffect,
+    DomainEventBodyDescriptor, DomainEventBodyKind, DomainEventDescriptor, DomainEventEnvelope,
+    DomainEventOccurrence, ProjectionAssignment, ProjectionExpression, ProjectionInvalidation,
+    ProjectionKeyField, ProjectionMutationKind, ProjectionProgram, ProjectionRelationship,
+    ProjectionRelationshipEffect, ProjectionValue, ProjectionValueType, ResolvedProjectionMutation,
+    ResolvedProjectionRelationshipEffect, DOMAIN_EVENT_BODY_CODEC, DOMAIN_EVENT_BODY_CODEC_VERSION,
+    MAX_PROJECTION_EXPRESSION_DEPTH,
 };
 
 const BODY_FINGERPRINT: &str =
@@ -224,20 +224,18 @@ fn sealed_authority_lowers_actual_full_state_and_memoizes_partition() {
     );
     assert_eq!(upsert.2, &vec!["owner_id", "status", "title"]);
     assert!(upsert.1.iter().all(|field| field.field != "todo_id"));
-    assert!(
-        delta
-            .operations
-            .iter()
-            .any(|operation| matches!(operation.mutation, ProjectionDeltaMutation::Link { .. }))
-    );
+    assert!(delta
+        .operations
+        .iter()
+        .any(|operation| matches!(operation.mutation, ProjectionDeltaMutation::Link { .. })));
 }
 
 #[test]
 #[cfg(feature = "graphql")]
 fn production_authority_binds_partition_and_obligation_tokens_to_request_scope() {
     use super::runtime::{
-        MAX_PROJECTION_AUTHORITY_LIFETIME_MS, ModeledProjectionObservationScope,
-        ProjectionRuntimeAuthorityError, ProtocolProjectionDeltaRequestAuthority,
+        ModeledProjectionObservationScope, ProjectionRuntimeAuthorityError,
+        ProtocolProjectionDeltaRequestAuthority, MAX_PROJECTION_AUTHORITY_LIFETIME_MS,
     };
     use crate::graphql::protocol::{
         CommandProjectionMetadataV1, ProtocolTokenCodec, ProtocolTokenPurpose,
@@ -520,12 +518,10 @@ fn production_predicate_authorizes_only_complete_actual_after_rows() {
         state_occurrence(7, "todo-1", "visible"),
         Some("owner-secret"),
     );
-    assert!(
-        authorized
-            .operations
-            .iter()
-            .any(|operation| matches!(operation.mutation, ProjectionDeltaMutation::Upsert { .. }))
-    );
+    assert!(authorized
+        .operations
+        .iter()
+        .any(|operation| matches!(operation.mutation, ProjectionDeltaMutation::Upsert { .. })));
     assert!(!authorized.recoveries.iter().any(|recovery| matches!(
         recovery.target,
         ProjectionDeltaRecoveryTarget::Record { .. }
@@ -561,12 +557,10 @@ fn production_predicate_authorizes_only_complete_actual_after_rows() {
         Some("owner-secret"),
     );
     assert!(!delta.operations.iter().any(is_record_operation));
-    assert!(
-        delta
-            .recoveries
-            .iter()
-            .all(|recovery| matches!(recovery.target, ProjectionDeltaRecoveryTarget::Model { .. }))
-    );
+    assert!(delta
+        .recoveries
+        .iter()
+        .all(|recovery| matches!(recovery.target, ProjectionDeltaRecoveryTarget::Model { .. })));
 }
 
 #[test]
@@ -718,11 +712,9 @@ fn zero_obligation_modeled_metadata_is_revalidated_on_every_receipt_emission() {
         issued_at_unix_ms,
     )
     .unwrap();
-    assert!(
-        accumulator(stale_seed, codec.clone(), cache_scope.clone())
-            .record_status(&status(zero_obligation.clone()))
-            .is_err()
-    );
+    assert!(accumulator(stale_seed, codec.clone(), cache_scope.clone())
+        .record_status(&status(zero_obligation.clone()))
+        .is_err());
 
     let expired = CommandProjectionMetadataV1::try_new(
         1,
@@ -732,11 +724,9 @@ fn zero_obligation_modeled_metadata_is_revalidated_on_every_receipt_emission() {
         zero_obligation.revalidate,
     )
     .unwrap();
-    assert!(
-        accumulator(seed, codec, cache_scope)
-            .record_status(&status(expired))
-            .is_err()
-    );
+    assert!(accumulator(seed, codec, cache_scope)
+        .record_status(&status(expired))
+        .is_err());
 }
 
 #[test]
@@ -799,12 +789,10 @@ fn mounted_registry_derives_one_exact_physical_obligation_from_actual_fanout_ops
     )));
     assert_eq!(metadata.obligations.len(), 1);
     assert_eq!(metadata.obligations[0].model, "TodoView");
-    assert!(
-        metadata.obligations[0]
-            .scope_token
-            .as_str()
-            .starts_with("v1.projection-obligation.")
-    );
+    assert!(metadata.obligations[0]
+        .scope_token
+        .as_str()
+        .starts_with("v1.projection-obligation."));
 }
 
 #[test]
@@ -871,12 +859,10 @@ fn full_state_preview_lowers_to_upsert() {
     .unwrap();
     let occurrence = ProjectionDeltaPlanOccurrence::preview(vec![(&source, &plan)]).unwrap();
     let delta = authority.lower(&[occurrence]).unwrap();
-    assert!(
-        delta
-            .operations
-            .iter()
-            .any(|operation| matches!(operation.mutation, ProjectionDeltaMutation::Upsert { .. }))
-    );
+    assert!(delta
+        .operations
+        .iter()
+        .any(|operation| matches!(operation.mutation, ProjectionDeltaMutation::Upsert { .. })));
     assert!(delta.recoveries.is_empty());
 }
 
@@ -1454,11 +1440,10 @@ fn row_authorization_transition_matrix_is_explicit_and_fail_closed() {
         transition(authorized, authorized),
     )
     .unwrap();
-    assert!(
-        visible.operations.iter().any(|operation| {
-            matches!(operation.mutation, ProjectionDeltaMutation::Upsert { .. })
-        })
-    );
+    assert!(visible
+        .operations
+        .iter()
+        .any(|operation| { matches!(operation.mutation, ProjectionDeltaMutation::Upsert { .. }) }));
 
     let hidden = lower_with_transitions(
         transition(denied, denied),
@@ -1492,12 +1477,10 @@ fn row_authorization_transition_matrix_is_explicit_and_fail_closed() {
         transition(authorized, authorized),
     )
     .unwrap();
-    assert!(
-        complete_after
-            .operations
-            .iter()
-            .any(|operation| matches!(operation.mutation, ProjectionDeltaMutation::Upsert { .. }))
-    );
+    assert!(complete_after
+        .operations
+        .iter()
+        .any(|operation| matches!(operation.mutation, ProjectionDeltaMutation::Upsert { .. })));
 
     for record_transition in [
         transition(authorized, unknown),
@@ -1523,16 +1506,14 @@ fn relationship_authorization_transition_matrix_is_explicit_and_fail_closed() {
     let record = transition(authorized, authorized);
 
     let visible = lower_with_transitions(record, transition(authorized, authorized)).unwrap();
-    assert!(
-        visible.operations.iter().any(|operation| {
-            matches!(operation.mutation, ProjectionDeltaMutation::Link { .. })
-        })
-    );
-    assert!(
-        visible.operations.iter().any(|operation| {
-            matches!(operation.mutation, ProjectionDeltaMutation::Unlink { .. })
-        })
-    );
+    assert!(visible
+        .operations
+        .iter()
+        .any(|operation| { matches!(operation.mutation, ProjectionDeltaMutation::Link { .. }) }));
+    assert!(visible
+        .operations
+        .iter()
+        .any(|operation| { matches!(operation.mutation, ProjectionDeltaMutation::Unlink { .. }) }));
 
     let hidden = lower_with_transitions(record, transition(denied, denied)).unwrap();
     assert!(!hidden.operations.iter().any(is_relationship_operation));
@@ -1783,16 +1764,14 @@ fn lowerer_rejects_wrong_program_binding_arm_occurrence_and_duplicate_program_so
 #[test]
 fn explicit_fk_and_join_row_provenance_lower_to_edges_without_physical_names() {
     let fk = lower_with_transitions(authorized_transition(), authorized_transition()).unwrap();
-    assert!(
-        fk.operations.iter().any(|operation| {
-            matches!(operation.mutation, ProjectionDeltaMutation::Link { .. })
-        })
-    );
-    assert!(
-        fk.operations.iter().any(|operation| {
-            matches!(operation.mutation, ProjectionDeltaMutation::Unlink { .. })
-        })
-    );
+    assert!(fk
+        .operations
+        .iter()
+        .any(|operation| { matches!(operation.mutation, ProjectionDeltaMutation::Link { .. }) }));
+    assert!(fk
+        .operations
+        .iter()
+        .any(|operation| { matches!(operation.mutation, ProjectionDeltaMutation::Unlink { .. }) }));
 
     let join = modeled_join_fixture();
     let selected = selected_export_join(&join.surface);
@@ -2020,15 +1999,13 @@ fn modeled_join_fixture() -> ModeledFixture {
             projection_field(0, "todo_id", "todo_id"),
             projection_field(1, "owner_id", "owner_id"),
         ],
-        vec![
-            ProjectionRelationshipEffect::link(
-                0,
-                relationship,
-                vec![projection_key(0, "todo_id", "todo_id")],
-                vec![projection_key(0, "user_id", "owner_id")],
-            )
-            .unwrap(),
-        ],
+        vec![ProjectionRelationshipEffect::link(
+            0,
+            relationship,
+            vec![projection_key(0, "todo_id", "todo_id")],
+            vec![projection_key(0, "user_id", "owner_id")],
+        )
+        .unwrap()],
         vec![],
     )
     .unwrap();
@@ -2048,14 +2025,12 @@ fn modeled_join_fixture() -> ModeledFixture {
         ProjectionExecutionClass::Causal,
         "distributed-projection-partition",
         PROJECTION_PARTITION_CODEC_VERSION,
-        vec![
-            ProjectionOutput::try_new(
-                "TodoOwnerLink",
-                "private_todo_owner_links",
-                join_schema.clone(),
-            )
-            .unwrap(),
-        ],
+        vec![ProjectionOutput::try_new(
+            "TodoOwnerLink",
+            "private_todo_owner_links",
+            join_schema.clone(),
+        )
+        .unwrap()],
         vec![ProjectionRelationshipBinding::try_new("TodoView", "owner", "UserView").unwrap()],
         Some(ProjectionPhysicalTopology::from_protocol(
             &ProjectorTopologyId::new(1, "projection-delta-join-test", [0x46; 32]).unwrap(),
@@ -2128,14 +2103,12 @@ fn modeled_fixture_config(
     let relationship = ProjectionRelationship::try_new("TodoView", "owner", "UserView").unwrap();
     let (relationship_effects, invalidations) = if invalidate_relationship {
         (
-            vec![
-                ProjectionRelationshipEffect::invalidate(
-                    0,
-                    relationship,
-                    vec![projection_key(0, "todo_id", "todo_id")],
-                )
-                .unwrap(),
-            ],
+            vec![ProjectionRelationshipEffect::invalidate(
+                0,
+                relationship,
+                vec![projection_key(0, "todo_id", "todo_id")],
+            )
+            .unwrap()],
             vec![ProjectionInvalidation::relationship("TodoView", "owner", "UserView").unwrap()],
         )
     } else {

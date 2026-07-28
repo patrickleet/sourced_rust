@@ -1,16 +1,16 @@
 use std::time::{Duration, SystemTime};
 
-use base64::Engine as _;
 use base64::engine::general_purpose::URL_SAFE_NO_PAD;
+use base64::Engine as _;
 use serde_json::Value;
 
 use crate::projection_protocol::{ResolvedProjectionObligation, SameTransactionProjectionEvidence};
 
 use super::{
-    AttemptFence, AttemptToken, CanonicalInputHash, CausationId, CommandAttempt, CommandCompletion,
+    ids::COMMAND_REPLAY_VERSION, state::validate_projection_obligation_semantics, AttemptFence,
+    AttemptToken, CanonicalInputHash, CausationId, CommandAttempt, CommandCompletion,
     CommandContractFingerprint, CommandLedgerError, CommandLedgerKey, CommandLedgerState,
     CommandLookup, CommandLookupScope, CommandReplay, CommandReservation, ReservationOutcome,
-    ids::COMMAND_REPLAY_VERSION, state::validate_projection_obligation_semantics,
 };
 
 /// Storage-neutral row representation shared by built-in adapters.

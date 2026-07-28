@@ -20,8 +20,8 @@ use crate::outbox_worker::ClaimOutboxMessages;
 use crate::repository::RepositoryError;
 use crate::sqlx_repo::read_model::quote_identifier;
 use crate::sqlx_repo::repo::{
-    SqlxOutboxStore, SqlxRepository, embedded_migrator, outbox_message_by_id,
-    system_time_epoch_secs,
+    embedded_migrator, outbox_message_by_id, system_time_epoch_secs, SqlxOutboxStore,
+    SqlxRepository,
 };
 use crate::sqlx_repo::{
     self, is_sqlite_unique_constraint, read_model_i64_from_u64 as sqlx_read_model_i64_from_u64,

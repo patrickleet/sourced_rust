@@ -17,15 +17,15 @@ use super::authorization::{
 };
 use super::canonical::{canonicalize_operations, canonicalize_recoveries};
 use super::types::{
-    AuthorizationTransition, MAX_PROJECTION_DELTA_OPERATIONS, ProjectionDeltaCacheScopeToken,
-    ProjectionDeltaVisibility, ProjectionMutationSource,
+    AuthorizationTransition, ProjectionDeltaCacheScopeToken, ProjectionDeltaVisibility,
+    ProjectionMutationSource, MAX_PROJECTION_DELTA_OPERATIONS,
 };
 use super::{
-    DeltaField, DeltaValue, PROJECTION_DELTA_WIRE_VERSION, ProjectionDelta, ProjectionDeltaError,
-    ProjectionDeltaIdentity, ProjectionDeltaMutation, ProjectionDeltaOccurrence,
-    ProjectionDeltaOperation, ProjectionDeltaPartition, ProjectionDeltaProjectionIdentity,
-    ProjectionDeltaRecovery, ProjectionDeltaRecoveryCondition, ProjectionDeltaRecoveryTarget,
-    ProjectionDeltaScope, ProjectionDeltaSurfaceIdentity,
+    DeltaField, DeltaValue, ProjectionDelta, ProjectionDeltaError, ProjectionDeltaIdentity,
+    ProjectionDeltaMutation, ProjectionDeltaOccurrence, ProjectionDeltaOperation,
+    ProjectionDeltaPartition, ProjectionDeltaProjectionIdentity, ProjectionDeltaRecovery,
+    ProjectionDeltaRecoveryCondition, ProjectionDeltaRecoveryTarget, ProjectionDeltaScope,
+    ProjectionDeltaSurfaceIdentity, PROJECTION_DELTA_WIRE_VERSION,
 };
 
 /// One sealed lowering authority derived from an unforgeable selected client

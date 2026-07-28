@@ -2,8 +2,8 @@ use std::collections::BTreeSet;
 use std::fmt;
 use std::marker::PhantomData;
 
-use base64::Engine as _;
 use base64::engine::general_purpose::URL_SAFE_NO_PAD;
+use base64::Engine as _;
 use serde::de::{Error as _, IgnoredAny, SeqAccess, Visitor};
 use serde::{Deserialize, Deserializer, Serialize};
 

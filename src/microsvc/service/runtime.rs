@@ -8,8 +8,8 @@ use serde_json::Value;
 
 #[cfg(feature = "graphql")]
 use super::causal::{
-    CausalCommandPublicStatus, CausalDispatchError, CausalDispatchResult, GraphqlServiceBindError,
-    internal_ledger_error,
+    internal_ledger_error, CausalCommandPublicStatus, CausalDispatchError, CausalDispatchResult,
+    GraphqlServiceBindError,
 };
 use super::helpers::{
     is_json_content_type, message_to_json_input, message_to_session, names_by_kind,
