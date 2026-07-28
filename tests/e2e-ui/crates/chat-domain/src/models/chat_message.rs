@@ -2,6 +2,7 @@ use distributed::{sourced, Entity};
 use serde::{Deserialize, Serialize};
 
 use super::ChatError;
+use crate::projection_v2::ChatMessageState;
 
 #[derive(Debug, Clone, Default, Serialize, Deserialize)]
 pub struct ChatMessage {
@@ -13,6 +14,8 @@ pub struct ChatMessage {
     pub body: String,
     /// RFC3339 timestamp (string for portable projections / SQLite text).
     pub created_at: String,
+    #[serde(default)]
+    snapshot_delivery_generation: u64,
 }
 
 impl ChatMessage {
@@ -21,7 +24,12 @@ impl ChatMessage {
     }
 }
 
-#[sourced(entity, events = "ChatMessageEvent", aggregate_type = "chat_message")]
+#[sourced(
+    entity,
+    events = "ChatMessageEvent",
+    aggregate_type = "chat_message",
+    domain_state = ChatMessageState,
+)]
 impl ChatMessage {
     pub fn post(
         &mut self,
@@ -52,17 +60,11 @@ impl ChatMessage {
         if body.is_empty() {
             return Err(ChatError::EmptyBody);
         }
-        self.record_posted(
-            message_id,
-            room_id,
-            author_id,
-            body.to_string(),
-            created_at,
-        )?;
+        self.record_posted(message_id, room_id, author_id, body.to_string(), created_at)?;
         Ok(())
     }
 
-    #[event("chat_message.posted")]
+    #[event("chat_message.posted", version = 1, domain)]
     fn record_posted(
         &mut self,
         message_id: String,
@@ -77,6 +79,7 @@ impl ChatMessage {
         self.author_id = author_id;
         self.body = body;
         self.created_at = created_at;
+        self.snapshot_delivery_generation = self.snapshot_delivery_generation.saturating_add(1);
     }
 }
 
@@ -101,5 +104,33 @@ mod tests {
             m.post("m1", "lobby", "alice", "  ", "t").unwrap_err(),
             ChatError::EmptyBody
         );
+    }
+
+    #[test]
+    fn posted_captures_public_state_without_snapshot_only_data() {
+        let mut message = ChatMessage::default();
+        message.post("m1", "lobby", "alice", "hello", "1").unwrap();
+
+        let occurrence = message.entity.pending_domain_events().last().unwrap();
+        assert_eq!(occurrence.descriptor().name, "chat_message.posted");
+        assert_eq!(occurrence.descriptor().body.version, 1);
+        let state = occurrence.decode_body::<ChatMessageState>().unwrap();
+        assert_eq!(state.body, "hello");
+        let snapshot = serde_json::to_value(&message).unwrap();
+        let public = serde_json::to_value(state).unwrap();
+        assert!(snapshot.get("snapshot_delivery_generation").is_some());
+        assert!(public.get("snapshot_delivery_generation").is_none());
+    }
+
+    #[test]
+    fn replay_suppresses_posted_domain_event_recapture() {
+        let mut message = ChatMessage::default();
+        message.post("m1", "lobby", "alice", "hello", "1").unwrap();
+        message.entity.mark_committed();
+        message.entity.mark_domain_events_committed().unwrap();
+
+        let replayed: ChatMessage = distributed::hydrate(message.entity.clone()).unwrap();
+        assert!(replayed.entity.pending_domain_events().is_empty());
+        assert_eq!(replayed.body, "hello");
     }
 }

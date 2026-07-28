@@ -9,12 +9,9 @@ use distributed::microsvc::{CausalCommandContext, HandlerError};
 use serde::{Deserialize, Serialize};
 use todo_domain::Todo;
 
-use crate::handlers::commands::todo_cmd::{commit_todo_event, load_todo, map_domain};
+use crate::handlers::commands::todo_cmd::{commit_todo_events, load_todo, map_domain};
 
 pub const COMMAND: &str = "todo.force_archive";
-
-/// Outbox / projector event name — distinct from owner `todo.archived`.
-pub const FORCE_ARCHIVED_EVENT: &str = "todo.force_archived";
 
 #[derive(Debug, Deserialize, distributed::GraphqlInput)]
 pub struct TodoForceArchiveInput {
@@ -37,15 +34,11 @@ pub async fn handle(
     let admin = ctx.user_id()?.to_string();
     let mut todo = load_todo(ctx, &input.todo_id).await?;
 
-    // Domain archive is owner-scoped; use the aggregate's real owner (not admin id).
-    let owner = todo.owner_id.clone();
-    todo.archive(&owner).map_err(map_domain)?;
-    commit_todo_event(ctx, todo, FORCE_ARCHIVED_EVENT, |fact| {
-        TodoForceArchivePayload {
-            todo_id: fact.todo_id,
-            owner_id: fact.owner_id,
-            status: fact.status,
-            archived_by: admin,
-        }
+    todo.force_archive().map_err(map_domain)?;
+    commit_todo_events(ctx, todo, |state| TodoForceArchivePayload {
+        todo_id: state.todo_id,
+        owner_id: state.owner_id,
+        status: state.status,
+        archived_by: admin,
     })
 }

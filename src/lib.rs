@@ -205,8 +205,8 @@ pub use microsvc::{ROLE_KEY, USER_ID_KEY};
 
 // Re-export proc macros
 pub use distributed_macros::{
-    aggregate, command_confirmations, command_effects, command_input_defaults, digest, sourced,
-    DomainEvent, DomainState, GraphqlInput, GraphqlOutput, ReadModel, Snapshot,
+    aggregate, command_confirmations, command_effects, command_input_defaults, digest, projection,
+    sourced, DomainEvent, DomainState, GraphqlInput, GraphqlOutput, ReadModel, Snapshot,
 };
 
 // Re-export enqueue macro (requires "emitter" feature)

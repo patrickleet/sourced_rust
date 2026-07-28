@@ -1,29 +1,5 @@
-use serde::{Deserialize, Serialize};
+//! Temporary compatibility export for the pre-cutover shared registry.
+//!
+//! Task 20 removes this module after `TodoState` becomes the canonical export.
 
-use super::{Todo, TodoStatus};
-
-/// Portable outbox / projection DTO.
-/// Full snapshot fields so projectors can upsert without loading prior rows.
-#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
-pub struct TodoFact {
-    pub todo_id: String,
-    pub owner_id: String,
-    pub title: String,
-    /// `open` | `completed` | `archived`
-    pub status: String,
-}
-
-impl TodoFact {
-    pub fn from_todo(t: &Todo) -> Self {
-        Self {
-            todo_id: t.todo_id.clone(),
-            owner_id: t.owner_id.clone(),
-            title: t.title.clone(),
-            status: match t.status {
-                TodoStatus::Open => "open".into(),
-                TodoStatus::Completed => "completed".into(),
-                TodoStatus::Archived => "archived".into(),
-            },
-        }
-    }
-}
+pub use crate::projection_v2::TodoState as TodoFact;

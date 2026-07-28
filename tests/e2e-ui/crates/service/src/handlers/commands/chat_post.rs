@@ -1,9 +1,9 @@
 //! Command: `chat.post` — author is always the authenticated session user.
 
-use chat_domain::{ChatMessage, ChatMessagePosted};
+use chat_domain::projection_v2::ChatMessageState;
+use chat_domain::ChatMessage;
 use distributed::graphql::{Causal, PreparedCommand};
 use distributed::microsvc::{CausalCommandContext, HandlerError};
-use distributed::OutboxMessage;
 use serde::{Deserialize, Serialize};
 
 use crate::handlers::util::rejected;
@@ -53,26 +53,13 @@ pub async fn handle(
     )
     .map_err(rejected)?;
 
-    let fact = ChatMessagePosted::from_message(&msg);
-    let payload =
-        serde_json::to_vec(&fact).map_err(|error| HandlerError::Other(Box::new(error)))?;
-    let outbox = OutboxMessage::create(
-        format!(
-            "{}:chat_message.posted:{}",
-            msg.message_id,
-            msg.entity.version()
-        ),
-        "chat_message.posted",
-        payload,
-    )
-    .map_err(|e| HandlerError::Other(Box::new(e)))?;
-
-    ctx.outbox(outbox).commit(msg)?.causal(ChatPostPayload {
-        message_id: fact.message_id,
-        room_id: fact.room_id,
-        author_id: fact.author_id,
-        body: fact.body,
-        created_at: fact.created_at,
+    let state = ChatMessageState::from(&*msg);
+    ctx.publish_events().commit(msg)?.causal(ChatPostPayload {
+        message_id: state.message_id,
+        room_id: state.room_id,
+        author_id: state.author_id,
+        body: state.body,
+        created_at: state.created_at,
     })
 }
 

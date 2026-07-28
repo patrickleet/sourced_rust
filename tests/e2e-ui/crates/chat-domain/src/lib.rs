@@ -2,4 +2,7 @@
 
 pub mod models;
 
+#[doc(hidden)]
+pub mod projection_v2;
+
 pub use models::{ChatError, ChatMessage, ChatMessagePosted};
