@@ -636,7 +636,17 @@ pub struct ClientProjectionProgram {
 pub struct ClientProjectionArm {
     pub arm: String,
     pub event: ClientProjectionEventRef,
+    pub partition: ClientProjectionPartition,
     pub operations: Vec<ClientProjectionOperation>,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(tag = "kind", rename_all = "snake_case", deny_unknown_fields)]
+pub enum ClientProjectionPartition {
+    Unit,
+    Expression {
+        expression: ClientProjectionExpression,
+    },
 }
 
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]

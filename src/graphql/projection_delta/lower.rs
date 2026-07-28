@@ -306,17 +306,24 @@ impl<'a> ProjectionDeltaPlanOccurrence<'a> {
 
     fn try_new(
         source: ProjectionMutationSource,
-        plans: Vec<(&'a ProjectionDeltaSource, &'a ResolvedProjectionPlan)>,
+        mut plans: Vec<(&'a ProjectionDeltaSource, &'a ResolvedProjectionPlan)>,
     ) -> Result<Self, ProjectionDeltaError> {
-        let occurrence_id = plans
+        let occurrence = plans
             .first()
-            .map(|(_, plan)| plan.occurrence().id().to_owned())
+            .map(|(_, plan)| plan.occurrence().clone())
             .ok_or(ProjectionDeltaError::InvalidOperation(
                 "projection occurrence must contain at least one canonical resolved plan",
             ))?;
+        let occurrence_id = occurrence.id().to_owned();
         let mut programs = BTreeSet::new();
         for (projection, plan) in &plans {
             projection.validate_for(source)?;
+            if plan.occurrence() != &occurrence
+                || plan.occurrence().causation_id()
+                    != Some(projection.authority.command_causation_id.as_str())
+            {
+                return Err(ProjectionDeltaError::ProjectionIdentityMismatch);
+            }
             validate_plan(projection, plan, &occurrence_id)?;
             if !programs.insert(&projection.program_id) {
                 return Err(ProjectionDeltaError::InvalidOperation(
@@ -324,6 +331,7 @@ impl<'a> ProjectionDeltaPlanOccurrence<'a> {
                 ));
             }
         }
+        plans.sort_by_key(|(projection, _)| projection.wire_identity());
         Ok(Self {
             source,
             occurrence_id,
@@ -342,6 +350,13 @@ fn lower_projection_delta(
             len: batch.len(),
             max: MAX_PROJECTION_DELTA_OPERATIONS,
         });
+    }
+    if let Some(source) = batch.first().map(|occurrence| occurrence.source) {
+        if batch.iter().any(|occurrence| occurrence.source != source) {
+            return Err(ProjectionDeltaError::InvalidOperation(
+                "actual and preview occurrences cannot share one projection delta",
+            ));
+        }
     }
     let identity = context.wire_identity();
     identity.validate()?;

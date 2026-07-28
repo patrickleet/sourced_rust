@@ -45,6 +45,8 @@ use crate::{
 
 const BODY_FINGERPRINT: &str =
     "sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa";
+const TEST_CAUSATION_ID: &str = "0190a000-0000-7000-8000-000000000017";
+const FOREIGN_CAUSATION_ID: &str = "0190a000-0000-7000-8000-000000000018";
 
 #[test]
 fn strict_decode_rejects_unknown_wire_fields() {
@@ -254,7 +256,7 @@ fn full_state_preview_lowers_to_upsert() {
 }
 
 #[test]
-fn partial_preview_lowers_to_conditional_patch_with_missing_record_fallback() {
+fn sparse_patch_program_preview_lowers_to_conditional_patch_with_missing_record_fallback() {
     let fixture = modeled_fixture_with_kind(
         ProjectionBindingState::Active,
         ProjectionExecutionClass::Causal,
@@ -286,6 +288,142 @@ fn partial_preview_lowers_to_conditional_patch_with_missing_record_fallback() {
                 ProjectionDeltaRecoveryTarget::Record { .. }
             )
     }));
+}
+
+#[test]
+fn plan_occurrence_rejects_missing_or_foreign_command_causation() {
+    let fixture = modeled_fixture(
+        ProjectionBindingState::Active,
+        ProjectionExecutionClass::Causal,
+    );
+    let selected = selected_export(&fixture.surface);
+    let request = TestRequestAuthority::authorized("auth-generation-7");
+    let authority = ProjectionDeltaAuthority::try_new(&selected, &request).unwrap();
+    let modeled = selected.surface().projectors[0].modeled[0].clone();
+    let source = authority.source(&modeled).unwrap();
+
+    for causation in [None, Some(FOREIGN_CAUSATION_ID)] {
+        let occurrence =
+            state_occurrence_with_metadata(7, "todo-1", "title", causation, BTreeMap::new());
+        let plan = crate::ResolvedProjectionPlan::resolve(&fixture.program, &occurrence).unwrap();
+        assert!(matches!(
+            ProjectionDeltaPlanOccurrence::actual(vec![(&source, &plan)]),
+            Err(ProjectionDeltaError::ProjectionIdentityMismatch)
+        ));
+    }
+}
+
+#[test]
+fn fanout_requires_the_same_exact_sealed_occurrence_not_only_the_same_id() {
+    let fixture = modeled_fixture(
+        ProjectionBindingState::Active,
+        ProjectionExecutionClass::Causal,
+    );
+    let selected = selected_export(&fixture.surface);
+    let request = TestRequestAuthority::authorized("auth-generation-7");
+    let authority = ProjectionDeltaAuthority::try_new(&selected, &request).unwrap();
+    let modeled = selected.surface().projectors[0].modeled[0].clone();
+    let source = authority.source(&modeled).unwrap();
+    let first_occurrence = state_occurrence(7, "todo-1", "title");
+    let second_occurrence = state_occurrence_with_metadata(
+        7,
+        "todo-1",
+        "title",
+        Some(TEST_CAUSATION_ID),
+        BTreeMap::from([("request_scope".into(), "different".into())]),
+    );
+    assert_eq!(first_occurrence.id(), second_occurrence.id());
+    assert_ne!(first_occurrence, second_occurrence);
+    let first =
+        crate::ResolvedProjectionPlan::resolve(&fixture.program, &first_occurrence).unwrap();
+    let second =
+        crate::ResolvedProjectionPlan::resolve(&fixture.program, &second_occurrence).unwrap();
+
+    assert!(matches!(
+        ProjectionDeltaPlanOccurrence::actual(vec![(&source, &first), (&source, &second)]),
+        Err(ProjectionDeltaError::ProjectionIdentityMismatch)
+    ));
+}
+
+#[test]
+fn one_delta_cannot_mix_actual_and_preview_occurrence_layers() {
+    let fixture = modeled_fixture(
+        ProjectionBindingState::Active,
+        ProjectionExecutionClass::Causal,
+    );
+    let selected = selected_export(&fixture.surface);
+    let request = TestRequestAuthority::authorized("auth-generation-7");
+    let authority = ProjectionDeltaAuthority::try_new(&selected, &request).unwrap();
+    let modeled = selected.surface().projectors[0].modeled[0].clone();
+    let source = authority.source(&modeled).unwrap();
+    let occurrence = state_occurrence(7, "todo-1", "title");
+    let plan = crate::ResolvedProjectionPlan::resolve(&fixture.program, &occurrence).unwrap();
+    let actual = ProjectionDeltaPlanOccurrence::actual(vec![(&source, &plan)]).unwrap();
+    let preview = ProjectionDeltaPlanOccurrence::preview(vec![(&source, &plan)]).unwrap();
+
+    assert!(matches!(
+        authority.lower(&[actual, preview]),
+        Err(ProjectionDeltaError::InvalidOperation(
+            "actual and preview occurrences cannot share one projection delta"
+        ))
+    ));
+}
+
+#[test]
+fn reversed_nonconflicting_fanout_plan_input_produces_identical_delta_bytes() {
+    let fixture = fanout_fixture();
+    let selected = selected_export(&fixture.surface);
+    let request = TestRequestAuthority::authorized("auth-generation-7");
+    let authority = ProjectionDeltaAuthority::try_new(&selected, &request).unwrap();
+    let modeled = &selected.surface().projectors[0].modeled;
+    let todo_source = authority
+        .source(
+            modeled
+                .iter()
+                .find(|modeled| {
+                    modeled.program_id().to_string()
+                        == fixture.todo_program.id().unwrap().to_string()
+                })
+                .unwrap(),
+        )
+        .unwrap();
+    let user_source = authority
+        .source(
+            modeled
+                .iter()
+                .find(|modeled| {
+                    modeled.program_id().to_string()
+                        == fixture.user_program.id().unwrap().to_string()
+                })
+                .unwrap(),
+        )
+        .unwrap();
+    let occurrence = state_occurrence(7, "todo-1", "title");
+    let todo = crate::ResolvedProjectionPlan::resolve(&fixture.todo_program, &occurrence).unwrap();
+    let user = crate::ResolvedProjectionPlan::resolve(&fixture.user_program, &occurrence).unwrap();
+    let forward =
+        ProjectionDeltaPlanOccurrence::actual(vec![(&todo_source, &todo), (&user_source, &user)])
+            .unwrap();
+    let reversed =
+        ProjectionDeltaPlanOccurrence::actual(vec![(&user_source, &user), (&todo_source, &todo)])
+            .unwrap();
+
+    let forward = authority.lower(&[forward]).unwrap();
+    assert!(forward.operations.iter().any(|operation| {
+        operation.projection_refs.len() == 2
+            && matches!(
+                &operation.mutation,
+                ProjectionDeltaMutation::InvalidateModel { model, .. } if model == "TodoView"
+            )
+    }));
+    let forward = forward.canonical_bytes().unwrap();
+    let reversed = authority
+        .lower(&[reversed])
+        .unwrap()
+        .canonical_bytes()
+        .unwrap();
+
+    assert_eq!(forward, reversed);
 }
 
 #[test]
@@ -631,6 +769,12 @@ struct ModeledFixture {
     program: ProjectionProgram,
 }
 
+struct FanoutFixture {
+    surface: crate::graphql::Surface,
+    todo_program: ProjectionProgram,
+    user_program: ProjectionProgram,
+}
+
 fn modeled_fixture(
     state: ProjectionBindingState,
     execution: ProjectionExecutionClass,
@@ -754,6 +898,143 @@ fn modeled_fixture_config(
     ModeledFixture { surface, program }
 }
 
+fn fanout_fixture() -> FanoutFixture {
+    let todo_schema = todos();
+    let user_schema = users();
+    let descriptor = event_descriptor();
+    let selector = crate::ProjectionEventSelector::try_from_descriptor(&descriptor).unwrap();
+    let todo_operation = ProjectionOperation::try_new(
+        "fanout-todo",
+        0,
+        ProjectionMutationKind::Upsert,
+        ProjectionTarget::try_new("TodoView", "todos").unwrap(),
+        vec![projection_key(0, "todo_id", "todo_id")],
+        vec![
+            projection_field(0, "todo_id", "todo_id"),
+            projection_field(1, "owner_id", "owner_id"),
+            projection_field(2, "title", "title"),
+            projection_field(3, "status", "status"),
+        ],
+        Vec::new(),
+        vec![ProjectionInvalidation::model("TodoView").unwrap()],
+    )
+    .unwrap();
+    let user_operation = ProjectionOperation::try_new(
+        "fanout-user",
+        0,
+        ProjectionMutationKind::Upsert,
+        ProjectionTarget::try_new("UserView", "users").unwrap(),
+        vec![projection_key(0, "user_id", "owner_id")],
+        vec![
+            projection_field(0, "user_id", "owner_id"),
+            projection_field(1, "display_name", "title"),
+        ],
+        Vec::new(),
+        vec![ProjectionInvalidation::model("TodoView").unwrap()],
+    )
+    .unwrap();
+    let todo_program = ProjectionProgram::try_new(
+        "projection-delta-fanout-todo",
+        1,
+        ProjectionPartition::Expression(ProjectionExpression::constant(ProjectionValue::string(
+            "tenant-a",
+        ))),
+        vec![ProjectionArm::try_new("todo", selector.clone(), vec![todo_operation]).unwrap()],
+    )
+    .unwrap();
+    let user_program = ProjectionProgram::try_new(
+        "projection-delta-fanout-user",
+        1,
+        ProjectionPartition::Expression(ProjectionExpression::constant(ProjectionValue::string(
+            "tenant-a",
+        ))),
+        vec![ProjectionArm::try_new("user", selector, vec![user_operation]).unwrap()],
+    )
+    .unwrap();
+    let owner = ProjectionOwner::try_new("projection-delta-fanout").unwrap();
+    let source =
+        ProjectionSourceBinding::try_new("todo-domain", "ordered-domain-events", 1).unwrap();
+    let todo_binding = ProjectionBinding::from_eventual_program(
+        &todo_program,
+        source.clone(),
+        owner.clone(),
+        ProjectionExecutionClass::Causal,
+        "distributed-projection-partition",
+        PROJECTION_PARTITION_CODEC_VERSION,
+        vec![ProjectionOutput::try_new("TodoView", "todos", todo_schema.clone()).unwrap()],
+        Vec::new(),
+        Some(ProjectionPhysicalTopology::from_protocol(
+            &ProjectorTopologyId::new(1, "projection-delta-fanout-todo", [0x55; 32]).unwrap(),
+        )),
+    )
+    .unwrap();
+    let user_binding = ProjectionBinding::from_eventual_program(
+        &user_program,
+        source,
+        owner,
+        ProjectionExecutionClass::Causal,
+        "distributed-projection-partition",
+        PROJECTION_PARTITION_CODEC_VERSION,
+        vec![ProjectionOutput::try_new("UserView", "users", user_schema.clone()).unwrap()],
+        Vec::new(),
+        Some(ProjectionPhysicalTopology::from_protocol(
+            &ProjectorTopologyId::new(1, "projection-delta-fanout-user", [0x66; 32]).unwrap(),
+        )),
+    )
+    .unwrap();
+    let catalog = crate::projection::catalog::ProjectionCatalog::try_new(vec![
+        todo_binding.clone(),
+        user_binding.clone(),
+    ])
+    .unwrap();
+    let active = catalog
+        .activate(
+            vec![
+                ProjectionBindingActivation::new(
+                    todo_binding.id(),
+                    todo_binding.program_id(),
+                    ProjectionEpoch::new("projection-delta-fanout-todo-v1").unwrap(),
+                    ProjectionBindingState::Active,
+                    Some(ProjectionExecutorRoute::local("delta-service").unwrap()),
+                ),
+                ProjectionBindingActivation::new(
+                    user_binding.id(),
+                    user_binding.program_id(),
+                    ProjectionEpoch::new("projection-delta-fanout-user-v1").unwrap(),
+                    ProjectionBindingState::Active,
+                    Some(ProjectionExecutorRoute::local("delta-service").unwrap()),
+                ),
+            ],
+            None,
+        )
+        .unwrap();
+    let todo_modeled = crate::graphql::SurfaceModeledProjection::try_from_catalog(
+        todo_program.clone(),
+        &catalog,
+        &active,
+        todo_binding.id(),
+    )
+    .unwrap();
+    let user_modeled = crate::graphql::SurfaceModeledProjection::try_from_catalog(
+        user_program.clone(),
+        &catalog,
+        &active,
+        user_binding.id(),
+    )
+    .unwrap();
+    let surface = build_surface(&[todo_schema, user_schema], &SurfaceOptions::sqlite())
+        .unwrap()
+        .with_projectors([SurfaceProjector::new("projection-delta-fanout")
+            .modeled(todo_modeled)
+            .modeled(user_modeled)])
+        .unwrap();
+    FanoutFixture {
+        surface,
+        todo_program,
+        user_program,
+    }
+}
+
 fn selected_export(surface: &crate::graphql::Surface) -> DistributedClientSurfaceExport {
     let selected = surface_for_role(
         surface,
@@ -845,6 +1126,25 @@ struct StateBody<'a> {
 }
 
 fn state_occurrence(sequence: u64, todo_id: &str, title: &str) -> DomainEventOccurrence {
+    state_occurrence_with_metadata(
+        sequence,
+        todo_id,
+        title,
+        Some(TEST_CAUSATION_ID),
+        BTreeMap::new(),
+    )
+}
+
+fn state_occurrence_with_metadata(
+    sequence: u64,
+    todo_id: &str,
+    title: &str,
+    causation_id: Option<&str>,
+    mut metadata: BTreeMap<String, String>,
+) -> DomainEventOccurrence {
+    if let Some(causation_id) = causation_id {
+        metadata.insert("causation_id".into(), causation_id.into());
+    }
     DomainEventOccurrence::capture(
         event_descriptor(),
         DomainEventEnvelope {
@@ -853,7 +1153,7 @@ fn state_occurrence(sequence: u64, todo_id: &str, title: &str) -> DomainEventOcc
             aggregate_sequence: sequence,
             publication_ordinal: 0,
             occurred_at: UNIX_EPOCH + Duration::from_secs(sequence),
-            metadata: BTreeMap::new(),
+            metadata,
         },
         &StateBody {
             todo_id,
@@ -866,7 +1166,7 @@ fn state_occurrence(sequence: u64, todo_id: &str, title: &str) -> DomainEventOcc
 }
 
 fn partial_state_occurrence(sequence: u64, todo_id: &str) -> DomainEventOccurrence {
-    DomainEventOccurrence::capture(
+    let mut occurrence = DomainEventOccurrence::capture(
         event_descriptor(),
         DomainEventEnvelope {
             aggregate_type: "todo".into(),
@@ -882,7 +1182,9 @@ fn partial_state_occurrence(sequence: u64, todo_id: &str) -> DomainEventOccurren
             "status": "open"
         }),
     )
-    .unwrap()
+    .unwrap();
+    occurrence.overwrite_causation_id(TEST_CAUSATION_ID);
+    occurrence
 }
 
 fn todos() -> TableSchema {
@@ -974,7 +1276,10 @@ impl TestRequestAuthority {
                 .unwrap(),
             cache_scope: ProjectionDeltaCacheScopeToken::parse_wire(TEST_CACHE_SCOPE_TOKEN)
                 .unwrap(),
-            causation: crate::command_ledger::CausationId::new(),
+            causation: crate::command_ledger::CausationId::parse_stored(
+                TEST_CAUSATION_ID.to_owned(),
+            )
+            .unwrap(),
             record,
             relationship,
             partition_result: PartitionResult::Opaque,

@@ -70,7 +70,21 @@ fn merge_operation(
     existing: &mut ProjectionDeltaOperation,
     incoming: ProjectionDeltaOperation,
 ) -> Result<(), ProjectionDeltaError> {
-    let mutation = merge_mutation(existing.mutation.clone(), incoming.mutation)?;
+    if existing.occurrence_ordinal == incoming.occurrence_ordinal {
+        if existing.mutation != incoming.mutation {
+            return Err(ProjectionDeltaError::InvalidOperation(
+                "same occurrence cannot contribute different mutations to one scope",
+            ));
+        }
+        merge_refs(&mut existing.projection_refs, incoming.projection_refs);
+        return Ok(());
+    }
+    let (earlier, later) = if existing.occurrence_ordinal < incoming.occurrence_ordinal {
+        (existing.mutation.clone(), incoming.mutation)
+    } else {
+        (incoming.mutation, existing.mutation.clone())
+    };
+    let mutation = merge_mutation(earlier, later)?;
     existing.occurrence_ordinal = existing.occurrence_ordinal.max(incoming.occurrence_ordinal);
     merge_refs(&mut existing.projection_refs, incoming.projection_refs);
     existing.mutation = mutation;
@@ -638,6 +652,55 @@ mod tests {
                 "same scope resolves to incompatible final mutations"
             ))
         ));
+    }
+
+    #[test]
+    fn identical_same_occurrence_contributions_union_refs_independent_of_input_order() {
+        let mutation = delete(&scope("Todos"));
+        let left = operation(3, &[4], mutation.clone());
+        let right = operation(3, &[1], mutation);
+
+        let forward = canonicalize_operations(vec![left.clone(), right.clone()]).unwrap();
+        let reversed = canonicalize_operations(vec![right, left]).unwrap();
+
+        assert_eq!(forward, reversed);
+        assert_eq!(forward[0].projection_refs, vec![1, 4]);
+    }
+
+    #[test]
+    fn opposite_edge_contributions_in_one_occurrence_fail_closed_in_both_orders() {
+        let source = scope("Todos");
+        let target = scope("Tags");
+        let link = operation(
+            5,
+            &[0],
+            ProjectionDeltaMutation::Link {
+                relationship: "tags".to_owned(),
+                source: source.clone(),
+                target: target.clone(),
+            },
+        );
+        let unlink = operation(
+            5,
+            &[1],
+            ProjectionDeltaMutation::Unlink {
+                relationship: "tags".to_owned(),
+                source,
+                target,
+            },
+        );
+
+        for operations in [
+            vec![link.clone(), unlink.clone()],
+            vec![unlink.clone(), link.clone()],
+        ] {
+            assert!(matches!(
+                canonicalize_operations(operations),
+                Err(ProjectionDeltaError::InvalidOperation(
+                    "same occurrence cannot contribute different mutations to one scope"
+                ))
+            ));
+        }
     }
 
     #[test]

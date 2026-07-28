@@ -13,12 +13,12 @@ use crate::projection::placement::{
 };
 use crate::projection::{
     ProjectionAssignmentRef, ProjectionEnvelopeField, ProjectionExpression,
-    ProjectionExpressionRef, ProjectionInvalidation, ProjectionMutationKind,
+    ProjectionExpressionRef, ProjectionInvalidation, ProjectionMutationKind, ProjectionPartition,
     ProjectionRelationshipEffectKind, ProjectionScalarTransform, ProjectionValue,
     ProjectionValueRef, ProjectionValueType,
 };
 
-pub(super) const CLIENT_PROJECTION_PROGRAM_VERSION: u32 = 1;
+pub(super) const CLIENT_PROJECTION_PROGRAM_VERSION: u32 = 2;
 pub(super) const CLIENT_PROJECTION_BINDING_VERSION: u32 = 1;
 pub(super) const CLIENT_PROJECTION_OPERATION_SEMANTICS_VERSION: u32 = 1;
 pub(super) const COMMAND_PROJECTION_EXTENSION_VERSION: u32 = 2;
@@ -118,7 +118,14 @@ pub(super) fn command_projection_extension(
                 }
                 let arm_ref = arm_ref(modeled.program_id(), arm);
                 let mut arm_slots = Vec::new();
-                let _ = lower_arm(modeled.program_id(), arm, surface, &arm_ref, &mut arm_slots)?;
+                let _ = lower_arm(
+                    modeled.program_id(),
+                    arm,
+                    &program.partition,
+                    surface,
+                    &arm_ref,
+                    &mut arm_slots,
+                )?;
                 slot_origins.extend(arm_slots);
                 program_arms.push(CommandProjectionArmRef {
                     event: event_ref(&arm.selector),
@@ -147,15 +154,14 @@ pub(super) fn command_projection_extension(
 
     let mut preview_occurrences = Vec::new();
     for preview in &command.projections.previews {
+        let preview_event = event_ref(&preview.selector);
+        if program_arms.iter().all(|arm| arm.event != preview_event) {
+            continue;
+        }
         let occurrence_origins = slot_origins
             .iter()
             .filter(|origin| origin.event == preview.selector)
             .collect::<Vec<_>>();
-        // A denied, draining, background, direct, or otherwise absent arm does
-        // not create an occurrence. Dense ordinals avoid leaking its position.
-        if occurrence_origins.is_empty() {
-            continue;
-        }
         let mut values = occurrence_origins
             .into_iter()
             .map(|origin| {
@@ -206,7 +212,7 @@ pub(super) fn command_projection_extension(
         })?;
         preview_occurrences.push(CommandProjectionPreviewOccurrence {
             ordinal,
-            event: event_ref(&preview.selector),
+            event: preview_event,
             values,
         });
     }
@@ -229,7 +235,14 @@ fn lower_program(
     let mut arms = Vec::with_capacity(program.arms.len());
     for arm in &program.arms {
         let arm_ref = arm_ref(program_id, arm);
-        arms.push(lower_arm(program_id, arm, surface, &arm_ref, slots)?);
+        arms.push(lower_arm(
+            program_id,
+            arm,
+            &program.partition,
+            surface,
+            &arm_ref,
+            slots,
+        )?);
     }
     Ok(ClientProjectionProgram {
         version: CLIENT_PROJECTION_PROGRAM_VERSION,
@@ -245,10 +258,17 @@ fn lower_program(
 fn lower_arm(
     program_id: crate::ProjectionProgramId,
     arm: &SurfaceProjectionArm,
+    partition: &ProjectionPartition,
     surface: &Surface,
     arm_ref: &str,
     slots: &mut Vec<SlotOrigin>,
 ) -> Result<ClientProjectionArm, ClientManifestError> {
+    let partition = match partition {
+        ProjectionPartition::Unit => ClientProjectionPartition::Unit,
+        ProjectionPartition::Expression(expression) => ClientProjectionPartition::Expression {
+            expression: lower_expression(program_id, arm, arm_ref, "partition", expression, slots)?,
+        },
+    };
     let operations = arm
         .operations
         .iter()
@@ -257,6 +277,7 @@ fn lower_arm(
     Ok(ClientProjectionArm {
         arm: arm_ref.to_owned(),
         event: event_ref(&arm.selector),
+        partition,
         operations,
     })
 }
@@ -1050,6 +1071,14 @@ mod tests {
         name: &str,
         selectors: impl IntoIterator<Item = crate::ProjectionEventSelector>,
     ) -> SurfaceSelectedProjectionProgram {
+        selected_program_with_partition(name, selectors, ProjectionPartition::Unit)
+    }
+
+    fn selected_program_with_partition(
+        name: &str,
+        selectors: impl IntoIterator<Item = crate::ProjectionEventSelector>,
+        partition: ProjectionPartition,
+    ) -> SurfaceSelectedProjectionProgram {
         let operations = |ordinal| {
             vec![SurfaceProjectionOperation {
                 operation_id: format!("{name}-delete-{ordinal}"),
@@ -1074,6 +1103,7 @@ mod tests {
             version: 1,
             ir_version: crate::projection::PROJECTION_PROGRAM_IR_VERSION,
             operation_semantics_version: crate::projection::PROJECTION_OPERATION_SEMANTICS_VERSION,
+            partition,
             arms: selectors
                 .into_iter()
                 .enumerate()
@@ -1084,6 +1114,52 @@ mod tests {
                 })
                 .collect(),
         }
+    }
+
+    fn selected_constant_program(
+        name: &str,
+        selector: crate::ProjectionEventSelector,
+    ) -> SurfaceSelectedProjectionProgram {
+        SurfaceSelectedProjectionProgram {
+            name: name.into(),
+            version: 1,
+            ir_version: crate::projection::PROJECTION_PROGRAM_IR_VERSION,
+            operation_semantics_version: crate::projection::PROJECTION_OPERATION_SEMANTICS_VERSION,
+            partition: ProjectionPartition::Unit,
+            arms: vec![SurfaceProjectionArm {
+                arm_id: format!("{name}-arm"),
+                selector,
+                operations: vec![SurfaceProjectionOperation {
+                    operation_id: format!("{name}-delete"),
+                    staging_ordinal: 0,
+                    kind: ProjectionMutationKind::Delete,
+                    model: "TodoView".into(),
+                    storage: "todos".into(),
+                    key: vec![ProjectionKeyField::try_new(
+                        0,
+                        "todo_id",
+                        ProjectionExpression::constant(ProjectionValue::string("constant-todo")),
+                    )
+                    .unwrap()],
+                    fields: Vec::new(),
+                    relationship_effects: Vec::new(),
+                    invalidations: Vec::new(),
+                    force_revalidate: false,
+                }],
+            }],
+        }
+    }
+
+    fn typed_body_preview(source: CommandProjectionPreviewSource) -> CommandProjectionPreview {
+        let mut preview = CommandProjectionPreview::new()
+            .events(crate::events![PreviewA])
+            .field(["private_partition_path"], source);
+        let field = &mut preview.fields[0];
+        field.body_type = Some(ProjectionPortableType::String);
+        field.body_rust_type = Some("String");
+        field.body_nullable = Some(false);
+        field.body_always_present = Some(true);
+        preview
     }
 
     fn modeled(
@@ -1149,6 +1225,182 @@ mod tests {
             projection.preview_occurrences.is_empty(),
             "an allowed actual event is not an optimistic prediction"
         );
+    }
+
+    #[test]
+    fn unit_partition_is_explicit_on_every_client_arm() {
+        let selector = typed_selector::<PreviewA>();
+        let surface = surface_with_modeled([modeled(
+            20,
+            ProjectionPlacement::Eventual,
+            Some(selected_program("unit-partition", [selector])),
+        )]);
+
+        let (programs, _) = projection_manifest(&surface).unwrap();
+
+        assert!(matches!(
+            programs[0].arms[0].partition,
+            ClientProjectionPartition::Unit
+        ));
+    }
+
+    #[test]
+    fn non_unit_partition_slot_uses_known_input_source_and_is_deterministic() {
+        let selector = typed_selector::<PreviewA>();
+        let selected = selected_program_with_partition(
+            "input-partition",
+            [selector],
+            ProjectionPartition::Expression(
+                ProjectionExpression::body_path(
+                    ProjectionValueType::String,
+                    ["private_partition_path"],
+                )
+                .unwrap(),
+            ),
+        );
+        let surface =
+            surface_with_modeled([modeled(21, ProjectionPlacement::Eventual, Some(selected))]);
+        let mut command = command("String");
+        command.projections.add_event_set(crate::events![PreviewA]);
+        command
+            .projections
+            .add_preview(typed_body_preview(CommandProjectionPreviewSource::input([
+                "value",
+            ])));
+
+        let first = command_projection_extension(&command, &surface, &[])
+            .unwrap()
+            .unwrap();
+        let second = command_projection_extension(&command, &surface, &[])
+            .unwrap()
+            .unwrap();
+        let (programs, _) = projection_manifest(&surface).unwrap();
+        let ClientProjectionPartition::Expression {
+            expression: ClientProjectionExpression::Slot { slot, .. },
+        } = &programs[0].arms[0].partition
+        else {
+            panic!("non-unit partition must lower to an opaque typed slot");
+        };
+        let source = &first.preview_occurrences[0]
+            .values
+            .iter()
+            .find(|value| value.slot == *slot)
+            .unwrap()
+            .source;
+
+        assert!(matches!(
+            source,
+            ClientProjectionPreviewSource::Input { path } if path == &["value"]
+        ));
+        assert_eq!(
+            serde_json::to_vec(&first).unwrap(),
+            serde_json::to_vec(&second).unwrap()
+        );
+        let wire = serde_json::to_string(&(programs, first)).unwrap();
+        assert!(!wire.contains("private_partition_path"));
+    }
+
+    #[test]
+    fn unknown_non_unit_partition_source_remains_an_explicit_unknown_slot() {
+        let selector = typed_selector::<PreviewA>();
+        let selected = selected_program_with_partition(
+            "unknown-partition",
+            [selector],
+            ProjectionPartition::Expression(
+                ProjectionExpression::body_path(
+                    ProjectionValueType::String,
+                    ["private_partition_path"],
+                )
+                .unwrap(),
+            ),
+        );
+        let surface =
+            surface_with_modeled([modeled(22, ProjectionPlacement::Eventual, Some(selected))]);
+        let mut command = command("String");
+        command.projections.add_event_set(crate::events![PreviewA]);
+        command
+            .projections
+            .add_preview(typed_body_preview(CommandProjectionPreviewSource::Unknown));
+
+        let projection = command_projection_extension(&command, &surface, &[])
+            .unwrap()
+            .unwrap();
+        let (programs, _) = projection_manifest(&surface).unwrap();
+        let ClientProjectionPartition::Expression {
+            expression: ClientProjectionExpression::Slot { slot, .. },
+        } = &programs[0].arms[0].partition
+        else {
+            panic!("non-unit partition must lower to an opaque typed slot");
+        };
+
+        assert!(projection.preview_occurrences[0]
+            .values
+            .iter()
+            .any(|value| {
+                value.slot == *slot && value.source == ClientProjectionPreviewSource::Unknown
+            }));
+    }
+
+    #[test]
+    fn selected_constant_only_preview_remains_ordered_with_an_empty_value_list() {
+        let selector = typed_selector::<PreviewA>();
+        let surface = surface_with_modeled([modeled(
+            23,
+            ProjectionPlacement::Eventual,
+            Some(selected_constant_program("constant-only", selector)),
+        )]);
+        let mut command = command("String");
+        command
+            .projections
+            .add_event_set(crate::events![PreviewA, PreviewB]);
+        command
+            .projections
+            .add_preview(CommandProjectionPreview::new().events(crate::events![PreviewB]));
+        command
+            .projections
+            .add_preview(CommandProjectionPreview::new().events(crate::events![PreviewA]));
+
+        let projection = command_projection_extension(&command, &surface, &[])
+            .unwrap()
+            .unwrap();
+
+        assert_eq!(projection.preview_occurrences.len(), 1);
+        assert_eq!(projection.preview_occurrences[0].ordinal, 0);
+        assert!(projection.preview_occurrences[0].values.is_empty());
+        assert_eq!(
+            projection.preview_occurrences[0].event,
+            projection.program_arms[0].event
+        );
+    }
+
+    #[test]
+    fn partition_semantics_change_client_program_bytes_and_fingerprint() {
+        let selector = typed_selector::<PreviewA>();
+        let unit = selected_program("partition-fingerprint", [selector.clone()]);
+        let expression = selected_program_with_partition(
+            "partition-fingerprint",
+            [selector],
+            ProjectionPartition::Expression(ProjectionExpression::constant(
+                ProjectionValue::string("tenant-a"),
+            )),
+        );
+        let program_id =
+            crate::ProjectionProgramId::parse(&format!("pp1:sha256:{}", "22".repeat(32))).unwrap();
+        let mut unit_slots = Vec::new();
+        let unit = lower_program(program_id, &unit, &todo_surface(), &mut unit_slots).unwrap();
+        let mut expression_slots = Vec::new();
+        let expression = lower_program(
+            program_id,
+            &expression,
+            &todo_surface(),
+            &mut expression_slots,
+        )
+        .unwrap();
+        let unit_bytes = serde_json::to_vec(&unit).unwrap();
+        let expression_bytes = serde_json::to_vec(&expression).unwrap();
+
+        assert_ne!(unit_bytes, expression_bytes);
+        assert_ne!(hash_bytes(&unit_bytes), hash_bytes(&expression_bytes));
     }
 
     #[test]
@@ -1354,6 +1606,7 @@ mod tests {
             version: 1,
             ir_version: 1,
             operation_semantics_version: 1,
+            partition: ProjectionPartition::Unit,
             arms: vec![arm],
         };
         let program_id =

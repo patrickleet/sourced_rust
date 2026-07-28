@@ -7,7 +7,8 @@ use crate::projection::placement::{
 };
 use crate::{
     ProjectionField, ProjectionInvalidation, ProjectionKeyField, ProjectionMutationKind,
-    ProjectionOperation, ProjectionProgram, ProjectionProgramId, ProjectionRelationshipEffect,
+    ProjectionOperation, ProjectionPartition, ProjectionProgram, ProjectionProgramId,
+    ProjectionRelationshipEffect,
 };
 
 use super::types::SurfaceProjectionOwnerKind;
@@ -44,6 +45,7 @@ pub(crate) struct SurfaceSelectedProjectionProgram {
     pub version: u64,
     pub ir_version: u16,
     pub operation_semantics_version: u16,
+    pub partition: ProjectionPartition,
     pub arms: Vec<SurfaceProjectionArm>,
 }
 
@@ -329,6 +331,7 @@ impl SurfaceModeledProjection {
                 version: program.version(),
                 ir_version: program.ir_version(),
                 operation_semantics_version: program.operation_semantics_version(),
+                partition: program.partition().clone(),
                 arms,
             })
         };

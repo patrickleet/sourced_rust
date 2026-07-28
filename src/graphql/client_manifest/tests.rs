@@ -285,13 +285,21 @@ fn modeled_surface(
     state: crate::projection::placement::ProjectionBindingState,
     execution_class: crate::projection::placement::ProjectionExecutionClass,
 ) -> Surface {
+    modeled_surface_with_partition(state, execution_class, crate::ProjectionPartition::Unit)
+}
+
+fn modeled_surface_with_partition(
+    state: crate::projection::placement::ProjectionBindingState,
+    execution_class: crate::projection::placement::ProjectionExecutionClass,
+    partition: crate::ProjectionPartition,
+) -> Surface {
     use crate::projection::catalog::ProjectionBindingActivation;
     use crate::projection::placement::{
         ProjectionBinding, ProjectionExecutorRoute, ProjectionOutput, ProjectionOwner,
         ProjectionPhysicalTopology, ProjectionSourceBinding, PROJECTION_PARTITION_CODEC_VERSION,
     };
     use crate::projection::{
-        ProjectionArm, ProjectionField, ProjectionOperation, ProjectionPartition, ProjectionTarget,
+        ProjectionArm, ProjectionField, ProjectionOperation, ProjectionTarget,
     };
     use crate::projection_protocol::{ProjectionEpoch, ProjectorTopologyId};
     use crate::{
@@ -329,13 +337,8 @@ fn modeled_surface(
     )
     .unwrap();
     let arm = ProjectionArm::try_new("todo-projected", selector, vec![operation]).unwrap();
-    let program = ProjectionProgram::try_new(
-        "project-todos-modeled",
-        1,
-        ProjectionPartition::Unit,
-        vec![arm],
-    )
-    .unwrap();
+    let program =
+        ProjectionProgram::try_new("project-todos-modeled", 1, partition, vec![arm]).unwrap();
     let binding = ProjectionBinding::from_eventual_program(
         &program,
         ProjectionSourceBinding::try_new("todo-domain", "ordered-domain-events", 1).unwrap(),
@@ -681,7 +684,7 @@ fn role_manifest_is_deterministic_and_hides_denied_identity_and_commands() {
     );
     assert_eq!(
         first.protocol_fingerprint,
-        "sha256:04791adffc73cd76aba4cb3b2ae6bfa451b3413814e935fc2f417e664b14c117"
+        "sha256:00fb342f3acb4dc1c1716a43cc3001c748d5f6c500ff831690d820e9e43e2782"
     );
 
     let user = first
@@ -793,6 +796,61 @@ fn role_manifest_is_deterministic_and_hides_denied_identity_and_commands() {
 }
 
 #[test]
+fn role_and_application_partition_manifests_hide_raw_paths_and_denied_values() {
+    use crate::projection::placement::{ProjectionBindingState, ProjectionExecutionClass};
+
+    let mut full = modeled_surface_with_partition(
+        ProjectionBindingState::Active,
+        ProjectionExecutionClass::Causal,
+        crate::ProjectionPartition::Expression(
+            crate::ProjectionExpression::body_path(
+                crate::ProjectionValueType::String,
+                ["private_partition_path"],
+            )
+            .unwrap(),
+        ),
+    );
+    full.commands
+        .iter_mut()
+        .find(|command| command.command_name == "todo.complete")
+        .unwrap()
+        .projections
+        .add_preview(
+            crate::graphql::CommandProjectionPreview::new()
+                .events(crate::events![ManifestTodoProjected])
+                .field(
+                    ["private_partition_path"],
+                    crate::graphql::CommandProjectionPreviewSource::constant(
+                        crate::ProjectionValue::string("denied-partition-value"),
+                    ),
+                ),
+        );
+    let all_grants = grants();
+    let role = surface_for_role(&full, "user", &all_grants["user"]).unwrap();
+    let application = surface_for_application(&full, "web", &["user".into()], &all_grants).unwrap();
+
+    for (identity, selected) in [
+        (ClientSurfaceIdentity::role("user"), role),
+        (
+            ClientSurfaceIdentity::application("web", ["user"]),
+            application,
+        ),
+    ] {
+        let manifest = client_manifest_from_surface("todos-service", identity, &selected).unwrap();
+        assert!(matches!(
+            manifest.projection_programs[0].arms[0].partition,
+            ClientProjectionPartition::Expression {
+                expression: ClientProjectionExpression::Slot { .. }
+            }
+        ));
+        let wire = serde_json::to_string(&manifest).unwrap();
+        assert!(!wire.contains("private_partition_path"));
+        assert!(!wire.contains("denied-partition-value"));
+        assert!(!wire.contains("\"kind\":\"body_path\""));
+    }
+}
+
+#[test]
 fn manifest_v2_decode_rejects_unknown_versions_fields_and_legacy_authority() {
     let full = full_surface();
     let selected = surface_for_role(&full, "user", &grants()["user"]).unwrap();
@@ -842,21 +900,23 @@ fn manifest_v2_decode_rejects_unknown_versions_fields_and_legacy_authority() {
     });
     assert!(serde_json::from_value::<DistributedClientManifest>(mixed).is_err());
 
-    let mut program = value.clone();
-    program["projection_programs"] = serde_json::json!([{
-        "version": 2,
+    for version in [1, 3] {
+        let mut program = value.clone();
+        program["projection_programs"] = serde_json::json!([{
+        "version": version,
         "program_id": "pp1:sha256:bad",
         "name": "bad",
         "program_version": 1,
         "ir_version": 1,
         "operation_semantics_version": 1,
         "arms": []
-    }]);
-    assert!(serde_json::from_value::<DistributedClientManifest>(program).is_err());
+        }]);
+        assert!(serde_json::from_value::<DistributedClientManifest>(program).is_err());
+    }
     for field in ["ir_version", "operation_semantics_version"] {
         let mut program = serde_json::to_value(&baseline).unwrap();
         program["projection_programs"] = serde_json::json!([{
-            "version": 1,
+            "version": 2,
             "program_id": "pp1:sha256:bad",
             "name": "bad",
             "program_version": 1,
@@ -870,6 +930,51 @@ fn manifest_v2_decode_rejects_unknown_versions_fields_and_legacy_authority() {
             "unknown `{field}` must fail closed"
         );
     }
+    let valid_program = serde_json::json!({
+        "version": 2,
+        "program_id": "pp1:sha256:bad",
+        "name": "bad",
+        "program_version": 1,
+        "ir_version": 1,
+        "operation_semantics_version": 1,
+        "arms": [{
+            "arm": "pa1:sha256:bad",
+            "event": {
+                "id": "pe1:sha256:bad",
+                "name": "todo.partitioned",
+                "version": 1
+            },
+            "partition": {"kind": "unit"},
+            "operations": []
+        }]
+    });
+    for field in ["version", "partition"] {
+        let mut hostile = serde_json::to_value(&baseline).unwrap();
+        hostile["projection_programs"] = serde_json::json!([valid_program.clone()]);
+        if field == "version" {
+            hostile["projection_programs"][0]
+                .as_object_mut()
+                .unwrap()
+                .remove(field);
+        } else {
+            hostile["projection_programs"][0]["arms"][0]
+                .as_object_mut()
+                .unwrap()
+                .remove(field);
+        }
+        assert!(
+            serde_json::from_value::<DistributedClientManifest>(hostile).is_err(),
+            "missing required arm/program `{field}` must fail closed"
+        );
+    }
+    let mut unknown_partition = serde_json::to_value(&baseline).unwrap();
+    unknown_partition["projection_programs"] = serde_json::json!([valid_program]);
+    unknown_partition["projection_programs"][0]["arms"][0]["partition"] =
+        serde_json::json!({"kind": "opaque", "value": "private"});
+    assert!(
+        serde_json::from_value::<DistributedClientManifest>(unknown_partition).is_err(),
+        "unknown partition semantics must fail closed"
+    );
 
     let mut binding = value.clone();
     binding["projection_bindings"] = serde_json::json!([{
