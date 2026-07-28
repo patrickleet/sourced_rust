@@ -228,6 +228,7 @@ pub struct SurfaceProjectionOwner {
     pub(crate) change_epoch: Option<String>,
     pub(crate) partition: ProjectionPartitionSpec,
     pub(in crate::graphql::surface) kind: SurfaceProjectionOwnerKind,
+    pub(crate) modeled: Vec<SurfaceModeledProjection>,
 }
 
 impl SurfaceProjectionOwner {
@@ -266,6 +267,7 @@ impl SurfaceProjector {
                 change_epoch: None,
                 partition: ProjectionPartitionSpec::unit(),
                 kind: SurfaceProjectionOwnerKind::Async,
+                modeled: Vec::new(),
             },
         }
     }
@@ -277,6 +279,15 @@ impl SurfaceProjector {
 
     pub fn models(mut self, models: impl IntoIterator<Item = impl Into<String>>) -> Self {
         self.owner.models = models.into_iter().map(Into::into).collect();
+        self
+    }
+
+    /// Attach one exact program/binding/activation tuple.
+    ///
+    /// Repeat this for retained draining bindings. Exactly one active binding
+    /// per program is accepted when the owner registry is attached.
+    pub fn modeled(mut self, projection: SurfaceModeledProjection) -> Self {
+        self.owner.modeled.push(projection);
         self
     }
 
@@ -367,6 +378,7 @@ impl SurfaceDirectProjection {
                 change_epoch: None,
                 partition: ProjectionPartitionSpec::unit(),
                 kind: SurfaceProjectionOwnerKind::Direct,
+                modeled: Vec::new(),
             },
         }
     }
@@ -382,6 +394,12 @@ impl SurfaceDirectProjection {
         M: crate::read_model::RelationalReadModel,
     {
         self.owner.models.push(M::schema().model_name.clone());
+        self
+    }
+
+    /// Attach one exact same-transaction modeled projection.
+    pub fn modeled(mut self, projection: SurfaceModeledProjection) -> Self {
+        self.owner.modeled.push(projection);
         self
     }
 
@@ -637,12 +655,60 @@ impl Surface {
         }
         let mut out = Vec::new();
         let mut names = BTreeSet::new();
+        let mut active_programs = BTreeSet::new();
         for mut projector in projectors {
             if projector.name.trim().is_empty() {
                 return Err("projector name must not be empty".into());
             }
             if !names.insert(projector.name.clone()) {
                 return Err(format!("duplicate projector name `{}`", projector.name));
+            }
+            if !projector.modeled.is_empty() {
+                if !projector.facts.is_empty() || !projector.models.is_empty() {
+                    return Err(format!(
+                        "modeled projection owner `{}` must derive event and model inventory from its exact bindings",
+                        projector.name
+                    ));
+                }
+                for modeled in &projector.modeled {
+                    modeled.validate_for_surface(&projector.name, projector.kind, &self.models)?;
+                    if modeled.activation().state()
+                        == crate::projection::placement::ProjectionBindingState::Active
+                        && !active_programs.insert(modeled.program_id())
+                    {
+                        return Err(format!(
+                            "projection program `{}` has more than one active Surface binding",
+                            modeled.program_id()
+                        ));
+                    }
+                }
+                projector.models = projector
+                    .modeled
+                    .iter()
+                    .flat_map(|modeled| modeled.binding().outputs())
+                    .map(|output| output.model().to_owned())
+                    .collect::<BTreeSet<_>>()
+                    .into_iter()
+                    .collect();
+                if projector.kind == SurfaceProjectionOwnerKind::Async {
+                    projector.facts = projector
+                        .modeled
+                        .iter()
+                        .flat_map(|modeled| modeled.program().arms())
+                        .map(|arm| arm.selector().event_name().to_owned())
+                        .collect::<BTreeSet<_>>()
+                        .into_iter()
+                        .collect();
+                }
+                projector.change_epoch = projector
+                    .modeled
+                    .iter()
+                    .find(|modeled| {
+                        modeled.activation().state()
+                            == crate::projection::placement::ProjectionBindingState::Active
+                    })
+                    .or_else(|| projector.modeled.first())
+                    .map(|modeled| modeled.activation().epoch().as_str().to_owned());
             }
             match projector.kind {
                 SurfaceProjectionOwnerKind::Async if projector.facts.is_empty() => {

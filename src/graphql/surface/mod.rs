@@ -38,6 +38,7 @@ mod build;
 mod commands;
 mod effects;
 mod identity;
+mod projections;
 mod roots;
 mod types;
 mod validation;
@@ -47,6 +48,7 @@ mod tests;
 
 pub use application::{role_grants_for_role, surface_for_application, surface_for_role, RoleGrant};
 pub use build::build_surface;
+pub use projections::SurfaceModeledProjection;
 pub use types::{
     ColumnField, RelField, RootField, RootKind, Surface, SurfaceArgument, SurfaceArgumentKind,
     SurfaceCommand, SurfaceCommandShape, SurfaceDialect, SurfaceDirectProjection, SurfaceModel,

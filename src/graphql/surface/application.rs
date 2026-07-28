@@ -296,6 +296,7 @@ pub fn surface_for_role(
             change_epoch: projector.change_epoch.clone(),
             partition: projector.partition.clone(),
             kind: projector.kind,
+            modeled: projector.modeled.clone(),
         });
     }
     sanitize_command_confirmations(&mut commands, &projectors, &models);
