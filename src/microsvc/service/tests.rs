@@ -196,6 +196,86 @@ const CAUSAL_ROGUE_DIRECT_PROJECTION: crate::projection::lower::ProjectionDescri
 };
 
 #[cfg(feature = "graphql")]
+const CAUSAL_SIBLING_DIRECT_PROJECTION: crate::projection::lower::ProjectionDescriptor<
+    crate::projection::lower::DirectCandidate,
+> = distributed_macros::projection! {
+    name: "project_causal_direct_sibling";
+    version: 1;
+    epoch: "causal-direct-v1";
+    partition: unit;
+
+    on "causal.direct-sibling-recorded" version 1 (state: CausalDirectState) {
+        upsert CausalProjectionSiblingView from state as view;
+    }
+};
+
+#[cfg(feature = "graphql")]
+fn modeled_direct_registration(
+    descriptor: crate::projection::lower::ProjectionDescriptor<
+        crate::projection::lower::DirectCandidate,
+    >,
+    owner: &str,
+    epoch: &str,
+    topology_name: &str,
+    topology_digest: u8,
+    schema: crate::table::TableSchema,
+) -> crate::graphql::SurfaceModeledProjection {
+    let model = schema.model_name.clone();
+    let storage = schema.table_name.clone();
+    let binding = crate::projection::placement::ProjectionBinding::materialize_direct(
+        descriptor.direct(),
+        crate::projection::placement::ProjectionSourceBinding::try_new(
+            "causal-domain",
+            "ordered-domain-events",
+            1,
+        )
+        .unwrap(),
+        crate::projection::placement::ProjectionOwner::try_new(owner).unwrap(),
+        "distributed-projection-partition",
+        crate::projection::placement::PROJECTION_PARTITION_CODEC_VERSION,
+        vec![
+            crate::projection::placement::ProjectionOutput::try_new(model, storage, schema)
+                .unwrap(),
+        ],
+        vec![],
+        Some(
+            crate::projection::placement::ProjectionPhysicalTopology::from_protocol(
+                &ProjectorTopologyId::new(1, topology_name, [topology_digest; 32]).unwrap(),
+            ),
+        ),
+    )
+    .unwrap();
+    let catalog =
+        crate::projection::catalog::ProjectionCatalog::try_new(vec![binding.clone()]).unwrap();
+    let active = catalog
+        .activate(
+            vec![
+                crate::projection::catalog::ProjectionBindingActivation::new(
+                    binding.id(),
+                    binding.program_id(),
+                    crate::projection_protocol::ProjectionEpoch::new(epoch).unwrap(),
+                    crate::projection::placement::ProjectionBindingState::Active,
+                    Some(
+                        crate::projection::placement::ProjectionExecutorRoute::local(
+                            "causal-direct",
+                        )
+                        .unwrap(),
+                    ),
+                ),
+            ],
+            None,
+        )
+        .unwrap();
+    crate::graphql::SurfaceModeledProjection::try_from_descriptor(
+        descriptor,
+        &catalog,
+        &active,
+        binding.id(),
+    )
+    .unwrap()
+}
+
+#[cfg(feature = "graphql")]
 impl GraphqlOutputType for CausalProjectionObligationView {
     fn graphql_type() -> GraphqlTypeDef {
         one_string_field("CausalProjectionObligationView", "id")
@@ -1766,6 +1846,84 @@ async fn causal_dispatch_replay_contains_resolved_projection_obligation() {
     let pending = repository.outbox_store().pending(10).await.unwrap();
     assert_eq!(pending.len(), 1);
     assert_eq!(pending[0].event_type, "causal.obligation_fact");
+}
+
+#[cfg(all(feature = "graphql", feature = "sqlite"))]
+#[tokio::test]
+async fn engine_rejects_incompatible_direct_owner_before_typed_command_binding() {
+    let repository = crate::SqliteRepository::connect_and_migrate("sqlite::memory:")
+        .await
+        .expect("framework migrations should apply");
+    let handler_calls = Arc::new(AtomicUsize::new(0));
+    let route_handler_calls = Arc::clone(&handler_calls);
+    let service = Service::new().named("causal-direct").routes(
+        Routes::new()
+            .with_repo(repository.clone().aggregate::<CausalDispatcherAggregate>())
+            .typed_command(typed_command::<
+                CausalProjectionInput,
+                Projected<CausalProjectionObligationView>,
+            >("causal.direct"))
+            .handle(
+                move |_context: &CausalCommandContext<'_, CausalDispatcherAggregate>,
+                      input: CausalProjectionInput| {
+                    let calls = Arc::clone(&route_handler_calls);
+                    async move {
+                        calls.fetch_add(1, Ordering::SeqCst);
+                        Err(HandlerError::Rejected(format!(
+                            "handler must not run for {}",
+                            input.id
+                        )))
+                    }
+                },
+            ),
+    );
+    let first = modeled_direct_registration(
+        CAUSAL_DIRECT_PROJECTION,
+        "project_causal_direct",
+        "causal-direct-v1",
+        "first-direct-topology",
+        1,
+        <CausalProjectionObligationView as crate::read_model::RelationalReadModel>::schema()
+            .clone(),
+    );
+    let second = modeled_direct_registration(
+        CAUSAL_SIBLING_DIRECT_PROJECTION,
+        "project_causal_direct",
+        "causal-direct-v1",
+        "second-direct-topology",
+        2,
+        <CausalProjectionSiblingView as crate::read_model::RelationalReadModel>::schema().clone(),
+    );
+    let owner = SurfaceDirectProjection::new("project_causal_direct")
+        .modeled(first)
+        .modeled(second)
+        // If typed-command binding ran first, this deliberately incompatible
+        // command partition would produce a different error.
+        .partition_by(["must-not-bind"]);
+    let result = crate::graphql::GraphqlEngine::builder(&repository)
+        .model::<CausalProjectionObligationView>(
+            crate::graphql::ModelPermissions::new()
+                .grant("anonymous", crate::graphql::read().all_columns()),
+        )
+        .model::<CausalProjectionSiblingView>(
+            crate::graphql::ModelPermissions::new()
+                .grant("anonymous", crate::graphql::read().all_columns()),
+        )
+        .service(&service)
+        .client_projection_owners([owner.into()])
+        .build();
+    let error = match result {
+        Ok(_) => panic!("incompatible direct owner must fail engine construction"),
+        Err(error) => error,
+    };
+
+    assert!(
+        error
+            .to_string()
+            .contains("incompatible active physical topologies"),
+        "{error}"
+    );
+    assert_eq!(handler_calls.load(Ordering::SeqCst), 0);
 }
 
 #[cfg(all(feature = "graphql", feature = "sqlite"))]

@@ -11,7 +11,7 @@ use crate::{
     ProjectionRelationshipEffect,
 };
 
-use super::types::SurfaceProjectionOwnerKind;
+use super::types::{SurfaceProjectionOwner, SurfaceProjectionOwnerKind};
 use super::{SurfaceModel, SurfaceRelationshipKeys};
 
 /// One role-safe selected operation from an authoritative projection program.
@@ -433,6 +433,91 @@ impl SurfaceModeledProjection {
     ) -> Option<&crate::projection::lower::ProjectionServerExecutorDescriptor> {
         self.server_executor.as_ref()
     }
+}
+
+/// Validate the one active physical contract represented by each direct
+/// modeled owner before any command inventory is bound to it.
+///
+/// Draining registrations remain visible for rollout completion but do not
+/// participate in the contract used to mint new same-transaction work.
+pub(crate) fn validate_direct_modeled_owner_compatibility(
+    owners: &[SurfaceProjectionOwner],
+) -> Result<(), String> {
+    for owner in owners {
+        if owner.kind != SurfaceProjectionOwnerKind::Direct || owner.modeled.is_empty() {
+            continue;
+        }
+        let active = owner
+            .modeled
+            .iter()
+            .filter(|modeled| modeled.state() == ProjectionBindingState::Active)
+            .collect::<Vec<_>>();
+        let active_epochs = active
+            .iter()
+            .map(|modeled| modeled.epoch().as_str())
+            .collect::<BTreeSet<_>>();
+        if active_epochs.len() > 1 {
+            return Err(format!(
+                "direct modeled projection owner `{}` has mixed active change epochs: {}",
+                owner.name,
+                active_epochs
+                    .into_iter()
+                    .map(|epoch| format!("`{epoch}`"))
+                    .collect::<Vec<_>>()
+                    .join(", ")
+            ));
+        }
+        let Some(first) = active.first() else {
+            continue;
+        };
+        let (_, first_binding) = first.raw().ok_or_else(|| {
+            "selected modeled projection cannot be reattached to a catalog Surface".to_owned()
+        })?;
+        let mut binding_owners = BTreeSet::new();
+        for modeled in &active {
+            let (_, binding) = modeled.raw().ok_or_else(|| {
+                "selected modeled projection cannot be reattached to a catalog Surface".to_owned()
+            })?;
+            binding_owners.insert(binding.owner().name());
+            if binding.placement() != ProjectionPlacement::Direct {
+                return Err(format!(
+                    "direct modeled projection owner `{}` has incompatible {:?} placement",
+                    owner.name,
+                    binding.placement()
+                ));
+            }
+            if binding.physical_topology() != first_binding.physical_topology() {
+                return Err(format!(
+                    "direct modeled projection owner `{}` has incompatible active physical topologies",
+                    owner.name
+                ));
+            }
+            if binding.partition() != first_binding.partition() {
+                return Err(format!(
+                    "direct modeled projection owner `{}` has incompatible active partition protocols",
+                    owner.name
+                ));
+            }
+            if modeled.route() != first.route() {
+                return Err(format!(
+                    "direct modeled projection owner `{}` has incompatible active executor routes",
+                    owner.name
+                ));
+            }
+        }
+        if binding_owners != BTreeSet::from([owner.name.as_str()]) {
+            return Err(format!(
+                "direct modeled projection owner `{}` has incompatible active binding owners: {}",
+                owner.name,
+                binding_owners
+                    .into_iter()
+                    .map(|binding_owner| format!("`{binding_owner}`"))
+                    .collect::<Vec<_>>()
+                    .join(", ")
+            ));
+        }
+    }
+    Ok(())
 }
 
 fn server_executor_eq(

@@ -50,7 +50,8 @@ pub use application::{role_grants_for_role, surface_for_application, surface_for
 pub use build::build_surface;
 pub use projections::SurfaceModeledProjection;
 pub(crate) use projections::{
-    SurfaceProjectionArm, SurfaceProjectionOperation, SurfaceSelectedProjectionProgram,
+    validate_direct_modeled_owner_compatibility, SurfaceProjectionArm, SurfaceProjectionOperation,
+    SurfaceSelectedProjectionProgram,
 };
 pub use types::{
     ColumnField, RelField, RootField, RootKind, Surface, SurfaceArgument, SurfaceArgumentKind,

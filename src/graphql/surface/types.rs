@@ -711,6 +711,8 @@ impl Surface {
         let mut active_programs = BTreeSet::new();
         let mut active_models = BTreeMap::new();
         let mut modeled_registrations = BTreeSet::new();
+        let projectors = projectors.into_iter().collect::<Vec<_>>();
+        validate_direct_modeled_owner_compatibility(&projectors)?;
         for mut projector in projectors {
             if projector.name.trim().is_empty() {
                 return Err("projector name must not be empty".into());
@@ -756,28 +758,6 @@ impl Surface {
                                 ));
                             }
                         }
-                    }
-                }
-                if projector.kind == SurfaceProjectionOwnerKind::Direct {
-                    let active_epochs = projector
-                        .modeled
-                        .iter()
-                        .filter(|modeled| {
-                            modeled.state()
-                                == crate::projection::placement::ProjectionBindingState::Active
-                        })
-                        .map(|modeled| modeled.epoch().as_str())
-                        .collect::<BTreeSet<_>>();
-                    if active_epochs.len() > 1 {
-                        return Err(format!(
-                            "direct modeled projection owner `{}` has mixed active change epochs: {}",
-                            projector.name,
-                            active_epochs
-                                .into_iter()
-                                .map(|epoch| format!("`{epoch}`"))
-                                .collect::<Vec<_>>()
-                                .join(", ")
-                        ));
                     }
                 }
                 projector.models = projector.binding_models();
