@@ -1,6 +1,11 @@
 use serde::Serialize;
 
-use crate::{DomainEventDescriptor, ProjectionEventSelector, ProjectionValue};
+use crate::domain_event::{DomainEventBodyContract, DomainEventContract};
+use crate::projection::lower::{ProjectionBodyMetadata, ProjectionPortableType};
+use crate::{
+    DomainEvent, DomainEventBodyKind, DomainEventDescriptor, DomainState, ProjectionEnvelopeField,
+    ProjectionEventSelector, ProjectionValue,
+};
 
 /// One preview-time source for an emitted domain-event body field.
 ///
@@ -20,8 +25,8 @@ pub enum CommandProjectionPreviewSource {
     Constant { value: ProjectionValue },
     /// Use explicit null.
     Null,
-    /// Preserve the projection program's explicit unset assignment.
-    Unset,
+    /// The body property is known to be omitted.
+    Absent,
     /// This one field cannot be predicted; other fields remain usable.
     Unknown,
     /// Deliberately non-portable server-only source.
@@ -64,6 +69,15 @@ impl CommandProjectionPreviewSource {
 #[derive(Clone, Debug, PartialEq, Eq, Serialize)]
 pub struct CommandProjectionPreviewField {
     pub(crate) body_path: Vec<String>,
+    pub(crate) envelope: Option<ProjectionEnvelopeField>,
+    #[serde(skip)]
+    pub(crate) body_type: Option<ProjectionPortableType>,
+    #[serde(skip)]
+    pub(crate) body_rust_type: Option<&'static str>,
+    #[serde(skip)]
+    pub(crate) body_nullable: Option<bool>,
+    #[serde(skip)]
+    pub(crate) body_always_present: Option<bool>,
     pub(crate) source: CommandProjectionPreviewSource,
 }
 
@@ -103,6 +117,30 @@ impl CommandProjectionPreview {
     ) -> Self {
         self.fields.push(CommandProjectionPreviewField {
             body_path: body_path.into_iter().map(Into::into).collect(),
+            envelope: None,
+            body_type: None,
+            body_rust_type: None,
+            body_nullable: None,
+            body_always_present: None,
+            source,
+        });
+        self
+    }
+
+    /// Bind one non-intrinsic occurrence-envelope field to command provenance.
+    #[must_use]
+    pub fn envelope(
+        mut self,
+        field: ProjectionEnvelopeField,
+        source: CommandProjectionPreviewSource,
+    ) -> Self {
+        self.fields.push(CommandProjectionPreviewField {
+            body_path: Vec::new(),
+            envelope: Some(field),
+            body_type: None,
+            body_rust_type: None,
+            body_nullable: None,
+            body_always_present: None,
             source,
         });
         self
@@ -131,6 +169,18 @@ impl CommandProjectionEvents {
     }
 
     pub(crate) fn add_preview(&mut self, preview: CommandProjectionPreview) {
+        if preview.selectors.is_empty() {
+            self.declaration_errors
+                .push("projection preview must bind exactly one emitted event variant".to_owned());
+            return;
+        }
+        if preview.selectors.len() != 1 {
+            self.declaration_errors.push(
+                "projection preview must bind one exact event variant, not a multi-event set"
+                    .to_owned(),
+            );
+            return;
+        }
         self.declaration_errors
             .extend(preview.declaration_errors.clone());
         self.previews.extend(
@@ -189,16 +239,18 @@ impl CommandProjectionEvents {
             preview
                 .preview
                 .fields
-                .sort_by(|left, right| left.body_path.cmp(&right.body_path));
+                .sort_by(|left, right| preview_field_key(left).cmp(&preview_field_key(right)));
             for pair in preview.preview.fields.windows(2) {
-                if pair[0].body_path == pair[1].body_path {
+                if preview_field_key(&pair[0]) == preview_field_key(&pair[1]) {
                     return Err(format!(
-                        "typed command `{command}` repeats preview provenance for one emitted body path"
+                        "typed command `{command}` repeats preview provenance for one event value"
                     ));
                 }
             }
             for field in &preview.preview.fields {
-                validate_path(command, "emitted body", &field.body_path)?;
+                if field.envelope.is_none() {
+                    validate_path(command, "emitted body", &field.body_path)?;
+                }
                 match &field.source {
                     CommandProjectionPreviewSource::InputPath { path }
                     | CommandProjectionPreviewSource::GeneratedDefaultPath { path } => {
@@ -218,7 +270,7 @@ impl CommandProjectionEvents {
                     }
                     CommandProjectionPreviewSource::Constant { .. }
                     | CommandProjectionPreviewSource::Null
-                    | CommandProjectionPreviewSource::Unset
+                    | CommandProjectionPreviewSource::Absent
                     | CommandProjectionPreviewSource::Unknown => {}
                 }
             }
@@ -244,10 +296,17 @@ pub struct CommandProjectionEventSet {
 /// Build the sealed command event-set value used by `events!`.
 #[doc(hidden)]
 pub fn __command_projection_events(
-    descriptors: impl IntoIterator<Item = DomainEventDescriptor>,
+    descriptors: impl IntoIterator<Item = Result<DomainEventDescriptor, String>>,
 ) -> CommandProjectionEventSet {
     let mut events = CommandProjectionEventSet::default();
     for descriptor in descriptors {
+        let descriptor = match descriptor {
+            Ok(descriptor) => descriptor,
+            Err(error) => {
+                events.declaration_errors.push(error);
+                continue;
+            }
+        };
         match ProjectionEventSelector::try_from_descriptor(&descriptor) {
             Ok(selector) => events.selectors.push(selector),
             Err(error) => events.declaration_errors.push(error.to_string()),
@@ -256,12 +315,120 @@ pub fn __command_projection_events(
     events
 }
 
+/// Resolve one exact typed command event descriptor for `events!`.
+#[doc(hidden)]
+pub fn __command_projection_event_descriptor<E: DomainEventContract>(
+) -> Result<DomainEventDescriptor, String> {
+    let descriptor = E::descriptor();
+    if descriptor.name != E::EVENT_NAME {
+        return Err(format!(
+            "event contract name `{}` differs from descriptor name `{}`",
+            E::EVENT_NAME,
+            descriptor.name
+        ));
+    }
+    if descriptor.version != E::EVENT_VERSION {
+        return Err(format!(
+            "event contract `{}` version {} differs from descriptor version {}",
+            E::EVENT_NAME,
+            E::EVENT_VERSION,
+            descriptor.version
+        ));
+    }
+    Ok(descriptor)
+}
+
+/// Build a structured state preview from generated body metadata.
+#[doc(hidden)]
+pub fn __command_projection_state_preview<E, S>(
+    fields: Vec<(&'static str, CommandProjectionPreviewSource)>,
+) -> CommandProjectionPreview
+where
+    E: DomainEventBodyContract<S>,
+    S: DomainState + ProjectionBodyMetadata,
+{
+    let descriptor = __command_projection_event_descriptor::<E>().and_then(|descriptor| {
+        let expected = DomainEventDescriptor::state::<S>(E::EVENT_NAME, E::EVENT_VERSION);
+        if descriptor != expected || descriptor.body.kind != DomainEventBodyKind::State {
+            return Err(format!(
+                "state preview event contract `{}` does not exactly describe `{}` state",
+                E::EVENT_NAME,
+                std::any::type_name::<S>()
+            ));
+        }
+        Ok(descriptor)
+    });
+    structured_preview::<S>(__command_projection_events([descriptor]), fields)
+}
+
+/// Build a structured sparse-event preview from generated body metadata.
+#[doc(hidden)]
+pub fn __command_projection_event_preview<E, B>(
+    fields: Vec<(&'static str, CommandProjectionPreviewSource)>,
+) -> CommandProjectionPreview
+where
+    E: DomainEventBodyContract<B>,
+    B: DomainEvent + ProjectionBodyMetadata,
+{
+    let descriptor = __command_projection_event_descriptor::<E>().and_then(|descriptor| {
+        if descriptor != B::DESCRIPTOR || descriptor.body.kind != DomainEventBodyKind::Event {
+            return Err(format!(
+                "event preview contract `{}` differs from its exact typed body descriptor",
+                E::EVENT_NAME
+            ));
+        }
+        Ok(descriptor)
+    });
+    structured_preview::<B>(__command_projection_events([descriptor]), fields)
+}
+
+fn structured_preview<B: ProjectionBodyMetadata>(
+    events: CommandProjectionEventSet,
+    fields: Vec<(&'static str, CommandProjectionPreviewSource)>,
+) -> CommandProjectionPreview {
+    let mut preview = CommandProjectionPreview::new().events(events);
+    for (rust_name, source) in fields {
+        match B::PROJECTION_FIELDS
+            .iter()
+            .find(|field| field.rust_name == rust_name && field.present)
+        {
+            Some(field) => preview.fields.push(CommandProjectionPreviewField {
+                body_path: vec![field.wire_name.to_owned()],
+                envelope: None,
+                body_type: Some(field.portable_type),
+                body_rust_type: Some(field.rust_type),
+                body_nullable: Some(field.nullable),
+                body_always_present: Some(field.always_present),
+                source,
+            }),
+            None => preview.declaration_errors.push(format!(
+                "state preview references unknown body field `{rust_name}`"
+            )),
+        }
+    }
+    preview
+}
+
+/// Convert a typed constant into the portable preview value lattice.
+#[doc(hidden)]
+pub fn __command_projection_preview_constant(
+    value: impl Serialize,
+) -> CommandProjectionPreviewSource {
+    match serde_json::to_value(value)
+        .map_err(|error| error.to_string())
+        .and_then(|value| ProjectionValue::try_from_json(value).map_err(|error| error.to_string()))
+    {
+        Ok(value) => CommandProjectionPreviewSource::Constant { value },
+        Err(_) => CommandProjectionPreviewSource::Unknown,
+    }
+}
+
 /// Declare an exact, type-checked outward domain-event set.
 #[macro_export]
 macro_rules! events {
     ($($event:ty),+ $(,)?) => {
         $crate::graphql::__command_projection_events([
-            $(<$event as $crate::DomainEvent>::DESCRIPTOR.clone()),+
+            $($crate::graphql::__command_projection_event_descriptor::<$event>()),+
         ])
     };
 }
@@ -273,13 +440,126 @@ macro_rules! events {
 #[macro_export]
 macro_rules! state_preview {
     (
-        events: $events:expr,
-        fields: { $($body_path:expr => $source:expr),* $(,)? }
+        $event:ty => $state:ty { $($fields:tt)* }
     ) => {{
-        let preview = $crate::graphql::CommandProjectionPreview::new().events($events);
-        $(let preview = preview.field($body_path, $source);)*
-        preview
+        $crate::graphql::__command_projection_state_preview::<$event, $state>(
+            $crate::__distributed_state_preview_fields!(@collect [] ; $($fields)*)
+        )
     }};
+}
+
+/// Build partial preview provenance for one exact sparse outward event.
+#[macro_export]
+macro_rules! event_preview {
+    (
+        $event:ty => $body:ty { $($fields:tt)* }
+    ) => {{
+        $crate::graphql::__command_projection_event_preview::<$event, $body>(
+            $crate::__distributed_state_preview_fields!(@collect [] ; $($fields)*)
+        )
+    }};
+}
+
+#[doc(hidden)]
+#[macro_export]
+macro_rules! __distributed_state_preview_fields {
+    (@collect [$($out:expr,)*] ; ..unknown $(,)?) => {
+        vec![$($out,)*]
+    };
+    (@collect [$($out:expr,)*] ; ) => {
+        vec![$($out,)*]
+    };
+    (@collect [$($out:expr,)*] ;
+        $field:ident : input.$first:ident $(.$rest:ident)*,
+        $($tail:tt)*
+    ) => {
+        $crate::__distributed_state_preview_fields!(
+            @collect [
+                $($out,)*
+                (
+                    stringify!($field),
+                    $crate::graphql::CommandProjectionPreviewSource::input([
+                        stringify!($first) $(, stringify!($rest))*
+                    ])
+                ),
+            ];
+            $($tail)*
+        )
+    };
+    (@collect [$($out:expr,)*] ;
+        $field:ident : generated.$first:ident $(.$rest:ident)*,
+        $($tail:tt)*
+    ) => {
+        $crate::__distributed_state_preview_fields!(
+            @collect [
+                $($out,)*
+                (
+                    stringify!($field),
+                    $crate::graphql::CommandProjectionPreviewSource::generated_default([
+                        stringify!($first) $(, stringify!($rest))*
+                    ])
+                ),
+            ];
+            $($tail)*
+        )
+    };
+    (@collect [$($out:expr,)*] ;
+        $field:ident : trusted($name:expr, $codec:expr),
+        $($tail:tt)*
+    ) => {
+        $crate::__distributed_state_preview_fields!(
+            @collect [
+                $($out,)*
+                (
+                    stringify!($field),
+                    $crate::graphql::CommandProjectionPreviewSource::trusted($name, $codec)
+                ),
+            ];
+            $($tail)*
+        )
+    };
+    (@collect [$($out:expr,)*] ; $field:ident : unknown, $($tail:tt)*) => {
+        $crate::__distributed_state_preview_fields!(
+            @collect [$($out,)* (stringify!($field), $crate::graphql::CommandProjectionPreviewSource::Unknown),];
+            $($tail)*
+        )
+    };
+    (@collect [$($out:expr,)*] ; $field:ident : absent, $($tail:tt)*) => {
+        $crate::__distributed_state_preview_fields!(
+            @collect [$($out,)* (stringify!($field), $crate::graphql::CommandProjectionPreviewSource::Absent),];
+            $($tail)*
+        )
+    };
+    (@collect [$($out:expr,)*] ; $field:ident : null, $($tail:tt)*) => {
+        $crate::__distributed_state_preview_fields!(
+            @collect [$($out,)* (stringify!($field), $crate::graphql::CommandProjectionPreviewSource::Null),];
+            $($tail)*
+        )
+    };
+    (@collect [$($out:expr,)*] ; $field:ident : $constant:path, $($tail:tt)*) => {
+        $crate::__distributed_state_preview_fields!(
+            @collect [
+                $($out,)*
+                (
+                    stringify!($field),
+                    $crate::graphql::__command_projection_preview_constant($constant)
+                ),
+            ];
+            $($tail)*
+        )
+    };
+    (@collect [$($out:expr,)*] ; $field:ident : $constant:literal, $($tail:tt)*) => {
+        $crate::__distributed_state_preview_fields!(
+            @collect [
+                $($out,)*
+                (
+                    stringify!($field),
+                    $crate::graphql::__command_projection_preview_constant($constant)
+                ),
+            ];
+            $($tail)*
+        )
+    };
 }
 
 fn validate_path(command: &str, label: &str, path: &[String]) -> Result<(), String> {
@@ -289,6 +569,17 @@ fn validate_path(command: &str, label: &str, path: &[String]) -> Result<(), Stri
         ));
     }
     Ok(())
+}
+
+fn preview_field_key(field: &CommandProjectionPreviewField) -> (u8, Vec<String>) {
+    match field.envelope {
+        Some(envelope) => (
+            1,
+            vec![serde_json::to_string(&envelope)
+                .expect("projection envelope field serialization cannot fail")],
+        ),
+        None => (0, field.body_path.clone()),
+    }
 }
 
 fn preview_bytes(preview: &CommandProjectionPreview) -> Vec<u8> {

@@ -179,7 +179,7 @@ pub(super) fn command_direct_projection_extension(
 }
 pub(super) fn command_trusted_preset_descriptors(
     command: &SurfaceCommand,
-    surface: &Surface,
+    _surface: &Surface,
 ) -> Result<Vec<ClientTrustedPresetDescriptor>, ClientManifestError> {
     fn register(
         out: &mut BTreeMap<String, String>,
@@ -206,118 +206,7 @@ pub(super) fn command_trusted_preset_descriptors(
         Ok(())
     }
 
-    fn field_codec<'a>(
-        surface: &'a Surface,
-        model: &str,
-        field: &str,
-    ) -> Result<&'static str, ClientManifestError> {
-        let column = surface
-            .models
-            .get(model)
-            .and_then(|model| model.columns.iter().find(|column| column.name == field))
-            .ok_or_else(|| {
-                ClientManifestError(format!(
-                    "trusted preset target references absent field `{model}.{field}`"
-                ))
-            })?;
-        scalar_codec(&column.scalar).ok_or_else(|| {
-            ClientManifestError(format!(
-                "trusted preset target `{model}.{field}` uses unsupported scalar `{}`",
-                column.scalar
-            ))
-        })
-    }
-
-    fn collect_key(
-        out: &mut BTreeMap<String, String>,
-        key: &EffectKey,
-        model: &str,
-        command: &SurfaceCommand,
-        surface: &Surface,
-    ) -> Result<(), ClientManifestError> {
-        for field in &key.fields {
-            register(
-                out,
-                &field.value,
-                field_codec(surface, model, &field.field)?,
-                command,
-            )?;
-        }
-        Ok(())
-    }
-
     let mut out = BTreeMap::new();
-    if let Some(effects) = &command.effects {
-        for operation in &effects.operations {
-            match operation {
-                CommandEffect::Upsert { model, key, fields }
-                | CommandEffect::Patch { model, key, fields } => {
-                    collect_key(&mut out, key, model, command, surface)?;
-                    for field in fields {
-                        register(
-                            &mut out,
-                            &field.value,
-                            field_codec(surface, model, &field.field)?,
-                            command,
-                        )?;
-                    }
-                }
-                CommandEffect::Delete { model, key } => {
-                    collect_key(&mut out, key, model, command, surface)?;
-                }
-                CommandEffect::Link {
-                    relationship,
-                    source,
-                    target,
-                }
-                | CommandEffect::Unlink {
-                    relationship,
-                    source,
-                    target,
-                } => {
-                    collect_key(
-                        &mut out,
-                        source,
-                        &relationship.source_model,
-                        command,
-                        surface,
-                    )?;
-                    collect_key(
-                        &mut out,
-                        target,
-                        &relationship.target_model,
-                        command,
-                        surface,
-                    )?;
-                }
-                CommandEffect::InvalidateRelationship {
-                    relationship,
-                    source,
-                } => {
-                    collect_key(
-                        &mut out,
-                        source,
-                        &relationship.source_model,
-                        command,
-                        surface,
-                    )?;
-                }
-                CommandEffect::InvalidateModel { .. } => {}
-            }
-        }
-    }
-    for confirmation in &command.confirmations {
-        collect_key(
-            &mut out,
-            &confirmation.key,
-            &confirmation.model,
-            command,
-            surface,
-        )?;
-        if let Some(partition) = &confirmation.partition {
-            register(&mut out, partition, "string", command)?;
-        }
-    }
     if let Some(direct) = &command.direct_projection {
         if let Some(partition) = &direct.partition {
             register(&mut out, partition, "string", command)?;

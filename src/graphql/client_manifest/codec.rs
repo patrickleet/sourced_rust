@@ -255,6 +255,10 @@ pub(super) fn protocol_fingerprint() -> Result<String, ClientManifestError> {
         projector_entry_version: u32,
         protocol_operations_version: u32,
         query_capabilities_version: u32,
+        projection_program_version: u32,
+        projection_binding_version: u32,
+        projection_operation_semantics_version: u32,
+        command_projection_extension_version: u32,
         scalar_codecs: Vec<ScalarCodec>,
     }
     hash_json(&ProtocolMaterial {
@@ -265,6 +269,12 @@ pub(super) fn protocol_fingerprint() -> Result<String, ClientManifestError> {
         projector_entry_version: PROJECTOR_ENTRY_VERSION,
         protocol_operations_version: PROTOCOL_OPERATIONS_VERSION,
         query_capabilities_version: QUERY_CAPABILITIES_VERSION,
+        projection_program_version: super::projections::CLIENT_PROJECTION_PROGRAM_VERSION,
+        projection_binding_version: super::projections::CLIENT_PROJECTION_BINDING_VERSION,
+        projection_operation_semantics_version:
+            super::projections::CLIENT_PROJECTION_OPERATION_SEMANTICS_VERSION,
+        command_projection_extension_version:
+            super::projections::COMMAND_PROJECTION_EXTENSION_VERSION,
         scalar_codecs: supported_scalar_codecs(),
     })
 }

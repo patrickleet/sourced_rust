@@ -58,6 +58,39 @@ struct TodoRenamed {
     title: String,
 }
 
+#[derive(Serialize, crate::DomainState)]
+#[domain_state(version = 1)]
+struct TodoState {
+    todo_id: String,
+    status: String,
+}
+
+enum DishonestEventContract {}
+
+impl crate::domain_event::DomainEventContract for DishonestEventContract {
+    const EVENT_NAME: &'static str = "todo.lied";
+    const EVENT_VERSION: u64 = 1;
+
+    fn descriptor() -> crate::DomainEventDescriptor {
+        <TodoCompleted as crate::DomainEvent>::DESCRIPTOR.clone()
+    }
+}
+
+impl crate::domain_event::DomainEventBodyContract<TodoCompleted> for DishonestEventContract {}
+
+enum DishonestStateContract {}
+
+impl crate::domain_event::DomainEventContract for DishonestStateContract {
+    const EVENT_NAME: &'static str = "todo.completed";
+    const EVENT_VERSION: u64 = 1;
+
+    fn descriptor() -> crate::DomainEventDescriptor {
+        <TodoCompleted as crate::DomainEvent>::DESCRIPTOR.clone()
+    }
+}
+
+impl crate::domain_event::DomainEventBodyContract<TodoState> for DishonestStateContract {}
+
 impl GraphqlOutputType for Payload {
     fn graphql_type() -> GraphqlTypeDef {
         GraphqlTypeDef::new(
@@ -144,13 +177,40 @@ fn command_event_registration_rejects_duplicates_and_conflicting_schemas() {
 }
 
 #[test]
+fn command_registration_distrusts_manual_event_contracts() {
+    let mismatched_name = typed_command::<Input, Succeeded<Payload>>("todo.dishonest-event")
+        .emits(crate::events![DishonestEventContract])
+        .into_contract();
+    assert!(
+        TypedServiceCommandBinding::from_contracts("todos", &[mismatched_name])
+            .unwrap_err()
+            .contains("differs from descriptor name")
+    );
+
+    let mismatched_state = typed_command::<Input, Succeeded<Payload>>("todo.dishonest-state")
+        .emits(crate::events![DishonestStateContract])
+        .preview(crate::state_preview! {
+            DishonestStateContract => TodoState {
+                todo_id: input.id,
+                ..unknown
+            }
+        })
+        .into_contract();
+    assert!(
+        TypedServiceCommandBinding::from_contracts("todos", &[mismatched_state])
+            .unwrap_err()
+            .contains("does not exactly describe")
+    );
+}
+
+#[test]
 fn command_preview_requires_membership_and_rejects_server_only_sources() {
     let outside = typed_command::<Input, Succeeded<Payload>>("todo.outside")
         .emits(crate::events![TodoCompleted])
-        .preview(crate::state_preview! {
-            events: crate::events![TodoRenamed],
-            fields: {
-                ["todo_id"] => CommandProjectionPreviewSource::input(["id"])
+        .preview(crate::event_preview! {
+            TodoRenamed => TodoRenamed {
+                todo_id: input.id,
+                ..unknown
             }
         })
         .into_contract();
@@ -162,12 +222,11 @@ fn command_preview_requires_membership_and_rejects_server_only_sources() {
 
     let server_only = typed_command::<Input, Succeeded<Payload>>("todo.server-only")
         .emits(crate::events![TodoCompleted])
-        .preview(crate::state_preview! {
-            events: crate::events![TodoCompleted],
-            fields: {
-                ["todo_id"] => CommandProjectionPreviewSource::ServerOnly
-            }
-        })
+        .preview(
+            CommandProjectionPreview::new()
+                .events(crate::events![TodoCompleted])
+                .field(["todo_id"], CommandProjectionPreviewSource::ServerOnly),
+        )
         .into_contract();
     assert!(
         TypedServiceCommandBinding::from_contracts("todos", &[server_only])
@@ -177,23 +236,19 @@ fn command_preview_requires_membership_and_rejects_server_only_sources() {
 }
 
 #[test]
-fn partial_preview_retains_known_unknown_unset_and_typed_constant_sources() {
+fn partial_preview_retains_known_unknown_and_typed_constant_sources() {
     let contract = typed_command::<Input, Succeeded<Payload>>("todo.partial")
         .emits(crate::events![TodoCompleted])
-        .preview(crate::state_preview! {
-            events: crate::events![TodoCompleted],
-            fields: {
-                ["todo_id"] => CommandProjectionPreviewSource::input(["id"]),
-                ["status"] => CommandProjectionPreviewSource::constant(
-                    crate::ProjectionValue::string("completed")
-                ),
-                ["optional"] => CommandProjectionPreviewSource::Unknown,
-                ["removed"] => CommandProjectionPreviewSource::Unset
+        .preview(crate::event_preview! {
+            TodoCompleted => TodoCompleted {
+                todo_id: input.id,
+                status: "completed",
+                ..unknown
             }
         })
         .into_contract();
     TypedServiceCommandBinding::from_contracts("todos", &[contract.clone()]).unwrap();
-    assert_eq!(contract.projections.previews[0].preview.fields.len(), 4);
+    assert_eq!(contract.projections.previews[0].preview.fields.len(), 2);
 }
 
 fn confirmation_with_facts(facts: &[&str]) -> CommandProjectionConfirmation {

@@ -14,6 +14,7 @@ mod error;
 mod export;
 mod identity;
 mod limits;
+mod projections;
 mod types;
 mod validation;
 
@@ -26,9 +27,7 @@ use std::sync::Arc;
 use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
 
-use super::command_contract::{
-    CommandConsistency, CommandEffect, CommandEffectFallback, EffectExpression, EffectKey,
-};
+use super::command_contract::{CommandConsistency, EffectExpression};
 use super::complexity_contract::{default_weights, DEFAULT_MAX_COMPLEXITY, DEFAULT_MAX_DEPTH};
 use super::filter::{FilterExpr, Operand};
 use super::naming::{aggregate_fields_type_name, aggregate_type_name};
@@ -47,6 +46,7 @@ use capabilities::{
 };
 use codec::*;
 use commands::*;
+use projections::{command_projection_extension, projection_manifest};
 use validation::validate_surface_structure;
 
 // Used by unit tests (and still a thin production-friendly wrapper).
@@ -60,23 +60,32 @@ pub use types::{
     ClientAggregateSemantics, ClientArgument, ClientArgumentKind, ClientCapabilities,
     ClientCommand, ClientCommandExtensionSlots, ClientCommandShape, ClientField, ClientFilterField,
     ClientFilterInput, ClientFilterInputRelationship, ClientFilterSemantics, ClientKeyField,
-    ClientModel, ClientOrderSemantics, ClientPaginationSemantics, ClientProjectionTopologyIdentity,
-    ClientProjector, ClientProtocolOperation, ClientProtocolOperations, ClientRelationship,
-    ClientRelationshipAggregate, ClientRelationshipKind, ClientRelationshipMaintenance, ClientRoot,
-    ClientRootKind, ClientRootOperation, ClientRowPolicy, ClientTrustedPresetDescriptor,
-    ClientTypeDef, ClientTypeField, CommandConfirmationsExtension, CommandConsistencyExtension,
-    CommandDirectProjectionExtension, CommandEffectsExtension, CommandInputDefaultsExtension,
-    DistributedClientManifest, ModelNormalization, RelationshipKeyMapping, ScalarCodec,
+    ClientModel, ClientOrderSemantics, ClientPaginationSemantics, ClientProjectionArm,
+    ClientProjectionAssignment, ClientProjectionBinding, ClientProjectionBindingState,
+    ClientProjectionEnvelopeField, ClientProjectionEventRef, ClientProjectionExecutionClass,
+    ClientProjectionExpression, ClientProjectionFallback, ClientProjectionField,
+    ClientProjectionInvalidation, ClientProjectionKeyField, ClientProjectionMutationKind,
+    ClientProjectionObjectField, ClientProjectionOperation, ClientProjectionPlacement,
+    ClientProjectionPreviewSource, ClientProjectionProgram, ClientProjectionRelationshipEffect,
+    ClientProjectionRelationshipEffectKind, ClientProjectionScalarTransform,
+    ClientProjectionTopologyIdentity, ClientProjectionValue, ClientProjectionValueField,
+    ClientProjectionValueType, ClientProjector, ClientProtocolOperation, ClientProtocolOperations,
+    ClientRelationship, ClientRelationshipAggregate, ClientRelationshipKind,
+    ClientRelationshipMaintenance, ClientRoot, ClientRootKind, ClientRootOperation,
+    ClientRowPolicy, ClientTrustedPresetDescriptor, ClientTypeDef, ClientTypeField,
+    CommandConfirmationsExtension, CommandConsistencyExtension, CommandDirectProjectionExtension,
+    CommandEffectsExtension, CommandInputDefaultsExtension, CommandProjectionArmRef,
+    CommandProjectionExtension, CommandProjectionPreviewValue, DistributedClientManifest,
+    ModelNormalization, RelationshipKeyMapping, ScalarCodec,
 };
 pub(crate) use validation::trusted_preset_descriptors;
 
-pub const DISTRIBUTED_CLIENT_MANIFEST_VERSION: u32 = 1;
+pub const DISTRIBUTED_CLIENT_MANIFEST_VERSION: u32 = 2;
 pub const DISTRIBUTED_CLIENT_PROTOCOL_VERSION: u32 = 1;
 // Protocol v1 is the first public wire family. The independent fingerprint below
 // changes when its generated command/scope contract changes, including trusted-preset descriptor slots.
-const DISTRIBUTED_CLIENT_PROTOCOL_MANIFEST_EPOCH: u32 = 1;
-const COMMAND_EXTENSION_SLOTS_VERSION: u32 = 1;
-const COMMAND_CONFIRMATIONS_VERSION: u32 = 1;
+const DISTRIBUTED_CLIENT_PROTOCOL_MANIFEST_EPOCH: u32 = 2;
+const COMMAND_EXTENSION_SLOTS_VERSION: u32 = 2;
 const PROJECTOR_ENTRY_VERSION: u32 = 1;
 const PROTOCOL_OPERATIONS_VERSION: u32 = 1;
 const QUERY_CAPABILITIES_VERSION: u32 = 1;

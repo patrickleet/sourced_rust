@@ -13,8 +13,8 @@ pub use canonical::{
     MAX_DOMAIN_EVENT_OCCURRENCE_WIRE_BYTES,
 };
 pub use descriptor::{
-    DomainDeletion, DomainDeletionError, DomainEvent, DomainEventBodyDescriptor,
-    DomainEventBodyContract, DomainEventBodyKind, DomainEventContract, DomainEventDescriptor,
+    DomainDeletion, DomainDeletionError, DomainEvent, DomainEventBodyContract,
+    DomainEventBodyDescriptor, DomainEventBodyKind, DomainEventContract, DomainEventDescriptor,
     DomainState, DomainStateDescriptor,
 };
 pub use occurrence::{

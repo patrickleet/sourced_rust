@@ -44,8 +44,8 @@ pub use effect_wire::{
     TypedEffectExpression, TypedEffectKey, TypedEffectRelationship,
 };
 pub(crate) use effects::{
-    CommandEffect, CommandEffectFallback, CommandEffects, EffectExpression, EffectFieldValue,
-    EffectKey, EffectRelationship,
+    CommandEffect, CommandEffects, EffectExpression, EffectFieldValue, EffectKey,
+    EffectRelationship,
 };
 pub use outcomes::{
     Causal, CommandConsistency, CommandOutcome, PrepareCommandError, PreparedCommand, Projected,
@@ -56,7 +56,9 @@ pub(crate) use projection_obligations::{
 };
 pub(crate) use projections::CommandProjectionEvents;
 pub use projections::{
-    __command_projection_events, CommandProjectionEventSet, CommandProjectionPreview,
+    __command_projection_event_descriptor, __command_projection_event_preview,
+    __command_projection_events, __command_projection_preview_constant,
+    __command_projection_state_preview, CommandProjectionEventSet, CommandProjectionPreview,
     CommandProjectionPreviewSource,
 };
 // Re-exported for unit tests that resolve obligations through this module path.

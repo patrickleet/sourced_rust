@@ -1,8 +1,94 @@
 use super::*;
 
+fn deserialize_exact_u32<'de, D>(
+    deserializer: D,
+    expected: u32,
+    label: &str,
+) -> Result<u32, D::Error>
+where
+    D: serde::Deserializer<'de>,
+{
+    let actual = u32::deserialize(deserializer)?;
+    if actual != expected {
+        return Err(serde::de::Error::custom(format!(
+            "unsupported {label} version {actual}; expected {expected}"
+        )));
+    }
+    Ok(actual)
+}
+
+fn deserialize_manifest_version<'de, D>(deserializer: D) -> Result<u32, D::Error>
+where
+    D: serde::Deserializer<'de>,
+{
+    deserialize_exact_u32(
+        deserializer,
+        DISTRIBUTED_CLIENT_MANIFEST_VERSION,
+        "client manifest",
+    )
+}
+
+fn deserialize_protocol_version<'de, D>(deserializer: D) -> Result<u32, D::Error>
+where
+    D: serde::Deserializer<'de>,
+{
+    deserialize_exact_u32(
+        deserializer,
+        DISTRIBUTED_CLIENT_PROTOCOL_VERSION,
+        "client protocol",
+    )
+}
+
+fn deserialize_command_slots_version<'de, D>(deserializer: D) -> Result<u32, D::Error>
+where
+    D: serde::Deserializer<'de>,
+{
+    deserialize_exact_u32(
+        deserializer,
+        COMMAND_EXTENSION_SLOTS_VERSION,
+        "command extension slots",
+    )
+}
+
+fn deserialize_projection_binding_version<'de, D>(deserializer: D) -> Result<u32, D::Error>
+where
+    D: serde::Deserializer<'de>,
+{
+    deserialize_exact_u32(
+        deserializer,
+        super::projections::CLIENT_PROJECTION_BINDING_VERSION,
+        "projection binding",
+    )
+}
+
+fn deserialize_projection_program_version<'de, D>(deserializer: D) -> Result<u32, D::Error>
+where
+    D: serde::Deserializer<'de>,
+{
+    deserialize_exact_u32(
+        deserializer,
+        super::projections::CLIENT_PROJECTION_PROGRAM_VERSION,
+        "projection program",
+    )
+}
+
+fn deserialize_command_projection_version<'de, D>(deserializer: D) -> Result<u32, D::Error>
+where
+    D: serde::Deserializer<'de>,
+{
+    deserialize_exact_u32(
+        deserializer,
+        super::projections::COMMAND_PROJECTION_EXTENSION_VERSION,
+        "command projection extension",
+    )
+}
+
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
 pub struct DistributedClientManifest {
+    #[serde(deserialize_with = "deserialize_manifest_version")]
     pub manifest_version: u32,
+    #[serde(deserialize_with = "deserialize_protocol_version")]
     pub protocol_version: u32,
     pub service_id: String,
     pub surface: ClientSurfaceIdentity,
@@ -16,6 +102,8 @@ pub struct DistributedClientManifest {
     pub commands: Vec<ClientCommand>,
     pub protocol_operations: ClientProtocolOperations,
     pub projectors: Vec<ClientProjector>,
+    pub projection_programs: Vec<ClientProjectionProgram>,
+    pub projection_bindings: Vec<ClientProjectionBinding>,
 }
 
 /// Framework-owned operations generated alongside application operations.
@@ -332,21 +420,43 @@ pub struct ClientTypeField {
 
 /// Versioned typed command semantics exported from the executable service.
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
 pub struct ClientCommandExtensionSlots {
+    #[serde(deserialize_with = "deserialize_command_slots_version")]
     pub version: u32,
     pub consistency: CommandConsistencyExtension,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub direct_projection: Option<CommandDirectProjectionExtension>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub input_defaults: Option<CommandInputDefaultsExtension>,
-    #[serde(skip_serializing_if = "Option::is_none")]
+    #[serde(
+        default,
+        skip_serializing,
+        deserialize_with = "reject_legacy_command_authority"
+    )]
     pub effects: Option<CommandEffectsExtension>,
-    #[serde(skip_serializing_if = "Option::is_none")]
+    #[serde(
+        default,
+        skip_serializing,
+        deserialize_with = "reject_legacy_command_authority"
+    )]
     pub confirmations: Option<CommandConfirmationsExtension>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub projection: Option<CommandProjectionExtension>,
     /// Names and wire codecs only. Values are server-derived for the current
     /// verified Session and are never frozen into a generated artifact.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub trusted_presets: Vec<ClientTrustedPresetDescriptor>,
+}
+
+fn reject_legacy_command_authority<'de, D, T>(deserializer: D) -> Result<Option<T>, D::Error>
+where
+    D: serde::Deserializer<'de>,
+{
+    let _ = serde::de::IgnoredAny::deserialize(deserializer)?;
+    Err(serde::de::Error::custom(
+        "client manifest v2 rejects legacy command effects/confirmations authority",
+    ))
 }
 
 #[derive(Clone, Debug, PartialEq, Eq, PartialOrd, Ord, Serialize, Deserialize)]
@@ -417,4 +527,297 @@ pub struct ClientProjector {
     pub models: Vec<String>,
     pub dependencies: Vec<String>,
     pub causal_confirmation: bool,
+}
+
+/// Opaque exact outward-event reference.
+#[derive(Clone, Debug, PartialEq, Eq, PartialOrd, Ord, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct ClientProjectionEventRef {
+    pub id: String,
+    pub name: String,
+    pub version: u64,
+}
+
+/// Exact role-selected deployment binding. No route, physical topology,
+/// output schema, body schema, or join-table details are serialized.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct ClientProjectionBinding {
+    #[serde(deserialize_with = "deserialize_projection_binding_version")]
+    pub version: u32,
+    pub binding_id: String,
+    pub program_id: String,
+    pub epoch: String,
+    pub state: ClientProjectionBindingState,
+    pub placement: ClientProjectionPlacement,
+    pub execution_class: ClientProjectionExecutionClass,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum ClientProjectionBindingState {
+    Active,
+    Draining,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum ClientProjectionPlacement {
+    Eventual,
+    Direct,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum ClientProjectionExecutionClass {
+    Causal,
+    Background,
+}
+
+/// One authorized portable projection program.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct ClientProjectionProgram {
+    #[serde(deserialize_with = "deserialize_projection_program_version")]
+    pub version: u32,
+    pub program_id: String,
+    pub name: String,
+    pub program_version: u64,
+    pub ir_version: u16,
+    pub operation_semantics_version: u16,
+    pub arms: Vec<ClientProjectionArm>,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct ClientProjectionArm {
+    pub arm: String,
+    pub event: ClientProjectionEventRef,
+    pub operations: Vec<ClientProjectionOperation>,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct ClientProjectionOperation {
+    pub operation: String,
+    pub ordinal: u32,
+    pub kind: ClientProjectionMutationKind,
+    pub model: String,
+    pub key: Vec<ClientProjectionKeyField>,
+    pub fields: Vec<ClientProjectionField>,
+    pub relationships: Vec<ClientProjectionRelationshipEffect>,
+    pub invalidations: Vec<ClientProjectionInvalidation>,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum ClientProjectionMutationKind {
+    Insert,
+    Upsert,
+    Patch,
+    UpsertPatch,
+    Delete,
+    Recreate,
+    InsertRelated,
+    UpsertRelated,
+    InvalidateModel,
+    InvalidateRelationship,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct ClientProjectionKeyField {
+    pub ordinal: u32,
+    pub name: String,
+    pub expression: ClientProjectionExpression,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct ClientProjectionField {
+    pub ordinal: u32,
+    pub name: String,
+    pub assignment: ClientProjectionAssignment,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(tag = "kind", rename_all = "snake_case", deny_unknown_fields)]
+pub enum ClientProjectionAssignment {
+    Set {
+        expression: ClientProjectionExpression,
+    },
+    Unset,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(tag = "kind", rename_all = "snake_case", deny_unknown_fields)]
+pub enum ClientProjectionExpression {
+    Slot {
+        slot: String,
+        value_type: ClientProjectionValueType,
+    },
+    Envelope {
+        field: ClientProjectionEnvelopeField,
+    },
+    Constant {
+        value: ClientProjectionValue,
+    },
+    Enum {
+        enum_type: String,
+        variant: String,
+    },
+    List {
+        values: Vec<ClientProjectionExpression>,
+    },
+    Object {
+        fields: Vec<ClientProjectionObjectField>,
+    },
+    Transform {
+        transform: ClientProjectionScalarTransform,
+        arguments: Vec<ClientProjectionExpression>,
+    },
+}
+
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct ClientProjectionObjectField {
+    pub name: String,
+    pub value: ClientProjectionExpression,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(
+    tag = "type",
+    content = "name",
+    rename_all = "snake_case",
+    deny_unknown_fields
+)]
+pub enum ClientProjectionValueType {
+    Boolean,
+    I64,
+    U64,
+    F64,
+    String,
+    Enum(String),
+    Json,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum ClientProjectionScalarTransform {
+    StringConcat,
+    FirstPresent,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum ClientProjectionEnvelopeField {
+    OccurrenceVersion,
+    EventName,
+    EventVersion,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(
+    tag = "type",
+    content = "value",
+    rename_all = "snake_case",
+    deny_unknown_fields
+)]
+pub enum ClientProjectionValue {
+    Null,
+    Boolean(bool),
+    I64(String),
+    U64(String),
+    F64(String),
+    String(String),
+    Enum { enum_type: String, variant: String },
+    List(Vec<ClientProjectionValue>),
+    Object(Vec<ClientProjectionValueField>),
+}
+
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct ClientProjectionValueField {
+    pub name: String,
+    pub value: ClientProjectionValue,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct ClientProjectionRelationshipEffect {
+    pub ordinal: u32,
+    pub kind: ClientProjectionRelationshipEffectKind,
+    pub source_model: String,
+    pub relationship: String,
+    pub target_model: String,
+    pub source_key: Vec<ClientProjectionKeyField>,
+    pub target_key: Vec<ClientProjectionKeyField>,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum ClientProjectionRelationshipEffectKind {
+    Link,
+    Unlink,
+    Invalidate,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(tag = "kind", rename_all = "snake_case", deny_unknown_fields)]
+pub enum ClientProjectionInvalidation {
+    Model {
+        model: String,
+    },
+    Relationship {
+        source_model: String,
+        relationship: String,
+        target_model: String,
+    },
+}
+
+/// Projection semantics attached to one generated command.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct CommandProjectionExtension {
+    #[serde(deserialize_with = "deserialize_command_projection_version")]
+    pub version: u32,
+    pub event_set: Vec<ClientProjectionEventRef>,
+    pub program_arms: Vec<CommandProjectionArmRef>,
+    pub preview_values: Vec<CommandProjectionPreviewValue>,
+    pub fallback: ClientProjectionFallback,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum ClientProjectionFallback {
+    Revalidate,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct CommandProjectionArmRef {
+    pub event: ClientProjectionEventRef,
+    pub program_id: String,
+    pub arm: String,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct CommandProjectionPreviewValue {
+    pub event: ClientProjectionEventRef,
+    pub slot: String,
+    pub source: ClientProjectionPreviewSource,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(tag = "kind", rename_all = "snake_case", deny_unknown_fields)]
+pub enum ClientProjectionPreviewSource {
+    Input { path: Vec<String> },
+    GeneratedDefault { path: Vec<String> },
+    TrustedPreset { name: String, codec: String },
+    Constant { value: ClientProjectionValue },
+    Null,
+    Absent,
+    Unknown,
 }

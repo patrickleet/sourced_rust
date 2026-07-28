@@ -397,7 +397,7 @@ fn projected_command_exports_opaque_role_safe_direct_target() {
 }
 
 #[test]
-fn trusted_preset_artifacts_expose_typed_descriptors_without_values() {
+fn legacy_effect_presets_are_not_v2_client_authority() {
     use super::super::command_contract::{
         CommandEffect, CommandEffects, EffectExpression, EffectFieldValue, EffectKey,
     };
@@ -436,18 +436,15 @@ fn trusted_preset_artifacts_expose_typed_descriptors_without_values() {
     )
     .expect("trusted preset descriptor manifest");
 
-    assert_eq!(
-        manifest.commands[0].extensions.trusted_presets,
-        vec![ClientTrustedPresetDescriptor {
-            name: "x-user-id".into(),
-            codec: "string".into(),
-        }]
-    );
+    assert!(manifest.commands[0]
+        .extensions
+        .trusted_presets
+        .is_empty());
     let wire = serde_json::to_value(manifest).expect("manifest JSON");
-    assert_eq!(
-        wire["commands"][0]["extensions"]["trusted_presets"],
-        serde_json::json!([{"name": "x-user-id", "codec": "string"}])
-    );
+    assert!(wire["commands"][0]["extensions"].get("effects").is_none());
+    assert!(wire["commands"][0]["extensions"]
+        .get("confirmations")
+        .is_none());
     assert!(
         !wire.to_string().contains("preset-value"),
         "static artifacts must never freeze a runtime preset value"
@@ -560,15 +557,15 @@ fn role_manifest_is_deterministic_and_hides_denied_identity_and_commands() {
     let first = export.manifest().unwrap();
     let second = export.manifest().unwrap();
     assert_eq!(first, second);
-    assert_eq!(first.manifest_version, 1);
+    assert_eq!(first.manifest_version, 2);
     assert_eq!(first.schema_fingerprint, second.schema_fingerprint);
     assert_eq!(
         first.schema_fingerprint,
-        "sha256:d2a890402634708d74f3edd895b7985fa0e3a86f6787730798b7d8c94f078db8"
+        "sha256:a3c6c2b019a334c393c6c97e7879d2de9830b48c4eaa002051035857a5c0dd81"
     );
     assert_eq!(
         first.protocol_fingerprint,
-        "sha256:30f19c9f4d29280a02ddf67c4df62cdc92c4e8090792f43d6b1bdafea3e31273"
+        "sha256:ed6801875db537f1b889ba2695777995adf3919f993f1432239fd10ff73cc609"
     );
 
     let user = first
@@ -665,9 +662,7 @@ fn role_manifest_is_deterministic_and_hides_denied_identity_and_commands() {
     assert_eq!(first.commands[0].grants, vec!["user"]);
     assert!(first.commands.iter().all(|command| {
         command.extensions.consistency.kind == "succeeded"
-            && command.extensions.effects.as_ref().is_some_and(|effects| {
-                effects.operations.is_empty() && effects.fallback == "revalidate"
-            })
+            && command.extensions.effects.is_none()
             && command.extensions.confirmations.is_none()
     }));
 
@@ -678,6 +673,97 @@ fn role_manifest_is_deterministic_and_hides_denied_identity_and_commands() {
     assert!(
         json.contains("x-user-id"),
         "portable row policies expose only the static claim name, never its value"
+    );
+}
+
+#[test]
+fn manifest_v2_decode_rejects_unknown_versions_fields_and_legacy_authority() {
+    let full = full_surface();
+    let selected = surface_for_role(&full, "user", &grants()["user"]).unwrap();
+    let baseline = client_manifest_from_surface(
+        "todos-service",
+        ClientSurfaceIdentity::role("user"),
+        &selected,
+    )
+    .expect("baseline manifest");
+    let value = serde_json::to_value(&baseline).expect("manifest value");
+
+    for version in [1, 3] {
+        let mut hostile = value.clone();
+        hostile["manifest_version"] = serde_json::json!(version);
+        assert!(serde_json::from_value::<DistributedClientManifest>(hostile).is_err());
+    }
+
+    let mut unknown = value.clone();
+    unknown["projection_secret"] = serde_json::json!("must-fail");
+    assert!(serde_json::from_value::<DistributedClientManifest>(unknown).is_err());
+
+    let mut slots = value.clone();
+    slots["commands"][0]["extensions"]["version"] = serde_json::json!(1);
+    assert!(serde_json::from_value::<DistributedClientManifest>(slots).is_err());
+
+    for legacy in ["effects", "confirmations"] {
+        let mut hostile = value.clone();
+        hostile["commands"][0]["extensions"][legacy] = serde_json::json!(null);
+        assert!(
+            serde_json::from_value::<DistributedClientManifest>(hostile).is_err(),
+            "v2 must reject even null legacy `{legacy}` authority"
+        );
+    }
+
+    let mut mixed = value.clone();
+    mixed["commands"][0]["extensions"]["projection"] = serde_json::json!({
+        "version": 1,
+        "event_set": [],
+        "program_arms": [],
+        "preview_values": [],
+        "fallback": "revalidate"
+    });
+    mixed["commands"][0]["extensions"]["effects"] = serde_json::json!({
+        "version": 1,
+        "operations": [],
+        "fallback": "revalidate"
+    });
+    assert!(serde_json::from_value::<DistributedClientManifest>(mixed).is_err());
+
+    let mut program = value.clone();
+    program["projection_programs"] = serde_json::json!([{
+        "version": 2,
+        "program_id": "pp1:sha256:bad",
+        "name": "bad",
+        "program_version": 1,
+        "ir_version": 1,
+        "operation_semantics_version": 1,
+        "arms": []
+    }]);
+    assert!(serde_json::from_value::<DistributedClientManifest>(program).is_err());
+
+    let mut binding = value.clone();
+    binding["projection_bindings"] = serde_json::json!([{
+        "version": 2,
+        "binding_id": "pb1:sha256:bad",
+        "program_id": "pp1:sha256:bad",
+        "epoch": "bad-v1",
+        "state": "active",
+        "placement": "eventual",
+        "execution_class": "causal"
+    }]);
+    assert!(serde_json::from_value::<DistributedClientManifest>(binding).is_err());
+
+    let mut extension = value;
+    extension["commands"][0]["extensions"]["projection"] = serde_json::json!({
+        "version": 2,
+        "event_set": [],
+        "program_arms": [],
+        "preview_values": [],
+        "fallback": "revalidate"
+    });
+    assert!(serde_json::from_value::<DistributedClientManifest>(extension).is_err());
+
+    assert_ne!(
+        baseline.protocol_fingerprint,
+        "sha256:30f19c9f4d29280a02ddf67c4df62cdc92c4e8090792f43d6b1bdafea3e31273",
+        "manifest v2 projection semantics must not share the v1 protocol fingerprint"
     );
 }
 

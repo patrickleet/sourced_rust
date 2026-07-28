@@ -338,31 +338,69 @@ fn select_operation(
         .filter(|field| logical_field_visible(model, field.name()))
         .cloned()
         .collect::<Vec<_>>();
-    let relationship_effects = operation
-        .relationship_effects()
-        .iter()
-        .filter(|effect| relationship_visible(effect, models))
-        .cloned()
-        .collect::<Vec<_>>();
+    let mut relationship_effects = Vec::new();
+    let mut relationship_recovery = Vec::new();
+    for effect in operation.relationship_effects() {
+        if relationship_visible(&effect, models) {
+            relationship_effects.push(effect.clone());
+            continue;
+        }
+        if relationship_surface_visible(effect, models) {
+            let relationship = effect.relationship();
+            let source = models
+                .get(relationship.source_model())
+                .expect("visible relationship source model");
+            if !effect.source_key().is_empty()
+                && effect
+                    .source_key()
+                    .iter()
+                    .all(|key| logical_field_visible(source, key.name()))
+            {
+                relationship_effects.push(
+                    ProjectionRelationshipEffect::invalidate(
+                        effect.ordinal(),
+                        relationship.clone(),
+                        effect.source_key().to_vec(),
+                    )
+                    .expect("selected source key remains complete"),
+                );
+                relationship_recovery.push(
+                    ProjectionInvalidation::relationship(
+                        relationship.source_model(),
+                        relationship.relationship(),
+                        relationship.target_model(),
+                    )
+                    .expect("selected relationship identity is non-empty"),
+                );
+            } else {
+                relationship_recovery.push(
+                    ProjectionInvalidation::model(relationship.source_model())
+                        .expect("selected relationship source identity is non-empty"),
+                );
+            }
+        }
+    }
     let mut invalidations = operation
         .invalidations()
         .iter()
         .filter(|invalidation| invalidation_visible(invalidation, models))
         .cloned()
         .collect::<Vec<_>>();
+    invalidations.extend(relationship_recovery);
+    invalidations.sort();
+    invalidations.dedup();
     let row_consequence = operation.kind() == ProjectionMutationKind::Delete || !fields.is_empty();
-    let relationship_consequence = !relationship_effects.is_empty() || !invalidations.is_empty();
     let hidden_only_row_change = operation.kind() != ProjectionMutationKind::Delete
         && !operation.fields().is_empty()
-        && fields.is_empty()
-        && !relationship_consequence;
+        && fields.is_empty();
     let force_revalidate = (row_consequence && !key_visible) || hidden_only_row_change;
     if force_revalidate {
-        invalidations.clear();
         invalidations.push(
             ProjectionInvalidation::model(&model.model_name)
                 .expect("selected model identity is non-empty"),
         );
+        invalidations.sort();
+        invalidations.dedup();
     }
     Some(SurfaceProjectionOperation {
         operation_id: operation.operation_id().to_owned(),
@@ -374,11 +412,7 @@ fn select_operation(
             .then(|| operation.key().to_vec())
             .unwrap_or_default(),
         fields: if force_revalidate { Vec::new() } else { fields },
-        relationship_effects: if force_revalidate {
-            Vec::new()
-        } else {
-            relationship_effects
-        },
+        relationship_effects,
         invalidations,
         force_revalidate,
     })
@@ -429,6 +463,22 @@ fn relationship_visible(
             .target_key()
             .iter()
             .all(|key| logical_field_visible(target, key.name()))
+}
+
+fn relationship_surface_visible(
+    effect: &ProjectionRelationshipEffect,
+    models: &BTreeMap<String, SurfaceModel>,
+) -> bool {
+    let relationship = effect.relationship();
+    models
+        .get(relationship.source_model())
+        .is_some_and(|source| {
+            source.relationships.iter().any(|selected| {
+                selected.name == relationship.relationship()
+                    && selected.target_model == relationship.target_model()
+                    && models.contains_key(relationship.target_model())
+            })
+        })
 }
 
 fn invalidation_visible(

@@ -1,8 +1,9 @@
 use std::cell::Cell;
 
 use distributed::{
-    domain_event::{DomainEventBodyContract, DomainEventContract}, AggregateBuilder,
-    DomainDeletion, DomainEvent, DomainEventBodyKind, DomainState, Entity, InMemoryRepository,
+    domain_event::{DomainEventBodyContract, DomainEventContract},
+    AggregateBuilder, DomainDeletion, DomainEvent, DomainEventBodyKind, DomainState, Entity,
+    InMemoryRepository,
 };
 use serde::{Deserialize, Serialize};
 

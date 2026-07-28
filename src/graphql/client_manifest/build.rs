@@ -336,52 +336,34 @@ pub(super) fn client_manifest_from_surface_with_execution(
                     })
             })
             .transpose()?;
-        let effects = command
-            .effects
-            .as_ref()
-            .map(|effects| {
-                let operations = effects
-                    .operations
-                    .iter()
-                    .map(|operation| serde_json::to_value(operation).map(canonical_json_value))
-                    .collect::<Result<Vec<_>, _>>()?;
-                let fallback = match effects.fallback {
-                    CommandEffectFallback::Revalidate => "revalidate",
+        let mut trusted_presets = command_trusted_preset_descriptors(command, surface)?;
+        let projection = command_projection_extension(command, surface, &trusted_presets)?;
+        if let Some(projection) = &projection {
+            for preview in &projection.preview_values {
+                let ClientProjectionPreviewSource::TrustedPreset { name, codec } = &preview.source
+                else {
+                    continue;
                 };
-                Ok::<_, serde_json::Error>(CommandEffectsExtension {
-                    version: 1,
-                    operations,
-                    fallback: fallback.into(),
-                })
-            })
-            .transpose()?;
-        let confirmations = if command.confirmation_unavailable {
-            Some(CommandConfirmationsExtension {
-                version: COMMAND_CONFIRMATIONS_VERSION,
-                kind: "unavailable".into(),
-                expected: Vec::new(),
-                fallback: "revalidate".into(),
-            })
-        } else {
-            (!command.confirmations.is_empty() || command.consistency == CommandConsistency::Causal)
-                .then(|| {
-                    command
-                        .confirmations
-                        .iter()
-                        .map(|confirmation| {
-                            serde_json::to_value(confirmation).map(canonical_json_value)
-                        })
-                        .collect::<Result<Vec<_>, _>>()
-                        .map(|expected| CommandConfirmationsExtension {
-                            version: COMMAND_CONFIRMATIONS_VERSION,
-                            kind: "finite".into(),
-                            expected,
-                            fallback: "revalidate".into(),
-                        })
-                })
-                .transpose()?
-        };
-        let trusted_presets = command_trusted_preset_descriptors(command, surface)?;
+                match trusted_presets
+                    .iter()
+                    .find(|descriptor| descriptor.name == *name)
+                {
+                    Some(descriptor) if descriptor.codec == *codec => {}
+                    Some(descriptor) => {
+                        return Err(ClientManifestError(format!(
+                            "command `{}` trusted preset `{name}` is used with incompatible codecs `{}` and `{codec}`",
+                            command.command_name,
+                            descriptor.codec
+                        )));
+                    }
+                    None => trusted_presets.push(ClientTrustedPresetDescriptor {
+                        name: name.clone(),
+                        codec: codec.clone(),
+                    }),
+                }
+            }
+            trusted_presets.sort();
+        }
         commands.push(ClientCommand {
             version: 1,
             name: command.command_name.clone(),
@@ -396,8 +378,9 @@ pub(super) fn client_manifest_from_surface_with_execution(
                 consistency,
                 direct_projection,
                 input_defaults,
-                effects,
-                confirmations,
+                effects: None,
+                confirmations: None,
+                projection,
                 trusted_presets,
             },
         });
@@ -440,6 +423,7 @@ pub(super) fn client_manifest_from_surface_with_execution(
         })
         .collect();
     projectors.sort_by(|a, b| a.name.cmp(&b.name));
+    let (projection_programs, projection_bindings) = projection_manifest(surface)?;
 
     let scalar_codecs = supported_scalar_codecs();
     let record_evidence = query_footprint_has_record_evidence(surface);
@@ -471,6 +455,8 @@ pub(super) fn client_manifest_from_surface_with_execution(
         commands: &'a [ClientCommand],
         protocol_operations: &'a ClientProtocolOperations,
         projectors: &'a [ClientProjector],
+        projection_programs: &'a [ClientProjectionProgram],
+        projection_bindings: &'a [ClientProjectionBinding],
     }
     let schema_material = SchemaMaterial {
         manifest_version: DISTRIBUTED_CLIENT_MANIFEST_VERSION,
@@ -485,6 +471,8 @@ pub(super) fn client_manifest_from_surface_with_execution(
         commands: &commands,
         protocol_operations: &protocol_operations,
         projectors: &projectors,
+        projection_programs: &projection_programs,
+        projection_bindings: &projection_bindings,
     };
     let schema_fingerprint = hash_json(&schema_material)?;
 
@@ -503,6 +491,8 @@ pub(super) fn client_manifest_from_surface_with_execution(
         commands,
         protocol_operations,
         projectors,
+        projection_programs,
+        projection_bindings,
     };
     // Validate the one exact scope-wide descriptor union while the complete
     // role-selected manifest is still available. The serialized manifest need

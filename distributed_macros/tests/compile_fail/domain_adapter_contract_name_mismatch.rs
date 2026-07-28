@@ -1,6 +1,7 @@
 use distributed::{
-    domain_event::{DomainEventBodyContract, DomainEventContract}, sourced, DomainEvent, DomainEventBodyDescriptor,
-    DomainEventBodyKind, DomainEventDescriptor, Entity,
+    domain_event::{DomainEventBodyContract, DomainEventContract},
+    sourced, DomainEvent, DomainEventBodyDescriptor, DomainEventBodyKind, DomainEventDescriptor,
+    Entity,
 };
 use serde::Serialize;
 

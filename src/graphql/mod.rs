@@ -38,7 +38,9 @@ pub use command_contract::{
     EffectWireTimestamp, EffectWireUnsupported,
 };
 pub use command_contract::{
-    __command_projection_events, typed_command, Causal, CommandConsistency,
+    __command_projection_event_descriptor, __command_projection_event_preview,
+    __command_projection_events, __command_projection_preview_constant,
+    __command_projection_state_preview, typed_command, Causal, CommandConsistency,
     CommandProjectionEventSet, CommandProjectionPreview, CommandProjectionPreviewSource,
     CompiledCommandEffects, CompiledConfirmationPlan, CompiledDirectProjectionTarget,
     CompiledInputDefaults, PrepareCommandError, PreparedCommand, Projected, Succeeded,
