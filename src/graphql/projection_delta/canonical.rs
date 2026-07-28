@@ -2,7 +2,7 @@ use std::collections::{BTreeMap, BTreeSet};
 
 use super::{
     ProjectionDeltaError, ProjectionDeltaMutation, ProjectionDeltaOperation,
-    ProjectionDeltaRecovery,
+    ProjectionDeltaRecovery, ProjectionDeltaRecoveryCondition, ProjectionDeltaRecoveryTarget,
 };
 
 pub(crate) fn canonicalize_operations(
@@ -24,6 +24,7 @@ pub(crate) fn canonicalize_operations(
 
 pub(crate) fn canonicalize_recoveries(
     recoveries: Vec<ProjectionDeltaRecovery>,
+    operations: &[ProjectionDeltaOperation],
 ) -> Vec<ProjectionDeltaRecovery> {
     let mut by_target = BTreeMap::new();
     for recovery in recoveries {
@@ -32,6 +33,9 @@ pub(crate) fn canonicalize_recoveries(
             .and_modify(|existing: &mut ProjectionDeltaRecovery| {
                 existing.occurrence_ordinal =
                     existing.occurrence_ordinal.max(recovery.occurrence_ordinal);
+                if recovery.condition == ProjectionDeltaRecoveryCondition::Always {
+                    existing.condition = ProjectionDeltaRecoveryCondition::Always;
+                }
                 merge_refs(
                     &mut existing.projection_refs,
                     recovery.projection_refs.clone(),
@@ -40,6 +44,24 @@ pub(crate) fn canonicalize_recoveries(
             .or_insert(recovery);
     }
     let mut recoveries = by_target.into_values().collect::<Vec<_>>();
+    recoveries.retain(|recovery| {
+        if recovery.condition == ProjectionDeltaRecoveryCondition::Always {
+            return true;
+        }
+        let ProjectionDeltaRecoveryTarget::Record { scope } = &recovery.target else {
+            return false;
+        };
+        operations.iter().any(|operation| {
+            matches!(
+                &operation.mutation,
+                ProjectionDeltaMutation::Patch {
+                    scope: patch_scope,
+                    if_present: true,
+                    ..
+                } if patch_scope == scope
+            )
+        })
+    });
     recoveries.sort_by_key(ProjectionDeltaRecovery::canonical_order);
     recoveries
 }

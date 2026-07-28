@@ -1,5 +1,7 @@
 use std::collections::BTreeSet;
 
+use base64::engine::general_purpose::URL_SAFE_NO_PAD;
+use base64::Engine as _;
 use serde::{Deserialize, Serialize};
 
 use crate::projection_protocol::{MAX_PROJECTION_PARTITION_BYTES, MAX_PROJECTION_RECORD_KEY_BYTES};
@@ -12,13 +14,81 @@ pub const MAX_PROJECTION_DELTA_OPERATIONS: usize = 128;
 
 const MAX_IDENTITY_BYTES: usize = 4 * 1024;
 
+/// Typed, already-authenticated GraphQL cache-scope token retained by the
+/// sealed request authority.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub(crate) struct ProjectionDeltaCacheScopeToken(String);
+
+impl ProjectionDeltaCacheScopeToken {
+    pub(crate) fn parse_wire(value: &str) -> Result<Self, ProjectionDeltaError> {
+        validate_opaque_protocol_token(value, Some("cache-scope"))?;
+        Ok(Self(value.to_owned()))
+    }
+
+    #[cfg(feature = "graphql")]
+    pub(crate) fn from_protocol(
+        token: &crate::graphql::protocol::OpaqueProtocolToken,
+    ) -> Result<Self, ProjectionDeltaError> {
+        Self::parse_wire(token.as_str())
+    }
+
+    pub(crate) fn as_str(&self) -> &str {
+        &self.0
+    }
+}
+
+fn validate_opaque_protocol_token(
+    value: &str,
+    expected_purpose: Option<&str>,
+) -> Result<(), ProjectionDeltaError> {
+    let mut segments = value.split('.');
+    let version = segments.next();
+    let purpose = segments.next();
+    let encoded = segments.next();
+    if segments.next().is_some()
+        || version != Some("v1")
+        || purpose.is_none()
+        || expected_purpose.is_some_and(|expected| purpose != Some(expected))
+        || !purpose.is_some_and(|purpose| {
+            !purpose.is_empty()
+                && purpose
+                    .bytes()
+                    .all(|byte| byte.is_ascii_lowercase() || byte == b'-')
+        })
+        || encoded.is_none()
+    {
+        return Err(ProjectionDeltaError::InvalidIdentity {
+            field: "opaque_protocol_token",
+        });
+    }
+    let encoded = encoded.expect("checked above");
+    let decoded =
+        URL_SAFE_NO_PAD
+            .decode(encoded)
+            .map_err(|_| ProjectionDeltaError::InvalidIdentity {
+                field: "opaque_protocol_token",
+            })?;
+    if decoded.len() != 32 || URL_SAFE_NO_PAD.encode(decoded) != encoded {
+        return Err(ProjectionDeltaError::InvalidIdentity {
+            field: "opaque_protocol_token",
+        });
+    }
+    Ok(())
+}
+
 /// Exact authorization and projection identity required to replay a delta.
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct ProjectionDeltaIdentity {
+    pub manifest_version: u32,
+    pub client_protocol_version: u32,
     pub surface: ProjectionDeltaSurfaceIdentity,
     pub schema_fingerprint: String,
+    pub protocol_fingerprint: String,
     pub authorization_generation: String,
+    /// Opaque authenticated binding of principal, cache scope, selected
+    /// Surface, fingerprints, and authorization generation.
+    pub cache_scope_token: String,
     pub command_causation_id: String,
 }
 
@@ -98,17 +168,19 @@ impl ProjectionDelta {
     ///
     /// Returns [`ProjectionDeltaError::ReplayScopeMismatch`] when any
     /// role/application/generation identity differs.
-    pub fn validate_replay_scope(
+    pub(crate) fn validate_replay_scope(
         &self,
-        surface: &ProjectionDeltaSurfaceIdentity,
-        schema_fingerprint: &str,
-        authorization_generation: &str,
-        command_causation_id: &str,
+        manifest: &crate::graphql::client_manifest::DistributedClientManifest,
+        request: &impl super::lower::ProjectionDeltaRequestAuthority,
     ) -> Result<(), ProjectionDeltaError> {
-        if &self.identity.surface != surface
-            || self.identity.schema_fingerprint != schema_fingerprint
-            || self.identity.authorization_generation != authorization_generation
-            || self.identity.command_causation_id != command_causation_id
+        if self.identity.manifest_version != manifest.manifest_version
+            || self.identity.client_protocol_version != manifest.protocol_version
+            || self.identity.surface != ProjectionDeltaSurfaceIdentity::from(&manifest.surface)
+            || self.identity.schema_fingerprint != manifest.schema_fingerprint
+            || self.identity.protocol_fingerprint != manifest.protocol_fingerprint
+            || self.identity.authorization_generation != request.authorization_generation()
+            || self.identity.cache_scope_token != request.cache_scope().as_str()
+            || self.identity.command_causation_id != request.command_causation_id().as_str()
         {
             return Err(ProjectionDeltaError::ReplayScopeMismatch);
         }
@@ -131,9 +203,13 @@ impl ProjectionDelta {
                 "empty projection inventory requires an empty authoritative delta",
             ));
         }
-        if self.projections.len() > MAX_PROJECTION_DELTA_OPERATIONS
-            || !self.projections.windows(2).all(|pair| pair[0] < pair[1])
-        {
+        if self.projections.len() > MAX_PROJECTION_DELTA_OPERATIONS {
+            return Err(ProjectionDeltaError::TooManyProjections {
+                len: self.projections.len(),
+                max: MAX_PROJECTION_DELTA_OPERATIONS,
+            });
+        }
+        if !self.projections.windows(2).all(|pair| pair[0] < pair[1]) {
             return Err(ProjectionDeltaError::NonCanonicalOrder {
                 field: "projections",
             });
@@ -169,6 +245,27 @@ impl ProjectionDelta {
         }
         for recovery in &self.recoveries {
             recovery.validate(self.projections.len(), self.occurrences.len())?;
+            if recovery.condition == ProjectionDeltaRecoveryCondition::IfRecordMissing {
+                let ProjectionDeltaRecoveryTarget::Record { scope } = &recovery.target else {
+                    return Err(ProjectionDeltaError::InvalidOperation(
+                        "if_record_missing recovery requires a record target",
+                    ));
+                };
+                if !self.operations.iter().any(|operation| {
+                    matches!(
+                        &operation.mutation,
+                        ProjectionDeltaMutation::Patch {
+                            scope: patch_scope,
+                            if_present: true,
+                            ..
+                        } if patch_scope == scope
+                    )
+                }) {
+                    return Err(ProjectionDeltaError::InvalidOperation(
+                        "if_record_missing recovery requires a same-scope conditional patch",
+                    ));
+                }
+            }
         }
         if !self
             .operations
@@ -194,18 +291,55 @@ impl ProjectionDelta {
 
 impl ProjectionDeltaIdentity {
     pub(crate) fn validate(&self) -> Result<(), ProjectionDeltaError> {
+        if self.manifest_version
+            != crate::graphql::client_manifest::DISTRIBUTED_CLIENT_MANIFEST_VERSION
+        {
+            return Err(ProjectionDeltaError::UnsupportedClientVersion {
+                field: "manifest_version",
+                actual: self.manifest_version,
+            });
+        }
+        if self.client_protocol_version
+            != crate::graphql::client_manifest::DISTRIBUTED_CLIENT_PROTOCOL_VERSION
+        {
+            return Err(ProjectionDeltaError::UnsupportedClientVersion {
+                field: "client_protocol_version",
+                actual: self.client_protocol_version,
+            });
+        }
         self.surface.validate()?;
         for (field, value) in [
             ("schema_fingerprint", self.schema_fingerprint.as_str()),
+            ("protocol_fingerprint", self.protocol_fingerprint.as_str()),
             (
                 "authorization_generation",
                 self.authorization_generation.as_str(),
             ),
+            ("cache_scope_token", self.cache_scope_token.as_str()),
             ("command_causation_id", self.command_causation_id.as_str()),
         ] {
             validate_identity(field, value)?;
         }
+        ProjectionDeltaCacheScopeToken::parse_wire(&self.cache_scope_token)?;
         Ok(())
+    }
+}
+
+impl From<&crate::graphql::client_manifest::ClientSurfaceIdentity>
+    for ProjectionDeltaSurfaceIdentity
+{
+    fn from(surface: &crate::graphql::client_manifest::ClientSurfaceIdentity) -> Self {
+        match surface {
+            crate::graphql::client_manifest::ClientSurfaceIdentity::Role { name } => {
+                Self::Role { name: name.clone() }
+            }
+            crate::graphql::client_manifest::ClientSurfaceIdentity::Application { name, roles } => {
+                Self::Application {
+                    name: name.clone(),
+                    roles: roles.clone(),
+                }
+            }
+        }
     }
 }
 
@@ -284,7 +418,7 @@ pub struct ProjectionDeltaScope {
 }
 
 impl ProjectionDeltaScope {
-    fn validate(&self) -> Result<(), ProjectionDeltaError> {
+    pub(crate) fn validate(&self) -> Result<(), ProjectionDeltaError> {
         self.partition.validate()?;
         validate_identity("model", &self.model)?;
         validate_key(&self.key)
@@ -301,15 +435,18 @@ pub enum ProjectionDeltaPartition {
 }
 
 impl ProjectionDeltaPartition {
-    fn validate(&self) -> Result<(), ProjectionDeltaError> {
+    pub(crate) fn validate(&self) -> Result<(), ProjectionDeltaError> {
+        let encoded = serde_json::to_vec(self)
+            .map_err(|error| ProjectionDeltaError::InvalidWire(error.to_string()))?;
+        if encoded.len() > MAX_PROJECTION_PARTITION_BYTES {
+            return Err(ProjectionDeltaError::PartitionTooLarge {
+                len: encoded.len(),
+                max: MAX_PROJECTION_PARTITION_BYTES,
+            });
+        }
         if let Self::Opaque { token } = self {
             validate_identity("opaque partition", token)?;
-            if token.len() > MAX_PROJECTION_PARTITION_BYTES {
-                return Err(ProjectionDeltaError::PartitionTooLarge {
-                    len: token.len(),
-                    max: MAX_PROJECTION_PARTITION_BYTES,
-                });
-            }
+            validate_opaque_protocol_token(token, Some("projection-partition"))?;
         }
         Ok(())
     }
@@ -354,6 +491,42 @@ pub enum DeltaValue {
 }
 
 impl DeltaValue {
+    pub(crate) fn try_from_projection_ref(
+        value: crate::ProjectionValueRef<'_>,
+    ) -> Result<Self, ProjectionDeltaError> {
+        let value = match value {
+            crate::ProjectionValueRef::Null => Self::Null,
+            crate::ProjectionValueRef::Boolean(value) => Self::Boolean(value),
+            crate::ProjectionValueRef::I64(value) => Self::I64(value.to_owned()),
+            crate::ProjectionValueRef::U64(value) => Self::U64(value.to_owned()),
+            crate::ProjectionValueRef::F64(value) => Self::F64(value.to_owned()),
+            crate::ProjectionValueRef::String(value) => Self::String(value.to_owned()),
+            crate::ProjectionValueRef::Enum { enum_type, variant } => Self::Enum {
+                enum_type: enum_type.to_owned(),
+                variant: variant.to_owned(),
+            },
+            crate::ProjectionValueRef::List(values) => Self::List(
+                values
+                    .iter()
+                    .map(|value| Self::try_from_projection_ref(value.as_ref()))
+                    .collect::<Result<Vec<_>, _>>()?,
+            ),
+            crate::ProjectionValueRef::Object(fields) => Self::Object(
+                fields
+                    .iter()
+                    .map(|field| {
+                        Ok(DeltaField {
+                            field: field.name().to_owned(),
+                            value: Self::try_from_projection_ref(field.value().as_ref())?,
+                        })
+                    })
+                    .collect::<Result<Vec<_>, ProjectionDeltaError>>()?,
+            ),
+        };
+        value.validate()?;
+        Ok(value)
+    }
+
     pub(crate) fn validate(&self) -> Result<(), ProjectionDeltaError> {
         self.validate_at_depth(1)
     }
@@ -429,7 +602,7 @@ pub(crate) enum ProjectionMutationSource {
 
 /// Authorization visibility independent of record existence or liveness.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub enum ProjectionDeltaVisibility {
+pub(crate) enum ProjectionDeltaVisibility {
     Authorized,
     Denied,
     Unknown,
@@ -438,7 +611,7 @@ pub enum ProjectionDeltaVisibility {
 /// Explicit authorization transition. A domain delete under stable permission
 /// is `Authorized` to `Authorized`; it is not an authorization transition.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub struct AuthorizationTransition {
+pub(crate) struct AuthorizationTransition {
     pub before: ProjectionDeltaVisibility,
     pub after: ProjectionDeltaVisibility,
 }
@@ -518,10 +691,9 @@ impl ProjectionDeltaOperation {
                 scope.validate()?;
                 validate_fields(fields)?;
                 validate_names("replace", replace)?;
-                if replace.is_empty() || fields.iter().any(|field| !replace.contains(&field.field))
-                {
+                if fields.iter().any(|field| !replace.contains(&field.field)) {
                     return Err(ProjectionDeltaError::InvalidOperation(
-                        "upsert fields must be contained in a non-empty replacement mask",
+                        "upsert fields must be contained in the replacement mask",
                     ));
                 }
             }
@@ -641,7 +813,19 @@ pub(crate) enum OperationScope {
 pub struct ProjectionDeltaRecovery {
     pub occurrence_ordinal: u32,
     pub projection_refs: Vec<u32>,
+    pub condition: ProjectionDeltaRecoveryCondition,
     pub target: ProjectionDeltaRecoveryTarget,
+}
+
+/// When a conservative recovery is applied by the client.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum ProjectionDeltaRecoveryCondition {
+    /// Apply immediately.
+    Always,
+    /// Apply only when the paired same-record conditional patch finds no live
+    /// row (including a tombstone).
+    IfRecordMissing,
 }
 
 impl ProjectionDeltaRecovery {
@@ -708,11 +892,13 @@ impl ProjectionDeltaRecoveryTarget {
 pub enum ProjectionDeltaError {
     InvalidWire(String),
     UnsupportedVersion { actual: u16 },
+    UnsupportedClientVersion { field: &'static str, actual: u32 },
     UnsupportedExecutableVersion { field: &'static str, actual: u16 },
     ZeroVersion { field: &'static str },
     InvalidIdentity { field: &'static str },
     ReplayScopeMismatch,
     TooManyOperations { len: usize, max: usize },
+    TooManyProjections { len: usize, max: usize },
     TooManyOccurrences { len: usize, max: usize },
     TooManyRecoveries { len: usize, max: usize },
     BodyTooLarge { len: usize, max: usize },
@@ -740,6 +926,10 @@ impl std::fmt::Display for ProjectionDeltaError {
                     "unsupported projection-delta wire version `{actual}`"
                 )
             }
+            Self::UnsupportedClientVersion { field, actual } => write!(
+                formatter,
+                "unsupported projection-delta client `{field}` version `{actual}`"
+            ),
             Self::UnsupportedExecutableVersion { field, actual } => write!(
                 formatter,
                 "unsupported projection-delta executable `{field}` version `{actual}`"
@@ -756,6 +946,10 @@ impl std::fmt::Display for ProjectionDeltaError {
             Self::TooManyOperations { len, max } => write!(
                 formatter,
                 "projection-delta has {len} operations, exceeding the maximum of {max}"
+            ),
+            Self::TooManyProjections { len, max } => write!(
+                formatter,
+                "projection-delta has {len} projections, exceeding the maximum of {max}"
             ),
             Self::TooManyOccurrences { len, max } => write!(
                 formatter,

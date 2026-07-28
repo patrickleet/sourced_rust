@@ -9,14 +9,19 @@ mod canonical;
 pub(crate) mod lower;
 mod types;
 
+#[allow(
+    unused_imports,
+    reason = "Task 11 names this authenticated request seam"
+)]
+pub(crate) use types::ProjectionDeltaCacheScopeToken;
+
 #[cfg(test)]
 mod tests;
 
 pub use types::{
-    AuthorizationTransition, DeltaField, DeltaKeyField, DeltaValue, ProjectionDelta,
-    ProjectionDeltaError, ProjectionDeltaIdentity, ProjectionDeltaMutation,
-    ProjectionDeltaOccurrence, ProjectionDeltaOperation, ProjectionDeltaPartition,
-    ProjectionDeltaProjectionIdentity, ProjectionDeltaRecovery, ProjectionDeltaRecoveryTarget,
-    ProjectionDeltaScope, ProjectionDeltaSurfaceIdentity, ProjectionDeltaVisibility,
-    PROJECTION_DELTA_WIRE_VERSION,
+    DeltaField, DeltaKeyField, DeltaValue, ProjectionDelta, ProjectionDeltaError,
+    ProjectionDeltaIdentity, ProjectionDeltaMutation, ProjectionDeltaOccurrence,
+    ProjectionDeltaOperation, ProjectionDeltaPartition, ProjectionDeltaProjectionIdentity,
+    ProjectionDeltaRecovery, ProjectionDeltaRecoveryCondition, ProjectionDeltaRecoveryTarget,
+    ProjectionDeltaScope, ProjectionDeltaSurfaceIdentity, PROJECTION_DELTA_WIRE_VERSION,
 };
