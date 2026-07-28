@@ -5,6 +5,7 @@
 //! aliases and scalar representations cannot silently produce different
 //! record identities.
 
+mod catalog;
 mod constants;
 mod errors;
 mod key;
@@ -15,6 +16,7 @@ mod topology;
 #[cfg(test)]
 mod tests;
 
+pub(crate) use catalog::{canonical_projection_topology_bytes, digest_projection_binding};
 pub(crate) use errors::ProjectionScopeCodecError;
 pub(crate) use partition::ProjectionPartitionSpec;
 pub(crate) use scope::ProjectionScopeCodec;

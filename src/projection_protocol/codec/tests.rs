@@ -1,6 +1,9 @@
 use std::collections::BTreeMap;
 
-use super::{ProjectionScopeCodec, ProjectionScopeCodecError};
+use super::{
+    canonical_projection_topology_bytes, digest_projection_binding, ProjectionScopeCodec,
+    ProjectionScopeCodecError,
+};
 use crate::projection_protocol::{
     ProjectionRecordScope, ProjectorTopologyId, ResolvedProjectionKey, ResolvedProjectionKeyField,
     ResolvedProjectionObligation,
@@ -9,6 +12,37 @@ use crate::table::{ColumnType, PrimaryKey, RowKey, RowValue, TableColumn, TableK
 
 fn topology() -> ProjectorTopologyId {
     ProjectorTopologyId::new(3, "project_memberships", [7; 32]).unwrap()
+}
+
+#[test]
+fn catalog_canonical_json_sorts_nested_object_keys_without_reordering_arrays() {
+    let left = serde_json::json!({
+        "z": {"b": 2, "a": 1},
+        "a": [{"y": true, "x": false}, 3],
+    });
+    let right = serde_json::json!({
+        "a": [{"x": false, "y": true}, 3],
+        "z": {"a": 1, "b": 2},
+    });
+
+    assert_eq!(
+        canonical_projection_topology_bytes(&left).unwrap(),
+        canonical_projection_topology_bytes(&right).unwrap()
+    );
+}
+
+#[test]
+fn projection_binding_digest_is_domain_separated_and_length_bound() {
+    let canonical = br#"{"binding":"todos"}"#;
+
+    assert_eq!(
+        digest_projection_binding(canonical),
+        digest_projection_binding(canonical)
+    );
+    assert_ne!(
+        digest_projection_binding(canonical),
+        digest_projection_binding(br#"{"binding":"chat"}"#)
+    );
 }
 
 fn schema(

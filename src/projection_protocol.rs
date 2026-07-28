@@ -20,8 +20,8 @@ mod store;
 mod workspace;
 
 pub(crate) use codec::{
-    compile_projection_topology, CompiledProjectionTopology, ProjectionPartitionSpec,
-    ProjectionScopeCodec,
+    canonical_projection_topology_bytes, compile_projection_topology, digest_projection_binding,
+    CompiledProjectionTopology, ProjectionPartitionSpec, ProjectionScopeCodec,
 };
 use store::domain_separated_digest;
 pub use store::*;
@@ -543,6 +543,25 @@ impl ProjectionEpoch {
 
     pub fn as_str(&self) -> &str {
         &self.0
+    }
+}
+
+impl Serialize for ProjectionEpoch {
+    fn serialize<S>(&self, serializer: S) -> Result<S::Ok, S::Error>
+    where
+        S: serde::Serializer,
+    {
+        serializer.serialize_str(self.as_str())
+    }
+}
+
+impl<'de> Deserialize<'de> for ProjectionEpoch {
+    fn deserialize<D>(deserializer: D) -> Result<Self, D::Error>
+    where
+        D: serde::Deserializer<'de>,
+    {
+        let value = String::deserialize(deserializer)?;
+        Self::new(value).map_err(serde::de::Error::custom)
     }
 }
 
@@ -1314,6 +1333,14 @@ mod tests {
     fn epoch_is_bounded_opaque_and_never_ordered_by_contents() {
         let opaque = ProjectionEpoch::new("2026-07-22 10:00:00Z").unwrap();
         assert_eq!(opaque.as_str(), "2026-07-22 10:00:00Z");
+        assert_eq!(
+            serde_json::from_str::<ProjectionEpoch>(
+                &serde_json::to_string(&opaque).expect("epoch serializes")
+            )
+            .expect("serialized epoch validates"),
+            opaque
+        );
+        assert!(serde_json::from_str::<ProjectionEpoch>("\"epoch\\n2\"").is_err());
         assert_eq!(
             ProjectionEpoch::new(""),
             Err(ProjectionProtocolValidationError::Empty {
