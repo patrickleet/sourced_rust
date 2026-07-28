@@ -21,11 +21,11 @@ use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
 
 use super::{
+    MAX_PROJECTION_PARTITION_BYTES, MAX_PROJECTION_POSITION, MAX_PROJECTION_RECORD_KEY_BYTES,
     ProjectionChangeCursor, ProjectionCheckpoint, ProjectionCommitOutcome, ProjectionEpoch,
     ProjectionInputCursor, ProjectionPartition, ProjectionProtocolValidationError,
     ProjectionRecordScope, ProjectionScopeCodec, ProjectionSource, ProjectorTopologyId,
-    RecordRevision, MAX_PROJECTION_PARTITION_BYTES, MAX_PROJECTION_POSITION,
-    MAX_PROJECTION_RECORD_KEY_BYTES,
+    RecordRevision,
 };
 use crate::repository::{InboxReceipt, RepositoryError};
 use crate::table::{
@@ -63,15 +63,15 @@ pub(crate) use commit::{
 pub use error::ProjectionProtocolError;
 pub(super) use helpers::domain_separated_digest;
 pub use identity::{
-    ProjectionChangeRetention, ProjectionGeneration, ProjectionInputFingerprint,
-    ProjectionObservationKind, DEFAULT_MAX_RETAINED_PROJECTION_CHANGES,
+    DEFAULT_MAX_RETAINED_PROJECTION_CHANGES, ProjectionChangeRetention, ProjectionGeneration,
+    ProjectionInputFingerprint, ProjectionObservationKind,
 };
 pub(crate) use identity::{
+    MAX_PROJECTION_EVIDENCE_BATCH_ITEMS, MAX_PROJECTION_QUERY_BATCH_CHECKPOINT_PROBES,
+    MAX_PROJECTION_QUERY_BATCH_ROWS, MAX_PROJECTION_QUERY_CHECKPOINT_PROBES,
     ProjectionInputDisposition, ProjectionModelOwnership, ProjectionMutationKind,
     ProjectionObservationRequest, ProjectionObservationTarget, ProjectionRecordExpectation,
-    ProjectionRecordMutation, TrustedProjectionInput, MAX_PROJECTION_EVIDENCE_BATCH_ITEMS,
-    MAX_PROJECTION_QUERY_BATCH_CHECKPOINT_PROBES, MAX_PROJECTION_QUERY_BATCH_ROWS,
-    MAX_PROJECTION_QUERY_CHECKPOINT_PROBES,
+    ProjectionRecordMutation, TrustedProjectionInput,
 };
 pub(crate) use ownership::validate_ownership_batch;
 pub use query::{
@@ -82,18 +82,17 @@ pub use query::{
 // store surface and silence unused_imports on non-test lib builds.
 #[allow(unused_imports)]
 pub(crate) use query::{
+    ProjectionCausationEvidenceBatch, ProjectionCausationEvidenceRequest,
     ProjectionCheckpointProbe, ProjectionCheckpointSnapshot, ProjectionExecutionSnapshotBatch,
     ProjectionExecutionSnapshotBatchRequest, ProjectionFailureLocation,
     ProjectionGraphIncludeRequest, ProjectionGraphIncludeSnapshot, ProjectionGraphSnapshot,
     ProjectionGraphSnapshotRequest, ProjectionLiveRecordBatch, ProjectionLiveRecordBatchRequest,
-    ProjectionLiveRecordRequest, ProjectionCausationEvidenceBatch,
-    ProjectionCausationEvidenceRequest, ProjectionObligationEvidence,
-    ProjectionObligationEvidenceBatch, ProjectionObligationEvidenceBatchRequest,
-    ProjectionObligationEvidenceRequest, ProjectionPartitionRuntimeState,
-    ProjectionPartitionSnapshot, ProjectionPendingRetry, ProjectionQuerySnapshot,
-    ProjectionQuerySnapshotBatch, ProjectionQuerySnapshotBatchRequest,
+    ProjectionLiveRecordRequest, ProjectionObligationEvidence, ProjectionObligationEvidenceBatch,
+    ProjectionObligationEvidenceBatchRequest, ProjectionObligationEvidenceRequest,
+    ProjectionPartitionRuntimeState, ProjectionPartitionSnapshot, ProjectionPendingRetry,
+    ProjectionQuerySnapshot, ProjectionQuerySnapshotBatch, ProjectionQuerySnapshotBatchRequest,
     ProjectionQuerySnapshotRequest, ProjectionScopedRowSnapshot,
 };
+pub(crate) use replay::SameTransactionProjectionEvidence;
 pub use r#trait::ProjectionChangeRead;
 pub(crate) use r#trait::ProjectionProtocolStore;
-pub(crate) use replay::SameTransactionProjectionEvidence;

@@ -400,7 +400,7 @@ pub(super) fn replay_rejection(
         _ => {
             return Err(CausalDispatchError::Internal(
                 "stored rejection code is invalid".into(),
-            ))
+            ));
         }
     };
     let status = error
@@ -801,13 +801,12 @@ where
                 "modeled projection status authority rejected its stored identity: {error}"
             ))
         })?;
-    let request =
-        ProjectionCausationEvidenceRequest::new(receipt.causation_id.clone(), topologies)
-            .map_err(|error| {
-                CausalDispatchError::Internal(format!(
-                    "stored modeled projection causation is invalid: {error}"
-                ))
-            })?;
+    let request = ProjectionCausationEvidenceRequest::new(receipt.causation_id.clone(), topologies)
+        .map_err(|error| {
+            CausalDispatchError::Internal(format!(
+                "stored modeled projection causation is invalid: {error}"
+            ))
+        })?;
     let batch = repository
         .projection_causation_evidence(&request)
         .await

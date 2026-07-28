@@ -8,8 +8,8 @@ use serde_json::Value;
 
 #[cfg(feature = "graphql")]
 use super::causal::{
-    internal_ledger_error, CausalCommandPublicStatus, CausalDispatchError, CausalDispatchResult,
-    GraphqlServiceBindError,
+    CausalCommandPublicStatus, CausalDispatchError, CausalDispatchResult, GraphqlServiceBindError,
+    internal_ledger_error,
 };
 use super::helpers::{
     is_json_content_type, message_to_json_input, message_to_session, names_by_kind,
@@ -358,8 +358,7 @@ impl Service {
                 assert!(
                     projector_fanout,
                     "duplicate route registration for {:?} `{}` is allowed only between causal projectors",
-                    kind,
-                    name
+                    kind, name
                 );
             }
             #[cfg(feature = "graphql")]
@@ -899,8 +898,7 @@ impl Service {
             let service_name = self.name.as_deref().ok_or_else(|| {
                 HandlerError::Projection(
                     crate::projection_protocol::ProjectionProtocolError::InvalidBatch(
-                        "modeled local projection executors require Service::named identity"
-                            .into(),
+                        "modeled local projection executors require Service::named identity".into(),
                     ),
                 )
             })?;

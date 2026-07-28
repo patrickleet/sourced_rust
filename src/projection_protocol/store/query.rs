@@ -503,8 +503,7 @@ impl ProjectionCausationEvidenceRequest {
             self.causation_id.clone(),
             MAX_CAUSATION_ID_BYTES,
         )?;
-        if self.topologies.is_empty()
-            || self.topologies.len() > MAX_PROJECTION_EVIDENCE_BATCH_ITEMS
+        if self.topologies.is_empty() || self.topologies.len() > MAX_PROJECTION_EVIDENCE_BATCH_ITEMS
         {
             return Err(ProjectionProtocolError::InvalidBatch(format!(
                 "projection causation evidence has {} topology filters; expected 1..={}",
