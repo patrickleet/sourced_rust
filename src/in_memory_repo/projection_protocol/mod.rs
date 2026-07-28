@@ -9,8 +9,9 @@ use std::sync::Arc;
 
 use super::InMemoryRepository;
 use crate::projection_protocol::{
-    change_kind_for_mutation, checked_next, failure_matches_batch, projection_has_many_columns,
-    table_model_name, validate_projection_graph_snapshot_request, ProjectionCausationEvidenceBatch,
+    change_kind_for_mutation, checked_next, checked_projection_graph_materialization,
+    failure_matches_batch, projection_has_many_columns, table_model_name,
+    validate_projection_graph_snapshot_request, ProjectionCausationEvidenceBatch,
     ProjectionCausationEvidenceRequest, ProjectionChange, ProjectionChangeCursor,
     ProjectionChangeKind, ProjectionChangeRead, ProjectionChangeRetention, ProjectionCheckpoint,
     ProjectionCommitBatch, ProjectionCommitOutcome, ProjectionCommitResult, ProjectionEpoch,

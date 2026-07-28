@@ -14,8 +14,8 @@ use crate::read_model::{
 };
 use crate::sqlx_repo::read_model_storage_error;
 use crate::table::{
-    validate_key, RelationshipKind, RowKey, RowValue, RowValues, TableSchema, TableSchemaRegistry,
-    TableStoreError,
+    has_many_join_columns, validate_key, RelationshipKind, RowKey, RowValue, RowValues,
+    TableSchema, TableSchemaRegistry, TableStoreError,
 };
 
 pub(crate) async fn load_relational_row_by_key<DB>(
@@ -121,27 +121,8 @@ where
     for<'q> i64: Encode<'q, DB> + Type<DB> + sqlx::Decode<'q, DB>,
     for<'r> &'r str: sqlx::ColumnIndex<<DB as Database>::Row>,
 {
-    let foreign_key = spec.relationship.foreign_key.as_deref().ok_or_else(|| {
-        TableStoreError::Metadata(format!(
-            "relationship `{}` must declare a foreign key",
-            spec.relationship.field_name
-        ))
-    })?;
-    let target_column = crate::table::column_name_for(&spec.target_schema, foreign_key)
-        .ok_or_else(|| {
-            TableStoreError::Metadata(format!(
-                "relationship `{}` foreign key `{}` is not a target column",
-                spec.relationship.field_name, foreign_key
-            ))
-        })?;
-    let root_column = crate::table::column_name_for(root_schema, foreign_key)
-        .or_else(|| root_schema.primary_key.columns.first().cloned())
-        .ok_or_else(|| {
-            TableStoreError::Metadata(format!(
-                "relationship `{}` has no root key column",
-                spec.relationship.field_name
-            ))
-        })?;
+    let (target_column, root_column) =
+        has_many_join_columns(root_schema, &spec.relationship, &spec.target_schema)?;
     let root_value = root_row.get(&root_column).ok_or_else(|| {
         TableStoreError::Metadata(format!(
             "read model `{}` root row is missing relationship key `{}`",

@@ -4,7 +4,9 @@ use super::{
     MAX_PROJECTION_QUERY_BATCH_ROWS,
 };
 use crate::projection_protocol::MAX_PROJECTION_POSITION;
-use crate::table::{column_name_for, RelationshipDef, TableMutation, TableSchema};
+use crate::table::{
+    has_many_join_columns, RelationshipDef, TableMutation, TableSchema, TableStoreError,
+};
 
 pub(crate) fn checked_next(
     value: u64,
@@ -104,49 +106,26 @@ pub(crate) fn projection_has_many_columns(
     relationship: &RelationshipDef,
     target_schema: &TableSchema,
 ) -> Result<(String, String), ProjectionProtocolError> {
-    let foreign_key = relationship.foreign_key.as_deref().ok_or_else(|| {
-        ProjectionProtocolError::InvalidBatch(format!(
-            "projection graph relationship `{}` has no foreign key",
-            relationship.field_name
-        ))
+    has_many_join_columns(root_schema, relationship, target_schema).map_err(|error| match error {
+        TableStoreError::Metadata(message) => ProjectionProtocolError::InvalidBatch(message),
+        other => ProjectionProtocolError::Table(other),
+    })
+}
+
+pub(crate) fn checked_projection_graph_materialization(
+    current: usize,
+) -> Result<usize, ProjectionProtocolError> {
+    let next = current.checked_add(1).ok_or_else(|| {
+        ProjectionProtocolError::InvalidBatch(
+            "projection graph materialized-row count overflowed".into(),
+        )
     })?;
-    let target_column = column_name_for(target_schema, foreign_key).ok_or_else(|| {
-        ProjectionProtocolError::InvalidBatch(format!(
-            "projection graph relationship `{}` foreign key `{foreign_key}` is not a target column",
-            relationship.field_name
-        ))
-    })?;
-    let target = target_schema
-        .columns
-        .iter()
-        .find(|column| column.column_name == target_column)
-        .expect("column_name_for returned a registered target column");
-    let root_column = match target.foreign_key.as_ref() {
-        Some(reference) if reference.table == root_schema.table_name => {
-            column_name_for(root_schema, &reference.column).ok_or_else(|| {
-                ProjectionProtocolError::InvalidBatch(format!(
-                    "projection graph relationship `{}` targets missing root column `{}`",
-                    relationship.field_name, reference.column
-                ))
-            })?
-        }
-        Some(reference) => {
-            return Err(ProjectionProtocolError::InvalidBatch(format!(
-                "projection graph relationship `{}` target column `{target_column}` references table `{}`, not root table `{}`",
-                relationship.field_name, reference.table, root_schema.table_name
-            )));
-        }
-        None => {
-            let [primary_key] = root_schema.primary_key.columns.as_slice() else {
-                return Err(ProjectionProtocolError::InvalidBatch(format!(
-                    "projection graph relationship `{}` needs a target-column foreign-key reference because root model `{}` has a composite key",
-                    relationship.field_name, root_schema.model_name
-                )));
-            };
-            primary_key.clone()
-        }
-    };
-    Ok((target_column, root_column))
+    if next > MAX_PROJECTION_QUERY_BATCH_ROWS {
+        return Err(ProjectionProtocolError::InvalidBatch(format!(
+            "projection graph materialized {next} record snapshots; maximum is {MAX_PROJECTION_QUERY_BATCH_ROWS}"
+        )));
+    }
+    Ok(next)
 }
 
 #[cfg(test)]
@@ -220,5 +199,18 @@ mod tests {
 
         failure.gap_free = batch.input.gap_free;
         assert!(failure_matches_batch(&failure, &batch));
+    }
+
+    #[test]
+    fn graph_materialization_budget_bounds_duplicate_include_expansion() {
+        assert_eq!(
+            checked_projection_graph_materialization(MAX_PROJECTION_QUERY_BATCH_ROWS - 1).unwrap(),
+            MAX_PROJECTION_QUERY_BATCH_ROWS
+        );
+        let error =
+            checked_projection_graph_materialization(MAX_PROJECTION_QUERY_BATCH_ROWS).unwrap_err();
+        assert!(error
+            .to_string()
+            .contains("materialized 4097 record snapshots"));
     }
 }

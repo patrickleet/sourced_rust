@@ -255,6 +255,84 @@ fn graph_snapshot_request(max_unique: usize) -> ProjectionGraphSnapshotRequest {
     .unwrap()
 }
 
+fn fanout_schemas() -> &'static [TableSchema] {
+    static SCHEMAS: LazyLock<Vec<TableSchema>> = LazyLock::new(|| {
+        [
+            ("FanoutParent", "fanout_parents"),
+            ("FanoutChild", "fanout_children"),
+            ("FanoutSummary", "fanout_summaries"),
+            ("FanoutJoin", "fanout_joins"),
+        ]
+        .into_iter()
+        .map(|(model_name, table_name)| TableSchema {
+            model_name: model_name.into(),
+            table_name: table_name.into(),
+            columns: vec![TableColumn {
+                primary_key: true,
+                ..TableColumn::new("id", "id", ColumnType::Text)
+            }],
+            primary_key: PrimaryKey::new(["id"]),
+            version_column: None,
+            foreign_keys: Vec::new(),
+            indexes: Vec::new(),
+            relationships: Vec::new(),
+            kind: TableKind::ReadModel,
+        })
+        .collect()
+    });
+    &SCHEMAS
+}
+
+fn fanout_codec() -> ProjectionScopeCodec {
+    ProjectionScopeCodec::with_models(
+        topology(),
+        fanout_schemas()
+            .iter()
+            .map(|schema| (schema.model_name.as_str(), schema)),
+    )
+    .unwrap()
+}
+
+fn fanout_key(index: usize) -> RowKey {
+    RowKey::new([("id", RowValue::String(format!("fanout-{index}")))])
+}
+
+fn fanout_scope(index: usize) -> ProjectionRecordScope {
+    let schema = &fanout_schemas()[index];
+    fanout_codec()
+        .encode_row_scope_in_partition(&schema.model_name, partition(), &fanout_key(index))
+        .unwrap()
+}
+
+fn fanout_mutation(index: usize) -> ProjectionRecordMutation {
+    let schema = &fanout_schemas()[index];
+    let key = fanout_key(index);
+    let mut values = RowValues::new();
+    values.insert("id", RowValue::String(format!("fanout-{index}")));
+    ProjectionRecordMutation::new(
+        fanout_scope(index),
+        TableMutation::UpsertRow(TableRowMutation {
+            schema,
+            key,
+            values,
+            expected_version: ExpectedVersion::Any,
+            mode: RowWriteMode::Upsert,
+        }),
+        ProjectionRecordExpectation::Missing,
+        ProjectionMutationKind::Upsert,
+    )
+    .unwrap()
+}
+
+fn fanout_ownership() -> Vec<ProjectionModelOwnership> {
+    fanout_schemas()
+        .iter()
+        .map(|schema| {
+            ProjectionModelOwnership::new(&schema.model_name, &schema.table_name).unwrap()
+        })
+        .collect()
+}
+
 fn scope_codec() -> ProjectionScopeCodec {
     ProjectionScopeCodec::with_models(topology(), [("TodoView", schema())]).unwrap()
 }
@@ -3270,6 +3348,105 @@ async fn coherent_execution_and_graph_snapshots_use_fk_references_and_unique_sco
                 && message.contains("budget is 1")),
         "{error}"
     );
+}
+
+#[tokio::test]
+async fn one_four_table_occurrence_commits_rows_and_every_causal_artifact() {
+    let repository = InMemoryRepository::new();
+    repository
+        .register_projection_models(&topology(), &fanout_ownership())
+        .await
+        .unwrap();
+    let trusted = input(
+        1,
+        b"four-table-occurrence",
+        "four-table-message-1",
+        "four-table-cause-1",
+        ProjectionGeneration::initial(),
+    );
+    let result = repository
+        .commit_projection(ProjectionCommitBatch {
+            input: trusted.clone(),
+            change_epoch: change_epoch(),
+            ownership: fanout_ownership(),
+            mutations: (0..fanout_schemas().len()).map(fanout_mutation).collect(),
+            observations: (0..fanout_schemas().len())
+                .map(|index| ProjectionObservationRequest {
+                    kind: ProjectionObservationKind::Record,
+                    target: ProjectionObservationTarget::StagedRecord(fanout_scope(index)),
+                })
+                .collect(),
+        })
+        .await
+        .unwrap();
+
+    assert_eq!(result.outcome, ProjectionCommitOutcome::Applied);
+    assert_eq!(result.records.len(), 4);
+    assert!(result.records.iter().all(|record| !record.tombstone));
+    assert_eq!(
+        result
+            .changes
+            .iter()
+            .filter(|change| change.kind == ProjectionChangeKind::RecordUpsert)
+            .count(),
+        4
+    );
+    assert_eq!(result.changes.len(), 4);
+    assert_eq!(
+        result
+            .checkpoint
+            .as_ref()
+            .map(|checkpoint| checkpoint.input()),
+        Some(&trusted.cursor)
+    );
+    assert_eq!(repository.inbox_store.read().unwrap().len(), 1);
+    assert_eq!(
+        repository
+            .projection_protocol
+            .read()
+            .unwrap()
+            .observations
+            .len(),
+        4
+    );
+
+    for index in 0..fanout_schemas().len() {
+        let schema = &fanout_schemas()[index];
+        let snapshot = repository
+            .projection_query_snapshot(
+                &ProjectionQuerySnapshotRequest::new(
+                    &fanout_codec(),
+                    Some(&serde_json::json!("tenant-a")),
+                    &schema.model_name,
+                    fanout_key(index),
+                    vec![crate::projection_protocol::ProjectionCheckpointProbe::new(
+                        topology(),
+                        partition(),
+                        source(),
+                        ProjectionEpoch::new("source-v1").unwrap(),
+                        ProjectionGeneration::initial(),
+                    )],
+                )
+                .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert!(snapshot.row.is_some());
+        assert_eq!(
+            snapshot
+                .record
+                .as_ref()
+                .map(|record| record.revision.revision()),
+            Some(1)
+        );
+        assert_eq!(
+            snapshot.checkpoints[0]
+                .checkpoint
+                .as_ref()
+                .map(|checkpoint| checkpoint.input()),
+            Some(&trusted.cursor)
+        );
+    }
 }
 
 #[tokio::test]

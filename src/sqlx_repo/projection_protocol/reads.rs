@@ -977,6 +977,7 @@ where
     };
     let mut includes = std::collections::BTreeMap::new();
     let mut unique_scopes = std::collections::HashSet::from([root.scope.clone()]);
+    let mut materialized_snapshots = 1;
     for (name, include) in &request.includes {
         let mut snapshots = Vec::new();
         if let Some(root_row) = root.row.as_ref() {
@@ -1002,6 +1003,8 @@ where
                 ))
             })?;
             for key in keys {
+                materialized_snapshots =
+                    checked_projection_graph_materialization(materialized_snapshots)?;
                 let scope = codec
                     .encode_row_scope_in_partition(
                         &include.target_schema.model_name,

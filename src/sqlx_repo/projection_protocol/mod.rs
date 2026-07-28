@@ -19,13 +19,13 @@ use std::sync::Arc;
 use sqlx::{Encode, Executor, IntoArguments, Pool, QueryBuilder, Row, Transaction, Type};
 
 use crate::projection_protocol::{
-    change_kind_for_mutation, checked_next, projection_has_many_columns, table_model_name,
-    validate_projection_graph_snapshot_request, ProjectionCausationEvidenceBatch,
-    ProjectionCausationEvidenceRequest, ProjectionChange, ProjectionChangeCursor,
-    ProjectionChangeKind, ProjectionChangeRead, ProjectionChangeRetention, ProjectionCheckpoint,
-    ProjectionCommitBatch, ProjectionCommitOutcome, ProjectionCommitResult, ProjectionEpoch,
-    ProjectionExecutionSnapshotBatch, ProjectionExecutionSnapshotBatchRequest, ProjectionFailure,
-    ProjectionFailureBatch, ProjectionFailureLocation, ProjectionGeneration,
+    change_kind_for_mutation, checked_next, checked_projection_graph_materialization,
+    projection_has_many_columns, table_model_name, validate_projection_graph_snapshot_request,
+    ProjectionCausationEvidenceBatch, ProjectionCausationEvidenceRequest, ProjectionChange,
+    ProjectionChangeCursor, ProjectionChangeKind, ProjectionChangeRead, ProjectionChangeRetention,
+    ProjectionCheckpoint, ProjectionCommitBatch, ProjectionCommitOutcome, ProjectionCommitResult,
+    ProjectionEpoch, ProjectionExecutionSnapshotBatch, ProjectionExecutionSnapshotBatchRequest,
+    ProjectionFailure, ProjectionFailureBatch, ProjectionFailureLocation, ProjectionGeneration,
     ProjectionGraphIncludeSnapshot, ProjectionGraphSnapshot, ProjectionGraphSnapshotRequest,
     ProjectionInputCursor, ProjectionInputDisposition, ProjectionInputFingerprint,
     ProjectionLiveRecordBatch, ProjectionLiveRecordBatchRequest, ProjectionModelOwnership,

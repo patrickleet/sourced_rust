@@ -36,6 +36,7 @@ pub(super) fn read_projection_graph_snapshot_from_state(
 
     let mut includes = BTreeMap::new();
     let mut unique_scopes = HashSet::from([root.scope.clone()]);
+    let mut materialized_snapshots = 1;
     for (name, include) in &request.includes {
         let mut snapshots = Vec::new();
         if let Some(root_row) = root.row.as_ref() {
@@ -49,6 +50,8 @@ pub(super) fn read_projection_graph_snapshot_from_state(
             )?;
             let codec = graph_target_codec(request, &include.target_schema)?;
             for key in keys {
+                materialized_snapshots =
+                    checked_projection_graph_materialization(materialized_snapshots)?;
                 let scope = codec
                     .encode_row_scope_in_partition(
                         &include.target_schema.model_name,

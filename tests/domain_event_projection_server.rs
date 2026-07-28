@@ -1,7 +1,13 @@
-use distributed::projection::lower::{EventualOnly, ProjectionDescriptor};
+use distributed::projection::lower::{
+    body_path, finish_lowering, lower_model_mutation, lower_related_mutation, model_operation,
+    related_operation, state_selector, LoweredProjectionPlan, ProjectionAuthoringField,
+    ProjectionLoweringError,
+};
 use distributed::table::TableSchemaRegistry;
 use distributed::{
-    Entity, InMemoryRepository, ReadModelWorkspaceExt, ReadModelWritePlanBuilder,
+    Entity, InMemoryRepository, ProjectionArm, ProjectionEventSet, ProjectionExpression,
+    ProjectionMutationKind, ProjectionPartition, ProjectionPlanTemplate, ProjectionProgram,
+    ProjectionProgramError, ProjectionValue, ReadModelWorkspaceExt, ReadModelWritePlanBuilder,
     ReadModelWritePlanStore, RowKey, RowValue,
 };
 use serde::{Deserialize, Serialize};
@@ -99,34 +105,90 @@ struct PlayerSummary {
     weapon_count: u64,
 }
 
-const PLAYER_GRAPH: ProjectionDescriptor<EventualOnly> = distributed_macros::projection! {
-    name: "domain-event-player-graph";
-    version: 1;
-    epoch: "domain-event-player-graph-v1";
-    partition: state.player_id;
+struct PlayerEvents;
 
-    on "player.loaded" version 1 (state: PlayerState) {
-        upsert PlayerSummary {
-            key { player_id: state.player_id },
-            set { weapon_count: 1u64 }
-        };
-        upsert Players {
-            key { player_id: state.player_id },
-            set { display_name: state.display_name }
-        } as player;
-        upsert_related player.weapons -> PlayerWeapons {
-            key { weapon_id: state.weapon_id },
-            set { acquired_at: state.acquired_at }
-        };
-        insert PlayerWeaponLinks {
-            key {
-                player_id: state.player_id,
-                weapon_id: state.weapon_id
-            },
-            set {}
-        };
+impl ProjectionEventSet for PlayerEvents {
+    fn projection_event_selectors(
+    ) -> Result<Vec<distributed::ProjectionEventSelector>, ProjectionProgramError> {
+        Ok(vec![state_selector::<PlayerState>("player.loaded", 1)?])
     }
-};
+}
+
+fn projected(field: &'static str) -> Result<ProjectionAuthoringField, ProjectionProgramError> {
+    Ok(ProjectionAuthoringField::set(
+        field,
+        body_path::<PlayerState>(field)?,
+    ))
+}
+
+fn player_program() -> Result<ProjectionProgram, ProjectionProgramError> {
+    let summary = model_operation::<PlayerSummary>(
+        "upsert-summary",
+        0,
+        ProjectionMutationKind::Upsert,
+        vec![projected("player_id")?],
+        vec![ProjectionAuthoringField::set(
+            "weapon_count",
+            ProjectionExpression::constant(ProjectionValue::unsigned(1)),
+        )],
+    )?;
+    let player = model_operation::<Players>(
+        "upsert-player",
+        1,
+        ProjectionMutationKind::Upsert,
+        vec![projected("player_id")?],
+        vec![projected("display_name")?],
+    )?;
+    let weapon = related_operation::<__DistributedPlayersEffectRelationship_weapons>(
+        "upsert-weapon",
+        2,
+        ProjectionMutationKind::UpsertRelated,
+        &player,
+        vec![projected("weapon_id")?],
+        vec![projected("acquired_at")?],
+    )?;
+    let link = model_operation::<PlayerWeaponLinks>(
+        "insert-link",
+        3,
+        ProjectionMutationKind::Insert,
+        vec![projected("player_id")?, projected("weapon_id")?],
+        Vec::new(),
+    )?;
+    ProjectionProgram::try_new(
+        "domain-event-player-graph",
+        1,
+        ProjectionPartition::Expression(body_path::<PlayerState>("player_id")?),
+        vec![ProjectionArm::try_new(
+            "player-loaded",
+            state_selector::<PlayerState>("player.loaded", 1)?,
+            vec![summary, player, weapon, link],
+        )?],
+    )
+}
+
+fn lower_player_program(
+    plan: &distributed::ResolvedProjectionPlan,
+) -> Result<LoweredProjectionPlan, ProjectionLoweringError> {
+    let mut builder = ReadModelWritePlanBuilder::new();
+    for mutation in plan.mutations() {
+        let operation = mutation
+            .provenance()
+            .operation_ids()
+            .first()
+            .map(String::as_str)
+            .expect("each resolved mutation retains an operation ID");
+        match operation {
+            "upsert-summary" => lower_model_mutation::<PlayerSummary>(&mut builder, mutation)?,
+            "upsert-player" => lower_model_mutation::<Players>(&mut builder, mutation)?,
+            "upsert-weapon" => lower_related_mutation::<
+                __DistributedPlayersEffectRelationship_weapons,
+            >(&mut builder, plan, mutation, "upsert-player")?,
+            "insert-link" => lower_model_mutation::<PlayerWeaponLinks>(&mut builder, mutation)?,
+            other => panic!("unexpected manual projection operation `{other}`"),
+        }
+    }
+    finish_lowering(builder, plan)
+}
 
 fn player_key() -> RowKey {
     RowKey::new([("player_id", RowValue::String("player-1".into()))])
@@ -180,11 +242,14 @@ fn expected_models() -> (Players, PlayerWeapons, PlayerSummary, PlayerWeaponLink
     )
 }
 
-fn generated_and_fluent_plans() -> (distributed::TableWritePlan, distributed::TableWritePlan) {
-    let generated = PLAYER_GRAPH
-        .server_executor()
-        .expect("server executor")
-        .plan(&occurrence())
+fn portable_and_fluent_plans() -> (distributed::TableWritePlan, distributed::TableWritePlan) {
+    let resolved = ProjectionPlanTemplate::<PlayerEvents>::try_new(
+        player_program().expect("manual portable program"),
+    )
+    .expect("exact event set")
+    .resolve(&occurrence())
+    .expect("portable program resolves");
+    let portable = lower_player_program(&resolved)
         .expect("portable program lowers")
         .write_plan;
     let (player, weapon, summary, link) = expected_models();
@@ -199,7 +264,7 @@ fn generated_and_fluent_plans() -> (distributed::TableWritePlan, distributed::Ta
         .insert(&link)
         .expect("join");
     (
-        generated,
+        portable,
         fluent.into_write_plan().expect("fluent physical plan"),
     )
 }
@@ -246,10 +311,10 @@ async fn assert_in_memory_rows(repository: &InMemoryRepository) {
 
 #[tokio::test]
 async fn portable_four_table_program_matches_fluent_plan_and_applies_in_memory() {
-    let (generated, fluent) = generated_and_fluent_plans();
-    assert_eq!(generated, fluent);
+    let (portable, fluent) = portable_and_fluent_plans();
+    assert_eq!(portable, fluent);
     assert_eq!(
-        generated
+        portable
             .mutations
             .iter()
             .map(|mutation| mutation.table_name())
@@ -272,7 +337,7 @@ async fn portable_four_table_program_matches_fluent_plan_and_applies_in_memory()
         .register_schema::<PlayerWeapons>()
         .expect("register child includes");
     repository
-        .commit_write_plan(generated)
+        .commit_write_plan(portable)
         .await
         .expect("one atomic four-table commit");
     assert_in_memory_rows(&repository).await;
@@ -283,8 +348,8 @@ async fn portable_four_table_program_matches_fluent_plan_and_applies_in_memory()
 async fn sqlite_applies_the_same_four_table_server_plan() {
     use distributed::SqliteRepository;
 
-    let (generated, fluent) = generated_and_fluent_plans();
-    assert_eq!(generated, fluent);
+    let (portable, fluent) = portable_and_fluent_plans();
+    assert_eq!(portable, fluent);
     let repository = SqliteRepository::connect_and_migrate("sqlite::memory:")
         .await
         .expect("SQLite repository");
@@ -304,7 +369,7 @@ async fn sqlite_applies_the_same_four_table_server_plan() {
         .await
         .expect("bootstrap four read models");
     repository
-        .commit_write_plan(generated)
+        .commit_write_plan(portable)
         .await
         .expect("one atomic four-table SQLite commit");
 

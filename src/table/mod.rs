@@ -19,9 +19,9 @@ pub use metadata::{
     RowValues, TableColumn, TableIndex, TableKind, TableSchema, DEFAULT_TABLE_VERSION_COLUMN,
 };
 pub(crate) use mutation::{
-    column_name_for, key_fingerprint, key_from_row, validate_delete_mutation,
-    validate_expected_version, validate_key, validate_patch_mutation, validate_row_mutation,
-    validate_row_values,
+    column_name_for, has_many_join_columns, key_fingerprint, key_from_row,
+    validate_delete_mutation, validate_expected_version, validate_key, validate_patch_mutation,
+    validate_row_mutation, validate_row_values,
 };
 pub use mutation::{
     DeleteTableRowMutation, ExpectedVersion, PatchMode, PatchTableRowMutation, RowPatch,

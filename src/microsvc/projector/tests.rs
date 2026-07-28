@@ -257,6 +257,88 @@ fn generated_catalog_mount_is_fluent_and_remote_routes_do_not_subscribe() {
 
 #[cfg(feature = "graphql")]
 #[tokio::test]
+async fn the_same_catalog_program_executes_in_a_separate_projector_service() {
+    use crate::projection::placement::ProjectionExecutorRoute;
+
+    let repository = InMemoryRepository::new();
+    let bus = InMemoryBus::new();
+    let (application_route, _) =
+        generated_modeled_projector(ProjectionExecutorRoute::remote("task11-remote").unwrap());
+    let application = Service::new().routes(
+        Routes::new()
+            .with_read_model_store(repository.clone())
+            .consume_projection(application_route),
+    );
+    assert!(
+        application.subscription_plan().events.is_empty(),
+        "the application records the remote binding without consuming its event"
+    );
+
+    let (projector_route, topology) =
+        generated_modeled_projector(ProjectionExecutorRoute::local("task11-remote").unwrap());
+    let projector_service = Service::new()
+        .named("task11-remote")
+        .routes(
+            Routes::new()
+                .with_read_model_store(repository.clone())
+                .consume_projection(projector_route),
+        )
+        .with_bus(bus.clone());
+    assert_eq!(
+        projector_service.subscription_plan().events,
+        vec![FACT_NAME]
+    );
+
+    bus.publish_message(modeled_fact_message("todo-remote", "remote catalog", 1))
+        .await
+        .unwrap();
+    projector_service
+        .run(RunOptions::idempotent())
+        .await
+        .unwrap();
+
+    let ordered = bus.ordered_topic_evidence(FACT_NAME, 0);
+    for (model, schema) in [
+        ("PrimaryView", PrimaryView::schema()),
+        ("SecondaryView", SecondaryView::schema()),
+    ] {
+        let snapshot = repository
+            .projection_query_snapshot(&modeled_snapshot_request(
+                &topology,
+                &ordered,
+                model,
+                schema,
+                "todo-remote",
+            ))
+            .await
+            .unwrap();
+        assert_eq!(
+            snapshot
+                .row
+                .as_ref()
+                .and_then(|row| row.get_serde::<String>("title").ok())
+                .as_deref(),
+            Some("remote catalog")
+        );
+        assert_eq!(
+            snapshot
+                .record
+                .as_ref()
+                .map(|record| record.revision.revision()),
+            Some(1)
+        );
+        assert_eq!(
+            snapshot.checkpoints[0]
+                .checkpoint
+                .as_ref()
+                .map(|checkpoint| checkpoint.input().position()),
+            Some(ordered.position())
+        );
+    }
+}
+
+#[cfg(feature = "graphql")]
+#[tokio::test]
 async fn generated_local_mount_rejects_missing_or_mismatched_service_identity_before_bootstrap() {
     use crate::projection::placement::ProjectionExecutorRoute;
 
