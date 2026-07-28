@@ -1,4 +1,7 @@
-import type { CacheEngine } from '../../internal/cache-engine.js';
+import type {
+	CacheEngine,
+	OptimisticLayerReplacement
+} from '../../internal/cache-engine.js';
 import {
 	DistributedProtocolError,
 	type DistributedCommandMetadata,
@@ -108,6 +111,21 @@ export function createOptimisticLayerOn(
 		);
 		host.syncDiagnostics();
 	}
+}
+
+/**
+ * Package-private correction seam for projection-aware command runtimes.
+ *
+ * Receipts and diagnostics remain attached to the stable layer identity. The
+ * cache engine owns atomic prefix evaluation and preserves the layer context.
+ */
+export function replaceOptimisticLayerOn(
+	host: OptimisticHost,
+	id: string,
+	replacement: OptimisticLayerReplacement
+): boolean {
+	assertReplicaOptimisticLayerId(id);
+	return host.engine.replaceOptimisticLayer(id, replacement);
 }
 
 export function markOptimisticLayerAcceptedOn(

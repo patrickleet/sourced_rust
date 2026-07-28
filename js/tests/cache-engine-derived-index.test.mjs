@@ -141,6 +141,174 @@ test('derived indexes rebase from confirmed state plus surviving semantic layers
 	assert.deepEqual(observations.at(-1).layers, []);
 });
 
+test('replacement prefix derives indexes without target or suffix contexts', () => {
+	const engine = createCacheEngine();
+	seed(engine);
+	const observations = [];
+	engine.setDerivedIndexReconciler(membershipReconciler(observations));
+	engine.createOptimisticLayer(
+		'lower',
+		(writer) =>
+			writer.writeRecord({
+				key: A,
+				fields: { id: 'a', title: 'lower' }
+			}),
+		{ records: [A], marker: 'lower' }
+	);
+	engine.createOptimisticLayer(
+		'target',
+		(writer) =>
+			writer.writeRecord({
+				key: B,
+				fields: { id: 'b', title: 'preview' }
+			}),
+		{ records: [B], marker: 'preserved-target' }
+	);
+	assert.equal(engine.markOptimisticLayerAccepted('target'), true);
+	engine.createOptimisticLayer(
+		'suffix',
+		(writer) =>
+			writer.writeRecord({
+				key: SERVER,
+				fields: { id: 'server', title: 'suffix' }
+			}),
+		{ records: [SERVER], marker: 'suffix' }
+	);
+	const layersBefore = observations.at(-1).layers;
+	const observationCount = observations.length;
+	const deliveredRecords = [];
+	const deliveredIndexes = [];
+	engine.watch(
+		(reader) => reader.record(B)?.fields.title,
+		(value) => deliveredRecords.push(value)
+	);
+	engine.watch(
+		(reader) => reader.index(TODOS)?.records,
+		(value) => deliveredIndexes.push(value)
+	);
+
+	let prefixIndex;
+	let prefixTarget;
+	assert.equal(
+		engine.replaceOptimisticLayer('target', (reader, writer) => {
+			prefixIndex = reader.index(TODOS)?.records;
+			prefixTarget = reader.record(B);
+			writer.writeRecord({
+				key: B,
+				fields: { id: 'b', title: 'actual' }
+			});
+		}),
+		true
+	);
+
+	assert.deepEqual(prefixIndex, [BASE, A]);
+	assert.equal(prefixTarget, undefined);
+	assert.deepEqual(deliveredRecords, ['actual']);
+	assert.deepEqual(deliveredIndexes, []);
+	assert.deepEqual(
+		engine.read((reader) => reader.index(TODOS)?.records),
+		[BASE, A, B, SERVER]
+	);
+	assert.equal(observations.length, observationCount + 2);
+	assert.deepEqual(
+		observations.at(-2).layers.map(({ id }) => id),
+		['lower']
+	);
+	assert.deepEqual(observations.at(-1).layers, layersBefore);
+
+	const noOpObservationCount = observations.length;
+	assert.equal(
+		engine.replaceOptimisticLayer('target', (_reader, writer) =>
+			writer.writeRecord({
+				key: B,
+				fields: { id: 'b', title: 'actual' }
+			})
+		),
+		false
+	);
+	assert.equal(observations.length, noOpObservationCount + 1);
+	assert.deepEqual(
+		observations.at(-1).layers.map(({ id }) => id),
+		['lower']
+	);
+	assert.deepEqual(deliveredRecords, ['actual']);
+	assert.deepEqual(deliveredIndexes, []);
+});
+
+test('replacement publishes derived-index lifecycle changes from the final graph', () => {
+	const engine = createCacheEngine();
+	const relationship = cacheIndexKey({
+		parent: B,
+		field: 'related',
+		arguments: {}
+	});
+	const relationshipMetadata = {
+		parent: B,
+		field: 'related',
+		arguments: {},
+		coverage: { kind: 'complete' },
+		dependencies: ['related']
+	};
+	engine.batch((writer) => {
+		writer.writeRecord({
+			key: B,
+			revision: 1,
+			fields: { id: 'b', title: 'base parent' }
+		});
+		writer.writeRecord({
+			key: A,
+			revision: 1,
+			fields: { id: 'a', title: 'base child' }
+		});
+	});
+	engine.setDerivedIndexReconciler((_confirmed, layers) =>
+		layers.some(({ id }) => id === 'target')
+			? [
+					{
+						kind: 'write',
+						write: {
+							key: relationship,
+							records: [A],
+							complete: true,
+							metadata: relationshipMetadata
+						}
+					}
+				]
+			: []
+	);
+	engine.createOptimisticLayer(
+		'target',
+		(writer) =>
+			writer.writeRecord({
+				key: B,
+				fields: { title: 'preview parent' }
+			}),
+		{ stable: 'target-context' }
+	);
+	assert.deepEqual(
+		engine.read((reader) => reader.index(relationship)?.records),
+		[A]
+	);
+	const delivered = [];
+	engine.watch(
+		(reader) => reader.index(relationship)?.records,
+		(value) => delivered.push(value)
+	);
+	let prefixIndex;
+	assert.equal(
+		engine.replaceOptimisticLayer('target', (reader, writer) => {
+			prefixIndex = reader.index(relationship);
+			writer.tombstoneRecord(B);
+		}),
+		true
+	);
+
+	assert.equal(prefixIndex, undefined);
+	assert.equal(engine.read((reader) => reader.record(B)), undefined);
+	assert.equal(engine.read((reader) => reader.index(relationship)), undefined);
+	assert.deepEqual(delivered, [undefined]);
+});
+
 test('authoritative base writes reconcile pending derived indexes before one watcher flush', () => {
 	const engine = createCacheEngine();
 	seed(engine);
@@ -241,6 +409,7 @@ test('reconciler failures and invalid mutations roll back base and layer lifecyc
 	seed(engine);
 	const stable = membershipReconciler();
 	let rejectBlocked = false;
+	let replacementBlocked = false;
 	engine.setDerivedIndexReconciler((confirmed, layers) => {
 		const title = confirmed.records
 			.find(({ key }) => key === BASE)
@@ -248,6 +417,9 @@ test('reconciler failures and invalid mutations roll back base and layer lifecyc
 		if (title === 'bad') throw new Error('cannot derive bad base');
 		if (rejectBlocked && layers.length === 0) {
 			throw new Error('cannot derive rejected layer');
+		}
+		if (replacementBlocked && layers.some(({ id }) => id === 'A')) {
+			throw new Error('cannot derive replacement');
 		}
 		return stable(confirmed, layers);
 	});
@@ -295,6 +467,22 @@ test('reconciler failures and invalid mutations roll back base and layer lifecyc
 	);
 	assert.deepEqual(delivered, []);
 	rejectBlocked = false;
+
+	assert.throws(
+		() =>
+			engine.replaceOptimisticLayer('A', (_reader, writer) => {
+				writer.writeRecord({
+					key: A,
+					fields: { id: 'a', title: 'rolled-back replacement' }
+				});
+				replacementBlocked = true;
+			}),
+		/cannot derive replacement/
+	);
+	replacementBlocked = false;
+	assert.equal(engine.optimisticLayerState('A'), 'optimistic');
+	assert.equal(engine.read((reader) => reader.record(A))?.fields.title, undefined);
+	assert.deepEqual(delivered, []);
 
 	assert.throws(
 		() =>

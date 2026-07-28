@@ -1,4 +1,7 @@
-import { CacheRevisionConflictError } from './errors.js';
+import {
+	CacheRevisionConflictError,
+	OptimisticLayerNotFoundError
+} from './errors.js';
 import {
 	assertName,
 	assertSynchronousResult,
@@ -55,6 +58,7 @@ import type {
 	OptimisticIndexWrite,
 	OptimisticLayer,
 	OptimisticLayerContext,
+	OptimisticLayerReplacement,
 	OptimisticLayerState,
 	OptimisticRecordWrite,
 	OverlayOperation,
@@ -193,6 +197,54 @@ export class PurposeBuiltCacheEngine implements CacheEngine {
 			this.#markOverlayChanges(operations, before, this.#materialize());
 			this.#dirty = true;
 			this.#reconcileDerivedIndexes();
+		});
+	}
+
+	replaceOptimisticLayer(
+		id: string,
+		replacement: OptimisticLayerReplacement
+	): boolean {
+		assertName(id, 'optimistic layer id');
+		if (typeof replacement !== 'function') {
+			throw new TypeError('optimistic layer replacement must be a function');
+		}
+		return this.#transaction(() => {
+			const targetIndex = this.#layers.findIndex(
+				(candidate) => candidate.id === id
+			);
+			if (targetIndex === -1) {
+				throw new OptimisticLayerNotFoundError(id);
+			}
+			const target = this.#layers[targetIndex]!;
+			const before = this.#materialize();
+			const prefixLayers = this.#layers.slice(0, targetIndex);
+			const prefixDerivedIndexes =
+				this.#deriveIndexOperations(prefixLayers);
+			const prefix = this.#materialize(
+				true,
+				prefixLayers,
+				prefixDerivedIndexes
+			);
+			const operations: OverlayOperation[] = [];
+			this.#runOptimisticReplacement(
+				replacement,
+				this.#readerFromGraph(prefix),
+				operations
+			);
+			if (deepEqual(operations, target.operations)) return false;
+
+			const previousOperations = target.operations;
+			target.operations = operations;
+			this.#reconcileDerivedIndexes();
+			const after = this.#materialize();
+			this.#markOverlayChanges(
+				[...previousOperations, ...operations],
+				before,
+				after
+			);
+			this.#markIndexGraphChanges(before, after);
+			this.#dirty = true;
+			return true;
 		});
 	}
 
@@ -462,7 +514,16 @@ export class PurposeBuiltCacheEngine implements CacheEngine {
 		// O(records + indexes + overlay operations) per selector. The private seam
 		// keeps this replaceable with an incrementally indexed graph without
 		// changing generated artifacts or the public replica API.
-		const { records, indexes } = this.#materialize(includeOptimistic);
+		return this.#readerFromGraph(
+			this.#materialize(includeOptimistic),
+			dependencies
+		);
+	}
+
+	#readerFromGraph(
+		{ records, indexes }: MaterializedCacheGraph,
+		dependencies?: Set<string>
+	): CacheReader {
 		return Object.freeze({
 			recordMeta(key: RecordKey): SparseRecordMeta | undefined {
 				dependencies?.add(recordSeenDependency(key));
@@ -610,7 +671,12 @@ export class PurposeBuiltCacheEngine implements CacheEngine {
 		return reachable;
 	}
 
-	#materialize(includeOptimistic = true): MaterializedCacheGraph {
+	#materialize(
+		includeOptimistic = true,
+		layers: readonly OptimisticLayer[] = this.#layers,
+		derivedIndexOperations: readonly DerivedIndexOperation[] =
+			this.#derivedIndexOperations
+	): MaterializedCacheGraph {
 		const records = new Map<RecordKey, VisibleRecord>();
 		const indexes = new Map<IndexKey, VisibleIndex>();
 
@@ -635,12 +701,12 @@ export class PurposeBuiltCacheEngine implements CacheEngine {
 		}
 
 		if (includeOptimistic) {
-			for (const layer of this.#layers) {
+			for (const layer of layers) {
 				for (const operation of layer.operations) {
 					this.#applyOverlay(records, indexes, layer.sequence, operation);
 				}
 			}
-			for (const operation of this.#derivedIndexOperations) {
+			for (const operation of derivedIndexOperations) {
 				this.#applyDerivedIndexOperation(records, indexes, operation);
 			}
 		}
@@ -682,6 +748,21 @@ export class PurposeBuiltCacheEngine implements CacheEngine {
 			this.#changedDependencies.add(
 				indexDependency(operation.kind === 'write-index' ? operation.write.key : operation.key)
 			);
+		}
+	}
+
+	#markIndexGraphChanges(
+		before: MaterializedCacheGraph,
+		after: MaterializedCacheGraph
+	): void {
+		for (const key of new Set([
+			...before.indexes.keys(),
+			...after.indexes.keys()
+		])) {
+			if (deepEqual(before.indexes.get(key), after.indexes.get(key))) {
+				continue;
+			}
+			this.#changedDependencies.add(indexDependency(key));
 		}
 	}
 
@@ -851,6 +932,23 @@ export class PurposeBuiltCacheEngine implements CacheEngine {
 	}
 
 	#reconcileDerivedIndexes(): void {
+		const next = this.#deriveIndexOperations(this.#layers);
+		const before = this.#materialize();
+		const previous = this.#derivedIndexOperations;
+		this.#derivedIndexOperations = [...next];
+		const after = this.#materialize();
+		let changed = false;
+		for (const key of derivedIndexKeys([...previous, ...next])) {
+			if (deepEqual(before.indexes.get(key), after.indexes.get(key))) continue;
+			this.#changedDependencies.add(indexDependency(key));
+			changed = true;
+		}
+		if (changed) this.#dirty = true;
+	}
+
+	#deriveIndexOperations(
+		layers: readonly OptimisticLayer[]
+	): readonly DerivedIndexOperation[] {
 		if (this.#reconcilingDerivedIndexes) {
 			throw new Error('derived index reconciliation cannot be re-entered');
 		}
@@ -865,7 +963,7 @@ export class PurposeBuiltCacheEngine implements CacheEngine {
 							runDerivedIndexReconciler(
 								reconciler,
 								this.extract(),
-								this.#layers.map((layer) =>
+								layers.map((layer) =>
 									Object.freeze({
 										id: layer.id,
 										sequence: layer.sequence,
@@ -880,17 +978,7 @@ export class PurposeBuiltCacheEngine implements CacheEngine {
 		} finally {
 			this.#reconcilingDerivedIndexes = false;
 		}
-		const before = this.#materialize();
-		const previous = this.#derivedIndexOperations;
-		this.#derivedIndexOperations = [...next];
-		const after = this.#materialize();
-		let changed = false;
-		for (const key of derivedIndexKeys([...previous, ...next])) {
-			if (deepEqual(before.indexes.get(key), after.indexes.get(key))) continue;
-			this.#changedDependencies.add(indexDependency(key));
-			changed = true;
-		}
-		if (changed) this.#dirty = true;
+		return next;
 	}
 
 	#recordFieldFloor(key: RecordKey, field: string): number {
@@ -1009,6 +1097,21 @@ export class PurposeBuiltCacheEngine implements CacheEngine {
 		try {
 			const result = update(writer);
 			assertSynchronousResult(result, 'optimistic layer update');
+		} finally {
+			active = false;
+		}
+	}
+
+	#runOptimisticReplacement(
+		replacement: OptimisticLayerReplacement,
+		reader: CacheReader,
+		operations: OverlayOperation[]
+	): void {
+		let active = true;
+		const writer = this.#optimisticWriter(operations, () => active);
+		try {
+			const result = replacement(reader, writer);
+			assertSynchronousResult(result, 'optimistic layer replacement');
 		} finally {
 			active = false;
 		}

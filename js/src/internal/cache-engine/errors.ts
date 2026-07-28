@@ -9,3 +9,13 @@ export class CacheRevisionConflictError extends Error {
 		this.revision = revision.toString(10);
 	}
 }
+
+export class OptimisticLayerNotFoundError extends Error {
+	readonly layerId: string;
+
+	constructor(layerId: string) {
+		super(`optimistic layer not found: ${layerId}`);
+		this.name = 'OptimisticLayerNotFoundError';
+		this.layerId = layerId;
+	}
+}

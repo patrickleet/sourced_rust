@@ -19,6 +19,7 @@ export type {
 	OptimisticCacheWriter,
 	OptimisticIndexWrite,
 	OptimisticLayerContext,
+	OptimisticLayerReplacement,
 	OptimisticLayerState,
 	OptimisticLayerView,
 	OptimisticRecordWrite,
@@ -30,5 +31,8 @@ export type {
 	SparseRecordMeta,
 	WatchOptions
 } from './types.js';
-export { CacheRevisionConflictError } from './errors.js';
+export {
+	CacheRevisionConflictError,
+	OptimisticLayerNotFoundError
+} from './errors.js';
 export { cacheIndexKey, createCacheEngine } from './create.js';

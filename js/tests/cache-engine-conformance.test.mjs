@@ -7,6 +7,7 @@ import { InMemoryCache } from '@apollo/client/cache';
 import { gql } from '@apollo/client';
 import {
 	CacheRevisionConflictError,
+	OptimisticLayerNotFoundError,
 	cacheIndexKey,
 	createCacheEngine
 } from '../dist/internal/cache-engine.js';
@@ -210,6 +211,164 @@ test('named optimistic layers survive acceptance and stale base responses', () =
 	});
 	assert.equal(engine.read((reader) => todoFields(reader).status), 'completed-optimistic');
 	assert.equal(engine.optimisticLayerState('complete-1'), 'accepted');
+});
+
+test('optimistic replacement reads only its prefix and publishes one rebased final state', () => {
+	const engine = createCacheEngine();
+	engine.batch((writer) =>
+		writer.writeRecord({
+			key: TODO,
+			revision: 1,
+			fields: { title: 'base', status: 'open' }
+		})
+	);
+	const confirmed = engine.extract();
+	engine.createOptimisticLayer('lower', (writer) =>
+		writer.writeRecord({
+			key: TODO,
+			fields: { title: 'lower', status: 'lower-open' }
+		})
+	);
+	engine.createOptimisticLayer(
+		'target',
+		(writer) =>
+			writer.writeRecord({
+				key: TODO,
+				fields: { status: 'preview' }
+			}),
+		{ stable: 'target-context' }
+	);
+	assert.equal(engine.markOptimisticLayerAccepted('target'), true);
+	engine.createOptimisticLayer('suffix', (writer) =>
+		writer.writeRecord({
+			key: TODO,
+			fields: { title: 'suffix', estimate: 3 }
+		})
+	);
+
+	const delivered = [];
+	engine.watch(
+		(reader) => reader.record(TODO)?.fields,
+		(value) => delivered.push(value)
+	);
+	let prefixFields;
+	assert.equal(
+		engine.replaceOptimisticLayer('target', (reader, writer) => {
+			prefixFields = reader.record(TODO)?.fields;
+			writer.writeRecord({
+				key: TODO,
+				fields: { status: 'actual' }
+			});
+		}),
+		true
+	);
+
+	assert.deepEqual(prefixFields, {
+		title: 'lower',
+		status: 'lower-open'
+	});
+	assert.deepEqual(delivered, [
+		{ title: 'suffix', status: 'actual', estimate: 3 }
+	]);
+	assert.equal(engine.optimisticLayerState('target'), 'accepted');
+	assert.deepEqual(engine.extract(), confirmed);
+
+	assert.equal(engine.rejectOptimisticLayer('suffix'), true);
+	assert.deepEqual(engine.read((reader) => reader.record(TODO)?.fields), {
+		title: 'lower',
+		status: 'actual'
+	});
+	assert.equal(engine.rejectOptimisticLayer('target'), true);
+	assert.deepEqual(engine.read((reader) => reader.record(TODO)?.fields), {
+		title: 'lower',
+		status: 'lower-open'
+	});
+});
+
+test('identical optimistic replacement is a no-op and missing layers fail typed without mutation', () => {
+	const engine = createCacheEngine();
+	engine.batch((writer) =>
+		writer.writeRecord({
+			key: TODO,
+			revision: 7,
+			fields: { title: 'base' }
+		})
+	);
+	engine.createOptimisticLayer('target', (writer) =>
+		writer.writeRecord({ key: TODO, fields: { title: 'preview' } })
+	);
+	assert.equal(engine.markOptimisticLayerAccepted('target'), true);
+	const confirmed = engine.extract();
+	const visible = engine.read((reader) => reader.record(TODO));
+	let calls = 0;
+	engine.watch(
+		(reader) => reader.record(TODO),
+		() => calls++
+	);
+
+	assert.equal(
+		engine.replaceOptimisticLayer('target', (_reader, writer) =>
+			writer.writeRecord({ key: TODO, fields: { title: 'preview' } })
+		),
+		false
+	);
+	let replacementInvoked = false;
+	assert.throws(
+		() =>
+			engine.replaceOptimisticLayer('missing', () => {
+				replacementInvoked = true;
+			}),
+		(error) =>
+			error instanceof OptimisticLayerNotFoundError &&
+			error.layerId === 'missing'
+	);
+
+	assert.equal(replacementInvoked, false);
+	assert.equal(calls, 0);
+	assert.equal(engine.optimisticLayerState('target'), 'accepted');
+	assert.deepEqual(engine.extract(), confirmed);
+	assert.deepEqual(engine.read((reader) => reader.record(TODO)), visible);
+});
+
+test('conditional replacement falls back when its earlier optimistic create is gone', () => {
+	const engine = createCacheEngine();
+	engine.createOptimisticLayer('earlier-create', (writer) =>
+		writer.writeRecord({
+			key: TODO,
+			fields: { id: 'todo-1', title: 'created' }
+		})
+	);
+	engine.createOptimisticLayer('later-patch', (writer) =>
+		writer.writeRecord({
+			key: TODO,
+			fields: { status: 'preview' }
+		})
+	);
+	assert.equal(engine.rejectOptimisticLayer('earlier-create'), true);
+	assert.deepEqual(engine.read((reader) => reader.record(TODO)?.fields), {
+		status: 'preview'
+	});
+
+	const delivered = [];
+	engine.watch(
+		(reader) => reader.record(TODO),
+		(value) => delivered.push(value)
+	);
+	assert.equal(
+		engine.replaceOptimisticLayer('later-patch', (reader, writer) => {
+			if (reader.record(TODO) === undefined) return;
+			writer.writeRecord({
+				key: TODO,
+				fields: { status: 'actual' }
+			});
+		}),
+		true
+	);
+
+	assert.equal(engine.read((reader) => reader.record(TODO)), undefined);
+	assert.deepEqual(delivered, [undefined]);
+	assert.deepEqual(engine.extract().records, []);
+	assert.equal(engine.optimisticLayerState('later-patch'), 'optimistic');
 });
 
 test('causal confirmation writes base and retires its layer atomically', () => {

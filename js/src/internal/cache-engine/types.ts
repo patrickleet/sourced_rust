@@ -132,6 +132,11 @@ export interface OptimisticCacheWriter {
 	deleteIndex(key: IndexKey): void;
 }
 
+export type OptimisticLayerReplacement = (
+	reader: CacheReader,
+	writer: OptimisticCacheWriter
+) => void;
+
 export type CacheSelector<T> = (reader: CacheReader) => T;
 export type CacheListener<T> = (value: T, previous: T | undefined) => void;
 
@@ -233,6 +238,14 @@ export interface CacheEngine {
 		update: (writer: OptimisticCacheWriter) => void,
 		context?: OptimisticLayerContext
 	): void;
+	/**
+	 * Atomically replace a layer in place. The replacement evaluates against
+	 * confirmed state plus only the optimistic layers below the target.
+	 */
+	replaceOptimisticLayer(
+		id: string,
+		replacement: OptimisticLayerReplacement
+	): boolean;
 	setDerivedIndexReconciler(reconciler: DerivedIndexReconciler | undefined): void;
 	markOptimisticLayerAccepted(id: string): boolean;
 	confirmOptimisticLayer<T>(id: string, update: (writer: BaseCacheWriter) => T): T;

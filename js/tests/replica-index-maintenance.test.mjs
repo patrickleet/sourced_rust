@@ -1,6 +1,8 @@
 import assert from 'node:assert/strict';
 import test from 'node:test';
 
+import { createCacheEngine } from '../dist/internal/cache-engine.js';
+import { replaceOptimisticLayerOn } from '../dist/replica/distributed-replica/impl-optimistic.js';
 import {
 	createReplicaIndexMaintenanceRegistry,
 	formatReplicaIndexStaleReason,
@@ -352,6 +354,86 @@ test('semantic layers recompute from confirmed state when an earlier layer disap
 			.records,
 		[base.key, insertB.key]
 	);
+});
+
+test('package-private replacement seam preserves replica receipt and diagnostic identity', () => {
+	const engine = createCacheEngine();
+	const key = replicaRecordKey(Todo, 'replacement-seam');
+	engine.batch((writer) =>
+		writer.writeRecord({
+			key,
+			revision: 11,
+			fields: { title: 'base', status: 'open' }
+		})
+	);
+	engine.createOptimisticLayer('lower', (writer) =>
+		writer.writeRecord({ key, fields: { title: 'lower' } })
+	);
+	engine.createOptimisticLayer(
+		'command-1',
+		(writer) =>
+			writer.writeRecord({ key, fields: { status: 'preview' } }),
+		{ id: 'command-1', changes: [] }
+	);
+	assert.equal(engine.markOptimisticLayerAccepted('command-1'), true);
+	engine.createOptimisticLayer('suffix', (writer) =>
+		writer.writeRecord({ key, fields: { title: 'suffix' } })
+	);
+
+	const receipt = {
+		causationId: 'causation-1',
+		expectations: new Map(),
+		observed: new Set()
+	};
+	const diagnostic = Object.freeze({
+		id: 'command-1',
+		sequence: 2,
+		state: 'accepted',
+		recordChanges: 1,
+		indexChanges: 0,
+		semanticChanges: 1
+	});
+	const events = [];
+	let syncCalls = 0;
+	let diagnosticSequence = 3;
+	const host = {
+		engine,
+		optimisticReceipts: new Map([['command-1', receipt]]),
+		diagnosticLayers: new Map([['command-1', diagnostic]]),
+		diagnostics: { enabled: true },
+		getDiagnosticLayerSequence: () => diagnosticSequence,
+		setDiagnosticLayerSequence: (value) => {
+			diagnosticSequence = value;
+		},
+		diagnosticEvent: (event) => events.push(event),
+		syncDiagnostics: () => {
+			syncCalls += 1;
+		},
+		retireDiagnosticLayer: () => {
+			throw new Error('replacement must not retire its layer');
+		}
+	};
+	const confirmed = engine.extract();
+	let prefix;
+	assert.equal(
+		replaceOptimisticLayerOn(host, 'command-1', (reader, writer) => {
+			prefix = reader.record(key)?.fields;
+			writer.writeRecord({ key, fields: { status: 'actual' } });
+		}),
+		true
+	);
+
+	assert.deepEqual(prefix, { title: 'lower', status: 'open' });
+	assert.deepEqual(engine.read((reader) => reader.record(key)?.fields), {
+		title: 'suffix',
+		status: 'actual'
+	});
+	assert.equal(engine.optimisticLayerState('command-1'), 'accepted');
+	assert.equal(host.optimisticReceipts.get('command-1'), receipt);
+	assert.equal(host.diagnosticLayers.get('command-1'), diagnostic);
+	assert.equal(syncCalls, 0);
+	assert.deepEqual(events, []);
+	assert.deepEqual(engine.extract(), confirmed);
 });
 
 test('a stale complete index keeps a later patch ordered during rebase', () => {

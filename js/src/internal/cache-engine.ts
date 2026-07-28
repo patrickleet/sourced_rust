@@ -1,6 +1,7 @@
 /** Private cache engine; implementation lives in ./cache-engine/. */
 export {
 	CacheRevisionConflictError,
+	OptimisticLayerNotFoundError,
 	cacheIndexKey,
 	createCacheEngine
 } from './cache-engine/index.js';
@@ -25,6 +26,7 @@ export type {
 	OptimisticCacheWriter,
 	OptimisticIndexWrite,
 	OptimisticLayerContext,
+	OptimisticLayerReplacement,
 	OptimisticLayerState,
 	OptimisticLayerView,
 	OptimisticRecordWrite,
