@@ -1,4 +1,4 @@
-use distributed::projection::lower::{DirectEligible, ProjectionDescriptor};
+use distributed::projection::lower::{DirectCandidate, ProjectionDescriptor};
 use distributed_macros::{projection, DomainState, ReadModel};
 use serde::{Deserialize, Serialize};
 
@@ -14,16 +14,13 @@ struct Todos {
     todo_id: String,
 }
 
-const INVALID: ProjectionDescriptor<DirectEligible> = projection! {
+const INVALID: ProjectionDescriptor<DirectCandidate> = projection! {
     name: "invalid";
     version: 1;
     epoch: "invalid-v1";
     partition: unit;
     on "todo.changed" version 1 (state: WrongTypeState) {
-        upsert Todos {
-            key { todo_id: state.todo_id },
-            set {}
-        };
+        upsert Todos from state;
     }
 };
 

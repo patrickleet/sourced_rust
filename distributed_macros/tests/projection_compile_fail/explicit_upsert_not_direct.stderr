@@ -1,0 +1,15 @@
+error[E0308]: mismatched types
+  --> tests/projection_compile_fail/explicit_upsert_not_direct.rs:17:56
+   |
+17 |   const INVALID: ProjectionDescriptor<DirectCandidate> = projection! {
+   |  ________________________________________________________^
+18 | |     name: "invalid";
+19 | |     version: 1;
+20 | |     epoch: "invalid-v1";
+...  |
+28 | | };
+   | |_^ expected `ProjectionDescriptor<DirectCandidate>`, found `ProjectionDescriptor`
+   |
+   = note: expected struct `ProjectionDescriptor<DirectCandidate>`
+              found struct `ProjectionDescriptor<EventualOnly>`
+   = note: this error originates in the macro `projection` (in Nightly builds, run with -Z macro-backtrace for more info)

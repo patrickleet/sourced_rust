@@ -551,8 +551,8 @@ fn expand_declaration(declaration: ProjectionDeclaration) -> Result<TokenStream>
     let mut output_models = BTreeMap::<String, Path>::new();
     let mut output_relationships = BTreeMap::<String, Path>::new();
     let mut assertions = Vec::new();
-    let mut direct_models = Vec::new();
-    let mut all_direct = true;
+    let mut direct_candidate_models = Vec::new();
+    let mut all_direct_candidates = true;
     let mut expanded_arm_index = 0usize;
 
     for arm in declaration.arms {
@@ -563,15 +563,12 @@ fn expand_declaration(declaration: ProjectionDeclaration) -> Result<TokenStream>
             state_body,
         } = selector_expansions(&arm.selector)?;
         if arm.operations.len() == 1
-            && matches!(
-                arm.operations[0].kind,
-                OperationKind::StateUpsert | OperationKind::Upsert
-            )
+            && arm.operations[0].kind == OperationKind::StateUpsert
             && arm.operations[0].related.is_none()
         {
-            direct_models.push(compact_tokens(&arm.operations[0].model));
+            direct_candidate_models.push(compact_tokens(&arm.operations[0].model));
         } else {
-            all_direct = false;
+            all_direct_candidates = false;
         }
         for (selector, selector_identity) in selectors {
             let arm_id = LitStr::new(
@@ -735,15 +732,15 @@ fn expand_declaration(declaration: ProjectionDeclaration) -> Result<TokenStream>
         }
     }
 
-    if all_direct
-        && direct_models
+    if all_direct_candidates
+        && direct_candidate_models
             .first()
-            .is_some_and(|first| direct_models.iter().any(|model| model != first))
+            .is_some_and(|first| direct_candidate_models.iter().any(|model| model != first))
     {
-        all_direct = false;
+        all_direct_candidates = false;
     }
-    let eligibility = if all_direct {
-        quote!(distributed::projection::lower::DirectEligible)
+    let eligibility = if all_direct_candidates {
+        quote!(distributed::projection::lower::DirectCandidate)
     } else {
         quote!(distributed::projection::lower::EventualOnly)
     };

@@ -1,11 +1,10 @@
 use distributed::projection::lower::{DirectCandidate, ProjectionDescriptor};
-use distributed_macros::{projection, DomainState, ReadModel};
+use distributed_macros::{projection, DomainEvent, ReadModel};
 use serde::{Deserialize, Serialize};
 
-#[derive(Clone, Serialize, Deserialize, DomainState)]
-#[domain_state(version = 1)]
-#[serde(rename_all = "camelCase")]
-struct RenamedState {
+#[derive(Clone, Serialize, Deserialize, DomainEvent)]
+#[domain_event(name = "todo.created", version = 1)]
+struct TodoCreated {
     todo_id: String,
 }
 
@@ -20,8 +19,11 @@ const INVALID: ProjectionDescriptor<DirectCandidate> = projection! {
     version: 1;
     epoch: "invalid-v1";
     partition: unit;
-    on "todo.created" version 1 (state: RenamedState) {
-        upsert Todos from state;
+    on TodoCreated(event) {
+        upsert Todos {
+            key { todo_id: event.todo_id },
+            set {}
+        };
     }
 };
 

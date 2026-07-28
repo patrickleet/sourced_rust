@@ -1,8 +1,8 @@
 error[E0080]: evaluation panicked: projection state-upsert field is missing or renamed
-  --> tests/projection_compile_fail/renamed_state_shorthand.rs:18:55
+  --> tests/projection_compile_fail/renamed_state_shorthand.rs:18:56
    |
-18 |   const INVALID: ProjectionDescriptor<DirectEligible> = projection! {
-   |  _______________________________________________________^
+18 |   const INVALID: ProjectionDescriptor<DirectCandidate> = projection! {
+   |  ________________________________________________________^
 19 | |     name: "invalid";
 20 | |     version: 1;
 21 | |     epoch: "invalid-v1";

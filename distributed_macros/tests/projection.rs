@@ -1,11 +1,11 @@
 use distributed::projection::lower::{
-    DirectEligible, EventualOnly, ProjectionDescriptor, ProjectionPortableType,
+    DirectCandidate, EventualOnly, ProjectionDescriptor, ProjectionPortableType,
     ProjectionReadModelMetadata,
 };
 use distributed::{
-    Entity, PatchMode, ProjectionProgramError, ProjectionRelationshipEffectKind,
-    ReadModelWritePlanBuilder, RelationalReadModel, RowKey, RowValue, TableAdapterCapabilities,
-    TableMutation,
+    Entity, PatchMode, ProjectionMutationKind, ProjectionProgramError,
+    ProjectionRelationshipEffectKind, ReadModelWritePlanBuilder, RelationalReadModel, RowKey,
+    RowValue, TableAdapterCapabilities, TableMutation,
 };
 use distributed_macros::{projection, DomainEvent, DomainState, ReadModel};
 use serde::{Deserialize, Serialize};
@@ -119,7 +119,7 @@ impl ProjectionAggregate {
     fn purge(&mut self) {}
 }
 
-const TODO_STATE: ProjectionDescriptor<DirectEligible> = projection! {
+const TODO_STATE: ProjectionDescriptor<DirectCandidate> = projection! {
     name: "todo-state";
     version: 1;
     epoch: "todos-v1";
@@ -147,7 +147,7 @@ const TODOS: ProjectionDescriptor<EventualOnly> = projection! {
     }
 };
 
-const RENAMED_TODOS: ProjectionDescriptor<DirectEligible> = projection! {
+const RENAMED_TODOS: ProjectionDescriptor<EventualOnly> = projection! {
     name: "renamed-todos";
     version: 1;
     epoch: "renamed-todos-v1";
@@ -220,7 +220,7 @@ const PLAYER_WEAPON_REMOVALS: ProjectionDescriptor<EventualOnly> = projection! {
     }
 };
 
-const INCOMPLETE_PLAYER_ROW: ProjectionDescriptor<DirectEligible> = projection! {
+const INCOMPLETE_PLAYER_ROW: ProjectionDescriptor<EventualOnly> = projection! {
     name: "incomplete-player-row";
     version: 1;
     epoch: "invalid-v1";
@@ -293,7 +293,7 @@ fn projection_declaration_builds_program_digest_inventory_and_executor() {
 }
 
 #[test]
-fn projection_exact_state_upsert_is_direct_eligible_and_metadata_is_typed() {
+fn projection_exact_state_upsert_is_a_direct_candidate_and_metadata_is_typed() {
     assert_eq!(TODO_STATE.name(), "todo-state");
     assert_eq!(TODO_STATE.program().expect("program").arms().len(), 2);
     assert_eq!(
@@ -332,8 +332,7 @@ fn multi_table_projection_is_byte_identical_to_the_fluent_orm_plan() {
         .server_executor()
         .expect("executor")
         .plan(occurrence)
-        .expect("generated physical plan")
-        .write_plan;
+        .expect("generated physical plan");
 
     let player = Players {
         player_id: "player-1".into(),
@@ -365,11 +364,69 @@ fn multi_table_projection_is_byte_identical_to_the_fluent_orm_plan() {
         .expect("join row");
     let manual = manual.into_write_plan().expect("manual physical plan");
 
-    assert_eq!(generated, manual);
-    assert_eq!(generated.mutations[0].table_name(), "account_summaries");
-    assert_eq!(generated.mutations[1].table_name(), "players");
-    assert_eq!(generated.mutations[2].table_name(), "player_weapons");
-    assert_eq!(generated.mutations[3].table_name(), "player_weapon_links");
+    assert_eq!(generated.write_plan, manual);
+    assert_eq!(
+        generated.write_plan.mutations[0].table_name(),
+        "account_summaries"
+    );
+    assert_eq!(generated.write_plan.mutations[1].table_name(), "players");
+    assert_eq!(
+        generated.write_plan.mutations[2].table_name(),
+        "player_weapons"
+    );
+    assert_eq!(
+        generated.write_plan.mutations[3].table_name(),
+        "player_weapon_links"
+    );
+
+    let logical_join = generated
+        .resolved
+        .mutations()
+        .iter()
+        .find(|mutation| mutation.target().model() == "PlayerWeaponLinks")
+        .expect("resolved join mutation");
+    assert_eq!(logical_join.kind(), ProjectionMutationKind::Insert);
+    assert_eq!(
+        logical_join
+            .key()
+            .fields()
+            .iter()
+            .map(|field| field.name())
+            .collect::<Vec<_>>(),
+        vec!["player_id", "weapon_id"]
+    );
+    assert_eq!(
+        logical_join.provenance().operation_ids(),
+        &["operation-3".to_owned()]
+    );
+    assert!(
+        logical_join.provenance().relationship_effects().is_empty(),
+        "ordinary join rows retain operation provenance without invented relationship effects"
+    );
+
+    let inventory = PLAYER_GRAPH.output_inventory().expect("output inventory");
+    let join_output = inventory
+        .models
+        .iter()
+        .find(|output| output.model == "PlayerWeaponLinks")
+        .expect("join output");
+    assert_eq!(join_output.storage, "player_weapon_links");
+    assert_eq!(join_output.schema.primary_key.columns.len(), 2);
+    assert_eq!(join_output.schema.foreign_keys.len(), 2);
+    assert_eq!(
+        join_output
+            .schema
+            .foreign_keys
+            .iter()
+            .map(|foreign_key| foreign_key.table.as_str())
+            .collect::<Vec<_>>(),
+        vec!["players", "player_weapons"]
+    );
+    assert_eq!(
+        inventory.relationships.len(),
+        1,
+        "only declared ORM relationships enter relationship inventory"
+    );
 }
 
 #[test]
