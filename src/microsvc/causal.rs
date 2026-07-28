@@ -20,11 +20,15 @@ use crate::aggregate::{hydrate, Aggregate, AggregateRepository};
 use crate::command_ledger::CausalGetStream;
 use crate::domain_event::{DomainEventCaptureError, DomainEventCommitGuardError};
 use crate::graphql::command_contract::{
-    CommandCommitProofError, CommandOutcome, ProjectionCommitProof, ResolvedDirectProjectionTarget,
-    TypedCommandContract,
+    validate_resolved_direct_plan, CommandCommitProofError, CommandOutcome, ProjectionCommitProof,
+    ResolvedDirectProjectionTarget, TypedCommandContract,
 };
 use crate::graphql::{GraphqlOutputType, PrepareCommandError, PreparedCommand, Projected};
 use crate::outbox::{OutboxMessage, PreparedDomainEvent};
+use crate::projection::lower::{
+    DirectCandidate, LoweredProjectionPlan, ProjectionDescriptor,
+    ProjectionServerExecutorDescriptor,
+};
 use crate::projection_protocol::SameTransactionProjectionBatch;
 use crate::read_model::{ReadModelWritePlanBuilder, RelationalReadModel};
 use crate::repository::{CommitBatch, RepositoryError, SnapshotWrite, StreamIdentity, StreamWrite};
@@ -151,6 +155,7 @@ pub(crate) enum CausalWorkspaceError {
     },
     DuplicateStream(StreamIdentity),
     ProjectionAlreadyStaged,
+    ModeledDirectProjection(String),
     DomainPublicationRequired(StreamIdentity),
     DomainPublicationsAlreadyPrepared,
     DomainPublicationsNotPrepared,
@@ -188,6 +193,9 @@ impl std::fmt::Display for CausalWorkspaceError {
             Self::ProjectionAlreadyStaged => formatter.write_str(
                 "a causal command may prepare only one same-transaction projected result",
             ),
+            Self::ModeledDirectProjection(error) => {
+                write!(formatter, "modeled direct projection is invalid: {error}")
+            }
             Self::DomainPublicationRequired(identity) => write!(
                 formatter,
                 "aggregate `{identity}` captured domain events; add `publish_events()` to its commit"
@@ -218,6 +226,7 @@ impl std::error::Error for CausalWorkspaceError {
             | Self::CommittedVersionChanged { .. }
             | Self::DuplicateStream(_)
             | Self::ProjectionAlreadyStaged
+            | Self::ModeledDirectProjection(_)
             | Self::DomainPublicationRequired(_)
             | Self::DomainPublicationsAlreadyPrepared
             | Self::DomainPublicationsNotPrepared
@@ -277,6 +286,7 @@ struct WorkspaceState<A> {
     read_model_plans: Vec<TableWritePlan>,
     snapshots: Vec<SnapshotWrite>,
     projection_staged: bool,
+    modeled_direct_projection: Option<ProjectionServerExecutorDescriptor>,
 }
 
 impl<A> Default for WorkspaceState<A> {
@@ -288,6 +298,7 @@ impl<A> Default for WorkspaceState<A> {
             read_model_plans: Vec::new(),
             snapshots: Vec::new(),
             projection_staged: false,
+            modeled_direct_projection: None,
         }
     }
 }
@@ -456,6 +467,51 @@ where
         Ok(prepared)
     }
 
+    /// Prepare a projected result whose exact row will be resolved from the
+    /// authoritative domain-event occurrence after the dispatcher stamps its
+    /// ledger causation.
+    pub(crate) fn prepare_modeled_projected<M>(
+        &self,
+        model: M,
+        projection: ProjectionDescriptor<DirectCandidate>,
+    ) -> Result<PreparedCommand<Projected<M>>, CausalWorkspaceError>
+    where
+        M: GraphqlOutputType + RelationalReadModel + Serialize + Send + Sync + 'static,
+    {
+        let executor = projection
+            .server_executor()
+            .map_err(|error| CausalWorkspaceError::ModeledDirectProjection(error.to_string()))?;
+        let [output] = executor.outputs.models.as_slice() else {
+            return Err(CausalWorkspaceError::ModeledDirectProjection(
+                "a direct descriptor must own exactly one output model".into(),
+            ));
+        };
+        let schema = M::schema();
+        if !executor.outputs.relationships.is_empty()
+            || output.model != schema.model_name
+            || output.storage != schema.table_name
+            || output.schema != *schema
+        {
+            return Err(CausalWorkspaceError::ModeledDirectProjection(format!(
+                "projection `{}` output does not exactly match returned model `{}`/`{}`",
+                executor.name, schema.model_name, schema.table_name
+            )));
+        }
+        let proof = ProjectionCommitProof::for_model(&model)?;
+        let prepared = PreparedCommand::prepare_projected(model, proof)?;
+
+        let mut state = self
+            .state
+            .lock()
+            .map_err(|_| CausalWorkspaceError::Poisoned)?;
+        if state.projection_staged {
+            return Err(CausalWorkspaceError::ProjectionAlreadyStaged);
+        }
+        state.projection_staged = true;
+        state.modeled_direct_projection = Some(executor);
+        Ok(prepared)
+    }
+
     pub(crate) fn into_parts(self) -> Result<CausalWorkspaceParts<A>, CausalWorkspaceError> {
         let state = self
             .state
@@ -467,6 +523,9 @@ where
             read_model_plans: state.read_model_plans,
             snapshots: state.snapshots,
             domain_event_occurrences: Vec::new(),
+            unpublished_direct_occurrences: HashSet::new(),
+            modeled_direct_projection: state.modeled_direct_projection,
+            resolved_direct_projection: None,
             publications_prepared: false,
             batch_prepared: false,
         })
@@ -482,6 +541,13 @@ pub(crate) struct CausalWorkspaceParts<A> {
     snapshots: Vec<SnapshotWrite>,
     /// Exact ledger-causation-stamped outward occurrences in publication order.
     domain_event_occurrences: Vec<crate::DomainEventOccurrence>,
+    /// Captured occurrences consumed only by a direct modeled projection.
+    /// Every member must be the one selected occurrence or validation fails;
+    /// no unrelated outward event may disappear merely because the command is
+    /// projected.
+    unpublished_direct_occurrences: HashSet<String>,
+    modeled_direct_projection: Option<ProjectionServerExecutorDescriptor>,
+    resolved_direct_projection: Option<LoweredProjectionPlan>,
     publications_prepared: bool,
     batch_prepared: bool,
 }
@@ -500,6 +566,7 @@ where
             return Err(CausalWorkspaceError::DomainPublicationsAlreadyPrepared);
         }
         self.publications_prepared = true;
+        let has_modeled_direct_projection = self.modeled_direct_projection.is_some();
 
         for staged in &mut self.aggregates {
             staged
@@ -509,21 +576,29 @@ where
             let entity = staged.aggregate.entity();
             entity.domain_event_commit_guard()?;
             let pending = entity.pending_domain_events_for_commit()?;
-            if !pending.is_empty() && !staged.publication.publish_captured_events {
+            if !pending.is_empty()
+                && !staged.publication.publish_captured_events
+                && !has_modeled_direct_projection
+            {
                 return Err(CausalWorkspaceError::DomainPublicationRequired(
                     staged.identity.clone(),
                 ));
             }
 
-            if staged.publication.publish_captured_events {
+            if staged.publication.publish_captured_events || has_modeled_direct_projection {
                 self.domain_event_occurrences
                     .extend(pending.iter().cloned());
+            }
+            if staged.publication.publish_captured_events {
                 self.outbox_messages.extend(
                     pending
                         .iter()
                         .map(OutboxMessage::from_domain_event_occurrence)
                         .collect::<Result<Vec<_>, _>>()?,
                 );
+            } else if has_modeled_direct_projection {
+                self.unpublished_direct_occurrences
+                    .extend(pending.iter().map(|occurrence| occurrence.id().to_owned()));
             }
 
             let current_sequence = staged.aggregate.entity().version();
@@ -557,10 +632,11 @@ where
     }
 
     pub(crate) fn validate_prepared<K: CommandOutcome>(
-        &self,
+        &mut self,
         contract: &TypedCommandContract,
         prepared: &PreparedCommand<K>,
     ) -> Result<(), CommandCommitProofError> {
+        self.resolve_modeled_direct_projection()?;
         prepared.validate_commit_evidence(
             contract,
             self.aggregates
@@ -568,6 +644,7 @@ where
                 .any(|staged| !staged.aggregate.entity().new_events().is_empty()),
             &self.outbox_messages,
             &self.read_model_plans,
+            self.resolved_direct_projection.as_ref(),
         )
     }
 
@@ -580,7 +657,74 @@ where
         target: Option<ResolvedDirectProjectionTarget>,
         causation_id: &str,
     ) -> Result<Option<SameTransactionProjectionBatch>, CommandCommitProofError> {
-        prepared.seal_direct_projection(target, &mut self.read_model_plans, causation_id)
+        if self.modeled_direct_projection.is_some() && self.resolved_direct_projection.is_none() {
+            return Err(CommandCommitProofError::DirectProjection(
+                "modeled direct projection was not resolved before sealing".into(),
+            ));
+        }
+        if let Some(executor) = self.modeled_direct_projection.as_ref() {
+            target
+                .as_ref()
+                .ok_or(CommandCommitProofError::MissingDirectProjectionTarget)?
+                .validate_modeled_owner(executor.name, executor.epoch)
+                .map_err(|error| CommandCommitProofError::DirectProjection(error.to_string()))?;
+        }
+        prepared.seal_direct_projection(
+            target,
+            &mut self.read_model_plans,
+            self.resolved_direct_projection.take(),
+            causation_id,
+        )
+    }
+
+    fn resolve_modeled_direct_projection(&mut self) -> Result<(), CommandCommitProofError> {
+        let Some(executor) = self.modeled_direct_projection.as_ref() else {
+            return Ok(());
+        };
+        if self.resolved_direct_projection.is_some() {
+            return Ok(());
+        }
+        if !self.publications_prepared {
+            return Err(CommandCommitProofError::DirectProjection(
+                "modeled direct projection requires sealed domain-event occurrences".into(),
+            ));
+        }
+
+        let mut matches = self
+            .domain_event_occurrences
+            .iter()
+            .filter(|occurrence| executor.matches(occurrence));
+        let occurrence = matches.next().ok_or_else(|| {
+            CommandCommitProofError::DirectProjection(format!(
+                "modeled direct projection `{}` matched no committed domain-event occurrence",
+                executor.name
+            ))
+        })?;
+        if matches.next().is_some() {
+            return Err(CommandCommitProofError::DirectProjection(format!(
+                "modeled direct projection `{}` matched more than one domain-event occurrence",
+                executor.name
+            )));
+        }
+        if self
+            .unpublished_direct_occurrences
+            .iter()
+            .any(|occurrence_id| occurrence_id != occurrence.id())
+        {
+            return Err(CommandCommitProofError::DirectProjection(
+                "a projected command captured an unrelated unpublished domain event".into(),
+            ));
+        }
+
+        let lowered = executor.plan(occurrence).map_err(|error| {
+            CommandCommitProofError::DirectProjection(format!(
+                "modeled direct projection `{}` could not lower its selected occurrence: {error}",
+                executor.name
+            ))
+        })?;
+        validate_resolved_direct_plan(&lowered)?;
+        self.resolved_direct_projection = Some(lowered);
+        Ok(())
     }
 
     /// Borrow staged aggregates into the existing public commit-batch shape.
@@ -710,6 +854,62 @@ mod tests {
             self.entity.set_id(id);
             self.title = title;
         }
+
+        #[event("causal.renamed", version = 1, domain)]
+        fn rename(&mut self, title: String) {
+            self.title = title;
+        }
+    }
+
+    #[derive(Clone, Debug, PartialEq, Serialize, serde::Deserialize, crate::ReadModel)]
+    #[readmodel(table = "modeled_direct_views", primary_key = ["id"])]
+    struct ModeledDirectView {
+        id: String,
+        title: String,
+    }
+
+    impl GraphqlOutputType for ModeledDirectView {
+        fn graphql_type() -> GraphqlTypeDef {
+            GraphqlTypeDef::new(
+                "ModeledDirectView",
+                vec![
+                    GraphqlTypeField {
+                        name: "id".into(),
+                        type_name: "String".into(),
+                        nullable: false,
+                        list: false,
+                        item_nullable: false,
+                        nested: None,
+                    },
+                    GraphqlTypeField {
+                        name: "title".into(),
+                        type_name: "String".into(),
+                        nullable: false,
+                        list: false,
+                        item_nullable: false,
+                        nested: None,
+                    },
+                ],
+            )
+            .with_type_id(std::any::TypeId::of::<Self>())
+        }
+    }
+
+    const MODELED_DIRECT: ProjectionDescriptor<DirectCandidate> = distributed_macros::projection! {
+        name: "modeled-direct-workspace";
+        version: 1;
+        epoch: "modeled-direct-workspace-v1";
+        partition: unit;
+
+        on "causal.created" version 1 (state: CausalPublishedState) {
+            upsert ModeledDirectView from state as view;
+        }
+    };
+
+    #[derive(Clone, Debug, Serialize, crate::DomainEvent)]
+    #[domain_event(name = "causal.background", version = 1)]
+    struct BackgroundEvent {
+        id: String,
     }
 
     #[derive(crate::DomainEvent)]
@@ -1048,7 +1248,7 @@ mod tests {
         let mut aggregate = workspace.load("a-1").await.unwrap().unwrap();
         aggregate.entity_mut().digest_empty("Projected").unwrap();
         workspace.stage(aggregate).unwrap();
-        let parts = workspace.into_parts().unwrap();
+        let mut parts = workspace.into_parts().unwrap();
 
         let contract =
             crate::graphql::typed_command::<TestInput, Projected<TestView>>("test.project")
@@ -1066,7 +1266,7 @@ mod tests {
                 title: "projected".into(),
             })
             .unwrap();
-        let parts = workspace.into_parts().unwrap();
+        let mut parts = workspace.into_parts().unwrap();
         let contract =
             crate::graphql::typed_command::<TestInput, Projected<TestView>>("test.project")
                 .into_contract();
@@ -1098,7 +1298,7 @@ mod tests {
             })
             .unwrap();
         workspace.stage_read_models(conflicting).unwrap();
-        let parts = workspace.into_parts().unwrap();
+        let mut parts = workspace.into_parts().unwrap();
         let contract =
             crate::graphql::typed_command::<TestInput, Projected<TestView>>("test.project")
                 .into_contract();
@@ -1137,5 +1337,264 @@ mod tests {
             parts.validate_prepared(&contract, &prepared),
             Err(CommandCommitProofError::ProjectionWriteMismatch { .. })
         ));
+    }
+
+    fn modeled_direct_repository() -> AggregateRepository<TestRepo, CausalPublishedAggregate> {
+        AggregateRepository::new(TestRepo {
+            entity: Arc::new(Entity::with_id("unused")),
+        })
+    }
+
+    fn modeled_direct_contract() -> TypedCommandContract {
+        crate::graphql::typed_command::<TestInput, Projected<ModeledDirectView>>(
+            "test.modeled-direct",
+        )
+        .into_contract()
+    }
+
+    #[test]
+    fn modeled_direct_resolves_one_internal_state_occurrence_to_one_exact_upsert() {
+        let repository = modeled_direct_repository();
+        let workspace = CausalWorkspace::new(&repository);
+        let mut aggregate = workspace.create();
+        aggregate
+            .create("direct-1".into(), "authoritative".into())
+            .unwrap();
+        workspace.stage(aggregate).unwrap();
+        let prepared = workspace
+            .prepare_modeled_projected(
+                ModeledDirectView {
+                    id: "direct-1".into(),
+                    title: "authoritative".into(),
+                },
+                MODELED_DIRECT,
+            )
+            .unwrap();
+
+        let mut parts = workspace.into_parts().unwrap();
+        parts
+            .prepare_domain_publications("modeled-direct-causation")
+            .unwrap();
+        assert_eq!(parts.domain_event_occurrences.len(), 1);
+        assert_eq!(parts.unpublished_direct_occurrences.len(), 1);
+        assert!(
+            parts.outbox_messages.is_empty(),
+            "the selected state occurrence is internal unless publication was requested"
+        );
+
+        parts
+            .validate_prepared(&modeled_direct_contract(), &prepared)
+            .unwrap();
+        let lowered = parts
+            .resolved_direct_projection
+            .as_ref()
+            .expect("validation must retain the selected authoritative lowering");
+        assert_eq!(lowered.resolved.mutations().len(), 1);
+        let [TableMutation::UpsertRow(row)] = lowered.write_plan.mutations.as_slice() else {
+            panic!("modeled direct lowering must contain one full-row upsert");
+        };
+        assert_eq!(row.schema.model_name, "ModeledDirectView");
+        assert_eq!(row.schema.table_name, "modeled_direct_views");
+        assert_eq!(
+            row.values.get("title"),
+            Some(&RowValue::String("authoritative".into()))
+        );
+    }
+
+    #[test]
+    fn modeled_direct_rejects_a_separate_same_transaction_read_model_plan() {
+        let repository = modeled_direct_repository();
+        let workspace = CausalWorkspace::new(&repository);
+        let mut aggregate = workspace.create();
+        aggregate
+            .create("direct-mixed".into(), "authoritative".into())
+            .unwrap();
+        workspace.stage(aggregate).unwrap();
+        let prepared = workspace
+            .prepare_modeled_projected(
+                ModeledDirectView {
+                    id: "direct-mixed".into(),
+                    title: "authoritative".into(),
+                },
+                MODELED_DIRECT,
+            )
+            .unwrap();
+        let mut separate = ReadModelWritePlanBuilder::new();
+        separate
+            .upsert(&TestView {
+                id: "separate".into(),
+                title: "not part of the modeled proof".into(),
+            })
+            .unwrap();
+        workspace.stage_read_models(separate).unwrap();
+
+        let mut parts = workspace.into_parts().unwrap();
+        parts
+            .prepare_domain_publications("modeled-direct-mixed")
+            .unwrap();
+        assert!(matches!(
+            parts.validate_prepared(&modeled_direct_contract(), &prepared),
+            Err(CommandCommitProofError::DirectProjection(message))
+                if message.contains("separate read-model mutations")
+        ));
+    }
+
+    #[test]
+    fn modeled_direct_rejects_returned_row_drift_from_the_authoritative_state() {
+        let repository = modeled_direct_repository();
+        let workspace = CausalWorkspace::new(&repository);
+        let mut aggregate = workspace.create();
+        aggregate
+            .create("direct-drift".into(), "authoritative".into())
+            .unwrap();
+        workspace.stage(aggregate).unwrap();
+        let prepared = workspace
+            .prepare_modeled_projected(
+                ModeledDirectView {
+                    id: "direct-drift".into(),
+                    title: "invented".into(),
+                },
+                MODELED_DIRECT,
+            )
+            .unwrap();
+
+        let mut parts = workspace.into_parts().unwrap();
+        parts
+            .prepare_domain_publications("modeled-direct-drift")
+            .unwrap();
+        assert!(matches!(
+            parts.validate_prepared(&modeled_direct_contract(), &prepared),
+            Err(CommandCommitProofError::ProjectionWriteMismatch { .. })
+        ));
+    }
+
+    #[test]
+    fn modeled_direct_requires_exactly_one_matching_occurrence() {
+        let repository = modeled_direct_repository();
+        let workspace = CausalWorkspace::new(&repository);
+        let mut aggregate = workspace.create();
+        aggregate.entity_mut().set_id("direct-none");
+        aggregate
+            .entity_mut()
+            .digest_empty("causal.unrelated")
+            .unwrap();
+        workspace.stage(aggregate).unwrap();
+        let prepared = workspace
+            .prepare_modeled_projected(
+                ModeledDirectView {
+                    id: "direct-none".into(),
+                    title: "none".into(),
+                },
+                MODELED_DIRECT,
+            )
+            .unwrap();
+        let mut parts = workspace.into_parts().unwrap();
+        parts
+            .prepare_domain_publications("modeled-direct-none")
+            .unwrap();
+        assert!(matches!(
+            parts.validate_prepared(&modeled_direct_contract(), &prepared),
+            Err(CommandCommitProofError::DirectProjection(message))
+                if message.contains("matched no committed")
+        ));
+
+        let repository = modeled_direct_repository();
+        let workspace = CausalWorkspace::new(&repository);
+        let mut aggregate = workspace.create();
+        aggregate
+            .create("direct-many".into(), "first".into())
+            .unwrap();
+        aggregate
+            .create("direct-many".into(), "second".into())
+            .unwrap();
+        workspace.stage(aggregate).unwrap();
+        let prepared = workspace
+            .prepare_modeled_projected(
+                ModeledDirectView {
+                    id: "direct-many".into(),
+                    title: "second".into(),
+                },
+                MODELED_DIRECT,
+            )
+            .unwrap();
+        let mut parts = workspace.into_parts().unwrap();
+        parts
+            .prepare_domain_publications("modeled-direct-many")
+            .unwrap();
+        assert!(matches!(
+            parts.validate_prepared(&modeled_direct_contract(), &prepared),
+            Err(CommandCommitProofError::DirectProjection(message))
+                if message.contains("more than one")
+        ));
+    }
+
+    #[test]
+    fn modeled_direct_rejects_unpublished_side_events_but_allows_published_background_events() {
+        let repository = modeled_direct_repository();
+        let workspace = CausalWorkspace::new(&repository);
+        let mut aggregate = workspace.create();
+        aggregate
+            .create("direct-side".into(), "first".into())
+            .unwrap();
+        aggregate.rename("renamed".into()).unwrap();
+        workspace.stage(aggregate).unwrap();
+        let prepared = workspace
+            .prepare_modeled_projected(
+                ModeledDirectView {
+                    id: "direct-side".into(),
+                    title: "first".into(),
+                },
+                MODELED_DIRECT,
+            )
+            .unwrap();
+        let mut parts = workspace.into_parts().unwrap();
+        parts
+            .prepare_domain_publications("modeled-direct-side")
+            .unwrap();
+        assert!(matches!(
+            parts.validate_prepared(&modeled_direct_contract(), &prepared),
+            Err(CommandCommitProofError::DirectProjection(message))
+                if message.contains("unrelated unpublished domain event")
+        ));
+
+        let repository = modeled_direct_repository();
+        let workspace = CausalWorkspace::new(&repository);
+        let mut aggregate = workspace.create();
+        aggregate
+            .create("direct-background".into(), "authoritative".into())
+            .unwrap();
+        workspace
+            .stage_with_publication(
+                aggregate,
+                AggregatePublication {
+                    publish_captured_events: true,
+                    explicit_events: vec![PreparedDomainEvent::new(BackgroundEvent {
+                        id: "background-1".into(),
+                    })
+                    .unwrap()],
+                },
+            )
+            .unwrap();
+        let prepared = workspace
+            .prepare_modeled_projected(
+                ModeledDirectView {
+                    id: "direct-background".into(),
+                    title: "authoritative".into(),
+                },
+                MODELED_DIRECT,
+            )
+            .unwrap();
+        let mut parts = workspace.into_parts().unwrap();
+        parts
+            .prepare_domain_publications("modeled-direct-background")
+            .unwrap();
+        assert_eq!(
+            parts.outbox_messages.len(),
+            2,
+            "publishing the selected occurrence and an unrelated background event is explicit"
+        );
+        parts
+            .validate_prepared(&modeled_direct_contract(), &prepared)
+            .unwrap();
     }
 }

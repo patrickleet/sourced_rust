@@ -161,6 +161,27 @@ struct CausalProjectionSiblingView {
 }
 
 #[cfg(feature = "graphql")]
+#[derive(Clone, Serialize, Deserialize, crate::DomainState)]
+#[domain_state(version = 1)]
+struct CausalDirectState {
+    id: String,
+}
+
+#[cfg(feature = "graphql")]
+const CAUSAL_DIRECT_PROJECTION: crate::projection::lower::ProjectionDescriptor<
+    crate::projection::lower::DirectCandidate,
+> = distributed_macros::projection! {
+    name: "project_causal_direct";
+    version: 1;
+    epoch: "causal-direct-v1";
+    partition: unit;
+
+    on "causal.direct-recorded" version 1 (state: CausalDirectState) {
+        upsert CausalProjectionObligationView from state as view;
+    }
+};
+
+#[cfg(feature = "graphql")]
 impl GraphqlOutputType for CausalProjectionObligationView {
     fn graphql_type() -> GraphqlTypeDef {
         one_string_field("CausalProjectionObligationView", "id")
@@ -211,6 +232,24 @@ impl CausalDispatcherAggregate {
     fn record(&mut self, id: String) -> crate::SourcedResult {
         self.entity.set_id(id);
         self.entity.digest_empty("causal.recorded")
+    }
+
+    fn record_direct(&mut self, id: String) -> Result<(), HandlerError> {
+        self.entity.set_id(id.clone());
+        self.entity
+            .digest_empty("causal.direct-recorded")
+            .map_err(|error| HandlerError::Other(Box::new(error)))?;
+        self.entity
+            .capture_domain_state(
+                Self::aggregate_type(),
+                crate::DomainEventDescriptor::state::<CausalDirectState>(
+                    "causal.direct-recorded",
+                    1,
+                ),
+                &CausalDirectState { id },
+            )
+            .map_err(|error| HandlerError::Other(Box::new(error)))?;
+        Ok(())
     }
 }
 
@@ -1756,11 +1795,9 @@ async fn projected_command_auto_binds_bootstraps_and_replays_exact_direct_eviden
                     let result = (|| {
                         calls.fetch_add(1, Ordering::SeqCst);
                         let mut checkout = context.create();
-                        checkout
-                            .record(input.id.clone())
-                            .map_err(|error| HandlerError::Other(Box::new(error)))?;
+                        checkout.record_direct(input.id.clone())?;
                         context
-                            .project(direct_read_model::<CausalProjectionObligationView>())
+                            .project(CAUSAL_DIRECT_PROJECTION)
                             .commit(checkout)?
                             .projected(CausalProjectionObligationView { id: input.id })
                     })();

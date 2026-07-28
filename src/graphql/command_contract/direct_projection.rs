@@ -7,6 +7,7 @@ use super::effects::EffectExpression;
 use super::projection_obligations::ProjectorTopologyIdentity;
 use super::projection_proof::canonical_json;
 use crate::microsvc::Session;
+use crate::projection::executor::resolved_partition_json;
 use crate::projection_protocol::{
     ProjectionEpoch, ProjectionModelOwnership, ProjectionPartition, ProjectionPartitionSpec,
     ProjectionProtocolError, ProjectionScopeCodec, ProjectorTopologyId,
@@ -14,6 +15,7 @@ use crate::projection_protocol::{
 };
 use crate::read_model::RelationalReadModel;
 use crate::table::{TableMutation, TableSchema};
+use crate::ResolvedProjectionPlan;
 
 /// Compiler-retained relational identity for one ordinary `Projected<M>`
 /// declaration before the GraphQL Surface resolves its unique physical owner.
@@ -309,6 +311,26 @@ impl ResolvedDirectProjectionTarget {
         (self.codec.topology(), &self.ownership)
     }
 
+    pub(crate) fn validate_modeled_owner(
+        &self,
+        projection_name: &str,
+        projection_epoch: &str,
+    ) -> Result<(), ProjectionProtocolError> {
+        if self.codec.topology().name() != projection_name {
+            return Err(ProjectionProtocolError::InvalidBatch(format!(
+                "modeled direct projection `{projection_name}` does not match compiled owner `{}`",
+                self.codec.topology().name()
+            )));
+        }
+        if self.change_epoch.as_str() != projection_epoch {
+            return Err(ProjectionProtocolError::InvalidBatch(format!(
+                "modeled direct projection epoch `{projection_epoch}` does not match compiled owner epoch `{}`",
+                self.change_epoch.as_str()
+            )));
+        }
+        Ok(())
+    }
+
     pub(super) fn seal(
         self,
         mutation: TableMutation,
@@ -347,6 +369,72 @@ impl ResolvedDirectProjectionTarget {
             mutation,
             causation_id,
         )
+    }
+
+    /// Seal one already validated modeled projection through the existing
+    /// single-row direct participant.
+    ///
+    /// The logical plan is retained until this boundary so the resolved
+    /// partition, model/storage target, occurrence causation, and compiled
+    /// direct owner can be checked against the exact physical row. The
+    /// resulting batch is still the original one-upsert/one-observation proof.
+    pub(super) fn seal_resolved(
+        self,
+        plan: &ResolvedProjectionPlan,
+        mutation: TableMutation,
+        causation_id: &str,
+    ) -> Result<SameTransactionProjectionBatch, ProjectionProtocolError> {
+        let [resolved] = plan.mutations() else {
+            return Err(ProjectionProtocolError::InvalidBatch(
+                "modeled direct projection must contain exactly one resolved record".into(),
+            ));
+        };
+        if resolved.target().model() != self.model
+            || resolved.target().storage() != self.table
+            || resolved.scope().model() != self.model
+            || resolved.scope().storage() != self.table
+        {
+            return Err(ProjectionProtocolError::InvalidBatch(format!(
+                "modeled direct projection target `{}/{}` does not match compiled owner `{}/{}`",
+                resolved.target().model(),
+                resolved.target().storage(),
+                self.model,
+                self.table
+            )));
+        }
+        let owner_matches = self
+            .ownership
+            .iter()
+            .filter(|owner| owner.model == self.model && owner.table == self.table)
+            .count();
+        if owner_matches != 1 {
+            return Err(ProjectionProtocolError::InvalidBatch(format!(
+                "modeled direct projection `{}/{}` must have one exact compiled owner",
+                self.model, self.table
+            )));
+        }
+        let logical_partition = resolved_partition_json(plan.partition())?;
+        let encoded_partition = self
+            .codec
+            .encode_partition(logical_partition.as_ref())
+            .map_err(|error| ProjectionProtocolError::InvalidBatch(error.to_string()))?;
+        if encoded_partition != self.partition || logical_partition != self.partition_value {
+            return Err(ProjectionProtocolError::ScopeMismatch {
+                field: "modeled direct projection partition",
+            });
+        }
+        if plan
+            .occurrence()
+            .metadata()
+            .get(crate::CAUSATION_ID)
+            .map(String::as_str)
+            != Some(causation_id)
+        {
+            return Err(ProjectionProtocolError::InvalidBatch(
+                "modeled direct projection occurrence has different command causation".into(),
+            ));
+        }
+        self.seal(mutation, causation_id)
     }
 }
 

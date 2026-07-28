@@ -3,10 +3,13 @@ use std::any::TypeId;
 use sha2::{Digest, Sha256};
 
 use super::outcomes::CommandConsistency;
+use crate::projection::lower::LoweredProjectionPlan;
 use crate::read_model::RelationalReadModel;
 use crate::table::{
-    RowKey, RowValue, RowValues, RowWriteMode, TableMutation, TableStoreError, TableWritePlan,
+    ExpectedVersion, RowKey, RowValue, RowValues, RowWriteMode, TableMutation, TableStoreError,
+    TableWritePlan,
 };
+use crate::{ProjectionMutationKind, ResolvedProjectionValue};
 
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub(crate) enum CommandCommitProofError {
@@ -132,18 +135,21 @@ impl ProjectionCommitProof {
         })
     }
 
-    pub(super) fn validate(
+    pub(super) fn validate<'a>(
         &self,
         output_type_id: TypeId,
-        plans: &[TableWritePlan],
-    ) -> Result<(), CommandCommitProofError> {
+        plans: impl IntoIterator<Item = &'a TableWritePlan>,
+    ) -> Result<(), CommandCommitProofError>
+    where
+        TableWritePlan: 'a,
+    {
         if self.model_type_id != output_type_id {
             return Err(CommandCommitProofError::ProjectionOutputTypeMismatch);
         }
 
         let mut target_count = 0usize;
         let mut exact_match = false;
-        for mutation in plans.iter().flat_map(|plan| &plan.mutations) {
+        for mutation in plans.into_iter().flat_map(|plan| plan.mutations.iter()) {
             let (schema, key) = match mutation {
                 TableMutation::UpsertRow(mutation) => (mutation.schema, &mutation.key),
                 TableMutation::PatchRow(mutation) => (mutation.schema, &mutation.key),
@@ -181,7 +187,7 @@ impl ProjectionCommitProof {
         output_type_id: TypeId,
         plans: &mut Vec<TableWritePlan>,
     ) -> Result<TableMutation, CommandCommitProofError> {
-        self.validate(output_type_id, plans)?;
+        self.validate(output_type_id, plans.iter())?;
 
         let mut found = None;
         for (plan_index, plan) in plans.iter().enumerate() {
@@ -215,6 +221,86 @@ impl ProjectionCommitProof {
         }
         Ok(mutation)
     }
+}
+
+/// Revalidate the one shape supported by the current direct evidence protocol.
+///
+/// The generated direct-candidate marker is intentionally insufficient by
+/// itself: this checks the actual selected arm, resolved values, relationship
+/// consequences, and authoritative ORM lowering before any table mutation can
+/// reach an adapter.
+pub(crate) fn validate_resolved_direct_plan(
+    lowered: &LoweredProjectionPlan,
+) -> Result<(), CommandCommitProofError> {
+    lowered
+        .write_plan
+        .validate()
+        .map_err(|error| direct_plan_error(error.to_string()))?;
+
+    let [resolved] = lowered.resolved.mutations() else {
+        return Err(direct_plan_error(
+            "modeled direct projection must resolve exactly one record mutation",
+        ));
+    };
+    if resolved.kind() != ProjectionMutationKind::Upsert {
+        return Err(direct_plan_error(
+            "modeled direct projection must resolve one complete upsert",
+        ));
+    }
+    if resolved.target().model() != resolved.scope().model()
+        || resolved.target().storage() != resolved.scope().storage()
+        || resolved.scope().partition() != lowered.resolved.partition()
+    {
+        return Err(direct_plan_error(
+            "modeled direct projection target, storage, or partition scope is inconsistent",
+        ));
+    }
+    if !resolved.provenance().relationship_effects().is_empty()
+        || !resolved.provenance().invalidations().is_empty()
+    {
+        return Err(direct_plan_error(
+            "modeled direct projection cannot carry relationship effects or invalidations",
+        ));
+    }
+    if resolved
+        .fields()
+        .iter()
+        .any(|field| !matches!(field.value(), ResolvedProjectionValue::Value(_)))
+    {
+        return Err(direct_plan_error(
+            "modeled direct projection upsert must resolve every row field",
+        ));
+    }
+    if resolved.provenance().program_id() != lowered.resolved.program_id()
+        || resolved.provenance().occurrence().occurrence_id() != lowered.resolved.occurrence().id()
+    {
+        return Err(direct_plan_error(
+            "modeled direct projection provenance does not match its resolved plan",
+        ));
+    }
+
+    let [TableMutation::UpsertRow(row)] = lowered.write_plan.mutations.as_slice() else {
+        return Err(direct_plan_error(
+            "modeled direct projection must lower to exactly one full-row upsert",
+        ));
+    };
+    if row.mode != RowWriteMode::Upsert || row.expected_version != ExpectedVersion::Any {
+        return Err(direct_plan_error(
+            "modeled direct projection requires an unfenced full-row upsert",
+        ));
+    }
+    if row.schema.model_name != resolved.target().model()
+        || row.schema.table_name != resolved.target().storage()
+    {
+        return Err(direct_plan_error(
+            "modeled direct projection logical and physical targets differ",
+        ));
+    }
+    Ok(())
+}
+
+fn direct_plan_error(error: impl Into<String>) -> CommandCommitProofError {
+    CommandCommitProofError::DirectProjection(error.into())
 }
 
 pub(super) fn fingerprint_key(key: &RowKey) -> String {

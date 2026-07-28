@@ -4,10 +4,13 @@ use std::marker::PhantomData;
 use serde::{Deserialize, Serialize};
 
 use super::direct_projection::ResolvedDirectProjectionTarget;
-use super::projection_proof::{CommandCommitProofError, ProjectionCommitProof};
+use super::projection_proof::{
+    validate_resolved_direct_plan, CommandCommitProofError, ProjectionCommitProof,
+};
 use super::typed_command::TypedCommandContract;
 use crate::graphql::types::GraphqlOutputType;
 use crate::outbox::OutboxMessage;
+use crate::projection::lower::LoweredProjectionPlan;
 use crate::projection_protocol::SameTransactionProjectionBatch;
 use crate::read_model::RelationalReadModel;
 use crate::table::{TableSchema, TableWritePlan};
@@ -222,6 +225,7 @@ impl<K: CommandOutcome> PreparedCommand<K> {
         has_staged_aggregate_events: bool,
         outbox_messages: &[OutboxMessage],
         read_model_plans: &[TableWritePlan],
+        modeled_direct_plan: Option<&LoweredProjectionPlan>,
     ) -> Result<(), CommandCommitProofError> {
         if contract.consistency != K::CONSISTENCY {
             return Err(CommandCommitProofError::ConsistencyMismatch {
@@ -235,7 +239,7 @@ impl<K: CommandOutcome> PreparedCommand<K> {
 
         match K::CONSISTENCY {
             CommandConsistency::Succeeded | CommandConsistency::Causal => {
-                if self.projection_proof.is_some() {
+                if self.projection_proof.is_some() || modeled_direct_plan.is_some() {
                     return Err(CommandCommitProofError::UnexpectedProjectionProof);
                 }
                 contract.validate_outbox_fact_coverage(outbox_messages)
@@ -247,10 +251,25 @@ impl<K: CommandOutcome> PreparedCommand<K> {
                 if !contract.confirmations.is_empty() {
                     return Err(CommandCommitProofError::ProjectedHasConfirmations);
                 }
-                self.projection_proof
+                let proof = self
+                    .projection_proof
                     .as_ref()
-                    .ok_or(CommandCommitProofError::MissingProjectionProof)?
-                    .validate(contract.output_type_id, read_model_plans)
+                    .ok_or(CommandCommitProofError::MissingProjectionProof)?;
+                if let Some(modeled) = modeled_direct_plan {
+                    if !read_model_plans.is_empty() {
+                        return Err(CommandCommitProofError::DirectProjection(
+                            "modeled direct projection cannot be mixed with separate read-model mutations"
+                                .into(),
+                        ));
+                    }
+                    validate_resolved_direct_plan(modeled)?;
+                    proof.validate(
+                        contract.output_type_id,
+                        std::iter::once(&modeled.write_plan),
+                    )
+                } else {
+                    proof.validate(contract.output_type_id, read_model_plans.iter())
+                }
             }
         }
     }
@@ -273,11 +292,12 @@ impl<K: CommandOutcome> PreparedCommand<K> {
         &self,
         target: Option<ResolvedDirectProjectionTarget>,
         read_model_plans: &mut Vec<TableWritePlan>,
+        modeled_direct_plan: Option<LoweredProjectionPlan>,
         causation_id: &str,
     ) -> Result<Option<SameTransactionProjectionBatch>, CommandCommitProofError> {
         match K::CONSISTENCY {
             CommandConsistency::Succeeded | CommandConsistency::Causal => {
-                if target.is_some() {
+                if target.is_some() || modeled_direct_plan.is_some() {
                     return Err(CommandCommitProofError::UnexpectedDirectProjectionTarget);
                 }
                 Ok(None)
@@ -289,10 +309,33 @@ impl<K: CommandOutcome> PreparedCommand<K> {
                     .projection_proof
                     .as_ref()
                     .ok_or(CommandCommitProofError::MissingProjectionProof)?;
-                let mutation =
-                    proof.extract_exact_upsert(TypeId::of::<K::Payload>(), read_model_plans)?;
-                target
-                    .seal(mutation, causation_id)
+                let sealed = if let Some(modeled) = modeled_direct_plan {
+                    if !read_model_plans.is_empty() {
+                        return Err(CommandCommitProofError::DirectProjection(
+                            "modeled direct projection cannot be mixed with separate read-model mutations"
+                                .into(),
+                        ));
+                    }
+                    validate_resolved_direct_plan(&modeled)?;
+                    proof.validate(
+                        TypeId::of::<K::Payload>(),
+                        std::iter::once(&modeled.write_plan),
+                    )?;
+                    let LoweredProjectionPlan {
+                        mut write_plan,
+                        resolved,
+                    } = modeled;
+                    let mutation = write_plan
+                        .mutations
+                        .pop()
+                        .expect("validated modeled direct plan has one physical mutation");
+                    target.seal_resolved(&resolved, mutation, causation_id)
+                } else {
+                    let mutation =
+                        proof.extract_exact_upsert(TypeId::of::<K::Payload>(), read_model_plans)?;
+                    target.seal(mutation, causation_id)
+                };
+                sealed
                     .map(Some)
                     .map_err(|error| CommandCommitProofError::DirectProjection(error.to_string()))
             }

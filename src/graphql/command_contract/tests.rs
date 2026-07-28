@@ -554,7 +554,7 @@ fn finite_confirmation_requires_a_reachable_staged_outbox_fact() {
     .unwrap();
 
     let no_fact = prepared
-        .validate_commit_evidence(&contract, false, &[], &[])
+        .validate_commit_evidence(&contract, false, &[], &[], None)
         .unwrap_err();
     assert!(matches!(
         no_fact,
@@ -563,34 +563,34 @@ fn finite_confirmation_requires_a_reachable_staged_outbox_fact() {
 
     let unrelated = OutboxMessage::create("message-1", "account.changed", Vec::new()).unwrap();
     assert!(matches!(
-        prepared.validate_commit_evidence(&contract, false, &[unrelated], &[]),
+        prepared.validate_commit_evidence(&contract, false, &[unrelated], &[], None),
         Err(CommandCommitProofError::UnreachableConfirmation { .. })
     ));
 
     let reachable = OutboxMessage::create("message-2", "todo.created", Vec::new()).unwrap();
     prepared
-        .validate_commit_evidence(&contract, false, &[reachable], &[])
+        .validate_commit_evidence(&contract, false, &[reachable], &[], None)
         .unwrap();
 
     let directed =
         OutboxMessage::create_to("message-3", "todo.created", "todo-projector", Vec::new())
             .unwrap();
     assert!(matches!(
-        prepared.validate_commit_evidence(&contract, false, &[directed], &[]),
+        prepared.validate_commit_evidence(&contract, false, &[directed], &[], None),
         Err(CommandCommitProofError::UnreachableConfirmation { .. })
     ));
 
     let mut published = OutboxMessage::create("message-4", "todo.created", Vec::new()).unwrap();
     published.status = crate::outbox::OutboxMessageStatus::Published;
     assert!(matches!(
-        prepared.validate_commit_evidence(&contract, false, &[published], &[]),
+        prepared.validate_commit_evidence(&contract, false, &[published], &[], None),
         Err(CommandCommitProofError::UnreachableConfirmation { .. })
     ));
 
     let mut failed = OutboxMessage::create("message-5", "todo.created", Vec::new()).unwrap();
     failed.status = crate::outbox::OutboxMessageStatus::Failed;
     assert!(matches!(
-        prepared.validate_commit_evidence(&contract, false, &[failed], &[]),
+        prepared.validate_commit_evidence(&contract, false, &[failed], &[], None),
         Err(CommandCommitProofError::UnreachableConfirmation { .. })
     ));
 }
@@ -604,7 +604,7 @@ fn succeeded_without_confirmations_allows_an_empty_domain_batch() {
     .unwrap();
 
     prepared
-        .validate_commit_evidence(&contract, false, &[], &[])
+        .validate_commit_evidence(&contract, false, &[], &[], None)
         .unwrap();
 }
 
@@ -619,7 +619,7 @@ fn causal_without_a_finite_confirmation_fails_at_commit_validation() {
 
     assert_eq!(
         prepared
-            .validate_commit_evidence(&contract, false, &[fact], &[])
+            .validate_commit_evidence(&contract, false, &[fact], &[], None)
             .unwrap_err(),
         CommandCommitProofError::CausalHasNoConfirmations
     );

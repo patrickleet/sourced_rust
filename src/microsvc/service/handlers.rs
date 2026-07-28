@@ -16,6 +16,7 @@ use crate::microsvc::context::Context;
 use crate::microsvc::error::HandlerError;
 use crate::microsvc::session::Session;
 use crate::outbox::{OutboxMessage, PreparedDomainEvent};
+use crate::projection::lower::{DirectCandidate, ProjectionDescriptor};
 use crate::read_model::{ReadModelWritePlanBuilder, RelationalReadModel};
 
 pub(super) type GuardFn<D> = dyn Fn(&Context<D>) -> bool + Send + Sync;
@@ -379,6 +380,27 @@ where
         self.context
             .workspace
             .prepare_projected(payload)
+            .map_err(workspace_handler_error)
+    }
+}
+
+impl<A, Publication>
+    PreparedCausalCommit<'_, '_, A, Publication, ProjectionDescriptor<DirectCandidate>>
+where
+    A: Aggregate + Send + Sync + 'static,
+{
+    /// Prepare the returned row through a modeled direct projection.
+    ///
+    /// The dispatcher resolves the descriptor from the authoritative,
+    /// ledger-stamped domain-event occurrence and admits only the existing
+    /// single complete-row direct proof.
+    pub fn projected<M>(self, payload: M) -> Result<PreparedCommand<Projected<M>>, HandlerError>
+    where
+        M: GraphqlOutputType + RelationalReadModel + Serialize + Send + Sync + 'static,
+    {
+        self.context
+            .workspace
+            .prepare_modeled_projected(payload, self.projection)
             .map_err(workspace_handler_error)
     }
 }

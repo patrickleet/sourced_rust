@@ -66,6 +66,8 @@ pub use projections::{
 pub(crate) use projection_obligations::{
     ProjectionObligationResolutionError, ProjectorTopologyIdentity,
 };
-pub(crate) use projection_proof::{CommandCommitProofError, ProjectionCommitProof};
+pub(crate) use projection_proof::{
+    validate_resolved_direct_plan, CommandCommitProofError, ProjectionCommitProof,
+};
 pub use typed_command::{typed_command, TypedCommand};
 pub(crate) use typed_command::{TypedCommandContract, TypedServiceCommandBinding};
