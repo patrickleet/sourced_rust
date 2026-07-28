@@ -1,6 +1,6 @@
 #[cfg(all(test, feature = "postgres"))]
 mod postgres_tests {
-    use std::sync::LazyLock;
+    use std::sync::{Arc, LazyLock};
     use std::time::Duration;
 
     use super::*;
@@ -10,14 +10,20 @@ mod postgres_tests {
         CommandReservation, PrincipalPartitionId, ReservationOutcome, TerminalCommandState,
     };
     use crate::projection_protocol::{
-        ProjectionCheckpointProbe, ProjectionRecordMutation, ProjectionScopeCodec,
+        ProjectionCheckpointProbe, ProjectionExecutionSnapshotBatchRequest,
+        ProjectionGraphSnapshotRequest, ProjectionQuerySnapshotRequest,
+        ProjectionObservationRequest, ProjectionRecordMutation, ProjectionScopeCodec,
     };
     use crate::repository::{CommitBatch, ReadModelWritePlanStore};
     use crate::table::{
-        ColumnType, DeleteTableRowMutation, ExpectedVersion, PrimaryKey, RowKey, RowValue,
-        RowValues, RowWriteMode, TableColumn, TableKind, TableRowMutation, TableSchema,
-        TableSchemaRegistry, TableStoreError, TableWritePlan,
+        ColumnType, DeleteTableRowMutation, ExpectedVersion, ForeignKey, PrimaryKey,
+        RelationshipDef, RelationshipKind, RowKey, RowValue, RowValues, RowWriteMode,
+        TableColumn, TableKind, TableRowMutation, TableSchema, TableSchemaRegistry,
+        TableStoreError, TableWritePlan,
     };
+
+    static POSTGRES_PROJECTION_TEST_LOCK: tokio::sync::Mutex<()> =
+        tokio::sync::Mutex::const_new(());
 
     fn topology() -> ProjectorTopologyId {
         ProjectorTopologyId::new(1, "postgres_projection_runtime", [71; 32]).unwrap()
@@ -54,6 +60,198 @@ mod postgres_tests {
         &SCHEMA
     }
 
+    fn graph_topology() -> ProjectorTopologyId {
+        ProjectorTopologyId::new(1, "postgres_graph_runtime", [72; 32]).unwrap()
+    }
+
+    fn graph_partition() -> ProjectionPartition {
+        ProjectionScopeCodec::new(graph_topology())
+            .encode_partition(Some(&serde_json::json!("postgres-graph-tenant")))
+            .unwrap()
+    }
+
+    fn graph_parent_schema() -> &'static TableSchema {
+        static SCHEMA: LazyLock<TableSchema> = LazyLock::new(|| TableSchema {
+            model_name: "PostgresGraphParentView".into(),
+            table_name: "postgres_graph_parent_views".into(),
+            columns: vec![
+                TableColumn {
+                    primary_key: true,
+                    ..TableColumn::new("id", "id", ColumnType::Text)
+                },
+                TableColumn::new("parent_id", "parent_id", ColumnType::Text),
+            ],
+            primary_key: PrimaryKey::new(["id"]),
+            version_column: Some(crate::table::DEFAULT_TABLE_VERSION_COLUMN.into()),
+            foreign_keys: Vec::new(),
+            indexes: Vec::new(),
+            relationships: vec![
+                RelationshipDef {
+                    field_name: "children".into(),
+                    kind: RelationshipKind::HasMany,
+                    target_model: "PostgresGraphChildView".into(),
+                    foreign_key: Some("parent_id".into()),
+                    through: None,
+                    target_foreign_key: None,
+                },
+                RelationshipDef {
+                    field_name: "featured_children".into(),
+                    kind: RelationshipKind::HasMany,
+                    target_model: "PostgresGraphChildView".into(),
+                    foreign_key: Some("parent_id".into()),
+                    through: None,
+                    target_foreign_key: None,
+                },
+            ],
+            kind: TableKind::ReadModel,
+        });
+        &SCHEMA
+    }
+
+    fn graph_child_schema() -> &'static TableSchema {
+        static SCHEMA: LazyLock<TableSchema> = LazyLock::new(|| TableSchema {
+            model_name: "PostgresGraphChildView".into(),
+            table_name: "postgres_graph_child_views".into(),
+            columns: vec![
+                TableColumn {
+                    primary_key: true,
+                    ..TableColumn::new("id", "id", ColumnType::Text)
+                },
+                TableColumn {
+                    foreign_key: Some(ForeignKey::new("postgres_graph_parent_views", "id")),
+                    ..TableColumn::new("parent_id", "parent_id", ColumnType::Text)
+                },
+            ],
+            primary_key: PrimaryKey::new(["id"]),
+            version_column: Some(crate::table::DEFAULT_TABLE_VERSION_COLUMN.into()),
+            foreign_keys: Vec::new(),
+            indexes: Vec::new(),
+            relationships: Vec::new(),
+            kind: TableKind::ReadModel,
+        });
+        &SCHEMA
+    }
+
+    fn graph_ownership() -> Vec<ProjectionModelOwnership> {
+        vec![
+            ProjectionModelOwnership::new(
+                "PostgresGraphParentView",
+                "postgres_graph_parent_views",
+            )
+            .unwrap(),
+            ProjectionModelOwnership::new(
+                "PostgresGraphChildView",
+                "postgres_graph_child_views",
+            )
+            .unwrap(),
+        ]
+    }
+
+    fn graph_codec() -> ProjectionScopeCodec {
+        ProjectionScopeCodec::with_models(
+            graph_topology(),
+            [
+                ("PostgresGraphParentView", graph_parent_schema()),
+                ("PostgresGraphChildView", graph_child_schema()),
+            ],
+        )
+        .unwrap()
+    }
+
+    fn graph_key(model: &str) -> RowKey {
+        RowKey::new([(
+            "id",
+            RowValue::String(match model {
+                "PostgresGraphParentView" => "parent-1",
+                "PostgresGraphChildView" => "child-1",
+                other => panic!("unknown PostgreSQL graph model {other}"),
+            }
+            .into()),
+        )])
+    }
+
+    fn graph_scope(model: &str) -> ProjectionRecordScope {
+        graph_codec()
+            .encode_row_scope_in_partition(model, graph_partition(), &graph_key(model))
+            .unwrap()
+    }
+
+    fn graph_mutation(model: &str) -> ProjectionRecordMutation {
+        let (schema, values) = match model {
+            "PostgresGraphParentView" => {
+                let mut values = RowValues::new();
+                values.insert("id", RowValue::String("parent-1".into()));
+                values.insert("parent_id", RowValue::String("wrong-parent".into()));
+                (graph_parent_schema(), values)
+            }
+            "PostgresGraphChildView" => {
+                let mut values = RowValues::new();
+                values.insert("id", RowValue::String("child-1".into()));
+                values.insert("parent_id", RowValue::String("parent-1".into()));
+                (graph_child_schema(), values)
+            }
+            other => panic!("unknown PostgreSQL graph model {other}"),
+        };
+        ProjectionRecordMutation::new(
+            graph_scope(model),
+            TableMutation::UpsertRow(TableRowMutation {
+                schema,
+                key: graph_key(model),
+                values,
+                expected_version: ExpectedVersion::Any,
+                mode: RowWriteMode::Upsert,
+            }),
+            ProjectionRecordExpectation::Missing,
+            ProjectionMutationKind::Upsert,
+        )
+        .unwrap()
+    }
+
+    fn graph_input() -> TrustedProjectionInput {
+        TrustedProjectionInput::mint(
+            ProjectionInputCursor::new(
+                graph_topology(),
+                graph_partition(),
+                ProjectionSource::new("postgres_graph_source", b"parent-1".to_vec()).unwrap(),
+                ProjectionEpoch::new("postgres-graph-source-v1").unwrap(),
+                1,
+            )
+            .unwrap(),
+            ProjectionInputFingerprint::from_canonical_bytes(b"postgres-graph-input"),
+            "postgres-graph-message-1",
+            "postgres-graph-cause-1",
+            ProjectionGeneration::initial(),
+            true,
+        )
+        .unwrap()
+    }
+
+    fn graph_snapshot_request(max_unique: usize) -> ProjectionGraphSnapshotRequest {
+        let root = ProjectionQuerySnapshotRequest::new(
+            &graph_codec(),
+            Some(&serde_json::json!("postgres-graph-tenant")),
+            "PostgresGraphParentView",
+            graph_key("PostgresGraphParentView"),
+            Vec::new(),
+        )
+        .unwrap();
+        ProjectionGraphSnapshotRequest::new(
+            root,
+            [
+                (
+                    "children".into(),
+                    Arc::new(graph_child_schema().clone()),
+                ),
+                (
+                    "featured_children".into(),
+                    Arc::new(graph_child_schema().clone()),
+                ),
+            ],
+            max_unique,
+        )
+        .unwrap()
+    }
+
     fn ownership() -> ProjectionModelOwnership {
         ProjectionModelOwnership::new("PostgresProjectionView", "postgres_projection_views")
             .unwrap()
@@ -66,6 +264,140 @@ mod postgres_tests {
 
     fn record_key() -> RowKey {
         RowKey::new([("id", RowValue::String("runtime-row".into()))])
+    }
+
+    fn matrix_partition(scenario: usize) -> ProjectionPartition {
+        ProjectionScopeCodec::new(matrix_topology())
+            .encode_partition(Some(&serde_json::json!(format!(
+                "postgres-matrix-{scenario}"
+            ))))
+            .unwrap()
+    }
+
+    fn matrix_topology() -> ProjectorTopologyId {
+        ProjectorTopologyId::new(1, "postgres_projection_matrix", [73; 32]).unwrap()
+    }
+
+    fn matrix_schema() -> &'static TableSchema {
+        static SCHEMA: LazyLock<TableSchema> = LazyLock::new(|| TableSchema {
+            model_name: "PostgresProjectionMatrixView".into(),
+            table_name: "postgres_projection_matrix_views".into(),
+            columns: vec![
+                TableColumn {
+                    primary_key: true,
+                    ..TableColumn::new("id", "id", ColumnType::Text)
+                },
+                TableColumn::new("value", "value", ColumnType::Text),
+            ],
+            primary_key: PrimaryKey::new(["id"]),
+            version_column: Some(crate::table::DEFAULT_TABLE_VERSION_COLUMN.into()),
+            foreign_keys: Vec::new(),
+            indexes: Vec::new(),
+            relationships: Vec::new(),
+            kind: TableKind::ReadModel,
+        });
+        &SCHEMA
+    }
+
+    fn matrix_ownership() -> ProjectionModelOwnership {
+        ProjectionModelOwnership::new(
+            "PostgresProjectionMatrixView",
+            "postgres_projection_matrix_views",
+        )
+        .unwrap()
+    }
+
+    fn matrix_codec() -> ProjectionScopeCodec {
+        ProjectionScopeCodec::with_models(
+            matrix_topology(),
+            [("PostgresProjectionMatrixView", matrix_schema())],
+        )
+        .unwrap()
+    }
+
+    fn matrix_key(scenario: usize, index: usize) -> RowKey {
+        RowKey::new([(
+            "id",
+            RowValue::String(format!("matrix-{scenario}-{index}")),
+        )])
+    }
+
+    fn matrix_scope(scenario: usize, index: usize) -> ProjectionRecordScope {
+        matrix_codec()
+            .encode_row_scope_in_partition(
+                "PostgresProjectionMatrixView",
+                matrix_partition(scenario),
+                &matrix_key(scenario, index),
+            )
+            .unwrap()
+    }
+
+    fn matrix_mutation(
+        scenario: usize,
+        index: usize,
+        value: &str,
+        expectation: ProjectionRecordExpectation,
+    ) -> ProjectionRecordMutation {
+        let mut values = RowValues::new();
+        values.insert(
+            "id",
+            RowValue::String(format!("matrix-{scenario}-{index}")),
+        );
+        values.insert("value", RowValue::String(value.into()));
+        ProjectionRecordMutation::new(
+            matrix_scope(scenario, index),
+            TableMutation::UpsertRow(TableRowMutation {
+                schema: matrix_schema(),
+                key: matrix_key(scenario, index),
+                values,
+                expected_version: ExpectedVersion::Any,
+                mode: RowWriteMode::Upsert,
+            }),
+            expectation,
+            ProjectionMutationKind::Upsert,
+        )
+        .unwrap()
+    }
+
+    fn matrix_input(scenario: usize, position: u64) -> TrustedProjectionInput {
+        TrustedProjectionInput::mint(
+            ProjectionInputCursor::new(
+                matrix_topology(),
+                matrix_partition(scenario),
+                ProjectionSource::new(
+                    "postgres_matrix_source",
+                    format!("matrix-{scenario}").into_bytes(),
+                )
+                .unwrap(),
+                ProjectionEpoch::new("postgres-matrix-source-v1").unwrap(),
+                position,
+            )
+            .unwrap(),
+            ProjectionInputFingerprint::from_canonical_bytes(
+                format!("postgres-matrix-{scenario}-{position}").as_bytes(),
+            ),
+            format!("postgres-matrix-message-{scenario}-{position}"),
+            format!("postgres-matrix-cause-{scenario}-{position}"),
+            ProjectionGeneration::initial(),
+            true,
+        )
+        .unwrap()
+    }
+
+    fn matrix_snapshot_request(
+        scenario: usize,
+        index: usize,
+    ) -> ProjectionQuerySnapshotRequest {
+        ProjectionQuerySnapshotRequest::new(
+            &matrix_codec(),
+            Some(&serde_json::json!(format!(
+                "postgres-matrix-{scenario}"
+            ))),
+            "PostgresProjectionMatrixView",
+            matrix_key(scenario, index),
+            Vec::new(),
+        )
+        .unwrap()
     }
 
     fn scope() -> ProjectionRecordScope {
@@ -199,10 +531,381 @@ mod postgres_tests {
     }
 
     #[tokio::test]
+    async fn postgres_coherent_execution_and_graph_snapshots_use_fk_references_and_unique_budgets()
+    {
+        let Ok(database_url) = std::env::var("DISTRIBUTED_TEST_POSTGRES_URL") else {
+            return;
+        };
+        let _test_guard = POSTGRES_PROJECTION_TEST_LOCK.lock().await;
+        let repository = SqlxRepository::<sqlx::Postgres>::connect_and_migrate(&database_url)
+            .await
+            .unwrap();
+        let mut registry = TableSchemaRegistry::new();
+        registry
+            .register_schema(graph_parent_schema().clone())
+            .unwrap();
+        registry
+            .register_schema(graph_child_schema().clone())
+            .unwrap();
+        repository
+            .bootstrap_table_schema_for_dev(&registry)
+            .await
+            .unwrap();
+        repository
+            .register_projection_models(&graph_topology(), &graph_ownership())
+            .await
+            .unwrap();
+        repository
+            .commit_projection(ProjectionCommitBatch {
+                input: graph_input(),
+                change_epoch: ProjectionEpoch::new("postgres-graph-changes-v1").unwrap(),
+                ownership: graph_ownership(),
+                mutations: vec![
+                    graph_mutation("PostgresGraphParentView"),
+                    graph_mutation("PostgresGraphChildView"),
+                ],
+                observations: Vec::new(),
+            })
+            .await
+            .unwrap();
+
+        let execution_request = ProjectionExecutionSnapshotBatchRequest::new(vec![
+            ProjectionQuerySnapshotRequest::new(
+                &graph_codec(),
+                Some(&serde_json::json!("postgres-graph-tenant")),
+                "PostgresGraphParentView",
+                graph_key("PostgresGraphParentView"),
+                Vec::new(),
+            )
+            .unwrap(),
+            ProjectionQuerySnapshotRequest::new(
+                &graph_codec(),
+                Some(&serde_json::json!("postgres-graph-tenant")),
+                "PostgresGraphChildView",
+                graph_key("PostgresGraphChildView"),
+                Vec::new(),
+            )
+            .unwrap(),
+        ])
+        .unwrap();
+        let execution = repository
+            .projection_execution_snapshot_batch(&execution_request)
+            .await
+            .unwrap();
+        assert_eq!(
+            execution
+                .snapshots
+                .iter()
+                .map(|snapshot| snapshot.scope.clone())
+                .collect::<Vec<_>>(),
+            execution_request
+                .requests
+                .iter()
+                .map(|request| request.scope.clone())
+                .collect::<Vec<_>>()
+        );
+        assert!(execution
+            .snapshots
+            .iter()
+            .all(|snapshot| snapshot.row.is_some() && snapshot.record.is_some()));
+
+        let graph = repository
+            .projection_graph_snapshot(&graph_snapshot_request(2))
+            .await
+            .unwrap();
+        assert_eq!(graph.includes["children"].rows.len(), 1);
+        assert_eq!(graph.includes["featured_children"].rows.len(), 1);
+        assert_eq!(
+            graph.includes["children"].rows[0].scope,
+            graph.includes["featured_children"].rows[0].scope
+        );
+        assert_eq!(
+            graph.includes["children"].rows[0]
+                .row
+                .as_ref()
+                .unwrap()
+                .get("parent_id"),
+            Some(&RowValue::String("parent-1".into()))
+        );
+
+        let error = repository
+            .projection_graph_snapshot(&graph_snapshot_request(1))
+            .await
+            .unwrap_err();
+        assert!(
+            matches!(error, ProjectionProtocolError::InvalidBatch(ref message)
+                if message.contains("returned 2 unique record scopes")
+                    && message.contains("budget is 1")),
+            "{error}"
+        );
+    }
+
+    #[tokio::test]
+    async fn four_position_postgres_projection_commit_failure_matrix_rolls_back_every_side_effect()
+    {
+        const PHYSICAL_MUTATION_POSITIONS: usize = 4;
+        let Ok(database_url) = std::env::var("DISTRIBUTED_TEST_POSTGRES_URL") else {
+            return;
+        };
+        let _test_guard = POSTGRES_PROJECTION_TEST_LOCK.lock().await;
+
+        for fail_at in 0..PHYSICAL_MUTATION_POSITIONS {
+            let repository = SqlxRepository::<sqlx::Postgres>::connect_and_migrate(&database_url)
+                .await
+                .unwrap();
+            let mut registry = TableSchemaRegistry::new();
+            registry.register_schema(matrix_schema().clone()).unwrap();
+            repository
+                .bootstrap_table_schema_for_dev(&registry)
+                .await
+                .unwrap();
+            repository
+                .register_projection_models(&matrix_topology(), &[matrix_ownership()])
+                .await
+                .unwrap();
+
+            let initial_input = matrix_input(fail_at, 1);
+            let initial = repository
+                .commit_projection(ProjectionCommitBatch {
+                    input: initial_input,
+                    change_epoch: ProjectionEpoch::new("postgres-matrix-changes-v1").unwrap(),
+                    ownership: vec![matrix_ownership()],
+                    mutations: (0..PHYSICAL_MUTATION_POSITIONS)
+                        .map(|index| {
+                            matrix_mutation(
+                                fail_at,
+                                index,
+                                "before",
+                                ProjectionRecordExpectation::Missing,
+                            )
+                        })
+                        .collect(),
+                    observations: Vec::new(),
+                })
+                .await
+                .unwrap();
+            assert_eq!(initial.records.len(), PHYSICAL_MUTATION_POSITIONS);
+
+            sqlx::query(
+                "CREATE OR REPLACE FUNCTION distributed_test_fail_projection_matrix() \
+                 RETURNS trigger AS $function$ \
+                 BEGIN \
+                   IF NEW.value = 'after' AND NEW.id IN \
+                     ('matrix-0-0', 'matrix-1-1', 'matrix-2-2', 'matrix-3-3') \
+                   THEN RAISE EXCEPTION 'forced projection matrix failure'; \
+                   END IF; \
+                   RETURN NEW; \
+                 END; \
+                 $function$ LANGUAGE plpgsql",
+            )
+            .execute(repository.pool())
+            .await
+            .unwrap();
+            sqlx::query(
+                "DROP TRIGGER IF EXISTS fail_projection_matrix_position \
+                 ON postgres_projection_matrix_views",
+            )
+            .execute(repository.pool())
+            .await
+            .unwrap();
+            sqlx::query(
+                "CREATE TRIGGER fail_projection_matrix_position \
+                 BEFORE UPDATE ON postgres_projection_matrix_views FOR EACH ROW \
+                 EXECUTE FUNCTION distributed_test_fail_projection_matrix()",
+            )
+            .execute(repository.pool())
+            .await
+            .unwrap();
+
+            let pattern = format!("matrix-{fail_at}-%");
+            let physical_before = sqlx::query(
+                "SELECT id, value, _sourced_version FROM postgres_projection_matrix_views \
+                 WHERE id LIKE $1 ORDER BY id",
+            )
+            .bind(&pattern)
+            .fetch_all(repository.pool())
+            .await
+            .unwrap()
+            .into_iter()
+            .map(|row| {
+                (
+                    row.try_get::<String, _>("id").unwrap(),
+                    row.try_get::<String, _>("value").unwrap(),
+                    row.try_get::<i64, _>("_sourced_version").unwrap(),
+                )
+            })
+            .collect::<Vec<_>>();
+            let mut snapshots_before = Vec::new();
+            for index in 0..PHYSICAL_MUTATION_POSITIONS {
+                snapshots_before.push(
+                    repository
+                        .projection_query_snapshot(&matrix_snapshot_request(fail_at, index))
+                        .await
+                        .unwrap(),
+                );
+            }
+            let changes_before = repository
+                .projection_changes(&matrix_topology(), &matrix_partition(fail_at), None, 100)
+                .await
+                .unwrap();
+            let retry_input = matrix_input(fail_at, 2);
+            let checkpoint_before = repository
+                .projection_checkpoint(&retry_input.cursor, ProjectionGeneration::initial())
+                .await
+                .unwrap();
+            let mut local_changes = repository.read_model_changes();
+            let mut pg_changes = sqlx::postgres::PgListener::connect(&database_url)
+                .await
+                .unwrap();
+            pg_changes
+                .listen("distributed_read_model_changes")
+                .await
+                .unwrap();
+
+            let failed_batch = || ProjectionCommitBatch {
+                input: retry_input.clone(),
+                change_epoch: ProjectionEpoch::new("postgres-matrix-changes-v1").unwrap(),
+                ownership: vec![matrix_ownership()],
+                mutations: (0..PHYSICAL_MUTATION_POSITIONS)
+                    .map(|index| {
+                        matrix_mutation(
+                            fail_at,
+                            index,
+                            "after",
+                            ProjectionRecordExpectation::Exact(
+                                initial.records[index].revision.clone(),
+                            ),
+                        )
+                    })
+                    .collect(),
+                observations: vec![ProjectionObservationRequest {
+                    kind: ProjectionObservationKind::Record,
+                    target: ProjectionObservationTarget::StagedRecord(matrix_scope(fail_at, 0)),
+                }],
+            };
+            assert!(
+                matches!(
+                    repository.commit_projection(failed_batch()).await,
+                    Err(ProjectionProtocolError::Table(TableStoreError::BackendStorage {
+                        ..
+                    }))
+                ),
+                "failure position {fail_at}"
+            );
+            assert!(matches!(
+                local_changes.try_recv(),
+                Err(tokio::sync::broadcast::error::TryRecvError::Empty)
+            ));
+            assert!(
+                tokio::time::timeout(Duration::from_millis(150), pg_changes.recv())
+                    .await
+                    .is_err(),
+                "failure position {fail_at} emitted a rolled-back pg_notify"
+            );
+
+            let physical_after = sqlx::query(
+                "SELECT id, value, _sourced_version FROM postgres_projection_matrix_views \
+                 WHERE id LIKE $1 ORDER BY id",
+            )
+            .bind(&pattern)
+            .fetch_all(repository.pool())
+            .await
+            .unwrap()
+            .into_iter()
+            .map(|row| {
+                (
+                    row.try_get::<String, _>("id").unwrap(),
+                    row.try_get::<String, _>("value").unwrap(),
+                    row.try_get::<i64, _>("_sourced_version").unwrap(),
+                )
+            })
+            .collect::<Vec<_>>();
+            assert_eq!(physical_after, physical_before, "failure position {fail_at}");
+            for (index, expected) in snapshots_before.iter().enumerate() {
+                assert_eq!(
+                    &repository
+                        .projection_query_snapshot(&matrix_snapshot_request(fail_at, index))
+                        .await
+                        .unwrap(),
+                    expected,
+                    "failure position {fail_at}"
+                );
+            }
+            assert_eq!(
+                repository
+                    .projection_changes(&matrix_topology(), &matrix_partition(fail_at), None, 100)
+                    .await
+                    .unwrap(),
+                changes_before,
+                "failure position {fail_at}"
+            );
+            assert_eq!(
+                repository
+                    .projection_checkpoint(&retry_input.cursor, ProjectionGeneration::initial())
+                    .await
+                    .unwrap(),
+                checkpoint_before
+            );
+            assert_eq!(
+                repository
+                    .projection_input_disposition(&retry_input)
+                    .await
+                    .unwrap(),
+                ProjectionInputDisposition::Pending
+            );
+            assert_eq!(
+                repository
+                    .projection_observation(
+                        &retry_input.causation_id,
+                        &matrix_scope(fail_at, 0),
+                        ProjectionObservationKind::Record,
+                    )
+                    .await
+                    .unwrap(),
+                None
+            );
+            assert_eq!(
+                sqlx::query_scalar::<_, i64>(
+                    "SELECT COUNT(*) FROM projection_input_receipts WHERE message_id = $1",
+                )
+                .bind(&retry_input.message_id)
+                .fetch_one(repository.pool())
+                .await
+                .unwrap(),
+                0
+            );
+            assert_eq!(
+                sqlx::query_scalar::<_, i64>(
+                    "SELECT COUNT(*) FROM consumer_inbox WHERE message_id = $1",
+                )
+                .bind(&retry_input.message_id)
+                .fetch_one(repository.pool())
+                .await
+                .unwrap(),
+                0
+            );
+
+            sqlx::query(
+                "DROP TRIGGER fail_projection_matrix_position ON postgres_projection_matrix_views",
+            )
+            .execute(repository.pool())
+            .await
+            .unwrap();
+            let applied = repository.commit_projection(failed_batch()).await.unwrap();
+            assert_eq!(applied.outcome, ProjectionCommitOutcome::Applied);
+            let duplicate = repository.commit_projection(failed_batch()).await.unwrap();
+            assert_eq!(duplicate.outcome, ProjectionCommitOutcome::Duplicate);
+            assert!(duplicate.records.is_empty());
+            assert!(duplicate.changes.is_empty());
+        }
+    }
+
+    #[tokio::test]
     async fn postgres_projection_protocol_runtime_conforms() {
         let Ok(database_url) = std::env::var("DISTRIBUTED_TEST_POSTGRES_URL") else {
             return;
         };
+        let _test_guard = POSTGRES_PROJECTION_TEST_LOCK.lock().await;
         let repository = SqlxRepository::<sqlx::Postgres>::connect_and_migrate(&database_url)
             .await
             .unwrap()

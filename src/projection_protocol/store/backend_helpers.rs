@@ -1,9 +1,10 @@
 use super::{
-    ProjectionChangeKind, ProjectionFailure, ProjectionFailureBatch, ProjectionMutationKind,
-    ProjectionProtocolError,
+    ProjectionChangeKind, ProjectionFailure, ProjectionFailureBatch,
+    ProjectionGraphSnapshotRequest, ProjectionMutationKind, ProjectionProtocolError,
+    MAX_PROJECTION_QUERY_BATCH_ROWS,
 };
 use crate::projection_protocol::MAX_PROJECTION_POSITION;
-use crate::table::TableMutation;
+use crate::table::{column_name_for, RelationshipDef, TableMutation, TableSchema};
 
 pub(crate) fn checked_next(
     value: u64,
@@ -45,6 +46,107 @@ pub(crate) fn failure_matches_batch(
         && failure.failure_bytes == batch.failure_bytes
         && failure.failure_digest == batch.failure_digest
         && failure.change.epoch() == &batch.change_epoch
+}
+
+pub(crate) fn validate_projection_graph_snapshot_request(
+    request: &ProjectionGraphSnapshotRequest,
+) -> Result<(), ProjectionProtocolError> {
+    request.root.validate()?;
+    if request.max_unique_record_scopes == 0
+        || request.max_unique_record_scopes > MAX_PROJECTION_QUERY_BATCH_ROWS
+    {
+        return Err(ProjectionProtocolError::InvalidBatch(format!(
+            "projection graph snapshot record-scope budget is {}; expected 1..={MAX_PROJECTION_QUERY_BATCH_ROWS}",
+            request.max_unique_record_scopes
+        )));
+    }
+    let query_scopes = request.includes.len().checked_add(1).ok_or_else(|| {
+        ProjectionProtocolError::InvalidBatch(
+            "projection graph snapshot query-scope count overflowed".into(),
+        )
+    })?;
+    if query_scopes > MAX_PROJECTION_QUERY_BATCH_ROWS {
+        return Err(ProjectionProtocolError::InvalidBatch(format!(
+            "projection graph snapshot has {query_scopes} query scopes; maximum is {MAX_PROJECTION_QUERY_BATCH_ROWS}"
+        )));
+    }
+    for (name, include) in &request.includes {
+        include.target_schema.validate()?;
+        let relationship = request
+            .root
+            .schema
+            .relationships
+            .iter()
+            .find(|relationship| relationship.field_name == *name)
+            .ok_or_else(|| {
+                ProjectionProtocolError::InvalidBatch(format!(
+                    "projection graph snapshot model `{}` has no relationship `{name}`",
+                    request.root.schema.model_name
+                ))
+            })?;
+        if relationship != &include.relationship
+            || relationship.target_model != include.target_schema.model_name
+            || matches!(
+                relationship.kind,
+                crate::table::RelationshipKind::ManyToMany
+            )
+        {
+            return Err(ProjectionProtocolError::InvalidBatch(format!(
+                "projection graph relationship `{name}` metadata is invalid or divergent"
+            )));
+        }
+    }
+    Ok(())
+}
+
+pub(crate) fn projection_has_many_columns(
+    root_schema: &TableSchema,
+    relationship: &RelationshipDef,
+    target_schema: &TableSchema,
+) -> Result<(String, String), ProjectionProtocolError> {
+    let foreign_key = relationship.foreign_key.as_deref().ok_or_else(|| {
+        ProjectionProtocolError::InvalidBatch(format!(
+            "projection graph relationship `{}` has no foreign key",
+            relationship.field_name
+        ))
+    })?;
+    let target_column = column_name_for(target_schema, foreign_key).ok_or_else(|| {
+        ProjectionProtocolError::InvalidBatch(format!(
+            "projection graph relationship `{}` foreign key `{foreign_key}` is not a target column",
+            relationship.field_name
+        ))
+    })?;
+    let target = target_schema
+        .columns
+        .iter()
+        .find(|column| column.column_name == target_column)
+        .expect("column_name_for returned a registered target column");
+    let root_column = match target.foreign_key.as_ref() {
+        Some(reference) if reference.table == root_schema.table_name => {
+            column_name_for(root_schema, &reference.column).ok_or_else(|| {
+                ProjectionProtocolError::InvalidBatch(format!(
+                    "projection graph relationship `{}` targets missing root column `{}`",
+                    relationship.field_name, reference.column
+                ))
+            })?
+        }
+        Some(reference) => {
+            return Err(ProjectionProtocolError::InvalidBatch(format!(
+                "projection graph relationship `{}` target column `{target_column}` references table `{}`, not root table `{}`",
+                relationship.field_name, reference.table, root_schema.table_name
+            )));
+        }
+        None => {
+            let [primary_key] = root_schema.primary_key.columns.as_slice() else {
+                return Err(ProjectionProtocolError::InvalidBatch(format!(
+                    "projection graph relationship `{}` needs a target-column foreign-key reference because root model `{}` has a composite key",
+                    relationship.field_name, root_schema.model_name
+                )));
+            };
+            primary_key.clone()
+        }
+    };
+    Ok((target_column, root_column))
 }
 
 #[cfg(test)]

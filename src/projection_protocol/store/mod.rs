@@ -55,7 +55,8 @@ use identity::{
 };
 
 pub(crate) use backend_helpers::{
-    change_kind_for_mutation, checked_next, failure_matches_batch, table_model_name,
+    change_kind_for_mutation, checked_next, failure_matches_batch, projection_has_many_columns,
+    table_model_name, validate_projection_graph_snapshot_request,
 };
 pub(crate) use commit::{
     ProjectionCommitBatch, ProjectionFailureBatch, SameTransactionProjectionBatch,

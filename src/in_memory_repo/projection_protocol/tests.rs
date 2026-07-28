@@ -8,14 +8,16 @@ use crate::command_ledger::{
     PrincipalPartitionId, ReservationOutcome, TerminalCommandState,
 };
 use crate::projection_protocol::{
+    ProjectionExecutionSnapshotBatchRequest, ProjectionGraphSnapshotRequest,
     ProjectionInputFingerprint, ProjectionModelOwnership, ProjectionObservationRequest,
-    ProjectionRecordMutation, ProjectionScopeCodec, TrustedProjectionInput,
+    ProjectionQuerySnapshotRequest, ProjectionRecordMutation, ProjectionScopeCodec,
+    TrustedProjectionInput,
 };
 use crate::repository::{CommitBatch, ReadModelWritePlanStore, TransactionalCommit};
 use crate::table::{
-    ColumnType, DeleteTableRowMutation, ExpectedVersion, PatchMode, PatchTableRowMutation,
-    PrimaryKey, RowKey, RowPatch, RowValue, RowValues, RowWriteMode, TableColumn, TableKind,
-    TableRowMutation, TableSchema,
+    ColumnType, DeleteTableRowMutation, ExpectedVersion, ForeignKey, PatchMode,
+    PatchTableRowMutation, PrimaryKey, RelationshipDef, RelationshipKind, RowKey, RowPatch,
+    RowValue, RowValues, RowWriteMode, TableColumn, TableKind, TableRowMutation, TableSchema,
 };
 
 fn topology() -> ProjectorTopologyId {
@@ -97,6 +99,162 @@ fn schema() -> &'static TableSchema {
     &SCHEMA
 }
 
+fn graph_parent_schema() -> &'static TableSchema {
+    static SCHEMA: LazyLock<TableSchema> = LazyLock::new(|| TableSchema {
+        model_name: "GraphParentView".into(),
+        table_name: "graph_parent_views".into(),
+        columns: vec![
+            TableColumn {
+                primary_key: true,
+                ..TableColumn::new("id", "id", ColumnType::Text)
+            },
+            TableColumn::new("parent_id", "parent_id", ColumnType::Text),
+        ],
+        primary_key: PrimaryKey::new(["id"]),
+        version_column: None,
+        foreign_keys: Vec::new(),
+        indexes: Vec::new(),
+        relationships: vec![
+            RelationshipDef {
+                field_name: "children".into(),
+                kind: RelationshipKind::HasMany,
+                target_model: "GraphChildView".into(),
+                foreign_key: Some("parent_id".into()),
+                through: None,
+                target_foreign_key: None,
+            },
+            RelationshipDef {
+                field_name: "featured_children".into(),
+                kind: RelationshipKind::HasMany,
+                target_model: "GraphChildView".into(),
+                foreign_key: Some("parent_id".into()),
+                through: None,
+                target_foreign_key: None,
+            },
+        ],
+        kind: TableKind::ReadModel,
+    });
+    &SCHEMA
+}
+
+fn graph_child_schema() -> &'static TableSchema {
+    static SCHEMA: LazyLock<TableSchema> = LazyLock::new(|| TableSchema {
+        model_name: "GraphChildView".into(),
+        table_name: "graph_child_views".into(),
+        columns: vec![
+            TableColumn {
+                primary_key: true,
+                ..TableColumn::new("id", "id", ColumnType::Text)
+            },
+            TableColumn {
+                foreign_key: Some(ForeignKey::new("graph_parent_views", "id")),
+                ..TableColumn::new("parent_id", "parent_id", ColumnType::Text)
+            },
+        ],
+        primary_key: PrimaryKey::new(["id"]),
+        version_column: None,
+        foreign_keys: Vec::new(),
+        indexes: Vec::new(),
+        relationships: Vec::new(),
+        kind: TableKind::ReadModel,
+    });
+    &SCHEMA
+}
+
+fn graph_ownership() -> Vec<ProjectionModelOwnership> {
+    vec![
+        ProjectionModelOwnership::new("GraphParentView", "graph_parent_views").unwrap(),
+        ProjectionModelOwnership::new("GraphChildView", "graph_child_views").unwrap(),
+    ]
+}
+
+fn graph_codec() -> ProjectionScopeCodec {
+    ProjectionScopeCodec::with_models(
+        topology(),
+        [
+            ("GraphParentView", graph_parent_schema()),
+            ("GraphChildView", graph_child_schema()),
+        ],
+    )
+    .unwrap()
+}
+
+fn graph_key(model: &str) -> RowKey {
+    RowKey::new([(
+        "id",
+        RowValue::String(
+            match model {
+                "GraphParentView" => "parent-1",
+                "GraphChildView" => "child-1",
+                other => panic!("unknown graph model {other}"),
+            }
+            .into(),
+        ),
+    )])
+}
+
+fn graph_scope(model: &str) -> ProjectionRecordScope {
+    graph_codec()
+        .encode_row_scope_in_partition(model, partition(), &graph_key(model))
+        .unwrap()
+}
+
+fn graph_mutation(model: &str) -> ProjectionRecordMutation {
+    let (schema, mut values) = match model {
+        "GraphParentView" => {
+            let mut values = RowValues::new();
+            values.insert("id", RowValue::String("parent-1".into()));
+            // Deliberately collides with the child's FK field name. HasMany
+            // membership must follow the target column's FK reference to `id`.
+            values.insert("parent_id", RowValue::String("wrong-parent".into()));
+            (graph_parent_schema(), values)
+        }
+        "GraphChildView" => {
+            let mut values = RowValues::new();
+            values.insert("id", RowValue::String("child-1".into()));
+            values.insert("parent_id", RowValue::String("parent-1".into()));
+            (graph_child_schema(), values)
+        }
+        other => panic!("unknown graph model {other}"),
+    };
+    ProjectionRecordMutation::new(
+        graph_scope(model),
+        TableMutation::UpsertRow(TableRowMutation {
+            schema,
+            key: graph_key(model),
+            values: std::mem::take(&mut values),
+            expected_version: ExpectedVersion::Any,
+            mode: RowWriteMode::Upsert,
+        }),
+        ProjectionRecordExpectation::Missing,
+        ProjectionMutationKind::Upsert,
+    )
+    .unwrap()
+}
+
+fn graph_snapshot_request(max_unique: usize) -> ProjectionGraphSnapshotRequest {
+    let root = ProjectionQuerySnapshotRequest::new(
+        &graph_codec(),
+        Some(&serde_json::json!("tenant-a")),
+        "GraphParentView",
+        graph_key("GraphParentView"),
+        Vec::new(),
+    )
+    .unwrap();
+    ProjectionGraphSnapshotRequest::new(
+        root,
+        [
+            ("children".into(), Arc::new(graph_child_schema().clone())),
+            (
+                "featured_children".into(),
+                Arc::new(graph_child_schema().clone()),
+            ),
+        ],
+        max_unique,
+    )
+    .unwrap()
+}
+
 fn scope_codec() -> ProjectionScopeCodec {
     ProjectionScopeCodec::with_models(topology(), [("TodoView", schema())]).unwrap()
 }
@@ -109,6 +267,51 @@ fn record_scope() -> ProjectionRecordScope {
     scope_codec()
         .encode_row_scope_in_partition("TodoView", partition(), &record_key())
         .unwrap()
+}
+
+fn matrix_key(index: usize) -> RowKey {
+    RowKey::new([("id", RowValue::String(format!("matrix-{index}")))])
+}
+
+fn matrix_scope(index: usize) -> ProjectionRecordScope {
+    scope_codec()
+        .encode_row_scope_in_partition("TodoView", partition(), &matrix_key(index))
+        .unwrap()
+}
+
+fn matrix_mutation(
+    index: usize,
+    value: &str,
+    expectation: ProjectionRecordExpectation,
+) -> ProjectionRecordMutation {
+    let key = matrix_key(index);
+    let mut values = RowValues::new();
+    values.insert("id", RowValue::String(format!("matrix-{index}")));
+    values.insert("value", RowValue::String(value.into()));
+    ProjectionRecordMutation::new(
+        matrix_scope(index),
+        TableMutation::UpsertRow(TableRowMutation {
+            schema: schema(),
+            key,
+            values,
+            expected_version: ExpectedVersion::Any,
+            mode: RowWriteMode::Upsert,
+        }),
+        expectation,
+        ProjectionMutationKind::Upsert,
+    )
+    .unwrap()
+}
+
+fn matrix_snapshot_request(index: usize) -> ProjectionQuerySnapshotRequest {
+    ProjectionQuerySnapshotRequest::new(
+        &scope_codec(),
+        Some(&serde_json::json!("tenant-a")),
+        "TodoView",
+        matrix_key(index),
+        Vec::new(),
+    )
+    .unwrap()
 }
 
 fn ownership() -> ProjectionModelOwnership {
@@ -2963,4 +3166,296 @@ async fn causal_owned_table_rejects_every_legacy_commit_path() {
         transactional,
         RepositoryError::CausalWriteRequired { ref table } if table == "todo_views"
     ));
+}
+
+#[tokio::test]
+async fn coherent_execution_and_graph_snapshots_use_fk_references_and_unique_scope_budgets() {
+    let repository = InMemoryRepository::new();
+    repository
+        .register_projection_models(&topology(), &graph_ownership())
+        .await
+        .unwrap();
+    repository
+        .commit_projection(ProjectionCommitBatch {
+            input: input(
+                1,
+                b"graph",
+                "graph-message-1",
+                "graph-cause-1",
+                ProjectionGeneration::initial(),
+            ),
+            change_epoch: change_epoch(),
+            ownership: graph_ownership(),
+            mutations: vec![
+                graph_mutation("GraphParentView"),
+                graph_mutation("GraphChildView"),
+            ],
+            observations: Vec::new(),
+        })
+        .await
+        .unwrap();
+
+    let execution_request = ProjectionExecutionSnapshotBatchRequest::new(vec![
+        ProjectionQuerySnapshotRequest::new(
+            &graph_codec(),
+            Some(&serde_json::json!("tenant-a")),
+            "GraphParentView",
+            graph_key("GraphParentView"),
+            Vec::new(),
+        )
+        .unwrap(),
+        ProjectionQuerySnapshotRequest::new(
+            &graph_codec(),
+            Some(&serde_json::json!("tenant-a")),
+            "GraphChildView",
+            graph_key("GraphChildView"),
+            Vec::new(),
+        )
+        .unwrap(),
+    ])
+    .unwrap();
+    let execution = repository
+        .projection_execution_snapshot_batch(&execution_request)
+        .await
+        .unwrap();
+    assert_eq!(
+        execution
+            .snapshots
+            .iter()
+            .map(|snapshot| snapshot.scope.clone())
+            .collect::<Vec<_>>(),
+        execution_request
+            .requests
+            .iter()
+            .map(|request| request.scope.clone())
+            .collect::<Vec<_>>()
+    );
+    assert!(execution
+        .snapshots
+        .iter()
+        .all(|snapshot| snapshot.row.is_some() && snapshot.record.is_some()));
+    assert!(ProjectionExecutionSnapshotBatchRequest::new(vec![
+        execution_request.requests[0].clone(),
+        execution_request.requests[0].clone(),
+    ])
+    .is_err());
+
+    let graph = repository
+        .projection_graph_snapshot(&graph_snapshot_request(2))
+        .await
+        .unwrap();
+    assert_eq!(graph.includes["children"].rows.len(), 1);
+    assert_eq!(graph.includes["featured_children"].rows.len(), 1);
+    assert_eq!(
+        graph.includes["children"].rows[0].scope, graph.includes["featured_children"].rows[0].scope,
+        "two includes may return one shared target scope"
+    );
+    assert_eq!(
+        graph.includes["children"].rows[0]
+            .row
+            .as_ref()
+            .unwrap()
+            .get("parent_id"),
+        Some(&RowValue::String("parent-1".into())),
+        "HasMany follows the target FK reference to root `id`, not the colliding root `parent_id`"
+    );
+
+    let error = repository
+        .projection_graph_snapshot(&graph_snapshot_request(1))
+        .await
+        .unwrap_err();
+    assert!(
+        matches!(error, ProjectionProtocolError::InvalidBatch(ref message)
+            if message.contains("returned 2 unique record scopes")
+                && message.contains("budget is 1")),
+        "{error}"
+    );
+}
+
+#[tokio::test]
+async fn four_position_in_memory_projection_commit_failure_matrix_rolls_back_every_side_effect() {
+    const PHYSICAL_MUTATION_POSITIONS: usize = 4;
+
+    for fail_at in 0..PHYSICAL_MUTATION_POSITIONS {
+        let repository = repository().await;
+        let initial = repository
+            .commit_projection(batch(
+                input(
+                    1,
+                    b"matrix-initial",
+                    "matrix-message-1",
+                    "matrix-cause-1",
+                    ProjectionGeneration::initial(),
+                ),
+                (0..PHYSICAL_MUTATION_POSITIONS)
+                    .map(|index| {
+                        matrix_mutation(index, "before", ProjectionRecordExpectation::Missing)
+                    })
+                    .collect(),
+                Vec::new(),
+            ))
+            .await
+            .unwrap();
+        assert_eq!(initial.records.len(), PHYSICAL_MUTATION_POSITIONS);
+
+        {
+            let target = matrix_mutation(
+                fail_at,
+                "after",
+                ProjectionRecordExpectation::Exact(initial.records[fail_at].revision.clone()),
+            )
+            .mutation
+            .lock_key();
+            repository
+                .model_store
+                .relational_rows
+                .write()
+                .unwrap()
+                .get_mut(&target)
+                .unwrap()
+                .version = u64::MAX;
+        }
+        let physical_before = {
+            let rows = repository.model_store.relational_rows.read().unwrap();
+            (0..PHYSICAL_MUTATION_POSITIONS)
+                .map(|index| {
+                    let key = matrix_mutation(
+                        index,
+                        "ignored",
+                        ProjectionRecordExpectation::Exact(initial.records[index].revision.clone()),
+                    )
+                    .mutation
+                    .lock_key();
+                    let row = rows.get(&key).unwrap();
+                    (key, row.values.clone(), row.version)
+                })
+                .collect::<Vec<_>>()
+        };
+        let mut snapshots_before = Vec::new();
+        for index in 0..PHYSICAL_MUTATION_POSITIONS {
+            snapshots_before.push(
+                repository
+                    .projection_query_snapshot(&matrix_snapshot_request(index))
+                    .await
+                    .unwrap(),
+            );
+        }
+        let changes_before = repository
+            .projection_changes(&topology(), &partition(), None, 100)
+            .await
+            .unwrap();
+        let inbox_before = repository.inbox_store.read().unwrap().len();
+        let observations_before = repository
+            .projection_protocol
+            .read()
+            .unwrap()
+            .observations
+            .len();
+
+        let retry_input = input(
+            2,
+            format!("matrix-fail-{fail_at}").as_bytes(),
+            &format!("matrix-message-2-{fail_at}"),
+            &format!("matrix-cause-2-{fail_at}"),
+            ProjectionGeneration::initial(),
+        );
+        let failed_batch = || ProjectionCommitBatch {
+            input: retry_input.clone(),
+            change_epoch: change_epoch(),
+            ownership: vec![ownership()],
+            mutations: (0..PHYSICAL_MUTATION_POSITIONS)
+                .map(|index| {
+                    matrix_mutation(
+                        index,
+                        "after",
+                        ProjectionRecordExpectation::Exact(initial.records[index].revision.clone()),
+                    )
+                })
+                .collect(),
+            observations: vec![ProjectionObservationRequest {
+                kind: ProjectionObservationKind::Record,
+                target: ProjectionObservationTarget::StagedRecord(matrix_scope(0)),
+            }],
+        };
+        let error = repository
+            .commit_projection(failed_batch())
+            .await
+            .unwrap_err();
+        assert!(
+            matches!(error, ProjectionProtocolError::Table(TableStoreError::Storage(ref message))
+                if message.contains("version overflow")),
+            "failure position {fail_at}: {error}"
+        );
+
+        let rows = repository.model_store.relational_rows.read().unwrap();
+        for (key, values, version) in &physical_before {
+            let row = rows.get(key).unwrap();
+            assert_eq!(&row.values, values, "failure position {fail_at}");
+            assert_eq!(row.version, *version, "failure position {fail_at}");
+        }
+        drop(rows);
+        for (index, expected) in snapshots_before.iter().enumerate() {
+            assert_eq!(
+                &repository
+                    .projection_query_snapshot(&matrix_snapshot_request(index))
+                    .await
+                    .unwrap(),
+                expected,
+                "failure position {fail_at}"
+            );
+        }
+        assert_eq!(
+            repository
+                .projection_changes(&topology(), &partition(), None, 100)
+                .await
+                .unwrap(),
+            changes_before,
+            "failure position {fail_at}"
+        );
+        assert_eq!(
+            repository.inbox_store.read().unwrap().len(),
+            inbox_before,
+            "failure position {fail_at}"
+        );
+        assert_eq!(
+            repository
+                .projection_protocol
+                .read()
+                .unwrap()
+                .observations
+                .len(),
+            observations_before,
+            "failure position {fail_at}"
+        );
+        assert_eq!(
+            repository
+                .projection_input_disposition(&retry_input)
+                .await
+                .unwrap(),
+            ProjectionInputDisposition::Pending,
+            "failure position {fail_at}"
+        );
+
+        let target = matrix_mutation(
+            fail_at,
+            "after",
+            ProjectionRecordExpectation::Exact(initial.records[fail_at].revision.clone()),
+        )
+        .mutation
+        .lock_key();
+        repository
+            .model_store
+            .relational_rows
+            .write()
+            .unwrap()
+            .get_mut(&target)
+            .unwrap()
+            .version = 1;
+        let applied = repository.commit_projection(failed_batch()).await.unwrap();
+        assert_eq!(applied.outcome, ProjectionCommitOutcome::Applied);
+        let duplicate = repository.commit_projection(failed_batch()).await.unwrap();
+        assert_eq!(duplicate.outcome, ProjectionCommitOutcome::Duplicate);
+        assert!(duplicate.records.is_empty());
+        assert!(duplicate.changes.is_empty());
+    }
 }

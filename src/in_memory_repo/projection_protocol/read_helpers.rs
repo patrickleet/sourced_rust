@@ -1,5 +1,213 @@
 use super::*;
 
+pub(super) fn read_projection_execution_snapshot_batch_from_state(
+    rows: &HashMap<String, StoredRow>,
+    protocol: &InMemoryProjectionProtocolState,
+    request: &ProjectionExecutionSnapshotBatchRequest,
+) -> Result<ProjectionExecutionSnapshotBatch, ProjectionProtocolError> {
+    request.validate()?;
+    let snapshots = request
+        .requests
+        .iter()
+        .map(|row_request| {
+            let snapshot = read_projection_query_snapshot_from_state(rows, protocol, row_request)?;
+            Ok(ProjectionScopedRowSnapshot {
+                scope: row_request.scope.clone(),
+                row: snapshot.row,
+                record: snapshot.record,
+            })
+        })
+        .collect::<Result<Vec<_>, ProjectionProtocolError>>()?;
+    Ok(ProjectionExecutionSnapshotBatch { snapshots })
+}
+
+pub(super) fn read_projection_graph_snapshot_from_state(
+    rows: &HashMap<String, StoredRow>,
+    protocol: &InMemoryProjectionProtocolState,
+    request: &ProjectionGraphSnapshotRequest,
+) -> Result<ProjectionGraphSnapshot, ProjectionProtocolError> {
+    validate_projection_graph_snapshot_request(request)?;
+    let root_snapshot = read_projection_query_snapshot_from_state(rows, protocol, &request.root)?;
+    let root = ProjectionScopedRowSnapshot {
+        scope: request.root.scope.clone(),
+        row: root_snapshot.row,
+        record: root_snapshot.record,
+    };
+
+    let mut includes = BTreeMap::new();
+    let mut unique_scopes = HashSet::from([root.scope.clone()]);
+    for (name, include) in &request.includes {
+        let mut snapshots = Vec::new();
+        if let Some(root_row) = root.row.as_ref() {
+            let keys = relationship_keys_from_state(
+                rows,
+                &request.root.schema,
+                root_row,
+                &include.relationship,
+                &include.target_schema,
+                request.max_unique_record_scopes,
+            )?;
+            let codec = graph_target_codec(request, &include.target_schema)?;
+            for key in keys {
+                let scope = codec
+                    .encode_row_scope_in_partition(
+                        &include.target_schema.model_name,
+                        request.root.scope.projection_partition().clone(),
+                        &key,
+                    )
+                    .map_err(|error| {
+                        ProjectionProtocolError::InvalidBatch(format!(
+                            "invalid projection graph included key: {error}"
+                        ))
+                    })?;
+                let is_new_scope = unique_scopes.insert(scope.clone());
+                if is_new_scope && unique_scopes.len() > request.max_unique_record_scopes {
+                    return Err(graph_budget_error(request, unique_scopes.len()));
+                }
+                let row_request = ProjectionQuerySnapshotRequest {
+                    schema: Arc::clone(&include.target_schema),
+                    key,
+                    scope: scope.clone(),
+                    checkpoint_probes: Vec::new(),
+                };
+                let snapshot =
+                    read_projection_query_snapshot_from_state(rows, protocol, &row_request)?;
+                snapshots.push(ProjectionScopedRowSnapshot {
+                    scope,
+                    row: snapshot.row,
+                    record: snapshot.record,
+                });
+            }
+            snapshots.sort_by(|left, right| {
+                left.scope
+                    .canonical_key_bytes()
+                    .cmp(right.scope.canonical_key_bytes())
+            });
+        }
+        includes.insert(
+            name.clone(),
+            ProjectionGraphIncludeSnapshot {
+                relationship: include.relationship.clone(),
+                target_schema: include.target_schema.as_ref().clone(),
+                rows: snapshots,
+            },
+        );
+    }
+    Ok(ProjectionGraphSnapshot { root, includes })
+}
+
+fn graph_target_codec(
+    request: &ProjectionGraphSnapshotRequest,
+    target_schema: &TableSchema,
+) -> Result<ProjectionScopeCodec, ProjectionProtocolError> {
+    ProjectionScopeCodec::with_models(
+        request.root.scope.topology().clone(),
+        [(target_schema.model_name.as_str(), target_schema)],
+    )
+    .map_err(|error| {
+        ProjectionProtocolError::InvalidBatch(format!(
+            "invalid projection graph target schema: {error}"
+        ))
+    })
+}
+
+fn relationship_keys_from_state(
+    rows: &HashMap<String, StoredRow>,
+    root_schema: &TableSchema,
+    root_row: &RowValues,
+    relationship: &crate::table::RelationshipDef,
+    target_schema: &TableSchema,
+    max_unique: usize,
+) -> Result<Vec<RowKey>, ProjectionProtocolError> {
+    let foreign_key = relationship.foreign_key.as_deref().ok_or_else(|| {
+        ProjectionProtocolError::InvalidBatch(format!(
+            "projection graph relationship `{}` has no foreign key",
+            relationship.field_name
+        ))
+    })?;
+    let (target_column, value) = match relationship.kind {
+        RelationshipKind::HasMany => {
+            let (target_column, root_column) =
+                projection_has_many_columns(root_schema, relationship, target_schema)?;
+            let value = root_row.get(&root_column).cloned().ok_or_else(|| {
+                ProjectionProtocolError::InvalidBatch(format!(
+                    "projection graph root `{}` is missing relationship key `{root_column}`",
+                    root_schema.model_name
+                ))
+            })?;
+            (target_column, value)
+        }
+        RelationshipKind::BelongsTo => {
+            let source_column = column_name_for(root_schema, foreign_key).ok_or_else(|| {
+                ProjectionProtocolError::InvalidBatch(format!(
+                    "projection graph relationship `{}` foreign key `{foreign_key}` is not a source column",
+                    relationship.field_name
+                ))
+            })?;
+            let [target_column] = target_schema.primary_key.columns.as_slice() else {
+                return Err(ProjectionProtocolError::InvalidBatch(format!(
+                    "projection graph belongs-to target `{}` must have one primary-key column",
+                    target_schema.model_name
+                )));
+            };
+            let value = root_row.get(&source_column).cloned().ok_or_else(|| {
+                ProjectionProtocolError::InvalidBatch(format!(
+                    "projection graph root `{}` is missing relationship key `{source_column}`",
+                    root_schema.model_name
+                ))
+            })?;
+            (target_column.clone(), value)
+        }
+        RelationshipKind::ManyToMany => {
+            return Err(ProjectionProtocolError::InvalidBatch(format!(
+                "projection graph relationship `{}` is many-to-many; project an explicit join read model instead",
+                relationship.field_name
+            )));
+        }
+    };
+    if value == crate::table::RowValue::Null {
+        return Ok(Vec::new());
+    }
+
+    let prefix = format!("{}:", target_schema.table_name);
+    let mut keys = Vec::new();
+    for (storage_key, stored) in rows {
+        if storage_key.starts_with(&prefix) && stored.values.get(&target_column) == Some(&value) {
+            if keys.len() == max_unique {
+                return Err(graph_budget_error_from_parts(
+                    root_schema,
+                    max_unique.saturating_add(1),
+                    max_unique,
+                ));
+            }
+            keys.push(key_from_row(target_schema, &stored.values)?);
+        }
+    }
+    Ok(keys)
+}
+
+fn graph_budget_error(
+    request: &ProjectionGraphSnapshotRequest,
+    returned: usize,
+) -> ProjectionProtocolError {
+    graph_budget_error_from_parts(
+        &request.root.schema,
+        returned,
+        request.max_unique_record_scopes,
+    )
+}
+
+fn graph_budget_error_from_parts(
+    root_schema: &TableSchema,
+    returned: usize,
+    maximum: usize,
+) -> ProjectionProtocolError {
+    ProjectionProtocolError::InvalidBatch(format!(
+        "projection graph model `{}` returned {returned} unique record scopes; request budget is {maximum}",
+        root_schema.model_name
+    ))
+}
+
 pub(super) fn read_projection_query_snapshot_from_state(
     rows: &HashMap<String, StoredRow>,
     protocol: &InMemoryProjectionProtocolState,

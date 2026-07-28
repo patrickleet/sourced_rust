@@ -697,6 +697,41 @@ impl ProjectionProtocolStore for InMemoryRepository {
         }
     }
 
+    fn projection_execution_snapshot_batch<'a>(
+        &'a self,
+        request: &'a ProjectionExecutionSnapshotBatchRequest,
+    ) -> impl Future<Output = Result<ProjectionExecutionSnapshotBatch, ProjectionProtocolError>>
+           + Send
+           + 'a {
+        async move {
+            request.validate()?;
+            let rows = self.model_store.relational_rows.read().map_err(|_| {
+                RepositoryError::LockPoisoned("projection execution snapshot rows read")
+            })?;
+            let protocol = self.projection_protocol.read().map_err(|_| {
+                RepositoryError::LockPoisoned("projection execution snapshot protocol read")
+            })?;
+            read_projection_execution_snapshot_batch_from_state(&rows, &protocol, request)
+        }
+    }
+
+    fn projection_graph_snapshot<'a>(
+        &'a self,
+        request: &'a ProjectionGraphSnapshotRequest,
+    ) -> impl Future<Output = Result<ProjectionGraphSnapshot, ProjectionProtocolError>> + Send + 'a
+    {
+        async move {
+            validate_projection_graph_snapshot_request(request)?;
+            let rows = self.model_store.relational_rows.read().map_err(|_| {
+                RepositoryError::LockPoisoned("projection graph snapshot rows read")
+            })?;
+            let protocol = self.projection_protocol.read().map_err(|_| {
+                RepositoryError::LockPoisoned("projection graph snapshot protocol read")
+            })?;
+            read_projection_graph_snapshot_from_state(&rows, &protocol, request)
+        }
+    }
+
     fn projection_obligation_evidence_batch<'a>(
         &'a self,
         request: &'a ProjectionObligationEvidenceBatchRequest,

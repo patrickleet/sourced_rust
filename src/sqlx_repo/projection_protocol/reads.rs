@@ -921,6 +921,268 @@ where
     })
 }
 
+pub(crate) async fn read_projection_execution_snapshot_batch_in_executor<DB>(
+    connection: &mut DB::Connection,
+    request: &ProjectionExecutionSnapshotBatchRequest,
+) -> Result<ProjectionExecutionSnapshotBatch, ProjectionProtocolError>
+where
+    DB: SqlxRepoBackend,
+    DB::Arguments: IntoArguments<DB>,
+    for<'c> &'c mut DB::Connection: Executor<'c, Database = DB>,
+    for<'q> i64: Encode<'q, DB> + Type<DB> + sqlx::Decode<'q, DB>,
+    for<'q> String: Type<DB> + sqlx::Decode<'q, DB>,
+    for<'q> Vec<u8>: Type<DB> + sqlx::Decode<'q, DB>,
+    for<'q> &'q str: Encode<'q, DB> + Type<DB>,
+    for<'q> &'q [u8]: Encode<'q, DB> + Type<DB>,
+    for<'r> &'r str: sqlx::ColumnIndex<DB::Row>,
+{
+    request.validate()?;
+    let mut snapshots = Vec::with_capacity(request.requests.len());
+    for row_request in &request.requests {
+        let snapshot =
+            read_projection_query_snapshot_in_executor::<DB, _>(&mut *connection, row_request)
+                .await?;
+        snapshots.push(ProjectionScopedRowSnapshot {
+            scope: row_request.scope.clone(),
+            row: snapshot.row,
+            record: snapshot.record,
+        });
+    }
+    Ok(ProjectionExecutionSnapshotBatch { snapshots })
+}
+
+pub(crate) async fn read_projection_graph_snapshot_in_executor<DB>(
+    connection: &mut DB::Connection,
+    request: &ProjectionGraphSnapshotRequest,
+) -> Result<ProjectionGraphSnapshot, ProjectionProtocolError>
+where
+    DB: SqlxRepoBackend,
+    DB::Arguments: IntoArguments<DB>,
+    for<'c> &'c mut DB::Connection: Executor<'c, Database = DB>,
+    for<'q> i64: Encode<'q, DB> + Type<DB> + sqlx::Decode<'q, DB>,
+    for<'q> String: Type<DB> + sqlx::Decode<'q, DB>,
+    for<'q> Vec<u8>: Type<DB> + sqlx::Decode<'q, DB>,
+    for<'q> &'q str: Encode<'q, DB> + Type<DB>,
+    for<'q> &'q [u8]: Encode<'q, DB> + Type<DB>,
+    for<'r> &'r str: sqlx::ColumnIndex<DB::Row>,
+{
+    validate_projection_graph_snapshot_request(request)?;
+    let root_snapshot =
+        read_projection_query_snapshot_in_executor::<DB, _>(&mut *connection, &request.root)
+            .await?;
+    let root = ProjectionScopedRowSnapshot {
+        scope: request.root.scope.clone(),
+        row: root_snapshot.row,
+        record: root_snapshot.record,
+    };
+    let mut includes = std::collections::BTreeMap::new();
+    let mut unique_scopes = std::collections::HashSet::from([root.scope.clone()]);
+    for (name, include) in &request.includes {
+        let mut snapshots = Vec::new();
+        if let Some(root_row) = root.row.as_ref() {
+            let keys = read_projection_relationship_keys_in_executor::<DB>(
+                connection,
+                &request.root.schema,
+                root_row,
+                &include.relationship,
+                &include.target_schema,
+                request.max_unique_record_scopes,
+            )
+            .await?;
+            let codec = ProjectionScopeCodec::with_models(
+                request.root.scope.topology().clone(),
+                [(
+                    include.target_schema.model_name.as_str(),
+                    include.target_schema.as_ref(),
+                )],
+            )
+            .map_err(|error| {
+                ProjectionProtocolError::InvalidBatch(format!(
+                    "invalid projection graph target schema: {error}"
+                ))
+            })?;
+            for key in keys {
+                let scope = codec
+                    .encode_row_scope_in_partition(
+                        &include.target_schema.model_name,
+                        request.root.scope.projection_partition().clone(),
+                        &key,
+                    )
+                    .map_err(|error| {
+                        ProjectionProtocolError::InvalidBatch(format!(
+                            "invalid projection graph included key: {error}"
+                        ))
+                    })?;
+                let is_new_scope = unique_scopes.insert(scope.clone());
+                if is_new_scope && unique_scopes.len() > request.max_unique_record_scopes {
+                    return Err(projection_graph_budget_error(
+                        &request.root.schema,
+                        unique_scopes.len(),
+                        request.max_unique_record_scopes,
+                    ));
+                }
+                let row_request = ProjectionQuerySnapshotRequest {
+                    schema: Arc::clone(&include.target_schema),
+                    key,
+                    scope: scope.clone(),
+                    checkpoint_probes: Vec::new(),
+                };
+                let snapshot = read_projection_query_snapshot_in_executor::<DB, _>(
+                    &mut *connection,
+                    &row_request,
+                )
+                .await?;
+                snapshots.push(ProjectionScopedRowSnapshot {
+                    scope,
+                    row: snapshot.row,
+                    record: snapshot.record,
+                });
+            }
+            snapshots.sort_by(|left, right| {
+                left.scope
+                    .canonical_key_bytes()
+                    .cmp(right.scope.canonical_key_bytes())
+            });
+        }
+        includes.insert(
+            name.clone(),
+            ProjectionGraphIncludeSnapshot {
+                relationship: include.relationship.clone(),
+                target_schema: include.target_schema.as_ref().clone(),
+                rows: snapshots,
+            },
+        );
+    }
+    Ok(ProjectionGraphSnapshot { root, includes })
+}
+
+#[allow(clippy::too_many_arguments)]
+async fn read_projection_relationship_keys_in_executor<DB>(
+    connection: &mut DB::Connection,
+    root_schema: &TableSchema,
+    root_row: &RowValues,
+    relationship: &crate::table::RelationshipDef,
+    target_schema: &TableSchema,
+    max_unique: usize,
+) -> Result<Vec<RowKey>, ProjectionProtocolError>
+where
+    DB: SqlxRepoBackend,
+    DB::Arguments: IntoArguments<DB>,
+    for<'c> &'c mut DB::Connection: Executor<'c, Database = DB>,
+    for<'r> &'r str: sqlx::ColumnIndex<DB::Row>,
+{
+    let foreign_key = relationship.foreign_key.as_deref().ok_or_else(|| {
+        ProjectionProtocolError::InvalidBatch(format!(
+            "projection graph relationship `{}` has no foreign key",
+            relationship.field_name
+        ))
+    })?;
+    let (target_column, value) = match relationship.kind {
+        RelationshipKind::HasMany => {
+            let (target_column, root_column) =
+                projection_has_many_columns(root_schema, relationship, target_schema)?;
+            let value = root_row.get(&root_column).cloned().ok_or_else(|| {
+                ProjectionProtocolError::InvalidBatch(format!(
+                    "projection graph root `{}` is missing relationship key `{root_column}`",
+                    root_schema.model_name
+                ))
+            })?;
+            (target_column, value)
+        }
+        RelationshipKind::BelongsTo => {
+            let source_column = column_name_for(root_schema, foreign_key).ok_or_else(|| {
+                ProjectionProtocolError::InvalidBatch(format!(
+                    "projection graph relationship `{}` foreign key `{foreign_key}` is not a source column",
+                    relationship.field_name
+                ))
+            })?;
+            let [target_column] = target_schema.primary_key.columns.as_slice() else {
+                return Err(ProjectionProtocolError::InvalidBatch(format!(
+                    "projection graph belongs-to target `{}` must have one primary-key column",
+                    target_schema.model_name
+                )));
+            };
+            let value = root_row.get(&source_column).cloned().ok_or_else(|| {
+                ProjectionProtocolError::InvalidBatch(format!(
+                    "projection graph root `{}` is missing relationship key `{source_column}`",
+                    root_schema.model_name
+                ))
+            })?;
+            (target_column.clone(), value)
+        }
+        RelationshipKind::ManyToMany => {
+            return Err(ProjectionProtocolError::InvalidBatch(format!(
+                "projection graph relationship `{}` is many-to-many; project an explicit join read model instead",
+                relationship.field_name
+            )));
+        }
+    };
+    if value == RowValue::Null {
+        return Ok(Vec::new());
+    }
+
+    let mut builder = QueryBuilder::<DB>::new("SELECT ");
+    for (index, primary_key) in target_schema.primary_key.columns.iter().enumerate() {
+        if index > 0 {
+            builder.push(", ");
+        }
+        DB::push_select_column(&mut builder, column_by_name(target_schema, primary_key)?);
+    }
+    builder.push(" FROM ");
+    builder.push(quote_identifier(&target_schema.table_name));
+    builder.push(" WHERE ");
+    builder.push(quote_identifier(&target_column));
+    builder.push(" = ");
+    DB::push_row_value_bind(
+        &mut builder,
+        value,
+        column_by_name(target_schema, &target_column)?,
+    )?;
+    push_order_by_primary_key(&mut builder, target_schema);
+    builder.push(" LIMIT ");
+    builder.push(max_unique.saturating_add(1).to_string());
+
+    let rows = builder
+        .build()
+        .fetch_all(&mut *connection)
+        .await
+        .map_err(|error| {
+            protocol_storage_error::<DB>("load projection graph relationship keys", error)
+        })?;
+    if rows.len() > max_unique {
+        return Err(projection_graph_budget_error(
+            root_schema,
+            max_unique.saturating_add(1),
+            max_unique,
+        ));
+    }
+    rows.iter()
+        .map(|row| {
+            let values = target_schema
+                .primary_key
+                .columns
+                .iter()
+                .map(|primary_key| {
+                    let column = column_by_name(target_schema, primary_key)?;
+                    Ok((primary_key.clone(), DB::row_value(row, column)?))
+                })
+                .collect::<Result<Vec<_>, TableStoreError>>()?;
+            Ok(RowKey::new(values))
+        })
+        .collect()
+}
+
+fn projection_graph_budget_error(
+    root_schema: &TableSchema,
+    returned: usize,
+    maximum: usize,
+) -> ProjectionProtocolError {
+    ProjectionProtocolError::InvalidBatch(format!(
+        "projection graph model `{}` returned {returned} unique record scopes; request budget is {maximum}",
+        root_schema.model_name
+    ))
+}
+
 /// Resolve a bounded command-obligation set from one existing SQL snapshot.
 ///
 /// Observations and failures are read in two set queries on the same borrowed

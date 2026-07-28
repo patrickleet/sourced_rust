@@ -369,8 +369,8 @@ impl ProjectionReadModelWorkspace {
         }
         let root_row = graph.root.row.as_ref();
 
-        let mut scopes = HashSet::new();
-        scopes.insert(graph.root.scope.clone());
+        let mut scopes = HashMap::new();
+        scopes.insert(graph.root.scope.clone(), &graph.root);
         let causal = self
             .causal
             .lock()
@@ -430,12 +430,16 @@ impl ProjectionReadModelWorkspace {
                     }
                     .into());
                 }
-                if !scopes.insert(row.scope.clone()) {
-                    return Err(ProjectionProtocolError::InvalidBatch(format!(
-                        "projection graph repeats model `{}` record scope",
-                        row.scope.model()
-                    ))
-                    .into());
+                if let Some(previous) = scopes.get(&row.scope) {
+                    if *previous != row {
+                        return Err(ProjectionProtocolError::InvalidBatch(format!(
+                            "projection graph returns divergent snapshots for model `{}` record scope",
+                            row.scope.model()
+                        ))
+                        .into());
+                    }
+                } else {
+                    scopes.insert(row.scope.clone(), row);
                 }
             }
         }
@@ -532,20 +536,12 @@ fn validate_relationship_membership(
     })?;
     let coherent = match relationship.kind {
         RelationshipKind::HasMany => {
-            let target_column = column_name_for(target_schema, foreign_key).ok_or_else(|| {
-                ProjectionProtocolError::InvalidBatch(format!(
-                    "projection graph relationship `{}` foreign key `{foreign_key}` is not a target column",
-                    relationship.field_name
-                ))
-            })?;
-            let root_column = column_name_for(root_schema, foreign_key)
-                .or_else(|| root_schema.primary_key.columns.first().cloned())
-                .ok_or_else(|| {
-                    ProjectionProtocolError::InvalidBatch(format!(
-                        "projection graph relationship `{}` has no root key column",
-                        relationship.field_name
-                    ))
-                })?;
+            let (target_column, root_column) =
+                crate::projection_protocol::projection_has_many_columns(
+                    root_schema,
+                    relationship,
+                    target_schema,
+                )?;
             root_row.get(&root_column) == target_row.get(&target_column)
         }
         RelationshipKind::BelongsTo => {
@@ -588,12 +584,7 @@ fn graph_record_scopes(
     scopes.insert(graph.root.scope.clone());
     for include in graph.includes.values() {
         for row in &include.rows {
-            if !scopes.insert(row.scope.clone()) {
-                return Err(ProjectionProtocolError::InvalidBatch(format!(
-                    "projection graph repeats model `{}` record scope",
-                    row.scope.model()
-                )));
-            }
+            scopes.insert(row.scope.clone());
         }
     }
     Ok(scopes)
@@ -1387,6 +1378,30 @@ mod tests {
             MAX_PROJECTION_QUERY_BATCH_ROWS + 1,
         )
         .is_err());
+    }
+
+    #[test]
+    fn graph_record_scope_budget_counts_one_target_shared_by_two_includes_once() {
+        let causal = causal_workspace();
+        let graph = player_graph(
+            &causal,
+            player("player-1", "Ada"),
+            vec![weapon("player-1", "sword", "2026-07-28")],
+        );
+        let shared = graph.includes["weapons"].clone();
+        let graph = ProjectionGraphSnapshot {
+            root: graph.root,
+            includes: BTreeMap::from([
+                ("equipped_weapons".into(), shared.clone()),
+                ("weapons".into(), shared),
+            ]),
+        };
+
+        assert_eq!(
+            graph_record_scopes(&graph).unwrap().len(),
+            2,
+            "the root and one shared target consume two unique record scopes"
+        );
     }
 
     #[test]

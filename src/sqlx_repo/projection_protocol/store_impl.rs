@@ -947,6 +947,42 @@ where
         }
     }
 
+    fn projection_execution_snapshot_batch<'a>(
+        &'a self,
+        request: &'a ProjectionExecutionSnapshotBatchRequest,
+    ) -> impl Future<Output = Result<ProjectionExecutionSnapshotBatch, ProjectionProtocolError>>
+           + Send
+           + 'a {
+        let request = request.clone();
+        async move {
+            request.validate()?;
+            with_projection_read_snapshot(self.pool(), move |connection| {
+                Box::pin(async move {
+                    read_projection_execution_snapshot_batch_in_executor::<DB>(connection, &request)
+                        .await
+                })
+            })
+            .await
+        }
+    }
+
+    fn projection_graph_snapshot<'a>(
+        &'a self,
+        request: &'a ProjectionGraphSnapshotRequest,
+    ) -> impl Future<Output = Result<ProjectionGraphSnapshot, ProjectionProtocolError>> + Send + 'a
+    {
+        let request = request.clone();
+        async move {
+            validate_projection_graph_snapshot_request(&request)?;
+            with_projection_read_snapshot(self.pool(), move |connection| {
+                Box::pin(async move {
+                    read_projection_graph_snapshot_in_executor::<DB>(connection, &request).await
+                })
+            })
+            .await
+        }
+    }
+
     fn projection_obligation_evidence_batch<'a>(
         &'a self,
         request: &'a ProjectionObligationEvidenceBatchRequest,

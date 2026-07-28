@@ -14,15 +14,19 @@
 use std::collections::{BTreeSet, HashMap};
 use std::future::Future;
 use std::pin::Pin;
+use std::sync::Arc;
 
 use sqlx::{Encode, Executor, IntoArguments, Pool, QueryBuilder, Row, Transaction, Type};
 
 use crate::projection_protocol::{
-    change_kind_for_mutation, checked_next, table_model_name, ProjectionCausationEvidenceBatch,
+    change_kind_for_mutation, checked_next, projection_has_many_columns, table_model_name,
+    validate_projection_graph_snapshot_request, ProjectionCausationEvidenceBatch,
     ProjectionCausationEvidenceRequest, ProjectionChange, ProjectionChangeCursor,
     ProjectionChangeKind, ProjectionChangeRead, ProjectionChangeRetention, ProjectionCheckpoint,
     ProjectionCommitBatch, ProjectionCommitOutcome, ProjectionCommitResult, ProjectionEpoch,
-    ProjectionFailure, ProjectionFailureBatch, ProjectionFailureLocation, ProjectionGeneration,
+    ProjectionExecutionSnapshotBatch, ProjectionExecutionSnapshotBatchRequest, ProjectionFailure,
+    ProjectionFailureBatch, ProjectionFailureLocation, ProjectionGeneration,
+    ProjectionGraphIncludeSnapshot, ProjectionGraphSnapshot, ProjectionGraphSnapshotRequest,
     ProjectionInputCursor, ProjectionInputDisposition, ProjectionInputFingerprint,
     ProjectionLiveRecordBatch, ProjectionLiveRecordBatchRequest, ProjectionModelOwnership,
     ProjectionMutationKind, ProjectionObligationEvidence, ProjectionObligationEvidenceBatch,
@@ -31,18 +35,21 @@ use crate::projection_protocol::{
     ProjectionPartitionSnapshot, ProjectionPendingRetry, ProjectionProtocolError,
     ProjectionProtocolStore, ProjectionQuerySnapshot, ProjectionQuerySnapshotBatch,
     ProjectionQuerySnapshotBatchRequest, ProjectionQuerySnapshotRequest,
-    ProjectionRecordExpectation, ProjectionRecordMetadata, ProjectionRecordScope, ProjectionSource,
-    ProjectorTopologyId, RecordRevision, SameTransactionProjectionBatch,
-    SameTransactionProjectionEvidence, TrustedProjectionInput, MAX_PROJECTION_EVIDENCE_BATCH_ITEMS,
+    ProjectionRecordExpectation, ProjectionRecordMetadata, ProjectionRecordScope,
+    ProjectionScopeCodec, ProjectionScopedRowSnapshot, ProjectionSource, ProjectorTopologyId,
+    RecordRevision, SameTransactionProjectionBatch, SameTransactionProjectionEvidence,
+    TrustedProjectionInput, MAX_PROJECTION_EVIDENCE_BATCH_ITEMS,
 };
 use crate::repository::RepositoryError;
 use crate::sqlx_repo::read_model::{
-    apply_read_model_write_plan_in_tx, push_key_predicates, quote_identifier, row_version_in_tx,
-    validate_sql_write_plan, validate_values_match_key, version_column,
+    apply_read_model_write_plan_in_tx, column_by_name, push_key_predicates,
+    push_order_by_primary_key, quote_identifier, row_version_in_tx, validate_sql_write_plan,
+    validate_values_match_key, version_column,
 };
 use crate::sqlx_repo::repo::{repository_storage_error, SqlxRepoBackend, SqlxRepository};
 use crate::table::{
-    validate_row_values, RowValues, TableMutation, TableStoreError, TableWritePlan,
+    column_name_for, validate_row_values, RelationshipKind, RowKey, RowValue, RowValues,
+    TableMutation, TableSchema, TableStoreError, TableWritePlan,
 };
 
 mod helpers;

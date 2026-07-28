@@ -290,7 +290,7 @@ async fn generated_local_mount_rejects_missing_or_mismatched_service_identity_be
 
 #[cfg(feature = "graphql")]
 #[tokio::test]
-async fn generated_mount_reaches_fail_closed_adapter_snapshot_boundary() {
+async fn generated_mount_applies_both_modeled_rows_through_one_causal_commit() {
     use crate::projection::placement::ProjectionExecutorRoute;
 
     let repository = InMemoryRepository::new();
@@ -309,26 +309,53 @@ async fn generated_mount_reaches_fail_closed_adapter_snapshot_boundary() {
         .await
         .unwrap();
 
-    let error = service
-        .run(RunOptions::idempotent())
+    service.run(RunOptions::idempotent()).await.unwrap();
+
+    let ordered = bus.ordered_topic_evidence(FACT_NAME, 0);
+    let primary = repository
+        .projection_query_snapshot(&modeled_snapshot_request(
+            &topology,
+            &ordered,
+            "PrimaryView",
+            PrimaryView::schema(),
+            "todo-modeled",
+        ))
         .await
-        .expect_err("Task 12 owns adapter execution snapshots");
-    let repair = repair_handle(&error);
-    let partition = ProjectionScopeCodec::new(topology.clone())
-        .encode_partition(None)
         .unwrap();
-    let failure = repository
-        .projection_failure(&topology, &partition, repair.failure_id())
+    let secondary = repository
+        .projection_query_snapshot(&modeled_snapshot_request(
+            &topology,
+            &ordered,
+            "SecondaryView",
+            SecondaryView::schema(),
+            "todo-modeled",
+        ))
         .await
-        .unwrap()
         .unwrap();
-    assert_eq!(failure.failure_code, "modeled_apply");
-    assert_eq!(failure.causation_id, "command-todo-modeled");
-    assert!(
-        String::from_utf8_lossy(&failure.failure_bytes)
-            .contains("does not support coherent execution snapshots"),
-        "the generated executor reaches the fail-closed Task 12 adapter boundary"
-    );
+    for snapshot in [primary, secondary] {
+        assert_eq!(
+            snapshot
+                .row
+                .as_ref()
+                .and_then(|row| row.get_serde::<String>("title").ok())
+                .as_deref(),
+            Some("catalog runtime")
+        );
+        assert_eq!(
+            snapshot
+                .record
+                .as_ref()
+                .map(|record| record.revision.revision()),
+            Some(1)
+        );
+        assert_eq!(
+            snapshot.checkpoints[0]
+                .checkpoint
+                .as_ref()
+                .map(|checkpoint| checkpoint.input().position()),
+            Some(ordered.position())
+        );
+    }
 }
 
 #[cfg(feature = "graphql")]
