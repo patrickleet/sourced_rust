@@ -38,6 +38,33 @@ impl ReadModelWritePlanBuilder {
         Self::default()
     }
 
+    /// Framework-only access to the same validated schema path used by every
+    /// hand-authored read-model mutation.
+    pub(crate) fn projection_validated_schema<M>() -> Result<&'static TableSchema, TableStoreError>
+    where
+        M: RelationalReadModel,
+    {
+        validated_schema::<M>()
+    }
+
+    /// Framework-only access to the authoritative relationship lookup.
+    pub(crate) fn projection_relationship_for<'a>(
+        parent_schema: &'a TableSchema,
+        relationship_field: &str,
+        child_schema: &TableSchema,
+    ) -> Result<&'a RelationshipDef, TableStoreError> {
+        relationship_for(parent_schema, relationship_field, child_schema)
+    }
+
+    /// Framework-only access to delegated foreign-key resolution.
+    pub(crate) fn projection_delegated_relationship_columns(
+        parent_schema: &TableSchema,
+        relationship: &RelationshipDef,
+        child_schema: &TableSchema,
+    ) -> Result<Vec<(String, String)>, TableStoreError> {
+        delegated_relationship_columns(parent_schema, relationship, child_schema)
+    }
+
     pub fn is_empty(&self) -> bool {
         self.mutations.is_empty()
     }
@@ -259,6 +286,94 @@ impl ReadModelWritePlanBuilder {
         Ok(self)
     }
 
+    pub(crate) fn stage_projection_full_row<M>(
+        &mut self,
+        key: RowKey,
+        values: RowValues,
+        mode: RowWriteMode,
+        expected_version: ExpectedVersion,
+    ) -> Result<&mut Self, TableStoreError>
+    where
+        M: RelationalReadModel,
+    {
+        let schema = validated_schema::<M>()?;
+        validate_key(schema, &key)?;
+        let mutation = TableRowMutation {
+            schema,
+            key,
+            values,
+            expected_version,
+            mode,
+        };
+        self.push(TableMutation::UpsertRow(mutation));
+        Ok(self)
+    }
+
+    pub(crate) fn stage_projection_patch<M>(
+        &mut self,
+        key: RowKey,
+        patch: RowPatch,
+        mode: PatchMode,
+    ) -> Result<&mut Self, TableStoreError>
+    where
+        M: RelationalReadModel,
+    {
+        let schema = validated_schema::<M>()?;
+        validate_key(schema, &key)?;
+        let mutation = PatchTableRowMutation {
+            schema,
+            key,
+            patch,
+            expected_version: ExpectedVersion::Any,
+            mode,
+        };
+        self.push(TableMutation::PatchRow(mutation));
+        Ok(self)
+    }
+
+    pub(crate) fn stage_projection_delete<M>(
+        &mut self,
+        key: RowKey,
+    ) -> Result<&mut Self, TableStoreError>
+    where
+        M: RelationalReadModel,
+    {
+        let schema = validated_schema::<M>()?;
+        validate_key(schema, &key)?;
+        self.push(TableMutation::DeleteRow(DeleteTableRowMutation {
+            schema,
+            key,
+            expected_version: ExpectedVersion::Any,
+        }));
+        Ok(self)
+    }
+
+    pub(crate) fn stage_projection_related_row<P, C>(
+        &mut self,
+        relationship_field: &str,
+        parent_row: &RowValues,
+        mut child_row: RowValues,
+        mode: RowWriteMode,
+        expected_version: ExpectedVersion,
+    ) -> Result<&mut Self, TableStoreError>
+    where
+        P: RelationalReadModel,
+        C: RelationalReadModel,
+    {
+        let parent_schema = validated_schema::<P>()?;
+        let child_schema = validated_schema::<C>()?;
+        let relationship = relationship_for(parent_schema, relationship_field, child_schema)?;
+        populate_delegated_relationship_values(
+            parent_schema,
+            parent_row,
+            relationship,
+            child_schema,
+            &mut child_row,
+        )?;
+        let key = key_from_row(child_schema, &child_row)?;
+        self.stage_projection_full_row::<C>(key, child_row, mode, expected_version)
+    }
+
     fn stage_related_row<P, C>(
         &mut self,
         parent: &P,
@@ -272,23 +387,7 @@ impl ReadModelWritePlanBuilder {
     {
         let parent_schema = validated_schema::<P>()?;
         let child_schema = validated_schema::<C>()?;
-        let relationship = parent_schema
-            .relationships
-            .iter()
-            .find(|relationship| relationship.field_name == relationship_field)
-            .ok_or_else(|| {
-                TableStoreError::Metadata(format!(
-                    "read model `{}` has no relationship `{}`",
-                    parent_schema.model_name, relationship_field
-                ))
-            })?;
-
-        if relationship.target_model != child_schema.model_name {
-            return Err(TableStoreError::Metadata(format!(
-                "relationship `{}` targets `{}`, not `{}`",
-                relationship.field_name, relationship.target_model, child_schema.model_name
-            )));
-        }
+        let relationship = relationship_for(parent_schema, relationship_field, child_schema)?;
 
         let parent_row = parent.to_row()?;
         let mut child_row = child.to_row()?;
@@ -338,7 +437,7 @@ impl ReadModelWritePlanBuilder {
         Ok(self)
     }
 
-    pub(super) fn push(&mut self, mutation: TableMutation) {
+    pub(crate) fn push(&mut self, mutation: TableMutation) {
         let sequence = self.next_sequence;
         self.next_sequence = self.next_sequence.saturating_add(1);
         self.mutations.push(StagedMutation { sequence, mutation });
@@ -356,7 +455,7 @@ impl ReadModelWritePlanBuilder {
     }
 }
 
-pub(super) fn validated_schema<M>() -> Result<&'static TableSchema, TableStoreError>
+pub(crate) fn validated_schema<M>() -> Result<&'static TableSchema, TableStoreError>
 where
     M: RelationalReadModel,
 {
@@ -365,14 +464,36 @@ where
     Ok(schema)
 }
 
-pub(super) fn populate_delegated_relationship_values(
+pub(crate) fn relationship_for<'a>(
+    parent_schema: &'a TableSchema,
+    relationship_field: &str,
+    child_schema: &TableSchema,
+) -> Result<&'a RelationshipDef, TableStoreError> {
+    let relationship = parent_schema
+        .relationships
+        .iter()
+        .find(|relationship| relationship.field_name == relationship_field)
+        .ok_or_else(|| {
+            TableStoreError::Metadata(format!(
+                "read model `{}` has no relationship `{}`",
+                parent_schema.model_name, relationship_field
+            ))
+        })?;
+    if relationship.target_model != child_schema.model_name {
+        return Err(TableStoreError::Metadata(format!(
+            "relationship `{}` targets `{}`, not `{}`",
+            relationship.field_name, relationship.target_model, child_schema.model_name
+        )));
+    }
+    Ok(relationship)
+}
+
+pub(crate) fn delegated_relationship_columns(
     parent_schema: &TableSchema,
-    parent_row: &RowValues,
     relationship: &RelationshipDef,
     child_schema: &TableSchema,
-    child_row: &mut RowValues,
-) -> Result<(), TableStoreError> {
-    let mut populated = 0;
+) -> Result<Vec<(String, String)>, TableStoreError> {
+    let mut mappings = Vec::new();
     for column in child_schema
         .columns
         .iter()
@@ -385,28 +506,18 @@ pub(super) fn populate_delegated_relationship_values(
                 child_schema.model_name, column.column_name, delegated_from
             )));
         };
-
         if model_name != parent_schema.model_name {
             continue;
         }
-
         let source_column = column_name_for(parent_schema, source_name).ok_or_else(|| {
             TableStoreError::Metadata(format!(
                 "read model `{}` delegated source `{}` is not a parent column",
                 child_schema.model_name, delegated_from
             ))
         })?;
-        let value = parent_row.get(&source_column).cloned().ok_or_else(|| {
-            TableStoreError::Metadata(format!(
-                "read model `{}` parent row is missing delegated source column `{}`",
-                parent_schema.model_name, source_column
-            ))
-        })?;
-        child_row.insert(column.column_name.clone(), value);
-        populated += 1;
+        mappings.push((column.column_name.clone(), source_column));
     }
-
-    if populated == 0 {
+    if mappings.is_empty() {
         let foreign_key = relationship.foreign_key.as_deref().ok_or_else(|| {
             TableStoreError::Metadata(format!(
                 "read model `{}` relationship `{}` must declare a foreign key",
@@ -427,9 +538,24 @@ pub(super) fn populate_delegated_relationship_values(
                     relationship.field_name
                 ))
             })?;
+        mappings.push((child_column, parent_column));
+    }
+    Ok(mappings)
+}
+
+pub(crate) fn populate_delegated_relationship_values(
+    parent_schema: &TableSchema,
+    parent_row: &RowValues,
+    relationship: &RelationshipDef,
+    child_schema: &TableSchema,
+    child_row: &mut RowValues,
+) -> Result<(), TableStoreError> {
+    for (child_column, parent_column) in
+        delegated_relationship_columns(parent_schema, relationship, child_schema)?
+    {
         let value = parent_row.get(&parent_column).cloned().ok_or_else(|| {
             TableStoreError::Metadata(format!(
-                "read model `{}` parent row is missing relationship key `{}`",
+                "read model `{}` parent row is missing delegated source column `{}`",
                 parent_schema.model_name, parent_column
             ))
         })?;

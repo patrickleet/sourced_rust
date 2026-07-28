@@ -1,5 +1,10 @@
+use proc_macro2::Span;
 use quote::{format_ident, quote};
 use syn::{punctuated::Punctuated, Field, Token};
+
+use crate::shared::{
+    compact_tokens, portable_projection_kind, projection_field_metadata, schema_fingerprint,
+};
 
 use super::attrs::{foreign_key_tokens, FieldAttrs, RelationshipKindAttr, StructAttrs};
 use super::types::{
@@ -79,6 +84,8 @@ pub(super) fn expand_relational_read_model(
     let mut include_rows_arms = Vec::new();
     let mut include_schema_arms = Vec::new();
     let mut effect_markers = Vec::new();
+    let mut projection_fields = Vec::new();
+    let mut projection_field_schema = Vec::new();
 
     for (field, attrs) in fields.iter().zip(field_attrs) {
         let ident = field
@@ -113,6 +120,12 @@ pub(super) fn expand_relational_read_model(
                 #visibility struct #marker;
 
                 impl distributed::graphql::EffectRelationshipMarker for #marker {
+                    type Source = #name;
+                    type Target = #target_ty;
+                    const FIELD: &'static str = #field_name;
+                }
+
+                impl distributed::projection::lower::ProjectionRelationshipMetadata for #marker {
                     type Source = #name;
                     type Target = #target_ty;
                     const FIELD: &'static str = #field_name;
@@ -160,6 +173,29 @@ pub(super) fn expand_relational_read_model(
         let delegated_from = option_string_tokens(attrs.delegated_from.as_deref());
         let has_default = attrs.has_default;
         let jsonb = attrs.jsonb;
+        let projection_metadata = projection_field_metadata(field)?;
+        let rust_type = projection_metadata.rust_type;
+        let portable_kind = syn::Ident::new(
+            portable_projection_kind(projection_metadata.inner_type),
+            Span::call_site(),
+        );
+        let required = !nullable && !has_default;
+        projection_field_schema.push(format!(
+            "{}:{}:{}:{}:{}:{}:{}",
+            field_name, column_name, rust_type, portable_kind, nullable, required, primary_key
+        ));
+        projection_fields.push(quote! {
+            distributed::projection::lower::ProjectionModelFieldMetadata {
+                field_name: #field_name,
+                column_name: #column_name,
+                rust_type: #rust_type,
+                portable_type:
+                    distributed::projection::lower::ProjectionPortableType::#portable_kind,
+                nullable: #nullable,
+                required: #required,
+                primary_key: #primary_key,
+            }
+        });
 
         column_defs.push(quote! {
             distributed::TableColumn {
@@ -251,6 +287,18 @@ pub(super) fn expand_relational_read_model(
         indexes.push(index_def_tokens(index_name, index_columns, index.unique));
     }
 
+    let relationship_schema = relationships
+        .iter()
+        .map(compact_tokens)
+        .collect::<Vec<_>>()
+        .join("|");
+    let projection_schema_fingerprint = schema_fingerprint(&format!(
+        "distributed.projection-model/v1|model={model_name}|table={table_name}|fields={}|relationships={relationship_schema}",
+        projection_field_schema.join("|")
+    ));
+    let projection_schema_fingerprint =
+        syn::LitStr::new(&projection_schema_fingerprint, Span::call_site());
+
     Ok(quote! {
         #[doc(hidden)]
         #[allow(non_camel_case_types)]
@@ -304,6 +352,14 @@ pub(super) fn expand_relational_read_model(
                     #(#row_fields),*
                 })
             }
+        }
+
+        impl distributed::projection::lower::ProjectionReadModelMetadata for #name {
+            const PROJECTION_FIELDS: &'static [
+                distributed::projection::lower::ProjectionModelFieldMetadata
+            ] = &[#(#projection_fields),*];
+            const PROJECTION_SCHEMA_FINGERPRINT: &'static str =
+                #projection_schema_fingerprint;
         }
 
         impl distributed::RelationalReadModelIncludes for #name {

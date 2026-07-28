@@ -1,0 +1,5 @@
+error: projection integer literals require an explicit `i64` or `u64` suffix
+  --> tests/projection_compile_fail/unsuffixed_numeric.rs:12:30
+   |
+12 |                 set { count: 1 }
+   |                              ^

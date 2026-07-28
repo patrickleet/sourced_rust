@@ -1,0 +1,5 @@
+error: execution placement is not part of projection!; bind the descriptor with `.eventual()` or `.direct()`
+ --> tests/projection_compile_fail/invalid_direct_placement.rs:9:9
+  |
+9 |         direct: true;
+  |         ^^^^^^

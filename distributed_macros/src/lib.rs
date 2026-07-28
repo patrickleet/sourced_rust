@@ -5,6 +5,7 @@ mod domain_event;
 mod domain_state;
 mod enqueue;
 mod graphql_types;
+mod projection;
 mod read_model;
 mod shared;
 mod snapshot;
@@ -103,6 +104,14 @@ pub fn command_input_defaults(input: TokenStream) -> TokenStream {
 #[proc_macro]
 pub fn command_confirmations(input: TokenStream) -> TokenStream {
     command_effects::expand_confirmations(input)
+}
+
+/// Compile a typed projection declaration into portable IR, exact event
+/// resolution, authoritative ORM lowering, output inventory and server
+/// executor metadata.
+#[proc_macro]
+pub fn projection(input: TokenStream) -> TokenStream {
+    projection::expand(input)
 }
 
 /// Derive `GraphqlInputType` for command mutation input structs.

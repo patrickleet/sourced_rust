@@ -12,8 +12,9 @@ use crate::aggregate::{
 };
 use crate::shared::{
     canonical_object_schema, ensure_sourced_result_signature, extract_params_with_types,
-    generate_digest_call, generate_enqueue_call, schema_fingerprint,
-    validate_domain_event_name_literal, wrap_result_body_with_guard_and_postlude,
+    generate_digest_call, generate_enqueue_call, projection_body_metadata_tokens,
+    schema_fingerprint, validate_domain_event_name_literal,
+    wrap_result_body_with_guard_and_postlude,
 };
 
 pub(crate) struct SourcedArgs {
@@ -355,6 +356,17 @@ fn expand_domain_capture(
                     .map(|(name, ty)| (name.to_string(), ty.clone(), Vec::new())),
             );
             let fingerprint = schema_fingerprint(&schema);
+            let projection_field_definitions = params.iter().map(|(name, ty)| quote!(#name: #ty));
+            let projection_fields: syn::FieldsNamed = syn::parse2(quote!({
+                #(#projection_field_definitions),*
+            }))?;
+            let projection_metadata = projection_body_metadata_tokens(
+                "domain_event",
+                &body_type_name,
+                version.base10_parse::<u64>()?,
+                &[],
+                &projection_fields.named,
+            )?;
             let body_type_name = LitStr::new(&body_type_name, event_name.span());
             let schema = LitStr::new(&schema, event_name.span());
             let fingerprint = LitStr::new(&fingerprint, event_name.span());
@@ -379,6 +391,10 @@ fn expand_domain_capture(
                                 #fingerprint,
                             ),
                         };
+                }
+
+                impl distributed::projection::lower::ProjectionBodyMetadata for #body_type {
+                    #projection_metadata
                 }
             };
             let capture = domain_capture_error(quote! {
@@ -662,6 +678,25 @@ pub(crate) fn expand_sourced(attr: TokenStream2, item: TokenStream2) -> syn::Res
 
     let deletion_identity = if uses_deletion_identity {
         let identity = format_ident!("{struct_name}DomainIdentity");
+        let deletion_type_name = format!("DomainDeletion<{identity}>");
+        let deletion_schema = canonical_object_schema(
+            "domain_deletion",
+            &deletion_type_name,
+            1,
+            &[],
+            [
+                ("key".to_string(), syn::parse_quote!(#identity), Vec::new()),
+                (
+                    "incarnation".to_string(),
+                    syn::parse_quote!(u64),
+                    Vec::new(),
+                ),
+            ],
+        );
+        let deletion_fingerprint = schema_fingerprint(&deletion_schema);
+        let deletion_type_name = LitStr::new(&deletion_type_name, struct_name.span());
+        let deletion_schema = LitStr::new(&deletion_schema, struct_name.span());
+        let deletion_fingerprint = LitStr::new(&deletion_fingerprint, struct_name.span());
         quote! {
             /// Stable aggregate identity carried by deletion domain events.
             ///
@@ -677,6 +712,12 @@ pub(crate) fn expand_sourced(attr: TokenStream2, item: TokenStream2) -> syn::Res
             )]
             pub struct #identity {
                 pub aggregate_id: String,
+            }
+
+            impl distributed::projection::lower::ProjectionDeletionMetadata for #identity {
+                const BODY_TYPE_NAME: &'static str = #deletion_type_name;
+                const BODY_SCHEMA: &'static str = #deletion_schema;
+                const BODY_FINGERPRINT: &'static str = #deletion_fingerprint;
             }
         }
     } else {

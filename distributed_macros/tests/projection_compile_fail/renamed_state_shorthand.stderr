@@ -1,0 +1,22 @@
+error[E0080]: evaluation panicked: projection state-upsert field is missing or renamed
+  --> tests/projection_compile_fail/renamed_state_shorthand.rs:18:55
+   |
+18 |   const INVALID: ProjectionDescriptor<DirectEligible> = projection! {
+   |  _______________________________________________________^
+19 | |     name: "invalid";
+20 | |     version: 1;
+21 | |     epoch: "invalid-v1";
+...  |
+26 | | };
+   | |_^ evaluation of `INVALID::_` failed inside this call
+   |
+note: inside `distributed::projection::lower::assert_state_upsert_compatible`
+  --> $RUST/core/src/panic.rs
+   |
+   |         $crate::panicking::panic_fmt($crate::const_format_args!($($t)+));
+   |         ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^ the failure occurred here
+   |
+  ::: $WORKSPACE/src/projection/lower.rs
+   |
+   |             panic!("projection state-upsert field is missing or renamed");
+   |             ------------------------------------------------------------- in this macro invocation

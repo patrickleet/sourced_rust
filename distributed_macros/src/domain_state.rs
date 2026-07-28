@@ -3,7 +3,7 @@ use proc_macro2::Span;
 use quote::quote;
 use syn::{Data, DeriveInput, Fields, LitInt, LitStr};
 
-use crate::shared::{canonical_object_schema, schema_fingerprint};
+use crate::shared::{canonical_object_schema, projection_body_metadata_tokens, schema_fingerprint};
 
 pub(crate) fn derive_domain_state(input: TokenStream) -> TokenStream {
     let input = syn::parse_macro_input!(input as DeriveInput);
@@ -42,6 +42,13 @@ pub(crate) fn expand_domain_state(input: DeriveInput) -> syn::Result<proc_macro2
         schema_fields,
     );
     let fingerprint = schema_fingerprint(&schema);
+    let projection_metadata = projection_body_metadata_tokens(
+        "domain_state",
+        &type_name,
+        version,
+        &input.attrs,
+        &fields.named,
+    )?;
     let type_name = LitStr::new(&type_name, Span::call_site());
     let schema = LitStr::new(&schema, Span::call_site());
     let fingerprint = LitStr::new(&fingerprint, Span::call_site());
@@ -55,6 +62,10 @@ pub(crate) fn expand_domain_state(input: DeriveInput) -> syn::Result<proc_macro2
                     #schema,
                     #fingerprint,
                 );
+        }
+
+        impl distributed::projection::lower::ProjectionBodyMetadata for #name {
+            #projection_metadata
         }
     })
 }
@@ -163,5 +174,25 @@ mod tests {
         let error = expand_domain_state(input).unwrap_err();
 
         assert!(error.to_string().contains("not an event"));
+    }
+
+    #[test]
+    fn projection_metadata_tracks_serialize_names_and_conditional_presence() {
+        let input: DeriveInput = syn::parse_quote! {
+            #[domain_state(version = 1)]
+            #[serde(rename_all(serialize = "camelCase", deserialize = "snake_case"))]
+            struct TodoState {
+                todo_id: String,
+                #[serde(skip_serializing_if = "Option::is_none")]
+                owner_id: Option<String>,
+            }
+        };
+
+        let expanded = expand_domain_state(input).unwrap().to_string();
+
+        assert!(expanded.contains("wire_name : \"todoId\""));
+        assert!(expanded.contains("wire_name : \"ownerId\""));
+        assert!(expanded.contains("present : true"));
+        assert!(expanded.contains("always_present : false"));
     }
 }

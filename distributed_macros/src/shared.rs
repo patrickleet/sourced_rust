@@ -1,6 +1,9 @@
 use quote::{quote, ToTokens};
 use sha2::{Digest, Sha256};
-use syn::{Attribute, Expr, FnArg, Ident, LitStr, Pat, ReturnType, Type};
+use syn::{
+    punctuated::Punctuated, Attribute, Expr, Field, FnArg, GenericArgument, Ident, LitStr, Meta,
+    MetaNameValue, Pat, PathArguments, ReturnType, Token, Type,
+};
 
 // Shared helpers
 // ============================================================================
@@ -240,13 +243,296 @@ fn canonical_serde_attrs(attrs: &[Attribute]) -> String {
         .join(",")
 }
 
-fn compact_tokens(tokens: &impl ToTokens) -> String {
+pub(crate) fn compact_tokens(tokens: &impl ToTokens) -> String {
     tokens
         .to_token_stream()
         .to_string()
         .chars()
         .filter(|character| !character.is_whitespace())
         .collect()
+}
+
+/// Portable flat-field metadata shared by outward body and relational model
+/// derives. This is deliberately independent of the table codec metadata.
+pub(crate) struct ProjectionFieldMetadata<'a> {
+    pub(crate) rust_name: String,
+    pub(crate) wire_name: String,
+    pub(crate) inner_type: &'a Type,
+    pub(crate) rust_type: String,
+    pub(crate) portable_kind: &'static str,
+    pub(crate) nullable: bool,
+    pub(crate) present: bool,
+    pub(crate) always_present: bool,
+}
+
+pub(crate) fn projection_field_metadata(field: &Field) -> syn::Result<ProjectionFieldMetadata<'_>> {
+    projection_field_metadata_with_rename(field, None)
+}
+
+fn projection_field_metadata_with_rename<'a>(
+    field: &'a Field,
+    rename_all: Option<&str>,
+) -> syn::Result<ProjectionFieldMetadata<'a>> {
+    let ident = field.ident.as_ref().ok_or_else(|| {
+        syn::Error::new_spanned(field, "portable projection metadata requires named fields")
+    })?;
+    let rust_name = ident.to_string();
+    let mut wire_name = rename_all
+        .map(|rule| apply_serde_rename_all(&rust_name, rule))
+        .transpose()?
+        .unwrap_or_else(|| rust_name.clone());
+    let mut present = true;
+    let mut always_present = true;
+    for attr in &field.attrs {
+        if !attr.path().is_ident("serde") {
+            continue;
+        }
+        let metas = attr.parse_args_with(Punctuated::<Meta, Token![,]>::parse_terminated)?;
+        for meta in metas {
+            match meta {
+                Meta::NameValue(value) if value.path.is_ident("rename") => {
+                    wire_name = string_value(&value)?;
+                }
+                Meta::List(list) if list.path.is_ident("rename") => {
+                    let nested = list.parse_args_with(
+                        Punctuated::<MetaNameValue, Token![,]>::parse_terminated,
+                    )?;
+                    if let Some(value) =
+                        nested.iter().find(|value| value.path.is_ident("serialize"))
+                    {
+                        wire_name = string_value(value)?;
+                    }
+                }
+                Meta::Path(path) if path.is_ident("skip") || path.is_ident("skip_serializing") => {
+                    present = false;
+                    always_present = false;
+                }
+                Meta::NameValue(value) if value.path.is_ident("skip_serializing_if") => {
+                    always_present = false;
+                }
+                Meta::Path(path) if path.is_ident("flatten") => {
+                    return Err(syn::Error::new_spanned(
+                        path,
+                        "projection flat-field metadata does not support #[serde(flatten)]; use an explicit projection mapping",
+                    ));
+                }
+                _ => {}
+            }
+        }
+    }
+    let (inner_type, nullable) = option_inner_type(&field.ty)
+        .map(|inner| (inner, true))
+        .unwrap_or((&field.ty, false));
+    let rust_type = compact_tokens(inner_type);
+    let portable_kind = portable_projection_kind(inner_type);
+    Ok(ProjectionFieldMetadata {
+        rust_name,
+        wire_name,
+        inner_type,
+        rust_type,
+        portable_kind,
+        nullable,
+        present,
+        always_present,
+    })
+}
+
+pub(crate) fn projection_body_metadata_tokens(
+    role: &str,
+    type_name: &str,
+    version: u64,
+    container_attrs: &[Attribute],
+    fields: &Punctuated<Field, Token![,]>,
+) -> syn::Result<proc_macro2::TokenStream> {
+    let rename_all = serde_serialize_rename_all(container_attrs)?;
+    let metadata = fields
+        .iter()
+        .map(|field| projection_field_metadata_with_rename(field, rename_all.as_deref()))
+        .collect::<syn::Result<Vec<_>>>()?;
+    let canonical = metadata
+        .iter()
+        .map(|field| {
+            format!(
+                "{}:{}:{}:{}:{}:{}:{}",
+                field.rust_name,
+                field.wire_name,
+                field.rust_type,
+                field.portable_kind,
+                field.nullable,
+                field.present,
+                field.always_present
+            )
+        })
+        .collect::<Vec<_>>()
+        .join("|");
+    let fingerprint = schema_fingerprint(&format!(
+        "distributed.projection-body/v1|role={role}|type={type_name}|version={version}|{canonical}"
+    ));
+    let fingerprint = LitStr::new(&fingerprint, proc_macro2::Span::call_site());
+    let entries = metadata.iter().map(|field| {
+        let rust_name = &field.rust_name;
+        let wire_name = &field.wire_name;
+        let rust_type = &field.rust_type;
+        let portable_kind = Ident::new(field.portable_kind, proc_macro2::Span::call_site());
+        let nullable = field.nullable;
+        let present = field.present;
+        let always_present = field.always_present;
+        quote! {
+            distributed::projection::lower::ProjectionBodyFieldMetadata {
+                rust_name: #rust_name,
+                wire_name: #wire_name,
+                rust_type: #rust_type,
+                portable_type:
+                    distributed::projection::lower::ProjectionPortableType::#portable_kind,
+                nullable: #nullable,
+                present: #present,
+                always_present: #always_present,
+            }
+        }
+    });
+    Ok(quote! {
+        const PROJECTION_FIELDS: &'static [
+            distributed::projection::lower::ProjectionBodyFieldMetadata
+        ] = &[#(#entries),*];
+        const PROJECTION_SCHEMA_FINGERPRINT: &'static str = #fingerprint;
+    })
+}
+
+fn serde_serialize_rename_all(attrs: &[Attribute]) -> syn::Result<Option<String>> {
+    let mut rename_all = None;
+    for attr in attrs {
+        if !attr.path().is_ident("serde") {
+            continue;
+        }
+        let metas = attr.parse_args_with(Punctuated::<Meta, Token![,]>::parse_terminated)?;
+        for meta in metas {
+            match meta {
+                Meta::NameValue(value) if value.path.is_ident("rename_all") => {
+                    rename_all = Some(string_value(&value)?);
+                }
+                Meta::List(list) if list.path.is_ident("rename_all") => {
+                    let nested = list.parse_args_with(
+                        Punctuated::<MetaNameValue, Token![,]>::parse_terminated,
+                    )?;
+                    if let Some(value) =
+                        nested.iter().find(|value| value.path.is_ident("serialize"))
+                    {
+                        rename_all = Some(string_value(value)?);
+                    }
+                }
+                _ => {}
+            }
+        }
+    }
+    Ok(rename_all)
+}
+
+fn string_value(value: &MetaNameValue) -> syn::Result<String> {
+    let Expr::Lit(literal) = &value.value else {
+        return Err(syn::Error::new_spanned(
+            &value.value,
+            "serde rename value must be a string literal",
+        ));
+    };
+    let syn::Lit::Str(value) = &literal.lit else {
+        return Err(syn::Error::new_spanned(
+            &literal.lit,
+            "serde rename value must be a string literal",
+        ));
+    };
+    Ok(value.value())
+}
+
+fn apply_serde_rename_all(field: &str, rule: &str) -> syn::Result<String> {
+    let words = field
+        .split('_')
+        .filter(|word| !word.is_empty())
+        .collect::<Vec<_>>();
+    let pascal = || {
+        words
+            .iter()
+            .map(|word| {
+                let mut chars = word.chars();
+                chars
+                    .next()
+                    .map(|first| first.to_uppercase().collect::<String>() + chars.as_str())
+                    .unwrap_or_default()
+            })
+            .collect::<String>()
+    };
+    match rule {
+        "lowercase" => Ok(field.to_lowercase()),
+        "UPPERCASE" => Ok(field.to_uppercase()),
+        "PascalCase" => Ok(pascal()),
+        "camelCase" => {
+            let pascal = pascal();
+            let mut chars = pascal.chars();
+            Ok(chars
+                .next()
+                .map(|first| first.to_lowercase().collect::<String>() + chars.as_str())
+                .unwrap_or_default())
+        }
+        "snake_case" => Ok(field.to_owned()),
+        "SCREAMING_SNAKE_CASE" => Ok(field.to_uppercase()),
+        "kebab-case" => Ok(field.replace('_', "-")),
+        "SCREAMING-KEBAB-CASE" => Ok(field.replace('_', "-").to_uppercase()),
+        other => Err(syn::Error::new(
+            proc_macro2::Span::call_site(),
+            format!("unsupported serde rename_all rule `{other}` in projection metadata"),
+        )),
+    }
+}
+
+pub(crate) fn portable_projection_kind(ty: &Type) -> &'static str {
+    let Type::Path(path) = ty else {
+        return "Custom";
+    };
+    let Some(segment) = path.path.segments.last() else {
+        return "Custom";
+    };
+    match segment.ident.to_string().as_str() {
+        "bool" => "Boolean",
+        "i8" | "i16" | "i32" | "i64" | "isize" => "I64",
+        "u8" | "u16" | "u32" | "u64" | "usize" => "U64",
+        "f32" | "f64" => "F64",
+        "String" | "str" => "String",
+        "Vec" if vec_inner_type(ty).is_some_and(is_u8) => "Bytes",
+        "Vec" | "HashMap" | "BTreeMap" | "Value" => "Json",
+        _ => "Custom",
+    }
+}
+
+fn is_u8(ty: &Type) -> bool {
+    matches!(
+        ty,
+        Type::Path(path)
+            if path.path.segments.last().is_some_and(|segment| segment.ident == "u8")
+    )
+}
+
+fn option_inner_type(ty: &Type) -> Option<&Type> {
+    generic_inner_type(ty, "Option")
+}
+
+fn vec_inner_type(ty: &Type) -> Option<&Type> {
+    generic_inner_type(ty, "Vec")
+}
+
+fn generic_inner_type<'a>(ty: &'a Type, wrapper: &str) -> Option<&'a Type> {
+    let Type::Path(type_path) = ty else {
+        return None;
+    };
+    let segment = type_path.path.segments.last()?;
+    if segment.ident != wrapper {
+        return None;
+    }
+    let PathArguments::AngleBracketed(arguments) = &segment.arguments else {
+        return None;
+    };
+    arguments.args.iter().find_map(|argument| match argument {
+        GenericArgument::Type(inner) => Some(inner),
+        _ => None,
+    })
 }
 
 /// Return a lowercase SHA-256 descriptor fingerprint.

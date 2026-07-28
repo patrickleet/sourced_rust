@@ -1,0 +1,22 @@
+error[E0080]: evaluation panicked: projection explicit field type mismatch
+  --> tests/projection_compile_fail/type_mismatch.rs:17:55
+   |
+17 |   const INVALID: ProjectionDescriptor<DirectEligible> = projection! {
+   |  _______________________________________________________^
+18 | |     name: "invalid";
+19 | |     version: 1;
+20 | |     epoch: "invalid-v1";
+...  |
+28 | | };
+   | |_^ evaluation of `INVALID::_` failed inside this call
+   |
+note: inside `distributed::projection::lower::assert_explicit_field_compatible`
+  --> $RUST/core/src/panic.rs
+   |
+   |         $crate::panicking::panic_fmt($crate::const_format_args!($($t)+));
+   |         ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^ the failure occurred here
+   |
+  ::: $WORKSPACE/src/projection/lower.rs
+   |
+   |         panic!("projection explicit field type mismatch");
+   |         ------------------------------------------------- in this macro invocation

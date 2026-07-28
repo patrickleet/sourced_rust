@@ -1,0 +1,5 @@
+error: unknown or nondeterministic projection envelope field
+ --> tests/projection_compile_fail/nondeterministic_envelope.rs:8:29
+  |
+8 |         partition: envelope.occurred_at;
+  |                             ^^^^^^^^^^^

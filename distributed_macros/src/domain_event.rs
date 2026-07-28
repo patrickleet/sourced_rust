@@ -4,7 +4,8 @@ use quote::quote;
 use syn::{Data, DeriveInput, Fields, LitInt, LitStr};
 
 use crate::shared::{
-    canonical_object_schema, schema_fingerprint, validate_domain_event_name_literal,
+    canonical_object_schema, projection_body_metadata_tokens, schema_fingerprint,
+    validate_domain_event_name_literal,
 };
 
 pub(crate) fn derive_domain_event(input: TokenStream) -> TokenStream {
@@ -44,6 +45,13 @@ pub(crate) fn expand_domain_event(input: DeriveInput) -> syn::Result<proc_macro2
         schema_fields,
     );
     let fingerprint = schema_fingerprint(&schema);
+    let projection_metadata = projection_body_metadata_tokens(
+        "domain_event",
+        &type_name,
+        version,
+        &input.attrs,
+        &fields.named,
+    )?;
     let type_name = LitStr::new(&type_name, Span::call_site());
     let schema = LitStr::new(&schema, Span::call_site());
     let fingerprint = LitStr::new(&fingerprint, Span::call_site());
@@ -62,6 +70,10 @@ pub(crate) fn expand_domain_event(input: DeriveInput) -> syn::Result<proc_macro2
                         #fingerprint,
                     ),
                 };
+        }
+
+        impl distributed::projection::lower::ProjectionBodyMetadata for #name {
+            #projection_metadata
         }
     })
 }
