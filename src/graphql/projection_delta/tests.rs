@@ -231,6 +231,111 @@ fn sealed_authority_lowers_actual_full_state_and_memoizes_partition() {
 }
 
 #[test]
+fn production_authority_binds_partition_and_obligation_tokens_to_request_scope() {
+    use super::runtime::{
+        ProjectionRuntimeAuthorityError, ProtocolProjectionDeltaRequestAuthority,
+    };
+    use crate::graphql::protocol::{
+        CommandProjectionMetadataV1, ProtocolTokenCodec, ProtocolTokenPurpose,
+    };
+
+    let fixture = modeled_fixture(
+        ProjectionBindingState::Active,
+        ProjectionExecutionClass::Causal,
+    );
+    let selected = selected_export(&fixture.surface);
+    let codec = ProtocolTokenCodec::new([0x5a; 32]);
+    let cache_scope = codec
+        .issue(
+            ProtocolTokenPurpose::CacheScope,
+            &("delta-user", "auth-generation-7"),
+        )
+        .unwrap();
+    let principal = crate::command_ledger::PrincipalPartitionId::new("principal-scope-9").unwrap();
+    let causation =
+        crate::command_ledger::CausationId::parse_stored(TEST_CAUSATION_ID.to_owned()).unwrap();
+    let request = ProtocolProjectionDeltaRequestAuthority::try_new(
+        selected,
+        codec.clone(),
+        principal.clone(),
+        "auth-generation-7",
+        &cache_scope,
+        causation,
+        1_000,
+        2_000,
+    )
+    .unwrap();
+    let authority = ProjectionDeltaAuthority::try_new(request.export(), &request).unwrap();
+    let modeled = request.export().surface().projectors[0].modeled[0].clone();
+    let source = authority.source(&modeled).unwrap();
+    let plan = crate::ResolvedProjectionPlan::resolve(
+        &fixture.program,
+        &state_occurrence(7, "todo-1", "title"),
+    )
+    .unwrap();
+    let occurrence = ProjectionDeltaPlanOccurrence::actual(vec![(&source, &plan)]).unwrap();
+    let delta = authority.lower(&[occurrence]).unwrap();
+    let partition_token = match &delta.operations[0].mutation {
+        ProjectionDeltaMutation::Upsert { scope, .. } => match &scope.partition {
+            ProjectionDeltaPartition::Opaque { token } => token.clone(),
+            ProjectionDeltaPartition::Unit => panic!("fixture uses a value partition"),
+        },
+        mutation => panic!("expected fixture upsert, got {mutation:?}"),
+    };
+    assert!(partition_token.starts_with("v1.projection-partition."));
+    request
+        .verify_partition_token(
+            &partition_token,
+            &delta.identity.surface,
+            plan.partition(),
+            1_999,
+        )
+        .unwrap();
+    assert_eq!(
+        request.verify_partition_token(
+            &partition_token,
+            &delta.identity.surface,
+            plan.partition(),
+            2_000,
+        ),
+        Err(ProjectionRuntimeAuthorityError::Expired)
+    );
+
+    let metadata = request.metadata(delta).unwrap();
+    assert!(!metadata.obligations.is_empty());
+    assert!(metadata.obligations.iter().all(|obligation| obligation
+        .scope_token
+        .as_str()
+        .starts_with("v1.projection-obligation.")));
+    let bytes = metadata.canonical_bytes().unwrap();
+    assert_eq!(
+        CommandProjectionMetadataV1::from_json(&bytes).unwrap(),
+        metadata
+    );
+
+    let other_request = ProtocolProjectionDeltaRequestAuthority::try_new(
+        request.export().clone(),
+        codec,
+        principal,
+        "auth-generation-8",
+        &cache_scope,
+        crate::command_ledger::CausationId::parse_stored(TEST_CAUSATION_ID.to_owned()).unwrap(),
+        1_000,
+        2_000,
+    )
+    .unwrap();
+    assert!(matches!(
+        other_request.verify_partition_token(
+            &partition_token,
+            &metadata.delta.identity.surface,
+            plan.partition(),
+            1_500,
+        ),
+        Err(ProjectionRuntimeAuthorityError::Token(_))
+    ));
+}
+
+#[test]
 fn full_state_preview_lowers_to_upsert() {
     let fixture = modeled_fixture(
         ProjectionBindingState::Active,

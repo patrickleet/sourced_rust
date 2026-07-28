@@ -7,6 +7,8 @@
 pub(crate) mod authorization;
 mod canonical;
 pub(crate) mod lower;
+#[cfg(feature = "graphql")]
+pub(crate) mod runtime;
 mod types;
 
 #[allow(

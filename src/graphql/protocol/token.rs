@@ -12,7 +12,12 @@ const TOKEN_FORMAT_VERSION: &str = "v1";
 const TOKEN_MAC_BYTES: usize = 32;
 const TOKEN_DOMAIN: &[u8] = b"distributed.graphql.protocol-token";
 const MAX_TOKEN_MATERIAL_BYTES: usize = 1024 * 1024;
-const MAX_OPAQUE_TOKEN_BYTES: usize = 128;
+/// Maximum accepted opaque protocol token size.
+///
+/// Current HMAC tokens are deliberately much smaller. The wire bound remains
+/// 4 KiB so future keyed codecs can evolve without allowing unbounded client
+/// input or diverging from the projection partition contract.
+pub(crate) const MAX_OPAQUE_TOKEN_BYTES: usize = 4 * 1024;
 
 /// Maximum resumable projector partitions carried in one live operation.
 /// Request parsing and response generation share this bound so the server
@@ -69,6 +74,7 @@ pub(crate) enum ProtocolTokenPurpose {
     CacheScope,
     ProjectionObligation,
     ProjectionObservation,
+    ProjectionPartition,
     RecordRevision,
     QuerySnapshot,
     QueryIndex,
@@ -81,6 +87,7 @@ impl ProtocolTokenPurpose {
             Self::CacheScope => "cache-scope",
             Self::ProjectionObligation => "projection-obligation",
             Self::ProjectionObservation => "projection-observation",
+            Self::ProjectionPartition => "projection-partition",
             Self::RecordRevision => "record-revision",
             Self::QuerySnapshot => "query-snapshot",
             Self::QueryIndex => "query-index",
@@ -93,6 +100,7 @@ impl ProtocolTokenPurpose {
             "cache-scope" => Some(Self::CacheScope),
             "projection-obligation" => Some(Self::ProjectionObligation),
             "projection-observation" => Some(Self::ProjectionObservation),
+            "projection-partition" => Some(Self::ProjectionPartition),
             "record-revision" => Some(Self::RecordRevision),
             "query-snapshot" => Some(Self::QuerySnapshot),
             "query-index" => Some(Self::QueryIndex),
