@@ -1,16 +1,16 @@
 use std::time::{Duration, SystemTime};
 
-use base64::engine::general_purpose::URL_SAFE_NO_PAD;
 use base64::Engine as _;
+use base64::engine::general_purpose::URL_SAFE_NO_PAD;
 use serde_json::Value;
 
 use crate::projection_protocol::{ResolvedProjectionObligation, SameTransactionProjectionEvidence};
 
 use super::{
-    ids::COMMAND_REPLAY_VERSION, state::validate_projection_obligation_semantics, AttemptFence,
-    AttemptToken, CanonicalInputHash, CausationId, CommandAttempt, CommandCompletion,
+    AttemptFence, AttemptToken, CanonicalInputHash, CausationId, CommandAttempt, CommandCompletion,
     CommandContractFingerprint, CommandLedgerError, CommandLedgerKey, CommandLedgerState,
     CommandLookup, CommandLookupScope, CommandReplay, CommandReservation, ReservationOutcome,
+    ids::COMMAND_REPLAY_VERSION, state::validate_projection_obligation_semantics,
 };
 
 /// Storage-neutral row representation shared by built-in adapters.
@@ -279,8 +279,15 @@ impl CommandLedgerRecord {
     ) -> Result<(), CommandLedgerError> {
         completion.validate_direct_projection()?;
         self.validate_live_attempt(&completion.attempt.fence(), now)?;
-        let retention_expires_at =
-            checked_deadline(now, completion.retention, "command retention")?;
+        let retention_expires_at = match completion.retention_expires_at() {
+            Some(deadline) if deadline > now => deadline,
+            Some(_) => {
+                return Err(CommandLedgerError::Invalid(
+                    "command retention deadline must remain live at commit".into(),
+                ));
+            }
+            None => checked_deadline(now, completion.retention, "command retention")?,
+        };
         self.state = completion.state.into();
         self.attempt_token = None;
         self.lease_expires_at = None;

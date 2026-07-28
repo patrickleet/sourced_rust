@@ -1,8 +1,11 @@
 use std::collections::BTreeSet;
+use std::fmt;
+use std::marker::PhantomData;
 
-use base64::engine::general_purpose::URL_SAFE_NO_PAD;
 use base64::Engine as _;
-use serde::{Deserialize, Serialize};
+use base64::engine::general_purpose::URL_SAFE_NO_PAD;
+use serde::de::{Error as _, IgnoredAny, SeqAccess, Visitor};
+use serde::{Deserialize, Deserializer, Serialize};
 
 use crate::projection_protocol::{MAX_PROJECTION_PARTITION_BYTES, MAX_PROJECTION_RECORD_KEY_BYTES};
 use crate::{MAX_DOMAIN_EVENT_BODY_BYTES, MAX_PROJECTION_EXPRESSION_DEPTH};
@@ -117,11 +120,124 @@ pub struct ProjectionDeltaProjectionIdentity {
 pub struct ProjectionDelta {
     pub wire_version: u16,
     pub identity: ProjectionDeltaIdentity,
+    #[serde(deserialize_with = "deserialize_bounded_projections")]
     pub projections: Vec<ProjectionDeltaProjectionIdentity>,
+    #[serde(deserialize_with = "deserialize_bounded_occurrences")]
     pub occurrences: Vec<ProjectionDeltaOccurrence>,
+    #[serde(deserialize_with = "deserialize_bounded_operations")]
     pub operations: Vec<ProjectionDeltaOperation>,
-    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    #[serde(
+        default,
+        skip_serializing_if = "Vec::is_empty",
+        deserialize_with = "deserialize_bounded_recoveries"
+    )]
     pub recoveries: Vec<ProjectionDeltaRecovery>,
+}
+
+fn deserialize_bounded_projections<'de, D>(
+    deserializer: D,
+) -> Result<Vec<ProjectionDeltaProjectionIdentity>, D::Error>
+where
+    D: Deserializer<'de>,
+{
+    deserialize_bounded_delta_sequence(deserializer, "projections")
+}
+
+fn deserialize_bounded_occurrences<'de, D>(
+    deserializer: D,
+) -> Result<Vec<ProjectionDeltaOccurrence>, D::Error>
+where
+    D: Deserializer<'de>,
+{
+    deserialize_bounded_delta_sequence(deserializer, "occurrences")
+}
+
+fn deserialize_bounded_operations<'de, D>(
+    deserializer: D,
+) -> Result<Vec<ProjectionDeltaOperation>, D::Error>
+where
+    D: Deserializer<'de>,
+{
+    deserialize_bounded_delta_sequence(deserializer, "operations")
+}
+
+fn deserialize_bounded_recoveries<'de, D>(
+    deserializer: D,
+) -> Result<Vec<ProjectionDeltaRecovery>, D::Error>
+where
+    D: Deserializer<'de>,
+{
+    deserialize_bounded_delta_sequence(deserializer, "recoveries")
+}
+
+fn deserialize_bounded_delta_sequence<'de, D, T>(
+    deserializer: D,
+    field: &'static str,
+) -> Result<Vec<T>, D::Error>
+where
+    D: Deserializer<'de>,
+    T: Deserialize<'de>,
+{
+    struct BoundedDeltaSequenceVisitor<T> {
+        field: &'static str,
+        marker: PhantomData<fn() -> T>,
+    }
+
+    impl<'de, T> Visitor<'de> for BoundedDeltaSequenceVisitor<T>
+    where
+        T: Deserialize<'de>,
+    {
+        type Value = Vec<T>;
+
+        fn expecting(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+            write!(
+                formatter,
+                "at most {MAX_PROJECTION_DELTA_OPERATIONS} projection-delta `{}` items",
+                self.field
+            )
+        }
+
+        fn visit_seq<A>(self, mut sequence: A) -> Result<Self::Value, A::Error>
+        where
+            A: SeqAccess<'de>,
+        {
+            if sequence
+                .size_hint()
+                .is_some_and(|len| len > MAX_PROJECTION_DELTA_OPERATIONS)
+            {
+                return Err(A::Error::custom(format_args!(
+                    "projection-delta `{}` has more than \
+                     {MAX_PROJECTION_DELTA_OPERATIONS} items",
+                    self.field
+                )));
+            }
+            let mut items = Vec::with_capacity(
+                sequence
+                    .size_hint()
+                    .unwrap_or_default()
+                    .min(MAX_PROJECTION_DELTA_OPERATIONS),
+            );
+            while items.len() < MAX_PROJECTION_DELTA_OPERATIONS {
+                let Some(item) = sequence.next_element()? else {
+                    return Ok(items);
+                };
+                items.push(item);
+            }
+            if sequence.next_element::<IgnoredAny>()?.is_some() {
+                return Err(A::Error::custom(format_args!(
+                    "projection-delta `{}` has more than \
+                     {MAX_PROJECTION_DELTA_OPERATIONS} items",
+                    self.field
+                )));
+            }
+            Ok(items)
+        }
+    }
+
+    deserializer.deserialize_seq(BoundedDeltaSequenceVisitor {
+        field,
+        marker: PhantomData,
+    })
 }
 
 impl ProjectionDelta {

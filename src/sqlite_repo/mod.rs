@@ -20,8 +20,8 @@ use crate::outbox_worker::ClaimOutboxMessages;
 use crate::repository::RepositoryError;
 use crate::sqlx_repo::read_model::quote_identifier;
 use crate::sqlx_repo::repo::{
-    embedded_migrator, outbox_message_by_id, system_time_epoch_secs, SqlxOutboxStore,
-    SqlxRepository,
+    SqlxOutboxStore, SqlxRepository, embedded_migrator, outbox_message_by_id,
+    system_time_epoch_secs,
 };
 use crate::sqlx_repo::{
     self, is_sqlite_unique_constraint, read_model_i64_from_u64 as sqlx_read_model_i64_from_u64,
@@ -150,6 +150,12 @@ impl crate::sqlx_repo::repo::SqlxRepoBackend for Sqlite {
         builder.push("(unixepoch('now','subsec') + ");
         builder.push_bind(duration.as_secs_f64());
         builder.push(")");
+    }
+
+    fn push_command_ledger_deadline_is_live(builder: &mut QueryBuilder<Sqlite>, deadline: &String) {
+        builder.push("CAST(");
+        builder.push_bind(deadline.as_str());
+        builder.push(" AS REAL) > unixepoch('now','subsec')");
     }
 
     fn push_command_ledger_json(builder: &mut QueryBuilder<Sqlite>, json: &str) {

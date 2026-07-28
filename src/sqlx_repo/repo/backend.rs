@@ -148,6 +148,13 @@ pub trait SqlxRepoBackend: SqlxReadModelBackend {
     /// Push database-now plus a caller-validated positive duration.
     fn push_command_ledger_deadline(builder: &mut QueryBuilder<Self>, duration: Duration);
 
+    /// Push an exact encoded deadline comparison against the same
+    /// non-transaction-start database clock used by command leases.
+    fn push_command_ledger_deadline_is_live(
+        builder: &mut QueryBuilder<Self>,
+        deadline: &Self::TimestampValue,
+    );
+
     /// Push a JSON value bind, adding the backend's native JSON cast if needed.
     fn push_command_ledger_json(builder: &mut QueryBuilder<Self>, json: &str);
 

@@ -17,15 +17,15 @@ use super::authorization::{
 };
 use super::canonical::{canonicalize_operations, canonicalize_recoveries};
 use super::types::{
-    AuthorizationTransition, ProjectionDeltaCacheScopeToken, ProjectionDeltaVisibility,
-    ProjectionMutationSource, MAX_PROJECTION_DELTA_OPERATIONS,
+    AuthorizationTransition, MAX_PROJECTION_DELTA_OPERATIONS, ProjectionDeltaCacheScopeToken,
+    ProjectionDeltaVisibility, ProjectionMutationSource,
 };
 use super::{
-    DeltaField, DeltaValue, ProjectionDelta, ProjectionDeltaError, ProjectionDeltaIdentity,
-    ProjectionDeltaMutation, ProjectionDeltaOccurrence, ProjectionDeltaOperation,
-    ProjectionDeltaPartition, ProjectionDeltaProjectionIdentity, ProjectionDeltaRecovery,
-    ProjectionDeltaRecoveryCondition, ProjectionDeltaRecoveryTarget, ProjectionDeltaScope,
-    ProjectionDeltaSurfaceIdentity, PROJECTION_DELTA_WIRE_VERSION,
+    DeltaField, DeltaValue, PROJECTION_DELTA_WIRE_VERSION, ProjectionDelta, ProjectionDeltaError,
+    ProjectionDeltaIdentity, ProjectionDeltaMutation, ProjectionDeltaOccurrence,
+    ProjectionDeltaOperation, ProjectionDeltaPartition, ProjectionDeltaProjectionIdentity,
+    ProjectionDeltaRecovery, ProjectionDeltaRecoveryCondition, ProjectionDeltaRecoveryTarget,
+    ProjectionDeltaScope, ProjectionDeltaSurfaceIdentity,
 };
 
 /// One sealed lowering authority derived from an unforgeable selected client
@@ -360,23 +360,32 @@ fn lower_projection_delta(
     }
     let identity = context.wire_identity();
     identity.validate()?;
-    let mut sources = batch
+    let mut sources = Vec::with_capacity(MAX_PROJECTION_DELTA_OPERATIONS);
+    for source in batch
         .iter()
         .flat_map(|occurrence| occurrence.plans.iter().map(|(source, _)| *source))
-        .collect::<Vec<_>>();
-    for source in &sources {
+    {
         if source.authority != identity {
             return Err(ProjectionDeltaError::ProjectionIdentityMismatch);
         }
+        if sources.iter().any(|existing: &&ProjectionDeltaSource| {
+            existing.program_id == source.program_id
+                && existing.binding_id == source.binding_id
+                && existing.epoch == source.epoch
+                && existing.program_ir_version == source.program_ir_version
+                && existing.operation_semantics_version == source.operation_semantics_version
+        }) {
+            continue;
+        }
+        if sources.len() == MAX_PROJECTION_DELTA_OPERATIONS {
+            return Err(ProjectionDeltaError::TooManyProjections {
+                len: MAX_PROJECTION_DELTA_OPERATIONS + 1,
+                max: MAX_PROJECTION_DELTA_OPERATIONS,
+            });
+        }
+        sources.push(source);
     }
     sources.sort_by_key(|source| source.wire_identity());
-    sources.dedup_by_key(|source| source.wire_identity());
-    if sources.len() > MAX_PROJECTION_DELTA_OPERATIONS {
-        return Err(ProjectionDeltaError::TooManyProjections {
-            len: sources.len(),
-            max: MAX_PROJECTION_DELTA_OPERATIONS,
-        });
-    }
     let projections = sources
         .iter()
         .map(|source| source.wire_identity())

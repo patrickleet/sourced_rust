@@ -8,15 +8,15 @@ use std::time::SystemTime;
 
 #[cfg(feature = "graphql")]
 use super::causal::{
-    abandon_causal_attempt, causal_handler_error_code, commit_causal_rejection,
-    ensure_causal_grant, evaluate_causal_command_status, internal_ledger_error,
-    load_committed_dispatch_result, recover_causal_commit_error, replay_result,
-    CausalCommandPublicStatus, CausalDispatchError, CausalDispatchResult,
+    CausalCommandPublicStatus, CausalDispatchError, CausalDispatchResult, abandon_causal_attempt,
+    causal_handler_error_code, commit_causal_rejection, ensure_causal_grant,
+    evaluate_causal_command_status, internal_ledger_error, load_committed_dispatch_result,
+    recover_causal_commit_error, replay_result,
 };
 use super::handlers::{
-    boxed_causal_guard, boxed_handler, boxed_prepared_handler, CausalCommandContext, CausalGuardFn,
-    GuardFn, Handler, HandlerFn, HandlerFuture, PreparedCommandHandler, PreparedHandlerFn,
-    ProjectorBootstrapFuture,
+    CausalCommandContext, CausalGuardFn, GuardFn, Handler, HandlerFn, HandlerFuture,
+    PreparedCommandHandler, PreparedHandlerFn, ProjectorBootstrapFuture, boxed_causal_guard,
+    boxed_handler, boxed_prepared_handler,
 };
 use crate::aggregate::Aggregate;
 use crate::bus::{Bus, Message, MessageKind, MessagePublisher, OrderedDelivery, TransportError};
@@ -623,14 +623,17 @@ impl<D: Send + Sync + 'static> Routes<D> {
                     binding.id()
                 )
             });
-            let topology =
-                ProjectorTopologyId::new(physical.version(), physical.name(), physical.digest())
-                    .unwrap_or_else(|error| {
-                        panic!(
+            let topology = ProjectorTopologyId::new(
+                physical.version(),
+                physical.name(),
+                physical.digest(),
+            )
+            .unwrap_or_else(|error| {
+                panic!(
                     "local modeled projection binding `{}` has invalid physical topology: {error}",
                     binding.id()
                 )
-                    });
+            });
             let compiled = CompiledProjectionTopology::from_modeled_binding(
                 topology,
                 binding.outputs().iter().map(|output| {
@@ -973,10 +976,10 @@ where
             {
                 ReservationOutcome::Acquired(attempt) => attempt,
                 ReservationOutcome::InProgress { .. } => {
-                    return Err(CausalDispatchError::InProgress)
+                    return Err(CausalDispatchError::InProgress);
                 }
                 ReservationOutcome::Replay(replay) => {
-                    return replay_result(self.contract.consistency, replay)
+                    return replay_result(self.contract.consistency, replay);
                 }
                 ReservationOutcome::Conflict => return Err(CausalDispatchError::CommandIdReuse),
                 ReservationOutcome::Expired => return Err(CausalDispatchError::Expired),
@@ -1058,7 +1061,7 @@ where
                         self.contract.consistency,
                         error.to_string(),
                     )
-                    .await
+                    .await;
                 }
             };
             if let Err(error) = parts.prepare_domain_publications(attempt.causation_id().as_str()) {
@@ -1102,7 +1105,7 @@ where
                             self.contract.consistency,
                             error.to_string(),
                         )
-                        .await
+                        .await;
                     }
                 };
                 match protocol
@@ -1122,11 +1125,27 @@ where
                             self.contract.consistency,
                             error.to_string(),
                         )
-                        .await
+                        .await;
                     }
                 }
             } else {
                 None
+            };
+            let projection_retention_expires_at = match projection_metadata
+                .as_ref()
+                .map(crate::graphql::protocol::CommandProjectionMetadataV1::expires_at)
+                .transpose()
+            {
+                Ok(deadline) => deadline,
+                Err(error) => {
+                    return abandon_causal_attempt(
+                        repository,
+                        attempt,
+                        self.contract.consistency,
+                        format!("modeled projection metadata lifetime failed: {error}"),
+                    )
+                    .await;
+                }
             };
             let projection_metadata_bytes = match projection_metadata
                 .as_ref()
@@ -1141,7 +1160,7 @@ where
                         self.contract.consistency,
                         format!("modeled projection metadata encoding failed: {error}"),
                     )
-                    .await
+                    .await;
                 }
             };
             let direct_projection = match parts.seal_direct_projection(
@@ -1157,7 +1176,7 @@ where
                         self.contract.consistency,
                         error.to_string(),
                     )
-                    .await
+                    .await;
                 }
             };
 
@@ -1192,7 +1211,7 @@ where
                         self.contract.consistency,
                         format!("causal commit batch preparation failed: {error}"),
                     )
-                    .await
+                    .await;
                 }
             };
 
@@ -1230,19 +1249,22 @@ where
             }
 
             let fence = attempt.fence();
-            let completion = match projection_metadata_bytes {
-                Some(metadata) => attempt.complete_with_projection_metadata(
-                    terminal_state,
-                    replay_payload.clone(),
-                    metadata,
-                    policy.replay_retention,
-                ),
-                None => attempt.complete_with_obligations(
+            let completion = match (projection_metadata_bytes, projection_retention_expires_at) {
+                (Some(metadata), Some(retention_expires_at)) => attempt
+                    .complete_with_projection_metadata_until(
+                        terminal_state,
+                        replay_payload.clone(),
+                        metadata,
+                        policy.replay_retention,
+                        retention_expires_at,
+                    ),
+                (None, None) => attempt.complete_with_obligations(
                     terminal_state,
                     replay_payload.clone(),
                     projection_obligations,
                     policy.replay_retention,
                 ),
+                _ => unreachable!("modeled projection bytes and lifetime are derived together"),
             }
             .map_err(internal_ledger_error)?;
             let causal_batch = match direct_projection {

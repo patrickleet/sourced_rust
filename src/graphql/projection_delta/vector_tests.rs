@@ -1,4 +1,4 @@
-use serde_json::{json, Value};
+use serde_json::{Value, json};
 use sha2::{Digest, Sha256};
 
 use super::authorization::{
@@ -7,18 +7,18 @@ use super::authorization::{
 use super::canonical::{canonicalize_operations, canonicalize_recoveries};
 use super::lower::ProjectionDeltaRequestAuthority;
 use super::types::{
-    AuthorizationTransition, ProjectionDeltaCacheScopeToken, ProjectionDeltaVisibility,
-    ProjectionMutationSource, MAX_PROJECTION_DELTA_OPERATIONS,
+    AuthorizationTransition, MAX_PROJECTION_DELTA_OPERATIONS, ProjectionDeltaCacheScopeToken,
+    ProjectionDeltaVisibility, ProjectionMutationSource,
 };
 use super::*;
 use crate::graphql::client_manifest::{
     ClientCapabilities, ClientExecutionLimits, ClientProtocolOperations, ClientSurfaceIdentity,
-    DistributedClientManifest, DISTRIBUTED_CLIENT_MANIFEST_VERSION,
-    DISTRIBUTED_CLIENT_PROTOCOL_VERSION,
+    DISTRIBUTED_CLIENT_MANIFEST_VERSION, DISTRIBUTED_CLIENT_PROTOCOL_VERSION,
+    DistributedClientManifest,
 };
 use crate::{
-    ResolvedProjectionMutation, ResolvedProjectionPartition, ResolvedProjectionRelationshipEffect,
-    MAX_DOMAIN_EVENT_BODY_BYTES, MAX_PROJECTION_EXPRESSION_DEPTH,
+    MAX_DOMAIN_EVENT_BODY_BYTES, MAX_PROJECTION_EXPRESSION_DEPTH, ResolvedProjectionMutation,
+    ResolvedProjectionPartition, ResolvedProjectionRelationshipEffect,
 };
 
 const CACHE_SCOPE_TOKEN: &str = "v1.cache-scope.AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA";
@@ -82,9 +82,11 @@ fn golden_vector_preserves_presence_masks_relationships_and_numeric_bounds() {
         ]
     );
     assert!(fields.iter().all(|field| field.field != "archived_at"));
-    assert!(fields
-        .iter()
-        .any(|field| field.field == "nullable_note" && field.value == DeltaValue::Null));
+    assert!(
+        fields
+            .iter()
+            .any(|field| field.field == "nullable_note" && field.value == DeltaValue::Null)
+    );
     assert!(fields.iter().any(|field| {
         field.field == "title" && field.value == DeltaValue::String("Résumé 🚀".to_owned())
     }));
@@ -112,18 +114,21 @@ fn golden_vector_preserves_presence_masks_relationships_and_numeric_bounds() {
             )
     }));
 
-    assert!(delta
-        .operations
-        .iter()
-        .any(|operation| { matches!(operation.mutation, ProjectionDeltaMutation::Delete { .. }) }));
-    assert!(delta
-        .operations
-        .iter()
-        .any(|operation| { matches!(operation.mutation, ProjectionDeltaMutation::Link { .. }) }));
-    assert!(delta
-        .operations
-        .iter()
-        .any(|operation| { matches!(operation.mutation, ProjectionDeltaMutation::Unlink { .. }) }));
+    assert!(
+        delta.operations.iter().any(|operation| {
+            matches!(operation.mutation, ProjectionDeltaMutation::Delete { .. })
+        })
+    );
+    assert!(
+        delta.operations.iter().any(|operation| {
+            matches!(operation.mutation, ProjectionDeltaMutation::Link { .. })
+        })
+    );
+    assert!(
+        delta.operations.iter().any(|operation| {
+            matches!(operation.mutation, ProjectionDeltaMutation::Unlink { .. })
+        })
+    );
     assert!(delta.operations.iter().any(|operation| {
         matches!(
             operation.mutation,
@@ -487,6 +492,56 @@ fn operation_projection_occurrence_and_recovery_limits_accept_128_and_reject_129
     assert!(matches!(
         delta.canonical_bytes(),
         Err(ProjectionDeltaError::TooManyRecoveries { len: 129, max: 128 })
+    ));
+}
+
+#[test]
+fn wire_decode_streams_no_more_than_128_top_level_delta_items() {
+    let recovery = ProjectionDeltaRecovery {
+        occurrence_ordinal: 0,
+        projection_refs: vec![0],
+        condition: ProjectionDeltaRecoveryCondition::Always,
+        target: ProjectionDeltaRecoveryTarget::Model {
+            partition: None,
+            model: "Rows".into(),
+        },
+    };
+    let operation = operation(
+        0,
+        vec![0],
+        ProjectionDeltaMutation::Delete {
+            scope: scope("Rows", vec![key(0, "id", "record-1")]),
+        },
+    );
+    for (field, item) in [
+        (
+            "projections",
+            serde_json::to_value(projection_identity(0)).unwrap(),
+        ),
+        ("occurrences", serde_json::to_value(occurrence(0)).unwrap()),
+        ("operations", serde_json::to_value(operation).unwrap()),
+        ("recoveries", serde_json::to_value(recovery).unwrap()),
+    ] {
+        let mut wire = serde_json::to_value(wire_shell()).unwrap();
+        wire[field] =
+            Value::Array(std::iter::repeat_n(item, MAX_PROJECTION_DELTA_OPERATIONS + 1).collect());
+        assert!(matches!(
+            ProjectionDelta::from_json(&serde_json::to_vec(&wire).unwrap()),
+            Err(ProjectionDeltaError::InvalidWire(message))
+                if message.contains(field) && message.contains("more than 128")
+        ));
+    }
+
+    let mut wire = serde_json::to_value(wire_shell()).unwrap();
+    wire["occurrences"] = Value::Array(
+        std::iter::repeat_n(serde_json::to_value(occurrence(0)).unwrap(), 4_096).collect(),
+    );
+    let bytes = serde_json::to_vec(&wire).unwrap();
+    assert!(bytes.len() < MAX_DOMAIN_EVENT_BODY_BYTES);
+    assert!(matches!(
+        ProjectionDelta::from_json(&bytes),
+        Err(ProjectionDeltaError::InvalidWire(message))
+            if message.contains("occurrences") && message.contains("more than 128")
     ));
 }
 

@@ -13,8 +13,8 @@ use super::lower::{
     ProjectionDeltaAuthority, ProjectionDeltaPlanOccurrence, ProjectionDeltaRequestAuthority,
 };
 use super::types::{
-    AuthorizationTransition, ProjectionDeltaCacheScopeToken, ProjectionDeltaVisibility,
-    ProjectionMutationSource,
+    AuthorizationTransition, MAX_PROJECTION_DELTA_OPERATIONS, ProjectionDeltaCacheScopeToken,
+    ProjectionDeltaVisibility, ProjectionMutationSource,
 };
 use super::{
     ProjectionDelta, ProjectionDeltaError, ProjectionDeltaMutation, ProjectionDeltaPartition,
@@ -23,8 +23,8 @@ use super::{
 use crate::command_ledger::{CausationId, PrincipalPartitionId};
 use crate::graphql::client_manifest::DistributedClientSurfaceExport;
 use crate::graphql::protocol::{
-    CommandProjectionMetadataV1, CommandProjectionObligationV1, OpaqueProtocolToken,
-    ProtocolTokenCodec, ProtocolTokenError, ProtocolTokenPurpose,
+    CommandProjectionMetadataV1, CommandProjectionObligationV1, MAX_COMMAND_PROJECTION_OBLIGATIONS,
+    OpaqueProtocolToken, ProtocolTokenCodec, ProtocolTokenError, ProtocolTokenPurpose,
 };
 use crate::graphql::surface::{Surface, SurfaceModeledProjection};
 use crate::projection::placement::{ProjectionBinding, ProjectionExecutorRoute};
@@ -127,13 +127,38 @@ impl ProtocolProjectionRequestSeed {
         occurrences: &[DomainEventOccurrence],
         sealed_events: &[ProjectionEventSelector],
     ) -> Result<CommandProjectionMetadataV1, ProjectionRuntimeAuthorityError> {
-        let now_unix_ms = unix_time_ms(SystemTime::now())?;
+        self.metadata_for_actual_at(
+            codec,
+            cache_scope,
+            causation_id,
+            replay_retention,
+            occurrences,
+            sealed_events,
+            SystemTime::now(),
+        )
+    }
+
+    #[allow(clippy::too_many_arguments)]
+    pub(crate) fn metadata_for_actual_at(
+        &self,
+        codec: ProtocolTokenCodec,
+        cache_scope: &OpaqueProtocolToken,
+        causation_id: CausationId,
+        replay_retention: Duration,
+        occurrences: &[DomainEventOccurrence],
+        sealed_events: &[ProjectionEventSelector],
+        completion_time: SystemTime,
+    ) -> Result<CommandProjectionMetadataV1, ProjectionRuntimeAuthorityError> {
+        reject_oversized_occurrence_batch(occurrences)?;
+        let completion_unix_ms = unix_time_ms(completion_time)?;
+        if completion_unix_ms < self.issued_at_unix_ms {
+            return Err(ProjectionRuntimeAuthorityError::InvalidAuthority);
+        }
         let retention_ms = replay_retention
             .as_millis()
             .try_into()
             .map_err(|_| ProjectionRuntimeAuthorityError::InvalidAuthority)?;
-        let expires_at_unix_ms = self
-            .issued_at_unix_ms
+        let expires_at_unix_ms = completion_unix_ms
             .checked_add(retention_ms)
             .ok_or(ProjectionRuntimeAuthorityError::InvalidAuthority)?;
         let request = ProtocolProjectionDeltaRequestAuthority::try_new(
@@ -143,8 +168,8 @@ impl ProtocolProjectionRequestSeed {
             self.authorization_generation.clone(),
             cache_scope,
             causation_id,
-            now_unix_ms,
-            self.issued_at_unix_ms,
+            completion_unix_ms,
+            completion_unix_ms,
             expires_at_unix_ms,
         )?
         .with_trusted_presets(self.trusted_presets.clone());
@@ -423,6 +448,20 @@ fn unix_time_ms(now: SystemTime) -> Result<u64, ProjectionRuntimeAuthorityError>
         .map_err(|_| ProjectionRuntimeAuthorityError::InvalidAuthority)
 }
 
+fn reject_oversized_occurrence_batch(
+    occurrences: &[DomainEventOccurrence],
+) -> Result<(), ProjectionRuntimeAuthorityError> {
+    if occurrences.len() > MAX_PROJECTION_DELTA_OPERATIONS {
+        return Err(ProjectionRuntimeAuthorityError::Delta(
+            ProjectionDeltaError::TooManyOccurrences {
+                len: occurrences.len(),
+                max: MAX_PROJECTION_DELTA_OPERATIONS,
+            },
+        ));
+    }
+    Ok(())
+}
+
 /// One finite physical observation proven to correspond to a role-safe delta
 /// operation by the mounted projection registry.
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -535,6 +574,7 @@ impl ProtocolProjectionProgramRegistry {
         occurrences: &[DomainEventOccurrence],
         sealed_events: &[ProjectionEventSelector],
     ) -> Result<CommandProjectionMetadataV1, ProjectionRuntimeAuthorityError> {
+        reject_oversized_occurrence_batch(occurrences)?;
         for occurrence in occurrences {
             if !sealed_events
                 .iter()
@@ -546,23 +586,36 @@ impl ProtocolProjectionProgramRegistry {
 
         let authority = ProjectionDeltaAuthority::try_new(request.export(), request)
             .map_err(ProjectionRuntimeAuthorityError::Delta)?;
-        let modeled = request
+        let mut modeled = Vec::with_capacity(MAX_PROJECTION_DELTA_OPERATIONS);
+        for projection in request
             .export()
             .surface()
             .projection_owners()
             .iter()
             .flat_map(|owner| &owner.modeled)
             .filter(|projection| projection.is_causally_eligible())
-            .collect::<Vec<_>>();
+        {
+            if modeled.len() == MAX_PROJECTION_DELTA_OPERATIONS {
+                return Err(ProjectionRuntimeAuthorityError::Delta(
+                    ProjectionDeltaError::TooManyProjections {
+                        len: MAX_PROJECTION_DELTA_OPERATIONS + 1,
+                        max: MAX_PROJECTION_DELTA_OPERATIONS,
+                    },
+                ));
+            }
+            modeled.push(projection);
+        }
         let sources = modeled
             .iter()
             .map(|projection| authority.source(projection))
             .collect::<Result<Vec<_>, _>>()
             .map_err(ProjectionRuntimeAuthorityError::Delta)?;
 
-        let mut resolved_occurrences = Vec::<Vec<(usize, ResolvedProjectionPlan)>>::new();
+        let mut resolved_occurrences =
+            Vec::<Vec<(usize, ResolvedProjectionPlan)>>::with_capacity(occurrences.len());
         for occurrence in occurrences {
-            let mut resolved = Vec::new();
+            let mut resolved =
+                Vec::with_capacity(modeled.len().min(MAX_PROJECTION_DELTA_OPERATIONS));
             for (source_index, projection) in modeled.iter().enumerate() {
                 let selected = projection
                     .selected_program()
@@ -577,6 +630,14 @@ impl ProtocolProjectionProgramRegistry {
                 let entry = self.exact(projection)?;
                 let plan = ResolvedProjectionPlan::resolve(&entry.program, occurrence)
                     .map_err(|error| ProjectionRuntimeAuthorityError::Plan(error.to_string()))?;
+                if resolved.len() == MAX_PROJECTION_DELTA_OPERATIONS {
+                    return Err(ProjectionRuntimeAuthorityError::Delta(
+                        ProjectionDeltaError::TooManyProjections {
+                            len: MAX_PROJECTION_DELTA_OPERATIONS + 1,
+                            max: MAX_PROJECTION_DELTA_OPERATIONS,
+                        },
+                    ));
+                }
                 resolved.push((source_index, plan));
             }
             if !resolved.is_empty() {
@@ -654,7 +715,12 @@ impl ProtocolProjectionProgramRegistry {
             request.cache_scope.clone(),
         )
         .map_err(ProjectionRuntimeAuthorityError::Delta)?;
-        let mut observations = Vec::new();
+        let mut observations = Vec::with_capacity(
+            delta
+                .operations
+                .len()
+                .min(MAX_COMMAND_PROJECTION_OBLIGATIONS),
+        );
         for (operation_index, operation) in delta.operations.iter().enumerate() {
             if matches!(
                 operation.mutation,
@@ -707,6 +773,9 @@ impl ProtocolProjectionProgramRegistry {
                         .any(|output| output.model() == model)
                     {
                         return Err(ProjectionRuntimeAuthorityError::InvalidObservation);
+                    }
+                    if observations.len() == MAX_COMMAND_PROJECTION_OBLIGATIONS {
+                        return Err(ProjectionRuntimeAuthorityError::InvalidMetadata);
                     }
                     let physical_scope = entry
                         .codec
@@ -1055,7 +1124,10 @@ impl ProtocolProjectionDeltaRequestAuthority {
             .map_err(ProjectionRuntimeAuthorityError::Delta)?;
         self.validate_active_projection_inventory(&delta, eligible)?;
 
-        let mut obligations = Vec::new();
+        if observations.len() > MAX_COMMAND_PROJECTION_OBLIGATIONS {
+            return Err(ProjectionRuntimeAuthorityError::InvalidMetadata);
+        }
+        let mut obligations = Vec::with_capacity(observations.len());
         let manifest = self
             .export
             .manifest()
@@ -1093,6 +1165,9 @@ impl ProtocolProjectionDeltaRequestAuthority {
                     .any(|model| model == &observation.model)
             {
                 return Err(ProjectionRuntimeAuthorityError::InvalidObservation);
+            }
+            if obligations.len() == MAX_COMMAND_PROJECTION_OBLIGATIONS {
+                return Err(ProjectionRuntimeAuthorityError::InvalidMetadata);
             }
             let token = crate::graphql::protocol::issue_projection_obligation_token(
                 &self.codec,

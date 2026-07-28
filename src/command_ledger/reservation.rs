@@ -1,8 +1,8 @@
 use std::fmt;
-use std::time::Duration;
+use std::time::{Duration, SystemTime};
 
-use base64::engine::general_purpose::URL_SAFE_NO_PAD;
 use base64::Engine as _;
+use base64::engine::general_purpose::URL_SAFE_NO_PAD;
 use serde_json::Value;
 
 use crate::projection_protocol::{
@@ -11,9 +11,9 @@ use crate::projection_protocol::{
 use crate::repository::CommitBatch;
 
 use super::{
-    ids::COMMAND_REPLAY_VERSION, state::validate_projection_obligation_semantics, AttemptToken,
-    CanonicalInputHash, CausationId, CommandContractFingerprint, CommandId, CommandLedgerError,
-    CommandLedgerKey, CommandLedgerState, TerminalCommandState, SHA256_BYTES,
+    AttemptToken, CanonicalInputHash, CausationId, CommandContractFingerprint, CommandId,
+    CommandLedgerError, CommandLedgerKey, CommandLedgerState, SHA256_BYTES, TerminalCommandState,
+    ids::COMMAND_REPLAY_VERSION, state::validate_projection_obligation_semantics,
 };
 
 /// One validated reservation request. Fresh candidate IDs lose a race safely:
@@ -169,7 +169,7 @@ impl CommandAttempt {
         outcome: Value,
         retention: Duration,
     ) -> Result<CommandCompletion, CommandLedgerError> {
-        self.complete_with_replay_metadata(state, outcome, Vec::new(), None, retention)
+        self.complete_with_replay_metadata(state, outcome, Vec::new(), None, retention, None)
     }
 
     pub(crate) fn complete_with_obligations(
@@ -179,7 +179,14 @@ impl CommandAttempt {
         projection_obligations: Vec<ResolvedProjectionObligation>,
         retention: Duration,
     ) -> Result<CommandCompletion, CommandLedgerError> {
-        self.complete_with_replay_metadata(state, outcome, projection_obligations, None, retention)
+        self.complete_with_replay_metadata(
+            state,
+            outcome,
+            projection_obligations,
+            None,
+            retention,
+            None,
+        )
     }
 
     /// Complete a command with exact already-canonical role-safe projection
@@ -202,6 +209,31 @@ impl CommandAttempt {
             Vec::new(),
             Some(projection_metadata),
             retention,
+            None,
+        )
+    }
+
+    /// Complete a modeled command with the exact absolute retention boundary
+    /// sealed into its authenticated projection metadata.
+    ///
+    /// The repository persists this same deadline atomically with the replay
+    /// bytes, preventing a retained ledger tail whose metadata has already
+    /// expired.
+    pub(crate) fn complete_with_projection_metadata_until(
+        self,
+        state: TerminalCommandState,
+        outcome: Value,
+        projection_metadata: Vec<u8>,
+        retention: Duration,
+        retention_expires_at: SystemTime,
+    ) -> Result<CommandCompletion, CommandLedgerError> {
+        self.complete_with_replay_metadata(
+            state,
+            outcome,
+            Vec::new(),
+            Some(projection_metadata),
+            retention,
+            Some(retention_expires_at),
         )
     }
 
@@ -212,6 +244,7 @@ impl CommandAttempt {
         projection_obligations: Vec<ResolvedProjectionObligation>,
         projection_metadata: Option<Vec<u8>>,
         retention: Duration,
+        retention_expires_at: Option<SystemTime>,
     ) -> Result<CommandCompletion, CommandLedgerError> {
         validate_positive_duration("command replay retention", retention)?;
         if projection_metadata.is_none() {
@@ -256,6 +289,7 @@ impl CommandAttempt {
             replay,
             direct_projection: None,
             retention,
+            retention_expires_at,
         })
     }
 }
@@ -404,6 +438,7 @@ pub(crate) struct CommandCompletion {
     pub(super) replay: String,
     direct_projection: Option<Value>,
     pub(super) retention: Duration,
+    retention_expires_at: Option<SystemTime>,
 }
 
 impl CommandCompletion {
@@ -421,6 +456,10 @@ impl CommandCompletion {
 
     pub(crate) fn retention(&self) -> Duration {
         self.retention
+    }
+
+    pub(crate) fn retention_expires_at(&self) -> Option<SystemTime> {
+        self.retention_expires_at
     }
 
     pub(crate) fn attempt_fence(&self) -> AttemptFence {

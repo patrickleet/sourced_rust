@@ -1,8 +1,12 @@
-use serde::{Deserialize, Serialize};
+use std::fmt;
+use std::time::{Duration, SystemTime, UNIX_EPOCH};
+
+use serde::de::{Error as _, IgnoredAny, SeqAccess, Visitor};
+use serde::{Deserialize, Deserializer, Serialize};
 
 use super::OpaqueProtocolToken;
-use crate::graphql::projection_delta::{ProjectionDelta, ProjectionDeltaError};
 use crate::MAX_DOMAIN_EVENT_BODY_BYTES;
+use crate::graphql::projection_delta::{ProjectionDelta, ProjectionDeltaError};
 
 /// Version of the command response/status projection metadata envelope.
 pub(crate) const COMMAND_PROJECTION_METADATA_WIRE_VERSION: u16 = 1;
@@ -35,6 +39,7 @@ pub(crate) struct CommandProjectionMetadataV1 {
     pub(crate) issued_at_unix_ms: u64,
     pub(crate) expires_at_unix_ms: u64,
     pub(crate) delta: ProjectionDelta,
+    #[serde(deserialize_with = "deserialize_bounded_obligations")]
     pub(crate) obligations: Vec<CommandProjectionObligationV1>,
     pub(crate) revalidate: bool,
 }
@@ -47,6 +52,12 @@ impl CommandProjectionMetadataV1 {
         mut obligations: Vec<CommandProjectionObligationV1>,
         revalidate: bool,
     ) -> Result<Self, CommandProjectionMetadataError> {
+        if obligations.len() > MAX_COMMAND_PROJECTION_OBLIGATIONS {
+            return Err(CommandProjectionMetadataError::TooManyObligations {
+                len: obligations.len(),
+                max: MAX_COMMAND_PROJECTION_OBLIGATIONS,
+            });
+        }
         let mut scope_models = std::collections::BTreeMap::new();
         for obligation in &obligations {
             let key = (obligation.projection_ref, obligation.scope_token.as_str());
@@ -114,6 +125,13 @@ impl CommandProjectionMetadataV1 {
             return Err(CommandProjectionMetadataError::Expired);
         }
         Ok(())
+    }
+
+    pub(crate) fn expires_at(&self) -> Result<SystemTime, CommandProjectionMetadataError> {
+        self.validate()?;
+        UNIX_EPOCH
+            .checked_add(Duration::from_millis(self.expires_at_unix_ms))
+            .ok_or(CommandProjectionMetadataError::InvalidLifetime)
     }
 
     fn validate(&self) -> Result<(), CommandProjectionMetadataError> {
@@ -204,6 +222,65 @@ impl CommandProjectionMetadataV1 {
     }
 }
 
+fn deserialize_bounded_obligations<'de, D>(
+    deserializer: D,
+) -> Result<Vec<CommandProjectionObligationV1>, D::Error>
+where
+    D: Deserializer<'de>,
+{
+    struct BoundedObligationsVisitor;
+
+    impl<'de> Visitor<'de> for BoundedObligationsVisitor {
+        type Value = Vec<CommandProjectionObligationV1>;
+
+        fn expecting(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+            write!(
+                formatter,
+                "at most {MAX_COMMAND_PROJECTION_OBLIGATIONS} command projection obligations"
+            )
+        }
+
+        fn visit_seq<A>(self, mut sequence: A) -> Result<Self::Value, A::Error>
+        where
+            A: SeqAccess<'de>,
+        {
+            if sequence
+                .size_hint()
+                .is_some_and(|len| len > MAX_COMMAND_PROJECTION_OBLIGATIONS)
+            {
+                return Err(A::Error::custom(format_args!(
+                    "command projection metadata has more than \
+                     {MAX_COMMAND_PROJECTION_OBLIGATIONS} obligations"
+                )));
+            }
+            let mut obligations = Vec::with_capacity(
+                sequence
+                    .size_hint()
+                    .unwrap_or_default()
+                    .min(MAX_COMMAND_PROJECTION_OBLIGATIONS),
+            );
+            while obligations.len() < MAX_COMMAND_PROJECTION_OBLIGATIONS {
+                let Some(obligation) = sequence.next_element()? else {
+                    return Ok(obligations);
+                };
+                obligations.push(obligation);
+            }
+            // Probe one additional element as ignored streaming input. This
+            // detects an oversized array without materializing obligation 129
+            // or any remaining hostile tail.
+            if sequence.next_element::<IgnoredAny>()?.is_some() {
+                return Err(A::Error::custom(format_args!(
+                    "command projection metadata has more than \
+                     {MAX_COMMAND_PROJECTION_OBLIGATIONS} obligations"
+                )));
+            }
+            Ok(obligations)
+        }
+    }
+
+    deserializer.deserialize_seq(BoundedObligationsVisitor)
+}
+
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub(crate) enum CommandProjectionMetadataError {
     InvalidWire(String),
@@ -272,10 +349,10 @@ mod tests {
         DISTRIBUTED_CLIENT_MANIFEST_VERSION, DISTRIBUTED_CLIENT_PROTOCOL_VERSION,
     };
     use crate::graphql::projection_delta::{
-        DeltaKeyField, DeltaValue, ProjectionDeltaIdentity, ProjectionDeltaMutation,
-        ProjectionDeltaOccurrence, ProjectionDeltaOperation, ProjectionDeltaPartition,
-        ProjectionDeltaProjectionIdentity, ProjectionDeltaScope, ProjectionDeltaSurfaceIdentity,
-        PROJECTION_DELTA_WIRE_VERSION,
+        DeltaKeyField, DeltaValue, PROJECTION_DELTA_WIRE_VERSION, ProjectionDeltaIdentity,
+        ProjectionDeltaMutation, ProjectionDeltaOccurrence, ProjectionDeltaOperation,
+        ProjectionDeltaPartition, ProjectionDeltaProjectionIdentity, ProjectionDeltaScope,
+        ProjectionDeltaSurfaceIdentity,
     };
     use crate::graphql::protocol::{ProtocolTokenCodec, ProtocolTokenPurpose};
     use sha2::{Digest, Sha256};
@@ -430,6 +507,44 @@ mod tests {
         assert!(matches!(
             CommandProjectionMetadataV1::try_new(100, 200, delta(), obligations, false),
             Err(CommandProjectionMetadataError::TooManyObligations { len: 129, max: 128 })
+        ));
+    }
+
+    #[test]
+    fn wire_decode_streams_no_more_than_128_obligations() {
+        let codec = ProtocolTokenCodec::new([0x34; 32]);
+        let obligation = CommandProjectionObligationV1 {
+            projection_ref: 0,
+            model: "Todos".into(),
+            scope_token: codec
+                .issue(ProtocolTokenPurpose::ProjectionObligation, &("hostile", 1))
+                .unwrap(),
+        };
+        let metadata =
+            CommandProjectionMetadataV1::try_new(100, 200, delta(), vec![obligation], false)
+                .unwrap();
+        let mut wire = serde_json::to_value(metadata).unwrap();
+        let encoded = wire["obligations"][0].clone();
+        wire["obligations"] = serde_json::Value::Array(
+            std::iter::repeat_n(encoded.clone(), MAX_COMMAND_PROJECTION_OBLIGATIONS + 1).collect(),
+        );
+        let error = CommandProjectionMetadataV1::from_json(&serde_json::to_vec(&wire).unwrap())
+            .unwrap_err();
+        assert!(matches!(
+            error,
+            CommandProjectionMetadataError::InvalidWire(ref message)
+                if message.contains("more than 128 obligations")
+        ));
+
+        wire["obligations"] =
+            serde_json::Value::Array(std::iter::repeat_n(encoded, 4_096).collect());
+        let bytes = serde_json::to_vec(&wire).unwrap();
+        assert!(bytes.len() < MAX_DOMAIN_EVENT_BODY_BYTES);
+        let error = CommandProjectionMetadataV1::from_json(&bytes).unwrap_err();
+        assert!(matches!(
+            error,
+            CommandProjectionMetadataError::InvalidWire(ref message)
+                if message.contains("more than 128 obligations")
         ));
     }
 

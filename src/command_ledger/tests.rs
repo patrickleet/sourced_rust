@@ -394,14 +394,10 @@ where
     let (left, right) = tokio::join!(repo.reserve_command(left), repo.reserve_command(right));
     let outcomes = (left.unwrap(), right.unwrap());
     let (winner, observed_causation) = match outcomes {
-        (
-            ReservationOutcome::Acquired(winner),
-            ReservationOutcome::InProgress { causation_id },
-        )
-        | (
-            ReservationOutcome::InProgress { causation_id },
-            ReservationOutcome::Acquired(winner),
-        ) => (winner, causation_id),
+        (ReservationOutcome::Acquired(winner), ReservationOutcome::InProgress { causation_id })
+        | (ReservationOutcome::InProgress { causation_id }, ReservationOutcome::Acquired(winner)) => {
+            (winner, causation_id)
+        }
         other => panic!(
             "concurrent reservations should have one winner and one in-progress observer, got {other:?}"
         ),
@@ -833,10 +829,12 @@ where
         .unwrap();
     assert!(repo.load_graph(load).await.unwrap().root.is_none());
     assert!(repo.get_snapshot(&identity).await.unwrap().is_none());
-    assert!(!repo
-        .inbox_contains(&inbox_consumer, &inbox_message_id)
-        .await
-        .unwrap());
+    assert!(
+        !repo
+            .inbox_contains(&inbox_consumer, &inbox_message_id)
+            .await
+            .unwrap()
+    );
     match repo
         .lookup_command(&key, CommandLookupScope::CommandName("order.create"))
         .await
@@ -904,6 +902,37 @@ where
     ));
 }
 
+async fn expired_modeled_metadata_deadline_cannot_commit<R>(repo: &R)
+where
+    R: CommandLedgerAdapterConformance,
+{
+    let id = Uuid::now_v7().to_string();
+    let request = reservation(&id, 81, 82).unwrap();
+    let key = request.key().clone();
+    let attempt = acquire(repo, request).await;
+    let causation_id = attempt.causation_id().clone();
+    let completion = attempt
+        .complete_with_projection_metadata_until(
+            TerminalCommandState::SucceededPendingProjection,
+            serde_json::json!({"ok": true}),
+            br#"{"modeled":true}"#.to_vec(),
+            Duration::from_secs(300),
+            SystemTime::UNIX_EPOCH + Duration::from_secs(1),
+        )
+        .unwrap();
+    assert!(
+        repo.commit_causal_batch(CausalCommitBatch::new(CommitBatch::empty(), completion))
+            .await
+            .is_err()
+    );
+    assert_eq!(
+        repo.lookup_command(&key, CommandLookupScope::CommandName("order.create"))
+            .await
+            .unwrap(),
+        CommandLookup::InProgress { causation_id }
+    );
+}
+
 async fn run_command_ledger_adapter_conformance<R>(repo: &R)
 where
     R: CommandLedgerAdapterConformance,
@@ -918,6 +947,7 @@ where
     committed_events_and_outbox_round_trip_ledger_causation(repo).await;
     stale_fence_rolls_back_every_commit_participant(repo).await;
     compacted_expiry_is_a_permanent_tombstone(repo).await;
+    expired_modeled_metadata_deadline_cannot_commit(repo).await;
 }
 
 #[test]
@@ -1075,22 +1105,26 @@ fn completion_rejects_inconsistent_projection_obligation_states() {
         TerminalCommandState::Projected,
         TerminalCommandState::Rejected,
     ] {
-        assert!(fresh_attempt()
-            .complete(
-                state,
+        assert!(
+            fresh_attempt()
+                .complete(
+                    state,
+                    serde_json::json!({"ok": true}),
+                    Duration::from_secs(300),
+                )
+                .is_ok()
+        );
+    }
+    assert!(
+        fresh_attempt()
+            .complete_with_obligations(
+                TerminalCommandState::SucceededPendingProjection,
                 serde_json::json!({"ok": true}),
+                vec![resolved_obligation("pending")],
                 Duration::from_secs(300),
             )
-            .is_ok());
-    }
-    assert!(fresh_attempt()
-        .complete_with_obligations(
-            TerminalCommandState::SucceededPendingProjection,
-            serde_json::json!({"ok": true}),
-            vec![resolved_obligation("pending")],
-            Duration::from_secs(300),
-        )
-        .is_ok());
+            .is_ok()
+    );
 }
 
 #[test]
@@ -1272,6 +1306,32 @@ fn modeled_projection_metadata_replays_exact_bytes_without_plaintext_scope_mater
             .into(),
     );
     assert!(matches!(row.replay(), Err(CommandLedgerError::Corrupt(_))));
+}
+
+#[test]
+fn modeled_projection_metadata_and_ledger_share_one_absolute_retention_deadline() {
+    let request = reservation(&Uuid::now_v7().to_string(), 11, 12).unwrap();
+    let started = SystemTime::UNIX_EPOCH + Duration::from_secs(100);
+    let deadline = started + Duration::from_secs(301);
+    let mut row = CommandLedgerRecord::initial(&request, started).unwrap();
+    let completion = row
+        .acquired_attempt()
+        .unwrap()
+        .complete_with_projection_metadata_until(
+            TerminalCommandState::SucceededPendingProjection,
+            serde_json::json!({"todo_id": "todo-deadline"}),
+            br#"{"modeled":true}"#.to_vec(),
+            Duration::from_secs(300),
+            deadline,
+        )
+        .unwrap();
+
+    // A delayed final commit must retain the exact metadata boundary rather
+    // than extending the ledger beyond it with commit-now + retention.
+    row.complete(&completion, started + Duration::from_secs(10))
+        .unwrap();
+    assert_eq!(row.retention_expires_at, deadline);
+    assert!(row.replay().is_ok());
 }
 
 #[test]
@@ -1614,9 +1674,9 @@ async fn concurrent_in_memory_reservations_have_one_winner_and_one_cause() {
 #[cfg(feature = "sqlite")]
 #[tokio::test]
 async fn sqlite_adapter_enforces_attempt_fence_and_replays() {
+    use crate::SqliteRepository;
     use crate::outbox::{OutboxMessage, OutboxMessageStatus};
     use crate::outbox_worker::OutboxStore;
-    use crate::SqliteRepository;
 
     let repo = SqliteRepository::connect_and_migrate("sqlite::memory:")
         .await
@@ -1658,12 +1718,13 @@ async fn sqlite_adapter_enforces_attempt_fence_and_replays() {
             .await,
         Err(CommandLedgerError::AttemptFenced { .. })
     ));
-    assert!(repo
-        .outbox_store()
-        .messages_by_status(OutboxMessageStatus::Pending, 10)
-        .await
-        .unwrap()
-        .is_empty());
+    assert!(
+        repo.outbox_store()
+            .messages_by_status(OutboxMessageStatus::Pending, 10)
+            .await
+            .unwrap()
+            .is_empty()
+    );
 
     let completion = second
         .complete(

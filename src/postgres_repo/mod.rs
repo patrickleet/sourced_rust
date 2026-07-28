@@ -19,8 +19,8 @@ use crate::outbox_worker::ClaimOutboxMessages;
 use crate::repository::RepositoryError;
 use crate::sqlx_repo::read_model::quote_identifier;
 use crate::sqlx_repo::repo::{
-    embedded_migrator, outbox_message_from_row, system_time_epoch_secs, SqlxOutboxStore,
-    SqlxRepository,
+    SqlxOutboxStore, SqlxRepository, embedded_migrator, outbox_message_from_row,
+    system_time_epoch_secs,
 };
 use crate::sqlx_repo::{
     self, is_postgres_unique_violation, read_model_i64_from_u64 as sqlx_read_model_i64_from_u64,
@@ -183,6 +183,12 @@ impl crate::sqlx_repo::repo::SqlxRepoBackend for Postgres {
         builder.push("(clock_timestamp() + make_interval(secs => ");
         builder.push_bind(duration.as_secs_f64());
         builder.push("))");
+    }
+
+    fn push_command_ledger_deadline_is_live(builder: &mut QueryBuilder<Postgres>, deadline: &f64) {
+        builder.push("to_timestamp(");
+        builder.push_bind(*deadline);
+        builder.push(") > clock_timestamp()");
     }
 
     fn push_command_ledger_json(builder: &mut QueryBuilder<Postgres>, json: &str) {

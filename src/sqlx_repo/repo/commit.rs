@@ -570,6 +570,11 @@ where
         DB::INTEGER_STORAGE,
     )?;
     let terminal_state = CommandLedgerState::from(completion.state()).as_str();
+    let retention_expires_at = completion
+        .retention_expires_at()
+        .map(DB::timestamp_value)
+        .transpose()
+        .map_err(CommandLedgerError::Storage)?;
     let mut builder = QueryBuilder::<DB>::new("UPDATE command_ledger SET state = ");
     builder.push_bind(terminal_state);
     builder.push(", attempt_token = NULL, lease_expires_at = NULL, outcome = ");
@@ -579,7 +584,10 @@ where
     builder.push(", completed_at = ");
     DB::push_command_ledger_now(&mut builder);
     builder.push(", retention_expires_at = ");
-    DB::push_command_ledger_deadline(&mut builder, completion.retention());
+    match retention_expires_at.as_ref() {
+        Some(deadline) => DB::push_timestamp_assign(&mut builder, deadline),
+        None => DB::push_command_ledger_deadline(&mut builder, completion.retention()),
+    }
     builder.push(", compacted_at = NULL WHERE service_id = ");
     builder.push_bind(fence.key().service_id());
     builder.push(" AND principal_partition = ");
@@ -598,6 +606,10 @@ where
     builder.push_bind(attempt_number);
     builder.push(" AND lease_expires_at > ");
     DB::push_command_ledger_now(&mut builder);
+    if let Some(deadline) = retention_expires_at.as_ref() {
+        builder.push(" AND ");
+        DB::push_command_ledger_deadline_is_live(&mut builder, deadline);
+    }
     let result =
         builder.build().execute(&mut **tx).await.map_err(|error| {
             repository_storage_error::<DB>("complete command ledger row", error)
