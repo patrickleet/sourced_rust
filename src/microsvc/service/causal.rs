@@ -20,9 +20,10 @@ use crate::microsvc::error::HandlerError;
 use crate::microsvc::session::Session;
 #[cfg(feature = "graphql")]
 use crate::projection_protocol::{
-    ProjectionObligationEvidence, ProjectionObligationEvidenceBatchRequest,
-    ProjectionObligationEvidenceRequest, ProjectionObservationKind, ProjectionProtocolStore,
-    ProjectionRecordScope, SameTransactionProjectionEvidence,
+    ProjectionCausationEvidenceRequest, ProjectionObligationEvidence,
+    ProjectionObligationEvidenceBatchRequest, ProjectionObligationEvidenceRequest,
+    ProjectionObservationKind, ProjectionProtocolStore, ProjectionRecordScope,
+    SameTransactionProjectionEvidence,
 };
 #[cfg(feature = "graphql")]
 use crate::repository::CommitBatch;
@@ -563,6 +564,7 @@ pub(super) async fn evaluate_causal_command_status<R>(
     command_id: &CommandId,
     consistency: CommandConsistency,
     lookup: CommandLookup,
+    protocol: Option<&crate::graphql::protocol::ProtocolResponseAccumulator>,
 ) -> Result<CausalCommandPublicStatus, CausalDispatchError>
 where
     R: CommandLedgerStore + ProjectionProtocolStore + Send + Sync,
@@ -598,11 +600,13 @@ where
                 CommandLedgerState::Succeeded => (CausalCommandPublicState::Succeeded, Vec::new()),
                 CommandLedgerState::Projected => (
                     CausalCommandPublicState::Projected,
-                    receipt
-                        .obligations
-                        .iter()
-                        .enumerate()
-                        .map(|(obligation_index, _)| CausalCommandProjectionEvidence {
+                    (0..receipt
+                        .projection_metadata
+                        .as_ref()
+                        .map_or(receipt.obligations.len(), |metadata| {
+                            metadata.obligations.len()
+                        }))
+                        .map(|obligation_index| CausalCommandProjectionEvidence {
                             obligation_index,
                             state: CausalProjectionEvidenceState::Observed,
                             // The durable ledger state proves every finite
@@ -619,7 +623,7 @@ where
                     (CausalCommandPublicState::ProjectionFailed, Vec::new())
                 }
                 CommandLedgerState::SucceededPendingProjection => {
-                    evaluate_pending_projection_evidence(repository, &receipt).await?
+                    evaluate_pending_projection_evidence(repository, &receipt, protocol).await?
                 }
                 CommandLedgerState::InProgress
                 | CommandLedgerState::RetryableUnknown
@@ -649,6 +653,7 @@ where
 pub(super) async fn evaluate_pending_projection_evidence<R>(
     repository: &R,
     receipt: &CausalCommandReceiptSource,
+    protocol: Option<&crate::graphql::protocol::ProtocolResponseAccumulator>,
 ) -> Result<
     (
         CausalCommandPublicState,
@@ -659,6 +664,20 @@ pub(super) async fn evaluate_pending_projection_evidence<R>(
 where
     R: ProjectionProtocolStore + Send + Sync,
 {
+    if let Some(metadata) = receipt.projection_metadata.as_ref() {
+        return evaluate_pending_modeled_projection_evidence(
+            repository,
+            receipt,
+            metadata,
+            protocol.ok_or_else(|| {
+                CausalDispatchError::Internal(
+                    "modeled projection status requires authenticated protocol authority".into(),
+                )
+            })?,
+        )
+        .await;
+    }
+
     let requests = receipt
         .obligations
         .iter()
@@ -755,6 +774,111 @@ where
 
     // Failure precedence is intentional: a terminal failure must never be
     // hidden by observations from the remaining obligations.
+    let state = collapse_projection_evidence(&evidence);
+    Ok((state, evidence))
+}
+
+#[cfg(feature = "graphql")]
+async fn evaluate_pending_modeled_projection_evidence<R>(
+    repository: &R,
+    receipt: &CausalCommandReceiptSource,
+    metadata: &crate::graphql::protocol::CommandProjectionMetadataV1,
+    protocol: &crate::graphql::protocol::ProtocolResponseAccumulator,
+) -> Result<
+    (
+        CausalCommandPublicState,
+        Vec<CausalCommandProjectionEvidence>,
+    ),
+    CausalDispatchError,
+>
+where
+    R: ProjectionProtocolStore + Send + Sync,
+{
+    let topologies = protocol
+        .modeled_projection_evidence_topologies(&receipt.causation_id, metadata)
+        .map_err(|error| {
+            CausalDispatchError::Internal(format!(
+                "modeled projection status authority rejected its stored identity: {error}"
+            ))
+        })?;
+    let request =
+        ProjectionCausationEvidenceRequest::new(receipt.causation_id.clone(), topologies)
+            .map_err(|error| {
+                CausalDispatchError::Internal(format!(
+                    "stored modeled projection causation is invalid: {error}"
+                ))
+            })?;
+    let batch = repository
+        .projection_causation_evidence(&request)
+        .await
+        .map_err(|error| {
+            CausalDispatchError::Internal(format!(
+                "modeled projection causation evidence lookup failed: {error}"
+            ))
+        })?;
+    let modeled = protocol
+        .modeled_projection_evidence(&receipt.causation_id, metadata, &batch)
+        .map_err(|error| {
+            CausalDispatchError::Internal(format!(
+                "modeled projection evidence authority rejected durable candidates: {error}"
+            ))
+        })?;
+    if modeled.len() != metadata.obligations.len() {
+        return Err(CausalDispatchError::Internal(format!(
+            "modeled projection evidence returned {} items for {} opaque obligations",
+            modeled.len(),
+            metadata.obligations.len()
+        )));
+    }
+    let evidence = modeled
+        .into_iter()
+        .enumerate()
+        .map(|(obligation_index, item)| Ok(match item {
+            crate::graphql::projection_delta::runtime::ModeledProjectionEvidence::Pending => {
+                CausalCommandProjectionEvidence {
+                    obligation_index,
+                    state: CausalProjectionEvidenceState::Pending,
+                    incarnation: None,
+                    revision: None,
+                }
+            }
+            crate::graphql::projection_delta::runtime::ModeledProjectionEvidence::TerminalFailure => {
+                CausalCommandProjectionEvidence {
+                    obligation_index,
+                    state: CausalProjectionEvidenceState::TerminalFailure,
+                    incarnation: None,
+                    revision: None,
+                }
+            }
+            crate::graphql::projection_delta::runtime::ModeledProjectionEvidence::Observed(
+                observation,
+            ) => {
+                let (incarnation, revision) = match observation.revision.as_ref() {
+                    Some(record)
+                        if observation.kind == ProjectionObservationKind::Record
+                            && record.scope() == &observation.scope =>
+                    {
+                        (Some(record.incarnation()), Some(record.revision()))
+                    }
+                    None if observation.kind == ProjectionObservationKind::Dependency => {
+                        (None, None)
+                    }
+                    _ => {
+                        return Err(CausalDispatchError::Internal(
+                            "modeled projection store returned invalid observation revision"
+                                .into(),
+                        ));
+                    }
+                };
+                CausalCommandProjectionEvidence {
+                    obligation_index,
+                    state: CausalProjectionEvidenceState::Observed,
+                    incarnation,
+                    revision,
+                }
+            }
+        }))
+        .collect::<Result<Vec<_>, _>>()?;
     let state = collapse_projection_evidence(&evidence);
     Ok((state, evidence))
 }

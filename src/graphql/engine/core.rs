@@ -191,6 +191,8 @@ pub(crate) struct ProtocolApplicationInfo {
 #[derive(Clone)]
 pub(crate) struct ProtocolRuntime {
     pub(crate) codec: ProtocolTokenCodec,
+    pub(crate) projection_programs:
+        Arc<crate::graphql::projection_delta::runtime::ProtocolProjectionProgramRegistry>,
     pub(crate) namespace: String,
     pub(crate) service_id: String,
     pub(crate) roles: BTreeMap<String, ProtocolRoleInfo>,

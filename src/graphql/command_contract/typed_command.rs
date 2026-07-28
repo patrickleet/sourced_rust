@@ -254,7 +254,10 @@ impl TypedCommandContract {
         &self,
         outbox_messages: &[OutboxMessage],
     ) -> Result<(), CommandCommitProofError> {
-        if self.consistency == CommandConsistency::Causal && self.confirmations.is_empty() {
+        if self.consistency == CommandConsistency::Causal
+            && self.confirmations.is_empty()
+            && self.projections.selectors.is_empty()
+        {
             return Err(CommandCommitProofError::CausalHasNoConfirmations);
         }
 
@@ -404,7 +407,10 @@ impl TypedServiceCommandBinding {
                 ));
             }
             match contract.consistency {
-                CommandConsistency::Causal if contract.confirmations.is_empty() => {
+                CommandConsistency::Causal
+                    if contract.confirmations.is_empty()
+                        && contract.projections.selectors.is_empty() =>
+                {
                     return Err(format!(
                         "typed causal command `{}` must declare at least one expected projector confirmation",
                         contract.name
@@ -626,8 +632,9 @@ impl<I, K: CommandOutcome> TypedCommand<I, K> {
 
     /// Declare the finite projector/model/key progress that confirms this
     /// causal outcome.
-    /// `Causal<_>` commands require at least one confirmation. `Succeeded<_>` may
-    /// omit the plan (terminal succeeded) or provide one (pending projection).
+    /// Legacy `Causal<_>` commands require at least one confirmation unless
+    /// they declare an exact emitted-event set for modeled runtime derivation.
+    /// `Succeeded<_>` may omit the plan (terminal succeeded) or provide one.
     /// `Projected<_>` commands cannot carry asynchronous confirmations.
     pub fn confirmations(mut self, confirmations: CompiledConfirmationPlan<I>) -> Self {
         self.contract.confirmations = confirmations.0;

@@ -592,15 +592,15 @@ fn lower_record_consequence(
             recoveries,
         );
     }
-    let scope = authorized_scope(
-        partition.clone(),
-        mutation.target().model(),
-        mutation.key(),
-        authorization,
-    )?;
     let transition = authorization.record_transition(source, mutation)?;
+    let complete_after_only = source == ProjectionMutationSource::Actual
+        && transition.before == ProjectionDeltaVisibility::Unknown
+        && transition.after == ProjectionDeltaVisibility::Authorized
+        && complete_write(mutation.kind());
     match (transition.before, transition.after) {
         (ProjectionDeltaVisibility::Authorized, ProjectionDeltaVisibility::Authorized) => {}
+        (ProjectionDeltaVisibility::Unknown, ProjectionDeltaVisibility::Authorized)
+            if complete_after_only => {}
         (ProjectionDeltaVisibility::Denied, ProjectionDeltaVisibility::Denied) => return Ok(()),
         (ProjectionDeltaVisibility::Unknown, _) | (_, ProjectionDeltaVisibility::Unknown) => {
             push_recovery(
@@ -617,6 +617,12 @@ fn lower_record_consequence(
             return Ok(());
         }
         _ => {
+            let scope = authorized_scope(
+                partition.clone(),
+                mutation.target().model(),
+                mutation.key(),
+                authorization,
+            )?;
             push_recovery(
                 recoveries,
                 recovery(
@@ -633,6 +639,12 @@ fn lower_record_consequence(
             return Ok(());
         }
     }
+    let scope = authorized_scope(
+        partition.clone(),
+        mutation.target().model(),
+        mutation.key(),
+        authorization,
+    )?;
     let Some(scope) = scope else {
         return emit_model_recovery(
             occurrence_ordinal,
@@ -707,6 +719,16 @@ fn lower_record_consequence(
                     replace: replacement,
                 },
             },
+        );
+    }
+    if complete_after_only {
+        return emit_model_recovery(
+            occurrence_ordinal,
+            projection_ref,
+            partition,
+            model.wire_model,
+            operations,
+            recoveries,
         );
     }
     let patch_emitted = !set.is_empty() || !unset.is_empty();

@@ -369,6 +369,17 @@ fn projection_value_json(
     }
 }
 
+pub(crate) fn resolved_partition_json(
+    partition: &super::ResolvedProjectionPartition,
+) -> Result<Option<serde_json::Value>, ProjectionProtocolError> {
+    match partition.as_ref() {
+        ResolvedProjectionPartitionRef::Unit => Ok(None),
+        ResolvedProjectionPartitionRef::Value(value) => {
+            projection_value_json(value.as_ref()).map(Some)
+        }
+    }
+}
+
 fn validate_execution_bounds(
     scopes: usize,
     client_visible: usize,

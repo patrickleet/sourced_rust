@@ -14,16 +14,16 @@ use crate::command_ledger::{
 use crate::entity::Entity;
 use crate::lock::{InMemoryLockManager, Lock, LockManager};
 use crate::projection_protocol::{
-    ProjectionChangeCursor, ProjectionChangeRead, ProjectionCheckpoint, ProjectionCommitBatch,
-    ProjectionCommitResult, ProjectionFailure, ProjectionFailureBatch, ProjectionFailureLocation,
-    ProjectionGeneration, ProjectionInputCursor, ProjectionInputDisposition,
-    ProjectionLiveRecordBatch, ProjectionLiveRecordBatchRequest, ProjectionModelOwnership,
-    ProjectionObligationEvidenceBatch, ProjectionObligationEvidenceBatchRequest,
-    ProjectionObservation, ProjectionObservationKind, ProjectionPartition,
-    ProjectionPartitionRuntimeState, ProjectionProtocolError, ProjectionProtocolStore,
-    ProjectionQuerySnapshot, ProjectionQuerySnapshotBatch, ProjectionQuerySnapshotBatchRequest,
-    ProjectionQuerySnapshotRequest, ProjectionRecordMetadata, ProjectionRecordScope,
-    ProjectorTopologyId, TrustedProjectionInput,
+    ProjectionCausationEvidenceBatch, ProjectionCausationEvidenceRequest, ProjectionChangeCursor,
+    ProjectionChangeRead, ProjectionCheckpoint, ProjectionCommitBatch, ProjectionCommitResult,
+    ProjectionFailure, ProjectionFailureBatch, ProjectionFailureLocation, ProjectionGeneration,
+    ProjectionInputCursor, ProjectionInputDisposition, ProjectionLiveRecordBatch,
+    ProjectionLiveRecordBatchRequest, ProjectionModelOwnership, ProjectionObligationEvidenceBatch,
+    ProjectionObligationEvidenceBatchRequest, ProjectionObservation, ProjectionObservationKind,
+    ProjectionPartition, ProjectionPartitionRuntimeState, ProjectionProtocolError,
+    ProjectionProtocolStore, ProjectionQuerySnapshot, ProjectionQuerySnapshotBatch,
+    ProjectionQuerySnapshotBatchRequest, ProjectionQuerySnapshotRequest, ProjectionRecordMetadata,
+    ProjectionRecordScope, ProjectorTopologyId, TrustedProjectionInput,
 };
 use crate::read_model::{ReadModelLoadGraph, ReadModelLoadRequest, ReadModelQueryCapabilities};
 use crate::repository::{
@@ -373,6 +373,15 @@ where
            + Send
            + 'a {
         self.inner.projection_obligation_evidence_batch(request)
+    }
+
+    fn projection_causation_evidence<'a>(
+        &'a self,
+        request: &'a ProjectionCausationEvidenceRequest,
+    ) -> impl Future<Output = Result<ProjectionCausationEvidenceBatch, ProjectionProtocolError>>
+           + Send
+           + 'a {
+        self.inner.projection_causation_evidence(request)
     }
 
     fn projection_live_record_batch<'a>(

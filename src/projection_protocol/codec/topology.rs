@@ -61,6 +61,44 @@ impl CompiledProjectionTopology {
         })
     }
 
+    /// Rehydrate one generated modeled executor from its catalog-pinned
+    /// physical topology and exact output schemas.
+    pub(crate) fn from_modeled_binding<'a>(
+        topology: ProjectorTopologyId,
+        outputs: impl IntoIterator<Item = (&'a str, &'a str, &'a TableSchema)>,
+    ) -> Result<Self, ProjectionProtocolError> {
+        let outputs = outputs.into_iter().collect::<Vec<_>>();
+        let codec = ProjectionScopeCodec::with_models(
+            topology.clone(),
+            outputs.iter().map(|(model, _, schema)| (*model, *schema)),
+        )
+        .map_err(|error| {
+            ProjectionProtocolError::InvalidBatch(format!(
+                "invalid modeled projection scope codec: {error}"
+            ))
+        })?;
+        let mut ownership = outputs
+            .iter()
+            .map(|(model, storage, _)| {
+                ProjectionModelOwnership::new((*model).to_owned(), (*storage).to_owned())
+            })
+            .collect::<Result<Vec<_>, _>>()?;
+        ownership.sort_by(|left, right| left.model.cmp(&right.model));
+        if ownership.windows(2).any(|pair| pair[0] == pair[1]) {
+            return Err(ProjectionProtocolError::InvalidBatch(
+                "modeled projection repeats output ownership".into(),
+            ));
+        }
+        Ok(Self {
+            topology,
+            codec: Arc::new(codec),
+            ownership,
+            // Portable modeled executors resolve their partition from the
+            // actual occurrence plan, not from raw transport JSON.
+            partition: ProjectionPartitionSpec::unit(),
+        })
+    }
+
     pub(crate) fn topology(&self) -> &ProjectorTopologyId {
         &self.topology
     }

@@ -717,6 +717,113 @@ impl ProjectionProtocolStore for InMemoryRepository {
         }
     }
 
+    fn projection_causation_evidence<'a>(
+        &'a self,
+        request: &'a ProjectionCausationEvidenceRequest,
+    ) -> impl Future<Output = Result<ProjectionCausationEvidenceBatch, ProjectionProtocolError>>
+           + Send
+           + 'a {
+        async move {
+            request.validate()?;
+            let protocol = self
+                .projection_protocol
+                .read()
+                .map_err(|_| RepositoryError::LockPoisoned("projection causation evidence read"))?;
+            let mut observations = protocol
+                .observations
+                .values()
+                .filter(|observation| {
+                    observation.causation_id == request.causation_id
+                        && request
+                            .topologies
+                            .iter()
+                            .any(|topology| topology == observation.scope.topology())
+                })
+                .cloned()
+                .collect::<Vec<_>>();
+            if observations.len() > MAX_PROJECTION_EVIDENCE_BATCH_ITEMS {
+                return Err(ProjectionProtocolError::InvalidBatch(format!(
+                    "projection causation has {} observations; maximum is {}",
+                    observations.len(),
+                    MAX_PROJECTION_EVIDENCE_BATCH_ITEMS
+                )));
+            }
+            for observation in &observations {
+                let probe = ProjectionObligationEvidenceRequest::new(
+                    request.causation_id.clone(),
+                    observation.scope.clone(),
+                    observation.kind,
+                )?;
+                validate_observation_from_state(&protocol, &probe, observation)?;
+            }
+            observations.sort_by(|left, right| {
+                (
+                    left.scope.topology().canonical_bytes(),
+                    left.scope.projection_partition().canonical_bytes(),
+                    left.scope.model(),
+                    left.kind.as_storage_str(),
+                    left.scope.canonical_key_bytes(),
+                )
+                    .cmp(&(
+                        right.scope.topology().canonical_bytes(),
+                        right.scope.projection_partition().canonical_bytes(),
+                        right.scope.model(),
+                        right.kind.as_storage_str(),
+                        right.scope.canonical_key_bytes(),
+                    ))
+            });
+
+            let mut terminal_failure_topologies = Vec::new();
+            for failure in protocol.failures.values().filter(|failure| {
+                failure.causation_id == request.causation_id
+                    && request
+                        .topologies
+                        .iter()
+                        .any(|topology| topology == failure.input.topology())
+            }) {
+                let key = PartitionKey::new(
+                    failure.input.topology(),
+                    failure.input.projection_partition(),
+                );
+                let partition = protocol.partitions.get(&key).ok_or_else(|| {
+                    ProjectionProtocolError::InvalidBatch(
+                        "stored projection failure has no partition state".into(),
+                    )
+                })?;
+                if partition.stopped_failure_id.as_deref() != Some(&failure.failure_id) {
+                    continue;
+                }
+                if failure.change.topology() != failure.input.topology()
+                    || failure.change.projection_partition() != failure.input.projection_partition()
+                    || failure.change.epoch() != &partition.change_epoch
+                    || failure.change.position() > partition.change_head
+                {
+                    return Err(ProjectionProtocolError::InvalidBatch(
+                        "stored stopped projection failure lies outside its partition".into(),
+                    ));
+                }
+                if !terminal_failure_topologies
+                    .iter()
+                    .any(|topology| topology == failure.input.topology())
+                {
+                    terminal_failure_topologies.push(failure.input.topology().clone());
+                }
+            }
+            if terminal_failure_topologies.len() > MAX_PROJECTION_EVIDENCE_BATCH_ITEMS {
+                return Err(ProjectionProtocolError::InvalidBatch(format!(
+                    "projection causation has {} stopped topologies; maximum is {}",
+                    terminal_failure_topologies.len(),
+                    MAX_PROJECTION_EVIDENCE_BATCH_ITEMS
+                )));
+            }
+            terminal_failure_topologies.sort_by_key(ProjectorTopologyId::canonical_bytes);
+            Ok(ProjectionCausationEvidenceBatch {
+                observations,
+                terminal_failure_topologies,
+            })
+        }
+    }
+
     fn projection_live_record_batch<'a>(
         &'a self,
         request: &'a ProjectionLiveRecordBatchRequest,

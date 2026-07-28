@@ -1,6 +1,4 @@
-#[cfg(feature = "graphql")]
-use std::collections::BTreeMap;
-use std::collections::HashMap;
+use std::collections::{BTreeMap, BTreeSet, HashMap};
 use std::future::Future;
 use std::pin::Pin;
 use std::sync::Arc;
@@ -54,6 +52,8 @@ use crate::outbox::OutboxPublisherConfig;
 use crate::outbox_worker::BusOutboxPublishHook;
 #[cfg(feature = "graphql")]
 use crate::projection_protocol::ProjectionProtocolStore;
+#[cfg(feature = "graphql")]
+use crate::projection_protocol::{CompiledProjectionTopology, ProjectorTopologyId};
 use serde_json::Value;
 
 /// How a handler expects the transport to deliver matching messages.
@@ -188,6 +188,7 @@ pub(super) trait ErasedCausalHandler<D>: Send + Sync {
         session: Session,
         principal: VerifiedPrincipal,
         policy: CausalCommandPolicy,
+        protocol: Option<crate::graphql::protocol::ProtocolResponseAccumulator>,
     ) -> CausalHandlerFuture<'a>;
 
     #[cfg(feature = "graphql")]
@@ -209,6 +210,7 @@ pub(super) trait ErasedCausalHandler<D>: Send + Sync {
         command_id: &'a CommandId,
         principal_partition: &'a PrincipalPartitionId,
         session: &'a Session,
+        protocol: Option<crate::graphql::protocol::ProtocolResponseAccumulator>,
     ) -> CausalStatusFuture<'a>;
 }
 
@@ -261,6 +263,8 @@ pub(super) trait ErasedRoutes: Send + Sync {
 
     fn projector_registrations(&self) -> Vec<ProjectorRegistration>;
 
+    fn modeled_local_services(&self) -> Vec<&str>;
+
     fn bootstrap_projectors(&self) -> ProjectorBootstrapFuture<'_>;
 
     fn is_causal_projector(&self, message: &Message) -> bool;
@@ -302,6 +306,7 @@ pub(super) trait ErasedRoutes: Send + Sync {
         session: Session,
         principal: VerifiedPrincipal,
         policy: CausalCommandPolicy,
+        protocol: Option<crate::graphql::protocol::ProtocolResponseAccumulator>,
     ) -> CausalHandlerFuture<'a>;
 
     #[cfg(feature = "graphql")]
@@ -322,6 +327,7 @@ pub(super) trait ErasedRoutes: Send + Sync {
         command_id: &'a CommandId,
         principal_partition: &'a PrincipalPartitionId,
         session: &'a Session,
+        protocol: Option<crate::graphql::protocol::ProtocolResponseAccumulator>,
     ) -> CausalStatusFuture<'a>;
 
     #[cfg(feature = "graphql")]
@@ -492,6 +498,7 @@ pub struct Routes<D> {
     handlers: HashMap<MessageKind, HashMap<String, RegisteredHandler<D>>>,
     handler_specs: Vec<HandlerSpec>,
     projectors: Vec<Arc<dyn ErasedProjectorHandler<D>>>,
+    modeled_local_services: BTreeSet<String>,
     outbox_configurator: Option<OutboxConfigurator<D>>,
 }
 
@@ -503,6 +510,7 @@ impl<D: Send + Sync + 'static> Routes<D> {
             handlers: HashMap::new(),
             handler_specs: Vec::new(),
             projectors: Vec::new(),
+            modeled_local_services: BTreeSet::new(),
             outbox_configurator: None,
         }
     }
@@ -517,7 +525,10 @@ impl<D: Send + Sync + 'static> Routes<D> {
     /// otherwise silently drop previously registered handlers.
     pub(super) fn assert_no_registrations(&self, builder: &str) {
         assert!(
-            self.handlers.is_empty() && self.handler_specs.is_empty() && self.projectors.is_empty(),
+            self.handlers.is_empty()
+                && self.handler_specs.is_empty()
+                && self.projectors.is_empty()
+                && self.modeled_local_services.is_empty(),
             "Routes::{builder} must be called before registering handlers"
         );
     }
@@ -575,6 +586,88 @@ impl<D: Send + Sync + 'static> Routes<D> {
         I: serde::de::DeserializeOwned + Send + 'static,
     {
         CausalProjectorRouteBuilder::new(self, projector)
+    }
+
+    /// Mount every catalog-pinned local executor in one modeled projection
+    /// declaration.
+    ///
+    /// Remote bindings remain producer-visible registry entries but install no
+    /// local event route. Active and draining local bindings both execute so a
+    /// draining epoch can finish already-published work; only Active+Causal is
+    /// eligible for new client obligations.
+    #[cfg(feature = "graphql")]
+    pub fn consume_projection(mut self, projector: SurfaceProjector) -> Self
+    where
+        D: CausalProjectionRouteDependencies,
+    {
+        let modeled = projector.modeled.clone();
+        for projection in modeled {
+            let crate::projection::placement::ProjectionExecutorRoute::Local { service } =
+                projection.route()
+            else {
+                continue;
+            };
+            let executor = projection.server_executor().cloned().unwrap_or_else(|| {
+                panic!(
+                    "local modeled projection `{}` / `{}` must be registered from a generated descriptor",
+                    projection.program_id(),
+                    projection.binding_id()
+                )
+            });
+            let (_, binding) = projection.raw().unwrap_or_else(|| {
+                panic!("local modeled projection lost its exact catalog binding")
+            });
+            let physical = binding.physical_topology().unwrap_or_else(|| {
+                panic!(
+                    "local modeled projection binding `{}` has no physical topology",
+                    binding.id()
+                )
+            });
+            let topology =
+                ProjectorTopologyId::new(physical.version(), physical.name(), physical.digest())
+                    .unwrap_or_else(|error| {
+                        panic!(
+                    "local modeled projection binding `{}` has invalid physical topology: {error}",
+                    binding.id()
+                )
+                    });
+            let compiled = CompiledProjectionTopology::from_modeled_binding(
+                topology,
+                binding.outputs().iter().map(|output| {
+                    (output.model(), output.storage(), output.schema())
+                }),
+            )
+            .unwrap_or_else(|error| {
+                panic!(
+                    "local modeled projection binding `{}` cannot compile its physical runtime: {error}",
+                    binding.id()
+                )
+            });
+            let change_epoch =
+                crate::projection_protocol::ProjectionEpoch::new(projection.epoch().as_str())
+                    .unwrap_or_else(|error| {
+                        panic!(
+                            "local modeled projection binding `{}` has invalid epoch: {error}",
+                            binding.id()
+                        )
+                    });
+            let facts = projection.event_names();
+            assert!(
+                !facts.is_empty(),
+                "local modeled projection binding `{}` consumes no domain events",
+                binding.id()
+            );
+            self.modeled_local_services.insert(service.clone());
+            self = self.register_projector(
+                HandlerSpec::projector(facts),
+                Box::new(crate::microsvc::projector::RegisteredModeledProjector {
+                    compiled,
+                    change_epoch,
+                    executor,
+                }),
+            );
+        }
+        self
     }
 
     /// Start registering an event handler that consumes JSON payload input.
@@ -820,6 +913,7 @@ where
         session: Session,
         principal: VerifiedPrincipal,
         policy: CausalCommandPolicy,
+        protocol: Option<crate::graphql::protocol::ProtocolResponseAccumulator>,
     ) -> CausalHandlerFuture<'a> {
         Box::pin(async move {
             ensure_causal_grant(&self.contract, &session)?;
@@ -985,6 +1079,71 @@ where
                 )
                 .await;
             }
+            let projection_metadata = if protocol.is_some()
+                && self.contract.consistency != CommandConsistency::Projected
+                && !self.contract.projections.selectors.is_empty()
+            {
+                if !projection_obligations.is_empty() {
+                    return abandon_causal_attempt(
+                        repository,
+                        attempt,
+                        self.contract.consistency,
+                        "typed command cannot mix modeled projection metadata with legacy confirmations"
+                            .to_owned(),
+                    )
+                    .await;
+                }
+                let occurrences = match parts.prepared_domain_occurrences() {
+                    Ok(occurrences) => occurrences,
+                    Err(error) => {
+                        return abandon_causal_attempt(
+                            repository,
+                            attempt,
+                            self.contract.consistency,
+                            error.to_string(),
+                        )
+                        .await
+                    }
+                };
+                match protocol
+                    .as_ref()
+                    .expect("modeled projection branch has protocol authority")
+                    .projection_metadata_for_actual(
+                        attempt.causation_id().clone(),
+                        policy.replay_retention,
+                        occurrences,
+                        &self.contract.projections.selectors,
+                    ) {
+                    Ok(metadata) => Some(metadata),
+                    Err(error) => {
+                        return abandon_causal_attempt(
+                            repository,
+                            attempt,
+                            self.contract.consistency,
+                            error.to_string(),
+                        )
+                        .await
+                    }
+                }
+            } else {
+                None
+            };
+            let projection_metadata_bytes = match projection_metadata
+                .as_ref()
+                .map(crate::graphql::protocol::CommandProjectionMetadataV1::canonical_bytes)
+                .transpose()
+            {
+                Ok(bytes) => bytes,
+                Err(error) => {
+                    return abandon_causal_attempt(
+                        repository,
+                        attempt,
+                        self.contract.consistency,
+                        format!("modeled projection metadata encoding failed: {error}"),
+                    )
+                    .await
+                }
+            };
             let direct_projection = match parts.seal_direct_projection(
                 &prepared,
                 direct_projection_target,
@@ -1002,14 +1161,25 @@ where
                 }
             };
 
-            let terminal_state = match self.contract.consistency {
-                CommandConsistency::Succeeded if self.contract.confirmations.is_empty() => {
+            let terminal_state = match (&projection_metadata, self.contract.consistency) {
+                (Some(metadata), CommandConsistency::Succeeded | CommandConsistency::Causal)
+                    if metadata.obligations.is_empty() =>
+                {
                     TerminalCommandState::Succeeded
                 }
-                CommandConsistency::Succeeded | CommandConsistency::Causal => {
+                (Some(_), CommandConsistency::Succeeded | CommandConsistency::Causal) => {
                     TerminalCommandState::SucceededPendingProjection
                 }
-                CommandConsistency::Projected => TerminalCommandState::Projected,
+                (Some(_), CommandConsistency::Projected) => unreachable!(
+                    "same-transaction commands do not persist eventual modeled metadata"
+                ),
+                (None, CommandConsistency::Succeeded) if self.contract.confirmations.is_empty() => {
+                    TerminalCommandState::Succeeded
+                }
+                (None, CommandConsistency::Succeeded | CommandConsistency::Causal) => {
+                    TerminalCommandState::SucceededPendingProjection
+                }
+                (None, CommandConsistency::Projected) => TerminalCommandState::Projected,
             };
             let replay_payload = prepared.serialized_payload().clone();
             let publisher = aggregate_repository.outbox_publisher();
@@ -1060,14 +1230,21 @@ where
             }
 
             let fence = attempt.fence();
-            let completion = attempt
-                .complete_with_obligations(
+            let completion = match projection_metadata_bytes {
+                Some(metadata) => attempt.complete_with_projection_metadata(
+                    terminal_state,
+                    replay_payload.clone(),
+                    metadata,
+                    policy.replay_retention,
+                ),
+                None => attempt.complete_with_obligations(
                     terminal_state,
                     replay_payload.clone(),
                     projection_obligations,
                     policy.replay_retention,
-                )
-                .map_err(internal_ledger_error)?;
+                ),
+            }
+            .map_err(internal_ledger_error)?;
             let causal_batch = match direct_projection {
                 Some(direct_projection) => {
                     CausalCommitBatch::with_direct_projection(batch, completion, direct_projection)
@@ -1146,6 +1323,7 @@ where
         command_id: &'a CommandId,
         principal_partition: &'a PrincipalPartitionId,
         session: &'a Session,
+        protocol: Option<crate::graphql::protocol::ProtocolResponseAccumulator>,
     ) -> CausalStatusFuture<'a> {
         Box::pin(async move {
             // Status is deliberately non-enumerating: handlers that are no
@@ -1176,6 +1354,7 @@ where
                 command_id,
                 self.contract.consistency,
                 lookup,
+                protocol.as_ref(),
             )
             .await
         })
@@ -1198,6 +1377,13 @@ where
         self.projectors
             .iter()
             .map(|projector| projector.registration())
+            .collect()
+    }
+
+    fn modeled_local_services(&self) -> Vec<&str> {
+        self.modeled_local_services
+            .iter()
+            .map(String::as_str)
             .collect()
     }
 
@@ -1354,6 +1540,7 @@ where
         session: Session,
         principal: VerifiedPrincipal,
         policy: CausalCommandPolicy,
+        protocol: Option<crate::graphql::protocol::ProtocolResponseAccumulator>,
     ) -> CausalHandlerFuture<'a> {
         let handler = self
             .handlers
@@ -1368,6 +1555,7 @@ where
                 session,
                 principal,
                 policy,
+                protocol,
             ),
             Some(RegisteredHandler::Legacy { .. })
             | Some(RegisteredHandler::Projector(_))
@@ -1417,6 +1605,7 @@ where
         command_id: &'a CommandId,
         principal_partition: &'a PrincipalPartitionId,
         session: &'a Session,
+        protocol: Option<crate::graphql::protocol::ProtocolResponseAccumulator>,
     ) -> CausalStatusFuture<'a> {
         Box::pin(async move {
             let mut handlers = self
@@ -1439,6 +1628,7 @@ where
                         command_id,
                         principal_partition,
                         session,
+                        protocol.clone(),
                     )
                     .await?;
                 if !status.is_unknown() {

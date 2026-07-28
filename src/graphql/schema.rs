@@ -972,7 +972,14 @@ async fn resolve_command(
             )
         })?;
     let result = service
-        .dispatch_causal_with_receipt(command_name, &command_id, input, session, principal)
+        .dispatch_causal_with_receipt_and_protocol(
+            command_name,
+            &command_id,
+            input,
+            session,
+            principal,
+            protocol.clone(),
+        )
         .await
         .map_err(|error| {
             client_error_with_status(error.code(), error.status_code(), error.client_message())
@@ -1028,7 +1035,7 @@ async fn resolve_command_status(
         .map_err(|_| client_error("BAD_REQUEST", "invalid commandId"))?;
 
     let status = service
-        .causal_command_status(&command_id, &session, principal)
+        .causal_command_status_with_protocol(&command_id, &session, principal, protocol.clone())
         .await
         .map_err(|error| {
             client_error_with_status(error.code(), error.status_code(), error.client_message())

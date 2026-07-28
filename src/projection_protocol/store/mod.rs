@@ -86,10 +86,12 @@ pub(crate) use query::{
     ProjectionExecutionSnapshotBatchRequest, ProjectionFailureLocation,
     ProjectionGraphIncludeRequest, ProjectionGraphIncludeSnapshot, ProjectionGraphSnapshot,
     ProjectionGraphSnapshotRequest, ProjectionLiveRecordBatch, ProjectionLiveRecordBatchRequest,
-    ProjectionLiveRecordRequest, ProjectionObligationEvidence, ProjectionObligationEvidenceBatch,
-    ProjectionObligationEvidenceBatchRequest, ProjectionObligationEvidenceRequest,
-    ProjectionPartitionRuntimeState, ProjectionPartitionSnapshot, ProjectionPendingRetry,
-    ProjectionQuerySnapshot, ProjectionQuerySnapshotBatch, ProjectionQuerySnapshotBatchRequest,
+    ProjectionLiveRecordRequest, ProjectionCausationEvidenceBatch,
+    ProjectionCausationEvidenceRequest, ProjectionObligationEvidence,
+    ProjectionObligationEvidenceBatch, ProjectionObligationEvidenceBatchRequest,
+    ProjectionObligationEvidenceRequest, ProjectionPartitionRuntimeState,
+    ProjectionPartitionSnapshot, ProjectionPendingRetry, ProjectionQuerySnapshot,
+    ProjectionQuerySnapshotBatch, ProjectionQuerySnapshotBatchRequest,
     ProjectionQuerySnapshotRequest, ProjectionScopedRowSnapshot,
 };
 pub use r#trait::ProjectionChangeRead;

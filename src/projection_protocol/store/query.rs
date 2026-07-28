@@ -468,6 +468,74 @@ pub(crate) struct ProjectionObligationEvidenceBatch {
     pub(crate) evidence: Vec<ProjectionObligationEvidence>,
 }
 
+/// Bounded durable evidence discovered from one framework-minted causation.
+///
+/// This server-only read exists for modeled projection receipts, whose ledger
+/// representation deliberately persists opaque scope tokens rather than raw
+/// physical row identities. The authenticated GraphQL authority remints tokens
+/// from these candidates and accepts only exact byte matches.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub(crate) struct ProjectionCausationEvidenceRequest {
+    pub(crate) causation_id: String,
+    pub(crate) topologies: Vec<ProjectorTopologyId>,
+}
+
+impl ProjectionCausationEvidenceRequest {
+    pub(crate) fn new(
+        causation_id: impl Into<String>,
+        topologies: Vec<ProjectorTopologyId>,
+    ) -> Result<Self, ProjectionProtocolError> {
+        let request = Self {
+            causation_id: bounded_opaque(
+                "projection causation ID",
+                causation_id,
+                MAX_CAUSATION_ID_BYTES,
+            )?,
+            topologies,
+        };
+        request.validate()?;
+        Ok(request)
+    }
+
+    pub(crate) fn validate(&self) -> Result<(), ProjectionProtocolError> {
+        bounded_opaque(
+            "projection causation ID",
+            self.causation_id.clone(),
+            MAX_CAUSATION_ID_BYTES,
+        )?;
+        if self.topologies.is_empty()
+            || self.topologies.len() > MAX_PROJECTION_EVIDENCE_BATCH_ITEMS
+        {
+            return Err(ProjectionProtocolError::InvalidBatch(format!(
+                "projection causation evidence has {} topology filters; expected 1..={}",
+                self.topologies.len(),
+                MAX_PROJECTION_EVIDENCE_BATCH_ITEMS
+            )));
+        }
+        let mut exact = std::collections::HashSet::new();
+        if self
+            .topologies
+            .iter()
+            .any(|topology| !exact.insert(topology))
+        {
+            return Err(ProjectionProtocolError::InvalidBatch(
+                "projection causation evidence repeats an exact topology filter".into(),
+            ));
+        }
+        Ok(())
+    }
+}
+
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
+pub(crate) struct ProjectionCausationEvidenceBatch {
+    pub(crate) observations: Vec<ProjectionObservation>,
+    /// Only failures that still stop their exact partition are returned.
+    ///
+    /// Repair clears that stop fence, so an immutable historical failure does
+    /// not permanently poison later status reads.
+    pub(crate) terminal_failure_topologies: Vec<ProjectorTopologyId>,
+}
+
 /// A typed physical-row key whose causal partition is deliberately unknown.
 ///
 /// The registered codec supplies the topology, schema, and canonical key. The

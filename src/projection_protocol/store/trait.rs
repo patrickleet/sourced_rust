@@ -108,6 +108,19 @@ pub(crate) trait ProjectionProtocolStore: Send + Sync {
            + Send
            + 'a;
 
+    fn projection_causation_evidence<'a>(
+        &'a self,
+        _request: &'a ProjectionCausationEvidenceRequest,
+    ) -> impl Future<Output = Result<ProjectionCausationEvidenceBatch, ProjectionProtocolError>>
+           + Send
+           + 'a {
+        async {
+            Err(ProjectionProtocolError::InvalidBatch(
+                "projection adapter does not support modeled causation evidence".into(),
+            ))
+        }
+    }
+
     fn projection_live_record_batch<'a>(
         &'a self,
         request: &'a ProjectionLiveRecordBatchRequest,

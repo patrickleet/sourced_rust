@@ -234,8 +234,8 @@ fn sealed_authority_lowers_actual_full_state_and_memoizes_partition() {
 #[cfg(feature = "graphql")]
 fn production_authority_binds_partition_and_obligation_tokens_to_request_scope() {
     use super::runtime::{
-        ProjectionRuntimeAuthorityError, ProtocolProjectionDeltaRequestAuthority,
-        MAX_PROJECTION_AUTHORITY_LIFETIME_MS,
+        ModeledProjectionObservationScope, ProjectionRuntimeAuthorityError,
+        ProtocolProjectionDeltaRequestAuthority, MAX_PROJECTION_AUTHORITY_LIFETIME_MS,
     };
     use crate::graphql::protocol::{
         CommandProjectionMetadataV1, ProtocolTokenCodec, ProtocolTokenPurpose,
@@ -315,7 +315,37 @@ fn production_authority_binds_partition_and_obligation_tokens_to_request_scope()
         Err(ProjectionRuntimeAuthorityError::InvalidAuthority)
     );
 
-    let metadata = request.metadata(delta, &[&modeled]).unwrap();
+    let observation_codec = crate::projection_protocol::ProjectionScopeCodec::with_models(
+        ProjectorTopologyId::new(1, "projection-delta-test", [0x44; 32]).unwrap(),
+        [("TodoView", &todos())],
+    )
+    .unwrap();
+    let observation_scope = observation_codec
+        .encode_row_scope(
+            "projection-delta-test",
+            "TodoView",
+            Some(&json!("tenant-a")),
+            &crate::table::RowKey::new([(
+                "todo_id",
+                crate::table::RowValue::String("todo-1".into()),
+            )]),
+        )
+        .unwrap();
+    let metadata = request
+        .metadata(
+            delta,
+            &[&modeled],
+            &[ModeledProjectionObservationScope {
+                operation_index: 0,
+                projection_ref: 0,
+                projector: "projection-delta-test".into(),
+                model: "TodoView".into(),
+                kind: crate::projection_protocol::ProjectionObservationKind::Record,
+                scope: observation_scope,
+            }],
+            false,
+        )
+        .unwrap();
     assert!(!metadata.obligations.is_empty());
     assert!(metadata.obligations.iter().all(|obligation| obligation
         .scope_token
@@ -431,6 +461,302 @@ fn production_authority_binds_partition_and_obligation_tokens_to_request_scope()
 
 #[test]
 #[cfg(feature = "graphql")]
+fn production_predicate_authorizes_only_complete_actual_after_rows() {
+    use super::runtime::ProtocolProjectionDeltaRequestAuthority;
+    use crate::graphql::protocol::{
+        DistributedTrustedPreset, ProtocolTokenCodec, ProtocolTokenPurpose,
+    };
+
+    fn lower(
+        fixture: &ModeledFixture,
+        occurrence: DomainEventOccurrence,
+        claim: Option<&str>,
+    ) -> ProjectionDelta {
+        let selected = selected_export_with_owner_policy(&fixture.surface);
+        let codec = ProtocolTokenCodec::new([0x6a; 32]);
+        let cache_scope = codec
+            .issue(ProtocolTokenPurpose::CacheScope, &("owner-policy", claim))
+            .unwrap();
+        let trusted_presets = claim
+            .map(|value| {
+                vec![DistributedTrustedPreset {
+                    name: "x-user-id".into(),
+                    codec: "string".into(),
+                    value: serde_json::Value::String(value.into()),
+                }]
+            })
+            .unwrap_or_default();
+        let request = ProtocolProjectionDeltaRequestAuthority::try_new(
+            selected,
+            codec,
+            crate::command_ledger::PrincipalPartitionId::new("owner-policy-principal").unwrap(),
+            "owner-policy-generation",
+            &cache_scope,
+            crate::command_ledger::CausationId::parse_stored(TEST_CAUSATION_ID.to_owned()).unwrap(),
+            1_000,
+            1_000,
+            2_000,
+        )
+        .unwrap()
+        .with_trusted_presets(trusted_presets);
+        let authority = ProjectionDeltaAuthority::try_new(request.export(), &request).unwrap();
+        let modeled = request.export().surface().projectors[0].modeled[0].clone();
+        let source = authority.source(&modeled).unwrap();
+        let plan = crate::ResolvedProjectionPlan::resolve(&fixture.program, &occurrence).unwrap();
+        let occurrence = ProjectionDeltaPlanOccurrence::actual(vec![(&source, &plan)]).unwrap();
+        authority.lower(&[occurrence]).unwrap()
+    }
+
+    let complete = modeled_fixture(
+        ProjectionBindingState::Active,
+        ProjectionExecutionClass::Causal,
+    );
+    let authorized = lower(
+        &complete,
+        state_occurrence(7, "todo-1", "visible"),
+        Some("owner-secret"),
+    );
+    assert!(authorized
+        .operations
+        .iter()
+        .any(|operation| matches!(operation.mutation, ProjectionDeltaMutation::Upsert { .. })));
+    assert!(!authorized.recoveries.iter().any(|recovery| matches!(
+        recovery.target,
+        ProjectionDeltaRecoveryTarget::Record { .. }
+    )));
+
+    for (occurrence, claim) in [
+        (
+            state_occurrence(8, "todo-2", "owner transfer"),
+            Some("another-owner"),
+        ),
+        (state_occurrence(9, "todo-3", "missing trusted claim"), None),
+    ] {
+        let delta = lower(&complete, occurrence, claim);
+        assert!(!delta.operations.iter().any(is_record_operation));
+        assert!(!delta.recoveries.iter().any(|recovery| matches!(
+            recovery.target,
+            ProjectionDeltaRecoveryTarget::Record { .. }
+        )));
+        assert!(delta.recoveries.iter().all(|recovery| matches!(
+            recovery.target,
+            ProjectionDeltaRecoveryTarget::Model { .. }
+        )));
+    }
+
+    let patch = modeled_fixture_with_kind(
+        ProjectionBindingState::Active,
+        ProjectionExecutionClass::Causal,
+        ProjectionMutationKind::Patch,
+    );
+    let delta = lower(
+        &patch,
+        partial_state_occurrence(10, "todo-4"),
+        Some("owner-secret"),
+    );
+    assert!(!delta.operations.iter().any(is_record_operation));
+    assert!(delta
+        .recoveries
+        .iter()
+        .all(|recovery| matches!(recovery.target, ProjectionDeltaRecoveryTarget::Model { .. })));
+}
+
+#[test]
+#[cfg(feature = "graphql")]
+fn zero_obligation_modeled_metadata_is_revalidated_on_every_receipt_emission() {
+    use std::sync::Arc;
+
+    use super::runtime::{ProtocolProjectionProgramRegistry, ProtocolProjectionRequestSeed};
+    use crate::graphql::protocol::{
+        CommandProjectionMetadataV1, DistributedEnvelopeV1, ProtocolResponseAccumulator,
+        ProtocolTokenCodec, ProtocolTokenPurpose,
+    };
+    use crate::microsvc::{CausalCommandPublicState, CausalCommandPublicStatus};
+
+    fn status(metadata: CommandProjectionMetadataV1) -> CausalCommandPublicStatus {
+        CausalCommandPublicStatus {
+            state: CausalCommandPublicState::Succeeded,
+            command_id: "0190a000-0000-7000-8000-000000000011".into(),
+            causation_id: Some(TEST_CAUSATION_ID.into()),
+            consistency: Some(crate::graphql::command_contract::CommandConsistency::Causal),
+            outcome: None,
+            obligations: Vec::new(),
+            projection_metadata: Some(metadata),
+            evidence: Vec::new(),
+            direct_projection: None,
+        }
+    }
+
+    fn accumulator(
+        seed: ProtocolProjectionRequestSeed,
+        codec: ProtocolTokenCodec,
+        cache_scope: crate::graphql::protocol::OpaqueProtocolToken,
+    ) -> ProtocolResponseAccumulator {
+        let accumulator = ProtocolResponseAccumulator::new(
+            DistributedEnvelopeV1::new("sha256:modeled-status", cache_scope, None),
+            codec,
+        );
+        accumulator.bind_projection_request(seed).unwrap();
+        accumulator
+    }
+
+    let fixture = modeled_fixture(
+        ProjectionBindingState::Active,
+        ProjectionExecutionClass::Causal,
+    );
+    let export = selected_export(&fixture.surface);
+    let registry =
+        Arc::new(ProtocolProjectionProgramRegistry::try_from_surface(&fixture.surface).unwrap());
+    let issued_at_unix_ms = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .unwrap()
+        .as_millis() as u64;
+    let seed = ProtocolProjectionRequestSeed::new(
+        export.clone(),
+        Arc::clone(&registry),
+        crate::command_ledger::PrincipalPartitionId::new("modeled-status-principal").unwrap(),
+        "modeled-status-auth",
+        Vec::new(),
+        issued_at_unix_ms,
+    )
+    .unwrap();
+    let codec = ProtocolTokenCodec::new([0x6c; 32]);
+    let cache_scope = codec
+        .issue(
+            ProtocolTokenPurpose::CacheScope,
+            &("modeled-status", "cache"),
+        )
+        .unwrap();
+    let occurrence = state_occurrence(11, "todo-status", "status");
+    let selector =
+        crate::ProjectionEventSelector::try_from_descriptor(occurrence.descriptor()).unwrap();
+    let metadata = seed
+        .metadata_for_actual(
+            codec.clone(),
+            &cache_scope,
+            crate::command_ledger::CausationId::parse_stored(TEST_CAUSATION_ID.into()).unwrap(),
+            std::time::Duration::from_secs(60),
+            &[occurrence],
+            &[selector],
+        )
+        .unwrap();
+    let forged_link_model = CommandProjectionMetadataV1::try_new(
+        metadata.issued_at_unix_ms,
+        metadata.expires_at_unix_ms,
+        metadata.delta.clone(),
+        vec![crate::graphql::protocol::CommandProjectionObligationV1 {
+            projection_ref: metadata.obligations[0].projection_ref,
+            // Link/Unlink may observe a physical join output that the
+            // role-safe delta deliberately does not expose. Structural
+            // decoding therefore permits the label, but the exact mounted
+            // binding must reject this forged non-output model before emit.
+            model: "ForgedJoinOutput".into(),
+            scope_token: metadata.obligations[0].scope_token.clone(),
+        }],
+        metadata.revalidate,
+    )
+    .unwrap();
+    assert!(
+        accumulator(seed.clone(), codec.clone(), cache_scope.clone())
+            .record_status(&status(forged_link_model))
+            .is_err()
+    );
+
+    let zero_obligation = CommandProjectionMetadataV1::try_new(
+        metadata.issued_at_unix_ms,
+        metadata.expires_at_unix_ms,
+        metadata.delta.clone(),
+        Vec::new(),
+        metadata.revalidate,
+    )
+    .unwrap();
+
+    accumulator(seed.clone(), codec.clone(), cache_scope.clone())
+        .record_status(&status(zero_obligation.clone()))
+        .unwrap();
+
+    let stale_seed = ProtocolProjectionRequestSeed::new(
+        export,
+        registry,
+        crate::command_ledger::PrincipalPartitionId::new("modeled-status-principal").unwrap(),
+        "changed-modeled-status-auth",
+        Vec::new(),
+        issued_at_unix_ms,
+    )
+    .unwrap();
+    assert!(accumulator(stale_seed, codec.clone(), cache_scope.clone())
+        .record_status(&status(zero_obligation.clone()))
+        .is_err());
+
+    let expired = CommandProjectionMetadataV1::try_new(
+        1,
+        2,
+        zero_obligation.delta,
+        Vec::new(),
+        zero_obligation.revalidate,
+    )
+    .unwrap();
+    assert!(accumulator(seed, codec, cache_scope)
+        .record_status(&status(expired))
+        .is_err());
+}
+
+#[test]
+#[cfg(feature = "graphql")]
+fn mounted_registry_derives_one_exact_physical_obligation_from_actual_fanout_ops() {
+    use super::runtime::{
+        ProtocolProjectionDeltaRequestAuthority, ProtocolProjectionProgramRegistry,
+    };
+    use crate::graphql::protocol::{ProtocolTokenCodec, ProtocolTokenPurpose};
+
+    let fixture = modeled_fixture(
+        ProjectionBindingState::Active,
+        ProjectionExecutionClass::Causal,
+    );
+    let registry = ProtocolProjectionProgramRegistry::try_from_surface(&fixture.surface).unwrap();
+    let selected = selected_export(&fixture.surface);
+    let codec = ProtocolTokenCodec::new([0x6b; 32]);
+    let cache_scope = codec
+        .issue(ProtocolTokenPurpose::CacheScope, &("registry-actual", 1))
+        .unwrap();
+    let now = std::time::SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .unwrap()
+        .as_millis() as u64;
+    let request = ProtocolProjectionDeltaRequestAuthority::try_new(
+        selected,
+        codec,
+        crate::command_ledger::PrincipalPartitionId::new("registry-principal").unwrap(),
+        "registry-generation",
+        &cache_scope,
+        crate::command_ledger::CausationId::parse_stored(TEST_CAUSATION_ID.to_owned()).unwrap(),
+        now,
+        now,
+        now + 10_000,
+    )
+    .unwrap();
+    let occurrence = state_occurrence(11, "todo-registry", "actual");
+    let selector =
+        crate::ProjectionEventSelector::try_from_descriptor(&event_descriptor()).unwrap();
+    let metadata = registry
+        .metadata_for_actual(&request, &[occurrence], &[selector])
+        .unwrap();
+
+    assert!(metadata.delta.operations.iter().any(is_record_operation));
+    assert!(metadata.delta.operations.iter().any(|operation| matches!(
+        operation.mutation,
+        ProjectionDeltaMutation::Link { .. } | ProjectionDeltaMutation::Unlink { .. }
+    )));
+    assert_eq!(metadata.obligations.len(), 1);
+    assert_eq!(metadata.obligations[0].model, "TodoView");
+    assert!(metadata.obligations[0]
+        .scope_token
+        .as_str()
+        .starts_with("v1.projection-obligation."));
+}
+
+#[test]
+#[cfg(feature = "graphql")]
 fn draining_actual_delta_can_apply_but_cannot_mint_new_obligations() {
     use super::runtime::{
         ProjectionRuntimeAuthorityError, ProtocolProjectionDeltaRequestAuthority,
@@ -470,7 +796,7 @@ fn draining_actual_delta_can_apply_but_cannot_mint_new_obligations() {
     let delta = authority.lower(&[occurrence]).unwrap();
 
     assert!(matches!(
-        request.metadata(delta, &[&modeled]),
+        request.metadata(delta, &[&modeled], &[], false),
         Err(ProjectionRuntimeAuthorityError::IneligibleProjection)
     ));
 }
@@ -1106,8 +1432,17 @@ fn row_authorization_transition_matrix_is_explicit_and_fail_closed() {
         }));
     }
 
-    for record_transition in [
+    let complete_after = lower_with_transitions(
         transition(unknown, authorized),
+        transition(authorized, authorized),
+    )
+    .unwrap();
+    assert!(complete_after
+        .operations
+        .iter()
+        .any(|operation| matches!(operation.mutation, ProjectionDeltaMutation::Upsert { .. })));
+
+    for record_transition in [
         transition(authorized, unknown),
         transition(unknown, denied),
         transition(denied, unknown),
@@ -1968,6 +2303,25 @@ fn selected_export(surface: &crate::graphql::Surface) -> DistributedClientSurfac
         "delta-user",
         &BTreeMap::from([
             ("TodoView".into(), RoleGrant::all_columns()),
+            ("UserView".into(), RoleGrant::all_columns()),
+        ]),
+    )
+    .unwrap();
+    DistributedClientSurfaceExport::from_selected("delta-service", selected).unwrap()
+}
+
+fn selected_export_with_owner_policy(
+    surface: &crate::graphql::Surface,
+) -> DistributedClientSurfaceExport {
+    let selected = surface_for_role(
+        surface,
+        "delta-user",
+        &BTreeMap::from([
+            (
+                "TodoView".into(),
+                RoleGrant::all_columns()
+                    .rows(crate::graphql::col("owner_id").eq(crate::graphql::claim("x-user-id"))),
+            ),
             ("UserView".into(), RoleGrant::all_columns()),
         ]),
     )

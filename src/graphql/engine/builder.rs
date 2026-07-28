@@ -607,6 +607,17 @@ impl GraphqlEngineBuilder {
         } else {
             QueryProtocolRuntime::default()
         };
+        let projection_programs = self
+            .protocol_token_key
+            .is_some()
+            .then(|| {
+                crate::graphql::projection_delta::runtime::ProtocolProjectionProgramRegistry::try_from_surface(
+                    &full_surface,
+                )
+                .map(Arc::new)
+                .map_err(|error| GraphqlBuildError(error.to_string()))
+            })
+            .transpose()?;
 
         let mut roles: BTreeSet<String> = self.permissions.keys().map(|(_, r)| r.clone()).collect();
         if let Some(declared) = &declared_roles {
@@ -768,6 +779,8 @@ impl GraphqlEngineBuilder {
                 .expect("protocol configuration validated a service ID");
             ProtocolRuntime {
                 codec: ProtocolTokenCodec::new(key),
+                projection_programs: projection_programs
+                    .expect("protocol configuration compiled projection programs"),
                 namespace: self
                     .protocol_namespace
                     .unwrap_or_else(|| service_id.clone()),

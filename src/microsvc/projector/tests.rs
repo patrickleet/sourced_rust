@@ -7,8 +7,9 @@ use crate::bus::{Message, MessageKind};
 use crate::graphql::SurfaceProjector;
 use crate::microsvc::{CausalProjectorContext, HandlerError, ProjectionRepairHandle, Routes};
 use crate::projection_protocol::{
-    CompiledProjectionTopology, ProjectionCheckpointProbe, ProjectionGeneration,
+    CompiledProjectionTopology, ProjectionCheckpointProbe, ProjectionEpoch, ProjectionGeneration,
     ProjectionInputCursor, ProjectionProtocolStore, ProjectionQuerySnapshotRequest,
+    ProjectionScopeCodec, ProjectorTopologyId,
 };
 use crate::table::{RowKey, RowValue};
 use crate::{InMemoryRepository, RelationalReadModel};
@@ -17,7 +18,8 @@ use crate::microsvc::Service;
 
 const FACT_NAME: &str = "task15.todo_changed";
 
-#[derive(Clone, Debug, serde::Deserialize)]
+#[derive(Clone, Debug, serde::Serialize, serde::Deserialize, crate::DomainState)]
+#[domain_state(version = 1)]
 struct TodoChanged {
     id: String,
     title: String,
@@ -42,6 +44,27 @@ struct SecondaryView {
 struct MalformedView {
     id: String,
 }
+
+#[cfg(feature = "graphql")]
+const GENERATED_MODELED_PROJECTOR: crate::projection::lower::ProjectionDescriptor<
+    crate::projection::lower::EventualOnly,
+> = distributed_macros::projection! {
+    name: "task11-generated-multi-table";
+    version: 1;
+    epoch: "task11-generated-v1";
+    partition: unit;
+
+    on "task15.todo_changed" version 1 (state: TodoChanged) {
+        upsert PrimaryView {
+            key { id: state.id },
+            set { title: state.title }
+        };
+        upsert SecondaryView {
+            key { id: state.id },
+            set { title: state.title }
+        };
+    }
+};
 
 fn primary_projector() -> SurfaceProjector {
     SurfaceProjector::new("task15_a_primary")
@@ -69,6 +92,286 @@ fn fact_message(id: &str, title: &str) -> Message {
 
 fn row_key(id: &str) -> RowKey {
     RowKey::new([("id", RowValue::String(id.to_string()))])
+}
+
+#[cfg(feature = "graphql")]
+fn generated_modeled_projector(
+    route: crate::projection::placement::ProjectionExecutorRoute,
+) -> (SurfaceProjector, ProjectorTopologyId) {
+    use crate::graphql::SurfaceModeledProjection;
+    use crate::projection::catalog::{ProjectionBindingActivation, ProjectionCatalog};
+    use crate::projection::placement::{
+        ProjectionBinding, ProjectionBindingState, ProjectionOutput, ProjectionOwner,
+        ProjectionPhysicalTopology, ProjectionSourceBinding, PROJECTION_PARTITION_CODEC_VERSION,
+    };
+
+    let topology = ProjectorTopologyId::new(1, "task11-generated-runtime", [0x6b; 32]).unwrap();
+    let binding = ProjectionBinding::materialize_eventual(
+        GENERATED_MODELED_PROJECTOR.eventual(),
+        ProjectionSourceBinding::try_new("task11-domain", "ordered-domain-events", 1).unwrap(),
+        ProjectionOwner::try_new("task11-generated-owner").unwrap(),
+        "distributed-projection-partition",
+        PROJECTION_PARTITION_CODEC_VERSION,
+        vec![
+            ProjectionOutput::try_new(
+                "PrimaryView",
+                "task15_primary_views",
+                PrimaryView::schema().clone(),
+            )
+            .unwrap(),
+            ProjectionOutput::try_new(
+                "SecondaryView",
+                "task15_secondary_views",
+                SecondaryView::schema().clone(),
+            )
+            .unwrap(),
+        ],
+        Vec::new(),
+        Some(ProjectionPhysicalTopology::from_protocol(&topology)),
+    )
+    .unwrap();
+    let catalog = ProjectionCatalog::try_new(vec![binding.clone()]).unwrap();
+    let active = catalog
+        .activate(
+            vec![ProjectionBindingActivation::new(
+                binding.id(),
+                binding.program_id(),
+                ProjectionEpoch::new("task11-generated-v1").unwrap(),
+                ProjectionBindingState::Active,
+                Some(route),
+            )],
+            None,
+        )
+        .unwrap();
+    let modeled = SurfaceModeledProjection::try_from_descriptor(
+        GENERATED_MODELED_PROJECTOR,
+        &catalog,
+        &active,
+        binding.id(),
+    )
+    .unwrap();
+    (
+        SurfaceProjector::new("task11-generated-runtime").modeled(modeled),
+        topology,
+    )
+}
+
+#[cfg(feature = "graphql")]
+fn modeled_fact_message(id: &str, title: &str, event_version: u64) -> Message {
+    let mut occurrence = crate::DomainEventOccurrence::capture(
+        crate::DomainEventDescriptor::state::<TodoChanged>(FACT_NAME, event_version),
+        crate::DomainEventEnvelope {
+            aggregate_type: "todo".into(),
+            aggregate_id: id.into(),
+            aggregate_sequence: 1,
+            publication_ordinal: 0,
+            occurred_at: std::time::UNIX_EPOCH + std::time::Duration::from_secs(1),
+            metadata: std::collections::BTreeMap::new(),
+        },
+        &TodoChanged {
+            id: id.into(),
+            title: title.into(),
+        },
+    )
+    .unwrap();
+    let causation_id = format!("command-{id}");
+    occurrence.overwrite_causation_id(&causation_id);
+    let occurrence_id = occurrence.id().to_owned();
+    Message::new(
+        FACT_NAME,
+        MessageKind::Event,
+        occurrence.canonical_bytes().unwrap(),
+    )
+    .with_id(occurrence_id)
+    .with_metadata(crate::trace_context::CAUSATION_ID, format!("command-{id}"))
+}
+
+#[cfg(feature = "graphql")]
+fn modeled_snapshot_request(
+    topology: &ProjectorTopologyId,
+    ordered: &crate::bus::OrderedDelivery,
+    model: &str,
+    schema: &'static crate::table::TableSchema,
+    id: &str,
+) -> ProjectionQuerySnapshotRequest {
+    let codec = ProjectionScopeCodec::with_models(
+        topology.clone(),
+        [
+            ("PrimaryView", PrimaryView::schema()),
+            ("SecondaryView", SecondaryView::schema()),
+        ],
+    )
+    .unwrap();
+    let partition = codec.encode_partition(None).unwrap();
+    ProjectionQuerySnapshotRequest::new(
+        &codec,
+        None,
+        model,
+        RowKey::new([("id", RowValue::String(id.into()))]),
+        vec![ProjectionCheckpointProbe::new(
+            topology.clone(),
+            partition,
+            ordered.source().clone(),
+            ordered.epoch().clone(),
+            ProjectionGeneration::initial(),
+        )],
+    )
+    .unwrap_or_else(|error| {
+        panic!(
+            "modeled snapshot request for {} / {} failed: {error}",
+            schema.model_name, model
+        )
+    })
+}
+
+#[cfg(feature = "graphql")]
+#[test]
+fn generated_catalog_mount_is_fluent_and_remote_routes_do_not_subscribe() {
+    use crate::projection::placement::ProjectionExecutorRoute;
+
+    let repository = InMemoryRepository::new();
+    let (local, _) =
+        generated_modeled_projector(ProjectionExecutorRoute::local("task11-service").unwrap());
+    let local_routes = Routes::new()
+        .with_read_model_store(repository.clone())
+        .consume_projection(local);
+    assert_eq!(
+        Service::new()
+            .routes(local_routes)
+            .subscription_plan()
+            .events,
+        vec![FACT_NAME]
+    );
+
+    let (remote, _) =
+        generated_modeled_projector(ProjectionExecutorRoute::remote("task11-remote").unwrap());
+    let remote_routes = Routes::new()
+        .with_read_model_store(repository)
+        .consume_projection(remote);
+    assert!(Service::new()
+        .routes(remote_routes)
+        .subscription_plan()
+        .events
+        .is_empty());
+}
+
+#[cfg(feature = "graphql")]
+#[tokio::test]
+async fn generated_local_mount_rejects_missing_or_mismatched_service_identity_before_bootstrap() {
+    use crate::projection::placement::ProjectionExecutorRoute;
+
+    let (unnamed, _) =
+        generated_modeled_projector(ProjectionExecutorRoute::local("task11-service").unwrap());
+    let unnamed = Service::new().routes(
+        Routes::new()
+            .with_read_model_store(InMemoryRepository::new())
+            .consume_projection(unnamed),
+    );
+    assert!(matches!(
+        unnamed.bootstrap_projectors().await,
+        Err(HandlerError::Projection(
+            crate::projection_protocol::ProjectionProtocolError::InvalidBatch(_)
+        ))
+    ));
+
+    let (mismatched, _) =
+        generated_modeled_projector(ProjectionExecutorRoute::local("task11-service").unwrap());
+    let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+        Service::new()
+            .routes(
+                Routes::new()
+                    .with_read_model_store(InMemoryRepository::new())
+                    .consume_projection(mismatched),
+            )
+            .named("different-service")
+    }));
+    assert!(result.is_err());
+}
+
+#[cfg(feature = "graphql")]
+#[tokio::test]
+async fn generated_mount_reaches_fail_closed_adapter_snapshot_boundary() {
+    use crate::projection::placement::ProjectionExecutorRoute;
+
+    let repository = InMemoryRepository::new();
+    let bus = InMemoryBus::new();
+    let (projector, topology) =
+        generated_modeled_projector(ProjectionExecutorRoute::local("task11-service").unwrap());
+    let service = Service::new()
+        .named("task11-service")
+        .routes(
+            Routes::new()
+                .with_read_model_store(repository.clone())
+                .consume_projection(projector),
+        )
+        .with_bus(bus.clone());
+    bus.publish_message(modeled_fact_message("todo-modeled", "catalog runtime", 1))
+        .await
+        .unwrap();
+
+    let error = service
+        .run(RunOptions::idempotent())
+        .await
+        .expect_err("Task 12 owns adapter execution snapshots");
+    let repair = repair_handle(&error);
+    let partition = ProjectionScopeCodec::new(topology.clone())
+        .encode_partition(None)
+        .unwrap();
+    let failure = repository
+        .projection_failure(&topology, &partition, repair.failure_id())
+        .await
+        .unwrap()
+        .unwrap();
+    assert_eq!(failure.failure_code, "modeled_apply");
+    assert_eq!(failure.causation_id, "command-todo-modeled");
+    assert!(
+        String::from_utf8_lossy(&failure.failure_bytes)
+            .contains("does not support coherent execution snapshots"),
+        "the generated executor reaches the fail-closed Task 12 adapter boundary"
+    );
+}
+
+#[cfg(feature = "graphql")]
+#[tokio::test]
+async fn same_name_different_version_is_an_empty_unit_checkpoint_not_a_failure() {
+    use crate::projection::placement::ProjectionExecutorRoute;
+
+    let repository = InMemoryRepository::new();
+    let bus = InMemoryBus::new();
+    let (projector, topology) =
+        generated_modeled_projector(ProjectionExecutorRoute::local("task11-service").unwrap());
+    let service = Service::new()
+        .named("task11-service")
+        .routes(
+            Routes::new()
+                .with_read_model_store(repository.clone())
+                .consume_projection(projector),
+        )
+        .with_bus(bus.clone());
+    bus.publish_message(modeled_fact_message("todo-v2", "not selected", 2))
+        .await
+        .unwrap();
+
+    service.run(RunOptions::idempotent()).await.unwrap();
+
+    let ordered = bus.ordered_topic_evidence(FACT_NAME, 0);
+    let snapshot = repository
+        .projection_query_snapshot(&modeled_snapshot_request(
+            &topology,
+            &ordered,
+            "PrimaryView",
+            PrimaryView::schema(),
+            "todo-v2",
+        ))
+        .await
+        .unwrap();
+    assert!(snapshot.row.is_none());
+    let checkpoint = snapshot.checkpoints[0]
+        .checkpoint
+        .as_ref()
+        .expect("unit projection records an empty checkpoint for a skipped selector");
+    assert!(checkpoint.is_gap_free());
+    assert_eq!(checkpoint.input().position(), ordered.position());
 }
 
 #[tokio::test]

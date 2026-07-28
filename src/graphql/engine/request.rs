@@ -125,6 +125,11 @@ impl GraphqlEngine {
             .and_then(|principal| principal.downcast_ref::<VerifiedPrincipal>());
         let principal_partition =
             principal.map(|principal| principal.partition_for_service(&runtime.service_id));
+        let projection_principal = principal_partition
+            .as_deref()
+            .map(crate::command_ledger::PrincipalPartitionId::new)
+            .transpose()
+            .map_err(|_| ())?;
         let session_authorization_context = role_info
             .claim_keys
             .iter()
@@ -180,8 +185,49 @@ impl GraphqlEngine {
             // identity/drift fence without claiming APQ negotiation.
             Some(operation_fingerprint(&request.query)),
         )
-        .with_trusted_presets(trusted_presets);
+        .with_trusted_presets(trusted_presets.clone());
         let accumulator = ProtocolResponseAccumulator::new(envelope, runtime.codec.clone());
+        if let Some(principal_scope) = projection_principal {
+            let selected_surface = match &surface_identity {
+                ClientSurfaceIdentity::Role { name } => self.inner.role_surfaces.get(name),
+                ClientSurfaceIdentity::Application { name, .. } => {
+                    self.inner.application_surfaces.get(name)
+                }
+            }
+            .cloned()
+            .ok_or(())?;
+            let export = DistributedClientSurfaceExport::from_selected_with_execution(
+                &runtime.service_id,
+                selected_surface,
+                ClientExecutionLimits::from_runtime(
+                    self.inner.max_depth,
+                    self.inner.max_complexity,
+                    self.inner.max_bool_width,
+                    self.inner.max_in_list,
+                )
+                .map_err(|_| ())?,
+            )
+            .map_err(|_| ())?;
+            let issued_at_unix_ms = std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .map_err(|_| ())?
+                .as_millis()
+                .try_into()
+                .map_err(|_| ())?;
+            let projection_request =
+                crate::graphql::projection_delta::runtime::ProtocolProjectionRequestSeed::new(
+                    export,
+                    Arc::clone(&runtime.projection_programs),
+                    principal_scope,
+                    role_info.authorization_fingerprint.clone(),
+                    trusted_presets,
+                    issued_at_unix_ms,
+                )
+                .map_err(|_| ())?;
+            accumulator
+                .bind_projection_request(projection_request)
+                .map_err(|_| ())?;
+        }
         accumulator
             .set_requested_live_resume(parse_requested_live_resume(request))
             .map_err(|_| ())?;

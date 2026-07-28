@@ -282,6 +282,14 @@ impl Service {
                 "attached GraphQL engine identity does not match renamed service"
             );
         }
+        for routes in &self.routes {
+            for expected in routes.modeled_local_services() {
+                assert_eq!(
+                    expected, name,
+                    "modeled projection local executor route does not match Service::named identity"
+                );
+            }
+        }
         self.name = Some(name);
         self
     }
@@ -314,6 +322,14 @@ impl Service {
     where
         D: Send + Sync + 'static,
     {
+        if let Some(service_name) = self.name.as_deref() {
+            for expected in routes.modeled_local_services() {
+                assert_eq!(
+                    expected, service_name,
+                    "modeled projection local executor route does not match the service identity"
+                );
+            }
+        }
         let keys = routes.registered_keys();
         let new_projectors = routes.projector_registrations();
         let existing_projectors = self
@@ -421,6 +437,45 @@ impl Service {
         session: Session,
         principal: VerifiedPrincipal,
     ) -> Result<CausalDispatchResult, CausalDispatchError> {
+        self.dispatch_causal_with_receipt_inner(
+            command, command_id, input, session, principal, None,
+        )
+        .await
+    }
+
+    /// Execute one authenticated command while deriving its modeled
+    /// projection delta from the exact GraphQL request authority.
+    #[cfg(feature = "graphql")]
+    pub(crate) async fn dispatch_causal_with_receipt_and_protocol(
+        &self,
+        command: &str,
+        command_id: &str,
+        input: Value,
+        session: Session,
+        principal: VerifiedPrincipal,
+        protocol: crate::graphql::protocol::ProtocolResponseAccumulator,
+    ) -> Result<CausalDispatchResult, CausalDispatchError> {
+        self.dispatch_causal_with_receipt_inner(
+            command,
+            command_id,
+            input,
+            session,
+            principal,
+            Some(protocol),
+        )
+        .await
+    }
+
+    #[cfg(feature = "graphql")]
+    async fn dispatch_causal_with_receipt_inner(
+        &self,
+        command: &str,
+        command_id: &str,
+        input: Value,
+        session: Session,
+        principal: VerifiedPrincipal,
+        protocol: Option<crate::graphql::protocol::ProtocolResponseAccumulator>,
+    ) -> Result<CausalDispatchResult, CausalDispatchError> {
         let service_id = self.name().ok_or_else(|| {
             CausalDispatchError::Internal(
                 "typed causal dispatch requires Service::named identity".into(),
@@ -441,6 +496,7 @@ impl Service {
                 session,
                 principal,
                 self.causal_command_policy,
+                protocol,
             )
             .await
     }
@@ -457,6 +513,30 @@ impl Service {
         command_id: &str,
         session: &Session,
         principal: VerifiedPrincipal,
+    ) -> Result<CausalCommandPublicStatus, CausalDispatchError> {
+        self.causal_command_status_internal(command_id, session, principal, None)
+            .await
+    }
+
+    #[cfg(feature = "graphql")]
+    pub(crate) async fn causal_command_status_with_protocol(
+        &self,
+        command_id: &str,
+        session: &Session,
+        principal: VerifiedPrincipal,
+        protocol: crate::graphql::protocol::ProtocolResponseAccumulator,
+    ) -> Result<CausalCommandPublicStatus, CausalDispatchError> {
+        self.causal_command_status_internal(command_id, session, principal, Some(protocol))
+            .await
+    }
+
+    #[cfg(feature = "graphql")]
+    async fn causal_command_status_internal(
+        &self,
+        command_id: &str,
+        session: &Session,
+        principal: VerifiedPrincipal,
+        protocol: Option<crate::graphql::protocol::ProtocolResponseAccumulator>,
     ) -> Result<CausalCommandPublicStatus, CausalDispatchError> {
         let Ok(parsed_command_id) = CommandId::parse(command_id) else {
             return Ok(CausalCommandPublicStatus::unknown(command_id));
@@ -478,6 +558,7 @@ impl Service {
                     &parsed_command_id,
                     &principal_partition,
                     session,
+                    protocol.clone(),
                 )
                 .await?;
             if status.is_unknown() {
@@ -809,6 +890,32 @@ impl Service {
     }
 
     pub(crate) async fn bootstrap_projectors(&self) -> Result<(), HandlerError> {
+        let modeled_local_services = self
+            .routes
+            .iter()
+            .flat_map(|routes| routes.modeled_local_services())
+            .collect::<Vec<_>>();
+        if !modeled_local_services.is_empty() {
+            let service_name = self.name.as_deref().ok_or_else(|| {
+                HandlerError::Projection(
+                    crate::projection_protocol::ProjectionProtocolError::InvalidBatch(
+                        "modeled local projection executors require Service::named identity"
+                            .into(),
+                    ),
+                )
+            })?;
+            if modeled_local_services
+                .iter()
+                .any(|expected| *expected != service_name)
+            {
+                return Err(HandlerError::Projection(
+                    crate::projection_protocol::ProjectionProtocolError::InvalidBatch(
+                        "modeled local projection executor route differs from the running service identity"
+                            .into(),
+                    ),
+                ));
+            }
+        }
         for routes in &self.routes {
             routes.bootstrap_projectors().await?;
         }

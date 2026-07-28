@@ -1,5 +1,3 @@
-use std::collections::BTreeSet;
-
 use serde::{Deserialize, Serialize};
 
 use super::OpaqueProtocolToken;
@@ -20,6 +18,11 @@ pub(crate) const MAX_COMMAND_PROJECTION_OBLIGATIONS: usize = 128;
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
 pub(crate) struct CommandProjectionObligationV1 {
     pub(crate) projection_ref: u32,
+    /// Exact role-safe output model observed by this physical scope.
+    ///
+    /// This is required for multi-table projections and edge effects, where a
+    /// program-level label cannot identify which output fence was observed.
+    pub(crate) model: String,
     pub(crate) scope_token: OpaqueProtocolToken,
 }
 
@@ -44,9 +47,20 @@ impl CommandProjectionMetadataV1 {
         mut obligations: Vec<CommandProjectionObligationV1>,
         revalidate: bool,
     ) -> Result<Self, CommandProjectionMetadataError> {
+        let mut scope_models = std::collections::BTreeMap::new();
+        for obligation in &obligations {
+            let key = (obligation.projection_ref, obligation.scope_token.as_str());
+            if scope_models
+                .insert(key, obligation.model.as_str())
+                .is_some_and(|model| model != obligation.model)
+            {
+                return Err(CommandProjectionMetadataError::ConflictingObligationScope);
+            }
+        }
         obligations.sort_by(|left, right| {
             left.projection_ref
                 .cmp(&right.projection_ref)
+                .then_with(|| left.model.cmp(&right.model))
                 .then_with(|| left.scope_token.as_str().cmp(right.scope_token.as_str()))
         });
         obligations.dedup();
@@ -124,16 +138,43 @@ impl CommandProjectionMetadataV1 {
             return Err(CommandProjectionMetadataError::MissingRevalidation);
         }
 
-        let operation_projection_refs = self
-            .delta
-            .operations
-            .iter()
-            .flat_map(|operation| operation.projection_refs.iter().copied())
-            .collect::<BTreeSet<_>>();
-        let mut previous: Option<(u32, &str)> = None;
+        let mut previous: Option<(u32, &str, &str)> = None;
+        let mut scope_models = std::collections::BTreeMap::new();
         for obligation in &self.obligations {
             if obligation.projection_ref as usize >= self.delta.projections.len()
-                || !operation_projection_refs.contains(&obligation.projection_ref)
+                || obligation.model.trim().is_empty()
+                || obligation.model.as_bytes().len() > 255
+                || !self.delta.operations.iter().any(|operation| {
+                    operation
+                        .projection_refs
+                        .binary_search(&obligation.projection_ref)
+                        .is_ok()
+                        && match &operation.mutation {
+                            crate::graphql::projection_delta::ProjectionDeltaMutation::Upsert {
+                                scope,
+                                ..
+                            }
+                            | crate::graphql::projection_delta::ProjectionDeltaMutation::Patch {
+                                scope,
+                                ..
+                            }
+                            | crate::graphql::projection_delta::ProjectionDeltaMutation::Delete {
+                                scope,
+                            } => scope.model == obligation.model,
+                            crate::graphql::projection_delta::ProjectionDeltaMutation::Link {
+                                ..
+                            }
+                            | crate::graphql::projection_delta::ProjectionDeltaMutation::Unlink {
+                                ..
+                            } => true,
+                            crate::graphql::projection_delta::ProjectionDeltaMutation::InvalidateModel {
+                                ..
+                            }
+                            | crate::graphql::projection_delta::ProjectionDeltaMutation::InvalidateRelationship {
+                                ..
+                            } => false,
+                        }
+                })
             {
                 return Err(CommandProjectionMetadataError::UnknownProjectionReference);
             }
@@ -142,7 +183,18 @@ impl CommandProjectionMetadataV1 {
             if parsed.as_str().split('.').nth(1) != Some("projection-obligation") {
                 return Err(CommandProjectionMetadataError::InvalidScopeToken);
             }
-            let current = (obligation.projection_ref, obligation.scope_token.as_str());
+            let scope_key = (obligation.projection_ref, obligation.scope_token.as_str());
+            if scope_models
+                .insert(scope_key, obligation.model.as_str())
+                .is_some_and(|model| model != obligation.model)
+            {
+                return Err(CommandProjectionMetadataError::ConflictingObligationScope);
+            }
+            let current = (
+                obligation.projection_ref,
+                obligation.model.as_str(),
+                obligation.scope_token.as_str(),
+            );
             if previous.is_some_and(|previous| previous >= current) {
                 return Err(CommandProjectionMetadataError::NonCanonical);
             }
@@ -162,6 +214,7 @@ pub(crate) enum CommandProjectionMetadataError {
     TooManyObligations { len: usize, max: usize },
     UnknownProjectionReference,
     InvalidScopeToken,
+    ConflictingObligationScope,
     MissingRevalidation,
     NonCanonical,
     BodyTooLarge { len: usize, max: usize },
@@ -193,6 +246,9 @@ impl std::fmt::Display for CommandProjectionMetadataError {
             Self::InvalidScopeToken => {
                 formatter.write_str("command projection obligation scope token is invalid")
             }
+            Self::ConflictingObligationScope => formatter.write_str(
+                "command projection obligation scope has conflicting output model labels",
+            ),
             Self::MissingRevalidation => {
                 formatter.write_str("command projection recovery requires explicit revalidation")
             }
@@ -222,6 +278,7 @@ mod tests {
         PROJECTION_DELTA_WIRE_VERSION,
     };
     use crate::graphql::protocol::{ProtocolTokenCodec, ProtocolTokenPurpose};
+    use sha2::{Digest, Sha256};
 
     fn delta() -> ProjectionDelta {
         ProjectionDelta {
@@ -288,10 +345,12 @@ mod tests {
             vec![
                 CommandProjectionObligationV1 {
                     projection_ref: 0,
+                    model: "Todos".into(),
                     scope_token: token.clone(),
                 },
                 CommandProjectionObligationV1 {
                     projection_ref: 0,
+                    model: "Todos".into(),
                     scope_token: token,
                 },
             ],
@@ -311,11 +370,47 @@ mod tests {
     }
 
     #[test]
+    fn command_projection_metadata_v1_matches_frozen_wire_fixture() {
+        let codec = ProtocolTokenCodec::new([0x35; 32]);
+        let token = codec
+            .issue(
+                ProtocolTokenPurpose::ProjectionObligation,
+                &("command-projection-metadata-v1", 1),
+            )
+            .unwrap();
+        let metadata = CommandProjectionMetadataV1::try_new(
+            1_700_000_000_000,
+            1_700_000_060_000,
+            delta(),
+            vec![CommandProjectionObligationV1 {
+                projection_ref: 0,
+                model: "Todos".into(),
+                scope_token: token,
+            }],
+            false,
+        )
+        .unwrap();
+        let expected = metadata.canonical_bytes().unwrap();
+        let fixture = include_bytes!("../../../tests/fixtures/command-projection-metadata-v1.json");
+        let fixture = fixture.strip_suffix(b"\n").unwrap_or(fixture);
+        assert_eq!(fixture, expected);
+        assert_eq!(
+            format!("sha256:{:x}", Sha256::digest(fixture)),
+            "sha256:161c286cf64bb719e05589859f7eb0db2c86d8649a53b3bd621388ff556b3aa7"
+        );
+        assert_eq!(
+            CommandProjectionMetadataV1::from_json(fixture).unwrap(),
+            metadata
+        );
+    }
+
+    #[test]
     fn metadata_accepts_128_obligations_and_rejects_129_before_completion() {
         let codec = ProtocolTokenCodec::new([0x32; 32]);
         let obligations = (0..=MAX_COMMAND_PROJECTION_OBLIGATIONS)
             .map(|index| CommandProjectionObligationV1 {
                 projection_ref: 0,
+                model: "Todos".into(),
                 scope_token: codec
                     .issue(
                         ProtocolTokenPurpose::ProjectionObligation,
@@ -336,5 +431,126 @@ mod tests {
             CommandProjectionMetadataV1::try_new(100, 200, delta(), obligations, false),
             Err(CommandProjectionMetadataError::TooManyObligations { len: 129, max: 128 })
         ));
+    }
+
+    #[test]
+    fn one_projection_preserves_distinct_obligations_for_each_output_model() {
+        let codec = ProtocolTokenCodec::new([0x33; 32]);
+        let mut delta = delta();
+        delta.operations.insert(
+            0,
+            ProjectionDeltaOperation {
+                occurrence_ordinal: 0,
+                projection_refs: vec![0],
+                mutation: ProjectionDeltaMutation::Delete {
+                    scope: ProjectionDeltaScope {
+                        partition: ProjectionDeltaPartition::Unit,
+                        model: "TodoCounts".into(),
+                        key: vec![DeltaKeyField {
+                            ordinal: 0,
+                            field: "owner_id".into(),
+                            value: DeltaValue::String("owner-1".into()),
+                        }],
+                    },
+                },
+            },
+        );
+        let todos = codec
+            .issue(ProtocolTokenPurpose::ProjectionObligation, &("Todos", 1))
+            .unwrap();
+        let counts = codec
+            .issue(
+                ProtocolTokenPurpose::ProjectionObligation,
+                &("TodoCounts", 1),
+            )
+            .unwrap();
+        let metadata = CommandProjectionMetadataV1::try_new(
+            100,
+            200,
+            delta,
+            vec![
+                CommandProjectionObligationV1 {
+                    projection_ref: 0,
+                    model: "TodoCounts".into(),
+                    scope_token: counts.clone(),
+                },
+                CommandProjectionObligationV1 {
+                    projection_ref: 0,
+                    model: "Todos".into(),
+                    scope_token: todos.clone(),
+                },
+            ],
+            false,
+        )
+        .unwrap();
+
+        assert_eq!(
+            metadata
+                .obligations
+                .iter()
+                .map(|obligation| (
+                    obligation.projection_ref,
+                    obligation.model.as_str(),
+                    obligation.scope_token.as_str(),
+                ))
+                .collect::<Vec<_>>(),
+            vec![
+                (0, "TodoCounts", counts.as_str()),
+                (0, "Todos", todos.as_str()),
+            ]
+        );
+        assert_eq!(
+            CommandProjectionMetadataV1::from_json(&metadata.canonical_bytes().unwrap()).unwrap(),
+            metadata
+        );
+    }
+
+    #[test]
+    fn one_physical_scope_cannot_be_relabelled_as_two_output_models() {
+        let codec = ProtocolTokenCodec::new([0x34; 32]);
+        let token = codec
+            .issue(ProtocolTokenPurpose::ProjectionObligation, &("scope", 1))
+            .unwrap();
+        let mut multi_model = delta();
+        multi_model.operations.insert(
+            0,
+            ProjectionDeltaOperation {
+                occurrence_ordinal: 0,
+                projection_refs: vec![0],
+                mutation: ProjectionDeltaMutation::Delete {
+                    scope: ProjectionDeltaScope {
+                        partition: ProjectionDeltaPartition::Unit,
+                        model: "TodoCounts".into(),
+                        key: vec![DeltaKeyField {
+                            ordinal: 0,
+                            field: "owner_id".into(),
+                            value: DeltaValue::String("owner-1".into()),
+                        }],
+                    },
+                },
+            },
+        );
+
+        assert_eq!(
+            CommandProjectionMetadataV1::try_new(
+                100,
+                200,
+                multi_model,
+                vec![
+                    CommandProjectionObligationV1 {
+                        projection_ref: 0,
+                        model: "Todos".into(),
+                        scope_token: token.clone(),
+                    },
+                    CommandProjectionObligationV1 {
+                        projection_ref: 0,
+                        model: "TodoCounts".into(),
+                        scope_token: token,
+                    },
+                ],
+                false,
+            ),
+            Err(CommandProjectionMetadataError::ConflictingObligationScope)
+        );
     }
 }

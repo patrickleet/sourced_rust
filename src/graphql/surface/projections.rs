@@ -3,7 +3,7 @@ use std::collections::{BTreeMap, BTreeSet};
 use crate::projection::catalog::{ActiveProjectionBindings, ProjectionCatalog, ProjectionEpoch};
 use crate::projection::placement::{
     ProjectionBinding, ProjectionBindingId, ProjectionBindingState, ProjectionExecutionClass,
-    ProjectionPlacement,
+    ProjectionExecutorRoute, ProjectionPlacement,
 };
 use crate::{
     ProjectionField, ProjectionInvalidation, ProjectionKeyField, ProjectionMutationKind,
@@ -56,7 +56,7 @@ pub(crate) struct SurfaceSelectedProjectionProgram {
 /// Role/application selection replaces it with a field-filtered descriptor and
 /// drops the raw program, binding schemas, event body paths for denied fields,
 /// executor route, and physical topology.
-#[derive(Clone, PartialEq, Eq)]
+#[derive(Clone)]
 pub struct SurfaceModeledProjection {
     program_id: ProjectionProgramId,
     binding_id: ProjectionBindingId,
@@ -65,11 +65,36 @@ pub struct SurfaceModeledProjection {
     execution_class: ProjectionExecutionClass,
     state: ProjectionBindingState,
     epoch: ProjectionEpoch,
+    route: ProjectionExecutorRoute,
     output_models: Vec<String>,
     raw_program: Option<ProjectionProgram>,
     raw_binding: Option<ProjectionBinding>,
+    server_executor: Option<crate::projection::lower::ProjectionServerExecutorDescriptor>,
     selected: Option<SurfaceSelectedProjectionProgram>,
 }
+
+impl PartialEq for SurfaceModeledProjection {
+    fn eq(&self, other: &Self) -> bool {
+        self.program_id == other.program_id
+            && self.binding_id == other.binding_id
+            && self.owner == other.owner
+            && self.placement == other.placement
+            && self.execution_class == other.execution_class
+            && self.state == other.state
+            && self.epoch == other.epoch
+            && self.route == other.route
+            && self.output_models == other.output_models
+            && self.raw_program == other.raw_program
+            && self.raw_binding == other.raw_binding
+            && server_executor_eq(
+                self.server_executor.as_ref(),
+                other.server_executor.as_ref(),
+            )
+            && self.selected == other.selected
+    }
+}
+
+impl Eq for SurfaceModeledProjection {}
 
 impl std::fmt::Debug for SurfaceModeledProjection {
     fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
@@ -106,9 +131,12 @@ impl SurfaceModeledProjection {
             state,
             epoch: ProjectionEpoch::new("client-manifest-test-v1")
                 .expect("test epoch is canonical"),
+            route: ProjectionExecutorRoute::local("client-manifest-test")
+                .expect("test route is canonical"),
             output_models,
             raw_program: None,
             raw_binding: None,
+            server_executor: None,
             selected,
         }
     }
@@ -139,6 +167,10 @@ impl SurfaceModeledProjection {
             .iter()
             .find(|activation| activation.binding_id() == binding_id)
             .ok_or_else(|| format!("modeled projection binding `{binding_id}` is not live"))?;
+        let route = activation
+            .route()
+            .cloned()
+            .ok_or_else(|| format!("modeled projection binding `{binding_id}` has no route"))?;
         let program_id = program.id().map_err(|error| error.to_string())?;
         if binding.program_id() != program_id || activation.program_id() != program_id {
             return Err("modeled projection binding does not match its program digest".into());
@@ -156,11 +188,53 @@ impl SurfaceModeledProjection {
             execution_class: binding.execution_class(),
             state: activation.state(),
             epoch: activation.epoch().clone(),
+            route,
             output_models,
             raw_program: Some(program),
             raw_binding: Some(binding),
+            server_executor: None,
             selected: None,
         })
+    }
+
+    /// Resolve one generated portable executor through the exact catalog
+    /// binding that will host it.
+    ///
+    /// This is the mountable form used by the projection service runtime.
+    /// Program digest, output schemas, route, and epoch are all validated
+    /// before a transport subscription can be planned.
+    pub fn try_from_descriptor<D>(
+        descriptor: crate::projection::lower::ProjectionDescriptor<D>,
+        catalog: &ProjectionCatalog,
+        active: &ActiveProjectionBindings,
+        binding_id: ProjectionBindingId,
+    ) -> Result<Self, String> {
+        let program = descriptor.program().map_err(|error| error.to_string())?;
+        let executor = descriptor
+            .server_executor()
+            .map_err(|error| error.to_string())?;
+        let mut modeled = Self::try_from_catalog(program, catalog, active, binding_id)?;
+        let (_, binding) = modeled
+            .raw()
+            .ok_or_else(|| "mountable modeled projection lost its raw binding".to_owned())?;
+        if executor.program_id != modeled.program_id
+            || executor.epoch != modeled.epoch.as_str()
+            || executor.outputs.models.len() != binding.outputs().len()
+            || executor.outputs.models.iter().any(|output| {
+                !binding.outputs().iter().any(|bound| {
+                    bound.model() == output.model
+                        && bound.storage() == output.storage
+                        && bound.schema() == &output.schema
+                })
+            })
+        {
+            return Err(
+                "generated projection executor differs from its exact binding digest, epoch, or outputs"
+                    .into(),
+            );
+        }
+        modeled.server_executor = Some(executor);
+        Ok(modeled)
     }
 
     /// Return the semantic program identity.
@@ -181,6 +255,11 @@ impl SurfaceModeledProjection {
     /// Return the exact physical incarnation.
     pub fn epoch(&self) -> &ProjectionEpoch {
         &self.epoch
+    }
+
+    /// Return the exact validated executor route.
+    pub fn route(&self) -> &ProjectionExecutorRoute {
+        &self.route
     }
 
     /// Whether this exact selected registration may mint client causal work.
@@ -339,13 +418,37 @@ impl SurfaceModeledProjection {
             output_models,
             raw_program: None,
             raw_binding: None,
+            server_executor: None,
             selected,
             ..self.clone()
         }))
     }
 
-    fn raw(&self) -> Option<(&ProjectionProgram, &ProjectionBinding)> {
+    pub(crate) fn raw(&self) -> Option<(&ProjectionProgram, &ProjectionBinding)> {
         Some((self.raw_program.as_ref()?, self.raw_binding.as_ref()?))
+    }
+
+    pub(crate) fn server_executor(
+        &self,
+    ) -> Option<&crate::projection::lower::ProjectionServerExecutorDescriptor> {
+        self.server_executor.as_ref()
+    }
+}
+
+fn server_executor_eq(
+    left: Option<&crate::projection::lower::ProjectionServerExecutorDescriptor>,
+    right: Option<&crate::projection::lower::ProjectionServerExecutorDescriptor>,
+) -> bool {
+    match (left, right) {
+        (None, None) => true,
+        (Some(left), Some(right)) => {
+            left.name == right.name
+                && left.version == right.version
+                && left.epoch == right.epoch
+                && left.program_id == right.program_id
+                && left.outputs == right.outputs
+        }
+        (None, Some(_)) | (Some(_), None) => false,
     }
 }
 

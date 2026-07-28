@@ -968,6 +968,24 @@ where
         }
     }
 
+    fn projection_causation_evidence<'a>(
+        &'a self,
+        request: &'a ProjectionCausationEvidenceRequest,
+    ) -> impl Future<Output = Result<ProjectionCausationEvidenceBatch, ProjectionProtocolError>>
+           + Send
+           + 'a {
+        let request = request.clone();
+        async move {
+            request.validate()?;
+            with_projection_read_snapshot(self.pool(), move |connection| {
+                Box::pin(async move {
+                    read_projection_causation_evidence_in_executor::<DB>(connection, &request).await
+                })
+            })
+            .await
+        }
+    }
+
     fn projection_live_record_batch<'a>(
         &'a self,
         request: &'a ProjectionLiveRecordBatchRequest,

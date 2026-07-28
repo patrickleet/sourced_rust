@@ -9,13 +9,14 @@ use std::future::Future;
 use super::InMemoryRepository;
 use crate::projection_protocol::{
     change_kind_for_mutation, checked_next, failure_matches_batch, table_model_name,
-    ProjectionChange, ProjectionChangeCursor, ProjectionChangeKind, ProjectionChangeRead,
-    ProjectionChangeRetention, ProjectionCheckpoint, ProjectionCommitBatch,
-    ProjectionCommitOutcome, ProjectionCommitResult, ProjectionEpoch, ProjectionFailure,
-    ProjectionFailureBatch, ProjectionFailureLocation, ProjectionGeneration, ProjectionInputCursor,
-    ProjectionInputDisposition, ProjectionInputFingerprint, ProjectionLiveRecordBatch,
-    ProjectionLiveRecordBatchRequest, ProjectionMutationKind, ProjectionObligationEvidence,
-    ProjectionObligationEvidenceBatch, ProjectionObligationEvidenceBatchRequest,
+    ProjectionCausationEvidenceBatch, ProjectionCausationEvidenceRequest, ProjectionChange,
+    ProjectionChangeCursor, ProjectionChangeKind, ProjectionChangeRead, ProjectionChangeRetention,
+    ProjectionCheckpoint, ProjectionCommitBatch, ProjectionCommitOutcome, ProjectionCommitResult,
+    ProjectionEpoch, ProjectionFailure, ProjectionFailureBatch, ProjectionFailureLocation,
+    ProjectionGeneration, ProjectionInputCursor, ProjectionInputDisposition,
+    ProjectionInputFingerprint, ProjectionLiveRecordBatch, ProjectionLiveRecordBatchRequest,
+    ProjectionMutationKind, ProjectionObligationEvidence, ProjectionObligationEvidenceBatch,
+    ProjectionObligationEvidenceBatchRequest, ProjectionObligationEvidenceRequest,
     ProjectionObservation, ProjectionObservationKind, ProjectionObservationTarget,
     ProjectionPartition, ProjectionPartitionRuntimeState, ProjectionPendingRetry,
     ProjectionProtocolError, ProjectionProtocolStore, ProjectionQuerySnapshot,
@@ -23,7 +24,7 @@ use crate::projection_protocol::{
     ProjectionQuerySnapshotRequest, ProjectionRecordExpectation, ProjectionRecordMetadata,
     ProjectionRecordScope, ProjectionSource, ProjectorTopologyId, RecordRevision,
     RevisionComparison, SameTransactionProjectionBatch, SameTransactionProjectionEvidence,
-    TrustedProjectionInput,
+    TrustedProjectionInput, MAX_PROJECTION_EVIDENCE_BATCH_ITEMS,
 };
 use crate::read_model::in_memory::{
     apply_read_model_write_plan, relational_storage_key, StoredRow,
@@ -43,7 +44,7 @@ pub(super) use state::{reject_causal_owned_plans, InMemoryProjectionProtocolStat
 
 use read_helpers::{
     read_projection_live_record_from_state, read_projection_obligation_evidence_from_state,
-    read_projection_query_snapshot_from_state,
+    read_projection_query_snapshot_from_state, validate_observation_from_state,
 };
 use state::*;
 use util::storage_key_belongs_to_table;

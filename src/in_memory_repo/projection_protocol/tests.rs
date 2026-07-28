@@ -2638,6 +2638,87 @@ async fn observations_are_immutable_and_staged_records_reuse_row_changes() {
 }
 
 #[tokio::test]
+async fn causation_evidence_is_topology_allowlisted_and_repair_clears_terminal_failure() {
+    let repository = repository().await;
+    let scope = record_scope();
+    repository
+        .commit_projection(batch(
+            input(
+                1,
+                b"status-observation",
+                "message-status-1",
+                "cause-status",
+                ProjectionGeneration::initial(),
+            ),
+            vec![mutation(
+                ProjectionRecordExpectation::Missing,
+                ProjectionMutationKind::Upsert,
+            )],
+            vec![ProjectionObservationRequest {
+                kind: ProjectionObservationKind::Record,
+                target: ProjectionObservationTarget::StagedRecord(scope),
+            }],
+        ))
+        .await
+        .unwrap();
+
+    let selected =
+        ProjectionCausationEvidenceRequest::new("cause-status", vec![topology()]).unwrap();
+    let observed = repository
+        .projection_causation_evidence(&selected)
+        .await
+        .unwrap();
+    assert_eq!(observed.observations.len(), 1);
+    assert!(observed.terminal_failure_topologies.is_empty());
+
+    let unrelated =
+        ProjectionCausationEvidenceRequest::new("cause-status", vec![other_topology()]).unwrap();
+    let filtered = repository
+        .projection_causation_evidence(&unrelated)
+        .await
+        .unwrap();
+    assert!(filtered.observations.is_empty());
+    assert!(filtered.terminal_failure_topologies.is_empty());
+
+    let failure = ProjectionFailureBatch::new(
+        input(
+            2,
+            b"status-failure",
+            "message-status-2",
+            "cause-status",
+            ProjectionGeneration::initial(),
+        ),
+        change_epoch(),
+        "failure-status-2",
+        "decode_error",
+        b"redacted".to_vec(),
+    )
+    .unwrap();
+    repository.record_projection_failure(failure).await.unwrap();
+    let failed = repository
+        .projection_causation_evidence(&selected)
+        .await
+        .unwrap();
+    assert_eq!(failed.terminal_failure_topologies, vec![topology()]);
+    let filtered = repository
+        .projection_causation_evidence(&unrelated)
+        .await
+        .unwrap();
+    assert!(filtered.terminal_failure_topologies.is_empty());
+
+    repository
+        .repair_projection(&topology(), &partition(), "failure-status-2")
+        .await
+        .unwrap();
+    let repaired = repository
+        .projection_causation_evidence(&selected)
+        .await
+        .unwrap();
+    assert_eq!(repaired.observations.len(), 1);
+    assert!(repaired.terminal_failure_topologies.is_empty());
+}
+
+#[tokio::test]
 async fn dependency_failure_repair_and_resume_are_durable() {
     let repository = repository().await;
     let scope = record_scope();

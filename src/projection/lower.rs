@@ -469,12 +469,19 @@ impl<D> ProjectionDescriptor<D> {
     pub fn server_executor(
         &self,
     ) -> Result<ProjectionServerExecutorDescriptor, ProjectionLoweringError> {
+        let program = self.program()?;
         Ok(ProjectionServerExecutorDescriptor {
             name: self.name,
             version: self.version,
             epoch: self.epoch,
-            program_id: self.program_id()?,
+            program_id: program.id()?,
             outputs: self.output_inventory()?,
+            selectors: program
+                .arms()
+                .iter()
+                .map(|arm| arm.selector().clone())
+                .collect(),
+            unit_partition: matches!(program.partition(), ProjectionPartition::Unit),
             resolve: self.resolve,
             lower: self.lower,
         })
@@ -494,11 +501,23 @@ pub struct ProjectionServerExecutorDescriptor {
     pub program_id: ProjectionProgramId,
     /// Canonical output inventory.
     pub outputs: ProjectionOutputInventory,
+    selectors: Vec<ProjectionEventSelector>,
+    unit_partition: bool,
     resolve: ProjectionResolver,
     lower: ProjectionLowerer,
 }
 
 impl ProjectionServerExecutorDescriptor {
+    pub(crate) fn matches(&self, occurrence: &DomainEventOccurrence) -> bool {
+        self.selectors
+            .iter()
+            .any(|selector| selector.matches(occurrence))
+    }
+
+    pub(crate) fn has_unit_partition(&self) -> bool {
+        self.unit_partition
+    }
+
     /// Resolve and physically lower an exact occurrence without performing I/O.
     ///
     /// # Errors

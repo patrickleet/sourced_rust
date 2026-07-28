@@ -68,7 +68,7 @@ where
         _ => {
             return Err(corrupt_storage(
                 "projection change record scope has an inconsistent shape",
-            ))
+            ));
         }
     };
     let revision = match (scope.as_ref(), incarnation, revision_value) {
@@ -81,7 +81,7 @@ where
         _ => {
             return Err(corrupt_storage(
                 "projection change record revision has an inconsistent shape",
-            ))
+            ));
         }
     };
     let observation_kind = scope_kind
@@ -117,7 +117,7 @@ where
         _ => {
             return Err(corrupt_storage(format!(
                 "projection change `{kind_value}` payload has an inconsistent shape"
-            )))
+            )));
         }
     }
     Ok(ProjectionChange {
@@ -624,7 +624,7 @@ where
                 value => {
                     return Err(corrupt_storage(format!(
                         "record tombstone contains invalid value {value}"
-                    )))
+                    )));
                 }
             };
             let record_change_epoch: Option<String> =
@@ -823,7 +823,7 @@ where
                 value => {
                     return Err(corrupt_storage(format!(
                         "cursor gap-free flag contains invalid value {value}"
-                    )))
+                    )));
                 }
             };
         let checkpoint_change_epoch: Option<String> =
@@ -1234,6 +1234,243 @@ where
         })
         .collect();
     Ok(ProjectionObligationEvidenceBatch { evidence })
+}
+
+/// Discover the bounded durable evidence for one modeled command causation.
+///
+/// The command ledger stores only opaque scope tokens. This read returns
+/// server-internal candidates from one SQL snapshot; the authenticated GraphQL
+/// authority later remints each token and accepts exact byte equality only.
+pub(crate) async fn read_projection_causation_evidence_in_executor<DB>(
+    connection: &mut DB::Connection,
+    request: &ProjectionCausationEvidenceRequest,
+) -> Result<ProjectionCausationEvidenceBatch, ProjectionProtocolError>
+where
+    DB: SqlxRepoBackend,
+    for<'c> &'c mut DB::Connection: Executor<'c, Database = DB>,
+    DB::Arguments: IntoArguments<DB>,
+    for<'q> i64: Encode<'q, DB> + Type<DB> + sqlx::Decode<'q, DB>,
+    for<'q> String: Type<DB> + sqlx::Decode<'q, DB>,
+    for<'q> Vec<u8>: Type<DB> + sqlx::Decode<'q, DB>,
+    for<'q> &'q str: Encode<'q, DB> + Type<DB>,
+    for<'q> &'q [u8]: Encode<'q, DB> + Type<DB>,
+    for<'r> &'r str: sqlx::ColumnIndex<DB::Row>,
+{
+    request.validate()?;
+    let overflow_limit = MAX_PROJECTION_EVIDENCE_BATCH_ITEMS + 1;
+    let mut observation_query = QueryBuilder::<DB>::new(
+        "SELECT observation.topology_hash, observation.partition_hash, \
+         observation.causation_id, observation.model_name, observation.scope_kind, \
+         observation.canonical_key_bytes, observation.canonical_key_hash, \
+         observation.incarnation, observation.revision, observation.change_epoch, \
+         observation.change_position, partition.topology_bytes, \
+         partition.partition_bytes, partition.change_epoch AS partition_change_epoch, \
+         partition.change_head AS partition_change_head \
+         FROM projection_observations observation \
+         INNER JOIN projection_partitions partition \
+         ON partition.topology_hash = observation.topology_hash \
+         AND partition.partition_hash = observation.partition_hash \
+         WHERE observation.causation_id = ",
+    );
+    observation_query.push_bind(request.causation_id.as_str());
+    observation_query.push(" AND (");
+    for (index, topology) in request.topologies.iter().enumerate() {
+        if index > 0 {
+            observation_query.push(" OR ");
+        }
+        let topology_hash = topology.digest();
+        observation_query.push("observation.topology_hash = ");
+        observation_query.push_bind(topology_hash.as_slice());
+    }
+    observation_query.push(")");
+    observation_query.push(
+        " ORDER BY observation.topology_hash, observation.partition_hash, \
+         observation.model_name, observation.scope_kind, observation.canonical_key_hash \
+         LIMIT ",
+    );
+    observation_query.push(overflow_limit.to_string());
+    let rows = observation_query
+        .build()
+        .fetch_all(&mut *connection)
+        .await
+        .map_err(|error| {
+            protocol_storage_error::<DB>("read modeled projection causation observations", error)
+        })?;
+    if rows.len() > MAX_PROJECTION_EVIDENCE_BATCH_ITEMS {
+        return Err(ProjectionProtocolError::InvalidBatch(format!(
+            "projection causation has more than {} observations",
+            MAX_PROJECTION_EVIDENCE_BATCH_ITEMS
+        )));
+    }
+
+    let mut observations = Vec::with_capacity(rows.len());
+    for row in rows {
+        let stored_causation_id: String = row.try_get("causation_id").map_err(|error| {
+            protocol_storage_error::<DB>("decode modeled evidence causation ID", error)
+        })?;
+        if stored_causation_id != request.causation_id {
+            return Err(corrupt_storage(
+                "modeled projection observation escaped its causation predicate",
+            ));
+        }
+        let topology_bytes: Vec<u8> = row.try_get("topology_bytes").map_err(|error| {
+            protocol_storage_error::<DB>("decode modeled evidence topology bytes", error)
+        })?;
+        let topology = ProjectorTopologyId::from_canonical_bytes(&topology_bytes)?;
+        if !request
+            .topologies
+            .iter()
+            .any(|allowed| allowed == &topology)
+        {
+            return Err(corrupt_storage(
+                "modeled projection observation escaped its topology predicate",
+            ));
+        }
+        let topology_hash: Vec<u8> = row.try_get("topology_hash").map_err(|error| {
+            protocol_storage_error::<DB>("decode modeled evidence topology hash", error)
+        })?;
+        verify_digest(
+            &topology_hash,
+            topology.digest(),
+            "modeled projection evidence topology",
+        )?;
+        let partition_bytes: Vec<u8> = row.try_get("partition_bytes").map_err(|error| {
+            protocol_storage_error::<DB>("decode modeled evidence partition bytes", error)
+        })?;
+        let partition = ProjectionPartition::new(partition_bytes)?;
+        let partition_hash: Vec<u8> = row.try_get("partition_hash").map_err(|error| {
+            protocol_storage_error::<DB>("decode modeled evidence partition hash", error)
+        })?;
+        verify_digest(
+            &partition_hash,
+            partition.digest(),
+            "modeled projection evidence partition",
+        )?;
+        let model: String = row.try_get("model_name").map_err(|error| {
+            protocol_storage_error::<DB>("decode modeled evidence model", error)
+        })?;
+        let key_bytes: Vec<u8> = row.try_get("canonical_key_bytes").map_err(|error| {
+            protocol_storage_error::<DB>("decode modeled evidence key bytes", error)
+        })?;
+        let scope = ProjectionRecordScope::new(topology, partition, model, key_bytes)?;
+        let key_hash: Vec<u8> = row.try_get("canonical_key_hash").map_err(|error| {
+            protocol_storage_error::<DB>("decode modeled evidence key hash", error)
+        })?;
+        verify_digest(
+            &key_hash,
+            scope.key_digest(),
+            "modeled projection evidence key",
+        )?;
+        let kind_value: String = row.try_get("scope_kind").map_err(|error| {
+            protocol_storage_error::<DB>("decode modeled evidence observation kind", error)
+        })?;
+        let kind = decode_observation_kind(&kind_value)?;
+        let partition_epoch = ProjectionEpoch::new(
+            row.try_get::<String, _>("partition_change_epoch")
+                .map_err(|error| {
+                    protocol_storage_error::<DB>("decode modeled evidence partition epoch", error)
+                })?,
+        )?;
+        let partition_head = from_i64::<DB>(
+            row.try_get("partition_change_head").map_err(|error| {
+                protocol_storage_error::<DB>("decode modeled evidence partition head", error)
+            })?,
+            "modeled projection evidence partition head",
+        )?;
+        let observation = decode_observation_row::<DB>(
+            &row,
+            &request.causation_id,
+            &scope,
+            kind,
+            &partition_epoch,
+        )?;
+        if observation.change.position() > partition_head
+            || observations.iter().any(|existing: &ProjectionObservation| {
+                existing.kind == observation.kind && existing.scope == observation.scope
+            })
+        {
+            return Err(corrupt_storage(
+                "modeled projection observation is duplicated or exceeds its partition head",
+            ));
+        }
+        observations.push(observation);
+    }
+
+    let mut failure_query = QueryBuilder::<DB>::new(
+        "SELECT DISTINCT partition.topology_bytes, partition.topology_hash \
+         FROM projection_failures failure \
+         INNER JOIN projection_partitions partition \
+         ON partition.topology_hash = failure.topology_hash \
+         AND partition.partition_hash = failure.partition_hash \
+         AND partition.stopped_failure_id = failure.failure_id \
+         WHERE failure.causation_id = ",
+    );
+    failure_query.push_bind(request.causation_id.as_str());
+    failure_query.push(" AND (");
+    for (index, topology) in request.topologies.iter().enumerate() {
+        if index > 0 {
+            failure_query.push(" OR ");
+        }
+        let topology_hash = topology.digest();
+        failure_query.push("failure.topology_hash = ");
+        failure_query.push_bind(topology_hash.as_slice());
+    }
+    failure_query.push(")");
+    failure_query.push(" ORDER BY partition.topology_hash LIMIT ");
+    failure_query.push(overflow_limit.to_string());
+    let rows = failure_query
+        .build()
+        .fetch_all(&mut *connection)
+        .await
+        .map_err(|error| {
+            protocol_storage_error::<DB>(
+                "read modeled projection causation terminal failures",
+                error,
+            )
+        })?;
+    if rows.len() > MAX_PROJECTION_EVIDENCE_BATCH_ITEMS {
+        return Err(ProjectionProtocolError::InvalidBatch(format!(
+            "projection causation has more than {} stopped topologies",
+            MAX_PROJECTION_EVIDENCE_BATCH_ITEMS
+        )));
+    }
+    let mut terminal_failure_topologies = Vec::with_capacity(rows.len());
+    for row in rows {
+        let topology_bytes: Vec<u8> = row.try_get("topology_bytes").map_err(|error| {
+            protocol_storage_error::<DB>("decode stopped evidence topology bytes", error)
+        })?;
+        let topology = ProjectorTopologyId::from_canonical_bytes(&topology_bytes)?;
+        if !request
+            .topologies
+            .iter()
+            .any(|allowed| allowed == &topology)
+        {
+            return Err(corrupt_storage(
+                "stopped modeled projection escaped its topology predicate",
+            ));
+        }
+        let topology_hash: Vec<u8> = row.try_get("topology_hash").map_err(|error| {
+            protocol_storage_error::<DB>("decode stopped evidence topology hash", error)
+        })?;
+        verify_digest(
+            &topology_hash,
+            topology.digest(),
+            "stopped modeled projection topology",
+        )?;
+        if terminal_failure_topologies
+            .iter()
+            .any(|existing| existing == &topology)
+        {
+            return Err(corrupt_storage(
+                "modeled projection causation returned duplicate stopped topologies",
+            ));
+        }
+        terminal_failure_topologies.push(topology);
+    }
+    Ok(ProjectionCausationEvidenceBatch {
+        observations,
+        terminal_failure_topologies,
+    })
 }
 
 /// Recover exact live record scopes for typed physical-row keys without

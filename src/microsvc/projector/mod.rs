@@ -23,7 +23,7 @@ pub use registration::CausalProjectorRouteBuilder;
 pub(super) use errors::projection_error_is_retryable;
 pub(super) use runtime::{
     ErasedProjectorHandler, ProjectorRegistration, ProjectorRepairFuture,
-    ProjectorRepairLookupFuture,
+    ProjectorRepairLookupFuture, RegisteredModeledProjector,
 };
 
 #[cfg(test)]
