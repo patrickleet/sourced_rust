@@ -48,6 +48,123 @@ fn operational() -> TableSchema {
     }
 }
 
+fn direct_model(model_name: &str, table_name: &str) -> TableSchema {
+    TableSchema {
+        model_name: model_name.into(),
+        table_name: table_name.into(),
+        columns: vec![TableColumn {
+            primary_key: true,
+            ..TableColumn::new("id", "id", ColumnType::Text)
+        }],
+        primary_key: PrimaryKey::new(["id"]),
+        version_column: None,
+        foreign_keys: Vec::new(),
+        indexes: Vec::new(),
+        relationships: Vec::new(),
+        kind: TableKind::ReadModel,
+    }
+}
+
+struct TestProjectionDescriptor(crate::ProjectionProgram);
+
+impl crate::projection::placement::ProjectionProgramDescriptor for TestProjectionDescriptor {
+    fn projection_program(
+        &self,
+    ) -> Result<crate::ProjectionProgram, crate::ProjectionProgramError> {
+        Ok(self.0.clone())
+    }
+}
+
+fn modeled_direct_projection(
+    owner: &str,
+    program_name: &str,
+    epoch: &str,
+    schema: TableSchema,
+    topology_digest: u8,
+) -> SurfaceModeledProjection {
+    use crate::projection::catalog::{ProjectionBindingActivation, ProjectionCatalog};
+    use crate::projection::placement::{
+        DirectProjectionPlacement, ProjectionBinding, ProjectionBindingState,
+        ProjectionExecutorRoute, ProjectionOutput, ProjectionOwner, ProjectionPhysicalTopology,
+        ProjectionSourceBinding, PROJECTION_PARTITION_CODEC_VERSION,
+    };
+    use crate::projection::{
+        ProjectionArm, ProjectionField, ProjectionOperation, ProjectionPartition, ProjectionTarget,
+    };
+    use crate::projection_protocol::{ProjectionEpoch, ProjectorTopologyId};
+    use crate::{
+        DomainEventBodyKind, ProjectionAssignment, ProjectionEventSelector, ProjectionExpression,
+        ProjectionKeyField, ProjectionMutationKind, ProjectionProgram, ProjectionValue,
+        DOMAIN_EVENT_BODY_CODEC, DOMAIN_EVENT_BODY_CODEC_VERSION,
+    };
+
+    let model_name = schema.model_name.clone();
+    let table_name = schema.table_name.clone();
+    let selector = ProjectionEventSelector::try_new(
+        1,
+        format!("{program_name}.changed"),
+        1,
+        DomainEventBodyKind::State,
+        format!("{program_name}State"),
+        1,
+        format!("urn:test:{program_name}:v1"),
+        "sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+        DOMAIN_EVENT_BODY_CODEC,
+        DOMAIN_EVENT_BODY_CODEC_VERSION,
+    )
+    .unwrap();
+    let value = ProjectionExpression::constant(ProjectionValue::string("row-1"));
+    let operation = ProjectionOperation::try_new(
+        format!("{program_name}-upsert"),
+        0,
+        ProjectionMutationKind::Upsert,
+        ProjectionTarget::try_new(&model_name, &table_name).unwrap(),
+        vec![ProjectionKeyField::try_new(0, "id", value.clone()).unwrap()],
+        vec![ProjectionField::try_new(0, "id", ProjectionAssignment::Set(value)).unwrap()],
+        Vec::new(),
+        Vec::new(),
+    )
+    .unwrap();
+    let program = ProjectionProgram::try_new(
+        program_name,
+        1,
+        ProjectionPartition::Unit,
+        vec![
+            ProjectionArm::try_new(format!("{program_name}-arm"), selector, vec![operation])
+                .unwrap(),
+        ],
+    )
+    .unwrap();
+    let descriptor = TestProjectionDescriptor(program.clone());
+    let binding = ProjectionBinding::materialize_direct(
+        DirectProjectionPlacement::new(&descriptor),
+        ProjectionSourceBinding::try_new("test-domain", "ordered-domain-events", 1).unwrap(),
+        ProjectionOwner::try_new(owner).unwrap(),
+        "distributed-projection-partition",
+        PROJECTION_PARTITION_CODEC_VERSION,
+        vec![ProjectionOutput::try_new(model_name, table_name, schema).unwrap()],
+        Vec::new(),
+        Some(ProjectionPhysicalTopology::from_protocol(
+            &ProjectorTopologyId::new(1, program_name, [topology_digest; 32]).unwrap(),
+        )),
+    )
+    .unwrap();
+    let catalog = ProjectionCatalog::try_new(vec![binding.clone()]).unwrap();
+    let active = catalog
+        .activate(
+            vec![ProjectionBindingActivation::new(
+                binding.id(),
+                binding.program_id(),
+                ProjectionEpoch::new(epoch).unwrap(),
+                ProjectionBindingState::Active,
+                Some(ProjectionExecutorRoute::local("test-service").unwrap()),
+            )],
+            None,
+        )
+        .unwrap();
+    SurfaceModeledProjection::try_from_catalog(program, &catalog, &active, binding.id()).unwrap()
+}
+
 fn test_command(
     command_name: &str,
     field_name: &str,
@@ -211,6 +328,81 @@ fn direct_projection_owner_requires_models_but_not_facts() {
             .into()])
         .unwrap_err();
     assert!(error.contains("must declare at least one model"));
+}
+
+#[test]
+fn direct_modeled_owner_rejects_mixed_active_epochs_before_command_binding() {
+    let first = direct_model("FirstDirectView", "first_direct");
+    let second = direct_model("SecondDirectView", "second_direct");
+    let first_modeled = modeled_direct_projection(
+        "shared-direct",
+        "first-direct",
+        "direct-v1",
+        first.clone(),
+        1,
+    );
+    let second_modeled = modeled_direct_projection(
+        "shared-direct",
+        "second-direct",
+        "direct-v2",
+        second.clone(),
+        2,
+    );
+
+    let error = build_surface(&[first, second], &SurfaceOptions::sqlite())
+        .unwrap()
+        .with_projection_owners([SurfaceDirectProjection::new("shared-direct")
+            .modeled(first_modeled)
+            .modeled(second_modeled)
+            .into()])
+        .unwrap_err();
+
+    assert!(
+        error.contains(
+            "direct modeled projection owner `shared-direct` has mixed active change epochs"
+        ),
+        "{error}"
+    );
+    assert!(error.contains("`direct-v1`"), "{error}");
+    assert!(error.contains("`direct-v2`"), "{error}");
+}
+
+#[test]
+fn direct_modeled_owner_accepts_distinct_models_with_one_active_epoch() {
+    let first = direct_model("FirstDirectView", "first_direct");
+    let second = direct_model("SecondDirectView", "second_direct");
+    let first_modeled = modeled_direct_projection(
+        "shared-direct",
+        "first-direct",
+        "direct-v1",
+        first.clone(),
+        1,
+    );
+    let second_modeled = modeled_direct_projection(
+        "shared-direct",
+        "second-direct",
+        "direct-v1",
+        second.clone(),
+        2,
+    );
+
+    let surface = build_surface(&[first, second], &SurfaceOptions::sqlite())
+        .unwrap()
+        .with_projection_owners([SurfaceDirectProjection::new("shared-direct")
+            .modeled(first_modeled)
+            .modeled(second_modeled)
+            .into()])
+        .unwrap();
+
+    let [owner] = surface.projection_owners() else {
+        panic!("one direct owner should be retained");
+    };
+    assert!(owner.is_direct());
+    assert_eq!(
+        owner.models,
+        vec!["FirstDirectView".to_owned(), "SecondDirectView".to_owned()]
+    );
+    assert_eq!(owner.change_epoch.as_deref(), Some("direct-v1"));
 }
 
 #[test]

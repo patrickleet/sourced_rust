@@ -758,6 +758,28 @@ impl Surface {
                         }
                     }
                 }
+                if projector.kind == SurfaceProjectionOwnerKind::Direct {
+                    let active_epochs = projector
+                        .modeled
+                        .iter()
+                        .filter(|modeled| {
+                            modeled.state()
+                                == crate::projection::placement::ProjectionBindingState::Active
+                        })
+                        .map(|modeled| modeled.epoch().as_str())
+                        .collect::<BTreeSet<_>>();
+                    if active_epochs.len() > 1 {
+                        return Err(format!(
+                            "direct modeled projection owner `{}` has mixed active change epochs: {}",
+                            projector.name,
+                            active_epochs
+                                .into_iter()
+                                .map(|epoch| format!("`{epoch}`"))
+                                .collect::<Vec<_>>()
+                                .join(", ")
+                        ));
+                    }
+                }
                 projector.models = projector.binding_models();
                 projector.facts = projector.binding_facts();
                 projector.change_epoch = projector.binding_change_epoch();
