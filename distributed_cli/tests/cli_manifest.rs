@@ -49,18 +49,18 @@ fn describe_emits_manifest_json() {
 fn client_manifest_uses_service_surface_export() {
     let json = dctl(&["client-manifest"]);
     let manifest: serde_json::Value = serde_json::from_str(&json).unwrap();
-    assert_eq!(manifest["manifest_version"], 1);
+    assert_eq!(manifest["manifest_version"], 2);
     assert_eq!(manifest["protocol_version"], 1);
     assert_eq!(manifest["service_id"], "orders");
     assert_eq!(manifest["surface"]["kind"], "role");
     assert_eq!(manifest["surface"]["name"], "user");
     assert_eq!(
         manifest["schema_fingerprint"],
-        "sha256:31a54d18b0104283e3ec26cb7da37bfb2c31a3d8e37e96e8297e83059cf56aa4"
+        "sha256:74b55fc0a23c6204fa002a117356277794c2c4ce35438b26119b27f52a2d6ad7"
     );
     assert_eq!(
         manifest["protocol_fingerprint"],
-        "sha256:30f19c9f4d29280a02ddf67c4df62cdc92c4e8090792f43d6b1bdafea3e31273"
+        "sha256:00fb342f3acb4dc1c1716a43cc3001c748d5f6c500ff831690d820e9e43e2782"
     );
     assert_eq!(manifest["models"][0]["id"], "OrderView");
     assert_eq!(manifest["models"][0]["record_revisions"], true);
@@ -97,6 +97,8 @@ fn client_manifest_uses_service_surface_export() {
         .get("partition")
         .is_none());
     assert!(manifest["protocol_operations"]["command_status"].is_object());
+    assert!(manifest["projection_programs"].is_array());
+    assert!(manifest["projection_bindings"].is_array());
 }
 
 #[test]

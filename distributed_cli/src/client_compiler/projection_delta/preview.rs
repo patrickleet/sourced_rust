@@ -86,12 +86,38 @@ impl CompiledCommandProjection {
         models
     }
 
-    pub(crate) fn affected_relationships(&self) -> BTreeSet<(String, String, String)> {
+    pub(crate) fn affected_relationships(
+        &self,
+        manifest: &ClientManifest,
+    ) -> BTreeSet<(String, String, String)> {
         let mut relationships = BTreeSet::new();
         for operation in &self.preview.operations {
             operation.mutation.collect_relationships(&mut relationships);
         }
+        for recovery in &self.preview.recoveries {
+            if let PreviewRecoveryTarget::Relationship {
+                relationship,
+                source,
+            } = &recovery.target
+            {
+                relationships.insert((source.model.clone(), relationship.clone(), String::new()));
+            }
+        }
         relationships
+            .into_iter()
+            .filter_map(|(source, relationship, target)| {
+                if !target.is_empty() {
+                    return Some((source, relationship, target));
+                }
+                let target = manifest
+                    .models
+                    .get(&source)?
+                    .relationship(&relationship)?
+                    .target_model
+                    .clone();
+                Some((source, relationship, target))
+            })
+            .collect()
     }
 
     pub(crate) fn requires_revalidation(&self) -> bool {
@@ -238,7 +264,7 @@ impl PreviewMutation {
             Self::InvalidateModel { partition, model } => PreviewOperationScope::Model {
                 partition: partition
                     .as_ref()
-                    .map(|partition| serde_json::to_string(partition))
+                    .map(serde_json::to_string)
                     .transpose()
                     .map_err(|error| {
                         ClientCompileError::manifest(
@@ -379,7 +405,7 @@ impl PreviewRecoveryTarget {
             Self::Model { partition, model } => PreviewRecoveryTargetKey::Model {
                 partition: partition
                     .as_ref()
-                    .map(|partition| serde_json::to_string(partition))
+                    .map(serde_json::to_string)
                     .transpose()
                     .map_err(|error| {
                         ClientCompileError::manifest(
@@ -553,7 +579,6 @@ fn lower_arm(
             operation,
             &partition,
             slots,
-            manifest,
             operations,
             recoveries,
         )?;
@@ -564,7 +589,6 @@ fn lower_arm(
             operation,
             &partition,
             slots,
-            manifest,
             operations,
             recoveries,
         )?;
@@ -724,7 +748,6 @@ fn lower_relationships(
     operation: &ManifestProjectionOperation,
     partition: &Option<PreviewPartition>,
     slots: &BTreeMap<&str, Knowledge>,
-    _manifest: &ClientManifest,
     operations: &mut Vec<PreviewOperation>,
     recoveries: &mut Vec<PreviewRecovery>,
 ) -> Result<(), ClientCompileError> {
@@ -804,7 +827,6 @@ fn lower_invalidations(
     operation: &ManifestProjectionOperation,
     partition: &Option<PreviewPartition>,
     slots: &BTreeMap<&str, Knowledge>,
-    _manifest: &ClientManifest,
     operations: &mut Vec<PreviewOperation>,
     recoveries: &mut Vec<PreviewRecovery>,
 ) -> Result<(), ClientCompileError> {
@@ -1375,6 +1397,37 @@ mod tests {
         }
     }
 
+    fn relationship_operation() -> ManifestProjectionOperation {
+        let key = |slot: &str| {
+            vec![ManifestProjectionKeyField {
+                ordinal: 0,
+                name: "id".into(),
+                expression: ManifestProjectionExpression::Slot {
+                    slot: slot.into(),
+                    value_type: ManifestProjectionValueType::String,
+                },
+            }]
+        };
+        ManifestProjectionOperation {
+            operation: "link-owner".into(),
+            ordinal: 0,
+            kind: ManifestProjectionMutationKind::Patch,
+            model: "Todo".into(),
+            key: key("source"),
+            fields: Vec::new(),
+            relationships: vec![ManifestProjectionRelationshipEffect {
+                ordinal: 0,
+                kind: ManifestProjectionRelationshipEffectKind::Link,
+                source_model: "Todo".into(),
+                relationship: "owner".into(),
+                target_model: "User".into(),
+                source_key: key("source"),
+                target_key: key("target"),
+            }],
+            invalidations: Vec::new(),
+        }
+    }
+
     #[test]
     fn knowledge_lattice_preserves_null_unset_unknown_denied_and_cache_unowned() {
         let event = event();
@@ -1559,5 +1612,81 @@ mod tests {
         assert!(canonicalize_recoveries(vec![recovery], &operations)
             .unwrap()
             .is_empty());
+    }
+
+    #[test]
+    fn relationship_preview_never_guesses_an_uncertain_edge() {
+        let known = |path: &str| {
+            Knowledge::Known(PreviewExpression::Input {
+                path: vec![path.into()],
+            })
+        };
+        let operation = relationship_operation();
+        let partition = Some(PreviewPartition::Unit);
+
+        let known_slots =
+            BTreeMap::from([("source", known("source")), ("target", known("target"))]);
+        let mut operations = Vec::new();
+        let mut recoveries = Vec::new();
+        lower_relationships(
+            0,
+            0,
+            &event(),
+            &operation,
+            &partition,
+            &known_slots,
+            &mut operations,
+            &mut recoveries,
+        )
+        .unwrap();
+        assert!(matches!(
+            operations[0].mutation,
+            PreviewMutation::Link { .. }
+        ));
+        assert!(recoveries.is_empty());
+
+        let uncertain_target =
+            BTreeMap::from([("source", known("source")), ("target", Knowledge::Unknown)]);
+        operations.clear();
+        lower_relationships(
+            0,
+            0,
+            &event(),
+            &operation,
+            &partition,
+            &uncertain_target,
+            &mut operations,
+            &mut recoveries,
+        )
+        .unwrap();
+        assert!(matches!(
+            operations[0].mutation,
+            PreviewMutation::InvalidateRelationship { .. }
+        ));
+        assert!(matches!(
+            recoveries.last().unwrap().target,
+            PreviewRecoveryTarget::Relationship { .. }
+        ));
+
+        let uncertain_source =
+            BTreeMap::from([("source", Knowledge::Denied), ("target", known("target"))]);
+        operations.clear();
+        recoveries.clear();
+        lower_relationships(
+            0,
+            0,
+            &event(),
+            &operation,
+            &partition,
+            &uncertain_source,
+            &mut operations,
+            &mut recoveries,
+        )
+        .unwrap();
+        assert!(operations.is_empty());
+        assert!(matches!(
+            recoveries[0].target,
+            PreviewRecoveryTarget::Model { .. }
+        ));
     }
 }

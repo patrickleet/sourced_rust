@@ -30,11 +30,6 @@ export type Command_importTodos_Output = {
 export const Command_importTodos: ReplicaCommandArtifact<Command_importTodos_Input, Command_importTodos_Output> = {
   "consistency": "succeeded",
   "document": "mutation Client_importTodos($commandId: ID!, $input: ImportTodosInput!) { importTodos(commandId: $commandId, input: $input) { result } }",
-  "effects": {
-    "fallback": "revalidate",
-    "operations": [],
-    "version": 1
-  },
   "input": {
     "definition": {
       "fields": [
@@ -72,8 +67,8 @@ export const Command_importTodos: ReplicaCommandArtifact<Command_importTodos_Inp
   },
   "protocol": {
     "operation": "sha256:e8e54238fd7618fa94e90ae60b1dfac8833943027d04e71be84cb03702f1cebf",
-    "protocolHash": "sha256:30f19c9f4d29280a02ddf67c4df62cdc92c4e8090792f43d6b1bdafea3e31273",
-    "schemaHash": "sha256:1c798ef001a557124c53e8eeb2300d980e71d712458aa51d6d3f083f6ac2d077",
+    "protocolHash": "sha256:00fb342f3acb4dc1c1716a43cc3001c748d5f6c500ff831690d820e9e43e2782",
+    "schemaHash": "sha256:98df0746262f07963389d89984b3612168d3d6782010750f29dc0958f74064af",
     "surface": {
       "kind": "role",
       "name": "user"
@@ -92,7 +87,7 @@ export const Command_importTodos: ReplicaCommandArtifact<Command_importTodos_Inp
     "required": true,
     "version": 1
   },
-  "version": 1
+  "version": 2
 };
 
 export function prepareCommand_importTodos(
@@ -112,11 +107,6 @@ export type Command_pingTodos_Output = {
 export const Command_pingTodos: ReplicaCommandArtifact<Command_pingTodos_Input, Command_pingTodos_Output> = {
   "consistency": "succeeded",
   "document": "mutation Client_pingTodos($commandId: ID!) { pingTodos(commandId: $commandId) { ok } }",
-  "effects": {
-    "fallback": "revalidate",
-    "operations": [],
-    "version": 1
-  },
   "input": {
     "kind": "none"
   },
@@ -141,8 +131,8 @@ export const Command_pingTodos: ReplicaCommandArtifact<Command_pingTodos_Input, 
   },
   "protocol": {
     "operation": "sha256:3cb3c1e96331b4e98191cc725ab6b01c0e9b04cc7cc0f37f4fa0ef394fee9acf",
-    "protocolHash": "sha256:30f19c9f4d29280a02ddf67c4df62cdc92c4e8090792f43d6b1bdafea3e31273",
-    "schemaHash": "sha256:1c798ef001a557124c53e8eeb2300d980e71d712458aa51d6d3f083f6ac2d077",
+    "protocolHash": "sha256:00fb342f3acb4dc1c1716a43cc3001c748d5f6c500ff831690d820e9e43e2782",
+    "schemaHash": "sha256:98df0746262f07963389d89984b3612168d3d6782010750f29dc0958f74064af",
     "surface": {
       "kind": "role",
       "name": "user"
@@ -161,7 +151,7 @@ export const Command_pingTodos: ReplicaCommandArtifact<Command_pingTodos_Input, 
     "required": true,
     "version": 1
   },
-  "version": 1
+  "version": 2
 };
 
 export function prepareCommand_pingTodos(
@@ -206,11 +196,6 @@ export const Command_projectTodo: ReplicaCommandArtifact<Command_projectTodo_Inp
     }
   },
   "document": "mutation Client_projectTodo($commandId: ID!, $input: ProjectTodoInput!) { projectTodo(commandId: $commandId, input: $input) { completed id priority tenantId title } }",
-  "effects": {
-    "fallback": "revalidate",
-    "operations": [],
-    "version": 1
-  },
   "input": {
     "definition": {
       "fields": [
@@ -288,8 +273,8 @@ export const Command_projectTodo: ReplicaCommandArtifact<Command_projectTodo_Inp
   },
   "protocol": {
     "operation": "sha256:f986d060555cdedfe94621914116306af704d8bb90e75289722a3b7119211d32",
-    "protocolHash": "sha256:30f19c9f4d29280a02ddf67c4df62cdc92c4e8090792f43d6b1bdafea3e31273",
-    "schemaHash": "sha256:1c798ef001a557124c53e8eeb2300d980e71d712458aa51d6d3f083f6ac2d077",
+    "protocolHash": "sha256:00fb342f3acb4dc1c1716a43cc3001c748d5f6c500ff831690d820e9e43e2782",
+    "schemaHash": "sha256:98df0746262f07963389d89984b3612168d3d6782010750f29dc0958f74064af",
     "surface": {
       "kind": "role",
       "name": "user"
@@ -308,7 +293,7 @@ export const Command_projectTodo: ReplicaCommandArtifact<Command_projectTodo_Inp
     "required": true,
     "version": 1
   },
-  "version": 1
+  "version": 2
 };
 
 export function prepareCommand_projectTodo(
@@ -351,7 +336,7 @@ export function createCommands(
   });
 }
 
-/** Projector topology used by command confirmation/effect runtimes. */
+/** Projector topology retained for inspection and causal diagnostics. */
 export const PROJECTOR_ARTIFACTS = [
   {
     "version": 1,

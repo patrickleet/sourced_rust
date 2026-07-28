@@ -486,7 +486,7 @@ fn command_revalidation_json(
     let mut dependencies = BTreeSet::new();
     if let Some(projection) = projection {
         models.extend(projection.affected_models());
-        relationships.extend(projection.affected_relationships());
+        relationships.extend(projection.affected_relationships(manifest));
         required |= projection.requires_revalidation();
     }
     if let Some(direct) = &command.extensions.direct_projection {

@@ -1,5 +1,5 @@
 //! Integration tests for `dctl client`: drive the real binary against a small
-//! manifest-v1 project and verify generation, read-only drift checking,
+//! manifest-v2 project and verify generation, read-only drift checking,
 //! authorization-surface selection, document discovery, and explicit `@load`
 //! route registration.
 
@@ -9,15 +9,15 @@ use std::path::{Path, PathBuf};
 use std::process::{Command, Output};
 
 const ROLE_MANIFEST: &str = r#"{
-  "manifest_version": 1,
+  "manifest_version": 2,
   "protocol_version": 1,
   "service_id": "todos",
   "surface": {
     "kind": "role",
     "name": "user"
   },
-  "schema_fingerprint": "sha256:fc1d0cdb83cb42d07d9dfaf0944b24ea3e95b1dafc63ad320f9e93ffe2e3d9b9",
-  "protocol_fingerprint": "sha256:30f19c9f4d29280a02ddf67c4df62cdc92c4e8090792f43d6b1bdafea3e31273",
+  "schema_fingerprint": "sha256:758a97e4f7e1e538e8be86d24abd3d50a8da2d5813d29abd7a04bfa092d05189",
+  "protocol_fingerprint": "sha256:00fb342f3acb4dc1c1716a43cc3001c748d5f6c500ff831690d820e9e43e2782",
   "execution": {
     "max_depth": 8,
     "max_complexity": 500,
@@ -268,7 +268,9 @@ const ROLE_MANIFEST: &str = r#"{
     "version": 1,
     "command_status": null
   },
-  "projectors": []
+  "projectors": [],
+  "projection_programs": [],
+  "projection_bindings": []
 }"#;
 
 const TODOS_QUERY: &str = r#"query Todos {

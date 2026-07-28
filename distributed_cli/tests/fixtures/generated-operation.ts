@@ -826,7 +826,7 @@ export const Operation_ScalarInputs: ReplicaOperationArtifact<Operation_ScalarIn
   ],
   "protocol": {
     "version": 1,
-    "schemaHash": "sha256:9d0d6ec390c7402779a98490ce3e046de73c59f1e2534928927495e1407547fe",
+    "schemaHash": "sha256:1b203cdad2827a6b52ac96e6d4d9114e160312cf93196a3d489dde2d5e331526",
     "surface": {
       "kind": "role",
       "name": "user"

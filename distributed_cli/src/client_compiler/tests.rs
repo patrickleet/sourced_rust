@@ -593,7 +593,7 @@ fn projected_manifest() -> JsonValue {
         "operation": mutation,
         "operation_hash": fingerprint(mutation),
         "extensions": {
-            "version": 1,
+            "version": 2,
             "consistency": {"version": 1, "kind": "projected"},
             "direct_projection": {
                 "topology": {
@@ -670,7 +670,7 @@ fn generated_command_types_manifest() -> JsonValue {
             "operation": import,
             "operation_hash": fingerprint(import),
             "extensions": {
-                "version": 1,
+                "version": 2,
                 "consistency": {"version": 1, "kind": "succeeded"}
             }
         }),
@@ -697,7 +697,7 @@ fn generated_command_types_manifest() -> JsonValue {
             "operation": ping,
             "operation_hash": fingerprint(ping),
             "extensions": {
-                "version": 1,
+                "version": 2,
                 "consistency": {"version": 1, "kind": "succeeded"}
             }
         }),
@@ -1446,7 +1446,7 @@ fn emits_executable_filter_order_and_pagination_plans_with_hidden_dependencies()
     assert!(generated.contains("\"maxInList\": 1000"));
     let provenance: JsonValue =
         serde_json::from_str(file(&project, "manifest.json")).expect("compiler manifest JSON");
-    assert_eq!(provenance["distributed_manifest_version"], 1);
+    assert_eq!(provenance["distributed_manifest_version"], 2);
     assert!(generated.contains(
         "\"target\": {\n              \"kind\": \"input\",\n              \"name\": \"todo_bool_exp\""
     ));
@@ -2609,6 +2609,47 @@ fn command_protocol_and_extensions_are_preserved_exactly() {
         }
     });
     refresh_schema_fingerprint(&mut value);
+    let mut partial_value = value.clone();
+    partial_value["commands"][0]["extensions"]["projection"]["preview_occurrences"][0]["values"]
+        [4]["source"] = json!({"kind": "unknown"});
+    refresh_schema_fingerprint(&mut partial_value);
+    let mut unknown_key_value = value.clone();
+    unknown_key_value["commands"][0]["extensions"]["projection"]["preview_occurrences"][0]
+        ["values"][1]["source"] = json!({"kind": "unknown"});
+    refresh_schema_fingerprint(&mut unknown_key_value);
+    let mut unknown_partition_value = value.clone();
+    unknown_partition_value["commands"][0]["extensions"]["projection"]["preview_occurrences"][0]
+        ["values"][3]["source"] = json!({"kind": "unknown"});
+    refresh_schema_fingerprint(&mut unknown_partition_value);
+    let mut delete_value = value.clone();
+    delete_value["projection_programs"][0]["arms"][0]["operations"][0]["kind"] = json!("delete");
+    delete_value["projection_programs"][0]["arms"][0]["operations"][0]["fields"] = json!([]);
+    delete_value["commands"][0]["extensions"]["projection"]["preview_occurrences"][0]["values"] = json!([
+        {
+            "slot": "state.id",
+            "source": {"kind": "generated_default", "path": ["id"]}
+        },
+        {
+            "slot": "state.tenantId",
+            "source": {"kind": "input", "path": ["tenantId"]}
+        }
+    ]);
+    refresh_schema_fingerprint(&mut delete_value);
+    let mut multi_model_value = value.clone();
+    multi_model_value["models"]
+        .as_array_mut()
+        .unwrap()
+        .push(model("User", "user"));
+    let mut second_operation =
+        multi_model_value["projection_programs"][0]["arms"][0]["operations"][0].clone();
+    second_operation["operation"] = json!("upsert-user");
+    second_operation["ordinal"] = json!(1);
+    second_operation["model"] = json!("User");
+    multi_model_value["projection_programs"][0]["arms"][0]["operations"]
+        .as_array_mut()
+        .unwrap()
+        .push(second_operation);
+    refresh_schema_fingerprint(&mut multi_model_value);
     let project = compile_client(ClientCompileInput::new(
         value,
         ClientSurfaceSelector::role("user"),
@@ -2674,6 +2715,69 @@ fn command_protocol_and_extensions_are_preserved_exactly() {
     assert!(protocol.contains("\"surface\": {"));
     assert!(protocol.contains("\"trustedPresets\": []"));
     assert!(protocol.contains("\ttrustedPresets: []"));
+
+    let partial = compile_client(ClientCompileInput::new(
+        partial_value,
+        ClientSurfaceSelector::role("user"),
+        vec![ClientDocument::new(
+            "src/routes/todos/+page.graphql",
+            "query Todos { todos { id } }",
+        )],
+    ))
+    .expect("compile partial projection preview");
+    let partial_commands = file(&partial, "commands.ts");
+    assert!(partial_commands.contains("\"op\": \"patch\""));
+    assert!(!partial_commands.contains("\"op\": \"upsert\""));
+    assert!(partial_commands.contains("\"condition\": \"if_record_missing\""));
+    assert!(partial_commands.contains("\"kind\": \"record\""));
+
+    for fallback in [unknown_key_value, unknown_partition_value] {
+        let project = compile_client(ClientCompileInput::new(
+            fallback,
+            ClientSurfaceSelector::role("user"),
+            vec![ClientDocument::new(
+                "src/routes/todos/+page.graphql",
+                "query Todos { todos { id } }",
+            )],
+        ))
+        .expect("compile conservative projection fallback");
+        let fallback_commands = file(&project, "commands.ts");
+        assert!(fallback_commands.contains("\"operations\": []"));
+        assert!(fallback_commands.contains("\"kind\": \"model\""));
+        assert!(!fallback_commands.contains("\"op\": \"upsert\""));
+        assert!(!fallback_commands.contains("\"op\": \"patch\""));
+    }
+
+    let delete = compile_client(ClientCompileInput::new(
+        delete_value,
+        ClientSurfaceSelector::role("user"),
+        vec![ClientDocument::new(
+            "src/routes/todos/+page.graphql",
+            "query Todos { todos { id } }",
+        )],
+    ))
+    .expect("compile delete projection preview");
+    let delete_commands = file(&delete, "commands.ts");
+    assert!(delete_commands.contains("\"op\": \"delete\""));
+    assert!(!delete_commands.contains("\"op\": \"upsert\""));
+    assert!(!delete_commands.contains("\"op\": \"patch\""));
+
+    let multi_model = compile_client(ClientCompileInput::new(
+        multi_model_value,
+        ClientSurfaceSelector::role("user"),
+        vec![ClientDocument::new(
+            "src/routes/todos/+page.graphql",
+            "query Todos { todos { id } }",
+        )],
+    ))
+    .expect("compile one projection arm spanning multiple models");
+    let multi_model_commands = file(&multi_model, "commands.ts");
+    assert_eq!(
+        multi_model_commands.matches("\"op\": \"upsert\"").count(),
+        2
+    );
+    assert!(multi_model_commands.contains("\"model\": \"Todo\""));
+    assert!(multi_model_commands.contains("\"model\": \"User\""));
 }
 
 #[test]
@@ -2755,7 +2859,7 @@ fn manifest_v2_parses_exact_projection_program_binding_and_preview_contract() {
     assert_eq!(parsed.projection_programs[0].version, 2);
     assert!(matches!(
         parsed.projection_programs[0].arms[0].partition,
-        super::manifest::ManifestProjectionPartition::Unit
+        super::manifest::ManifestProjectionPartition::Expression { .. }
     ));
     assert_eq!(parsed.projection_bindings.len(), 1);
     assert!(parsed.commands[0].extensions.effects.is_none());
@@ -2770,6 +2874,62 @@ fn manifest_v2_parses_exact_projection_program_binding_and_preview_contract() {
             .len(),
         1
     );
+}
+
+#[test]
+fn manifest_v2_has_no_legacy_projection_or_command_authority_decoder() {
+    let mut stale_manifest = manifest();
+    stale_manifest["manifest_version"] = json!(1);
+    refresh_schema_fingerprint(&mut stale_manifest);
+    let error = ClientManifest::parse(stale_manifest, &ClientSurfaceSelector::role("user"))
+        .expect_err("manifest v1 must fail closed");
+    assert_eq!(error.code, "client.manifest.version");
+
+    let mut stale_command = projected_manifest();
+    stale_command["commands"][0]["extensions"]["version"] = json!(1);
+    refresh_schema_fingerprint(&mut stale_command);
+    let error = ClientManifest::parse(stale_command, &ClientSurfaceSelector::role("user"))
+        .expect_err("command extensions v1 must fail closed");
+    assert_eq!(error.code, "client.manifest.command_extensions");
+
+    let mut legacy_effects = projected_manifest();
+    legacy_effects["commands"][0]["extensions"]["effects"] =
+        json!({"version": 1, "operations": [], "fallback": "revalidate"});
+    let error = ClientManifest::parse(legacy_effects, &ClientSurfaceSelector::role("user"))
+        .expect_err("legacy effects must not deserialize");
+    assert_eq!(error.code, "client.manifest.invalid");
+
+    let mut unknown_projection_field = manifest();
+    install_create_projection(&mut unknown_projection_field);
+    unknown_projection_field["projection_programs"][0]["unexpected"] = json!(true);
+    let error = ClientManifest::parse(
+        unknown_projection_field,
+        &ClientSurfaceSelector::role("user"),
+    )
+    .expect_err("unknown projection fields must fail closed");
+    assert_eq!(error.code, "client.manifest.invalid");
+
+    let mut unsupported_program = manifest();
+    install_create_projection(&mut unsupported_program);
+    unsupported_program["projection_programs"][0]["version"] = json!(3);
+    refresh_schema_fingerprint(&mut unsupported_program);
+    let error = ClientManifest::parse(unsupported_program, &ClientSurfaceSelector::role("user"))
+        .expect_err("unknown projection program versions must fail closed");
+    assert_eq!(error.code, "client.manifest.projection_program_version");
+
+    let mut duplicate_operation = manifest();
+    install_create_projection(&mut duplicate_operation);
+    let mut duplicate =
+        duplicate_operation["projection_programs"][0]["arms"][0]["operations"][0].clone();
+    duplicate["ordinal"] = json!(1);
+    duplicate_operation["projection_programs"][0]["arms"][0]["operations"]
+        .as_array_mut()
+        .unwrap()
+        .push(duplicate);
+    refresh_schema_fingerprint(&mut duplicate_operation);
+    let error = ClientManifest::parse(duplicate_operation, &ClientSurfaceSelector::role("user"))
+        .expect_err("projection operation IDs must be unique within a program");
+    assert_eq!(error.code, "client.manifest.projection_operation_id");
 }
 
 #[test]
@@ -2957,7 +3117,7 @@ fn rejects_commands_without_causal_identity_or_normative_input_defaults() {
             "operation": operation,
             "operation_hash": fingerprint(operation),
             "extensions": {
-                "version": 1,
+                "version": 2,
                 "consistency": {"version": 1, "kind": "projected"},
                 "input_defaults": {
                     "version": 1,

@@ -46,6 +46,7 @@ pub(crate) fn validate_projection_manifest(
     });
 
     let mut program_ids = BTreeSet::new();
+    let mut event_contracts = BTreeMap::new();
     for program in &programs {
         validate_program(program, models)?;
         if !program_ids.insert(program.program_id.as_str()) {
@@ -53,6 +54,21 @@ pub(crate) fn validate_projection_manifest(
                 "client.manifest.projection_program_id",
                 format!("duplicate projection program `{}`", program.program_id),
             ));
+        }
+        for arm in &program.arms {
+            let contract = (arm.event.name.as_str(), arm.event.version);
+            if event_contracts
+                .insert(arm.event.id.as_str(), contract)
+                .is_some_and(|existing| existing != contract)
+            {
+                return Err(projection_error(
+                    "client.manifest.projection_event_identity",
+                    format!(
+                        "projection event id `{}` maps to conflicting name/version contracts",
+                        arm.event.id
+                    ),
+                ));
+            }
         }
     }
 
@@ -305,6 +321,7 @@ fn validate_program(
         ));
     }
     let mut arm_ids = BTreeSet::new();
+    let mut operation_ids = BTreeSet::new();
     let mut previous = None;
     for arm in &program.arms {
         validate_nonempty(&arm.arm, "projection arm id")?;
@@ -340,6 +357,15 @@ fn validate_program(
             ));
         }
         for (index, operation) in arm.operations.iter().enumerate() {
+            if !operation_ids.insert(operation.operation.as_str()) {
+                return Err(projection_error(
+                    "client.manifest.projection_operation_id",
+                    format!(
+                        "projection program `{}` repeats operation id `{}`",
+                        program.program_id, operation.operation
+                    ),
+                ));
+            }
             if operation.ordinal as usize != index {
                 return Err(projection_error(
                     "client.manifest.projection_operation_order",
