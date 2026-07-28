@@ -1,112 +1,240 @@
-use std::collections::BTreeSet;
+use std::collections::{BTreeMap, BTreeSet};
 
-use crate::projection::catalog::ProjectionBindingActivation;
+use crate::projection::catalog::{ActiveProjectionBindings, ProjectionCatalog, ProjectionEpoch};
 use crate::projection::placement::{
-    ProjectionBinding, ProjectionBindingState, ProjectionExecutionClass, ProjectionPlacement,
+    ProjectionBinding, ProjectionBindingId, ProjectionBindingState, ProjectionExecutionClass,
+    ProjectionPlacement,
 };
-use crate::{ProjectionMutationKind, ProjectionProgram, ProjectionProgramId};
+use crate::{
+    ProjectionField, ProjectionInvalidation, ProjectionKeyField, ProjectionMutationKind,
+    ProjectionOperation, ProjectionProgram, ProjectionProgramId, ProjectionRelationshipEffect,
+};
 
 use super::types::SurfaceProjectionOwnerKind;
-use super::SurfaceModel;
+use super::{SurfaceModel, SurfaceRelationshipKeys};
+
+/// One role-safe selected operation from an authoritative projection program.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub(crate) struct SurfaceProjectionOperation {
+    pub operation_id: String,
+    pub staging_ordinal: u32,
+    pub kind: ProjectionMutationKind,
+    pub model: String,
+    pub storage: String,
+    pub key: Vec<ProjectionKeyField>,
+    pub fields: Vec<ProjectionField>,
+    pub relationship_effects: Vec<ProjectionRelationshipEffect>,
+    pub invalidations: Vec<ProjectionInvalidation>,
+    pub force_revalidate: bool,
+}
+
+/// One exact selected event arm. Its selector is server-only; client export
+/// receives only a digest-derived event reference.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub(crate) struct SurfaceProjectionArm {
+    pub arm_id: String,
+    pub selector: crate::ProjectionEventSelector,
+    pub operations: Vec<SurfaceProjectionOperation>,
+}
+
+/// Role-safe program inventory retained after Surface selection.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub(crate) struct SurfaceSelectedProjectionProgram {
+    pub name: String,
+    pub version: u64,
+    pub ir_version: u16,
+    pub operation_semantics_version: u16,
+    pub arms: Vec<SurfaceProjectionArm>,
+}
 
 /// One exact modeled projection registration carried through Surface
 /// authorization.
 ///
-/// Program, deployment binding, activation and epoch remain a single tuple.
-/// Neither manifest generation nor delta lowering reconstructs authority from
-/// projector names, event-name strings, or a union of legacy `.facts(...)`.
-#[derive(Clone, Debug, PartialEq, Eq)]
+/// On the catalog Surface the private raw tuple is present for validation.
+/// Role/application selection replaces it with a field-filtered descriptor and
+/// drops the raw program, binding schemas, event body paths for denied fields,
+/// executor route, and physical topology.
+#[derive(Clone, PartialEq, Eq)]
 pub struct SurfaceModeledProjection {
-    program: ProjectionProgram,
-    binding: ProjectionBinding,
-    activation: ProjectionBindingActivation,
+    program_id: ProjectionProgramId,
+    binding_id: ProjectionBindingId,
+    owner: String,
+    placement: ProjectionPlacement,
+    execution_class: ProjectionExecutionClass,
+    state: ProjectionBindingState,
+    epoch: ProjectionEpoch,
+    output_models: Vec<String>,
+    raw_program: Option<ProjectionProgram>,
+    raw_binding: Option<ProjectionBinding>,
+    selected: Option<SurfaceSelectedProjectionProgram>,
+}
+
+impl std::fmt::Debug for SurfaceModeledProjection {
+    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        formatter
+            .debug_struct("SurfaceModeledProjection")
+            .field("program_id", &self.program_id)
+            .field("binding_id", &self.binding_id)
+            .field("placement", &self.placement)
+            .field("execution_class", &self.execution_class)
+            .field("state", &self.state)
+            .field("epoch", &self.epoch.as_str())
+            .field("output_models", &self.output_models)
+            .finish_non_exhaustive()
+    }
 }
 
 impl SurfaceModeledProjection {
-    /// Construct one exact modeled registration.
+    /// Resolve one exact registration through a validated catalog and active
+    /// binding view.
     ///
-    /// Full owner/model/placement validation runs when the declaration is
-    /// attached to a catalog Surface, where selected ORM schemas are present.
-    pub fn try_new(
+    /// This is the only public authority path. Arbitrary
+    /// `ProjectionBindingActivation::new(...)` values cannot bypass catalog
+    /// writer-conflict, route, placement, or epoch-takeover validation.
+    pub fn try_from_catalog(
         program: ProjectionProgram,
-        binding: ProjectionBinding,
-        activation: ProjectionBindingActivation,
+        catalog: &ProjectionCatalog,
+        active: &ActiveProjectionBindings,
+        binding_id: ProjectionBindingId,
     ) -> Result<Self, String> {
+        let active_bytes = active
+            .canonical_bytes()
+            .map_err(|error| error.to_string())?;
+        let validated = ActiveProjectionBindings::from_canonical_bytes(catalog, &active_bytes)
+            .map_err(|error| error.to_string())?;
+        let binding = catalog
+            .binding(binding_id)
+            .ok_or_else(|| format!("unknown modeled projection binding `{binding_id}`"))?
+            .clone();
+        let activation = validated
+            .bindings()
+            .iter()
+            .find(|activation| activation.binding_id() == binding_id)
+            .ok_or_else(|| format!("modeled projection binding `{binding_id}` is not live"))?;
         let program_id = program.id().map_err(|error| error.to_string())?;
-        if binding.program_id() != program_id {
+        if binding.program_id() != program_id || activation.program_id() != program_id {
             return Err("modeled projection binding does not match its program digest".into());
         }
-        if activation.program_id() != program_id || activation.binding_id() != binding.id() {
-            return Err(
-                "modeled projection activation does not match its exact program and binding".into(),
-            );
-        }
-        if activation.route().is_none() {
-            return Err("modeled projection activation requires an executor route".into());
-        }
+        let output_models = binding
+            .outputs()
+            .iter()
+            .map(|output| output.model().to_owned())
+            .collect();
         Ok(Self {
-            program,
-            binding,
-            activation,
+            program_id,
+            binding_id,
+            owner: binding.owner().name().to_owned(),
+            placement: binding.placement(),
+            execution_class: binding.execution_class(),
+            state: activation.state(),
+            epoch: activation.epoch().clone(),
+            output_models,
+            raw_program: Some(program),
+            raw_binding: Some(binding),
+            selected: None,
         })
     }
 
-    /// Return the authoritative portable program.
-    pub fn program(&self) -> &ProjectionProgram {
-        &self.program
-    }
-
-    /// Return its semantic program identity.
+    /// Return the semantic program identity.
     pub fn program_id(&self) -> ProjectionProgramId {
-        self.binding.program_id()
+        self.program_id
     }
 
-    /// Return the exact deployment binding.
-    pub fn binding(&self) -> &ProjectionBinding {
-        &self.binding
+    /// Return the exact deployment binding identity.
+    pub fn binding_id(&self) -> ProjectionBindingId {
+        self.binding_id
     }
 
-    /// Return the exact active or draining executor registration.
-    pub fn activation(&self) -> &ProjectionBindingActivation {
-        &self.activation
+    /// Return active or draining state.
+    pub fn state(&self) -> ProjectionBindingState {
+        self.state
     }
 
-    /// Whether this registration may mint ordinary client causal work.
+    /// Return the exact physical incarnation.
+    pub fn epoch(&self) -> &ProjectionEpoch {
+        &self.epoch
+    }
+
+    /// Whether this exact selected registration may mint client causal work.
     pub fn is_causally_eligible(&self) -> bool {
-        self.activation.state() == ProjectionBindingState::Active
-            && self.binding.placement() == ProjectionPlacement::Eventual
-            && self.binding.execution_class() == ProjectionExecutionClass::Causal
+        self.state == ProjectionBindingState::Active
+            && self.placement == ProjectionPlacement::Eventual
+            && self.execution_class == ProjectionExecutionClass::Causal
+    }
+
+    pub(crate) fn placement(&self) -> ProjectionPlacement {
+        self.placement
+    }
+
+    pub(crate) fn execution_class(&self) -> ProjectionExecutionClass {
+        self.execution_class
+    }
+
+    pub(crate) fn output_models(&self) -> &[String] {
+        &self.output_models
+    }
+
+    pub(crate) fn event_names(&self) -> Vec<String> {
+        self.raw_program
+            .as_ref()
+            .map(|program| {
+                program
+                    .arms()
+                    .iter()
+                    .map(|arm| arm.selector().event_name().to_owned())
+                    .collect::<BTreeSet<_>>()
+                    .into_iter()
+                    .collect()
+            })
+            .or_else(|| {
+                self.selected.as_ref().map(|program| {
+                    program
+                        .arms
+                        .iter()
+                        .map(|arm| arm.selector.event_name().to_owned())
+                        .collect::<BTreeSet<_>>()
+                        .into_iter()
+                        .collect()
+                })
+            })
+            .unwrap_or_default()
+    }
+
+    pub(crate) fn selected_program(&self) -> Option<&SurfaceSelectedProjectionProgram> {
+        self.selected.as_ref()
     }
 
     pub(super) fn validate_for_surface(
         &self,
         owner_name: &str,
         kind: SurfaceProjectionOwnerKind,
-        models: &std::collections::BTreeMap<String, SurfaceModel>,
+        models: &BTreeMap<String, SurfaceModel>,
     ) -> Result<(), String> {
-        if self.binding.owner().name() != owner_name {
+        let (program, binding) = self.raw().ok_or_else(|| {
+            "selected modeled projection cannot be reattached to a catalog Surface".to_owned()
+        })?;
+        if self.owner != owner_name {
             return Err(format!(
                 "modeled projection owner `{owner_name}` differs from binding owner `{}`",
-                self.binding.owner().name()
+                self.owner
             ));
         }
         let expected_placement = match kind {
             SurfaceProjectionOwnerKind::Async => ProjectionPlacement::Eventual,
             SurfaceProjectionOwnerKind::Direct => ProjectionPlacement::Direct,
         };
-        if self.binding.placement() != expected_placement {
+        if binding.placement() != expected_placement {
             return Err(format!(
                 "modeled projection owner `{owner_name}` has incompatible {:?} placement",
-                self.binding.placement()
+                binding.placement()
             ));
         }
-        let output_models = self
-            .binding
+        let output_models = binding
             .outputs()
             .iter()
             .map(|output| output.model())
             .collect::<BTreeSet<_>>();
-        for output in self.binding.outputs() {
+        for output in binding.outputs() {
             let Some(model) = models.get(output.model()) else {
                 return Err(format!(
                     "modeled projection owner `{owner_name}` targets unknown surface model `{}`",
@@ -120,7 +248,7 @@ impl SurfaceModeledProjection {
                 ));
             }
         }
-        for arm in self.program.arms() {
+        for arm in program.arms() {
             for operation in arm.operations() {
                 if !output_models.contains(operation.target().model()) {
                     return Err(format!(
@@ -131,9 +259,193 @@ impl SurfaceModeledProjection {
             }
         }
         if kind == SurfaceProjectionOwnerKind::Direct {
-            validate_direct_program(owner_name, &self.program, &self.binding, models)?;
+            validate_direct_program(owner_name, program, binding, models)?;
         }
         Ok(())
+    }
+
+    pub(super) fn select_for_models(
+        &self,
+        models: &BTreeMap<String, SurfaceModel>,
+    ) -> Result<Option<Self>, String> {
+        let (program, _) = self
+            .raw()
+            .ok_or_else(|| "modeled projection was already Surface-selected".to_owned())?;
+        let output_models = self
+            .output_models
+            .iter()
+            .filter(|model| models.contains_key(*model))
+            .cloned()
+            .collect::<Vec<_>>();
+        if output_models.is_empty() {
+            return Ok(None);
+        }
+        let selected = if self.placement == ProjectionPlacement::Direct {
+            None
+        } else {
+            let mut arms = Vec::new();
+            for arm in program.arms() {
+                let operations = arm
+                    .operations()
+                    .iter()
+                    .filter_map(|operation| select_operation(operation, models))
+                    .collect::<Vec<_>>();
+                if !operations.is_empty() {
+                    arms.push(SurfaceProjectionArm {
+                        arm_id: arm.arm_id().to_owned(),
+                        selector: arm.selector().clone(),
+                        operations,
+                    });
+                }
+            }
+            Some(SurfaceSelectedProjectionProgram {
+                name: program.name().to_owned(),
+                version: program.version(),
+                ir_version: program.ir_version(),
+                operation_semantics_version: program.operation_semantics_version(),
+                arms,
+            })
+        };
+        Ok(Some(Self {
+            output_models,
+            raw_program: None,
+            raw_binding: None,
+            selected,
+            ..self.clone()
+        }))
+    }
+
+    fn raw(&self) -> Option<(&ProjectionProgram, &ProjectionBinding)> {
+        Some((self.raw_program.as_ref()?, self.raw_binding.as_ref()?))
+    }
+}
+
+fn select_operation(
+    operation: &ProjectionOperation,
+    models: &BTreeMap<String, SurfaceModel>,
+) -> Option<SurfaceProjectionOperation> {
+    let model = models.get(operation.target().model())?;
+    if operation.target().storage() != model.table_name {
+        return None;
+    }
+    let key_visible = operation
+        .key()
+        .iter()
+        .all(|key| logical_field_visible(model, key.name()));
+    let fields = operation
+        .fields()
+        .iter()
+        .filter(|field| logical_field_visible(model, field.name()))
+        .cloned()
+        .collect::<Vec<_>>();
+    let relationship_effects = operation
+        .relationship_effects()
+        .iter()
+        .filter(|effect| relationship_visible(effect, models))
+        .cloned()
+        .collect::<Vec<_>>();
+    let mut invalidations = operation
+        .invalidations()
+        .iter()
+        .filter(|invalidation| invalidation_visible(invalidation, models))
+        .cloned()
+        .collect::<Vec<_>>();
+    let row_consequence = operation.kind() == ProjectionMutationKind::Delete || !fields.is_empty();
+    let relationship_consequence = !relationship_effects.is_empty() || !invalidations.is_empty();
+    let hidden_only_row_change = operation.kind() != ProjectionMutationKind::Delete
+        && !operation.fields().is_empty()
+        && fields.is_empty()
+        && !relationship_consequence;
+    let force_revalidate = (row_consequence && !key_visible) || hidden_only_row_change;
+    if force_revalidate {
+        invalidations.clear();
+        invalidations.push(
+            ProjectionInvalidation::model(&model.model_name)
+                .expect("selected model identity is non-empty"),
+        );
+    }
+    Some(SurfaceProjectionOperation {
+        operation_id: operation.operation_id().to_owned(),
+        staging_ordinal: operation.staging_ordinal(),
+        kind: operation.kind(),
+        model: operation.target().model().to_owned(),
+        storage: operation.target().storage().to_owned(),
+        key: key_visible
+            .then(|| operation.key().to_vec())
+            .unwrap_or_default(),
+        fields: if force_revalidate { Vec::new() } else { fields },
+        relationship_effects: if force_revalidate {
+            Vec::new()
+        } else {
+            relationship_effects
+        },
+        invalidations,
+        force_revalidate,
+    })
+}
+
+fn logical_field_visible(model: &SurfaceModel, logical: &str) -> bool {
+    model
+        .schema
+        .columns
+        .iter()
+        .find(|column| !column.skipped && column.field_name == logical)
+        .is_some_and(|column| {
+            model
+                .columns
+                .iter()
+                .any(|selected| selected.name == column.column_name)
+        })
+}
+
+fn relationship_visible(
+    effect: &&ProjectionRelationshipEffect,
+    models: &BTreeMap<String, SurfaceModel>,
+) -> bool {
+    let relationship = effect.relationship();
+    let Some(source) = models.get(relationship.source_model()) else {
+        return false;
+    };
+    let Some(target) = models.get(relationship.target_model()) else {
+        return false;
+    };
+    let Some(selected) = source
+        .relationships
+        .iter()
+        .find(|selected| selected.name == relationship.relationship())
+    else {
+        return false;
+    };
+    if selected.target_model != target.model_name
+        || matches!(selected.keys, SurfaceRelationshipKeys::Embedded)
+    {
+        return false;
+    }
+    effect
+        .source_key()
+        .iter()
+        .all(|key| logical_field_visible(source, key.name()))
+        && effect
+            .target_key()
+            .iter()
+            .all(|key| logical_field_visible(target, key.name()))
+}
+
+fn invalidation_visible(
+    invalidation: &&ProjectionInvalidation,
+    models: &BTreeMap<String, SurfaceModel>,
+) -> bool {
+    match invalidation {
+        ProjectionInvalidation::Model { model } => models.contains_key(model),
+        ProjectionInvalidation::Relationship {
+            source_model,
+            relationship,
+            target_model,
+        } => models.get(source_model).is_some_and(|source| {
+            source.relationships.iter().any(|selected| {
+                selected.name == *relationship && selected.target_model == *target_model
+            })
+        }),
     }
 }
 
@@ -141,7 +453,7 @@ fn validate_direct_program(
     owner: &str,
     program: &ProjectionProgram,
     binding: &ProjectionBinding,
-    models: &std::collections::BTreeMap<String, SurfaceModel>,
+    models: &BTreeMap<String, SurfaceModel>,
 ) -> Result<(), String> {
     let [output] = binding.outputs() else {
         return Err(format!(

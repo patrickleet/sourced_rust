@@ -49,6 +49,9 @@ mod tests;
 pub use application::{role_grants_for_role, surface_for_application, surface_for_role, RoleGrant};
 pub use build::build_surface;
 pub use projections::SurfaceModeledProjection;
+pub(crate) use projections::{
+    SurfaceProjectionArm, SurfaceProjectionOperation, SurfaceSelectedProjectionProgram,
+};
 pub use types::{
     ColumnField, RelField, RootField, RootKind, Surface, SurfaceArgument, SurfaceArgumentKind,
     SurfaceCommand, SurfaceCommandShape, SurfaceDialect, SurfaceDirectProjection, SurfaceModel,

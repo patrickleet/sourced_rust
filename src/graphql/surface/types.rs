@@ -656,6 +656,8 @@ impl Surface {
         let mut out = Vec::new();
         let mut names = BTreeSet::new();
         let mut active_programs = BTreeSet::new();
+        let mut active_models = BTreeMap::new();
+        let mut modeled_registrations = BTreeSet::new();
         for mut projector in projectors {
             if projector.name.trim().is_empty() {
                 return Err("projector name must not be empty".into());
@@ -672,21 +674,41 @@ impl Surface {
                 }
                 for modeled in &projector.modeled {
                     modeled.validate_for_surface(&projector.name, projector.kind, &self.models)?;
-                    if modeled.activation().state()
-                        == crate::projection::placement::ProjectionBindingState::Active
-                        && !active_programs.insert(modeled.program_id())
-                    {
+                    if !modeled_registrations.insert((
+                        modeled.binding_id(),
+                        modeled.epoch().as_str().to_owned(),
+                        modeled.state(),
+                    )) {
                         return Err(format!(
-                            "projection program `{}` has more than one active Surface binding",
-                            modeled.program_id()
+                            "projection binding `{}` is registered more than once on the Surface",
+                            modeled.binding_id()
                         ));
+                    }
+                    if modeled.state()
+                        == crate::projection::placement::ProjectionBindingState::Active
+                    {
+                        if !active_programs.insert(modeled.program_id()) {
+                            return Err(format!(
+                                "projection program `{}` has more than one active Surface binding",
+                                modeled.program_id()
+                            ));
+                        }
+                        for model in modeled.output_models() {
+                            if let Some(previous) =
+                                active_models.insert(model.clone(), modeled.program_id())
+                            {
+                                return Err(format!(
+                                    "active projection programs `{previous}` and `{}` both own model `{model}`",
+                                    modeled.program_id()
+                                ));
+                            }
+                        }
                     }
                 }
                 projector.models = projector
                     .modeled
                     .iter()
-                    .flat_map(|modeled| modeled.binding().outputs())
-                    .map(|output| output.model().to_owned())
+                    .flat_map(|modeled| modeled.output_models().iter().cloned())
                     .collect::<BTreeSet<_>>()
                     .into_iter()
                     .collect();
@@ -694,8 +716,7 @@ impl Surface {
                     projector.facts = projector
                         .modeled
                         .iter()
-                        .flat_map(|modeled| modeled.program().arms())
-                        .map(|arm| arm.selector().event_name().to_owned())
+                        .flat_map(SurfaceModeledProjection::event_names)
                         .collect::<BTreeSet<_>>()
                         .into_iter()
                         .collect();
@@ -704,11 +725,11 @@ impl Surface {
                     .modeled
                     .iter()
                     .find(|modeled| {
-                        modeled.activation().state()
+                        modeled.state()
                             == crate::projection::placement::ProjectionBindingState::Active
                     })
                     .or_else(|| projector.modeled.first())
-                    .map(|modeled| modeled.activation().epoch().as_str().to_owned());
+                    .map(|modeled| modeled.epoch().as_str().to_owned());
             }
             match projector.kind {
                 SurfaceProjectionOwnerKind::Async if projector.facts.is_empty() => {

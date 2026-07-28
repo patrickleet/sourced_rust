@@ -276,27 +276,58 @@ pub fn surface_for_role(
         // Facts do not carry per-model provenance. If any target is denied,
         // retaining a subset would leak fact IDs/topology from that denied
         // domain, so omit the whole projector.
-        if projector
-            .models
-            .iter()
-            .any(|model| !models.contains_key(model))
+        if projector.modeled.is_empty()
+            && projector
+                .models
+                .iter()
+                .any(|model| !models.contains_key(model))
         {
             continue;
         }
-        let dependencies = projector
-            .models
+        let modeled = projector
+            .modeled
+            .iter()
+            .map(|modeled| modeled.select_for_models(&models))
+            .collect::<Result<Vec<_>, _>>()?
+            .into_iter()
+            .flatten()
+            .collect::<Vec<_>>();
+        if !projector.modeled.is_empty() && modeled.is_empty() {
+            continue;
+        }
+        let selected_models = if projector.modeled.is_empty() {
+            projector.models.clone()
+        } else {
+            modeled
+                .iter()
+                .flat_map(|modeled| modeled.output_models().iter().cloned())
+                .collect::<BTreeSet<_>>()
+                .into_iter()
+                .collect()
+        };
+        let selected_facts = if projector.modeled.is_empty() {
+            projector.facts.clone()
+        } else {
+            modeled
+                .iter()
+                .flat_map(SurfaceModeledProjection::event_names)
+                .collect::<BTreeSet<_>>()
+                .into_iter()
+                .collect()
+        };
+        let dependencies = selected_models
             .iter()
             .filter_map(|model| models.get(model).map(|model| model.table_name.clone()))
             .collect();
         projectors.push(SurfaceProjectionOwner {
             name: projector.name.clone(),
-            facts: projector.facts.clone(),
-            models: projector.models.clone(),
+            facts: selected_facts,
+            models: selected_models,
             dependencies,
             change_epoch: projector.change_epoch.clone(),
             partition: projector.partition.clone(),
             kind: projector.kind,
-            modeled: projector.modeled.clone(),
+            modeled,
         });
     }
     sanitize_command_confirmations(&mut commands, &projectors, &models);
