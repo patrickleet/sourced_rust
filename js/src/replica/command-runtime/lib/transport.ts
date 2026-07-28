@@ -112,6 +112,8 @@ export function requireCommandEnvelope<TInput, TOutput>(
 		distributed.operation !== prepared.transport.operationHash ||
 		distributed.protocolVersion !== authority.scope.protocolVersion ||
 		distributed.schemaHash !== authority.scope.schemaHash ||
+		distributed.authorizationGeneration !==
+			authority.scope.authorizationGeneration ||
 		distributed.cacheScope !== authority.scope.cacheScope
 	) {
 		throw new Error('command response does not match its generated scope');
@@ -143,6 +145,8 @@ export function requireCommandRejectionEnvelope<TInput, TOutput>(
 		distributed.operation !== prepared.transport.operationHash ||
 		distributed.protocolVersion !== authority.scope.protocolVersion ||
 		distributed.schemaHash !== authority.scope.schemaHash ||
+		distributed.authorizationGeneration !==
+			authority.scope.authorizationGeneration ||
 		distributed.cacheScope !== authority.scope.cacheScope
 	) {
 		throw new Error('command rejection does not match its generated scope');
@@ -165,4 +169,3 @@ export function graphqlCommandRejection(
 	}
 	return errors[0];
 }
-

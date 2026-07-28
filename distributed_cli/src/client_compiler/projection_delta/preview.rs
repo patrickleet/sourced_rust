@@ -8,6 +8,7 @@ use super::PROJECTION_DELTA_WIRE_VERSION;
 
 const PREVIEW_PLAN_VERSION: u16 = 1;
 const MAX_PREVIEW_ITEMS: usize = 128;
+const MAX_PROJECTION_ARTIFACT_BYTES: usize = 1024 * 1024;
 
 /// Compiler knowledge is deliberately richer than JavaScript values.
 ///
@@ -621,7 +622,7 @@ pub(crate) fn compile_command_preview(
     validate_preview_inventory(&operations, &recoveries)?;
     let operations = canonicalize_operations(operations)?;
     let recoveries = canonicalize_recoveries(recoveries, &operations)?;
-    Ok(Some(CompiledCommandProjection {
+    let compiled = CompiledCommandProjection {
         version: extension.version,
         delta_wire_version: PROJECTION_DELTA_WIRE_VERSION,
         projection_program_version: CLIENT_PROJECTION_PROGRAM_VERSION,
@@ -640,7 +641,20 @@ pub(crate) fn compile_command_preview(
         },
         fallback: extension.fallback,
         selected_models,
-    }))
+    };
+    let encoded = serde_json::to_vec(&compiled).map_err(|error| {
+        ClientCompileError::manifest(
+            "client.projection_artifact.body",
+            format!("cannot encode generated projection artifact: {error}"),
+        )
+    })?;
+    if encoded.len() > MAX_PROJECTION_ARTIFACT_BYTES {
+        return Err(ClientCompileError::manifest(
+            "client.projection_artifact.body",
+            format!("generated projection artifact exceeds {MAX_PROJECTION_ARTIFACT_BYTES} bytes"),
+        ));
+    }
+    Ok(Some(compiled))
 }
 
 fn compile_capability_arm(

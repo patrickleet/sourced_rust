@@ -38,6 +38,8 @@ import {
 const MAX_ITEMS = 128;
 const MAX_DEPTH = 64;
 const MAX_BODY_BYTES = 1024 * 1024;
+const MAX_TRAVERSAL_NODES = MAX_BODY_BYTES;
+const MAX_TRAVERSAL_DEPTH = MAX_DEPTH + 64;
 const MAX_KEY_BYTES = 4 * 1024;
 const MAX_PARTITION_BYTES = 4 * 1024;
 const MAX_IDENTITY_BYTES = 4 * 1024;
@@ -60,6 +62,7 @@ export class ProjectionDeltaValidationError extends TypeError {
 }
 
 export function parseProjectionDelta(value: unknown): ProjectionDelta {
+	preflightProjectionPayload(value, 'projection.delta');
 	const delta = exactRecord(
 		value,
 		['wire_version', 'identity', 'projections', 'occurrences', 'operations'],
@@ -271,6 +274,7 @@ export function parseProjectionDelta(value: unknown): ProjectionDelta {
 export function parseCommandProjectionMetadata(
 	value: unknown
 ): CommandProjectionMetadata {
+	preflightProjectionPayload(value, 'projection');
 	const metadata = exactRecord(
 		value,
 		[
@@ -348,6 +352,7 @@ export function validateCommandProjectionArtifact(
 	value: unknown,
 	path = 'artifact.projection'
 ): ReplicaCommandProjection {
+	preflightProjectionPayload(value, path);
 	const projection = exactRecord(
 		value,
 		[
@@ -1263,10 +1268,8 @@ function parseCapabilityArm(
 	) {
 		invalid(path);
 	}
-	const mutations = boundedArray(
-		arm.mutations,
-		`${path}.mutations`
-	).map((item, index) =>
+	const mutations = capabilityArray(arm.mutations, `${path}.mutations`).map(
+		(item, index) =>
 		parseCapabilityMutation(item, `${path}.mutations[${index}]`)
 	);
 	if (mutations.length === 0) invalid(`${path}.mutations`);
@@ -2128,8 +2131,108 @@ function exactRecord(
 	return value as Record<string, unknown>;
 }
 
+/**
+ * Bound hostile already-decoded JSON before cloning/freezing/canonicalizing it.
+ *
+ * The byte counter is a lower bound (UTF-8 strings and property names only), so
+ * it never rejects a wire body that could satisfy the exact final one-MiB
+ * canonical check. The independent node/depth fences bound punctuation-heavy
+ * or deeply nested inputs whose strings alone would stay below that byte limit.
+ */
+function preflightProjectionPayload(value: unknown, path: string): void {
+	type Work =
+		| Readonly<{ kind: 'visit'; value: unknown; depth: number }>
+		| Readonly<{ kind: 'leave'; value: object }>;
+	const active = new WeakSet<object>();
+	const work: Work[] = [{ kind: 'visit', value, depth: 0 }];
+	let nodes = 0;
+	let stringBytes = 0;
+	const consumeString = (candidate: string): void => {
+		stringBytes += utf8ByteLength(candidate, MAX_BODY_BYTES - stringBytes);
+		if (stringBytes > MAX_BODY_BYTES) invalid(path);
+	};
+	while (work.length !== 0) {
+		const item = work.pop()!;
+		if (item.kind === 'leave') {
+			active.delete(item.value);
+			continue;
+		}
+		nodes += 1;
+		if (nodes > MAX_TRAVERSAL_NODES || item.depth > MAX_TRAVERSAL_DEPTH) {
+			invalid(path);
+		}
+		const candidate = item.value;
+		if (typeof candidate === 'string') {
+			consumeString(candidate);
+			continue;
+		}
+		if (
+			candidate === null ||
+			(typeof candidate !== 'object' && typeof candidate !== 'function')
+		) {
+			continue;
+		}
+		if (active.has(candidate)) invalid(path);
+		active.add(candidate);
+		work.push({ kind: 'leave', value: candidate });
+		if (Array.isArray(candidate)) {
+			for (let index = candidate.length - 1; index >= 0; index -= 1) {
+				const descriptor = Object.getOwnPropertyDescriptor(candidate, index);
+				if (descriptor === undefined || !('value' in descriptor)) invalid(path);
+				work.push({
+					kind: 'visit',
+					value: descriptor.value,
+					depth: item.depth + 1
+				});
+			}
+			continue;
+		}
+		const keys = Reflect.ownKeys(candidate);
+		for (let index = keys.length - 1; index >= 0; index -= 1) {
+			const key = keys[index]!;
+			if (typeof key !== 'string') invalid(path);
+			consumeString(key);
+			const descriptor = Object.getOwnPropertyDescriptor(candidate, key);
+			if (descriptor === undefined || !('value' in descriptor)) invalid(path);
+			work.push({
+				kind: 'visit',
+				value: descriptor.value,
+				depth: item.depth + 1
+			});
+		}
+	}
+}
+
+function utf8ByteLength(value: string, remaining: number): number {
+	let bytes = 0;
+	for (let index = 0; index < value.length; index += 1) {
+		const code = value.charCodeAt(index);
+		if (code <= 0x7f) bytes += 1;
+		else if (code <= 0x7ff) bytes += 2;
+		else if (
+			code >= 0xd800 &&
+			code <= 0xdbff &&
+			index + 1 < value.length &&
+			value.charCodeAt(index + 1) >= 0xdc00 &&
+			value.charCodeAt(index + 1) <= 0xdfff
+		) {
+			bytes += 4;
+			index += 1;
+		} else {
+			bytes += 3;
+		}
+		if (bytes > remaining) return bytes;
+	}
+	return bytes;
+}
+
 function boundedArray(value: unknown, path: string): readonly unknown[] {
 	if (!Array.isArray(value) || value.length > MAX_ITEMS) invalid(path);
+	return value;
+}
+
+function capabilityArray(value: unknown, path: string): readonly unknown[] {
+	if (!Array.isArray(value) || value.length > MAX_TRAVERSAL_NODES) invalid(path);
 	return value;
 }
 

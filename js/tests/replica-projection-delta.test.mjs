@@ -341,3 +341,53 @@ test('projection artifacts reject aggregate payloads above one MiB', () => {
 	assert.ok(Buffer.byteLength(JSON.stringify(artifact)) > 1024 * 1024);
 	assert.throws(() => validateCommandProjectionArtifact(artifact));
 });
+
+for (const operationCount of [65, 128]) {
+	test(`projection capabilities accept ${operationCount} operations after record/model expansion`, () => {
+		const artifact = projectionArtifact();
+		const records = Array.from({ length: operationCount }, (_, index) => ({
+			kind: 'record',
+			model: `Model${String(index).padStart(3, '0')}`,
+			key: ['id'],
+			fields: ['title'],
+			replace: ['title'],
+			upsert: true,
+			patch: true,
+			delete: false
+		}));
+		const models = Array.from({ length: operationCount }, (_, index) => ({
+			kind: 'model',
+			model: `Model${String(index).padStart(3, '0')}`
+		}));
+		artifact.capabilities.arms[0].mutations = [...records, ...models];
+		assert.equal(
+			artifact.capabilities.arms[0].mutations.length,
+			operationCount * 2
+		);
+		assert.doesNotThrow(() =>
+			validateCommandProjectionArtifact(artifact)
+		);
+	});
+}
+
+test('aggregate byte budget rejects before constructing a late hostile artifact member', () => {
+	const artifact = projectionArtifact();
+	artifact.capabilities.arms[0].mutations = Array.from(
+		{ length: 128 },
+		(_, index) => ({
+			kind: 'relationship',
+			relationship: `r${String(index).padStart(3, '0')}`.padEnd(9_000, 'x'),
+			source_model: 'Todo',
+			source_key: ['id'],
+			target_model: 'Todo',
+			target_key: ['id'],
+			link: true,
+			unlink: true,
+			...(index === 127 ? { hostile: true } : {})
+		})
+	);
+	assert.throws(
+		() => validateCommandProjectionArtifact(artifact),
+		(error) => error.path === 'artifact.projection'
+	);
+});

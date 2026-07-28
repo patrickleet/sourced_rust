@@ -37,6 +37,7 @@ export type ProtocolGeneration = {
 	protocolVersion: 1;
 	cacheScope: DistributedOpaqueString;
 	schemaHash: string;
+	authorizationGeneration: string;
 };
 
 export type RenderedOperation = {

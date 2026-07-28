@@ -103,6 +103,7 @@ function todosFrame(revision, data, errors = undefined) {
 			distributed: {
 				protocolVersion: 1,
 				schemaHash: DIAGNOSTIC_SCHEMA_HASH,
+				authorizationGeneration: 'auth-1',
 				cacheScope: 'scope:diagnostics-user',
 				operation: Todos.id,
 				trustedPresets: [],

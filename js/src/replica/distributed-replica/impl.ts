@@ -535,6 +535,7 @@ export class DistributedReplicaImpl implements DistributedReplicaApi {
 			: Object.freeze({
 					protocolVersion: scope.protocolVersion,
 					schemaHash: scope.schemaHash,
+					authorizationGeneration: scope.authorizationGeneration,
 					cacheScope: scope.cacheScope
 				});
 	}

@@ -23,6 +23,7 @@ function envelope(overrides = {}) {
 	return {
 		protocolVersion: 1,
 		schemaHash: HASH_A,
+		authorizationGeneration: 'auth-1',
 		cacheScope: 'opaque:scope',
 		...overrides
 	};

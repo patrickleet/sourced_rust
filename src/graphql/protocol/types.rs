@@ -183,6 +183,7 @@ pub(crate) struct DistributedTrustedPreset {
 pub(crate) struct DistributedEnvelopeV1 {
     pub(crate) protocol_version: u32,
     pub(crate) schema_hash: String,
+    pub(crate) authorization_generation: String,
     pub(crate) cache_scope: OpaqueProtocolToken,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub(crate) operation: Option<String>,
@@ -199,12 +200,14 @@ pub(crate) struct DistributedEnvelopeV1 {
 impl DistributedEnvelopeV1 {
     pub(crate) fn new(
         schema_hash: impl Into<String>,
+        authorization_generation: impl Into<String>,
         cache_scope: OpaqueProtocolToken,
         operation: Option<String>,
     ) -> Self {
         Self {
             protocol_version: DISTRIBUTED_CLIENT_PROTOCOL_VERSION,
             schema_hash: schema_hash.into(),
+            authorization_generation: authorization_generation.into(),
             cache_scope,
             operation,
             command: None,

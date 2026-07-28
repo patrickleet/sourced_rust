@@ -210,7 +210,8 @@ export function diagnosticScopeTransition(
 	if (
 		previous !== undefined &&
 		previous.cacheScope === next.cacheScope &&
-		previous.schemaHash === next.schemaHash
+		previous.schemaHash === next.schemaHash &&
+		previous.authorizationGeneration === next.authorizationGeneration
 	) {
 		return;
 	}

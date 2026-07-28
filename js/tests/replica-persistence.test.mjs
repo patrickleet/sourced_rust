@@ -42,10 +42,15 @@ const TodoPolicy = Object.freeze({
 	})
 });
 
-function scope(cacheScope = 'cache:tenant-a', schemaHash = 'schema:a') {
+function scope(
+	cacheScope = 'cache:tenant-a',
+	schemaHash = 'schema:a',
+	authorizationGeneration = 'auth-1'
+) {
 	return {
 		protocolVersion: 1,
 		schemaHash,
+		authorizationGeneration,
 		cacheScope
 	};
 }
@@ -485,7 +490,7 @@ test('malformed or command-like dehydration fields never enter IndexedDB', async
 	persistence.close();
 });
 
-test('scope identity includes schema and protocol fingerprint exactly', async () => {
+test('scope identity includes schema and authorization fingerprints exactly', async () => {
 	const factory = new FakeIndexedDbFactory();
 	const persistence = createReplicaIndexedDbPersistence({
 		indexedDB: factory,
@@ -494,8 +499,11 @@ test('scope identity includes schema and protocol fingerprint exactly', async ()
 	});
 	await persistence.save(state(scope('cache:tenant-a', 'schema:a')));
 	await persistence.save(state(scope('cache:tenant-a', 'schema:b')));
+	await persistence.save(
+		state(scope('cache:tenant-a', 'schema:a', 'auth-2'))
+	);
 
-	assert.equal(factory.entries(DATABASE).size, 2);
+	assert.equal(factory.entries(DATABASE).size, 3);
 	assert.notEqual(
 		[...factory.entries(DATABASE).keys()][0],
 		[...factory.entries(DATABASE).keys()][1]
@@ -509,6 +517,14 @@ test('scope identity includes schema and protocol fingerprint exactly', async ()
 		(await persistence.restore(scope('cache:tenant-a', 'schema:b'))).scope
 			.schemaHash,
 		'schema:b'
+	);
+	assert.equal(
+		(
+			await persistence.restore(
+				scope('cache:tenant-a', 'schema:a', 'auth-2')
+			)
+		).scope.authorizationGeneration,
+		'auth-2'
 	);
 	persistence.close();
 });

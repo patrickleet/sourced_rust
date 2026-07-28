@@ -296,6 +296,7 @@ export function todoFrame(
 	rows,
 	{
 		cacheScope = 'cache:user-a',
+		authorizationGeneration = 'auth-1',
 		position = '1',
 		source = 'query',
 		reset = false,
@@ -332,6 +333,7 @@ export function todoFrame(
 			distributed: {
 				protocolVersion: 1,
 				schemaHash: artifact.protocol.schemaHash,
+				authorizationGeneration,
 				cacheScope,
 				operation,
 				trustedPresets: [],

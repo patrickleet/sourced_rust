@@ -397,7 +397,12 @@ export function parseAuthoritativeScope(value: unknown): ReplicaAuthoritativeSco
 	const scope = exactRecord(
 		value,
 		'authoritative scope',
-		['protocolVersion', 'schemaHash', 'cacheScope']
+		[
+			'protocolVersion',
+			'schemaHash',
+			'authorizationGeneration',
+			'cacheScope'
+		]
 	);
 	if (scope.protocolVersion !== 1) {
 		throw new TypeError('unsupported authoritative protocol version');
@@ -405,6 +410,10 @@ export function parseAuthoritativeScope(value: unknown): ReplicaAuthoritativeSco
 	return Object.freeze({
 		protocolVersion: 1 as const,
 		schemaHash: nonEmptyString(scope.schemaHash, 'authoritative scope schemaHash'),
+		authorizationGeneration: nonEmptyString(
+			scope.authorizationGeneration,
+			'authoritative scope authorizationGeneration'
+		),
 		cacheScope: nonEmptyString(scope.cacheScope, 'authoritative scope cacheScope')
 	});
 }
@@ -891,6 +900,7 @@ export function persistenceIdentity(scope: ReplicaAuthoritativeScope): string {
 		ENTRY_FORMAT_VERSION,
 		scope.protocolVersion,
 		scope.schemaHash,
+		scope.authorizationGeneration,
 		scope.cacheScope
 	]);
 }
@@ -902,6 +912,7 @@ export function sameScope(
 	return (
 		left.protocolVersion === right.protocolVersion &&
 		left.schemaHash === right.schemaHash &&
+		left.authorizationGeneration === right.authorizationGeneration &&
 		left.cacheScope === right.cacheScope
 	);
 }
@@ -1080,4 +1091,3 @@ export function compareDecimal(left: string, right: string): -1 | 0 | 1 {
 	const rightValue = BigInt(right);
 	return leftValue < rightValue ? -1 : leftValue > rightValue ? 1 : 0;
 }
-

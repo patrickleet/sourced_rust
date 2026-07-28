@@ -7,6 +7,7 @@ import {
 	prepareReplicaCommandWithTrustedPresets,
 	verifyReplicaCommandReceipt,
 	type ReplicaCommandArtifact,
+	type ReplicaCommandRevalidationPlan,
 	type ReplicaPreparedCommand
 } from '../commands.js';
 import type { ReplicaResultEnvelope } from '../types.js';
@@ -311,6 +312,94 @@ function sameStrings(left: readonly string[], right: readonly string[]): boolean
 	);
 }
 
+function actualProjectionRevalidation(
+	base: ReplicaCommandRevalidationPlan,
+	delta: ProjectionDelta
+): ReplicaCommandRevalidationPlan {
+	const models = new Set(base.models);
+	const relationships = new Map(
+		base.relationships.map((relationship) => [
+			JSON.stringify([
+				relationship.sourceModel,
+				relationship.field,
+				relationship.targetModel
+			]),
+			relationship
+		])
+	);
+	const addRelationship = (
+		sourceModel: string,
+		field: string,
+		targetModel: string
+	): void => {
+		const relationship = Object.freeze({ sourceModel, field, targetModel });
+		relationships.set(
+			JSON.stringify([sourceModel, field, targetModel]),
+			relationship
+		);
+	};
+	for (const { mutation } of delta.operations) {
+		switch (mutation.op) {
+			case 'upsert':
+			case 'patch':
+			case 'delete':
+				models.add(mutation.scope.model);
+				break;
+			case 'link':
+			case 'unlink':
+				models.add(mutation.source.model);
+				models.add(mutation.target.model);
+				addRelationship(
+					mutation.source.model,
+					mutation.relationship,
+					mutation.target.model
+				);
+				break;
+			case 'invalidate_model':
+				models.add(mutation.model);
+				break;
+			case 'invalidate_relationship':
+				models.add(mutation.source.model);
+				break;
+		}
+	}
+	for (const { target } of delta.recoveries) {
+		switch (target.kind) {
+			case 'record':
+				models.add(target.scope.model);
+				break;
+			case 'relationship':
+				models.add(target.source.model);
+				break;
+			case 'model':
+				models.add(target.model);
+				break;
+		}
+	}
+	return Object.freeze({
+		version: 1 as const,
+		required: true,
+		dependencies: Object.freeze([...base.dependencies]),
+		models: Object.freeze([...models].sort(compareCodeUnits)),
+		relationships: Object.freeze(
+			[...relationships.values()].sort((left, right) =>
+				compareCodeUnits(
+					JSON.stringify([
+						left.sourceModel,
+						left.field,
+						left.targetModel
+					]),
+					JSON.stringify([
+						right.sourceModel,
+						right.field,
+						right.targetModel
+					])
+				)
+			)
+		)
+	});
+}
+
 export function createReplicaCommandRuntime<
 	const TEntries extends Readonly<Record<string, CommandEntry>>
 >(
@@ -357,6 +446,10 @@ export function createReplicaCommandRuntime<
 	const registration = replica[replicaCommandAuthority]?.(contract);
 	const pending = new Map<string, PendingProjection>();
 	const projectionReplays = new Map<string, string>();
+	const projectionRevalidations = new Map<
+		string,
+		ReplicaCommandRevalidationPlan
+	>();
 	const unmanagedLayers = new Set<string>();
 	const runtimeAbort = new AbortController();
 	let disposed = false;
@@ -364,6 +457,7 @@ export function createReplicaCommandRuntime<
 	type ValidatedActualProjection = Readonly<{
 		canonical?: string;
 		operations?: readonly PreparedProjectionOperation[];
+		revalidation?: ReplicaCommandRevalidationPlan;
 		requiresRevalidation: boolean;
 	}>;
 
@@ -389,6 +483,8 @@ export function createReplicaCommandRuntime<
 				surface: prepared.transport.protocol.surface,
 				schemaHash: prepared.transport.protocol.schemaHash,
 				protocolHash: prepared.transport.protocol.protocolHash,
+				authorizationGeneration:
+					authority.scope.authorizationGeneration,
 				cacheScope: authority.scope.cacheScope,
 				causationId: metadata.causationId
 			}
@@ -435,6 +531,13 @@ export function createReplicaCommandRuntime<
 		return Object.freeze({
 			canonical,
 			operations,
+			revalidation:
+				actual.revalidate || actual.obligations.length === 0
+					? actualProjectionRevalidation(
+							prepared.revalidation,
+							actual.delta
+						)
+					: undefined,
 			requiresRevalidation:
 				actual.revalidate || actual.obligations.length === 0
 		});
@@ -466,6 +569,12 @@ export function createReplicaCommandRuntime<
 			preparedSemanticChanges(actualPrepared)
 		);
 		projectionReplays.set(prepared.commandId, validated.canonical);
+		if (validated.revalidation !== undefined) {
+			projectionRevalidations.set(
+				prepared.commandId,
+				validated.revalidation
+			);
+		}
 		return validated.requiresRevalidation;
 	};
 
@@ -571,7 +680,10 @@ export function createReplicaCommandRuntime<
 		]);
 		try {
 			await waitForCommandOperation(
-				replicaRevalidate(prepared.revalidation),
+				replicaRevalidate(
+					projectionRevalidations.get(prepared.commandId) ??
+						prepared.revalidation
+				),
 				revalidationSignals.signal
 			);
 			return true;
@@ -1047,8 +1159,6 @@ export function createReplicaCommandRuntime<
 		}
 
 		const metadata = distributed.command!;
-		statusTracker.state = metadata.state;
-		statusTracker.metadata = metadata;
 		if (metadata.state === 'rejected') {
 			rejectUnmanagedLayer(prepared.commandId);
 			throw new ReplicaCommandRuntimeError('REPLICA_COMMAND_REJECTED', {
@@ -1065,6 +1175,8 @@ export function createReplicaCommandRuntime<
 			);
 		}
 		if (metadata.state === 'unknown' || metadata.state === 'in_progress') {
+			statusTracker.state = metadata.state;
+			statusTracker.metadata = metadata;
 			throw new ReplicaCommandRuntimeError(
 				'REPLICA_COMMAND_OUTCOME_PENDING',
 				{
@@ -1098,17 +1210,17 @@ export function createReplicaCommandRuntime<
 				result.data,
 				prepared.transport.mutationField
 			) as TOutput;
-			} catch (error) {
-				rejectUnmanagedLayer(prepared.commandId);
-				revalidateInBackground(prepared, authority);
-				throw new ReplicaCommandRuntimeError(
-					'REPLICA_COMMAND_PROTOCOL_INVALID',
-					{
-						commandId: prepared.commandId,
-						cause: error,
-						...(statusArtifact === undefined ? {} : { recovery })
-					}
-				);
+		} catch (error) {
+			rejectUnmanagedLayer(prepared.commandId);
+			revalidateInBackground(prepared, authority);
+			throw new ReplicaCommandRuntimeError(
+				'REPLICA_COMMAND_PROTOCOL_INVALID',
+				{
+					commandId: prepared.commandId,
+					cause: error,
+					...(statusArtifact === undefined ? {} : { recovery })
+				}
+			);
 		}
 		let actualRequiresRevalidation = false;
 		try {
@@ -1119,15 +1231,15 @@ export function createReplicaCommandRuntime<
 			);
 		} catch (error) {
 			rejectUnmanagedLayer(prepared.commandId);
-				revalidateInBackground(prepared, authority);
-				throw new ReplicaCommandRuntimeError(
-					'REPLICA_COMMAND_PROTOCOL_INVALID',
-					{
-						commandId: prepared.commandId,
-						cause: error,
-						...(statusArtifact === undefined ? {} : { recovery })
-					}
-				);
+			revalidateInBackground(prepared, authority);
+			throw new ReplicaCommandRuntimeError(
+				'REPLICA_COMMAND_PROTOCOL_INVALID',
+				{
+					commandId: prepared.commandId,
+					cause: error,
+					...(statusArtifact === undefined ? {} : { recovery })
+				}
+			);
 		}
 		let projected:
 			| Promise<ReplicaCommandProjectedOutcome<TOutput>>
@@ -1137,6 +1249,8 @@ export function createReplicaCommandRuntime<
 			| undefined;
 		if (prepared.consistency === 'projected') {
 			if (metadata.state !== 'projected') {
+				statusTracker.state = metadata.state;
+				statusTracker.metadata = metadata;
 				throw new ReplicaCommandRuntimeError(
 					'REPLICA_COMMAND_OUTCOME_PENDING',
 					{
@@ -1161,6 +1275,8 @@ export function createReplicaCommandRuntime<
 					}
 				);
 			}
+			statusTracker.state = metadata.state;
+			statusTracker.metadata = metadata;
 			projected = Promise.resolve(
 				Object.freeze({
 					commandId: prepared.commandId,
@@ -1170,6 +1286,8 @@ export function createReplicaCommandRuntime<
 				})
 			);
 		} else {
+			statusTracker.state = metadata.state;
+			statusTracker.metadata = metadata;
 			const remainsPending = replica.markOptimisticLayerAccepted(
 				prepared.commandId,
 				metadata
@@ -1294,6 +1412,8 @@ export function createReplicaCommandRuntime<
 			}
 			if (
 				distributed.schemaHash !== controller.authority.scope.schemaHash ||
+				distributed.authorizationGeneration !==
+					controller.authority.scope.authorizationGeneration ||
 				distributed.cacheScope !== controller.authority.scope.cacheScope
 			) {
 				continue;
@@ -1307,6 +1427,15 @@ export function createReplicaCommandRuntime<
 							'live command changed pending causation identity'
 						);
 					}
+					validateStatusProgression(
+						controller.metadata.state,
+						controller.metadata,
+						Object.freeze({
+							commandId,
+							state: command.state,
+							metadata: command
+						})
+					);
 					const validated = validateProjectionForState(
 						controller.prepared,
 						command,

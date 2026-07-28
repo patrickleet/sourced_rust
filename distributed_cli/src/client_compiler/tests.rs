@@ -2778,6 +2778,30 @@ fn command_protocol_and_extensions_are_preserved_exactly() {
         .unwrap()
         .push(second_operation);
     refresh_schema_fingerprint(&mut multi_model_value);
+    let capability_boundaries = [65_usize, 128].map(|operation_count| {
+        let mut boundary = value.clone();
+        let template = boundary["projection_programs"][0]["arms"][0]["operations"][0].clone();
+        let mut models = boundary["models"].as_array().unwrap().clone();
+        let mut operations = Vec::with_capacity(operation_count);
+        for index in 0..operation_count {
+            let model_id = if index == 0 {
+                "Todo".to_owned()
+            } else {
+                let model_id = format!("ProjectionModel{index:03}");
+                models.push(model(&model_id, &format!("ProjectionModel{index:03}")));
+                model_id
+            };
+            let mut operation = template.clone();
+            operation["operation"] = json!(format!("upsert-model-{index:03}"));
+            operation["ordinal"] = json!(index);
+            operation["model"] = json!(model_id);
+            operations.push(operation);
+        }
+        boundary["models"] = JsonValue::Array(models);
+        boundary["projection_programs"][0]["arms"][0]["operations"] = JsonValue::Array(operations);
+        refresh_schema_fingerprint(&mut boundary);
+        (operation_count, boundary)
+    });
     let mut input_i64_value = value.clone();
     input_i64_value["commands"][0]["input"]["definition"]["fields"]
         .as_array_mut()
@@ -3092,6 +3116,27 @@ fn command_protocol_and_extensions_are_preserved_exactly() {
     );
     assert!(multi_model_commands.contains("\"model\": \"Todo\""));
     assert!(multi_model_commands.contains("\"model\": \"User\""));
+
+    for (operation_count, boundary) in capability_boundaries {
+        let compiled = compile_client(ClientCompileInput::new(
+            boundary,
+            ClientSurfaceSelector::role("user"),
+            vec![ClientDocument::new(
+                "src/routes/todos/+page.graphql",
+                "query Todos { todos { id } }",
+            )],
+        ))
+        .expect("expanded capabilities remain valid at the operation boundary");
+        let commands = file(&compiled, "commands.ts");
+        assert_eq!(
+            commands.matches("\"kind\": \"record\"").count(),
+            operation_count
+        );
+        assert_eq!(
+            commands.matches("\"kind\": \"model\"").count(),
+            operation_count
+        );
+    }
 
     for valid_i64 in [input_i64_value, preset_i64_value] {
         compile_client(ClientCompileInput::new(

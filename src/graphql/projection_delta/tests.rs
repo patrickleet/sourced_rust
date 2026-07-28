@@ -610,7 +610,12 @@ fn zero_obligation_modeled_metadata_is_revalidated_on_every_receipt_emission() {
         cache_scope: crate::graphql::protocol::OpaqueProtocolToken,
     ) -> ProtocolResponseAccumulator {
         let accumulator = ProtocolResponseAccumulator::new(
-            DistributedEnvelopeV1::new("sha256:modeled-status", cache_scope, None),
+            DistributedEnvelopeV1::new(
+                "sha256:modeled-status",
+                "modeled-status-auth",
+                cache_scope,
+                None,
+            ),
             codec,
         );
         accumulator.bind_projection_request(seed).unwrap();

@@ -213,7 +213,10 @@ fn accumulator(key: u8, cache_material: &str, schema: &str) -> ProtocolResponseA
     let cache_scope = codec
         .issue(ProtocolTokenPurpose::CacheScope, &cache_material)
         .unwrap();
-    ProtocolResponseAccumulator::new(DistributedEnvelopeV1::new(schema, cache_scope, None), codec)
+    ProtocolResponseAccumulator::new(
+        DistributedEnvelopeV1::new(schema, "sha256:test-authorization", cache_scope, None),
+        codec,
+    )
 }
 
 #[test]
@@ -222,7 +225,12 @@ fn accumulator_is_idempotent_and_rejects_ambiguous_receipts() {
         .issue(ProtocolTokenPurpose::CacheScope, &("principal", "surface"))
         .unwrap();
     let accumulator = ProtocolResponseAccumulator::new(
-        DistributedEnvelopeV1::new("sha256:schema", scope, Some("sha256:operation".into())),
+        DistributedEnvelopeV1::new(
+            "sha256:schema",
+            "sha256:test-authorization",
+            scope,
+            Some("sha256:operation".into()),
+        ),
         codec(9),
     );
     accumulator.claim_dispatch().unwrap();
@@ -241,6 +249,7 @@ fn accumulator_is_idempotent_and_rejects_ambiguous_receipts() {
     let json = serde_json::to_value(envelope).unwrap();
     assert_eq!(json["protocolVersion"], 1);
     assert_eq!(json["schemaHash"], "sha256:schema");
+    assert_eq!(json["authorizationGeneration"], "sha256:test-authorization");
     assert_eq!(json["operation"], "sha256:operation");
     assert_eq!(json["command"]["commandId"], "cmd-1");
     assert_eq!(json["command"]["state"], "succeeded_pending_projection");

@@ -14,6 +14,7 @@ function distributedEnvelope() {
 	return {
 		protocolVersion: DISTRIBUTED_PROTOCOL_VERSION,
 		schemaHash: 'sha256:schema-v2',
+		authorizationGeneration: 'auth-1',
 		cacheScope: 'opaque:principal-and-grants',
 		operation: 'sha256:operation',
 		command: {

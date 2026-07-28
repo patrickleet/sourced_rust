@@ -1140,7 +1140,12 @@ mod causal_command_schema_tests {
             )
             .expect("test cache scope should encode");
         ProtocolResponseAccumulator::new(
-            DistributedEnvelopeV1::new("sha256:schema-unit-test", cache_scope, None),
+            DistributedEnvelopeV1::new(
+                "sha256:schema-unit-test",
+                "sha256:authorization-unit-test",
+                cache_scope,
+                None,
+            ),
             codec,
         )
     }

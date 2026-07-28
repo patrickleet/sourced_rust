@@ -348,6 +348,7 @@ replica.writeResult(operation, {}, {
     distributed: {
       protocolVersion: 1,
       schemaHash,
+      authorizationGeneration: 'auth-1',
       cacheScope: 'scope:user',
       operation: operation.id,
       trustedPresets: [],

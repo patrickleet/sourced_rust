@@ -58,6 +58,7 @@ function protocolEnvelope(root) {
 			distributed: {
 				protocolVersion: artifact.protocol.version,
 				schemaHash: artifact.protocol.schemaHash,
+				authorizationGeneration: 'auth-1',
 				cacheScope: 'runtime-bridge-cache',
 				operation: artifact.id,
 				snapshot: {

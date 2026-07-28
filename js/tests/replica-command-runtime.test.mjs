@@ -30,6 +30,10 @@ const Todo = Object.freeze({
 	id: 'Todos',
 	identityFields: Object.freeze(['id'])
 });
+const Audit = Object.freeze({
+	id: 'Audits',
+	identityFields: Object.freeze(['id'])
+});
 
 const scalar = (name, typeName = 'String', codec = 'string') =>
 	Object.freeze({
@@ -54,10 +58,10 @@ const input = (path) =>
 	Object.freeze({ kind: 'input', path: Object.freeze(path) });
 const unit = Object.freeze({ kind: 'unit' });
 
-function scope(value) {
+function scope(value, model = Todo.id) {
 	return Object.freeze({
 		partition: unit,
-		model: Todo.id,
+		model,
 		key: Object.freeze([
 			Object.freeze({
 				ordinal: 0,
@@ -367,7 +371,8 @@ function commandMetadata(request, options = {}) {
 						{
 							occurrence_ordinal: 0,
 							projection_refs: [0],
-							mutation: deltaMutation(request, options)
+							mutation:
+								options.mutation ?? deltaMutation(request, options)
 						}
 					]
 		},
@@ -404,6 +409,8 @@ function envelope(request, options = {}) {
 			distributed: {
 				protocolVersion: 1,
 				schemaHash: HASH_B,
+				authorizationGeneration:
+					options.envelopeAuthorizationGeneration ?? 'auth-1',
 				cacheScope: CACHE_SCOPE,
 				operation: request.operationHash,
 				trustedPresets: [],
@@ -413,7 +420,11 @@ function envelope(request, options = {}) {
 	};
 }
 
-function statusEnvelope(request, metadata) {
+function statusEnvelope(
+	request,
+	metadata,
+	authorizationGeneration = 'auth-1'
+) {
 	return {
 		status: 200,
 		data: { commandStatus: { state: metadata.state } },
@@ -421,6 +432,7 @@ function statusEnvelope(request, metadata) {
 			distributed: {
 				protocolVersion: 1,
 				schemaHash: HASH_B,
+				authorizationGeneration,
 				cacheScope: CACHE_SCOPE,
 				operation: HASH_D,
 				trustedPresets: [],
@@ -451,6 +463,7 @@ class TestReplica {
 	scope = Object.freeze({
 		protocolVersion: 1,
 		schemaHash: HASH_B,
+		authorizationGeneration: 'auth-1',
 		cacheScope: CACHE_SCOPE
 	});
 	revalidations = [];
@@ -825,6 +838,96 @@ test('status causation is validated before actual delta mutation and rolls back 
 	runtime.dispose();
 });
 
+test('an invalid initial result does not poison corrected status recovery', async () => {
+	const modeled = structuredClone(artifact());
+	const event = { id: 'event-2', name: 'audit.recorded', version: 1 };
+	modeled.projection.eventSet.push(event);
+	modeled.projection.capabilities.arms.push({
+		event,
+		projection_ref: 0,
+		arm: 'audit_upsert',
+		partition: { kind: 'unit' },
+		mutations: [
+			{
+				kind: 'record',
+				model: Audit.id,
+				key: ['id'],
+				fields: ['title'],
+				replace: ['title'],
+				upsert: true,
+				patch: false,
+				delete: false
+			}
+		]
+	});
+	const replica = new TestReplica();
+	let commandRequest;
+	const runtime = createReplicaCommandRuntime(
+		replica,
+		{
+			dispatch(request) {
+				commandRequest = request;
+				return Promise.resolve(
+					envelope(request, {
+						bindingId: `pb1:sha256:${'9'.repeat(64)}`,
+						obligationModel: Audit.id,
+						mutation: {
+							op: 'upsert',
+							scope: scope(
+								{
+									type: 'string',
+									value: request.variables.input.id
+								},
+								Audit.id
+							),
+							fields: [
+								{
+									field: 'title',
+									value: {
+										type: 'string',
+										value: 'invalid initial'
+									}
+								}
+							],
+							replace: ['title']
+						}
+					})
+				);
+			},
+			status(request) {
+				return Promise.resolve(
+					statusEnvelope(request, commandMetadata(commandRequest))
+				);
+			}
+		},
+		{ change: modeled },
+		{ status: STATUS }
+	);
+	let recovery;
+	await assert.rejects(
+		runtime.commands.change(
+			{ id: 'todo-1', title: 'preview' },
+			{ commandId: COMMAND_A }
+		),
+		(error) => {
+			recovery = error.recovery;
+			return error.code === 'REPLICA_COMMAND_PROTOCOL_INVALID';
+		}
+	);
+	/*
+	 * The initial protocol failure correctly retired the old preview. Recreate
+	 * only the cache seam so this regression isolates the status tracker's
+	 * authority to accept corrected server metadata on retry.
+	 */
+	replica.createOptimisticLayer(COMMAND_A, () => undefined);
+	assert.equal(
+		(await recovery.status()).state,
+		'succeeded_pending_projection'
+	);
+	assert.equal(replica.replacements.length, 1);
+	runtime.dispose();
+});
+
 test('live causation is validated before actual delta mutation and rejects its layer', async () => {
 	const replica = new TestReplica();
 	let request;
@@ -854,6 +957,40 @@ test('live causation is validated before actual delta mutation and rejects its l
 	await projected;
 	assert.equal(replica.record('todo-1'), undefined);
 	assert.equal(replica.replacements.length, 1);
+	runtime.dispose();
+});
+
+test('live command state cannot regress before actual projection mutation', async () => {
+	const replica = new TestReplica();
+	let request;
+	const runtime = createReplicaCommandRuntime(
+		replica,
+		{
+			dispatch(candidate) {
+				request = candidate;
+				return Promise.resolve(envelope(candidate));
+			}
+		},
+		{ change: artifact() }
+	);
+	const receipt = await runtime.commands.change(
+		{ id: 'todo-1', title: 'preview' },
+		{ commandId: COMMAND_A }
+	);
+	const projected = assert.rejects(receipt.projected, {
+		code: 'REPLICA_COMMAND_PROTOCOL_INVALID'
+	});
+	runtime.observeResult({
+		extensions: envelope(request, {
+			command: commandMetadata(request, {
+				state: 'in_progress',
+				projection: false
+			})
+		}).extensions
+	});
+	await projected;
+	assert.equal(replica.replacements.length, 1);
+	assert.equal(replica.record('todo-1'), undefined);
 	runtime.dispose();
 });
 
@@ -941,6 +1078,72 @@ test('an allowed unpreviewed event arm can authoritatively replace the preview',
 	runtime.dispose();
 });
 
+test('zero-obligation revalidation includes actual unpreviewed target models', async () => {
+	const modeled = structuredClone(artifact());
+	const event = { id: 'event-2', name: 'audit.recorded', version: 1 };
+	modeled.projection.eventSet.push(event);
+	modeled.projection.capabilities.arms.push({
+		event,
+		projection_ref: 0,
+		arm: 'audit_upsert',
+		partition: { kind: 'unit' },
+		mutations: [
+			{
+				kind: 'record',
+				model: Audit.id,
+				key: ['id'],
+				fields: ['title'],
+				replace: ['title'],
+				upsert: true,
+				patch: false,
+				delete: false
+			}
+		]
+	});
+	const replica = new TestReplica();
+	const runtime = createReplicaCommandRuntime(
+		replica,
+		{
+			dispatch: (request) =>
+				Promise.resolve(
+					envelope(request, {
+						obligations: 0,
+						mutation: {
+							op: 'upsert',
+							scope: scope(
+								{
+									type: 'string',
+									value: request.variables.input.id
+								},
+								Audit.id
+							),
+							fields: [
+								{
+									field: 'title',
+									value: {
+										type: 'string',
+										value: 'authoritative audit'
+									}
+								}
+							],
+							replace: ['title']
+						}
+					})
+				)
+		},
+		{ change: modeled }
+	);
+	const receipt = await runtime.commands.change(
+		{ id: 'audit-1', title: 'preview' },
+		{ commandId: COMMAND_A }
+	);
+	assert.equal(receipt.projected, undefined);
+	await tick();
+	assert.deepEqual(replica.revalidations[0].models, [Audit.id, Todo.id]);
+	assert.equal(replica.layer(COMMAND_A), undefined);
+	runtime.dispose();
+});
+
 test('actual deltas outside every selected-arm capability fail closed', async () => {
 	const replica = new TestReplica();
 	const runtime = createReplicaCommandRuntime(
@@ -973,7 +1176,9 @@ test('surface, digest, scope, causation, and expiry mismatches fail before mutat
 		{ surface: { kind: 'role', name: 'admin' } },
 		{ bindingId: `pb1:sha256:${'9'.repeat(64)}` },
 		{ cacheScope: token('cache-scope', 9) },
-		{ protocolHash: HASH_D }
+		{ protocolHash: HASH_D },
+		{ authorizationGeneration: 'auth-wrong' },
+		{ envelopeAuthorizationGeneration: 'auth-wrong' }
 	]) {
 		const replica = new TestReplica();
 		const runtime = createReplicaCommandRuntime(
@@ -993,6 +1198,93 @@ test('surface, digest, scope, causation, and expiry mismatches fail before mutat
 		);
 		assert.equal(replica.record('todo-1'), undefined);
 		assert.equal(replica.replacements.length, 0);
+		runtime.dispose();
+	}
+});
+
+test('status and live ingress enforce authorization generation before mutation', async () => {
+	{
+		const replica = new TestReplica();
+		let commandRequest;
+		const runtime = createReplicaCommandRuntime(
+			replica,
+			{
+				dispatch(request) {
+					commandRequest = request;
+					return Promise.resolve(
+						envelope(request, {
+							command: commandMetadata(request, {
+								state: 'in_progress',
+								projection: false
+							})
+						})
+					);
+				},
+				status(request) {
+					return Promise.resolve(
+						statusEnvelope(
+							request,
+							commandMetadata(commandRequest),
+							'auth-wrong'
+						)
+					);
+				}
+			},
+			{ change: artifact() },
+			{ status: STATUS }
+		);
+		let recovery;
+		await assert.rejects(
+			runtime.commands.change(
+				{ id: 'todo-1', title: 'preview' },
+				{ commandId: COMMAND_A }
+			),
+			(error) => {
+				recovery = error.recovery;
+				return error.code === 'REPLICA_COMMAND_OUTCOME_PENDING';
+			}
+		);
+		await assert.rejects(recovery.status(), {
+			code: 'REPLICA_COMMAND_PROTOCOL_INVALID'
+		});
+		assert.equal(replica.replacements.length, 0);
+		runtime.dispose();
+	}
+
+	{
+		const replica = new TestReplica();
+		let request;
+		const runtime = createReplicaCommandRuntime(
+			replica,
+			{
+				dispatch(candidate) {
+					request = candidate;
+					return Promise.resolve(envelope(candidate));
+				}
+			},
+			{ change: artifact() }
+		);
+		const receipt = await runtime.commands.change(
+			{ id: 'todo-1', title: 'preview' },
+			{ commandId: COMMAND_A }
+		);
+		const projected = assert.rejects(receipt.projected, {
+			code: 'REPLICA_COMMAND_PROTOCOL_INVALID'
+		});
+		runtime.observeResult({
+			extensions: envelope(request, {
+				envelopeAuthorizationGeneration: 'auth-wrong'
+			}).extensions
+		});
+		assert.equal(replica.layer(COMMAND_A), 'accepted');
+		runtime.observeResult({
+			extensions: envelope(request, {
+				authorizationGeneration: 'auth-wrong'
+			}).extensions
+		});
+		await projected;
+		assert.equal(replica.replacements.length, 1);
+		assert.equal(replica.record('todo-1'), undefined);
 		runtime.dispose();
 	}
 });

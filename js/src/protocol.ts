@@ -182,6 +182,7 @@ export type DistributedProtocolEnvelope = Readonly<
 	Record<string, unknown> & {
 		protocolVersion: typeof DISTRIBUTED_PROTOCOL_VERSION;
 		schemaHash: string;
+		authorizationGeneration: string;
 		cacheScope: DistributedOpaqueString;
 		operation?: string;
 		command?: DistributedCommandMetadata;
@@ -296,6 +297,10 @@ export function parseDistributedProtocolEnvelope(
 		envelope.schemaHash,
 		'extensions.distributed.schemaHash'
 	);
+	const authorizationGeneration = publicString(
+		envelope.authorizationGeneration,
+		'extensions.distributed.authorizationGeneration'
+	);
 	const cacheScope = opaqueString(
 		envelope.cacheScope,
 		'extensions.distributed.cacheScope'
@@ -328,6 +333,7 @@ export function parseDistributedProtocolEnvelope(
 		...envelope,
 		protocolVersion: DISTRIBUTED_PROTOCOL_VERSION,
 		schemaHash,
+		authorizationGeneration,
 		cacheScope,
 		...(operation === undefined ? {} : { operation }),
 		...(command === undefined ? {} : { command }),

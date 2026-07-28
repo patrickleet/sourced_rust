@@ -372,6 +372,7 @@ function wireFrame(options = {}) {
 			distributed: {
 				protocolVersion: DISTRIBUTED_PROTOCOL_VERSION,
 				schemaHash: options.schemaHash ?? 'schema-a',
+				authorizationGeneration: 'auth-1',
 				cacheScope: options.cacheScope ?? 'cache:a',
 				operation: options.operation ?? 'query:todos',
 				...(options.command === undefined
@@ -409,6 +410,7 @@ function gamesFrame({
 			distributed: {
 				protocolVersion: DISTRIBUTED_PROTOCOL_VERSION,
 				schemaHash: 'schema-a',
+				authorizationGeneration: 'auth-1',
 				cacheScope: 'cache:a',
 				operation,
 				snapshot: {
@@ -463,6 +465,7 @@ function commandMetadata(options = {}) {
 	return parseDistributedProtocolEnvelope({
 		protocolVersion: DISTRIBUTED_PROTOCOL_VERSION,
 		schemaHash: 'schema-a',
+		authorizationGeneration: 'auth-1',
 		cacheScope: 'cache:a',
 		operation: 'command:todo',
 		command: {
@@ -1100,6 +1103,7 @@ test('snapshot-only nested records do not invalidate exact membership', () => {
 				distributed: {
 					protocolVersion: DISTRIBUTED_PROTOCOL_VERSION,
 					schemaHash: 'schema-a',
+					authorizationGeneration: 'auth-1',
 					cacheScope: 'cache:a',
 					operation: GamesWithOwner.id,
 					snapshot: {
@@ -1825,6 +1829,7 @@ test('scope and schema generations purge old state before accepting fresh eviden
 		() =>
 			write(replica, {
 				schemaHash: 'schema-tampered',
+				authorizationGeneration: 'auth-1',
 				cacheScope: 'cache:b',
 				rows: [{ id: 'todo-1', title: 'wrong schema' }]
 			}),

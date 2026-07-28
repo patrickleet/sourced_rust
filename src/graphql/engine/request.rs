@@ -179,6 +179,7 @@ impl GraphqlEngine {
             .map_err(|_| ())?;
         let envelope = DistributedEnvelopeV1::new(
             surface_info.schema_fingerprint.clone(),
+            role_info.authorization_fingerprint.clone(),
             cache_scope,
             // Generated artifacts submit this exact document. Hashing its
             // bytes matches manifest operation_hash and provides a useful

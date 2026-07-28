@@ -257,6 +257,7 @@ function codecWireFrame(title = 'schema one') {
 			distributed: {
 				protocolVersion: 1,
 				schemaHash: 'schema-one',
+				authorizationGeneration: 'auth-1',
 				cacheScope: 'cache:one',
 				operation: CodecArtifact.id,
 				snapshot: {

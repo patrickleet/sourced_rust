@@ -817,6 +817,8 @@ function validatedHydrationAuthority(
 		scope.protocolVersion !== 1 ||
 		typeof scope.schemaHash !== 'string' ||
 		scope.schemaHash.length === 0 ||
+		typeof scope.authorizationGeneration !== 'string' ||
+		scope.authorizationGeneration.length === 0 ||
 		typeof scope.cacheScope !== 'string' ||
 		scope.cacheScope.length === 0
 	) {
@@ -832,6 +834,7 @@ function sameReplicaScope(
 	return (
 		left.protocolVersion === right.protocolVersion &&
 		left.schemaHash === right.schemaHash &&
+		left.authorizationGeneration === right.authorizationGeneration &&
 		left.cacheScope === right.cacheScope
 	);
 }

@@ -23,6 +23,7 @@ export function cloneScope(scope: ReplicaAuthoritativeScope): ReplicaAuthoritati
 	return Object.freeze({
 		protocolVersion: 1,
 		schemaHash: scope.schemaHash,
+		authorizationGeneration: scope.authorizationGeneration,
 		cacheScope: scope.cacheScope
 	});
 }
@@ -34,6 +35,7 @@ export function sameScope(
 	return (
 		left.protocolVersion === right.protocolVersion &&
 		left.schemaHash === right.schemaHash &&
+		left.authorizationGeneration === right.authorizationGeneration &&
 		left.cacheScope === right.cacheScope
 	);
 }

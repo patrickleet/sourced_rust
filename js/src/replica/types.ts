@@ -694,6 +694,7 @@ export type DistributedReplicaOptions = {
 export type ReplicaAuthoritativeScope = {
 	readonly protocolVersion: 1;
 	readonly schemaHash: string;
+	readonly authorizationGeneration: string;
 	readonly cacheScope: string;
 };
 

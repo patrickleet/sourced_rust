@@ -89,7 +89,12 @@ export function parseAuthoritativeScope(
 		const scope = hydrationRecord(
 			value,
 			'authoritativeScope',
-			['protocolVersion', 'schemaHash', 'cacheScope']
+			[
+				'protocolVersion',
+				'schemaHash',
+				'authorizationGeneration',
+				'cacheScope'
+			]
 		);
 		if (scope.protocolVersion !== 1) {
 			hydrationInvalid('authoritativeScope.protocolVersion');
@@ -99,6 +104,10 @@ export function parseAuthoritativeScope(
 			schemaHash: hydrationString(
 				scope.schemaHash,
 				'authoritativeScope.schemaHash'
+			),
+			authorizationGeneration: hydrationString(
+				scope.authorizationGeneration,
+				'authoritativeScope.authorizationGeneration'
 			),
 			cacheScope: hydrationOpaque(
 				scope.cacheScope,
@@ -206,7 +215,12 @@ export function parseReplicaHydration(
 		const scopeValue = hydrationRecord(
 			state.scope,
 			'state.scope',
-			['protocolVersion', 'schemaHash', 'cacheScope']
+			[
+				'protocolVersion',
+				'schemaHash',
+				'authorizationGeneration',
+				'cacheScope'
+			]
 		);
 		if (scopeValue.protocolVersion !== 1) {
 			hydrationInvalid('state.scope.protocolVersion');
@@ -216,6 +230,10 @@ export function parseReplicaHydration(
 			schemaHash: hydrationString(
 				scopeValue.schemaHash,
 				'state.scope.schemaHash'
+			),
+			authorizationGeneration: hydrationString(
+				scopeValue.authorizationGeneration,
+				'state.scope.authorizationGeneration'
 			),
 			cacheScope: hydrationOpaque(
 				scopeValue.cacheScope,

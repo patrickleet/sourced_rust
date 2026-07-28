@@ -301,6 +301,7 @@ export function dehydrateReplica(host: HydrationHost): ReplicaDehydratedState {
 		scope: Object.freeze({
 			protocolVersion: 1 as const,
 			schemaHash: scope.schemaHash,
+			authorizationGeneration: scope.authorizationGeneration,
 			cacheScope: scope.cacheScope
 		}),
 		payload
@@ -337,6 +338,8 @@ export function hydrateReplica(
 	if (
 		parsed.scope.protocolVersion !== expectedScope.protocolVersion ||
 		parsed.scope.schemaHash !== expectedScope.schemaHash ||
+		parsed.scope.authorizationGeneration !==
+			expectedScope.authorizationGeneration ||
 		parsed.scope.cacheScope !== expectedScope.cacheScope
 	) {
 		return rejected('scope-mismatch');
@@ -354,6 +357,8 @@ export function hydrateReplica(
 		(
 			current.protocolVersion !== parsed.scope.protocolVersion ||
 			current.schemaHash !== parsed.scope.schemaHash ||
+			current.authorizationGeneration !==
+				parsed.scope.authorizationGeneration ||
 			current.cacheScope !== parsed.scope.cacheScope
 		)
 	) {

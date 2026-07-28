@@ -76,6 +76,7 @@ function frame(revision, value, operation = Query.id) {
 			distributed: {
 				protocolVersion: 1,
 				schemaHash: SCHEMA_HASH,
+				authorizationGeneration: 'auth-1',
 				cacheScope: 'scope:user',
 				operation,
 				trustedPresets: [],
@@ -273,6 +274,7 @@ test('receipt-only protocol frames notify only after the authoritative scope com
 				distributed: {
 					protocolVersion: 1,
 					schemaHash,
+					authorizationGeneration: 'auth-1',
 					cacheScope: 'scope:user',
 					operation: operationHash,
 					trustedPresets: []
@@ -293,6 +295,7 @@ test('receipt-only protocol frames notify only after the authoritative scope com
 						distributed: {
 							protocolVersion: 1,
 							schemaHash: `sha256:${'c'.repeat(64)}`,
+							authorizationGeneration: 'auth-1',
 							cacheScope: 'scope:forged',
 							operation: operationHash,
 							trustedPresets: []

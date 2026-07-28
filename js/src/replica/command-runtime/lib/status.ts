@@ -45,6 +45,8 @@ export function requireStatusEnvelope<TInput, TOutput>(
 		distributed.operation !== artifact.operationHash ||
 		distributed.protocolVersion !== authority.scope.protocolVersion ||
 		distributed.schemaHash !== authority.scope.schemaHash ||
+		distributed.authorizationGeneration !==
+			authority.scope.authorizationGeneration ||
 		distributed.cacheScope !== authority.scope.cacheScope ||
 		distributed.snapshot !== undefined ||
 		distributed.live !== undefined

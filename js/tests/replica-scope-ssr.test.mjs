@@ -128,6 +128,7 @@ function frame(
 	rows,
 	{
 		cacheScope = 'cache:a',
+		authorizationGeneration = 'auth-1',
 		position = '1',
 		revision = position,
 		recordScope = (row) => `record:${row.id}`,
@@ -154,6 +155,7 @@ function frame(
 			distributed: {
 				protocolVersion: 1,
 				schemaHash: artifact.protocol.schemaHash,
+				authorizationGeneration,
 				cacheScope,
 				operation: artifact.protocol.operation,
 				trustedPresets,
@@ -197,6 +199,7 @@ test('only a server response establishes a scope and permits SSR dehydration', (
 	assert.deepEqual(replica.scope, {
 		protocolVersion: 1,
 		schemaHash: 'schema-a',
+		authorizationGeneration: 'auth-1',
 		cacheScope: 'cache:a'
 	});
 	assert.equal(Object.isFrozen(replica.scope), true);
@@ -385,6 +388,20 @@ test('hydration rejects malformed, cross-scope, and elevated-schema state atomic
 	);
 	assert.equal(current.read(Todos, {}).data.todos[0].title, 'current');
 	assert.equal(current.scope.cacheScope, 'cache:a');
+
+	const otherAuthorization = createDistributedReplica();
+	write(
+		otherAuthorization,
+		Todos,
+		[{ id: 'todo-1', title: 'other authorization' }],
+		{ authorizationGeneration: 'auth-2' }
+	);
+	otherAuthorization.read(Todos, {});
+	assert.equal(
+		current.hydrate(otherAuthorization.dehydrate(), current.scope),
+		false
+	);
+	assert.equal(current.read(Todos, {}).data.todos[0].title, 'current');
 
 	const malformed = jsonClone(current.dehydrate());
 	malformed.payload.cache.records[0].revision = 'not-a-decimal';

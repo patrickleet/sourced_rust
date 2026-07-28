@@ -125,13 +125,15 @@ export function stageProtocolGeneration(
 	const next: ProtocolGeneration = {
 		protocolVersion: 1,
 		cacheScope: envelope.cacheScope,
-		schemaHash: envelope.schemaHash
+		schemaHash: envelope.schemaHash,
+		authorizationGeneration: envelope.authorizationGeneration
 	};
 	const current = host.getProtocolGeneration();
 	if (current === undefined) return next;
 	if (
 		current.cacheScope === next.cacheScope &&
-		current.schemaHash === next.schemaHash
+		current.schemaHash === next.schemaHash &&
+		current.authorizationGeneration === next.authorizationGeneration
 	) {
 		return current;
 	}
