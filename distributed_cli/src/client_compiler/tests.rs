@@ -264,12 +264,12 @@ fn aggregate_root() -> JsonValue {
 
 pub(super) fn manifest() -> JsonValue {
     let mut value = json!({
-        "manifest_version": 1,
+        "manifest_version": 2,
         "protocol_version": 1,
         "service_id": "todos-service",
         "surface": {"kind": "role", "name": "user"},
         "schema_fingerprint": fingerprint("schema"),
-        "protocol_fingerprint": "sha256:30f19c9f4d29280a02ddf67c4df62cdc92c4e8090792f43d6b1bdafea3e31273",
+        "protocol_fingerprint": "sha256:00fb342f3acb4dc1c1716a43cc3001c748d5f6c500ff831690d820e9e43e2782",
         "execution": {
             "max_depth": 8,
             "max_complexity": 500,
@@ -307,10 +307,112 @@ pub(super) fn manifest() -> JsonValue {
         ],
         "commands": [],
         "protocol_operations": {"version": 1},
-        "projectors": []
+        "projectors": [],
+        "projection_programs": [],
+        "projection_bindings": []
     });
     refresh_schema_fingerprint(&mut value);
     value
+}
+
+fn install_create_projection(value: &mut JsonValue) {
+    const PROGRAM_ID: &str =
+        "pp1:sha256:1111111111111111111111111111111111111111111111111111111111111111";
+    const BINDING_ID: &str =
+        "pb1:sha256:2222222222222222222222222222222222222222222222222222222222222222";
+    let event = json!({
+        "id": "event:todo.created:v1",
+        "name": "todo.created",
+        "version": 1
+    });
+    value["projection_programs"] = json!([{
+        "version": 2,
+        "program_id": PROGRAM_ID,
+        "name": "project_todos",
+        "program_version": 1,
+        "ir_version": 1,
+        "operation_semantics_version": 1,
+        "arms": [{
+            "arm": "todo-created",
+            "event": event,
+            "partition": {"kind": "unit"},
+            "operations": [{
+                "operation": "upsert-todo",
+                "ordinal": 0,
+                "kind": "upsert",
+                "model": "Todo",
+                "key": [
+                    {
+                        "ordinal": 0,
+                        "name": "tenantId",
+                        "expression": {
+                            "kind": "slot",
+                            "slot": "state.tenantId",
+                            "value_type": {"type": "string"}
+                        }
+                    },
+                    {
+                        "ordinal": 1,
+                        "name": "id",
+                        "expression": {
+                            "kind": "slot",
+                            "slot": "state.id",
+                            "value_type": {"type": "string"}
+                        }
+                    }
+                ],
+                "fields": [
+                    {
+                        "ordinal": 0,
+                        "name": "completed",
+                        "assignment": {
+                            "kind": "set",
+                            "expression": {
+                                "kind": "slot",
+                                "slot": "state.completed",
+                                "value_type": {"type": "boolean"}
+                            }
+                        }
+                    },
+                    {
+                        "ordinal": 1,
+                        "name": "priority",
+                        "assignment": {
+                            "kind": "set",
+                            "expression": {
+                                "kind": "slot",
+                                "slot": "state.priority",
+                                "value_type": {"type": "i64"}
+                            }
+                        }
+                    },
+                    {
+                        "ordinal": 2,
+                        "name": "title",
+                        "assignment": {
+                            "kind": "set",
+                            "expression": {
+                                "kind": "slot",
+                                "slot": "state.title",
+                                "value_type": {"type": "string"}
+                            }
+                        }
+                    }
+                ],
+                "relationships": [],
+                "invalidations": []
+            }]
+        }]
+    }]);
+    value["projection_bindings"] = json!([{
+        "version": 1,
+        "binding_id": BINDING_ID,
+        "program_id": PROGRAM_ID,
+        "epoch": "todos-projection-v2",
+        "state": "active",
+        "placement": "eventual",
+        "execution_class": "causal"
+    }]);
 }
 
 fn custom_scalar_manifest() -> JsonValue {
@@ -2420,59 +2522,69 @@ fn command_protocol_and_extensions_are_preserved_exactly() {
         "operation": mutation,
         "operation_hash": fingerprint(mutation),
         "extensions": {
-            "version": 1,
+            "version": 2,
             "consistency": {"version": 1, "kind": "causal"},
             "input_defaults": {
                 "version": 1,
                 "defaults": [{"path": ["id"], "generator": "uuid_v7"}]
             },
-            "effects": {
-                "version": 1,
-                "operations": [{
-                    "kind": "upsert",
-                    "model": "Todo",
-                    "key": {
-                        "fields": [
-                            {
-                                "field": "tenantId",
-                                "value": {"kind": "input", "path": ["tenantId"]}
-                            },
-                            {
-                                "field": "id",
-                                "value": {"kind": "input", "path": ["id"]}
-                            }
-                        ]
-                    },
-                    "fields": [{
-                        "field": "title",
-                        "value": {"kind": "input", "path": ["title"]}
-                    }]
+            "projection": {
+                "version": 2,
+                "event_set": [{
+                    "id": "event:todo.created:v1",
+                    "name": "todo.created",
+                    "version": 1
                 }],
-                "fallback": "revalidate"
-            },
-            "confirmations": {
-                "version": 1,
-                "kind": "finite",
-                "expected": [{
-                    "projector": "todos",
-                    "model": "Todo",
-                    "key": {
-                        "fields": [
-                            {
-                                "field": "tenantId",
-                                "value": {"kind": "input", "path": ["tenantId"]}
-                            },
-                            {
-                                "field": "id",
-                                "value": {"kind": "input", "path": ["id"]}
+                "program_arms": [{
+                    "event": {
+                        "id": "event:todo.created:v1",
+                        "name": "todo.created",
+                        "version": 1
+                    },
+                    "program_id": "pp1:sha256:1111111111111111111111111111111111111111111111111111111111111111",
+                    "arm": "todo-created"
+                }],
+                "preview_occurrences": [{
+                    "ordinal": 0,
+                    "event": {
+                        "id": "event:todo.created:v1",
+                        "name": "todo.created",
+                        "version": 1
+                    },
+                    "values": [
+                        {
+                            "slot": "state.completed",
+                            "source": {
+                                "kind": "constant",
+                                "value": {"type": "boolean", "value": false}
                             }
-                        ]
-                    }
+                        },
+                        {
+                            "slot": "state.id",
+                            "source": {"kind": "generated_default", "path": ["id"]}
+                        },
+                        {
+                            "slot": "state.priority",
+                            "source": {
+                                "kind": "constant",
+                                "value": {"type": "i64", "value": "0"}
+                            }
+                        },
+                        {
+                            "slot": "state.tenantId",
+                            "source": {"kind": "input", "path": ["tenantId"]}
+                        },
+                        {
+                            "slot": "state.title",
+                            "source": {"kind": "input", "path": ["title"]}
+                        }
+                    ]
                 }],
                 "fallback": "revalidate"
             }
         }
     }]);
+    install_create_projection(&mut value);
     value["projectors"] = json!([{
         "version": 1,
         "name": "todos",
@@ -2509,8 +2621,9 @@ fn command_protocol_and_extensions_are_preserved_exactly() {
     assert!(commands.contains("readonly \"tenantId\": string;"));
     assert!(commands.contains("\"mutationField\": \"createTodo\""));
     assert!(commands.contains("\"inputDefaults\""));
-    assert!(commands.contains("\"effects\""));
-    assert!(commands.contains("\"confirmations\""));
+    assert!(commands.contains("\"projection\""));
+    assert!(!commands.contains("\"effects\""));
+    assert!(!commands.contains("\"confirmations\""));
     assert!(commands.contains("\"consistency\": \"causal\""));
     assert!(commands.contains("\"revalidation\""));
     assert!(commands.contains("\"trustedPresets\": []"));
@@ -2548,6 +2661,102 @@ fn command_protocol_and_extensions_are_preserved_exactly() {
 }
 
 #[test]
+fn manifest_v2_parses_exact_projection_program_binding_and_preview_contract() {
+    let mutation = "mutation Client_createTodo($commandId: ID!, $input: CreateTodoInput!) { createTodo(commandId: $commandId, input: $input) { id } }";
+    let status =
+        "query Distributed_CommandStatus($commandId: ID!) { commandStatus(commandId: $commandId) { state } }";
+    let mut value = manifest();
+    value["capabilities"]["causal_receipts"] = json!(true);
+    value["commands"] = json!([{
+        "version": 1,
+        "name": "todo.create",
+        "mutation_field": "createTodo",
+        "grants": ["user"],
+        "input": {
+            "kind": "object",
+            "definition": {
+                "name": "CreateTodoInput",
+                "fields": [
+                    {"name": "id", "type_name": "ID", "nullable": false, "list": false, "item_nullable": false, "codec": "string"},
+                    {"name": "tenantId", "type_name": "ID", "nullable": false, "list": false, "item_nullable": false, "codec": "string"},
+                    {"name": "title", "type_name": "String", "nullable": false, "list": false, "item_nullable": false, "codec": "string"}
+                ]
+            }
+        },
+        "output": {
+            "kind": "object",
+            "definition": {
+                "name": "CreateTodoPayload",
+                "fields": [{"name": "id", "type_name": "ID", "nullable": false, "list": false, "item_nullable": false, "codec": "string"}]
+            }
+        },
+        "operation": mutation,
+        "operation_hash": fingerprint(mutation),
+        "extensions": {
+            "version": 2,
+            "consistency": {"version": 1, "kind": "causal"},
+            "input_defaults": {
+                "version": 1,
+                "defaults": [{"path": ["id"], "generator": "uuid_v7"}]
+            },
+            "projection": {
+                "version": 2,
+                "event_set": [{"id": "event:todo.created:v1", "name": "todo.created", "version": 1}],
+                "program_arms": [{
+                    "event": {"id": "event:todo.created:v1", "name": "todo.created", "version": 1},
+                    "program_id": "pp1:sha256:1111111111111111111111111111111111111111111111111111111111111111",
+                    "arm": "todo-created"
+                }],
+                "preview_occurrences": [{
+                    "ordinal": 0,
+                    "event": {"id": "event:todo.created:v1", "name": "todo.created", "version": 1},
+                    "values": [
+                        {"slot": "state.completed", "source": {"kind": "constant", "value": {"type": "boolean", "value": false}}},
+                        {"slot": "state.id", "source": {"kind": "generated_default", "path": ["id"]}},
+                        {"slot": "state.priority", "source": {"kind": "constant", "value": {"type": "i64", "value": "0"}}},
+                        {"slot": "state.tenantId", "source": {"kind": "input", "path": ["tenantId"]}},
+                        {"slot": "state.title", "source": {"kind": "input", "path": ["title"]}}
+                    ]
+                }],
+                "fallback": "revalidate"
+            }
+        }
+    }]);
+    value["protocol_operations"] = json!({
+        "version": 1,
+        "command_status": {
+            "name": "Distributed_CommandStatus",
+            "operation": status,
+            "operation_hash": fingerprint(status)
+        }
+    });
+    install_create_projection(&mut value);
+    refresh_schema_fingerprint(&mut value);
+
+    let parsed = ClientManifest::parse(value, &ClientSurfaceSelector::role("user"))
+        .expect("manifest-v2 projection contract");
+    assert_eq!(parsed.projection_programs.len(), 1);
+    assert_eq!(parsed.projection_programs[0].version, 2);
+    assert!(matches!(
+        parsed.projection_programs[0].arms[0].partition,
+        super::manifest::ManifestProjectionPartition::Unit
+    ));
+    assert_eq!(parsed.projection_bindings.len(), 1);
+    assert!(parsed.commands[0].extensions.effects.is_none());
+    assert!(parsed.commands[0].extensions.confirmations.is_none());
+    assert_eq!(
+        parsed.commands[0]
+            .extensions
+            .projection
+            .as_ref()
+            .expect("projection extension")
+            .preview_occurrences
+            .len(),
+        1
+    );
+}
+
+#[test]
 fn generated_command_typescript_covers_typed_json_fields_and_no_input_wrappers() {
     let project = compile_client(ClientCompileInput::new(
         generated_command_types_manifest(),
@@ -2559,7 +2768,7 @@ fn generated_command_typescript_covers_typed_json_fields_and_no_input_wrappers()
     ))
     .expect("compile generated command type fixture");
     let commands = file(&project, "commands.ts");
-assert_eq!(
+    assert_eq!(
         commands,
         include_str!("../../tests/fixtures/generated-commands.ts")
     );

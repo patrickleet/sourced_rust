@@ -199,6 +199,7 @@ fn command() -> ManifestCommand {
                 }],
                 fallback: ManifestRevalidationFallback::Revalidate,
             }),
+            projection: None,
             trusted_presets: Vec::new(),
         },
     }

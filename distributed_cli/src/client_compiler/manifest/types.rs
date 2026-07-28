@@ -23,6 +23,8 @@ pub(crate) struct ClientManifest {
     pub(crate) commands_requiring_revalidation: BTreeSet<String>,
     pub(crate) protocol_operations: ManifestProtocolOperations,
     pub(crate) projectors: Vec<ManifestProjector>,
+    pub(crate) projection_programs: Vec<ManifestProjectionProgram>,
+    pub(crate) projection_bindings: Vec<ManifestProjectionBinding>,
 }
 
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
@@ -508,12 +510,32 @@ pub(crate) struct ManifestCommandExtensions {
     pub(crate) direct_projection: Option<ManifestDirectProjection>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub(crate) input_defaults: Option<ManifestInputDefaults>,
-    #[serde(skip_serializing_if = "Option::is_none")]
+    #[serde(
+        default,
+        skip_serializing,
+        deserialize_with = "reject_legacy_command_authority"
+    )]
     pub(crate) effects: Option<ManifestEffects>,
-    #[serde(skip_serializing_if = "Option::is_none")]
+    #[serde(
+        default,
+        skip_serializing,
+        deserialize_with = "reject_legacy_command_authority"
+    )]
     pub(crate) confirmations: Option<ManifestConfirmations>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub(crate) projection: Option<ManifestCommandProjection>,
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub(crate) trusted_presets: Vec<ManifestTrustedPresetDescriptor>,
+}
+
+fn reject_legacy_command_authority<'de, D, T>(deserializer: D) -> Result<Option<T>, D::Error>
+where
+    D: serde::Deserializer<'de>,
+{
+    let _ = serde::de::IgnoredAny::deserialize(deserializer)?;
+    Err(serde::de::Error::custom(
+        "client manifest v2 rejects legacy command effects/confirmations authority",
+    ))
 }
 
 #[derive(Clone, Debug, PartialEq, Eq, PartialOrd, Ord, Serialize, Deserialize)]
@@ -788,4 +810,306 @@ pub(crate) struct ManifestProjector {
     pub(crate) models: Vec<String>,
     pub(crate) dependencies: Vec<String>,
     pub(crate) causal_confirmation: bool,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq, PartialOrd, Ord, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub(crate) struct ManifestProjectionEventRef {
+    pub(crate) id: String,
+    pub(crate) name: String,
+    pub(crate) version: u64,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub(crate) struct ManifestProjectionBinding {
+    pub(crate) version: u32,
+    pub(crate) binding_id: String,
+    pub(crate) program_id: String,
+    pub(crate) epoch: String,
+    pub(crate) state: ManifestProjectionBindingState,
+    pub(crate) placement: ManifestProjectionPlacement,
+    pub(crate) execution_class: ManifestProjectionExecutionClass,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub(crate) enum ManifestProjectionBindingState {
+    Active,
+    Draining,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub(crate) enum ManifestProjectionPlacement {
+    Eventual,
+    Direct,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub(crate) enum ManifestProjectionExecutionClass {
+    Causal,
+    Background,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub(crate) struct ManifestProjectionProgram {
+    pub(crate) version: u32,
+    pub(crate) program_id: String,
+    pub(crate) name: String,
+    pub(crate) program_version: u64,
+    pub(crate) ir_version: u16,
+    pub(crate) operation_semantics_version: u16,
+    pub(crate) arms: Vec<ManifestProjectionArm>,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub(crate) struct ManifestProjectionArm {
+    pub(crate) arm: String,
+    pub(crate) event: ManifestProjectionEventRef,
+    pub(crate) partition: ManifestProjectionPartition,
+    pub(crate) operations: Vec<ManifestProjectionOperation>,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(tag = "kind", rename_all = "snake_case", deny_unknown_fields)]
+pub(crate) enum ManifestProjectionPartition {
+    Unit,
+    Expression {
+        expression: ManifestProjectionExpression,
+    },
+}
+
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub(crate) struct ManifestProjectionOperation {
+    pub(crate) operation: String,
+    pub(crate) ordinal: u32,
+    pub(crate) kind: ManifestProjectionMutationKind,
+    pub(crate) model: String,
+    pub(crate) key: Vec<ManifestProjectionKeyField>,
+    pub(crate) fields: Vec<ManifestProjectionField>,
+    pub(crate) relationships: Vec<ManifestProjectionRelationshipEffect>,
+    pub(crate) invalidations: Vec<ManifestProjectionInvalidation>,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub(crate) enum ManifestProjectionMutationKind {
+    Insert,
+    Upsert,
+    Patch,
+    UpsertPatch,
+    Delete,
+    Recreate,
+    InsertRelated,
+    UpsertRelated,
+    InvalidateModel,
+    InvalidateRelationship,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub(crate) struct ManifestProjectionKeyField {
+    pub(crate) ordinal: u32,
+    pub(crate) name: String,
+    pub(crate) expression: ManifestProjectionExpression,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub(crate) struct ManifestProjectionField {
+    pub(crate) ordinal: u32,
+    pub(crate) name: String,
+    pub(crate) assignment: ManifestProjectionAssignment,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(tag = "kind", rename_all = "snake_case", deny_unknown_fields)]
+pub(crate) enum ManifestProjectionAssignment {
+    Set {
+        expression: ManifestProjectionExpression,
+    },
+    Unset,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(tag = "kind", rename_all = "snake_case", deny_unknown_fields)]
+pub(crate) enum ManifestProjectionExpression {
+    Slot {
+        slot: String,
+        value_type: ManifestProjectionValueType,
+    },
+    Envelope {
+        field: ManifestProjectionEnvelopeField,
+    },
+    Constant {
+        value: ManifestProjectionValue,
+    },
+    Enum {
+        enum_type: String,
+        variant: String,
+    },
+    List {
+        values: Vec<ManifestProjectionExpression>,
+    },
+    Object {
+        fields: Vec<ManifestProjectionObjectField>,
+    },
+    Transform {
+        transform: ManifestProjectionScalarTransform,
+        arguments: Vec<ManifestProjectionExpression>,
+    },
+}
+
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub(crate) struct ManifestProjectionObjectField {
+    pub(crate) name: String,
+    pub(crate) value: ManifestProjectionExpression,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(
+    tag = "type",
+    content = "name",
+    rename_all = "snake_case",
+    deny_unknown_fields
+)]
+pub(crate) enum ManifestProjectionValueType {
+    Boolean,
+    I64,
+    U64,
+    F64,
+    String,
+    Enum(String),
+    Json,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub(crate) enum ManifestProjectionScalarTransform {
+    StringConcat,
+    FirstPresent,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub(crate) enum ManifestProjectionEnvelopeField {
+    OccurrenceVersion,
+    EventName,
+    EventVersion,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(
+    tag = "type",
+    content = "value",
+    rename_all = "snake_case",
+    deny_unknown_fields
+)]
+pub(crate) enum ManifestProjectionValue {
+    Null,
+    Boolean(bool),
+    I64(String),
+    U64(String),
+    F64(String),
+    String(String),
+    Enum { enum_type: String, variant: String },
+    List(Vec<ManifestProjectionValue>),
+    Object(Vec<ManifestProjectionValueField>),
+}
+
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub(crate) struct ManifestProjectionValueField {
+    pub(crate) name: String,
+    pub(crate) value: ManifestProjectionValue,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub(crate) struct ManifestProjectionRelationshipEffect {
+    pub(crate) ordinal: u32,
+    pub(crate) kind: ManifestProjectionRelationshipEffectKind,
+    pub(crate) source_model: String,
+    pub(crate) relationship: String,
+    pub(crate) target_model: String,
+    pub(crate) source_key: Vec<ManifestProjectionKeyField>,
+    pub(crate) target_key: Vec<ManifestProjectionKeyField>,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub(crate) enum ManifestProjectionRelationshipEffectKind {
+    Link,
+    Unlink,
+    Invalidate,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(tag = "kind", rename_all = "snake_case", deny_unknown_fields)]
+pub(crate) enum ManifestProjectionInvalidation {
+    Model {
+        model: String,
+    },
+    Relationship {
+        source_model: String,
+        relationship: String,
+        target_model: String,
+    },
+}
+
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub(crate) struct ManifestCommandProjection {
+    pub(crate) version: u32,
+    pub(crate) event_set: Vec<ManifestProjectionEventRef>,
+    pub(crate) program_arms: Vec<ManifestCommandProjectionArmRef>,
+    pub(crate) preview_occurrences: Vec<ManifestCommandProjectionPreviewOccurrence>,
+    pub(crate) fallback: ManifestProjectionFallback,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub(crate) enum ManifestProjectionFallback {
+    Revalidate,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub(crate) struct ManifestCommandProjectionArmRef {
+    pub(crate) event: ManifestProjectionEventRef,
+    pub(crate) program_id: String,
+    pub(crate) arm: String,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub(crate) struct ManifestCommandProjectionPreviewOccurrence {
+    pub(crate) ordinal: u32,
+    pub(crate) event: ManifestProjectionEventRef,
+    pub(crate) values: Vec<ManifestCommandProjectionPreviewValue>,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub(crate) struct ManifestCommandProjectionPreviewValue {
+    pub(crate) slot: String,
+    pub(crate) source: ManifestProjectionPreviewSource,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(tag = "kind", rename_all = "snake_case", deny_unknown_fields)]
+pub(crate) enum ManifestProjectionPreviewSource {
+    Input { path: Vec<String> },
+    GeneratedDefault { path: Vec<String> },
+    TrustedPreset { name: String, codec: String },
+    Constant { value: ManifestProjectionValue },
+    Null,
+    Absent,
+    Unknown,
 }

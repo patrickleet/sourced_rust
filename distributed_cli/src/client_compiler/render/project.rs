@@ -169,7 +169,7 @@ fn render_compiler_manifest(
 ) -> Result<String, ClientCompileError> {
     let provenance = CompilerManifest {
         compiler_manifest_version: 1,
-        distributed_manifest_version: 1,
+        distributed_manifest_version: 2,
         protocol_version: 1,
         service_id: &manifest.service_id,
         surface: &manifest.surface,

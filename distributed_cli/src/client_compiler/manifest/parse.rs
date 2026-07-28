@@ -25,6 +25,8 @@ struct ManifestWire {
     commands: Vec<ManifestCommand>,
     protocol_operations: ManifestProtocolOperations,
     projectors: Vec<ManifestProjector>,
+    projection_programs: Vec<ManifestProjectionProgram>,
+    projection_bindings: Vec<ManifestProjectionBinding>,
 }
 
 #[derive(Serialize)]
@@ -41,6 +43,8 @@ struct ManifestSchemaMaterial<'a> {
     commands: &'a [ManifestCommand],
     protocol_operations: &'a ManifestProtocolOperations,
     projectors: &'a [ManifestProjector],
+    projection_programs: &'a [ManifestProjectionProgram],
+    projection_bindings: &'a [ManifestProjectionBinding],
 }
 
 impl ClientManifest {
@@ -169,6 +173,11 @@ impl ClientManifest {
         let mut projectors = wire.projectors;
         canonicalize_projectors(&mut projectors)?;
         validate_projectors(&projectors, &models)?;
+        let (projection_programs, projection_bindings) = validate_projection_manifest(
+            wire.projection_programs,
+            wire.projection_bindings,
+            &models,
+        )?;
         let mut commands = wire.commands;
         canonicalize_commands(&mut commands)?;
         let mut command_validation = super::super::command_manifest::validate_command_manifest(
@@ -180,6 +189,14 @@ impl ClientManifest {
             wire.capabilities.causal_receipts,
             &wire.protocol_operations,
         )?;
+        command_validation
+            .commands_requiring_revalidation
+            .extend(validate_command_projections(
+                &commands,
+                &projection_programs,
+                &projection_bindings,
+                &models,
+            )?);
         command_validation
             .commands_requiring_revalidation
             .extend(validate_direct_projections(
@@ -214,6 +231,8 @@ impl ClientManifest {
             commands_requiring_revalidation: command_validation.commands_requiring_revalidation,
             protocol_operations: wire.protocol_operations,
             projectors,
+            projection_programs,
+            projection_bindings,
         })
     }
 
@@ -236,6 +255,8 @@ fn schema_fingerprint(wire: &ManifestWire) -> Result<String, ClientCompileError>
         commands: &wire.commands,
         protocol_operations: &wire.protocol_operations,
         projectors: &wire.projectors,
+        projection_programs: &wire.projection_programs,
+        projection_bindings: &wire.projection_bindings,
     };
     serde_json::to_vec(&material)
         .map(|bytes| hash_bytes(&bytes))
@@ -250,7 +271,7 @@ fn schema_fingerprint(wire: &ManifestWire) -> Result<String, ClientCompileError>
 #[cfg(test)]
 pub(crate) fn refresh_schema_fingerprint(value: &mut JsonValue) {
     let wire: ManifestWire =
-        serde_json::from_value(value.clone()).expect("test manifest must match the v7 wire shape");
+        serde_json::from_value(value.clone()).expect("test manifest must match the v2 wire shape");
     value["schema_fingerprint"] =
         JsonValue::String(schema_fingerprint(&wire).expect("test manifest must be serializable"));
 }

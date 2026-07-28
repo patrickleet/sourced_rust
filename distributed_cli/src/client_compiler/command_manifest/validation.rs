@@ -128,11 +128,11 @@ fn validate_command(
     validate_exact_operation_hash(&command.operation, &command.operation_hash, "command")?;
 
     let extensions = &command.extensions;
-    if extensions.version != 1 {
+    if !matches!(extensions.version, 1 | 2) {
         return Err(command_error(
             command,
             "client.manifest.command_extensions",
-            "extensions.version must be 1",
+            "extensions.version must be 1 or 2",
         ));
     }
     let consistency = &extensions.consistency;
@@ -146,27 +146,35 @@ fn validate_command(
     if let Some(defaults) = &extensions.input_defaults {
         validate_defaults(command, defaults.version, &defaults.defaults)?;
     }
-    if let Some(effects) = &extensions.effects {
-        if effects.version != 1 {
-            return Err(command_error(
-                command,
-                "client.manifest.command_effects",
-                "effects.version must be 1",
-            ));
-        }
-        if effects.operations.is_empty() {
+    if extensions.version == 1 {
+        if let Some(effects) = &extensions.effects {
+            if effects.version != 1 {
+                return Err(command_error(
+                    command,
+                    "client.manifest.command_effects",
+                    "effects.version must be 1",
+                ));
+            }
+            if effects.operations.is_empty() {
+                report
+                    .commands_requiring_revalidation
+                    .insert(command.name.clone());
+            }
+            for effect in &effects.operations {
+                validate_effect(command, effect, models, report)?;
+            }
+        } else {
             report
                 .commands_requiring_revalidation
                 .insert(command.name.clone());
         }
-        for effect in &effects.operations {
-            validate_effect(command, effect, models, report)?;
-        }
-    } else {
-        report
-            .commands_requiring_revalidation
-            .insert(command.name.clone());
+        validate_confirmations(command, models, projectors, report)?;
+    } else if extensions.effects.is_some() || extensions.confirmations.is_some() {
+        return Err(command_error(
+            command,
+            "client.manifest.legacy_command_authority",
+            "manifest v2 cannot carry legacy effects or confirmations",
+        ));
     }
-    validate_confirmations(command, models, projectors, report)?;
     validate_trusted_preset_inventory(command)
 }

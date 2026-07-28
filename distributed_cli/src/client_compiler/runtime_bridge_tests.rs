@@ -48,7 +48,7 @@ fn scalar_only_operation_module_is_byte_exact_and_needs_no_replica_value_import(
     let (manifest, operation) = compile_runtime_bridge_operation();
     let module = render_operation_module(&operation, &manifest)
         .expect("render scalar-only operation module");
-assert_eq!(
+    assert_eq!(
         module,
         include_str!("../../tests/fixtures/generated-scalar-operation.ts"),
         "the strict TypeScript scalar-only fixture must remain exact Rust compiler output"
