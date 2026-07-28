@@ -284,6 +284,30 @@ mod tests {
     }
 
     #[test]
+    fn hydrated_create_after_purge_is_rejected_without_emitting_events() {
+        let mut todo = open_todo();
+        todo.purge("alice").unwrap();
+        todo.entity.mark_committed();
+        todo.entity.mark_domain_events_committed().unwrap();
+
+        let mut hydrated: Todo = distributed::hydrate(todo.entity.clone()).unwrap();
+        let error = hydrated
+            .create("t1", "alice", "Recreated after hydration")
+            .unwrap_err();
+
+        assert_eq!(
+            (
+                error,
+                hydrated.is_purged(),
+                hydrated.entity.version(),
+                hydrated.entity.events().len(),
+                hydrated.entity.pending_domain_events().len(),
+            ),
+            (TodoError::AlreadyExists, true, 2, 2, 0)
+        );
+    }
+
+    #[test]
     fn rejects_empty_title_and_double_create() {
         let mut t = Todo::default();
         assert_eq!(
