@@ -555,6 +555,13 @@ fn expand_domain_capture(
                     if let Some(__distributed_domain_event_source) =
                         __distributed_domain_event_source.as_ref()
                     {
+                        fn __distributed_assert_domain_event_contract<T>()
+                        where
+                            T: distributed::DomainEvent
+                                + distributed::domain_event::DomainEventContract<Body = T>,
+                        {
+                        }
+                        __distributed_assert_domain_event_contract::<#output>();
                         let __distributed_domain_event_adapter:
                             fn(&#aggregate, &#event_enum) -> #output = #adapter;
                         let __distributed_domain_event_body =
@@ -562,6 +569,13 @@ fn expand_domain_capture(
                                 &*self,
                                 __distributed_domain_event_source,
                             );
+                        if <#output as distributed::domain_event::DomainEventContract>::descriptor()
+                            != <#output as distributed::DomainEvent>::DESCRIPTOR
+                        {
+                            return Err(distributed::EventRecordError {
+                                message: "domain-event capture failed: adapter output contract differs from its DomainEvent descriptor".to_owned(),
+                            });
+                        }
                         #capture
                     }
                 },

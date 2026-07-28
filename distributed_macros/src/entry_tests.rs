@@ -287,6 +287,8 @@ mod tests {
         assert!(output.contains("capture_domain_event"));
         assert!(output.contains("DomainEventContract > :: EVENT_NAME"));
         assert!(output.contains("DomainEventContract > :: EVENT_VERSION"));
+        assert!(output.contains("DomainEventContract < Body = T >"));
+        assert!(output.contains("!= < TodoCompleted as distributed :: DomainEvent > :: DESCRIPTOR"));
     }
 
     #[test]

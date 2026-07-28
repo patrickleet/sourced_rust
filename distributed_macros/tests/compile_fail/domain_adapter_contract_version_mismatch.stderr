@@ -1,0 +1,5 @@
+error[E0080]: evaluation panicked: domain adapter output event version differs from #[event]
+  --> tests/compile_fail/domain_adapter_contract_version_mismatch.rs:43:1
+   |
+43 | #[sourced(entity, events = "TodoReplayEvent", aggregate_type = "todo")]
+   | ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^ evaluation of `_` failed here
