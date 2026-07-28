@@ -17,6 +17,8 @@ pub(crate) use types::ProjectionDeltaCacheScopeToken;
 
 #[cfg(test)]
 mod tests;
+#[cfg(test)]
+mod vector_tests;
 
 pub use types::{
     DeltaField, DeltaKeyField, DeltaValue, ProjectionDelta, ProjectionDeltaError,
