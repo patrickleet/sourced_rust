@@ -7,16 +7,22 @@ use super::super::ClientCompileError;
 use super::PROJECTION_DELTA_WIRE_VERSION;
 
 const PREVIEW_PLAN_VERSION: u16 = 1;
+const MAX_PREVIEW_ITEMS: usize = 128;
 
 /// Compiler knowledge is deliberately richer than JavaScript values.
 ///
-/// `Known(Null)` is a value. `Unset` is an explicit absence. `Denied` and
-/// `CacheUnowned` are authorization/coverage states and never become artifact
-/// paths or values.
+/// `Known(Null)` is a value. `Absent` is missing source data; `Unset` is
+/// reserved for explicit clearing intent. `Denied` and `CacheUnowned` are
+/// authorization/coverage states and never become artifact paths or values.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub(crate) enum Knowledge {
     Known(PreviewExpression),
     Unknown,
+    Absent,
+    #[allow(
+        dead_code,
+        reason = "reserved for explicit projection-assignment clearing, never missing source data"
+    )]
     Unset,
     Denied,
     #[allow(
@@ -72,6 +78,8 @@ pub(crate) struct CompiledCommandProjection {
     event_set: Vec<ManifestProjectionEventRef>,
     preview: PreviewPlan,
     fallback: ManifestProjectionFallback,
+    #[serde(skip)]
+    selected_models: BTreeSet<String>,
 }
 
 impl CompiledCommandProjection {
@@ -122,6 +130,10 @@ impl CompiledCommandProjection {
 
     pub(crate) fn requires_revalidation(&self) -> bool {
         !self.preview.recoveries.is_empty()
+    }
+
+    pub(crate) fn selected_models(&self) -> &BTreeSet<String> {
+        &self.selected_models
     }
 }
 
@@ -491,6 +503,15 @@ pub(crate) fn compile_command_preview(
         .enumerate()
         .map(|(index, identity)| (identity.program_id.as_str(), index as u32))
         .collect::<BTreeMap<_, _>>();
+    let mut selected_models = BTreeSet::new();
+    for selected in &extension.program_arms {
+        let arm = programs[selected.program_id.as_str()]
+            .arms
+            .iter()
+            .find(|arm| arm.arm == selected.arm && arm.event == selected.event)
+            .expect("manifest validation proved selected arm");
+        collect_selected_models(arm, &mut selected_models);
+    }
 
     let mut occurrences = Vec::new();
     let mut operations = Vec::new();
@@ -523,12 +544,14 @@ pub(crate) fn compile_command_preview(
                 &occurrence.event,
                 arm,
                 &slots,
+                command,
                 manifest,
                 &mut operations,
                 &mut recoveries,
             )?;
         }
     }
+    validate_preview_inventory(&operations, &recoveries)?;
     let operations = canonicalize_operations(operations)?;
     let recoveries = canonicalize_recoveries(recoveries, &operations)?;
     Ok(Some(CompiledCommandProjection {
@@ -545,6 +568,7 @@ pub(crate) fn compile_command_preview(
             recoveries,
         },
         fallback: extension.fallback,
+        selected_models,
     }))
 }
 
@@ -555,6 +579,7 @@ fn lower_arm(
     event: &ManifestProjectionEventRef,
     arm: &ManifestProjectionArm,
     slots: &BTreeMap<&str, Knowledge>,
+    command: &ManifestCommand,
     manifest: &ClientManifest,
     operations: &mut Vec<PreviewOperation>,
     recoveries: &mut Vec<PreviewRecovery>,
@@ -568,10 +593,12 @@ fn lower_arm(
             operation,
             &partition,
             slots,
+            command,
             manifest,
             operations,
             recoveries,
         )?;
+        validate_preview_inventory(operations, recoveries)?;
         lower_relationships(
             occurrence_ordinal,
             projection_ref,
@@ -579,9 +606,11 @@ fn lower_arm(
             operation,
             &partition,
             slots,
+            command,
             operations,
             recoveries,
         )?;
+        validate_preview_inventory(operations, recoveries)?;
         lower_invalidations(
             occurrence_ordinal,
             projection_ref,
@@ -590,8 +619,64 @@ fn lower_arm(
             operations,
             recoveries,
         )?;
+        validate_preview_inventory(operations, recoveries)?;
     }
     Ok(())
+}
+
+fn validate_preview_inventory(
+    operations: &[PreviewOperation],
+    recoveries: &[PreviewRecovery],
+) -> Result<(), ClientCompileError> {
+    if operations.len() > MAX_PREVIEW_ITEMS || recoveries.len() > MAX_PREVIEW_ITEMS {
+        return Err(ClientCompileError::manifest(
+            "client.manifest.command_projection_preview_inventory",
+            format!(
+                "expanded projection preview operations and recoveries cannot exceed \
+                 {MAX_PREVIEW_ITEMS} entries"
+            ),
+        ));
+    }
+    Ok(())
+}
+
+fn push_preview_item<T>(items: &mut Vec<T>, item: T) -> Result<(), ClientCompileError> {
+    if items.len() >= MAX_PREVIEW_ITEMS {
+        return Err(ClientCompileError::manifest(
+            "client.manifest.command_projection_preview_inventory",
+            format!(
+                "expanded projection preview operations and recoveries cannot exceed \
+                 {MAX_PREVIEW_ITEMS} entries"
+            ),
+        ));
+    }
+    items.push(item);
+    Ok(())
+}
+
+fn collect_selected_models(arm: &ManifestProjectionArm, models: &mut BTreeSet<String>) {
+    for operation in &arm.operations {
+        models.insert(operation.model.clone());
+        for relationship in &operation.relationships {
+            models.insert(relationship.source_model.clone());
+            models.insert(relationship.target_model.clone());
+        }
+        for invalidation in &operation.invalidations {
+            match invalidation {
+                ManifestProjectionInvalidation::Model { model } => {
+                    models.insert(model.clone());
+                }
+                ManifestProjectionInvalidation::Relationship {
+                    source_model,
+                    target_model,
+                    ..
+                } => {
+                    models.insert(source_model.clone());
+                    models.insert(target_model.clone());
+                }
+            }
+        }
+    }
 }
 
 #[allow(clippy::too_many_arguments)]
@@ -602,6 +687,7 @@ fn lower_record(
     operation: &ManifestProjectionOperation,
     partition: &Option<PreviewPartition>,
     slots: &BTreeMap<&str, Knowledge>,
+    command: &ManifestCommand,
     manifest: &ClientManifest,
     operations: &mut Vec<PreviewOperation>,
     recoveries: &mut Vec<PreviewRecovery>,
@@ -614,7 +700,7 @@ fn lower_record(
         return Ok(());
     }
     let partition = partition.clone();
-    let key = evaluate_key(&operation.key, slots, event);
+    let key = evaluate_key(&operation.key, slots, event, command);
     let Some(scope) = partition
         .clone()
         .zip(key)
@@ -624,12 +710,15 @@ fn lower_record(
             key,
         })
     else {
-        recoveries.push(model_recovery(
-            occurrence_ordinal,
-            projection_ref,
-            operation.model.clone(),
-            partition,
-        ));
+        push_preview_item(
+            recoveries,
+            model_recovery(
+                occurrence_ordinal,
+                projection_ref,
+                operation.model.clone(),
+                partition,
+            ),
+        )?;
         return Ok(());
     };
     let model = manifest
@@ -665,73 +754,97 @@ fn lower_record(
                     .collect::<BTreeSet<_>>()
                     == mapped;
             if complete {
-                operations.push(PreviewOperation {
-                    occurrence_ordinal,
-                    projection_refs: vec![projection_ref],
-                    mutation: PreviewMutation::Upsert {
-                        scope,
-                        fields: set,
-                        replace: replacement_fields,
+                push_preview_item(
+                    operations,
+                    PreviewOperation {
+                        occurrence_ordinal,
+                        projection_refs: vec![projection_ref],
+                        mutation: PreviewMutation::Upsert {
+                            scope,
+                            fields: set,
+                            replace: replacement_fields,
+                        },
                     },
-                });
+                )?;
             } else if !set.is_empty() || !unset.is_empty() {
-                operations.push(PreviewOperation {
-                    occurrence_ordinal,
-                    projection_refs: vec![projection_ref],
-                    mutation: PreviewMutation::Patch {
-                        scope: scope.clone(),
-                        set,
-                        unset,
-                        if_present: true,
+                push_preview_item(
+                    operations,
+                    PreviewOperation {
+                        occurrence_ordinal,
+                        projection_refs: vec![projection_ref],
+                        mutation: PreviewMutation::Patch {
+                            scope: scope.clone(),
+                            set,
+                            unset,
+                            if_present: true,
+                        },
                     },
-                });
-                recoveries.push(record_recovery(
-                    occurrence_ordinal,
-                    projection_ref,
-                    scope,
-                    PreviewRecoveryCondition::IfRecordMissing,
-                ));
+                )?;
+                push_preview_item(
+                    recoveries,
+                    record_recovery(
+                        occurrence_ordinal,
+                        projection_ref,
+                        scope,
+                        PreviewRecoveryCondition::IfRecordMissing,
+                    ),
+                )?;
             } else {
-                recoveries.push(record_recovery(
-                    occurrence_ordinal,
-                    projection_ref,
-                    scope,
-                    PreviewRecoveryCondition::Always,
-                ));
+                push_preview_item(
+                    recoveries,
+                    record_recovery(
+                        occurrence_ordinal,
+                        projection_ref,
+                        scope,
+                        PreviewRecoveryCondition::Always,
+                    ),
+                )?;
             }
         }
         ManifestProjectionMutationKind::Patch | ManifestProjectionMutationKind::UpsertPatch => {
             if !set.is_empty() || !unset.is_empty() {
-                operations.push(PreviewOperation {
-                    occurrence_ordinal,
-                    projection_refs: vec![projection_ref],
-                    mutation: PreviewMutation::Patch {
-                        scope: scope.clone(),
-                        set,
-                        unset,
-                        if_present: true,
+                push_preview_item(
+                    operations,
+                    PreviewOperation {
+                        occurrence_ordinal,
+                        projection_refs: vec![projection_ref],
+                        mutation: PreviewMutation::Patch {
+                            scope: scope.clone(),
+                            set,
+                            unset,
+                            if_present: true,
+                        },
                     },
-                });
-                recoveries.push(record_recovery(
-                    occurrence_ordinal,
-                    projection_ref,
-                    scope,
-                    PreviewRecoveryCondition::IfRecordMissing,
-                ));
+                )?;
+                push_preview_item(
+                    recoveries,
+                    record_recovery(
+                        occurrence_ordinal,
+                        projection_ref,
+                        scope,
+                        PreviewRecoveryCondition::IfRecordMissing,
+                    ),
+                )?;
             } else {
-                recoveries.push(record_recovery(
-                    occurrence_ordinal,
-                    projection_ref,
-                    scope,
-                    PreviewRecoveryCondition::Always,
-                ));
+                push_preview_item(
+                    recoveries,
+                    record_recovery(
+                        occurrence_ordinal,
+                        projection_ref,
+                        scope,
+                        PreviewRecoveryCondition::Always,
+                    ),
+                )?;
             }
         }
-        ManifestProjectionMutationKind::Delete => operations.push(PreviewOperation {
-            occurrence_ordinal,
-            projection_refs: vec![projection_ref],
-            mutation: PreviewMutation::Delete { scope },
-        }),
+        ManifestProjectionMutationKind::Delete => push_preview_item(
+            operations,
+            PreviewOperation {
+                occurrence_ordinal,
+                projection_refs: vec![projection_ref],
+                mutation: PreviewMutation::Delete { scope },
+            },
+        )?,
         ManifestProjectionMutationKind::InvalidateModel
         | ManifestProjectionMutationKind::InvalidateRelationship => unreachable!(),
     }
@@ -746,6 +859,7 @@ fn lower_relationships(
     operation: &ManifestProjectionOperation,
     partition: &Option<PreviewPartition>,
     slots: &BTreeMap<&str, Knowledge>,
+    command: &ManifestCommand,
     operations: &mut Vec<PreviewOperation>,
     recoveries: &mut Vec<PreviewRecovery>,
 ) -> Result<(), ClientCompileError> {
@@ -753,7 +867,7 @@ fn lower_relationships(
     for effect in &operation.relationships {
         let source = partition
             .clone()
-            .zip(evaluate_key(&effect.source_key, slots, event))
+            .zip(evaluate_key(&effect.source_key, slots, event, command))
             .map(|(partition, key)| PreviewScope {
                 partition,
                 model: effect.source_model.clone(),
@@ -761,7 +875,7 @@ fn lower_relationships(
             });
         let target = partition
             .clone()
-            .zip(evaluate_key(&effect.target_key, slots, event))
+            .zip(evaluate_key(&effect.target_key, slots, event, command))
             .map(|(partition, key)| PreviewScope {
                 partition,
                 model: effect.target_model.clone(),
@@ -769,49 +883,64 @@ fn lower_relationships(
             });
         match (effect.kind, source, target) {
             (ManifestProjectionRelationshipEffectKind::Link, Some(source), Some(target)) => {
-                operations.push(PreviewOperation {
-                    occurrence_ordinal,
-                    projection_refs: vec![projection_ref],
-                    mutation: PreviewMutation::Link {
-                        relationship: effect.relationship.clone(),
-                        source,
-                        target,
+                push_preview_item(
+                    operations,
+                    PreviewOperation {
+                        occurrence_ordinal,
+                        projection_refs: vec![projection_ref],
+                        mutation: PreviewMutation::Link {
+                            relationship: effect.relationship.clone(),
+                            source,
+                            target,
+                        },
                     },
-                });
+                )?;
             }
             (ManifestProjectionRelationshipEffectKind::Unlink, Some(source), Some(target)) => {
-                operations.push(PreviewOperation {
-                    occurrence_ordinal,
-                    projection_refs: vec![projection_ref],
-                    mutation: PreviewMutation::Unlink {
-                        relationship: effect.relationship.clone(),
-                        source,
-                        target,
+                push_preview_item(
+                    operations,
+                    PreviewOperation {
+                        occurrence_ordinal,
+                        projection_refs: vec![projection_ref],
+                        mutation: PreviewMutation::Unlink {
+                            relationship: effect.relationship.clone(),
+                            source,
+                            target,
+                        },
                     },
-                });
+                )?;
             }
             (_, Some(source), _) => {
-                operations.push(PreviewOperation {
-                    occurrence_ordinal,
-                    projection_refs: vec![projection_ref],
-                    mutation: PreviewMutation::InvalidateRelationship {
-                        relationship: effect.relationship.clone(),
-                        source: source.clone(),
+                push_preview_item(
+                    operations,
+                    PreviewOperation {
+                        occurrence_ordinal,
+                        projection_refs: vec![projection_ref],
+                        mutation: PreviewMutation::InvalidateRelationship {
+                            relationship: effect.relationship.clone(),
+                            source: source.clone(),
+                        },
                     },
-                });
-                recoveries.push(relationship_recovery(
+                )?;
+                push_preview_item(
+                    recoveries,
+                    relationship_recovery(
+                        occurrence_ordinal,
+                        projection_ref,
+                        effect.relationship.clone(),
+                        source,
+                    ),
+                )?;
+            }
+            (_, None, _) => push_preview_item(
+                recoveries,
+                model_recovery(
                     occurrence_ordinal,
                     projection_ref,
-                    effect.relationship.clone(),
-                    source,
-                ));
-            }
-            (_, None, _) => recoveries.push(model_recovery(
-                occurrence_ordinal,
-                projection_ref,
-                effect.source_model.clone(),
-                partition.clone(),
-            )),
+                    effect.source_model.clone(),
+                    partition.clone(),
+                ),
+            )?,
         }
     }
     Ok(())
@@ -828,38 +957,50 @@ fn lower_invalidations(
 ) -> Result<(), ClientCompileError> {
     let partition = partition.clone();
     if operation.kind == ManifestProjectionMutationKind::InvalidateModel {
-        operations.push(PreviewOperation {
-            occurrence_ordinal,
-            projection_refs: vec![projection_ref],
-            mutation: PreviewMutation::InvalidateModel {
-                partition: partition.clone(),
-                model: operation.model.clone(),
+        push_preview_item(
+            operations,
+            PreviewOperation {
+                occurrence_ordinal,
+                projection_refs: vec![projection_ref],
+                mutation: PreviewMutation::InvalidateModel {
+                    partition: partition.clone(),
+                    model: operation.model.clone(),
+                },
             },
-        });
-        recoveries.push(model_recovery(
-            occurrence_ordinal,
-            projection_ref,
-            operation.model.clone(),
-            partition.clone(),
-        ));
+        )?;
+        push_preview_item(
+            recoveries,
+            model_recovery(
+                occurrence_ordinal,
+                projection_ref,
+                operation.model.clone(),
+                partition.clone(),
+            ),
+        )?;
     }
     for invalidation in &operation.invalidations {
         match invalidation {
             ManifestProjectionInvalidation::Model { model } => {
-                operations.push(PreviewOperation {
-                    occurrence_ordinal,
-                    projection_refs: vec![projection_ref],
-                    mutation: PreviewMutation::InvalidateModel {
-                        partition: partition.clone(),
-                        model: model.clone(),
+                push_preview_item(
+                    operations,
+                    PreviewOperation {
+                        occurrence_ordinal,
+                        projection_refs: vec![projection_ref],
+                        mutation: PreviewMutation::InvalidateModel {
+                            partition: partition.clone(),
+                            model: model.clone(),
+                        },
                     },
-                });
-                recoveries.push(model_recovery(
-                    occurrence_ordinal,
-                    projection_ref,
-                    model.clone(),
-                    partition.clone(),
-                ));
+                )?;
+                push_preview_item(
+                    recoveries,
+                    model_recovery(
+                        occurrence_ordinal,
+                        projection_ref,
+                        model.clone(),
+                        partition.clone(),
+                    ),
+                )?;
             }
             ManifestProjectionInvalidation::Relationship {
                 source_model,
@@ -878,20 +1019,26 @@ fn lower_invalidations(
                 // A provenance-only relationship invalidation has no source
                 // key of its own. The record operation key may belong to a
                 // different model and is never authority for an edge scope.
-                operations.push(PreviewOperation {
-                    occurrence_ordinal,
-                    projection_refs: vec![projection_ref],
-                    mutation: PreviewMutation::InvalidateModel {
-                        partition: partition.clone(),
-                        model: source_model.clone(),
+                push_preview_item(
+                    operations,
+                    PreviewOperation {
+                        occurrence_ordinal,
+                        projection_refs: vec![projection_ref],
+                        mutation: PreviewMutation::InvalidateModel {
+                            partition: partition.clone(),
+                            model: source_model.clone(),
+                        },
                     },
-                });
-                recoveries.push(model_recovery(
-                    occurrence_ordinal,
-                    projection_ref,
-                    source_model.clone(),
-                    partition.clone(),
-                ));
+                )?;
+                push_preview_item(
+                    recoveries,
+                    model_recovery(
+                        occurrence_ordinal,
+                        projection_ref,
+                        source_model.clone(),
+                        partition.clone(),
+                    ),
+                )?;
             }
         }
     }
@@ -916,6 +1063,7 @@ fn evaluate_partition(
                     requires: PreviewPartitionRequirement::CurrentCachePartition,
                 }),
                 Knowledge::Unknown
+                | Knowledge::Absent
                 | Knowledge::Unset
                 | Knowledge::Denied
                 | Knowledge::CacheUnowned => None,
@@ -928,12 +1076,16 @@ fn evaluate_key(
     key: &[ManifestProjectionKeyField],
     slots: &BTreeMap<&str, Knowledge>,
     event: &ManifestProjectionEventRef,
+    command: &ManifestCommand,
 ) -> Option<Vec<PreviewKeyField>> {
     let mut result = Vec::with_capacity(key.len());
     for field in key {
         let Knowledge::Known(value) = evaluate_expression(&field.expression, slots, event) else {
             return None;
         };
+        if !preview_key_value_is_provably_non_null_scalar(&value, command) {
+            return None;
+        }
         result.push(PreviewKeyField {
             ordinal: field.ordinal,
             field: field.name.clone(),
@@ -941,6 +1093,79 @@ fn evaluate_key(
         });
     }
     Some(result)
+}
+
+fn preview_key_value_is_provably_non_null_scalar(
+    value: &PreviewExpression,
+    command: &ManifestCommand,
+) -> bool {
+    match value {
+        PreviewExpression::Input { path } => {
+            command_input_field(&command.input, path).is_some_and(|field| {
+                !field.nullable
+                    && !field.list
+                    && field.nested.is_none()
+                    && field.codec.as_deref() != Some("json")
+            })
+        }
+        PreviewExpression::GeneratedDefault { path } => command
+            .extensions
+            .input_defaults
+            .as_ref()
+            .is_some_and(|defaults| {
+                defaults
+                    .defaults
+                    .iter()
+                    .any(|default| default.path == *path)
+            }),
+        PreviewExpression::TrustedPreset { codec, .. } => codec != "json",
+        PreviewExpression::Constant { value } => matches!(
+            value,
+            ManifestProjectionValue::Boolean(_)
+                | ManifestProjectionValue::I64(_)
+                | ManifestProjectionValue::U64(_)
+                | ManifestProjectionValue::F64(_)
+                | ManifestProjectionValue::String(_)
+                | ManifestProjectionValue::Enum { .. }
+        ),
+        PreviewExpression::Null
+        | PreviewExpression::List { .. }
+        | PreviewExpression::Object { .. } => false,
+        PreviewExpression::Transform {
+            transform,
+            arguments,
+        } => match transform {
+            ManifestProjectionScalarTransform::StringConcat => arguments
+                .iter()
+                .all(|argument| preview_key_value_is_provably_non_null_scalar(argument, command)),
+            ManifestProjectionScalarTransform::FirstPresent => {
+                arguments.first().is_some_and(|argument| {
+                    preview_key_value_is_provably_non_null_scalar(argument, command)
+                })
+            }
+        },
+    }
+}
+
+fn command_input_field<'a>(
+    shape: &'a ManifestCommandShape,
+    path: &[String],
+) -> Option<&'a ManifestTypeField> {
+    let ManifestCommandShape::Object { definition } = shape else {
+        return None;
+    };
+    let mut current = definition;
+    for (index, segment) in path.iter().enumerate() {
+        let field = current.fields.iter().find(|field| field.name == *segment)?;
+        if index + 1 == path.len() {
+            return Some(field);
+        }
+        if field.nullable || field.list {
+            return None;
+        }
+        current = field.nested.as_deref()?;
+    }
+    None
 }
 
 fn evaluate_fields(
@@ -960,10 +1185,11 @@ fn evaluate_fields(
                         field: field.name.clone(),
                         value,
                     }),
-                    Knowledge::Unset => unset.push(field.name.clone()),
-                    Knowledge::Unknown | Knowledge::Denied | Knowledge::CacheUnowned => {
-                        uncertain = true;
-                    }
+                    Knowledge::Unknown
+                    | Knowledge::Absent
+                    | Knowledge::Unset
+                    | Knowledge::Denied
+                    | Knowledge::CacheUnowned => uncertain = true,
                 }
             }
         }
@@ -993,7 +1219,7 @@ fn source_knowledge(source: &ManifestProjectionPreviewSource) -> Knowledge {
             })
         }
         ManifestProjectionPreviewSource::Null => Knowledge::Known(PreviewExpression::Null),
-        ManifestProjectionPreviewSource::Absent => Knowledge::Unset,
+        ManifestProjectionPreviewSource::Absent => Knowledge::Absent,
         ManifestProjectionPreviewSource::Unknown => Knowledge::Unknown,
     }
 }
@@ -1053,7 +1279,7 @@ fn evaluate_expression(
                         name: field.name.clone(),
                         value,
                     }),
-                    Knowledge::Unset => {}
+                    Knowledge::Absent | Knowledge::Unset => {}
                     other => return other,
                 }
             }
@@ -1067,13 +1293,13 @@ fn evaluate_expression(
             for argument in arguments {
                 match evaluate_expression(argument, slots, event) {
                     Knowledge::Known(value) => resolved.push(value),
-                    Knowledge::Unset
+                    Knowledge::Absent | Knowledge::Unset
                         if *transform == ManifestProjectionScalarTransform::FirstPresent => {}
                     other => return other,
                 }
             }
             if resolved.is_empty() {
-                Knowledge::Unset
+                Knowledge::Absent
             } else {
                 Knowledge::Known(PreviewExpression::Transform {
                     transform: *transform,
@@ -1357,6 +1583,49 @@ mod tests {
         }
     }
 
+    fn key_command() -> ManifestCommand {
+        ManifestCommand {
+            version: 1,
+            name: "test".into(),
+            mutation_field: "test".into(),
+            grants: vec!["user".into()],
+            input: ManifestCommandShape::Object {
+                definition: ManifestTypeDef {
+                    name: "TestInput".into(),
+                    fields: ["source", "target"]
+                        .into_iter()
+                        .map(|name| ManifestTypeField {
+                            name: name.into(),
+                            type_name: "ID".into(),
+                            nullable: false,
+                            list: false,
+                            item_nullable: false,
+                            codec: Some("string".into()),
+                            nested: None,
+                        })
+                        .collect(),
+                },
+            },
+            output: ManifestCommandShape::None,
+            operation: "mutation Test { test }".into(),
+            operation_hash:
+                "sha256:0000000000000000000000000000000000000000000000000000000000000000".into(),
+            extensions: ManifestCommandExtensions {
+                version: 2,
+                consistency: ManifestCommandConsistency {
+                    version: 1,
+                    kind: ManifestConsistencyKind::Causal,
+                },
+                direct_projection: None,
+                input_defaults: None,
+                effects: None,
+                confirmations: None,
+                projection: None,
+                trusted_presets: Vec::new(),
+            },
+        }
+    }
+
     fn preview_scope(model: &str) -> PreviewScope {
         PreviewScope {
             partition: PreviewPartition::Unit,
@@ -1424,6 +1693,7 @@ mod tests {
         let event = event();
         let cases = [
             Knowledge::Known(PreviewExpression::Null),
+            Knowledge::Absent,
             Knowledge::Unset,
             Knowledge::Unknown,
             Knowledge::Denied,
@@ -1474,6 +1744,7 @@ mod tests {
         let expression = ManifestProjectionPartition::Expression { expression: slot() };
         for knowledge in [
             Knowledge::Unknown,
+            Knowledge::Absent,
             Knowledge::Unset,
             Knowledge::Denied,
             Knowledge::CacheUnowned,
@@ -1481,6 +1752,109 @@ mod tests {
             let slots = BTreeMap::from([("value", knowledge)]);
             assert!(evaluate_partition(&expression, &slots, &event()).is_none());
         }
+    }
+
+    #[test]
+    fn absent_composes_without_becoming_an_unset() {
+        let slots = BTreeMap::from([
+            ("absent", Knowledge::Absent),
+            (
+                "known",
+                Knowledge::Known(PreviewExpression::Input {
+                    path: vec!["known".into()],
+                }),
+            ),
+        ]);
+        let slot = |name: &str| ManifestProjectionExpression::Slot {
+            slot: name.into(),
+            value_type: ManifestProjectionValueType::String,
+        };
+        let object = ManifestProjectionExpression::Object {
+            fields: vec![
+                ManifestProjectionObjectField {
+                    name: "missing".into(),
+                    value: slot("absent"),
+                },
+                ManifestProjectionObjectField {
+                    name: "present".into(),
+                    value: slot("known"),
+                },
+            ],
+        };
+        assert!(matches!(
+            evaluate_expression(&object, &slots, &event()),
+            Knowledge::Known(PreviewExpression::Object { fields }) if fields.len() == 1
+        ));
+
+        let first_present = ManifestProjectionExpression::Transform {
+            transform: ManifestProjectionScalarTransform::FirstPresent,
+            arguments: vec![slot("absent"), slot("known")],
+        };
+        assert!(matches!(
+            evaluate_expression(&first_present, &slots, &event()),
+            Knowledge::Known(PreviewExpression::Transform { arguments, .. })
+                if arguments.len() == 1
+        ));
+        let all_absent = ManifestProjectionExpression::Transform {
+            transform: ManifestProjectionScalarTransform::FirstPresent,
+            arguments: vec![slot("absent")],
+        };
+        assert_eq!(
+            evaluate_expression(&all_absent, &slots, &event()),
+            Knowledge::Absent
+        );
+    }
+
+    #[test]
+    fn projection_keys_require_provable_non_null_scalars() {
+        let command = key_command();
+        for value in [
+            ManifestProjectionValue::Boolean(true),
+            ManifestProjectionValue::I64("-1".into()),
+            ManifestProjectionValue::U64("1".into()),
+            ManifestProjectionValue::F64("1.5".into()),
+            ManifestProjectionValue::String("id".into()),
+            ManifestProjectionValue::Enum {
+                enum_type: "Status".into(),
+                variant: "OPEN".into(),
+            },
+        ] {
+            assert!(preview_key_value_is_provably_non_null_scalar(
+                &PreviewExpression::Constant { value },
+                &command,
+            ));
+        }
+        for value in [
+            ManifestProjectionValue::Null,
+            ManifestProjectionValue::List(vec![ManifestProjectionValue::String("id".into())]),
+            ManifestProjectionValue::Object(vec![ManifestProjectionValueField {
+                name: "id".into(),
+                value: ManifestProjectionValue::String("id".into()),
+            }]),
+        ] {
+            assert!(!preview_key_value_is_provably_non_null_scalar(
+                &PreviewExpression::Constant { value },
+                &command,
+            ));
+        }
+
+        assert!(preview_key_value_is_provably_non_null_scalar(
+            &PreviewExpression::Input {
+                path: vec!["source".into()],
+            },
+            &command,
+        ));
+        let mut nullable = command;
+        let ManifestCommandShape::Object { definition } = &mut nullable.input else {
+            unreachable!();
+        };
+        definition.fields[0].nullable = true;
+        assert!(!preview_key_value_is_provably_non_null_scalar(
+            &PreviewExpression::Input {
+                path: vec!["source".into()],
+            },
+            &nullable,
+        ));
     }
 
     #[test]
@@ -1606,7 +1980,40 @@ mod tests {
     }
 
     #[test]
+    fn expanded_preview_inventory_accepts_128_and_rejects_129() {
+        let scope = preview_scope("Todo");
+        let one_operation = operation(0, PreviewMutation::Delete { scope });
+        let mut operations = Vec::new();
+        for _ in 0..MAX_PREVIEW_ITEMS {
+            push_preview_item(&mut operations, one_operation.clone()).unwrap();
+        }
+        assert!(validate_preview_inventory(&operations, &[]).is_ok());
+        assert_eq!(
+            push_preview_item(&mut operations, one_operation)
+                .unwrap_err()
+                .code,
+            "client.manifest.command_projection_preview_inventory"
+        );
+        assert_eq!(operations.len(), MAX_PREVIEW_ITEMS);
+
+        let one_recovery = model_recovery(0, 0, "Todo".into(), Some(PreviewPartition::Unit));
+        let mut recoveries = Vec::new();
+        for _ in 0..MAX_PREVIEW_ITEMS {
+            push_preview_item(&mut recoveries, one_recovery.clone()).unwrap();
+        }
+        assert!(validate_preview_inventory(&[], &recoveries).is_ok());
+        assert_eq!(
+            push_preview_item(&mut recoveries, one_recovery)
+                .unwrap_err()
+                .code,
+            "client.manifest.command_projection_preview_inventory"
+        );
+        assert_eq!(recoveries.len(), MAX_PREVIEW_ITEMS);
+    }
+
+    #[test]
     fn relationship_preview_never_guesses_an_uncertain_edge() {
+        let command = key_command();
         let known = |path: &str| {
             Knowledge::Known(PreviewExpression::Input {
                 path: vec![path.into()],
@@ -1626,6 +2033,7 @@ mod tests {
             &operation,
             &partition,
             &known_slots,
+            &command,
             &mut operations,
             &mut recoveries,
         )
@@ -1646,6 +2054,7 @@ mod tests {
             &operation,
             &partition,
             &uncertain_target,
+            &command,
             &mut operations,
             &mut recoveries,
         )
@@ -1670,6 +2079,7 @@ mod tests {
             &operation,
             &partition,
             &uncertain_source,
+            &command,
             &mut operations,
             &mut recoveries,
         )
@@ -1683,6 +2093,7 @@ mod tests {
 
     #[test]
     fn relationship_invalidation_uses_only_its_explicit_keyed_effect() {
+        let command = key_command();
         let known = |path: &str| {
             Knowledge::Known(PreviewExpression::Input {
                 path: vec![path.into()],
@@ -1706,6 +2117,7 @@ mod tests {
             &operation,
             &partition,
             &slots,
+            &command,
             &mut operations,
             &mut recoveries,
         )

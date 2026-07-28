@@ -489,8 +489,14 @@ fn validate_operation(
                 ));
             }
         }
-        ManifestProjectionMutationKind::InvalidateModel
-        | ManifestProjectionMutationKind::InvalidateRelationship => {}
+        ManifestProjectionMutationKind::InvalidateModel => {}
+        ManifestProjectionMutationKind::InvalidateRelationship => {
+            return Err(projection_error(
+                "client.manifest.projection_invalidation",
+                "top-level relationship invalidation has no source-key provenance; use an \
+                 explicit relationship effect with kind `invalidate`",
+            ));
+        }
     }
     validate_relationships(operation, models)?;
     validate_invalidations(operation, models)

@@ -702,6 +702,61 @@ fn generated_command_types_manifest() -> JsonValue {
             }
         }),
     ]);
+    install_create_projection(&mut value);
+    value["commands"][0]["extensions"]["projection"] = json!({
+        "version": 2,
+        "event_set": [{
+            "id": "event:todo.created:v1",
+            "name": "todo.created",
+            "version": 1
+        }],
+        "program_arms": [{
+            "event": {
+                "id": "event:todo.created:v1",
+                "name": "todo.created",
+                "version": 1
+            },
+            "program_id": "pp1:sha256:1111111111111111111111111111111111111111111111111111111111111111",
+            "arm": "todo-created"
+        }],
+        "preview_occurrences": [{
+            "ordinal": 0,
+            "event": {
+                "id": "event:todo.created:v1",
+                "name": "todo.created",
+                "version": 1
+            },
+            "values": [
+                {
+                    "slot": "state.completed",
+                    "source": {
+                        "kind": "constant",
+                        "value": {"type": "boolean", "value": false}
+                    }
+                },
+                {
+                    "slot": "state.id",
+                    "source": {"kind": "input", "path": ["id"]}
+                },
+                {
+                    "slot": "state.priority",
+                    "source": {
+                        "kind": "constant",
+                        "value": {"type": "i64", "value": "0"}
+                    }
+                },
+                {
+                    "slot": "state.tenantId",
+                    "source": {"kind": "input", "path": ["tenantId"]}
+                },
+                {
+                    "slot": "state.title",
+                    "source": {"kind": "null"}
+                }
+            ]
+        }],
+        "fallback": "revalidate"
+    });
     refresh_schema_fingerprint(&mut value);
     value
 }
@@ -2625,6 +2680,47 @@ fn command_protocol_and_extensions_are_preserved_exactly() {
     unknown_key_value["commands"][0]["extensions"]["projection"]["preview_occurrences"][0]
         ["values"][1]["source"] = json!({"kind": "unknown"});
     refresh_schema_fingerprint(&mut unknown_key_value);
+    let mut null_key_value = value.clone();
+    null_key_value["commands"][0]["extensions"]["projection"]["preview_occurrences"][0]["values"]
+        [1]["source"] = json!({"kind": "null"});
+    refresh_schema_fingerprint(&mut null_key_value);
+    let mut nullable_input_key_value = value.clone();
+    nullable_input_key_value["commands"][0]["input"]["definition"]["fields"][0]["nullable"] =
+        json!(true);
+    nullable_input_key_value["commands"][0]["extensions"]
+        .as_object_mut()
+        .unwrap()
+        .remove("input_defaults");
+    nullable_input_key_value["commands"][0]["extensions"]["projection"]["preview_occurrences"][0]
+        ["values"][1]["source"] = json!({"kind": "input", "path": ["id"]});
+    refresh_schema_fingerprint(&mut nullable_input_key_value);
+    let mut json_list_key_value = value.clone();
+    json_list_key_value["projection_programs"][0]["arms"][0]["operations"][0]["key"][1]
+        ["expression"]["value_type"] = json!({"type": "json"});
+    json_list_key_value["commands"][0]["extensions"]["projection"]["preview_occurrences"][0]
+        ["values"][1]["source"] = json!({
+        "kind": "constant",
+        "value": {
+            "type": "list",
+            "value": [{"type": "string", "value": "todo-1"}]
+        }
+    });
+    refresh_schema_fingerprint(&mut json_list_key_value);
+    let mut json_object_key_value = value.clone();
+    json_object_key_value["projection_programs"][0]["arms"][0]["operations"][0]["key"][1]
+        ["expression"]["value_type"] = json!({"type": "json"});
+    json_object_key_value["commands"][0]["extensions"]["projection"]["preview_occurrences"][0]
+        ["values"][1]["source"] = json!({
+        "kind": "constant",
+        "value": {
+            "type": "object",
+            "value": [{
+                "name": "id",
+                "value": {"type": "string", "value": "todo-1"}
+            }]
+        }
+    });
+    refresh_schema_fingerprint(&mut json_object_key_value);
     let mut unknown_partition_value = value.clone();
     unknown_partition_value["commands"][0]["extensions"]["projection"]["preview_occurrences"][0]
         ["values"][3]["source"] = json!({"kind": "unknown"});
@@ -2714,6 +2810,90 @@ fn command_protocol_and_extensions_are_preserved_exactly() {
         "value_type": {"type": "boolean"}
     });
     refresh_schema_fingerprint(&mut conflicting_slot_type);
+    let mut top_level_relationship_invalidation = value.clone();
+    top_level_relationship_invalidation["projection_programs"][0]["arms"][0]["operations"][0]
+        ["kind"] = json!("invalidate_relationship");
+    refresh_schema_fingerprint(&mut top_level_relationship_invalidation);
+    let mut no_preview_value = value.clone();
+    no_preview_value["models"]
+        .as_array_mut()
+        .unwrap()
+        .push(model("User", "user"));
+    no_preview_value["commands"][0]["extensions"]["projection"]["preview_occurrences"] = json!([]);
+    refresh_schema_fingerprint(&mut no_preview_value);
+    let mut occurrence_boundary = value.clone();
+    let occurrence = occurrence_boundary["commands"][0]["extensions"]["projection"]
+        ["preview_occurrences"][0]
+        .clone();
+    occurrence_boundary["commands"][0]["extensions"]["projection"]["preview_occurrences"] =
+        JsonValue::Array(
+            (0..128)
+                .map(|ordinal| {
+                    let mut occurrence = occurrence.clone();
+                    occurrence["ordinal"] = json!(ordinal);
+                    occurrence
+                })
+                .collect(),
+        );
+    refresh_schema_fingerprint(&mut occurrence_boundary);
+    let mut too_many_occurrences = occurrence_boundary.clone();
+    let mut extra_occurrence = too_many_occurrences["commands"][0]["extensions"]["projection"]
+        ["preview_occurrences"][0]
+        .clone();
+    extra_occurrence["ordinal"] = json!(128);
+    too_many_occurrences["commands"][0]["extensions"]["projection"]["preview_occurrences"]
+        .as_array_mut()
+        .unwrap()
+        .push(extra_occurrence);
+    refresh_schema_fingerprint(&mut too_many_occurrences);
+    let mut value_boundary = value.clone();
+    let extra_slots = (0..123)
+        .map(|index| format!("zz{index:03}"))
+        .collect::<Vec<_>>();
+    value_boundary["projection_programs"][0]["arms"][0]["partition"]["expression"] = json!({
+        "kind": "list",
+        "values": extra_slots
+            .iter()
+            .map(|slot| json!({
+                "kind": "slot",
+                "slot": slot,
+                "value_type": {"type": "string"}
+            }))
+            .collect::<Vec<_>>()
+    });
+    value_boundary["commands"][0]["extensions"]["projection"]["preview_occurrences"][0]["values"]
+        .as_array_mut()
+        .unwrap()
+        .extend(extra_slots.iter().map(|slot| {
+            json!({
+                "slot": slot,
+                "source": {
+                    "kind": "constant",
+                    "value": {"type": "string", "value": slot}
+                }
+            })
+        }));
+    refresh_schema_fingerprint(&mut value_boundary);
+    let mut too_many_values = value_boundary.clone();
+    too_many_values["projection_programs"][0]["arms"][0]["partition"]["expression"]["values"]
+        .as_array_mut()
+        .unwrap()
+        .push(json!({
+            "kind": "slot",
+            "slot": "zz123",
+            "value_type": {"type": "string"}
+        }));
+    too_many_values["commands"][0]["extensions"]["projection"]["preview_occurrences"][0]["values"]
+        .as_array_mut()
+        .unwrap()
+        .push(json!({
+            "slot": "zz123",
+            "source": {
+                "kind": "constant",
+                "value": {"type": "string", "value": "zz123"}
+            }
+        }));
+    refresh_schema_fingerprint(&mut too_many_values);
     let project = compile_client(ClientCompileInput::new(
         value,
         ClientSurfaceSelector::role("user"),
@@ -2803,10 +2983,12 @@ fn command_protocol_and_extensions_are_preserved_exactly() {
             "query Todos { todos { id } }",
         )],
     ))
-    .expect("compile explicitly absent projection field");
+    .expect("compile absent projection field without clearing cached state");
     let absent_commands = file(&absent, "commands.ts");
     assert!(absent_commands.contains("\"op\": \"patch\""));
-    assert!(absent_commands.contains("\"unset\": [\n              \"title\"\n"));
+    assert!(!absent_commands.contains("\"unset\""));
+    assert!(absent_commands.contains("\"field\": \"completed\""));
+    assert!(absent_commands.contains("\"field\": \"priority\""));
     assert!(absent_commands.contains("\"condition\": \"if_record_missing\""));
     assert!(!absent_commands.contains("\"op\": \"upsert\""));
 
@@ -2824,7 +3006,14 @@ fn command_protocol_and_extensions_are_preserved_exactly() {
     assert!(null_commands.contains("\"kind\": \"null\""));
     assert!(!null_commands.contains("\"condition\": \"if_record_missing\""));
 
-    for fallback in [unknown_key_value, unknown_partition_value] {
+    for fallback in [
+        unknown_key_value,
+        null_key_value,
+        nullable_input_key_value,
+        json_list_key_value,
+        json_object_key_value,
+        unknown_partition_value,
+    ] {
         let project = compile_client(ClientCompileInput::new(
             fallback,
             ClientSurfaceSelector::role("user"),
@@ -2913,6 +3102,59 @@ fn command_protocol_and_extensions_are_preserved_exactly() {
     ))
     .expect_err("one opaque slot cannot claim conflicting value types");
     assert_eq!(error.code, "client.manifest.command_projection_slot_type");
+
+    let error = compile_client(ClientCompileInput::new(
+        top_level_relationship_invalidation,
+        ClientSurfaceSelector::role("user"),
+        vec![ClientDocument::new(
+            "src/routes/todos/+page.graphql",
+            "query Todos { todos { id } }",
+        )],
+    ))
+    .expect_err("top-level relationship invalidation lacks source-key provenance");
+    assert_eq!(error.code, "client.manifest.projection_invalidation");
+
+    let no_preview = compile_client(ClientCompileInput::new(
+        no_preview_value,
+        ClientSurfaceSelector::role("user"),
+        vec![ClientDocument::new(
+            "src/routes/todos/+page.graphql",
+            "query Todos { todos { id } }",
+        )],
+    ))
+    .expect("compile static revalidation targets without optimistic occurrences");
+    let no_preview_commands = file(&no_preview, "commands.ts");
+    assert!(no_preview_commands.contains("\"models\": [\n      \"Todo\"\n"));
+    assert!(!no_preview_commands.contains("\"User\""));
+    assert!(!no_preview_commands.contains("\"user_rows\""));
+
+    for boundary in [occurrence_boundary, value_boundary] {
+        compile_client(ClientCompileInput::new(
+            boundary,
+            ClientSurfaceSelector::role("user"),
+            vec![ClientDocument::new(
+                "src/routes/todos/+page.graphql",
+                "query Todos { todos { id } }",
+            )],
+        ))
+        .expect("projection preview accepts the frozen 128-entry boundary");
+    }
+    for overflow in [too_many_occurrences, too_many_values] {
+        let error = compile_client(ClientCompileInput::new(
+            overflow,
+            ClientSurfaceSelector::role("user"),
+            vec![ClientDocument::new(
+                "src/routes/todos/+page.graphql",
+                "query Todos { todos { id } }",
+            )],
+        ))
+        .expect_err("projection preview rejects 129 entries");
+        assert!(matches!(
+            error.code,
+            "client.manifest.command_projection_inventory"
+                | "client.manifest.command_projection_preview_inventory"
+        ));
+    }
 }
 
 #[test]

@@ -220,12 +220,12 @@ impl ProjectionSurfaceIdentity {
             Self::Role { name } => nonempty(name, "role surface"),
             Self::Application { name, roles } => {
                 nonempty(name, "application surface")?;
-                if roles.is_empty() || roles.windows(2).any(|pair| pair[0] >= pair[1]) {
+                if roles.is_empty() {
                     return Err(invalid(
                         "ProjectionDelta application roles must be sorted, unique, and non-empty",
                     ));
                 }
-                Ok(())
+                validate_names(roles, "application roles")
             }
         }
     }
@@ -833,6 +833,35 @@ mod tests {
             ProjectionDeltaWire::from_canonical_bytes(&serde_json::to_vec(&value).unwrap())
                 .is_err()
         );
+    }
+
+    #[test]
+    fn application_surface_roles_match_server_identity_validation() {
+        for roles in [
+            Vec::<String>::new(),
+            vec!["".into()],
+            vec![" user".into()],
+            vec!["user".into(), "user".into()],
+            vec!["user".into(), "admin".into()],
+            vec!["x".repeat(4 * 1024 + 1)],
+        ] {
+            let mut delta = vector();
+            delta.identity.surface = ProjectionSurfaceIdentity::Application {
+                name: "web".into(),
+                roles,
+            };
+            assert!(
+                delta.canonical_bytes().is_err(),
+                "invalid application role inventory must fail closed"
+            );
+        }
+
+        let mut delta = vector();
+        delta.identity.surface = ProjectionSurfaceIdentity::Application {
+            name: "web".into(),
+            roles: vec!["admin".into(), "user".into()],
+        };
+        assert!(delta.canonical_bytes().is_ok());
     }
 
     #[test]
