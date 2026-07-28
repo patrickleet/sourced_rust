@@ -14,6 +14,7 @@ mod effects;
 mod outcomes;
 mod projection_obligations;
 mod projection_proof;
+mod projections;
 mod typed_command;
 
 #[cfg(test)]
@@ -52,6 +53,11 @@ pub use outcomes::{
 };
 pub(crate) use projection_obligations::{
     validate_projection_confirmation_count, CommandInputDefault, CommandProjectionConfirmation,
+};
+pub(crate) use projections::CommandProjectionEvents;
+pub use projections::{
+    __command_projection_events, CommandProjectionEventSet, CommandProjectionPreview,
+    CommandProjectionPreviewSource,
 };
 // Re-exported for unit tests that resolve obligations through this module path.
 #[cfg_attr(not(test), allow(unused_imports))]

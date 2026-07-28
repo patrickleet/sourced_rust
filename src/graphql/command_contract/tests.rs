@@ -37,6 +37,27 @@ struct Payload {
     id: String,
 }
 
+#[derive(Serialize, crate::DomainEvent)]
+#[domain_event(name = "todo.completed", version = 1)]
+struct TodoCompleted {
+    todo_id: String,
+    status: String,
+}
+
+#[derive(Serialize, crate::DomainEvent)]
+#[domain_event(name = "todo.completed", version = 1)]
+struct ConflictingTodoCompleted {
+    todo_id: String,
+    completed_at: String,
+}
+
+#[derive(Serialize, crate::DomainEvent)]
+#[domain_event(name = "todo.renamed", version = 1)]
+struct TodoRenamed {
+    todo_id: String,
+    title: String,
+}
+
 impl GraphqlOutputType for Payload {
     fn graphql_type() -> GraphqlTypeDef {
         GraphqlTypeDef::new(
@@ -84,6 +105,95 @@ fn successful_consistency_wire_vocabulary_is_exact_and_breaking() {
     }
     assert!(serde_json::from_str::<CommandConsistency>("\"accepted\"").is_err());
     assert!(serde_json::from_str::<CommandConsistency>("\"fact\"").is_err());
+}
+
+#[test]
+fn command_events_are_exact_values_independent_of_projector_declarations() {
+    let contract = typed_command::<Input, Succeeded<Payload>>("todo.complete")
+        .emits(crate::events![TodoCompleted])
+        .into_contract();
+    let binding = TypedServiceCommandBinding::from_contracts("todos", &[contract.clone()]);
+    assert!(binding.is_ok());
+    assert_eq!(contract.projections.selectors.len(), 1);
+    assert_eq!(
+        contract.projections.selectors[0].event_name(),
+        "todo.completed"
+    );
+}
+
+#[test]
+fn command_event_registration_rejects_duplicates_and_conflicting_schemas() {
+    let duplicate = typed_command::<Input, Succeeded<Payload>>("todo.duplicate")
+        .emits(crate::events![TodoCompleted])
+        .emits(crate::events![TodoCompleted])
+        .into_contract();
+    assert!(
+        TypedServiceCommandBinding::from_contracts("todos", &[duplicate])
+            .unwrap_err()
+            .contains("repeats an exact emitted")
+    );
+
+    let conflicting = typed_command::<Input, Succeeded<Payload>>("todo.conflicting")
+        .emits(crate::events![TodoCompleted, ConflictingTodoCompleted])
+        .into_contract();
+    assert!(
+        TypedServiceCommandBinding::from_contracts("todos", &[conflicting])
+            .unwrap_err()
+            .contains("conflicting schemas")
+    );
+}
+
+#[test]
+fn command_preview_requires_membership_and_rejects_server_only_sources() {
+    let outside = typed_command::<Input, Succeeded<Payload>>("todo.outside")
+        .emits(crate::events![TodoCompleted])
+        .preview(crate::state_preview! {
+            events: crate::events![TodoRenamed],
+            fields: {
+                ["todo_id"] => CommandProjectionPreviewSource::input(["id"])
+            }
+        })
+        .into_contract();
+    assert!(
+        TypedServiceCommandBinding::from_contracts("todos", &[outside])
+            .unwrap_err()
+            .contains("outside its exact emitted event set")
+    );
+
+    let server_only = typed_command::<Input, Succeeded<Payload>>("todo.server-only")
+        .emits(crate::events![TodoCompleted])
+        .preview(crate::state_preview! {
+            events: crate::events![TodoCompleted],
+            fields: {
+                ["todo_id"] => CommandProjectionPreviewSource::ServerOnly
+            }
+        })
+        .into_contract();
+    assert!(
+        TypedServiceCommandBinding::from_contracts("todos", &[server_only])
+            .unwrap_err()
+            .contains("server-only preview provenance")
+    );
+}
+
+#[test]
+fn partial_preview_retains_known_unknown_unset_and_typed_constant_sources() {
+    let contract = typed_command::<Input, Succeeded<Payload>>("todo.partial")
+        .emits(crate::events![TodoCompleted])
+        .preview(crate::state_preview! {
+            events: crate::events![TodoCompleted],
+            fields: {
+                ["todo_id"] => CommandProjectionPreviewSource::input(["id"]),
+                ["status"] => CommandProjectionPreviewSource::constant(
+                    crate::ProjectionValue::string("completed")
+                ),
+                ["optional"] => CommandProjectionPreviewSource::Unknown,
+                ["removed"] => CommandProjectionPreviewSource::Unset
+            }
+        })
+        .into_contract();
+    TypedServiceCommandBinding::from_contracts("todos", &[contract.clone()]).unwrap();
+    assert_eq!(contract.projections.previews[0].preview.fields.len(), 4);
 }
 
 fn confirmation_with_facts(facts: &[&str]) -> CommandProjectionConfirmation {
@@ -504,8 +614,8 @@ fn command_fingerprints_canonicalize_nested_json_object_keys() {
             reverse_binding.structural_fingerprint.as_str(),
         ),
         (
-            "sha256:17dd2ae5f736befcd5b70b39a594782cb8cc3b090ee0c9b9ae2089a3e156583d",
-            "sha256:d51e11ca2bbd5c32c5463839f8c3dc8f5bbc9a005b4e2ba3adf2e32fed0d2d2e",
+            "sha256:db980e553f62b65ee01600c23c0331e97b5083f5e9f3b65498cb4cde344a0204",
+            "sha256:ba291c9b13aafb68a135b5b8112e3e2ebf1fa1e23819eb210219c60b186c265f",
         )
     );
 }

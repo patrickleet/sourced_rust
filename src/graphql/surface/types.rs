@@ -201,6 +201,7 @@ pub struct SurfaceCommand {
     pub(crate) confirmations: Vec<CommandProjectionConfirmation>,
     pub(crate) projected_model: Option<CommandProjectedModel>,
     pub(crate) direct_projection: Option<CommandDirectProjectionTarget>,
+    pub(crate) projections: CommandProjectionEvents,
     /// Authorization selection erased at least one required confirmation.
     /// No hidden projector/model/key IDs may survive into client artifacts.
     pub(crate) confirmation_unavailable: bool,

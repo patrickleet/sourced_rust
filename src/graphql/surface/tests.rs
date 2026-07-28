@@ -80,6 +80,7 @@ fn test_command(
         confirmations: Vec::new(),
         projected_model: None,
         direct_projection: None,
+        projections: Default::default(),
     }
 }
 
@@ -374,6 +375,7 @@ fn projected_output_reuse_and_sdl_emission_use_the_same_exact_predicate() {
         confirmations: Vec::new(),
         projected_model: Some(projected_model.clone()),
         direct_projection: None,
+        projections: Default::default(),
         confirmation_unavailable: false,
     };
     let one_string_field = |name: &str| SurfaceTypeDef {
@@ -501,6 +503,7 @@ fn role_surface_erases_denied_effects_and_retains_valid_trusted_presets() {
         confirmations: Vec::new(),
         projected_model: None,
         direct_projection: None,
+        projections: Default::default(),
         confirmation_unavailable: false,
     };
     let trusted_preset_command = SurfaceCommand {
@@ -534,6 +537,7 @@ fn role_surface_erases_denied_effects_and_retains_valid_trusted_presets() {
         confirmations: Vec::new(),
         projected_model: None,
         direct_projection: None,
+        projections: Default::default(),
         confirmation_unavailable: false,
     };
     full.commands = vec![denied_field_command, trusted_preset_command];
@@ -1066,6 +1070,7 @@ fn constant_validation_uses_exact_wire_scalar_domains() {
         confirmations: Vec::new(),
         projected_model: None,
         direct_projection: None,
+        projections: Default::default(),
         confirmation_unavailable: false,
     };
     let constant = |value| EffectExpression::Constant { value };
@@ -1127,6 +1132,7 @@ fn missing_surface_primary_key_column_is_a_configuration_error_not_a_panic() {
         confirmations: Vec::new(),
         projected_model: None,
         direct_projection: None,
+        projections: Default::default(),
         confirmation_unavailable: false,
     };
     let key = EffectKey {

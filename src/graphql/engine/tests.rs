@@ -81,6 +81,7 @@ mod client_surface_parity_tests {
             confirmations: Vec::new(),
             projected_model: None,
             direct_projection: None,
+            projections: Default::default(),
         }
     }
 

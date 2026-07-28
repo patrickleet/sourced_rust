@@ -38,10 +38,11 @@ pub use command_contract::{
     EffectWireTimestamp, EffectWireUnsupported,
 };
 pub use command_contract::{
-    typed_command, Causal, CommandConsistency, CompiledCommandEffects, CompiledConfirmationPlan,
-    CompiledDirectProjectionTarget, CompiledInputDefaults, PrepareCommandError, PreparedCommand,
-    Projected, Succeeded, TypedCommand, TypedEffectExpression, TypedEffectKey,
-    TypedEffectRelationship,
+    __command_projection_events, typed_command, Causal, CommandConsistency,
+    CommandProjectionEventSet, CommandProjectionPreview, CommandProjectionPreviewSource,
+    CompiledCommandEffects, CompiledConfirmationPlan, CompiledDirectProjectionTarget,
+    CompiledInputDefaults, PrepareCommandError, PreparedCommand, Projected, Succeeded,
+    TypedCommand, TypedEffectExpression, TypedEffectKey, TypedEffectRelationship,
 };
 pub use naming::{
     aggregate_field, by_pk_field, comparison_op_fields, include_postgres_json_comparison_ops,

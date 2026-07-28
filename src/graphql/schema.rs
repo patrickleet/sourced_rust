@@ -1108,6 +1108,7 @@ mod causal_command_schema_tests {
                 confirmations: Vec::new(),
                 projected_model: None,
                 direct_projection: None,
+                projections: Default::default(),
                 confirmation_unavailable: false,
             }],
             commands_attached: true,

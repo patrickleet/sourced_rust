@@ -16,8 +16,9 @@ use super::command_contract::{
     compiled_direct_projection_target, compiled_projection_confirmation,
     validate_projection_confirmation_count, CommandConsistency, CommandDirectProjectionTarget,
     CommandEffect, CommandEffects, CommandInputDefault, CommandProjectedModel,
-    CommandProjectionConfirmation, CompiledDirectProjectionTarget, CompiledProjectionConfirmation,
-    EffectExpression, EffectFieldValue, EffectKey, EffectRelationship, TypedEffectKey,
+    CommandProjectionConfirmation, CommandProjectionEvents, CompiledDirectProjectionTarget,
+    CompiledProjectionConfirmation, EffectExpression, EffectFieldValue, EffectKey,
+    EffectRelationship, TypedEffectKey,
 };
 use super::filter::{validate_row_policy_operand_literal, FilterExpr, Operand};
 use crate::projection_protocol::ProjectionPartitionSpec;

@@ -20,6 +20,7 @@ use super::projection_obligations::{
     CommandInputDefault, CommandProjectionConfirmation, ProjectionObligationResolutionError,
 };
 use super::projection_proof::{canonical_json, CommandCommitProofError};
+use super::projections::{CommandProjectionEvents, CommandProjectionPreview};
 use crate::graphql::naming;
 use crate::graphql::types::{GraphqlInputType, GraphqlOutputType, GraphqlTypeDef};
 use crate::microsvc::Session;
@@ -47,6 +48,9 @@ pub(crate) struct TypedCommandContract {
     /// resolved. This never requires an application declaration.
     pub projected_model: Option<CommandProjectedModel>,
     pub direct_projection: Option<CommandDirectProjectionTarget>,
+    /// Exact outward event contracts, independent of whichever projectors
+    /// happen to consume them in this deployment.
+    pub projections: CommandProjectionEvents,
 }
 
 impl TypedCommandContract {
@@ -96,6 +100,10 @@ impl TypedCommandContract {
             .projected_model
             .as_ref()
             .map(CommandProjectedModel::canonical_value);
+        let mut projections = self.projections.clone();
+        projections
+            .canonicalize_and_validate(&self.name)
+            .expect("validated command projection declarations are canonical");
         canonical_json(&serde_json::json!({
             "name": self.name,
             "field_name": self.field_name,
@@ -108,6 +116,7 @@ impl TypedCommandContract {
             "confirmations": confirmations,
             "projected_model": projected_model,
             "direct_projection": direct_projection,
+            "projections": projections,
         }))
     }
 
@@ -371,6 +380,8 @@ impl TypedServiceCommandBinding {
         let mut types = BTreeMap::new();
         let mut canonical = Vec::with_capacity(ordered.len());
         for contract in ordered {
+            let mut projections = contract.projections.clone();
+            projections.canonicalize_and_validate(&contract.name)?;
             if contract.name.trim().is_empty() {
                 return Err("typed command id must not be empty".into());
             }
@@ -577,6 +588,7 @@ where
             confirmations: Vec::new(),
             projected_model,
             direct_projection: None,
+            projections: CommandProjectionEvents::default(),
         },
         _types: PhantomData,
     }
@@ -619,6 +631,26 @@ impl<I, K: CommandOutcome> TypedCommand<I, K> {
     /// `Projected<_>` commands cannot carry asynchronous confirmations.
     pub fn confirmations(mut self, confirmations: CompiledConfirmationPlan<I>) -> Self {
         self.contract.confirmations = confirmations.0;
+        self
+    }
+
+    /// Declare an exact outward domain-event set this command may emit.
+    ///
+    /// This declaration is intentionally independent of projector ownership:
+    /// one occurrence can fan out to zero, one, or many modeled programs.
+    #[must_use]
+    pub fn emits(mut self, events: super::CommandProjectionEventSet) -> Self {
+        self.contract.projections.add_event_set(events);
+        self
+    }
+
+    /// Attach partial client-preview provenance to an already emitted event.
+    ///
+    /// Service registration rejects a preview whose exact event selector is
+    /// not also present through [`Self::emits`].
+    #[must_use]
+    pub fn preview(mut self, preview: CommandProjectionPreview) -> Self {
+        self.contract.projections.add_preview(preview);
         self
     }
 

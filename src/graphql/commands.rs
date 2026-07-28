@@ -84,6 +84,7 @@ impl TypedCommandInventory {
                     confirmations: contract.confirmations.clone(),
                     projected_model: contract.projected_model.clone(),
                     direct_projection: contract.direct_projection.clone(),
+                    projections: contract.projections.clone(),
                     confirmation_unavailable: false,
                 }
             })

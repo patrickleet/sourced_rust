@@ -328,6 +328,7 @@ fn projected_surface() -> Surface {
             }),
         }),
         direct_projection: None,
+        projections: Default::default(),
         confirmation_unavailable: false,
     }];
     surface.commands_attached = true;
