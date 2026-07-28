@@ -72,7 +72,7 @@ impl Todo {
         owner_id: impl Into<String>,
         title: impl Into<String>,
     ) -> Result<(), TodoError> {
-        if self.is_created() {
+        if self.purged || self.is_created() {
             return Err(TodoError::AlreadyExists);
         }
         let todo_id = todo_id.into();
@@ -251,6 +251,36 @@ mod tests {
         assert_eq!(t.status, TodoStatus::Open);
         assert_eq!(t.entity.id(), "t1");
         assert_eq!(t.entity.version(), 1);
+        assert_eq!(t.entity.events()[0].event_name, "todo.created");
+        assert_eq!(
+            t.entity.pending_domain_events()[0].descriptor().name,
+            "todo.created"
+        );
+    }
+
+    #[test]
+    fn create_after_purge_is_rejected_without_emitting_events() {
+        let mut todo = open_todo();
+        todo.purge("alice").unwrap();
+        let events_before = (
+            todo.entity.version(),
+            todo.entity.events().len(),
+            todo.entity.pending_domain_events().len(),
+        );
+
+        let error = todo
+            .create("t1", "alice", "Recreated without an explicit command")
+            .unwrap_err();
+
+        assert_eq!(error, TodoError::AlreadyExists);
+        assert_eq!(
+            (
+                todo.entity.version(),
+                todo.entity.events().len(),
+                todo.entity.pending_domain_events().len(),
+            ),
+            events_before
+        );
     }
 
     #[test]
