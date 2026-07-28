@@ -123,7 +123,15 @@ impl ProjectionDelta {
         }
         self.identity.validate()?;
         if self.projections.is_empty()
-            || self.projections.len() > MAX_PROJECTION_DELTA_OPERATIONS
+            && (!self.occurrences.is_empty()
+                || !self.operations.is_empty()
+                || !self.recoveries.is_empty())
+        {
+            return Err(ProjectionDeltaError::InvalidOperation(
+                "empty projection inventory requires an empty authoritative delta",
+            ));
+        }
+        if self.projections.len() > MAX_PROJECTION_DELTA_OPERATIONS
             || !self.projections.windows(2).all(|pair| pair[0] < pair[1])
         {
             return Err(ProjectionDeltaError::NonCanonicalOrder {
@@ -412,22 +420,23 @@ impl DeltaValue {
     }
 }
 
-/// Source completeness used while lowering a mutation.
+/// Whether provenance is an applied event or a compiler preview.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub enum ProjectionMutationSource {
+pub(crate) enum ProjectionMutationSource {
     Actual,
     Preview,
 }
 
-/// Visibility before and after the command under one authorization generation.
+/// Authorization visibility independent of record existence or liveness.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum ProjectionDeltaVisibility {
-    VisibleLive,
-    Hidden,
+    Authorized,
+    Denied,
     Unknown,
 }
 
-/// Explicit row or endpoint authorization transition.
+/// Explicit authorization transition. A domain delete under stable permission
+/// is `Authorized` to `Authorized`; it is not an authorization transition.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct AuthorizationTransition {
     pub before: ProjectionDeltaVisibility,
@@ -695,49 +704,110 @@ impl ProjectionDeltaRecoveryTarget {
 }
 
 /// Projection-delta validation and lowering failure.
-#[derive(Clone, Debug, PartialEq, Eq, thiserror::Error)]
+#[derive(Clone, Debug, PartialEq, Eq)]
 pub enum ProjectionDeltaError {
-    #[error("invalid projection-delta wire payload: {0}")]
     InvalidWire(String),
-    #[error("unsupported projection-delta wire version `{actual}`")]
     UnsupportedVersion { actual: u16 },
-    #[error("unsupported projection-delta executable `{field}` version `{actual}`")]
     UnsupportedExecutableVersion { field: &'static str, actual: u16 },
-    #[error("projection-delta `{field}` must have a non-zero version")]
     ZeroVersion { field: &'static str },
-    #[error("invalid projection-delta identity `{field}`")]
     InvalidIdentity { field: &'static str },
-    #[error("projection-delta replay scope does not match the current authorization scope")]
     ReplayScopeMismatch,
-    #[error("projection-delta has {len} operations, exceeding the maximum of {max}")]
     TooManyOperations { len: usize, max: usize },
-    #[error("projection-delta has {len} occurrences, exceeding the maximum of {max}")]
     TooManyOccurrences { len: usize, max: usize },
-    #[error("projection-delta has {len} recoveries, exceeding the maximum of {max}")]
     TooManyRecoveries { len: usize, max: usize },
-    #[error("projection-delta body is {len} bytes, exceeding the maximum of {max}")]
     BodyTooLarge { len: usize, max: usize },
-    #[error("projection-delta value depth {depth} exceeds the maximum of {max}")]
     ValueTooDeep { depth: usize, max: usize },
-    #[error("projection-delta contains a noncanonical or out-of-range number")]
     InvalidNumber,
-    #[error("projection-delta key is {len} bytes, exceeding the maximum of {max}")]
     KeyTooLarge { len: usize, max: usize },
-    #[error("projection-delta partition is {len} bytes, exceeding the maximum of {max}")]
     PartitionTooLarge { len: usize, max: usize },
-    #[error("projection-delta contains duplicate mutation scopes")]
     DuplicateScope,
-    #[error("projection-delta `{field}` order is noncanonical")]
     NonCanonicalOrder { field: &'static str },
-    #[error("invalid projection-delta operation: {0}")]
     InvalidOperation(&'static str),
-    #[error("projection binding is not an active eventual causal binding")]
     IneligibleBinding,
-    #[error("projection plan identity does not match the selected binding")]
     ProjectionIdentityMismatch,
-    #[error("projection authorization denied or could not map a required identity")]
     AuthorizationMapping,
 }
+
+impl std::fmt::Display for ProjectionDeltaError {
+    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Self::InvalidWire(error) => {
+                write!(formatter, "invalid projection-delta wire payload: {error}")
+            }
+            Self::UnsupportedVersion { actual } => {
+                write!(
+                    formatter,
+                    "unsupported projection-delta wire version `{actual}`"
+                )
+            }
+            Self::UnsupportedExecutableVersion { field, actual } => write!(
+                formatter,
+                "unsupported projection-delta executable `{field}` version `{actual}`"
+            ),
+            Self::ZeroVersion { field } => {
+                write!(formatter, "projection-delta `{field}` must be non-zero")
+            }
+            Self::InvalidIdentity { field } => {
+                write!(formatter, "invalid projection-delta identity `{field}`")
+            }
+            Self::ReplayScopeMismatch => formatter.write_str(
+                "projection-delta replay scope does not match the current authorization scope",
+            ),
+            Self::TooManyOperations { len, max } => write!(
+                formatter,
+                "projection-delta has {len} operations, exceeding the maximum of {max}"
+            ),
+            Self::TooManyOccurrences { len, max } => write!(
+                formatter,
+                "projection-delta has {len} occurrences, exceeding the maximum of {max}"
+            ),
+            Self::TooManyRecoveries { len, max } => write!(
+                formatter,
+                "projection-delta has {len} recoveries, exceeding the maximum of {max}"
+            ),
+            Self::BodyTooLarge { len, max } => write!(
+                formatter,
+                "projection-delta body is {len} bytes, exceeding the maximum of {max}"
+            ),
+            Self::ValueTooDeep { depth, max } => write!(
+                formatter,
+                "projection-delta value depth {depth} exceeds the maximum of {max}"
+            ),
+            Self::InvalidNumber => formatter
+                .write_str("projection-delta contains a noncanonical or out-of-range number"),
+            Self::KeyTooLarge { len, max } => write!(
+                formatter,
+                "projection-delta key is {len} bytes, exceeding the maximum of {max}"
+            ),
+            Self::PartitionTooLarge { len, max } => write!(
+                formatter,
+                "projection-delta partition is {len} bytes, exceeding the maximum of {max}"
+            ),
+            Self::DuplicateScope => {
+                formatter.write_str("projection-delta contains duplicate mutation scopes")
+            }
+            Self::NonCanonicalOrder { field } => {
+                write!(
+                    formatter,
+                    "projection-delta `{field}` order is noncanonical"
+                )
+            }
+            Self::InvalidOperation(message) => {
+                write!(formatter, "invalid projection-delta operation: {message}")
+            }
+            Self::IneligibleBinding => {
+                formatter.write_str("projection binding is not an eligible eventual causal binding")
+            }
+            Self::ProjectionIdentityMismatch => {
+                formatter.write_str("projection plan identity does not match the selected binding")
+            }
+            Self::AuthorizationMapping => formatter
+                .write_str("projection authorization denied or could not map a required identity"),
+        }
+    }
+}
+
+impl std::error::Error for ProjectionDeltaError {}
 
 fn validate_occurrences(
     occurrences: &[ProjectionDeltaOccurrence],

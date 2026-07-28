@@ -1,5 +1,10 @@
+use super::types::ProjectionMutationSource;
+use super::AuthorizationTransition;
 use super::{DeltaKeyField, ProjectionDeltaError, ProjectionDeltaPartition};
-use crate::{ResolvedProjectionKey, ResolvedProjectionPartition};
+use crate::{
+    ResolvedProjectionKey, ResolvedProjectionMutation, ResolvedProjectionPartition,
+    ResolvedProjectionRelationshipEffect,
+};
 
 /// An authorized normalized model identity.
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -44,7 +49,7 @@ pub struct AuthorizedRelationship {
 /// role/application Surface. Returning `None` means the identity is denied or
 /// cannot be represented safely; lowerers then recover at the narrowest
 /// authorized scope without serializing the denied logical name.
-pub trait ProjectionAuthorization {
+pub(crate) trait ProjectionAuthorization {
     /// Map one logical partition to unit or an opaque role-safe token.
     ///
     /// Raw partition values must never cross this boundary.
@@ -79,4 +84,20 @@ pub trait ProjectionAuthorization {
         logical_relationship: &str,
         target_logical_model: &str,
     ) -> Option<AuthorizedRelationship>;
+
+    /// Evaluate authorization visibility before and after one record
+    /// consequence. Row existence is independent of this transition.
+    fn record_transition(
+        &self,
+        source: ProjectionMutationSource,
+        mutation: &ResolvedProjectionMutation,
+    ) -> Result<AuthorizationTransition, ProjectionDeltaError>;
+
+    /// Evaluate endpoint/edge authorization visibility before and after one
+    /// explicit relationship consequence.
+    fn relationship_transition(
+        &self,
+        source: ProjectionMutationSource,
+        effect: &ResolvedProjectionRelationshipEffect,
+    ) -> Result<AuthorizationTransition, ProjectionDeltaError>;
 }

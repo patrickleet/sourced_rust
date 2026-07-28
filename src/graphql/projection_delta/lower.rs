@@ -11,28 +11,51 @@ use crate::{
 
 use super::authorization::ProjectionAuthorization;
 use super::canonical::{canonicalize_operations, canonicalize_recoveries};
+use super::types::ProjectionMutationSource;
 use super::{
     AuthorizationTransition, DeltaField, DeltaValue, ProjectionDelta, ProjectionDeltaError,
     ProjectionDeltaIdentity, ProjectionDeltaMutation, ProjectionDeltaOccurrence,
     ProjectionDeltaOperation, ProjectionDeltaProjectionIdentity, ProjectionDeltaRecovery,
     ProjectionDeltaRecoveryTarget, ProjectionDeltaScope, ProjectionDeltaSurfaceIdentity,
-    ProjectionDeltaVisibility, ProjectionMutationSource, PROJECTION_DELTA_WIRE_VERSION,
+    ProjectionDeltaVisibility, PROJECTION_DELTA_WIRE_VERSION,
 };
 
 /// Exact eligible binding pins used while lowering.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct ProjectionDeltaSource {
-    pub program_id: String,
-    pub binding_id: String,
-    pub epoch: String,
-    pub program_ir_version: u16,
-    pub operation_semantics_version: u16,
-    pub placement: ProjectionPlacement,
-    pub execution_class: ProjectionExecutionClass,
-    pub state: ProjectionBindingState,
+    program_id: String,
+    binding_id: String,
+    epoch: String,
+    program_ir_version: u16,
+    operation_semantics_version: u16,
+    placement: ProjectionPlacement,
+    execution_class: ProjectionExecutionClass,
+    state: ProjectionBindingState,
 }
 
 impl ProjectionDeltaSource {
+    /// Capture exact pins from an already role/application-selected modeled
+    /// Surface projection.
+    pub(crate) fn try_from_surface(
+        projection: &crate::graphql::surface::SurfaceModeledProjection,
+    ) -> Result<Self, ProjectionDeltaError> {
+        let selected = projection
+            .selected_program()
+            .ok_or(ProjectionDeltaError::IneligibleBinding)?;
+        let source = Self {
+            program_id: projection.program_id().to_string(),
+            binding_id: projection.binding_id().to_string(),
+            epoch: projection.epoch().as_str().to_owned(),
+            program_ir_version: selected.ir_version,
+            operation_semantics_version: selected.operation_semantics_version,
+            placement: projection.placement(),
+            execution_class: projection.execution_class(),
+            state: projection.state(),
+        };
+        source.validate_for(ProjectionMutationSource::Actual)?;
+        Ok(source)
+    }
+
     pub(crate) fn wire_identity(&self) -> ProjectionDeltaProjectionIdentity {
         ProjectionDeltaProjectionIdentity {
             program_id: self.program_id.clone(),
@@ -61,13 +84,29 @@ impl ProjectionDeltaSource {
 /// Command-wide role/application identity for lowering.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct ProjectionDeltaContext {
-    pub surface: ProjectionDeltaSurfaceIdentity,
-    pub schema_fingerprint: String,
-    pub authorization_generation: String,
-    pub command_causation_id: String,
+    surface: ProjectionDeltaSurfaceIdentity,
+    schema_fingerprint: String,
+    authorization_generation: String,
+    command_causation_id: String,
 }
 
 impl ProjectionDeltaContext {
+    pub(crate) fn try_new(
+        surface: ProjectionDeltaSurfaceIdentity,
+        schema_fingerprint: impl Into<String>,
+        authorization_generation: impl Into<String>,
+        command_causation_id: impl Into<String>,
+    ) -> Result<Self, ProjectionDeltaError> {
+        let context = Self {
+            surface,
+            schema_fingerprint: schema_fingerprint.into(),
+            authorization_generation: authorization_generation.into(),
+            command_causation_id: command_causation_id.into(),
+        };
+        context.wire_identity().validate()?;
+        Ok(context)
+    }
+
     fn wire_identity(&self) -> ProjectionDeltaIdentity {
         ProjectionDeltaIdentity {
             surface: self.surface.clone(),
@@ -78,53 +117,48 @@ impl ProjectionDeltaContext {
     }
 }
 
-/// One server-resolved or compiler-preview logical mutation.
-#[derive(Clone, Debug)]
-pub struct LogicalProjectionMutation<'a> {
-    pub source: ProjectionMutationSource,
-    pub mutation: &'a ResolvedProjectionMutation,
-    pub transition: AuthorizationTransition,
-}
-
-/// One explicit logical relationship invalidation independent of row mutation.
-#[derive(Clone, Debug)]
-pub struct LogicalProjectionInvalidation {
-    pub invalidation: ProjectionInvalidation,
-    pub source_key: Option<ProjectionDeltaScope>,
-}
-
-/// One relationship effect exposed for callers constructing preview batches.
-#[derive(Clone, Debug)]
-pub struct LogicalRelationshipEffect<'a> {
-    pub source_model: &'a str,
-    pub relationship: &'a str,
-    pub target_model: &'a str,
-    pub source_key: Option<&'a ResolvedProjectionKey>,
-    pub target_key: Option<&'a ResolvedProjectionKey>,
-    pub link: Option<bool>,
-    pub transition: AuthorizationTransition,
-}
-
-/// One concrete/absent/unset logical field used by preview adapters.
-#[derive(Clone, Debug)]
-pub struct LogicalFieldValue {
-    pub logical_field: String,
-    pub value: ResolvedProjectionValue,
-}
-
 /// One zero-based command occurrence and all selected program plans.
 #[derive(Clone, Debug)]
-pub struct LogicalProjectionOccurrence<'a> {
-    pub occurrence_id: String,
-    pub plans: Vec<(&'a ProjectionDeltaSource, &'a ResolvedProjectionPlan)>,
-    pub mutations: Vec<(&'a ProjectionDeltaSource, LogicalProjectionMutation<'a>)>,
+pub(crate) struct ProjectionDeltaPlanOccurrence<'a> {
+    source: ProjectionMutationSource,
+    occurrence_id: String,
+    plans: Vec<(&'a ProjectionDeltaSource, &'a ResolvedProjectionPlan)>,
 }
 
-/// Complete ordered logical input for one command delta.
-#[derive(Clone, Debug)]
-pub struct LogicalProjectionBatch<'a> {
-    pub context: ProjectionDeltaContext,
-    pub occurrences: Vec<LogicalProjectionOccurrence<'a>>,
+impl<'a> ProjectionDeltaPlanOccurrence<'a> {
+    pub(crate) fn actual(
+        plans: Vec<(&'a ProjectionDeltaSource, &'a ResolvedProjectionPlan)>,
+    ) -> Result<Self, ProjectionDeltaError> {
+        Self::try_new(ProjectionMutationSource::Actual, plans)
+    }
+
+    #[cfg(test)]
+    pub(crate) fn preview(
+        plans: Vec<(&'a ProjectionDeltaSource, &'a ResolvedProjectionPlan)>,
+    ) -> Result<Self, ProjectionDeltaError> {
+        Self::try_new(ProjectionMutationSource::Preview, plans)
+    }
+
+    fn try_new(
+        source: ProjectionMutationSource,
+        plans: Vec<(&'a ProjectionDeltaSource, &'a ResolvedProjectionPlan)>,
+    ) -> Result<Self, ProjectionDeltaError> {
+        let occurrence_id = plans
+            .first()
+            .map(|(_, plan)| plan.occurrence().id().to_owned())
+            .ok_or(ProjectionDeltaError::InvalidOperation(
+                "projection occurrence must contain at least one canonical resolved plan",
+            ))?;
+        for (projection, plan) in &plans {
+            projection.validate_for(source)?;
+            validate_plan(projection, plan, &occurrence_id)?;
+        }
+        Ok(Self {
+            source,
+            occurrence_id,
+            plans,
+        })
+    }
 }
 
 /// Lower selected logical projection plans into one role-safe delta.
@@ -134,21 +168,15 @@ pub struct LogicalProjectionBatch<'a> {
 /// Rejects ineligible/direct/draining bindings, identity mismatches,
 /// authorization generation changes, unsafe mappings, and resource overflows.
 pub fn lower_projection_delta(
-    batch: &LogicalProjectionBatch<'_>,
+    context: &ProjectionDeltaContext,
+    batch: &[ProjectionDeltaPlanOccurrence<'_>],
     authorization: &impl ProjectionAuthorization,
 ) -> Result<ProjectionDelta, ProjectionDeltaError> {
-    let identity = batch.context.wire_identity();
+    let identity = context.wire_identity();
     identity.validate()?;
     let mut sources = batch
-        .occurrences
         .iter()
-        .flat_map(|occurrence| {
-            occurrence
-                .plans
-                .iter()
-                .map(|(source, _)| *source)
-                .chain(occurrence.mutations.iter().map(|(source, _)| *source))
-        })
+        .flat_map(|occurrence| occurrence.plans.iter().map(|(source, _)| *source))
         .collect::<Vec<_>>();
     sources.sort_by_key(|source| source.wire_identity());
     sources.dedup_by_key(|source| source.wire_identity());
@@ -163,50 +191,32 @@ pub fn lower_projection_delta(
         .map(|(index, identity)| (identity, index as u32))
         .collect::<BTreeMap<_, _>>();
 
-    let mut occurrences = Vec::with_capacity(batch.occurrences.len());
+    let mut occurrences = Vec::with_capacity(batch.len());
     let mut operations = Vec::new();
     let mut recoveries = Vec::new();
-    for (ordinal, occurrence) in batch.occurrences.iter().enumerate() {
+    for (ordinal, occurrence) in batch.iter().enumerate() {
         occurrences.push(ProjectionDeltaOccurrence {
-            causation_id: batch.context.command_causation_id.clone(),
+            causation_id: context.command_causation_id.clone(),
             ordinal: ordinal as u32,
             occurrence_id: occurrence.occurrence_id.clone(),
         });
         for (source, plan) in &occurrence.plans {
-            source.validate_for(ProjectionMutationSource::Actual)?;
-            if plan.program_id().to_string() != source.program_id {
-                return Err(ProjectionDeltaError::ProjectionIdentityMismatch);
-            }
+            source.validate_for(occurrence.source)?;
+            validate_plan(source, plan, &occurrence.occurrence_id)?;
             let projection_ref = projection_indexes[&source.wire_identity()];
             for mutation in plan.mutations() {
+                let transition = authorization.record_transition(occurrence.source, mutation)?;
                 lower_mutation(
                     ordinal as u32,
                     projection_ref,
-                    ProjectionMutationSource::Actual,
+                    occurrence.source,
                     mutation,
-                    AuthorizationTransition {
-                        before: ProjectionDeltaVisibility::VisibleLive,
-                        after: ProjectionDeltaVisibility::VisibleLive,
-                    },
+                    transition,
                     authorization,
                     &mut operations,
                     &mut recoveries,
                 )?;
             }
-        }
-        for (source, logical) in &occurrence.mutations {
-            source.validate_for(logical.source)?;
-            let projection_ref = projection_indexes[&source.wire_identity()];
-            lower_mutation(
-                ordinal as u32,
-                projection_ref,
-                logical.source,
-                logical.mutation,
-                logical.transition,
-                authorization,
-                &mut operations,
-                &mut recoveries,
-            )?;
         }
     }
     let delta = ProjectionDelta {
@@ -249,10 +259,10 @@ fn lower_mutation(
         _ => None,
     };
     match (transition.before, transition.after) {
-        (ProjectionDeltaVisibility::VisibleLive, ProjectionDeltaVisibility::VisibleLive) => {}
-        (ProjectionDeltaVisibility::Hidden, ProjectionDeltaVisibility::Hidden) => return Ok(()),
-        (ProjectionDeltaVisibility::VisibleLive, ProjectionDeltaVisibility::Hidden)
-        | (ProjectionDeltaVisibility::Hidden, ProjectionDeltaVisibility::VisibleLive)
+        (ProjectionDeltaVisibility::Authorized, ProjectionDeltaVisibility::Authorized) => {}
+        (ProjectionDeltaVisibility::Denied, ProjectionDeltaVisibility::Denied) => return Ok(()),
+        (ProjectionDeltaVisibility::Authorized, ProjectionDeltaVisibility::Denied)
+        | (ProjectionDeltaVisibility::Denied, ProjectionDeltaVisibility::Authorized)
         | (ProjectionDeltaVisibility::Unknown, _)
         | (_, ProjectionDeltaVisibility::Unknown) => {
             recoveries.push(recovery(
@@ -346,6 +356,25 @@ fn lower_mutation(
         operations,
         recoveries,
     )
+}
+
+fn validate_plan(
+    source: &ProjectionDeltaSource,
+    plan: &ResolvedProjectionPlan,
+    occurrence_id: &str,
+) -> Result<(), ProjectionDeltaError> {
+    if plan.program_id().to_string() != source.program_id || plan.occurrence().id() != occurrence_id
+    {
+        return Err(ProjectionDeltaError::ProjectionIdentityMismatch);
+    }
+    for mutation in plan.mutations() {
+        if mutation.provenance().program_id() != plan.program_id()
+            || mutation.provenance().occurrence().occurrence_id() != occurrence_id
+        {
+            return Err(ProjectionDeltaError::ProjectionIdentityMismatch);
+        }
+    }
+    Ok(())
 }
 
 fn complete_write(kind: ProjectionMutationKind) -> bool {
