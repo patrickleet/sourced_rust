@@ -1,4 +1,4 @@
-use distributed::graphql::{typed_command, Accepted};
+use distributed::graphql::{typed_command, Succeeded};
 use distributed::{command_effects, GraphqlInput, GraphqlOutput, ReadModel};
 use serde::{Deserialize, Serialize};
 
@@ -28,5 +28,5 @@ fn main() {
         input: InputB;
         delete View { key { id: input.id } };
     };
-    let _ = typed_command::<InputA, Accepted<Output>>("view.delete").effects(effects);
+    let _ = typed_command::<InputA, Succeeded<Output>>("view.delete").effects(effects);
 }

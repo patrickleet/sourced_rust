@@ -1,7 +1,7 @@
-use distributed::graphql::Accepted;
+use distributed::graphql::Succeeded;
 
 fn main() {
-    let _ = Accepted {
+    let _ = Succeeded {
         payload: String::from("not committed"),
     };
 }

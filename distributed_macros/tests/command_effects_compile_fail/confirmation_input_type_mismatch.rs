@@ -1,4 +1,4 @@
-use distributed::graphql::{typed_command, Accepted, SurfaceProjector};
+use distributed::graphql::{typed_command, Succeeded, SurfaceProjector};
 use distributed::{command_confirmations, GraphqlInput, GraphqlOutput, ReadModel};
 use serde::{Deserialize, Serialize};
 
@@ -31,5 +31,5 @@ fn main() {
         input: InputB;
         confirm projector -> View { key { id: input.id } };
     };
-    let _ = typed_command::<InputA, Accepted<Output>>("view.create").confirmations(confirmations);
+    let _ = typed_command::<InputA, Succeeded<Output>>("view.create").confirmations(confirmations);
 }

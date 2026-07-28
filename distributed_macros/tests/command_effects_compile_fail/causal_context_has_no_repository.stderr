@@ -14,4 +14,13 @@ error[E0599]: no method named `read_model_store` found for reference `&CausalCom
   --> tests/command_effects_compile_fail/causal_context_has_no_repository.rs:28:21
    |
 28 |     let _ = context.read_model_store();
-   |                     ^^^^^^^^^^^^^^^^ method not found in `&CausalCommandContext<'_, FixtureAggregate>`
+   |                     ^^^^^^^^^^^^^^^^
+   |
+help: there is a method `read_models` with a similar name, but with different arguments
+  --> $WORKSPACE/src/microsvc/service/handlers.rs
+   |
+   | /     pub fn read_models(
+   | |         &self,
+   | |         writes: ReadModelWritePlanBuilder,
+   | |     ) -> CausalCommitBuilder<'_, 'a, A, NoPublication, NoDirectProjection> {
+   | |__________________________________________________________________________^

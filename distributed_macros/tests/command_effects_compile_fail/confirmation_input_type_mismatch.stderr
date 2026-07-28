@@ -1,10 +1,10 @@
 error[E0308]: mismatched types
-  --> tests/command_effects_compile_fail/confirmation_input_type_mismatch.rs:34:84
+  --> tests/command_effects_compile_fail/confirmation_input_type_mismatch.rs:34:85
    |
-34 |     let _ = typed_command::<InputA, Accepted<Output>>("view.create").confirmations(confirmations);
-   |                                                                      ------------- ^^^^^^^^^^^^^ expected `CompiledConfirmationPlan<InputA>`, found `CompiledConfirmationPlan<InputB>`
-   |                                                                      |
-   |                                                                      arguments to this method are incorrect
+34 |     let _ = typed_command::<InputA, Succeeded<Output>>("view.create").confirmations(confirmations);
+   |                                                                       ------------- ^^^^^^^^^^^^^ expected `CompiledConfirmationPlan<InputA>`, found `CompiledConfirmationPlan<InputB>`
+   |                                                                       |
+   |                                                                       arguments to this method are incorrect
    |
    = note: expected struct `CompiledConfirmationPlan<InputA>`
               found struct `CompiledConfirmationPlan<InputB>`
