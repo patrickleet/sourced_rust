@@ -1,15 +1,12 @@
 use std::collections::BTreeMap;
 
-use serde_json::json;
-
 use super::command_manifest::validate_command_manifest;
 use super::manifest::{
     hash_bytes, ManifestCommand, ManifestCommandConsistency, ManifestCommandExtensions,
-    ManifestCommandShape, ManifestConfirmation, ManifestConfirmationKind, ManifestConfirmations,
-    ManifestConsistencyKind, ManifestEffect, ManifestEffectExpression, ManifestEffectField,
-    ManifestEffectKey, ManifestEffects, ManifestField, ManifestFilterField, ManifestFilterInput,
-    ManifestInputDefault, ManifestInputDefaultGenerator, ManifestInputDefaults, ManifestKeyField,
-    ManifestModel, ManifestNormalization, ManifestProjector, ManifestProtocolOperation,
+    ManifestCommandShape, ManifestConfirmationKind, ManifestConfirmations, ManifestConsistencyKind,
+    ManifestEffects, ManifestField, ManifestFilterField, ManifestFilterInput, ManifestInputDefault,
+    ManifestInputDefaultGenerator, ManifestInputDefaults, ManifestKeyField, ManifestModel,
+    ManifestNormalization, ManifestProjector, ManifestProtocolOperation,
     ManifestProtocolOperations, ManifestRevalidationFallback, ManifestRowPolicy,
     ManifestTrustedPresetDescriptor, ManifestTypeDef, ManifestTypeField,
 };
@@ -132,21 +129,6 @@ fn output() -> ManifestTypeDef {
     }
 }
 
-fn input_expression(path: &[&str]) -> ManifestEffectExpression {
-    ManifestEffectExpression::Input {
-        path: path.iter().map(|segment| (*segment).into()).collect(),
-    }
-}
-
-fn key() -> ManifestEffectKey {
-    ManifestEffectKey {
-        fields: vec![ManifestEffectField {
-            field: "id".into(),
-            value: input_expression(&["id"]),
-        }],
-    }
-}
-
 fn command() -> ManifestCommand {
     let operation = "mutation Client_createTodo($commandId: ID!, $input: CreateTodoInput!) { createTodo(commandId: $commandId, input: $input) { id todo { id title } } }";
     ManifestCommand {
@@ -163,7 +145,7 @@ fn command() -> ManifestCommand {
         operation: operation.into(),
         operation_hash: hash_bytes(operation.as_bytes()),
         extensions: ManifestCommandExtensions {
-            version: 1,
+            version: 2,
             consistency: ManifestCommandConsistency {
                 version: 1,
                 kind: ManifestConsistencyKind::Causal,
@@ -176,29 +158,8 @@ fn command() -> ManifestCommand {
                     generator: ManifestInputDefaultGenerator::UuidV7,
                 }],
             }),
-            effects: Some(ManifestEffects {
-                version: 1,
-                operations: vec![ManifestEffect::Upsert {
-                    model: "Todo".into(),
-                    key: key(),
-                    fields: vec![ManifestEffectField {
-                        field: "title".into(),
-                        value: input_expression(&["metadata", "title"]),
-                    }],
-                }],
-                fallback: ManifestRevalidationFallback::Revalidate,
-            }),
-            confirmations: Some(ManifestConfirmations {
-                version: 1,
-                kind: ManifestConfirmationKind::Finite,
-                expected: vec![ManifestConfirmation {
-                    projector: "todos".into(),
-                    model: "Todo".into(),
-                    key: key(),
-                    partition: None,
-                }],
-                fallback: ManifestRevalidationFallback::Revalidate,
-            }),
+            effects: None,
+            confirmations: None,
             projection: None,
             trusted_presets: Vec::new(),
         },
@@ -260,7 +221,7 @@ fn command_with_identity(name: &str, mutation_field: &str) -> ManifestCommand {
 }
 
 #[test]
-fn validates_recursive_shapes_effects_and_confirmations() {
+fn validates_recursive_shapes_under_command_authority_v2() {
     let report = validate(&command()).expect("valid typed command");
     assert!(report.commands_requiring_revalidation.is_empty());
 }
@@ -283,20 +244,8 @@ fn requires_byte_exact_canonical_operation_and_recursive_codecs() {
 }
 
 #[test]
-fn trusted_presets_require_an_exact_typed_descriptor() {
+fn unreferenced_trusted_preset_descriptors_fail_closed() {
     let mut trusted = command();
-    let Some(effects) = &mut trusted.extensions.effects else {
-        unreachable!()
-    };
-    let ManifestEffect::Upsert { fields, .. } = &mut effects.operations[0] else {
-        unreachable!()
-    };
-    fields[0].value = ManifestEffectExpression::TrustedPreset {
-        name: "subject".into(),
-    };
-    let error = validate(&trusted).expect_err("undeclared trusted preset must fail closed");
-    assert_eq!(error.code, "client.manifest.effect_trusted_preset");
-
     trusted
         .extensions
         .trusted_presets
@@ -304,57 +253,35 @@ fn trusted_presets_require_an_exact_typed_descriptor() {
             name: "subject".into(),
             codec: "string".into(),
         });
-    validate(&trusted).expect("matching descriptor binds the trusted preset");
+    let error = validate(&trusted).expect_err("unreferenced descriptor must fail closed");
+    assert_eq!(error.code, "client.manifest.trusted_preset_inventory");
 }
 
 #[test]
-fn missing_effects_and_nonfinite_confirmations_require_revalidation() {
-    let mut missing_effects = command();
-    missing_effects.extensions.effects = None;
-    let report = validate(&missing_effects).expect("effects may be withheld");
-    assert!(report
-        .commands_requiring_revalidation
-        .contains("CreateTodo"));
+fn legacy_command_authority_has_no_v2_decoder() {
+    let mut old_version = command();
+    old_version.extensions.version = 1;
+    let error = validate(&old_version).expect_err("extensions v1 must fail closed");
+    assert_eq!(error.code, "client.manifest.command_extensions");
 
-    let mut succeeded_without_confirmations = command();
-    succeeded_without_confirmations.extensions.consistency.kind =
-        ManifestConsistencyKind::Succeeded;
-    succeeded_without_confirmations.extensions.confirmations = None;
-    let report = validate(&succeeded_without_confirmations)
-        .expect("succeeded effects may omit a finite confirmation contract");
-    assert!(report
-        .commands_requiring_revalidation
-        .contains("CreateTodo"));
+    let mut effects = command();
+    effects.extensions.effects = Some(ManifestEffects {
+        version: 1,
+        operations: Vec::new(),
+        fallback: ManifestRevalidationFallback::Revalidate,
+    });
+    let error = validate(&effects).expect_err("legacy effects must fail closed");
+    assert_eq!(error.code, "client.manifest.legacy_command_authority");
 
-    let mut unavailable = command();
-    let confirmations = unavailable
-        .extensions
-        .confirmations
-        .as_mut()
-        .expect("confirmations");
-    confirmations.kind = ManifestConfirmationKind::Unavailable;
-    confirmations.expected.clear();
-    let report = validate(&unavailable).expect("complete topology may be withheld");
-    assert!(report
-        .commands_requiring_revalidation
-        .contains("CreateTodo"));
-
-    unavailable
-        .extensions
-        .confirmations
-        .as_mut()
-        .expect("confirmations")
-        .expected
-        .push(ManifestConfirmation {
-            projector: "hidden".into(),
-            model: "Todo".into(),
-            key: key(),
-            partition: Some(ManifestEffectExpression::Constant {
-                value: json!("tenant"),
-            }),
-        });
-    let error = validate(&unavailable).expect_err("unavailable must be empty");
-    assert_eq!(error.code, "client.manifest.command_confirmations");
+    let mut confirmations = command();
+    confirmations.extensions.confirmations = Some(ManifestConfirmations {
+        version: 1,
+        kind: ManifestConfirmationKind::Unavailable,
+        expected: Vec::new(),
+        fallback: ManifestRevalidationFallback::Revalidate,
+    });
+    let error = validate(&confirmations).expect_err("legacy confirmations must fail closed");
+    assert_eq!(error.code, "client.manifest.legacy_command_authority");
 }
 
 #[test]
@@ -411,55 +338,6 @@ fn rejects_empty_outputs_and_ambiguous_command_type_namespaces() {
     let error = validate(&non_projected_model_output)
         .expect_err("only an exact Projected<T> output may reuse its model object type");
     assert_eq!(error.code, "client.manifest.command_type_namespace");
-}
-
-#[test]
-fn caps_finite_confirmations_at_the_authoritative_protocol_limit() {
-    let mut excessive = command();
-    let confirmations = excessive
-        .extensions
-        .confirmations
-        .as_mut()
-        .expect("confirmations");
-    confirmations.expected = vec![confirmations.expected[0].clone(); 129];
-
-    let error = validate(&excessive).expect_err("129 confirmations exceed the protocol batch");
-    assert_eq!(error.code, "client.manifest.command_confirmations");
-    assert!(error.message.contains("maximum is 128"));
-}
-
-#[test]
-fn bytea_constants_use_the_authoritative_standard_base64_decoder() {
-    let mut encoded = command();
-    {
-        let Some(effects) = &mut encoded.extensions.effects else {
-            unreachable!()
-        };
-        let ManifestEffect::Upsert { fields, .. } = &mut effects.operations[0] else {
-            unreachable!()
-        };
-        fields.push(ManifestEffectField {
-            field: "payload".into(),
-            value: ManifestEffectExpression::Constant {
-                value: json!("AQ=="),
-            },
-        });
-    }
-    validate(&encoded).expect("canonical standard base64");
-
-    let Some(effects) = &mut encoded.extensions.effects else {
-        unreachable!()
-    };
-    let ManifestEffect::Upsert { fields, .. } = &mut effects.operations[0] else {
-        unreachable!()
-    };
-    fields.last_mut().expect("payload assignment").value = ManifestEffectExpression::Constant {
-        // Syntactically shaped like base64, but the unused trailing bits
-        // are non-zero and the authoritative decoder rejects it.
-        value: json!("AB=="),
-    };
-    let error = validate(&encoded).expect_err("non-canonical trailing bits must fail");
-    assert_eq!(error.code, "client.manifest.effect_constant");
 }
 
 #[test]

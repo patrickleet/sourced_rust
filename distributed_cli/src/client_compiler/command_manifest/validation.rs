@@ -128,11 +128,11 @@ fn validate_command(
     validate_exact_operation_hash(&command.operation, &command.operation_hash, "command")?;
 
     let extensions = &command.extensions;
-    if !matches!(extensions.version, 1 | 2) {
+    if extensions.version != 2 {
         return Err(command_error(
             command,
             "client.manifest.command_extensions",
-            "extensions.version must be 1 or 2",
+            "extensions.version must be 2; legacy command authority has no decoder",
         ));
     }
     let consistency = &extensions.consistency;

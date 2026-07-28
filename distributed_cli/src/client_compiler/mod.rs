@@ -7,6 +7,7 @@
 mod command_manifest;
 mod graphql;
 mod manifest;
+mod projection_delta;
 mod render;
 
 #[cfg(test)]

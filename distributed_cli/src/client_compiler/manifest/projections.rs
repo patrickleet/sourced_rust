@@ -3,7 +3,10 @@ use std::collections::{BTreeMap, BTreeSet};
 use super::*;
 
 const MAX_PROJECTION_ITEMS: usize = 128;
-const MAX_EXPRESSION_DEPTH: usize = 32;
+// Frozen with `distributed::MAX_PROJECTION_EXPRESSION_DEPTH`. The CLI crate is
+// intentionally dependency-free from the runtime crate, so keep a boundary
+// test below to prevent this executable-contract limit from drifting.
+const MAX_EXPRESSION_DEPTH: usize = 64;
 
 pub(crate) fn validate_projection_manifest(
     mut programs: Vec<ManifestProjectionProgram>,
@@ -641,7 +644,7 @@ fn validate_expression(
     if depth > MAX_EXPRESSION_DEPTH {
         return Err(projection_error(
             "client.manifest.projection_expression_depth",
-            "projection expression exceeds maximum depth 32",
+            "projection expression exceeds maximum depth 64",
         ));
     }
     match expression {
@@ -696,7 +699,7 @@ fn validate_value(value: &ManifestProjectionValue, depth: usize) -> Result<(), C
     if depth > MAX_EXPRESSION_DEPTH {
         return Err(projection_error(
             "client.manifest.projection_value_depth",
-            "projection value exceeds maximum depth 32",
+            "projection value exceeds maximum depth 64",
         ));
     }
     match value {
@@ -979,4 +982,34 @@ fn command_projection_error(
         code,
         format!("manifest command `{}` {}", command.name, message.into()),
     )
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn nested_expression(depth: usize) -> ManifestProjectionExpression {
+        let mut expression = ManifestProjectionExpression::Constant {
+            value: ManifestProjectionValue::Null,
+        };
+        for _ in 1..depth {
+            expression = ManifestProjectionExpression::List {
+                values: vec![expression],
+            };
+        }
+        expression
+    }
+
+    #[test]
+    fn projection_expression_accepts_the_frozen_depth_limit() {
+        validate_expression(&nested_expression(MAX_EXPRESSION_DEPTH), 1)
+            .expect("server-valid depth 64 must remain compiler-valid");
+    }
+
+    #[test]
+    fn projection_expression_rejects_limit_plus_one() {
+        let error = validate_expression(&nested_expression(MAX_EXPRESSION_DEPTH + 1), 1)
+            .expect_err("depth 65 must fail closed");
+        assert_eq!(error.code, "client.manifest.projection_expression_depth");
+    }
 }

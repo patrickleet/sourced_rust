@@ -335,7 +335,14 @@ fn install_create_projection(value: &mut JsonValue) {
         "arms": [{
             "arm": "todo-created",
             "event": event,
-            "partition": {"kind": "unit"},
+            "partition": {
+                "kind": "expression",
+                "expression": {
+                    "kind": "slot",
+                    "slot": "state.tenantId",
+                    "value_type": {"type": "string"}
+                }
+            },
             "operations": [{
                 "operation": "upsert-todo",
                 "ordinal": 0,
@@ -2622,6 +2629,15 @@ fn command_protocol_and_extensions_are_preserved_exactly() {
     assert!(commands.contains("\"mutationField\": \"createTodo\""));
     assert!(commands.contains("\"inputDefaults\""));
     assert!(commands.contains("\"projection\""));
+    assert!(commands.contains("\"version\": 2"));
+    assert!(commands.contains("\"deltaWireVersion\": 1"));
+    assert!(commands.contains("\"projectionProgramVersion\": 2"));
+    assert!(commands.contains("\"operationSemanticsVersion\": 1"));
+    assert!(commands.contains("\"op\": \"upsert\""));
+    assert!(commands.contains("\"requires\": \"current_cache_partition\""));
+    assert!(commands.contains("\"programId\": \"pp1:sha256:1111111111111111111111111111111111111111111111111111111111111111\""));
+    assert!(commands.contains("\"bindingId\": \"pb1:sha256:2222222222222222222222222222222222222222222222222222222222222222\""));
+    assert!(!commands.contains("\"token\""));
     assert!(!commands.contains("\"effects\""));
     assert!(!commands.contains("\"confirmations\""));
     assert!(commands.contains("\"consistency\": \"causal\""));

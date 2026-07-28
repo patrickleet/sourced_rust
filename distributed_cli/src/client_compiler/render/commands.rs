@@ -4,13 +4,14 @@ use serde_json::Value as JsonValue;
 
 use super::super::manifest::{
     canonical_json_value, ClientManifest, ManifestCommand, ManifestCommandShape,
-    ManifestConfirmation, ManifestConfirmationKind, ManifestConsistencyKind,
-    ManifestDirectProjection, ManifestEffect, ManifestEffectExpression, ManifestEffectField,
-    ManifestEffectKey, ManifestEffectRelationship, ManifestEffects, ManifestRevalidationFallback,
-    ManifestTypeDef, ManifestTypeField,
+    ManifestConsistencyKind, ManifestDirectProjection, ManifestEffectExpression, ManifestTypeDef,
+    ManifestTypeField,
 };
+use super::super::projection_delta::{compile_command_preview, CompiledCommandProjection};
 use super::super::ClientCompileError;
 use super::common::quoted_property;
+
+const COMMAND_ARTIFACT_VERSION: u32 = 2;
 
 pub(super) fn render_commands(manifest: &ClientManifest) -> Result<String, ClientCompileError> {
     validate_command_namespaces(&manifest.commands)?;
@@ -90,7 +91,7 @@ pub(super) fn render_commands(manifest: &ClientManifest) -> Result<String, Clien
         );
     }
     sections.push(format!(
-        "/** Projector topology used by command confirmation/effect runtimes. */\nexport const PROJECTOR_ARTIFACTS = {projectors} as const;"
+        "/** Projector topology retained for inspection and causal diagnostics. */\nexport const PROJECTOR_ARTIFACTS = {projectors} as const;"
     ));
     sections
         .push("export type GeneratedCommandArtifact = (typeof COMMAND_ARTIFACTS)[number];".into());
@@ -294,7 +295,13 @@ fn command_artifact_json(
 ) -> Result<JsonValue, ClientCompileError> {
     let consistency = &command.extensions.consistency;
     let mut artifact = serde_json::Map::new();
-    artifact.insert("version".into(), serde_json::json!(command.version));
+    // This is the generated JavaScript artifact contract, not the version of
+    // the manifest's command inventory entry. Projection authority replaced
+    // effects/confirmations and therefore requires a fail-closed v2 consumer.
+    artifact.insert(
+        "version".into(),
+        serde_json::json!(COMMAND_ARTIFACT_VERSION),
+    );
     artifact.insert("name".into(), serde_json::json!(command.name));
     artifact.insert(
         "mutationField".into(),
@@ -331,19 +338,19 @@ fn command_artifact_json(
         "consistency".into(),
         serde_json::json!(consistency_label(consistency.kind)),
     );
-    artifact.insert(
-        "effects".into(),
-        effects_json(command.extensions.effects.as_ref()),
-    );
-    if let Some(confirmations) = &command.extensions.confirmations {
+    let projection = compile_command_preview(command, manifest)?;
+    if let Some(projection) = &projection {
         artifact.insert(
-            "confirmations".into(),
-            serde_json::json!({
-                "version": confirmations.version,
-                "kind": confirmation_kind_label(confirmations.kind),
-                "expected": confirmations.expected.iter().map(confirmation_json).collect::<Vec<_>>(),
-                "fallback": "revalidate",
-            }),
+            "projection".into(),
+            serde_json::to_value(projection).map_err(|error| {
+                ClientCompileError::manifest(
+                    "client.render.command_projection",
+                    format!(
+                        "failed to render command projection `{}`: {error}",
+                        command.name
+                    ),
+                )
+            })?,
         );
     }
     if let Some(direct) = &command.extensions.direct_projection {
@@ -360,7 +367,7 @@ fn command_artifact_json(
     }
     artifact.insert(
         "revalidation".into(),
-        command_revalidation_json(command, manifest),
+        command_revalidation_json(command, manifest, projection.as_ref()),
     );
     Ok(JsonValue::Object(artifact))
 }
@@ -409,109 +416,6 @@ fn consistency_label(kind: ManifestConsistencyKind) -> &'static str {
     }
 }
 
-fn confirmation_kind_label(kind: ManifestConfirmationKind) -> &'static str {
-    match kind {
-        ManifestConfirmationKind::Finite => "finite",
-        ManifestConfirmationKind::Unavailable => "unavailable",
-    }
-}
-
-fn effects_json(effects: Option<&ManifestEffects>) -> JsonValue {
-    match effects {
-        Some(effects) => serde_json::json!({
-            "version": effects.version,
-            "operations": effects.operations.iter().map(effect_json).collect::<Vec<_>>(),
-            "fallback": revalidation_label(effects.fallback),
-        }),
-        None => serde_json::json!({
-            "version": 1,
-            "operations": [],
-            "fallback": "revalidate",
-        }),
-    }
-}
-
-fn revalidation_label(fallback: ManifestRevalidationFallback) -> &'static str {
-    match fallback {
-        ManifestRevalidationFallback::Revalidate => "revalidate",
-    }
-}
-
-fn effect_json(effect: &ManifestEffect) -> JsonValue {
-    match effect {
-        ManifestEffect::Upsert { model, key, fields } => serde_json::json!({
-            "kind": "upsert",
-            "model": model,
-            "key": effect_key_json(key),
-            "fields": fields.iter().map(effect_field_json).collect::<Vec<_>>(),
-        }),
-        ManifestEffect::Patch { model, key, fields } => serde_json::json!({
-            "kind": "patch",
-            "model": model,
-            "key": effect_key_json(key),
-            "fields": fields.iter().map(effect_field_json).collect::<Vec<_>>(),
-        }),
-        ManifestEffect::Delete { model, key } => serde_json::json!({
-            "kind": "delete",
-            "model": model,
-            "key": effect_key_json(key),
-        }),
-        ManifestEffect::Link {
-            relationship,
-            source,
-            target,
-        } => serde_json::json!({
-            "kind": "link",
-            "relationship": effect_relationship_json(relationship),
-            "source": effect_key_json(source),
-            "target": effect_key_json(target),
-        }),
-        ManifestEffect::Unlink {
-            relationship,
-            source,
-            target,
-        } => serde_json::json!({
-            "kind": "unlink",
-            "relationship": effect_relationship_json(relationship),
-            "source": effect_key_json(source),
-            "target": effect_key_json(target),
-        }),
-        ManifestEffect::InvalidateModel { model } => serde_json::json!({
-            "kind": "invalidate_model",
-            "model": model,
-        }),
-        ManifestEffect::InvalidateRelationship {
-            relationship,
-            source,
-        } => serde_json::json!({
-            "kind": "invalidate_relationship",
-            "relationship": effect_relationship_json(relationship),
-            "source": effect_key_json(source),
-        }),
-    }
-}
-
-fn effect_relationship_json(relationship: &ManifestEffectRelationship) -> JsonValue {
-    serde_json::json!({
-        "sourceModel": relationship.source_model,
-        "field": relationship.field,
-        "targetModel": relationship.target_model,
-    })
-}
-
-fn effect_key_json(key: &ManifestEffectKey) -> JsonValue {
-    serde_json::json!({
-        "fields": key.fields.iter().map(effect_field_json).collect::<Vec<_>>(),
-    })
-}
-
-fn effect_field_json(field: &ManifestEffectField) -> JsonValue {
-    serde_json::json!({
-        "field": field.field,
-        "value": effect_expression_json(&field.value),
-    })
-}
-
 fn effect_expression_json(expression: &ManifestEffectExpression) -> JsonValue {
     match expression {
         ManifestEffectExpression::Input { path } => {
@@ -525,20 +429,6 @@ fn effect_expression_json(expression: &ManifestEffectExpression) -> JsonValue {
         }
         ManifestEffectExpression::Null => serde_json::json!({"kind": "null"}),
     }
-}
-
-fn confirmation_json(confirmation: &ManifestConfirmation) -> JsonValue {
-    let mut result = serde_json::Map::new();
-    result.insert(
-        "projector".into(),
-        serde_json::json!(confirmation.projector),
-    );
-    result.insert("model".into(), serde_json::json!(confirmation.model));
-    result.insert("key".into(), effect_key_json(&confirmation.key));
-    if let Some(partition) = &confirmation.partition {
-        result.insert("partition".into(), effect_expression_json(partition));
-    }
-    JsonValue::Object(result)
 }
 
 fn direct_projection_json(
@@ -583,29 +473,21 @@ fn direct_projection_json(
     Ok(JsonValue::Object(result))
 }
 
-fn command_revalidation_json(command: &ManifestCommand, manifest: &ClientManifest) -> JsonValue {
-    let required = manifest
+fn command_revalidation_json(
+    command: &ManifestCommand,
+    manifest: &ClientManifest,
+    projection: Option<&CompiledCommandProjection>,
+) -> JsonValue {
+    let mut required = manifest
         .commands_requiring_revalidation
         .contains(&command.name);
     let mut models = BTreeSet::new();
     let mut relationships = BTreeSet::new();
     let mut dependencies = BTreeSet::new();
-    if let Some(effects) = &command.extensions.effects {
-        for effect in &effects.operations {
-            collect_effect_scope(effect, &mut models, &mut relationships);
-        }
-    }
-    if let Some(confirmations) = &command.extensions.confirmations {
-        for confirmation in &confirmations.expected {
-            models.insert(confirmation.model.clone());
-            if let Some(projector) = manifest
-                .projectors
-                .iter()
-                .find(|projector| projector.name == confirmation.projector)
-            {
-                dependencies.extend(projector.dependencies.iter().cloned());
-            }
-        }
+    if let Some(projection) = projection {
+        models.extend(projection.affected_models());
+        relationships.extend(projection.affected_relationships());
+        required |= projection.requires_revalidation();
     }
     if let Some(direct) = &command.extensions.direct_projection {
         models.insert(direct.model.clone());
@@ -642,30 +524,4 @@ fn command_revalidation_json(command: &ManifestCommand, manifest: &ClientManifes
         "models": models.into_iter().collect::<Vec<_>>(),
         "relationships": relationship_values,
     })
-}
-
-fn collect_effect_scope(
-    effect: &ManifestEffect,
-    models: &mut BTreeSet<String>,
-    relationships: &mut BTreeSet<(String, String, String)>,
-) {
-    match effect {
-        ManifestEffect::Upsert { model, .. }
-        | ManifestEffect::Patch { model, .. }
-        | ManifestEffect::Delete { model, .. }
-        | ManifestEffect::InvalidateModel { model } => {
-            models.insert(model.clone());
-        }
-        ManifestEffect::Link { relationship, .. }
-        | ManifestEffect::Unlink { relationship, .. }
-        | ManifestEffect::InvalidateRelationship { relationship, .. } => {
-            models.insert(relationship.source_model.clone());
-            models.insert(relationship.target_model.clone());
-            relationships.insert((
-                relationship.source_model.clone(),
-                relationship.field.clone(),
-                relationship.target_model.clone(),
-            ));
-        }
-    }
 }
