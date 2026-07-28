@@ -76,6 +76,50 @@ struct BinaryAsset {
     optional_payload: Option<Vec<u8>>,
 }
 
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize, ReadModel)]
+struct Todos {
+    #[id]
+    todo_id: String,
+}
+
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize, ReadModel)]
+struct ChatMessages {
+    #[id]
+    message_id: String,
+    #[index]
+    posted_at: String,
+}
+
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize, ReadModel)]
+struct BlobGames {
+    #[id]
+    game_id: String,
+    #[index]
+    owner_id: String,
+}
+
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize, ReadModel)]
+struct CounterView {
+    #[id]
+    counter_id: String,
+}
+
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize, ReadModel)]
+#[collection("statuses")]
+struct Status {
+    #[id]
+    status_id: String,
+    #[index]
+    label: String,
+}
+
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize, ReadModel)]
+#[table("buses")]
+struct Bus {
+    #[id]
+    bus_id: String,
+}
+
 #[test]
 fn derive_preserves_read_model_identity_for_table_models() {
     let summary = AccountSummary {
@@ -266,4 +310,56 @@ fn direct_collection_table_column_and_index_attributes_wrap_readmodel_metadata()
             && index.columns == vec!["tenant_id", "slug"]
             && index.unique
     }));
+}
+
+#[test]
+fn natural_plural_document_storage_name_is_inferred() {
+    assert_eq!(Todos::COLLECTION, "todos");
+}
+
+#[test]
+fn natural_plural_storage_name_is_shared_by_document_and_relational_metadata() {
+    let schema = ChatMessages::schema();
+
+    assert_eq!(
+        (ChatMessages::COLLECTION, schema.table_name.as_str()),
+        ("chat_messages", "chat_messages")
+    );
+}
+
+#[test]
+fn natural_plural_model_identity_is_not_tied_to_a_view_suffix() {
+    let chat = ChatMessages::schema();
+    let blob = BlobGames::schema();
+
+    assert_eq!(
+        (
+            chat.model_name.as_str(),
+            chat.table_name.as_str(),
+            blob.model_name.as_str(),
+            blob.table_name.as_str(),
+        ),
+        ("ChatMessages", "chat_messages", "BlobGames", "blob_games")
+    );
+}
+
+#[test]
+fn singular_model_keeps_the_existing_append_s_convention() {
+    assert_eq!(CounterView::COLLECTION, "counter_views");
+}
+
+#[test]
+fn explicit_overrides_disambiguate_singular_names_ending_in_s() {
+    let status = Status::schema();
+    let bus = Bus::schema();
+
+    assert_eq!(
+        (
+            Status::COLLECTION,
+            status.table_name.as_str(),
+            Bus::COLLECTION,
+            bus.table_name.as_str(),
+        ),
+        ("statuses", "statuses", "buses", "buses")
+    );
 }

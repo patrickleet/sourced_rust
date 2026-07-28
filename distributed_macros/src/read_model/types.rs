@@ -191,3 +191,16 @@ pub(super) fn to_snake_case(s: &str) -> String {
     }
     result
 }
+
+/// Infers a read model's default physical storage name.
+///
+/// A snake-cased model name ending in `s` is treated as plural. Singular nouns
+/// that also end in `s` must use an explicit `#[table("...")]` or
+/// `#[collection("...")]` override when their storage name differs.
+pub(super) fn default_storage_name(model_name: &str) -> String {
+    let mut storage_name = to_snake_case(model_name);
+    if !storage_name.ends_with('s') {
+        storage_name.push('s');
+    }
+    storage_name
+}

@@ -1,3 +1,4 @@
+use super::types::{default_storage_name, to_snake_case};
 use super::*;
 use syn::DeriveInput;
 
@@ -410,4 +411,56 @@ fn expand_read_model_rejects_duplicate_pending_relationship_through_attrs() {
 #[test]
 fn snake_case_preserves_multi_char_lowercase_mapping() {
     assert_eq!(to_snake_case("İdView"), "i\u{307}d_view");
+}
+
+#[test]
+fn default_storage_name_infers_natural_plural_query_names() {
+    let actual = ["Todos", "ChatMessages", "BlobGames"].map(default_storage_name);
+    let expected = [
+        "todos".to_string(),
+        "chat_messages".to_string(),
+        "blob_games".to_string(),
+    ];
+
+    assert_eq!(actual, expected);
+}
+
+#[test]
+fn default_storage_name_retains_the_singular_append_s_convention() {
+    assert_eq!(default_storage_name("CounterView"), "counter_views");
+}
+
+#[test]
+fn default_storage_name_does_not_assign_meaning_to_the_view_suffix() {
+    let actual = ["Todo", "TodoView"].map(default_storage_name);
+    let expected = ["todos".to_string(), "todo_views".to_string()];
+
+    assert_eq!(actual, expected);
+}
+
+#[test]
+fn default_storage_name_treats_ambiguous_terminal_s_as_plural() {
+    let actual = ["Status", "Bus"].map(default_storage_name);
+    let expected = ["status".to_string(), "bus".to_string()];
+
+    assert_eq!(actual, expected);
+}
+
+#[test]
+fn expand_read_model_shares_natural_default_between_document_and_relational_metadata() {
+    let input: DeriveInput = syn::parse_quote! {
+        struct BlobGames {
+            #[id]
+            game_id: String,
+            #[index]
+            owner_id: String,
+        }
+    };
+
+    let expanded = expand_read_model(input).unwrap().to_string();
+
+    assert!(
+        expanded.contains("const COLLECTION : & 'static str = \"blob_games\"")
+            && expanded.contains("table_name : \"blob_games\"")
+    );
 }

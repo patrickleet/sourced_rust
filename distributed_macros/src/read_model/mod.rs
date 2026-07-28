@@ -8,7 +8,7 @@ use syn::{punctuated::Punctuated, Data, DeriveInput, Field, Fields, Token};
 
 use attrs::{FieldAttrs, StructAttrs};
 use relational::expand_relational_read_model;
-use types::to_snake_case;
+use types::default_storage_name;
 
 pub fn derive_read_model(input: TokenStream) -> TokenStream {
     let input = syn::parse_macro_input!(input as DeriveInput);
@@ -36,7 +36,7 @@ pub(crate) fn expand_read_model(input: DeriveInput) -> syn::Result<proc_macro2::
         .collection
         .clone()
         .or_else(|| struct_attrs.table.clone())
-        .unwrap_or_else(|| format!("{}s", to_snake_case(&name.to_string())));
+        .unwrap_or_else(|| default_storage_name(&name.to_string()));
 
     let read_model_impl = if let Some(id_field) = &id_field {
         Some(quote! {

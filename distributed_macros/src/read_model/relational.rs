@@ -3,8 +3,8 @@ use syn::{punctuated::Punctuated, Field, Token};
 
 use super::attrs::{foreign_key_tokens, FieldAttrs, RelationshipKindAttr, StructAttrs};
 use super::types::{
-    bytes_row_value_tokens, column_type_tokens, effect_model_wire_tokens, option_inner_type,
-    option_string_tokens, to_snake_case, vec_inner_type,
+    bytes_row_value_tokens, column_type_tokens, default_storage_name, effect_model_wire_tokens,
+    option_inner_type, option_string_tokens, vec_inner_type,
 };
 
 pub(super) fn expand_relational_read_model(
@@ -20,7 +20,7 @@ pub(super) fn expand_relational_read_model(
         .table
         .clone()
         .or_else(|| struct_attrs.collection.clone())
-        .unwrap_or_else(|| format!("{}s", to_snake_case(&model_name)));
+        .unwrap_or_else(|| default_storage_name(&model_name));
 
     let primary_key_fields =
         relational_primary_key_fields(struct_attrs, fields, field_attrs, id_field);
