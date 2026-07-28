@@ -644,10 +644,14 @@ impl<I, K: CommandOutcome> TypedCommand<I, K> {
         self
     }
 
-    /// Attach partial client-preview provenance to an already emitted event.
+    /// Predict one ordered, non-authoritative occurrence for the optimistic
+    /// client overlay.
     ///
     /// Service registration rejects a preview whose exact event selector is
-    /// not also present through [`Self::emits`].
+    /// not also present through [`Self::emits`]. Repeating an exact selector
+    /// predicts multiple occurrences in declaration order; it does not promise
+    /// that the server emits any particular cardinality. The authoritative
+    /// ordered command delta later replaces the optimistic overlay.
     #[must_use]
     pub fn preview(mut self, preview: CommandProjectionPreview) -> Self {
         self.contract.projections.add_preview(preview);

@@ -21,7 +21,7 @@ use crate::projection::{
 pub(super) const CLIENT_PROJECTION_PROGRAM_VERSION: u32 = 1;
 pub(super) const CLIENT_PROJECTION_BINDING_VERSION: u32 = 1;
 pub(super) const CLIENT_PROJECTION_OPERATION_SEMANTICS_VERSION: u32 = 1;
-pub(super) const COMMAND_PROJECTION_EXTENSION_VERSION: u32 = 1;
+pub(super) const COMMAND_PROJECTION_EXTENSION_VERSION: u32 = 2;
 
 #[derive(Clone)]
 struct SlotOrigin {
@@ -145,60 +145,77 @@ pub(super) fn command_projection_extension(
         .into_iter()
         .collect();
 
-    let mut previews = Vec::new();
+    let mut preview_occurrences = Vec::new();
     for preview in &command.projections.previews {
-        for field in &preview.preview.fields {
-            let target = match field.envelope {
-                Some(envelope) => SlotTarget::Envelope { field: envelope },
-                None => SlotTarget::BodyPath {
-                    path: field.body_path.clone(),
-                },
-            };
-            previews.push(((preview.selector.clone(), target), field));
+        let occurrence_origins = slot_origins
+            .iter()
+            .filter(|origin| origin.event == preview.selector)
+            .collect::<Vec<_>>();
+        // A denied, draining, background, direct, or otherwise absent arm does
+        // not create an occurrence. Dense ordinals avoid leaking its position.
+        if occurrence_origins.is_empty() {
+            continue;
         }
-    }
-    let mut preview_values = slot_origins
-        .into_iter()
-        .map(|origin| {
-            let source = previews
-                .iter()
-                .find(|((selector, target), _)| {
-                    selector == &origin.event && target == &origin.target
+        let mut values = occurrence_origins
+            .into_iter()
+            .map(|origin| {
+                let source = preview
+                    .preview
+                    .fields
+                    .iter()
+                    .find(|field| {
+                        let target = match field.envelope {
+                            Some(envelope) => SlotTarget::Envelope { field: envelope },
+                            None => SlotTarget::BodyPath {
+                                path: field.body_path.clone(),
+                            },
+                        };
+                        target == origin.target
+                    })
+                    .map(|field| {
+                        client_preview_source(
+                            &field.source,
+                            matches!(origin.target, SlotTarget::BodyPath { .. }),
+                            match origin.target {
+                                SlotTarget::Envelope { field } => Some(field),
+                                SlotTarget::BodyPath { .. } => None,
+                            },
+                            field.body_type,
+                            field.body_rust_type,
+                            field.body_nullable,
+                            field.body_always_present,
+                            &origin.value_type,
+                            command,
+                        )
+                    })
+                    .transpose()?
+                    .unwrap_or(ClientProjectionPreviewSource::Unknown);
+                Ok(CommandProjectionPreviewValue {
+                    slot: origin.slot.clone(),
+                    source,
                 })
-                .map(|(_, field)| *field)
-                .map(|field| {
-                    client_preview_source(
-                        &field.source,
-                        matches!(origin.target, SlotTarget::BodyPath { .. }),
-                        field.body_type,
-                        field.body_rust_type,
-                        field.body_nullable,
-                        field.body_always_present,
-                        &origin.value_type,
-                        command,
-                    )
-                })
-                .transpose()?
-                .unwrap_or(ClientProjectionPreviewSource::Unknown);
-            Ok(CommandProjectionPreviewValue {
-                event: event_ref(&origin.event),
-                slot: origin.slot,
-                source,
             })
-        })
-        .collect::<Result<Vec<_>, ClientManifestError>>()?;
-    preview_values.sort_by(|left, right| {
-        left.event
-            .cmp(&right.event)
-            .then_with(|| left.slot.cmp(&right.slot))
-    });
-    preview_values.dedup_by(|left, right| left.event == right.event && left.slot == right.slot);
+            .collect::<Result<Vec<_>, ClientManifestError>>()?;
+        values.sort_by(|left, right| left.slot.cmp(&right.slot));
+        values.dedup_by(|left, right| left.slot == right.slot);
+        let ordinal = u32::try_from(preview_occurrences.len()).map_err(|_| {
+            ClientManifestError(format!(
+                "command `{}` declares too many projection preview occurrences",
+                command.command_name
+            ))
+        })?;
+        preview_occurrences.push(CommandProjectionPreviewOccurrence {
+            ordinal,
+            event: event_ref(&preview.selector),
+            values,
+        });
+    }
 
     Ok(Some(CommandProjectionExtension {
         version: COMMAND_PROJECTION_EXTENSION_VERSION,
         event_set,
         program_arms,
-        preview_values,
+        preview_occurrences,
         fallback: ClientProjectionFallback::Revalidate,
     }))
 }
@@ -647,6 +664,7 @@ fn physical_field(
 fn client_preview_source(
     source: &CommandProjectionPreviewSource,
     body_slot: bool,
+    envelope: Option<ProjectionEnvelopeField>,
     body_type: Option<crate::projection::lower::ProjectionPortableType>,
     body_rust_type: Option<&str>,
     body_nullable: Option<bool>,
@@ -657,6 +675,9 @@ fn client_preview_source(
     use crate::projection::lower::ProjectionPortableType;
 
     if body_slot && body_type.is_none() {
+        return Ok(ClientProjectionPreviewSource::Unknown);
+    }
+    if envelope.is_some_and(|field| field != ProjectionEnvelopeField::AggregateId) {
         return Ok(ClientProjectionPreviewSource::Unknown);
     }
     let body_compatible = match body_type {
@@ -923,15 +944,31 @@ fn mutation_kind(kind: ProjectionMutationKind) -> ClientProjectionMutationKind {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::graphql::{build_surface, SurfaceOptions, SurfaceTypeDef, SurfaceTypeField};
+    use crate::graphql::{
+        build_surface, CommandProjectionPreview, CommandProjectionPreviewSource, SurfaceOptions,
+        SurfaceProjector, SurfaceTypeDef, SurfaceTypeField,
+    };
     use crate::projection::lower::ProjectionPortableType;
-    use crate::table::{
-        ColumnType, PrimaryKey, TableColumn, TableKind, TableSchema,
+    use crate::projection::placement::{
+        ProjectionBindingId, ProjectionBindingState, ProjectionExecutionClass, ProjectionPlacement,
     };
+    use crate::table::{ColumnType, PrimaryKey, TableColumn, TableKind, TableSchema};
     use crate::{
-        DomainEventBodyKind, ProjectionEnvelopeField, ProjectionExpression,
-        ProjectionKeyField,
+        DomainEvent, DomainEventBodyKind, ProjectionEnvelopeField, ProjectionExpression,
+        ProjectionKeyField, ProjectionValue,
     };
+
+    #[derive(Serialize, crate::DomainEvent)]
+    #[domain_event(name = "todo.preview-a", version = 1)]
+    struct PreviewA {
+        value: String,
+    }
+
+    #[derive(Serialize, crate::DomainEvent)]
+    #[domain_event(name = "todo.preview-b", version = 1)]
+    struct PreviewB {
+        value: String,
+    }
 
     fn todo_surface() -> Surface {
         build_surface(
@@ -1005,6 +1042,276 @@ mod tests {
         }
     }
 
+    fn typed_selector<E: DomainEvent>() -> crate::ProjectionEventSelector {
+        crate::ProjectionEventSelector::try_from_descriptor(&E::DESCRIPTOR).unwrap()
+    }
+
+    fn selected_program(
+        name: &str,
+        selectors: impl IntoIterator<Item = crate::ProjectionEventSelector>,
+    ) -> SurfaceSelectedProjectionProgram {
+        let operations = |ordinal| {
+            vec![SurfaceProjectionOperation {
+                operation_id: format!("{name}-delete-{ordinal}"),
+                staging_ordinal: ordinal,
+                kind: ProjectionMutationKind::Delete,
+                model: "TodoView".into(),
+                storage: "todos".into(),
+                key: vec![ProjectionKeyField::try_new(
+                    0,
+                    "todo_id",
+                    ProjectionExpression::envelope(ProjectionEnvelopeField::AggregateId),
+                )
+                .unwrap()],
+                fields: Vec::new(),
+                relationship_effects: Vec::new(),
+                invalidations: Vec::new(),
+                force_revalidate: false,
+            }]
+        };
+        SurfaceSelectedProjectionProgram {
+            name: name.into(),
+            version: 1,
+            ir_version: crate::projection::PROJECTION_PROGRAM_IR_VERSION,
+            operation_semantics_version: crate::projection::PROJECTION_OPERATION_SEMANTICS_VERSION,
+            arms: selectors
+                .into_iter()
+                .enumerate()
+                .map(|(ordinal, selector)| SurfaceProjectionArm {
+                    arm_id: format!("{name}-arm-{ordinal}"),
+                    selector,
+                    operations: operations(u32::try_from(ordinal).unwrap()),
+                })
+                .collect(),
+        }
+    }
+
+    fn modeled(
+        seed: u8,
+        placement: ProjectionPlacement,
+        selected: Option<SurfaceSelectedProjectionProgram>,
+    ) -> crate::graphql::SurfaceModeledProjection {
+        crate::graphql::SurfaceModeledProjection::selected_for_client_manifest_test(
+            crate::ProjectionProgramId::parse(&format!(
+                "pp1:sha256:{}",
+                format!("{seed:02x}").repeat(32)
+            ))
+            .unwrap(),
+            ProjectionBindingId::parse(&format!(
+                "pb1:sha256:{}",
+                format!("{:02x}", seed.wrapping_add(64)).repeat(32)
+            ))
+            .unwrap(),
+            placement,
+            ProjectionExecutionClass::Causal,
+            ProjectionBindingState::Active,
+            vec!["TodoView".into()],
+            selected,
+        )
+    }
+
+    fn surface_with_modeled(
+        modeled: impl IntoIterator<Item = crate::graphql::SurfaceModeledProjection>,
+    ) -> Surface {
+        let mut surface = todo_surface();
+        let projector = modeled.into_iter().fold(
+            SurfaceProjector::new("client-manifest-test"),
+            |owner, modeled| owner.modeled(modeled),
+        );
+        surface.projectors = vec![projector.into()];
+        surface.projectors_attached = true;
+        surface
+    }
+
+    #[test]
+    fn allowed_event_arms_do_not_invent_optimistic_occurrences() {
+        let selector_a = typed_selector::<PreviewA>();
+        let selector_b = typed_selector::<PreviewB>();
+        let surface = surface_with_modeled([modeled(
+            1,
+            ProjectionPlacement::Eventual,
+            Some(selected_program(
+                "allowed-without-preview",
+                [selector_a, selector_b],
+            )),
+        )]);
+        let mut command = command("String");
+        command
+            .projections
+            .add_event_set(crate::events![PreviewA, PreviewB]);
+
+        let projection = command_projection_extension(&command, &surface, &[])
+            .unwrap()
+            .expect("eligible allowed arms remain visible");
+        assert_eq!(projection.event_set.len(), 2);
+        assert_eq!(projection.program_arms.len(), 2);
+        assert!(
+            projection.preview_occurrences.is_empty(),
+            "an allowed actual event is not an optimistic prediction"
+        );
+    }
+
+    #[test]
+    fn one_preview_occurrence_fans_out_to_every_selected_program_arm() {
+        let selector = typed_selector::<PreviewA>();
+        let surface = surface_with_modeled([
+            modeled(
+                2,
+                ProjectionPlacement::Eventual,
+                Some(selected_program("fanout-a", [selector.clone()])),
+            ),
+            modeled(
+                3,
+                ProjectionPlacement::Eventual,
+                Some(selected_program("fanout-b", [selector])),
+            ),
+        ]);
+        let mut command = command("String");
+        command.projections.add_event_set(crate::events![PreviewA]);
+        command.projections.add_preview(
+            CommandProjectionPreview::new()
+                .events(crate::events![PreviewA])
+                .envelope(
+                    ProjectionEnvelopeField::AggregateId,
+                    CommandProjectionPreviewSource::input(["value"]),
+                ),
+        );
+
+        let projection = command_projection_extension(&command, &surface, &[])
+            .unwrap()
+            .expect("fanout command projection");
+        assert_eq!(projection.program_arms.len(), 2);
+        assert_eq!(projection.preview_occurrences.len(), 1);
+        let occurrence = &projection.preview_occurrences[0];
+        assert_eq!(occurrence.ordinal, 0);
+        assert_eq!(occurrence.values.len(), 2);
+        assert_ne!(occurrence.values[0].slot, occurrence.values[1].slot);
+        assert!(occurrence
+            .values
+            .iter()
+            .all(|value| matches!(value.source, ClientProjectionPreviewSource::Input { .. })));
+    }
+
+    #[test]
+    fn repeated_preview_events_remain_distinct_and_ordered() {
+        let selector = typed_selector::<PreviewA>();
+        let surface = surface_with_modeled([modeled(
+            4,
+            ProjectionPlacement::Eventual,
+            Some(selected_program("ordered-preview", [selector])),
+        )]);
+        let mut command = command("String");
+        command.projections.add_event_set(crate::events![PreviewA]);
+        command.projections.add_preview(
+            CommandProjectionPreview::new()
+                .events(crate::events![PreviewA])
+                .envelope(
+                    ProjectionEnvelopeField::AggregateId,
+                    CommandProjectionPreviewSource::constant(ProjectionValue::string("first")),
+                ),
+        );
+        command.projections.add_preview(
+            CommandProjectionPreview::new()
+                .events(crate::events![PreviewA])
+                .envelope(
+                    ProjectionEnvelopeField::AggregateId,
+                    CommandProjectionPreviewSource::input(["value"]),
+                ),
+        );
+
+        let projection = command_projection_extension(&command, &surface, &[])
+            .unwrap()
+            .expect("ordered command projection");
+        assert_eq!(
+            projection
+                .preview_occurrences
+                .iter()
+                .map(|occurrence| occurrence.ordinal)
+                .collect::<Vec<_>>(),
+            vec![0, 1]
+        );
+        assert!(matches!(
+            projection.preview_occurrences[0].values[0].source,
+            ClientProjectionPreviewSource::Constant { .. }
+        ));
+        assert!(matches!(
+            projection.preview_occurrences[1].values[0].source,
+            ClientProjectionPreviewSource::Input { .. }
+        ));
+    }
+
+    #[test]
+    fn filtered_preview_occurrences_leave_no_ordinal_or_identity_gap() {
+        let selector_a = typed_selector::<PreviewA>();
+        let surface = surface_with_modeled([modeled(
+            5,
+            ProjectionPlacement::Eventual,
+            Some(selected_program("selected-a-only", [selector_a])),
+        )]);
+        let mut command = command("String");
+        command
+            .projections
+            .add_event_set(crate::events![PreviewA, PreviewB]);
+        command.projections.add_preview(
+            CommandProjectionPreview::new()
+                .events(crate::events![PreviewB])
+                .envelope(
+                    ProjectionEnvelopeField::AggregateId,
+                    CommandProjectionPreviewSource::constant(ProjectionValue::string(
+                        "hidden-first",
+                    )),
+                ),
+        );
+        command.projections.add_preview(
+            CommandProjectionPreview::new()
+                .events(crate::events![PreviewA])
+                .envelope(
+                    ProjectionEnvelopeField::AggregateId,
+                    CommandProjectionPreviewSource::input(["value"]),
+                ),
+        );
+
+        let projection = command_projection_extension(&command, &surface, &[])
+            .unwrap()
+            .expect("selected command projection");
+        assert_eq!(projection.event_set.len(), 1);
+        assert_eq!(projection.preview_occurrences.len(), 1);
+        assert_eq!(projection.preview_occurrences[0].ordinal, 0);
+        assert_eq!(
+            projection.preview_occurrences[0].event,
+            projection.event_set[0]
+        );
+        let wire = serde_json::to_string(&projection).unwrap();
+        assert!(!wire.contains("todo.preview-b"));
+        assert!(!wire.contains("hidden-first"));
+    }
+
+    #[test]
+    fn direct_bindings_export_inventory_without_an_executable_program() {
+        let surface = surface_with_modeled([modeled(6, ProjectionPlacement::Direct, None)]);
+        let (programs, bindings) = projection_manifest(&surface).unwrap();
+        assert!(programs.is_empty());
+        assert_eq!(bindings.len(), 1);
+        assert_eq!(bindings[0].placement, ClientProjectionPlacement::Direct);
+
+        let mut command = command("String");
+        command.projections.add_event_set(crate::events![PreviewA]);
+        command.projections.add_preview(
+            CommandProjectionPreview::new()
+                .events(crate::events![PreviewA])
+                .envelope(
+                    ProjectionEnvelopeField::AggregateId,
+                    CommandProjectionPreviewSource::input(["value"]),
+                ),
+        );
+        assert!(
+            command_projection_extension(&command, &surface, &[])
+                .unwrap()
+                .is_none(),
+            "direct projections are reconciled by the projected response, not event previews"
+        );
+    }
+
     #[test]
     fn non_intrinsic_envelope_values_are_opaque_typed_slots() {
         let arm = SurfaceProjectionArm {
@@ -1049,11 +1356,8 @@ mod tests {
             operation_semantics_version: 1,
             arms: vec![arm],
         };
-        let program_id = crate::ProjectionProgramId::parse(&format!(
-            "pp1:sha256:{}",
-            "11".repeat(32)
-        ))
-        .unwrap();
+        let program_id =
+            crate::ProjectionProgramId::parse(&format!("pp1:sha256:{}", "11".repeat(32))).unwrap();
         let mut slots = Vec::new();
         let lowered = lower_program(program_id, &selected, &todo_surface(), &mut slots).unwrap();
         let key = &lowered.arms[0].operations[0].key;
@@ -1097,6 +1401,7 @@ mod tests {
                 None,
                 None,
                 None,
+                None,
                 &ProjectionValueType::String,
                 &string_command,
             )
@@ -1108,6 +1413,7 @@ mod tests {
             client_preview_source(
                 &input,
                 false,
+                Some(ProjectionEnvelopeField::AggregateId),
                 None,
                 None,
                 None,
@@ -1118,12 +1424,32 @@ mod tests {
             .unwrap(),
             ClientProjectionPreviewSource::Input { .. }
         ));
+        let private_schema = CommandProjectionPreviewSource::constant(ProjectionValue::string(
+            "private-body-schema",
+        ));
+        let rejected_schema = client_preview_source(
+            &private_schema,
+            false,
+            Some(ProjectionEnvelopeField::BodySchema),
+            None,
+            None,
+            None,
+            None,
+            &ProjectionValueType::String,
+            &string_command,
+        )
+        .unwrap();
+        assert_eq!(rejected_schema, ClientProjectionPreviewSource::Unknown);
+        assert!(!serde_json::to_string(&rejected_schema)
+            .unwrap()
+            .contains("private-body-schema"));
 
         let enum_command = command("TodoStatus");
         assert!(matches!(
             client_preview_source(
                 &input,
                 true,
+                None,
                 Some(ProjectionPortableType::Custom),
                 Some("app::TodoStatus"),
                 Some(false),
@@ -1139,6 +1465,7 @@ mod tests {
             client_preview_source(
                 &CommandProjectionPreviewSource::constant(ProjectionValue::unsigned(1)),
                 true,
+                None,
                 Some(ProjectionPortableType::I64),
                 Some("i64"),
                 Some(false),
@@ -1154,6 +1481,7 @@ mod tests {
             client_preview_source(
                 &CommandProjectionPreviewSource::constant(ProjectionValue::signed(-1)),
                 true,
+                None,
                 Some(ProjectionPortableType::I64),
                 Some("i64"),
                 Some(false),
@@ -1195,6 +1523,7 @@ mod tests {
                 client_preview_source(
                     &source,
                     true,
+                    None,
                     Some(ProjectionPortableType::String),
                     Some("String"),
                     Some(nullable),

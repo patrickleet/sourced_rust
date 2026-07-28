@@ -17,6 +17,23 @@ where
     Ok(actual)
 }
 
+fn deserialize_exact_u16<'de, D>(
+    deserializer: D,
+    expected: u16,
+    label: &str,
+) -> Result<u16, D::Error>
+where
+    D: serde::Deserializer<'de>,
+{
+    let actual = u16::deserialize(deserializer)?;
+    if actual != expected {
+        return Err(serde::de::Error::custom(format!(
+            "unsupported {label} version {actual}; expected {expected}"
+        )));
+    }
+    Ok(actual)
+}
+
 fn deserialize_manifest_version<'de, D>(deserializer: D) -> Result<u32, D::Error>
 where
     D: serde::Deserializer<'de>,
@@ -80,6 +97,30 @@ where
         deserializer,
         super::projections::COMMAND_PROJECTION_EXTENSION_VERSION,
         "command projection extension",
+    )
+}
+
+fn deserialize_projection_ir_version<'de, D>(deserializer: D) -> Result<u16, D::Error>
+where
+    D: serde::Deserializer<'de>,
+{
+    deserialize_exact_u16(
+        deserializer,
+        crate::projection::PROJECTION_PROGRAM_IR_VERSION,
+        "projection IR",
+    )
+}
+
+fn deserialize_projection_operation_semantics_version<'de, D>(
+    deserializer: D,
+) -> Result<u16, D::Error>
+where
+    D: serde::Deserializer<'de>,
+{
+    deserialize_exact_u16(
+        deserializer,
+        crate::projection::PROJECTION_OPERATION_SEMANTICS_VERSION,
+        "projection operation semantics",
     )
 }
 
@@ -583,7 +624,9 @@ pub struct ClientProjectionProgram {
     pub program_id: String,
     pub name: String,
     pub program_version: u64,
+    #[serde(deserialize_with = "deserialize_projection_ir_version")]
     pub ir_version: u16,
+    #[serde(deserialize_with = "deserialize_projection_operation_semantics_version")]
     pub operation_semantics_version: u16,
     pub arms: Vec<ClientProjectionArm>,
 }
@@ -777,15 +820,98 @@ pub enum ClientProjectionInvalidation {
 }
 
 /// Projection semantics attached to one generated command.
-#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
-#[serde(deny_unknown_fields)]
+#[derive(Clone, Debug, PartialEq, Eq, Serialize)]
 pub struct CommandProjectionExtension {
     #[serde(deserialize_with = "deserialize_command_projection_version")]
     pub version: u32,
     pub event_set: Vec<ClientProjectionEventRef>,
     pub program_arms: Vec<CommandProjectionArmRef>,
-    pub preview_values: Vec<CommandProjectionPreviewValue>,
+    /// Ordered, non-authoritative optimistic occurrences explicitly declared
+    /// by the command author. `event_set` and `program_arms` describe allowed
+    /// actual topology only and never imply an optimistic occurrence.
+    ///
+    /// The client applies these in ordinal order as one overlay. The actual
+    /// ordered command delta reconciles and replaces that overlay.
+    pub preview_occurrences: Vec<CommandProjectionPreviewOccurrence>,
     pub fallback: ClientProjectionFallback,
+}
+
+impl<'de> Deserialize<'de> for CommandProjectionExtension {
+    fn deserialize<D>(deserializer: D) -> Result<Self, D::Error>
+    where
+        D: serde::Deserializer<'de>,
+    {
+        #[derive(Deserialize)]
+        #[serde(deny_unknown_fields)]
+        struct Wire {
+            #[serde(deserialize_with = "deserialize_command_projection_version")]
+            version: u32,
+            event_set: Vec<ClientProjectionEventRef>,
+            program_arms: Vec<CommandProjectionArmRef>,
+            preview_occurrences: Vec<CommandProjectionPreviewOccurrence>,
+            fallback: ClientProjectionFallback,
+        }
+
+        let wire = Wire::deserialize(deserializer)?;
+        if wire.event_set.windows(2).any(|pair| pair[0] >= pair[1]) {
+            return Err(serde::de::Error::custom(
+                "command projection event_set must be sorted and unique",
+            ));
+        }
+        if wire.program_arms.windows(2).any(|pair| {
+            (&pair[0].event, &pair[0].program_id, &pair[0].arm)
+                >= (&pair[1].event, &pair[1].program_id, &pair[1].arm)
+        }) {
+            return Err(serde::de::Error::custom(
+                "command projection program_arms must be sorted and unique",
+            ));
+        }
+        let arm_events = wire
+            .program_arms
+            .iter()
+            .map(|arm| arm.event.clone())
+            .collect::<std::collections::BTreeSet<_>>()
+            .into_iter()
+            .collect::<Vec<_>>();
+        if arm_events != wire.event_set {
+            return Err(serde::de::Error::custom(
+                "command projection event_set must exactly match program_arms",
+            ));
+        }
+        for (index, occurrence) in wire.preview_occurrences.iter().enumerate() {
+            if usize::try_from(occurrence.ordinal).ok() != Some(index) {
+                return Err(serde::de::Error::custom(
+                    "command projection preview ordinals must be dense and zero-based",
+                ));
+            }
+            if wire
+                .program_arms
+                .iter()
+                .all(|arm| arm.event != occurrence.event)
+            {
+                return Err(serde::de::Error::custom(
+                    "command projection preview event has no selected program arm",
+                ));
+            }
+            if occurrence
+                .values
+                .windows(2)
+                .any(|pair| pair[0].slot >= pair[1].slot)
+            {
+                return Err(serde::de::Error::custom(
+                    "command projection preview values must be sorted and unique",
+                ));
+            }
+        }
+
+        Ok(Self {
+            version: wire.version,
+            event_set: wire.event_set,
+            program_arms: wire.program_arms,
+            preview_occurrences: wire.preview_occurrences,
+            fallback: wire.fallback,
+        })
+    }
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
@@ -804,8 +930,16 @@ pub struct CommandProjectionArmRef {
 
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
-pub struct CommandProjectionPreviewValue {
+pub struct CommandProjectionPreviewOccurrence {
+    /// Dense ordinal after authorization and eligible-arm filtering.
+    pub ordinal: u32,
     pub event: ClientProjectionEventRef,
+    pub values: Vec<CommandProjectionPreviewValue>,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct CommandProjectionPreviewValue {
     pub slot: String,
     pub source: ClientProjectionPreviewSource,
 }

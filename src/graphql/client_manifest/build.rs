@@ -339,27 +339,30 @@ pub(super) fn client_manifest_from_surface_with_execution(
         let mut trusted_presets = command_trusted_preset_descriptors(command, surface)?;
         let projection = command_projection_extension(command, surface, &trusted_presets)?;
         if let Some(projection) = &projection {
-            for preview in &projection.preview_values {
-                let ClientProjectionPreviewSource::TrustedPreset { name, codec } = &preview.source
-                else {
-                    continue;
-                };
-                match trusted_presets
-                    .iter()
-                    .find(|descriptor| descriptor.name == *name)
-                {
-                    Some(descriptor) if descriptor.codec == *codec => {}
-                    Some(descriptor) => {
-                        return Err(ClientManifestError(format!(
-                            "command `{}` trusted preset `{name}` is used with incompatible codecs `{}` and `{codec}`",
-                            command.command_name,
-                            descriptor.codec
-                        )));
+            for occurrence in &projection.preview_occurrences {
+                for preview in &occurrence.values {
+                    let ClientProjectionPreviewSource::TrustedPreset { name, codec } =
+                        &preview.source
+                    else {
+                        continue;
+                    };
+                    match trusted_presets
+                        .iter()
+                        .find(|descriptor| descriptor.name == *name)
+                    {
+                        Some(descriptor) if descriptor.codec == *codec => {}
+                        Some(descriptor) => {
+                            return Err(ClientManifestError(format!(
+                                "command `{}` trusted preset `{name}` is used with incompatible codecs `{}` and `{codec}`",
+                                command.command_name,
+                                descriptor.codec
+                            )));
+                        }
+                        None => trusted_presets.push(ClientTrustedPresetDescriptor {
+                            name: name.clone(),
+                            codec: codec.clone(),
+                        }),
                     }
-                    None => trusted_presets.push(ClientTrustedPresetDescriptor {
-                        name: name.clone(),
-                        codec: codec.clone(),
-                    }),
                 }
             }
             trusted_presets.sort();

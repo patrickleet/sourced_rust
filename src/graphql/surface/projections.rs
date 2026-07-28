@@ -85,6 +85,32 @@ impl std::fmt::Debug for SurfaceModeledProjection {
 }
 
 impl SurfaceModeledProjection {
+    #[cfg(test)]
+    pub(crate) fn selected_for_client_manifest_test(
+        program_id: ProjectionProgramId,
+        binding_id: ProjectionBindingId,
+        placement: ProjectionPlacement,
+        execution_class: ProjectionExecutionClass,
+        state: ProjectionBindingState,
+        output_models: Vec<String>,
+        selected: Option<SurfaceSelectedProjectionProgram>,
+    ) -> Self {
+        Self {
+            program_id,
+            binding_id,
+            owner: "client-manifest-test".into(),
+            placement,
+            execution_class,
+            state,
+            epoch: ProjectionEpoch::new("client-manifest-test-v1")
+                .expect("test epoch is canonical"),
+            output_models,
+            raw_program: None,
+            raw_binding: None,
+            selected,
+        }
+    }
+
     /// Resolve one exact registration through a validated catalog and active
     /// binding view.
     ///
@@ -569,4 +595,225 @@ fn validate_direct_program(
         }
     }
     Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::graphql::{build_surface, surface_for_role, RoleGrant, SurfaceOptions};
+    use crate::table::{
+        ColumnType, PrimaryKey, RelationshipDef, RelationshipKind, TableColumn, TableKind,
+        TableSchema,
+    };
+    use crate::{
+        ProjectionAssignment, ProjectionExpression, ProjectionRelationship, ProjectionValue,
+    };
+
+    fn schema(
+        model: &str,
+        table: &str,
+        fields: &[&str],
+        relationships: Vec<RelationshipDef>,
+    ) -> TableSchema {
+        TableSchema {
+            model_name: model.into(),
+            table_name: table.into(),
+            columns: fields
+                .iter()
+                .enumerate()
+                .map(|(index, field)| TableColumn {
+                    primary_key: index == 0,
+                    ..TableColumn::new(*field, *field, ColumnType::Text)
+                })
+                .collect(),
+            primary_key: PrimaryKey::new([fields[0]]),
+            version_column: None,
+            foreign_keys: Vec::new(),
+            indexes: Vec::new(),
+            relationships,
+            kind: TableKind::ReadModel,
+        }
+    }
+
+    fn models(grants: BTreeMap<String, RoleGrant>) -> BTreeMap<String, SurfaceModel> {
+        let todo = schema(
+            "TodoView",
+            "todos",
+            &["todo_id", "owner_id", "title"],
+            vec![RelationshipDef {
+                field_name: "owner".into(),
+                kind: RelationshipKind::BelongsTo,
+                target_model: "UserView".into(),
+                foreign_key: Some("owner_id".into()),
+                through: None,
+                target_foreign_key: None,
+            }],
+        );
+        let user = schema("UserView", "users", &["user_id", "name"], Vec::new());
+        surface_for_role(
+            &build_surface(&[todo, user], &SurfaceOptions::sqlite()).unwrap(),
+            "user",
+            &grants,
+        )
+        .unwrap()
+        .models
+    }
+
+    fn key(ordinal: u32, name: &str) -> ProjectionKeyField {
+        ProjectionKeyField::try_new(
+            ordinal,
+            name,
+            ProjectionExpression::constant(ProjectionValue::string("id")),
+        )
+        .unwrap()
+    }
+
+    fn operation(
+        field: &str,
+        relationship_effects: Vec<ProjectionRelationshipEffect>,
+    ) -> ProjectionOperation {
+        ProjectionOperation::try_new(
+            "patch-and-link",
+            0,
+            ProjectionMutationKind::Patch,
+            crate::ProjectionTarget::try_new("TodoView", "todos").unwrap(),
+            vec![key(0, "todo_id")],
+            vec![ProjectionField::try_new(
+                0,
+                field,
+                ProjectionAssignment::Set(ProjectionExpression::constant(ProjectionValue::string(
+                    "changed",
+                ))),
+            )
+            .unwrap()],
+            relationship_effects,
+            Vec::new(),
+        )
+        .unwrap()
+    }
+
+    fn owner_link(source_field: &str, target_field: &str) -> ProjectionRelationshipEffect {
+        ProjectionRelationshipEffect::link(
+            0,
+            ProjectionRelationship::try_new("TodoView", "owner", "UserView").unwrap(),
+            vec![key(0, source_field)],
+            vec![key(0, target_field)],
+        )
+        .unwrap()
+    }
+
+    #[test]
+    fn hidden_row_change_adds_model_recovery_without_erasing_safe_edge() {
+        let selected = select_operation(
+            &operation("title", vec![owner_link("todo_id", "user_id")]),
+            &models(BTreeMap::from([
+                (
+                    "TodoView".into(),
+                    RoleGrant::columns(["todo_id", "owner_id"]),
+                ),
+                ("UserView".into(), RoleGrant::columns(["user_id"])),
+            ])),
+        )
+        .unwrap();
+
+        assert!(selected.force_revalidate);
+        assert!(selected.fields.is_empty());
+        assert_eq!(selected.relationship_effects.len(), 1);
+        assert!(selected
+            .invalidations
+            .contains(&ProjectionInvalidation::model("TodoView").unwrap()));
+    }
+
+    #[test]
+    fn denied_relationship_consequence_is_omitted_without_broad_recovery() {
+        let selected = select_operation(
+            &operation("title", vec![owner_link("todo_id", "user_id")]),
+            &models(BTreeMap::from([(
+                "TodoView".into(),
+                RoleGrant::all_columns(),
+            )])),
+        )
+        .unwrap();
+
+        assert!(!selected.force_revalidate);
+        assert!(selected.relationship_effects.is_empty());
+        assert!(selected.invalidations.is_empty());
+        assert_eq!(selected.fields.len(), 1);
+    }
+
+    #[test]
+    fn unsafe_visible_relationship_uses_narrow_or_source_model_recovery() {
+        let narrow = select_operation(
+            &operation("title", vec![owner_link("todo_id", "user_id")]),
+            &models(BTreeMap::from([
+                ("TodoView".into(), RoleGrant::all_columns()),
+                ("UserView".into(), RoleGrant::columns(["name"])),
+            ])),
+        )
+        .unwrap();
+        assert_eq!(
+            narrow.relationship_effects[0].kind(),
+            crate::ProjectionRelationshipEffectKind::Invalidate
+        );
+        assert!(narrow.invalidations.contains(
+            &ProjectionInvalidation::relationship("TodoView", "owner", "UserView",).unwrap()
+        ));
+        assert!(!narrow.force_revalidate);
+
+        let source_recovery = select_operation(
+            &operation("owner_id", vec![owner_link("title", "user_id")]),
+            &models(BTreeMap::from([
+                (
+                    "TodoView".into(),
+                    RoleGrant::columns(["todo_id", "owner_id"]),
+                ),
+                ("UserView".into(), RoleGrant::columns(["user_id"])),
+            ])),
+        )
+        .unwrap();
+        assert!(source_recovery.relationship_effects.is_empty());
+        assert!(source_recovery
+            .invalidations
+            .contains(&ProjectionInvalidation::model("TodoView").unwrap()));
+        assert!(!source_recovery.force_revalidate);
+        assert_eq!(source_recovery.fields.len(), 1);
+    }
+
+    #[test]
+    fn partial_multi_model_selection_keeps_authorized_operations_only() {
+        let selected_models = models(BTreeMap::from([(
+            "TodoView".into(),
+            RoleGrant::all_columns(),
+        )]));
+        let todo = operation("title", Vec::new());
+        let user = ProjectionOperation::try_new(
+            "patch-user",
+            1,
+            ProjectionMutationKind::Patch,
+            crate::ProjectionTarget::try_new("UserView", "users").unwrap(),
+            vec![key(0, "user_id")],
+            vec![ProjectionField::try_new(
+                0,
+                "name",
+                ProjectionAssignment::Set(ProjectionExpression::constant(ProjectionValue::string(
+                    "changed",
+                ))),
+            )
+            .unwrap()],
+            Vec::new(),
+            Vec::new(),
+        )
+        .unwrap();
+
+        assert_eq!(
+            select_operation(&todo, &selected_models)
+                .expect("authorized model operation")
+                .model,
+            "TodoView"
+        );
+        assert!(
+            select_operation(&user, &selected_models).is_none(),
+            "an operation against a denied output model must not survive Surface selection"
+        );
+    }
 }

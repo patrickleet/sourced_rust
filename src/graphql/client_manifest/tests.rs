@@ -10,6 +10,12 @@ use crate::table::{
 };
 use std::any::TypeId;
 
+#[derive(Serialize, crate::DomainEvent)]
+#[domain_event(name = "todo.projected", version = 1)]
+struct ManifestTodoProjected {
+    todo_id: String,
+}
+
 #[test]
 fn generated_causal_command_operation_requires_framework_command_id() {
     let operation = command_operation(
@@ -275,6 +281,119 @@ fn full_surface() -> Surface {
     .expect("projectors")
 }
 
+fn modeled_surface(
+    state: crate::projection::placement::ProjectionBindingState,
+    execution_class: crate::projection::placement::ProjectionExecutionClass,
+) -> Surface {
+    use crate::projection::catalog::ProjectionBindingActivation;
+    use crate::projection::placement::{
+        ProjectionBinding, ProjectionExecutorRoute, ProjectionOutput, ProjectionOwner,
+        ProjectionPhysicalTopology, ProjectionSourceBinding, PROJECTION_PARTITION_CODEC_VERSION,
+    };
+    use crate::projection::{
+        ProjectionArm, ProjectionField, ProjectionOperation, ProjectionPartition, ProjectionTarget,
+    };
+    use crate::projection_protocol::{ProjectionEpoch, ProjectorTopologyId};
+    use crate::{
+        ProjectionAssignment, ProjectionExpression, ProjectionKeyField, ProjectionMutationKind,
+        ProjectionProgram, ProjectionValueType,
+    };
+
+    let selector = crate::ProjectionEventSelector::try_from_descriptor(
+        &<ManifestTodoProjected as crate::DomainEvent>::DESCRIPTOR,
+    )
+    .unwrap();
+    let key = ProjectionKeyField::try_new(
+        0,
+        "todo_id",
+        ProjectionExpression::body_path(ProjectionValueType::String, ["todo_id"]).unwrap(),
+    )
+    .unwrap();
+    let field = ProjectionField::try_new(
+        0,
+        "title",
+        ProjectionAssignment::Set(
+            ProjectionExpression::body_path(ProjectionValueType::String, ["todo_id"]).unwrap(),
+        ),
+    )
+    .unwrap();
+    let operation = ProjectionOperation::try_new(
+        "project-todo",
+        0,
+        ProjectionMutationKind::Patch,
+        ProjectionTarget::try_new("TodoView", "todos").unwrap(),
+        vec![key],
+        vec![field],
+        Vec::new(),
+        Vec::new(),
+    )
+    .unwrap();
+    let arm = ProjectionArm::try_new("todo-projected", selector, vec![operation]).unwrap();
+    let program = ProjectionProgram::try_new(
+        "project-todos-modeled",
+        1,
+        ProjectionPartition::Unit,
+        vec![arm],
+    )
+    .unwrap();
+    let binding = ProjectionBinding::from_eventual_program(
+        &program,
+        ProjectionSourceBinding::try_new("todo-domain", "ordered-domain-events", 1).unwrap(),
+        ProjectionOwner::try_new("project-todos-modeled").unwrap(),
+        execution_class,
+        "distributed-projection-partition",
+        PROJECTION_PARTITION_CODEC_VERSION,
+        vec![ProjectionOutput::try_new("TodoView", "todos", todos()).unwrap()],
+        Vec::new(),
+        Some(ProjectionPhysicalTopology::from_protocol(
+            &ProjectorTopologyId::new(1, "project-todos-modeled", [0x44; 32]).unwrap(),
+        )),
+    )
+    .unwrap();
+    let catalog =
+        crate::projection::catalog::ProjectionCatalog::try_new(vec![binding.clone()]).unwrap();
+    let active = catalog
+        .activate(
+            vec![ProjectionBindingActivation::new(
+                binding.id(),
+                binding.program_id(),
+                ProjectionEpoch::new("todos-modeled-v1").unwrap(),
+                state,
+                Some(ProjectionExecutorRoute::local("todos-service").unwrap()),
+            )],
+            None,
+        )
+        .unwrap();
+    let modeled = crate::graphql::SurfaceModeledProjection::try_from_catalog(
+        program,
+        &catalog,
+        &active,
+        binding.id(),
+    )
+    .unwrap();
+
+    let mut surface = full_surface();
+    surface.projectors.clear();
+    surface.projectors_attached = false;
+    let command = surface
+        .commands
+        .iter_mut()
+        .find(|command| command.command_name == "todo.complete")
+        .unwrap();
+    command
+        .projections
+        .add_event_set(crate::events![ManifestTodoProjected]);
+    command.projections.add_preview(crate::event_preview! {
+        ManifestTodoProjected => ManifestTodoProjected {
+            todo_id: input.todo_id,
+            ..unknown
+        }
+    });
+    surface
+        .with_projectors([SurfaceProjector::new("project-todos-modeled").modeled(modeled)])
+        .unwrap()
+}
+
 fn projected_surface() -> Surface {
     use super::super::command_contract::{CommandEffects, CommandProjectedModel, EffectExpression};
 
@@ -436,10 +555,7 @@ fn legacy_effect_presets_are_not_v2_client_authority() {
     )
     .expect("trusted preset descriptor manifest");
 
-    assert!(manifest.commands[0]
-        .extensions
-        .trusted_presets
-        .is_empty());
+    assert!(manifest.commands[0].extensions.trusted_presets.is_empty());
     let wire = serde_json::to_value(manifest).expect("manifest JSON");
     assert!(wire["commands"][0]["extensions"].get("effects").is_none());
     assert!(wire["commands"][0]["extensions"]
@@ -565,7 +681,7 @@ fn role_manifest_is_deterministic_and_hides_denied_identity_and_commands() {
     );
     assert_eq!(
         first.protocol_fingerprint,
-        "sha256:ed6801875db537f1b889ba2695777995adf3919f993f1432239fd10ff73cc609"
+        "sha256:04791adffc73cd76aba4cb3b2ae6bfa451b3413814e935fc2f417e664b14c117"
     );
 
     let user = first
@@ -716,7 +832,7 @@ fn manifest_v2_decode_rejects_unknown_versions_fields_and_legacy_authority() {
         "version": 1,
         "event_set": [],
         "program_arms": [],
-        "preview_values": [],
+        "preview_occurrences": [],
         "fallback": "revalidate"
     });
     mixed["commands"][0]["extensions"]["effects"] = serde_json::json!({
@@ -737,6 +853,23 @@ fn manifest_v2_decode_rejects_unknown_versions_fields_and_legacy_authority() {
         "arms": []
     }]);
     assert!(serde_json::from_value::<DistributedClientManifest>(program).is_err());
+    for field in ["ir_version", "operation_semantics_version"] {
+        let mut program = serde_json::to_value(&baseline).unwrap();
+        program["projection_programs"] = serde_json::json!([{
+            "version": 1,
+            "program_id": "pp1:sha256:bad",
+            "name": "bad",
+            "program_version": 1,
+            "ir_version": 1,
+            "operation_semantics_version": 1,
+            "arms": []
+        }]);
+        program["projection_programs"][0][field] = serde_json::json!(2);
+        assert!(
+            serde_json::from_value::<DistributedClientManifest>(program).is_err(),
+            "unknown `{field}` must fail closed"
+        );
+    }
 
     let mut binding = value.clone();
     binding["projection_bindings"] = serde_json::json!([{
@@ -752,10 +885,10 @@ fn manifest_v2_decode_rejects_unknown_versions_fields_and_legacy_authority() {
 
     let mut extension = value;
     extension["commands"][0]["extensions"]["projection"] = serde_json::json!({
-        "version": 2,
+        "version": 3,
         "event_set": [],
         "program_arms": [],
-        "preview_values": [],
+        "preview_occurrences": [],
         "fallback": "revalidate"
     });
     assert!(serde_json::from_value::<DistributedClientManifest>(extension).is_err());
@@ -765,6 +898,191 @@ fn manifest_v2_decode_rejects_unknown_versions_fields_and_legacy_authority() {
         "sha256:30f19c9f4d29280a02ddf67c4df62cdc92c4e8090792f43d6b1bdafea3e31273",
         "manifest v2 projection semantics must not share the v1 protocol fingerprint"
     );
+}
+
+#[test]
+fn manifest_decode_rejects_hostile_preview_occurrence_topology() {
+    use crate::projection::placement::{ProjectionBindingState, ProjectionExecutionClass};
+
+    let selected = surface_for_role(
+        &modeled_surface(
+            ProjectionBindingState::Active,
+            ProjectionExecutionClass::Causal,
+        ),
+        "user",
+        &grants()["user"],
+    )
+    .unwrap();
+    let manifest = client_manifest_from_surface(
+        "todos-service",
+        ClientSurfaceIdentity::role("user"),
+        &selected,
+    )
+    .unwrap();
+    let baseline = serde_json::to_value(manifest).unwrap();
+    let command_index = baseline["commands"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .position(|command| command["name"] == "todo.complete")
+        .unwrap();
+
+    let mut ordinal = baseline.clone();
+    ordinal["commands"][command_index]["extensions"]["projection"]["preview_occurrences"][0]
+        ["ordinal"] = serde_json::json!(2);
+    assert!(
+        serde_json::from_value::<DistributedClientManifest>(ordinal).is_err(),
+        "synthetic preview ordinals must be dense and zero-based"
+    );
+
+    let mut foreign_event = baseline.clone();
+    foreign_event["commands"][command_index]["extensions"]["projection"]["preview_occurrences"]
+        [0]["event"] = serde_json::json!({
+        "id": "pe1:sha256:ffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffff",
+        "name": "private.denied-event",
+        "version": 1
+    });
+    assert!(
+        serde_json::from_value::<DistributedClientManifest>(foreign_event).is_err(),
+        "a preview occurrence cannot inject an event without a selected arm"
+    );
+
+    let mut duplicate_slot = baseline;
+    let duplicate = duplicate_slot["commands"][command_index]["extensions"]["projection"]
+        ["preview_occurrences"][0]["values"][0]
+        .clone();
+    duplicate_slot["commands"][command_index]["extensions"]["projection"]["preview_occurrences"][0]
+        ["values"]
+        .as_array_mut()
+        .unwrap()
+        .push(duplicate);
+    assert!(
+        serde_json::from_value::<DistributedClientManifest>(duplicate_slot).is_err(),
+        "preview slots must be sorted and unique"
+    );
+}
+
+#[test]
+fn active_causal_modeled_projection_exports_exact_command_plan() {
+    use crate::projection::placement::{ProjectionBindingState, ProjectionExecutionClass};
+
+    let full = modeled_surface(
+        ProjectionBindingState::Active,
+        ProjectionExecutionClass::Causal,
+    );
+    let selected = surface_for_role(&full, "user", &grants()["user"]).unwrap();
+    let manifest = client_manifest_from_surface(
+        "todos-service",
+        ClientSurfaceIdentity::role("user"),
+        &selected,
+    )
+    .unwrap();
+
+    assert_eq!(manifest.projection_programs.len(), 1);
+    assert_eq!(manifest.projection_bindings.len(), 1);
+    assert_eq!(
+        manifest.projection_bindings[0].state,
+        ClientProjectionBindingState::Active
+    );
+    let command = manifest
+        .commands
+        .iter()
+        .find(|command| command.name == "todo.complete")
+        .unwrap();
+    let projection = command
+        .extensions
+        .projection
+        .as_ref()
+        .expect("active eventual causal binding can mint preview work");
+    assert_eq!(projection.event_set.len(), 1);
+    assert_eq!(projection.program_arms.len(), 1);
+    assert_eq!(projection.preview_occurrences.len(), 1);
+    assert_eq!(projection.preview_occurrences[0].ordinal, 0);
+    assert_eq!(projection.preview_occurrences[0].values.len(), 2);
+    assert!(projection.preview_occurrences[0]
+        .values
+        .iter()
+        .all(|preview| matches!(preview.source, ClientProjectionPreviewSource::Input { .. })));
+    let wire = serde_json::to_string(&manifest).unwrap();
+    assert!(!wire.contains("domain_event"));
+    assert!(!wire.contains("body_schema"));
+    assert!(!wire.contains("\"kind\":\"body_path\""));
+}
+
+#[test]
+fn draining_and_background_bindings_are_visible_but_cannot_mint_command_work() {
+    use crate::projection::placement::{ProjectionBindingState, ProjectionExecutionClass};
+
+    for (state, class, expected_state) in [
+        (
+            ProjectionBindingState::Draining,
+            ProjectionExecutionClass::Causal,
+            ClientProjectionBindingState::Draining,
+        ),
+        (
+            ProjectionBindingState::Active,
+            ProjectionExecutionClass::Background,
+            ClientProjectionBindingState::Active,
+        ),
+    ] {
+        let full = modeled_surface(state, class);
+        let selected = surface_for_role(&full, "user", &grants()["user"]).unwrap();
+        let manifest = client_manifest_from_surface(
+            "todos-service",
+            ClientSurfaceIdentity::role("user"),
+            &selected,
+        )
+        .unwrap();
+        assert_eq!(manifest.projection_programs.len(), 1);
+        assert_eq!(manifest.projection_bindings[0].state, expected_state);
+        assert!(manifest
+            .commands
+            .iter()
+            .find(|command| command.name == "todo.complete")
+            .unwrap()
+            .extensions
+            .projection
+            .is_none());
+    }
+}
+
+#[test]
+fn denied_modeled_projection_exports_no_program_event_slot_or_preset_identity() {
+    use crate::projection::placement::{ProjectionBindingState, ProjectionExecutionClass};
+
+    let mut full = modeled_surface(
+        ProjectionBindingState::Active,
+        ProjectionExecutionClass::Causal,
+    );
+    let command = full
+        .commands
+        .iter_mut()
+        .find(|command| command.command_name == "todo.complete")
+        .unwrap();
+    command.projections.previews[0].preview.fields[0].source =
+        crate::graphql::CommandProjectionPreviewSource::trusted("denied-owner-secret", "string");
+    let selected = surface_for_role(
+        &full,
+        "user",
+        &BTreeMap::from([("UserView".into(), RoleGrant::all_columns())]),
+    )
+    .unwrap();
+    let manifest = client_manifest_from_surface(
+        "todos-service",
+        ClientSurfaceIdentity::role("user"),
+        &selected,
+    )
+    .unwrap();
+    assert!(manifest.projection_programs.is_empty());
+    assert!(manifest.projection_bindings.is_empty());
+    let wire = serde_json::to_string(&manifest).unwrap();
+    for hidden in [
+        "todo.projected",
+        "denied-owner-secret",
+        "project-todos-modeled",
+    ] {
+        assert!(!wire.contains(hidden), "leaked `{hidden}` in {wire}");
+    }
 }
 
 #[test]

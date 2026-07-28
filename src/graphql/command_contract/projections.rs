@@ -169,6 +169,8 @@ impl CommandProjectionEvents {
     }
 
     pub(crate) fn add_preview(&mut self, preview: CommandProjectionPreview) {
+        self.declaration_errors
+            .extend(preview.declaration_errors.clone());
         if preview.selectors.is_empty() {
             self.declaration_errors
                 .push("projection preview must bind exactly one emitted event variant".to_owned());
@@ -181,8 +183,6 @@ impl CommandProjectionEvents {
             );
             return;
         }
-        self.declaration_errors
-            .extend(preview.declaration_errors.clone());
         self.previews.extend(
             preview
                 .selectors
@@ -221,11 +221,10 @@ impl CommandProjectionEvents {
                 ));
             }
         }
-        self.previews.sort_by(|left, right| {
-            left.selector
-                .canonical_cmp(&right.selector)
-                .then_with(|| preview_bytes(&left.preview).cmp(&preview_bytes(&right.preview)))
-        });
+        // Preview declarations are synthetic occurrences, not another view of
+        // the allowed event set. Preserve their declaration order so generated
+        // clients can apply them deterministically until the authoritative
+        // ordered command delta replaces the optimistic overlay.
         for preview in &mut self.previews {
             if self
                 .selectors
@@ -273,13 +272,6 @@ impl CommandProjectionEvents {
                     | CommandProjectionPreviewSource::Absent
                     | CommandProjectionPreviewSource::Unknown => {}
                 }
-            }
-        }
-        for pair in self.previews.windows(2) {
-            if pair[0].selector == pair[1].selector {
-                return Err(format!(
-                    "typed command `{command}` repeats preview provenance for one exact emitted event"
-                ));
             }
         }
         Ok(())
@@ -580,8 +572,4 @@ fn preview_field_key(field: &CommandProjectionPreviewField) -> (u8, Vec<String>)
         ),
         None => (0, field.body_path.clone()),
     }
-}
-
-fn preview_bytes(preview: &CommandProjectionPreview) -> Vec<u8> {
-    serde_json::to_vec(preview).expect("projection preview serialization cannot fail")
 }

@@ -251,6 +251,39 @@ fn partial_preview_retains_known_unknown_and_typed_constant_sources() {
     assert_eq!(contract.projections.previews[0].preview.fields.len(), 2);
 }
 
+#[test]
+fn repeated_preview_declarations_preserve_synthetic_occurrence_order() {
+    let contract = typed_command::<Input, Succeeded<Payload>>("todo.repeated-preview")
+        .emits(crate::events![TodoCompleted])
+        .preview(crate::event_preview! {
+            TodoCompleted => TodoCompleted {
+                todo_id: "first",
+                ..unknown
+            }
+        })
+        .preview(crate::event_preview! {
+            TodoCompleted => TodoCompleted {
+                todo_id: input.id,
+                ..unknown
+            }
+        })
+        .into_contract();
+    let mut projections = contract.projections.clone();
+    projections
+        .canonicalize_and_validate("todo.repeated-preview")
+        .unwrap();
+
+    assert_eq!(projections.previews.len(), 2);
+    assert!(matches!(
+        projections.previews[0].preview.fields[0].source,
+        CommandProjectionPreviewSource::Constant { .. }
+    ));
+    assert!(matches!(
+        projections.previews[1].preview.fields[0].source,
+        CommandProjectionPreviewSource::InputPath { .. }
+    ));
+}
+
 fn confirmation_with_facts(facts: &[&str]) -> CommandProjectionConfirmation {
     CommandProjectionConfirmation {
         projector: "project_todos".into(),

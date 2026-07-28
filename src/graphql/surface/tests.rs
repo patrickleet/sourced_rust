@@ -441,7 +441,7 @@ fn surface_for_role_drops_ungranted_columns_and_models() {
 }
 
 #[test]
-fn role_surface_erases_denied_effects_and_retains_valid_trusted_presets() {
+fn role_surface_legacy_effects_never_become_v2_client_authority() {
     let mut full = build_surface(&[orders()], &SurfaceOptions::sqlite()).unwrap();
     let input = SurfaceTypeDef {
         name: "UpdateOrderInput".into(),
@@ -583,11 +583,7 @@ fn role_surface_erases_denied_effects_and_retains_valid_trusted_presets() {
         .iter()
         .find(|command| command.name == "order.assign_customer")
         .expect("denied-field manifest command");
-    assert!(denied
-        .extensions
-        .effects
-        .as_ref()
-        .is_some_and(|effects| effects.operations.is_empty() && effects.fallback == "revalidate"));
+    assert!(denied.extensions.effects.is_none());
     assert!(denied.extensions.trusted_presets.is_empty());
     let denied_effects_json = serde_json::to_string(&denied.extensions.effects).unwrap();
     assert!(
@@ -604,15 +600,10 @@ fn role_surface_erases_denied_effects_and_retains_valid_trusted_presets() {
         .iter()
         .find(|command| command.name == "order.apply_preset")
         .expect("trusted-preset manifest command");
-    assert_eq!(
-        trusted.extensions.trusted_presets,
-        vec![super::super::ClientTrustedPresetDescriptor {
-            name: "tenant-secret".into(),
-            codec: "string".into(),
-        }]
-    );
+    assert!(trusted.extensions.effects.is_none());
+    assert!(trusted.extensions.trusted_presets.is_empty());
     let trusted_json = serde_json::to_string(trusted).unwrap();
-    assert!(trusted_json.contains("tenant-secret"), "{trusted_json}");
+    assert!(!trusted_json.contains("tenant-secret"), "{trusted_json}");
     let preset_descriptors_json =
         serde_json::to_string(&trusted.extensions.trusted_presets).unwrap();
     assert!(
