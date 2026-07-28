@@ -810,8 +810,46 @@ fn lower_relationship_consequences(
                             && descriptor.target_model() == target_model
                     })
                 });
-                if !proven {
+                if proven {
+                    continue;
+                }
+                let explicit = mutation.provenance().invalidations().contains(invalidation);
+                if !explicit {
                     return Err(ProjectionDeltaError::ProjectionIdentityMismatch);
+                }
+                let raw_effect =
+                    mutation
+                        .provenance()
+                        .relationship_effects()
+                        .iter()
+                        .find(|effect| {
+                            let descriptor = effect.relationship();
+                            effect.kind() == ProjectionRelationshipEffectKind::Invalidate
+                                && descriptor.source_model() == source_model
+                                && descriptor.relationship() == relationship
+                                && descriptor.target_model() == target_model
+                        });
+                if let Some(raw_effect) = raw_effect {
+                    lower_relationship_effect(
+                        occurrence_ordinal,
+                        projection_ref,
+                        source,
+                        raw_effect,
+                        ProjectionRelationshipEffectKind::Invalidate,
+                        partition.clone(),
+                        authorization,
+                        operations,
+                        recoveries,
+                    )?;
+                } else if let Some(model) = authorization.model(source_model) {
+                    emit_model_recovery(
+                        occurrence_ordinal,
+                        projection_ref,
+                        partition.clone(),
+                        model.wire_model,
+                        operations,
+                        recoveries,
+                    )?;
                 }
             }
         }

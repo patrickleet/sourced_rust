@@ -243,8 +243,12 @@ impl ProjectionDelta {
                 return Err(ProjectionDeltaError::DuplicateScope);
             }
         }
+        let mut recovery_targets = BTreeSet::new();
         for recovery in &self.recoveries {
             recovery.validate(self.projections.len(), self.occurrences.len())?;
+            if !recovery_targets.insert(&recovery.target) {
+                return Err(ProjectionDeltaError::DuplicateScope);
+            }
             if recovery.condition == ProjectionDeltaRecoveryCondition::IfRecordMissing {
                 let ProjectionDeltaRecoveryTarget::Record { scope } = &recovery.target else {
                     return Err(ProjectionDeltaError::InvalidOperation(

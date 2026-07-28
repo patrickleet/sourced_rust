@@ -249,14 +249,19 @@ where
         &self,
         logical_model: &str,
     ) -> Option<&crate::graphql::surface::SurfaceModel> {
-        self.surface
-            .models
-            .get(logical_model)
+        self.surface.models.get(logical_model)
+    }
+
+    fn normalized_model(
+        &self,
+        logical_model: &str,
+    ) -> Option<&crate::graphql::surface::SurfaceModel> {
+        self.selected_model(logical_model)
             .filter(|model| crate::graphql::surface::model_has_client_normalized_identity(model))
     }
 
     fn selected_field(&self, logical_model: &str, logical_field: &str) -> Option<String> {
-        let model = self.selected_model(logical_model)?;
+        let model = self.normalized_model(logical_model)?;
         let column = model
             .schema
             .columns
@@ -318,7 +323,7 @@ where
         logical_model: &str,
         logical_key: &ResolvedProjectionKey,
     ) -> Result<Option<AuthorizedRecordKey>, ProjectionDeltaError> {
-        let Some(model) = self.selected_model(logical_model) else {
+        let Some(model) = self.normalized_model(logical_model) else {
             return Ok(None);
         };
         let mut logical_by_wire = std::collections::BTreeMap::new();
@@ -354,7 +359,7 @@ where
         logical_relationship: &str,
         target_logical_model: &str,
     ) -> Option<AuthorizedRelationship> {
-        let source = self.selected_model(source_logical_model)?;
+        let source = self.normalized_model(source_logical_model)?;
         let target = self.surface.models.get(target_logical_model)?;
         source
             .relationships

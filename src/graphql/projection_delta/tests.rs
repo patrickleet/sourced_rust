@@ -36,8 +36,8 @@ use crate::table::{
 };
 use crate::{
     DomainEventBodyDescriptor, DomainEventBodyKind, DomainEventDescriptor, DomainEventEnvelope,
-    DomainEventOccurrence, ProjectionAssignment, ProjectionExpression, ProjectionKeyField,
-    ProjectionMutationKind, ProjectionProgram, ProjectionRelationship,
+    DomainEventOccurrence, ProjectionAssignment, ProjectionExpression, ProjectionInvalidation,
+    ProjectionKeyField, ProjectionMutationKind, ProjectionProgram, ProjectionRelationship,
     ProjectionRelationshipEffect, ProjectionValue, ProjectionValueType, ResolvedProjectionMutation,
     ResolvedProjectionRelationshipEffect, DOMAIN_EVENT_BODY_CODEC, DOMAIN_EVENT_BODY_CODEC_VERSION,
     MAX_PROJECTION_EXPRESSION_DEPTH,
@@ -377,6 +377,48 @@ fn hidden_relationship_target_transforms_link_into_source_invalidation() {
 }
 
 #[test]
+fn explicit_relationship_invalidation_survives_removed_keyed_effect_as_model_recovery() {
+    let fixture = modeled_fixture_with_relationship_invalidation(
+        ProjectionBindingState::Active,
+        ProjectionExecutionClass::Causal,
+    );
+    let selected = selected_export_with_embedded_source(&fixture.surface);
+    let request = TestRequestAuthority::authorized("auth-generation-7");
+    let authority = ProjectionDeltaAuthority::try_new(&selected, &request).unwrap();
+    let modeled = selected.surface().projectors[0].modeled[0].clone();
+    let source = authority.source(&modeled).unwrap();
+    let plan = crate::ResolvedProjectionPlan::resolve(
+        &fixture.program,
+        &state_occurrence(7, "todo-1", "secret-title"),
+    )
+    .unwrap();
+    let occurrence = ProjectionDeltaPlanOccurrence::actual(vec![(&source, &plan)]).unwrap();
+    let delta = authority.lower(&[occurrence]).unwrap();
+
+    assert!(!delta.operations.iter().any(|operation| matches!(
+        operation.mutation,
+        ProjectionDeltaMutation::Link { .. }
+            | ProjectionDeltaMutation::Unlink { .. }
+            | ProjectionDeltaMutation::InvalidateRelationship { .. }
+    )));
+    assert!(delta.operations.iter().any(|operation| matches!(
+        &operation.mutation,
+        ProjectionDeltaMutation::InvalidateModel { model, .. } if model == "TodoView"
+    )));
+    assert!(delta.recoveries.iter().any(|recovery| {
+        recovery.condition == ProjectionDeltaRecoveryCondition::Always
+            && matches!(
+                &recovery.target,
+                ProjectionDeltaRecoveryTarget::Model { model, .. } if model == "TodoView"
+            )
+    }));
+    let json = String::from_utf8(delta.canonical_bytes().unwrap()).unwrap();
+    assert!(!json.contains("todo-1"));
+    assert!(!json.contains("owner-secret"));
+    assert!(!json.contains("secret-title"));
+}
+
+#[test]
 fn hidden_relationship_source_emits_no_keyed_consequence() {
     let fixture = modeled_fixture(
         ProjectionBindingState::Active,
@@ -394,6 +436,17 @@ fn hidden_relationship_source_emits_no_keyed_consequence() {
     .unwrap();
     let occurrence = ProjectionDeltaPlanOccurrence::actual(vec![(&source, &plan)]).unwrap();
     let delta = authority.lower(&[occurrence]).unwrap();
+    assert!(delta.operations.iter().any(|operation| matches!(
+        &operation.mutation,
+        ProjectionDeltaMutation::InvalidateModel { model, .. } if model == "TodoView"
+    )));
+    assert!(delta.recoveries.iter().any(|recovery| {
+        recovery.condition == ProjectionDeltaRecoveryCondition::Always
+            && matches!(
+                &recovery.target,
+                ProjectionDeltaRecoveryTarget::Model { model, .. } if model == "TodoView"
+            )
+    }));
     let json = String::from_utf8(delta.canonical_bytes().unwrap()).unwrap();
     assert!(!json.contains("todo-secret"));
     assert!(!json.contains("owner-secret"));
@@ -435,7 +488,8 @@ fn recovery_condition_is_order_independent_and_obsolete_patch_fallback_is_droppe
         vec![conditional.clone(), always.clone()],
         vec![always.clone(), conditional.clone()],
     ] {
-        let merged = super::canonical::canonicalize_recoveries(recoveries, &[patch.clone()]);
+        let merged =
+            super::canonical::canonicalize_recoveries(recoveries, std::slice::from_ref(&patch));
         assert_eq!(merged.len(), 1);
         assert_eq!(
             merged[0].condition,
@@ -581,7 +635,7 @@ fn modeled_fixture(
     state: ProjectionBindingState,
     execution: ProjectionExecutionClass,
 ) -> ModeledFixture {
-    modeled_fixture_with_kind(state, execution, ProjectionMutationKind::Upsert)
+    modeled_fixture_config(state, execution, ProjectionMutationKind::Upsert, false)
 }
 
 fn modeled_fixture_with_kind(
@@ -589,11 +643,49 @@ fn modeled_fixture_with_kind(
     execution: ProjectionExecutionClass,
     mutation_kind: ProjectionMutationKind,
 ) -> ModeledFixture {
+    modeled_fixture_config(state, execution, mutation_kind, false)
+}
+
+fn modeled_fixture_with_relationship_invalidation(
+    state: ProjectionBindingState,
+    execution: ProjectionExecutionClass,
+) -> ModeledFixture {
+    modeled_fixture_config(state, execution, ProjectionMutationKind::Upsert, true)
+}
+
+fn modeled_fixture_config(
+    state: ProjectionBindingState,
+    execution: ProjectionExecutionClass,
+    mutation_kind: ProjectionMutationKind,
+    invalidate_relationship: bool,
+) -> ModeledFixture {
     let todo_schema = todos();
     let user_schema = users();
     let descriptor = event_descriptor();
     let selector = crate::ProjectionEventSelector::try_from_descriptor(&descriptor).unwrap();
     let relationship = ProjectionRelationship::try_new("TodoView", "owner", "UserView").unwrap();
+    let (relationship_effects, invalidations) = if invalidate_relationship {
+        (
+            vec![ProjectionRelationshipEffect::invalidate(
+                0,
+                relationship,
+                vec![projection_key(0, "todo_id", "todo_id")],
+            )
+            .unwrap()],
+            vec![ProjectionInvalidation::relationship("TodoView", "owner", "UserView").unwrap()],
+        )
+    } else {
+        (
+            vec![ProjectionRelationshipEffect::link(
+                0,
+                relationship,
+                vec![projection_key(0, "todo_id", "todo_id")],
+                vec![projection_key(0, "user_id", "owner_id")],
+            )
+            .unwrap()],
+            vec![],
+        )
+    };
     let operation = ProjectionOperation::try_new(
         "upsert-todo",
         0,
@@ -606,14 +698,8 @@ fn modeled_fixture_with_kind(
             projection_field(2, "title", "title"),
             projection_field(3, "status", "status"),
         ],
-        vec![ProjectionRelationshipEffect::link(
-            0,
-            relationship.clone(),
-            vec![projection_key(0, "todo_id", "todo_id")],
-            vec![projection_key(0, "user_id", "owner_id")],
-        )
-        .unwrap()],
-        vec![],
+        relationship_effects,
+        invalidations,
     )
     .unwrap();
     let arm = ProjectionArm::try_new("todo-state", selector, vec![operation]).unwrap();
