@@ -1080,7 +1080,7 @@ async fn multi_root_causal_query_fails_before_merging_independent_snapshots() {
         response.errors
     );
     assert!(
-        response.extensions.get("distributed").is_none(),
+        !response.extensions.contains_key("distributed"),
         "a rejected multi-root operation must not advertise a fabricated atomic snapshot"
     );
 }

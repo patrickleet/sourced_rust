@@ -69,6 +69,12 @@ where
         F: Fn(CausalProjectorContext, I) -> Fut + Send + Sync + 'static,
         Fut: Future<Output = Result<(), HandlerError>> + Send + 'static,
     {
+        if !self.declaration.modeled.is_empty() {
+            panic!(
+                "causal projector `{}` carries modeled projection registrations; mount it with `Routes::consume_projection(...)` instead of the legacy `causal_projector(...).model(...).handle(...)` builder",
+                self.declaration.name
+            );
+        }
         if self.declaration.facts.is_empty() {
             panic!(
                 "causal projector `{}` requires at least one accepted fact",

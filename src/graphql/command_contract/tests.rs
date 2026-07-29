@@ -145,7 +145,8 @@ fn command_events_are_exact_values_independent_of_projector_declarations() {
     let contract = typed_command::<Input, Succeeded<Payload>>("todo.complete")
         .emits(crate::events![TodoCompleted])
         .into_contract();
-    let binding = TypedServiceCommandBinding::from_contracts("todos", &[contract.clone()]);
+    let binding =
+        TypedServiceCommandBinding::from_contracts("todos", std::slice::from_ref(&contract));
     assert!(binding.is_ok());
     assert_eq!(contract.projections.selectors.len(), 1);
     assert_eq!(
@@ -247,7 +248,7 @@ fn partial_preview_retains_known_unknown_and_typed_constant_sources() {
             }
         })
         .into_contract();
-    TypedServiceCommandBinding::from_contracts("todos", &[contract.clone()]).unwrap();
+    TypedServiceCommandBinding::from_contracts("todos", std::slice::from_ref(&contract)).unwrap();
     assert_eq!(contract.projections.previews[0].preview.fields.len(), 2);
 }
 

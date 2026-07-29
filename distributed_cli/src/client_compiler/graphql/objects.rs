@@ -1,15 +1,36 @@
 use super::*;
 
+pub(super) struct ModelCompileContext<'a> {
+    manifest: &'a ClientManifest,
+    variables: &'a [CompiledVariable],
+    document: &'a ClientDocument,
+}
+
+impl<'a> ModelCompileContext<'a> {
+    pub(super) fn new(
+        manifest: &'a ClientManifest,
+        variables: &'a [CompiledVariable],
+        document: &'a ClientDocument,
+    ) -> Self {
+        Self {
+            manifest,
+            variables,
+            document,
+        }
+    }
+}
+
 pub(super) fn compile_model_object<'ast>(
     field: &MergedField<'ast>,
     model: &ManifestModel,
-    manifest: &ClientManifest,
-    variables: &[CompiledVariable],
+    context: &ModelCompileContext<'_>,
     used_variables: &mut BTreeSet<String>,
-    document: &ClientDocument,
     expander: &mut FragmentExpander<'ast, '_>,
     depth: usize,
 ) -> Result<CompiledObject, ClientCompileError> {
+    let manifest = context.manifest;
+    let variables = context.variables;
+    let document = context.document;
     let selected_fields = expander.merge_object(
         &field.selection_sets,
         &model.typename,
@@ -72,10 +93,8 @@ pub(super) fn compile_model_object<'ast>(
             let mut selection = compile_model_object(
                 &selected,
                 target,
-                manifest,
-                variables,
+                context,
                 used_variables,
-                document,
                 expander,
                 depth + 1,
             )?;
@@ -426,10 +445,8 @@ pub(super) fn compile_aggregate_object<'ast>(
                 let mut selection = compile_model_object(
                     &selected,
                     model,
-                    manifest,
-                    variables,
+                    &ModelCompileContext::new(manifest, variables, document),
                     used_variables,
-                    document,
                     expander,
                     depth + 1,
                 )?;

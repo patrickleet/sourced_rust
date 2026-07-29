@@ -158,6 +158,21 @@ fn generated_modeled_projector(
 }
 
 #[cfg(feature = "graphql")]
+#[test]
+#[should_panic(expected = "mount it with `Routes::consume_projection(...)` instead of the legacy")]
+fn legacy_route_builder_rejects_unit_partition_modeled_projection() {
+    let (projector, _) = generated_modeled_projector(
+        crate::projection::placement::ProjectionExecutorRoute::local("task11-service").unwrap(),
+    );
+
+    let _ = Routes::new()
+        .with_read_model_store(InMemoryRepository::new())
+        .causal_projector::<TodoChanged>(projector)
+        .model::<PrimaryView>()
+        .handle(|_context: CausalProjectorContext, _fact: TodoChanged| async move { Ok(()) });
+}
+
+#[cfg(feature = "graphql")]
 fn modeled_fact_message(id: &str, title: &str, event_version: u64) -> Message {
     let mut occurrence = crate::DomainEventOccurrence::capture(
         crate::DomainEventDescriptor::state::<TodoChanged>(FACT_NAME, event_version),

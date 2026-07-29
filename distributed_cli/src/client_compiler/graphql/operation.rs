@@ -103,10 +103,8 @@ pub(crate) fn compile_document(
         RootKind::List | RootKind::ByPk => compile_model_object(
             &root_field,
             model,
-            manifest,
-            &variables,
+            &ModelCompileContext::new(manifest, &variables, document),
             &mut used_variables,
-            document,
             &mut expander,
             2,
         )?,

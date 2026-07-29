@@ -3564,13 +3564,14 @@ async fn four_position_in_memory_projection_commit_failure_matrix_rolls_back_eve
             "failure position {fail_at}: {error}"
         );
 
-        let rows = repository.model_store.relational_rows.read().unwrap();
-        for (key, values, version) in &physical_before {
-            let row = rows.get(key).unwrap();
-            assert_eq!(&row.values, values, "failure position {fail_at}");
-            assert_eq!(row.version, *version, "failure position {fail_at}");
+        {
+            let rows = repository.model_store.relational_rows.read().unwrap();
+            for (key, values, version) in &physical_before {
+                let row = rows.get(key).unwrap();
+                assert_eq!(&row.values, values, "failure position {fail_at}");
+                assert_eq!(row.version, *version, "failure position {fail_at}");
+            }
         }
-        drop(rows);
         for (index, expected) in snapshots_before.iter().enumerate() {
             assert_eq!(
                 &repository

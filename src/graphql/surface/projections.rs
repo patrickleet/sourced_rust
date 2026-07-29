@@ -269,6 +269,16 @@ impl SurfaceModeledProjection {
             && self.execution_class == ProjectionExecutionClass::Causal
     }
 
+    /// Whether this exact live registration may validate causal work minted
+    /// before or during a rollout.
+    pub(crate) fn is_causal_evidence_eligible(&self) -> bool {
+        matches!(
+            self.state,
+            ProjectionBindingState::Active | ProjectionBindingState::Draining
+        ) && self.placement == ProjectionPlacement::Eventual
+            && self.execution_class == ProjectionExecutionClass::Causal
+    }
+
     pub(crate) fn placement(&self) -> ProjectionPlacement {
         self.placement
     }

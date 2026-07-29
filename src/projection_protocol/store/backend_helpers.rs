@@ -178,7 +178,7 @@ mod tests {
         let mut failure = ProjectionFailure {
             failure_id: batch.failure_id.clone(),
             input: batch.input.cursor.clone(),
-            input_fingerprint: batch.input.fingerprint.clone(),
+            input_fingerprint: batch.input.fingerprint,
             message_id: batch.input.message_id.clone(),
             causation_id: batch.input.causation_id.clone(),
             generation: batch.input.generation,

@@ -776,7 +776,7 @@ fn mounted_registry_derives_one_exact_physical_obligation_from_actual_fanout_ops
         .metadata_for_actual(
             &request,
             std::slice::from_ref(&occurrence),
-            &[selector.clone()],
+            std::slice::from_ref(&selector),
         )
         .unwrap();
     let oversized = vec![occurrence; super::types::MAX_PROJECTION_DELTA_OPERATIONS + 1];
@@ -844,6 +844,119 @@ fn draining_actual_delta_can_apply_but_cannot_mint_new_obligations() {
         request.metadata(delta, &[&modeled], &[], false),
         Err(ProjectionRuntimeAuthorityError::IneligibleProjection)
     ));
+}
+
+#[test]
+#[cfg(feature = "graphql")]
+fn active_metadata_remains_queryable_while_exact_projection_is_draining() {
+    use std::sync::Arc;
+
+    use super::runtime::{
+        ModeledProjectionEvidence, ProtocolProjectionProgramRegistry, ProtocolProjectionRequestSeed,
+    };
+    use crate::graphql::protocol::{ProtocolTokenCodec, ProtocolTokenPurpose};
+    use crate::projection_protocol::ProjectionCausationEvidenceBatch;
+
+    let now = std::time::SystemTime::now();
+    let now_unix_ms = now
+        .duration_since(std::time::UNIX_EPOCH)
+        .unwrap()
+        .as_millis() as u64;
+    let codec = ProtocolTokenCodec::new([0x5c; 32]);
+    let cache_scope = codec
+        .issue(ProtocolTokenPurpose::CacheScope, &("active-to-draining", 1))
+        .unwrap();
+    let principal =
+        crate::command_ledger::PrincipalPartitionId::new("active-to-draining-principal").unwrap();
+    let active = modeled_fixture(
+        ProjectionBindingState::Active,
+        ProjectionExecutionClass::Causal,
+    );
+    let active_seed = ProtocolProjectionRequestSeed::new(
+        selected_export(&active.surface),
+        Arc::new(ProtocolProjectionProgramRegistry::try_from_surface(&active.surface).unwrap()),
+        principal.clone(),
+        "active-to-draining-generation",
+        Vec::new(),
+        now_unix_ms,
+    )
+    .unwrap();
+    let occurrence = state_occurrence(11, "todo-draining-status", "active");
+    let selector =
+        crate::ProjectionEventSelector::try_from_descriptor(occurrence.descriptor()).unwrap();
+    let metadata = active_seed
+        .metadata_for_actual_at(
+            codec.clone(),
+            &cache_scope,
+            crate::command_ledger::CausationId::parse_stored(TEST_CAUSATION_ID.into()).unwrap(),
+            Duration::from_secs(60),
+            std::slice::from_ref(&occurrence),
+            std::slice::from_ref(&selector),
+            now,
+        )
+        .unwrap();
+    assert_eq!(metadata.obligations.len(), 1);
+
+    let draining_cache_scope = codec
+        .issue(ProtocolTokenPurpose::CacheScope, &("active-to-draining", 2))
+        .unwrap();
+    assert_ne!(cache_scope, draining_cache_scope);
+    assert!(matches!(
+        active_seed.modeled_evidence_topologies(
+            &codec,
+            &draining_cache_scope,
+            TEST_CAUSATION_ID,
+            &metadata,
+        ),
+        Err(super::runtime::ProjectionRuntimeAuthorityError::Delta(
+            ProjectionDeltaError::ReplayScopeMismatch
+        ))
+    ));
+
+    let draining = modeled_fixture(
+        ProjectionBindingState::Draining,
+        ProjectionExecutionClass::Causal,
+    );
+    let draining_seed = ProtocolProjectionRequestSeed::new(
+        selected_export(&draining.surface),
+        Arc::new(ProtocolProjectionProgramRegistry::try_from_surface(&draining.surface).unwrap()),
+        principal,
+        "active-to-draining-generation",
+        Vec::new(),
+        now_unix_ms,
+    )
+    .unwrap();
+    let topologies = draining_seed
+        .modeled_evidence_topologies(&codec, &draining_cache_scope, TEST_CAUSATION_ID, &metadata)
+        .unwrap();
+    assert_eq!(topologies.len(), 1);
+    assert_eq!(topologies[0].name(), "projection-delta-test");
+    assert_eq!(
+        draining_seed
+            .modeled_evidence(
+                &codec,
+                &draining_cache_scope,
+                TEST_CAUSATION_ID,
+                &metadata,
+                &ProjectionCausationEvidenceBatch::default(),
+            )
+            .unwrap(),
+        vec![ModeledProjectionEvidence::Pending]
+    );
+
+    let draining_metadata = draining_seed
+        .metadata_for_actual_at(
+            codec,
+            &draining_cache_scope,
+            crate::command_ledger::CausationId::parse_stored(TEST_CAUSATION_ID.into()).unwrap(),
+            Duration::from_secs(60),
+            &[state_occurrence(12, "todo-draining-status", "draining")],
+            &[selector],
+            now,
+        )
+        .unwrap();
+    assert!(draining_metadata.obligations.is_empty());
+    assert!(draining_metadata.delta.projections.is_empty());
 }
 
 #[test]
@@ -1834,7 +1947,7 @@ fn logical_partition_boundary_accepts_4k_and_rejects_the_next_byte() {
     let mut low = 0;
     let mut high = limit;
     while low < high {
-        let middle = low + (high - low + 1) / 2;
+        let middle = low + (high - low).div_ceil(2);
         if resolve(middle).is_ok() {
             low = middle;
         } else {

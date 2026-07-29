@@ -1037,25 +1037,6 @@ fn query_index_budget_allows(index_count: usize) -> bool {
     index_count <= MAX_PROTOCOL_EVIDENCE_ITEMS
 }
 
-#[cfg(test)]
-mod tests {
-    use super::*;
-
-    #[test]
-    fn live_and_index_resume_budget_accepts_64_and_rejects_65() {
-        assert!(live_resume_cursor_budget_allows(MAX_LIVE_RESUME_CURSORS));
-        assert!(!live_resume_cursor_budget_allows(
-            MAX_LIVE_RESUME_CURSORS + 1
-        ));
-    }
-
-    #[test]
-    fn query_index_budget_accepts_4096_and_rejects_4097() {
-        assert!(query_index_budget_allows(MAX_PROTOCOL_EVIDENCE_ITEMS));
-        assert!(!query_index_budget_allows(MAX_PROTOCOL_EVIDENCE_ITEMS + 1));
-    }
-}
-
 fn wire_query_snapshot(
     accumulator: &ProtocolResponseAccumulator,
     mut prepared: PreparedQueryEvidence,
@@ -1292,4 +1273,23 @@ fn wire_query_snapshot(
         indexes,
         observations,
     })
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn live_and_index_resume_budget_accepts_64_and_rejects_65() {
+        assert!(live_resume_cursor_budget_allows(MAX_LIVE_RESUME_CURSORS));
+        assert!(!live_resume_cursor_budget_allows(
+            MAX_LIVE_RESUME_CURSORS + 1
+        ));
+    }
+
+    #[test]
+    fn query_index_budget_accepts_4096_and_rejects_4097() {
+        assert!(query_index_budget_allows(MAX_PROTOCOL_EVIDENCE_ITEMS));
+        assert!(!query_index_budget_allows(MAX_PROTOCOL_EVIDENCE_ITEMS + 1));
+    }
 }

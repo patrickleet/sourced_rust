@@ -934,13 +934,11 @@ mod tests {
     }
 
     impl CausalGetStream for TestRepo {
-        fn get_causal_stream<'a>(
+        async fn get_causal_stream<'a>(
             &'a self,
             identity: &'a StreamIdentity,
-        ) -> impl Future<Output = Result<Option<Entity>, RepositoryError>> + Send + 'a {
-            async move {
-                Ok((identity.aggregate_id() == self.entity.id()).then(|| (*self.entity).clone()))
-            }
+        ) -> Result<Option<Entity>, RepositoryError> {
+            Ok((identity.aggregate_id() == self.entity.id()).then(|| (*self.entity).clone()))
         }
     }
 

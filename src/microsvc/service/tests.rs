@@ -636,28 +636,26 @@ impl CommandLedgerStore for AmbiguousCommitRepository {
 
 #[cfg(feature = "graphql")]
 impl CausalTransactionalCommit for AmbiguousCommitRepository {
-    fn commit_causal_batch<'a>(
+    async fn commit_causal_batch<'a>(
         &'a self,
         batch: CausalCommitBatch<'a>,
-    ) -> impl Future<Output = Result<(), CommandLedgerError>> + Send + 'a {
-        async move {
-            let behavior = {
-                let mut behavior = self.behavior.lock().map_err(|_| {
-                    CommandLedgerError::Storage(crate::RepositoryError::LockPoisoned(
-                        "injected causal commit behavior",
-                    ))
-                })?;
-                std::mem::replace(&mut *behavior, InjectedCommitBehavior::Delegate)
-            };
-            match behavior {
-                InjectedCommitBehavior::CommitThenErrorOnce => {
-                    CausalTransactionalCommit::commit_causal_batch(&self.inner, batch).await?;
-                    Err(Self::injected_error())
-                }
-                InjectedCommitBehavior::ErrorBeforeCommitOnce => Err(Self::injected_error()),
-                InjectedCommitBehavior::Delegate => {
-                    CausalTransactionalCommit::commit_causal_batch(&self.inner, batch).await
-                }
+    ) -> Result<(), CommandLedgerError> {
+        let behavior = {
+            let mut behavior = self.behavior.lock().map_err(|_| {
+                CommandLedgerError::Storage(crate::RepositoryError::LockPoisoned(
+                    "injected causal commit behavior",
+                ))
+            })?;
+            std::mem::replace(&mut *behavior, InjectedCommitBehavior::Delegate)
+        };
+        match behavior {
+            InjectedCommitBehavior::CommitThenErrorOnce => {
+                CausalTransactionalCommit::commit_causal_batch(&self.inner, batch).await?;
+                Err(Self::injected_error())
+            }
+            InjectedCommitBehavior::ErrorBeforeCommitOnce => Err(Self::injected_error()),
+            InjectedCommitBehavior::Delegate => {
+                CausalTransactionalCommit::commit_causal_batch(&self.inner, batch).await
             }
         }
     }

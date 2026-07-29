@@ -1413,7 +1413,7 @@ fn assert_exact_codec_boundary(kind: &str, limit: usize) -> Result<(), Box<dyn E
     let mut low = 0;
     let mut high = limit;
     while low < high {
-        let middle = low + (high - low + 1) / 2;
+        let middle = low + (high - low).div_ceil(2);
         if resolve(middle).is_ok() {
             low = middle;
         } else {

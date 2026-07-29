@@ -957,6 +957,10 @@ mod tests {
         }
     }
 
+    #[allow(
+        clippy::too_many_arguments,
+        reason = "this test helper keeps each catalog conflict dimension explicit at call sites"
+    )]
     fn binding_with(
         program: &ProjectionProgram,
         owner: &str,
