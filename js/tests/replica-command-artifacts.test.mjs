@@ -995,7 +995,7 @@ test('generated Draining command authorizes lifecycle revalidation without proje
 	assert.deepEqual(
 		verifyReplicaCommandReceipt(
 			prepared,
-			receipt(prepared, 'projected', {
+			receipt(prepared, 'succeeded', {
 				projectionDisposition: 'revalidate'
 			})
 		),

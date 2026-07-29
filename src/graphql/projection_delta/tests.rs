@@ -3,7 +3,7 @@ use std::cell::Cell;
 use std::collections::BTreeMap;
 use std::time::{Duration, UNIX_EPOCH};
 
-use serde::Serialize;
+use serde::{Deserialize, Serialize};
 use serde_json::json;
 
 use super::authorization::{
@@ -47,6 +47,18 @@ const BODY_FINGERPRINT: &str =
     "sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa";
 const TEST_CAUSATION_ID: &str = "0190a000-0000-7000-8000-000000000017";
 const FOREIGN_CAUSATION_ID: &str = "0190a000-0000-7000-8000-000000000018";
+const TEST_COMMAND_NAME: &str = "todo.modeled";
+
+#[allow(dead_code)]
+#[derive(Deserialize, crate::GraphqlInput)]
+struct ModeledCommandInput {
+    todo_id: String,
+}
+
+#[derive(Serialize, crate::GraphqlOutput)]
+struct ModeledCommandOutput {
+    accepted: bool,
+}
 
 #[test]
 fn strict_decode_rejects_unknown_wire_fields() {
@@ -587,6 +599,7 @@ fn zero_obligation_modeled_metadata_is_revalidated_on_every_receipt_emission() {
         CausalCommandPublicStatus {
             state: CausalCommandPublicState::Succeeded,
             command_id: "0190a000-0000-7000-8000-000000000011".into(),
+            command_name: Some(TEST_COMMAND_NAME.into()),
             causation_id: Some(TEST_CAUSATION_ID.into()),
             consistency: Some(crate::graphql::command_contract::CommandConsistency::Causal),
             outcome: None,
@@ -601,6 +614,7 @@ fn zero_obligation_modeled_metadata_is_revalidated_on_every_receipt_emission() {
     fn receipt(metadata: CommandProjectionMetadataV1) -> CausalCommandReceiptSource {
         CausalCommandReceiptSource {
             command_id: "modeled-status-command".into(),
+            command_name: TEST_COMMAND_NAME.into(),
             causation_id: TEST_CAUSATION_ID.into(),
             consistency: crate::graphql::command_contract::CommandConsistency::Causal,
             state: crate::command_ledger::CommandLedgerState::SucceededPendingProjection,
@@ -742,6 +756,191 @@ fn zero_obligation_modeled_metadata_is_revalidated_on_every_receipt_emission() {
     assert!(accumulator(seed, codec, cache_scope)
         .record_status(&status(expired))
         .is_err());
+}
+
+#[test]
+#[cfg(feature = "graphql")]
+fn zero_occurrence_metadata_is_classified_from_the_current_causal_command_contract() {
+    use std::sync::Arc;
+
+    use super::runtime::{
+        ModeledProjectionStatusDisposition, ProtocolProjectionProgramRegistry,
+        ProtocolProjectionRequestSeed,
+    };
+    use crate::graphql::protocol::{
+        DistributedEnvelopeV1, ProtocolResponseAccumulator, ProtocolTokenCodec,
+        ProtocolTokenPurpose,
+    };
+    use crate::microsvc::CausalCommandReceiptSource;
+
+    fn seed(fixture: &ModeledFixture, now_unix_ms: u64) -> ProtocolProjectionRequestSeed {
+        ProtocolProjectionRequestSeed::new(
+            selected_export(&fixture.surface),
+            Arc::new(
+                ProtocolProjectionProgramRegistry::try_from_surface(&fixture.surface).unwrap(),
+            ),
+            crate::command_ledger::PrincipalPartitionId::new("zero-occurrence-principal").unwrap(),
+            "zero-occurrence-generation",
+            Vec::new(),
+            now_unix_ms,
+        )
+        .unwrap()
+    }
+
+    fn receipt(
+        metadata: crate::graphql::protocol::CommandProjectionMetadataV1,
+    ) -> CausalCommandReceiptSource {
+        CausalCommandReceiptSource {
+            command_id: "0190a000-0000-7000-8000-000000000012".into(),
+            command_name: TEST_COMMAND_NAME.into(),
+            causation_id: TEST_CAUSATION_ID.into(),
+            consistency: crate::graphql::command_contract::CommandConsistency::Causal,
+            state: crate::command_ledger::CommandLedgerState::Succeeded,
+            outcome: serde_json::json!({"accepted": true}),
+            obligations: Vec::new(),
+            projection_metadata: Some(metadata),
+            direct_projection: None,
+        }
+    }
+
+    fn accumulator(
+        seed: ProtocolProjectionRequestSeed,
+        codec: ProtocolTokenCodec,
+        cache_scope: crate::graphql::protocol::OpaqueProtocolToken,
+    ) -> ProtocolResponseAccumulator {
+        let accumulator = ProtocolResponseAccumulator::new(
+            DistributedEnvelopeV1::new(
+                "sha256:zero-occurrence",
+                "zero-occurrence-generation",
+                cache_scope,
+                None,
+            ),
+            codec,
+        );
+        accumulator.bind_projection_request(seed).unwrap();
+        accumulator
+    }
+
+    let now = std::time::SystemTime::now();
+    let now_unix_ms = now.duration_since(UNIX_EPOCH).unwrap().as_millis() as u64;
+    let codec = ProtocolTokenCodec::new([0x6d; 32]);
+    let active_cache = codec
+        .issue(
+            ProtocolTokenPurpose::CacheScope,
+            &("zero-occurrence", "active"),
+        )
+        .unwrap();
+    let active = modeled_fixture(
+        ProjectionBindingState::Active,
+        ProjectionExecutionClass::Causal,
+    );
+    let active_seed = seed(&active, now_unix_ms);
+    let active_metadata = active_seed
+        .metadata_for_actual_at(
+            codec.clone(),
+            &active_cache,
+            crate::command_ledger::CausationId::parse_stored(TEST_CAUSATION_ID.into()).unwrap(),
+            Duration::from_secs(60),
+            &[],
+            &[],
+            now,
+        )
+        .unwrap();
+    assert!(active_metadata.delta.projections.is_empty());
+    assert!(active_metadata.delta.occurrences.is_empty());
+    assert!(active_metadata.delta.operations.is_empty());
+    assert_eq!(
+        active_seed
+            .modeled_evidence_topologies(
+                &codec,
+                &active_cache,
+                TEST_COMMAND_NAME,
+                TEST_CAUSATION_ID,
+                &active_metadata,
+            )
+            .unwrap()
+            .disposition,
+        ModeledProjectionStatusDisposition::Applicable
+    );
+    assert!(active_seed
+        .modeled_evidence_topologies(
+            &codec,
+            &active_cache,
+            "todo.unrelated",
+            TEST_CAUSATION_ID,
+            &active_metadata,
+        )
+        .is_err());
+    let active_accumulator = accumulator(active_seed, codec.clone(), active_cache.clone());
+    active_accumulator
+        .record_receipt(&receipt(active_metadata.clone()))
+        .unwrap();
+    let active_command =
+        serde_json::to_value(active_accumulator.snapshot().unwrap()).unwrap()["command"].clone();
+    assert!(active_command.get("projectionDisposition").is_none());
+    assert_eq!(
+        active_command["projection"]["delta"]["operations"],
+        serde_json::json!([])
+    );
+
+    let draining_cache = codec
+        .issue(
+            ProtocolTokenPurpose::CacheScope,
+            &("zero-occurrence", "draining"),
+        )
+        .unwrap();
+    let draining = modeled_fixture(
+        ProjectionBindingState::Draining,
+        ProjectionExecutionClass::Causal,
+    );
+    let draining_seed = seed(&draining, now_unix_ms);
+    let draining_metadata = draining_seed
+        .metadata_for_actual_at(
+            codec.clone(),
+            &draining_cache,
+            crate::command_ledger::CausationId::parse_stored(TEST_CAUSATION_ID.into()).unwrap(),
+            Duration::from_secs(60),
+            &[],
+            &[],
+            now,
+        )
+        .unwrap();
+    assert_eq!(
+        draining_seed
+            .modeled_evidence_topologies(
+                &codec,
+                &draining_cache,
+                TEST_COMMAND_NAME,
+                TEST_CAUSATION_ID,
+                &draining_metadata,
+            )
+            .unwrap()
+            .disposition,
+        ModeledProjectionStatusDisposition::Revalidate
+    );
+    assert_eq!(
+        draining_seed
+            .modeled_evidence_topologies(
+                &codec,
+                &draining_cache,
+                TEST_COMMAND_NAME,
+                TEST_CAUSATION_ID,
+                &active_metadata,
+            )
+            .unwrap()
+            .disposition,
+        ModeledProjectionStatusDisposition::Revalidate,
+        "scope-drift empty metadata is safe only as revalidation"
+    );
+    let draining_accumulator = accumulator(draining_seed, codec, draining_cache);
+    draining_accumulator
+        .record_receipt(&receipt(draining_metadata))
+        .unwrap();
+    let draining_command =
+        serde_json::to_value(draining_accumulator.snapshot().unwrap()).unwrap()["command"].clone();
+    assert_eq!(draining_command["projectionDisposition"], "revalidate");
+    assert!(draining_command.get("projection").is_none());
+    assert_eq!(draining_command["expects"], serde_json::json!([]));
 }
 
 #[test]
@@ -923,6 +1122,7 @@ fn active_metadata_revalidates_but_remains_queryable_while_projection_is_drainin
         active_seed.modeled_evidence_topologies(
             &codec,
             &draining_cache_scope,
+            TEST_COMMAND_NAME,
             TEST_CAUSATION_ID,
             &metadata,
         ),
@@ -947,7 +1147,13 @@ fn active_metadata_revalidates_but_remains_queryable_while_projection_is_drainin
     )
     .unwrap();
     let same_cache_plan = draining_seed
-        .modeled_evidence_topologies(&codec, &cache_scope, TEST_CAUSATION_ID, &metadata)
+        .modeled_evidence_topologies(
+            &codec,
+            &cache_scope,
+            TEST_COMMAND_NAME,
+            TEST_CAUSATION_ID,
+            &metadata,
+        )
         .unwrap();
     assert_eq!(
         same_cache_plan.disposition,
@@ -994,6 +1200,7 @@ fn active_metadata_revalidates_but_remains_queryable_while_projection_is_drainin
             .modeled_evidence_topologies(
                 &codec,
                 &cache_scope,
+                TEST_COMMAND_NAME,
                 TEST_CAUSATION_ID,
                 &exact_scope_metadata,
             )
@@ -1017,6 +1224,7 @@ fn active_metadata_revalidates_but_remains_queryable_while_projection_is_drainin
     exact_scope_accumulator
         .record_receipt(&CausalCommandReceiptSource {
             command_id: "0190a000-0000-7000-8000-000000000018".into(),
+            command_name: TEST_COMMAND_NAME.into(),
             causation_id: TEST_CAUSATION_ID.into(),
             consistency: crate::graphql::command_contract::CommandConsistency::Causal,
             state: crate::command_ledger::CommandLedgerState::Projected,
@@ -1033,7 +1241,13 @@ fn active_metadata_revalidates_but_remains_queryable_while_projection_is_drainin
     assert_eq!(exact_scope_command["expects"], serde_json::json!([]));
     assert!(exact_scope_command.get("projection").is_none());
     let plan = draining_seed
-        .modeled_evidence_topologies(&codec, &draining_cache_scope, TEST_CAUSATION_ID, &metadata)
+        .modeled_evidence_topologies(
+            &codec,
+            &draining_cache_scope,
+            TEST_COMMAND_NAME,
+            TEST_CAUSATION_ID,
+            &metadata,
+        )
         .unwrap();
     assert_eq!(plan.topologies.len(), 1);
     assert_eq!(plan.topologies[0].name(), "projection-delta-test");
@@ -1046,6 +1260,7 @@ fn active_metadata_revalidates_but_remains_queryable_while_projection_is_drainin
             .modeled_evidence(
                 &codec,
                 &draining_cache_scope,
+                TEST_COMMAND_NAME,
                 TEST_CAUSATION_ID,
                 &metadata,
                 &ProjectionCausationEvidenceBatch::default(),
@@ -1070,6 +1285,7 @@ fn active_metadata_revalidates_but_remains_queryable_while_projection_is_drainin
         .record_status(&CausalCommandPublicStatus {
             state: CausalCommandPublicState::SucceededPendingProjection,
             command_id: "0190a000-0000-7000-8000-000000000019".into(),
+            command_name: Some(TEST_COMMAND_NAME.into()),
             causation_id: Some(TEST_CAUSATION_ID.into()),
             consistency: Some(crate::graphql::command_contract::CommandConsistency::Causal),
             outcome: None,
@@ -1107,6 +1323,7 @@ fn active_metadata_revalidates_but_remains_queryable_while_projection_is_drainin
     replay_accumulator
         .record_receipt(&CausalCommandReceiptSource {
             command_id: "0190a000-0000-7000-8000-000000000019".into(),
+            command_name: TEST_COMMAND_NAME.into(),
             causation_id: TEST_CAUSATION_ID.into(),
             consistency: crate::graphql::command_contract::CommandConsistency::Causal,
             state: crate::command_ledger::CommandLedgerState::SucceededPendingProjection,
@@ -1174,6 +1391,7 @@ fn lifecycle_status_rejects_changed_deployment_identity_and_mixed_fanout_tamperi
         accumulator
             .record_receipt(&CausalCommandReceiptSource {
                 command_id: "0190a000-0000-7000-8000-000000000020".into(),
+                command_name: TEST_COMMAND_NAME.into(),
                 causation_id: TEST_CAUSATION_ID.into(),
                 consistency: crate::graphql::command_contract::CommandConsistency::Causal,
                 state: crate::command_ledger::CommandLedgerState::SucceededPendingProjection,
@@ -1258,7 +1476,13 @@ fn lifecycle_status_rejects_changed_deployment_identity_and_mixed_fanout_tamperi
     .unwrap();
     assert_eq!(
         changed_schema_seed
-            .modeled_evidence_topologies(&codec, &old_cache, TEST_CAUSATION_ID, &metadata)
+            .modeled_evidence_topologies(
+                &codec,
+                &old_cache,
+                TEST_COMMAND_NAME,
+                TEST_CAUSATION_ID,
+                &metadata,
+            )
             .unwrap()
             .disposition,
         ModeledProjectionStatusDisposition::Revalidate
@@ -1295,14 +1519,20 @@ fn lifecycle_status_rejects_changed_deployment_identity_and_mixed_fanout_tamperi
             now_unix_ms,
         )
         .unwrap();
-        let result =
-            seed.modeled_evidence_topologies(&codec, &current_cache, TEST_CAUSATION_ID, &metadata);
+        let result = seed.modeled_evidence_topologies(
+            &codec,
+            &current_cache,
+            TEST_COMMAND_NAME,
+            TEST_CAUSATION_ID,
+            &metadata,
+        );
         assert!(
             matches!(
                 result,
                 Err(
                     ProjectionRuntimeAuthorityError::Token(ProtocolTokenError::Mismatch)
                         | ProjectionRuntimeAuthorityError::IneligibleProjection
+                        | ProjectionRuntimeAuthorityError::InvalidAuthority
                 )
             ),
             "{result:?}"
@@ -1326,7 +1556,13 @@ fn lifecycle_status_rejects_changed_deployment_identity_and_mixed_fanout_tamperi
     )
     .unwrap();
     assert!(removed_seed
-        .modeled_evidence_topologies(&codec, &current_cache, TEST_CAUSATION_ID, &metadata)
+        .modeled_evidence_topologies(
+            &codec,
+            &current_cache,
+            TEST_COMMAND_NAME,
+            TEST_CAUSATION_ID,
+            &metadata,
+        )
         .is_err());
     assert!(receipt_is_rejected(
         removed_seed,
@@ -1352,6 +1588,7 @@ fn lifecycle_status_rejects_changed_deployment_identity_and_mixed_fanout_tamperi
         draining_seed.modeled_evidence_topologies(
             &codec,
             &current_cache,
+            TEST_COMMAND_NAME,
             TEST_CAUSATION_ID,
             &tampered,
         ),
@@ -1412,6 +1649,7 @@ fn lifecycle_status_rejects_changed_deployment_identity_and_mixed_fanout_tamperi
             .modeled_evidence_topologies(
                 &codec,
                 &current_cache,
+                TEST_COMMAND_NAME,
                 TEST_CAUSATION_ID,
                 &fanout_metadata,
             )
@@ -1430,6 +1668,7 @@ fn lifecycle_status_rejects_changed_deployment_identity_and_mixed_fanout_tamperi
         mixed_seed.modeled_evidence_topologies(
             &codec,
             &current_cache,
+            TEST_COMMAND_NAME,
             TEST_CAUSATION_ID,
             &mixed_tampered,
         ),
@@ -2981,8 +3220,9 @@ fn fanout_fixture_states(
 }
 
 fn selected_export(surface: &crate::graphql::Surface) -> DistributedClientSurfaceExport {
+    let surface = surface_with_modeled_command(surface);
     let selected = surface_for_role(
-        surface,
+        &surface,
         "delta-user",
         &BTreeMap::from([
             ("TodoView".into(), RoleGrant::all_columns()),
@@ -2996,8 +3236,9 @@ fn selected_export(surface: &crate::graphql::Surface) -> DistributedClientSurfac
 fn selected_export_with_owner_policy(
     surface: &crate::graphql::Surface,
 ) -> DistributedClientSurfaceExport {
+    let surface = surface_with_modeled_command(surface);
     let selected = surface_for_role(
-        surface,
+        &surface,
         "delta-user",
         &BTreeMap::from([
             (
@@ -3015,8 +3256,9 @@ fn selected_export_with_owner_policy(
 fn selected_export_with_embedded_target(
     surface: &crate::graphql::Surface,
 ) -> DistributedClientSurfaceExport {
+    let surface = surface_with_modeled_command(surface);
     let selected = surface_for_role(
-        surface,
+        &surface,
         "delta-user",
         &BTreeMap::from([
             ("TodoView".into(), RoleGrant::all_columns()),
@@ -3030,8 +3272,9 @@ fn selected_export_with_embedded_target(
 fn selected_export_with_embedded_source(
     surface: &crate::graphql::Surface,
 ) -> DistributedClientSurfaceExport {
+    let surface = surface_with_modeled_command(surface);
     let selected = surface_for_role(
-        surface,
+        &surface,
         "delta-user",
         &BTreeMap::from([
             (
@@ -3046,8 +3289,9 @@ fn selected_export_with_embedded_source(
 }
 
 fn selected_export_join(surface: &crate::graphql::Surface) -> DistributedClientSurfaceExport {
+    let surface = surface_with_modeled_command(surface);
     let selected = surface_for_role(
-        surface,
+        &surface,
         "delta-user",
         &BTreeMap::from([
             ("TodoView".into(), RoleGrant::all_columns()),
@@ -3057,6 +3301,30 @@ fn selected_export_join(surface: &crate::graphql::Surface) -> DistributedClientS
     )
     .unwrap();
     DistributedClientSurfaceExport::from_selected("delta-service", selected).unwrap()
+}
+
+fn surface_with_modeled_command(surface: &crate::graphql::Surface) -> crate::graphql::Surface {
+    let contract = crate::graphql::typed_command::<
+        ModeledCommandInput,
+        crate::graphql::Causal<ModeledCommandOutput>,
+    >(TEST_COMMAND_NAME)
+    .roles(["delta-user"])
+    .emits(crate::graphql::__command_projection_events([Ok(
+        event_descriptor(),
+    )]))
+    .into_contract();
+    let binding = crate::graphql::command_contract::TypedServiceCommandBinding::from_contracts(
+        "delta-service",
+        std::slice::from_ref(&contract),
+    )
+    .expect("modeled test service binding");
+    let commands = crate::graphql::commands::TypedCommandInventory::from_contracts(&[contract])
+        .expect("modeled test command inventory");
+    surface
+        .clone()
+        .with_typed_commands(&commands)
+        .expect("modeled test command")
+        .with_service_binding(Some(binding))
 }
 
 fn projection_key(ordinal: u32, name: &str, body_field: &str) -> ProjectionKeyField {

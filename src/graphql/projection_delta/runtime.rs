@@ -191,10 +191,15 @@ impl ProtocolProjectionRequestSeed {
             .metadata_for_actual(&request, occurrences, sealed_events)
     }
 
+    #[expect(
+        clippy::too_many_arguments,
+        reason = "evidence validation binds independent request, command, causation, metadata, candidate, and lifecycle authorities"
+    )]
     pub(crate) fn modeled_evidence(
         &self,
         codec: &ProtocolTokenCodec,
         cache_scope: &OpaqueProtocolToken,
+        command_name: &str,
         causation_id: &str,
         metadata: &CommandProjectionMetadataV1,
         batch: &ProjectionCausationEvidenceBatch,
@@ -202,12 +207,19 @@ impl ProtocolProjectionRequestSeed {
     ) -> Result<Vec<ModeledProjectionEvidence>, ProjectionRuntimeAuthorityError> {
         match disposition {
             ModeledProjectionStatusDisposition::Applicable => {
-                self.validate_modeled_metadata(codec, cache_scope, causation_id, metadata)?;
+                self.validate_modeled_metadata(
+                    codec,
+                    cache_scope,
+                    command_name,
+                    causation_id,
+                    metadata,
+                )?;
             }
             ModeledProjectionStatusDisposition::Revalidate => {
                 self.validate_modeled_lifecycle_metadata(
                     codec,
                     cache_scope,
+                    command_name,
                     causation_id,
                     metadata,
                 )?;
@@ -273,22 +285,46 @@ impl ProtocolProjectionRequestSeed {
         &self,
         codec: &ProtocolTokenCodec,
         cache_scope: &OpaqueProtocolToken,
+        command_name: &str,
         causation_id: &str,
         metadata: &CommandProjectionMetadataV1,
     ) -> Result<ModeledProjectionStatusPlan, ProjectionRuntimeAuthorityError> {
-        let disposition =
-            match self.validate_modeled_metadata(codec, cache_scope, causation_id, metadata) {
-                Ok(()) => ModeledProjectionStatusDisposition::Applicable,
+        let disposition = if structurally_empty_modeled_metadata(metadata) {
+            match self.validate_modeled_status_authority(codec, cache_scope, causation_id, metadata)
+            {
+                Ok(()) => self.empty_command_disposition(command_name)?,
                 Err(_) => {
-                    self.validate_modeled_lifecycle_metadata(
+                    self.validate_empty_modeled_revalidation_metadata(
                         codec,
                         cache_scope,
+                        command_name,
                         causation_id,
                         metadata,
                     )?;
                     ModeledProjectionStatusDisposition::Revalidate
                 }
-            };
+            }
+        } else {
+            match self.validate_modeled_metadata(
+                codec,
+                cache_scope,
+                command_name,
+                causation_id,
+                metadata,
+            ) {
+                Ok(()) => ModeledProjectionStatusDisposition::Applicable,
+                Err(_) => {
+                    self.validate_modeled_lifecycle_metadata(
+                        codec,
+                        cache_scope,
+                        command_name,
+                        causation_id,
+                        metadata,
+                    )?;
+                    ModeledProjectionStatusDisposition::Revalidate
+                }
+            }
+        };
         let mut topologies = Vec::new();
         for identity in &metadata.delta.projections {
             let entry = self.projection_entry(identity, disposition)?;
@@ -327,10 +363,12 @@ impl ProtocolProjectionRequestSeed {
         &self,
         codec: &ProtocolTokenCodec,
         cache_scope: &OpaqueProtocolToken,
+        command_name: &str,
         causation_id: &str,
         metadata: &CommandProjectionMetadataV1,
     ) -> Result<(), ProjectionRuntimeAuthorityError> {
         self.validate_modeled_status_authority(codec, cache_scope, causation_id, metadata)?;
+        self.validate_command_projection_inventory(command_name, metadata)?;
         for identity in &metadata.delta.projections {
             self.current_projection_entry(identity)?;
         }
@@ -484,9 +522,20 @@ impl ProtocolProjectionRequestSeed {
         &self,
         codec: &ProtocolTokenCodec,
         cache_scope: &OpaqueProtocolToken,
+        command_name: &str,
         causation_id: &str,
         metadata: &CommandProjectionMetadataV1,
     ) -> Result<(), ProjectionRuntimeAuthorityError> {
+        if structurally_empty_modeled_metadata(metadata) {
+            return self.validate_empty_modeled_revalidation_metadata(
+                codec,
+                cache_scope,
+                command_name,
+                causation_id,
+                metadata,
+            );
+        }
+        self.validate_command_projection_inventory(command_name, metadata)?;
         let now_unix_ms = unix_time_ms(SystemTime::now())?;
         metadata
             .validate_not_expired(now_unix_ms)
@@ -569,6 +618,157 @@ impl ProtocolProjectionRequestSeed {
         }
         Ok(())
     }
+
+    fn command(
+        &self,
+        command_name: &str,
+    ) -> Result<&crate::graphql::surface::SurfaceCommand, ProjectionRuntimeAuthorityError> {
+        self.export
+            .surface()
+            .commands()
+            .iter()
+            .find(|command| command.command_name == command_name)
+            .ok_or(ProjectionRuntimeAuthorityError::InvalidAuthority)
+    }
+
+    fn empty_command_disposition(
+        &self,
+        command_name: &str,
+    ) -> Result<ModeledProjectionStatusDisposition, ProjectionRuntimeAuthorityError> {
+        let command = self.command(command_name)?;
+        if command.projections.selectors.is_empty() {
+            return Err(ProjectionRuntimeAuthorityError::InvalidAuthority);
+        }
+        for selector in &command.projections.selectors {
+            let matching = self
+                .export
+                .surface()
+                .projection_owners()
+                .iter()
+                .flat_map(|owner| &owner.modeled)
+                .filter(|projection| {
+                    projection.selected_program().is_some_and(|program| {
+                        program.arms.iter().any(|arm| &arm.selector == selector)
+                    })
+                })
+                .collect::<Vec<_>>();
+            if matching.is_empty()
+                || matching
+                    .iter()
+                    .any(|projection| !projection.is_causally_eligible())
+            {
+                return Ok(ModeledProjectionStatusDisposition::Revalidate);
+            }
+        }
+        Ok(ModeledProjectionStatusDisposition::Applicable)
+    }
+
+    fn validate_command_projection_inventory(
+        &self,
+        command_name: &str,
+        metadata: &CommandProjectionMetadataV1,
+    ) -> Result<(), ProjectionRuntimeAuthorityError> {
+        let command = self.command(command_name)?;
+        if command.projections.selectors.is_empty() {
+            return Err(ProjectionRuntimeAuthorityError::InvalidAuthority);
+        }
+        for identity in &metadata.delta.projections {
+            let authorized = self
+                .export
+                .surface()
+                .projection_owners()
+                .iter()
+                .flat_map(|owner| &owner.modeled)
+                .any(|projection| {
+                    projection.program_id().to_string() == identity.program_id
+                        && projection.binding_id().to_string() == identity.binding_id
+                        && projection.epoch().as_str() == identity.epoch
+                        && projection.selected_program().is_some_and(|program| {
+                            program.ir_version == identity.program_ir_version
+                                && program.operation_semantics_version
+                                    == identity.operation_semantics_version
+                                && program.arms.iter().any(|arm| {
+                                    command
+                                        .projections
+                                        .selectors
+                                        .iter()
+                                        .any(|selector| selector == &arm.selector)
+                                })
+                        })
+                });
+            if !authorized {
+                return Err(ProjectionRuntimeAuthorityError::InvalidAuthority);
+            }
+        }
+        Ok(())
+    }
+
+    fn validate_empty_modeled_revalidation_metadata(
+        &self,
+        codec: &ProtocolTokenCodec,
+        cache_scope: &OpaqueProtocolToken,
+        command_name: &str,
+        causation_id: &str,
+        metadata: &CommandProjectionMetadataV1,
+    ) -> Result<(), ProjectionRuntimeAuthorityError> {
+        if !structurally_empty_modeled_metadata(metadata) {
+            return Err(ProjectionRuntimeAuthorityError::InvalidMetadata);
+        }
+        // The current selected command contract is the authority for a
+        // zero-occurrence receipt. It must still declare modeled selectors,
+        // even though lifecycle-only or scope-drift work is revalidation-only.
+        self.empty_command_disposition(command_name)?;
+        let now_unix_ms = unix_time_ms(SystemTime::now())?;
+        metadata
+            .validate_not_expired(now_unix_ms)
+            .map_err(|error| match error {
+                crate::graphql::protocol::CommandProjectionMetadataError::Expired => {
+                    ProjectionRuntimeAuthorityError::Expired
+                }
+                _ => ProjectionRuntimeAuthorityError::InvalidMetadata,
+            })?;
+        let causation_id = CausationId::parse_stored(causation_id.to_owned())
+            .map_err(|_| ProjectionRuntimeAuthorityError::InvalidAuthority)?;
+        let authority = ProtocolProjectionDeltaRequestAuthority::try_new(
+            self.export.clone(),
+            codec.clone(),
+            self.principal_scope.clone(),
+            self.authorization_generation.clone(),
+            cache_scope,
+            causation_id,
+            now_unix_ms,
+            metadata.issued_at_unix_ms,
+            metadata.expires_at_unix_ms,
+        )?
+        .with_trusted_presets(self.trusted_presets.clone());
+        let manifest = self
+            .export
+            .manifest()
+            .map_err(|_| ProjectionRuntimeAuthorityError::InvalidAuthority)?;
+        let identity = &metadata.delta.identity;
+        if identity.manifest_version != manifest.manifest_version
+            || identity.client_protocol_version != manifest.protocol_version
+            || identity.surface != ProjectionDeltaSurfaceIdentity::from(&manifest.surface)
+            || identity.protocol_fingerprint != manifest.protocol_fingerprint
+            || identity.authorization_generation != authority.authorization_generation()
+            || identity.command_causation_id != authority.command_causation_id().as_str()
+        {
+            return Err(ProjectionRuntimeAuthorityError::Delta(
+                ProjectionDeltaError::ReplayScopeMismatch,
+            ));
+        }
+        Ok(())
+    }
+}
+
+fn structurally_empty_modeled_metadata(metadata: &CommandProjectionMetadataV1) -> bool {
+    metadata.delta.projections.is_empty()
+        && metadata.delta.occurrences.is_empty()
+        && metadata.delta.operations.is_empty()
+        && metadata.delta.recoveries.is_empty()
+        && metadata.lifecycle_proofs.is_empty()
+        && metadata.obligations.is_empty()
+        && !metadata.revalidate
 }
 
 fn trusted_preset_value_matches(codec: &str, value: &serde_json::Value) -> bool {

@@ -148,6 +148,7 @@ pub(crate) struct CausalCommandProjectionObligation {
 #[derive(Clone, Debug, PartialEq)]
 pub(crate) struct CausalCommandReceiptSource {
     pub(crate) command_id: String,
+    pub(crate) command_name: String,
     pub(crate) causation_id: String,
     pub(crate) consistency: CommandConsistency,
     pub(crate) state: CommandLedgerState,
@@ -198,6 +199,7 @@ impl CausalCommandReceiptSource {
             })?;
         Ok(Self {
             command_id: replay.command_id.as_str().to_string(),
+            command_name: replay.command_name,
             causation_id: replay.causation_id.as_str().to_string(),
             consistency,
             state: replay.state,
@@ -278,6 +280,8 @@ pub(crate) struct CausalCommandProjectionEvidence {
 pub(crate) struct CausalCommandPublicStatus {
     pub(crate) state: CausalCommandPublicState,
     pub(crate) command_id: String,
+    /// Trusted durable command identity for complete terminal receipts.
+    pub(crate) command_name: Option<String>,
     pub(crate) causation_id: Option<String>,
     pub(crate) consistency: Option<CommandConsistency>,
     pub(crate) outcome: Option<Value>,
@@ -296,6 +300,7 @@ impl CausalCommandPublicStatus {
         Self {
             state: CausalCommandPublicState::Unknown,
             command_id: command_id.into(),
+            command_name: None,
             causation_id: None,
             consistency: None,
             outcome: None,
@@ -578,6 +583,7 @@ where
         CommandLookup::Expired => Ok(CausalCommandPublicStatus {
             state: CausalCommandPublicState::Expired,
             command_id: command_id.as_str().to_string(),
+            command_name: None,
             causation_id: None,
             consistency: Some(consistency),
             outcome: None,
@@ -591,6 +597,7 @@ where
         | CommandLookup::RetryableUnknown { causation_id } => Ok(CausalCommandPublicStatus {
             state: CausalCommandPublicState::InProgress,
             command_id: command_id.as_str().to_string(),
+            command_name: None,
             causation_id: Some(causation_id.as_str().to_string()),
             consistency: Some(consistency),
             outcome: None,
@@ -612,6 +619,7 @@ where
                             )
                         })?
                         .modeled_projection_evidence_topologies(
+                            &receipt.command_name,
                             &receipt.causation_id,
                             metadata,
                         )
@@ -674,6 +682,7 @@ where
             Ok(CausalCommandPublicStatus {
                 state,
                 command_id: receipt.command_id,
+                command_name: Some(receipt.command_name),
                 causation_id: Some(receipt.causation_id),
                 consistency: Some(receipt.consistency),
                 outcome: Some(receipt.outcome),
@@ -857,7 +866,13 @@ where
             ))
         })?;
     let modeled = protocol
-        .modeled_projection_evidence(&receipt.causation_id, metadata, &batch, plan.disposition)
+        .modeled_projection_evidence(
+            &receipt.command_name,
+            &receipt.causation_id,
+            metadata,
+            &batch,
+            plan.disposition,
+        )
         .map_err(|error| {
             CausalDispatchError::Internal(format!(
                 "modeled projection evidence authority rejected durable candidates: {error}"

@@ -2135,7 +2135,7 @@ async fn graphql_terminal_replay_revalidates_after_active_projection_starts_drai
             &session,
             async_graphql::Request::new(mutation)
                 .data(Arc::clone(&draining_service))
-                .data(principal),
+                .data(principal.clone()),
         )
         .await;
     assert!(replay_response.errors.is_empty(), "{replay_response:?}");
@@ -2166,6 +2166,78 @@ async fn graphql_terminal_replay_revalidates_after_active_projection_starts_drai
     assert!(replay_envelope["command"].get("observations").is_none());
     assert!(replay_envelope["command"].get("records").is_none());
     assert_eq!(handler_calls.load(Ordering::SeqCst), 1);
+
+    let fresh_command_id = causal_test_command_id();
+    let fresh_mutation = format!(
+        "mutation {{ causal_lifecycle(commandId: \"{fresh_command_id}\", input: {{ id: \"todo-lifecycle-fresh\", label: \"draining\" }}) {{ id }} }}"
+    );
+    let fresh_response = draining_service
+        .graphql_engine()
+        .unwrap()
+        .execute(
+            &session,
+            async_graphql::Request::new(fresh_mutation)
+                .data(Arc::clone(&draining_service))
+                .data(principal.clone()),
+        )
+        .await;
+    assert!(fresh_response.errors.is_empty(), "{fresh_response:?}");
+    assert_eq!(
+        fresh_response.data.clone().into_json().unwrap(),
+        json!({"causal_lifecycle": {"id": "todo-lifecycle-fresh"}})
+    );
+    let fresh_envelope = serde_json::to_value(
+        fresh_response
+            .extensions
+            .get("distributed")
+            .expect("fresh Draining command should carry the protocol envelope"),
+    )
+    .unwrap();
+    assert_eq!(fresh_envelope["command"]["state"], "succeeded");
+    assert_eq!(
+        fresh_envelope["command"]["projectionDisposition"],
+        "revalidate"
+    );
+    assert_eq!(fresh_envelope["command"]["expects"], json!([]));
+    assert!(fresh_envelope["command"].get("projection").is_none());
+    assert_eq!(
+        handler_calls.load(Ordering::SeqCst),
+        2,
+        "fresh Draining command must execute rather than replay"
+    );
+
+    let status_query =
+        format!("query {{ commandStatus(commandId: \"{fresh_command_id}\") {{ state }} }}");
+    let status_response = draining_service
+        .graphql_engine()
+        .unwrap()
+        .execute(
+            &session,
+            async_graphql::Request::new(status_query)
+                .data(Arc::clone(&draining_service))
+                .data(principal),
+        )
+        .await;
+    assert!(status_response.errors.is_empty(), "{status_response:?}");
+    assert_eq!(
+        status_response.data.into_json().unwrap(),
+        json!({"commandStatus": {"state": "succeeded"}})
+    );
+    let status_envelope = serde_json::to_value(
+        status_response
+            .extensions
+            .get("distributed")
+            .expect("fresh Draining status should carry the terminal protocol envelope"),
+    )
+    .unwrap();
+    assert_eq!(status_envelope["command"]["state"], "succeeded");
+    assert_eq!(
+        status_envelope["command"]["projectionDisposition"],
+        "revalidate"
+    );
+    assert_eq!(status_envelope["command"]["expects"], json!([]));
+    assert!(status_envelope["command"].get("projection").is_none());
+    assert_eq!(handler_calls.load(Ordering::SeqCst), 2);
 }
 
 #[cfg(all(feature = "graphql", feature = "sqlite"))]

@@ -453,6 +453,7 @@ impl CommandLedgerRecord {
         }
         Ok(CommandReplay {
             command_id: self.key.command_id.clone(),
+            command_name: self.command_name.clone(),
             state: self.state,
             causation_id: self.causation_id.clone(),
             outcome,

@@ -157,6 +157,7 @@ impl ProtocolResponseAccumulator {
 
     pub(crate) fn modeled_projection_evidence(
         &self,
+        command_name: &str,
         causation_id: &str,
         metadata: &super::CommandProjectionMetadataV1,
         batch: &crate::projection_protocol::ProjectionCausationEvidenceBatch,
@@ -177,6 +178,7 @@ impl ProtocolResponseAccumulator {
             .modeled_evidence(
                 &self.inner.codec,
                 &cache_scope,
+                command_name,
                 causation_id,
                 metadata,
                 batch,
@@ -187,6 +189,7 @@ impl ProtocolResponseAccumulator {
 
     pub(crate) fn modeled_projection_evidence_topologies(
         &self,
+        command_name: &str,
         causation_id: &str,
         metadata: &super::CommandProjectionMetadataV1,
     ) -> Result<
@@ -202,12 +205,19 @@ impl ProtocolResponseAccumulator {
             .ok_or(ProtocolAccumulatorError::MissingProjectionRequest)?;
         let cache_scope = self.with_envelope(|envelope| envelope.cache_scope.clone())?;
         request
-            .modeled_evidence_topologies(&self.inner.codec, &cache_scope, causation_id, metadata)
+            .modeled_evidence_topologies(
+                &self.inner.codec,
+                &cache_scope,
+                command_name,
+                causation_id,
+                metadata,
+            )
             .map_err(|_| ProtocolAccumulatorError::ProjectionAuthority)
     }
 
     fn validate_modeled_projection_metadata(
         &self,
+        command_name: &str,
         causation_id: &str,
         metadata: &super::CommandProjectionMetadataV1,
     ) -> Result<(), ProtocolAccumulatorError> {
@@ -220,12 +230,19 @@ impl ProtocolResponseAccumulator {
             .ok_or(ProtocolAccumulatorError::MissingProjectionRequest)?;
         let cache_scope = self.with_envelope(|envelope| envelope.cache_scope.clone())?;
         request
-            .validate_modeled_metadata(&self.inner.codec, &cache_scope, causation_id, metadata)
+            .validate_modeled_metadata(
+                &self.inner.codec,
+                &cache_scope,
+                command_name,
+                causation_id,
+                metadata,
+            )
             .map_err(|_| ProtocolAccumulatorError::ProjectionAuthority)
     }
 
     fn validate_modeled_projection_lifecycle_metadata(
         &self,
+        command_name: &str,
         causation_id: &str,
         metadata: &super::CommandProjectionMetadataV1,
     ) -> Result<(), ProtocolAccumulatorError> {
@@ -241,6 +258,7 @@ impl ProtocolResponseAccumulator {
             .validate_modeled_lifecycle_metadata(
                 &self.inner.codec,
                 &cache_scope,
+                command_name,
                 causation_id,
                 metadata,
             )
@@ -634,13 +652,17 @@ impl ProtocolResponseAccumulator {
             .projection_metadata
             .as_ref()
             .map(|metadata| {
-                self.modeled_projection_evidence_topologies(&receipt.causation_id, metadata)
-                    .map(|plan| match plan.disposition {
-                        ModeledProjectionStatusDisposition::Applicable => None,
-                        ModeledProjectionStatusDisposition::Revalidate => {
-                            Some(DistributedProjectionDisposition::Revalidate)
-                        }
-                    })
+                self.modeled_projection_evidence_topologies(
+                    &receipt.command_name,
+                    &receipt.causation_id,
+                    metadata,
+                )
+                .map(|plan| match plan.disposition {
+                    ModeledProjectionStatusDisposition::Applicable => None,
+                    ModeledProjectionStatusDisposition::Revalidate => {
+                        Some(DistributedProjectionDisposition::Revalidate)
+                    }
+                })
             })
             .transpose()?
             .flatten();
@@ -657,6 +679,7 @@ impl ProtocolResponseAccumulator {
         };
         self.record_command(self.metadata(
             &receipt.command_id,
+            &receipt.command_name,
             &receipt.causation_id,
             command_state(receipt.state),
             receipt.consistency,
@@ -692,6 +715,7 @@ impl ProtocolResponseAccumulator {
         self.record_command(
             self.metadata(
                 &status.command_id,
+                status.command_name.as_deref().unwrap_or_default(),
                 causation_id,
                 public_command_state(status.state),
                 consistency,
@@ -713,6 +737,7 @@ impl ProtocolResponseAccumulator {
     fn metadata(
         &self,
         command_id: &str,
+        command_name: &str,
         causation_id: &str,
         state: DistributedCommandState,
         consistency: CommandConsistency,
@@ -733,9 +758,19 @@ impl ProtocolResponseAccumulator {
             // scope, causation, or expired delta.
             match projection_disposition {
                 Some(DistributedProjectionDisposition::Revalidate) => {
-                    self.validate_modeled_projection_lifecycle_metadata(causation_id, metadata)?;
+                    self.validate_modeled_projection_lifecycle_metadata(
+                        command_name,
+                        causation_id,
+                        metadata,
+                    )?;
                 }
-                None => self.validate_modeled_projection_metadata(causation_id, metadata)?,
+                None => {
+                    self.validate_modeled_projection_metadata(
+                        command_name,
+                        causation_id,
+                        metadata,
+                    )?;
+                }
             }
         }
         if projection_disposition.is_some() && projection_metadata.is_none() {

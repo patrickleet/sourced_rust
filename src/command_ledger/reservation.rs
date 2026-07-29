@@ -365,6 +365,11 @@ impl fmt::Debug for CommandAttempt {
 #[derive(Clone, Debug, PartialEq)]
 pub(crate) struct CommandReplay {
     pub(crate) command_id: CommandId,
+    /// Trusted command contract identity retained from the durable ledger row.
+    ///
+    /// Projection response/status classification uses this value to bind even
+    /// structurally empty modeled metadata to the command that produced it.
+    pub(crate) command_name: String,
     pub(crate) state: CommandLedgerState,
     pub(crate) causation_id: CausationId,
     pub(crate) outcome: Value,

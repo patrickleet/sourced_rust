@@ -114,6 +114,7 @@ fn receipt() -> CausalCommandReceiptSource {
     .unwrap();
     CausalCommandReceiptSource {
         command_id: "0190a000-0000-7000-8000-000000000042".into(),
+        command_name: "todo.complete".into(),
         causation_id: "0190a000-0000-7000-8000-000000000017".into(),
         consistency: CommandConsistency::Causal,
         state: CommandLedgerState::SucceededPendingProjection,
@@ -332,6 +333,7 @@ fn unknown_status_does_not_fabricate_receipt_identity() {
         .record_status(&CausalCommandPublicStatus {
             state: CausalCommandPublicState::Unknown,
             command_id: "0190a000-0000-7000-8000-000000000099".into(),
+            command_name: None,
             causation_id: None,
             consistency: None,
             outcome: None,
@@ -354,6 +356,7 @@ fn projected_status_exposes_only_matching_opaque_observations() {
         .record_status(&CausalCommandPublicStatus {
             state: CausalCommandPublicState::Projected,
             command_id: source.command_id,
+            command_name: Some(source.command_name),
             causation_id: Some(source.causation_id.clone()),
             consistency: Some(source.consistency),
             outcome: Some(source.outcome),

@@ -1002,7 +1002,7 @@ test('draining lifecycle status revalidates without applying old-scope delta and
 	runtime.dispose();
 });
 
-test('generated Draining command handles terminal duplicate through current revalidation then retirement', async () => {
+test('generated Draining command handles a fresh succeeded response through current revalidation then retirement', async () => {
 	const replica = new TestReplica();
 	const terminalRefresh = deferred();
 	replica.scope = Object.freeze({
@@ -1025,7 +1025,7 @@ test('generated Draining command handles terminal duplicate through current reva
 	const terminalMetadata = (commandId) => ({
 		commandId,
 		causationId: `cause:${commandId}`,
-		state: 'projected',
+		state: 'succeeded',
 		consistency: 'causal',
 		projectionDisposition: 'revalidate',
 		expects: [],
@@ -1059,7 +1059,7 @@ test('generated Draining command handles terminal duplicate through current reva
 			status(request) {
 				return Promise.resolve({
 					status: 200,
-					data: { commandStatus: { state: 'projected' } },
+					data: { commandStatus: { state: 'succeeded' } },
 					extensions: {
 						distributed: {
 							protocolVersion: 1,
@@ -1082,7 +1082,7 @@ test('generated Draining command handles terminal duplicate through current reva
 		{ todo_id: 'todo-1' },
 		{ commandId: COMMAND_A }
 	);
-	assert.equal(receipt.state, 'projected');
+	assert.equal(receipt.state, 'succeeded');
 	assert.equal(receipt.metadata.projection, undefined);
 	assert.equal(replica.replacements.length, 0);
 	assert.deepEqual(replica.revalidations, [
@@ -1099,7 +1099,7 @@ test('generated Draining command handles terminal duplicate through current reva
 	await tick();
 	assert.equal(terminalSettled, false);
 	terminalRefresh.resolve();
-	assert.equal((await terminalStatus).state, 'projected');
+	assert.equal((await terminalStatus).state, 'succeeded');
 	assert.equal(terminalSettled, true);
 	assert.equal(replica.confirmations, 1);
 	assert.equal(replica.layer(COMMAND_A), undefined);
