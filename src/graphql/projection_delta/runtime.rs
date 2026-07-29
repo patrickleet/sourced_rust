@@ -387,7 +387,11 @@ impl ProtocolProjectionRequestSeed {
             .iter()
             .flat_map(|owner| &owner.modeled)
             .find(|projection| {
-                projection.is_causal_evidence_eligible()
+                // Draining bindings remain lifecycle/evidence authorities, but
+                // they are never current delta-application authorities. This
+                // stays true even when the durable receipt's outer scope still
+                // exactly matches the selected client surface.
+                projection.is_causally_eligible()
                     && projection.program_id().to_string() == identity.program_id
                     && projection.binding_id().to_string() == identity.binding_id
                     && projection.epoch().as_str() == identity.epoch
@@ -511,14 +515,17 @@ impl ProtocolProjectionRequestSeed {
             .manifest()
             .map_err(|_| ProjectionRuntimeAuthorityError::InvalidAuthority)?;
         let identity = &metadata.delta.identity;
+        // Lifecycle authority may be exercised against an unchanged outer
+        // schema/cache scope when applicability failed because an exact
+        // binding is Draining. The proof loop below still requires every
+        // route/topology/program identity to match and at least one Draining
+        // binding, so an Active-only same-scope receipt cannot enter this path.
         if identity.manifest_version != manifest.manifest_version
             || identity.client_protocol_version != manifest.protocol_version
             || identity.surface != ProjectionDeltaSurfaceIdentity::from(&manifest.surface)
             || identity.protocol_fingerprint != manifest.protocol_fingerprint
             || identity.authorization_generation != authority.authorization_generation()
             || identity.command_causation_id != authority.command_causation_id().as_str()
-            || (identity.schema_fingerprint == manifest.schema_fingerprint
-                && identity.cache_scope_token == authority.cache_scope().as_str())
         {
             return Err(ProjectionRuntimeAuthorityError::Delta(
                 ProjectionDeltaError::ReplayScopeMismatch,

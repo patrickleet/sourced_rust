@@ -858,11 +858,12 @@ fn draining_actual_delta_can_apply_but_cannot_mint_new_obligations() {
 
 #[test]
 #[cfg(feature = "graphql")]
-fn active_metadata_remains_queryable_while_exact_projection_is_draining() {
+fn active_metadata_revalidates_but_remains_queryable_while_projection_is_draining() {
     use std::sync::Arc;
 
     use super::runtime::{
-        ModeledProjectionEvidence, ProtocolProjectionProgramRegistry, ProtocolProjectionRequestSeed,
+        ModeledProjectionEvidence, ProtocolProjectionDeltaRequestAuthority,
+        ProtocolProjectionProgramRegistry, ProtocolProjectionRequestSeed,
     };
     use crate::graphql::protocol::{
         DistributedEnvelopeV1, ProtocolResponseAccumulator, ProtocolTokenCodec,
@@ -934,10 +935,12 @@ fn active_metadata_remains_queryable_while_exact_projection_is_draining() {
     );
     let draining_export = selected_export(&draining.surface);
     let current_manifest = draining_export.manifest().unwrap();
+    let draining_registry =
+        Arc::new(ProtocolProjectionProgramRegistry::try_from_surface(&draining.surface).unwrap());
     let draining_seed = ProtocolProjectionRequestSeed::new(
-        draining_export,
-        Arc::new(ProtocolProjectionProgramRegistry::try_from_surface(&draining.surface).unwrap()),
-        principal,
+        draining_export.clone(),
+        Arc::clone(&draining_registry),
+        principal.clone(),
         "active-to-draining-generation",
         Vec::new(),
         now_unix_ms,
@@ -948,12 +951,87 @@ fn active_metadata_remains_queryable_while_exact_projection_is_draining() {
         .unwrap();
     assert_eq!(
         same_cache_plan.disposition,
-        if metadata.delta.identity.schema_fingerprint == current_manifest.schema_fingerprint {
-            super::runtime::ModeledProjectionStatusDisposition::Applicable
-        } else {
-            super::runtime::ModeledProjectionStatusDisposition::Revalidate
-        }
+        super::runtime::ModeledProjectionStatusDisposition::Revalidate,
+        "Draining remains lifecycle-visible but cannot authorize delta application even under an exact outer scope"
     );
+    let current_request = ProtocolProjectionDeltaRequestAuthority::try_new(
+        draining_export.clone(),
+        codec.clone(),
+        principal,
+        "active-to-draining-generation",
+        &cache_scope,
+        crate::command_ledger::CausationId::parse_stored(TEST_CAUSATION_ID.into()).unwrap(),
+        now_unix_ms,
+        metadata.issued_at_unix_ms,
+        metadata.expires_at_unix_ms,
+    )
+    .unwrap();
+    let mut exact_scope_metadata = metadata.clone();
+    exact_scope_metadata.delta.identity.schema_fingerprint =
+        current_manifest.schema_fingerprint.clone();
+    exact_scope_metadata.delta.identity.cache_scope_token = cache_scope.as_str().to_owned();
+    let exact_projection = draining_export
+        .surface()
+        .projection_owners()
+        .iter()
+        .flat_map(|owner| &owner.modeled)
+        .find(|projection| {
+            projection.program_id().to_string()
+                == exact_scope_metadata.delta.projections[0].program_id
+                && projection.binding_id().to_string()
+                    == exact_scope_metadata.delta.projections[0].binding_id
+        })
+        .unwrap();
+    exact_scope_metadata.lifecycle_proofs = draining_registry
+        .lifecycle_proofs_for_test(
+            &current_request,
+            &exact_scope_metadata.delta,
+            &[exact_projection],
+        )
+        .unwrap();
+    assert_eq!(
+        draining_seed
+            .modeled_evidence_topologies(
+                &codec,
+                &cache_scope,
+                TEST_CAUSATION_ID,
+                &exact_scope_metadata,
+            )
+            .unwrap()
+            .disposition,
+        super::runtime::ModeledProjectionStatusDisposition::Revalidate,
+        "an exact-scope authenticated Draining receipt remains lifecycle-only"
+    );
+    let exact_scope_accumulator = ProtocolResponseAccumulator::new(
+        DistributedEnvelopeV1::new(
+            current_manifest.schema_fingerprint.clone(),
+            "active-to-draining-generation",
+            cache_scope.clone(),
+            None,
+        ),
+        codec.clone(),
+    );
+    exact_scope_accumulator
+        .bind_projection_request(draining_seed.clone())
+        .unwrap();
+    exact_scope_accumulator
+        .record_receipt(&CausalCommandReceiptSource {
+            command_id: "0190a000-0000-7000-8000-000000000018".into(),
+            causation_id: TEST_CAUSATION_ID.into(),
+            consistency: crate::graphql::command_contract::CommandConsistency::Causal,
+            state: crate::command_ledger::CommandLedgerState::Projected,
+            outcome: serde_json::json!({"id": "todo-draining-status"}),
+            obligations: Vec::new(),
+            projection_metadata: Some(exact_scope_metadata),
+            direct_projection: None,
+        })
+        .unwrap();
+    let exact_scope_command = serde_json::to_value(exact_scope_accumulator.snapshot().unwrap())
+        .unwrap()["command"]
+        .clone();
+    assert_eq!(exact_scope_command["projectionDisposition"], "revalidate");
+    assert_eq!(exact_scope_command["expects"], serde_json::json!([]));
+    assert!(exact_scope_command.get("projection").is_none());
     let plan = draining_seed
         .modeled_evidence_topologies(&codec, &draining_cache_scope, TEST_CAUSATION_ID, &metadata)
         .unwrap();

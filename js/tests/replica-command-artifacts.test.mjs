@@ -1,4 +1,5 @@
 import assert from 'node:assert/strict';
+import { readFileSync } from 'node:fs';
 import test from 'node:test';
 
 import {
@@ -16,6 +17,15 @@ const COMMAND_ID = '018f47de-3d2a-7abc-8abc-0123456789ab';
 const OTHER_COMMAND_ID = '018f47de-3d2a-7def-8def-0123456789ab';
 const GENERATED_UUID = '018f47de-3d2a-7123-8123-0123456789ab';
 const GENERATED_ULID = '01J0Z6YV6E0000000000000000';
+const GENERATED_DRAINING_COMMAND = JSON.parse(
+	readFileSync(
+		new URL(
+			'../../tests/fixtures/generated-draining-command-v2.json',
+			import.meta.url
+		),
+		'utf8'
+	)
+);
 
 const scalarField = (
 	name,
@@ -969,6 +979,56 @@ test('unavailable confirmation contracts always force conservative revalidation'
 			receipt(prepared, 'succeeded')
 		),
 		{ kind: 'matched', revalidate: true }
+	);
+});
+
+test('generated Draining command authorizes lifecycle revalidation without projection application authority', () => {
+	assert.equal(GENERATED_DRAINING_COMMAND.consistency, 'causal');
+	assert.equal(GENERATED_DRAINING_COMMAND.projection, undefined);
+	assert.equal(GENERATED_DRAINING_COMMAND.revalidation.required, true);
+	const prepared = prepareReplicaCommand(
+		GENERATED_DRAINING_COMMAND,
+		{ todo_id: 'todo-1' },
+		{ commandId: COMMAND_ID }
+	);
+
+	assert.deepEqual(
+		verifyReplicaCommandReceipt(
+			prepared,
+			receipt(prepared, 'projected', {
+				projectionDisposition: 'revalidate'
+			})
+		),
+		{ kind: 'matched', revalidate: true }
+	);
+});
+
+test('revalidation disposition without projection or command-level capability fails closed', () => {
+	const prepared = prepareReplicaCommand(
+		projectedArtifact(),
+		{ meta: { count: 7 }, title: 'No lifecycle capability' },
+		{
+			commandId: COMMAND_ID,
+			generators: {
+				uuidV7: () => GENERATED_UUID,
+				ulid: () => GENERATED_ULID
+			}
+		}
+	);
+	assert.equal(prepared.projection, undefined);
+	assert.equal(prepared.revalidation.required, false);
+
+	assert.throws(
+		() =>
+			verifyReplicaCommandReceipt(
+				prepared,
+				receipt(prepared, 'projected', {
+					projectionDisposition: 'revalidate'
+				})
+			),
+		(error) =>
+			error instanceof ReplicaCommandContractError &&
+			error.path === 'receipt.projectionDisposition'
 	);
 });
 

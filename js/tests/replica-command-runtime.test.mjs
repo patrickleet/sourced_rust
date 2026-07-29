@@ -1,4 +1,5 @@
 import assert from 'node:assert/strict';
+import { readFileSync } from 'node:fs';
 import test from 'node:test';
 
 import { createCacheEngine } from '../dist/internal/cache-engine.js';
@@ -24,6 +25,15 @@ const BINDING = `pb1:sha256:${'2'.repeat(64)}`;
 const COMMAND_A = '018f47de-3d2a-7abc-8abc-0123456789ab';
 const COMMAND_B = '018f47de-3d2a-7def-8def-0123456789ab';
 const COMMAND_C = '018f47de-3d2a-7123-8123-0123456789ab';
+const GENERATED_DRAINING_COMMAND = JSON.parse(
+	readFileSync(
+		new URL(
+			'../../tests/fixtures/generated-draining-command-v2.json',
+			import.meta.url
+		),
+		'utf8'
+	)
+);
 const SURFACE = Object.freeze({ kind: 'role', name: 'user' });
 const CACHE_SCOPE = token('cache-scope', 1);
 const Todo = Object.freeze({
@@ -989,6 +999,111 @@ test('draining lifecycle status revalidates without applying old-scope delta and
 	assert.equal(replica.replacements.length, 0);
 	assert.equal(replica.layer(COMMAND_A), undefined);
 	assert.equal(replica.record('todo-1'), undefined);
+	runtime.dispose();
+});
+
+test('generated Draining command handles terminal duplicate through current revalidation then retirement', async () => {
+	const replica = new TestReplica();
+	const terminalRefresh = deferred();
+	replica.scope = Object.freeze({
+		protocolVersion: 1,
+		schemaHash: GENERATED_DRAINING_COMMAND.protocol.schemaHash,
+		authorizationGeneration: 'auth-1',
+		cacheScope: CACHE_SCOPE
+	});
+	replica.revalidate = (plan) => {
+		replica.revalidations.push(plan);
+		return terminalRefresh.promise;
+	};
+	const generatedStatus = Object.freeze({
+		...STATUS,
+		protocol: Object.freeze({
+			...GENERATED_DRAINING_COMMAND.protocol,
+			operation: HASH_D
+		})
+	});
+	const terminalMetadata = (commandId) => ({
+		commandId,
+		causationId: `cause:${commandId}`,
+		state: 'projected',
+		consistency: 'causal',
+		projectionDisposition: 'revalidate',
+		expects: [],
+		observations: [],
+		records: []
+	});
+	const runtime = createReplicaCommandRuntime(
+		replica,
+		{
+			dispatch(request) {
+				return Promise.resolve({
+					status: 200,
+					data: {
+						[request.mutationField]: {
+							todo_id: request.variables.input.todo_id
+						}
+					},
+					extensions: {
+						distributed: {
+							protocolVersion: 1,
+							schemaHash: GENERATED_DRAINING_COMMAND.protocol.schemaHash,
+							authorizationGeneration: 'auth-1',
+							cacheScope: CACHE_SCOPE,
+							operation: request.operationHash,
+							trustedPresets: [],
+							command: terminalMetadata(request.commandId)
+						}
+					}
+				});
+			},
+			status(request) {
+				return Promise.resolve({
+					status: 200,
+					data: { commandStatus: { state: 'projected' } },
+					extensions: {
+						distributed: {
+							protocolVersion: 1,
+							schemaHash: GENERATED_DRAINING_COMMAND.protocol.schemaHash,
+							authorizationGeneration: 'auth-1',
+							cacheScope: CACHE_SCOPE,
+							operation: request.operationHash,
+							trustedPresets: [],
+							command: terminalMetadata(request.commandId)
+						}
+					}
+				});
+			}
+		},
+		{ complete: GENERATED_DRAINING_COMMAND },
+		{ status: generatedStatus }
+	);
+
+	const receipt = await runtime.commands.complete(
+		{ todo_id: 'todo-1' },
+		{ commandId: COMMAND_A }
+	);
+	assert.equal(receipt.state, 'projected');
+	assert.equal(receipt.metadata.projection, undefined);
+	assert.equal(replica.replacements.length, 0);
+	assert.deepEqual(replica.revalidations, [
+		GENERATED_DRAINING_COMMAND.revalidation
+	]);
+	assert.equal(replica.confirmations, 0);
+	assert.notEqual(replica.layer(COMMAND_A), undefined);
+
+	let terminalSettled = false;
+	const terminalStatus = receipt.status().then((status) => {
+		terminalSettled = true;
+		return status;
+	});
+	await tick();
+	assert.equal(terminalSettled, false);
+	terminalRefresh.resolve();
+	assert.equal((await terminalStatus).state, 'projected');
+	assert.equal(terminalSettled, true);
+	assert.equal(replica.confirmations, 1);
+	assert.equal(replica.layer(COMMAND_A), undefined);
+	assert.equal(replica.replacements.length, 0);
 	runtime.dispose();
 });
 

@@ -18,7 +18,10 @@ export function verifyReplicaCommandReceipt<TInput, TOutput>(
 		receiptMismatch('receipt.consistency');
 	}
 	if (receipt.projectionDisposition === 'revalidate') {
-		if (prepared.projection === undefined) {
+		if (
+			prepared.projection === undefined &&
+			!prepared.revalidation.required
+		) {
 			receiptMismatch('receipt.projectionDisposition');
 		}
 		return Object.freeze({

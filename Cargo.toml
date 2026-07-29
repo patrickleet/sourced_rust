@@ -81,6 +81,7 @@ tonic-build = { version = "0.14", default-features = false, features = ["transpo
 
 [dev-dependencies]
 axum = "0.8"
+distributed_cli = { path = "distributed_cli" }
 tower = { version = "0.5", features = ["util"] }
 http-body-util = "0.1"
 # OTLP export e2e (tests/otel_export): a real SDK pipeline pointed at a

@@ -1,7 +1,7 @@
 use super::*;
 use crate::graphql::{
     build_surface, claim, col, rel, surface_for_application, surface_for_role, typed_command,
-    GraphqlInputType, GraphqlOutputType, GraphqlTypeDef, GraphqlTypeField, PreparedCommand,
+    Causal, GraphqlInputType, GraphqlOutputType, GraphqlTypeDef, GraphqlTypeField, PreparedCommand,
     RoleGrant, Succeeded, SurfaceCommand, SurfaceOptions, SurfaceProjector, SurfaceTypeField,
 };
 use crate::microsvc::{CausalCommandContext, HandlerError, Routes, Service};
@@ -250,6 +250,16 @@ async fn complete_handler(
     )
 }
 
+async fn complete_causal_handler(
+    _context: &CausalCommandContext<'_, ManifestAggregate>,
+    _input: CompleteInput,
+) -> Result<PreparedCommand<Causal<CompletePayload>>, HandlerError> {
+    Ok(
+        PreparedCommand::<Causal<CompletePayload>>::prepare(CompletePayload)
+            .expect("serializable command payload"),
+    )
+}
+
 fn full_surface() -> Surface {
     let service = Service::new().named("todos-service").routes(
         Routes::new()
@@ -287,14 +297,69 @@ fn full_surface() -> Surface {
     .expect("projectors")
 }
 
+fn causal_full_surface() -> Surface {
+    let service = Service::new().named("todos-service").routes(
+        Routes::new()
+            .with_repo(crate::AggregateRepository::<_, ManifestAggregate>::new(
+                crate::InMemoryRepository::new(),
+            ))
+            .typed_command(
+                typed_command::<CompleteInput, Causal<CompletePayload>>("todo.complete")
+                    .field_name("todos_complete")
+                    .roles(["admin", "user"])
+                    .emits(crate::events![ManifestTodoProjected])
+                    .preview(crate::event_preview! {
+                        ManifestTodoProjected => ManifestTodoProjected {
+                            todo_id: input.todo_id,
+                            ..unknown
+                        }
+                    }),
+            )
+            .handle(complete_causal_handler),
+    );
+    build_surface(
+        &[todos(), users(), memberships()],
+        &SurfaceOptions::sqlite(),
+    )
+    .expect("surface")
+    .with_service(&service)
+    .expect("typed service")
+}
+
 fn modeled_surface(
     state: crate::projection::placement::ProjectionBindingState,
     execution_class: crate::projection::placement::ProjectionExecutionClass,
 ) -> Surface {
-    modeled_surface_with_partition(state, execution_class, crate::ProjectionPartition::Unit)
+    modeled_surface_with_base(
+        full_surface(),
+        state,
+        execution_class,
+        crate::ProjectionPartition::Unit,
+    )
+}
+
+fn modeled_causal_surface(
+    state: crate::projection::placement::ProjectionBindingState,
+    execution_class: crate::projection::placement::ProjectionExecutionClass,
+) -> Surface {
+    modeled_surface_with_base(
+        causal_full_surface(),
+        state,
+        execution_class,
+        crate::ProjectionPartition::Unit,
+    )
 }
 
 fn modeled_surface_with_partition(
+    state: crate::projection::placement::ProjectionBindingState,
+    execution_class: crate::projection::placement::ProjectionExecutionClass,
+    partition: crate::ProjectionPartition,
+) -> Surface {
+    modeled_surface_with_base(full_surface(), state, execution_class, partition)
+}
+
+fn modeled_surface_with_base(
+    mut surface: Surface,
     state: crate::projection::placement::ProjectionBindingState,
     execution_class: crate::projection::placement::ProjectionExecutionClass,
     partition: crate::ProjectionPartition,
@@ -389,7 +454,6 @@ fn modeled_surface_with_partition(
     )
     .unwrap();
 
-    let mut surface = full_surface();
     surface.projectors.clear();
     surface.projectors_attached = false;
     let command = surface
@@ -397,15 +461,17 @@ fn modeled_surface_with_partition(
         .iter_mut()
         .find(|command| command.command_name == "todo.complete")
         .unwrap();
-    command
-        .projections
-        .add_event_set(crate::events![ManifestTodoProjected]);
-    command.projections.add_preview(crate::event_preview! {
-        ManifestTodoProjected => ManifestTodoProjected {
-            todo_id: input.todo_id,
-            ..unknown
-        }
-    });
+    if command.projections.selectors.is_empty() {
+        command
+            .projections
+            .add_event_set(crate::events![ManifestTodoProjected]);
+        command.projections.add_preview(crate::event_preview! {
+            ManifestTodoProjected => ManifestTodoProjected {
+                todo_id: input.todo_id,
+                ..unknown
+            }
+        });
+    }
     surface
         .with_projectors([SurfaceProjector::new("project-todos-modeled").modeled(modeled)])
         .unwrap()
@@ -1255,6 +1321,74 @@ fn draining_and_background_bindings_are_visible_but_cannot_mint_command_work() {
             .projection
             .is_none());
     }
+}
+
+#[test]
+fn draining_manifest_compiles_current_revalidation_without_projection_authority() {
+    use crate::projection::placement::{ProjectionBindingState, ProjectionExecutionClass};
+    use distributed_cli::{
+        compile_client, ClientCompileInput, ClientDocument,
+        ClientSurfaceSelector as CompilerSurfaceSelector,
+    };
+
+    let full = modeled_causal_surface(
+        ProjectionBindingState::Draining,
+        ProjectionExecutionClass::Causal,
+    );
+    let selected = surface_for_role(&full, "admin", &grants()["admin"]).unwrap();
+    let manifest = client_manifest_from_surface(
+        "todos-service",
+        ClientSurfaceIdentity::role("admin"),
+        &selected,
+    )
+    .unwrap();
+    assert_eq!(
+        manifest.projection_bindings[0].state,
+        ClientProjectionBindingState::Draining
+    );
+    let project = compile_client(ClientCompileInput::new(
+        serde_json::to_value(manifest).unwrap(),
+        CompilerSurfaceSelector::role("admin"),
+        vec![ClientDocument::new(
+            "src/routes/todos/+page.graphql",
+            "query Todos { todos { todo_id } }",
+        )],
+    ))
+    .expect("compile the server-generated Draining manifest");
+    let generated = project
+        .files
+        .iter()
+        .find(|file| file.path == "commands.ts")
+        .expect("generated commands module")
+        .contents
+        .as_str();
+    let command = generated
+        .split_once("export const Command_todos_complete:")
+        .expect("generated todo.complete command")
+        .1;
+    let artifact_start = command.find(" = {").expect("generated command artifact") + 3;
+    let artifact_end = command[artifact_start..]
+        .find(";\n\nexport function prepareCommand_todos_complete")
+        .expect("generated command artifact terminator")
+        + artifact_start;
+    let artifact_json = &command[artifact_start..artifact_end];
+    let artifact: serde_json::Value =
+        serde_json::from_str(artifact_json).expect("generated command artifact JSON");
+
+    assert!(
+        artifact.get("projection").is_none(),
+        "Draining cannot mint or apply projection work"
+    );
+    assert_eq!(artifact["revalidation"]["required"], true);
+    assert_eq!(
+        artifact["revalidation"]["models"],
+        serde_json::json!(["MembershipView", "TodoView", "UserView"])
+    );
+    assert_eq!(
+        format!("{artifact_json}\n"),
+        include_str!("../../../tests/fixtures/generated-draining-command-v2.json"),
+        "the JS bridge fixture must remain byte-exact with the current server manifest and compiler"
+    );
 }
 
 #[test]
