@@ -17,7 +17,7 @@ use crate::graphql::command_contract::CommandConsistency;
 #[cfg(feature = "graphql")]
 use crate::graphql::identity::VerifiedPrincipal;
 use crate::graphql::{
-    typed_command, GraphqlInputType, GraphqlOutputType, GraphqlTypeDef, GraphqlTypeField,
+    typed_command, Causal, GraphqlInputType, GraphqlOutputType, GraphqlTypeDef, GraphqlTypeField,
     PreparedCommand, Succeeded,
 };
 #[cfg(feature = "graphql")]
@@ -161,6 +161,22 @@ struct CausalProjectionSiblingView {
 }
 
 #[cfg(feature = "graphql")]
+#[derive(Clone, Serialize, crate::DomainEvent)]
+#[domain_event(name = "causal.lifecycle-recorded", version = 1)]
+struct CausalLifecycleRecorded {
+    id: String,
+    label: String,
+}
+
+#[cfg(feature = "graphql")]
+#[derive(Clone, Serialize, Deserialize, crate::ReadModel)]
+#[readmodel(table = "causal_lifecycle_views", primary_key = ["id"])]
+struct CausalLifecycleView {
+    id: String,
+    label: String,
+}
+
+#[cfg(feature = "graphql")]
 #[derive(Clone, Serialize, Deserialize, crate::DomainState)]
 #[domain_state(version = 1)]
 struct CausalDirectState {
@@ -206,6 +222,23 @@ const CAUSAL_SIBLING_DIRECT_PROJECTION: crate::projection::lower::ProjectionDesc
 
     on "causal.direct-sibling-recorded" version 1 (state: CausalDirectState) {
         upsert CausalProjectionSiblingView from state as view;
+    }
+};
+
+#[cfg(feature = "graphql")]
+const CAUSAL_LIFECYCLE_PROJECTION: crate::projection::lower::ProjectionDescriptor<
+    crate::projection::lower::EventualOnly,
+> = distributed_macros::projection! {
+    name: "project_causal_lifecycle";
+    version: 1;
+    epoch: "causal-lifecycle-v1";
+    partition: unit;
+
+    on CausalLifecycleRecorded(event) {
+        upsert CausalLifecycleView {
+            key { id: event.id },
+            set { label: event.label }
+        };
     }
 };
 
@@ -276,6 +309,70 @@ fn modeled_direct_registration(
 }
 
 #[cfg(feature = "graphql")]
+fn modeled_lifecycle_projector(
+    state: crate::projection::placement::ProjectionBindingState,
+    route: &str,
+    topology_name: &str,
+    topology_digest: u8,
+) -> SurfaceProjector {
+    let schema = <CausalLifecycleView as crate::read_model::RelationalReadModel>::schema().clone();
+    let binding = crate::projection::placement::ProjectionBinding::materialize_eventual(
+        CAUSAL_LIFECYCLE_PROJECTION.eventual(),
+        crate::projection::placement::ProjectionSourceBinding::try_new(
+            "causal-domain",
+            "ordered-domain-events",
+            1,
+        )
+        .unwrap(),
+        crate::projection::placement::ProjectionOwner::try_new("project_causal_lifecycle").unwrap(),
+        "distributed-projection-partition",
+        crate::projection::placement::PROJECTION_PARTITION_CODEC_VERSION,
+        vec![crate::projection::placement::ProjectionOutput::try_new(
+            schema.model_name.clone(),
+            schema.table_name.clone(),
+            schema,
+        )
+        .unwrap()],
+        vec![],
+        Some(
+            crate::projection::placement::ProjectionPhysicalTopology::from_protocol(
+                &ProjectorTopologyId::new(1, topology_name, [topology_digest; 32]).unwrap(),
+            ),
+        ),
+    )
+    .unwrap();
+    let catalog =
+        crate::projection::catalog::ProjectionCatalog::try_new(vec![binding.clone()]).unwrap();
+    let active = catalog
+        .activate(
+            vec![
+                crate::projection::catalog::ProjectionBindingActivation::new(
+                    binding.id(),
+                    binding.program_id(),
+                    crate::projection_protocol::ProjectionEpoch::new("causal-lifecycle-v1")
+                        .unwrap(),
+                    state,
+                    Some(
+                        crate::projection::placement::ProjectionExecutorRoute::local(route)
+                            .unwrap(),
+                    ),
+                ),
+            ],
+            None,
+        )
+        .unwrap();
+    SurfaceProjector::new("project_causal_lifecycle").modeled(
+        crate::graphql::SurfaceModeledProjection::try_from_descriptor(
+            CAUSAL_LIFECYCLE_PROJECTION,
+            &catalog,
+            &active,
+            binding.id(),
+        )
+        .unwrap(),
+    )
+}
+
+#[cfg(feature = "graphql")]
 impl GraphqlOutputType for CausalProjectionObligationView {
     fn graphql_type() -> GraphqlTypeDef {
         one_string_field("CausalProjectionObligationView", "id")
@@ -288,6 +385,34 @@ impl GraphqlOutputType for CausalProjectionSiblingView {
     fn graphql_type() -> GraphqlTypeDef {
         one_string_field("CausalProjectionSiblingView", "id")
             .with_type_id(std::any::TypeId::of::<Self>())
+    }
+}
+
+#[cfg(feature = "graphql")]
+impl GraphqlOutputType for CausalLifecycleView {
+    fn graphql_type() -> GraphqlTypeDef {
+        GraphqlTypeDef::new(
+            "CausalLifecycleView",
+            vec![
+                GraphqlTypeField {
+                    name: "id".into(),
+                    type_name: "String".into(),
+                    nullable: false,
+                    list: false,
+                    item_nullable: false,
+                    nested: None,
+                },
+                GraphqlTypeField {
+                    name: "label".into(),
+                    type_name: "String".into(),
+                    nullable: false,
+                    list: false,
+                    item_nullable: false,
+                    nested: None,
+                },
+            ],
+        )
+        .with_type_id(std::any::TypeId::of::<Self>())
     }
 }
 
@@ -341,6 +466,20 @@ impl CausalDispatcherAggregate {
                     1,
                 ),
                 &CausalDirectState { id },
+            )
+            .map_err(|error| HandlerError::Other(Box::new(error)))?;
+        Ok(())
+    }
+
+    fn record_lifecycle(&mut self, id: String, label: String) -> Result<(), HandlerError> {
+        self.entity.set_id(id.clone());
+        self.entity
+            .digest_empty("causal.lifecycle-recorded")
+            .map_err(|error| HandlerError::Other(Box::new(error)))?;
+        self.entity
+            .capture_domain_event(
+                Self::aggregate_type(),
+                &CausalLifecycleRecorded { id, label },
             )
             .map_err(|error| HandlerError::Other(Box::new(error)))?;
         Ok(())
@@ -1844,6 +1983,189 @@ async fn causal_dispatch_replay_contains_resolved_projection_obligation() {
     let pending = repository.outbox_store().pending(10).await.unwrap();
     assert_eq!(pending.len(), 1);
     assert_eq!(pending[0].event_type, "causal.obligation_fact");
+}
+
+#[cfg(all(feature = "graphql", feature = "sqlite"))]
+#[tokio::test]
+async fn graphql_terminal_replay_revalidates_after_active_projection_starts_draining() {
+    let repository = crate::SqliteRepository::connect_and_migrate("sqlite::memory:")
+        .await
+        .expect("framework migrations should apply");
+    let handler_calls = Arc::new(AtomicUsize::new(0));
+    let build_service = |projector: SurfaceProjector| {
+        let route_calls = Arc::clone(&handler_calls);
+        Service::new().named("causal-lifecycle").routes(
+            Routes::new()
+                .with_repo(repository.clone().aggregate::<CausalDispatcherAggregate>())
+                .with_read_model_store(repository.clone())
+                .typed_command(
+                    typed_command::<CausalTestInput, Causal<TypedOutput>>("causal.lifecycle")
+                        .roles(["user"])
+                        .emits(crate::events![CausalLifecycleRecorded]),
+                )
+                .handle(
+                    move |context: &CausalCommandContext<'_, CausalDispatcherAggregate>,
+                          input: CausalTestInput| {
+                        let calls = Arc::clone(&route_calls);
+                        let result = (|| {
+                            calls.fetch_add(1, Ordering::SeqCst);
+                            let mut checkout = context.create();
+                            checkout.record_lifecycle(input.id.clone(), input.label)?;
+                            context
+                                .publish_events()
+                                .commit(checkout)?
+                                .causal(TypedOutput { id: input.id })
+                        })();
+                        async move { result }
+                    },
+                )
+                .consume_projection(projector),
+        )
+    };
+    let attach = |service: Service, projector: SurfaceProjector| {
+        let engine = crate::graphql::GraphqlEngine::builder(&repository)
+            .protocol_token_key(TEST_PROTOCOL_TOKEN_KEY)
+            .model::<CausalLifecycleView>(
+                crate::graphql::ModelPermissions::new()
+                    .grant("user", crate::graphql::read().all_columns()),
+            )
+            .service(&service)
+            .client_projectors([projector])
+            .build()
+            .expect("lifecycle GraphQL engine should build");
+        service.try_with_graphql(engine)
+    };
+    let active_projector = modeled_lifecycle_projector(
+        crate::projection::placement::ProjectionBindingState::Active,
+        "causal-lifecycle",
+        "causal-lifecycle-topology",
+        0x6c,
+    );
+    let active_service = Arc::new(
+        attach(build_service(active_projector.clone()), active_projector)
+            .expect("active modeled projection should attach"),
+    );
+    let command_id = causal_test_command_id();
+    let mutation = format!(
+        "mutation {{ causal_lifecycle(commandId: \"{command_id}\", input: {{ id: \"todo-lifecycle\", label: \"active\" }}) {{ id }} }}"
+    );
+    let session = session_with_role("user");
+    let principal = causal_test_principal();
+    let active_response = active_service
+        .graphql_engine()
+        .unwrap()
+        .execute(
+            &session,
+            async_graphql::Request::new(&mutation)
+                .data(Arc::clone(&active_service))
+                .data(principal.clone()),
+        )
+        .await;
+    assert!(active_response.errors.is_empty(), "{active_response:?}");
+    let active_data = active_response.data.clone().into_json().unwrap();
+    let active_envelope = serde_json::to_value(
+        active_response
+            .extensions
+            .get("distributed")
+            .expect("active response should carry the protocol envelope"),
+    )
+    .unwrap();
+    assert_eq!(
+        active_data,
+        json!({"causal_lifecycle": {"id": "todo-lifecycle"}})
+    );
+    assert_eq!(
+        active_envelope["command"]["state"],
+        "succeeded_pending_projection"
+    );
+    assert!(active_envelope["command"].get("projection").is_some());
+    assert!(active_envelope["command"]
+        .get("projectionDisposition")
+        .is_none());
+    assert_eq!(handler_calls.load(Ordering::SeqCst), 1);
+
+    let exact_replay_response = active_service
+        .graphql_engine()
+        .unwrap()
+        .execute(
+            &session,
+            async_graphql::Request::new(&mutation)
+                .data(Arc::clone(&active_service))
+                .data(principal.clone()),
+        )
+        .await;
+    assert!(
+        exact_replay_response.errors.is_empty(),
+        "{exact_replay_response:?}"
+    );
+    assert_eq!(
+        exact_replay_response.data.clone().into_json().unwrap(),
+        active_data
+    );
+    let exact_replay_envelope = serde_json::to_value(
+        exact_replay_response
+            .extensions
+            .get("distributed")
+            .expect("exact terminal replay should carry the protocol envelope"),
+    )
+    .unwrap();
+    assert!(exact_replay_envelope["command"].get("projection").is_some());
+    assert!(exact_replay_envelope["command"]
+        .get("projectionDisposition")
+        .is_none());
+    assert_eq!(handler_calls.load(Ordering::SeqCst), 1);
+
+    let draining_projector = modeled_lifecycle_projector(
+        crate::projection::placement::ProjectionBindingState::Draining,
+        "causal-lifecycle",
+        "causal-lifecycle-topology",
+        0x6c,
+    );
+    let draining_service = Arc::new(
+        attach(
+            build_service(draining_projector.clone()),
+            draining_projector,
+        )
+        .expect("draining modeled projection should attach for replay"),
+    );
+    let replay_response = draining_service
+        .graphql_engine()
+        .unwrap()
+        .execute(
+            &session,
+            async_graphql::Request::new(mutation)
+                .data(Arc::clone(&draining_service))
+                .data(principal),
+        )
+        .await;
+    assert!(replay_response.errors.is_empty(), "{replay_response:?}");
+    let replay_data = replay_response.data.clone().into_json().unwrap();
+    let replay_envelope = serde_json::to_value(
+        replay_response
+            .extensions
+            .get("distributed")
+            .expect("terminal replay should carry the protocol envelope"),
+    )
+    .unwrap();
+    assert_eq!(replay_data, active_data);
+    assert_eq!(
+        replay_envelope["command"]["state"],
+        active_envelope["command"]["state"]
+    );
+    assert_eq!(
+        replay_envelope["command"]["causationId"],
+        active_envelope["command"]["causationId"]
+    );
+    assert_ne!(replay_envelope["cacheScope"], active_envelope["cacheScope"]);
+    assert_eq!(
+        replay_envelope["command"]["projectionDisposition"],
+        "revalidate"
+    );
+    assert_eq!(replay_envelope["command"]["expects"], json!([]));
+    assert!(replay_envelope["command"].get("projection").is_none());
+    assert!(replay_envelope["command"].get("observations").is_none());
+    assert!(replay_envelope["command"].get("records").is_none());
+    assert_eq!(handler_calls.load(Ordering::SeqCst), 1);
 }
 
 #[cfg(all(feature = "graphql", feature = "sqlite"))]

@@ -992,6 +992,124 @@ test('draining lifecycle status revalidates without applying old-scope delta and
 	runtime.dispose();
 });
 
+test('draining lifecycle live frames keep polling while pending and retire only after terminal refresh', async () => {
+	const replica = new TestReplica();
+	const terminalRefresh = deferred();
+	const backgroundErrors = [];
+	let commandRequest;
+	let terminalObserved = false;
+	let terminalRefreshAttempts = 0;
+	let statusCalls = 0;
+	replica.revalidate = (plan) => {
+		replica.revalidations.push(plan);
+		if (terminalObserved) {
+			terminalRefreshAttempts += 1;
+			if (terminalRefreshAttempts === 1) {
+				return Promise.reject(new Error('first terminal refresh failed'));
+			}
+			return terminalRefresh.promise;
+		}
+		return Promise.resolve();
+	};
+	const disposition = (state) => ({
+		commandId: commandRequest.commandId,
+		causationId: `cause:${commandRequest.commandId}`,
+		state,
+		consistency: 'causal',
+		projectionDisposition: 'revalidate',
+		expects: [],
+		observations: [],
+		records: []
+	});
+	const runtime = createReplicaCommandRuntime(
+		replica,
+		{
+			dispatch(request) {
+				commandRequest = request;
+				return Promise.resolve(
+					envelope(request, { actualTitle: 'accepted' })
+				);
+			},
+			status(request) {
+				statusCalls += 1;
+				return Promise.resolve(
+					statusEnvelope(
+						request,
+						disposition('succeeded_pending_projection')
+					)
+				);
+			}
+		},
+		{ change: artifact() },
+		{
+			status: STATUS,
+			onBackgroundError: (error) => backgroundErrors.push(error)
+		}
+	);
+	const receipt = await runtime.commands.change(
+		{ id: 'todo-1', title: 'preview' },
+		{ commandId: COMMAND_A }
+	);
+	let projectedSettled = false;
+	const projected = receipt.projected.then((outcome) => {
+		projectedSettled = true;
+		return outcome;
+	});
+	assert.equal(replica.replacements.length, 1);
+	assert.equal(replica.record('todo-1').fields.title, 'accepted');
+	assert.notEqual(replica.layer(COMMAND_A), undefined);
+
+	runtime.observeResult({
+		extensions: envelope(commandRequest, {
+			command: disposition('succeeded_pending_projection')
+		}).extensions
+	});
+	await new Promise((resolve) => setTimeout(resolve, 40));
+	assert.ok(statusCalls >= 1);
+	assert.equal(projectedSettled, false);
+	assert.equal(replica.replacements.length, 1);
+	assert.notEqual(replica.layer(COMMAND_A), undefined);
+	assert.deepEqual(backgroundErrors, []);
+
+	terminalObserved = true;
+	runtime.observeResult({
+		extensions: envelope(commandRequest, {
+			command: disposition('projected')
+		}).extensions
+	});
+	await tick();
+	assert.equal(terminalRefreshAttempts, 1);
+	assert.equal(projectedSettled, false);
+	assert.equal(replica.replacements.length, 1);
+	assert.notEqual(replica.layer(COMMAND_A), undefined);
+	assert.equal(backgroundErrors.length, 1);
+	assert.equal(backgroundErrors[0].message, 'first terminal refresh failed');
+	assert.notEqual(
+		backgroundErrors[0].code,
+		'REPLICA_COMMAND_PROTOCOL_INVALID'
+	);
+
+	runtime.observeResult({
+		extensions: envelope(commandRequest, {
+			command: disposition('projected')
+		}).extensions
+	});
+	await tick();
+	assert.equal(terminalRefreshAttempts, 2);
+	assert.equal(projectedSettled, false);
+	assert.equal(replica.replacements.length, 1);
+	assert.notEqual(replica.layer(COMMAND_A), undefined);
+	assert.equal(backgroundErrors.length, 1);
+
+	terminalRefresh.resolve();
+	assert.equal((await projected).state, 'projected');
+	assert.equal(replica.replacements.length, 1);
+	assert.equal(replica.layer(COMMAND_A), undefined);
+	assert.equal(replica.record('todo-1'), undefined);
+	assert.equal(backgroundErrors.length, 1);
+	runtime.dispose();
+});
+
 test('an invalid initial result does not poison corrected status recovery', async () => {
 	const modeled = modeledArtifactWithAuditArm();
 	const replica = new TestReplica();

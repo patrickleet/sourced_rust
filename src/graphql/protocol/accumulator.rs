@@ -15,6 +15,7 @@ use super::{
 };
 use crate::command_ledger::CommandLedgerState;
 use crate::graphql::command_contract::CommandConsistency;
+use crate::graphql::projection_delta::runtime::ModeledProjectionStatusDisposition;
 use crate::microsvc::{
     CausalCommandProjectionObligation, CausalCommandPublicState, CausalCommandPublicStatus,
     CausalCommandReceiptSource, CausalProjectionEvidenceState,
@@ -629,8 +630,28 @@ impl ProtocolResponseAccumulator {
         &self,
         receipt: &CausalCommandReceiptSource,
     ) -> Result<(), ProtocolAccumulatorError> {
+        let projection_disposition = receipt
+            .projection_metadata
+            .as_ref()
+            .map(|metadata| {
+                self.modeled_projection_evidence_topologies(&receipt.causation_id, metadata)
+                    .map(|plan| match plan.disposition {
+                        ModeledProjectionStatusDisposition::Applicable => None,
+                        ModeledProjectionStatusDisposition::Revalidate => {
+                            Some(DistributedProjectionDisposition::Revalidate)
+                        }
+                    })
+            })
+            .transpose()?
+            .flatten();
+        let obligation_count = receipt
+            .projection_metadata
+            .as_ref()
+            .map_or(receipt.obligations.len(), |metadata| {
+                metadata.obligations.len()
+            });
         let observed = if receipt.state == CommandLedgerState::Projected {
-            (0..receipt.obligations.len()).collect::<Vec<_>>()
+            (0..obligation_count).collect::<Vec<_>>()
         } else {
             Vec::new()
         };
@@ -643,7 +664,7 @@ impl ProtocolResponseAccumulator {
             receipt.projection_metadata.as_ref(),
             receipt.direct_projection.as_ref(),
             &observed,
-            None,
+            projection_disposition,
         )?)
     }
 

@@ -870,7 +870,7 @@ fn active_metadata_remains_queryable_while_exact_projection_is_draining() {
     };
     use crate::microsvc::{
         CausalCommandProjectionEvidence, CausalCommandPublicState, CausalCommandPublicStatus,
-        CausalProjectionEvidenceState,
+        CausalCommandReceiptSource, CausalProjectionEvidenceState,
     };
     use crate::projection_protocol::ProjectionCausationEvidenceBatch;
 
@@ -978,7 +978,7 @@ fn active_metadata_remains_queryable_while_exact_projection_is_draining() {
     );
     let accumulator = ProtocolResponseAccumulator::new(
         DistributedEnvelopeV1::new(
-            current_manifest.schema_fingerprint,
+            current_manifest.schema_fingerprint.clone(),
             "active-to-draining-generation",
             draining_cache_scope.clone(),
             None,
@@ -1014,6 +1014,38 @@ fn active_metadata_remains_queryable_while_exact_projection_is_draining() {
     assert!(command.get("observations").is_none());
     assert!(command.get("records").is_none());
 
+    let replay_accumulator = ProtocolResponseAccumulator::new(
+        DistributedEnvelopeV1::new(
+            current_manifest.schema_fingerprint,
+            "active-to-draining-generation",
+            draining_cache_scope.clone(),
+            None,
+        ),
+        codec.clone(),
+    );
+    replay_accumulator
+        .bind_projection_request(draining_seed.clone())
+        .unwrap();
+    replay_accumulator
+        .record_receipt(&CausalCommandReceiptSource {
+            command_id: "0190a000-0000-7000-8000-000000000019".into(),
+            causation_id: TEST_CAUSATION_ID.into(),
+            consistency: crate::graphql::command_contract::CommandConsistency::Causal,
+            state: crate::command_ledger::CommandLedgerState::SucceededPendingProjection,
+            outcome: serde_json::json!({"id": "todo-draining-status"}),
+            obligations: Vec::new(),
+            projection_metadata: Some(metadata),
+            direct_projection: None,
+        })
+        .unwrap();
+    let replay_command =
+        serde_json::to_value(replay_accumulator.snapshot().unwrap()).unwrap()["command"].clone();
+    assert_eq!(replay_command["projectionDisposition"], "revalidate");
+    assert_eq!(replay_command["expects"], serde_json::json!([]));
+    assert!(replay_command.get("projection").is_none());
+    assert!(replay_command.get("observations").is_none());
+    assert!(replay_command.get("records").is_none());
+
     let draining_metadata = draining_seed
         .metadata_for_actual_at(
             codec,
@@ -1039,7 +1071,41 @@ fn lifecycle_status_rejects_changed_deployment_identity_and_mixed_fanout_tamperi
         ProtocolProjectionProgramRegistry, ProtocolProjectionRequestSeed,
     };
     use crate::graphql::client_manifest::ClientExecutionLimits;
-    use crate::graphql::protocol::{ProtocolTokenCodec, ProtocolTokenError, ProtocolTokenPurpose};
+    use crate::graphql::protocol::{
+        DistributedEnvelopeV1, ProtocolResponseAccumulator, ProtocolTokenCodec, ProtocolTokenError,
+        ProtocolTokenPurpose,
+    };
+    use crate::microsvc::CausalCommandReceiptSource;
+
+    fn receipt_is_rejected(
+        seed: ProtocolProjectionRequestSeed,
+        codec: ProtocolTokenCodec,
+        cache_scope: crate::graphql::protocol::OpaqueProtocolToken,
+        metadata: crate::graphql::protocol::CommandProjectionMetadataV1,
+    ) -> bool {
+        let accumulator = ProtocolResponseAccumulator::new(
+            DistributedEnvelopeV1::new(
+                "sha256:lifecycle-hostile-current",
+                "lifecycle-hostile-generation",
+                cache_scope,
+                None,
+            ),
+            codec,
+        );
+        accumulator.bind_projection_request(seed).unwrap();
+        accumulator
+            .record_receipt(&CausalCommandReceiptSource {
+                command_id: "0190a000-0000-7000-8000-000000000020".into(),
+                causation_id: TEST_CAUSATION_ID.into(),
+                consistency: crate::graphql::command_contract::CommandConsistency::Causal,
+                state: crate::command_ledger::CommandLedgerState::SucceededPendingProjection,
+                outcome: serde_json::json!({"id": "todo-lifecycle-hostile"}),
+                obligations: Vec::new(),
+                projection_metadata: Some(metadata),
+                direct_projection: None,
+            })
+            .is_err()
+    }
 
     let now = std::time::SystemTime::now();
     let now_unix_ms = now.duration_since(UNIX_EPOCH).unwrap().as_millis() as u64;
@@ -1163,6 +1229,12 @@ fn lifecycle_status_rejects_changed_deployment_identity_and_mixed_fanout_tamperi
             ),
             "{result:?}"
         );
+        assert!(receipt_is_rejected(
+            seed,
+            codec.clone(),
+            current_cache.clone(),
+            metadata.clone(),
+        ));
     }
 
     let removed_surface = build_surface(&[todos(), users()], &SurfaceOptions::sqlite()).unwrap();
@@ -1178,6 +1250,12 @@ fn lifecycle_status_rejects_changed_deployment_identity_and_mixed_fanout_tamperi
     assert!(removed_seed
         .modeled_evidence_topologies(&codec, &current_cache, TEST_CAUSATION_ID, &metadata)
         .is_err());
+    assert!(receipt_is_rejected(
+        removed_seed,
+        codec.clone(),
+        current_cache.clone(),
+        metadata.clone(),
+    ));
 
     let draining_seed = ProtocolProjectionRequestSeed::new(
         selected_export(&draining.surface),
@@ -1202,6 +1280,12 @@ fn lifecycle_status_rejects_changed_deployment_identity_and_mixed_fanout_tamperi
         Err(ProjectionRuntimeAuthorityError::Token(
             ProtocolTokenError::Mismatch
         ))
+    ));
+    assert!(receipt_is_rejected(
+        draining_seed,
+        codec.clone(),
+        current_cache.clone(),
+        tampered,
     ));
 
     let fanout_active = fanout_fixture();
@@ -1274,6 +1358,12 @@ fn lifecycle_status_rejects_changed_deployment_identity_and_mixed_fanout_tamperi
         Err(ProjectionRuntimeAuthorityError::Token(
             ProtocolTokenError::Mismatch
         ))
+    ));
+    assert!(receipt_is_rejected(
+        mixed_seed,
+        codec,
+        current_cache,
+        mixed_tampered,
     ));
 }
 
