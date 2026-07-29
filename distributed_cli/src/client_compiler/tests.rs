@@ -809,11 +809,10 @@ fn embedded_model_invalidation_parses_compiles_and_generates_unkeyed_recovery() 
     assert_eq!(recovery["target"]["kind"], "model");
     assert_eq!(recovery["target"]["model"], "Todo");
     assert!(recovery["target"].get("key").is_none());
-    assert!(compiled["capabilities"]["arms"][0]["mutations"]
-        .as_array()
-        .unwrap()
-        .iter()
-        .all(|mutation| mutation["kind"] == "model"));
+    assert_eq!(
+        compiled["capabilities"]["arms"][0]["mutations"],
+        json!([{"kind": "model", "model": "Todo"}])
+    );
 
     let project = compile_client(ClientCompileInput::new(
         value,
@@ -890,6 +889,67 @@ fn embedded_model_invalidation_rejects_record_and_relationship_authority() {
     let error = ClientManifest::parse(value, &ClientSurfaceSelector::role("user"))
         .expect_err("embedded model invalidation cannot carry relationship effects");
     assert_eq!(error.code, "client.manifest.projection_invalidation");
+}
+
+#[test]
+fn embedded_model_invalidation_requires_canonical_same_model_scope() {
+    let mut value = embedded_model_invalidation_manifest();
+    value["projection_programs"][0]["arms"][0]["operations"][0]["invalidations"] = json!([]);
+    refresh_schema_fingerprint(&mut value);
+
+    let error = ClientManifest::parse(value, &ClientSurfaceSelector::role("user"))
+        .expect_err("embedded model invalidation must retain its canonical model scope");
+    assert_eq!(error.code, "client.manifest.projection_invalidation");
+}
+
+#[test]
+fn embedded_model_invalidation_rejects_relationship_invalidation_scope() {
+    let mut value = embedded_model_invalidation_manifest();
+    value["projection_programs"][0]["arms"][0]["operations"][0]["invalidations"] = json!([{
+        "kind": "relationship",
+        "source_model": "Todo",
+        "relationship": "owner",
+        "target_model": "Todo"
+    }]);
+    refresh_schema_fingerprint(&mut value);
+
+    let error = ClientManifest::parse(value, &ClientSurfaceSelector::role("user"))
+        .expect_err("embedded model invalidation cannot authorize relationship invalidation");
+    assert_eq!(error.code, "client.manifest.projection_invalidation");
+}
+
+#[test]
+fn embedded_model_invalidation_rejects_foreign_existing_model_scope() {
+    let mut value = embedded_model_invalidation_manifest();
+    value["models"]
+        .as_array_mut()
+        .expect("models")
+        .push(model("Other", "other"));
+    value["projection_programs"][0]["arms"][0]["operations"][0]["invalidations"] =
+        json!([{"kind": "model", "model": "Other"}]);
+    refresh_schema_fingerprint(&mut value);
+
+    let error = ClientManifest::parse(value, &ClientSurfaceSelector::role("user"))
+        .expect_err("embedded model invalidation cannot authorize a foreign model");
+    assert_eq!(error.code, "client.manifest.projection_invalidation");
+}
+
+#[test]
+fn embedded_model_invalidation_preserves_duplicate_scope_rejection() {
+    let mut value = embedded_model_invalidation_manifest();
+    let invalidation =
+        value["projection_programs"][0]["arms"][0]["operations"][0]["invalidations"][0].clone();
+    value["projection_programs"][0]["arms"][0]["operations"][0]["invalidations"] =
+        json!([invalidation.clone(), invalidation]);
+    refresh_schema_fingerprint(&mut value);
+
+    let error = ClientManifest::parse(value, &ClientSurfaceSelector::role("user"))
+        .expect_err("duplicate embedded model invalidation scope must remain invalid");
+    assert_eq!(error.code, "client.manifest.projection_invalidation");
+    assert!(
+        error.message.contains("repeats an invalidation scope"),
+        "{error}"
+    );
 }
 
 #[test]

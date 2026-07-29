@@ -465,7 +465,21 @@ fn validate_operation(
                 ),
             ));
         }
-        return validate_invalidations(operation, models);
+        validate_invalidations(operation, models)?;
+        if !matches!(
+            operation.invalidations.as_slice(),
+            [ManifestProjectionInvalidation::Model { model }] if model == &operation.model
+        ) {
+            return Err(projection_error(
+                "client.manifest.projection_invalidation",
+                format!(
+                    "embedded model invalidation `{}` must carry exactly one model invalidation \
+                     for `{}`",
+                    operation.operation, operation.model
+                ),
+            ));
+        }
+        return Ok(());
     };
     validate_key(&operation.key, identity, "projection operation key")?;
     validate_projection_fields(operation, model)?;
