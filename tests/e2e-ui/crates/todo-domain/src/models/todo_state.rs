@@ -1,7 +1,7 @@
 use distributed::DomainState;
 use serde::{Deserialize, Serialize};
 
-use crate::models::{Todo, TodoStatus};
+use super::{Todo, TodoStatus};
 
 /// Stable public post-transition state carried by Todo domain events.
 ///

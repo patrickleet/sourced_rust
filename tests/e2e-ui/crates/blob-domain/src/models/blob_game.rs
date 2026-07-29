@@ -2,10 +2,9 @@ use distributed::{sourced, Entity};
 use serde::{Deserialize, Serialize};
 
 use crate::levels::generate_level;
-use crate::projection_v2::BlobGameState;
 
 use super::tile;
-use super::{BlobError, Direction};
+use super::{BlobError, BlobGameState, Direction};
 
 /// Tiny 3×3 map for unit tests (player top-left, no holes).
 pub fn test_map_no_holes() -> Vec<Vec<u8>> {

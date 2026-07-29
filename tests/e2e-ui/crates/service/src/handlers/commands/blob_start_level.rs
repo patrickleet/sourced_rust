@@ -1,7 +1,6 @@
 //! Command: `blob.start_level` — next level after complete (new generated map).
 
-use blob_domain::projection_v2::BlobGames;
-use blob_domain::BlobGame;
+use blob_domain::{BlobGame, BlobGames};
 use distributed::graphql::{PreparedCommand, Projected};
 use distributed::microsvc::{CausalCommandContext, HandlerError};
 use serde::Deserialize;

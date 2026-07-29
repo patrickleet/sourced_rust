@@ -227,6 +227,55 @@ fn test_inventory(
 }
 
 #[test]
+fn causal_surface_commands_accept_modeled_event_selectors_but_not_empty_authority() {
+    let output = || {
+        GraphqlTypeDef::new(
+            "CausalPayload",
+            vec![GraphqlTypeField {
+                name: "id".into(),
+                type_name: "String".into(),
+                nullable: false,
+                list: false,
+                item_nullable: false,
+                nested: None,
+            }],
+        )
+    };
+    let mut modeled = test_command("order.modeled", "order_modeled", output());
+    modeled.consistency = CommandConsistency::Causal;
+    modeled.projections.selectors.push(
+        crate::ProjectionEventSelector::try_new(
+            1,
+            "order.changed",
+            1,
+            crate::DomainEventBodyKind::State,
+            "OrderState",
+            1,
+            "urn:test:order-state:v1",
+            "sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+            crate::DOMAIN_EVENT_BODY_CODEC,
+            crate::DOMAIN_EVENT_BODY_CODEC_VERSION,
+        )
+        .unwrap(),
+    );
+    assert!(
+        build_surface(&[orders()], &SurfaceOptions::sqlite())
+            .unwrap()
+            .with_typed_commands(&test_inventory([modeled]))
+            .is_ok(),
+        "an exact modeled event selector replaces hand-authored confirmations"
+    );
+
+    let mut empty = test_command("order.empty", "order_empty", output());
+    empty.consistency = CommandConsistency::Causal;
+    let error = build_surface(&[orders()], &SurfaceOptions::sqlite())
+        .unwrap()
+        .with_typed_commands(&test_inventory([empty]))
+        .unwrap_err();
+    assert!(error.contains("must declare at least one expected projector confirmation"));
+}
+
+#[test]
 fn build_surface_skips_operational_and_lists_roots() {
     let surface =
         build_surface(&[orders(), operational()], &SurfaceOptions::sqlite()).expect("surface");

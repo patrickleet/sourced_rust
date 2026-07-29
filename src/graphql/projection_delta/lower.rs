@@ -298,6 +298,7 @@ impl<'a> ProjectionDeltaPlanOccurrence<'a> {
         Self::try_new(ProjectionMutationSource::Actual, plans)
     }
 
+    #[cfg(test)]
     pub(crate) fn preview(
         plans: Vec<(&'a ProjectionDeltaSource, &'a ResolvedProjectionPlan)>,
     ) -> Result<Self, ProjectionDeltaError> {

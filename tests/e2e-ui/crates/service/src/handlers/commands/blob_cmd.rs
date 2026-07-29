@@ -4,8 +4,7 @@
 //! the aggregate, command ledger, and exact projected row commit atomically.
 //! The canonical game row has no asynchronous fact consumer or second writer.
 
-use blob_domain::projection_v2::{BlobGames, BLOB_GAMES};
-use blob_domain::BlobGame;
+use blob_domain::{BlobGame, BlobGames, BLOB_GAMES};
 use distributed::graphql::{PreparedCommand, Projected};
 use distributed::microsvc::{AggregateCheckout, CausalCommandContext, HandlerError};
 

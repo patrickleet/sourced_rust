@@ -275,7 +275,9 @@ pub(in crate::graphql::surface) fn validate_command_confirmations(
 ) -> Result<(), String> {
     validate_projection_confirmation_count(&command.command_name, command.confirmations.len())?;
     match command.consistency {
-        CommandConsistency::Causal if command.confirmations.is_empty() => {
+        CommandConsistency::Causal
+            if command.confirmations.is_empty() && command.projections.selectors.is_empty() =>
+        {
             return Err(format!(
                 "typed causal command `{}` must declare at least one expected projector confirmation",
                 command.command_name
@@ -526,7 +528,10 @@ pub(in crate::graphql::surface) fn bind_surface_direct_projection_targets(
             .get(&projected.model)
             .expect("projector ownership above requires a registered model")
             .schema;
-        if projected.schema != registered_schema {
+        if !projected
+            .schema
+            .has_same_storage_contract(registered_schema)
+        {
             return Err(format!(
                 "typed projected command `{}` retained schema for `{}` differs from the registered full table schema",
                 command.command_name, projected.model

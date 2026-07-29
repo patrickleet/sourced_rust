@@ -1132,6 +1132,45 @@ fn compatible_patches_coalesce_and_conflicts_fail_at_registration() -> Result<()
 }
 
 #[test]
+fn complete_row_key_assignment_must_match_the_canonical_key_expression(
+) -> Result<(), Box<dyn Error>> {
+    let target = ProjectionTarget::try_new("Todos", "todos")?;
+    let key_expression = body_path(&["todo_id"])?;
+    let key_fields = vec![key(0, "todo_id", key_expression.clone())?];
+
+    ProjectionOperation::try_new(
+        "safe-upsert",
+        0,
+        ProjectionMutationKind::Upsert,
+        target.clone(),
+        key_fields.clone(),
+        vec![field(0, "todo_id", key_expression)?],
+        vec![],
+        vec![],
+    )?;
+
+    let error = ProjectionOperation::try_new(
+        "unsafe-upsert",
+        0,
+        ProjectionMutationKind::Upsert,
+        target,
+        key_fields,
+        vec![field(
+            0,
+            "todo_id",
+            ProjectionExpression::constant(ProjectionValue::string("different-row")),
+        )?],
+        vec![],
+        vec![],
+    )
+    .unwrap_err();
+    assert!(error
+        .to_string()
+        .contains("must use the exact key expression"));
+    Ok(())
+}
+
+#[test]
 fn unit_partition_is_distinct_and_event_marker_is_exact() -> Result<(), Box<dyn Error>> {
     let event = descriptor(
         "todo.purged",

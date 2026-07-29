@@ -1,7 +1,7 @@
 use distributed::DomainState;
 use serde::{Deserialize, Serialize};
 
-use crate::models::ChatMessage;
+use super::ChatMessage;
 
 /// Stable public post-transition body for `chat_message.posted`.
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize, DomainState)]

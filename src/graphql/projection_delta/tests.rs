@@ -937,11 +937,20 @@ fn selected_manifest_exposes_partition_expression_and_projection_field_slots() {
     let operation = &arm.operations[0];
     assert_eq!(
         operation
+            .key
+            .iter()
+            .map(|field| field.name.as_str())
+            .collect::<Vec<_>>(),
+        vec!["todo_id"],
+        "the canonical row identity is carried only by the key"
+    );
+    assert_eq!(
+        operation
             .fields
             .iter()
             .map(|field| field.name.as_str())
             .collect::<Vec<_>>(),
-        vec!["todo_id", "owner_id", "title", "status"]
+        vec!["owner_id", "title", "status"]
     );
     let mut slots = operation
         .fields

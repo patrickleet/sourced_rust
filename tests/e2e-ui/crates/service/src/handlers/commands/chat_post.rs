@@ -1,7 +1,6 @@
 //! Command: `chat.post` — author is always the authenticated session user.
 
-use chat_domain::projection_v2::ChatMessageState;
-use chat_domain::ChatMessage;
+use chat_domain::{ChatMessage, ChatMessageState};
 use distributed::graphql::{Causal, PreparedCommand};
 use distributed::microsvc::{CausalCommandContext, HandlerError};
 use serde::{Deserialize, Serialize};

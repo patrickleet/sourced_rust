@@ -66,6 +66,25 @@ export const Operation_Todos: ReplicaOperationArtifact<Operation_Todos_Data, Ope
       "filter": {
         "fields": [
           {
+            "field": "assignee_id",
+            "scalar": "String",
+            "codec": "string",
+            "nullable": true,
+            "operators": [
+              "_eq",
+              "_gt",
+              "_gte",
+              "_ilike",
+              "_in",
+              "_is_null",
+              "_like",
+              "_lt",
+              "_lte",
+              "_neq",
+              "_nin"
+            ]
+          },
+          {
             "field": "owner_id",
             "scalar": "String",
             "codec": "string",
@@ -161,6 +180,12 @@ export const Operation_Todos: ReplicaOperationArtifact<Operation_Todos_Data, Ope
         },
         "fields": [
           {
+            "field": "assignee_id",
+            "scalar": "String",
+            "codec": "string",
+            "nullable": true
+          },
+          {
             "field": "owner_id",
             "scalar": "String",
             "codec": "string",
@@ -202,10 +227,10 @@ export const Operation_Todos: ReplicaOperationArtifact<Operation_Todos_Data, Ope
         "stableUpdate": "local"
       },
       "selection": {
-        "typename": "TodoView",
+        "typename": "Todos",
         "storage": {
           "kind": "normalized",
-          "model": "TodoView",
+          "model": "Todos",
           "identityFields": [
             "todo_id"
           ]
@@ -253,7 +278,7 @@ export const Operation_Todos: ReplicaOperationArtifact<Operation_Todos_Data, Ope
   ],
   "protocol": {
     "version": 1,
-    "schemaHash": "sha256:59ed52f22affc1c32abed2d1df7bd7c7fdc7f5eb59c19535dd63e9f7c8004f45",
+    "schemaHash": "sha256:4d00675dc386eb0dad0444d3c86bf0185c69e59dc010717d7758a1cfdc168dc5",
     "surface": {
       "kind": "application",
       "name": "e2e-ui",

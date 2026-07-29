@@ -3,23 +3,39 @@
 use std::collections::BTreeMap;
 use std::sync::Arc;
 
-use blob_domain::BlobGame;
-use chat_domain::ChatMessage;
+use blob_domain::{
+    BlobGame, BlobGames, BlobLevelStartedDomainEvent, BlobMovedDomainEvent,
+    BlobStartedDomainEvent, BLOB_GAMES,
+};
+use chat_domain::{ChatMessage, ChatMessagePostedDomainEvent, ChatMessages, CHAT_MESSAGES};
 use distributed::graphql::{
     build_surface, read, surface_for_application, typed_command, DistributedClientSurfaceExport,
-    Causal, GraphqlEngine, GraphqlPoolSource, IdentityConfig, ModelPermissions, OidcConfig,
-    Projected, RoleGrant, SurfaceDirectProjection, SurfaceOptions, SurfaceProjector,
+    Causal, CommandProjectionPreview, CommandProjectionPreviewSource, GraphqlEngine,
+    GraphqlPoolSource, IdentityConfig, ModelPermissions, OidcConfig, Projected, RoleGrant,
+    SurfaceDirectProjection, SurfaceModeledProjection, SurfaceOptions, SurfaceProjector,
 };
 use distributed::microsvc::{
     ConfigurableOutboxPublisher, HasOutboxStore, HasRepo, Routes, Service,
 };
-use distributed::{
-    command_confirmations, command_effects, command_input_defaults, AggregateBuilder,
-    AggregateRepository, InMemoryLockManager, InMemoryRepository, LockError, LockManager,
-    Queueable, QueuedRepository,
+use distributed::projection::catalog::{ProjectionBindingActivation, ProjectionCatalog};
+use distributed::projection::lower::ProjectionDescriptor;
+use distributed::projection::placement::{
+    ProjectionBinding, ProjectionBindingState, ProjectionEpoch, ProjectionExecutorRoute,
+    ProjectionOutput, ProjectionOwner, ProjectionPhysicalTopology, ProjectionSourceBinding,
+    PROJECTION_PARTITION_CODEC_VERSION,
 };
-use e2e_readmodels::{AuthUserView, BlobGameView, ChatMessageView, TodoView};
-use todo_domain::Todo;
+use distributed::{
+    command_input_defaults, AggregateBuilder, AggregateRepository, InMemoryLockManager,
+    InMemoryRepository, LockError, LockManager, ProjectionEnvelopeField, Queueable,
+    QueuedRepository, RelationalReadModel,
+};
+use distributed::projection_protocol::ProjectorTopologyId;
+use e2e_readmodels::AuthUserView;
+use todo_domain::{
+    Todo, TodoArchivedDomainEvent, TodoCompletedDomainEvent, TodoCreatedDomainEvent,
+    TodoForceArchivedDomainEvent, TodoPurgedDomainEvent, TodoRenamedDomainEvent,
+    TodoReopenedDomainEvent, Todos, TODO_READS,
+};
 
 use crate::bounds::{EventStore, Locks, ReadStore};
 use crate::handlers;
@@ -44,44 +60,153 @@ impl LockManager for ClientSurfaceLocks {
     }
 }
 
-fn todo_projector() -> SurfaceProjector {
-    SurfaceProjector::new("project_todo")
-        .facts(handlers::events::project_todo::EVENTS.iter().copied())
-        .models(["TodoView"])
-        .change_epoch("e2e-ui-todos-v1")
+#[derive(Clone)]
+struct ProjectionOwners {
+    todo: SurfaceProjector,
+    chat: SurfaceProjector,
+    blob: SurfaceDirectProjection,
 }
 
-fn chat_projector() -> SurfaceProjector {
-    SurfaceProjector::new("project_chat")
-        .facts([handlers::events::project_chat::EVENT])
-        .models(["ChatMessageView"])
-        .change_epoch("e2e-ui-chat-v1")
+fn projection_output<M: RelationalReadModel>() -> ProjectionOutput {
+    let schema = M::schema().clone();
+    ProjectionOutput::try_new(
+        schema.model_name.clone(),
+        schema.table_name.clone(),
+        schema,
+    )
+    .expect("canonical e2e-ui projection output")
 }
 
-fn blob_projection() -> SurfaceDirectProjection {
-    SurfaceDirectProjection::new("project_blob")
-        .model::<BlobGameView>()
-        .change_epoch("e2e-ui-blob-v1")
+fn physical_topology(name: &str, digest: u8) -> ProjectionPhysicalTopology {
+    ProjectionPhysicalTopology::from_protocol(
+        &ProjectorTopologyId::new(1, name, [digest; 32])
+            .expect("canonical e2e-ui physical topology"),
+    )
+}
+
+fn modeled_projection<D>(
+    descriptor: ProjectionDescriptor<D>,
+    catalog: &ProjectionCatalog,
+    active: &distributed::projection::catalog::ActiveProjectionBindings,
+    binding: &ProjectionBinding,
+) -> SurfaceModeledProjection {
+    SurfaceModeledProjection::try_from_descriptor(descriptor, catalog, active, binding.id())
+        .expect("modeled projection should resolve through the active catalog")
+}
+
+fn projection_owners() -> ProjectionOwners {
+    let source = || {
+        ProjectionSourceBinding::try_new("e2e-ui-domain", "ordered-domain-events", 1)
+            .expect("canonical e2e-ui domain source")
+    };
+    let owner = |name| ProjectionOwner::try_new(name).expect("canonical projection owner");
+
+    let todo_binding = ProjectionBinding::materialize_eventual(
+        TODO_READS.eventual(),
+        source(),
+        owner("project_todos"),
+        "distributed-projection-partition",
+        PROJECTION_PARTITION_CODEC_VERSION,
+        vec![projection_output::<Todos>()],
+        Vec::new(),
+        Some(physical_topology("project_todos", 0x20)),
+    )
+    .expect("Todo projection binding");
+    let chat_binding = ProjectionBinding::materialize_eventual(
+        CHAT_MESSAGES.eventual(),
+        source(),
+        owner("project_chat_messages"),
+        "distributed-projection-partition",
+        PROJECTION_PARTITION_CODEC_VERSION,
+        vec![projection_output::<ChatMessages>()],
+        Vec::new(),
+        Some(physical_topology("project_chat_messages", 0x21)),
+    )
+    .expect("Chat projection binding");
+    let blob_binding = ProjectionBinding::materialize_direct(
+        BLOB_GAMES.direct(),
+        source(),
+        owner("project_blob"),
+        "distributed-projection-partition",
+        PROJECTION_PARTITION_CODEC_VERSION,
+        vec![projection_output::<BlobGames>()],
+        Vec::new(),
+        Some(physical_topology("project_blob", 0x22)),
+    )
+    .expect("Blob projection binding");
+
+    let catalog = ProjectionCatalog::try_new(vec![
+        todo_binding.clone(),
+        chat_binding.clone(),
+        blob_binding.clone(),
+    ])
+    .expect("deployment-wide projection catalog");
+    let activation = |binding: &ProjectionBinding, epoch: &str| {
+        ProjectionBindingActivation::new(
+            binding.id(),
+            binding.program_id(),
+            ProjectionEpoch::new(epoch).expect("canonical projection epoch"),
+            ProjectionBindingState::Active,
+            Some(
+                ProjectionExecutorRoute::local("e2e-ui")
+                    .expect("canonical local projection route"),
+            ),
+        )
+    };
+    let active = catalog
+        .activate(
+            vec![
+                activation(&todo_binding, "e2e-ui-todos-v2"),
+                activation(&chat_binding, "e2e-ui-chat-v2"),
+                activation(&blob_binding, "e2e-ui-blob-v2"),
+            ],
+            None,
+        )
+        .expect("non-overlapping active projection catalog");
+
+    ProjectionOwners {
+        todo: SurfaceProjector::new("project_todos")
+            .modeled(modeled_projection(
+                TODO_READS,
+                &catalog,
+                &active,
+                &todo_binding,
+            )),
+        chat: SurfaceProjector::new("project_chat_messages")
+            .modeled(modeled_projection(
+                CHAT_MESSAGES,
+                &catalog,
+                &active,
+                &chat_binding,
+            )),
+        blob: SurfaceDirectProjection::new("project_blob")
+            .modeled(modeled_projection(
+                BLOB_GAMES,
+                &catalog,
+                &active,
+                &blob_binding,
+            )),
+    }
 }
 
 fn client_grants() -> BTreeMap<String, BTreeMap<String, RoleGrant>> {
     let all_models = || {
         BTreeMap::from([
             ("AuthUserView".into(), RoleGrant::all_columns()),
-            ("BlobGameView".into(), RoleGrant::all_columns()),
-            ("ChatMessageView".into(), RoleGrant::all_columns()),
-            ("TodoView".into(), RoleGrant::all_columns()),
+            ("BlobGames".into(), RoleGrant::all_columns()),
+            ("ChatMessages".into(), RoleGrant::all_columns()),
+            ("Todos".into(), RoleGrant::all_columns()),
         ])
     };
     let mut user = all_models();
     user.insert(
-        "TodoView".into(),
+        "Todos".into(),
         RoleGrant::all_columns().rows(
             distributed::graphql::col("owner_id").eq(distributed::graphql::claim("x-user-id")),
         ),
     );
     user.insert(
-        "BlobGameView".into(),
+        "BlobGames".into(),
         RoleGrant::all_columns().rows(
             distributed::graphql::col("owner_id").eq(distributed::graphql::claim("x-user-id")),
         ),
@@ -97,16 +222,17 @@ fn pool_free_client_surface(application: &str, roles: &[&str]) -> DistributedCli
         ClientSurfaceLocks::default(),
         repository,
     );
+    let projections = projection_owners();
     let full = build_surface(&project.tables, &SurfaceOptions::sqlite())
         .expect("e2e-ui client Surface should build")
-        .with_service(&service)
-        .expect("e2e-ui typed Service inventory should bind")
         .with_projection_owners([
-            todo_projector().into(),
-            chat_projector().into(),
-            blob_projection().into(),
+            projections.todo.into(),
+            projections.chat.into(),
+            projections.blob.into(),
         ])
-        .expect("e2e-ui projector topology should bind");
+        .expect("e2e-ui projector topology should bind")
+        .with_service(&service)
+        .expect("e2e-ui typed Service inventory should bind");
     let roles = roles
         .iter()
         .map(|role| (*role).to_string())
@@ -154,11 +280,11 @@ where
 {
     use handlers::commands::{
         archive, blob_move, blob_start, blob_start_level, chat_post, complete, create,
-        force_archive, payloads, rename, reopen,
+        force_archive, payloads, purge, rename, reopen,
     };
 
     let app_roles = ["user", "admin"];
-    let todo_projection = todo_projector();
+    let projections = projection_owners();
     let todos = Routes::new()
         .with_repo(repo.clone().queued_with(locks.clone()).aggregate::<Todo>())
         .with_read_model_store(read_models.clone())
@@ -172,22 +298,15 @@ where
                 input: create::TodoCreateInput;
                 default input.todo_id = uuid_v7();
             })
-            .effects(command_effects! {
-                input: create::TodoCreateInput;
-                upsert e2e_readmodels::models::todo_view::TodoView {
-                    key { todo_id: input.todo_id },
-                    set {
-                        owner_id: trusted("x-user-id"),
-                        title: input.title,
-                        status: "open"
-                    }
-                };
-            })
-            .confirmations(command_confirmations! {
-                input: create::TodoCreateInput;
-                confirm todo_projection -> e2e_readmodels::models::todo_view::TodoView {
-                    key { todo_id: input.todo_id }
-                };
+            .emits(distributed::events![TodoCreatedDomainEvent])
+            .preview(distributed::state_preview! {
+                TodoCreatedDomainEvent => todo_domain::TodoState {
+                    todo_id: generated.todo_id,
+                    owner_id: trusted("x-user-id", "string"),
+                    title: input.title,
+                    status: "open",
+                    assignee_id: null,
+                }
             }),
         )
         .handle(create::handle)
@@ -197,18 +316,13 @@ where
             )
             .field_name("todos_rename")
             .roles(app_roles)
-            .effects(command_effects! {
-                input: rename::TodoRenameInput;
-                patch e2e_readmodels::models::todo_view::TodoView {
-                    key { todo_id: input.todo_id },
-                    set { title: input.title }
-                };
-            })
-            .confirmations(command_confirmations! {
-                input: rename::TodoRenameInput;
-                confirm todo_projection -> e2e_readmodels::models::todo_view::TodoView {
-                    key { todo_id: input.todo_id }
-                };
+            .emits(distributed::events![TodoRenamedDomainEvent])
+            .preview(distributed::state_preview! {
+                TodoRenamedDomainEvent => todo_domain::TodoState {
+                    todo_id: input.todo_id,
+                    title: input.title,
+                    ..unknown
+                }
             }),
         )
         .handle(rename::handle)
@@ -218,19 +332,8 @@ where
             )
             .field_name("todos_complete")
             .roles(app_roles)
-            .effects(command_effects! {
-                input: complete::TodoCompleteInput;
-                patch e2e_readmodels::models::todo_view::TodoView {
-                    key { todo_id: input.todo_id },
-                    set { status: "completed" }
-                };
-            })
-            .confirmations(command_confirmations! {
-                input: complete::TodoCompleteInput;
-                confirm todo_projection -> e2e_readmodels::models::todo_view::TodoView {
-                    key { todo_id: input.todo_id }
-                };
-            }),
+            .emits(distributed::events![TodoCompletedDomainEvent])
+            .preview(todo_domain::complete_preview()),
         )
         .handle(complete::handle)
         .typed_command(
@@ -239,18 +342,13 @@ where
             )
             .field_name("todos_reopen")
             .roles(app_roles)
-            .effects(command_effects! {
-                input: reopen::TodoReopenInput;
-                patch e2e_readmodels::models::todo_view::TodoView {
-                    key { todo_id: input.todo_id },
-                    set { status: "open" }
-                };
-            })
-            .confirmations(command_confirmations! {
-                input: reopen::TodoReopenInput;
-                confirm todo_projection -> e2e_readmodels::models::todo_view::TodoView {
-                    key { todo_id: input.todo_id }
-                };
+            .emits(distributed::events![TodoReopenedDomainEvent])
+            .preview(distributed::state_preview! {
+                TodoReopenedDomainEvent => todo_domain::TodoState {
+                    todo_id: input.todo_id,
+                    status: "open",
+                    ..unknown
+                }
             }),
         )
         .handle(reopen::handle)
@@ -260,18 +358,13 @@ where
             )
             .field_name("todos_archive")
             .roles(app_roles)
-            .effects(command_effects! {
-                input: archive::TodoArchiveInput;
-                patch e2e_readmodels::models::todo_view::TodoView {
-                    key { todo_id: input.todo_id },
-                    set { status: "archived" }
-                };
-            })
-            .confirmations(command_confirmations! {
-                input: archive::TodoArchiveInput;
-                confirm todo_projection -> e2e_readmodels::models::todo_view::TodoView {
-                    key { todo_id: input.todo_id }
-                };
+            .emits(distributed::events![TodoArchivedDomainEvent])
+            .preview(distributed::state_preview! {
+                TodoArchivedDomainEvent => todo_domain::TodoState {
+                    todo_id: input.todo_id,
+                    status: "archived",
+                    ..unknown
+                }
             }),
         )
         .handle(archive::handle)
@@ -282,26 +375,35 @@ where
             >(force_archive::COMMAND)
             .field_name("todos_force_archive")
             .roles(["admin"])
-            .effects(command_effects! {
-                input: force_archive::TodoForceArchiveInput;
-                patch e2e_readmodels::models::todo_view::TodoView {
-                    key { todo_id: input.todo_id },
-                    set { status: "archived" }
-                };
-            })
-            .confirmations(command_confirmations! {
-                input: force_archive::TodoForceArchiveInput;
-                confirm todo_projection -> e2e_readmodels::models::todo_view::TodoView {
-                    key { todo_id: input.todo_id }
-                };
+            .emits(distributed::events![TodoForceArchivedDomainEvent])
+            .preview(distributed::state_preview! {
+                TodoForceArchivedDomainEvent => todo_domain::TodoState {
+                    todo_id: input.todo_id,
+                    status: "archived",
+                    ..unknown
+                }
             }),
         )
         .handle(force_archive::handle)
-        .causal_projector::<todo_domain::TodoFact>(todo_projection)
-        .model::<TodoView>()
-        .handle(handlers::events::project_todo::handle);
+        .typed_command(
+            typed_command::<purge::TodoPurgeInput, Causal<purge::TodoPurgePayload>>(
+                purge::COMMAND,
+            )
+            .field_name("todos_purge")
+            .roles(app_roles)
+            .emits(distributed::events![TodoPurgedDomainEvent])
+            .preview(
+                CommandProjectionPreview::new()
+                    .events(distributed::events![TodoPurgedDomainEvent])
+                    .envelope(
+                        ProjectionEnvelopeField::AggregateId,
+                        CommandProjectionPreviewSource::input(["todo_id"]),
+                    ),
+            ),
+        )
+        .handle(purge::handle)
+        .consume_projection(projections.todo.clone());
 
-    let chat_projection = chat_projector();
     let chat = Routes::new()
         .with_repo(
             repo.clone()
@@ -315,23 +417,15 @@ where
             )
             .field_name("chat_messages_post")
             .roles(app_roles)
-            .effects(command_effects! {
-                input: chat_post::ChatPostInput;
-                upsert e2e_readmodels::models::chat_message_view::ChatMessageView {
-                    key { message_id: input.message_id },
-                    set {
-                        room_id: input.room_id,
-                        author_id: trusted("x-user-id"),
-                        body: input.body,
-                        created_at: input.created_at
-                    }
-                };
-            })
-            .confirmations(command_confirmations! {
-                input: chat_post::ChatPostInput;
-                confirm chat_projection -> e2e_readmodels::models::chat_message_view::ChatMessageView {
-                    key { message_id: input.message_id }
-                };
+            .emits(distributed::events![ChatMessagePostedDomainEvent])
+            .preview(distributed::state_preview! {
+                ChatMessagePostedDomainEvent => chat_domain::ChatMessageState {
+                    message_id: input.message_id,
+                    room_id: input.room_id,
+                    author_id: trusted("x-user-id", "string"),
+                    body: input.body,
+                    created_at: input.created_at,
+                }
             }),
         )
         .handle(chat_post::handle)
@@ -347,9 +441,7 @@ where
             handlers::ingestors::zitadel_scrape::guard,
             handlers::ingestors::zitadel_scrape::handle,
         )
-        .causal_projector::<chat_domain::ChatMessagePosted>(chat_projection)
-        .model::<ChatMessageView>()
-        .handle(handlers::events::project_chat::handle)
+        .consume_projection(projections.chat.clone())
         .events(handlers::events::project_auth_user::EVENTS)
         .guarded(
             handlers::events::project_auth_user::guard,
@@ -360,25 +452,28 @@ where
         .with_repo(repo.queued_with(locks).aggregate::<BlobGame>())
         .with_read_model_store(read_models)
         .typed_command(
-            typed_command::<blob_start::BlobStartInput, Projected<BlobGameView>>(
+            typed_command::<blob_start::BlobStartInput, Projected<BlobGames>>(
                 blob_start::COMMAND,
             )
             .field_name("blob_games_start")
-            .roles(app_roles),
+            .roles(app_roles)
+            .emits(distributed::events![BlobStartedDomainEvent]),
         )
         .handle(blob_start::handle)
         .typed_command(
-            typed_command::<blob_move::BlobMoveInput, Projected<BlobGameView>>(blob_move::COMMAND)
+            typed_command::<blob_move::BlobMoveInput, Projected<BlobGames>>(blob_move::COMMAND)
                 .field_name("blob_games_move")
-                .roles(app_roles),
+                .roles(app_roles)
+                .emits(distributed::events![BlobMovedDomainEvent]),
         )
         .handle(blob_move::handle)
         .typed_command(
-            typed_command::<blob_start_level::BlobStartLevelInput, Projected<BlobGameView>>(
+            typed_command::<blob_start_level::BlobStartLevelInput, Projected<BlobGames>>(
                 blob_start_level::COMMAND,
             )
             .field_name("blob_games_start_level")
-            .roles(app_roles),
+            .roles(app_roles)
+            .emits(distributed::events![BlobLevelStartedDomainEvent]),
         )
         .handle(blob_start_level::handle);
 
@@ -415,6 +510,7 @@ fn build_graphql_engine_with_graphiql(
     change_rx: Option<tokio::sync::broadcast::Receiver<distributed::ReadModelChange>>,
     graphiql: bool,
 ) -> Result<GraphqlEngine, String> {
+    let projections = projection_owners();
     let mut b = GraphqlEngine::builder(pool)
         .protocol_token_key(E2E_PROTOCOL_TOKEN_KEY)
         .roles(&["user", "admin"])
@@ -423,7 +519,7 @@ fn build_graphql_engine_with_graphiql(
         .client_application_surface(DISTRIBUTED_CLIENT_SURFACE, ["admin", "user"])
         .client_application_surface(DISTRIBUTED_ADMIN_CLIENT_SURFACE, ["admin"])
         // user: only own rows. admin: all owners (UI: /admin all-notes view).
-        .model::<TodoView>(
+        .model::<Todos>(
             ModelPermissions::new()
                 .grant(
                     "user",
@@ -434,12 +530,14 @@ fn build_graphql_engine_with_graphiql(
                 )
                 .grant("admin", read().all_columns()),
         )
-        .model::<ChatMessageView>(
+        .model_schema::<ChatMessages>(
+            e2e_readmodels::chat_messages_schema(),
             ModelPermissions::new()
                 .grant("user", read().all_columns())
                 .grant("admin", read().all_columns()),
         )
-        .model::<BlobGameView>(
+        .model_schema::<BlobGames>(
+            e2e_readmodels::blob_games_schema(),
             ModelPermissions::new()
                 .grant(
                     "user",
@@ -452,16 +550,17 @@ fn build_graphql_engine_with_graphiql(
         )
         // Imported IdP directory (join target for chat.author / blob.owner).
         // Readable by all authenticated roles; writes only via Zitadel projector.
-        .model::<AuthUserView>(
+        .model_schema::<AuthUserView>(
+            AuthUserView::schema().clone(),
             ModelPermissions::new()
                 .grant("user", read().all_columns())
                 .grant("admin", read().all_columns()),
         )
         .service(service)
         .client_projection_owners([
-            todo_projector().into(),
-            chat_projector().into(),
-            blob_projection().into(),
+            projections.todo.into(),
+            projections.chat.into(),
+            projections.blob.into(),
         ])
         .identity(identity)
         // GraphiQL is a local template convenience. Disable with GRAPHIQL=0
@@ -611,7 +710,7 @@ mod client_surface_tests {
             build_graphql_engine_with_graphiql(&repository, &service, dev_identity(), None, true)
                 .expect("engine");
         let runtime = engine
-            .client_manifest_for_application(DISTRIBUTED_CLIENT_SURFACE, &["user"])
+            .client_manifest_for_application(DISTRIBUTED_CLIENT_SURFACE, &["user", "admin"])
             .unwrap();
 
         assert_eq!(generated, runtime);
@@ -624,7 +723,7 @@ mod client_surface_tests {
                         "surface": {
                             "kind": "application",
                             "name": DISTRIBUTED_CLIENT_SURFACE,
-                            "roles": ["user"]
+                            "roles": ["admin", "user"]
                         },
                         "schemaHash": generated.schema_fingerprint
                     }

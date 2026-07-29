@@ -22,8 +22,8 @@
 			href: '/todos',
 			title: 'Todos — owner-scoped list',
 			blurb:
-				'Create, complete, reopen, archive. UI paints from generated optimistic effects; a projector confirms the row. You only see your own todos unless you are admin.',
-			where: '/todos · Causal + effects · personal RLS',
+				'Create, complete, reopen, archive, or purge. One domain-event projection drives the server row, optimistic preview, and causal confirmation. You only see your own todos unless you are admin.',
+			where: '/todos · Causal + modeled projection · personal RLS',
 			label: 'Open todos'
 		},
 		{
@@ -38,7 +38,7 @@
 			href: '/blob',
 			title: 'Blob game — Projected board in the response',
 			blurb:
-				'Each move is an aggregate command that returns Projected<BlobGameView>. Map and score commit with the event; the replica applies the payload before the call resolves.',
+				'Each move is an aggregate command that returns Projected<BlobGames>. Map and score commit with the event; the replica applies the payload before the call resolves.',
 			where: '/blob · Projected · no dual-write',
 			label: 'Play blob'
 		},
@@ -72,7 +72,7 @@
 		},
 		{
 			title: 'Know which side of the fence you are on',
-			body: 'Writes produce durable history. Reads use query-shaped tables. Publish goes through an outbox on purpose. Handlers stay thin; projectors or Projected materialize reads; the UI observes. Confusion usually means those lines blurred.'
+			body: 'Aggregate events replay write-side history. Domain events are the outward contract other components may react to; a sourced event can automatically publish its post-transition DomainState when that is the useful contract. Read models stay query-shaped.'
 		},
 		{
 			title: 'You keep the interesting code',
@@ -80,11 +80,11 @@
 		},
 		{
 			title: 'Register once, ship everywhere',
-			body: 'Commands and read models live once in the typed Service inventory. Generation fans out GraphQL fields, operation artifacts, optimistic effects, confirmations, and dual application surfaces. Drift fails CI on purpose.'
+			body: 'Commands, domain events, and projections live once in the typed Service inventory. Generation lowers the same projection into server execution, optimistic client effects, causal obligations, GraphQL fields, and dual application surfaces. Drift fails CI on purpose.'
 		},
 		{
 			title: 'Familiar patterns, short handles',
-			body: 'Load aggregate → apply command → stage events (+ outbox) → Causal or Projected result. Swap memory for Postgres without rewriting the domain.'
+			body: 'Load aggregate → apply command → publish_events/project → commit → Causal or Projected result. Swap memory for Postgres without rewriting the domain.'
 		},
 		{
 			title: 'Grow without rewriting what you proved',
@@ -100,11 +100,11 @@
 		},
 		{
 			title: 'One inventory, many surfaces',
-			body: 'Describe commands and readable tables once. Application surfaces (e2e-ui vs e2e-ui-admin) select roles and fields. Generation turns that into GraphQL, typed UI helpers, optimistic effects, and drift checks.'
+			body: 'Describe commands, domain events, projection programs, and readable tables once. Application surfaces select roles and fields. Generation turns that into GraphQL, typed UI helpers, safe optimistic effects, and drift checks.'
 		},
 		{
 			title: 'Patterns as short, swappable verbs',
-			body: 'CausalCommandContext: load / create / stage / projected. Real design patterns, thin handles, backends you can swap when you grow.'
+			body: 'CausalCommandContext: load / create / publish_events / project / commit. Real design patterns, thin handles, backends you can swap when you grow.'
 		}
 	];
 
@@ -124,7 +124,7 @@
 		},
 		{
 			title: 'Let the Service declare how the UI catches up',
-			body: 'command_effects + command_confirmations (Causal) vs Projected payload (blob). Screens do not invent reconciliation. Revalidation may lag; fences keep your own write from rolling back.'
+			body: 'A command names the domain events it may emit and optionally previews values known from input, generated defaults, trusted claims, or constants. The compiler derives safe optimism and causal obligations; unknown fields fall back to revalidation.'
 		},
 		{
 			title: 'Roles and surfaces are real',
@@ -139,15 +139,15 @@
 	const crates = [
 		{
 			name: 'todo-domain / chat-domain / blob-domain',
-			role: 'Pure rules — methods + unit tests, no network'
+			role: 'Rules, DomainState, natural read models, and portable projection programs'
 		},
 		{
 			name: 'e2e-readmodels',
-			role: 'Query tables, joins (author / owner → auth_users)'
+			role: 'Provider-owned auth_users plus deployment-composed cross-domain joins'
 		},
 		{
 			name: 'e2e-service',
-			role: 'Handlers, projectors, Projected blob, dual client surfaces, GraphQL'
+			role: 'Fluent commits, projection catalog/placement, dual client surfaces, GraphQL'
 		},
 		{
 			name: 'e2e-runner → e2e-ui',
@@ -261,7 +261,7 @@ const client = provideDistributed({
 		{
 			n: 'C4',
 			title: 'Read and write through generated artifacts',
-			why: 'Todos.use() / ChatMessages.use() / BlobGames.use() bind the tree-local replica. useCommands() carries optimistic effects and Projected/Causal metadata so every mounted view observes the change without page-specific cache surgery.',
+			why: 'Todos.use() / ChatMessages.use() / BlobGames.use() bind the tree-local replica. useCommands() carries projection-derived optimistic operations and Projected/Causal metadata so every mounted view observes the change without page-specific cache surgery.',
 			path: 'routes/todos/+page.svelte · $distributed',
 			label: 'Operation + commands',
 			blocks: [
@@ -277,7 +277,7 @@ const rows = $derived($list.complete ? $list.data.todos : []);
 await commands.todo.create({ title });
 // todo_id defaults to uuid_v7() from the inventory
 await commands.todo.complete({ todo_id });
-// Optimism already visible; projector confirms later`
+// Modeled optimism is already visible; the exact causal obligation confirms later`
 				},
 				{
 					file: 'blob/[[gameId]]/+page.svelte',
@@ -379,7 +379,7 @@ callbacks: {
 					file: 'crates/service/src/service.rs',
 					label: 'Row-level grants',
 					code: `// OidcBearer → x-user-id (sub) + engine roles
-.model::<TodoView>(
+.model::<Todos>(
   ModelPermissions::new()
     .grant(
       "user",
@@ -389,7 +389,7 @@ callbacks: {
     )
     .grant("admin", read().all_columns()),
 )
-// Same pattern for BlobGameView; ChatMessageView is room-shared`
+// Same pattern for BlobGames; ChatMessages is room-shared`
 				},
 				{
 					file: 'todos/+page.graphql',
@@ -408,7 +408,7 @@ callbacks: {
 		{
 			n: '03',
 			title: 'Mutations are commands — Causal or Projected',
-			why: 'The typed Service inventory declares input, result shape, roles, optimistic effects, and projector confirmations. Handlers never accept owner_id from the client.',
+			why: 'The typed Service inventory declares input, result shape, roles, emitted domain events, and any safe pre-dispatch preview. The projection program derives optimism and exact causal obligations. Handlers never accept owner_id from the client.',
 			path: 'service.rs · handlers/commands/*',
 			label: 'Commands',
 			blocks: [
@@ -422,59 +422,62 @@ callbacks: {
   let owner = ctx.user_id()?.to_string(); // never from input
   let mut todo = ctx.create();
   todo.create(&input.todo_id, &owner, &input.title)?;
-  commit_todo_event(ctx, todo, "todo.created", |fact| {
+  commit_todo_events(ctx, todo, |state| {
     TodoCreatePayload {
-      todo_id: fact.todo_id, owner_id: fact.owner_id,
-      title: fact.title, status: fact.status,
+      todo_id: state.todo_id, owner_id: state.owner_id,
+      title: state.title, status: state.status,
     }
   })
 }`
 				},
 				{
 					file: 'service.rs · typed_command',
-					label: 'Effects + confirmations',
+					label: 'Event + safe preview',
 					code: `typed_command::<TodoCreateInput, Causal<TodoCreatePayload>>(…)
-  .effects(command_effects! {
-    upsert TodoView {
-      key { todo_id: input.todo_id },
-      set {
-        owner_id: trusted("x-user-id"),
-        title: input.title,
-        status: "open"
-      }
-    };
-  })
-  .confirmations(command_confirmations! {
-    confirm todo_projection -> TodoView {
-      key { todo_id: input.todo_id }
-    };
+  .emits(events![TodoCreatedDomainEvent])
+  .preview(state_preview! {
+    TodoCreatedDomainEvent => TodoState {
+      todo_id: generated.todo_id,
+      owner_id: trusted("x-user-id", "string"),
+      title: input.title,
+      status: "open",
+      assignee_id: null,
+    }
   })`
 				}
 			]
 		},
 		{
 			n: '04',
-			title: 'Eventual path: history first, then projector',
-			why: 'Todos and chat stage events (+ outbox). A projector upserts the query row and ChangeHub wakes @live subscribers. The UI already applied optimistic effects from the inventory.',
-			path: 'handlers/events/project_todo.rs · project_chat.rs',
-			label: 'Projector',
+			title: 'Eventual path: one projection, mounted as a consumer',
+			why: 'Todos and chat publish captured domain events with the fluent commit builder. The catalog-pinned projection executes the same portable operations the client preview specialized; ChangeHub wakes @live subscribers.',
+			path: 'todo-domain/projection.rs · service.rs',
+			label: 'Modeled projector',
 			blocks: [
 				{
-					file: 'handlers/events/project_todo.rs',
-					label: 'Only RM write for todos',
-					code: `pub const EVENTS: &[&str] = &[
-  "todo.created", "todo.renamed", "todo.completed",
-  "todo.reopened", "todo.archived", // + force_archived
-];
-// decode fact → TodoView → ReadModelWritePlanBuilder upsert
-// ChangeHub notifies open subscriptions`
+					file: 'todo-domain/projection.rs',
+					label: 'State lifecycle + deletion',
+					code: `pub const TODO_READS: ProjectionDescriptor<EventualOnly> = projection! {
+  name: "project_todos";
+  epoch: "e2e-ui-todos-v2";
+
+  on ["todo.created", "todo.renamed", "todo.completed", …]
+    version 1 (state: TodoState) {
+      upsert Todos from state as todo;
+  }
+  on "todo.purged" version 1 (deleted: TodoDeletionIdentity) {
+    delete Todos { key { todo_id: envelope.aggregate_id } };
+  }
+};
+
+// Routes::new().consume_projection(catalog_pinned_todo_owner)`
 				}
 			]
 		},
 		{
 			n: '05',
 			title: 'Strong path: Projected in the same transaction',
-			why: 'Blob maps must not lag. The handler returns PreparedCommand<Projected<BlobGameView>> through the fluent direct-projection commit — aggregate, ledger, and query row commit together. No second writer, no dual-write from the UI.',
+			why: 'Blob maps must not lag. The handler returns PreparedCommand<Projected<BlobGames>> through the fluent direct-projection commit — aggregate, ledger, and query row commit together. No second writer, no dual-write from the UI.',
 			path: 'handlers/commands/blob_move.rs · blob_cmd.rs',
 			label: 'Projected',
 			blocks: [
@@ -484,7 +487,7 @@ callbacks: {
 					code: `pub async fn handle(
   ctx: &CausalCommandContext<'_, BlobGame>,
   input: BlobMoveInput,
-) -> Result<PreparedCommand<Projected<BlobGameView>>, HandlerError> {
+) -> Result<PreparedCommand<Projected<BlobGames>>, HandlerError> {
   let owner = ctx.user_id()?.to_string();
   let mut game = load_game(ctx, &input.game_id).await?;
   game.move_dir(&owner, dir).map_err(map_domain)?;
@@ -496,10 +499,9 @@ callbacks: {
 					label: 'Client topology',
 					code: `fn blob_projection() -> SurfaceDirectProjection {
   SurfaceDirectProjection::new("project_blob")
-    .model::<BlobGameView>()
-    .change_epoch("e2e-ui-blob-v1")
+    .modeled(catalog.resolve(BLOB_GAMES))
 }
-// typed_command::<…, Projected<BlobGameView>>(…)`
+// typed_command::<…, Projected<BlobGames>>(…)`
 				}
 			]
 		},
@@ -511,18 +513,26 @@ callbacks: {
 			label: 'Joins',
 			blocks: [
 				{
-					file: 'readmodels/…/blob_game_view.rs',
-					label: 'belongs_to',
-					code: `#[readmodel(belongs_to = "AuthUserView", foreign_key = "owner_id")]
-pub owner: Option<AuthUserView>,
-// GraphQL: owner { user_id display_name email status }`
+					file: 'readmodels/src/lib.rs',
+					label: 'deployment-composed belongs_to',
+					code: `let mut schema = BlobGames::schema().clone();
+schema.relationships.push(RelationshipDef {
+  field_name: "owner".into(),
+  kind: RelationshipKind::BelongsTo,
+  target_model: "AuthUserView".into(),
+  foreign_key: Some("owner_id".into()),
+  …
+});
+// Projection storage identity remains the canonical BlobGames row.`
 				},
 				{
-					file: 'readmodels/…/chat_message_view.rs',
-					label: 'author join ready',
-					code: `#[readmodel(belongs_to = "AuthUserView", foreign_key = "author_id")]
-pub author: Option<AuthUserView>,
-// Select author { … } when the route needs labels`
+					file: 'readmodels/models/auth_user_view.rs',
+					label: 'reverse relationships',
+					code: `#[readmodel(has_many = "ChatMessages", foreign_key = "author_id")]
+pub chat_messages: Vec<ChatMessages>,
+#[readmodel(has_many = "BlobGames", foreign_key = "owner_id")]
+pub blob_games: Vec<BlobGames>,
+// Select author/owner or reverse collections without a crate cycle.`
 				}
 			]
 		}
@@ -701,27 +711,33 @@ pub author: Option<AuthUserView>,
   Ok(())
 }
 
-#[event("todo.completed")]
+#[event("todo.completed", version = 1, domain)]
 fn record_completed(&mut self) {
   self.status = TodoStatus::Completed;
 }
-// Unit tests call complete() directly — no handler required.`}</code></pre>
+// The aggregate event replays history; `domain` also captures TodoState
+// as the outward domain-event body after the transition.`}</code></pre>
 				</div>
 				<div class="wf-code">
 					<div class="wf-code-bar">
-						<span>e2e-readmodels · TodoView</span>
-						<em>#[derive(ReadModel)]</em>
+						<span>todo-domain · TodoState + Todos</span>
+						<em>DomainState + ReadModel</em>
 					</div>
-					<pre><code>{`#[derive(Clone, Debug, Default, Serialize, Deserialize, ReadModel)]
-#[table("todos")]
-pub struct TodoView {
-  #[id("todo_id")]
+					<pre><code>{`#[derive(Clone, Debug, Serialize, Deserialize, DomainState)]
+pub struct TodoState {
+  // Public post-transition DTO; may omit private snapshot fields.
+}
+
+#[derive(Clone, Debug, Default, Serialize, Deserialize, ReadModel)]
+#[readmodel(primary_key = ["todo_id"])]
+pub struct Todos {
+  #[readmodel(id)]
   pub todo_id: String,
   pub owner_id: String,
   pub title: String,
   pub status: String,
 }
-// GraphQL lists/filters this table — you did not hand-write resolvers.`}</code></pre>
+// GraphQL lists/filters `todos` — no hand-written resolvers.`}</code></pre>
 				</div>
 				<div class="wf-code">
 					<div class="wf-code-bar">
@@ -742,7 +758,7 @@ pub struct TodoCreateInput {
 				<span class="wf-label">Patterns you already know</span>
 				<h3>Short verbs you can swap under the hood</h3>
 				<p>
-					Load from history, apply a command, stage events (and outbox), return
+					Load from history, apply a command, publish captured domain events, return
 					<code>Causal</code> or <code>Projected</code>. Same ideas as textbooks — thin APIs, backends
 					you can change later.
 				</p>
@@ -750,15 +766,17 @@ pub struct TodoCreateInput {
 			<div class="wf-code-stack">
 				<div class="wf-code">
 					<div class="wf-code-bar">
-						<span>Load → decide → stage history</span>
+						<span>Load → decide → fluent commit</span>
 						<em>CausalCommandContext</em>
 					</div>
 					<pre><code>{`let mut todo = load_todo(ctx, &input.todo_id).await?;
 todo.complete(&owner).map_err(map_domain)?;
-commit_todo_event(ctx, todo, "todo.completed", |fact| {
-  TodoStatusPayload { todo_id: fact.todo_id, status: fact.status }
-})
-// .outbox(...).commit(aggregate)?.causal(payload)
+let state = TodoState::from(&*todo);
+ctx.publish_events()
+  .commit(todo)?
+  .causal(TodoStatusPayload {
+    todo_id: state.todo_id, status: state.status
+  })
 // Framework commits history + publication + ledger together.`}</code></pre>
 				</div>
 				<div class="wf-code">
@@ -766,10 +784,10 @@ commit_todo_event(ctx, todo, "todo.completed", |fact| {
 						<span>Projected — same transaction</span>
 						<em>blob</em>
 					</div>
-					<pre><code>{`ctx.project(direct_read_model::<BlobGameView>())
+					<pre><code>{`ctx.project(BLOB_GAMES)
   .commit(game)?
   .projected(view)
-// → PreparedCommand<Projected<BlobGameView>>
+// → PreparedCommand<Projected<BlobGames>>
 // Aggregate + command ledger + query row commit atomically.
 // No manual ReadModelWritePlan in the handler.`}</code></pre>
 				</div>
@@ -915,13 +933,13 @@ Service::new()
   Sign in → cookie with access token
   @load pages → GraphQL (Bearer) → SSR hydrate replica
   @live rooms → WebSocket (token in connection_init)
-  commands.* → same replica (effects / Projected payload)
+  commands.* → same replica (projection preview / authoritative delta)
 
 Service
   OidcBearer → x-user-id + roles · deny-by-default RLS
   typed Service inventory → GraphQL mutations + client surfaces
-       ├─ todos / chat: Causal + projector (+ @live)     (eventual)
-       └─ blob:         Projected<BlobGameView>         (atomic)
+       ├─ todos / chat: Causal + modeled projector (+ @live) (eventual)
+       └─ blob:         Projected<BlobGames>                 (atomic)
   e2e-ui vs e2e-ui-admin application surfaces
   auth_users imported from Zitadel for joins`}</code></pre>
 			</div>
@@ -974,7 +992,7 @@ Service
 				<p>
 					You should not wire a new HTTP client per page. The root layout creates one replica from
 					one session source; the server hydrates it, <code>@live</code> operations continue it, and
-					typed commands update it (optimistic effects or Projected payload). Query documents live
+					typed commands update it (projection-derived optimism or Projected payload). Query documents live
 					next to routes; command contracts come from the same typed Rust inventory the API runs.
 					Admin is a second generated surface under <code>/admin</code>.
 				</p>
@@ -1029,19 +1047,20 @@ Service
 					<span class="wf-card-kicker">Projected</span>
 					<h3>Blob — row commits with the command</h3>
 					<p>
-						<code>PreparedCommand&lt;Projected&lt;BlobGameView&gt;&gt;</code> +
-						<code>project(direct_read_model()).commit().projected()</code>. Map/score are in the
+						<code>PreparedCommand&lt;Projected&lt;BlobGames&gt;&gt;</code> +
+						<code>project(BLOB_GAMES).commit().projected()</code>. Map/score are in the
 						mutation payload; the replica applies them before the call resolves. Revalidation may
 						still race — fences keep your own write from rolling back under a lagging stamp.
 					</p>
 				</div>
 				<div class="wf-card">
-					<span class="wf-card-kicker">Causal + effects</span>
+					<span class="wf-card-kicker">Causal + modeled projection</span>
 					<h3>Todos — paint now, confirm later</h3>
 					<p>
-						Command returns a causal result. Inventory <code>command_effects</code> paint the replica;
-						<code>command_confirmations</code> wait for the projector epoch. History is still the
-						source of truth — the query table catches up.
+						Command returns a causal result. Its event set plus <code>state_preview!</code> safely
+						specialize the same <code>projection!</code> program for the replica; actual emitted
+						occurrences mint exact obligations for the active projector epoch. Unknown values
+						revalidate, and history remains the source of truth.
 					</p>
 				</div>
 				<div class="wf-card">

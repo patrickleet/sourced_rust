@@ -507,6 +507,7 @@ impl Service {
     /// fingerprint. Malformed, absent, wrong-principal, revoked, drifted, and
     /// ambiguous IDs all collapse to `unknown`.
     #[cfg(feature = "graphql")]
+    #[cfg(test)]
     pub(crate) async fn causal_command_status(
         &self,
         command_id: &str,

@@ -3,7 +3,8 @@
 use distributed::ReadModel;
 use serde::{Deserialize, Serialize};
 
-use super::{BlobGameView, ChatMessageView};
+use blob_domain::BlobGames;
+use chat_domain::ChatMessages;
 
 /// Imported IdP user. PK: `user_id` (= Zitadel subject / OIDC `sub` / session `x-user-id`).
 ///
@@ -22,10 +23,10 @@ pub struct AuthUserView {
     /// `active` | `deactivated`
     pub status: String,
     pub updated_at: String,
-    #[readmodel(has_many = "ChatMessageView", foreign_key = "author_id")]
-    pub chat_messages: Vec<ChatMessageView>,
-    #[readmodel(has_many = "BlobGameView", foreign_key = "owner_id")]
-    pub blob_games: Vec<BlobGameView>,
+    #[readmodel(has_many = "ChatMessages", foreign_key = "author_id")]
+    pub chat_messages: Vec<ChatMessages>,
+    #[readmodel(has_many = "BlobGames", foreign_key = "owner_id")]
+    pub blob_games: Vec<BlobGames>,
 }
 
 /// Provider envelope published by `zitadel.ingress.v1` (fixture + Action shape).

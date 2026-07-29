@@ -196,6 +196,7 @@ impl CommandAttempt {
     /// the versioned delta/obligation schema before calling this method; the
     /// ledger preserves those bytes exactly and applies only generic size and
     /// state invariants.
+    #[cfg(test)]
     pub(crate) fn complete_with_projection_metadata(
         self,
         state: TerminalCommandState,

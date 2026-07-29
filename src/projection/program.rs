@@ -444,6 +444,27 @@ impl ProjectionOperation {
                 reason: "complete-row writes cannot unset fields".to_owned(),
             });
         }
+        if kind.is_complete_write() {
+            for key_field in &key {
+                let Some(field) = fields.iter().find(|field| field.name() == key_field.name())
+                else {
+                    continue;
+                };
+                if !matches!(
+                    field.assignment(),
+                    ProjectionAssignment::Set(expression)
+                        if expression == key_field.expression()
+                ) {
+                    return Err(ProjectionProgramError::InvalidOperation {
+                        operation: operation_id,
+                        reason: format!(
+                            "complete-row key field `{}` must use the exact key expression",
+                            key_field.name()
+                        ),
+                    });
+                }
+            }
+        }
         relationship_effects.sort_by_key(ProjectionRelationshipEffect::ordinal);
         validate_ordinals(
             &relationship_effects,

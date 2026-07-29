@@ -5,8 +5,8 @@ import type { ReplicaCommandStatusArtifact } from '@hops-ops/distributed/replica
 export const CLIENT_PROTOCOL = {
 	version: 1,
 	serviceId: "e2e-ui",
-	schemaHash: "sha256:d8ca49f74beab7719f3e35491439c338e7e71e0627fc1b9551158560f270f872",
-	protocolHash: "sha256:30f19c9f4d29280a02ddf67c4df62cdc92c4e8090792f43d6b1bdafea3e31273",
+	schemaHash: "sha256:9d6043cfbecdd409499668c2cb216e31aa4c73ed5078221b159c1d8d296f6254",
+	protocolHash: "sha256:00fb342f3acb4dc1c1716a43cc3001c748d5f6c500ff831690d820e9e43e2782",
 	surface: {"kind":"application","name":"e2e-ui-admin","roles":["admin"]},
 	trustedPresets: [
   {
@@ -31,8 +31,8 @@ export const COMMAND_STATUS: ReplicaCommandStatusArtifact = {
   "operationHash": "sha256:eb3ce6a8b306d935fc9f3d6f071804ce3ec415d209594c04015fa35b080282ef",
   "protocol": {
     "operation": "sha256:eb3ce6a8b306d935fc9f3d6f071804ce3ec415d209594c04015fa35b080282ef",
-    "protocolHash": "sha256:30f19c9f4d29280a02ddf67c4df62cdc92c4e8090792f43d6b1bdafea3e31273",
-    "schemaHash": "sha256:d8ca49f74beab7719f3e35491439c338e7e71e0627fc1b9551158560f270f872",
+    "protocolHash": "sha256:00fb342f3acb4dc1c1716a43cc3001c748d5f6c500ff831690d820e9e43e2782",
+    "schemaHash": "sha256:9d6043cfbecdd409499668c2cb216e31aa4c73ed5078221b159c1d8d296f6254",
     "surface": {
       "kind": "application",
       "name": "e2e-ui-admin",

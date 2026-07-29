@@ -13,7 +13,7 @@ use e2e_service::{build_graphql_engine, build_service, distributed_manifest};
 use e2e_suite::{
     assert_http_commands_disabled, cases, graphql, graphql_raw, new_command_id,
     offline_oidc_identity, todos_archive, todos_complete, todos_create, todos_force_archive,
-    todos_rename, todos_reopen, wait_ready,
+    todos_purge, todos_rename, todos_reopen, wait_ready,
 };
 
 async fn ensure_target() -> String {
@@ -585,4 +585,84 @@ async fn t6_lifecycle_rename_and_archive() {
         cases::LIFECYCLE
     );
     eprintln!("{} ok {tid}", cases::LIFECYCLE);
+}
+
+#[tokio::test]
+async fn t7_modeled_no_ops_succeed_without_projection_obligations() {
+    let base = ensure_target().await;
+    let tid = id("noop");
+    todos_create(&base, &tid, "Stable title", "alice", "user")
+        .await
+        .unwrap();
+    assert!(poll_todo(&base, "alice", &tid).await.is_some());
+
+    let rename_id = new_command_id();
+    let rename = format!(
+        r#"mutation {{
+          todos_rename(commandId: "{rename_id}", input: {{
+            todo_id: "{tid}", title: "Stable title"
+          }}) {{ todo_id title status }}
+        }}"#
+    );
+    let response = graphql(&base, &rename, "alice", "user").await.unwrap();
+    assert!(response.get("errors").is_none(), "{response}");
+    let receipt = &response["extensions"]["distributed"]["command"];
+    assert_eq!(receipt["state"], "succeeded", "{response}");
+    assert_eq!(receipt["consistency"], "causal", "{response}");
+    assert_eq!(receipt["expects"], serde_json::json!([]), "{response}");
+
+    todos_archive(&base, &tid, "alice", "user")
+        .await
+        .unwrap();
+    let archived = poll_todo(&base, "alice", &tid).await.unwrap();
+    assert_eq!(archived["status"], "archived");
+
+    let archive_id = new_command_id();
+    let archive = format!(
+        r#"mutation {{
+          todos_archive(commandId: "{archive_id}", input: {{ todo_id: "{tid}" }}) {{
+            todo_id status
+          }}
+        }}"#
+    );
+    let response = graphql(&base, &archive, "alice", "user").await.unwrap();
+    assert!(response.get("errors").is_none(), "{response}");
+    let receipt = &response["extensions"]["distributed"]["command"];
+    assert_eq!(receipt["state"], "succeeded", "{response}");
+    assert_eq!(receipt["expects"], serde_json::json!([]), "{response}");
+    let replayed = poll_todo(&base, "alice", &tid).await.unwrap();
+    assert_eq!(replayed, archived, "no-op replay changed the projected row");
+}
+
+#[tokio::test]
+async fn t8_explicit_purge_domain_event_deletes_the_todo_row() {
+    let base = ensure_target().await;
+    let tid = id("purge");
+    todos_create(&base, &tid, "Disposable", "alice", "user")
+        .await
+        .unwrap();
+    assert!(poll_todo(&base, "alice", &tid).await.is_some());
+
+    let payload = todos_purge(&base, &tid, "alice", "user").await.unwrap();
+    assert_eq!(payload["todo_id"], tid);
+    assert_eq!(payload["purged"], true);
+
+    for _ in 0..100 {
+        let response = graphql(
+            &base,
+            "{ todos { todo_id owner_id title status } }",
+            "alice",
+            "user",
+        )
+        .await
+        .unwrap();
+        let present = response["data"]["todos"]
+            .as_array()
+            .is_some_and(|rows| rows.iter().any(|row| row["todo_id"] == tid));
+        if !present {
+            return;
+        }
+        tokio::time::sleep(Duration::from_millis(30)).await;
+    }
+    panic!("purged todo `{tid}` remained query-visible");
 }

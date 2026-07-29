@@ -1,7 +1,6 @@
 //! Command: `blob.move` — direction up|down|left|right.
 
-use blob_domain::projection_v2::BlobGames;
-use blob_domain::{BlobGame, Direction};
+use blob_domain::{BlobGame, BlobGames, Direction};
 use distributed::graphql::{PreparedCommand, Projected};
 use distributed::microsvc::{CausalCommandContext, HandlerError};
 use serde::Deserialize;

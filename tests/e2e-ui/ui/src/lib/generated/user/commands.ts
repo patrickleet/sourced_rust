@@ -38,23 +38,18 @@ export type Command_blob_games_move_Output = {
 export const Command_blob_games_move: ReplicaCommandArtifact<Command_blob_games_move_Input, Command_blob_games_move_Output> = {
   "consistency": "projected",
   "directProjection": {
-    "changeEpoch": "e2e-ui-blob-v1",
+    "changeEpoch": "e2e-ui-blob-v2",
     "identityFields": [
       "game_id"
     ],
-    "model": "BlobGameView",
+    "model": "BlobGames",
     "topology": {
-      "digest": "sha256:259f4c8941653467b4ff9bbfcf7b4d1dcf490be96fc60499e7debf78a3beeef0",
+      "digest": "sha256:97e34e60cea23dd98b313de15240894dba1672cae2bd33e3c6c45a742de7c975",
       "name": "project_blob",
       "version": 1
     }
   },
   "document": "mutation Client_blob_games_move($commandId: ID!, $input: BlobMoveInput!) { blob_games_move(commandId: $commandId, input: $input) { current_level current_level_completed game_id map_json owner_id player_dead score status } }",
-  "effects": {
-    "fallback": "revalidate",
-    "operations": [],
-    "version": 1
-  },
   "input": {
     "definition": {
       "fields": [
@@ -150,14 +145,14 @@ export const Command_blob_games_move: ReplicaCommandArtifact<Command_blob_games_
           "typeName": "String"
         }
       ],
-      "name": "BlobGameView"
+      "name": "BlobGames"
     },
     "kind": "object"
   },
   "protocol": {
     "operation": "sha256:6e3c6c00474e126a3fce6b671cd8a06eed988546f161793d39a08cc784ae49c7",
-    "protocolHash": "sha256:30f19c9f4d29280a02ddf67c4df62cdc92c4e8090792f43d6b1bdafea3e31273",
-    "schemaHash": "sha256:59ed52f22affc1c32abed2d1df7bd7c7fdc7f5eb59c19535dd63e9f7c8004f45",
+    "protocolHash": "sha256:00fb342f3acb4dc1c1716a43cc3001c748d5f6c500ff831690d820e9e43e2782",
+    "schemaHash": "sha256:4d00675dc386eb0dad0444d3c86bf0185c69e59dc010717d7758a1cfdc168dc5",
     "surface": {
       "kind": "application",
       "name": "e2e-ui",
@@ -179,13 +174,13 @@ export const Command_blob_games_move: ReplicaCommandArtifact<Command_blob_games_
       "blob_games"
     ],
     "models": [
-      "BlobGameView"
+      "BlobGames"
     ],
     "relationships": [],
     "required": true,
     "version": 1
   },
-  "version": 1
+  "version": 2
 };
 
 export function prepareCommand_blob_games_move(
@@ -214,23 +209,18 @@ export type Command_blob_games_start_Output = {
 export const Command_blob_games_start: ReplicaCommandArtifact<Command_blob_games_start_Input, Command_blob_games_start_Output> = {
   "consistency": "projected",
   "directProjection": {
-    "changeEpoch": "e2e-ui-blob-v1",
+    "changeEpoch": "e2e-ui-blob-v2",
     "identityFields": [
       "game_id"
     ],
-    "model": "BlobGameView",
+    "model": "BlobGames",
     "topology": {
-      "digest": "sha256:259f4c8941653467b4ff9bbfcf7b4d1dcf490be96fc60499e7debf78a3beeef0",
+      "digest": "sha256:97e34e60cea23dd98b313de15240894dba1672cae2bd33e3c6c45a742de7c975",
       "name": "project_blob",
       "version": 1
     }
   },
   "document": "mutation Client_blob_games_start($commandId: ID!, $input: BlobStartInput!) { blob_games_start(commandId: $commandId, input: $input) { current_level current_level_completed game_id map_json owner_id player_dead score status } }",
-  "effects": {
-    "fallback": "revalidate",
-    "operations": [],
-    "version": 1
-  },
   "input": {
     "definition": {
       "fields": [
@@ -318,14 +308,14 @@ export const Command_blob_games_start: ReplicaCommandArtifact<Command_blob_games
           "typeName": "String"
         }
       ],
-      "name": "BlobGameView"
+      "name": "BlobGames"
     },
     "kind": "object"
   },
   "protocol": {
     "operation": "sha256:4b7ab56a38aec41d21809801ecefc5d7039a09e53a350187152c72a305de1567",
-    "protocolHash": "sha256:30f19c9f4d29280a02ddf67c4df62cdc92c4e8090792f43d6b1bdafea3e31273",
-    "schemaHash": "sha256:59ed52f22affc1c32abed2d1df7bd7c7fdc7f5eb59c19535dd63e9f7c8004f45",
+    "protocolHash": "sha256:00fb342f3acb4dc1c1716a43cc3001c748d5f6c500ff831690d820e9e43e2782",
+    "schemaHash": "sha256:4d00675dc386eb0dad0444d3c86bf0185c69e59dc010717d7758a1cfdc168dc5",
     "surface": {
       "kind": "application",
       "name": "e2e-ui",
@@ -347,13 +337,13 @@ export const Command_blob_games_start: ReplicaCommandArtifact<Command_blob_games
       "blob_games"
     ],
     "models": [
-      "BlobGameView"
+      "BlobGames"
     ],
     "relationships": [],
     "required": true,
     "version": 1
   },
-  "version": 1
+  "version": 2
 };
 
 export function prepareCommand_blob_games_start(
@@ -382,23 +372,18 @@ export type Command_blob_games_start_level_Output = {
 export const Command_blob_games_start_level: ReplicaCommandArtifact<Command_blob_games_start_level_Input, Command_blob_games_start_level_Output> = {
   "consistency": "projected",
   "directProjection": {
-    "changeEpoch": "e2e-ui-blob-v1",
+    "changeEpoch": "e2e-ui-blob-v2",
     "identityFields": [
       "game_id"
     ],
-    "model": "BlobGameView",
+    "model": "BlobGames",
     "topology": {
-      "digest": "sha256:259f4c8941653467b4ff9bbfcf7b4d1dcf490be96fc60499e7debf78a3beeef0",
+      "digest": "sha256:97e34e60cea23dd98b313de15240894dba1672cae2bd33e3c6c45a742de7c975",
       "name": "project_blob",
       "version": 1
     }
   },
   "document": "mutation Client_blob_games_start_level($commandId: ID!, $input: BlobStartLevelInput!) { blob_games_start_level(commandId: $commandId, input: $input) { current_level current_level_completed game_id map_json owner_id player_dead score status } }",
-  "effects": {
-    "fallback": "revalidate",
-    "operations": [],
-    "version": 1
-  },
   "input": {
     "definition": {
       "fields": [
@@ -486,14 +471,14 @@ export const Command_blob_games_start_level: ReplicaCommandArtifact<Command_blob
           "typeName": "String"
         }
       ],
-      "name": "BlobGameView"
+      "name": "BlobGames"
     },
     "kind": "object"
   },
   "protocol": {
     "operation": "sha256:37c108a568f62e7391a03728555d7013bb717f14d1957a5c3527151fd70093bf",
-    "protocolHash": "sha256:30f19c9f4d29280a02ddf67c4df62cdc92c4e8090792f43d6b1bdafea3e31273",
-    "schemaHash": "sha256:59ed52f22affc1c32abed2d1df7bd7c7fdc7f5eb59c19535dd63e9f7c8004f45",
+    "protocolHash": "sha256:00fb342f3acb4dc1c1716a43cc3001c748d5f6c500ff831690d820e9e43e2782",
+    "schemaHash": "sha256:4d00675dc386eb0dad0444d3c86bf0185c69e59dc010717d7758a1cfdc168dc5",
     "surface": {
       "kind": "application",
       "name": "e2e-ui",
@@ -515,13 +500,13 @@ export const Command_blob_games_start_level: ReplicaCommandArtifact<Command_blob
       "blob_games"
     ],
     "models": [
-      "BlobGameView"
+      "BlobGames"
     ],
     "relationships": [],
     "required": true,
     "version": 1
   },
-  "version": 1
+  "version": 2
 };
 
 export function prepareCommand_blob_games_start_level(
@@ -548,91 +533,8 @@ export type Command_chat_messages_post_Output = {
 
 /** Exact typed causal command descriptor and full mutation bytes. */
 export const Command_chat_messages_post: ReplicaCommandArtifact<Command_chat_messages_post_Input, Command_chat_messages_post_Output> = {
-  "confirmations": {
-    "expected": [
-      {
-        "key": {
-          "fields": [
-            {
-              "field": "message_id",
-              "value": {
-                "kind": "input",
-                "path": [
-                  "message_id"
-                ]
-              }
-            }
-          ]
-        },
-        "model": "ChatMessageView",
-        "projector": "project_chat"
-      }
-    ],
-    "fallback": "revalidate",
-    "kind": "finite",
-    "version": 1
-  },
   "consistency": "causal",
   "document": "mutation Client_chat_messages_post($commandId: ID!, $input: ChatPostInput!) { chat_messages_post(commandId: $commandId, input: $input) { author_id body created_at message_id room_id } }",
-  "effects": {
-    "fallback": "revalidate",
-    "operations": [
-      {
-        "fields": [
-          {
-            "field": "author_id",
-            "value": {
-              "kind": "trusted_preset",
-              "name": "x-user-id"
-            }
-          },
-          {
-            "field": "body",
-            "value": {
-              "kind": "input",
-              "path": [
-                "body"
-              ]
-            }
-          },
-          {
-            "field": "created_at",
-            "value": {
-              "kind": "input",
-              "path": [
-                "created_at"
-              ]
-            }
-          },
-          {
-            "field": "room_id",
-            "value": {
-              "kind": "input",
-              "path": [
-                "room_id"
-              ]
-            }
-          }
-        ],
-        "key": {
-          "fields": [
-            {
-              "field": "message_id",
-              "value": {
-                "kind": "input",
-                "path": [
-                  "message_id"
-                ]
-              }
-            }
-          ]
-        },
-        "kind": "upsert",
-        "model": "ChatMessageView"
-      }
-    ],
-    "version": 1
-  },
   "input": {
     "definition": {
       "fields": [
@@ -724,10 +626,172 @@ export const Command_chat_messages_post: ReplicaCommandArtifact<Command_chat_mes
     },
     "kind": "object"
   },
+  "projection": {
+    "capabilities": {
+      "arms": [
+        {
+          "arm": "pa1:sha256:0b6e20d1037796b9b81401aa891558f494690f4dc510e7a059d7f80c64926091",
+          "event": {
+            "id": "pe1:sha256:0b84f94ef8a350d7cd967ce57a5419212f892e7fd7c3a9b6ec75dd080270d0f3",
+            "name": "chat_message.posted",
+            "version": 1
+          },
+          "mutations": [
+            {
+              "delete": false,
+              "fields": [
+                "author_id",
+                "body",
+                "created_at",
+                "room_id"
+              ],
+              "key": [
+                "message_id"
+              ],
+              "kind": "record",
+              "model": "ChatMessages",
+              "patch": true,
+              "replace": [
+                "author_id",
+                "body",
+                "created_at",
+                "room_id"
+              ],
+              "upsert": true
+            },
+            {
+              "kind": "model",
+              "model": "ChatMessages"
+            }
+          ],
+          "partition": {
+            "expression_fingerprint": "sha256:9a3696ed6ba40ff26008e23826a02cf27c1e3c8c6f410e60d78927ba79a136f9",
+            "kind": "opaque"
+          },
+          "projection_ref": 0
+        }
+      ],
+      "version": 1
+    },
+    "deltaWireVersion": 1,
+    "eventSet": [
+      {
+        "id": "pe1:sha256:0b84f94ef8a350d7cd967ce57a5419212f892e7fd7c3a9b6ec75dd080270d0f3",
+        "name": "chat_message.posted",
+        "version": 1
+      }
+    ],
+    "fallback": "revalidate",
+    "operationSemanticsVersion": 1,
+    "preview": {
+      "occurrences": [
+        {
+          "event": {
+            "id": "pe1:sha256:0b84f94ef8a350d7cd967ce57a5419212f892e7fd7c3a9b6ec75dd080270d0f3",
+            "name": "chat_message.posted",
+            "version": 1
+          },
+          "ordinal": 0
+        }
+      ],
+      "operations": [
+        {
+          "mutation": {
+            "fields": [
+              {
+                "field": "author_id",
+                "value": {
+                  "codec": "string",
+                  "kind": "trusted_preset",
+                  "name": "x-user-id"
+                }
+              },
+              {
+                "field": "body",
+                "value": {
+                  "kind": "input",
+                  "path": [
+                    "body"
+                  ]
+                }
+              },
+              {
+                "field": "created_at",
+                "value": {
+                  "kind": "input",
+                  "path": [
+                    "created_at"
+                  ]
+                }
+              },
+              {
+                "field": "room_id",
+                "value": {
+                  "kind": "input",
+                  "path": [
+                    "room_id"
+                  ]
+                }
+              }
+            ],
+            "op": "upsert",
+            "replace": [
+              "author_id",
+              "body",
+              "created_at",
+              "room_id"
+            ],
+            "scope": {
+              "key": [
+                {
+                  "field": "message_id",
+                  "ordinal": 0,
+                  "value": {
+                    "kind": "input",
+                    "path": [
+                      "message_id"
+                    ]
+                  }
+                }
+              ],
+              "model": "ChatMessages",
+              "partition": {
+                "expression": {
+                  "kind": "input",
+                  "path": [
+                    "room_id"
+                  ]
+                },
+                "kind": "expression",
+                "requires": "current_cache_partition"
+              }
+            }
+          },
+          "occurrence_ordinal": 0,
+          "projection_refs": [
+            0
+          ]
+        }
+      ],
+      "recoveries": [],
+      "version": 1
+    },
+    "projectionProgramVersion": 2,
+    "projections": [
+      {
+        "bindingId": "pb1:sha256:925c00e221b7d26daad2906df8b9c6bbf6e06d44a26a8c61e1e8302033d58f8d",
+        "epoch": "e2e-ui-chat-v2",
+        "operationSemanticsVersion": 1,
+        "programId": "pp1:sha256:f7f6e13d4d60fb4f2f040f015b1d3d2e2d42b616e72062cfd56b2d906c5491d4",
+        "programIrVersion": 1
+      }
+    ],
+    "version": 2
+  },
   "protocol": {
     "operation": "sha256:838e5ccb79daebb523ea3c634bea27077bcea191feabb86e45923470a7b9373d",
-    "protocolHash": "sha256:30f19c9f4d29280a02ddf67c4df62cdc92c4e8090792f43d6b1bdafea3e31273",
-    "schemaHash": "sha256:59ed52f22affc1c32abed2d1df7bd7c7fdc7f5eb59c19535dd63e9f7c8004f45",
+    "protocolHash": "sha256:00fb342f3acb4dc1c1716a43cc3001c748d5f6c500ff831690d820e9e43e2782",
+    "schemaHash": "sha256:4d00675dc386eb0dad0444d3c86bf0185c69e59dc010717d7758a1cfdc168dc5",
     "surface": {
       "kind": "application",
       "name": "e2e-ui",
@@ -749,7 +813,7 @@ export const Command_chat_messages_post: ReplicaCommandArtifact<Command_chat_mes
       "chat_messages"
     ],
     "models": [
-      "ChatMessageView"
+      "ChatMessages"
     ],
     "relationships": [],
     "required": false,
@@ -761,7 +825,7 @@ export const Command_chat_messages_post: ReplicaCommandArtifact<Command_chat_mes
       "name": "x-user-id"
     }
   ],
-  "version": 1
+  "version": 2
 };
 
 export function prepareCommand_chat_messages_post(
@@ -782,64 +846,8 @@ export type Command_todos_archive_Output = {
 
 /** Exact typed causal command descriptor and full mutation bytes. */
 export const Command_todos_archive: ReplicaCommandArtifact<Command_todos_archive_Input, Command_todos_archive_Output> = {
-  "confirmations": {
-    "expected": [
-      {
-        "key": {
-          "fields": [
-            {
-              "field": "todo_id",
-              "value": {
-                "kind": "input",
-                "path": [
-                  "todo_id"
-                ]
-              }
-            }
-          ]
-        },
-        "model": "TodoView",
-        "projector": "project_todo"
-      }
-    ],
-    "fallback": "revalidate",
-    "kind": "finite",
-    "version": 1
-  },
   "consistency": "causal",
   "document": "mutation Client_todos_archive($commandId: ID!, $input: TodoArchiveInput!) { todos_archive(commandId: $commandId, input: $input) { status todo_id } }",
-  "effects": {
-    "fallback": "revalidate",
-    "operations": [
-      {
-        "fields": [
-          {
-            "field": "status",
-            "value": {
-              "kind": "constant",
-              "value": "archived"
-            }
-          }
-        ],
-        "key": {
-          "fields": [
-            {
-              "field": "todo_id",
-              "value": {
-                "kind": "input",
-                "path": [
-                  "todo_id"
-                ]
-              }
-            }
-          ]
-        },
-        "kind": "patch",
-        "model": "TodoView"
-      }
-    ],
-    "version": 1
-  },
   "input": {
     "definition": {
       "fields": [
@@ -883,10 +891,163 @@ export const Command_todos_archive: ReplicaCommandArtifact<Command_todos_archive
     },
     "kind": "object"
   },
+  "projection": {
+    "capabilities": {
+      "arms": [
+        {
+          "arm": "pa1:sha256:d9856ba99d22a945c95d3eabfb86886fa393f58c64b7e17b0c42b12f0bd042e5",
+          "event": {
+            "id": "pe1:sha256:0de35f3626c0778cd92dd52d40b060e123fa91ab71d1793a329731d4cb77c1cf",
+            "name": "todo.archived",
+            "version": 1
+          },
+          "mutations": [
+            {
+              "delete": false,
+              "fields": [
+                "assignee_id",
+                "owner_id",
+                "status",
+                "title"
+              ],
+              "key": [
+                "todo_id"
+              ],
+              "kind": "record",
+              "model": "Todos",
+              "patch": true,
+              "replace": [
+                "assignee_id",
+                "owner_id",
+                "status",
+                "title"
+              ],
+              "upsert": true
+            },
+            {
+              "kind": "model",
+              "model": "Todos"
+            }
+          ],
+          "partition": {
+            "kind": "unit"
+          },
+          "projection_ref": 0
+        }
+      ],
+      "version": 1
+    },
+    "deltaWireVersion": 1,
+    "eventSet": [
+      {
+        "id": "pe1:sha256:0de35f3626c0778cd92dd52d40b060e123fa91ab71d1793a329731d4cb77c1cf",
+        "name": "todo.archived",
+        "version": 1
+      }
+    ],
+    "fallback": "revalidate",
+    "operationSemanticsVersion": 1,
+    "preview": {
+      "occurrences": [
+        {
+          "event": {
+            "id": "pe1:sha256:0de35f3626c0778cd92dd52d40b060e123fa91ab71d1793a329731d4cb77c1cf",
+            "name": "todo.archived",
+            "version": 1
+          },
+          "ordinal": 0
+        }
+      ],
+      "operations": [
+        {
+          "mutation": {
+            "if_present": true,
+            "op": "patch",
+            "scope": {
+              "key": [
+                {
+                  "field": "todo_id",
+                  "ordinal": 0,
+                  "value": {
+                    "kind": "input",
+                    "path": [
+                      "todo_id"
+                    ]
+                  }
+                }
+              ],
+              "model": "Todos",
+              "partition": {
+                "kind": "unit"
+              }
+            },
+            "set": [
+              {
+                "field": "status",
+                "value": {
+                  "kind": "constant",
+                  "value": {
+                    "type": "string",
+                    "value": "archived"
+                  }
+                }
+              }
+            ]
+          },
+          "occurrence_ordinal": 0,
+          "projection_refs": [
+            0
+          ]
+        }
+      ],
+      "recoveries": [
+        {
+          "condition": "if_record_missing",
+          "occurrence_ordinal": 0,
+          "projection_refs": [
+            0
+          ],
+          "target": {
+            "kind": "record",
+            "scope": {
+              "key": [
+                {
+                  "field": "todo_id",
+                  "ordinal": 0,
+                  "value": {
+                    "kind": "input",
+                    "path": [
+                      "todo_id"
+                    ]
+                  }
+                }
+              ],
+              "model": "Todos",
+              "partition": {
+                "kind": "unit"
+              }
+            }
+          }
+        }
+      ],
+      "version": 1
+    },
+    "projectionProgramVersion": 2,
+    "projections": [
+      {
+        "bindingId": "pb1:sha256:70d228adc8f8b943f823741c5e35d103d801b9dd4f4fefd0f815f368509e2b81",
+        "epoch": "e2e-ui-todos-v2",
+        "operationSemanticsVersion": 1,
+        "programId": "pp1:sha256:43952a1ac785361b5c19fdafd6608d542bc11d1ddb26e18779e99d81d56aaf20",
+        "programIrVersion": 1
+      }
+    ],
+    "version": 2
+  },
   "protocol": {
     "operation": "sha256:fb2d3a14933841a966836ced65263a9ba2413d5aed8c582d31165aaee6e632ab",
-    "protocolHash": "sha256:30f19c9f4d29280a02ddf67c4df62cdc92c4e8090792f43d6b1bdafea3e31273",
-    "schemaHash": "sha256:59ed52f22affc1c32abed2d1df7bd7c7fdc7f5eb59c19535dd63e9f7c8004f45",
+    "protocolHash": "sha256:00fb342f3acb4dc1c1716a43cc3001c748d5f6c500ff831690d820e9e43e2782",
+    "schemaHash": "sha256:4d00675dc386eb0dad0444d3c86bf0185c69e59dc010717d7758a1cfdc168dc5",
     "surface": {
       "kind": "application",
       "name": "e2e-ui",
@@ -908,13 +1069,13 @@ export const Command_todos_archive: ReplicaCommandArtifact<Command_todos_archive
       "todos"
     ],
     "models": [
-      "TodoView"
+      "Todos"
     ],
     "relationships": [],
-    "required": false,
+    "required": true,
     "version": 1
   },
-  "version": 1
+  "version": 2
 };
 
 export function prepareCommand_todos_archive(
@@ -935,64 +1096,8 @@ export type Command_todos_complete_Output = {
 
 /** Exact typed causal command descriptor and full mutation bytes. */
 export const Command_todos_complete: ReplicaCommandArtifact<Command_todos_complete_Input, Command_todos_complete_Output> = {
-  "confirmations": {
-    "expected": [
-      {
-        "key": {
-          "fields": [
-            {
-              "field": "todo_id",
-              "value": {
-                "kind": "input",
-                "path": [
-                  "todo_id"
-                ]
-              }
-            }
-          ]
-        },
-        "model": "TodoView",
-        "projector": "project_todo"
-      }
-    ],
-    "fallback": "revalidate",
-    "kind": "finite",
-    "version": 1
-  },
   "consistency": "causal",
   "document": "mutation Client_todos_complete($commandId: ID!, $input: TodoCompleteInput!) { todos_complete(commandId: $commandId, input: $input) { status todo_id } }",
-  "effects": {
-    "fallback": "revalidate",
-    "operations": [
-      {
-        "fields": [
-          {
-            "field": "status",
-            "value": {
-              "kind": "constant",
-              "value": "completed"
-            }
-          }
-        ],
-        "key": {
-          "fields": [
-            {
-              "field": "todo_id",
-              "value": {
-                "kind": "input",
-                "path": [
-                  "todo_id"
-                ]
-              }
-            }
-          ]
-        },
-        "kind": "patch",
-        "model": "TodoView"
-      }
-    ],
-    "version": 1
-  },
   "input": {
     "definition": {
       "fields": [
@@ -1036,10 +1141,163 @@ export const Command_todos_complete: ReplicaCommandArtifact<Command_todos_comple
     },
     "kind": "object"
   },
+  "projection": {
+    "capabilities": {
+      "arms": [
+        {
+          "arm": "pa1:sha256:e85ce5d529b2ba14aafd24ed7867e4cbb1b2731e29e1d8aa2497612dec8e34b1",
+          "event": {
+            "id": "pe1:sha256:6d79b379098fe34a10efae8aa138c4d1396761a1a3916bb4500df1c19b210824",
+            "name": "todo.completed",
+            "version": 1
+          },
+          "mutations": [
+            {
+              "delete": false,
+              "fields": [
+                "assignee_id",
+                "owner_id",
+                "status",
+                "title"
+              ],
+              "key": [
+                "todo_id"
+              ],
+              "kind": "record",
+              "model": "Todos",
+              "patch": true,
+              "replace": [
+                "assignee_id",
+                "owner_id",
+                "status",
+                "title"
+              ],
+              "upsert": true
+            },
+            {
+              "kind": "model",
+              "model": "Todos"
+            }
+          ],
+          "partition": {
+            "kind": "unit"
+          },
+          "projection_ref": 0
+        }
+      ],
+      "version": 1
+    },
+    "deltaWireVersion": 1,
+    "eventSet": [
+      {
+        "id": "pe1:sha256:6d79b379098fe34a10efae8aa138c4d1396761a1a3916bb4500df1c19b210824",
+        "name": "todo.completed",
+        "version": 1
+      }
+    ],
+    "fallback": "revalidate",
+    "operationSemanticsVersion": 1,
+    "preview": {
+      "occurrences": [
+        {
+          "event": {
+            "id": "pe1:sha256:6d79b379098fe34a10efae8aa138c4d1396761a1a3916bb4500df1c19b210824",
+            "name": "todo.completed",
+            "version": 1
+          },
+          "ordinal": 0
+        }
+      ],
+      "operations": [
+        {
+          "mutation": {
+            "if_present": true,
+            "op": "patch",
+            "scope": {
+              "key": [
+                {
+                  "field": "todo_id",
+                  "ordinal": 0,
+                  "value": {
+                    "kind": "input",
+                    "path": [
+                      "todo_id"
+                    ]
+                  }
+                }
+              ],
+              "model": "Todos",
+              "partition": {
+                "kind": "unit"
+              }
+            },
+            "set": [
+              {
+                "field": "status",
+                "value": {
+                  "kind": "constant",
+                  "value": {
+                    "type": "string",
+                    "value": "completed"
+                  }
+                }
+              }
+            ]
+          },
+          "occurrence_ordinal": 0,
+          "projection_refs": [
+            0
+          ]
+        }
+      ],
+      "recoveries": [
+        {
+          "condition": "if_record_missing",
+          "occurrence_ordinal": 0,
+          "projection_refs": [
+            0
+          ],
+          "target": {
+            "kind": "record",
+            "scope": {
+              "key": [
+                {
+                  "field": "todo_id",
+                  "ordinal": 0,
+                  "value": {
+                    "kind": "input",
+                    "path": [
+                      "todo_id"
+                    ]
+                  }
+                }
+              ],
+              "model": "Todos",
+              "partition": {
+                "kind": "unit"
+              }
+            }
+          }
+        }
+      ],
+      "version": 1
+    },
+    "projectionProgramVersion": 2,
+    "projections": [
+      {
+        "bindingId": "pb1:sha256:70d228adc8f8b943f823741c5e35d103d801b9dd4f4fefd0f815f368509e2b81",
+        "epoch": "e2e-ui-todos-v2",
+        "operationSemanticsVersion": 1,
+        "programId": "pp1:sha256:43952a1ac785361b5c19fdafd6608d542bc11d1ddb26e18779e99d81d56aaf20",
+        "programIrVersion": 1
+      }
+    ],
+    "version": 2
+  },
   "protocol": {
     "operation": "sha256:9b8185c835d3308bda308593486767731acaf4b084a7962b4b17e3e2e319922c",
-    "protocolHash": "sha256:30f19c9f4d29280a02ddf67c4df62cdc92c4e8090792f43d6b1bdafea3e31273",
-    "schemaHash": "sha256:59ed52f22affc1c32abed2d1df7bd7c7fdc7f5eb59c19535dd63e9f7c8004f45",
+    "protocolHash": "sha256:00fb342f3acb4dc1c1716a43cc3001c748d5f6c500ff831690d820e9e43e2782",
+    "schemaHash": "sha256:4d00675dc386eb0dad0444d3c86bf0185c69e59dc010717d7758a1cfdc168dc5",
     "surface": {
       "kind": "application",
       "name": "e2e-ui",
@@ -1061,13 +1319,13 @@ export const Command_todos_complete: ReplicaCommandArtifact<Command_todos_comple
       "todos"
     ],
     "models": [
-      "TodoView"
+      "Todos"
     ],
     "relationships": [],
-    "required": false,
+    "required": true,
     "version": 1
   },
-  "version": 1
+  "version": 2
 };
 
 export function prepareCommand_todos_complete(
@@ -1091,80 +1349,8 @@ export type Command_todos_create_Output = {
 
 /** Exact typed causal command descriptor and full mutation bytes. */
 export const Command_todos_create: ReplicaCommandArtifact<Command_todos_create_Input, Command_todos_create_Output> = {
-  "confirmations": {
-    "expected": [
-      {
-        "key": {
-          "fields": [
-            {
-              "field": "todo_id",
-              "value": {
-                "kind": "input",
-                "path": [
-                  "todo_id"
-                ]
-              }
-            }
-          ]
-        },
-        "model": "TodoView",
-        "projector": "project_todo"
-      }
-    ],
-    "fallback": "revalidate",
-    "kind": "finite",
-    "version": 1
-  },
   "consistency": "causal",
   "document": "mutation Client_todos_create($commandId: ID!, $input: TodoCreateInput!) { todos_create(commandId: $commandId, input: $input) { owner_id status title todo_id } }",
-  "effects": {
-    "fallback": "revalidate",
-    "operations": [
-      {
-        "fields": [
-          {
-            "field": "owner_id",
-            "value": {
-              "kind": "trusted_preset",
-              "name": "x-user-id"
-            }
-          },
-          {
-            "field": "status",
-            "value": {
-              "kind": "constant",
-              "value": "open"
-            }
-          },
-          {
-            "field": "title",
-            "value": {
-              "kind": "input",
-              "path": [
-                "title"
-              ]
-            }
-          }
-        ],
-        "key": {
-          "fields": [
-            {
-              "field": "todo_id",
-              "value": {
-                "kind": "input",
-                "path": [
-                  "todo_id"
-                ]
-              }
-            }
-          ]
-        },
-        "kind": "upsert",
-        "model": "TodoView"
-      }
-    ],
-    "version": 1
-  },
   "input": {
     "definition": {
       "fields": [
@@ -1243,10 +1429,162 @@ export const Command_todos_create: ReplicaCommandArtifact<Command_todos_create_I
     },
     "kind": "object"
   },
+  "projection": {
+    "capabilities": {
+      "arms": [
+        {
+          "arm": "pa1:sha256:fca7e2aee736c8e08c8e289c0c4013e10903e0e9e150c02f0ed45e4bbbe4b7b7",
+          "event": {
+            "id": "pe1:sha256:7c79318b8641f67493938b92f0815224ae303dc719c26e2d9272603f2b1fe61c",
+            "name": "todo.created",
+            "version": 1
+          },
+          "mutations": [
+            {
+              "delete": false,
+              "fields": [
+                "assignee_id",
+                "owner_id",
+                "status",
+                "title"
+              ],
+              "key": [
+                "todo_id"
+              ],
+              "kind": "record",
+              "model": "Todos",
+              "patch": true,
+              "replace": [
+                "assignee_id",
+                "owner_id",
+                "status",
+                "title"
+              ],
+              "upsert": true
+            },
+            {
+              "kind": "model",
+              "model": "Todos"
+            }
+          ],
+          "partition": {
+            "kind": "unit"
+          },
+          "projection_ref": 0
+        }
+      ],
+      "version": 1
+    },
+    "deltaWireVersion": 1,
+    "eventSet": [
+      {
+        "id": "pe1:sha256:7c79318b8641f67493938b92f0815224ae303dc719c26e2d9272603f2b1fe61c",
+        "name": "todo.created",
+        "version": 1
+      }
+    ],
+    "fallback": "revalidate",
+    "operationSemanticsVersion": 1,
+    "preview": {
+      "occurrences": [
+        {
+          "event": {
+            "id": "pe1:sha256:7c79318b8641f67493938b92f0815224ae303dc719c26e2d9272603f2b1fe61c",
+            "name": "todo.created",
+            "version": 1
+          },
+          "ordinal": 0
+        }
+      ],
+      "operations": [
+        {
+          "mutation": {
+            "fields": [
+              {
+                "field": "assignee_id",
+                "value": {
+                  "kind": "null"
+                }
+              },
+              {
+                "field": "owner_id",
+                "value": {
+                  "codec": "string",
+                  "kind": "trusted_preset",
+                  "name": "x-user-id"
+                }
+              },
+              {
+                "field": "status",
+                "value": {
+                  "kind": "constant",
+                  "value": {
+                    "type": "string",
+                    "value": "open"
+                  }
+                }
+              },
+              {
+                "field": "title",
+                "value": {
+                  "kind": "input",
+                  "path": [
+                    "title"
+                  ]
+                }
+              }
+            ],
+            "op": "upsert",
+            "replace": [
+              "assignee_id",
+              "owner_id",
+              "status",
+              "title"
+            ],
+            "scope": {
+              "key": [
+                {
+                  "field": "todo_id",
+                  "ordinal": 0,
+                  "value": {
+                    "kind": "generated_default",
+                    "path": [
+                      "todo_id"
+                    ]
+                  }
+                }
+              ],
+              "model": "Todos",
+              "partition": {
+                "kind": "unit"
+              }
+            }
+          },
+          "occurrence_ordinal": 0,
+          "projection_refs": [
+            0
+          ]
+        }
+      ],
+      "recoveries": [],
+      "version": 1
+    },
+    "projectionProgramVersion": 2,
+    "projections": [
+      {
+        "bindingId": "pb1:sha256:70d228adc8f8b943f823741c5e35d103d801b9dd4f4fefd0f815f368509e2b81",
+        "epoch": "e2e-ui-todos-v2",
+        "operationSemanticsVersion": 1,
+        "programId": "pp1:sha256:43952a1ac785361b5c19fdafd6608d542bc11d1ddb26e18779e99d81d56aaf20",
+        "programIrVersion": 1
+      }
+    ],
+    "version": 2
+  },
   "protocol": {
     "operation": "sha256:187e72cd747aaa13ac0362942d73085a5166401f8cc3a188badeb3e7fa50cacb",
-    "protocolHash": "sha256:30f19c9f4d29280a02ddf67c4df62cdc92c4e8090792f43d6b1bdafea3e31273",
-    "schemaHash": "sha256:59ed52f22affc1c32abed2d1df7bd7c7fdc7f5eb59c19535dd63e9f7c8004f45",
+    "protocolHash": "sha256:00fb342f3acb4dc1c1716a43cc3001c748d5f6c500ff831690d820e9e43e2782",
+    "schemaHash": "sha256:4d00675dc386eb0dad0444d3c86bf0185c69e59dc010717d7758a1cfdc168dc5",
     "surface": {
       "kind": "application",
       "name": "e2e-ui",
@@ -1268,7 +1606,7 @@ export const Command_todos_create: ReplicaCommandArtifact<Command_todos_create_I
       "todos"
     ],
     "models": [
-      "TodoView"
+      "Todos"
     ],
     "relationships": [],
     "required": false,
@@ -1280,7 +1618,7 @@ export const Command_todos_create: ReplicaCommandArtifact<Command_todos_create_I
       "name": "x-user-id"
     }
   ],
-  "version": 1
+  "version": 2
 };
 
 export function prepareCommand_todos_create(
@@ -1288,6 +1626,209 @@ export function prepareCommand_todos_create(
   options?: PrepareReplicaCommandOptions
 ): ReplicaPreparedCommand<Command_todos_create_Input, Command_todos_create_Output> {
   return prepareReplicaCommand(Command_todos_create, input, options);
+}
+
+export type Command_todos_purge_Input = {
+  readonly "todo_id": string;
+};
+
+export type Command_todos_purge_Output = {
+  readonly "purged": boolean;
+  readonly "todo_id": string;
+};
+
+/** Exact typed causal command descriptor and full mutation bytes. */
+export const Command_todos_purge: ReplicaCommandArtifact<Command_todos_purge_Input, Command_todos_purge_Output> = {
+  "consistency": "causal",
+  "document": "mutation Client_todos_purge($commandId: ID!, $input: TodoPurgeInput!) { todos_purge(commandId: $commandId, input: $input) { purged todo_id } }",
+  "input": {
+    "definition": {
+      "fields": [
+        {
+          "codec": "string",
+          "itemNullable": false,
+          "list": false,
+          "name": "todo_id",
+          "nullable": false,
+          "typeName": "String"
+        }
+      ],
+      "name": "TodoPurgeInput"
+    },
+    "kind": "object"
+  },
+  "mutationField": "todos_purge",
+  "name": "todo.purge",
+  "operationHash": "sha256:01875defc418ccf0e607f316baa30d2f9cf8305602976cc5b1ce30cc5078c15e",
+  "output": {
+    "definition": {
+      "fields": [
+        {
+          "codec": "boolean",
+          "itemNullable": false,
+          "list": false,
+          "name": "purged",
+          "nullable": false,
+          "typeName": "Boolean"
+        },
+        {
+          "codec": "string",
+          "itemNullable": false,
+          "list": false,
+          "name": "todo_id",
+          "nullable": false,
+          "typeName": "String"
+        }
+      ],
+      "name": "TodoPurgePayload"
+    },
+    "kind": "object"
+  },
+  "projection": {
+    "capabilities": {
+      "arms": [
+        {
+          "arm": "pa1:sha256:80a9b97bc45c7b365bf073bfb71a5171a2e391deb3565f5e335698a46883195a",
+          "event": {
+            "id": "pe1:sha256:f3b8dfb7db5df6c8a0b8e2daeaf8c607c5c98ad718bea0c1dd55bcc4bcc649a6",
+            "name": "todo.purged",
+            "version": 1
+          },
+          "mutations": [
+            {
+              "delete": true,
+              "fields": [],
+              "key": [
+                "todo_id"
+              ],
+              "kind": "record",
+              "model": "Todos",
+              "patch": false,
+              "replace": [
+                "assignee_id",
+                "owner_id",
+                "status",
+                "title"
+              ],
+              "upsert": false
+            },
+            {
+              "kind": "model",
+              "model": "Todos"
+            }
+          ],
+          "partition": {
+            "kind": "unit"
+          },
+          "projection_ref": 0
+        }
+      ],
+      "version": 1
+    },
+    "deltaWireVersion": 1,
+    "eventSet": [
+      {
+        "id": "pe1:sha256:f3b8dfb7db5df6c8a0b8e2daeaf8c607c5c98ad718bea0c1dd55bcc4bcc649a6",
+        "name": "todo.purged",
+        "version": 1
+      }
+    ],
+    "fallback": "revalidate",
+    "operationSemanticsVersion": 1,
+    "preview": {
+      "occurrences": [
+        {
+          "event": {
+            "id": "pe1:sha256:f3b8dfb7db5df6c8a0b8e2daeaf8c607c5c98ad718bea0c1dd55bcc4bcc649a6",
+            "name": "todo.purged",
+            "version": 1
+          },
+          "ordinal": 0
+        }
+      ],
+      "operations": [
+        {
+          "mutation": {
+            "op": "delete",
+            "scope": {
+              "key": [
+                {
+                  "field": "todo_id",
+                  "ordinal": 0,
+                  "value": {
+                    "kind": "input",
+                    "path": [
+                      "todo_id"
+                    ]
+                  }
+                }
+              ],
+              "model": "Todos",
+              "partition": {
+                "kind": "unit"
+              }
+            }
+          },
+          "occurrence_ordinal": 0,
+          "projection_refs": [
+            0
+          ]
+        }
+      ],
+      "recoveries": [],
+      "version": 1
+    },
+    "projectionProgramVersion": 2,
+    "projections": [
+      {
+        "bindingId": "pb1:sha256:70d228adc8f8b943f823741c5e35d103d801b9dd4f4fefd0f815f368509e2b81",
+        "epoch": "e2e-ui-todos-v2",
+        "operationSemanticsVersion": 1,
+        "programId": "pp1:sha256:43952a1ac785361b5c19fdafd6608d542bc11d1ddb26e18779e99d81d56aaf20",
+        "programIrVersion": 1
+      }
+    ],
+    "version": 2
+  },
+  "protocol": {
+    "operation": "sha256:01875defc418ccf0e607f316baa30d2f9cf8305602976cc5b1ce30cc5078c15e",
+    "protocolHash": "sha256:00fb342f3acb4dc1c1716a43cc3001c748d5f6c500ff831690d820e9e43e2782",
+    "schemaHash": "sha256:4d00675dc386eb0dad0444d3c86bf0185c69e59dc010717d7758a1cfdc168dc5",
+    "surface": {
+      "kind": "application",
+      "name": "e2e-ui",
+      "roles": [
+        "admin",
+        "user"
+      ]
+    },
+    "trustedPresets": [
+      {
+        "codec": "string",
+        "name": "x-user-id"
+      }
+    ],
+    "version": 1
+  },
+  "revalidation": {
+    "dependencies": [
+      "todos"
+    ],
+    "models": [
+      "Todos"
+    ],
+    "relationships": [],
+    "required": false,
+    "version": 1
+  },
+  "version": 2
+};
+
+export function prepareCommand_todos_purge(
+  input: Command_todos_purge_Input,
+  options?: PrepareReplicaCommandOptions
+): ReplicaPreparedCommand<Command_todos_purge_Input, Command_todos_purge_Output> {
+  return prepareReplicaCommand(Command_todos_purge, input, options);
 }
 
 export type Command_todos_rename_Input = {
@@ -1303,66 +1844,8 @@ export type Command_todos_rename_Output = {
 
 /** Exact typed causal command descriptor and full mutation bytes. */
 export const Command_todos_rename: ReplicaCommandArtifact<Command_todos_rename_Input, Command_todos_rename_Output> = {
-  "confirmations": {
-    "expected": [
-      {
-        "key": {
-          "fields": [
-            {
-              "field": "todo_id",
-              "value": {
-                "kind": "input",
-                "path": [
-                  "todo_id"
-                ]
-              }
-            }
-          ]
-        },
-        "model": "TodoView",
-        "projector": "project_todo"
-      }
-    ],
-    "fallback": "revalidate",
-    "kind": "finite",
-    "version": 1
-  },
   "consistency": "causal",
   "document": "mutation Client_todos_rename($commandId: ID!, $input: TodoRenameInput!) { todos_rename(commandId: $commandId, input: $input) { status title todo_id } }",
-  "effects": {
-    "fallback": "revalidate",
-    "operations": [
-      {
-        "fields": [
-          {
-            "field": "title",
-            "value": {
-              "kind": "input",
-              "path": [
-                "title"
-              ]
-            }
-          }
-        ],
-        "key": {
-          "fields": [
-            {
-              "field": "todo_id",
-              "value": {
-                "kind": "input",
-                "path": [
-                  "todo_id"
-                ]
-              }
-            }
-          ]
-        },
-        "kind": "patch",
-        "model": "TodoView"
-      }
-    ],
-    "version": 1
-  },
   "input": {
     "definition": {
       "fields": [
@@ -1422,10 +1905,162 @@ export const Command_todos_rename: ReplicaCommandArtifact<Command_todos_rename_I
     },
     "kind": "object"
   },
+  "projection": {
+    "capabilities": {
+      "arms": [
+        {
+          "arm": "pa1:sha256:ed3a2740bc65de97e57cf8c624b0b3131c1acce8fb3b44bc8010572ad1f0846b",
+          "event": {
+            "id": "pe1:sha256:76efd5d9698eafac45bcf915e0667d519f4b3385793a6f4c6f17018479a34c53",
+            "name": "todo.renamed",
+            "version": 1
+          },
+          "mutations": [
+            {
+              "delete": false,
+              "fields": [
+                "assignee_id",
+                "owner_id",
+                "status",
+                "title"
+              ],
+              "key": [
+                "todo_id"
+              ],
+              "kind": "record",
+              "model": "Todos",
+              "patch": true,
+              "replace": [
+                "assignee_id",
+                "owner_id",
+                "status",
+                "title"
+              ],
+              "upsert": true
+            },
+            {
+              "kind": "model",
+              "model": "Todos"
+            }
+          ],
+          "partition": {
+            "kind": "unit"
+          },
+          "projection_ref": 0
+        }
+      ],
+      "version": 1
+    },
+    "deltaWireVersion": 1,
+    "eventSet": [
+      {
+        "id": "pe1:sha256:76efd5d9698eafac45bcf915e0667d519f4b3385793a6f4c6f17018479a34c53",
+        "name": "todo.renamed",
+        "version": 1
+      }
+    ],
+    "fallback": "revalidate",
+    "operationSemanticsVersion": 1,
+    "preview": {
+      "occurrences": [
+        {
+          "event": {
+            "id": "pe1:sha256:76efd5d9698eafac45bcf915e0667d519f4b3385793a6f4c6f17018479a34c53",
+            "name": "todo.renamed",
+            "version": 1
+          },
+          "ordinal": 0
+        }
+      ],
+      "operations": [
+        {
+          "mutation": {
+            "if_present": true,
+            "op": "patch",
+            "scope": {
+              "key": [
+                {
+                  "field": "todo_id",
+                  "ordinal": 0,
+                  "value": {
+                    "kind": "input",
+                    "path": [
+                      "todo_id"
+                    ]
+                  }
+                }
+              ],
+              "model": "Todos",
+              "partition": {
+                "kind": "unit"
+              }
+            },
+            "set": [
+              {
+                "field": "title",
+                "value": {
+                  "kind": "input",
+                  "path": [
+                    "title"
+                  ]
+                }
+              }
+            ]
+          },
+          "occurrence_ordinal": 0,
+          "projection_refs": [
+            0
+          ]
+        }
+      ],
+      "recoveries": [
+        {
+          "condition": "if_record_missing",
+          "occurrence_ordinal": 0,
+          "projection_refs": [
+            0
+          ],
+          "target": {
+            "kind": "record",
+            "scope": {
+              "key": [
+                {
+                  "field": "todo_id",
+                  "ordinal": 0,
+                  "value": {
+                    "kind": "input",
+                    "path": [
+                      "todo_id"
+                    ]
+                  }
+                }
+              ],
+              "model": "Todos",
+              "partition": {
+                "kind": "unit"
+              }
+            }
+          }
+        }
+      ],
+      "version": 1
+    },
+    "projectionProgramVersion": 2,
+    "projections": [
+      {
+        "bindingId": "pb1:sha256:70d228adc8f8b943f823741c5e35d103d801b9dd4f4fefd0f815f368509e2b81",
+        "epoch": "e2e-ui-todos-v2",
+        "operationSemanticsVersion": 1,
+        "programId": "pp1:sha256:43952a1ac785361b5c19fdafd6608d542bc11d1ddb26e18779e99d81d56aaf20",
+        "programIrVersion": 1
+      }
+    ],
+    "version": 2
+  },
   "protocol": {
     "operation": "sha256:a3e8a5ceae1a0f2c33863a4f2bf377a95b79da2157a619eb7823aa845ef681c3",
-    "protocolHash": "sha256:30f19c9f4d29280a02ddf67c4df62cdc92c4e8090792f43d6b1bdafea3e31273",
-    "schemaHash": "sha256:59ed52f22affc1c32abed2d1df7bd7c7fdc7f5eb59c19535dd63e9f7c8004f45",
+    "protocolHash": "sha256:00fb342f3acb4dc1c1716a43cc3001c748d5f6c500ff831690d820e9e43e2782",
+    "schemaHash": "sha256:4d00675dc386eb0dad0444d3c86bf0185c69e59dc010717d7758a1cfdc168dc5",
     "surface": {
       "kind": "application",
       "name": "e2e-ui",
@@ -1447,13 +2082,13 @@ export const Command_todos_rename: ReplicaCommandArtifact<Command_todos_rename_I
       "todos"
     ],
     "models": [
-      "TodoView"
+      "Todos"
     ],
     "relationships": [],
-    "required": false,
+    "required": true,
     "version": 1
   },
-  "version": 1
+  "version": 2
 };
 
 export function prepareCommand_todos_rename(
@@ -1474,64 +2109,8 @@ export type Command_todos_reopen_Output = {
 
 /** Exact typed causal command descriptor and full mutation bytes. */
 export const Command_todos_reopen: ReplicaCommandArtifact<Command_todos_reopen_Input, Command_todos_reopen_Output> = {
-  "confirmations": {
-    "expected": [
-      {
-        "key": {
-          "fields": [
-            {
-              "field": "todo_id",
-              "value": {
-                "kind": "input",
-                "path": [
-                  "todo_id"
-                ]
-              }
-            }
-          ]
-        },
-        "model": "TodoView",
-        "projector": "project_todo"
-      }
-    ],
-    "fallback": "revalidate",
-    "kind": "finite",
-    "version": 1
-  },
   "consistency": "causal",
   "document": "mutation Client_todos_reopen($commandId: ID!, $input: TodoReopenInput!) { todos_reopen(commandId: $commandId, input: $input) { status todo_id } }",
-  "effects": {
-    "fallback": "revalidate",
-    "operations": [
-      {
-        "fields": [
-          {
-            "field": "status",
-            "value": {
-              "kind": "constant",
-              "value": "open"
-            }
-          }
-        ],
-        "key": {
-          "fields": [
-            {
-              "field": "todo_id",
-              "value": {
-                "kind": "input",
-                "path": [
-                  "todo_id"
-                ]
-              }
-            }
-          ]
-        },
-        "kind": "patch",
-        "model": "TodoView"
-      }
-    ],
-    "version": 1
-  },
   "input": {
     "definition": {
       "fields": [
@@ -1575,10 +2154,163 @@ export const Command_todos_reopen: ReplicaCommandArtifact<Command_todos_reopen_I
     },
     "kind": "object"
   },
+  "projection": {
+    "capabilities": {
+      "arms": [
+        {
+          "arm": "pa1:sha256:7c6007a775acf4f6cd725034dc19bdfcc7a6ffb1ad26cb2837e1ffb2c2e67546",
+          "event": {
+            "id": "pe1:sha256:71ad216da977d0116683b39ec7be9b95df029adab26e369a4e1178fa015a72ba",
+            "name": "todo.reopened",
+            "version": 1
+          },
+          "mutations": [
+            {
+              "delete": false,
+              "fields": [
+                "assignee_id",
+                "owner_id",
+                "status",
+                "title"
+              ],
+              "key": [
+                "todo_id"
+              ],
+              "kind": "record",
+              "model": "Todos",
+              "patch": true,
+              "replace": [
+                "assignee_id",
+                "owner_id",
+                "status",
+                "title"
+              ],
+              "upsert": true
+            },
+            {
+              "kind": "model",
+              "model": "Todos"
+            }
+          ],
+          "partition": {
+            "kind": "unit"
+          },
+          "projection_ref": 0
+        }
+      ],
+      "version": 1
+    },
+    "deltaWireVersion": 1,
+    "eventSet": [
+      {
+        "id": "pe1:sha256:71ad216da977d0116683b39ec7be9b95df029adab26e369a4e1178fa015a72ba",
+        "name": "todo.reopened",
+        "version": 1
+      }
+    ],
+    "fallback": "revalidate",
+    "operationSemanticsVersion": 1,
+    "preview": {
+      "occurrences": [
+        {
+          "event": {
+            "id": "pe1:sha256:71ad216da977d0116683b39ec7be9b95df029adab26e369a4e1178fa015a72ba",
+            "name": "todo.reopened",
+            "version": 1
+          },
+          "ordinal": 0
+        }
+      ],
+      "operations": [
+        {
+          "mutation": {
+            "if_present": true,
+            "op": "patch",
+            "scope": {
+              "key": [
+                {
+                  "field": "todo_id",
+                  "ordinal": 0,
+                  "value": {
+                    "kind": "input",
+                    "path": [
+                      "todo_id"
+                    ]
+                  }
+                }
+              ],
+              "model": "Todos",
+              "partition": {
+                "kind": "unit"
+              }
+            },
+            "set": [
+              {
+                "field": "status",
+                "value": {
+                  "kind": "constant",
+                  "value": {
+                    "type": "string",
+                    "value": "open"
+                  }
+                }
+              }
+            ]
+          },
+          "occurrence_ordinal": 0,
+          "projection_refs": [
+            0
+          ]
+        }
+      ],
+      "recoveries": [
+        {
+          "condition": "if_record_missing",
+          "occurrence_ordinal": 0,
+          "projection_refs": [
+            0
+          ],
+          "target": {
+            "kind": "record",
+            "scope": {
+              "key": [
+                {
+                  "field": "todo_id",
+                  "ordinal": 0,
+                  "value": {
+                    "kind": "input",
+                    "path": [
+                      "todo_id"
+                    ]
+                  }
+                }
+              ],
+              "model": "Todos",
+              "partition": {
+                "kind": "unit"
+              }
+            }
+          }
+        }
+      ],
+      "version": 1
+    },
+    "projectionProgramVersion": 2,
+    "projections": [
+      {
+        "bindingId": "pb1:sha256:70d228adc8f8b943f823741c5e35d103d801b9dd4f4fefd0f815f368509e2b81",
+        "epoch": "e2e-ui-todos-v2",
+        "operationSemanticsVersion": 1,
+        "programId": "pp1:sha256:43952a1ac785361b5c19fdafd6608d542bc11d1ddb26e18779e99d81d56aaf20",
+        "programIrVersion": 1
+      }
+    ],
+    "version": 2
+  },
   "protocol": {
     "operation": "sha256:04531ace98fd3ee5e652761abbcb6ebd745d5ff6ed0ad100030f935335c5a35e",
-    "protocolHash": "sha256:30f19c9f4d29280a02ddf67c4df62cdc92c4e8090792f43d6b1bdafea3e31273",
-    "schemaHash": "sha256:59ed52f22affc1c32abed2d1df7bd7c7fdc7f5eb59c19535dd63e9f7c8004f45",
+    "protocolHash": "sha256:00fb342f3acb4dc1c1716a43cc3001c748d5f6c500ff831690d820e9e43e2782",
+    "schemaHash": "sha256:4d00675dc386eb0dad0444d3c86bf0185c69e59dc010717d7758a1cfdc168dc5",
     "surface": {
       "kind": "application",
       "name": "e2e-ui",
@@ -1600,13 +2332,13 @@ export const Command_todos_reopen: ReplicaCommandArtifact<Command_todos_reopen_I
       "todos"
     ],
     "models": [
-      "TodoView"
+      "Todos"
     ],
     "relationships": [],
-    "required": false,
+    "required": true,
     "version": 1
   },
-  "version": 1
+  "version": 2
 };
 
 export function prepareCommand_todos_reopen(
@@ -1616,7 +2348,7 @@ export function prepareCommand_todos_reopen(
   return prepareReplicaCommand(Command_todos_reopen, input, options);
 }
 
-export const COMMAND_ARTIFACTS = [Command_blob_games_move, Command_blob_games_start, Command_blob_games_start_level, Command_chat_messages_post, Command_todos_archive, Command_todos_complete, Command_todos_create, Command_todos_rename, Command_todos_reopen] as const;
+export const COMMAND_ARTIFACTS = [Command_blob_games_move, Command_blob_games_start, Command_blob_games_start_level, Command_chat_messages_post, Command_todos_archive, Command_todos_complete, Command_todos_create, Command_todos_purge, Command_todos_rename, Command_todos_reopen] as const;
 
 /** Inspectable command inventory consumed by the generated binding factory. */
 export const COMMANDS = {
@@ -1627,6 +2359,7 @@ export const COMMANDS = {
   "todo.archive": Command_todos_archive,
   "todo.complete": Command_todos_complete,
   "todo.create": Command_todos_create,
+  "todo.purge": Command_todos_purge,
   "todo.rename": Command_todos_rename,
   "todo.reopen": Command_todos_reopen
 } as const;
@@ -1640,10 +2373,7 @@ export type GeneratedCommands = GeneratedCommandRuntime['commands'];
 /** Runtime options excluding compiler-owned protocol authority. */
 export type GeneratedCommandRuntimeOptions = Omit<ReplicaCommandRuntimeOptions, 'status'>;
 
-/**
- * Bind this generated command inventory to a replica and transport.
- * Keep the returned runtime when `observeResult` or `dispose` is needed.
- */
+/** Bind this generated command inventory to a replica and transport. */
 export function createCommands(
   replica: DistributedReplica,
   transport: ReplicaCommandTransport,
@@ -1655,14 +2385,14 @@ export function createCommands(
   });
 }
 
-/** Projector topology used by command confirmation/effect runtimes. */
+/** Projector topology retained for inspection and causal diagnostics. */
 export const PROJECTOR_ARTIFACTS = [
   {
     "version": 1,
     "name": "project_blob",
     "facts": [],
     "models": [
-      "BlobGameView"
+      "BlobGames"
     ],
     "dependencies": [
       "blob_games"
@@ -1671,36 +2401,38 @@ export const PROJECTOR_ARTIFACTS = [
   },
   {
     "version": 1,
-    "name": "project_chat",
+    "name": "project_chat_messages",
     "facts": [
       "chat_message.posted"
     ],
     "models": [
-      "ChatMessageView"
+      "ChatMessages"
     ],
     "dependencies": [
       "chat_messages"
     ],
-    "causal_confirmation": true
+    "causal_confirmation": false
   },
   {
     "version": 1,
-    "name": "project_todo",
+    "name": "project_todos",
     "facts": [
       "todo.archived",
       "todo.completed",
       "todo.created",
       "todo.force_archived",
+      "todo.purged",
+      "todo.reassigned",
       "todo.renamed",
       "todo.reopened"
     ],
     "models": [
-      "TodoView"
+      "Todos"
     ],
     "dependencies": [
       "todos"
     ],
-    "causal_confirmation": true
+    "causal_confirmation": false
   }
 ] as const;
 

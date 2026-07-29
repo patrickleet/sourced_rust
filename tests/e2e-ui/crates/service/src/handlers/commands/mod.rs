@@ -8,6 +8,7 @@ pub mod complete;
 pub mod create;
 pub mod force_archive;
 pub mod payloads;
+pub mod purge;
 pub mod rename;
 pub mod reopen;
 pub mod todo_cmd;

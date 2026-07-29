@@ -1,6 +1,6 @@
 {
   "compiler_manifest_version": 1,
-  "distributed_manifest_version": 1,
+  "distributed_manifest_version": 2,
   "protocol_version": 1,
   "service_id": "e2e-ui",
   "surface": {
@@ -11,8 +11,8 @@
       "user"
     ]
   },
-  "schema_fingerprint": "sha256:59ed52f22affc1c32abed2d1df7bd7c7fdc7f5eb59c19535dd63e9f7c8004f45",
-  "protocol_fingerprint": "sha256:30f19c9f4d29280a02ddf67c4df62cdc92c4e8090792f43d6b1bdafea3e31273",
+  "schema_fingerprint": "sha256:4d00675dc386eb0dad0444d3c86bf0185c69e59dc010717d7758a1cfdc168dc5",
+  "protocol_fingerprint": "sha256:00fb342f3acb4dc1c1716a43cc3001c748d5f6c500ff831690d820e9e43e2782",
   "scalar_codecs": {
     "BigInt": "json_number_precision_limited",
     "Boolean": "boolean",
@@ -27,7 +27,11 @@
   "commands_requiring_revalidation": [
     "blob.move",
     "blob.start",
-    "blob.start_level"
+    "blob.start_level",
+    "todo.archive",
+    "todo.complete",
+    "todo.rename",
+    "todo.reopen"
   ],
   "operations": [
     {

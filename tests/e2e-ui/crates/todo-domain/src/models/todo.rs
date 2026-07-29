@@ -1,8 +1,7 @@
 use distributed::{sourced, Entity};
 use serde::{Deserialize, Serialize};
 
-use super::{TodoError, TodoStatus};
-use crate::projection_v2::TodoState;
+use super::{TodoError, TodoState, TodoStatus};
 
 #[derive(Debug, Clone, Default, Serialize, Deserialize)]
 pub struct Todo {
@@ -348,10 +347,14 @@ mod tests {
         t.rename("alice", "  Eggs  ").unwrap();
         assert_eq!(t.title, "Eggs");
         assert_eq!(t.rename("alice", "   ").unwrap_err(), TodoError::EmptyTitle);
-        // same title is no-op (no extra version if no event — check version stays)
+        // A same-title decision emits neither replay nor outward occurrences.
         let v = t.entity.version();
+        let replay_events = t.entity.events().len();
+        let domain_events = t.entity.pending_domain_events().len();
         t.rename("alice", "Eggs").unwrap();
         assert_eq!(t.entity.version(), v);
+        assert_eq!(t.entity.events().len(), replay_events);
+        assert_eq!(t.entity.pending_domain_events().len(), domain_events);
     }
 
     #[test]
@@ -361,9 +364,13 @@ mod tests {
         assert_eq!(t.status, TodoStatus::Archived);
         assert_eq!(t.complete("alice").unwrap_err(), TodoError::Archived);
         assert_eq!(t.rename("alice", "x").unwrap_err(), TodoError::Archived);
-        // second archive is idempotent
+        // A repeated archive is idempotent and emits no replay or outward occurrence.
+        let replay_events = t.entity.events().len();
+        let domain_events = t.entity.pending_domain_events().len();
         t.archive("alice").unwrap();
         assert_eq!(t.status, TodoStatus::Archived);
+        assert_eq!(t.entity.events().len(), replay_events);
+        assert_eq!(t.entity.pending_domain_events().len(), domain_events);
     }
 
     #[test]

@@ -244,6 +244,11 @@ fn lower_program(
             slots,
         )?);
     }
+    arms.sort_by(|left, right| {
+        left.event
+            .cmp(&right.event)
+            .then_with(|| left.arm.cmp(&right.arm))
+    });
     Ok(ClientProjectionProgram {
         version: CLIENT_PROJECTION_PROGRAM_VERSION,
         program_id: program_id.to_string(),
@@ -253,6 +258,15 @@ fn lower_program(
         operation_semantics_version: program.operation_semantics_version,
         arms,
     })
+}
+
+#[cfg(test)]
+pub(super) fn lower_program_for_test(
+    program_id: crate::ProjectionProgramId,
+    program: &SurfaceSelectedProjectionProgram,
+    surface: &Surface,
+) -> Result<ClientProjectionProgram, ClientManifestError> {
+    lower_program(program_id, program, surface, &mut Vec::new())
 }
 
 fn lower_arm(
@@ -330,10 +344,17 @@ fn lower_operation(
             })
         })
         .collect::<Result<Vec<_>, ClientManifestError>>()?;
+    let key_fields = operation
+        .key
+        .iter()
+        .map(|field| field.name())
+        .collect::<BTreeSet<_>>();
     let fields = operation
         .fields
         .iter()
-        .map(|field| {
+        .filter(|field| !key_fields.contains(field.name()))
+        .enumerate()
+        .map(|(ordinal, field)| {
             let name = physical_field(model, field.name())?;
             let position = format!(
                 "operation/{}/field/{}",
@@ -349,7 +370,7 @@ fn lower_operation(
                 ProjectionAssignmentRef::Unset => ClientProjectionAssignment::Unset,
             };
             Ok(ClientProjectionField {
-                ordinal: field.ordinal(),
+                ordinal: ordinal as u32,
                 name,
                 assignment,
             })

@@ -1,272 +1,201 @@
 # e2e-ui template
 
-Copyable **Distributed** service + SvelteKit UI. This README is the **code
-index**: where each “that feels like a real product” behavior lives, then how
-to run and test it.
+A copyable Distributed service and SvelteKit UI demonstrating one modeled
+projection from aggregate transition to server read model, generated GraphQL
+client, optimistic replica update, and causal confirmation.
 
 ```bash
 cd tests/e2e-ui
-make up          # Postgres :5433 + Zitadel :18080 → e2e-ui.env
+make up
 set -a && source e2e-ui.env && set +a
-make run         # API :8791 + UI :5180
+make run
 ```
 
-| URL | What |
-|-----|------|
-| http://127.0.0.1:5180/todos | Owner-scoped todos |
-| http://127.0.0.1:5180/chat | Lobby + live WS |
-| http://127.0.0.1:5180/blob | Projected map game |
-| http://127.0.0.1:5180/admin | Elevated client surface |
-| http://127.0.0.1:5180/login | Custom Login V2 (`alice` / `Password1!`) |
-| http://127.0.0.1:8791/graphql | GraphiQL |
+The UI is at `http://localhost:5180`; GraphQL is at
+`http://127.0.0.1:8791/graphql`. Demo users are `alice`, `bob`, and `admin`
+with password `Password1!`.
 
-Demo users: `alice` / `bob` / `admin` · password `Password1!`
+## The developer experience
 
----
+The page code stays ordinary:
+
+```ts
+const todos = Todos.use();
+const chat = ChatMessages.use();
+const games = BlobGames.use();
+const commands = useCommands();
+
+await commands.todo.complete({ todo_id });
+```
+
+The Rust side declares what happened and how it changes query models:
+
+```rust
+#[event("todo.completed", version = 1, domain)]
+fn record_completed(&mut self) {
+    self.status = TodoStatus::Completed;
+}
+
+pub const TODO_READS: ProjectionDescriptor<EventualOnly> = projection! {
+    name: "project_todos";
+    version: 1;
+    epoch: "e2e-ui-todos-v2";
+    partition: unit;
+
+    on [
+        "todo.created",
+        "todo.renamed",
+        "todo.completed",
+        "todo.reopened",
+        "todo.archived"
+    ] version 1 (state: TodoState) {
+        upsert Todos from state as todo;
+    }
+
+    on "todo.purged" version 1 (deleted: TodoDeletionIdentity) {
+        delete Todos { key { todo_id: envelope.aggregate_id } };
+    }
+};
+```
+
+The command registration links the command to its possible domain event and
+optionally previews only values known before dispatch:
+
+```rust
+typed_command::<TodoCompleteInput, Causal<TodoStatusPayload>>("todo.complete")
+    .emits(events![TodoCompletedDomainEvent])
+    .preview(state_preview! {
+        TodoCompletedDomainEvent => TodoState {
+            todo_id: input.todo_id,
+            status: "completed",
+            ..unknown
+        }
+    })
+```
+
+The compiler specializes `TODO_READS` into safe client operations. Known
+fields become an optimistic patch; unknown fields use narrow recovery or
+revalidation. Actual emitted occurrences—not the declaration—mint exact
+obligations for the active projector binding. A no-op command therefore emits
+zero occurrences, mints zero obligations, and completes as `Succeeded`.
+
+Handlers use the fluent unit of work:
+
+```rust
+let state = TodoState::from(&*todo);
+ctx.publish_events()
+    .commit(todo)?
+    .causal(TodoStatusPayload {
+        todo_id: state.todo_id,
+        status: state.status,
+    })
+```
+
+Blob uses the same projection model through the direct terminal:
+
+```rust
+let view = BlobGames::from(&game.state());
+ctx.project(BLOB_GAMES).commit(game)?.projected(view)
+```
+
+`Projected<BlobGames>` means aggregate history, command ledger, read-model row,
+and response evidence commit atomically. Its deliberately narrow eligibility
+is one complete row upsert; patches, deletes, multi-row programs, and stateful
+relationship work remain eventual.
+
+## Vocabulary
+
+- An **aggregate event** is write-side history used to replay the aggregate.
+- A **domain event** is an outward fact other components may react to.
+- `#[event(..., domain)]` is shorthand for the common case where the aggregate
+  event name is suitable outwardly and its post-transition `DomainState` is
+  the useful body.
+- A **DomainState** is a versioned public post-transition DTO. It may omit
+  secrets, internal counters, and replay-only details.
+- A **snapshot** is a private aggregate rehydration optimization. It is not
+  automatically an integration contract.
+- A **read model** is query-shaped storage such as `Todos`, `ChatMessages`, or
+  `BlobGames`.
+
+When state transfer is unsuitable, use an explicit sparse domain-event DTO.
+The projection syntax supports upsert, patch, delete, link, unlink, model or
+relationship invalidation, and client revalidation fallback.
+
+## Portable projections and stateful read-model work
+
+`projection!` is the portable semantic program shared by eventual server
+consumers, eligible same-transaction execution, and client optimism. It can
+fan one event out to multiple tables and relationship operations.
+
+The existing fluent read-model workspace remains the escape hatch for
+data-dependent, stateful work: load current rows/relationships, apply arbitrary
+multi-table ORM plans, and commit atomically. That is not merely an ACK with a
+subscription; its declared output scopes still produce causal obligations.
+What does not execute in the browser becomes a scoped invalidation and
+revalidation.
+
+Query-only relationships can be composed at the deployment boundary without a
+crate cycle or a second projection ORM. This fixture adds
+`BlobGames.owner`, `ChatMessages.author`, and the reverse
+`AuthUserView.blob_games`/`chat_messages` relationships to the canonical model
+schemas. Projection storage identity ignores only that query metadata and
+continues to pin every physical column, type, key, and table identity.
+
+## Outcomes
+
+| Outcome | Guarantee |
+|---|---|
+| `Succeeded<T>` | Command transaction succeeded; no projection wait is promised. |
+| `Causal<T>` | Actual emitted occurrences created durable obligations for the exact active causal projector bindings. Zero actual occurrences complete immediately as succeeded. |
+| `Projected<T>` | The eligible canonical read-model row committed in the command transaction and is returned as evidence. |
+
+`Accepted` is reserved for genuine fire-and-forget transport acceptance, not
+the normal GraphQL command result.
 
 ## Code index
 
-### UI — routes that teach the pattern
+| Path | Purpose |
+|---|---|
+| `crates/todo-domain/src/projection.rs` | State lifecycle, partial preview helper, and explicit purge deletion. |
+| `crates/chat-domain/src/projection.rs` | Insert-shaped causal projection. |
+| `crates/blob-domain/src/projection.rs` | Direct projection plus compile-fail eligibility guards. |
+| `crates/service/src/service.rs` | Deployment catalog, active bindings, routes, grants, and typed commands. |
+| `crates/readmodels/src/lib.rs` | Provider view and deployment-composed cross-domain relationships. |
+| `ui/src/routes/*/+page.graphql` | Co-located SSR/live reads. |
+| `ui/src/routes/*/+page.svelte` | `*.use()` and ordinary typed command calls. |
+| `ui/src/lib/generated/` | Generator-owned user/admin clients; do not hand-edit. |
 
-Pages stay thin: co-located GraphQL for reads, generated commands for writes,
-one replica for SSR + client + live.
+Todo and Chat mount catalog-pinned local causal executors with
+`consume_projection`. Blob has a catalog-pinned direct owner and no
+asynchronous event route or second writer. The Zitadel provider ingestor is an
+intentional integration adapter, not a portable aggregate projection.
 
-| Path | What to notice |
-|------|----------------|
-| [`ui/src/routes/todos/+page.graphql`](ui/src/routes/todos/+page.graphql) | `query Todos @load` — compiler-owned SSR seed; no second client document. |
-| [`ui/src/routes/todos/+page.svelte`](ui/src/routes/todos/+page.svelte) | `Todos.use()` + `commands.todo.*`. Comment at top: no app cache adapter, no hand optimistic recipe. |
-| [`ui/src/routes/chat/+page.graphql`](ui/src/routes/chat/+page.graphql) | `@load @live` on **one** query — SSR, cache, and WS companion from the same declaration. |
-| [`ui/src/routes/chat/+page.svelte`](ui/src/routes/chat/+page.svelte) | `ChatMessages.use()` defaults live because the artifact has a companion; post via `commands.chat.post`. |
-| [`ui/src/routes/blob/[[gameId]]/+page.graphql`](ui/src/routes/blob/[[gameId]]/+page.graphql) | `blob_games` + `owner { … }` join; `@load` seeds the board list. |
-| [`ui/src/routes/blob/[[gameId]]/+page.svelte`](ui/src/routes/blob/[[gameId]]/+page.svelte) | URL selects game; keyboard → `commands.blob.move`; board/`score` from replica (projected payload). |
-| [`ui/src/routes/+layout.server.ts`](ui/src/routes/+layout.server.ts) | `createDistributedSvelteKitServer({ routes: DISTRIBUTED_ROUTE_OPERATIONS, … })` — one loader for all user `@load` ops. |
-| [`ui/src/routes/+layout.svelte`](ui/src/routes/+layout.svelte) | `provideDistributed` + hydrate on navigation; session source shared by HTTP, WS, commands. |
-| [`ui/src/routes/admin/+layout.server.ts`](ui/src/routes/admin/+layout.server.ts) | **Separate** `$distributed/admin` surface; 403 before any elevated GraphQL runs. |
-| [`ui/src/routes/admin/+page.graphql`](ui/src/routes/admin/+page.graphql) | Admin-only document — never imported by the user client tree. |
-| [`ui/src/auth.ts`](ui/src/auth.ts) | Auth.js + Zitadel scopes/groups; access token on session for GraphQL Bearer. |
-| [`ui/src/routes/login/+page.server.ts`](ui/src/routes/login/+page.server.ts) | Custom Login V2 (Session API + CreateCallback), not stock Zitadel login UI. |
-| [`ui/src/lib/server/zitadel-session.ts`](ui/src/lib/server/zitadel-session.ts) | Server-only PAT path for login/signup. |
-| [`ui/src/lib/roles.ts`](ui/src/lib/roles.ts) | IdP groups → engine `user` / `admin`. |
-
-Generated (do not hand-edit; `make gen-client`):
-
-| Path | Role |
-|------|------|
-| [`ui/src/lib/generated/user/`](ui/src/lib/generated/user/) | Ops, commands, route registry, SvelteKit adapter for `e2e-ui` |
-| [`ui/src/lib/generated/admin/`](ui/src/lib/generated/admin/) | Same for `e2e-ui-admin` |
-
-`$distributed` re-exports the user surface; admin layout imports `$distributed/admin`.
-
-### Rust — domain → inventory → edge
-
-| Path | What to notice |
-|------|----------------|
-| [`crates/todo-domain/src/models/todo.rs`](crates/todo-domain/src/models/todo.rs) | Plain struct + `ensure_owner` + `@sourced` command methods. |
-| [`crates/chat-domain/src/models/chat_message.rs`](crates/chat-domain/src/models/chat_message.rs) | Minimal post aggregate. |
-| [`crates/blob-domain/src/models/blob_game.rs`](crates/blob-domain/src/models/blob_game.rs) | Move / level logic; emits facts the projector (or Projected path) maps. |
-| [`crates/readmodels/src/models/todo_view.rs`](crates/readmodels/src/models/todo_view.rs) | `#[table("todos")]` read model. |
-| [`crates/readmodels/src/models/blob_game_view.rs`](crates/readmodels/src/models/blob_game_view.rs) | Projected row + `belongs_to` `AuthUserView` owner join. |
-| [`crates/readmodels/src/models/chat_message_view.rs`](crates/readmodels/src/models/chat_message_view.rs) | Chat row + author join. |
-| [`crates/service/src/service.rs`](crates/service/src/service.rs) | **Center of gravity**: dual client surfaces, projectors vs direct projection, RLS grants, typed commands, OIDC claim map. |
-| [`crates/service/src/handlers/commands/create.rs`](crates/service/src/handlers/commands/create.rs) | `owner_id` from trusted claim — never from client input. |
-| [`crates/service/src/handlers/commands/blob_move.rs`](crates/service/src/handlers/commands/blob_move.rs) | `PreparedCommand<Projected<BlobGameView>>` + fluent direct projection commit. |
-| [`crates/service/src/handlers/events/project_todo.rs`](crates/service/src/handlers/events/project_todo.rs) | Eventual projector path (todos). |
-| [`crates/service/src/handlers/events/project_chat.rs`](crates/service/src/handlers/events/project_chat.rs) | Eventual projector path (chat → live). |
-| [`crates/service/src/handlers/ingestors/zitadel/`](crates/service/src/handlers/ingestors/zitadel/) | Ingress + scrape → `auth_users` ([runbook](docs/zitadel-ingestor.md)). |
-| [`crates/runner/src/main.rs`](crates/runner/src/main.rs) | Process wiring: Postgres/SQLite, OidcBearer vs DevHeaders, GraphiQL. |
-
-RLS sketch (from `service.rs` grants):
-
-```text
-user  → TodoView / BlobGameView rows: owner_id = claim(x-user-id)
-admin → all columns / all rows on the elevated surface
-```
-
-Command result shapes:
-
-| Domain | Result | UI effect |
-|--------|--------|-----------|
-| blob | `Projected<BlobGameView>` | Replica writes map/score with the mutation (no dual-write) |
-| todo / chat | Causal + projector | Accept command → projector → optional `@live` push |
-
-### Browser e2e (what CI trusts)
-
-| Spec | Covers |
-|------|--------|
-| [`e2e/todos.user.spec.ts`](e2e/todos.user.spec.ts) | Create / complete / archive as alice |
-| [`e2e/chat.user.spec.ts`](e2e/chat.user.spec.ts) | Post + live list |
-| [`e2e/blob.user.spec.ts`](e2e/blob.user.spec.ts) | Moves, projected board, revalidation races |
-| [`e2e/admin.admin.spec.ts`](e2e/admin.admin.spec.ts) | Elevated surface + force archive |
-| [`e2e/unauth.anon.spec.ts`](e2e/unauth.anon.spec.ts) | Redirects when logged out |
-| [`e2e/helpers/login.ts`](e2e/helpers/login.ts) | Shared OIDC + Login V2 flow |
-
----
-
-## Patterns (one-liners)
-
-| Pattern | Where |
-|---------|--------|
-| Multi-crate domain | `crates/*-domain`, `readmodels`, `service` |
-| Projectors-only for todos/chat | handlers never dual-write those tables |
-| Atomic `Projected` for blob | `blob_move.rs` / `blob_start*.rs` |
-| GraphQL RLS | `service.rs` `client_grants` + model permissions |
-| Live subscriptions | `@live` + ChangeHub |
-| Two client surfaces | `DISTRIBUTED_CLIENT_SURFACE` / `_ADMIN_` |
-| Real OIDC | Zitadel + Auth.js + custom `/login` |
-| SSR without flash | root layout + `DISTRIBUTED_ROUTE_OPERATIONS` |
-| Causal replica | `@hops-ops/distributed` via `file:../../../js` |
-
----
-
-## Architecture sketch
-
-```text
-Browser (SSR + client)
-  Auth.js → Zitadel /oauth/v2/authorize
-         → UI /login?authRequest=V2_…  (Session API + CreateCallback)
-         → Auth.js /auth/callback/oidc → access_token
-  GraphQL HTTP  Authorization: Bearer …
-  GraphQL WS    connection_init.authorization
-
-Zitadel edge (:18080)
-  Login V2 baseUri → Todos UI origin
-
-e2e-runner
-  OidcBearer (or DevHeaders offline)
-  Postgres event store + bus + locks
-  Projectors / Projected → ChangeHub → subs
-```
-
-**Auth flow:** Auth.js → Zitadel authorize → **your** `/login?authRequest=V2_…` →
-callback. Needs `ZITADEL_SERVICE_USER_TOKEN` from `make up`. After `make up`,
-restart `make run`.
-
----
-
-## Typed client generation
-
-Rust `Service` inventory is source of truth. Two pool-free exports:
-
-| Entrypoint | Application | Roles | Used by |
-|------------|-------------|-------|---------|
-| `e2e_service::distributed_client_surface` | `e2e-ui` | `admin`, `user` | App shell + user routes |
-| `e2e_service::distributed_admin_client_surface` | `e2e-ui-admin` | `admin` | Nested `/admin` only |
+## Generation and tests
 
 ```bash
-make gen-client      # both surfaces from ui/distributed.config.js
-make check-client    # dctl --check without rewrite
+make gen-client
+make check-client
+make test
+make test-live
+make test-browser
 ```
 
-Root layout:
+`make test-live` needs the local Postgres/Zitadel stack. Browser tests also need
+the UI/API processes and a checked-in Playwright runtime. The always-on offline
+path uses SQLite plus `DevHeaders`; production-shaped identity uses
+`OidcBearer`.
 
-```ts
-const distributed = createDistributedSvelteKitServer({
-  routes: DISTRIBUTED_ROUTE_OPERATIONS,
-  getSession: ({ locals }) => locals.auth(),
-  getRole: (session) => engineRoleFromGroups(session?.user?.groups)
-});
-export const load = distributed.load;
-```
+After changing a model, command, projection, grant, or `+page.graphql`, run the
+supported generator and commit its deterministic output. Never repair
+generated files by hand.
 
-Root shell:
+## Security and deployment
 
-```ts
-import { provideDistributed } from '$distributed';
+Owner/author values come from `ctx.user_id()`, never free-form client input.
+GraphQL row grants enforce `owner_id = claim("x-user-id")`; the admin mutation
+tree is a separate generated application surface. Disable GraphiQL outside
+local development.
 
-const client = provideDistributed({
-  session,
-  hydration: data.distributed,
-  authority: data.distributedAuthority
-});
-```
-
-Route:
-
-```ts
-import { Todos, useCommands } from '$distributed';
-
-const todos = Todos.use();
-const commands = useCommands();
-await commands.todo.create({ title });
-```
-
-**Agent rule:** after inventory / command contract / `+page.graphql` changes, run
-`make check-client` and commit generated diffs. Generated trees are outputs.
-
----
-
-## Tests & CI
-
-```bash
-make test          # domain + behavioral + UI unit (no Docker)
-make test-live     # OIDC isolation (needs make up + API)
-make test-browser  # Playwright (needs make up + make run)
-```
-
-| Project | Specs | Session |
-|---------|--------|---------|
-| `chromium-anon` | `e2e/*.anon.spec.ts` | none |
-| `setup-alice` → `chromium-user` | `e2e/*.user.spec.ts` | alice |
-| `setup-admin` → `chromium-admin` | `e2e/*.admin.spec.ts` | admin |
-
-CI: [`.github/workflows/integration-e2e-ui.yaml`](../../.github/workflows/integration-e2e-ui.yaml)
-— offline `make test`, then browser with `make up` + API/UI + Playwright.
-
-### Identity modes (suite)
-
-| Profile | When | Auth |
-|---------|------|------|
-| **DevHeaders** | `OIDC_*` unset | `x-user-id` / `x-role` (`make test`) |
-| **OidcBearer** | after `source e2e-ui.env` | real Bearer (`make test-live`) |
-
-Always-on units: `cargo test -p e2e-service --lib`, `cargo test -p todo-domain --lib`,
-`cd ui && npm test`. Do not run DevHeaders behavioral against an OIDC-only process.
-
-### WebSocket auth
-
-Browsers cannot set `Authorization` on the upgrade. Production path: unauthenticated
-upgrade, then `connection_init` with `{ "authorization": "Bearer …" }`. Chat page
-uses the session access token. Do not put long-lived tokens in query strings.
-
----
-
-## Env (`e2e-ui.env` from `make up`)
-
-| Variable | Purpose |
-|----------|---------|
-| `DATABASE_URL` | Postgres (or `sqlite:…` offline) |
-| `OIDC_ISSUER` / `OIDC_AUDIENCE` | JWKS + aud |
-| `OIDC_CLIENT_ID` / `SECRET` | Auth.js |
-| `ZITADEL_SERVICE_USER_TOKEN` | Login V2 Session API (server only) |
-| `AUTH_SECRET` | cookie encryption |
-| `E2E_MACHINE_*` | suite JWT-bearer keys |
-
-Offline without Docker: `cargo run -p e2e-runner` (DevHeaders + SQLite); UI
-`make ui-install && cd ui && npm run dev` (sign-in needs `make up` for real OIDC).
-
----
-
-## Crate map
-
-| Package | Role |
-|---------|------|
-| `todo-domain` / `chat-domain` / `blob-domain` | Aggregates |
-| `e2e-readmodels` | `todos`, `chat_messages`, `blob_games`, `auth_users` |
-| `e2e-service` | Handlers + GraphQL surface |
-| `e2e-runner` → bin `e2e-ui` | Process |
-| `e2e-suite` | Behavioral + gated OIDC |
-
-## Template usage
-
-Copy this folder: keep domains pure, swap `DATABASE_URL` / OIDC for your IdP,
-extend routes. In-repo fixture uses `@hops-ops/distributed` via
-`file:../../../js`; outside the monorepo, pin a released npm version.
-
-Normative design lives in the Distributed GitKB; this README is the checked-in
-fixture map.
-
-### Security notes
-
-- Set **`GRAPHIQL=0`** outside local dev.
-- Unset `OIDC_ISSUER` / `OIDC_AUDIENCE` → **DevHeaders** (local only).
-- UI `/admin` is convenience; **GraphQL field roles + handler guards** are the boundary.
+See [PROJECTION_ROLLOUT.md](PROJECTION_ROLLOUT.md) for compatibility probes,
+remote activation, drain, rebuild/import, rollback, and obligation-minting
+controls.

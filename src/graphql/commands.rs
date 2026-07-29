@@ -230,7 +230,10 @@ impl TypedCommandInventory {
             let registered_schema = model_schemas
                 .get(&projected.model)
                 .expect("projector ownership above requires a registered model schema");
-            if projected.schema != registered_schema {
+            if !projected
+                .schema
+                .has_same_storage_contract(registered_schema)
+            {
                 return Err(format!(
                     "typed projected command `{name}` retained schema for `{}` differs from the registered full table schema",
                     projected.model

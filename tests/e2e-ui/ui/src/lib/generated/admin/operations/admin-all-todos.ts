@@ -73,6 +73,25 @@ export const Operation_AdminAllTodos: ReplicaOperationArtifact<Operation_AdminAl
       "filter": {
         "fields": [
           {
+            "field": "assignee_id",
+            "scalar": "String",
+            "codec": "string",
+            "nullable": true,
+            "operators": [
+              "_eq",
+              "_gt",
+              "_gte",
+              "_ilike",
+              "_in",
+              "_is_null",
+              "_like",
+              "_lt",
+              "_lte",
+              "_neq",
+              "_nin"
+            ]
+          },
+          {
             "field": "owner_id",
             "scalar": "String",
             "codec": "string",
@@ -171,6 +190,12 @@ export const Operation_AdminAllTodos: ReplicaOperationArtifact<Operation_AdminAl
         },
         "fields": [
           {
+            "field": "assignee_id",
+            "scalar": "String",
+            "codec": "string",
+            "nullable": true
+          },
+          {
             "field": "owner_id",
             "scalar": "String",
             "codec": "string",
@@ -212,10 +237,10 @@ export const Operation_AdminAllTodos: ReplicaOperationArtifact<Operation_AdminAl
         "stableUpdate": "local"
       },
       "selection": {
-        "typename": "TodoView",
+        "typename": "Todos",
         "storage": {
           "kind": "normalized",
-          "model": "TodoView",
+          "model": "Todos",
           "identityFields": [
             "todo_id"
           ]
@@ -263,7 +288,7 @@ export const Operation_AdminAllTodos: ReplicaOperationArtifact<Operation_AdminAl
   ],
   "protocol": {
     "version": 1,
-    "schemaHash": "sha256:d8ca49f74beab7719f3e35491439c338e7e71e0627fc1b9551158560f270f872",
+    "schemaHash": "sha256:9d6043cfbecdd409499668c2cb216e31aa4c73ed5078221b159c1d8d296f6254",
     "surface": {
       "kind": "application",
       "name": "e2e-ui-admin",

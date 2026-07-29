@@ -3,7 +3,7 @@ name = "e2e-readmodels"
 version.workspace = true
 edition.workspace = true
 publish = false
-description = "Todo read models (TodoView) + project manifest"
+description = "Provider read models and deployment-composed query relationships"
 
 [dependencies]
 distributed = { workspace = true }

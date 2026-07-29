@@ -1,7 +1,4 @@
-//! Temporary hidden bridge for the projection-model cutover.
-//!
-//! Task 20 promotes these leaves into `models`, mounts `TODO_READS`, and removes
-//! this module.
+//! Domain-event projections for Todo query models.
 
 use distributed::domain_event::{DomainEventBodyContract, DomainEventContract};
 use distributed::projection::lower::{
@@ -15,13 +12,7 @@ use distributed::{
 };
 use serde::{Deserialize, Serialize};
 
-#[path = "models/todo_state.rs"]
-mod todo_state;
-#[path = "models/todos.rs"]
-mod todos;
-
-pub use todo_state::TodoState;
-pub use todos::Todos;
+use crate::{TodoState, Todos};
 
 macro_rules! state_event_contract {
     ($name:ident, $event:literal) => {
@@ -48,7 +39,7 @@ state_event_contract!(TodoReassignedDomainEvent, "todo.reassigned");
 state_event_contract!(TodoArchivedDomainEvent, "todo.archived");
 state_event_contract!(TodoForceArchivedDomainEvent, "todo.force_archived");
 
-/// Temporary public witness matching the sourced Todo deletion body.
+/// Stable public identity body for the sourced Todo deletion occurrence.
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub struct TodoDeletionIdentity {
     pub aggregate_id: String,
@@ -168,7 +159,7 @@ mod tests {
     use distributed::{DomainEventBodyKind, RelationalReadModel, RowValue, TableMutation};
 
     use super::*;
-    use crate::models::{Todo, TodoStatus};
+    use crate::{Todo, TodoStatus};
 
     #[test]
     fn state_lifecycle_and_delete_define_one_causal_obligation_target() {

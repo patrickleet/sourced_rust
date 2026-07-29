@@ -279,6 +279,23 @@ pub async fn todos_reopen(
     mutate(base, "todos_reopen", &doc, user_id, role).await
 }
 
+pub async fn todos_purge(
+    base: &str,
+    todo_id: &str,
+    user_id: &str,
+    role: &str,
+) -> Result<Value, String> {
+    let command_id = new_command_id();
+    let doc = format!(
+        r#"mutation {{
+          todos_purge(commandId: "{command_id}", input: {{ todo_id: "{todo_id}" }}) {{
+            todo_id purged
+          }}
+        }}"#
+    );
+    mutate(base, "todos_purge", &doc, user_id, role).await
+}
+
 /// Assert HTTP command routes are not mounted (GraphQL-only surface).
 pub async fn assert_http_commands_disabled(base: &str) -> Result<(), String> {
     let client = reqwest::Client::new();

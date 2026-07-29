@@ -1,19 +1,10 @@
-//! Temporary hidden bridge for the projection-model cutover.
-//!
-//! Task 20 promotes these leaves into `models`, mounts `CHAT_MESSAGES`, and
-//! removes this module.
+//! Domain-event projections for Chat query models.
 
 use distributed::domain_event::{DomainEventBodyContract, DomainEventContract};
 use distributed::projection::lower::{DirectCandidate, ProjectionDescriptor};
 use distributed::{projection, DomainEventDescriptor};
 
-#[path = "models/chat_message_state.rs"]
-mod chat_message_state;
-#[path = "models/chat_messages.rs"]
-mod chat_messages;
-
-pub use chat_message_state::ChatMessageState;
-pub use chat_messages::ChatMessages;
+use crate::{ChatMessageState, ChatMessages};
 
 /// Exact state-backed contract for the preserved semantic posted event.
 pub enum ChatMessagePostedDomainEvent {}
@@ -47,7 +38,7 @@ mod tests {
     use distributed::{RelationalReadModel, RowValue, TableMutation};
 
     use super::*;
-    use crate::models::ChatMessage;
+    use crate::ChatMessage;
 
     #[test]
     fn posted_state_preserves_semantic_name_and_lowers_to_complete_upsert() {

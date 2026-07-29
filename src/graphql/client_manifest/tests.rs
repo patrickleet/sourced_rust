@@ -16,6 +16,12 @@ struct ManifestTodoProjected {
     todo_id: String,
 }
 
+#[derive(Serialize, crate::DomainEvent)]
+#[domain_event(name = "todo.archived", version = 1)]
+struct ManifestTodoArchived {
+    todo_id: String,
+}
+
 #[test]
 fn generated_causal_command_operation_requires_framework_command_id() {
     let operation = command_operation(
@@ -318,8 +324,16 @@ fn modeled_surface_with_partition(
     )
     .unwrap();
     let field = ProjectionField::try_new(
-        0,
+        1,
         "title",
+        ProjectionAssignment::Set(
+            ProjectionExpression::body_path(ProjectionValueType::String, ["todo_id"]).unwrap(),
+        ),
+    )
+    .unwrap();
+    let key_field = ProjectionField::try_new(
+        0,
+        "todo_id",
         ProjectionAssignment::Set(
             ProjectionExpression::body_path(ProjectionValueType::String, ["todo_id"]).unwrap(),
         ),
@@ -328,10 +342,10 @@ fn modeled_surface_with_partition(
     let operation = ProjectionOperation::try_new(
         "project-todo",
         0,
-        ProjectionMutationKind::Patch,
+        ProjectionMutationKind::Upsert,
         ProjectionTarget::try_new("TodoView", "todos").unwrap(),
         vec![key],
-        vec![field],
+        vec![key_field, field],
         Vec::new(),
         Vec::new(),
     )
@@ -1089,6 +1103,18 @@ fn active_causal_modeled_projection_exports_exact_command_plan() {
         manifest.projection_bindings[0].state,
         ClientProjectionBindingState::Active
     );
+    let operation = &manifest.projection_programs[0].arms[0].operations[0];
+    assert_eq!(operation.key.len(), 1);
+    assert_eq!(operation.key[0].name, "todo_id");
+    assert_eq!(
+        operation
+            .fields
+            .iter()
+            .map(|field| (field.ordinal, field.name.as_str()))
+            .collect::<Vec<_>>(),
+        vec![(0, "title")],
+        "complete-row primary keys travel only in the canonical key"
+    );
     let command = manifest
         .commands
         .iter()
@@ -1112,6 +1138,86 @@ fn active_causal_modeled_projection_exports_exact_command_plan() {
     assert!(!wire.contains("domain_event"));
     assert!(!wire.contains("body_schema"));
     assert!(!wire.contains("\"kind\":\"body_path\""));
+}
+
+#[test]
+fn client_projection_arms_are_canonical_across_declaration_order() {
+    use super::projections::lower_program_for_test;
+    use crate::graphql::surface::{
+        SurfaceProjectionArm, SurfaceProjectionOperation, SurfaceSelectedProjectionProgram,
+    };
+    use crate::projection::{
+        PROJECTION_OPERATION_SEMANTICS_VERSION, PROJECTION_PROGRAM_IR_VERSION,
+    };
+    use crate::{
+        ProjectionAssignment, ProjectionExpression, ProjectionField, ProjectionKeyField,
+        ProjectionMutationKind, ProjectionPartition, ProjectionValueType,
+    };
+
+    let surface = build_surface(&[todos(), users()], &SurfaceOptions::sqlite()).unwrap();
+    let operation = || SurfaceProjectionOperation {
+        operation_id: "project-todo".into(),
+        staging_ordinal: 0,
+        kind: ProjectionMutationKind::Patch,
+        model: "TodoView".into(),
+        storage: "todos".into(),
+        key: vec![ProjectionKeyField::try_new(
+            0,
+            "todo_id",
+            ProjectionExpression::body_path(ProjectionValueType::String, ["todo_id"]).unwrap(),
+        )
+        .unwrap()],
+        fields: vec![ProjectionField::try_new(
+            0,
+            "title",
+            ProjectionAssignment::Set(
+                ProjectionExpression::body_path(ProjectionValueType::String, ["todo_id"]).unwrap(),
+            ),
+        )
+        .unwrap()],
+        relationship_effects: Vec::new(),
+        invalidations: Vec::new(),
+        force_revalidate: false,
+    };
+    let arm = |name: &str, descriptor: &crate::DomainEventDescriptor| SurfaceProjectionArm {
+        arm_id: name.into(),
+        selector: crate::ProjectionEventSelector::try_from_descriptor(descriptor).unwrap(),
+        operations: vec![operation()],
+    };
+    let archived = arm(
+        "archived",
+        &<ManifestTodoArchived as crate::DomainEvent>::DESCRIPTOR,
+    );
+    let projected = arm(
+        "projected",
+        &<ManifestTodoProjected as crate::DomainEvent>::DESCRIPTOR,
+    );
+    let selected = |arms| SurfaceSelectedProjectionProgram {
+        name: "canonical-client-arms".into(),
+        version: 1,
+        ir_version: PROJECTION_PROGRAM_IR_VERSION,
+        operation_semantics_version: PROJECTION_OPERATION_SEMANTICS_VERSION,
+        partition: ProjectionPartition::Unit,
+        arms,
+    };
+    let program_id = crate::ProjectionProgramId::parse(
+        "pp1:sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+    )
+    .unwrap();
+    let left = lower_program_for_test(
+        program_id,
+        &selected(vec![projected.clone(), archived.clone()]),
+        &surface,
+    )
+    .unwrap();
+    let right =
+        lower_program_for_test(program_id, &selected(vec![archived, projected]), &surface).unwrap();
+
+    assert_eq!(left.arms, right.arms);
+    assert!(left
+        .arms
+        .windows(2)
+        .all(|pair| (&pair[0].event, &pair[0].arm) < (&pair[1].event, &pair[1].arm)));
 }
 
 #[test]

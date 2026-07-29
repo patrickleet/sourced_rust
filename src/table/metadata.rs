@@ -200,6 +200,18 @@ pub struct TableSchema {
 }
 
 impl TableSchema {
+    /// Compare the physical row contract while ignoring query-only relationships.
+    ///
+    /// Relationship metadata can be composed at a deployment boundary without
+    /// changing the model/table identity that projection bindings pin.
+    pub fn has_same_storage_contract(&self, other: &Self) -> bool {
+        let mut left = self.clone();
+        let mut right = other.clone();
+        left.relationships.clear();
+        right.relationships.clear();
+        left == right
+    }
+
     pub fn validate(&self) -> Result<(), TableStoreError> {
         if self.table_name.is_empty() {
             return Err(TableStoreError::Metadata(
@@ -571,6 +583,37 @@ mod tests {
         let schema = valid_schema();
 
         schema.validate().unwrap();
+    }
+
+    #[test]
+    fn storage_contract_comparison_ignores_only_query_relationships() {
+        let schema = valid_schema();
+        let mut with_relationship = schema.clone();
+        with_relationship.relationships.push(RelationshipDef {
+            field_name: "player".into(),
+            kind: RelationshipKind::BelongsTo,
+            target_model: "Player".into(),
+            foreign_key: Some("player_id".into()),
+            through: None,
+            target_foreign_key: None,
+        });
+        assert!(schema.has_same_storage_contract(&with_relationship));
+
+        let mut different_table = with_relationship.clone();
+        different_table.table_name = "other_player_weapons".into();
+        assert!(!schema.has_same_storage_contract(&different_table));
+
+        let mut different_type = with_relationship.clone();
+        different_type.columns[0].column_type = ColumnType::Integer;
+        assert!(!schema.has_same_storage_contract(&different_type));
+
+        let mut different_key = with_relationship.clone();
+        different_key.primary_key = PrimaryKey::new(["player_id"]);
+        assert!(!schema.has_same_storage_contract(&different_key));
+
+        let mut different_shape = with_relationship;
+        different_shape.columns[0].column_name = "renamed_player_id".into();
+        assert!(!schema.has_same_storage_contract(&different_shape));
     }
 
     #[test]

@@ -1,7 +1,7 @@
 use distributed::DomainState;
 use serde::{Deserialize, Serialize};
 
-use crate::models::BlobGame;
+use super::BlobGame;
 
 /// Stable public post-transition state carried by Blob domain events.
 #[derive(Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize, DomainState)]

@@ -3,8 +3,7 @@
 use distributed::graphql::{Causal, GraphqlOutputType, PreparedCommand};
 use distributed::microsvc::{AggregateCheckout, CausalCommandContext, HandlerError};
 use serde::Serialize;
-use todo_domain::projection_v2::TodoState;
-use todo_domain::Todo;
+use todo_domain::{Todo, TodoState};
 
 use crate::handlers::util::rejected;
 

@@ -1206,6 +1206,7 @@ impl ProtocolProjectionDeltaRequestAuthority {
         .map_err(|_| ProjectionRuntimeAuthorityError::InvalidMetadata)
     }
 
+    #[cfg(test)]
     pub(crate) fn verify_partition_token(
         &self,
         token: &str,

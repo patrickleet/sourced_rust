@@ -1,18 +1,33 @@
-//! Temporary hidden bridge for the projection-model cutover.
-//!
-//! Task 20 promotes these leaves into `models`, mounts `BLOB_GAMES`, restores
-//! the shared owner relationship, and removes this module.
+//! Domain-event projections for Blob query models.
 
+use distributed::domain_event::{DomainEventBodyContract, DomainEventContract};
 use distributed::projection;
 use distributed::projection::lower::{DirectCandidate, ProjectionDescriptor};
+use distributed::DomainEventDescriptor;
 
-#[path = "models/blob_game_state.rs"]
-mod blob_game_state;
-#[path = "models/blob_games.rs"]
-mod blob_games;
+use crate::{BlobGameState, BlobGames};
 
-pub use blob_game_state::BlobGameState;
-pub use blob_games::BlobGames;
+macro_rules! state_event_contract {
+    ($name:ident, $event:literal) => {
+        pub enum $name {}
+
+        impl DomainEventContract for $name {
+            const EVENT_NAME: &'static str = $event;
+            const EVENT_VERSION: u64 = 1;
+
+            fn descriptor() -> DomainEventDescriptor {
+                DomainEventDescriptor::state::<BlobGameState>($event, 1)
+            }
+        }
+
+        impl DomainEventBodyContract<BlobGameState> for $name {}
+    };
+}
+
+state_event_contract!(BlobInitializedDomainEvent, "blob.initialized");
+state_event_contract!(BlobLevelStartedDomainEvent, "blob.level_started");
+state_event_contract!(BlobStartedDomainEvent, "blob.started");
+state_event_contract!(BlobMovedDomainEvent, "blob.moved");
 
 /// One complete state upsert for every direct Blob transition.
 pub const BLOB_GAMES: ProjectionDescriptor<DirectCandidate> = projection! {
@@ -37,7 +52,7 @@ pub const BLOB_GAMES: ProjectionDescriptor<DirectCandidate> = projection! {
 /// `projected` terminal.
 ///
 /// ```compile_fail,E0599
-/// use blob_domain::{BlobGame, projection_v2::{BlobGameState, BlobGames}};
+/// use blob_domain::{BlobGame, BlobGameState, BlobGames};
 /// use distributed::{
 ///     microsvc::{AggregateCheckout, CausalCommandContext},
 ///     projection,
@@ -69,7 +84,7 @@ pub const BLOB_GAMES: ProjectionDescriptor<DirectCandidate> = projection! {
 /// A delete descriptor is also excluded from `Projected<T>`.
 ///
 /// ```compile_fail,E0599
-/// use blob_domain::{BlobGame, projection_v2::{BlobGameState, BlobGames}};
+/// use blob_domain::{BlobGame, BlobGameState, BlobGames};
 /// use distributed::{
 ///     microsvc::{AggregateCheckout, CausalCommandContext},
 ///     projection,
@@ -98,7 +113,7 @@ pub const BLOB_GAMES: ProjectionDescriptor<DirectCandidate> = projection! {
 /// More than one row operation cannot claim the single-row terminal.
 ///
 /// ```compile_fail,E0599
-/// use blob_domain::{BlobGame, projection_v2::{BlobGameState, BlobGames}};
+/// use blob_domain::{BlobGame, BlobGameState, BlobGames};
 /// use distributed::{
 ///     microsvc::{AggregateCheckout, CausalCommandContext},
 ///     projection,
@@ -152,7 +167,7 @@ mod tests {
     use serde::{Deserialize, Serialize};
 
     use super::*;
-    use crate::models::{test_map_no_holes, BlobGame, Direction};
+    use crate::{test_map_no_holes, BlobGame, Direction};
 
     #[derive(Clone, Serialize, Deserialize, distributed::ReadModel)]
     #[readmodel(primary_key = ["game_id"])]

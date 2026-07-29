@@ -78,6 +78,45 @@ impl GraphqlEngineBuilder {
         self
     }
 
+    /// Expose a model with deployment-composed query relationships.
+    ///
+    /// The supplied schema must retain `M`'s exact physical storage contract;
+    /// only relationship metadata may differ. This lets independently owned
+    /// model crates form a GraphQL relationship graph without introducing
+    /// circular Rust dependencies or a second projection model.
+    pub fn model_schema<M: crate::RelationalReadModel>(
+        mut self,
+        schema: TableSchema,
+        perms: ModelPermissions<M>,
+    ) -> Self {
+        if !schema.has_same_storage_contract(M::schema()) {
+            self.pending_errors.push(format!(
+                "deployment schema for model `{}` changes its canonical storage contract",
+                M::schema().model_name
+            ));
+            return self;
+        }
+        if let Err(error) = self.insert_catalog(schema.clone(), true) {
+            self.pending_errors.push(error.0);
+            return self;
+        }
+        for (role, permission) in perms.entries {
+            let key = (schema.model_name.clone(), role.clone());
+            match self.permissions.entry(key) {
+                Entry::Vacant(entry) => {
+                    entry.insert(RoleModelPerm { permission });
+                }
+                Entry::Occupied(_) => {
+                    self.pending_errors.push(format!(
+                        "duplicate permission for model `{}` role `{role}`",
+                        schema.model_name
+                    ));
+                }
+            }
+        }
+        self
+    }
+
     pub fn table_schema(mut self, schema: TableSchema) -> Self {
         if let Err(e) = self.insert_catalog(schema, false) {
             self.pending_errors.push(e.0);

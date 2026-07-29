@@ -348,7 +348,9 @@ impl SurfaceModeledProjection {
                     output.model()
                 ));
             };
-            if output.storage() != model.table_name || output.schema() != &model.schema {
+            if output.storage() != model.table_name
+                || !output.schema().has_same_storage_contract(&model.schema)
+            {
                 return Err(format!(
                     "modeled projection owner `{owner_name}` output `{}` does not match the authoritative Surface schema",
                     output.model()

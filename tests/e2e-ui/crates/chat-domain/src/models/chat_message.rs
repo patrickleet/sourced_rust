@@ -1,8 +1,7 @@
 use distributed::{sourced, Entity};
 use serde::{Deserialize, Serialize};
 
-use super::ChatError;
-use crate::projection_v2::ChatMessageState;
+use super::{ChatError, ChatMessageState};
 
 #[derive(Debug, Clone, Default, Serialize, Deserialize)]
 pub struct ChatMessage {
