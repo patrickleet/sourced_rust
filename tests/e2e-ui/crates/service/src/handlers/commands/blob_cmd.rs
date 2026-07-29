@@ -1,15 +1,13 @@
 //! Shared load + causal staging path for blob game commands.
 //!
-//! The returned [`BlobGameView`] uses the narrow direct-read-model proof, so
+//! The returned [`BlobGames`] uses the narrow modeled direct proof, so
 //! the aggregate, command ledger, and exact projected row commit atomically.
 //! The canonical game row has no asynchronous fact consumer or second writer.
 
-use blob_domain::{BlobGame, BlobGameFact};
+use blob_domain::projection_v2::{BlobGames, BLOB_GAMES};
+use blob_domain::BlobGame;
 use distributed::graphql::{PreparedCommand, Projected};
-use distributed::microsvc::{
-    direct_read_model, AggregateCheckout, CausalCommandContext, HandlerError,
-};
-use e2e_readmodels::{map_blob_fact, BlobGameView};
+use distributed::microsvc::{AggregateCheckout, CausalCommandContext, HandlerError};
 
 use crate::handlers::util::rejected;
 
@@ -26,11 +24,9 @@ pub async fn load_game(
 pub fn commit_blob(
     ctx: &CausalCommandContext<'_, BlobGame>,
     game: AggregateCheckout<BlobGame>,
-) -> Result<PreparedCommand<Projected<BlobGameView>>, HandlerError> {
-    let fact = BlobGameFact::from_game(&game);
-    ctx.project(direct_read_model::<BlobGameView>())
-        .commit(game)?
-        .projected(map_blob_fact(&fact))
+) -> Result<PreparedCommand<Projected<BlobGames>>, HandlerError> {
+    let view = BlobGames::from(&game.state());
+    ctx.project(BLOB_GAMES).commit(game)?.projected(view)
 }
 
 pub fn map_domain(err: impl std::fmt::Display) -> HandlerError {

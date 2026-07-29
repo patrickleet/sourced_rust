@@ -2,9 +2,10 @@ use distributed::{sourced, Entity};
 use serde::{Deserialize, Serialize};
 
 use crate::levels::generate_level;
+use crate::projection_v2::BlobGameState;
 
 use super::tile;
-use super::{BlobError, BlobGameFact, Direction};
+use super::{BlobError, Direction};
 
 /// Tiny 3×3 map for unit tests (player top-left, no holes).
 pub fn test_map_no_holes() -> Vec<Vec<u8>> {
@@ -93,8 +94,9 @@ impl BlobGame {
         Ok(())
     }
 
-    pub fn fact(&self) -> BlobGameFact {
-        BlobGameFact {
+    /// Capture the stable public state used by Blob domain events.
+    pub fn state(&self) -> BlobGameState {
+        BlobGameState {
             game_id: self.game_id.clone(),
             owner_id: self.owner_id.clone(),
             score: self.score,
@@ -118,7 +120,12 @@ impl BlobGame {
     }
 }
 
-#[sourced(entity, events = "BlobGameEvent", aggregate_type = "blob")]
+#[sourced(
+    entity,
+    events = "BlobGameEvent",
+    aggregate_type = "blob",
+    domain_state = BlobGameState,
+)]
 impl BlobGame {
     /// Create game shell (no map yet). Level 0 is "completed" so first level can start.
     pub fn initialize(
@@ -141,7 +148,7 @@ impl BlobGame {
         Ok(())
     }
 
-    #[event("blob.initialized")]
+    #[event("blob.initialized", version = 1, domain)]
     fn record_initialized(&mut self, game_id: String, owner_id: String) {
         self.entity.set_id(&game_id);
         self.game_id = game_id;
@@ -154,11 +161,7 @@ impl BlobGame {
     }
 
     /// Append/start a level map. Requires current level complete and player alive.
-    pub fn start_level(
-        &mut self,
-        owner_id: &str,
-        map: Vec<Vec<u8>>,
-    ) -> Result<(), BlobError> {
+    pub fn start_level(&mut self, owner_id: &str, map: Vec<Vec<u8>>) -> Result<(), BlobError> {
         self.ensure_owner(owner_id)?;
         if self.player_dead {
             return Err(BlobError::PlayerDead);
@@ -172,7 +175,7 @@ impl BlobGame {
         Ok(())
     }
 
-    #[event("blob.level_started")]
+    #[event("blob.level_started", version = 1, domain)]
     fn record_level_started(&mut self, current_level: i64, map: Vec<Vec<u8>>) {
         self.current_level = current_level;
         self.map = map;
@@ -219,7 +222,7 @@ impl BlobGame {
         self.start_level(owner_id, map)
     }
 
-    #[event("blob.started")]
+    #[event("blob.started", version = 1, domain)]
     fn record_started(
         &mut self,
         game_id: String,
@@ -311,7 +314,7 @@ impl BlobGame {
         Ok(())
     }
 
-    #[event("blob.moved")]
+    #[event("blob.moved", version = 1, domain)]
     fn record_moved(
         &mut self,
         score: i64,
@@ -398,10 +401,7 @@ mod tests {
     fn complete_level_when_no_unvisited() {
         // 2×2: player + 3 unvisited
         use tile::*;
-        let map = vec![
-            vec![PLAYER, UNVISITED],
-            vec![UNVISITED, UNVISITED],
-        ];
+        let map = vec![vec![PLAYER, UNVISITED], vec![UNVISITED, UNVISITED]];
         let mut g = game_with_map(map);
         g.move_dir("alice", Direction::Right).unwrap();
         g.move_dir("alice", Direction::Down).unwrap();
@@ -409,7 +409,7 @@ mod tests {
         assert!(g.current_level_completed);
         assert!(!g.player_dead);
         assert_eq!(g.score, 3);
-        assert_eq!(g.fact().status, "level_complete");
+        assert_eq!(g.state().status, "level_complete");
     }
 
     #[test]
@@ -420,7 +420,6 @@ mod tests {
             BlobError::NotOwner
         );
     }
-
 
     #[test]
     fn complete_then_start_next_level() {
@@ -456,9 +455,25 @@ mod tests {
         g.move_dir("alice", Direction::Left).unwrap();
         assert!(g.current_level_completed);
         let mut g2: BlobGame = distributed::hydrate(g.entity.clone()).unwrap();
-        assert!(g2.current_level_completed, "completed flag must survive hydrate");
+        assert!(
+            g2.current_level_completed,
+            "completed flag must survive hydrate"
+        );
         g2.start_next_generated_level("alice").unwrap();
         assert_eq!(g2.current_level, 2);
+    }
+
+    #[test]
+    fn replay_suppresses_blob_domain_state_recapture() {
+        let mut game = BlobGame::default();
+        game.start_with_map("g1", "alice", test_map_no_holes())
+            .unwrap();
+        game.entity.mark_committed();
+        game.entity.mark_domain_events_committed().unwrap();
+
+        let replayed: BlobGame = distributed::hydrate(game.entity.clone()).unwrap();
+        assert!(replayed.entity.pending_domain_events().is_empty());
+        assert_eq!(replayed.state().status, "active");
     }
 
     #[test]

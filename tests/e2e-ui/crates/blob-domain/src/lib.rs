@@ -6,6 +6,9 @@
 pub mod levels;
 pub mod models;
 
+#[doc(hidden)]
+pub mod projection_v2;
+
 pub use levels::{demo_map, generate_level, generate_level_with, is_hamiltonian_passable};
 pub use models::tile;
 pub use models::{

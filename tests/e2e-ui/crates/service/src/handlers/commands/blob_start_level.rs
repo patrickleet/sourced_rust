@@ -1,9 +1,9 @@
 //! Command: `blob.start_level` — next level after complete (new generated map).
 
+use blob_domain::projection_v2::BlobGames;
 use blob_domain::BlobGame;
 use distributed::graphql::{PreparedCommand, Projected};
 use distributed::microsvc::{CausalCommandContext, HandlerError};
-use e2e_readmodels::BlobGameView;
 use serde::Deserialize;
 
 use crate::handlers::commands::blob_cmd::{commit_blob, load_game, map_domain};
@@ -18,7 +18,7 @@ pub struct BlobStartLevelInput {
 pub async fn handle(
     ctx: &CausalCommandContext<'_, BlobGame>,
     input: BlobStartLevelInput,
-) -> Result<PreparedCommand<Projected<BlobGameView>>, HandlerError> {
+) -> Result<PreparedCommand<Projected<BlobGames>>, HandlerError> {
     let owner = ctx.user_id()?.to_string();
     let mut game = load_game(ctx, &input.game_id).await?;
     // Fresh passable layout each level (like original generateLevel)

@@ -1,9 +1,9 @@
 //! Command: `blob.start` — create game + demo level. Owner = session user.
 
+use blob_domain::projection_v2::BlobGames;
 use blob_domain::BlobGame;
 use distributed::graphql::{PreparedCommand, Projected};
 use distributed::microsvc::{CausalCommandContext, HandlerError};
-use e2e_readmodels::BlobGameView;
 use serde::Deserialize;
 
 use crate::handlers::commands::blob_cmd::{commit_blob, map_domain};
@@ -15,7 +15,7 @@ pub struct BlobStartInput {
     pub game_id: String,
 }
 
-pub type BlobGamePayload = BlobGameView;
+pub type BlobGamePayload = BlobGames;
 
 pub async fn handle(
     ctx: &CausalCommandContext<'_, BlobGame>,
