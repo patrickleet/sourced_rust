@@ -465,7 +465,7 @@ callbacks: {
     version 1 (state: TodoState) {
       upsert Todos from state as todo;
   }
-  on "todo.purged" version 1 (deleted: TodoDeletionIdentity) {
+  on "todo.purged" version 1 (deleted: TodoDomainIdentity) {
     delete Todos { key { todo_id: envelope.aggregate_id } };
   }
 };
