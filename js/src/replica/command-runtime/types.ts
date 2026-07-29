@@ -341,6 +341,7 @@ export type PendingProjection = {
 	readonly commandId: string;
 	readonly causationId: string;
 	readonly authority: CapturedAuthority;
+	readonly tracker: CommandStatusTracker;
 	readonly resolve: (
 		value: ReplicaCommandProjectedOutcome<unknown>
 	) => void;

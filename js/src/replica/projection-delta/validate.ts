@@ -682,7 +682,7 @@ export function validateProjectionMetadataAuthority(
 		surface: ProjectionDeltaSurface;
 		schemaHash: string;
 		protocolHash: string;
-		authorizationGeneration?: string;
+		authorizationGeneration: string;
 		cacheScope: string;
 		causationId: string;
 	}>,
@@ -701,8 +701,7 @@ export function validateProjectionMetadataAuthority(
 				) !== 0)) ||
 		identity.schema_fingerprint !== authority.schemaHash ||
 		identity.protocol_fingerprint !== authority.protocolHash ||
-		(authority.authorizationGeneration !== undefined &&
-			identity.authorization_generation !== authority.authorizationGeneration) ||
+		identity.authorization_generation !== authority.authorizationGeneration ||
 		identity.cache_scope_token !== authority.cacheScope ||
 		identity.command_causation_id !== authority.causationId
 	) {
@@ -2145,11 +2144,26 @@ function preflightProjectionPayload(value: unknown, path: string): void {
 		| Readonly<{ kind: 'leave'; value: object }>;
 	const active = new WeakSet<object>();
 	const work: Work[] = [{ kind: 'visit', value, depth: 0 }];
-	let nodes = 0;
+	let scheduledVisits = 1;
 	let stringBytes = 0;
+	const reserveVisits = (count: number): void => {
+		if (count > MAX_TRAVERSAL_NODES - scheduledVisits) invalid(path);
+		scheduledVisits += count;
+	};
 	const consumeString = (candidate: string): void => {
 		stringBytes += utf8ByteLength(candidate, MAX_BODY_BYTES - stringBytes);
 		if (stringBytes > MAX_BODY_BYTES) invalid(path);
+	};
+	const enqueueVisit = (candidate: unknown, depth: number): void => {
+		if (depth > MAX_TRAVERSAL_DEPTH) invalid(path);
+		if (typeof candidate === 'string') {
+			consumeString(candidate);
+		} else if (
+			candidate !== null &&
+			(typeof candidate === 'object' || typeof candidate === 'function')
+		) {
+			work.push({ kind: 'visit', value: candidate, depth });
+		}
 	};
 	while (work.length !== 0) {
 		const item = work.pop()!;
@@ -2157,8 +2171,7 @@ function preflightProjectionPayload(value: unknown, path: string): void {
 			active.delete(item.value);
 			continue;
 		}
-		nodes += 1;
-		if (nodes > MAX_TRAVERSAL_NODES || item.depth > MAX_TRAVERSAL_DEPTH) {
+		if (item.depth > MAX_TRAVERSAL_DEPTH) {
 			invalid(path);
 		}
 		const candidate = item.value;
@@ -2176,29 +2189,23 @@ function preflightProjectionPayload(value: unknown, path: string): void {
 		active.add(candidate);
 		work.push({ kind: 'leave', value: candidate });
 		if (Array.isArray(candidate)) {
+			reserveVisits(candidate.length);
 			for (let index = candidate.length - 1; index >= 0; index -= 1) {
 				const descriptor = Object.getOwnPropertyDescriptor(candidate, index);
 				if (descriptor === undefined || !('value' in descriptor)) invalid(path);
-				work.push({
-					kind: 'visit',
-					value: descriptor.value,
-					depth: item.depth + 1
-				});
+				enqueueVisit(descriptor.value, item.depth + 1);
 			}
 			continue;
 		}
 		const keys = Reflect.ownKeys(candidate);
+		reserveVisits(keys.length);
 		for (let index = keys.length - 1; index >= 0; index -= 1) {
 			const key = keys[index]!;
 			if (typeof key !== 'string') invalid(path);
 			consumeString(key);
 			const descriptor = Object.getOwnPropertyDescriptor(candidate, key);
 			if (descriptor === undefined || !('value' in descriptor)) invalid(path);
-			work.push({
-				kind: 'visit',
-				value: descriptor.value,
-				depth: item.depth + 1
-			});
+			enqueueVisit(descriptor.value, item.depth + 1);
 		}
 	}
 }

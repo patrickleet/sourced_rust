@@ -99,7 +99,8 @@ export function confirmDirectProjection<TInput, TOutput>(
 export function pendingProjection(
 	authority: CapturedAuthority,
 	metadata: DistributedCommandMetadata,
-	prepared: ReplicaPreparedCommand<unknown, unknown>
+	prepared: ReplicaPreparedCommand<unknown, unknown>,
+	tracker: CommandStatusTracker
 ): PendingProjection {
 	let resolve!: (value: ReplicaCommandProjectedOutcome<unknown>) => void;
 	let reject!: (error: unknown) => void;
@@ -119,6 +120,7 @@ export function pendingProjection(
 		commandId: metadata.commandId,
 		causationId: metadata.causationId,
 		authority,
+		tracker,
 		resolve,
 		reject,
 		promise,

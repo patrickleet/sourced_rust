@@ -437,10 +437,14 @@ export function createReplicaCommandRuntime<
 	}
 	if (
 		replicaRevalidate === undefined &&
-		inventory.some(({ artifact }) => artifact.revalidation.required)
+		inventory.some(
+			({ artifact }) =>
+				artifact.projection !== undefined ||
+				artifact.revalidation.required
+		)
 	) {
 		throw new TypeError(
-			'generated command revalidation plan requires replica.revalidate'
+			'generated modeled projection or required revalidation plan requires replica.revalidate'
 		);
 	}
 	const registration = replica[replicaCommandAuthority]?.(contract);
@@ -726,6 +730,19 @@ export function createReplicaCommandRuntime<
 			.catch(() => undefined);
 	};
 
+	const commitStatusProgression = (
+		tracker: CommandStatusTracker,
+		status: ReplicaCommandStatus
+	): void => {
+		tracker.state = status.state;
+		if (status.metadata !== undefined) {
+			tracker.metadata = status.metadata;
+			if (tracker.pending !== undefined) {
+				tracker.pending.metadata = status.metadata;
+			}
+		}
+	};
+
 	const statusReader = <TInput, TOutput>(
 		prepared: ReplicaPreparedCommand<TInput, TOutput>,
 		authority: CapturedAuthority,
@@ -828,13 +845,7 @@ export function createReplicaCommandRuntime<
 				failTrackedProjection(tracker, pending, failure);
 				throw failure;
 			}
-			tracker.state = status.state;
-			if (status.metadata !== undefined) {
-				tracker.metadata = status.metadata;
-				if (tracker.pending !== undefined) {
-					tracker.pending.metadata = status.metadata;
-				}
-			}
+			commitStatusProgression(tracker, status);
 			switch (status.state) {
 				case 'rejected':
 					rejectUnmanagedLayer(prepared.commandId);
@@ -1296,7 +1307,8 @@ export function createReplicaCommandRuntime<
 				const controller = pendingProjection(
 					authority,
 					metadata,
-					prepared as ReplicaPreparedCommand<unknown, unknown>
+					prepared as ReplicaPreparedCommand<unknown, unknown>,
+					statusTracker
 				);
 				statusTracker.pending = controller;
 				if (!remainsPending) {
@@ -1427,14 +1439,15 @@ export function createReplicaCommandRuntime<
 							'live command changed pending causation identity'
 						);
 					}
+					const status = Object.freeze({
+						commandId,
+						state: command.state,
+						metadata: command
+					});
 					validateStatusProgression(
-						controller.metadata.state,
-						controller.metadata,
-						Object.freeze({
-							commandId,
-							state: command.state,
-							metadata: command
-						})
+						controller.tracker.state,
+						controller.tracker.metadata,
+						status
 					);
 					const validated = validateProjectionForState(
 						controller.prepared,
@@ -1442,6 +1455,7 @@ export function createReplicaCommandRuntime<
 						controller.authority
 					);
 					commitActualProjection(controller.prepared, validated);
+					commitStatusProgression(controller.tracker, status);
 				} catch (error) {
 					replica.rejectOptimisticLayer(commandId);
 					revalidateInBackground(
@@ -1458,7 +1472,6 @@ export function createReplicaCommandRuntime<
 					pending.delete(commandId);
 					continue;
 				}
-				controller.metadata = command;
 				if (command.state === 'projection_failed') {
 					replica.rejectOptimisticLayer(commandId);
 					revalidateInBackground(

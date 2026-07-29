@@ -127,7 +127,23 @@ test('metadata validates identity, expiry, obligations, and canonical replay byt
 					'v1.cache-scope.AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA',
 				causationId: 'cause-1'
 			},
-			parsed.expiresAtUnixMs
+			1_700_000_000_001
+		)
+	);
+	assert.throws(() =>
+		validateProjectionMetadataAuthority(
+			parsed,
+			contract,
+			{
+				surface: { kind: 'role', name: 'member' },
+				schemaHash: 'sha256:schema',
+				protocolHash: 'sha256:protocol',
+				authorizationGeneration: 1,
+				cacheScope:
+					'v1.cache-scope.AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA',
+				causationId: 'cause-1'
+			},
+			1_700_000_000_001
 		)
 	);
 });
@@ -161,6 +177,59 @@ test('strict hostile inputs fail before allocation or cache mutation', async () 
 		occurrence_id: `occurrence-${ordinal}`
 	}));
 	assert.throws(() => parseProjectionDelta(tooMany), /occurrences/);
+});
+
+test('preflight reserves dense-array and broad-object visits before enqueue', () => {
+	const traversalBudget = 1024 * 1024;
+	let denseDescriptorReads = 0;
+	const dense = new Proxy(Array(traversalBudget).fill(null), {
+		getOwnPropertyDescriptor(target, property) {
+			denseDescriptorReads += 1;
+			return Reflect.getOwnPropertyDescriptor(target, property);
+		}
+	});
+	assert.throws(
+		() => parseProjectionDelta(dense),
+		(error) => error?.path === 'projection.delta'
+	);
+	assert.equal(
+		denseDescriptorReads,
+		0,
+		'array length must exhaust the remaining visit budget before descriptors enqueue'
+	);
+
+	const broadTarget = Object.fromEntries(
+		Array.from({ length: 64 }, (_, index) => [`field${index}`, null])
+	);
+	let broadDescriptorReads = 0;
+	const broad = new Proxy(broadTarget, {
+		getOwnPropertyDescriptor(target, property) {
+			broadDescriptorReads += 1;
+			return Reflect.getOwnPropertyDescriptor(target, property);
+		}
+	});
+	const carrierTarget = [];
+	carrierTarget.length = traversalBudget - 32;
+	const carrier = new Proxy(carrierTarget, {
+		getOwnPropertyDescriptor(_target, property) {
+			const index = Number(property);
+			return {
+				configurable: true,
+				enumerable: true,
+				writable: true,
+				value: index === 0 ? broad : null
+			};
+		}
+	});
+	assert.throws(
+		() => parseProjectionDelta(carrier),
+		(error) => error?.path === 'projection.delta'
+	);
+	assert.equal(
+		broadDescriptorReads,
+		0,
+		'object width must exhaust the remaining visit budget before descriptors enqueue'
+	);
 });
 
 test('f64 strings use Rust serde_json/ryu notation at fixed/scientific boundaries', async () => {

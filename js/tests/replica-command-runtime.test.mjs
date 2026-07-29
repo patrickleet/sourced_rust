@@ -253,6 +253,58 @@ function artifact(options = {}) {
 	});
 }
 
+function directProjectionArtifact() {
+	return Object.freeze({
+		...artifact({
+			name: 'todo.project',
+			consistency: 'projected',
+			modeled: false,
+			directProjection: Object.freeze({
+				topology: Object.freeze({
+					version: 1,
+					name: 'todos',
+					digest: HASH_D
+				}),
+				model: Todo.id,
+				identityFields: Todo.identityFields,
+				changeEpoch: 'todos-v1'
+			})
+		}),
+		output: Object.freeze({
+			kind: 'object',
+			definition: Object.freeze({
+				name: Todo.id,
+				fields: Object.freeze([scalar('id', 'ID'), scalar('title')])
+			})
+		})
+	});
+}
+
+function modeledArtifactWithAuditArm() {
+	const modeled = structuredClone(artifact());
+	const event = { id: 'event-2', name: 'audit.recorded', version: 1 };
+	modeled.projection.eventSet.push(event);
+	modeled.projection.capabilities.arms.push({
+		event,
+		projection_ref: 0,
+		arm: 'audit_upsert',
+		partition: { kind: 'unit' },
+		mutations: [
+			{
+				kind: 'record',
+				model: Audit.id,
+				key: ['id'],
+				fields: ['title'],
+				replace: ['title'],
+				upsert: true,
+				patch: false,
+				delete: false
+			}
+		]
+	});
+	return modeled;
+}
+
 function deltaMutation(request, options = {}) {
 	const operation = options.operation ?? 'upsert';
 	const actualScope = scope({
@@ -839,27 +891,7 @@ test('status causation is validated before actual delta mutation and rolls back 
 });
 
 test('an invalid initial result does not poison corrected status recovery', async () => {
-	const modeled = structuredClone(artifact());
-	const event = { id: 'event-2', name: 'audit.recorded', version: 1 };
-	modeled.projection.eventSet.push(event);
-	modeled.projection.capabilities.arms.push({
-		event,
-		projection_ref: 0,
-		arm: 'audit_upsert',
-		partition: { kind: 'unit' },
-		mutations: [
-			{
-				kind: 'record',
-				model: Audit.id,
-				key: ['id'],
-				fields: ['title'],
-				replace: ['title'],
-				upsert: true,
-				patch: false,
-				delete: false
-			}
-		]
-	});
+	const modeled = modeledArtifactWithAuditArm();
 	const replica = new TestReplica();
 	let commandRequest;
 	const runtime = createReplicaCommandRuntime(
@@ -994,6 +1026,110 @@ test('live command state cannot regress before actual projection mutation', asyn
 	runtime.dispose();
 });
 
+for (const statusState of ['projected', 'succeeded_pending_projection']) {
+	test(`live terminal progression ${
+		statusState === 'projected'
+			? 'permits an idempotent status replay'
+			: 'rejects a later status regression'
+	}`, async () => {
+		const replica = new TestReplica();
+		let request;
+		let liveMetadata;
+		const runtime = createReplicaCommandRuntime(
+			replica,
+			{
+				dispatch(candidate) {
+					request = candidate;
+					return Promise.resolve(envelope(candidate));
+				},
+				status(statusRequest) {
+					return Promise.resolve(
+						statusEnvelope(statusRequest, {
+							...liveMetadata,
+							state: statusState
+						})
+					);
+				}
+			},
+			{ change: artifact() },
+			{ status: STATUS }
+		);
+		const receipt = await runtime.commands.change(
+			{ id: 'todo-1', title: 'preview' },
+			{ commandId: COMMAND_A }
+		);
+		liveMetadata = Object.freeze({
+			...receipt.metadata,
+			state: 'projected'
+		});
+		const projected =
+			statusState === 'projected'
+				? receipt.projected
+				: assert.rejects(receipt.projected, {
+						code: 'REPLICA_COMMAND_PROTOCOL_INVALID'
+					});
+		runtime.observeResult({
+			extensions: envelope(request, {
+				command: liveMetadata
+			}).extensions
+		});
+		if (statusState === 'projected') {
+			assert.equal((await receipt.status()).state, 'projected');
+			assert.equal((await projected).state, 'projected');
+		} else {
+			await assert.rejects(receipt.status(), {
+				code: 'REPLICA_COMMAND_PROTOCOL_INVALID'
+			});
+			await projected;
+		}
+		runtime.dispose();
+	});
+}
+
+test('invalid live progression cannot poison a later valid status transition', async () => {
+	const replica = new TestReplica();
+	let request;
+	let projectedMetadata;
+	const runtime = createReplicaCommandRuntime(
+		replica,
+		{
+			dispatch(candidate) {
+				request = candidate;
+				return Promise.resolve(envelope(candidate));
+			},
+			status(statusRequest) {
+				return Promise.resolve(
+					statusEnvelope(statusRequest, projectedMetadata)
+				);
+			}
+		},
+		{ change: artifact() },
+		{ status: STATUS }
+	);
+	const receipt = await runtime.commands.change(
+		{ id: 'todo-1', title: 'preview' },
+		{ commandId: COMMAND_A }
+	);
+	projectedMetadata = Object.freeze({
+		...receipt.metadata,
+		state: 'projected'
+	});
+	const projected = assert.rejects(receipt.projected, {
+		code: 'REPLICA_COMMAND_PROTOCOL_INVALID'
+	});
+	runtime.observeResult({
+		extensions: envelope(request, {
+			command: {
+				...receipt.metadata,
+				state: 'rejected'
+			}
+		}).extensions
+	});
+	await projected;
+	assert.equal((await receipt.status()).state, 'projected');
+	runtime.dispose();
+});
+
 test('terminal live deltas never replace optimism before rollback', async () => {
 	const replica = new TestReplica();
 	let request;
@@ -1079,27 +1215,7 @@ test('an allowed unpreviewed event arm can authoritatively replace the preview',
 });
 
 test('zero-obligation revalidation includes actual unpreviewed target models', async () => {
-	const modeled = structuredClone(artifact());
-	const event = { id: 'event-2', name: 'audit.recorded', version: 1 };
-	modeled.projection.eventSet.push(event);
-	modeled.projection.capabilities.arms.push({
-		event,
-		projection_ref: 0,
-		arm: 'audit_upsert',
-		partition: { kind: 'unit' },
-		mutations: [
-			{
-				kind: 'record',
-				model: Audit.id,
-				key: ['id'],
-				fields: ['title'],
-				replace: ['title'],
-				upsert: true,
-				patch: false,
-				delete: false
-			}
-		]
-	});
+	const modeled = modeledArtifactWithAuditArm();
 	const replica = new TestReplica();
 	const runtime = createReplicaCommandRuntime(
 		replica,
@@ -1349,30 +1465,7 @@ test('delete remains a provisional tombstone while its causal obligation is pend
 
 test('direct Projected results retain the canonical record-clock path', async () => {
 	const replica = new TestReplica();
-	const directArtifact = Object.freeze({
-		...artifact({
-			name: 'todo.project',
-			consistency: 'projected',
-			modeled: false,
-			directProjection: Object.freeze({
-				topology: Object.freeze({
-					version: 1,
-					name: 'todos',
-					digest: HASH_D
-				}),
-				model: Todo.id,
-				identityFields: Todo.identityFields,
-				changeEpoch: 'todos-v1'
-			})
-		}),
-		output: Object.freeze({
-			kind: 'object',
-			definition: Object.freeze({
-				name: Todo.id,
-				fields: Object.freeze([scalar('id', 'ID'), scalar('title')])
-			})
-		})
-	});
+	const directArtifact = directProjectionArtifact();
 	const runtime = createReplicaCommandRuntime(
 		replica,
 		{
@@ -1686,8 +1779,67 @@ test('required revalidation requires a replica coordinator at construction', () 
 					})
 				}
 			),
-		/generated command revalidation plan/
+		/required revalidation plan/
 	);
+});
+
+test('every modeled projection requires a coordinator before dispatch or layers', () => {
+	const replica = new TestReplica();
+	replica.revalidate = undefined;
+	const modeled = modeledArtifactWithAuditArm();
+	let dispatches = 0;
+	assert.throws(
+		() =>
+			createReplicaCommandRuntime(
+				replica,
+				{
+					dispatch(request) {
+						dispatches += 1;
+						return Promise.resolve(
+							envelope(request, {
+								obligations: 0,
+								mutation: {
+									op: 'upsert',
+									scope: scope(
+										{
+											type: 'string',
+											value: request.variables.input.id
+										},
+										Audit.id
+									),
+									fields: [
+										{
+											field: 'title',
+											value: {
+												type: 'string',
+												value: 'widened actual'
+											}
+										}
+									],
+									replace: ['title']
+								}
+							})
+						);
+					}
+				},
+				{ change: modeled }
+			),
+		/generated modeled projection/
+	);
+	assert.equal(dispatches, 0);
+	assert.equal(replica.layer(COMMAND_A), undefined);
+	assert.deepEqual(replica.semanticChanges, []);
+});
+
+test('unmodeled direct Projected commands do not require a revalidation coordinator', () => {
+	const replica = new TestReplica();
+	replica.revalidate = undefined;
+	const runtime = createReplicaCommandRuntime(
+		replica,
+		{ dispatch: () => Promise.reject(new Error('unused')) },
+		{ project: directProjectionArtifact() }
+	);
+	runtime.dispose();
 });
 
 test('generated status artifacts require a status transport at construction', () => {
