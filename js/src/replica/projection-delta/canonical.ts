@@ -25,6 +25,7 @@ export function canonicalCommandProjectionMetadata(
 		issuedAtUnixMs: metadata.issuedAtUnixMs,
 		expiresAtUnixMs: metadata.expiresAtUnixMs,
 		delta: JSON.parse(canonicalProjectionDelta(metadata.delta)) as unknown,
+		lifecycleProofs: metadata.lifecycleProofs,
 		obligations: metadata.obligations,
 		revalidate: metadata.revalidate
 	});

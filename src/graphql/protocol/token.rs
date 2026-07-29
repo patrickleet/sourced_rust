@@ -72,6 +72,7 @@ impl fmt::Debug for OpaqueProtocolToken {
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub(crate) enum ProtocolTokenPurpose {
     CacheScope,
+    ProjectionLifecycle,
     ProjectionObligation,
     ProjectionObservation,
     ProjectionPartition,
@@ -85,6 +86,7 @@ impl ProtocolTokenPurpose {
     const fn label(self) -> &'static str {
         match self {
             Self::CacheScope => "cache-scope",
+            Self::ProjectionLifecycle => "projection-lifecycle",
             Self::ProjectionObligation => "projection-obligation",
             Self::ProjectionObservation => "projection-observation",
             Self::ProjectionPartition => "projection-partition",
@@ -98,6 +100,7 @@ impl ProtocolTokenPurpose {
     fn from_label(value: &str) -> Option<Self> {
         match value {
             "cache-scope" => Some(Self::CacheScope),
+            "projection-lifecycle" => Some(Self::ProjectionLifecycle),
             "projection-obligation" => Some(Self::ProjectionObligation),
             "projection-observation" => Some(Self::ProjectionObservation),
             "projection-partition" => Some(Self::ProjectionPartition),

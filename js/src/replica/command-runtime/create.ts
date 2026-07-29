@@ -729,6 +729,26 @@ export function createReplicaCommandRuntime<
 			})
 			.catch(() => undefined);
 	};
+	const revalidateDispositionAndRetireInBackground = (
+		controller: PendingProjection
+	): void => {
+		void revalidate(controller.prepared, controller.authority.signal)
+			.then((refreshed) => {
+				if (
+					refreshed &&
+					!controller.settled &&
+					stillCurrent(controller.authority) &&
+					pending.get(controller.commandId) === controller
+				) {
+					retireLayerAfterAuthoritativeRevalidation(
+						controller.commandId
+					);
+					settleProjectionSuccess(controller);
+					pending.delete(controller.commandId);
+				}
+			})
+			.catch(() => undefined);
+	};
 
 	const commitStatusProgression = (
 		tracker: CommandStatusTracker,
@@ -825,15 +845,26 @@ export function createReplicaCommandRuntime<
 							'command status changed pending causation identity'
 						);
 					}
-					const validated = validateProjectionForState(
-						prepared as ReplicaPreparedCommand<unknown, unknown>,
-						status.metadata,
-						authority
-					);
-					statusRequiresRevalidation = commitActualProjection(
-						prepared as ReplicaPreparedCommand<unknown, unknown>,
-						validated
-					);
+					if (
+						status.metadata.projectionDisposition === 'revalidate'
+					) {
+						/*
+						 * This is current-envelope authority to refetch, never
+						 * authority to validate or apply the omitted old-scope
+						 * delta.
+						 */
+						statusRequiresRevalidation = true;
+					} else {
+						const validated = validateProjectionForState(
+							prepared as ReplicaPreparedCommand<unknown, unknown>,
+							status.metadata,
+							authority
+						);
+						statusRequiresRevalidation = commitActualProjection(
+							prepared as ReplicaPreparedCommand<unknown, unknown>,
+							validated
+						);
+					}
 				}
 			} catch (error) {
 				const failure = new ReplicaCommandRuntimeError(
@@ -881,6 +912,69 @@ export function createReplicaCommandRuntime<
 				case 'succeeded_pending_projection':
 				case 'projected': {
 					const metadata = status.metadata!;
+					if (metadata.projectionDisposition === 'revalidate') {
+						if (metadata.state === 'succeeded_pending_projection') {
+							/*
+							 * Historical evidence is still pending. Refresh
+							 * canonical current-scope queries opportunistically,
+							 * but retain optimism and keep polling until the
+							 * server reports a terminal state.
+							 */
+							revalidateInBackground(prepared, authority);
+							break;
+						}
+						let refreshed = false;
+						try {
+							refreshed = await revalidate(
+								prepared,
+								authority.signal
+							);
+						} catch (error) {
+							if (disposed) {
+								throw new ReplicaCommandRuntimeError(
+									'REPLICA_COMMAND_DISPOSED',
+									{
+										commandId: prepared.commandId,
+										cause: error
+									}
+								);
+							}
+							if (
+								authority.signal?.aborted ||
+								!stillCurrent(authority)
+							) {
+								throw new ReplicaCommandRuntimeError(
+									'REPLICA_COMMAND_SCOPE_INVALIDATED',
+									{
+										commandId: prepared.commandId,
+										cause: error
+									}
+								);
+							}
+							// The retained monitor will retry this exact
+							// current-scope revalidation on the next status read.
+						}
+						if (refreshed && stillCurrent(authority)) {
+							const controller = tracker.pending;
+							if (
+								controller !== undefined &&
+								!controller.settled &&
+								pending.get(prepared.commandId) === controller
+							) {
+								retireLayerAfterAuthoritativeRevalidation(
+									prepared.commandId
+								);
+								settleTrackedProjection(tracker, pending);
+							} else if (
+								unmanagedLayers.has(prepared.commandId)
+							) {
+								retireLayerAfterAuthoritativeRevalidation(
+									prepared.commandId
+								);
+							}
+						}
+						break;
+					}
 					const remainsPending = replica.markOptimisticLayerAccepted(
 						prepared.commandId,
 						metadata
@@ -1449,12 +1543,14 @@ export function createReplicaCommandRuntime<
 						controller.tracker.metadata,
 						status
 					);
-					const validated = validateProjectionForState(
-						controller.prepared,
-						command,
-						controller.authority
-					);
-					commitActualProjection(controller.prepared, validated);
+					if (command.projectionDisposition !== 'revalidate') {
+						const validated = validateProjectionForState(
+							controller.prepared,
+							command,
+							controller.authority
+						);
+						commitActualProjection(controller.prepared, validated);
+					}
 					commitStatusProgression(controller.tracker, status);
 				} catch (error) {
 					replica.rejectOptimisticLayer(commandId);
@@ -1507,6 +1603,19 @@ export function createReplicaCommandRuntime<
 						)
 					);
 					pending.delete(commandId);
+					continue;
+				}
+				if (command.projectionDisposition === 'revalidate') {
+					if (
+						command.state === 'succeeded_pending_projection'
+					) {
+						revalidateInBackground(
+							controller.prepared,
+							controller.authority
+						);
+					} else {
+						revalidateDispositionAndRetireInBackground(controller);
+					}
 					continue;
 				}
 			}

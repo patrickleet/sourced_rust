@@ -13,6 +13,17 @@ pub(crate) const COMMAND_PROJECTION_METADATA_WIRE_VERSION: u16 = 1;
 /// Maximum exact causal obligations carried by one command.
 pub(crate) const MAX_COMMAND_PROJECTION_OBLIGATIONS: usize = 128;
 
+/// MAC-bound immutable deployment identity for one delta projection.
+///
+/// The lifecycle state is deliberately excluded so an exact Active binding
+/// can become Draining without making its already-committed work invisible.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub(crate) struct CommandProjectionLifecycleProofV1 {
+    pub(crate) projection_ref: u32,
+    pub(crate) token: OpaqueProtocolToken,
+}
+
 /// One exact selected projector obligation.
 ///
 /// `projection_ref` indexes the role-safe delta projection inventory. The
@@ -39,6 +50,8 @@ pub(crate) struct CommandProjectionMetadataV1 {
     pub(crate) issued_at_unix_ms: u64,
     pub(crate) expires_at_unix_ms: u64,
     pub(crate) delta: ProjectionDelta,
+    #[serde(deserialize_with = "deserialize_bounded_lifecycle_proofs")]
+    pub(crate) lifecycle_proofs: Vec<CommandProjectionLifecycleProofV1>,
     #[serde(deserialize_with = "deserialize_bounded_obligations")]
     pub(crate) obligations: Vec<CommandProjectionObligationV1>,
     pub(crate) revalidate: bool,
@@ -49,6 +62,7 @@ impl CommandProjectionMetadataV1 {
         issued_at_unix_ms: u64,
         expires_at_unix_ms: u64,
         delta: ProjectionDelta,
+        mut lifecycle_proofs: Vec<CommandProjectionLifecycleProofV1>,
         mut obligations: Vec<CommandProjectionObligationV1>,
         revalidate: bool,
     ) -> Result<Self, CommandProjectionMetadataError> {
@@ -58,6 +72,8 @@ impl CommandProjectionMetadataV1 {
                 max: MAX_COMMAND_PROJECTION_OBLIGATIONS,
             });
         }
+        lifecycle_proofs.sort_by_key(|proof| proof.projection_ref);
+        lifecycle_proofs.dedup();
         let mut scope_models = std::collections::BTreeMap::new();
         for obligation in &obligations {
             let key = (obligation.projection_ref, obligation.scope_token.as_str());
@@ -80,6 +96,7 @@ impl CommandProjectionMetadataV1 {
             issued_at_unix_ms,
             expires_at_unix_ms,
             delta,
+            lifecycle_proofs,
             obligations,
             revalidate,
         };
@@ -146,6 +163,22 @@ impl CommandProjectionMetadataV1 {
         self.delta
             .canonical_bytes()
             .map_err(CommandProjectionMetadataError::Delta)?;
+        if self.lifecycle_proofs.len() != self.delta.projections.len()
+            || self
+                .lifecycle_proofs
+                .iter()
+                .enumerate()
+                .any(|(index, proof)| proof.projection_ref as usize != index)
+        {
+            return Err(CommandProjectionMetadataError::InvalidLifecycleProofs);
+        }
+        for proof in &self.lifecycle_proofs {
+            let parsed = OpaqueProtocolToken::parse(proof.token.as_str())
+                .map_err(|_| CommandProjectionMetadataError::InvalidLifecycleProofs)?;
+            if parsed.as_str().split('.').nth(1) != Some("projection-lifecycle") {
+                return Err(CommandProjectionMetadataError::InvalidLifecycleProofs);
+            }
+        }
         if self.obligations.len() > MAX_COMMAND_PROJECTION_OBLIGATIONS {
             return Err(CommandProjectionMetadataError::TooManyObligations {
                 len: self.obligations.len(),
@@ -222,6 +255,53 @@ impl CommandProjectionMetadataV1 {
     }
 }
 
+fn deserialize_bounded_lifecycle_proofs<'de, D>(
+    deserializer: D,
+) -> Result<Vec<CommandProjectionLifecycleProofV1>, D::Error>
+where
+    D: Deserializer<'de>,
+{
+    struct BoundedLifecycleProofsVisitor;
+
+    impl<'de> Visitor<'de> for BoundedLifecycleProofsVisitor {
+        type Value = Vec<CommandProjectionLifecycleProofV1>;
+
+        fn expecting(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+            write!(
+                formatter,
+                "at most {MAX_COMMAND_PROJECTION_OBLIGATIONS} projection lifecycle proofs"
+            )
+        }
+
+        fn visit_seq<A>(self, mut sequence: A) -> Result<Self::Value, A::Error>
+        where
+            A: SeqAccess<'de>,
+        {
+            let mut proofs = Vec::with_capacity(
+                sequence
+                    .size_hint()
+                    .unwrap_or_default()
+                    .min(MAX_COMMAND_PROJECTION_OBLIGATIONS),
+            );
+            while proofs.len() < MAX_COMMAND_PROJECTION_OBLIGATIONS {
+                let Some(proof) = sequence.next_element()? else {
+                    return Ok(proofs);
+                };
+                proofs.push(proof);
+            }
+            if sequence.next_element::<IgnoredAny>()?.is_some() {
+                return Err(A::Error::custom(format_args!(
+                    "command projection metadata has more than \
+                     {MAX_COMMAND_PROJECTION_OBLIGATIONS} lifecycle proofs"
+                )));
+            }
+            Ok(proofs)
+        }
+    }
+
+    deserializer.deserialize_seq(BoundedLifecycleProofsVisitor)
+}
+
 fn deserialize_bounded_obligations<'de, D>(
     deserializer: D,
 ) -> Result<Vec<CommandProjectionObligationV1>, D::Error>
@@ -293,6 +373,7 @@ pub(crate) enum CommandProjectionMetadataError {
     InvalidScopeToken,
     ConflictingObligationScope,
     MissingRevalidation,
+    InvalidLifecycleProofs,
     NonCanonical,
     BodyTooLarge { len: usize, max: usize },
 }
@@ -328,6 +409,9 @@ impl std::fmt::Display for CommandProjectionMetadataError {
             ),
             Self::MissingRevalidation => {
                 formatter.write_str("command projection recovery requires explicit revalidation")
+            }
+            Self::InvalidLifecycleProofs => {
+                formatter.write_str("command projection lifecycle proofs are incomplete or invalid")
             }
             Self::NonCanonical => {
                 formatter.write_str("command projection metadata is not canonical")
@@ -409,6 +493,23 @@ mod tests {
         }
     }
 
+    fn lifecycle_proofs(
+        codec: &ProtocolTokenCodec,
+        count: usize,
+    ) -> Vec<CommandProjectionLifecycleProofV1> {
+        (0..count)
+            .map(|index| CommandProjectionLifecycleProofV1 {
+                projection_ref: index.try_into().unwrap(),
+                token: codec
+                    .issue(
+                        ProtocolTokenPurpose::ProjectionLifecycle,
+                        &("projection-lifecycle", index),
+                    )
+                    .unwrap(),
+            })
+            .collect()
+    }
+
     #[test]
     fn metadata_round_trips_canonical_bytes_and_deduplicates_scope_tokens() {
         let codec = ProtocolTokenCodec::new([0x31; 32]);
@@ -419,6 +520,7 @@ mod tests {
             100,
             200,
             delta(),
+            lifecycle_proofs(&codec, 1),
             vec![
                 CommandProjectionObligationV1 {
                     projection_ref: 0,
@@ -455,10 +557,20 @@ mod tests {
                 &("command-projection-metadata-v1", 1),
             )
             .unwrap();
+        let lifecycle = codec
+            .issue(
+                ProtocolTokenPurpose::ProjectionLifecycle,
+                &("command-projection-metadata-v1", 1),
+            )
+            .unwrap();
         let metadata = CommandProjectionMetadataV1::try_new(
             1_700_000_000_000,
             1_700_000_060_000,
             delta(),
+            vec![CommandProjectionLifecycleProofV1 {
+                projection_ref: 0,
+                token: lifecycle,
+            }],
             vec![CommandProjectionObligationV1 {
                 projection_ref: 0,
                 model: "Todos".into(),
@@ -473,7 +585,7 @@ mod tests {
         assert_eq!(fixture, expected);
         assert_eq!(
             format!("sha256:{:x}", Sha256::digest(fixture)),
-            "sha256:161c286cf64bb719e05589859f7eb0db2c86d8649a53b3bd621388ff556b3aa7"
+            "sha256:40417ca1897322e636dc196388f68c331c322c142f624d3741e4e7a24b8e9f81"
         );
         assert_eq!(
             CommandProjectionMetadataV1::from_json(fixture).unwrap(),
@@ -500,12 +612,20 @@ mod tests {
             100,
             200,
             delta(),
+            lifecycle_proofs(&codec, 1),
             obligations[..MAX_COMMAND_PROJECTION_OBLIGATIONS].to_vec(),
             false,
         )
         .unwrap();
         assert!(matches!(
-            CommandProjectionMetadataV1::try_new(100, 200, delta(), obligations, false),
+            CommandProjectionMetadataV1::try_new(
+                100,
+                200,
+                delta(),
+                lifecycle_proofs(&codec, 1),
+                obligations,
+                false,
+            ),
             Err(CommandProjectionMetadataError::TooManyObligations { len: 129, max: 128 })
         ));
     }
@@ -520,9 +640,15 @@ mod tests {
                 .issue(ProtocolTokenPurpose::ProjectionObligation, &("hostile", 1))
                 .unwrap(),
         };
-        let metadata =
-            CommandProjectionMetadataV1::try_new(100, 200, delta(), vec![obligation], false)
-                .unwrap();
+        let metadata = CommandProjectionMetadataV1::try_new(
+            100,
+            200,
+            delta(),
+            lifecycle_proofs(&codec, 1),
+            vec![obligation],
+            false,
+        )
+        .unwrap();
         let mut wire = serde_json::to_value(metadata).unwrap();
         let encoded = wire["obligations"][0].clone();
         wire["obligations"] = serde_json::Value::Array(
@@ -545,6 +671,97 @@ mod tests {
             error,
             CommandProjectionMetadataError::InvalidWire(ref message)
                 if message.contains("more than 128 obligations")
+        ));
+    }
+
+    #[test]
+    fn lifecycle_proofs_are_dense_canonical_and_purpose_separated() {
+        let codec = ProtocolTokenCodec::new([0x36; 32]);
+        assert_eq!(
+            CommandProjectionMetadataV1::try_new(100, 200, delta(), Vec::new(), Vec::new(), false),
+            Err(CommandProjectionMetadataError::InvalidLifecycleProofs)
+        );
+        let wrong_purpose = CommandProjectionLifecycleProofV1 {
+            projection_ref: 0,
+            token: codec
+                .issue(ProtocolTokenPurpose::ProjectionObligation, &("wrong", 1))
+                .unwrap(),
+        };
+        assert_eq!(
+            CommandProjectionMetadataV1::try_new(
+                100,
+                200,
+                delta(),
+                vec![wrong_purpose],
+                Vec::new(),
+                false,
+            ),
+            Err(CommandProjectionMetadataError::InvalidLifecycleProofs)
+        );
+
+        let mut two = delta();
+        let mut second = two.projections[0].clone();
+        second.program_id =
+            "pp1:sha256:cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc".into();
+        second.binding_id =
+            "pb1:sha256:dddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddd".into();
+        two.projections.push(second);
+        let mut proofs = lifecycle_proofs(&codec, 2);
+        proofs.reverse();
+        let metadata =
+            CommandProjectionMetadataV1::try_new(100, 200, two, proofs, Vec::new(), false).unwrap();
+        assert_eq!(
+            metadata
+                .lifecycle_proofs
+                .iter()
+                .map(|proof| proof.projection_ref)
+                .collect::<Vec<_>>(),
+            vec![0, 1]
+        );
+        let mut wire = serde_json::to_value(&metadata).unwrap();
+        wire["lifecycleProofs"].as_array_mut().unwrap().reverse();
+        assert_eq!(
+            CommandProjectionMetadataV1::from_json(&serde_json::to_vec(&wire).unwrap()),
+            Err(CommandProjectionMetadataError::InvalidLifecycleProofs)
+        );
+
+        let mut duplicate = metadata.lifecycle_proofs.clone();
+        duplicate[1].projection_ref = 0;
+        assert_eq!(
+            CommandProjectionMetadataV1::try_new(
+                100,
+                200,
+                metadata.delta,
+                duplicate,
+                Vec::new(),
+                false,
+            ),
+            Err(CommandProjectionMetadataError::InvalidLifecycleProofs)
+        );
+    }
+
+    #[test]
+    fn wire_decode_streams_no_more_than_128_lifecycle_proofs() {
+        let codec = ProtocolTokenCodec::new([0x37; 32]);
+        let metadata = CommandProjectionMetadataV1::try_new(
+            100,
+            200,
+            delta(),
+            lifecycle_proofs(&codec, 1),
+            Vec::new(),
+            false,
+        )
+        .unwrap();
+        let mut wire = serde_json::to_value(metadata).unwrap();
+        let proof = wire["lifecycleProofs"][0].clone();
+        wire["lifecycleProofs"] =
+            serde_json::Value::Array(std::iter::repeat_n(proof, 129).collect());
+        let error = CommandProjectionMetadataV1::from_json(&serde_json::to_vec(&wire).unwrap())
+            .unwrap_err();
+        assert!(matches!(
+            error,
+            CommandProjectionMetadataError::InvalidWire(ref message)
+                if message.contains("more than 128 lifecycle proofs")
         ));
     }
 
@@ -583,6 +800,7 @@ mod tests {
             100,
             200,
             delta,
+            lifecycle_proofs(&codec, 1),
             vec![
                 CommandProjectionObligationV1 {
                     projection_ref: 0,
@@ -651,6 +869,7 @@ mod tests {
                 100,
                 200,
                 multi_model,
+                lifecycle_proofs(&codec, 1),
                 vec![
                     CommandProjectionObligationV1 {
                         projection_ref: 0,

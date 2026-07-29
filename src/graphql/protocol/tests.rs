@@ -87,6 +87,7 @@ fn command(id: &str) -> DistributedCommandMetadata {
         causation_id: "cause-17".into(),
         state: DistributedCommandState::SucceededPendingProjection,
         consistency: DistributedCommandConsistency::Causal,
+        projection_disposition: None,
         expects: vec![DistributedProjectionExpectation {
             projection: "todos".into(),
             model: "TodoView".into(),
@@ -336,6 +337,7 @@ fn unknown_status_does_not_fabricate_receipt_identity() {
             outcome: None,
             obligations: Vec::new(),
             projection_metadata: None,
+            projection_revalidate: false,
             evidence: Vec::new(),
             direct_projection: None,
         })
@@ -357,6 +359,7 @@ fn projected_status_exposes_only_matching_opaque_observations() {
             outcome: Some(source.outcome),
             obligations: source.obligations,
             projection_metadata: None,
+            projection_revalidate: false,
             evidence: vec![crate::microsvc::CausalCommandProjectionEvidence {
                 obligation_index: 0,
                 state: CausalProjectionEvidenceState::Observed,

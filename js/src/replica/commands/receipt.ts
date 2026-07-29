@@ -17,6 +17,18 @@ export function verifyReplicaCommandReceipt<TInput, TOutput>(
 	if (receipt.consistency !== prepared.consistency) {
 		receiptMismatch('receipt.consistency');
 	}
+	if (receipt.projectionDisposition === 'revalidate') {
+		if (prepared.projection === undefined) {
+			receiptMismatch('receipt.projectionDisposition');
+		}
+		return Object.freeze({
+			kind:
+				receipt.state === 'succeeded_pending_projection'
+					? 'deferred'
+					: 'matched',
+			revalidate: true
+		});
+	}
 	if (receipt.state === 'in_progress' && receipt.expects.length === 0) {
 		return Object.freeze({
 			kind: 'deferred',

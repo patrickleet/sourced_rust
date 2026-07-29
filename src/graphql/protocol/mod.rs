@@ -14,8 +14,8 @@ mod types;
 
 pub(crate) use accumulator::{issue_projection_obligation_token, ProtocolResponseAccumulator};
 pub(crate) use projection_metadata::{
-    CommandProjectionMetadataError, CommandProjectionMetadataV1, CommandProjectionObligationV1,
-    MAX_COMMAND_PROJECTION_OBLIGATIONS,
+    CommandProjectionLifecycleProofV1, CommandProjectionMetadataError, CommandProjectionMetadataV1,
+    CommandProjectionObligationV1, MAX_COMMAND_PROJECTION_OBLIGATIONS,
 };
 pub(crate) use token::{
     OpaqueProtocolToken, ProtocolTokenCodec, ProtocolTokenError, ProtocolTokenPurpose,
@@ -24,7 +24,7 @@ pub(crate) use token::{
 pub(crate) use types::{
     DistributedCommandConsistency, DistributedCommandMetadata, DistributedCommandState,
     DistributedEnvelopeV1, DistributedIndexRevision, DistributedLiveCursor,
-    DistributedLiveMetadata, DistributedProjectionExpectation, DistributedProjectionObservation,
-    DistributedQuerySnapshot, DistributedRecordRevision, DistributedTrustedPreset,
-    RequestedLiveResume,
+    DistributedLiveMetadata, DistributedProjectionDisposition, DistributedProjectionExpectation,
+    DistributedProjectionObservation, DistributedQuerySnapshot, DistributedRecordRevision,
+    DistributedTrustedPreset, RequestedLiveResume,
 };

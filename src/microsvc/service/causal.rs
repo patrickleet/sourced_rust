@@ -283,6 +283,9 @@ pub(crate) struct CausalCommandPublicStatus {
     pub(crate) outcome: Option<Value>,
     pub(crate) obligations: Vec<CausalCommandProjectionObligation>,
     pub(crate) projection_metadata: Option<crate::graphql::protocol::CommandProjectionMetadataV1>,
+    /// Historical modeled work was authenticated against an exact Draining
+    /// binding, but its old-scope delta is not applicable to this client.
+    pub(crate) projection_revalidate: bool,
     pub(crate) evidence: Vec<CausalCommandProjectionEvidence>,
     pub(crate) direct_projection: Option<SameTransactionProjectionEvidence>,
 }
@@ -298,6 +301,7 @@ impl CausalCommandPublicStatus {
             outcome: None,
             obligations: Vec::new(),
             projection_metadata: None,
+            projection_revalidate: false,
             evidence: Vec::new(),
             direct_projection: None,
         }
@@ -579,6 +583,7 @@ where
             outcome: None,
             obligations: Vec::new(),
             projection_metadata: None,
+            projection_revalidate: false,
             evidence: Vec::new(),
             direct_projection: None,
         }),
@@ -591,11 +596,37 @@ where
             outcome: None,
             obligations: Vec::new(),
             projection_metadata: None,
+            projection_revalidate: false,
             evidence: Vec::new(),
             direct_projection: None,
         }),
         CommandLookup::Replay(replay) => {
             let receipt = CausalCommandReceiptSource::from_replay(consistency, replay)?;
+            let modeled_plan = match receipt.projection_metadata.as_ref() {
+                Some(metadata) => Some(
+                    protocol
+                        .ok_or_else(|| {
+                            CausalDispatchError::Internal(
+                                "modeled projection status requires authenticated protocol authority"
+                                    .into(),
+                            )
+                        })?
+                        .modeled_projection_evidence_topologies(
+                            &receipt.causation_id,
+                            metadata,
+                        )
+                        .map_err(|error| {
+                            CausalDispatchError::Internal(format!(
+                                "modeled projection status authority rejected its stored identity: {error}"
+                            ))
+                        })?,
+                ),
+                None => None,
+            };
+            let projection_revalidate = modeled_plan.as_ref().is_some_and(|plan| {
+                plan.disposition
+                    == crate::graphql::projection_delta::runtime::ModeledProjectionStatusDisposition::Revalidate
+            });
             let (state, evidence) = match receipt.state {
                 CommandLedgerState::Succeeded => (CausalCommandPublicState::Succeeded, Vec::new()),
                 CommandLedgerState::Projected => (
@@ -623,7 +654,13 @@ where
                     (CausalCommandPublicState::ProjectionFailed, Vec::new())
                 }
                 CommandLedgerState::SucceededPendingProjection => {
-                    evaluate_pending_projection_evidence(repository, &receipt, protocol).await?
+                    evaluate_pending_projection_evidence(
+                        repository,
+                        &receipt,
+                        protocol,
+                        modeled_plan.as_ref(),
+                    )
+                    .await?
                 }
                 CommandLedgerState::InProgress
                 | CommandLedgerState::RetryableUnknown
@@ -642,6 +679,7 @@ where
                 outcome: Some(receipt.outcome),
                 obligations: receipt.obligations,
                 projection_metadata: receipt.projection_metadata,
+                projection_revalidate,
                 evidence,
                 direct_projection: receipt.direct_projection,
             })
@@ -654,6 +692,7 @@ pub(super) async fn evaluate_pending_projection_evidence<R>(
     repository: &R,
     receipt: &CausalCommandReceiptSource,
     protocol: Option<&crate::graphql::protocol::ProtocolResponseAccumulator>,
+    modeled_plan: Option<&crate::graphql::projection_delta::runtime::ModeledProjectionStatusPlan>,
 ) -> Result<
     (
         CausalCommandPublicState,
@@ -672,6 +711,11 @@ where
             protocol.ok_or_else(|| {
                 CausalDispatchError::Internal(
                     "modeled projection status requires authenticated protocol authority".into(),
+                )
+            })?,
+            modeled_plan.ok_or_else(|| {
+                CausalDispatchError::Internal(
+                    "modeled projection status is missing its authenticated status plan".into(),
                 )
             })?,
         )
@@ -784,6 +828,7 @@ async fn evaluate_pending_modeled_projection_evidence<R>(
     receipt: &CausalCommandReceiptSource,
     metadata: &crate::graphql::protocol::CommandProjectionMetadataV1,
     protocol: &crate::graphql::protocol::ProtocolResponseAccumulator,
+    plan: &crate::graphql::projection_delta::runtime::ModeledProjectionStatusPlan,
 ) -> Result<
     (
         CausalCommandPublicState,
@@ -794,19 +839,15 @@ async fn evaluate_pending_modeled_projection_evidence<R>(
 where
     R: ProjectionProtocolStore + Send + Sync,
 {
-    let topologies = protocol
-        .modeled_projection_evidence_topologies(&receipt.causation_id, metadata)
-        .map_err(|error| {
-            CausalDispatchError::Internal(format!(
-                "modeled projection status authority rejected its stored identity: {error}"
-            ))
-        })?;
-    let request = ProjectionCausationEvidenceRequest::new(receipt.causation_id.clone(), topologies)
-        .map_err(|error| {
-            CausalDispatchError::Internal(format!(
-                "stored modeled projection causation is invalid: {error}"
-            ))
-        })?;
+    let request = ProjectionCausationEvidenceRequest::new(
+        receipt.causation_id.clone(),
+        plan.topologies.clone(),
+    )
+    .map_err(|error| {
+        CausalDispatchError::Internal(format!(
+            "stored modeled projection causation is invalid: {error}"
+        ))
+    })?;
     let batch = repository
         .projection_causation_evidence(&request)
         .await
@@ -816,7 +857,7 @@ where
             ))
         })?;
     let modeled = protocol
-        .modeled_projection_evidence(&receipt.causation_id, metadata, &batch)
+        .modeled_projection_evidence(&receipt.causation_id, metadata, &batch, plan.disposition)
         .map_err(|error| {
             CausalDispatchError::Internal(format!(
                 "modeled projection evidence authority rejected durable candidates: {error}"

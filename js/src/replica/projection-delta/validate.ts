@@ -282,6 +282,7 @@ export function parseCommandProjectionMetadata(
 			'issuedAtUnixMs',
 			'expiresAtUnixMs',
 			'delta',
+			'lifecycleProofs',
 			'obligations',
 			'revalidate'
 		],
@@ -304,6 +305,31 @@ export function parseCommandProjectionMetadata(
 	);
 	if (issuedAtUnixMs >= expiresAtUnixMs) invalid('projection.expiresAtUnixMs');
 	const delta = parseProjectionDelta(metadata.delta);
+	const lifecycleProofs = boundedArray(
+		metadata.lifecycleProofs,
+		'projection.lifecycleProofs'
+	).map((item, index) => {
+		const path = `projection.lifecycleProofs[${index}]`;
+		const proof = exactRecord(item, ['projectionRef', 'token'], [], path);
+		const projectionRef = boundedOrdinal(
+			proof.projectionRef,
+			`${path}.projectionRef`
+		);
+		if (projectionRef !== index || projectionRef >= delta.projections.length) {
+			invalid(path);
+		}
+		return Object.freeze({
+			projectionRef,
+			token: protocolToken(
+				proof.token,
+				'projection-lifecycle',
+				`${path}.token`
+			)
+		});
+	});
+	if (lifecycleProofs.length !== delta.projections.length) {
+		invalid('projection.lifecycleProofs');
+	}
 	const obligations = boundedArray(
 		metadata.obligations,
 		'projection.obligations'
@@ -339,6 +365,7 @@ export function parseCommandProjectionMetadata(
 		issuedAtUnixMs,
 		expiresAtUnixMs,
 		delta,
+		lifecycleProofs: Object.freeze(lifecycleProofs),
 		obligations: Object.freeze(obligations),
 		revalidate: metadata.revalidate
 	});

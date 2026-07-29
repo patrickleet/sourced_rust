@@ -27,6 +27,14 @@ pub(crate) enum DistributedCommandConsistency {
     Projected,
 }
 
+/// Current-scope handling for durable projection work that was committed
+/// against an older cache/schema scope.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub(crate) enum DistributedProjectionDisposition {
+    Revalidate,
+}
+
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub(crate) struct DistributedProjectionExpectation {
@@ -42,6 +50,10 @@ pub(crate) struct DistributedCommandMetadata {
     pub(crate) causation_id: String,
     pub(crate) state: DistributedCommandState,
     pub(crate) consistency: DistributedCommandConsistency,
+    /// A lifecycle-safe status can acknowledge historical projector evidence
+    /// without making its old-scope delta applicable to this client.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub(crate) projection_disposition: Option<DistributedProjectionDisposition>,
     pub(crate) expects: Vec<DistributedProjectionExpectation>,
     /// Exact role-safe actual delta and opaque modeled obligations. Legacy
     /// compiler confirmations remain in `expects` during the migration.

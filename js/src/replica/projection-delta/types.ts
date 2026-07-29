@@ -145,11 +145,22 @@ export type CommandProjectionObligation = Readonly<{
 	scopeToken: string;
 }>;
 
+/**
+ * Opaque server-authenticated deployment identity for historical lifecycle
+ * checks. Clients validate only its bounded wire shape and never interpret it
+ * as authority to apply an old-scope delta.
+ */
+export type CommandProjectionLifecycleProof = Readonly<{
+	projectionRef: number;
+	token: string;
+}>;
+
 export type CommandProjectionMetadata = Readonly<{
 	wireVersion: 1;
 	issuedAtUnixMs: number;
 	expiresAtUnixMs: number;
 	delta: ProjectionDelta;
+	lifecycleProofs: readonly CommandProjectionLifecycleProof[];
 	obligations: readonly CommandProjectionObligation[];
 	revalidate: boolean;
 }>;

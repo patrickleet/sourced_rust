@@ -146,6 +146,13 @@ export function validateStatusProgression(
 		throw new Error('command status changed causal identity');
 	}
 	if (
+		previous.projectionDisposition === 'revalidate' &&
+		next.projectionDisposition !== 'revalidate'
+	) {
+		throw new Error('command status lost projection disposition');
+	}
+	if (next.projectionDisposition === 'revalidate') return;
+	if (
 		!(
 			previous.state === 'in_progress' &&
 			previous.expects.length === 0

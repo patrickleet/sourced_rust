@@ -23,8 +23,8 @@ use super::{
 use crate::command_ledger::{CausationId, PrincipalPartitionId};
 use crate::graphql::client_manifest::DistributedClientSurfaceExport;
 use crate::graphql::protocol::{
-    CommandProjectionMetadataV1, CommandProjectionObligationV1, OpaqueProtocolToken,
-    ProtocolTokenCodec, ProtocolTokenError, ProtocolTokenPurpose,
+    CommandProjectionLifecycleProofV1, CommandProjectionMetadataV1, CommandProjectionObligationV1,
+    OpaqueProtocolToken, ProtocolTokenCodec, ProtocolTokenError, ProtocolTokenPurpose,
     MAX_COMMAND_PROJECTION_OBLIGATIONS,
 };
 use crate::graphql::surface::{Surface, SurfaceModeledProjection};
@@ -49,6 +49,19 @@ use crate::{
 /// effectively permanent scope material while still allowing the complete
 /// default replay window.
 pub(crate) const MAX_PROJECTION_AUTHORITY_LIFETIME_MS: u64 = 30 * 24 * 60 * 60 * 1_000;
+
+#[derive(Serialize)]
+struct ProjectionLifecycleTokenMaterial<'a> {
+    domain: &'static str,
+    version: u32,
+    issued_at_unix_ms: u64,
+    expires_at_unix_ms: u64,
+    identity: &'a super::ProjectionDeltaIdentity,
+    projection_ref: u32,
+    projection: &'a super::ProjectionDeltaProjectionIdentity,
+    route: &'a ProjectionExecutorRoute,
+    topology: &'a ProjectorTopologyId,
+}
 
 /// Immutable request seed captured after GraphQL surface and bearer
 /// authentication have both been verified.
@@ -185,8 +198,21 @@ impl ProtocolProjectionRequestSeed {
         causation_id: &str,
         metadata: &CommandProjectionMetadataV1,
         batch: &ProjectionCausationEvidenceBatch,
+        disposition: ModeledProjectionStatusDisposition,
     ) -> Result<Vec<ModeledProjectionEvidence>, ProjectionRuntimeAuthorityError> {
-        self.validate_modeled_metadata(codec, cache_scope, causation_id, metadata)?;
+        match disposition {
+            ModeledProjectionStatusDisposition::Applicable => {
+                self.validate_modeled_metadata(codec, cache_scope, causation_id, metadata)?;
+            }
+            ModeledProjectionStatusDisposition::Revalidate => {
+                self.validate_modeled_lifecycle_metadata(
+                    codec,
+                    cache_scope,
+                    causation_id,
+                    metadata,
+                )?;
+            }
+        }
         let mut evidence = Vec::with_capacity(metadata.obligations.len());
         for obligation in &metadata.obligations {
             let identity = metadata
@@ -194,7 +220,7 @@ impl ProtocolProjectionRequestSeed {
                 .projections
                 .get(obligation.projection_ref as usize)
                 .ok_or(ProjectionRuntimeAuthorityError::InvalidMetadata)?;
-            let entry = self.historical_projection_entry(identity)?;
+            let entry = self.projection_entry(identity, disposition)?;
             let terminal_failure = batch
                 .terminal_failure_topologies
                 .iter()
@@ -249,24 +275,23 @@ impl ProtocolProjectionRequestSeed {
         cache_scope: &OpaqueProtocolToken,
         causation_id: &str,
         metadata: &CommandProjectionMetadataV1,
-    ) -> Result<Vec<ProjectorTopologyId>, ProjectionRuntimeAuthorityError> {
-        self.validate_modeled_metadata(codec, cache_scope, causation_id, metadata)?;
+    ) -> Result<ModeledProjectionStatusPlan, ProjectionRuntimeAuthorityError> {
+        let disposition =
+            match self.validate_modeled_metadata(codec, cache_scope, causation_id, metadata) {
+                Ok(()) => ModeledProjectionStatusDisposition::Applicable,
+                Err(_) => {
+                    self.validate_modeled_lifecycle_metadata(
+                        codec,
+                        cache_scope,
+                        causation_id,
+                        metadata,
+                    )?;
+                    ModeledProjectionStatusDisposition::Revalidate
+                }
+            };
         let mut topologies = Vec::new();
-        for obligation in &metadata.obligations {
-            let identity = metadata
-                .delta
-                .projections
-                .get(obligation.projection_ref as usize)
-                .ok_or(ProjectionRuntimeAuthorityError::InvalidMetadata)?;
-            let entry = self.historical_projection_entry(identity)?;
-            if !entry
-                .binding
-                .outputs()
-                .iter()
-                .any(|output| output.model() == obligation.model)
-            {
-                return Err(ProjectionRuntimeAuthorityError::InvalidObservation);
-            }
+        for identity in &metadata.delta.projections {
+            let entry = self.projection_entry(identity, disposition)?;
             let topology = entry.codec.topology();
             if !topologies
                 .iter()
@@ -275,11 +300,27 @@ impl ProtocolProjectionRequestSeed {
                 topologies.push(topology.clone());
             }
         }
-        if topologies.is_empty() {
-            return Err(ProjectionRuntimeAuthorityError::InvalidMetadata);
+        for obligation in &metadata.obligations {
+            let identity = metadata
+                .delta
+                .projections
+                .get(obligation.projection_ref as usize)
+                .ok_or(ProjectionRuntimeAuthorityError::InvalidMetadata)?;
+            let entry = self.projection_entry(identity, disposition)?;
+            if !entry
+                .binding
+                .outputs()
+                .iter()
+                .any(|output| output.model() == obligation.model)
+            {
+                return Err(ProjectionRuntimeAuthorityError::InvalidObservation);
+            }
         }
         topologies.sort_by_key(ProjectorTopologyId::canonical_bytes);
-        Ok(topologies)
+        Ok(ModeledProjectionStatusPlan {
+            topologies,
+            disposition,
+        })
     }
 
     pub(crate) fn validate_modeled_metadata(
@@ -290,13 +331,16 @@ impl ProtocolProjectionRequestSeed {
         metadata: &CommandProjectionMetadataV1,
     ) -> Result<(), ProjectionRuntimeAuthorityError> {
         self.validate_modeled_status_authority(codec, cache_scope, causation_id, metadata)?;
+        for identity in &metadata.delta.projections {
+            self.current_projection_entry(identity)?;
+        }
         for obligation in &metadata.obligations {
             let identity = metadata
                 .delta
                 .projections
                 .get(obligation.projection_ref as usize)
                 .ok_or(ProjectionRuntimeAuthorityError::InvalidMetadata)?;
-            let entry = self.historical_projection_entry(identity)?;
+            let entry = self.current_projection_entry(identity)?;
             if !entry
                 .binding
                 .outputs()
@@ -309,15 +353,30 @@ impl ProtocolProjectionRequestSeed {
         Ok(())
     }
 
-    fn historical_projection_entry(
+    fn projection_entry(
+        &self,
+        identity: &super::ProjectionDeltaProjectionIdentity,
+        disposition: ModeledProjectionStatusDisposition,
+    ) -> Result<&ProtocolProjectionProgram, ProjectionRuntimeAuthorityError> {
+        match disposition {
+            ModeledProjectionStatusDisposition::Applicable => {
+                self.current_projection_entry(identity)
+            }
+            ModeledProjectionStatusDisposition::Revalidate => {
+                self.lifecycle_projection_entry(identity)
+            }
+        }
+    }
+
+    fn current_projection_entry(
         &self,
         identity: &super::ProjectionDeltaProjectionIdentity,
     ) -> Result<&ProtocolProjectionProgram, ProjectionRuntimeAuthorityError> {
-        let projection = self.historical_projection(identity)?;
+        let projection = self.current_projection(identity)?;
         self.registry.exact(projection)
     }
 
-    fn historical_projection(
+    fn current_projection(
         &self,
         identity: &super::ProjectionDeltaProjectionIdentity,
     ) -> Result<&SurfaceModeledProjection, ProjectionRuntimeAuthorityError> {
@@ -332,6 +391,45 @@ impl ProtocolProjectionRequestSeed {
                     && projection.program_id().to_string() == identity.program_id
                     && projection.binding_id().to_string() == identity.binding_id
                     && projection.epoch().as_str() == identity.epoch
+                    && projection.selected_program().is_some_and(|selected| {
+                        selected.ir_version == identity.program_ir_version
+                            && selected.operation_semantics_version
+                                == identity.operation_semantics_version
+                    })
+            })
+            .ok_or(ProjectionRuntimeAuthorityError::IneligibleProjection)?;
+        self.registry.exact(projection)?;
+        Ok(projection)
+    }
+
+    fn lifecycle_projection_entry(
+        &self,
+        identity: &super::ProjectionDeltaProjectionIdentity,
+    ) -> Result<&ProtocolProjectionProgram, ProjectionRuntimeAuthorityError> {
+        let projection = self.lifecycle_projection(identity)?;
+        self.registry.exact(projection)
+    }
+
+    fn lifecycle_projection(
+        &self,
+        identity: &super::ProjectionDeltaProjectionIdentity,
+    ) -> Result<&SurfaceModeledProjection, ProjectionRuntimeAuthorityError> {
+        let projection = self
+            .export
+            .surface()
+            .projection_owners()
+            .iter()
+            .flat_map(|owner| &owner.modeled)
+            .find(|projection| {
+                projection.is_causal_evidence_eligible()
+                    && projection.program_id().to_string() == identity.program_id
+                    && projection.binding_id().to_string() == identity.binding_id
+                    && projection.epoch().as_str() == identity.epoch
+                    && projection.selected_program().is_some_and(|selected| {
+                        selected.ir_version == identity.program_ir_version
+                            && selected.operation_semantics_version
+                                == identity.operation_semantics_version
+                    })
             })
             .ok_or(ProjectionRuntimeAuthorityError::IneligibleProjection)?;
         self.registry.exact(projection)?;
@@ -372,39 +470,95 @@ impl ProtocolProjectionRequestSeed {
             .export
             .manifest()
             .map_err(|_| ProjectionRuntimeAuthorityError::InvalidAuthority)?;
-        if metadata
+        metadata
             .delta
             .validate_replay_scope(&manifest, &authority)
-            .is_ok()
-        {
-            return Ok(());
-        }
-        let mut saw_draining = false;
-        for identity in &metadata.delta.projections {
-            let projection = self.historical_projection(identity)?;
-            saw_draining |= projection.state()
-                == crate::projection::placement::ProjectionBindingState::Draining;
-        }
+            .map_err(ProjectionRuntimeAuthorityError::Delta)
+    }
+
+    pub(crate) fn validate_modeled_lifecycle_metadata(
+        &self,
+        codec: &ProtocolTokenCodec,
+        cache_scope: &OpaqueProtocolToken,
+        causation_id: &str,
+        metadata: &CommandProjectionMetadataV1,
+    ) -> Result<(), ProjectionRuntimeAuthorityError> {
+        let now_unix_ms = unix_time_ms(SystemTime::now())?;
+        metadata
+            .validate_not_expired(now_unix_ms)
+            .map_err(|error| match error {
+                crate::graphql::protocol::CommandProjectionMetadataError::Expired => {
+                    ProjectionRuntimeAuthorityError::Expired
+                }
+                _ => ProjectionRuntimeAuthorityError::InvalidMetadata,
+            })?;
+        let causation_id = CausationId::parse_stored(causation_id.to_owned())
+            .map_err(|_| ProjectionRuntimeAuthorityError::InvalidAuthority)?;
+        let authority = ProtocolProjectionDeltaRequestAuthority::try_new(
+            self.export.clone(),
+            codec.clone(),
+            self.principal_scope.clone(),
+            self.authorization_generation.clone(),
+            cache_scope,
+            causation_id,
+            now_unix_ms,
+            metadata.issued_at_unix_ms,
+            metadata.expires_at_unix_ms,
+        )?
+        .with_trusted_presets(self.trusted_presets.clone());
+        let manifest = self
+            .export
+            .manifest()
+            .map_err(|_| ProjectionRuntimeAuthorityError::InvalidAuthority)?;
         let identity = &metadata.delta.identity;
-        // Status/replay lookup is already fenced by the current verified
-        // principal partition. A lifecycle-only Active -> Draining rollout
-        // changes the selected manifest hash and therefore its cache-scope
-        // token, but must not strand work minted by the exact same binding.
-        // Preserve every immutable authorization identity here; the original
-        // schema/cache pair is authenticated again when each obligation token
-        // is verified, and current exact binding/route/topology eligibility is
-        // checked separately by `historical_projection_entry`.
-        if !saw_draining
-            || identity.manifest_version != manifest.manifest_version
+        if identity.manifest_version != manifest.manifest_version
             || identity.client_protocol_version != manifest.protocol_version
             || identity.surface != ProjectionDeltaSurfaceIdentity::from(&manifest.surface)
             || identity.protocol_fingerprint != manifest.protocol_fingerprint
             || identity.authorization_generation != authority.authorization_generation()
             || identity.command_causation_id != authority.command_causation_id().as_str()
+            || (identity.schema_fingerprint == manifest.schema_fingerprint
+                && identity.cache_scope_token == authority.cache_scope().as_str())
         {
             return Err(ProjectionRuntimeAuthorityError::Delta(
                 ProjectionDeltaError::ReplayScopeMismatch,
             ));
+        }
+        let mut saw_draining = false;
+        for (projection_ref, (projection_identity, proof)) in metadata
+            .delta
+            .projections
+            .iter()
+            .zip(&metadata.lifecycle_proofs)
+            .enumerate()
+        {
+            if proof.projection_ref as usize != projection_ref {
+                return Err(ProjectionRuntimeAuthorityError::InvalidMetadata);
+            }
+            let projection = self.lifecycle_projection(projection_identity)?;
+            let entry = self.registry.exact(projection)?;
+            saw_draining |= projection.state()
+                == crate::projection::placement::ProjectionBindingState::Draining;
+            codec
+                .verify(
+                    &proof.token,
+                    ProtocolTokenPurpose::ProjectionLifecycle,
+                    &ProjectionLifecycleTokenMaterial {
+                        domain: "distributed.graphql.projection-lifecycle",
+                        version: 1,
+                        issued_at_unix_ms: metadata.issued_at_unix_ms,
+                        expires_at_unix_ms: metadata.expires_at_unix_ms,
+                        identity,
+                        projection_ref: proof.projection_ref,
+                        projection: projection_identity,
+                        route: projection.route(),
+                        topology: entry.codec.topology(),
+                    },
+                )
+                .map_err(ProjectionRuntimeAuthorityError::Token)?;
+        }
+        if !saw_draining {
+            return Err(ProjectionRuntimeAuthorityError::IneligibleProjection);
         }
         Ok(())
     }
@@ -495,6 +649,18 @@ pub(crate) enum ModeledProjectionEvidence {
     Pending,
     Observed(ProjectionObservation),
     TerminalFailure,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(crate) enum ModeledProjectionStatusDisposition {
+    Applicable,
+    Revalidate,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub(crate) struct ModeledProjectionStatusPlan {
+    pub(crate) topologies: Vec<ProjectorTopologyId>,
+    pub(crate) disposition: ModeledProjectionStatusDisposition,
 }
 
 /// Exact raw catalog programs retained by the GraphQL engine solely for
@@ -693,6 +859,7 @@ impl ProtocolProjectionProgramRegistry {
             .into_iter()
             .map(|index| modeled[index])
             .collect::<Vec<_>>();
+        let lifecycle_proofs = self.lifecycle_proofs(request, &delta, &eligible)?;
         let observations =
             self.observation_scopes(request, &delta, &modeled, &resolved_occurrences)?;
         let opaque_revalidation = request
@@ -709,7 +876,56 @@ impl ProtocolProjectionProgramRegistry {
                         .any(|fact| fact == &occurrence.descriptor().name)
                 })
             });
-        request.metadata(delta, &eligible, &observations, opaque_revalidation)
+        request.metadata(
+            delta,
+            lifecycle_proofs,
+            &eligible,
+            &observations,
+            opaque_revalidation,
+        )
+    }
+
+    fn lifecycle_proofs(
+        &self,
+        request: &ProtocolProjectionDeltaRequestAuthority,
+        delta: &ProjectionDelta,
+        eligible: &[&SurfaceModeledProjection],
+    ) -> Result<Vec<CommandProjectionLifecycleProofV1>, ProjectionRuntimeAuthorityError> {
+        delta
+            .projections
+            .iter()
+            .enumerate()
+            .map(|(projection_ref, identity)| {
+                let projection = eligible
+                    .iter()
+                    .find(|projection| {
+                        projection.program_id().to_string() == identity.program_id
+                            && projection.binding_id().to_string() == identity.binding_id
+                            && projection.epoch().as_str() == identity.epoch
+                    })
+                    .ok_or(ProjectionRuntimeAuthorityError::InvalidAuthority)?;
+                let entry = self.exact(projection)?;
+                request.lifecycle_proof(
+                    delta,
+                    projection_ref
+                        .try_into()
+                        .map_err(|_| ProjectionRuntimeAuthorityError::InvalidMetadata)?,
+                    identity,
+                    projection,
+                    entry,
+                )
+            })
+            .collect()
+    }
+
+    #[cfg(test)]
+    pub(crate) fn lifecycle_proofs_for_test(
+        &self,
+        request: &ProtocolProjectionDeltaRequestAuthority,
+        delta: &ProjectionDelta,
+        eligible: &[&SurfaceModeledProjection],
+    ) -> Result<Vec<CommandProjectionLifecycleProofV1>, ProjectionRuntimeAuthorityError> {
+        self.lifecycle_proofs(request, delta, eligible)
     }
 
     fn observation_scopes(
@@ -1100,6 +1316,37 @@ impl ProtocolProjectionDeltaRequestAuthority {
         self
     }
 
+    fn lifecycle_proof(
+        &self,
+        delta: &ProjectionDelta,
+        projection_ref: u32,
+        identity: &super::ProjectionDeltaProjectionIdentity,
+        projection: &SurfaceModeledProjection,
+        entry: &ProtocolProjectionProgram,
+    ) -> Result<CommandProjectionLifecycleProofV1, ProjectionRuntimeAuthorityError> {
+        let token = self
+            .codec
+            .issue(
+                ProtocolTokenPurpose::ProjectionLifecycle,
+                &ProjectionLifecycleTokenMaterial {
+                    domain: "distributed.graphql.projection-lifecycle",
+                    version: 1,
+                    issued_at_unix_ms: self.issued_at_unix_ms,
+                    expires_at_unix_ms: self.expires_at_unix_ms,
+                    identity: &delta.identity,
+                    projection_ref,
+                    projection: identity,
+                    route: projection.route(),
+                    topology: entry.codec.topology(),
+                },
+            )
+            .map_err(ProjectionRuntimeAuthorityError::Token)?;
+        Ok(CommandProjectionLifecycleProofV1 {
+            projection_ref,
+            token,
+        })
+    }
+
     /// Derive canonical obligations only for finite, observable targets.
     ///
     /// Invalidations and recovery-only paths request revalidation but never
@@ -1107,6 +1354,7 @@ impl ProtocolProjectionDeltaRequestAuthority {
     pub(crate) fn metadata(
         &self,
         delta: ProjectionDelta,
+        lifecycle_proofs: Vec<CommandProjectionLifecycleProofV1>,
         eligible: &[&SurfaceModeledProjection],
         observations: &[ModeledProjectionObservationScope],
         force_revalidate: bool,
@@ -1197,6 +1445,7 @@ impl ProtocolProjectionDeltaRequestAuthority {
             self.issued_at_unix_ms,
             self.expires_at_unix_ms,
             delta,
+            lifecycle_proofs,
             obligations,
             revalidate,
         )

@@ -42,6 +42,9 @@ export type DistributedCommandConsistency =
 	| 'causal'
 	| 'projected';
 
+/** Current-scope handling for authenticated historical projector evidence. */
+export type DistributedProjectionDisposition = 'revalidate';
+
 /** Closed wire codecs for server-derived, client-visible trusted presets. */
 export type DistributedTrustedPresetCodec =
 	| 'string'
@@ -167,6 +170,7 @@ export type DistributedCommandMetadata = Readonly<
 		causationId: DistributedOpaqueString;
 		state: DistributedCommandState;
 		consistency: DistributedCommandConsistency;
+		projectionDisposition?: DistributedProjectionDisposition;
 		expects: readonly DistributedProjectionExpectation[];
 		/** Defaults to an empty array when omitted by the compact wire format. */
 		observations: readonly DistributedProjectionObservation[];
@@ -463,6 +467,14 @@ function parseCommand(value: unknown): DistributedCommandMetadata {
 		command.projection === undefined
 			? undefined
 			: parseCommandProjectionMetadata(command.projection);
+	const projectionDisposition =
+		command.projectionDisposition === undefined
+			? undefined
+			: command.projectionDisposition === 'revalidate'
+				? 'revalidate'
+				: invalid(
+						'extensions.distributed.command.projectionDisposition'
+					);
 	const commandId = opaqueString(
 		command.commandId,
 		'extensions.distributed.command.commandId'
@@ -484,6 +496,21 @@ function parseCommand(value: unknown): DistributedCommandMetadata {
 		}
 		seenObservations.add(key);
 	}
+	if (
+		projectionDisposition === 'revalidate' &&
+		(projection !== undefined ||
+			expects.length !== 0 ||
+			observations.length !== 0 ||
+			records.length !== 0 ||
+			![
+				'succeeded',
+				'succeeded_pending_projection',
+				'projected',
+				'projection_failed'
+			].includes(state))
+	) {
+		invalid('extensions.distributed.command.projectionDisposition');
+	}
 
 	return Object.freeze({
 		...command,
@@ -491,6 +518,9 @@ function parseCommand(value: unknown): DistributedCommandMetadata {
 		causationId,
 		state,
 		consistency,
+		...(projectionDisposition === undefined
+			? {}
+			: { projectionDisposition }),
 		expects: Object.freeze(expects),
 		observations,
 		records,

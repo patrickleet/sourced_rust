@@ -8,9 +8,10 @@ use serde::Serialize;
 use super::{
     DistributedCommandConsistency, DistributedCommandMetadata, DistributedCommandState,
     DistributedEnvelopeV1, DistributedLiveCursor, DistributedLiveMetadata,
-    DistributedProjectionExpectation, DistributedProjectionObservation, DistributedQuerySnapshot,
-    DistributedRecordRevision, OpaqueProtocolToken, ProtocolTokenCodec, ProtocolTokenError,
-    ProtocolTokenPurpose, RequestedLiveResume,
+    DistributedProjectionDisposition, DistributedProjectionExpectation,
+    DistributedProjectionObservation, DistributedQuerySnapshot, DistributedRecordRevision,
+    OpaqueProtocolToken, ProtocolTokenCodec, ProtocolTokenError, ProtocolTokenPurpose,
+    RequestedLiveResume,
 };
 use crate::command_ledger::CommandLedgerState;
 use crate::graphql::command_contract::CommandConsistency;
@@ -158,6 +159,7 @@ impl ProtocolResponseAccumulator {
         causation_id: &str,
         metadata: &super::CommandProjectionMetadataV1,
         batch: &crate::projection_protocol::ProjectionCausationEvidenceBatch,
+        disposition: crate::graphql::projection_delta::runtime::ModeledProjectionStatusDisposition,
     ) -> Result<
         Vec<crate::graphql::projection_delta::runtime::ModeledProjectionEvidence>,
         ProtocolAccumulatorError,
@@ -177,6 +179,7 @@ impl ProtocolResponseAccumulator {
                 causation_id,
                 metadata,
                 batch,
+                disposition,
             )
             .map_err(|_| ProtocolAccumulatorError::ProjectionAuthority)
     }
@@ -185,8 +188,10 @@ impl ProtocolResponseAccumulator {
         &self,
         causation_id: &str,
         metadata: &super::CommandProjectionMetadataV1,
-    ) -> Result<Vec<crate::projection_protocol::ProjectorTopologyId>, ProtocolAccumulatorError>
-    {
+    ) -> Result<
+        crate::graphql::projection_delta::runtime::ModeledProjectionStatusPlan,
+        ProtocolAccumulatorError,
+    > {
         let request = self
             .inner
             .projection_request
@@ -215,6 +220,29 @@ impl ProtocolResponseAccumulator {
         let cache_scope = self.with_envelope(|envelope| envelope.cache_scope.clone())?;
         request
             .validate_modeled_metadata(&self.inner.codec, &cache_scope, causation_id, metadata)
+            .map_err(|_| ProtocolAccumulatorError::ProjectionAuthority)
+    }
+
+    fn validate_modeled_projection_lifecycle_metadata(
+        &self,
+        causation_id: &str,
+        metadata: &super::CommandProjectionMetadataV1,
+    ) -> Result<(), ProtocolAccumulatorError> {
+        let request = self
+            .inner
+            .projection_request
+            .lock()
+            .map_err(|_| ProtocolAccumulatorError::Poisoned)?
+            .clone()
+            .ok_or(ProtocolAccumulatorError::MissingProjectionRequest)?;
+        let cache_scope = self.with_envelope(|envelope| envelope.cache_scope.clone())?;
+        request
+            .validate_modeled_lifecycle_metadata(
+                &self.inner.codec,
+                &cache_scope,
+                causation_id,
+                metadata,
+            )
             .map_err(|_| ProtocolAccumulatorError::ProjectionAuthority)
     }
 
@@ -615,6 +643,7 @@ impl ProtocolResponseAccumulator {
             receipt.projection_metadata.as_ref(),
             receipt.direct_projection.as_ref(),
             &observed,
+            None,
         )?)
     }
 
@@ -639,16 +668,21 @@ impl ProtocolResponseAccumulator {
             .filter(|evidence| evidence.state == CausalProjectionEvidenceState::Observed)
             .map(|evidence| evidence.obligation_index)
             .collect::<Vec<_>>();
-        self.record_command(self.metadata(
-            &status.command_id,
-            causation_id,
-            public_command_state(status.state),
-            consistency,
-            &status.obligations,
-            status.projection_metadata.as_ref(),
-            status.direct_projection.as_ref(),
-            &observed,
-        )?)
+        self.record_command(
+            self.metadata(
+                &status.command_id,
+                causation_id,
+                public_command_state(status.state),
+                consistency,
+                &status.obligations,
+                status.projection_metadata.as_ref(),
+                status.direct_projection.as_ref(),
+                &observed,
+                status
+                    .projection_revalidate
+                    .then_some(DistributedProjectionDisposition::Revalidate),
+            )?,
+        )
     }
 
     #[expect(
@@ -665,6 +699,7 @@ impl ProtocolResponseAccumulator {
         projection_metadata: Option<&super::CommandProjectionMetadataV1>,
         direct_projection: Option<&crate::projection_protocol::SameTransactionProjectionEvidence>,
         observed_obligation_indices: &[usize],
+        projection_disposition: Option<DistributedProjectionDisposition>,
     ) -> Result<DistributedCommandMetadata, ProtocolAccumulatorError> {
         if projection_metadata.is_some() && !obligations.is_empty() {
             return Err(ProtocolAccumulatorError::Encoding);
@@ -675,7 +710,33 @@ impl ProtocolResponseAccumulator {
             // Succeeded. Validate every receipt/status emission so replay can
             // never expose a stale surface, authorization generation, cache
             // scope, causation, or expired delta.
-            self.validate_modeled_projection_metadata(causation_id, metadata)?;
+            match projection_disposition {
+                Some(DistributedProjectionDisposition::Revalidate) => {
+                    self.validate_modeled_projection_lifecycle_metadata(causation_id, metadata)?;
+                }
+                None => self.validate_modeled_projection_metadata(causation_id, metadata)?,
+            }
+        }
+        if projection_disposition.is_some() && projection_metadata.is_none() {
+            return Err(ProtocolAccumulatorError::Encoding);
+        }
+        if projection_disposition.is_some()
+            && (!obligations.is_empty() || direct_projection.is_some())
+        {
+            return Err(ProtocolAccumulatorError::Encoding);
+        }
+        if projection_disposition.is_some() {
+            return Ok(DistributedCommandMetadata {
+                command_id: command_id.to_string(),
+                causation_id: causation_id.to_string(),
+                state,
+                consistency: command_consistency(consistency),
+                projection_disposition,
+                expects: Vec::new(),
+                projection: None,
+                observations: Vec::new(),
+                records: Vec::new(),
+            });
         }
         let mut expects = obligations
             .iter()
@@ -772,6 +833,7 @@ impl ProtocolResponseAccumulator {
             causation_id: causation_id.to_string(),
             state,
             consistency: command_consistency(consistency),
+            projection_disposition,
             expects,
             projection: projection_metadata.cloned(),
             observations,

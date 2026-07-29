@@ -428,6 +428,12 @@ function commandMetadata(request, options = {}) {
 						}
 					]
 		},
+		lifecycleProofs: [
+			{
+				projectionRef: 0,
+				token: token('projection-lifecycle', 2)
+			}
+		],
 		obligations,
 		revalidate: options.revalidate ?? false
 	};
@@ -887,6 +893,102 @@ test('status causation is validated before actual delta mutation and rolls back 
 	});
 	assert.equal(replica.record('todo-1'), undefined);
 	assert.equal(replica.replacements.length, 0);
+	runtime.dispose();
+});
+
+test('draining lifecycle status revalidates without applying old-scope delta and retires only after refresh', async () => {
+	const replica = new TestReplica();
+	const terminalRefresh = deferred();
+	let refreshCalls = 0;
+	replica.revalidate = (plan) => {
+		replica.revalidations.push(plan);
+		refreshCalls += 1;
+		return refreshCalls === 1
+			? Promise.resolve()
+			: terminalRefresh.promise;
+	};
+	let commandRequest;
+	let statusCalls = 0;
+	const disposition = (state) => ({
+		commandId: COMMAND_A,
+		causationId: `cause:${COMMAND_A}`,
+		state,
+		consistency: 'causal',
+		projectionDisposition: 'revalidate',
+		expects: [],
+		observations: [],
+		records: []
+	});
+	const runtime = createReplicaCommandRuntime(
+		replica,
+		{
+			dispatch(request) {
+				commandRequest = request;
+				return Promise.resolve(
+					envelope(request, {
+						command: commandMetadata(request, {
+							state: 'in_progress',
+							projection: false
+						})
+					})
+				);
+			},
+			status(request) {
+				statusCalls += 1;
+				assert.equal(request.commandId, commandRequest.commandId);
+				return Promise.resolve(
+					statusEnvelope(
+						request,
+						disposition(
+							statusCalls === 1
+								? 'succeeded_pending_projection'
+								: 'projected'
+						)
+					)
+				);
+			}
+		},
+		{ change: artifact() },
+		{ status: STATUS }
+	);
+	let recovery;
+	await assert.rejects(
+		runtime.commands.change(
+			{ id: 'todo-1', title: 'preview' },
+			{ commandId: COMMAND_A }
+		),
+		(error) => {
+			recovery = error.recovery;
+			return error.code === 'REPLICA_COMMAND_OUTCOME_PENDING';
+		}
+	);
+	assert.equal(replica.replacements.length, 0);
+	assert.equal(replica.record('todo-1').fields.title, 'preview');
+
+	const pendingStatus = await recovery.status();
+	assert.equal(pendingStatus.state, 'succeeded_pending_projection');
+	assert.equal(replica.replacements.length, 0);
+	assert.notEqual(replica.layer(COMMAND_A), undefined);
+	await tick();
+	assert.equal(refreshCalls, 1);
+	assert.notEqual(replica.layer(COMMAND_A), undefined);
+
+	let terminalSettled = false;
+	const terminalStatus = recovery.status().then((status) => {
+		terminalSettled = true;
+		return status;
+	});
+	await tick();
+	assert.equal(refreshCalls, 2);
+	assert.equal(terminalSettled, false);
+	assert.equal(replica.replacements.length, 0);
+	assert.notEqual(replica.layer(COMMAND_A), undefined);
+
+	terminalRefresh.resolve();
+	assert.equal((await terminalStatus).state, 'projected');
+	assert.equal(replica.replacements.length, 0);
+	assert.equal(replica.layer(COMMAND_A), undefined);
+	assert.equal(replica.record('todo-1'), undefined);
 	runtime.dispose();
 });
 

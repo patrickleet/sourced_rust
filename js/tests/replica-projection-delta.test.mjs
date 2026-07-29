@@ -148,6 +148,58 @@ test('metadata validates identity, expiry, obligations, and canonical replay byt
 	);
 });
 
+test('lifecycle proofs are dense, ordered, bounded opaque data and never client authority', async () => {
+	const accepted = await metadataVector();
+	const missing = clone(accepted);
+	missing.lifecycleProofs = [];
+	assert.throws(
+		() => parseCommandProjectionMetadata(missing),
+		/lifecycleProofs/
+	);
+
+	const wrongPurpose = clone(accepted);
+	wrongPurpose.lifecycleProofs[0].token =
+		`v1.projection-obligation.${Buffer.alloc(32, 3).toString('base64url')}`;
+	assert.throws(
+		() => parseCommandProjectionMetadata(wrongPurpose),
+		/lifecycleProofs/
+	);
+
+	const tamperedShape = clone(accepted);
+	tamperedShape.lifecycleProofs[0].route = 'client-must-not-see-or-trust-this';
+	assert.throws(
+		() => parseCommandProjectionMetadata(tamperedShape),
+		/lifecycleProofs/
+	);
+
+	const oversized = clone(accepted);
+	oversized.lifecycleProofs = Array.from({ length: 129 }, (_, index) => ({
+		projectionRef: index,
+		token: `v1.projection-lifecycle.${Buffer.alloc(32, index).toString('base64url')}`
+	}));
+	assert.throws(
+		() => parseCommandProjectionMetadata(oversized),
+		/lifecycleProofs/
+	);
+
+	const unordered = clone(accepted);
+	unordered.delta = await vector();
+	unordered.lifecycleProofs = [
+		{
+			projectionRef: 1,
+			token: `v1.projection-lifecycle.${Buffer.alloc(32, 4).toString('base64url')}`
+		},
+		{
+			projectionRef: 0,
+			token: `v1.projection-lifecycle.${Buffer.alloc(32, 5).toString('base64url')}`
+		}
+	];
+	assert.throws(
+		() => parseCommandProjectionMetadata(unordered),
+		/lifecycleProofs/
+	);
+});
+
 test('strict hostile inputs fail before allocation or cache mutation', async () => {
 	const original = await vector();
 	const unknown = clone(original);
@@ -378,6 +430,10 @@ test('projection artifact enforces Rust-aligned epoch/model and 4 KiB preview bo
 test('projection metadata keeps obligation models at the Rust 255-byte boundary', async () => {
 	const accepted = await metadataVector();
 	accepted.delta = await vector();
+	accepted.lifecycleProofs.push({
+		projectionRef: 1,
+		token: `v1.projection-lifecycle.${Buffer.alloc(32, 2).toString('base64url')}`
+	});
 	accepted.revalidate = true;
 	accepted.obligations[0].projectionRef = 0;
 	accepted.obligations[0].model = 'M'.repeat(255);

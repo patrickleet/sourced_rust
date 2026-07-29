@@ -235,7 +235,8 @@ fn sealed_authority_lowers_actual_full_state_and_memoizes_partition() {
 fn production_authority_binds_partition_and_obligation_tokens_to_request_scope() {
     use super::runtime::{
         ModeledProjectionObservationScope, ProjectionRuntimeAuthorityError,
-        ProtocolProjectionDeltaRequestAuthority, MAX_PROJECTION_AUTHORITY_LIFETIME_MS,
+        ProtocolProjectionDeltaRequestAuthority, ProtocolProjectionProgramRegistry,
+        MAX_PROJECTION_AUTHORITY_LIFETIME_MS,
     };
     use crate::graphql::protocol::{
         CommandProjectionMetadataV1, ProtocolTokenCodec, ProtocolTokenPurpose,
@@ -331,9 +332,14 @@ fn production_authority_binds_partition_and_obligation_tokens_to_request_scope()
             )]),
         )
         .unwrap();
+    let registry = ProtocolProjectionProgramRegistry::try_from_surface(&fixture.surface).unwrap();
+    let lifecycle_proofs = registry
+        .lifecycle_proofs_for_test(&request, &delta, &[&modeled])
+        .unwrap();
     let metadata = request
         .metadata(
             delta,
+            lifecycle_proofs,
             &[&modeled],
             &[ModeledProjectionObservationScope {
                 operation_index: 0,
@@ -586,6 +592,7 @@ fn zero_obligation_modeled_metadata_is_revalidated_on_every_receipt_emission() {
             outcome: None,
             obligations: Vec::new(),
             projection_metadata: Some(metadata),
+            projection_revalidate: false,
             evidence: Vec::new(),
             direct_projection: None,
         }
@@ -674,6 +681,7 @@ fn zero_obligation_modeled_metadata_is_revalidated_on_every_receipt_emission() {
         metadata.issued_at_unix_ms,
         metadata.expires_at_unix_ms,
         metadata.delta.clone(),
+        metadata.lifecycle_proofs.clone(),
         vec![crate::graphql::protocol::CommandProjectionObligationV1 {
             projection_ref: metadata.obligations[0].projection_ref,
             // Link/Unlink may observe a physical join output that the
@@ -696,6 +704,7 @@ fn zero_obligation_modeled_metadata_is_revalidated_on_every_receipt_emission() {
         metadata.issued_at_unix_ms,
         metadata.expires_at_unix_ms,
         metadata.delta.clone(),
+        metadata.lifecycle_proofs.clone(),
         Vec::new(),
         metadata.revalidate,
     )
@@ -724,7 +733,8 @@ fn zero_obligation_modeled_metadata_is_revalidated_on_every_receipt_emission() {
     let expired = CommandProjectionMetadataV1::try_new(
         1,
         2,
-        zero_obligation.delta,
+        zero_obligation.delta.clone(),
+        zero_obligation.lifecycle_proofs.clone(),
         Vec::new(),
         zero_obligation.revalidate,
     )
@@ -841,7 +851,7 @@ fn draining_actual_delta_can_apply_but_cannot_mint_new_obligations() {
     let delta = authority.lower(&[occurrence]).unwrap();
 
     assert!(matches!(
-        request.metadata(delta, &[&modeled], &[], false),
+        request.metadata(delta, Vec::new(), &[&modeled], &[], false),
         Err(ProjectionRuntimeAuthorityError::IneligibleProjection)
     ));
 }
@@ -854,7 +864,14 @@ fn active_metadata_remains_queryable_while_exact_projection_is_draining() {
     use super::runtime::{
         ModeledProjectionEvidence, ProtocolProjectionProgramRegistry, ProtocolProjectionRequestSeed,
     };
-    use crate::graphql::protocol::{ProtocolTokenCodec, ProtocolTokenPurpose};
+    use crate::graphql::protocol::{
+        DistributedEnvelopeV1, ProtocolResponseAccumulator, ProtocolTokenCodec,
+        ProtocolTokenPurpose,
+    };
+    use crate::microsvc::{
+        CausalCommandProjectionEvidence, CausalCommandPublicState, CausalCommandPublicStatus,
+        CausalProjectionEvidenceState,
+    };
     use crate::projection_protocol::ProjectionCausationEvidenceBatch;
 
     let now = std::time::SystemTime::now();
@@ -908,17 +925,17 @@ fn active_metadata_remains_queryable_while_exact_projection_is_draining() {
             TEST_CAUSATION_ID,
             &metadata,
         ),
-        Err(super::runtime::ProjectionRuntimeAuthorityError::Delta(
-            ProjectionDeltaError::ReplayScopeMismatch
-        ))
+        Err(super::runtime::ProjectionRuntimeAuthorityError::IneligibleProjection)
     ));
 
     let draining = modeled_fixture(
         ProjectionBindingState::Draining,
         ProjectionExecutionClass::Causal,
     );
+    let draining_export = selected_export(&draining.surface);
+    let current_manifest = draining_export.manifest().unwrap();
     let draining_seed = ProtocolProjectionRequestSeed::new(
-        selected_export(&draining.surface),
+        draining_export,
         Arc::new(ProtocolProjectionProgramRegistry::try_from_surface(&draining.surface).unwrap()),
         principal,
         "active-to-draining-generation",
@@ -926,11 +943,26 @@ fn active_metadata_remains_queryable_while_exact_projection_is_draining() {
         now_unix_ms,
     )
     .unwrap();
-    let topologies = draining_seed
+    let same_cache_plan = draining_seed
+        .modeled_evidence_topologies(&codec, &cache_scope, TEST_CAUSATION_ID, &metadata)
+        .unwrap();
+    assert_eq!(
+        same_cache_plan.disposition,
+        if metadata.delta.identity.schema_fingerprint == current_manifest.schema_fingerprint {
+            super::runtime::ModeledProjectionStatusDisposition::Applicable
+        } else {
+            super::runtime::ModeledProjectionStatusDisposition::Revalidate
+        }
+    );
+    let plan = draining_seed
         .modeled_evidence_topologies(&codec, &draining_cache_scope, TEST_CAUSATION_ID, &metadata)
         .unwrap();
-    assert_eq!(topologies.len(), 1);
-    assert_eq!(topologies[0].name(), "projection-delta-test");
+    assert_eq!(plan.topologies.len(), 1);
+    assert_eq!(plan.topologies[0].name(), "projection-delta-test");
+    assert_eq!(
+        plan.disposition,
+        super::runtime::ModeledProjectionStatusDisposition::Revalidate
+    );
     assert_eq!(
         draining_seed
             .modeled_evidence(
@@ -939,10 +971,48 @@ fn active_metadata_remains_queryable_while_exact_projection_is_draining() {
                 TEST_CAUSATION_ID,
                 &metadata,
                 &ProjectionCausationEvidenceBatch::default(),
+                plan.disposition,
             )
             .unwrap(),
         vec![ModeledProjectionEvidence::Pending]
     );
+    let accumulator = ProtocolResponseAccumulator::new(
+        DistributedEnvelopeV1::new(
+            current_manifest.schema_fingerprint,
+            "active-to-draining-generation",
+            draining_cache_scope.clone(),
+            None,
+        ),
+        codec.clone(),
+    );
+    accumulator
+        .bind_projection_request(draining_seed.clone())
+        .unwrap();
+    accumulator
+        .record_status(&CausalCommandPublicStatus {
+            state: CausalCommandPublicState::SucceededPendingProjection,
+            command_id: "0190a000-0000-7000-8000-000000000019".into(),
+            causation_id: Some(TEST_CAUSATION_ID.into()),
+            consistency: Some(crate::graphql::command_contract::CommandConsistency::Causal),
+            outcome: None,
+            obligations: Vec::new(),
+            projection_metadata: Some(metadata.clone()),
+            projection_revalidate: true,
+            evidence: vec![CausalCommandProjectionEvidence {
+                obligation_index: 0,
+                state: CausalProjectionEvidenceState::Pending,
+                incarnation: None,
+                revision: None,
+            }],
+            direct_projection: None,
+        })
+        .unwrap();
+    let command = serde_json::to_value(accumulator.snapshot().unwrap()).unwrap()["command"].clone();
+    assert_eq!(command["projectionDisposition"], "revalidate");
+    assert_eq!(command["expects"], serde_json::json!([]));
+    assert!(command.get("projection").is_none());
+    assert!(command.get("observations").is_none());
+    assert!(command.get("records").is_none());
 
     let draining_metadata = draining_seed
         .metadata_for_actual_at(
@@ -957,6 +1027,254 @@ fn active_metadata_remains_queryable_while_exact_projection_is_draining() {
         .unwrap();
     assert!(draining_metadata.obligations.is_empty());
     assert!(draining_metadata.delta.projections.is_empty());
+}
+
+#[test]
+#[cfg(feature = "graphql")]
+fn lifecycle_status_rejects_changed_deployment_identity_and_mixed_fanout_tampering() {
+    use std::sync::Arc;
+
+    use super::runtime::{
+        ModeledProjectionStatusDisposition, ProjectionRuntimeAuthorityError,
+        ProtocolProjectionProgramRegistry, ProtocolProjectionRequestSeed,
+    };
+    use crate::graphql::client_manifest::ClientExecutionLimits;
+    use crate::graphql::protocol::{ProtocolTokenCodec, ProtocolTokenError, ProtocolTokenPurpose};
+
+    let now = std::time::SystemTime::now();
+    let now_unix_ms = now.duration_since(UNIX_EPOCH).unwrap().as_millis() as u64;
+    let codec = ProtocolTokenCodec::new([0x5d; 32]);
+    let old_cache = codec
+        .issue(ProtocolTokenPurpose::CacheScope, &("lifecycle-hostile", 1))
+        .unwrap();
+    let current_cache = codec
+        .issue(ProtocolTokenPurpose::CacheScope, &("lifecycle-hostile", 2))
+        .unwrap();
+    let principal =
+        crate::command_ledger::PrincipalPartitionId::new("lifecycle-hostile-principal").unwrap();
+    let active = modeled_fixture(
+        ProjectionBindingState::Active,
+        ProjectionExecutionClass::Causal,
+    );
+    let active_seed = ProtocolProjectionRequestSeed::new(
+        selected_export(&active.surface),
+        Arc::new(ProtocolProjectionProgramRegistry::try_from_surface(&active.surface).unwrap()),
+        principal.clone(),
+        "lifecycle-hostile-generation",
+        Vec::new(),
+        now_unix_ms,
+    )
+    .unwrap();
+    let occurrence = state_occurrence(21, "todo-lifecycle-hostile", "active");
+    let selector =
+        crate::ProjectionEventSelector::try_from_descriptor(occurrence.descriptor()).unwrap();
+    let metadata = active_seed
+        .metadata_for_actual_at(
+            codec.clone(),
+            &old_cache,
+            crate::command_ledger::CausationId::parse_stored(TEST_CAUSATION_ID.into()).unwrap(),
+            Duration::from_secs(60),
+            std::slice::from_ref(&occurrence),
+            std::slice::from_ref(&selector),
+            now,
+        )
+        .unwrap();
+
+    let draining = modeled_fixture(
+        ProjectionBindingState::Draining,
+        ProjectionExecutionClass::Causal,
+    );
+    let draining_export = selected_export(&draining.surface);
+    let baseline_manifest = draining_export.manifest().unwrap();
+    let mut changed_limits = ClientExecutionLimits::default();
+    changed_limits.max_bool_width += 1;
+    let changed_schema_export = DistributedClientSurfaceExport::from_selected_with_execution(
+        "delta-service",
+        draining_export.surface().clone(),
+        changed_limits,
+    )
+    .unwrap();
+    let changed_schema_manifest = changed_schema_export.manifest().unwrap();
+    assert_ne!(
+        baseline_manifest.schema_fingerprint,
+        changed_schema_manifest.schema_fingerprint
+    );
+    assert_eq!(
+        baseline_manifest.protocol_fingerprint,
+        changed_schema_manifest.protocol_fingerprint
+    );
+    let changed_schema_seed = ProtocolProjectionRequestSeed::new(
+        changed_schema_export,
+        Arc::new(ProtocolProjectionProgramRegistry::try_from_surface(&draining.surface).unwrap()),
+        principal.clone(),
+        "lifecycle-hostile-generation",
+        Vec::new(),
+        now_unix_ms,
+    )
+    .unwrap();
+    assert_eq!(
+        changed_schema_seed
+            .modeled_evidence_topologies(&codec, &old_cache, TEST_CAUSATION_ID, &metadata)
+            .unwrap()
+            .disposition,
+        ModeledProjectionStatusDisposition::Revalidate
+    );
+
+    for changed in [
+        modeled_fixture_deployment(
+            ProjectionBindingState::Draining,
+            ProjectionExecutionClass::Causal,
+            ProjectionMutationKind::Upsert,
+            false,
+            "changed-route",
+            "projection-delta-test",
+            [0x44; 32],
+        ),
+        modeled_fixture_deployment(
+            ProjectionBindingState::Draining,
+            ProjectionExecutionClass::Causal,
+            ProjectionMutationKind::Upsert,
+            false,
+            "delta-service",
+            "changed-topology",
+            [0x47; 32],
+        ),
+    ] {
+        let seed = ProtocolProjectionRequestSeed::new(
+            selected_export(&changed.surface),
+            Arc::new(
+                ProtocolProjectionProgramRegistry::try_from_surface(&changed.surface).unwrap(),
+            ),
+            principal.clone(),
+            "lifecycle-hostile-generation",
+            Vec::new(),
+            now_unix_ms,
+        )
+        .unwrap();
+        let result =
+            seed.modeled_evidence_topologies(&codec, &current_cache, TEST_CAUSATION_ID, &metadata);
+        assert!(
+            matches!(
+                result,
+                Err(
+                    ProjectionRuntimeAuthorityError::Token(ProtocolTokenError::Mismatch)
+                        | ProjectionRuntimeAuthorityError::IneligibleProjection
+                )
+            ),
+            "{result:?}"
+        );
+    }
+
+    let removed_surface = build_surface(&[todos(), users()], &SurfaceOptions::sqlite()).unwrap();
+    let removed_seed = ProtocolProjectionRequestSeed::new(
+        selected_export(&removed_surface),
+        Arc::new(ProtocolProjectionProgramRegistry::try_from_surface(&removed_surface).unwrap()),
+        principal.clone(),
+        "lifecycle-hostile-generation",
+        Vec::new(),
+        now_unix_ms,
+    )
+    .unwrap();
+    assert!(removed_seed
+        .modeled_evidence_topologies(&codec, &current_cache, TEST_CAUSATION_ID, &metadata)
+        .is_err());
+
+    let draining_seed = ProtocolProjectionRequestSeed::new(
+        selected_export(&draining.surface),
+        Arc::new(ProtocolProjectionProgramRegistry::try_from_surface(&draining.surface).unwrap()),
+        principal.clone(),
+        "lifecycle-hostile-generation",
+        Vec::new(),
+        now_unix_ms,
+    )
+    .unwrap();
+    let mut tampered = metadata.clone();
+    tampered.lifecycle_proofs[0].token = codec
+        .issue(ProtocolTokenPurpose::ProjectionLifecycle, &("tampered", 1))
+        .unwrap();
+    assert!(matches!(
+        draining_seed.modeled_evidence_topologies(
+            &codec,
+            &current_cache,
+            TEST_CAUSATION_ID,
+            &tampered,
+        ),
+        Err(ProjectionRuntimeAuthorityError::Token(
+            ProtocolTokenError::Mismatch
+        ))
+    ));
+
+    let fanout_active = fanout_fixture();
+    let fanout_active_seed = ProtocolProjectionRequestSeed::new(
+        selected_export(&fanout_active.surface),
+        Arc::new(
+            ProtocolProjectionProgramRegistry::try_from_surface(&fanout_active.surface).unwrap(),
+        ),
+        principal.clone(),
+        "lifecycle-hostile-generation",
+        Vec::new(),
+        now_unix_ms,
+    )
+    .unwrap();
+    let fanout_occurrence = state_occurrence(22, "todo-lifecycle-fanout", "active");
+    let fanout_selector =
+        crate::ProjectionEventSelector::try_from_descriptor(fanout_occurrence.descriptor())
+            .unwrap();
+    let fanout_metadata = fanout_active_seed
+        .metadata_for_actual_at(
+            codec.clone(),
+            &old_cache,
+            crate::command_ledger::CausationId::parse_stored(TEST_CAUSATION_ID.into()).unwrap(),
+            Duration::from_secs(60),
+            std::slice::from_ref(&fanout_occurrence),
+            std::slice::from_ref(&fanout_selector),
+            now,
+        )
+        .unwrap();
+    assert_eq!(fanout_metadata.delta.projections.len(), 2);
+    let mixed = fanout_fixture_states(
+        ProjectionBindingState::Active,
+        ProjectionBindingState::Draining,
+    );
+    let mixed_seed = ProtocolProjectionRequestSeed::new(
+        selected_export(&mixed.surface),
+        Arc::new(ProtocolProjectionProgramRegistry::try_from_surface(&mixed.surface).unwrap()),
+        principal,
+        "lifecycle-hostile-generation",
+        Vec::new(),
+        now_unix_ms,
+    )
+    .unwrap();
+    assert_eq!(
+        mixed_seed
+            .modeled_evidence_topologies(
+                &codec,
+                &current_cache,
+                TEST_CAUSATION_ID,
+                &fanout_metadata,
+            )
+            .unwrap()
+            .disposition,
+        ModeledProjectionStatusDisposition::Revalidate
+    );
+    let mut mixed_tampered = fanout_metadata;
+    mixed_tampered.lifecycle_proofs[0].token = codec
+        .issue(
+            ProtocolTokenPurpose::ProjectionLifecycle,
+            &("tampered-active-leg", 1),
+        )
+        .unwrap();
+    assert!(matches!(
+        mixed_seed.modeled_evidence_topologies(
+            &codec,
+            &current_cache,
+            TEST_CAUSATION_ID,
+            &mixed_tampered,
+        ),
+        Err(ProjectionRuntimeAuthorityError::Token(
+            ProtocolTokenError::Mismatch
+        ))
+    ));
 }
 
 #[test]
@@ -2223,6 +2541,26 @@ fn modeled_fixture_config(
     mutation_kind: ProjectionMutationKind,
     invalidate_relationship: bool,
 ) -> ModeledFixture {
+    modeled_fixture_deployment(
+        state,
+        execution,
+        mutation_kind,
+        invalidate_relationship,
+        "delta-service",
+        "projection-delta-test",
+        [0x44; 32],
+    )
+}
+
+fn modeled_fixture_deployment(
+    state: ProjectionBindingState,
+    execution: ProjectionExecutionClass,
+    mutation_kind: ProjectionMutationKind,
+    invalidate_relationship: bool,
+    route: &str,
+    topology_name: &str,
+    topology_digest: [u8; 32],
+) -> ModeledFixture {
     let todo_schema = todos();
     let user_schema = users();
     let descriptor = event_descriptor();
@@ -2295,7 +2633,7 @@ fn modeled_fixture_config(
         vec![ProjectionOutput::try_new("TodoView", "todos", todo_schema.clone()).unwrap()],
         vec![ProjectionRelationshipBinding::try_new("TodoView", "owner", "UserView").unwrap()],
         Some(ProjectionPhysicalTopology::from_protocol(
-            &ProjectorTopologyId::new(1, "projection-delta-test", [0x44; 32]).unwrap(),
+            &ProjectorTopologyId::new(1, topology_name, topology_digest).unwrap(),
         )),
     )
     .unwrap();
@@ -2308,7 +2646,7 @@ fn modeled_fixture_config(
                 binding.program_id(),
                 ProjectionEpoch::new("projection-delta-v1").unwrap(),
                 state,
-                Some(ProjectionExecutorRoute::local("delta-service").unwrap()),
+                Some(ProjectionExecutorRoute::local(route).unwrap()),
             )],
             None,
         )
@@ -2328,6 +2666,16 @@ fn modeled_fixture_config(
 }
 
 fn fanout_fixture() -> FanoutFixture {
+    fanout_fixture_states(
+        ProjectionBindingState::Active,
+        ProjectionBindingState::Active,
+    )
+}
+
+fn fanout_fixture_states(
+    todo_state: ProjectionBindingState,
+    user_state: ProjectionBindingState,
+) -> FanoutFixture {
     let todo_schema = todos();
     let user_schema = users();
     let descriptor = event_descriptor();
@@ -2423,14 +2771,14 @@ fn fanout_fixture() -> FanoutFixture {
                     todo_binding.id(),
                     todo_binding.program_id(),
                     ProjectionEpoch::new("projection-delta-fanout-v1").unwrap(),
-                    ProjectionBindingState::Active,
+                    todo_state,
                     Some(ProjectionExecutorRoute::local("delta-service").unwrap()),
                 ),
                 ProjectionBindingActivation::new(
                     user_binding.id(),
                     user_binding.program_id(),
                     ProjectionEpoch::new("projection-delta-fanout-v1").unwrap(),
-                    ProjectionBindingState::Active,
+                    user_state,
                     Some(ProjectionExecutorRoute::local("delta-service").unwrap()),
                 ),
             ],
