@@ -11,17 +11,28 @@ use axum::body::Body;
 use axum::http::Request as HttpRequest;
 use distributed::graphql::{
     build_surface, graphql_router_with_service, read, surface_for_role, typed_command, Causal,
-    DistributedClientSurfaceExport, EffectInputFieldMarker, EffectModelFieldMarker, GraphqlEngine,
-    GraphqlInputType, GraphqlOutputType, GraphqlTypeDef, GraphqlTypeField, ModelPermissions,
-    PreparedCommand, Projected, RoleGrant, Succeeded, SurfaceDirectProjection, SurfaceOptions,
-    SurfaceProjector,
+    ClientProjectionAssignment, ClientProjectionExecutionClass, ClientProjectionExpression,
+    ClientProjectionFallback, ClientProjectionMutationKind, ClientProjectionPreviewSource,
+    ClientProjectionValue, ClientProjectionValueType, DistributedClientSurfaceExport,
+    EffectInputFieldMarker, EffectModelFieldMarker, GraphqlEngine, GraphqlInputType,
+    GraphqlOutputType, GraphqlTypeDef, GraphqlTypeField, ModelPermissions, PreparedCommand,
+    Projected, RoleGrant, Succeeded, SurfaceDirectProjection, SurfaceModeledProjection,
+    SurfaceOptions, SurfaceProjector,
 };
 use distributed::microsvc::{CausalCommandContext, HandlerError, Routes, Service};
 use distributed::microsvc::{Context, Session};
+use distributed::projection::catalog::{ProjectionBindingActivation, ProjectionCatalog};
+use distributed::projection::lower::{DirectCandidate, EventualOnly, ProjectionDescriptor};
+use distributed::projection::placement::{
+    ProjectionBinding, ProjectionBindingState, ProjectionEpoch, ProjectionExecutorRoute,
+    ProjectionOutput, ProjectionOwner, ProjectionPhysicalTopology, ProjectionSourceBinding,
+    PROJECTION_PARTITION_CODEC_VERSION,
+};
+use distributed::projection_protocol::ProjectorTopologyId;
 use distributed::{
-    command_confirmations, command_effects, command_input_defaults, Aggregate, AggregateRepository,
-    DistributedProjectManifest, Entity, EventRecord, GraphqlInput, GraphqlOutput,
-    InMemoryRepository, ReadModel, RelationalReadModel, SqliteRepository,
+    command_confirmations, command_effects, command_input_defaults, projection, Aggregate,
+    AggregateRepository, DistributedProjectManifest, Entity, EventRecord, GraphqlInput,
+    GraphqlOutput, InMemoryRepository, ReadModel, RelationalReadModel, SqliteRepository,
 };
 use serde::{Deserialize, Serialize};
 use tower::util::ServiceExt;
@@ -96,8 +107,9 @@ struct PlanOutput {
     id: String,
 }
 
-#[derive(Clone, Serialize, Deserialize, ReadModel)]
+#[derive(Clone, Serialize, Deserialize, ReadModel, distributed::DomainState)]
 #[readmodel(table = "plan_views", primary_key = ["id"])]
+#[domain_state(version = 1)]
 struct PlanView {
     id: String,
     title: String,
@@ -180,8 +192,9 @@ struct JsonPatchInput {
     details: JsonDocument,
 }
 
-#[derive(Clone, Serialize, Deserialize, ReadModel)]
+#[derive(Clone, Serialize, Deserialize, ReadModel, distributed::DomainState)]
 #[readmodel(table = "json_views", primary_key = ["id"])]
+#[domain_state(version = 1)]
 struct JsonView {
     id: String,
     #[readmodel(jsonb)]
@@ -196,8 +209,9 @@ struct BigIntKeyInput {
     title: String,
 }
 
-#[derive(Clone, Serialize, Deserialize, ReadModel)]
+#[derive(Clone, Serialize, Deserialize, ReadModel, distributed::DomainState)]
 #[readmodel(table = "bigint_key_views", primary_key = ["key"])]
+#[domain_state(version = 1)]
 struct BigIntKeyView {
     id: String,
     key: i64,
@@ -250,11 +264,12 @@ struct CompositeKeyInput {
     title: String,
 }
 
-#[derive(Clone, Serialize, Deserialize, ReadModel)]
+#[derive(Clone, Serialize, Deserialize, ReadModel, distributed::DomainState)]
 #[readmodel(
     table = "composite_key_views",
     primary_key = ["tenant_id", "id"]
 )]
+#[domain_state(version = 1)]
 struct CompositeKeyView {
     tenant_id: String,
     id: String,
@@ -332,6 +347,157 @@ struct BrokenConstantView {
     #[readmodel(text)]
     value: BrokenText,
 }
+
+macro_rules! state_event_contract {
+    ($marker:ident, $state:ty, $name:literal) => {
+        enum $marker {}
+
+        impl distributed::domain_event::DomainEventContract for $marker {
+            const EVENT_NAME: &'static str = $name;
+            const EVENT_VERSION: u64 = 1;
+
+            fn descriptor() -> distributed::DomainEventDescriptor {
+                <$state as distributed::DomainState>::DESCRIPTOR
+                    .clone()
+                    .event(Self::EVENT_NAME, Self::EVENT_VERSION)
+            }
+        }
+
+        impl distributed::domain_event::DomainEventBodyContract<$state> for $marker {}
+    };
+}
+
+state_event_contract!(PlanChangedDomainEvent, PlanView, "plan.changed");
+
+const PLAN_PROJECTION: ProjectionDescriptor<DirectCandidate> = projection! {
+    name: "typed_commands_plan";
+    version: 1;
+    epoch: "typed-commands-plan-v1";
+    partition: unit;
+
+    on "plan.changed" version 1 (state: PlanView) {
+        upsert PlanView from state as plan;
+    }
+};
+
+const PLAN_TITLE_PROJECTION: ProjectionDescriptor<EventualOnly> = projection! {
+    name: "typed_commands_plan_title";
+    version: 1;
+    epoch: "typed-commands-plan-title-v1";
+    partition: unit;
+
+    on "plan.changed" version 1 (state: PlanView) {
+        patch PlanView {
+            key { id: state.id },
+            set { title: state.title }
+        };
+    }
+};
+
+const PLAN_CLOSE_PROJECTION: ProjectionDescriptor<EventualOnly> = projection! {
+    name: "typed_commands_plan_close";
+    version: 1;
+    epoch: "typed-commands-plan-close-v1";
+    partition: unit;
+
+    on "plan.changed" version 1 (state: PlanView) {
+        patch PlanView {
+            key { id: state.id },
+            set { status: PlanStatus::Closed }
+        };
+    }
+};
+
+state_event_contract!(JsonChangedDomainEvent, JsonView, "json.changed");
+
+const JSON_PROJECTION: ProjectionDescriptor<EventualOnly> = projection! {
+    name: "typed_commands_json";
+    version: 1;
+    epoch: "typed-commands-json-v1";
+    partition: unit;
+
+    on "json.changed" version 1 (state: JsonView) {
+        patch JsonView {
+            key { id: state.id },
+            set { tags: state.tags, details: state.details }
+        };
+    }
+};
+
+state_event_contract!(
+    CompositeChangedDomainEvent,
+    CompositeKeyView,
+    "composite.changed"
+);
+
+const COMPOSITE_PROJECTION: ProjectionDescriptor<EventualOnly> = projection! {
+    name: "typed_commands_composite";
+    version: 1;
+    epoch: "typed-commands-composite-v1";
+    partition: unit;
+
+    on "composite.changed" version 1 (state: CompositeKeyView) {
+        patch CompositeKeyView {
+            key { tenant_id: state.tenant_id, id: state.id },
+            set { title: state.title }
+        };
+    }
+};
+
+state_event_contract!(BigIntChangedDomainEvent, BigIntKeyView, "bigint.changed");
+
+const BIGINT_PROJECTION: ProjectionDescriptor<DirectCandidate> = projection! {
+    name: "typed_commands_bigint";
+    version: 1;
+    epoch: "typed-commands-bigint-v1";
+    partition: unit;
+
+    on "bigint.changed" version 1 (state: BigIntKeyView) {
+        upsert BigIntKeyView from state as view;
+    }
+};
+
+#[derive(Clone, Serialize, distributed::DomainState)]
+#[domain_state(version = 1)]
+struct FloatClearState {
+    id: String,
+}
+
+state_event_contract!(FloatClearedDomainEvent, FloatClearState, "float.cleared");
+
+const FLOAT_CLEAR_PROJECTION: ProjectionDescriptor<EventualOnly> = projection! {
+    name: "typed_commands_float_clear";
+    version: 1;
+    epoch: "typed-commands-float-clear-v1";
+    partition: unit;
+
+    on "float.cleared" version 1 (state: FloatClearState) {
+        patch FloatEffectView {
+            key { id: state.id },
+            set { value: null }
+        };
+    }
+};
+
+state_event_contract!(
+    JsonFloatClearedDomainEvent,
+    FloatClearState,
+    "json-float.cleared"
+);
+
+const JSON_FLOAT_CLEAR_PROJECTION: ProjectionDescriptor<EventualOnly> = projection! {
+    name: "typed_commands_json_float_clear";
+    version: 1;
+    epoch: "typed-commands-json-float-clear-v1";
+    partition: unit;
+
+    on "json-float.cleared" version 1 (state: FloatClearState) {
+        patch JsonFloatEffectView {
+            key { id: state.id },
+            set { document: null }
+        };
+    }
+};
 
 struct ForgedTitleMarker;
 
@@ -535,6 +701,47 @@ fn plan_projector() -> SurfaceProjector {
         .facts(["plan.changed"])
         .models(["PlanView"])
         .partition_by(["id"])
+}
+
+fn modeled_projector<M, D>(descriptor: ProjectionDescriptor<D>) -> SurfaceProjector
+where
+    M: RelationalReadModel,
+{
+    let owner_name = descriptor.name();
+    let schema = M::schema().clone();
+    let output =
+        ProjectionOutput::try_new(schema.model_name.clone(), schema.table_name.clone(), schema)
+            .unwrap();
+    let binding = ProjectionBinding::materialize_eventual(
+        descriptor.eventual(),
+        ProjectionSourceBinding::try_new("typed-commands", "domain-events", 1).unwrap(),
+        ProjectionOwner::try_new(owner_name).unwrap(),
+        "distributed-projection-partition",
+        PROJECTION_PARTITION_CODEC_VERSION,
+        vec![output],
+        Vec::new(),
+        Some(ProjectionPhysicalTopology::from_protocol(
+            &ProjectorTopologyId::new(1, owner_name, [0x41; 32]).unwrap(),
+        )),
+    )
+    .unwrap();
+    let catalog = ProjectionCatalog::try_new(vec![binding.clone()]).unwrap();
+    let active = catalog
+        .activate(
+            vec![ProjectionBindingActivation::new(
+                binding.id(),
+                binding.program_id(),
+                ProjectionEpoch::new(descriptor.epoch()).unwrap(),
+                ProjectionBindingState::Active,
+                Some(ProjectionExecutorRoute::local("typed-commands").unwrap()),
+            )],
+            None,
+        )
+        .unwrap();
+    SurfaceProjector::new(owner_name).modeled(
+        SurfaceModeledProjection::try_from_descriptor(descriptor, &catalog, &active, binding.id())
+            .unwrap(),
+    )
 }
 
 fn direct_plan_projection() -> SurfaceDirectProjection {
@@ -1243,9 +1450,9 @@ async fn manifest_populates_typed_consistency_and_revalidation_effects() {
         .unwrap();
 
     assert_eq!(command.extensions.consistency.kind, "succeeded");
-    let effects = command.extensions.effects.as_ref().unwrap();
-    assert!(effects.operations.is_empty());
-    assert_eq!(effects.fallback, "revalidate");
+    assert!(command.extensions.effects.is_none());
+    assert!(command.extensions.confirmations.is_none());
+    assert!(command.extensions.projection.is_none());
     assert!(manifest.capabilities.causal_receipts);
     assert!(!manifest.capabilities.confirmed_persistence);
 }
@@ -1255,13 +1462,13 @@ async fn generated_input_default_is_reused_as_the_effect_key_and_fingerprinted()
     let command_with_default = || {
         typed_command::<PlanInput, Succeeded<PlanOutput>>("plan.create")
             .input_defaults(plan_input_defaults())
-            .confirmations(plan_confirmations())
-            .effects(command_effects! {
-                input: PlanInput;
-                upsert PlanView {
-                    key { id: input.id },
-                    set { title: input.title, count: 0 }
-                };
+            .emits(distributed::events![PlanChangedDomainEvent])
+            .preview(distributed::state_preview! {
+                PlanChangedDomainEvent => PlanView {
+                    id: generated.id,
+                    title: input.title,
+                    ..unknown
+                }
             })
     };
     let service_with_default = Service::new().named("plans").routes(
@@ -1272,7 +1479,7 @@ async fn generated_input_default_is_reused_as_the_effect_key_and_fingerprinted()
     let engine = GraphqlEngine::builder(pool())
         .model::<PlanView>(plan_permissions("anonymous"))
         .service(&service_with_default)
-        .client_projectors([plan_projector()])
+        .client_projectors([modeled_projector::<PlanView, _>(PLAN_PROJECTION)])
         .build()
         .unwrap();
     let manifest = engine.client_manifest_for_role("anonymous").unwrap();
@@ -1282,29 +1489,42 @@ async fn generated_input_default_is_reused_as_the_effect_key_and_fingerprinted()
     assert_eq!(defaults.defaults.len(), 1);
     assert_eq!(defaults.defaults[0]["path"], serde_json::json!(["id"]));
     assert_eq!(defaults.defaults[0]["generator"], "uuid_v7");
-    let effect = &command.extensions.effects.as_ref().unwrap().operations[0];
+    assert!(command.extensions.effects.is_none());
+    assert!(command.extensions.confirmations.is_none());
+    let projection = command.extensions.projection.as_ref().unwrap();
+    let generated_id = projection.preview_occurrences[0]
+        .values
+        .iter()
+        .find(|value| {
+            matches!(
+                &value.source,
+                ClientProjectionPreviewSource::GeneratedDefault { path }
+                    if path == &["id".to_string()]
+            )
+        })
+        .expect("projection preview must reuse the finalized generated id");
+    assert!(matches!(
+        generated_id.source,
+        ClientProjectionPreviewSource::GeneratedDefault { .. }
+    ));
+    assert_eq!(projection.program_arms.len(), 1);
+    assert_eq!(projection.program_arms[0].event.name, "plan.changed");
     assert_eq!(
-        effect["key"]["fields"][0]["value"]["path"],
-        serde_json::json!(["id"])
+        manifest.projection_bindings[0].execution_class,
+        ClientProjectionExecutionClass::Causal
     );
-    let confirmation = &command.extensions.confirmations.as_ref().unwrap().expected[0];
-    assert_eq!(
-        confirmation["key"]["fields"][0]["value"]["path"],
-        serde_json::json!(["id"])
-    );
-    assert_eq!(confirmation["partition"]["path"], serde_json::json!(["id"]));
 
     let without_default = Service::new().named("plans").routes(
         causal_routes()
             .typed_command(
                 typed_command::<PlanInput, Succeeded<PlanOutput>>("plan.create")
-                    .confirmations(plan_confirmations())
-                    .effects(command_effects! {
-                        input: PlanInput;
-                        upsert PlanView {
-                            key { id: input.id },
-                            set { title: input.title, count: 0 }
-                        };
+                    .emits(distributed::events![PlanChangedDomainEvent])
+                    .preview(distributed::state_preview! {
+                        PlanChangedDomainEvent => PlanView {
+                            id: input.id,
+                            title: input.title,
+                            ..unknown
+                        }
                     }),
             )
             .handle(succeeded_plan_handler),
@@ -1312,7 +1532,7 @@ async fn generated_input_default_is_reused_as_the_effect_key_and_fingerprinted()
     let manifest_without_default = GraphqlEngine::builder(pool())
         .model::<PlanView>(plan_permissions("anonymous"))
         .service(&without_default)
-        .client_projectors([plan_projector()])
+        .client_projectors([modeled_projector::<PlanView, _>(PLAN_PROJECTION)])
         .build()
         .unwrap()
         .client_manifest_for_role("anonymous")
@@ -1382,30 +1602,64 @@ async fn json_container_leaves_reach_the_manifest() {
     let json_service = Service::new().named("json").routes(
         causal_routes()
             .typed_command(
-                typed_command::<JsonPatchInput, Succeeded<PlanOutput>>("json.patch").effects(
-                    command_effects! {
-                        input: JsonPatchInput;
-                        patch JsonView {
-                            key { id: input.id },
-                            set { tags: input.tags, details: input.details }
-                        };
-                    },
-                ),
+                typed_command::<JsonPatchInput, Succeeded<PlanOutput>>("json.patch")
+                    .emits(distributed::events![JsonChangedDomainEvent])
+                    .preview(distributed::state_preview! {
+                        JsonChangedDomainEvent => JsonView {
+                            id: input.id,
+                            ..unknown
+                        }
+                    }),
             )
             .handle(json_patch_handler),
     );
     let manifest = GraphqlEngine::builder(pool())
         .model::<JsonView>(ModelPermissions::new().grant("anonymous", read().all_columns()))
         .service(&json_service)
+        .client_projectors([modeled_projector::<JsonView, _>(JSON_PROJECTION)])
         .build()
         .unwrap()
         .client_manifest_for_role("anonymous")
         .unwrap();
-    let effects = manifest.commands[0].extensions.effects.as_ref().unwrap();
-    assert_eq!(effects.operations.len(), 1);
-    let effects_json = serde_json::to_string(&effects.operations).unwrap();
-    assert!(effects_json.contains("tags"), "{effects_json}");
-    assert!(effects_json.contains("details"), "{effects_json}");
+    let command = &manifest.commands[0];
+    assert!(command.extensions.effects.is_none());
+    assert!(command.extensions.confirmations.is_none());
+    let projection = command.extensions.projection.as_ref().unwrap();
+    assert!(projection.preview_occurrences[0]
+        .values
+        .iter()
+        .any(|value| matches!(
+            &value.source,
+            ClientProjectionPreviewSource::Input { path }
+                if path == &["id".to_string()]
+        )));
+    assert!(
+        projection.preview_occurrences[0]
+            .values
+            .iter()
+            .filter(|value| matches!(value.source, ClientProjectionPreviewSource::Unknown))
+            .count()
+            >= 2
+    );
+    let operation = &manifest.projection_programs[0].arms[0].operations[0];
+    assert_eq!(operation.kind, ClientProjectionMutationKind::Patch);
+    for field in ["tags", "details"] {
+        let assignment = &operation
+            .fields
+            .iter()
+            .find(|candidate| candidate.name == field)
+            .unwrap()
+            .assignment;
+        assert!(matches!(
+            assignment,
+            ClientProjectionAssignment::Set {
+                expression: ClientProjectionExpression::Slot {
+                    value_type: ClientProjectionValueType::Json,
+                    ..
+                }
+            }
+        ));
+    }
 }
 
 #[tokio::test]
@@ -1504,12 +1758,13 @@ async fn embedded_primary_keys_reject_keyed_effects_while_composite_keys_remain_
         causal_routes()
             .typed_command(
                 typed_command::<CompositeKeyInput, Succeeded<PlanOutput>>("composite.patch")
-                    .effects(command_effects! {
-                        input: CompositeKeyInput;
-                        patch CompositeKeyView {
-                            key { tenant_id: input.tenant_id, id: input.id },
-                            set { title: input.title }
-                        };
+                    .emits(distributed::events![CompositeChangedDomainEvent])
+                    .preview(distributed::state_preview! {
+                        CompositeChangedDomainEvent => CompositeKeyView {
+                            tenant_id: input.tenant_id,
+                            id: input.id,
+                            title: input.title,
+                        }
                     }),
             )
             .handle(composite_key_handler),
@@ -1517,6 +1772,9 @@ async fn embedded_primary_keys_reject_keyed_effects_while_composite_keys_remain_
     let composite_manifest = GraphqlEngine::builder(pool())
         .model::<CompositeKeyView>(ModelPermissions::new().grant("anonymous", read().all_columns()))
         .service(&composite_service)
+        .client_projectors([modeled_projector::<CompositeKeyView, _>(
+            COMPOSITE_PROJECTION,
+        )])
         .build()
         .unwrap()
         .client_manifest_for_role("anonymous")
@@ -1533,43 +1791,44 @@ async fn embedded_primary_keys_reject_keyed_effects_while_composite_keys_remain_
             .collect::<Vec<_>>(),
         ["tenant_id", "id"]
     );
+    let command = &composite_manifest.commands[0];
+    assert!(command.extensions.effects.is_none());
+    assert!(command.extensions.confirmations.is_none());
+    assert!(command.extensions.projection.is_some());
+    let operation = &composite_manifest.projection_programs[0].arms[0].operations[0];
+    assert_eq!(operation.kind, ClientProjectionMutationKind::Patch);
     assert_eq!(
-        composite_manifest.commands[0]
-            .extensions
-            .effects
-            .as_ref()
-            .unwrap()
-            .operations
-            .len(),
-        1
+        operation
+            .key
+            .iter()
+            .map(|field| field.name.as_str())
+            .collect::<Vec<_>>(),
+        ["tenant_id", "id"]
+    );
+    assert_eq!(
+        operation
+            .fields
+            .iter()
+            .map(|field| field.name.as_str())
+            .collect::<Vec<_>>(),
+        ["title"]
     );
 }
 
 #[tokio::test]
-async fn embedded_models_retain_global_invalidation_and_server_resolved_confirmations() {
-    let projector = SurfaceProjector::new("project_bigint")
-        .facts(["bigint.changed"])
-        .models(["BigIntKeyView"]);
-    let confirmations = command_confirmations! {
-        input: BigIntKeyInput;
-        confirm projector -> BigIntKeyView { key { key: input.key } };
-    };
+async fn embedded_models_retain_global_revalidation_for_modeled_projections() {
     let service = Service::new().named("bigint").routes(
         causal_routes()
             .typed_command(
                 typed_command::<BigIntKeyInput, Succeeded<PlanOutput>>("bigint.invalidate")
-                    .confirmations(confirmations)
-                    .effects(command_effects! {
-                        input: BigIntKeyInput;
-                        invalidate BigIntKeyView;
-                    }),
+                    .emits(distributed::events![BigIntChangedDomainEvent]),
             )
             .handle(bigint_key_handler),
     );
     let manifest = GraphqlEngine::builder(pool())
         .model::<BigIntKeyView>(ModelPermissions::new().grant("anonymous", read().all_columns()))
         .service(&service)
-        .client_projectors([projector])
+        .client_projectors([modeled_projector::<BigIntKeyView, _>(BIGINT_PROJECTION)])
         .build()
         .unwrap()
         .client_manifest_for_role("anonymous")
@@ -1580,16 +1839,19 @@ async fn embedded_models_retain_global_invalidation_and_server_resolved_confirma
         distributed::graphql::ModelNormalization::Embedded
     );
     let command = &manifest.commands[0];
+    assert!(command.extensions.effects.is_none());
+    assert!(command.extensions.confirmations.is_none());
     assert_eq!(
-        command.extensions.effects.as_ref().unwrap().operations[0]["kind"],
-        "invalidate_model"
+        command.extensions.projection.as_ref().unwrap().fallback,
+        ClientProjectionFallback::Revalidate
     );
-    let confirmations = command.extensions.confirmations.as_ref().unwrap();
-    assert_eq!(confirmations.kind, "finite");
-    assert_eq!(confirmations.expected[0]["model"], "BigIntKeyView");
     assert_eq!(
-        confirmations.expected[0]["key"]["fields"][0]["value"]["path"],
-        serde_json::json!(["key"])
+        manifest.projection_programs[0].arms[0].operations[0].kind,
+        ClientProjectionMutationKind::Upsert
+    );
+    assert_eq!(
+        manifest.projection_bindings[0].execution_class,
+        ClientProjectionExecutionClass::Causal
     );
 }
 
@@ -1615,16 +1877,16 @@ async fn upsert_and_patch_effects_cannot_assign_primary_key_fields() {
 }
 
 #[tokio::test]
-async fn succeeded_finite_confirmation_is_exported_and_marks_the_projector_causal() {
+async fn succeeded_emitted_event_exports_a_modeled_causal_projection() {
     let command = typed_command::<PlanInput, Succeeded<PlanOutput>>("plan.create")
         .input_defaults(plan_input_defaults())
-        .confirmations(plan_confirmations())
-        .effects(command_effects! {
-            input: PlanInput;
-            upsert PlanView {
-                key { id: input.id },
-                set { title: input.title, count: 0 }
-            };
+        .emits(distributed::events![PlanChangedDomainEvent])
+        .preview(distributed::state_preview! {
+            PlanChangedDomainEvent => PlanView {
+                id: generated.id,
+                title: input.title,
+                ..unknown
+            }
         });
     let service = Service::new().named("plans").routes(
         causal_routes()
@@ -1634,7 +1896,7 @@ async fn succeeded_finite_confirmation_is_exported_and_marks_the_projector_causa
     let engine = GraphqlEngine::builder(pool())
         .model::<PlanView>(plan_permissions("anonymous"))
         .service(&service)
-        .client_projectors([plan_projector()])
+        .client_projectors([modeled_projector::<PlanView, _>(PLAN_PROJECTION)])
         .build()
         .unwrap();
     let manifest = engine.client_manifest_for_role("anonymous").unwrap();
@@ -1643,36 +1905,26 @@ async fn succeeded_finite_confirmation_is_exported_and_marks_the_projector_causa
         .iter()
         .find(|command| command.name == "plan.create")
         .unwrap();
-    let confirmations = command.extensions.confirmations.as_ref().unwrap();
-    assert_eq!(confirmations.kind, "finite");
-    assert_eq!(confirmations.expected.len(), 1);
-    assert_eq!(confirmations.expected[0]["projector"], "project_plan");
-    assert_eq!(confirmations.expected[0]["model"], "PlanView");
-    assert!(confirmations.expected[0]
-        .get("projector_topology")
-        .is_none());
-    assert!(confirmations.expected[0].get("facts").is_none());
-    assert_eq!(confirmations.fallback, "revalidate");
-    assert!(
-        manifest
-            .projectors
-            .iter()
-            .find(|projector| projector.name == "project_plan")
-            .unwrap()
-            .causal_confirmation
+    assert_eq!(command.extensions.consistency.kind, "succeeded");
+    assert!(command.extensions.effects.is_none());
+    assert!(command.extensions.confirmations.is_none());
+    let projection = command.extensions.projection.as_ref().unwrap();
+    assert_eq!(projection.program_arms.len(), 1);
+    assert_eq!(projection.program_arms[0].event.name, "plan.changed");
+    assert_eq!(
+        manifest.projection_programs[0].arms[0].operations[0].kind,
+        ClientProjectionMutationKind::Upsert
+    );
+    assert_eq!(
+        manifest.projection_bindings[0].execution_class,
+        ClientProjectionExecutionClass::Causal
     );
 }
 
 #[tokio::test]
 async fn text_backed_enum_constant_reaches_a_valid_client_manifest() {
-    let command =
-        typed_command::<PlanInput, Succeeded<PlanOutput>>("plan.close").effects(command_effects! {
-            input: PlanInput;
-            patch PlanView {
-                key { id: input.id },
-                set { status: constant(PlanStatus::Closed) }
-            };
-        });
+    let command = typed_command::<PlanInput, Succeeded<PlanOutput>>("plan.close")
+        .emits(distributed::events![PlanChangedDomainEvent]);
     let service = Service::new().named("plans").routes(
         causal_routes()
             .typed_command(command)
@@ -1681,17 +1933,29 @@ async fn text_backed_enum_constant_reaches_a_valid_client_manifest() {
     let engine = GraphqlEngine::builder(pool())
         .model::<PlanView>(plan_permissions("anonymous"))
         .service(&service)
+        .client_projectors([modeled_projector::<PlanView, _>(PLAN_CLOSE_PROJECTION)])
         .build()
         .unwrap();
     let manifest = engine.client_manifest_for_role("anonymous").unwrap();
-    let operations = &manifest.commands[0]
-        .extensions
-        .effects
-        .as_ref()
+    let command = &manifest.commands[0];
+    assert!(command.extensions.effects.is_none());
+    assert!(command.extensions.confirmations.is_none());
+    assert!(command.extensions.projection.is_some());
+    let status = &manifest.projection_programs[0].arms[0].operations[0]
+        .fields
+        .iter()
+        .find(|field| field.name == "status")
         .unwrap()
-        .operations;
-    assert_eq!(operations[0]["fields"][0]["field"], "status");
-    assert_eq!(operations[0]["fields"][0]["value"]["value"], "Closed");
+        .assignment;
+    assert!(matches!(
+        status,
+        ClientProjectionAssignment::Set {
+            expression: ClientProjectionExpression::Enum {
+                enum_type,
+                variant
+            }
+        } if enum_type == "PlanStatus" && variant == "Closed"
+    ));
 }
 
 #[tokio::test]
@@ -1757,34 +2021,39 @@ async fn nonfinite_float_constant_is_rejected_but_explicit_null_is_portable() {
     let explicit_null = Service::new().named("floats").routes(
         causal_routes()
             .typed_command(
-                typed_command::<FloatEffectInput, Succeeded<PlanOutput>>("float.clear").effects(
-                    command_effects! {
-                        input: FloatEffectInput;
-                        patch FloatEffectView {
-                            key { id: input.id },
-                            set { value: null() }
-                        };
-                    },
-                ),
+                typed_command::<FloatEffectInput, Succeeded<PlanOutput>>("float.clear")
+                    .emits(distributed::events![FloatClearedDomainEvent]),
             )
             .handle(float_effect_handler),
     );
     let manifest = GraphqlEngine::builder(pool())
         .model::<FloatEffectView>(ModelPermissions::new().grant("anonymous", read().all_columns()))
         .service(&explicit_null)
+        .client_projectors([modeled_projector::<FloatEffectView, _>(
+            FLOAT_CLEAR_PROJECTION,
+        )])
         .build()
         .unwrap()
         .client_manifest_for_role("anonymous")
         .unwrap();
-    assert_eq!(
-        manifest.commands[0]
-            .extensions
-            .effects
-            .as_ref()
-            .unwrap()
-            .operations[0]["fields"][0]["value"]["kind"],
-        "null"
-    );
+    let command = &manifest.commands[0];
+    assert!(command.extensions.effects.is_none());
+    assert!(command.extensions.confirmations.is_none());
+    assert!(command.extensions.projection.is_some());
+    let value = &manifest.projection_programs[0].arms[0].operations[0]
+        .fields
+        .iter()
+        .find(|field| field.name == "value")
+        .unwrap()
+        .assignment;
+    assert!(matches!(
+        value,
+        ClientProjectionAssignment::Set {
+            expression: ClientProjectionExpression::Constant {
+                value: ClientProjectionValue::Null
+            }
+        }
+    ));
 }
 
 #[tokio::test]
@@ -1871,15 +2140,8 @@ async fn json_backed_constants_reject_nonfinite_floats_but_preserve_json_null() 
     let json_null = Service::new().named("json-floats").routes(
         causal_routes()
             .typed_command(
-                typed_command::<FloatEffectInput, Succeeded<PlanOutput>>("json.clear").effects(
-                    command_effects! {
-                        input: FloatEffectInput;
-                        patch JsonFloatEffectView {
-                            key { id: input.id },
-                            set { document: constant(serde_json::Value::Null) }
-                        };
-                    },
-                ),
+                typed_command::<FloatEffectInput, Succeeded<PlanOutput>>("json.clear")
+                    .emits(distributed::events![JsonFloatClearedDomainEvent]),
             )
             .handle(float_effect_handler),
     );
@@ -1888,18 +2150,31 @@ async fn json_backed_constants_reject_nonfinite_floats_but_preserve_json_null() 
             ModelPermissions::new().grant("anonymous", read().all_columns()),
         )
         .service(&json_null)
+        .client_projectors([modeled_projector::<JsonFloatEffectView, _>(
+            JSON_FLOAT_CLEAR_PROJECTION,
+        )])
         .build()
         .unwrap()
         .client_manifest_for_role("anonymous")
         .unwrap();
-    let value = &manifest.commands[0]
-        .extensions
-        .effects
-        .as_ref()
+    let command = &manifest.commands[0];
+    assert!(command.extensions.effects.is_none());
+    assert!(command.extensions.confirmations.is_none());
+    assert!(command.extensions.projection.is_some());
+    let value = &manifest.projection_programs[0].arms[0].operations[0]
+        .fields
+        .iter()
+        .find(|field| field.name == "document")
         .unwrap()
-        .operations[0]["fields"][0]["value"];
-    assert_eq!(value["kind"], "constant");
-    assert!(value["value"].is_null());
+        .assignment;
+    assert!(matches!(
+        value,
+        ClientProjectionAssignment::Set {
+            expression: ClientProjectionExpression::Constant {
+                value: ClientProjectionValue::Null
+            }
+        }
+    ));
 }
 
 #[tokio::test]
@@ -1937,16 +2212,16 @@ async fn consistency_confirmation_matrix_fails_closed() {
 }
 
 #[tokio::test]
-async fn role_redaction_erases_the_whole_confirmation_and_optimistic_plan() {
+async fn role_redaction_replaces_an_unsafe_modeled_projection_with_revalidation() {
     let command = typed_command::<PlanInput, Succeeded<PlanOutput>>("plan.create")
         .input_defaults(plan_input_defaults())
-        .confirmations(plan_confirmations())
-        .effects(command_effects! {
-            input: PlanInput;
-            patch PlanView {
-                key { id: input.id },
-                set { title: input.title }
-            };
+        .emits(distributed::events![PlanChangedDomainEvent])
+        .preview(distributed::state_preview! {
+            PlanChangedDomainEvent => PlanView {
+                id: generated.id,
+                title: input.title,
+                ..unknown
+            }
         });
     let service = Service::new().named("plans").routes(
         causal_routes()
@@ -1956,23 +2231,20 @@ async fn role_redaction_erases_the_whole_confirmation_and_optimistic_plan() {
     let engine = GraphqlEngine::builder(pool())
         .model::<PlanView>(ModelPermissions::new().grant("user", read().columns(["title"])))
         .service(&service)
-        .client_projectors([plan_projector()])
+        .client_projectors([modeled_projector::<PlanView, _>(PLAN_TITLE_PROJECTION)])
         .build()
         .unwrap();
     let manifest = engine.client_manifest_for_role("user").unwrap();
     let command = &manifest.commands[0];
     assert!(command.extensions.input_defaults.is_some());
-    let confirmations = command.extensions.confirmations.as_ref().unwrap();
-    assert_eq!(confirmations.kind, "unavailable");
-    assert!(confirmations.expected.is_empty());
-    assert_eq!(confirmations.fallback, "revalidate");
-    let effects = command.extensions.effects.as_ref().unwrap();
-    assert!(effects.operations.is_empty());
-    assert_eq!(effects.fallback, "revalidate");
-    assert!(manifest
-        .projectors
-        .iter()
-        .all(|projector| !projector.causal_confirmation));
+    assert!(command.extensions.effects.is_none());
+    assert!(command.extensions.confirmations.is_none());
+    let projection = command.extensions.projection.as_ref().unwrap();
+    assert_eq!(projection.fallback, ClientProjectionFallback::Revalidate);
+    assert_eq!(
+        manifest.projection_programs[0].arms[0].operations[0].kind,
+        ClientProjectionMutationKind::InvalidateModel
+    );
 }
 
 #[tokio::test]
