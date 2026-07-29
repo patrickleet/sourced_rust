@@ -676,7 +676,7 @@ impl Surface {
         Ok(self)
     }
 
-    #[cfg(feature = "graphql")]
+    #[cfg(any(test, feature = "graphql"))]
     pub(crate) fn with_service_binding(
         mut self,
         binding: Option<crate::graphql::command_contract::TypedServiceCommandBinding>,

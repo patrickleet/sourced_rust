@@ -106,6 +106,48 @@ export function preparedSemanticChanges<TInput, TOutput>(
 	return Object.freeze(changes);
 }
 
+/**
+ * Exact record identities whose aggregate-facing command dispatches must retain
+ * invocation order. Optimistic layers still apply immediately; only transport
+ * waits for an earlier command touching the same modeled record to settle.
+ */
+export function preparedDispatchKeys<TInput, TOutput>(
+	prepared: ReplicaPreparedCommand<TInput, TOutput>
+): readonly string[] {
+	const keys = new Set<string>();
+	const addScope = (scope: PreparedProjectionScope): void => {
+		keys.add(
+			replicaRecordKey(modelFromKey(scope), identityFromKey(scope))
+		);
+	};
+
+	for (const effect of prepared.optimistic.operations) {
+		switch (effect.kind) {
+			case 'upsert':
+			case 'patch':
+			case 'delete':
+				addScope(effect.scope);
+				break;
+			case 'link':
+			case 'unlink':
+				addScope(effect.source);
+				addScope(effect.target);
+				break;
+			case 'invalidate_relationship':
+				addScope(effect.source);
+				break;
+			case 'invalidate_model':
+				/*
+				 * A model invalidation has no compiler-proven aggregate
+				 * identity. It cannot safely participate in a record queue.
+				 */
+				break;
+		}
+	}
+
+	return Object.freeze([...keys].sort());
+}
+
 export function modelFromKey(
 	scope: PreparedProjectionScope
 ): ReplicaModelArtifact {

@@ -671,7 +671,7 @@ test('artifact v1 is rejected at the public boundary', () => {
 	);
 });
 
-test('actual delta atomically replaces preview and later layers rebase in order', async () => {
+test('actual delta rebases later optimism while same-record dispatch retains invocation order', async () => {
 	const replica = new TestReplica();
 	const first = deferred();
 	const second = deferred();
@@ -695,6 +695,8 @@ test('actual delta atomically replaces preview and later layers rebase in order'
 		{ commandId: COMMAND_B }
 	);
 	assert.equal(replica.record('todo-1').fields.title, 'preview-b');
+	await tick();
+	assert.equal(dispatches, 1);
 
 	first.resolve(
 		envelope(
@@ -711,6 +713,8 @@ test('actual delta atomically replaces preview and later layers rebase in order'
 	assert.equal(receipt.metadata.expects.length, 1);
 	assert.equal(replica.layer(COMMAND_A), 'accepted');
 	assert.equal(replica.record('todo-1').fields.title, 'preview-b');
+	await tick();
+	assert.equal(dispatches, 2);
 
 	second.resolve(
 		envelope(

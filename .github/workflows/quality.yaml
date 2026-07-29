@@ -114,7 +114,10 @@ jobs:
         uses: dtolnay/rust-toolchain@stable
         with:
           toolchain: ${{ inputs.toolchain }}
-          components: rustfmt, clippy, llvm-tools-preview
+          # trybuild snapshots include const-eval call sites from the standard
+          # library. Installing rust-src keeps those diagnostics portable
+          # between local development and Linux CI.
+          components: rustfmt, clippy, llvm-tools-preview, rust-src
 
       - name: Rust cache
         if: inputs.rust_cache

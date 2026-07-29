@@ -32,6 +32,7 @@ import {
 	normalizeInventory,
 	normalizeRetries,
 	pendingProjection,
+	preparedDispatchKeys,
 	preparedSemanticChanges,
 	requireCommandEnvelope,
 	requireCommandRejectionEnvelope,
@@ -454,9 +455,43 @@ export function createReplicaCommandRuntime<
 		string,
 		ReplicaCommandRevalidationPlan
 	>();
+	const dispatchTails = new Map<string, Promise<void>>();
 	const unmanagedLayers = new Set<string>();
 	const runtimeAbort = new AbortController();
 	let disposed = false;
+
+	const reserveDispatch = (
+		prepared: ReplicaPreparedCommand<unknown, unknown>
+	): Readonly<{ wait: Promise<void>; release(): void }> => {
+		const keys = preparedDispatchKeys(prepared);
+		if (keys.length === 0) {
+			return Object.freeze({
+				wait: Promise.resolve(),
+				release(): void {}
+			});
+		}
+		const predecessors = keys.flatMap((key) => {
+			const predecessor = dispatchTails.get(key);
+			return predecessor === undefined ? [] : [predecessor];
+		});
+		let resolve!: () => void;
+		const tail = new Promise<void>((settled) => {
+			resolve = settled;
+		});
+		for (const key of keys) dispatchTails.set(key, tail);
+		let released = false;
+		return Object.freeze({
+			wait: Promise.all(predecessors).then(() => undefined),
+			release(): void {
+				if (released) return;
+				released = true;
+				for (const key of keys) {
+					if (dispatchTails.get(key) === tail) dispatchTails.delete(key);
+				}
+				resolve();
+			}
+		});
+	};
 
 	type ValidatedActualProjection = Readonly<{
 		canonical?: string;
@@ -1157,9 +1192,11 @@ export function createReplicaCommandRuntime<
 			}
 			return undefined;
 		};
+		const dispatchReservation = reserveDispatch(prepared);
 		let result: ReplicaCommandTransportResult;
 		let dispatchAttempted = false;
 		try {
+			await dispatchReservation.wait;
 			result = await dispatchPrepared(
 				transport,
 				request,
@@ -1203,6 +1240,7 @@ export function createReplicaCommandRuntime<
 				}
 			);
 		} finally {
+			dispatchReservation.release();
 			requestSignals.dispose();
 		}
 
