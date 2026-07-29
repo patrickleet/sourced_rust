@@ -189,6 +189,7 @@ impl GraphqlEngine {
         .with_trusted_presets(trusted_presets.clone());
         let accumulator = ProtocolResponseAccumulator::new(envelope, runtime.codec.clone());
         if let Some(principal_scope) = projection_principal {
+            let visibility_surface = self.inner.role_surfaces.get(role).cloned().ok_or(())?;
             let selected_surface = match &surface_identity {
                 ClientSurfaceIdentity::Role { name } => self.inner.role_surfaces.get(name),
                 ClientSurfaceIdentity::Application { name, .. } => {
@@ -224,6 +225,8 @@ impl GraphqlEngine {
                     trusted_presets,
                     issued_at_unix_ms,
                 )
+                .map_err(|_| ())?
+                .with_visibility_surface(visibility_surface)
                 .map_err(|_| ())?;
             accumulator
                 .bind_projection_request(projection_request)

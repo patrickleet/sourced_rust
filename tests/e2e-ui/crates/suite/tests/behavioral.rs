@@ -9,11 +9,14 @@ use std::time::Duration;
 use distributed::bus::{InMemoryBus, RunOptions};
 use distributed::microsvc::serve;
 use distributed::{SqliteLockManager, SqliteRepository};
-use e2e_service::{build_graphql_engine, build_service, distributed_manifest};
+use e2e_service::{
+    build_graphql_engine, build_service, distributed_client_surface, distributed_manifest,
+    DISTRIBUTED_CLIENT_SURFACE,
+};
 use e2e_suite::{
-    assert_http_commands_disabled, cases, graphql, graphql_raw, new_command_id,
-    offline_oidc_identity, todos_archive, todos_complete, todos_create, todos_force_archive,
-    todos_purge, todos_rename, todos_reopen, wait_ready,
+    assert_http_commands_disabled, cases, graphql, graphql_for_application, graphql_raw,
+    new_command_id, offline_oidc_identity, todos_archive, todos_complete, todos_create,
+    todos_force_archive, todos_purge, todos_rename, todos_reopen, wait_ready,
 };
 
 async fn ensure_target() -> String {
@@ -155,6 +158,63 @@ async fn t1_create_and_project() {
     assert_eq!(row["title"], "Buy milk");
     assert_eq!(row["owner_id"], "alice");
     eprintln!("{} ok {tid}", cases::CREATE);
+}
+
+#[tokio::test]
+async fn t1a_application_surface_returns_actual_todo_upsert_and_causal_obligation() {
+    let base = ensure_target().await;
+    let tid = id("tapp");
+    let command_id = new_command_id();
+    let mutation = format!(
+        r#"mutation {{
+          todos_create(commandId: "{command_id}", input: {{
+            todo_id: "{tid}", title: "Application projection"
+          }}) {{ todo_id owner_id title status }}
+        }}"#
+    );
+    let manifest = distributed_client_surface().manifest().unwrap();
+    let response = graphql_for_application(
+        &base,
+        &mutation,
+        "alice",
+        "user",
+        DISTRIBUTED_CLIENT_SURFACE,
+        &["admin", "user"],
+        &manifest.schema_fingerprint,
+    )
+    .await
+    .unwrap();
+    assert!(response.get("errors").is_none(), "{response}");
+    let command = &response["extensions"]["distributed"]["command"];
+    assert!(
+        matches!(
+            command["state"].as_str(),
+            Some("succeeded" | "succeeded_pending_projection")
+        ),
+        "{response}"
+    );
+    assert_eq!(command["consistency"], "causal", "{response}");
+    assert!(
+        command["projection"]["delta"]["operations"]
+            .as_array()
+            .is_some_and(|operations| operations.iter().any(|operation| {
+                operation["mutation"]["op"] == "upsert"
+                    && operation["mutation"]["scope"]["model"] == "Todos"
+            })),
+        "application surface must preserve the actual Todo upsert: {response}"
+    );
+    assert_eq!(
+        command["projection"]["obligations"]
+            .as_array()
+            .map(Vec::len),
+        Some(1),
+        "application surface must derive one finite projection obligation: {response}"
+    );
+    assert_eq!(
+        command["expects"].as_array().map(Vec::len),
+        Some(1),
+        "client confirmation must expose the same finite obligation: {response}"
+    );
 }
 
 /// Create via GraphQL command mutation; owner is always session user.

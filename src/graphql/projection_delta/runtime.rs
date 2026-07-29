@@ -72,6 +72,7 @@ struct ProjectionLifecycleTokenMaterial<'a> {
 #[derive(Clone)]
 pub(crate) struct ProtocolProjectionRequestSeed {
     export: DistributedClientSurfaceExport,
+    visibility_surface: Arc<Surface>,
     registry: Arc<ProtocolProjectionProgramRegistry>,
     principal_scope: PrincipalPartitionId,
     authorization_generation: String,
@@ -122,6 +123,7 @@ impl ProtocolProjectionRequestSeed {
             return Err(ProjectionRuntimeAuthorityError::InvalidAuthority);
         }
         Ok(Self {
+            visibility_surface: Arc::clone(export.surface()),
             export,
             registry,
             principal_scope,
@@ -129,6 +131,15 @@ impl ProtocolProjectionRequestSeed {
             trusted_presets,
             issued_at_unix_ms,
         })
+    }
+
+    pub(crate) fn with_visibility_surface(
+        mut self,
+        visibility_surface: Arc<Surface>,
+    ) -> Result<Self, ProjectionRuntimeAuthorityError> {
+        validate_visibility_surface(self.export.surface(), &visibility_surface)?;
+        self.visibility_surface = visibility_surface;
+        Ok(self)
     }
 
     #[allow(clippy::too_many_arguments)]
@@ -186,6 +197,7 @@ impl ProtocolProjectionRequestSeed {
             completion_unix_ms,
             expires_at_unix_ms,
         )?
+        .with_visibility_surface(Arc::clone(&self.visibility_surface))?
         .with_trusted_presets(self.trusted_presets.clone());
         self.registry
             .metadata_for_actual(&request, occurrences, sealed_events)
@@ -507,6 +519,7 @@ impl ProtocolProjectionRequestSeed {
             metadata.issued_at_unix_ms,
             metadata.expires_at_unix_ms,
         )?
+        .with_visibility_surface(Arc::clone(&self.visibility_surface))?
         .with_trusted_presets(self.trusted_presets.clone());
         let manifest = self
             .export
@@ -558,6 +571,7 @@ impl ProtocolProjectionRequestSeed {
             metadata.issued_at_unix_ms,
             metadata.expires_at_unix_ms,
         )?
+        .with_visibility_surface(Arc::clone(&self.visibility_surface))?
         .with_trusted_presets(self.trusted_presets.clone());
         let manifest = self
             .export
@@ -740,6 +754,7 @@ impl ProtocolProjectionRequestSeed {
             metadata.issued_at_unix_ms,
             metadata.expires_at_unix_ms,
         )?
+        .with_visibility_surface(Arc::clone(&self.visibility_surface))?
         .with_trusted_presets(self.trusted_presets.clone());
         let manifest = self
             .export
@@ -1454,6 +1469,7 @@ fn projection_value_json(
 pub(crate) struct ProtocolProjectionDeltaRequestAuthority {
     export: DistributedClientSurfaceExport,
     surface: Arc<Surface>,
+    visibility_surface: Arc<Surface>,
     codec: ProtocolTokenCodec,
     principal_scope: PrincipalPartitionId,
     authorization_generation: String,
@@ -1498,6 +1514,7 @@ impl ProtocolProjectionDeltaRequestAuthority {
             .map_err(|_| ProjectionRuntimeAuthorityError::InvalidAuthority)?;
         Ok(Self {
             export,
+            visibility_surface: Arc::clone(&surface),
             surface,
             codec,
             principal_scope,
@@ -1508,6 +1525,15 @@ impl ProtocolProjectionDeltaRequestAuthority {
             issued_at_unix_ms,
             expires_at_unix_ms,
         })
+    }
+
+    pub(crate) fn with_visibility_surface(
+        mut self,
+        visibility_surface: Arc<Surface>,
+    ) -> Result<Self, ProjectionRuntimeAuthorityError> {
+        validate_visibility_surface(&self.surface, &visibility_surface)?;
+        self.visibility_surface = visibility_surface;
+        Ok(self)
     }
 
     pub(crate) fn export(&self) -> &DistributedClientSurfaceExport {
@@ -1768,7 +1794,11 @@ impl ProjectionVisibilityEvaluator for ProtocolProjectionDeltaRequestAuthority {
         source: ProjectionMutationSource,
         mutation: &ResolvedProjectionMutation,
     ) -> Result<AuthorizationTransition, ProjectionDeltaError> {
-        let Some(model) = self.surface.models.get(mutation.target().model()) else {
+        let Some(model) = self
+            .visibility_surface
+            .models
+            .get(mutation.target().model())
+        else {
             return Ok(AuthorizationTransition {
                 before: ProjectionDeltaVisibility::Denied,
                 after: ProjectionDeltaVisibility::Denied,
@@ -1814,9 +1844,43 @@ impl ProjectionVisibilityEvaluator for ProtocolProjectionDeltaRequestAuthority {
         source: ProjectionMutationSource,
         effect: &ResolvedProjectionRelationshipEffect,
     ) -> Result<AuthorizationTransition, ProjectionDeltaError> {
-        SelectedSurfacePolicyVisibility::try_new(&self.surface)?
+        SelectedSurfacePolicyVisibility::try_new(&self.visibility_surface)?
             .relationship_transition(source, effect)
     }
+}
+
+fn validate_visibility_surface(
+    wire_surface: &Surface,
+    visibility_surface: &Surface,
+) -> Result<(), ProjectionRuntimeAuthorityError> {
+    if matches!(
+        visibility_surface.selection,
+        crate::graphql::surface::SurfaceSelection::Catalog
+    ) || wire_surface.dialect != visibility_surface.dialect
+    {
+        return Err(ProjectionRuntimeAuthorityError::InvalidAuthority);
+    }
+    for (model_name, wire_model) in &wire_surface.models {
+        let Some(visibility_model) = visibility_surface.models.get(model_name) else {
+            return Err(ProjectionRuntimeAuthorityError::InvalidAuthority);
+        };
+        if wire_model.model_name != visibility_model.model_name
+            || wire_model.table_name != visibility_model.table_name
+            || wire_model.object_name != visibility_model.object_name
+            || wire_model.primary_key != visibility_model.primary_key
+            || wire_model
+                .columns
+                .iter()
+                .any(|column| !visibility_model.columns.contains(column))
+            || wire_model
+                .relationships
+                .iter()
+                .any(|relationship| !visibility_model.relationships.contains(relationship))
+        {
+            return Err(ProjectionRuntimeAuthorityError::InvalidAuthority);
+        }
+    }
+    Ok(())
 }
 
 fn evaluate_complete_after_policy(

@@ -583,6 +583,91 @@ fn production_predicate_authorizes_only_complete_actual_after_rows() {
 
 #[test]
 #[cfg(feature = "graphql")]
+fn application_wire_surface_uses_authenticated_role_policy_for_actual_rows() {
+    use std::sync::Arc;
+
+    use super::runtime::ProtocolProjectionDeltaRequestAuthority;
+    use crate::graphql::protocol::{
+        DistributedTrustedPreset, ProtocolTokenCodec, ProtocolTokenPurpose,
+    };
+    use crate::graphql::surface_for_application;
+
+    let fixture = modeled_fixture(
+        ProjectionBindingState::Active,
+        ProjectionExecutionClass::Causal,
+    );
+    let surface = surface_with_modeled_command(&fixture.surface);
+    let user_grants = BTreeMap::from([
+        (
+            "TodoView".into(),
+            RoleGrant::all_columns()
+                .rows(crate::graphql::col("owner_id").eq(crate::graphql::claim("x-user-id"))),
+        ),
+        ("UserView".into(), RoleGrant::all_columns()),
+    ]);
+    let admin_grants = BTreeMap::from([
+        ("TodoView".into(), RoleGrant::all_columns()),
+        ("UserView".into(), RoleGrant::all_columns()),
+    ]);
+    let grants_by_role = BTreeMap::from([
+        ("delta-admin".into(), admin_grants),
+        ("delta-user".into(), user_grants.clone()),
+    ]);
+    let role_surface = Arc::new(surface_for_role(&surface, "delta-user", &user_grants).unwrap());
+    let application_surface = surface_for_application(
+        &surface,
+        "delta-app",
+        &["delta-admin".into(), "delta-user".into()],
+        &grants_by_role,
+    )
+    .unwrap();
+    assert!(matches!(
+        application_surface.models["TodoView"].row_policy,
+        crate::graphql::surface::SurfaceRowPolicy::ServerOnly
+    ));
+    let export =
+        DistributedClientSurfaceExport::from_selected("delta-service", application_surface)
+            .unwrap();
+    let codec = ProtocolTokenCodec::new([0x6b; 32]);
+    let cache_scope = codec
+        .issue(ProtocolTokenPurpose::CacheScope, &"application-role-policy")
+        .unwrap();
+    let trusted_presets = vec![DistributedTrustedPreset {
+        name: "x-user-id".into(),
+        codec: "string".into(),
+        value: serde_json::Value::String("owner-secret".into()),
+    }];
+    let request = ProtocolProjectionDeltaRequestAuthority::try_new(
+        export,
+        codec,
+        crate::command_ledger::PrincipalPartitionId::new("application-role-principal").unwrap(),
+        "application-role-generation",
+        &cache_scope,
+        crate::command_ledger::CausationId::parse_stored(TEST_CAUSATION_ID.to_owned()).unwrap(),
+        1_000,
+        1_000,
+        2_000,
+    )
+    .unwrap()
+    .with_visibility_surface(role_surface)
+    .unwrap()
+    .with_trusted_presets(trusted_presets);
+    let authority = ProjectionDeltaAuthority::try_new(request.export(), &request).unwrap();
+    let modeled = request.export().surface().projectors[0].modeled[0].clone();
+    let source = authority.source(&modeled).unwrap();
+    let occurrence = state_occurrence(10, "todo-app", "visible through role policy");
+    let plan = crate::ResolvedProjectionPlan::resolve(&fixture.program, &occurrence).unwrap();
+    let occurrence = ProjectionDeltaPlanOccurrence::actual(vec![(&source, &plan)]).unwrap();
+    let delta = authority.lower(&[occurrence]).unwrap();
+
+    assert!(delta
+        .operations
+        .iter()
+        .any(|operation| matches!(operation.mutation, ProjectionDeltaMutation::Upsert { .. })));
+}
+
+#[test]
+#[cfg(feature = "graphql")]
 fn zero_obligation_modeled_metadata_is_revalidated_on_every_receipt_emission() {
     use std::sync::Arc;
 

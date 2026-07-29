@@ -104,6 +104,47 @@ pub async fn wait_ready(base: &str, timeout: Duration) -> bool {
 }
 
 pub async fn graphql(base: &str, query: &str, user_id: &str, role: &str) -> Result<Value, String> {
+    graphql_request(base, json!({ "query": query }), user_id, role).await
+}
+
+pub async fn graphql_for_application(
+    base: &str,
+    query: &str,
+    user_id: &str,
+    role: &str,
+    application: &str,
+    roles: &[&str],
+    schema_hash: &str,
+) -> Result<Value, String> {
+    graphql_request(
+        base,
+        json!({
+            "query": query,
+            "extensions": {
+                "distributed": {
+                    "client": {
+                        "surface": {
+                            "kind": "application",
+                            "name": application,
+                            "roles": roles,
+                        },
+                        "schemaHash": schema_hash,
+                    }
+                }
+            }
+        }),
+        user_id,
+        role,
+    )
+    .await
+}
+
+async fn graphql_request(
+    base: &str,
+    body: Value,
+    user_id: &str,
+    role: &str,
+) -> Result<Value, String> {
     let client = reqwest::Client::builder()
         .timeout(Duration::from_secs(10))
         .build()
@@ -115,7 +156,7 @@ pub async fn graphql(base: &str, query: &str, user_id: &str, role: &str) -> Resu
         user_id,
         role,
     )
-    .json(&json!({ "query": query }))
+    .json(&body)
     .send()
     .await
     .map_err(|e| e.to_string())?;
