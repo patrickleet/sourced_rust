@@ -7,10 +7,11 @@ use crate::bus::{Message, MessageKind};
 use crate::graphql::SurfaceProjector;
 use crate::microsvc::{CausalProjectorContext, HandlerError, ProjectionRepairHandle, Routes};
 use crate::projection_protocol::{
-    CompiledProjectionTopology, ProjectionCheckpointProbe, ProjectionEpoch, ProjectionGeneration,
+    CompiledProjectionTopology, ProjectionCheckpointProbe, ProjectionGeneration,
     ProjectionInputCursor, ProjectionProtocolStore, ProjectionQuerySnapshotRequest,
-    ProjectionScopeCodec, ProjectorTopologyId,
 };
+#[cfg(feature = "graphql")]
+use crate::projection_protocol::{ProjectionEpoch, ProjectionScopeCodec, ProjectorTopologyId};
 use crate::table::{RowKey, RowValue};
 use crate::{InMemoryRepository, RelationalReadModel};
 

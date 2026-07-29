@@ -664,6 +664,27 @@ mod client_surface_tests {
     }
 
     #[test]
+    fn chat_manifest_retains_dynamic_room_partition_without_unit_resume_capability() {
+        let manifest = distributed_admin_client_surface().manifest().unwrap();
+        let program = manifest
+            .projection_programs
+            .iter()
+            .find(|program| program.name == "project_chat_messages")
+            .expect("Chat projection program should be exported");
+        assert!(
+            program.arms.iter().all(|arm| matches!(
+                &arm.partition,
+                distributed::graphql::ClientProjectionPartition::Expression { .. }
+            )),
+            "every Chat arm must retain its room-derived partition expression"
+        );
+        assert!(
+            !manifest.capabilities.live_resume,
+            "a room-partitioned projection cannot advertise one unit resume cursor"
+        );
+    }
+
+    #[test]
     fn blob_projection_owner_has_no_async_fact_route() {
         let manifest = distributed_client_surface().manifest().unwrap();
         let owner = manifest
@@ -681,6 +702,21 @@ mod client_surface_tests {
             repository,
         );
         let plan = service.subscription_plan();
+        for event in [
+            "todo.created",
+            "todo.renamed",
+            "todo.completed",
+            "todo.reopened",
+            "todo.archived",
+            "todo.force_archived",
+            "todo.purged",
+            "chat_message.posted",
+        ] {
+            assert!(
+                plan.events.iter().any(|candidate| candidate == event),
+                "eventual modeled projection must subscribe to {event}"
+            );
+        }
         for fact in [
             "blob.started",
             "blob.initialized",

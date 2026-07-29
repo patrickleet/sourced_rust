@@ -703,6 +703,10 @@ fn physical_field(
     Ok(column.column_name.clone())
 }
 
+#[expect(
+    clippy::too_many_arguments,
+    reason = "the arguments are the independent schema facts needed to prove one preview source safe"
+)]
 fn client_preview_source(
     source: &CommandProjectionPreviewSource,
     body_slot: bool,
@@ -812,15 +816,11 @@ fn command_input_field<'a>(
     };
     let mut fields = &definition.fields;
     for (index, segment) in path.iter().enumerate() {
-        let Some(field) = fields.iter().find(|field| field.name == *segment) else {
-            return None;
-        };
+        let field = fields.iter().find(|field| field.name == *segment)?;
         if index + 1 == path.len() {
             return (!field.list).then_some(field);
         }
-        let Some(nested) = field.nested.as_deref() else {
-            return None;
-        };
+        let nested = field.nested.as_deref()?;
         fields = &nested.fields;
     }
     None

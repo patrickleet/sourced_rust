@@ -424,6 +424,10 @@ pub(crate) enum ReservationOutcome {
 /// Authorized status lookup result. Grant checks occur above this private
 /// storage layer; a raw command ID alone never reaches this API.
 #[derive(Clone, Debug, PartialEq)]
+#[expect(
+    clippy::large_enum_variant,
+    reason = "lookups are immediately consumed and boxing the replay hot path would add an allocation"
+)]
 pub(crate) enum CommandLookup {
     InProgress { causation_id: CausationId },
     RetryableUnknown { causation_id: CausationId },

@@ -300,7 +300,7 @@ export const Operation_ChatMessages: ReplicaOperationArtifact<Operation_ChatMess
   ],
   "protocol": {
     "version": 1,
-    "schemaHash": "sha256:4d00675dc386eb0dad0444d3c86bf0185c69e59dc010717d7758a1cfdc168dc5",
+    "schemaHash": "sha256:760a4526f8da7826b1e9c5e7ab3511c8c8069c67b529f07474b6392ee56ad931",
     "surface": {
       "kind": "application",
       "name": "e2e-ui",

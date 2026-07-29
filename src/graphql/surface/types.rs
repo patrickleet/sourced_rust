@@ -763,6 +763,7 @@ impl Surface {
                 projector.models = projector.binding_models();
                 projector.facts = projector.binding_facts();
                 projector.change_epoch = projector.binding_change_epoch();
+                projector.partition = modeled_owner_partition_contract(&projector)?;
             }
             match projector.kind {
                 SurfaceProjectionOwnerKind::Async if projector.facts.is_empty() => {

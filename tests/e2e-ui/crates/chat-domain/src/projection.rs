@@ -1,24 +1,9 @@
 //! Domain-event projections for Chat query models.
 
-use distributed::domain_event::{DomainEventBodyContract, DomainEventContract};
 use distributed::projection::lower::{DirectCandidate, ProjectionDescriptor};
-use distributed::{projection, DomainEventDescriptor};
+use distributed::projection;
 
 use crate::{ChatMessageState, ChatMessages};
-
-/// Exact state-backed contract for the preserved semantic posted event.
-pub enum ChatMessagePostedDomainEvent {}
-
-impl DomainEventContract for ChatMessagePostedDomainEvent {
-    const EVENT_NAME: &'static str = "chat_message.posted";
-    const EVENT_VERSION: u64 = 1;
-
-    fn descriptor() -> DomainEventDescriptor {
-        DomainEventDescriptor::state::<ChatMessageState>(Self::EVENT_NAME, Self::EVENT_VERSION)
-    }
-}
-
-impl DomainEventBodyContract<ChatMessageState> for ChatMessagePostedDomainEvent {}
 
 /// Portable insert-shaped state transfer for chat.
 pub const CHAT_MESSAGES: ProjectionDescriptor<DirectCandidate> = projection! {
@@ -34,11 +19,12 @@ pub const CHAT_MESSAGES: ProjectionDescriptor<DirectCandidate> = projection! {
 
 #[cfg(test)]
 mod tests {
+    use distributed::domain_event::DomainEventContract;
     use distributed::projection::placement::ProjectionExecutionClass;
     use distributed::{RelationalReadModel, RowValue, TableMutation};
 
     use super::*;
-    use crate::ChatMessage;
+    use crate::{ChatMessage, ChatMessagePostedDomainEvent};
 
     #[test]
     fn posted_state_preserves_semantic_name_and_lowers_to_complete_upsert() {

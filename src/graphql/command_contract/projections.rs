@@ -183,17 +183,13 @@ impl CommandProjectionEvents {
             );
             return;
         }
-        self.previews.extend(
-            preview
-                .selectors
-                .iter()
-                .cloned()
-                .into_iter()
-                .map(|selector| CommandProjectionEventPreview {
+        self.previews
+            .extend(preview.selectors.iter().cloned().map(|selector| {
+                CommandProjectionEventPreview {
                     selector,
                     preview: preview.clone(),
-                }),
-        );
+                }
+            }));
     }
 
     pub(crate) fn canonicalize_and_validate(&mut self, command: &str) -> Result<(), String> {
@@ -235,10 +231,7 @@ impl CommandProjectionEvents {
                     "typed command `{command}` declares preview provenance outside its exact emitted event set"
                 ));
             }
-            preview
-                .preview
-                .fields
-                .sort_by(|left, right| preview_field_key(left).cmp(&preview_field_key(right)));
+            preview.preview.fields.sort_by_key(preview_field_key);
             for pair in preview.preview.fields.windows(2) {
                 if preview_field_key(&pair[0]) == preview_field_key(&pair[1]) {
                     return Err(format!(

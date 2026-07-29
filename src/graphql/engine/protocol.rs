@@ -174,6 +174,10 @@ pub(crate) fn has_multiple_protocol_query_roots(
         return false;
     }
 
+    #[expect(
+        clippy::too_many_arguments,
+        reason = "bounded recursive request analysis threads explicit cycle, budget, and result state"
+    )]
     fn collect_root_keys<'a>(
         selection: &'a async_graphql::parser::types::SelectionSet,
         document: &'a async_graphql::parser::types::ExecutableDocument,
@@ -248,7 +252,7 @@ pub(crate) fn has_multiple_protocol_query_roots(
     let mut remaining_selections = REQUEST_ANALYSIS_MAX_SELECTIONS;
     let analysis = collect_root_keys(
         &operation.node.selection_set.node,
-        &document,
+        document,
         &query_roots,
         &mut BTreeSet::new(),
         &mut BTreeSet::new(),

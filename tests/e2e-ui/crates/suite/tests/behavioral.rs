@@ -610,12 +610,55 @@ async fn t7_modeled_no_ops_succeed_without_projection_obligations() {
     assert_eq!(receipt["state"], "succeeded", "{response}");
     assert_eq!(receipt["consistency"], "causal", "{response}");
     assert_eq!(receipt["expects"], serde_json::json!([]), "{response}");
+    let first_payload = response["data"]["todos_rename"].clone();
+    let first_receipt = receipt.clone();
+    let row_before_retry = poll_todo(&base, "alice", &tid).await.unwrap();
+
+    let retry = graphql(&base, &rename, "alice", "user").await.unwrap();
+    assert!(retry.get("errors").is_none(), "{retry}");
+    assert_eq!(
+        retry["data"]["todos_rename"], first_payload,
+        "same commandId must replay the exact zero-occurrence payload"
+    );
+    assert_eq!(
+        retry["extensions"]["distributed"]["command"], first_receipt,
+        "same commandId must replay stable zero-obligation receipt bytes"
+    );
+    let row_after_retry = poll_todo(&base, "alice", &tid).await.unwrap();
+    assert_eq!(
+        row_after_retry, row_before_retry,
+        "zero-occurrence command replay must not change projected status"
+    );
+    let status = graphql(
+        &base,
+        &format!(
+            r#"{{ commandStatus(commandId: "{rename_id}") {{ state }} }}"#
+        ),
+        "alice",
+        "user",
+    )
+    .await
+    .unwrap();
+    assert!(status.get("errors").is_none(), "{status}");
+    assert_eq!(
+        status["data"]["commandStatus"]["state"], "succeeded",
+        "zero-occurrence replay must remain durably recoverable as succeeded"
+    );
 
     todos_archive(&base, &tid, "alice", "user")
         .await
         .unwrap();
-    let archived = poll_todo(&base, "alice", &tid).await.unwrap();
-    assert_eq!(archived["status"], "archived");
+    let mut archived = None;
+    for _ in 0..100 {
+        if let Some(row) = poll_todo(&base, "alice", &tid).await {
+            if row["status"] == "archived" {
+                archived = Some(row);
+                break;
+            }
+        }
+        tokio::time::sleep(Duration::from_millis(30)).await;
+    }
+    let archived = archived.expect("first archive must project before testing its no-op replay");
 
     let archive_id = new_command_id();
     let archive = format!(
@@ -665,4 +708,93 @@ async fn t8_explicit_purge_domain_event_deletes_the_todo_row() {
         tokio::time::sleep(Duration::from_millis(30)).await;
     }
     panic!("purged todo `{tid}` remained query-visible");
+}
+
+#[tokio::test]
+async fn t9_chat_room_partition_projects_posted_message() {
+    use std::time::{SystemTime, UNIX_EPOCH};
+
+    let base = ensure_target().await;
+    let message_id = id("chat");
+    let room_id = id("room");
+    let created_at = SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .unwrap()
+        .as_millis()
+        .to_string();
+    let command_id = new_command_id();
+    let mutation = format!(
+        r#"mutation {{
+          chat_messages_post(commandId: "{command_id}", input: {{
+            message_id: "{message_id}",
+            room_id: "{room_id}",
+            body: "partitioned hello",
+            created_at: "{created_at}"
+          }}) {{ message_id room_id author_id body created_at }}
+        }}"#
+    );
+    let response = graphql(&base, &mutation, "alice", "user").await.unwrap();
+    assert!(response.get("errors").is_none(), "{response}");
+    assert_eq!(
+        response["data"]["chat_messages_post"]["room_id"],
+        room_id
+    );
+
+    let query = format!(
+        r#"{{
+          chat_messages(where: {{ room_id: {{ _eq: "{room_id}" }} }}) {{
+            message_id room_id author_id body created_at
+          }}
+        }}"#
+    );
+    let mut projected = None;
+    for _ in 0..100 {
+        let response = graphql(&base, &query, "alice", "user").await.unwrap();
+        assert!(response.get("errors").is_none(), "{response}");
+        if let Some(row) = response["data"]["chat_messages"]
+            .as_array()
+            .and_then(|rows| rows.iter().find(|row| row["message_id"] == message_id))
+        {
+            projected = Some(row.clone());
+            break;
+        }
+        tokio::time::sleep(Duration::from_millis(30)).await;
+    }
+    let projected = projected.expect("room-partitioned Chat occurrence must project");
+    assert_eq!(projected["room_id"], room_id);
+    assert_eq!(projected["author_id"], "alice");
+    assert_eq!(projected["body"], "partitioned hello");
+}
+
+#[tokio::test]
+async fn t10_blob_direct_projection_is_immediate_and_owner_filtered() {
+    let base = ensure_target().await;
+    let game_id = id("blob");
+    let command_id = new_command_id();
+    let mutation = format!(
+        r#"mutation {{
+          blob_games_start(commandId: "{command_id}", input: {{ game_id: "{game_id}" }}) {{
+            game_id owner_id score status
+          }}
+        }}"#
+    );
+    let response = graphql(&base, &mutation, "alice", "user").await.unwrap();
+    assert!(response.get("errors").is_none(), "{response}");
+    assert_eq!(response["data"]["blob_games_start"]["game_id"], game_id);
+    assert_eq!(response["data"]["blob_games_start"]["owner_id"], "alice");
+
+    let query = format!(
+        r#"{{
+          blob_games(where: {{ game_id: {{ _eq: "{game_id}" }} }}) {{
+            game_id owner_id score status
+          }}
+        }}"#
+    );
+    let alice = graphql(&base, &query, "alice", "user").await.unwrap();
+    assert!(alice.get("errors").is_none(), "{alice}");
+    assert_eq!(alice["data"]["blob_games"][0]["game_id"], game_id);
+
+    let bob = graphql(&base, &query, "bob", "user").await.unwrap();
+    assert!(bob.get("errors").is_none(), "{bob}");
+    assert_eq!(bob["data"]["blob_games"], serde_json::json!([]));
 }

@@ -1,33 +1,9 @@
 //! Domain-event projections for Blob query models.
 
-use distributed::domain_event::{DomainEventBodyContract, DomainEventContract};
 use distributed::projection;
 use distributed::projection::lower::{DirectCandidate, ProjectionDescriptor};
-use distributed::DomainEventDescriptor;
 
 use crate::{BlobGameState, BlobGames};
-
-macro_rules! state_event_contract {
-    ($name:ident, $event:literal) => {
-        pub enum $name {}
-
-        impl DomainEventContract for $name {
-            const EVENT_NAME: &'static str = $event;
-            const EVENT_VERSION: u64 = 1;
-
-            fn descriptor() -> DomainEventDescriptor {
-                DomainEventDescriptor::state::<BlobGameState>($event, 1)
-            }
-        }
-
-        impl DomainEventBodyContract<BlobGameState> for $name {}
-    };
-}
-
-state_event_contract!(BlobInitializedDomainEvent, "blob.initialized");
-state_event_contract!(BlobLevelStartedDomainEvent, "blob.level_started");
-state_event_contract!(BlobStartedDomainEvent, "blob.started");
-state_event_contract!(BlobMovedDomainEvent, "blob.moved");
 
 /// One complete state upsert for every direct Blob transition.
 pub const BLOB_GAMES: ProjectionDescriptor<DirectCandidate> = projection! {

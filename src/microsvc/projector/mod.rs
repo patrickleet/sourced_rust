@@ -21,9 +21,11 @@ pub use handle::{ProjectionRepairHandle, ProjectionRepairHandleParseError};
 pub use registration::CausalProjectorRouteBuilder;
 
 pub(super) use errors::projection_error_is_retryable;
+#[cfg(feature = "graphql")]
+pub(super) use runtime::RegisteredModeledProjector;
 pub(super) use runtime::{
     ErasedProjectorHandler, ProjectorRegistration, ProjectorRepairFuture,
-    ProjectorRepairLookupFuture, RegisteredModeledProjector,
+    ProjectorRepairLookupFuture,
 };
 
 #[cfg(test)]

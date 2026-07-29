@@ -9,9 +9,10 @@
 pub mod models;
 pub mod projection;
 
-pub use models::{Todo, TodoError, TodoState, TodoStatus, Todos};
-pub use projection::{
-    complete_preview, TodoArchivedDomainEvent, TodoCompletedDomainEvent, TodoCreatedDomainEvent,
-    TodoDeletionIdentity, TodoForceArchivedDomainEvent, TodoPurgedDomainEvent,
-    TodoReassignedDomainEvent, TodoRenamedDomainEvent, TodoReopenedDomainEvent, TODO_READS,
+pub use models::{
+    Todo, TodoArchivedDomainEvent, TodoCompletedDomainEvent, TodoCreatedDomainEvent,
+    TodoDomainIdentity, TodoError, TodoForceArchivedDomainEvent, TodoPurgedDomainEvent,
+    TodoReassignedDomainEvent, TodoRenamedDomainEvent, TodoReopenedDomainEvent, TodoState,
+    TodoStatus, Todos,
 };
+pub use projection::{complete_preview, TODO_READS};

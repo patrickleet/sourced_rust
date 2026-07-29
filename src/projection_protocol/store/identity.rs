@@ -207,6 +207,10 @@ impl ProjectionModelOwnership {
 
 /// Record state required before a staged mutation may apply.
 #[derive(Clone, Debug, PartialEq, Eq)]
+#[expect(
+    clippy::large_enum_variant,
+    reason = "bounded staged mutations carry the exact canonical revision inline for atomic validation"
+)]
 pub(crate) enum ProjectionRecordExpectation {
     Missing,
     Exact(RecordRevision),

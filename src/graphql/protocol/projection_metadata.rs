@@ -161,7 +161,7 @@ impl CommandProjectionMetadataV1 {
         for obligation in &self.obligations {
             if obligation.projection_ref as usize >= self.delta.projections.len()
                 || obligation.model.trim().is_empty()
-                || obligation.model.as_bytes().len() > 255
+                || obligation.model.len() > 255
                 || !self.delta.operations.iter().any(|operation| {
                     operation
                         .projection_refs

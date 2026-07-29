@@ -133,6 +133,12 @@ pub(crate) fn compile_projection_topology<'a>(
     schemas: impl IntoIterator<Item = &'a TableSchema>,
 ) -> Result<(ProjectorTopologyId, Vec<ProjectionModelOwnership>), ProjectionProtocolError> {
     partition.validate()?;
+    if partition.is_modeled_only() {
+        return Err(ProjectionProtocolError::InvalidBatch(
+            "modeled projection partition contracts require an exact catalog physical topology and cannot be compiled by the legacy projector path"
+                .into(),
+        ));
+    }
     let mut facts = facts.to_vec();
     facts.sort();
     if facts.iter().any(|fact| fact.trim().is_empty()) {

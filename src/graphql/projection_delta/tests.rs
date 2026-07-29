@@ -2280,7 +2280,7 @@ fn fanout_fixture() -> FanoutFixture {
         vec![ProjectionOutput::try_new("TodoView", "todos", todo_schema.clone()).unwrap()],
         Vec::new(),
         Some(ProjectionPhysicalTopology::from_protocol(
-            &ProjectorTopologyId::new(1, "projection-delta-fanout-todo", [0x55; 32]).unwrap(),
+            &ProjectorTopologyId::new(1, "projection-delta-fanout", [0x55; 32]).unwrap(),
         )),
     )
     .unwrap();
@@ -2294,7 +2294,7 @@ fn fanout_fixture() -> FanoutFixture {
         vec![ProjectionOutput::try_new("UserView", "users", user_schema.clone()).unwrap()],
         Vec::new(),
         Some(ProjectionPhysicalTopology::from_protocol(
-            &ProjectorTopologyId::new(1, "projection-delta-fanout-user", [0x66; 32]).unwrap(),
+            &ProjectorTopologyId::new(1, "projection-delta-fanout", [0x55; 32]).unwrap(),
         )),
     )
     .unwrap();
@@ -2309,14 +2309,14 @@ fn fanout_fixture() -> FanoutFixture {
                 ProjectionBindingActivation::new(
                     todo_binding.id(),
                     todo_binding.program_id(),
-                    ProjectionEpoch::new("projection-delta-fanout-todo-v1").unwrap(),
+                    ProjectionEpoch::new("projection-delta-fanout-v1").unwrap(),
                     ProjectionBindingState::Active,
                     Some(ProjectionExecutorRoute::local("delta-service").unwrap()),
                 ),
                 ProjectionBindingActivation::new(
                     user_binding.id(),
                     user_binding.program_id(),
-                    ProjectionEpoch::new("projection-delta-fanout-user-v1").unwrap(),
+                    ProjectionEpoch::new("projection-delta-fanout-v1").unwrap(),
                     ProjectionBindingState::Active,
                     Some(ProjectionExecutorRoute::local("delta-service").unwrap()),
                 ),

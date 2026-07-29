@@ -11,9 +11,7 @@ pub use levels::{demo_map, generate_level, generate_level_with, is_hamiltonian_p
 pub use models::tile;
 pub use models::{
     test_map_no_holes, test_map_with_hole, BlobError, BlobGame, BlobGameState, BlobGames,
-    Direction,
+    BlobInitializedDomainEvent, BlobLevelStartedDomainEvent, BlobMovedDomainEvent,
+    BlobStartedDomainEvent, Direction,
 };
-pub use projection::{
-    BlobDirectEligibilityGuards, BlobInitializedDomainEvent, BlobLevelStartedDomainEvent,
-    BlobMovedDomainEvent, BlobStartedDomainEvent, BLOB_GAMES,
-};
+pub use projection::{BlobDirectEligibilityGuards, BLOB_GAMES};

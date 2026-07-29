@@ -366,6 +366,10 @@ pub(super) fn next_record(
     }
 }
 
+#[expect(
+    clippy::too_many_arguments,
+    reason = "the persisted change record keeps each protocol identity and optional evidence field explicit"
+)]
 pub(super) fn allocate_change(
     state: &mut PartitionState,
     topology: &ProjectorTopologyId,

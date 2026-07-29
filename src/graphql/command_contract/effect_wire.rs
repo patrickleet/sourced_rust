@@ -710,7 +710,10 @@ pub(crate) fn projection_confirmation<M: RelationalReadModel>(
             ProjectionPartitionSpec::Constant { value } => Some(EffectExpression::Constant {
                 value: value.clone(),
             }),
-            ProjectionPartitionSpec::Unit | ProjectionPartitionSpec::InputPath { .. } => None,
+            ProjectionPartitionSpec::Unit
+            | ProjectionPartitionSpec::InputPath { .. }
+            | ProjectionPartitionSpec::ModeledExpression { .. }
+            | ProjectionPartitionSpec::ModeledInactive => None,
         },
         projector_topology: ProjectorTopologyIdentity::new(projector, facts, models, partition),
         protocol_topology: None,

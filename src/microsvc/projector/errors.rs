@@ -11,6 +11,10 @@ use crate::projection_protocol::{
 use super::super::HandlerError;
 use super::handle::ProjectionRepairHandle;
 
+#[expect(
+    clippy::too_many_arguments,
+    reason = "failure persistence requires the full trusted ingress identity and ordering tuple"
+)]
 pub(super) async fn record_ingress_failure<S>(
     store: &S,
     compiled: &CompiledProjectionTopology,

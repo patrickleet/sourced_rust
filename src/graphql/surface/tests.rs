@@ -75,11 +75,15 @@ impl crate::projection::placement::ProjectionProgramDescriptor for TestProjectio
     }
 }
 
+#[derive(Clone, Copy)]
 struct DirectModeledBinding<'a> {
     topology_name: &'a str,
     topology_digest: u8,
     partition_codec: &'a str,
     state: crate::projection::placement::ProjectionBindingState,
+    eventual: bool,
+    dynamic_partition: bool,
+    physical_topology: bool,
 }
 
 impl<'a> DirectModeledBinding<'a> {
@@ -89,6 +93,9 @@ impl<'a> DirectModeledBinding<'a> {
             topology_digest: 1,
             partition_codec: "distributed-projection-partition",
             state: crate::projection::placement::ProjectionBindingState::Active,
+            eventual: false,
+            dynamic_partition: false,
+            physical_topology: true,
         }
     }
 }
@@ -102,9 +109,9 @@ fn modeled_direct_projection(
 ) -> SurfaceModeledProjection {
     use crate::projection::catalog::{ProjectionBindingActivation, ProjectionCatalog};
     use crate::projection::placement::{
-        DirectProjectionPlacement, ProjectionBinding, ProjectionExecutorRoute, ProjectionOutput,
-        ProjectionOwner, ProjectionPhysicalTopology, ProjectionSourceBinding,
-        PROJECTION_PARTITION_CODEC_VERSION,
+        DirectProjectionPlacement, ProjectionBinding, ProjectionExecutionClass,
+        ProjectionExecutorRoute, ProjectionOutput, ProjectionOwner, ProjectionPhysicalTopology,
+        ProjectionSourceBinding, PROJECTION_PARTITION_CODEC_VERSION,
     };
     use crate::projection::{
         ProjectionArm, ProjectionField, ProjectionOperation, ProjectionPartition, ProjectionTarget,
@@ -143,10 +150,17 @@ fn modeled_direct_projection(
         Vec::new(),
     )
     .unwrap();
+    let partition = if options.dynamic_partition {
+        ProjectionPartition::Expression(ProjectionExpression::constant(ProjectionValue::string(
+            "tenant-1",
+        )))
+    } else {
+        ProjectionPartition::Unit
+    };
     let program = ProjectionProgram::try_new(
         program_name,
         1,
-        ProjectionPartition::Unit,
+        partition,
         vec![
             ProjectionArm::try_new(format!("{program_name}-arm"), selector, vec![operation])
                 .unwrap(),
@@ -154,19 +168,40 @@ fn modeled_direct_projection(
     )
     .unwrap();
     let descriptor = TestProjectionDescriptor(program.clone());
-    let binding = ProjectionBinding::materialize_direct(
-        DirectProjectionPlacement::new(&descriptor),
-        ProjectionSourceBinding::try_new("test-domain", "ordered-domain-events", 1).unwrap(),
-        ProjectionOwner::try_new(owner).unwrap(),
-        options.partition_codec,
-        PROJECTION_PARTITION_CODEC_VERSION,
-        vec![ProjectionOutput::try_new(model_name, table_name, schema).unwrap()],
-        Vec::new(),
-        Some(ProjectionPhysicalTopology::from_protocol(
+    let topology = options.physical_topology.then(|| {
+        ProjectionPhysicalTopology::from_protocol(
             &ProjectorTopologyId::new(1, options.topology_name, [options.topology_digest; 32])
                 .unwrap(),
-        )),
-    )
+        )
+    });
+    let source =
+        ProjectionSourceBinding::try_new("test-domain", "ordered-domain-events", 1).unwrap();
+    let owner = ProjectionOwner::try_new(owner).unwrap();
+    let outputs = vec![ProjectionOutput::try_new(model_name, table_name, schema).unwrap()];
+    let binding = if options.eventual {
+        ProjectionBinding::from_eventual_program(
+            &program,
+            source,
+            owner,
+            ProjectionExecutionClass::Causal,
+            options.partition_codec,
+            PROJECTION_PARTITION_CODEC_VERSION,
+            outputs,
+            Vec::new(),
+            topology,
+        )
+    } else {
+        ProjectionBinding::materialize_direct(
+            DirectProjectionPlacement::new(&descriptor),
+            source,
+            owner,
+            options.partition_codec,
+            PROJECTION_PARTITION_CODEC_VERSION,
+            outputs,
+            Vec::new(),
+            topology,
+        )
+    }
     .unwrap();
     let catalog = ProjectionCatalog::try_new(vec![binding.clone()]).unwrap();
     let active = catalog
@@ -563,10 +598,10 @@ fn direct_modeled_owner_ignores_draining_epoch_and_topology_for_active_contract(
         "direct-v1",
         previous.clone(),
         DirectModeledBinding {
-            topology_name: "previous-direct-topology",
             topology_digest: 2,
             partition_codec: "previous-projection-partition",
             state: crate::projection::placement::ProjectionBindingState::Draining,
+            ..DirectModeledBinding::active("previous-direct-topology")
         },
     );
 
@@ -582,6 +617,148 @@ fn direct_modeled_owner_ignores_draining_epoch_and_topology_for_active_contract(
         panic!("one direct owner should be retained");
     };
     assert_eq!(owner.change_epoch.as_deref(), Some("direct-v2"));
+}
+
+#[cfg(feature = "graphql")]
+#[test]
+fn query_protocol_uses_exact_modeled_physical_topology() {
+    let model = direct_model("ExactTopology", "exact_topology");
+    let modeled = modeled_direct_projection(
+        "exact-modeled-owner",
+        "exact-modeled-program",
+        "exact-modeled-v1",
+        model.clone(),
+        DirectModeledBinding {
+            topology_digest: 0x2a,
+            ..DirectModeledBinding::active("exact-physical-topology")
+        },
+    );
+    let surface = build_surface(&[model], &SurfaceOptions::sqlite())
+        .unwrap()
+        .with_projection_owners([SurfaceDirectProjection::new("exact-modeled-owner")
+            .modeled(modeled)
+            .into()])
+        .unwrap();
+
+    let runtime = crate::graphql::query_protocol::QueryProtocolRuntime::compile(&surface).unwrap();
+    let topology = runtime
+        .topology_for_model("ExactTopology")
+        .expect("active modeled output must have a query protocol owner");
+    assert_eq!(topology.name(), "exact-physical-topology");
+    assert_eq!(topology.digest(), [0x2a; 32]);
+    assert_eq!(
+        runtime.model_has_static_partition("ExactTopology"),
+        Some(true)
+    );
+}
+
+#[cfg(feature = "graphql")]
+#[test]
+fn query_protocol_rejects_modeled_binding_without_physical_topology() {
+    let model = direct_model("MissingTopology", "missing_topology");
+    let modeled = modeled_direct_projection(
+        "missing-topology-owner",
+        "missing-topology-program",
+        "missing-topology-v1",
+        model.clone(),
+        DirectModeledBinding {
+            physical_topology: false,
+            ..DirectModeledBinding::active("unused-topology")
+        },
+    );
+    let error = build_surface(&[model], &SurfaceOptions::sqlite())
+        .unwrap()
+        .with_projection_owners([SurfaceDirectProjection::new("missing-topology-owner")
+            .modeled(modeled)
+            .into()])
+        .unwrap_err();
+    assert!(
+        error.contains("has no physical observation topology"),
+        "{error}"
+    );
+}
+
+#[cfg(feature = "graphql")]
+#[test]
+fn query_protocol_rejects_multiple_active_modeled_physical_topologies() {
+    let first = direct_model("FirstEventual", "first_eventual");
+    let second = direct_model("SecondEventual", "second_eventual");
+    let first_modeled = modeled_direct_projection(
+        "shared-eventual",
+        "first-eventual",
+        "shared-eventual-v1",
+        first.clone(),
+        DirectModeledBinding {
+            eventual: true,
+            ..DirectModeledBinding::active("first-eventual-topology")
+        },
+    );
+    let second_modeled = modeled_direct_projection(
+        "shared-eventual",
+        "second-eventual",
+        "shared-eventual-v1",
+        second.clone(),
+        DirectModeledBinding {
+            topology_name: "second-eventual-topology",
+            topology_digest: 2,
+            eventual: true,
+            ..DirectModeledBinding::active("second-eventual-topology")
+        },
+    );
+    let error = build_surface(&[first, second], &SurfaceOptions::sqlite())
+        .unwrap()
+        .with_projectors([SurfaceProjector::new("shared-eventual")
+            .modeled(first_modeled)
+            .modeled(second_modeled)])
+        .unwrap_err();
+    assert!(
+        error.contains("incompatible live physical topologies"),
+        "{error}"
+    );
+}
+
+#[cfg(feature = "graphql")]
+#[test]
+fn query_protocol_merges_compatible_active_models_without_inventing_static_partition() {
+    let first = direct_model("FirstDynamic", "first_dynamic");
+    let second = direct_model("SecondDynamic", "second_dynamic");
+    let options = DirectModeledBinding {
+        eventual: true,
+        dynamic_partition: true,
+        ..DirectModeledBinding::active("shared-dynamic-topology")
+    };
+    let first_modeled = modeled_direct_projection(
+        "shared-dynamic",
+        "first-dynamic",
+        "shared-dynamic-v1",
+        first.clone(),
+        DirectModeledBinding { ..options },
+    );
+    let second_modeled = modeled_direct_projection(
+        "shared-dynamic",
+        "second-dynamic",
+        "shared-dynamic-v1",
+        second.clone(),
+        options,
+    );
+    let surface = build_surface(&[first, second], &SurfaceOptions::sqlite())
+        .unwrap()
+        .with_projectors([SurfaceProjector::new("shared-dynamic")
+            .modeled(first_modeled)
+            .modeled(second_modeled)])
+        .unwrap();
+
+    let runtime = crate::graphql::query_protocol::QueryProtocolRuntime::compile(&surface).unwrap();
+    for model in ["FirstDynamic", "SecondDynamic"] {
+        assert_eq!(
+            runtime
+                .topology_for_model(model)
+                .expect("each active output must use the merged physical topology")
+                .name(),
+            "shared-dynamic-topology"
+        );
+        assert_eq!(runtime.model_has_static_partition(model), Some(false));
+    }
 }
 
 #[test]

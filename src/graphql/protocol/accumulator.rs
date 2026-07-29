@@ -32,6 +32,10 @@ struct ProjectionObligationTokenMaterial<'a> {
     scope: &'a crate::projection_protocol::ProjectionRecordScope,
 }
 
+#[expect(
+    clippy::too_many_arguments,
+    reason = "each argument is authenticated token material and keeping it explicit prevents accidental omission"
+)]
 pub(crate) fn issue_projection_obligation_token(
     codec: &ProtocolTokenCodec,
     cache_scope: &str,
@@ -597,9 +601,11 @@ impl ProtocolResponseAccumulator {
         &self,
         receipt: &CausalCommandReceiptSource,
     ) -> Result<(), ProtocolAccumulatorError> {
-        let observed = (receipt.state == CommandLedgerState::Projected)
-            .then(|| (0..receipt.obligations.len()).collect::<Vec<_>>())
-            .unwrap_or_default();
+        let observed = if receipt.state == CommandLedgerState::Projected {
+            (0..receipt.obligations.len()).collect::<Vec<_>>()
+        } else {
+            Vec::new()
+        };
         self.record_command(self.metadata(
             &receipt.command_id,
             &receipt.causation_id,
@@ -645,6 +651,10 @@ impl ProtocolResponseAccumulator {
         )?)
     }
 
+    #[expect(
+        clippy::too_many_arguments,
+        reason = "wire command metadata is assembled from distinct authenticated receipt fields"
+    )]
     fn metadata(
         &self,
         command_id: &str,

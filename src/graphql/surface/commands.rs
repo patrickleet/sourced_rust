@@ -402,7 +402,6 @@ pub(in crate::graphql::surface) fn bind_surface_direct_projection_targets(
     let mut compiled_projectors = BTreeMap::new();
     for projector in projectors {
         let binding_models = projector.binding_models();
-        let binding_facts = projector.binding_facts();
         let schemas = binding_models
             .iter()
             .map(|model_name| {
@@ -417,14 +416,7 @@ pub(in crate::graphql::surface) fn bind_surface_direct_projection_targets(
                     })
             })
             .collect::<Result<Vec<_>, _>>()?;
-        let compiled = compile_projection_topology(
-            &projector.name,
-            &binding_facts,
-            &binding_models,
-            &projector.partition,
-            schemas,
-        )
-        .map_err(|error| {
+        let compiled = compile_projection_owner_topology(projector, schemas).map_err(|error| {
             format!(
                 "projector `{}` has invalid compiled topology: {error}",
                 projector.name
@@ -585,14 +577,7 @@ pub(in crate::graphql::surface) fn validate_command_confirmation_topology(
                     })
             })
             .collect::<Result<Vec<_>, _>>()?;
-        let compiled = compile_projection_topology(
-            &projector.name,
-            &projector.facts,
-            &projector.models,
-            &projector.partition,
-            schemas,
-        )
-        .map_err(|error| {
+        let compiled = compile_projection_owner_topology(projector, schemas).map_err(|error| {
             format!(
                 "projector `{}` has invalid compiled topology: {error}",
                 projector.name

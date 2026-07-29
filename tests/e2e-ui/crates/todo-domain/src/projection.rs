@@ -1,79 +1,11 @@
 //! Domain-event projections for Todo query models.
 
-use distributed::domain_event::{DomainEventBodyContract, DomainEventContract};
-use distributed::projection::lower::{
-    EventualOnly, ProjectionDeletionMetadata, ProjectionDescriptor,
-};
+use distributed::projection::lower::{EventualOnly, ProjectionDescriptor};
 #[cfg(test)]
 use distributed::Entity;
-use distributed::{
-    projection, DomainDeletion, DomainEventBodyDescriptor, DomainEventBodyKind,
-    DomainEventDescriptor,
-};
-use serde::{Deserialize, Serialize};
+use distributed::projection;
 
-use crate::{TodoState, Todos};
-
-macro_rules! state_event_contract {
-    ($name:ident, $event:literal) => {
-        pub enum $name {}
-
-        impl DomainEventContract for $name {
-            const EVENT_NAME: &'static str = $event;
-            const EVENT_VERSION: u64 = 1;
-
-            fn descriptor() -> DomainEventDescriptor {
-                DomainEventDescriptor::state::<TodoState>($event, 1)
-            }
-        }
-
-        impl DomainEventBodyContract<TodoState> for $name {}
-    };
-}
-
-state_event_contract!(TodoCreatedDomainEvent, "todo.created");
-state_event_contract!(TodoRenamedDomainEvent, "todo.renamed");
-state_event_contract!(TodoCompletedDomainEvent, "todo.completed");
-state_event_contract!(TodoReopenedDomainEvent, "todo.reopened");
-state_event_contract!(TodoReassignedDomainEvent, "todo.reassigned");
-state_event_contract!(TodoArchivedDomainEvent, "todo.archived");
-state_event_contract!(TodoForceArchivedDomainEvent, "todo.force_archived");
-
-/// Stable public identity body for the sourced Todo deletion occurrence.
-#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
-pub struct TodoDeletionIdentity {
-    pub aggregate_id: String,
-}
-
-impl ProjectionDeletionMetadata for TodoDeletionIdentity {
-    const BODY_TYPE_NAME: &'static str = "DomainDeletion<TodoDomainIdentity>";
-    const BODY_SCHEMA: &'static str = "distributed.schema/v1|role=15:domain_deletion|type=34:DomainDeletion<TodoDomainIdentity>|version=1|serde=0:|fields=2:3:key|18:TodoDomainIdentity|0:|11:incarnation|3:u64|0:";
-    const BODY_FINGERPRINT: &'static str =
-        "sha256:21a004c5d43e73d50b437a661028fe568d22aea9cea96c7ae01f99aefb271f2a";
-}
-
-pub enum TodoPurgedDomainEvent {}
-
-impl DomainEventContract for TodoPurgedDomainEvent {
-    const EVENT_NAME: &'static str = "todo.purged";
-    const EVENT_VERSION: u64 = 1;
-
-    fn descriptor() -> DomainEventDescriptor {
-        DomainEventDescriptor {
-            name: Self::EVENT_NAME.into(),
-            version: Self::EVENT_VERSION,
-            body: DomainEventBodyDescriptor::distributed_json(
-                DomainEventBodyKind::Deletion,
-                TodoDeletionIdentity::BODY_TYPE_NAME,
-                1,
-                TodoDeletionIdentity::BODY_SCHEMA,
-                TodoDeletionIdentity::BODY_FINGERPRINT,
-            ),
-        }
-    }
-}
-
-impl DomainEventBodyContract<DomainDeletion<TodoDeletionIdentity>> for TodoPurgedDomainEvent {}
+use crate::{TodoCompletedDomainEvent, TodoDomainIdentity, TodoState, Todos};
 
 /// One modeled state-transfer lifecycle plus explicit physical deletion.
 pub const TODO_READS: ProjectionDescriptor<EventualOnly> = projection! {
@@ -94,7 +26,7 @@ pub const TODO_READS: ProjectionDescriptor<EventualOnly> = projection! {
         upsert Todos from state as todo;
     }
 
-    on "todo.purged" version 1 (deleted: TodoDeletionIdentity) {
+    on "todo.purged" version 1 (deleted: TodoDomainIdentity) {
         delete Todos {
             key { todo_id: envelope.aggregate_id }
         };
@@ -155,11 +87,12 @@ const SPARSE_TODO_COMPLETION: ProjectionDescriptor<EventualOnly> = projection! {
 
 #[cfg(test)]
 mod tests {
+    use distributed::domain_event::DomainEventContract;
     use distributed::projection::placement::ProjectionExecutionClass;
     use distributed::{DomainEventBodyKind, RelationalReadModel, RowValue, TableMutation};
 
     use super::*;
-    use crate::{Todo, TodoStatus};
+    use crate::{Todo, TodoPurgedDomainEvent, TodoStatus};
 
     #[test]
     fn state_lifecycle_and_delete_define_one_causal_obligation_target() {

@@ -1,4 +1,6 @@
-use std::collections::{BTreeMap, BTreeSet, HashMap};
+#[cfg(feature = "graphql")]
+use std::collections::BTreeMap;
+use std::collections::{BTreeSet, HashMap};
 use std::future::Future;
 use std::pin::Pin;
 use std::sync::Arc;
@@ -1079,12 +1081,13 @@ where
                 )
                 .await;
             }
-            let projection_metadata = if protocol.is_some()
-                && self.contract.consistency != CommandConsistency::Projected
-                && !self.contract.projections.selectors.is_empty()
-            {
-                if !projection_obligations.is_empty() {
-                    return abandon_causal_attempt(
+            let projection_metadata = match protocol.as_ref() {
+                Some(protocol)
+                    if self.contract.consistency != CommandConsistency::Projected
+                        && !self.contract.projections.selectors.is_empty() =>
+                {
+                    if !projection_obligations.is_empty() {
+                        return abandon_causal_attempt(
                         repository,
                         attempt,
                         self.contract.consistency,
@@ -1092,41 +1095,38 @@ where
                             .to_owned(),
                     )
                     .await;
-                }
-                let occurrences = match parts.prepared_domain_occurrences() {
-                    Ok(occurrences) => occurrences,
-                    Err(error) => {
-                        return abandon_causal_attempt(
-                            repository,
-                            attempt,
-                            self.contract.consistency,
-                            error.to_string(),
-                        )
-                        .await;
                     }
-                };
-                match protocol
-                    .as_ref()
-                    .expect("modeled projection branch has protocol authority")
-                    .projection_metadata_for_actual(
+                    let occurrences = match parts.prepared_domain_occurrences() {
+                        Ok(occurrences) => occurrences,
+                        Err(error) => {
+                            return abandon_causal_attempt(
+                                repository,
+                                attempt,
+                                self.contract.consistency,
+                                error.to_string(),
+                            )
+                            .await;
+                        }
+                    };
+                    match protocol.projection_metadata_for_actual(
                         attempt.causation_id().clone(),
                         policy.replay_retention,
                         occurrences,
                         &self.contract.projections.selectors,
                     ) {
-                    Ok(metadata) => Some(metadata),
-                    Err(error) => {
-                        return abandon_causal_attempt(
-                            repository,
-                            attempt,
-                            self.contract.consistency,
-                            error.to_string(),
-                        )
-                        .await;
+                        Ok(metadata) => Some(metadata),
+                        Err(error) => {
+                            return abandon_causal_attempt(
+                                repository,
+                                attempt,
+                                self.contract.consistency,
+                                error.to_string(),
+                            )
+                            .await;
+                        }
                     }
                 }
-            } else {
-                None
+                _ => None,
             };
             let projection_retention_expires_at = match projection_metadata
                 .as_ref()
@@ -1425,15 +1425,14 @@ where
                 if projector
                     .locates_failure(&self.dependencies, handle)
                     .await?
+                    && owner.replace(index).is_some()
                 {
-                    if owner.replace(index).is_some() {
-                        return Err(HandlerError::Projection(
-                            crate::projection_protocol::ProjectionProtocolError::InvalidBatch(
-                                "projection failure ID resolved to multiple registered projectors"
-                                    .into(),
-                            ),
-                        ));
-                    }
+                    return Err(HandlerError::Projection(
+                        crate::projection_protocol::ProjectionProtocolError::InvalidBatch(
+                            "projection failure ID resolved to multiple registered projectors"
+                                .into(),
+                        ),
+                    ));
                 }
             }
             let Some(owner) = owner else {

@@ -23,12 +23,13 @@ use super::protocol::{
     DistributedRecordRevision, ProtocolResponseAccumulator, RequestedLiveResume,
     MAX_LIVE_RESUME_CURSORS,
 };
-use super::surface::{Surface, SurfaceRowPolicy};
+use super::surface::{Surface, SurfaceProjectionOwner, SurfaceRowPolicy};
+use crate::projection::placement::ProjectionBindingState;
 use crate::projection_protocol::{
     CompiledProjectionTopology, ProjectionChangeCursor, ProjectionChangeRead, ProjectionEpoch,
     ProjectionLiveRecordBatchRequest, ProjectionLiveRecordRequest, ProjectionPartition,
     ProjectionPartitionSnapshot, ProjectionPartitionSpec, ProjectionProtocolError,
-    ProjectionScopeCodec,
+    ProjectionScopeCodec, ProjectorTopologyId,
 };
 #[cfg(any(feature = "sqlite", feature = "postgres"))]
 use crate::sqlx_repo::projection_protocol::{
@@ -68,7 +69,11 @@ impl QueryProjectorRuntime {
 }
 
 /// Full, authorization-independent topology compiled from complete schemas.
-/// Role selection only filters these already-compiled projector identities.
+///
+/// Legacy owners derive their canonical topology here. Modeled owners instead
+/// reuse the exact active binding's physical identity and register the
+/// authoritative Surface schemas beneath it. Role selection only filters
+/// these already-validated projector identities.
 #[derive(Clone, Debug, Default)]
 pub(crate) struct QueryProtocolRuntime {
     projectors: BTreeMap<String, Arc<QueryProjectorRuntime>>,
@@ -86,100 +91,60 @@ impl QueryProtocolRuntime {
     pub(crate) fn compile(surface: &Surface) -> Result<Self, String> {
         let mut runtime = Self::default();
         for projector in &surface.projectors {
-            let schemas = projector
-                .models
-                .iter()
-                .map(|model| {
-                    surface
-                        .models
-                        .get(model)
-                        .map(|model| &model.schema)
-                        .ok_or_else(|| {
-                            format!(
-                                "query protocol projector `{}` references unknown model `{model}`",
-                                projector.name
-                            )
-                        })
-                })
-                .collect::<Result<Vec<_>, _>>()?;
-            let compiled = CompiledProjectionTopology::compile(
-                &projector.name,
-                &projector.facts,
-                &projector.models,
-                &projector.partition,
-                schemas,
-            )
-            .map_err(|error| {
-                format!(
-                    "query protocol projector `{}` cannot compile: {error}",
-                    projector.name
-                )
-            })?;
-            let codec = compiled.codec();
-            let static_partition = match &projector.partition {
-                ProjectionPartitionSpec::Unit => codec.encode_partition(None).map(Some),
-                ProjectionPartitionSpec::Constant { value } => {
-                    codec.encode_partition(Some(value)).map(Some)
-                }
-                ProjectionPartitionSpec::InputPath { .. } => Ok(None),
+            let projection = if projector.modeled.is_empty() {
+                Some(compile_legacy_query_projector(surface, projector)?)
+            } else {
+                compile_modeled_query_projector(surface, projector)?
+            };
+            if let Some(projection) = projection {
+                runtime.register(surface, projection)?;
             }
-            .map_err(|error| {
-                format!(
-                    "query protocol projector `{}` has invalid static partition: {error}",
-                    projector.name
-                )
-            })?;
-            let change_epoch = projector
-                .change_epoch
-                .as_deref()
-                .map(ProjectionEpoch::new)
-                .transpose()
-                .map_err(|error| {
-                    format!(
-                        "query protocol projector `{}` has invalid change epoch: {error}",
-                        projector.name
-                    )
-                })?;
-            let projection = Arc::new(QueryProjectorRuntime {
-                name: projector.name.clone(),
-                codec,
-                static_partition,
-                change_epoch,
-                models: projector.models.iter().cloned().collect(),
-                dependencies: projector.dependencies.iter().cloned().collect(),
-            });
-
-            for model in &projector.models {
-                if let Some(existing) = runtime
-                    .model_owners
-                    .insert(model.clone(), Arc::clone(&projection))
-                {
-                    return Err(format!(
-                        "query protocol model `{model}` has ambiguous owners `{}` and `{}`",
-                        existing.name, projector.name
-                    ));
-                }
-                let table = surface
-                    .models
-                    .get(model)
-                    .expect("compiled projector model exists")
-                    .table_name
-                    .clone();
-                if let Some(existing) = runtime
-                    .table_owners
-                    .insert(table.clone(), Arc::clone(&projection))
-                {
-                    return Err(format!(
-                        "query protocol table `{table}` has ambiguous owners `{}` and `{}`",
-                        existing.name, projector.name
-                    ));
-                }
-            }
-            runtime
-                .projectors
-                .insert(projector.name.clone(), projection);
         }
         Ok(runtime)
+    }
+
+    fn register(
+        &mut self,
+        surface: &Surface,
+        projection: Arc<QueryProjectorRuntime>,
+    ) -> Result<(), String> {
+        for model in &projection.models {
+            if let Some(existing) = self
+                .model_owners
+                .insert(model.clone(), Arc::clone(&projection))
+            {
+                return Err(format!(
+                    "query protocol model `{model}` has ambiguous owners `{}` and `{}`",
+                    existing.name, projection.name
+                ));
+            }
+            let table = surface
+                .models
+                .get(model)
+                .expect("compiled projector model exists")
+                .table_name
+                .clone();
+            if let Some(existing) = self
+                .table_owners
+                .insert(table.clone(), Arc::clone(&projection))
+            {
+                return Err(format!(
+                    "query protocol table `{table}` has ambiguous owners `{}` and `{}`",
+                    existing.name, projection.name
+                ));
+            }
+        }
+        if self
+            .projectors
+            .insert(projection.name.clone(), Arc::clone(&projection))
+            .is_some()
+        {
+            return Err(format!(
+                "query protocol projection owner `{}` is registered more than once",
+                projection.name
+            ));
+        }
+        Ok(())
     }
 
     pub(crate) fn visible_model_owner(
@@ -244,6 +209,273 @@ impl QueryProtocolRuntime {
     pub(crate) fn is_empty(&self) -> bool {
         self.projectors.is_empty()
     }
+
+    #[cfg(test)]
+    pub(crate) fn topology_for_model(
+        &self,
+        model: &str,
+    ) -> Option<&crate::projection_protocol::ProjectorTopologyId> {
+        self.model_owners
+            .get(model)
+            .map(|owner| owner.codec.topology())
+    }
+
+    #[cfg(test)]
+    pub(crate) fn model_has_static_partition(&self, model: &str) -> Option<bool> {
+        self.model_owners
+            .get(model)
+            .map(|owner| owner.static_partition.is_some())
+    }
+}
+
+fn compile_legacy_query_projector(
+    surface: &Surface,
+    projector: &SurfaceProjectionOwner,
+) -> Result<Arc<QueryProjectorRuntime>, String> {
+    if projector.partition.is_modeled_only() {
+        return Err(format!(
+            "query protocol legacy projector `{}` cannot execute a modeled-only partition contract",
+            projector.name
+        ));
+    }
+    let schemas = projector
+        .models
+        .iter()
+        .map(|model| {
+            surface
+                .models
+                .get(model)
+                .map(|model| &model.schema)
+                .ok_or_else(|| {
+                    format!(
+                        "query protocol projector `{}` references unknown model `{model}`",
+                        projector.name
+                    )
+                })
+        })
+        .collect::<Result<Vec<_>, _>>()?;
+    let compiled = CompiledProjectionTopology::compile(
+        &projector.name,
+        &projector.facts,
+        &projector.models,
+        &projector.partition,
+        schemas,
+    )
+    .map_err(|error| {
+        format!(
+            "query protocol projector `{}` cannot compile: {error}",
+            projector.name
+        )
+    })?;
+    let codec = compiled.codec();
+    let static_partition = match &projector.partition {
+        ProjectionPartitionSpec::Unit => codec.encode_partition(None).map(Some),
+        ProjectionPartitionSpec::Constant { value } => {
+            codec.encode_partition(Some(value)).map(Some)
+        }
+        ProjectionPartitionSpec::InputPath { .. } => Ok(None),
+        ProjectionPartitionSpec::ModeledExpression { .. }
+        | ProjectionPartitionSpec::ModeledInactive => {
+            unreachable!("modeled-only partitions were rejected above")
+        }
+    }
+    .map_err(|error| {
+        format!(
+            "query protocol projector `{}` has invalid static partition: {error}",
+            projector.name
+        )
+    })?;
+    let change_epoch = projector
+        .change_epoch
+        .as_deref()
+        .map(ProjectionEpoch::new)
+        .transpose()
+        .map_err(|error| {
+            format!(
+                "query protocol projector `{}` has invalid change epoch: {error}",
+                projector.name
+            )
+        })?;
+    Ok(Arc::new(QueryProjectorRuntime {
+        name: projector.name.clone(),
+        codec,
+        static_partition,
+        change_epoch,
+        models: projector.models.iter().cloned().collect(),
+        dependencies: projector.dependencies.iter().cloned().collect(),
+    }))
+}
+
+fn compile_modeled_query_projector(
+    surface: &Surface,
+    projector: &SurfaceProjectionOwner,
+) -> Result<Option<Arc<QueryProjectorRuntime>>, String> {
+    let active = projector
+        .modeled
+        .iter()
+        .filter(|modeled| modeled.state() == ProjectionBindingState::Active)
+        .collect::<Vec<_>>();
+    let Some(first) = active.first() else {
+        // Draining registrations remain on the catalog Surface so outstanding
+        // work can finish, but they cannot mint new query or live evidence.
+        return Ok(None);
+    };
+    let (first_program, first_binding) = first.raw().ok_or_else(|| {
+        format!(
+            "query protocol modeled owner `{}` requires the unselected catalog Surface",
+            projector.name
+        )
+    })?;
+    let first_physical = first_binding.physical_topology().ok_or_else(|| {
+        format!(
+            "query protocol modeled owner `{}` binding `{}` has no physical observation topology",
+            projector.name,
+            first.binding_id()
+        )
+    })?;
+    let topology = ProjectorTopologyId::new(
+        first_physical.version(),
+        first_physical.name(),
+        first_physical.digest(),
+    )
+    .map_err(|error| {
+        format!(
+            "query protocol modeled owner `{}` has invalid physical observation topology: {error}",
+            projector.name
+        )
+    })?;
+    validate_modeled_partition_binding(projector, first_program, first_binding)?;
+
+    let mut models = BTreeSet::new();
+    for modeled in &active {
+        let (program, binding) = modeled.raw().ok_or_else(|| {
+            format!(
+                "query protocol modeled owner `{}` requires the unselected catalog Surface",
+                projector.name
+            )
+        })?;
+        let physical = binding.physical_topology().ok_or_else(|| {
+            format!(
+                "query protocol modeled owner `{}` binding `{}` has no physical observation topology",
+                projector.name,
+                modeled.binding_id()
+            )
+        })?;
+        validate_modeled_partition_binding(projector, program, binding)?;
+        if physical != first_physical {
+            return Err(format!(
+                "query protocol modeled owner `{}` has incompatible active physical topologies",
+                projector.name
+            ));
+        }
+        if modeled.epoch() != first.epoch() {
+            return Err(format!(
+                "query protocol modeled owner `{}` has incompatible active change epochs `{}` and `{}`",
+                projector.name,
+                first.epoch().as_str(),
+                modeled.epoch().as_str()
+            ));
+        }
+        if binding.partition() != first_binding.partition()
+            || program.partition() != first_program.partition()
+        {
+            return Err(format!(
+                "query protocol modeled owner `{}` has incompatible active partition protocols",
+                projector.name
+            ));
+        }
+        models.extend(modeled.output_models().iter().cloned());
+    }
+    if models.is_empty() {
+        return Err(format!(
+            "query protocol modeled owner `{}` has no active output models",
+            projector.name
+        ));
+    }
+
+    let schemas = models
+        .iter()
+        .map(|model| {
+            surface
+                .models
+                .get(model)
+                .map(|model| (model.model_name.as_str(), &model.schema))
+                .ok_or_else(|| {
+                    format!(
+                        "query protocol modeled owner `{}` references unknown active model `{model}`",
+                        projector.name
+                    )
+                })
+        })
+        .collect::<Result<Vec<_>, _>>()?;
+    let codec = Arc::new(
+        ProjectionScopeCodec::with_models(topology, schemas).map_err(|error| {
+            format!(
+                "query protocol modeled owner `{}` cannot register its authoritative schemas: {error}",
+                projector.name
+            )
+        })?,
+    );
+    let static_partition = if matches!(
+        first_program.partition(),
+        crate::projection::ProjectionPartition::Unit
+    ) {
+        Some(codec.encode_partition(None).map_err(|error| {
+            format!(
+                "query protocol modeled owner `{}` has invalid unit partition: {error}",
+                projector.name
+            )
+        })?)
+    } else {
+        None
+    };
+    let change_epoch = ProjectionEpoch::new(first.epoch().as_str()).map_err(|error| {
+        format!(
+            "query protocol modeled owner `{}` has invalid active change epoch: {error}",
+            projector.name
+        )
+    })?;
+    let dependencies = models
+        .iter()
+        .map(|model| {
+            surface
+                .models
+                .get(model)
+                .expect("modeled schema registration validated the model")
+                .table_name
+                .clone()
+        })
+        .collect();
+
+    Ok(Some(Arc::new(QueryProjectorRuntime {
+        name: projector.name.clone(),
+        codec,
+        static_partition,
+        change_epoch: Some(change_epoch),
+        models,
+        dependencies,
+    })))
+}
+
+fn validate_modeled_partition_binding(
+    projector: &SurfaceProjectionOwner,
+    program: &crate::projection::ProjectionProgram,
+    binding: &crate::projection::placement::ProjectionBinding,
+) -> Result<(), String> {
+    let expected = serde_json::to_value(program.partition()).map_err(|error| {
+        format!(
+            "query protocol modeled owner `{}` cannot encode its partition expression: {error}",
+            projector.name
+        )
+    })?;
+    if binding.partition().expression() != &expected {
+        return Err(format!(
+            "query protocol modeled owner `{}` binding `{}` partition differs from its program",
+            projector.name,
+            binding.id()
+        ));
+    }
+    Ok(())
 }
 
 pub(crate) struct ProtocolQueryExecution {
@@ -742,7 +974,7 @@ where
                     .static_partition
                     .as_ref()
                     .expect("comparable live plans retain a static partition");
-                let read_limit = remaining.checked_add(1).unwrap_or(usize::MAX);
+                let read_limit = remaining.saturating_add(1);
                 let read = read_projection_changes_in_executor::<DB>(
                     connection,
                     projector.codec.topology(),

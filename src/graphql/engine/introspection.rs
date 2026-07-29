@@ -100,7 +100,7 @@ pub(crate) fn is_pure_introspection_request(request: &mut Request) -> bool {
     let mut remaining_selections = REQUEST_ANALYSIS_MAX_SELECTIONS;
     selection_is_introspection_only(
         &operation.node.selection_set.node,
-        &document,
+        document,
         &mut BTreeSet::new(),
         &mut HashMap::new(),
         &mut remaining_selections,

@@ -54,6 +54,8 @@ pub struct SelectionNode {
     pub children: Vec<SelectionNode>,
 }
 
+type RecordEvidenceProjection = (Vec<(String, String)>, Option<QueryEvidenceRecordPlan>);
+
 /// Compile a root field selection into one SQL statement.
 pub fn compile_root(
     inner: &EngineInner,
@@ -578,7 +580,7 @@ pub(super) fn compile_record_evidence_projection(
     binds: &mut Vec<BindValue>,
     bytes_paths: &mut Vec<String>,
     path_prefix: &str,
-) -> Result<(Vec<(String, String)>, Option<QueryEvidenceRecordPlan>), String> {
+) -> Result<RecordEvidenceProjection, String> {
     // Embedded client models deliberately have no stable normalized identity.
     // Do not manufacture per-record evidence that the client cannot address;
     // table/projector dependencies still flow through `tables_touched` and

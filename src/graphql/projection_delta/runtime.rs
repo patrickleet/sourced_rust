@@ -476,6 +476,10 @@ pub(crate) struct ModeledProjectionObservationScope {
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]
+#[expect(
+    clippy::large_enum_variant,
+    reason = "evidence entries are tightly bounded and retain an owned canonical observation without per-entry allocation"
+)]
 pub(crate) enum ModeledProjectionEvidence {
     Pending,
     Observed(ProjectionObservation),

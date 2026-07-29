@@ -30,6 +30,10 @@ impl SerdeDirection {
 }
 
 #[derive(Clone, Copy)]
+#[expect(
+    clippy::enum_variant_names,
+    reason = "variant names intentionally mirror serde's public rename_all terminology"
+)]
 enum RenameRule {
     LowerCase,
     UpperCase,

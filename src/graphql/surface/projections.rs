@@ -522,6 +522,170 @@ pub(crate) fn validate_direct_modeled_owner_compatibility(
     Ok(())
 }
 
+pub(crate) fn modeled_owner_partition_contract(
+    owner: &SurfaceProjectionOwner,
+) -> Result<crate::projection_protocol::ProjectionPartitionSpec, String> {
+    let active = owner
+        .modeled
+        .iter()
+        .filter(|modeled| modeled.state() == ProjectionBindingState::Active)
+        .collect::<Vec<_>>();
+    let Some(first) = active.first() else {
+        return Ok(crate::projection_protocol::ProjectionPartitionSpec::modeled_inactive());
+    };
+    let (first_program, first_binding) = first.raw().ok_or_else(|| {
+        "selected modeled projection cannot be reattached to a catalog Surface".to_owned()
+    })?;
+    validate_program_partition_binding(&owner.name, first_program, first_binding)?;
+    for modeled in &active {
+        let (program, binding) = modeled.raw().ok_or_else(|| {
+            "selected modeled projection cannot be reattached to a catalog Surface".to_owned()
+        })?;
+        validate_program_partition_binding(&owner.name, program, binding)?;
+        if binding.partition() != first_binding.partition()
+            || program.partition() != first_program.partition()
+        {
+            return Err(format!(
+                "modeled projection owner `{}` has incompatible active partition contracts",
+                owner.name
+            ));
+        }
+    }
+    match first_program.partition() {
+        ProjectionPartition::Unit => {
+            Ok(crate::projection_protocol::ProjectionPartitionSpec::unit())
+        }
+        ProjectionPartition::Expression(_) => {
+            crate::projection_protocol::ProjectionPartitionSpec::modeled_expression(
+                first_binding.partition().expression().clone(),
+                first_binding.partition().codec(),
+                first_binding.partition().codec_version(),
+            )
+            .map_err(|error| {
+                format!(
+                    "modeled projection owner `{}` has invalid active partition contract: {error}",
+                    owner.name
+                )
+            })
+        }
+    }
+}
+
+pub(crate) fn compile_projection_owner_topology<'a>(
+    owner: &SurfaceProjectionOwner,
+    schemas: impl IntoIterator<Item = &'a crate::table::TableSchema>,
+) -> Result<
+    (
+        crate::projection_protocol::ProjectorTopologyId,
+        Vec<crate::projection_protocol::ProjectionModelOwnership>,
+    ),
+    String,
+> {
+    let schemas = schemas.into_iter().collect::<Vec<_>>();
+    if owner.modeled.is_empty() {
+        return crate::projection_protocol::compile_projection_topology(
+            &owner.name,
+            &owner.facts,
+            &owner.models,
+            &owner.partition,
+            schemas,
+        )
+        .map_err(|error| error.to_string());
+    }
+
+    let live = owner
+        .modeled
+        .iter()
+        .filter(|modeled| modeled.state() == ProjectionBindingState::Active)
+        .collect::<Vec<_>>();
+    let registrations = if live.is_empty() {
+        owner.modeled.iter().collect::<Vec<_>>()
+    } else {
+        live
+    };
+    let first = registrations.first().ok_or_else(|| {
+        format!(
+            "modeled projection owner `{}` has no catalog registrations",
+            owner.name
+        )
+    })?;
+    let (_, first_binding) = first.raw().ok_or_else(|| {
+        "selected modeled projection cannot be reattached to a catalog Surface".to_owned()
+    })?;
+    let first_physical = first_binding.physical_topology().ok_or_else(|| {
+        format!(
+            "modeled projection owner `{}` binding `{}` has no physical observation topology",
+            owner.name,
+            first.binding_id()
+        )
+    })?;
+    let topology = crate::projection_protocol::ProjectorTopologyId::new(
+        first_physical.version(),
+        first_physical.name(),
+        first_physical.digest(),
+    )
+    .map_err(|error| error.to_string())?;
+    let mut active_models = BTreeSet::new();
+    for modeled in registrations {
+        let (_, binding) = modeled.raw().ok_or_else(|| {
+            "selected modeled projection cannot be reattached to a catalog Surface".to_owned()
+        })?;
+        if binding.physical_topology() != Some(first_physical) {
+            return Err(format!(
+                "modeled projection owner `{}` has incompatible live physical topologies",
+                owner.name
+            ));
+        }
+        active_models.extend(modeled.output_models().iter().cloned());
+    }
+    let schemas = schemas
+        .into_iter()
+        .filter(|schema| active_models.contains(&schema.model_name))
+        .map(|schema| (schema.model_name.clone(), schema))
+        .collect::<BTreeMap<_, _>>();
+    if schemas.len() != active_models.len() {
+        return Err(format!(
+            "modeled projection owner `{}` does not have authoritative schemas for every live output",
+            owner.name
+        ));
+    }
+    let mut tables = BTreeSet::new();
+    let mut ownership = Vec::with_capacity(schemas.len());
+    for (model, schema) in schemas {
+        if !tables.insert(schema.table_name.as_str()) {
+            return Err(format!(
+                "modeled projection owner `{}` assigns more than one live model to physical table `{}`",
+                owner.name, schema.table_name
+            ));
+        }
+        ownership.push(
+            crate::projection_protocol::ProjectionModelOwnership::new(
+                model.clone(),
+                schema.table_name.clone(),
+            )
+            .map_err(|error| error.to_string())?,
+        );
+    }
+    Ok((topology, ownership))
+}
+
+fn validate_program_partition_binding(
+    owner: &str,
+    program: &ProjectionProgram,
+    binding: &ProjectionBinding,
+) -> Result<(), String> {
+    let expected = serde_json::to_value(program.partition()).map_err(|error| {
+        format!("modeled projection owner `{owner}` cannot encode its program partition: {error}")
+    })?;
+    if binding.partition().expression() != &expected {
+        return Err(format!(
+            "modeled projection owner `{owner}` binding `{}` partition differs from its program",
+            binding.id()
+        ));
+    }
+    Ok(())
+}
+
 fn server_executor_eq(
     left: Option<&crate::projection::lower::ProjectionServerExecutorDescriptor>,
     right: Option<&crate::projection::lower::ProjectionServerExecutorDescriptor>,
@@ -627,9 +791,11 @@ fn select_operation(
         kind: operation.kind(),
         model: operation.target().model().to_owned(),
         storage: operation.target().storage().to_owned(),
-        key: key_visible
-            .then(|| operation.key().to_vec())
-            .unwrap_or_default(),
+        key: if key_visible {
+            operation.key().to_vec()
+        } else {
+            Vec::new()
+        },
         fields: if force_revalidate { Vec::new() } else { fields },
         relationship_effects,
         invalidations,

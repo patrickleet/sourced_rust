@@ -207,6 +207,8 @@ impl CommandProjectionConfirmation {
                     })
             }
             ProjectionPartitionSpec::InputPath { .. } => self.partition.is_some(),
+            ProjectionPartitionSpec::ModeledExpression { .. }
+            | ProjectionPartitionSpec::ModeledInactive => false,
         }
     }
 }

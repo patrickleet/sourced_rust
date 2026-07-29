@@ -21,8 +21,8 @@ use super::command_contract::{
     EffectFieldValue, EffectKey, EffectRelationship, TypedEffectKey,
 };
 use super::filter::{validate_row_policy_operand_literal, FilterExpr, Operand};
+use crate::projection_protocol::ProjectionModelOwnership;
 use crate::projection_protocol::ProjectionPartitionSpec;
-use crate::projection_protocol::{compile_projection_topology, ProjectionModelOwnership};
 use crate::table::{
     resolve_m2m_target_foreign_key, ColumnType, RelationshipKind, TableColumn, TableSchema,
 };
@@ -50,6 +50,7 @@ pub use application::{role_grants_for_role, surface_for_application, surface_for
 pub use build::build_surface;
 pub use projections::SurfaceModeledProjection;
 pub(crate) use projections::{
+    compile_projection_owner_topology, modeled_owner_partition_contract,
     validate_direct_modeled_owner_compatibility, SurfaceProjectionArm, SurfaceProjectionOperation,
     SurfaceSelectedProjectionProgram,
 };

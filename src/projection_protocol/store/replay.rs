@@ -377,7 +377,7 @@ fn decode_replay_digest(field: &str, value: &str) -> Result<[u8; 32], String> {
 }
 
 fn decode_replay_hex(field: &str, value: &str, max_bytes: usize) -> Result<Vec<u8>, String> {
-    if value.len() % 2 != 0 || value.len() > max_bytes.saturating_mul(2) {
+    if !value.len().is_multiple_of(2) || value.len() > max_bytes.saturating_mul(2) {
         return Err(format!(
             "direct projection evidence {field} is not bounded canonical hexadecimal"
         ));

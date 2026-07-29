@@ -64,10 +64,10 @@ impl ZitadelScrapeConfig {
             });
         }
 
-        let on_start = match env::var(ON_START_ENV).ok().as_deref().map(str::trim) {
-            Some("0") | Some("false") | Some("FALSE") | Some("off") => false,
-            _ => true,
-        };
+        let on_start = !matches!(
+            env::var(ON_START_ENV).ok().as_deref().map(str::trim),
+            Some("0") | Some("false") | Some("FALSE") | Some("off")
+        );
 
         Some(Self {
             api_base,
@@ -334,11 +334,8 @@ fn map_mgmt_user(user: &MgmtUser) -> Option<MappedDelivery> {
         user_kind,
         emails,
         display_name: Some(display_name),
-        approval_status: if is_machine {
-            "approved".into()
-        } else {
-            "approved".into() // scrape treats listed humans as directory members
-        },
+        // Scrape treats every listed identity as a directory member.
+        approval_status: "approved".into(),
         ingested_at: now_ms(),
     };
 
