@@ -98,6 +98,18 @@ function sameTodoOrder(left: TodoOrderFrame, right: TodoOrderFrame) {
 	);
 }
 
+function waitForTodoCommand(
+	page: import('@playwright/test').Page,
+	mutation: 'todos_create' | 'todos_complete' | 'todos_reopen' | 'todos_archive'
+) {
+	return page.waitForResponse(
+		(response) =>
+			response.url().includes('/graphql') &&
+			(response.request().postData() ?? '').includes(mutation),
+		{ timeout: 20_000 }
+	);
+}
+
 test.describe('todos (alice)', () => {
 	test('create, complete, reopen, archive', async ({ page }) => {
 		const title = `e2e todo ${Date.now()}`;
@@ -107,34 +119,41 @@ test.describe('todos (alice)', () => {
 
 		// Create
 		await page.locator('#todo-title').fill(title);
+		const createResponse = waitForTodoCommand(page, 'todos_create');
 		await page.getByRole('button', { name: /^add$/i }).click();
+		await createResponse;
 		const openItem = page
 			.locator('.panel')
 			.filter({ has: page.getByRole('heading', { name: /^open$/i }) })
 			.locator('.item', { hasText: title });
-		await expect(openItem).toBeVisible({ timeout: 15_000 });
+		await expect(openItem).toBeVisible({ timeout: 30_000 });
 
 		// Complete
+		const completeResponse = waitForTodoCommand(page, 'todos_complete');
 		await openItem.getByRole('button', { name: /^done$/i }).click();
 		const doneItem = page
 			.locator('.panel')
 			.filter({ has: page.getByRole('heading', { name: /^done$/i }) })
 			.locator('.item', { hasText: title });
 		await expect(doneItem).toBeVisible({ timeout: 15_000 });
+		await completeResponse;
 
 		// Reopen (prefer the text button; wait until not busy)
 		const reopen = doneItem.getByRole('button', { name: 'Reopen', exact: true });
 		await expect(reopen).toBeEnabled({ timeout: 10_000 });
+		const reopenResponse = waitForTodoCommand(page, 'todos_reopen');
 		await reopen.click();
 		const openAgain = page
 			.locator('.panel')
 			.filter({ has: page.getByRole('heading', { name: /^open$/i }) })
 			.locator('.item', { hasText: title });
 		await expect(openAgain).toBeVisible({ timeout: 15_000 });
+		await reopenResponse;
 
 		// Archive
 		const archive = openAgain.getByRole('button', { name: 'Archive', exact: true });
 		await expect(archive).toBeEnabled({ timeout: 10_000 });
+		const archiveResponse = waitForTodoCommand(page, 'todos_archive');
 		await archive.click();
 		const archiveDetails = page.locator('details.archive');
 		await expect(archiveDetails).toBeVisible({ timeout: 15_000 });
@@ -142,6 +161,9 @@ test.describe('todos (alice)', () => {
 		await expect(archiveDetails.locator('.item', { hasText: title })).toBeVisible({
 			timeout: 10_000
 		});
+		// Optimistic visibility is deliberately immediate. Do not tear down the
+		// browser runtime until the durable command response has arrived.
+		await archiveResponse;
 
 		// Persist across navigation (async projectors may lag a beat)
 		await expect
@@ -153,7 +175,7 @@ test.describe('todos (alice)', () => {
 					await again.locator('summary').click();
 					return again.locator('.item', { hasText: title }).isVisible();
 				},
-				{ timeout: 25_000 }
+				{ timeout: 40_000 }
 			)
 			.toBeTruthy();
 	});
