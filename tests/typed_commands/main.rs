@@ -12,12 +12,12 @@ use axum::http::Request as HttpRequest;
 use distributed::graphql::{
     build_surface, graphql_router_with_service, read, surface_for_role, typed_command, Causal,
     ClientProjectionAssignment, ClientProjectionExecutionClass, ClientProjectionExpression,
-    ClientProjectionFallback, ClientProjectionMutationKind, ClientProjectionPreviewSource,
-    ClientProjectionValue, ClientProjectionValueType, DistributedClientSurfaceExport,
-    EffectInputFieldMarker, EffectModelFieldMarker, GraphqlEngine, GraphqlInputType,
-    GraphqlOutputType, GraphqlTypeDef, GraphqlTypeField, ModelPermissions, PreparedCommand,
-    Projected, RoleGrant, Succeeded, SurfaceDirectProjection, SurfaceModeledProjection,
-    SurfaceOptions, SurfaceProjector,
+    ClientProjectionFallback, ClientProjectionInvalidation, ClientProjectionMutationKind,
+    ClientProjectionPartition, ClientProjectionPreviewSource, ClientProjectionValue,
+    ClientProjectionValueType, DistributedClientSurfaceExport, EffectInputFieldMarker,
+    EffectModelFieldMarker, GraphqlEngine, GraphqlInputType, GraphqlOutputType, GraphqlTypeDef,
+    GraphqlTypeField, ModelPermissions, PreparedCommand, Projected, RoleGrant, Succeeded,
+    SurfaceDirectProjection, SurfaceModeledProjection, SurfaceOptions, SurfaceProjector,
 };
 use distributed::microsvc::{CausalCommandContext, HandlerError, Routes, Service};
 use distributed::microsvc::{Context, Session};
@@ -180,16 +180,11 @@ struct ForgedView {
     count: i64,
 }
 
-#[derive(Clone, Serialize, Deserialize, GraphqlInput)]
-struct JsonDocument {
-    label: String,
-}
-
 #[derive(Clone, Deserialize, GraphqlInput)]
 struct JsonPatchInput {
     id: String,
-    tags: Vec<String>,
-    details: JsonDocument,
+    tags: serde_json::Value,
+    details: serde_json::Value,
 }
 
 #[derive(Clone, Serialize, Deserialize, ReadModel, distributed::DomainState)]
@@ -198,9 +193,9 @@ struct JsonPatchInput {
 struct JsonView {
     id: String,
     #[readmodel(jsonb)]
-    tags: Vec<String>,
+    tags: serde_json::Value,
     #[readmodel(jsonb)]
-    details: JsonDocument,
+    details: serde_json::Value,
 }
 
 #[derive(Clone, Deserialize, GraphqlInput)]
@@ -373,7 +368,7 @@ const PLAN_PROJECTION: ProjectionDescriptor<DirectCandidate> = projection! {
     name: "typed_commands_plan";
     version: 1;
     epoch: "typed-commands-plan-v1";
-    partition: unit;
+    partition: state.id;
 
     on "plan.changed" version 1 (state: PlanView) {
         upsert PlanView from state as plan;
@@ -1436,23 +1431,39 @@ async fn execute_stream_cannot_dispatch_through_an_injected_legacy_service() {
 }
 
 #[tokio::test]
-async fn manifest_populates_typed_consistency_and_revalidation_effects() {
-    let service = service_a("todos");
+async fn succeeded_command_without_preview_exports_modeled_revalidation_contract() {
+    let service = Service::new().named("plans").routes(
+        causal_routes()
+            .typed_command(
+                typed_command::<PlanInput, Succeeded<PlanOutput>>("plan.create")
+                    .emits(distributed::events![PlanChangedDomainEvent]),
+            )
+            .handle(succeeded_plan_handler),
+    );
     let engine = GraphqlEngine::builder(pool())
+        .model::<PlanView>(plan_permissions("anonymous"))
         .service(&service)
+        .client_projectors([modeled_projector::<PlanView, _>(PLAN_PROJECTION)])
         .build()
         .unwrap();
     let manifest = engine.client_manifest_for_role("anonymous").unwrap();
     let command = manifest
         .commands
         .iter()
-        .find(|command| command.name == "todo.create")
+        .find(|command| command.name == "plan.create")
         .unwrap();
 
     assert_eq!(command.extensions.consistency.kind, "succeeded");
     assert!(command.extensions.effects.is_none());
     assert!(command.extensions.confirmations.is_none());
-    assert!(command.extensions.projection.is_none());
+    let projection = command.extensions.projection.as_ref().unwrap();
+    assert_eq!(projection.fallback, ClientProjectionFallback::Revalidate);
+    assert_eq!(projection.program_arms.len(), 1);
+    assert!(projection.preview_occurrences.is_empty());
+    assert_eq!(
+        manifest.projection_programs[0].arms[0].operations[0].kind,
+        ClientProjectionMutationKind::Upsert
+    );
     assert!(manifest.capabilities.causal_receipts);
     assert!(!manifest.capabilities.confirmed_persistence);
 }
@@ -1492,21 +1503,41 @@ async fn generated_input_default_is_reused_as_the_effect_key_and_fingerprinted()
     assert!(command.extensions.effects.is_none());
     assert!(command.extensions.confirmations.is_none());
     let projection = command.extensions.projection.as_ref().unwrap();
-    let generated_id = projection.preview_occurrences[0]
-        .values
+    let arm = &manifest.projection_programs[0].arms[0];
+    let ClientProjectionPartition::Expression {
+        expression:
+            ClientProjectionExpression::Slot {
+                slot: partition_slot,
+                value_type: ClientProjectionValueType::String,
+            },
+    } = &arm.partition
+    else {
+        panic!("plan projection must partition by its typed state id slot");
+    };
+    let id_key = arm.operations[0]
+        .key
         .iter()
-        .find(|value| {
-            matches!(
-                &value.source,
-                ClientProjectionPreviewSource::GeneratedDefault { path }
-                    if path == &["id".to_string()]
-            )
-        })
-        .expect("projection preview must reuse the finalized generated id");
-    assert!(matches!(
-        generated_id.source,
-        ClientProjectionPreviewSource::GeneratedDefault { .. }
-    ));
+        .find(|field| field.name == "id")
+        .expect("upsert must expose the PlanView identity");
+    let ClientProjectionExpression::Slot {
+        slot: key_slot,
+        value_type: ClientProjectionValueType::String,
+    } = &id_key.expression
+    else {
+        panic!("upsert id key must lower to a typed state slot");
+    };
+    for slot in [partition_slot, key_slot] {
+        let generated_id = projection.preview_occurrences[0]
+            .values
+            .iter()
+            .find(|value| value.slot == *slot)
+            .expect("partition and upsert key slots must have preview provenance");
+        assert!(matches!(
+            &generated_id.source,
+            ClientProjectionPreviewSource::GeneratedDefault { path }
+                if path == &["id".to_string()]
+        ));
+    }
     assert_eq!(projection.program_arms.len(), 1);
     assert_eq!(projection.program_arms[0].event.name, "plan.changed");
     assert_eq!(
@@ -1607,7 +1638,8 @@ async fn json_container_leaves_reach_the_manifest() {
                     .preview(distributed::state_preview! {
                         JsonChangedDomainEvent => JsonView {
                             id: input.id,
-                            ..unknown
+                            tags: input.tags,
+                            details: input.details,
                         }
                     }),
             )
@@ -1625,39 +1657,33 @@ async fn json_container_leaves_reach_the_manifest() {
     assert!(command.extensions.effects.is_none());
     assert!(command.extensions.confirmations.is_none());
     let projection = command.extensions.projection.as_ref().unwrap();
-    assert!(projection.preview_occurrences[0]
-        .values
-        .iter()
-        .any(|value| matches!(
-            &value.source,
-            ClientProjectionPreviewSource::Input { path }
-                if path == &["id".to_string()]
-        )));
-    assert!(
-        projection.preview_occurrences[0]
-            .values
-            .iter()
-            .filter(|value| matches!(value.source, ClientProjectionPreviewSource::Unknown))
-            .count()
-            >= 2
-    );
+    let preview = &projection.preview_occurrences[0];
     let operation = &manifest.projection_programs[0].arms[0].operations[0];
     assert_eq!(operation.kind, ClientProjectionMutationKind::Patch);
     for field in ["tags", "details"] {
-        let assignment = &operation
+        let assignment = operation
             .fields
             .iter()
             .find(|candidate| candidate.name == field)
-            .unwrap()
-            .assignment;
-        assert!(matches!(
-            assignment,
-            ClientProjectionAssignment::Set {
-                expression: ClientProjectionExpression::Slot {
+            .unwrap();
+        let ClientProjectionAssignment::Set {
+            expression:
+                ClientProjectionExpression::Slot {
+                    slot,
                     value_type: ClientProjectionValueType::Json,
-                    ..
-                }
-            }
+                },
+        } = &assignment.assignment
+        else {
+            panic!("{field} must compile from a typed JSON projection slot");
+        };
+        let source = preview
+            .values
+            .iter()
+            .find(|value| value.slot == *slot)
+            .expect("every optimistic JSON field slot must have preview provenance");
+        assert!(matches!(
+            &source.source,
+            ClientProjectionPreviewSource::Input { path } if path == &[field.to_string()]
         ));
     }
 }
@@ -1821,12 +1847,21 @@ async fn embedded_models_retain_global_revalidation_for_modeled_projections() {
         causal_routes()
             .typed_command(
                 typed_command::<BigIntKeyInput, Succeeded<PlanOutput>>("bigint.invalidate")
-                    .emits(distributed::events![BigIntChangedDomainEvent]),
+                    .emits(distributed::events![BigIntChangedDomainEvent])
+                    .preview(distributed::state_preview! {
+                        BigIntChangedDomainEvent => BigIntKeyView {
+                            key: input.key,
+                            title: input.title,
+                            ..unknown
+                        }
+                    }),
             )
             .handle(bigint_key_handler),
     );
     let manifest = GraphqlEngine::builder(pool())
-        .model::<BigIntKeyView>(ModelPermissions::new().grant("anonymous", read().all_columns()))
+        .model::<BigIntKeyView>(
+            ModelPermissions::new().grant("anonymous", read().columns(["title"])),
+        )
         .service(&service)
         .client_projectors([modeled_projector::<BigIntKeyView, _>(BIGINT_PROJECTION)])
         .build()
@@ -1846,13 +1881,30 @@ async fn embedded_models_retain_global_revalidation_for_modeled_projections() {
         ClientProjectionFallback::Revalidate
     );
     assert_eq!(
-        manifest.projection_programs[0].arms[0].operations[0].kind,
-        ClientProjectionMutationKind::Upsert
-    );
-    assert_eq!(
         manifest.projection_bindings[0].execution_class,
         ClientProjectionExecutionClass::Causal
     );
+    let operation = &manifest.projection_programs[0].arms[0].operations[0];
+    assert_eq!(
+        operation.kind,
+        ClientProjectionMutationKind::InvalidateModel
+    );
+    assert_eq!(operation.model, "BigIntKeyView");
+    assert!(operation.key.is_empty());
+    assert!(operation.fields.is_empty());
+    assert!(operation.relationships.is_empty());
+    assert!(matches!(
+        operation.invalidations.as_slice(),
+        [ClientProjectionInvalidation::Model { model }] if model == "BigIntKeyView"
+    ));
+    let preview = &command
+        .extensions
+        .projection
+        .as_ref()
+        .unwrap()
+        .preview_occurrences;
+    assert_eq!(preview.len(), 1);
+    assert!(preview[0].values.is_empty());
 }
 
 #[tokio::test]
@@ -2241,10 +2293,21 @@ async fn role_redaction_replaces_an_unsafe_modeled_projection_with_revalidation(
     assert!(command.extensions.confirmations.is_none());
     let projection = command.extensions.projection.as_ref().unwrap();
     assert_eq!(projection.fallback, ClientProjectionFallback::Revalidate);
+    let operation = &manifest.projection_programs[0].arms[0].operations[0];
     assert_eq!(
-        manifest.projection_programs[0].arms[0].operations[0].kind,
+        operation.kind,
         ClientProjectionMutationKind::InvalidateModel
     );
+    assert_eq!(operation.model, "PlanView");
+    assert!(operation.key.is_empty());
+    assert!(operation.fields.is_empty());
+    assert!(operation.relationships.is_empty());
+    assert!(matches!(
+        operation.invalidations.as_slice(),
+        [ClientProjectionInvalidation::Model { model }] if model == "PlanView"
+    ));
+    assert_eq!(projection.preview_occurrences.len(), 1);
+    assert!(projection.preview_occurrences[0].values.is_empty());
 }
 
 #[tokio::test]

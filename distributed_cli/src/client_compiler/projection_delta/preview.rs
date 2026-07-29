@@ -2205,6 +2205,103 @@ mod tests {
     }
 
     #[test]
+    fn json_input_slots_compile_into_their_exact_optimistic_patch_fields() {
+        let slot = |name: &str, value_type| ManifestProjectionExpression::Slot {
+            slot: name.into(),
+            value_type,
+        };
+        let operation = ManifestProjectionOperation {
+            operation: "patch-json".into(),
+            ordinal: 0,
+            kind: ManifestProjectionMutationKind::Patch,
+            model: "Todo".into(),
+            key: vec![ManifestProjectionKeyField {
+                ordinal: 0,
+                name: "id".into(),
+                expression: slot("source", ManifestProjectionValueType::String),
+            }],
+            fields: ["details", "tags"]
+                .into_iter()
+                .enumerate()
+                .map(|(ordinal, name)| ManifestProjectionField {
+                    ordinal: ordinal as u32,
+                    name: name.into(),
+                    assignment: ManifestProjectionAssignment::Set {
+                        expression: slot(name, ManifestProjectionValueType::Json),
+                    },
+                })
+                .collect(),
+            relationships: Vec::new(),
+            invalidations: Vec::new(),
+        };
+        let slots = BTreeMap::from([
+            (
+                "source",
+                Knowledge::Known(PreviewExpression::Input {
+                    path: vec!["source".into()],
+                }),
+            ),
+            (
+                "details",
+                Knowledge::Known(PreviewExpression::Input {
+                    path: vec!["details".into()],
+                }),
+            ),
+            (
+                "tags",
+                Knowledge::Known(PreviewExpression::Input {
+                    path: vec!["tags".into()],
+                }),
+            ),
+        ]);
+        let mut model = projection_model();
+        model
+            .fields
+            .extend(["details", "tags"].into_iter().map(|name| ManifestField {
+                name: name.into(),
+                scalar: "JSON".into(),
+                codec: "json".into(),
+                nullable: false,
+            }));
+        let mut operations = Vec::new();
+        let mut recoveries = Vec::new();
+
+        lower_record(
+            0,
+            0,
+            &event(),
+            &operation,
+            &Some(PreviewPartition::Unit),
+            &slots,
+            &key_command(),
+            &model,
+            &mut operations,
+            &mut recoveries,
+        )
+        .unwrap();
+
+        let PreviewMutation::Patch { set, .. } = &operations[0].mutation else {
+            panic!("known JSON inputs must compile to an optimistic patch");
+        };
+        for field in ["details", "tags"] {
+            assert!(set.iter().any(|compiled| {
+                compiled.field == field
+                    && compiled.value
+                        == (PreviewExpression::Input {
+                            path: vec![field.into()],
+                        })
+            }));
+        }
+        assert!(matches!(
+            recoveries.as_slice(),
+            [PreviewRecovery {
+                condition: PreviewRecoveryCondition::IfRecordMissing,
+                ..
+            }]
+        ));
+    }
+
+    #[test]
     fn object_expression_fails_closed_when_a_member_is_unset() {
         let expression = ManifestProjectionExpression::Object {
             fields: vec![ManifestProjectionObjectField {
@@ -2597,6 +2694,46 @@ mod tests {
         assert!(matches!(
             &recoveries[0].target,
             PreviewRecoveryTarget::Model { model, .. } if model == "Todo"
+        ));
+    }
+
+    #[test]
+    fn model_invalidation_and_recovery_compile_without_a_record_key() {
+        let mut operation = relationship_operation();
+        operation.kind = ManifestProjectionMutationKind::InvalidateModel;
+        operation.relationships.clear();
+        operation.invalidations = vec![ManifestProjectionInvalidation::Model {
+            model: "Todo".into(),
+        }];
+        let mut operations = Vec::new();
+        let mut recoveries = Vec::new();
+
+        lower_invalidations(
+            0,
+            0,
+            &operation,
+            &Some(PreviewPartition::Unit),
+            &mut operations,
+            &mut recoveries,
+        )
+        .unwrap();
+        let operations = canonicalize_operations(operations).unwrap();
+        let recoveries = canonicalize_recoveries(recoveries, &operations).unwrap();
+
+        assert!(matches!(
+            operations.as_slice(),
+            [PreviewOperation {
+                mutation: PreviewMutation::InvalidateModel { model, .. },
+                ..
+            }] if model == "Todo"
+        ));
+        assert!(matches!(
+            recoveries.as_slice(),
+            [PreviewRecovery {
+                condition: PreviewRecoveryCondition::Always,
+                target: PreviewRecoveryTarget::Model { model, .. },
+                ..
+            }] if model == "Todo"
         ));
     }
 }
