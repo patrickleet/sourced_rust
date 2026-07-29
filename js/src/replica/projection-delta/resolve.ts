@@ -14,6 +14,7 @@ import type {
 } from './types.js';
 
 const missing = Symbol('projection-preview-missing');
+const emptyUnsetFields: readonly string[] = Object.freeze([]);
 
 export function prepareCommandProjection(
 	contract: ReplicaCommandProjection,
@@ -112,7 +113,7 @@ function resolvePreviewMutation(
 				kind: 'patch' as const,
 				scope: previewScope(mutation.scope, input, presets),
 				fields: previewFields(mutation.set, input, presets),
-				unset: mutation.unset,
+				unset: mutation.unset ?? emptyUnsetFields,
 				ifPresent: true as const
 			});
 		case 'delete':

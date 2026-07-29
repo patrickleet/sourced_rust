@@ -12,7 +12,12 @@ import type {
   DistributedSvelteKitClient
 } from '@hops-ops/distributed/sveltekit';
 
-export type GeneratedCommands = Readonly<Record<never, never>>;
+import {
+  createCommands as createGeneratedCommands,
+  type GeneratedCommands
+} from './commands.js';
+
+export type { GeneratedCommands } from './commands.js';
 
 import { Operation_AdminAllTodos as DistributedOperation_0 } from './operations/admin-all-todos.js';
 
@@ -31,7 +36,8 @@ export function provideDistributed(
 ): DistributedSvelteKitClient<GeneratedCommands> {
   return provideDistributedSvelteKitClient(
     createDistributedSvelteKit<GeneratedCommands>({
-      ...options
+      ...options,
+      createCommands: createGeneratedCommands
     })
   );
 }

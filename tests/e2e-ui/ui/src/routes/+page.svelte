@@ -715,7 +715,7 @@ pub blob_games: Vec<BlobGames>,
 fn record_completed(&mut self) {
   self.status = TodoStatus::Completed;
 }
-// The aggregate event replays history; `domain` also captures TodoState
+// The aggregate event replays history; \`domain\` also captures TodoState
 // as the outward domain-event body after the transition.`}</code></pre>
 				</div>
 				<div class="wf-code">
@@ -737,7 +737,7 @@ pub struct Todos {
   pub title: String,
   pub status: String,
 }
-// GraphQL lists/filters `todos` — no hand-written resolvers.`}</code></pre>
+// GraphQL lists/filters \`todos\` — no hand-written resolvers.`}</code></pre>
 				</div>
 				<div class="wf-code">
 					<div class="wf-code-bar">

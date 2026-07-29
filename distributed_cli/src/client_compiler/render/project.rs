@@ -342,7 +342,22 @@ fn render_sveltekit(
         .join("\n"),
     ];
 
-    sections.push("export type GeneratedCommands = Readonly<Record<never, never>>;".to_string());
+    if manifest.commands.is_empty() {
+        sections
+            .push("export type GeneratedCommands = Readonly<Record<never, never>>;".to_string());
+    } else {
+        sections.push(
+            [
+                "import {",
+                "  createCommands as createGeneratedCommands,",
+                "  type GeneratedCommands",
+                "} from './commands.js';",
+                "",
+                "export type { GeneratedCommands } from './commands.js';",
+            ]
+            .join("\n"),
+        );
+    }
 
     for (index, operation) in operations.iter().enumerate() {
         let module = operation
@@ -382,7 +397,14 @@ fn render_sveltekit(
         "  return provideDistributedSvelteKitClient(".to_string(),
         "    createDistributedSvelteKit<GeneratedCommands>({".to_string(),
     ];
-    bindings.push("      ...options".to_string());
+    if manifest.commands.is_empty() {
+        bindings.push("      ...options".to_string());
+    } else {
+        bindings.extend([
+            "      ...options,".to_string(),
+            "      createCommands: createGeneratedCommands".to_string(),
+        ]);
+    }
     bindings.extend(
         [
             "    })",

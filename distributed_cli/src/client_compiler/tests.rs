@@ -2175,6 +2175,8 @@ fn explicit_load_registration_is_the_documented_fallback() {
     );
     assert!(sveltekit.contains("export function provideDistributed("));
     assert!(sveltekit.contains("export function useCommands(): GeneratedCommands"));
+    assert!(sveltekit.contains("export type GeneratedCommands = Readonly<Record<never, never>>;"));
+    assert!(!sveltekit.contains("createGeneratedCommands"));
     assert!(
         !sveltekit.contains("const client ="),
         "generated modules must not retain a module-global client: {sveltekit}"
@@ -2998,8 +3000,11 @@ fn command_protocol_and_extensions_are_preserved_exactly() {
     assert!(protocol.contains("\"surface\": {"));
     assert!(protocol.contains("\"trustedPresets\": []"));
     assert!(protocol.contains("\ttrustedPresets: []"));
-    assert!(sveltekit.contains("export type GeneratedCommands = Readonly<Record<never, never>>;"));
-    assert!(!sveltekit.contains("createGeneratedCommands"));
+    assert!(sveltekit.contains("createCommands as createGeneratedCommands"));
+    assert!(sveltekit.contains("type GeneratedCommands"));
+    assert!(sveltekit.contains("export type { GeneratedCommands } from './commands.js';"));
+    assert!(sveltekit.contains("createCommands: createGeneratedCommands"));
+    assert!(!sveltekit.contains("Readonly<Record<never, never>>"));
 
     let partial = compile_client(ClientCompileInput::new(
         partial_value,

@@ -253,7 +253,7 @@ export type ProjectionPreviewMutation =
 			op: 'patch';
 			scope: ProjectionPreviewScope;
 			set: readonly ProjectionPreviewField[];
-			unset: readonly string[];
+			unset?: readonly string[];
 			if_present: true;
 	  }>
 	| Readonly<{ op: 'delete'; scope: ProjectionPreviewScope }>

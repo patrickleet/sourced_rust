@@ -380,6 +380,65 @@ test('explicit defaulted fields are retained and their generators never run', ()
 	assert.equal(calls, 0);
 });
 
+test('compact generated preview patches canonicalize an omitted unset list', () => {
+	const artifact = baseArtifact({
+		projection: projectionArtifact(
+			[
+				Object.freeze({
+					op: 'patch',
+					scope: projectionScope(
+						'Todo',
+						projectionField('id', inputValue(['id']))
+					),
+					set: Object.freeze([
+						projectionField('title', inputValue(['title']))
+					]),
+					if_present: true
+				})
+			],
+			[
+				Object.freeze({
+					kind: 'record',
+					model: 'Todo',
+					key: Object.freeze(['id']),
+					fields: Object.freeze(['title']),
+					replace: Object.freeze([]),
+					upsert: false,
+					patch: true,
+					delete: false
+				})
+			]
+		)
+	});
+	const prepared = prepareReplicaCommand(
+		artifact,
+		{ meta: { count: 1 }, title: 'Compact patch' },
+		{
+			commandId: COMMAND_ID,
+			generators: {
+				uuidV7: () => GENERATED_UUID,
+				ulid: () => GENERATED_ULID
+			}
+		}
+	);
+
+	assert.deepEqual(prepared.optimistic.operations, [
+		{
+			kind: 'patch',
+			scope: {
+				model: 'Todo',
+				key: [{ field: 'id', value: GENERATED_UUID }]
+			},
+			fields: { title: 'Compact patch' },
+			unset: [],
+			ifPresent: true
+		}
+	]);
+	const unset = prepared.optimistic.operations[0].unset;
+	assert.equal(Object.isFrozen(unset), true);
+	assert.throws(() => unset.push('title'), TypeError);
+});
+
 test('real default generators produce canonical values', () => {
 	const prepared = prepareReplicaCommand(
 		baseArtifact(),
