@@ -945,6 +945,118 @@ fn zero_occurrence_metadata_is_classified_from_the_current_causal_command_contra
 
 #[test]
 #[cfg(feature = "graphql")]
+fn opaque_fallback_hint_does_not_hide_empty_draining_modeled_work() {
+    use std::sync::Arc;
+
+    use super::runtime::{
+        ModeledProjectionStatusDisposition, ProtocolProjectionProgramRegistry,
+        ProtocolProjectionRequestSeed,
+    };
+    use crate::graphql::protocol::{ProtocolTokenCodec, ProtocolTokenPurpose};
+
+    let now = std::time::SystemTime::now();
+    let now_unix_ms = now.duration_since(UNIX_EPOCH).unwrap().as_millis() as u64;
+    let codec = ProtocolTokenCodec::new([0x6e; 32]);
+    let occurrence = state_occurrence(12, "todo-opaque-fallback", "opaque");
+    let selector =
+        crate::ProjectionEventSelector::try_from_descriptor(occurrence.descriptor()).unwrap();
+
+    let active = modeled_fixture_with_opaque_fallback(ProjectionBindingState::Active);
+    let active_seed = ProtocolProjectionRequestSeed::new(
+        selected_export(&active.surface),
+        Arc::new(ProtocolProjectionProgramRegistry::try_from_surface(&active.surface).unwrap()),
+        crate::command_ledger::PrincipalPartitionId::new("opaque-fallback-principal").unwrap(),
+        "opaque-fallback-generation",
+        Vec::new(),
+        now_unix_ms,
+    )
+    .unwrap();
+    let active_cache = codec
+        .issue(
+            ProtocolTokenPurpose::CacheScope,
+            &("opaque-fallback", "active"),
+        )
+        .unwrap();
+    let active_metadata = active_seed
+        .metadata_for_actual_at(
+            codec.clone(),
+            &active_cache,
+            crate::command_ledger::CausationId::parse_stored(TEST_CAUSATION_ID.into()).unwrap(),
+            Duration::from_secs(60),
+            std::slice::from_ref(&occurrence),
+            std::slice::from_ref(&selector),
+            now,
+        )
+        .unwrap();
+    assert!(
+        active_metadata.revalidate,
+        "the opaque owner retains its conservative fallback hint"
+    );
+    assert!(!active_metadata.delta.operations.is_empty());
+    assert_eq!(
+        active_seed
+            .modeled_evidence_topologies(
+                &codec,
+                &active_cache,
+                TEST_COMMAND_NAME,
+                TEST_CAUSATION_ID,
+                &active_metadata,
+            )
+            .unwrap()
+            .disposition,
+        ModeledProjectionStatusDisposition::Applicable
+    );
+
+    let draining = modeled_fixture_with_opaque_fallback(ProjectionBindingState::Draining);
+    let draining_seed = ProtocolProjectionRequestSeed::new(
+        selected_export(&draining.surface),
+        Arc::new(ProtocolProjectionProgramRegistry::try_from_surface(&draining.surface).unwrap()),
+        crate::command_ledger::PrincipalPartitionId::new("opaque-fallback-principal").unwrap(),
+        "opaque-fallback-generation",
+        Vec::new(),
+        now_unix_ms,
+    )
+    .unwrap();
+    let draining_cache = codec
+        .issue(
+            ProtocolTokenPurpose::CacheScope,
+            &("opaque-fallback", "draining"),
+        )
+        .unwrap();
+    let draining_metadata = draining_seed
+        .metadata_for_actual_at(
+            codec.clone(),
+            &draining_cache,
+            crate::command_ledger::CausationId::parse_stored(TEST_CAUSATION_ID.into()).unwrap(),
+            Duration::from_secs(60),
+            &[occurrence],
+            &[selector],
+            now,
+        )
+        .unwrap();
+    assert!(draining_metadata.revalidate);
+    assert!(draining_metadata.delta.projections.is_empty());
+    assert!(draining_metadata.delta.occurrences.is_empty());
+    assert!(draining_metadata.delta.operations.is_empty());
+    assert!(draining_metadata.lifecycle_proofs.is_empty());
+    assert!(draining_metadata.obligations.is_empty());
+    assert_eq!(
+        draining_seed
+            .modeled_evidence_topologies(
+                &codec,
+                &draining_cache,
+                TEST_COMMAND_NAME,
+                TEST_CAUSATION_ID,
+                &draining_metadata,
+            )
+            .unwrap()
+            .disposition,
+        ModeledProjectionStatusDisposition::Revalidate
+    );
+}
+
+#[test]
+#[cfg(feature = "graphql")]
 fn mounted_registry_derives_one_exact_physical_obligation_from_actual_fanout_ops() {
     use super::runtime::{
         ProjectionRuntimeAuthorityError, ProtocolProjectionDeltaRequestAuthority,
@@ -2925,6 +3037,29 @@ fn modeled_fixture(
     execution: ProjectionExecutionClass,
 ) -> ModeledFixture {
     modeled_fixture_config(state, execution, ProjectionMutationKind::Upsert, false)
+}
+
+fn modeled_fixture_with_opaque_fallback(state: ProjectionBindingState) -> ModeledFixture {
+    let fixture = modeled_fixture(state, ProjectionExecutionClass::Causal);
+    let mut surface = fixture.surface;
+    let mut modeled = std::mem::take(&mut surface.projectors);
+    for owner in &mut modeled {
+        if !owner.modeled.is_empty() {
+            owner.facts.clear();
+            owner.models.clear();
+        }
+    }
+    surface.projectors_attached = false;
+    let opaque = SurfaceProjector::new("projection-delta-opaque-fallback")
+        .facts(["todo.state-published"])
+        .models(["UserView"]);
+    let surface = surface
+        .with_projection_owners(modeled.into_iter().chain(std::iter::once(opaque.into())))
+        .expect("mixed modeled and opaque projection topology");
+    ModeledFixture {
+        surface,
+        program: fixture.program,
+    }
 }
 
 fn modeled_fixture_with_kind(

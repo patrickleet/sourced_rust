@@ -2023,14 +2023,21 @@ async fn graphql_terminal_replay_revalidates_after_active_projection_starts_drai
         )
     };
     let attach = |service: Service, projector: SurfaceProjector| {
+        let opaque_fallback = SurfaceProjector::new("project_causal_lifecycle_opaque")
+            .facts(["causal.lifecycle-recorded"])
+            .models(["CausalProjectionSiblingView"]);
         let engine = crate::graphql::GraphqlEngine::builder(&repository)
             .protocol_token_key(TEST_PROTOCOL_TOKEN_KEY)
             .model::<CausalLifecycleView>(
                 crate::graphql::ModelPermissions::new()
                     .grant("user", crate::graphql::read().all_columns()),
             )
+            .model::<CausalProjectionSiblingView>(
+                crate::graphql::ModelPermissions::new()
+                    .grant("user", crate::graphql::read().all_columns()),
+            )
             .service(&service)
-            .client_projectors([projector])
+            .client_projectors([projector, opaque_fallback])
             .build()
             .expect("lifecycle GraphQL engine should build");
         service.try_with_graphql(engine)
@@ -2079,6 +2086,10 @@ async fn graphql_terminal_replay_revalidates_after_active_projection_starts_drai
         "succeeded_pending_projection"
     );
     assert!(active_envelope["command"].get("projection").is_some());
+    assert_eq!(
+        active_envelope["command"]["projection"]["revalidate"], true,
+        "the mixed opaque owner retains its fallback hint while Active modeled work applies"
+    );
     assert!(active_envelope["command"]
         .get("projectionDisposition")
         .is_none());

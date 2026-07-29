@@ -768,7 +768,6 @@ fn structurally_empty_modeled_metadata(metadata: &CommandProjectionMetadataV1) -
         && metadata.delta.recoveries.is_empty()
         && metadata.lifecycle_proofs.is_empty()
         && metadata.obligations.is_empty()
-        && !metadata.revalidate
 }
 
 fn trusted_preset_value_matches(codec: &str, value: &serde_json::Value) -> bool {
