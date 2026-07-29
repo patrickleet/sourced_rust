@@ -442,15 +442,31 @@ fn validate_operation(
             ),
         )
     })?;
-    let identity = model.identity().ok_or_else(|| {
-        projection_error(
-            "client.manifest.projection_model",
-            format!(
-                "projection operation `{}` targets non-normalized model `{}`",
-                operation.operation, operation.model
-            ),
-        )
-    })?;
+    let Some(identity) = model.identity() else {
+        if operation.kind != ManifestProjectionMutationKind::InvalidateModel {
+            return Err(projection_error(
+                "client.manifest.projection_model",
+                format!(
+                    "projection operation `{}` targets non-normalized model `{}`",
+                    operation.operation, operation.model
+                ),
+            ));
+        }
+        if !operation.key.is_empty()
+            || !operation.fields.is_empty()
+            || !operation.relationships.is_empty()
+        {
+            return Err(projection_error(
+                "client.manifest.projection_invalidation",
+                format!(
+                    "embedded model invalidation `{}` cannot carry record keys, fields, or \
+                     relationship effects",
+                    operation.operation
+                ),
+            ));
+        }
+        return validate_invalidations(operation, models);
+    };
     validate_key(&operation.key, identity, "projection operation key")?;
     validate_projection_fields(operation, model)?;
 

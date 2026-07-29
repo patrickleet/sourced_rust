@@ -180,11 +180,16 @@ struct ForgedView {
     count: i64,
 }
 
+#[derive(Clone, Serialize, Deserialize, GraphqlInput)]
+struct JsonDocument {
+    label: String,
+}
+
 #[derive(Clone, Deserialize, GraphqlInput)]
 struct JsonPatchInput {
     id: String,
-    tags: serde_json::Value,
-    details: serde_json::Value,
+    tags: Vec<String>,
+    details: JsonDocument,
 }
 
 #[derive(Clone, Serialize, Deserialize, ReadModel, distributed::DomainState)]
@@ -193,9 +198,9 @@ struct JsonPatchInput {
 struct JsonView {
     id: String,
     #[readmodel(jsonb)]
-    tags: serde_json::Value,
+    tags: Vec<String>,
     #[readmodel(jsonb)]
-    details: serde_json::Value,
+    details: JsonDocument,
 }
 
 #[derive(Clone, Deserialize, GraphqlInput)]
@@ -1638,8 +1643,7 @@ async fn json_container_leaves_reach_the_manifest() {
                     .preview(distributed::state_preview! {
                         JsonChangedDomainEvent => JsonView {
                             id: input.id,
-                            tags: input.tags,
-                            details: input.details,
+                            ..unknown
                         }
                     }),
             )
@@ -1657,6 +1661,7 @@ async fn json_container_leaves_reach_the_manifest() {
     assert!(command.extensions.effects.is_none());
     assert!(command.extensions.confirmations.is_none());
     let projection = command.extensions.projection.as_ref().unwrap();
+    assert_eq!(projection.fallback, ClientProjectionFallback::Revalidate);
     let preview = &projection.preview_occurrences[0];
     let operation = &manifest.projection_programs[0].arms[0].operations[0];
     assert_eq!(operation.kind, ClientProjectionMutationKind::Patch);
@@ -1680,11 +1685,8 @@ async fn json_container_leaves_reach_the_manifest() {
             .values
             .iter()
             .find(|value| value.slot == *slot)
-            .expect("every optimistic JSON field slot must have preview provenance");
-        assert!(matches!(
-            &source.source,
-            ClientProjectionPreviewSource::Input { path } if path == &[field.to_string()]
-        ));
+            .expect("every structured JSON field slot must remain explicit");
+        assert_eq!(source.source, ClientProjectionPreviewSource::Unknown);
     }
 }
 

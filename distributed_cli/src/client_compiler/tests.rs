@@ -761,6 +761,137 @@ fn generated_command_types_manifest() -> JsonValue {
     value
 }
 
+fn embedded_model_invalidation_manifest() -> JsonValue {
+    let mut value = generated_command_types_manifest();
+    let command = &mut value["commands"][0];
+    command["extensions"]["consistency"]["kind"] = json!("causal");
+    command["extensions"]
+        .as_object_mut()
+        .unwrap()
+        .remove("direct_projection");
+    command["output"]["definition"]["name"] = json!("ProjectTodoPayload");
+    command["extensions"]["projection"]["preview_occurrences"][0]["values"] = json!([{
+        "slot": "state.tenantId",
+        "source": {"kind": "input", "path": ["tenantId"]}
+    }]);
+    value["models"][0]["normalization"] = json!({"kind": "embedded"});
+    let operation = &mut value["projection_programs"][0]["arms"][0]["operations"][0];
+    operation["kind"] = json!("invalidate_model");
+    operation["key"] = json!([]);
+    operation["fields"] = json!([]);
+    operation["relationships"] = json!([]);
+    operation["invalidations"] = json!([{"kind": "model", "model": "Todo"}]);
+    refresh_schema_fingerprint(&mut value);
+    value
+}
+
+#[test]
+fn embedded_model_invalidation_parses_compiles_and_generates_unkeyed_recovery() {
+    let value = embedded_model_invalidation_manifest();
+    let manifest = ClientManifest::parse(value.clone(), &ClientSurfaceSelector::role("user"))
+        .expect("embedded model invalidation must be valid client authority");
+    let command = manifest
+        .commands
+        .iter()
+        .find(|command| command.extensions.projection.is_some())
+        .expect("modeled command");
+    let compiled = super::projection_delta::compile_command_preview(command, &manifest)
+        .expect("embedded invalidation preview must compile")
+        .expect("modeled command projection");
+    let compiled = serde_json::to_value(compiled).unwrap();
+    let mutation = &compiled["preview"]["operations"][0]["mutation"];
+    assert_eq!(mutation["op"], "invalidate_model");
+    assert_eq!(mutation["model"], "Todo");
+    assert!(mutation.get("scope").is_none());
+    assert!(mutation.get("key").is_none());
+    let recovery = &compiled["preview"]["recoveries"][0];
+    assert_eq!(recovery["condition"], "always");
+    assert_eq!(recovery["target"]["kind"], "model");
+    assert_eq!(recovery["target"]["model"], "Todo");
+    assert!(recovery["target"].get("key").is_none());
+    assert!(compiled["capabilities"]["arms"][0]["mutations"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .all(|mutation| mutation["kind"] == "model"));
+
+    let project = compile_client(ClientCompileInput::new(
+        value,
+        ClientSurfaceSelector::role("user"),
+        vec![ClientDocument::new(
+            "src/routes/todos/+page.graphql",
+            "query Todos { todos { id } }",
+        )],
+    ))
+    .expect("generate client for embedded model invalidation");
+    let commands = file(&project, "commands.ts");
+    assert!(commands.contains("\"op\": \"invalidate_model\""));
+    assert!(commands.contains("\"condition\": \"always\""));
+    assert!(commands.contains("\"kind\": \"model\""));
+    assert!(!commands.contains("\"kind\": \"record\""));
+    assert!(!commands.contains("\"key\":"));
+}
+
+#[test]
+fn embedded_model_rejects_every_identity_dependent_projection_mutation() {
+    let template = generated_command_types_manifest();
+    let key = template["projection_programs"][0]["arms"][0]["operations"][0]["key"].clone();
+    for kind in [
+        "insert",
+        "upsert",
+        "patch",
+        "upsert_patch",
+        "delete",
+        "recreate",
+        "insert_related",
+        "upsert_related",
+        "invalidate_relationship",
+    ] {
+        let mut value = embedded_model_invalidation_manifest();
+        let operation = &mut value["projection_programs"][0]["arms"][0]["operations"][0];
+        operation["kind"] = json!(kind);
+        operation["key"] = key.clone();
+        refresh_schema_fingerprint(&mut value);
+
+        let error = ClientManifest::parse(value, &ClientSurfaceSelector::role("user"))
+            .expect_err("identity-dependent operations must reject embedded models");
+        assert_eq!(error.code, "client.manifest.projection_model", "{kind}");
+    }
+}
+
+#[test]
+fn embedded_model_invalidation_rejects_record_and_relationship_authority() {
+    let template = generated_command_types_manifest();
+    for member in ["key", "fields"] {
+        let mut value = embedded_model_invalidation_manifest();
+        value["projection_programs"][0]["arms"][0]["operations"][0][member] =
+            template["projection_programs"][0]["arms"][0]["operations"][0][member].clone();
+        refresh_schema_fingerprint(&mut value);
+
+        let error = ClientManifest::parse(value, &ClientSurfaceSelector::role("user"))
+            .expect_err("embedded model invalidation must remain unkeyed and fieldless");
+        assert_eq!(
+            error.code, "client.manifest.projection_invalidation",
+            "{member}"
+        );
+    }
+
+    let mut value = embedded_model_invalidation_manifest();
+    value["projection_programs"][0]["arms"][0]["operations"][0]["relationships"] = json!([{
+        "ordinal": 0,
+        "kind": "invalidate",
+        "source_model": "Todo",
+        "relationship": "owner",
+        "target_model": "Todo",
+        "source_key": [],
+        "target_key": []
+    }]);
+    refresh_schema_fingerprint(&mut value);
+    let error = ClientManifest::parse(value, &ClientSurfaceSelector::role("user"))
+        .expect_err("embedded model invalidation cannot carry relationship effects");
+    assert_eq!(error.code, "client.manifest.projection_invalidation");
+}
+
 #[test]
 fn rejects_legacy_top_level_json_command_shapes() {
     for slot in ["input", "output"] {
