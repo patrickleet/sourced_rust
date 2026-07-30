@@ -110,7 +110,12 @@ pub fn command_confirmations(input: TokenStream) -> TokenStream {
 /// Compile a typed projection declaration into portable IR, exact event
 /// resolution, authoritative ORM lowering, output inventory and server
 /// executor metadata.
+///
+/// **Deprecated authoring surface.** Prefer event-independent [`mutation!`]
+/// plus portable handlers. `projection!` remains only as a dual-path runtime
+/// mount generator until full cutover removes event-owning projector macros.
 #[proc_macro]
+#[doc(hidden)]
 pub fn projection(input: TokenStream) -> TokenStream {
     projection::expand(input)
 }

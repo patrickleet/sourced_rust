@@ -8,6 +8,7 @@
 use std::collections::BTreeMap;
 use std::fmt;
 use std::marker::PhantomData;
+use std::sync::{OnceLock, RwLock};
 
 use super::ResolvedProjectionField;
 use crate::table::validate_row_values;
@@ -530,6 +531,61 @@ impl ProjectionServerExecutorDescriptor {
         let resolved = (self.resolve)(occurrence)?;
         (self.lower)(&resolved)
     }
+}
+
+/// Process-wide registry of placement-selected direct projection executors.
+///
+/// Service construction registers each direct modeled owner by output model
+/// name. Command handlers then call `commit()?.projected()` without naming a
+/// projection selector; the runtime looks up the executor by returned model.
+static PLACEMENT_SELECTED_DIRECT: OnceLock<
+    RwLock<BTreeMap<String, ProjectionServerExecutorDescriptor>>,
+> = OnceLock::new();
+
+fn placement_selected_direct_registry(
+) -> &'static RwLock<BTreeMap<String, ProjectionServerExecutorDescriptor>> {
+    PLACEMENT_SELECTED_DIRECT.get_or_init(|| RwLock::new(BTreeMap::new()))
+}
+
+/// Register the placement-selected direct executor for one output model.
+///
+/// Called from service/projection registration. Replacing an existing model
+/// entry is allowed so tests can rebuild services.
+pub fn register_placement_selected_direct(
+    model: impl Into<String>,
+    executor: ProjectionServerExecutorDescriptor,
+) {
+    let model = model.into();
+    if let Ok(mut guard) = placement_selected_direct_registry().write() {
+        guard.insert(model, executor);
+    }
+}
+
+/// Look up the placement-selected direct executor for a returned model.
+pub fn placement_selected_direct_for_model(
+    model: &str,
+) -> Option<ProjectionServerExecutorDescriptor> {
+    placement_selected_direct_registry()
+        .read()
+        .ok()
+        .and_then(|guard| guard.get(model).cloned())
+}
+
+/// Register every single-model output of a direct descriptor for placement
+/// selection. Multi-model descriptors are not eligible for `Projected<M>`.
+///
+/// # Errors
+///
+/// Returns executor construction failures.
+pub fn register_placement_selected_direct_descriptor(
+    descriptor: &ProjectionDescriptor<DirectCandidate>,
+) -> Result<(), ProjectionLoweringError> {
+    let executor = descriptor.server_executor()?;
+    if executor.outputs.models.len() == 1 {
+        let model = executor.outputs.models[0].model.clone();
+        register_placement_selected_direct(model, executor);
+    }
+    Ok(())
 }
 
 /// Physical ORM plan plus the canonical logical plan that produced it.
