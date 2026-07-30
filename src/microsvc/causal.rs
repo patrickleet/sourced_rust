@@ -23,7 +23,7 @@ use crate::graphql::command_contract::{
     validate_resolved_direct_plan, CommandCommitProofError, CommandOutcome, ProjectionCommitProof,
     ResolvedDirectProjectionTarget, TypedCommandContract,
 };
-use crate::graphql::{GraphqlOutputType, PrepareCommandError, PreparedCommand, Projected};
+use crate::graphql::{PrepareCommandError, PreparedCommand, Projected};
 use crate::outbox::{OutboxMessage, PreparedDomainEvent};
 use crate::projection::lower::{
     DirectCandidate, LoweredProjectionPlan, ProjectionDescriptor,
@@ -447,7 +447,7 @@ where
         model: M,
     ) -> Result<PreparedCommand<Projected<M>>, CausalWorkspaceError>
     where
-        M: GraphqlOutputType + RelationalReadModel + Serialize + Send + Sync + 'static,
+        M: RelationalReadModel + Serialize + Send + Sync + 'static,
     {
         let mut builder = ReadModelWritePlanBuilder::new();
         builder.upsert(&model)?;
@@ -472,11 +472,10 @@ where
     /// ledger causation.
     pub(crate) fn prepare_modeled_projected<M>(
         &self,
-        model: M,
         projection: ProjectionDescriptor<DirectCandidate>,
     ) -> Result<PreparedCommand<Projected<M>>, CausalWorkspaceError>
     where
-        M: GraphqlOutputType + RelationalReadModel + Serialize + Send + Sync + 'static,
+        M: RelationalReadModel + Serialize + Send + Sync + 'static,
     {
         let executor = projection
             .server_executor()
@@ -497,8 +496,7 @@ where
                 executor.name, schema.model_name, schema.table_name
             )));
         }
-        let proof = ProjectionCommitProof::for_model(&model)?;
-        let prepared = PreparedCommand::prepare_projected(model, proof)?;
+        let prepared = PreparedCommand::prepare_modeled_projected();
 
         let mut state = self
             .state
@@ -634,9 +632,10 @@ where
     pub(crate) fn validate_prepared<K: CommandOutcome>(
         &mut self,
         contract: &TypedCommandContract,
-        prepared: &PreparedCommand<K>,
+        prepared: &mut PreparedCommand<K>,
     ) -> Result<(), CommandCommitProofError> {
         self.resolve_modeled_direct_projection()?;
+        prepared.materialize_modeled_projection(self.resolved_direct_projection.as_ref())?;
         prepared.validate_commit_evidence(
             contract,
             self.aggregates
@@ -788,7 +787,7 @@ mod tests {
     use std::sync::Arc;
 
     use crate::entity::{Entity, EventRecord};
-    use crate::graphql::{GraphqlTypeDef, GraphqlTypeField};
+    use crate::graphql::GraphqlTypeDef;
     use crate::table::{
         ColumnType, PrimaryKey, RowKey, RowValue, RowValues, TableColumn, TableKind, TableMutation,
         TableSchema,
@@ -866,33 +865,6 @@ mod tests {
     struct ModeledDirectView {
         id: String,
         title: String,
-    }
-
-    impl GraphqlOutputType for ModeledDirectView {
-        fn graphql_type() -> GraphqlTypeDef {
-            GraphqlTypeDef::new(
-                "ModeledDirectView",
-                vec![
-                    GraphqlTypeField {
-                        name: "id".into(),
-                        type_name: "String".into(),
-                        nullable: false,
-                        list: false,
-                        item_nullable: false,
-                        nested: None,
-                    },
-                    GraphqlTypeField {
-                        name: "title".into(),
-                        type_name: "String".into(),
-                        nullable: false,
-                        list: false,
-                        item_nullable: false,
-                        nested: None,
-                    },
-                ],
-            )
-            .with_type_id(std::any::TypeId::of::<Self>())
-        }
     }
 
     const MODELED_DIRECT: ProjectionDescriptor<DirectCandidate> = distributed_macros::projection! {
@@ -990,33 +962,6 @@ mod tests {
                 id: row.get_serde("id")?,
                 title: row.get_serde("title")?,
             })
-        }
-    }
-
-    impl GraphqlOutputType for TestView {
-        fn graphql_type() -> GraphqlTypeDef {
-            GraphqlTypeDef::new(
-                "TestView",
-                vec![
-                    GraphqlTypeField {
-                        name: "id".into(),
-                        type_name: "String".into(),
-                        nullable: false,
-                        list: false,
-                        item_nullable: false,
-                        nested: None,
-                    },
-                    GraphqlTypeField {
-                        name: "title".into(),
-                        type_name: "String".into(),
-                        nullable: false,
-                        list: false,
-                        item_nullable: false,
-                        nested: None,
-                    },
-                ],
-            )
-            .with_type_id(std::any::TypeId::of::<Self>())
         }
     }
 
@@ -1242,7 +1187,7 @@ mod tests {
             id: "v-1".into(),
             title: "projected".into(),
         };
-        let prepared = workspace.prepare_projected(view).unwrap();
+        let mut prepared = workspace.prepare_projected(view).unwrap();
         let mut aggregate = workspace.load("a-1").await.unwrap().unwrap();
         aggregate.entity_mut().digest_empty("Projected").unwrap();
         workspace.stage(aggregate).unwrap();
@@ -1251,14 +1196,14 @@ mod tests {
         let contract =
             crate::graphql::typed_command::<TestInput, Projected<TestView>>("test.project")
                 .into_contract();
-        parts.validate_prepared(&contract, &prepared).unwrap();
+        parts.validate_prepared(&contract, &mut prepared).unwrap();
     }
 
     #[tokio::test]
     async fn projected_result_requires_a_durable_domain_fact() {
         let repository = loaded_repo();
         let workspace = CausalWorkspace::new(&repository);
-        let prepared = workspace
+        let mut prepared = workspace
             .prepare_projected(TestView {
                 id: "v-1".into(),
                 title: "projected".into(),
@@ -1270,7 +1215,7 @@ mod tests {
                 .into_contract();
 
         assert!(matches!(
-            parts.validate_prepared(&contract, &prepared),
+            parts.validate_prepared(&contract, &mut prepared),
             Err(CommandCommitProofError::DurableEventMissing)
         ));
     }
@@ -1279,7 +1224,7 @@ mod tests {
     async fn projected_proof_rejects_a_second_write_to_the_returned_key() {
         let repository = loaded_repo();
         let workspace = CausalWorkspace::new(&repository);
-        let prepared = workspace
+        let mut prepared = workspace
             .prepare_projected(TestView {
                 id: "v-1".into(),
                 title: "returned".into(),
@@ -1302,7 +1247,7 @@ mod tests {
                 .into_contract();
 
         assert!(matches!(
-            parts.validate_prepared(&contract, &prepared),
+            parts.validate_prepared(&contract, &mut prepared),
             Err(CommandCommitProofError::ProjectionWriteConflict { .. })
         ));
     }
@@ -1311,7 +1256,7 @@ mod tests {
     async fn projected_proof_rejects_row_drift_after_preparation() {
         let repository = loaded_repo();
         let workspace = CausalWorkspace::new(&repository);
-        let prepared = workspace
+        let mut prepared = workspace
             .prepare_projected(TestView {
                 id: "v-1".into(),
                 title: "returned".into(),
@@ -1332,7 +1277,7 @@ mod tests {
                 .into_contract();
 
         assert!(matches!(
-            parts.validate_prepared(&contract, &prepared),
+            parts.validate_prepared(&contract, &mut prepared),
             Err(CommandCommitProofError::ProjectionWriteMismatch { .. })
         ));
     }
@@ -1359,14 +1304,8 @@ mod tests {
             .create("direct-1".into(), "authoritative".into())
             .unwrap();
         workspace.stage(aggregate).unwrap();
-        let prepared = workspace
-            .prepare_modeled_projected(
-                ModeledDirectView {
-                    id: "direct-1".into(),
-                    title: "authoritative".into(),
-                },
-                MODELED_DIRECT,
-            )
+        let mut prepared = workspace
+            .prepare_modeled_projected::<ModeledDirectView>(MODELED_DIRECT)
             .unwrap();
 
         let mut parts = workspace.into_parts().unwrap();
@@ -1381,8 +1320,13 @@ mod tests {
         );
 
         parts
-            .validate_prepared(&modeled_direct_contract(), &prepared)
+            .validate_prepared(&modeled_direct_contract(), &mut prepared)
             .unwrap();
+        assert_eq!(prepared.serialized_payload()["id"], "direct-1");
+        assert_eq!(
+            prepared.serialized_payload()["title"],
+            serde_json::json!("authoritative")
+        );
         let lowered = parts
             .resolved_direct_projection
             .as_ref()
@@ -1408,14 +1352,8 @@ mod tests {
             .create("direct-mixed".into(), "authoritative".into())
             .unwrap();
         workspace.stage(aggregate).unwrap();
-        let prepared = workspace
-            .prepare_modeled_projected(
-                ModeledDirectView {
-                    id: "direct-mixed".into(),
-                    title: "authoritative".into(),
-                },
-                MODELED_DIRECT,
-            )
+        let mut prepared = workspace
+            .prepare_modeled_projected::<ModeledDirectView>(MODELED_DIRECT)
             .unwrap();
         let mut separate = ReadModelWritePlanBuilder::new();
         separate
@@ -1431,14 +1369,14 @@ mod tests {
             .prepare_domain_publications("modeled-direct-mixed")
             .unwrap();
         assert!(matches!(
-            parts.validate_prepared(&modeled_direct_contract(), &prepared),
+            parts.validate_prepared(&modeled_direct_contract(), &mut prepared),
             Err(CommandCommitProofError::DirectProjection(message))
                 if message.contains("separate read-model mutations")
         ));
     }
 
     #[test]
-    fn modeled_direct_rejects_returned_row_drift_from_the_authoritative_state() {
+    fn modeled_direct_materializes_the_authoritative_row_without_a_handler_payload() {
         let repository = modeled_direct_repository();
         let workspace = CausalWorkspace::new(&repository);
         let mut aggregate = workspace.create();
@@ -1446,24 +1384,21 @@ mod tests {
             .create("direct-drift".into(), "authoritative".into())
             .unwrap();
         workspace.stage(aggregate).unwrap();
-        let prepared = workspace
-            .prepare_modeled_projected(
-                ModeledDirectView {
-                    id: "direct-drift".into(),
-                    title: "invented".into(),
-                },
-                MODELED_DIRECT,
-            )
+        let mut prepared = workspace
+            .prepare_modeled_projected::<ModeledDirectView>(MODELED_DIRECT)
             .unwrap();
 
         let mut parts = workspace.into_parts().unwrap();
         parts
             .prepare_domain_publications("modeled-direct-drift")
             .unwrap();
-        assert!(matches!(
-            parts.validate_prepared(&modeled_direct_contract(), &prepared),
-            Err(CommandCommitProofError::ProjectionWriteMismatch { .. })
-        ));
+        parts
+            .validate_prepared(&modeled_direct_contract(), &mut prepared)
+            .unwrap();
+        assert_eq!(
+            prepared.serialized_payload()["title"],
+            serde_json::json!("authoritative")
+        );
     }
 
     #[test]
@@ -1477,21 +1412,15 @@ mod tests {
             .digest_empty("causal.unrelated")
             .unwrap();
         workspace.stage(aggregate).unwrap();
-        let prepared = workspace
-            .prepare_modeled_projected(
-                ModeledDirectView {
-                    id: "direct-none".into(),
-                    title: "none".into(),
-                },
-                MODELED_DIRECT,
-            )
+        let mut prepared = workspace
+            .prepare_modeled_projected::<ModeledDirectView>(MODELED_DIRECT)
             .unwrap();
         let mut parts = workspace.into_parts().unwrap();
         parts
             .prepare_domain_publications("modeled-direct-none")
             .unwrap();
         assert!(matches!(
-            parts.validate_prepared(&modeled_direct_contract(), &prepared),
+            parts.validate_prepared(&modeled_direct_contract(), &mut prepared),
             Err(CommandCommitProofError::DirectProjection(message))
                 if message.contains("matched no committed")
         ));
@@ -1506,21 +1435,15 @@ mod tests {
             .create("direct-many".into(), "second".into())
             .unwrap();
         workspace.stage(aggregate).unwrap();
-        let prepared = workspace
-            .prepare_modeled_projected(
-                ModeledDirectView {
-                    id: "direct-many".into(),
-                    title: "second".into(),
-                },
-                MODELED_DIRECT,
-            )
+        let mut prepared = workspace
+            .prepare_modeled_projected::<ModeledDirectView>(MODELED_DIRECT)
             .unwrap();
         let mut parts = workspace.into_parts().unwrap();
         parts
             .prepare_domain_publications("modeled-direct-many")
             .unwrap();
         assert!(matches!(
-            parts.validate_prepared(&modeled_direct_contract(), &prepared),
+            parts.validate_prepared(&modeled_direct_contract(), &mut prepared),
             Err(CommandCommitProofError::DirectProjection(message))
                 if message.contains("more than one")
         ));
@@ -1536,21 +1459,15 @@ mod tests {
             .unwrap();
         aggregate.rename("renamed".into()).unwrap();
         workspace.stage(aggregate).unwrap();
-        let prepared = workspace
-            .prepare_modeled_projected(
-                ModeledDirectView {
-                    id: "direct-side".into(),
-                    title: "first".into(),
-                },
-                MODELED_DIRECT,
-            )
+        let mut prepared = workspace
+            .prepare_modeled_projected::<ModeledDirectView>(MODELED_DIRECT)
             .unwrap();
         let mut parts = workspace.into_parts().unwrap();
         parts
             .prepare_domain_publications("modeled-direct-side")
             .unwrap();
         assert!(matches!(
-            parts.validate_prepared(&modeled_direct_contract(), &prepared),
+            parts.validate_prepared(&modeled_direct_contract(), &mut prepared),
             Err(CommandCommitProofError::DirectProjection(message))
                 if message.contains("unrelated unpublished domain event")
         ));
@@ -1573,14 +1490,8 @@ mod tests {
                 },
             )
             .unwrap();
-        let prepared = workspace
-            .prepare_modeled_projected(
-                ModeledDirectView {
-                    id: "direct-background".into(),
-                    title: "authoritative".into(),
-                },
-                MODELED_DIRECT,
-            )
+        let mut prepared = workspace
+            .prepare_modeled_projected::<ModeledDirectView>(MODELED_DIRECT)
             .unwrap();
         let mut parts = workspace.into_parts().unwrap();
         parts
@@ -1592,7 +1503,7 @@ mod tests {
             "publishing the selected occurrence and an unrelated background event is explicit"
         );
         parts
-            .validate_prepared(&modeled_direct_contract(), &prepared)
+            .validate_prepared(&modeled_direct_contract(), &mut prepared)
             .unwrap();
     }
 }

@@ -508,31 +508,31 @@ callbacks: {
 		{
 			n: '06',
 			title: 'People have names — join the identity directory',
-			why: 'Import users from Zitadel into auth_users; join from chat.author and blob.owner. Fix missing people at ingest/scrape — do not copy display names onto every aggregate.',
-			path: 'handlers/ingestors/zitadel · AuthUserView',
+			why: 'Import users from Zitadel into auth_users; join from todo.owner, chat.author, and blob.owner. Fix missing people at ingest/scrape — do not copy display names onto every aggregate.',
+			path: 'handlers/ingestors/zitadel · AuthUsers',
 			label: 'Joins',
 			blocks: [
 				{
-					file: 'readmodels/src/lib.rs',
-					label: 'deployment-composed belongs_to',
-					code: `let mut schema = BlobGames::schema().clone();
-schema.relationships.push(RelationshipDef {
-  field_name: "owner".into(),
-  kind: RelationshipKind::BelongsTo,
-  target_model: "AuthUserView".into(),
-  foreign_key: Some("owner_id".into()),
+					file: 'readmodels/models/blob_games.rs',
+					label: 'single belongs_to declaration',
+					code: `pub struct BlobGames {
+  pub owner_id: String,
+  #[readmodel(belongs_to = "AuthUsers", foreign_key = "owner_id")]
+  pub owner: Option<AuthUsers>,
   …
-});
-// Projection storage identity remains the canonical BlobGames row.`
+}
+// The referencing model owns the relationship knowledge.`
 				},
 				{
-					file: 'readmodels/models/auth_user_view.rs',
-					label: 'reverse relationships',
-					code: `#[readmodel(has_many = "ChatMessages", foreign_key = "author_id")]
-pub chat_messages: Vec<ChatMessages>,
-#[readmodel(has_many = "BlobGames", foreign_key = "owner_id")]
-pub blob_games: Vec<BlobGames>,
-// Select author/owner or reverse collections without a crate cycle.`
+					file: 'readmodels/models/auth_users.rs',
+					label: 'one-way relationship knowledge',
+					code: `pub struct AuthUsers {
+  pub user_id: String,
+  pub display_name: String,
+  …
+}
+// Referencing models own belongs_to metadata.
+// AuthUsers does not enumerate every incoming relationship.`
 				}
 			]
 		}

@@ -37,6 +37,25 @@ struct Payload {
     id: String,
 }
 
+#[derive(Clone, Serialize, Deserialize, crate::ReadModel)]
+#[readmodel(table = "projected_owners", primary_key = ["id"])]
+struct ProjectedOwner {
+    #[readmodel(id)]
+    id: String,
+}
+
+#[derive(Clone, Serialize, Deserialize, crate::ReadModel)]
+#[readmodel(table = "projected_rows", primary_key = ["id"])]
+struct ProjectedRow {
+    #[readmodel(id)]
+    id: String,
+    count: i64,
+    note: Option<String>,
+    owner_id: String,
+    #[readmodel(belongs_to = "ProjectedOwner", foreign_key = "owner_id")]
+    owner: Option<ProjectedOwner>,
+}
+
 #[derive(Serialize, crate::DomainEvent)]
 #[domain_event(name = "todo.completed", version = 1)]
 struct TodoCompleted {
@@ -119,6 +138,32 @@ fn preparation_serializes_and_retains_the_typed_payload_until_commit() {
     let (committed, serialized) = prepared.finalize_after_commit();
     assert_eq!(committed.payload().id, "todo-1");
     assert_eq!(serialized["id"], "todo-1");
+}
+
+#[test]
+fn projected_output_is_generated_from_relational_schema_without_graphql_output_derive() {
+    let contract = typed_command::<Input, Projected<ProjectedRow>>("row.project").into_contract();
+
+    assert_eq!(contract.output.name, "ProjectedRow");
+    assert_eq!(
+        contract
+            .output
+            .fields
+            .iter()
+            .map(|field| (
+                field.name.as_str(),
+                field.type_name.as_str(),
+                field.nullable
+            ))
+            .collect::<Vec<_>>(),
+        vec![
+            ("id", "String", false),
+            ("count", "BigInt", false),
+            ("note", "String", true),
+            ("owner_id", "String", false),
+        ]
+    );
+    assert_eq!(contract.output.type_id, Some(TypeId::of::<ProjectedRow>()));
 }
 
 #[test]

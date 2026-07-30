@@ -8,7 +8,7 @@ use super::projection_proof::{
     validate_resolved_direct_plan, CommandCommitProofError, ProjectionCommitProof,
 };
 use super::typed_command::TypedCommandContract;
-use crate::graphql::types::GraphqlOutputType;
+use crate::graphql::types::{read_model_graphql_type, GraphqlOutputType, GraphqlTypeDef};
 use crate::outbox::OutboxMessage;
 use crate::projection::lower::LoweredProjectionPlan;
 use crate::projection_protocol::SameTransactionProjectionBatch;
@@ -79,6 +79,10 @@ macro_rules! committed_outcome {
             fn __finalize_committed(payload: T) -> Self {
                 Self::from_committed_payload(payload)
             }
+
+            fn __graphql_output_type() -> GraphqlTypeDef {
+                T::graphql_type()
+            }
         }
     };
 }
@@ -90,7 +94,7 @@ impl<T> sealed::Outcome for Projected<T> where T: RelationalReadModel {}
 
 impl<T> CommandOutcome for Projected<T>
 where
-    T: GraphqlOutputType + RelationalReadModel + Serialize + Send + Sync + 'static,
+    T: RelationalReadModel + Serialize + Send + Sync + 'static,
 {
     type Payload = T;
     const CONSISTENCY: CommandConsistency = CommandConsistency::Projected;
@@ -103,8 +107,27 @@ where
         Self::from_committed_payload(payload)
     }
 
+    fn __graphql_output_type() -> GraphqlTypeDef {
+        read_model_graphql_type::<T>()
+    }
+
     fn __projected_model() -> Option<(TypeId, &'static TableSchema)> {
         Some((TypeId::of::<T>(), T::schema()))
+    }
+
+    fn __projected_payload_from_row(
+        row: crate::table::RowValues,
+    ) -> Result<Option<T>, crate::table::TableStoreError> {
+        T::from_row(row).map(Some)
+    }
+
+    fn __projected_row_for_payload(
+        payload: &T,
+    ) -> Result<
+        Option<(crate::table::RowKey, crate::table::RowValues)>,
+        crate::table::TableStoreError,
+    > {
+        Ok(Some((payload.primary_key()?, payload.to_row()?)))
     }
 }
 
@@ -137,13 +160,16 @@ impl<T> sealed::PreparableOutcome for Causal<T> {}
 
 /// Sealed type-level contract implemented by committed command outcomes.
 pub trait CommandOutcome: sealed::Outcome + Send + Sync + 'static {
-    type Payload: GraphqlOutputType + Serialize + Send + Sync + 'static;
+    type Payload: Serialize + Send + Sync + 'static;
     const CONSISTENCY: CommandConsistency;
 
     fn payload(&self) -> &Self::Payload;
 
     #[doc(hidden)]
     fn __finalize_committed(payload: Self::Payload) -> Self;
+
+    #[doc(hidden)]
+    fn __graphql_output_type() -> GraphqlTypeDef;
 
     /// Compiler-only model identity retained by an ordinary
     /// `typed_command::<I, Projected<M>>` declaration. The sealed default keeps
@@ -152,6 +178,23 @@ pub trait CommandOutcome: sealed::Outcome + Send + Sync + 'static {
     #[doc(hidden)]
     fn __projected_model() -> Option<(TypeId, &'static TableSchema)> {
         None
+    }
+
+    #[doc(hidden)]
+    fn __projected_payload_from_row(
+        _row: crate::table::RowValues,
+    ) -> Result<Option<Self::Payload>, crate::table::TableStoreError> {
+        Ok(None)
+    }
+
+    #[doc(hidden)]
+    fn __projected_row_for_payload(
+        _payload: &Self::Payload,
+    ) -> Result<
+        Option<(crate::table::RowKey, crate::table::RowValues)>,
+        crate::table::TableStoreError,
+    > {
+        Ok(None)
     }
 }
 
@@ -192,9 +235,10 @@ impl From<serde_json::Error> for PrepareCommandError {
 /// outcome and the declaration-owned confirmation plan outside application
 /// handler control.
 pub struct PreparedCommand<K: CommandOutcome> {
-    payload: K::Payload,
-    serialized_payload: serde_json::Value,
+    payload: Option<K::Payload>,
+    serialized_payload: Option<serde_json::Value>,
     projection_proof: Option<ProjectionCommitProof>,
+    modeled_projection_payload_pending: bool,
     _outcome: PhantomData<fn() -> K>,
 }
 
@@ -202,9 +246,10 @@ impl<K: CommandOutcome> PreparedCommand<K> {
     fn prepare_payload(payload: K::Payload) -> Result<Self, PrepareCommandError> {
         let serialized_payload = serde_json::to_value(&payload)?;
         Ok(Self {
-            payload,
-            serialized_payload,
+            payload: Some(payload),
+            serialized_payload: Some(serialized_payload),
             projection_proof: None,
+            modeled_projection_payload_pending: false,
             _outcome: PhantomData,
         })
     }
@@ -214,7 +259,9 @@ impl<K: CommandOutcome> PreparedCommand<K> {
     }
 
     pub fn serialized_payload(&self) -> &serde_json::Value {
-        &self.serialized_payload
+        self.serialized_payload
+            .as_ref()
+            .expect("prepared command payload is materialized before commit")
     }
 
     /// Validate declaration-owned completion obligations against exactly what
@@ -276,10 +323,67 @@ impl<K: CommandOutcome> PreparedCommand<K> {
 
     /// The durable committer is the sole intended consumer.
     pub(crate) fn finalize_after_commit(self) -> (K, serde_json::Value) {
-        (
-            K::__finalize_committed(self.payload),
-            self.serialized_payload,
-        )
+        let payload = self
+            .payload
+            .expect("prepared command payload is materialized before commit");
+        let serialized_payload = self
+            .serialized_payload
+            .expect("prepared command payload is serialized before commit");
+        (K::__finalize_committed(payload), serialized_payload)
+    }
+
+    /// Materialize the typed result from the exact modeled full-row upsert.
+    ///
+    /// The handler cannot provide a competing value: the authoritative
+    /// occurrence is resolved first, then the read-model derive converts that
+    /// same row into the command payload and proof.
+    pub(crate) fn materialize_modeled_projection(
+        &mut self,
+        modeled: Option<&LoweredProjectionPlan>,
+    ) -> Result<(), CommandCommitProofError> {
+        if !self.modeled_projection_payload_pending {
+            return Ok(());
+        }
+        let modeled = modeled.ok_or_else(|| {
+            CommandCommitProofError::DirectProjection(
+                "modeled projected result has no resolved projection plan".into(),
+            )
+        })?;
+        validate_resolved_direct_plan(modeled)?;
+        let [crate::table::TableMutation::UpsertRow(row)] = modeled.write_plan.mutations.as_slice()
+        else {
+            return Err(CommandCommitProofError::DirectProjection(
+                "modeled projected result must contain one complete row".into(),
+            ));
+        };
+        let payload = K::__projected_payload_from_row(row.values.clone())
+            .map_err(|error| CommandCommitProofError::DirectProjection(error.to_string()))?
+            .ok_or_else(|| {
+                CommandCommitProofError::DirectProjection(
+                    "command outcome cannot materialize a modeled projected row".into(),
+                )
+            })?;
+        let (model_type_id, schema) = K::__projected_model().ok_or_else(|| {
+            CommandCommitProofError::DirectProjection(
+                "command outcome has no projected read-model identity".into(),
+            )
+        })?;
+        let (key, projected_row) = K::__projected_row_for_payload(&payload)
+            .map_err(|error| CommandCommitProofError::DirectProjection(error.to_string()))?
+            .ok_or(CommandCommitProofError::MissingProjectionProof)?;
+        let proof =
+            ProjectionCommitProof::for_materialized(model_type_id, schema, &key, &projected_row)
+                .map_err(|error| CommandCommitProofError::DirectProjection(error.to_string()))?;
+        let serialized_payload = serde_json::to_value(&payload).map_err(|error| {
+            CommandCommitProofError::DirectProjection(format!(
+                "modeled projected result serialization failed: {error}"
+            ))
+        })?;
+        self.payload = Some(payload);
+        self.serialized_payload = Some(serialized_payload);
+        self.projection_proof = Some(proof);
+        self.modeled_projection_payload_pending = false;
+        Ok(())
     }
 
     /// Remove the proof-matched projected upsert from ordinary table plans and
@@ -345,7 +449,7 @@ impl<K: CommandOutcome> PreparedCommand<K> {
 
 impl<M> PreparedCommand<Projected<M>>
 where
-    M: GraphqlOutputType + RelationalReadModel + Serialize + Send + Sync + 'static,
+    M: RelationalReadModel + Serialize + Send + Sync + 'static,
 {
     /// Build a projected completion from the exact model value whose full-row
     /// upsert was staged by the framework-owned causal workspace.
@@ -355,11 +459,22 @@ where
     ) -> Result<Self, PrepareCommandError> {
         let serialized_payload = serde_json::to_value(&payload)?;
         Ok(Self {
-            payload,
-            serialized_payload,
+            payload: Some(payload),
+            serialized_payload: Some(serialized_payload),
             projection_proof: Some(proof),
+            modeled_projection_payload_pending: false,
             _outcome: PhantomData,
         })
+    }
+
+    pub(crate) fn prepare_modeled_projected() -> Self {
+        Self {
+            payload: None,
+            serialized_payload: None,
+            projection_proof: None,
+            modeled_projection_payload_pending: true,
+            _outcome: PhantomData,
+        }
     }
 }
 

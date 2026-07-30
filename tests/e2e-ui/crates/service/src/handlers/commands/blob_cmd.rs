@@ -4,9 +4,10 @@
 //! the aggregate, command ledger, and exact projected row commit atomically.
 //! The canonical game row has no asynchronous fact consumer or second writer.
 
-use blob_domain::{BlobGame, BlobGames, BLOB_GAMES};
+use blob_domain::BlobGame;
 use distributed::graphql::{PreparedCommand, Projected};
 use distributed::microsvc::{AggregateCheckout, CausalCommandContext, HandlerError};
+use e2e_readmodels::{BlobGames, BLOB_GAMES};
 
 use crate::handlers::util::rejected;
 
@@ -24,8 +25,7 @@ pub fn commit_blob(
     ctx: &CausalCommandContext<'_, BlobGame>,
     game: AggregateCheckout<BlobGame>,
 ) -> Result<PreparedCommand<Projected<BlobGames>>, HandlerError> {
-    let view = BlobGames::from(&game.state());
-    ctx.project(BLOB_GAMES).commit(game)?.projected(view)
+    ctx.project(BLOB_GAMES).commit(game)?.projected()
 }
 
 pub fn map_domain(err: impl std::fmt::Display) -> HandlerError {

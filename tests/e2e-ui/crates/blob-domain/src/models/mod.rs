@@ -3,7 +3,6 @@
 mod blob_error;
 mod blob_game;
 mod blob_game_state;
-mod blob_games;
 mod direction;
 pub mod tile;
 
@@ -16,5 +15,4 @@ pub use blob_game::{
     BlobGameStartedDomainEvent as BlobStartedDomainEvent,
 };
 pub use blob_game_state::BlobGameState;
-pub use blob_games::BlobGames;
 pub use direction::Direction;

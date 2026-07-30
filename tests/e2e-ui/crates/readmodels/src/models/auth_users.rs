@@ -3,15 +3,12 @@
 use distributed::ReadModel;
 use serde::{Deserialize, Serialize};
 
-use blob_domain::BlobGames;
-use chat_domain::ChatMessages;
-
 /// Imported IdP user. PK: `user_id` (= Zitadel subject / OIDC `sub` / session `x-user-id`).
 ///
 /// Populated only from the Zitadel ingestor projector — never from commands.
 #[derive(Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize, ReadModel)]
 #[table("auth_users")]
-pub struct AuthUserView {
+pub struct AuthUsers {
     #[id("user_id")]
     pub user_id: String,
     pub email: String,
@@ -23,10 +20,6 @@ pub struct AuthUserView {
     /// `active` | `deactivated`
     pub status: String,
     pub updated_at: String,
-    #[readmodel(has_many = "ChatMessages", foreign_key = "author_id")]
-    pub chat_messages: Vec<ChatMessages>,
-    #[readmodel(has_many = "BlobGames", foreign_key = "owner_id")]
-    pub blob_games: Vec<BlobGames>,
 }
 
 /// Provider envelope published by `zitadel.ingress.v1` (fixture + Action shape).
@@ -52,7 +45,7 @@ pub struct ZitadelEmail {
 }
 
 /// Map a created/updated provider payload into an upsert row.
-pub fn map_zitadel_user_upsert(event_name: &str, p: &ZitadelUserPayload) -> AuthUserView {
+pub fn map_zitadel_user_upsert(event_name: &str, p: &ZitadelUserPayload) -> AuthUsers {
     let email = p
         .emails
         .iter()
@@ -76,7 +69,7 @@ pub fn map_zitadel_user_upsert(event_name: &str, p: &ZitadelUserPayload) -> Auth
     } else {
         "active".into()
     };
-    AuthUserView {
+    AuthUsers {
         user_id: p.provider_subject.clone(),
         email,
         display_name,
@@ -84,13 +77,11 @@ pub fn map_zitadel_user_upsert(event_name: &str, p: &ZitadelUserPayload) -> Auth
         approval_status: p.approval_status.clone(),
         status,
         updated_at: p.ingested_at.clone(),
-        chat_messages: Vec::new(),
-        blob_games: Vec::new(),
     }
 }
 
 /// Status-only patch for deactivate / reactivate when no profile fields are present.
-pub fn map_zitadel_user_status(event_name: &str, p: &ZitadelUserPayload) -> AuthUserView {
+pub fn map_zitadel_user_status(event_name: &str, p: &ZitadelUserPayload) -> AuthUsers {
     let mut row = map_zitadel_user_upsert(event_name, p);
     if event_name.contains("reactivated") {
         row.status = "active".into();

@@ -22,7 +22,7 @@ use super::projection_obligations::{
 use super::projection_proof::{canonical_json, CommandCommitProofError};
 use super::projections::{CommandProjectionEvents, CommandProjectionPreview};
 use crate::graphql::naming;
-use crate::graphql::types::{GraphqlInputType, GraphqlOutputType, GraphqlTypeDef};
+use crate::graphql::types::{GraphqlInputType, GraphqlTypeDef};
 use crate::microsvc::Session;
 use crate::outbox::OutboxMessage;
 use crate::projection_protocol::{
@@ -575,7 +575,7 @@ where
         })
         .collect();
     let input = I::graphql_type();
-    let output = K::Payload::graphql_type();
+    let output = K::__graphql_output_type();
     let projected_model = K::__projected_model()
         .map(|(output_type_id, schema)| CommandProjectedModel::new(output_type_id, schema));
     TypedCommand {
@@ -686,14 +686,13 @@ impl<I, K: CommandOutcome> TypedCommand<I, K> {
 impl<I, M> TypedCommand<I, Projected<M>>
 where
     I: GraphqlInputType + DeserializeOwned + Send + 'static,
-    M: GraphqlOutputType + RelationalReadModel + Serialize + Send + Sync + 'static,
+    M: RelationalReadModel + Serialize + Send + Sync + 'static,
 {
     /// Attach compiler-generated direct projection ownership metadata.
     ///
     /// Application handlers do not call this; generated service inventory
     /// binds it from the registered projector declaration and handlers use the
-    /// fluent `project(direct_read_model::<M>()).commit(...).projected(view)`
-    /// API.
+    /// fluent direct-projection commit API.
     #[doc(hidden)]
     pub fn __direct_projection(mut self, target: CompiledDirectProjectionTarget<I, M>) -> Self {
         if let Some(projected) = &mut self.contract.projected_model {

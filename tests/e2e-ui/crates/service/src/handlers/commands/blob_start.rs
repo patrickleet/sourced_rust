@@ -1,8 +1,9 @@
 //! Command: `blob.start` — create game + demo level. Owner = session user.
 
-use blob_domain::{BlobGame, BlobGames};
+use blob_domain::BlobGame;
 use distributed::graphql::{PreparedCommand, Projected};
 use distributed::microsvc::{CausalCommandContext, HandlerError};
+use e2e_readmodels::BlobGames;
 use serde::Deserialize;
 
 use crate::handlers::commands::blob_cmd::{commit_blob, map_domain};

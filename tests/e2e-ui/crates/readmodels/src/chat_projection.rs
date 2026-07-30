@@ -1,9 +1,10 @@
-//! Domain-event projections for Chat query models.
+//! Chat domain-event projections into query models.
 
-use distributed::projection::lower::{DirectCandidate, ProjectionDescriptor};
 use distributed::projection;
+use distributed::projection::lower::{DirectCandidate, ProjectionDescriptor};
 
-use crate::{ChatMessageState, ChatMessages};
+use crate::ChatMessages;
+use chat_domain::ChatMessageState;
 
 /// Portable insert-shaped state transfer for chat.
 pub const CHAT_MESSAGES: ProjectionDescriptor<DirectCandidate> = projection! {
@@ -24,7 +25,7 @@ mod tests {
     use distributed::{RelationalReadModel, RowValue, TableMutation};
 
     use super::*;
-    use crate::{ChatMessage, ChatMessagePostedDomainEvent};
+    use chat_domain::{ChatMessage, ChatMessagePostedDomainEvent};
 
     #[test]
     fn posted_state_preserves_semantic_name_and_lowers_to_complete_upsert() {

@@ -1,8 +1,8 @@
-use distributed::graphql::{GraphqlOutputType, GraphqlTypeDef, GraphqlTypeField};
+use blob_domain::BlobGameState;
 use distributed::ReadModel;
 use serde::{Deserialize, Serialize};
 
-use super::BlobGameState;
+use super::AuthUsers;
 
 /// Query-oriented Blob game row. The natural plural name infers `blob_games`.
 #[derive(Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize, ReadModel)]
@@ -18,6 +18,8 @@ pub struct BlobGames {
     pub map_json: String,
     /// `active` | `dead` | `level_complete`
     pub status: String,
+    #[readmodel(belongs_to = "AuthUsers", foreign_key = "owner_id")]
+    pub owner: Option<AuthUsers>,
 }
 
 impl From<&BlobGameState> for BlobGames {
@@ -31,33 +33,7 @@ impl From<&BlobGameState> for BlobGames {
             current_level_completed: state.current_level_completed,
             map_json: state.map_json.clone(),
             status: state.status.clone(),
+            owner: None,
         }
-    }
-}
-
-impl GraphqlOutputType for BlobGames {
-    fn graphql_type() -> GraphqlTypeDef {
-        let scalar = |name: &str, type_name: &str| GraphqlTypeField {
-            name: name.into(),
-            type_name: type_name.into(),
-            nullable: false,
-            list: false,
-            item_nullable: false,
-            nested: None,
-        };
-        GraphqlTypeDef::new(
-            "BlobGames",
-            vec![
-                scalar("game_id", "String"),
-                scalar("owner_id", "String"),
-                scalar("score", "BigInt"),
-                scalar("player_dead", "Boolean"),
-                scalar("current_level", "BigInt"),
-                scalar("current_level_completed", "Boolean"),
-                scalar("map_json", "String"),
-                scalar("status", "String"),
-            ],
-        )
-        .with_type_id(std::any::TypeId::of::<Self>())
     }
 }

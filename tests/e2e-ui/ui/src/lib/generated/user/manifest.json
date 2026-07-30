@@ -11,7 +11,7 @@
       "user"
     ]
   },
-  "schema_fingerprint": "sha256:760a4526f8da7826b1e9c5e7ab3511c8c8069c67b529f07474b6392ee56ad931",
+  "schema_fingerprint": "sha256:440b6f3a0981cfea572c76e3759ace15d4fa1fe4fba78ed968b08716ff8e0dce",
   "protocol_fingerprint": "sha256:00fb342f3acb4dc1c1716a43cc3001c748d5f6c500ff831690d820e9e43e2782",
   "scalar_codecs": {
     "BigInt": "json_number_precision_limited",

@@ -1023,7 +1023,7 @@ where
                 .await;
             }
 
-            let prepared = match (self.handle)(&context, input).await {
+            let mut prepared = match (self.handle)(&context, input).await {
                 Ok(prepared) => prepared,
                 Err(error) if error.status_code() < 500 => {
                     let code = causal_handler_error_code(&error);
@@ -1072,7 +1072,7 @@ where
                 )
                 .await;
             }
-            if let Err(error) = parts.validate_prepared(&self.contract, &prepared) {
+            if let Err(error) = parts.validate_prepared(&self.contract, &mut prepared) {
                 return abandon_causal_attempt(
                     repository,
                     attempt,

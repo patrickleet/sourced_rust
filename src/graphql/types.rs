@@ -2,6 +2,9 @@
 
 use std::any::TypeId;
 
+use crate::graphql::naming::scalar_type_name;
+use crate::read_model::RelationalReadModel;
+
 /// One field on a GraphQL input or output object.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct GraphqlTypeField {
@@ -67,6 +70,40 @@ pub trait GraphqlInputType {
 
 pub trait GraphqlOutputType {
     fn graphql_type() -> GraphqlTypeDef;
+}
+
+/// Build a command-output object from the same relational schema that owns
+/// the generated query object.
+///
+/// Projected command results contain stored columns only. Relationships stay
+/// query-time fields and are never invented by a same-transaction row result.
+pub(crate) fn read_model_graphql_type<M>() -> GraphqlTypeDef
+where
+    M: RelationalReadModel + 'static,
+{
+    let schema = M::schema();
+    let fields = schema
+        .columns
+        .iter()
+        .filter(|column| !column.skipped)
+        .map(|column| {
+            let type_name = scalar_type_name(&column.column_type).unwrap_or_else(|| {
+                panic!(
+                    "read model `{}` column `{}` has no GraphQL scalar mapping",
+                    schema.model_name, column.column_name
+                )
+            });
+            GraphqlTypeField {
+                name: column.column_name.clone(),
+                type_name: type_name.into(),
+                nullable: column.nullable,
+                list: false,
+                item_nullable: false,
+                nested: None,
+            }
+        })
+        .collect();
+    GraphqlTypeDef::new(schema.model_name.clone(), fields).with_type_id(TypeId::of::<M>())
 }
 
 // Builtin scalar mappings for free-standing helpers used by derives.

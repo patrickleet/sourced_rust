@@ -50,11 +50,6 @@ impl Todo {
     fn advance_snapshot_generation(&mut self) {
         self.snapshot_generation = self.snapshot_generation.saturating_add(1);
     }
-
-    #[cfg(test)]
-    pub(crate) fn purged_domain_event_descriptor() -> distributed::DomainEventDescriptor {
-        <TodoPurgedDomainEvent as distributed::domain_event::DomainEventContract>::descriptor()
-    }
 }
 
 #[sourced(

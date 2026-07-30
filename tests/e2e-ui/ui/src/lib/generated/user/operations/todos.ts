@@ -161,7 +161,27 @@ export const Operation_Todos: ReplicaOperationArtifact<Operation_Todos_Data, Ope
             ]
           }
         ],
-        "relationships": [],
+        "relationships": [
+          {
+            "field": "owner",
+            "targetModel": "AuthUsers",
+            "kind": "belongs_to",
+            "keyMapping": {
+              "kind": "direct",
+              "local": [
+                "owner_id"
+              ],
+              "remote": [
+                "user_id"
+              ]
+            },
+            "maintenance": "local",
+            "dependencies": [
+              "auth_users",
+              "todos"
+            ]
+          }
+        ],
         "rowPolicy": {
           "kind": "server_only"
         }
@@ -278,7 +298,7 @@ export const Operation_Todos: ReplicaOperationArtifact<Operation_Todos_Data, Ope
   ],
   "protocol": {
     "version": 1,
-    "schemaHash": "sha256:760a4526f8da7826b1e9c5e7ab3511c8c8069c67b529f07474b6392ee56ad931",
+    "schemaHash": "sha256:440b6f3a0981cfea572c76e3759ace15d4fa1fe4fba78ed968b08716ff8e0dce",
     "surface": {
       "kind": "application",
       "name": "e2e-ui",

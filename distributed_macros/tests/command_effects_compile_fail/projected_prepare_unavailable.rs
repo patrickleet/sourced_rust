@@ -1,8 +1,8 @@
 use distributed::graphql::{PreparedCommand, Projected};
-use distributed::{GraphqlOutput, ReadModel};
+use distributed::ReadModel;
 use serde::{Deserialize, Serialize};
 
-#[derive(Clone, Serialize, Deserialize, GraphqlOutput, ReadModel)]
+#[derive(Clone, Serialize, Deserialize, ReadModel)]
 #[readmodel(table = "outputs", primary_key = ["id"])]
 struct Output {
     id: String,

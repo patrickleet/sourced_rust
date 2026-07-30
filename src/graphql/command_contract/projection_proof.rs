@@ -135,6 +135,22 @@ impl ProjectionCommitProof {
         })
     }
 
+    pub(crate) fn for_materialized(
+        model_type_id: TypeId,
+        schema: &'static crate::table::TableSchema,
+        key: &RowKey,
+        row: &RowValues,
+    ) -> Result<Self, TableStoreError> {
+        schema.validate()?;
+        Ok(Self {
+            model_type_id,
+            model_name: schema.model_name.clone(),
+            table_name: schema.table_name.clone(),
+            key_fingerprint: fingerprint_key(key),
+            row_fingerprint: fingerprint_row(row),
+        })
+    }
+
     pub(super) fn validate<'a>(
         &self,
         output_type_id: TypeId,

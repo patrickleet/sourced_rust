@@ -1,9 +1,10 @@
-//! Domain-event projections for Blob query models.
+//! Blob domain-event projections into query models.
 
 use distributed::projection;
 use distributed::projection::lower::{DirectCandidate, ProjectionDescriptor};
 
-use crate::{BlobGameState, BlobGames};
+use crate::BlobGames;
+use blob_domain::BlobGameState;
 
 /// One complete state upsert for every direct Blob transition.
 pub const BLOB_GAMES: ProjectionDescriptor<DirectCandidate> = projection! {
@@ -28,7 +29,8 @@ pub const BLOB_GAMES: ProjectionDescriptor<DirectCandidate> = projection! {
 /// `projected` terminal.
 ///
 /// ```compile_fail,E0599
-/// use blob_domain::{BlobGame, BlobGameState, BlobGames};
+/// use blob_domain::{BlobGame, BlobGameState};
+/// use e2e_readmodels::BlobGames;
 /// use distributed::{
 ///     microsvc::{AggregateCheckout, CausalCommandContext},
 ///     projection,
@@ -51,16 +53,20 @@ pub const BLOB_GAMES: ProjectionDescriptor<DirectCandidate> = projection! {
 /// fn cannot_claim_projected(
 ///     ctx: &CausalCommandContext<'_, BlobGame>,
 ///     game: AggregateCheckout<BlobGame>,
-///     view: BlobGames,
 /// ) {
-///     let _ = ctx.project(PATCH).commit(game).unwrap().projected(view);
+///     let _ = ctx
+///         .project(PATCH)
+///         .commit(game)
+///         .unwrap()
+///         .projected::<BlobGames>();
 /// }
 /// ```
 ///
 /// A delete descriptor is also excluded from `Projected<T>`.
 ///
 /// ```compile_fail,E0599
-/// use blob_domain::{BlobGame, BlobGameState, BlobGames};
+/// use blob_domain::{BlobGame, BlobGameState};
+/// use e2e_readmodels::BlobGames;
 /// use distributed::{
 ///     microsvc::{AggregateCheckout, CausalCommandContext},
 ///     projection,
@@ -80,16 +86,20 @@ pub const BLOB_GAMES: ProjectionDescriptor<DirectCandidate> = projection! {
 /// fn cannot_claim_projected(
 ///     ctx: &CausalCommandContext<'_, BlobGame>,
 ///     game: AggregateCheckout<BlobGame>,
-///     view: BlobGames,
 /// ) {
-///     let _ = ctx.project(DELETE).commit(game).unwrap().projected(view);
+///     let _ = ctx
+///         .project(DELETE)
+///         .commit(game)
+///         .unwrap()
+///         .projected::<BlobGames>();
 /// }
 /// ```
 ///
 /// More than one row operation cannot claim the single-row terminal.
 ///
 /// ```compile_fail,E0599
-/// use blob_domain::{BlobGame, BlobGameState, BlobGames};
+/// use blob_domain::{BlobGame, BlobGameState};
+/// use e2e_readmodels::BlobGames;
 /// use distributed::{
 ///     microsvc::{AggregateCheckout, CausalCommandContext},
 ///     projection,
@@ -126,9 +136,12 @@ pub const BLOB_GAMES: ProjectionDescriptor<DirectCandidate> = projection! {
 /// fn cannot_claim_projected(
 ///     ctx: &CausalCommandContext<'_, BlobGame>,
 ///     game: AggregateCheckout<BlobGame>,
-///     view: BlobGames,
 /// ) {
-///     let _ = ctx.project(MULTI_ROW).commit(game).unwrap().projected(view);
+///     let _ = ctx
+///         .project(MULTI_ROW)
+///         .commit(game)
+///         .unwrap()
+///         .projected::<BlobGames>();
 /// }
 /// ```
 #[doc(hidden)]
@@ -143,7 +156,7 @@ mod tests {
     use serde::{Deserialize, Serialize};
 
     use super::*;
-    use crate::{test_map_no_holes, BlobGame, Direction};
+    use blob_domain::{test_map_no_holes, BlobGame, Direction};
 
     #[derive(Clone, Serialize, Deserialize, distributed::ReadModel)]
     #[readmodel(primary_key = ["game_id"])]

@@ -7,12 +7,10 @@
 //! - archive is terminal for mutations (except re-open is not allowed after archive)
 
 pub mod models;
-pub mod projection;
 
 pub use models::{
     Todo, TodoArchivedDomainEvent, TodoCompletedDomainEvent, TodoCreatedDomainEvent,
     TodoDomainIdentity, TodoError, TodoForceArchivedDomainEvent, TodoPurgedDomainEvent,
     TodoReassignedDomainEvent, TodoRenamedDomainEvent, TodoReopenedDomainEvent, TodoState,
-    TodoStatus, Todos,
+    TodoStatus,
 };
-pub use projection::{complete_preview, TODO_READS};

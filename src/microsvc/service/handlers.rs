@@ -374,7 +374,7 @@ where
     /// ownership, conflicts, partial rows, or a mismatched returned value.
     pub fn projected(self, payload: M) -> Result<PreparedCommand<Projected<M>>, HandlerError>
     where
-        M: GraphqlOutputType + RelationalReadModel + Serialize + Send + Sync + 'static,
+        M: RelationalReadModel + Serialize + Send + Sync + 'static,
     {
         let _ = self.projection;
         self.context
@@ -389,18 +389,18 @@ impl<A, Publication>
 where
     A: Aggregate + Send + Sync + 'static,
 {
-    /// Prepare the returned row through a modeled direct projection.
+    /// Return the row produced by a modeled direct projection.
     ///
     /// The dispatcher resolves the descriptor from the authoritative,
-    /// ledger-stamped domain-event occurrence and admits only the existing
-    /// single complete-row direct proof.
-    pub fn projected<M>(self, payload: M) -> Result<PreparedCommand<Projected<M>>, HandlerError>
+    /// ledger-stamped domain-event occurrence, admits only one complete-row
+    /// direct proof, and materializes `M` from that exact committed upsert.
+    pub fn projected<M>(self) -> Result<PreparedCommand<Projected<M>>, HandlerError>
     where
-        M: GraphqlOutputType + RelationalReadModel + Serialize + Send + Sync + 'static,
+        M: RelationalReadModel + Serialize + Send + Sync + 'static,
     {
         self.context
             .workspace
-            .prepare_modeled_projected(payload, self.projection)
+            .prepare_modeled_projected(self.projection)
             .map_err(workspace_handler_error)
     }
 }

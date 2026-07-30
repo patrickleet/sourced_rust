@@ -168,7 +168,27 @@ export const Operation_AdminAllTodos: ReplicaOperationArtifact<Operation_AdminAl
             ]
           }
         ],
-        "relationships": [],
+        "relationships": [
+          {
+            "field": "owner",
+            "targetModel": "AuthUsers",
+            "kind": "belongs_to",
+            "keyMapping": {
+              "kind": "direct",
+              "local": [
+                "owner_id"
+              ],
+              "remote": [
+                "user_id"
+              ]
+            },
+            "maintenance": "local",
+            "dependencies": [
+              "auth_users",
+              "todos"
+            ]
+          }
+        ],
         "rowPolicy": {
           "kind": "unrestricted"
         }
@@ -288,7 +308,7 @@ export const Operation_AdminAllTodos: ReplicaOperationArtifact<Operation_AdminAl
   ],
   "protocol": {
     "version": 1,
-    "schemaHash": "sha256:591d891e3b2d7209066c85a895bc04606b7ff677b05c9f391e28dc0efc376503",
+    "schemaHash": "sha256:ea408cfc50429c4d5e8d30408d5479b2fbbca703c7b06181291901f104a8e645",
     "surface": {
       "kind": "application",
       "name": "e2e-ui-admin",

@@ -134,12 +134,11 @@ subscription; its declared output scopes still produce causal obligations.
 What does not execute in the browser becomes a scoped invalidation and
 revalidation.
 
-Query-only relationships can be composed at the deployment boundary without a
-crate cycle or a second projection ORM. This fixture adds
-`BlobGames.owner`, `ChatMessages.author`, and the reverse
-`AuthUserView.blob_games`/`chat_messages` relationships to the canonical model
-schemas. Projection storage identity ignores only that query metadata and
-continues to pin every physical column, type, key, and table identity.
+Query relationships are declared once on the referencing read model, without a
+second projection ORM. This fixture adds `Todos.owner`, `BlobGames.owner`, and
+`ChatMessages.author`, each referencing `AuthUsers`. The foreign-key side is
+the single relationship declaration; `AuthUsers` does not need reverse
+collections for every model that references it.
 
 ## Outcomes
 

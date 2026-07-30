@@ -1,8 +1,13 @@
-//! Provider-imported read models for e2e-ui.
+//! Query models for the e2e-ui deployment.
 
-pub mod auth_user_view;
+pub mod auth_users;
+pub mod blob_games;
+pub mod chat_messages;
+pub mod todos;
 
-pub use auth_user_view::{
-    map_zitadel_user_status, map_zitadel_user_upsert, AuthUserView, ZitadelEmail,
-    ZitadelUserPayload,
+pub use auth_users::{
+    map_zitadel_user_status, map_zitadel_user_upsert, AuthUsers, ZitadelEmail, ZitadelUserPayload,
 };
+pub use blob_games::BlobGames;
+pub use chat_messages::ChatMessages;
+pub use todos::Todos;

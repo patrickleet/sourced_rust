@@ -5,13 +5,11 @@
 
 pub mod levels;
 pub mod models;
-pub mod projection;
 
 pub use levels::{demo_map, generate_level, generate_level_with, is_hamiltonian_passable};
 pub use models::tile;
 pub use models::{
-    test_map_no_holes, test_map_with_hole, BlobError, BlobGame, BlobGameState, BlobGames,
+    test_map_no_holes, test_map_with_hole, BlobError, BlobGame, BlobGameState,
     BlobInitializedDomainEvent, BlobLevelStartedDomainEvent, BlobMovedDomainEvent,
     BlobStartedDomainEvent, Direction,
 };
-pub use projection::{BlobDirectEligibilityGuards, BLOB_GAMES};

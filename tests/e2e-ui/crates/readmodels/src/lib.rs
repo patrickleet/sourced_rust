@@ -1,67 +1,36 @@
-//! Provider-imported read models for the e2e-ui fixture.
+//! Read models and projection programs for the e2e-ui fixture.
 //!
-//! Todo, Chat, and Blob own their natural query models beside their reusable
-//! domain-event projections. This crate owns only the identity-provider view
-//! that relates those domain models without introducing a crate cycle.
+//! Domain crates own aggregates, replay events, and outward state contracts.
+//! This crate consumes those contracts to own query models, projection
+//! programs, and deployment-level relationships.
 
+mod blob_projection;
+mod chat_projection;
 pub mod models;
+mod todo_projection;
 
+pub use blob_projection::{BlobDirectEligibilityGuards, BLOB_GAMES};
+pub use chat_projection::CHAT_MESSAGES;
 pub use models::{
-    map_zitadel_user_status, map_zitadel_user_upsert, AuthUserView, ZitadelEmail,
-    ZitadelUserPayload,
+    map_zitadel_user_status, map_zitadel_user_upsert, AuthUsers, BlobGames, ChatMessages, Todos,
+    ZitadelEmail, ZitadelUserPayload,
 };
-
-/// Compose the cross-bounded-context query relationship without making the
-/// Chat domain depend on the identity-provider read model crate.
-pub fn chat_messages_schema() -> distributed::TableSchema {
-    use chat_domain::ChatMessages;
-    use distributed::{RelationshipDef, RelationshipKind, RelationalReadModel};
-
-    let mut schema = ChatMessages::schema().clone();
-    schema.relationships.push(RelationshipDef {
-        field_name: "author".into(),
-        kind: RelationshipKind::BelongsTo,
-        target_model: "AuthUserView".into(),
-        foreign_key: Some("author_id".into()),
-        through: None,
-        target_foreign_key: None,
-    });
-    schema
-}
-
-/// Compose the Blob owner relationship at the deployment boundary.
-pub fn blob_games_schema() -> distributed::TableSchema {
-    use blob_domain::BlobGames;
-    use distributed::{RelationshipDef, RelationshipKind, RelationalReadModel};
-
-    let mut schema = BlobGames::schema().clone();
-    schema.relationships.push(RelationshipDef {
-        field_name: "owner".into(),
-        kind: RelationshipKind::BelongsTo,
-        target_model: "AuthUserView".into(),
-        foreign_key: Some("owner_id".into()),
-        through: None,
-        target_foreign_key: None,
-    });
-    schema
-}
+pub use todo_projection::{complete_preview, TODO_READS};
 
 pub fn distributed_manifest() -> distributed::DistributedProjectManifest {
     use distributed::RelationalReadModel;
-    use todo_domain::Todos;
 
     distributed::DistributedProjectManifest::new("e2e-ui")
         .table_schema(Todos::schema().clone())
-        .table_schema(chat_messages_schema())
-        .table_schema(blob_games_schema())
-        .table_schema(AuthUserView::schema().clone())
+        .table_schema(ChatMessages::schema().clone())
+        .table_schema(BlobGames::schema().clone())
+        .table_schema(AuthUsers::schema().clone())
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
-    use blob_domain::{demo_map, BlobGame, BlobGames};
-    use chat_domain::ChatMessages;
+    use blob_domain::{demo_map, BlobGame};
     use distributed::RelationalReadModel;
 
     #[test]
@@ -95,29 +64,28 @@ mod tests {
     }
 
     #[test]
-    fn deployment_relationships_preserve_canonical_projection_storage_identity() {
-        let blob = blob_games_schema();
-        let chat = chat_messages_schema();
-        assert!(blob.has_same_storage_contract(BlobGames::schema()));
-        assert!(chat.has_same_storage_contract(ChatMessages::schema()));
+    fn referencing_models_own_one_way_auth_user_relationships() {
+        let todo = Todos::schema();
+        let blob = BlobGames::schema();
+        let chat = ChatMessages::schema();
         assert!(blob
             .relationships
             .iter()
             .any(|relationship| relationship.field_name == "owner"
-                && relationship.target_model == "AuthUserView"));
+                && relationship.target_model == "AuthUsers"));
         assert!(chat
             .relationships
             .iter()
             .any(|relationship| relationship.field_name == "author"
-                && relationship.target_model == "AuthUserView"));
+                && relationship.target_model == "AuthUsers"));
 
-        let auth = AuthUserView::schema();
-        for field in ["blob_games", "chat_messages"] {
-            assert!(auth
-                .relationships
-                .iter()
-                .any(|relationship| relationship.field_name == field));
-        }
+        assert!(todo
+            .relationships
+            .iter()
+            .any(|relationship| relationship.field_name == "owner"
+                && relationship.target_model == "AuthUsers"));
+
+        assert!(AuthUsers::schema().relationships.is_empty());
 
         let project = distributed_manifest();
         let surface = distributed::graphql::build_surface(
@@ -131,9 +99,8 @@ mod tests {
             let tail = &sdl[start..];
             &tail[..tail.find("\n}\n").unwrap()]
         };
-        assert!(object("BlobGames").contains("\n  owner: AuthUserView"));
-        assert!(object("ChatMessages").contains("\n  author: AuthUserView"));
-        assert!(object("AuthUserView").contains("\n  blob_games("));
-        assert!(object("AuthUserView").contains("\n  chat_messages("));
+        assert!(object("Todos").contains("\n  owner: AuthUsers"));
+        assert!(object("BlobGames").contains("\n  owner: AuthUsers"));
+        assert!(object("ChatMessages").contains("\n  author: AuthUsers"));
     }
 }

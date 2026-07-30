@@ -2374,7 +2374,7 @@ async fn projected_command_auto_binds_bootstraps_and_replays_exact_direct_eviden
                         context
                             .project(CAUSAL_DIRECT_PROJECTION)
                             .commit(checkout)?
-                            .projected(CausalProjectionObligationView { id: input.id })
+                            .projected()
                     })();
                     async move { result }
                 },

@@ -1,11 +1,12 @@
-//! Domain-event projections for Todo query models.
+//! Todo domain-event projections into query models.
 
+use distributed::projection;
 use distributed::projection::lower::{EventualOnly, ProjectionDescriptor};
 #[cfg(test)]
 use distributed::Entity;
-use distributed::projection;
 
-use crate::{TodoCompletedDomainEvent, TodoDomainIdentity, TodoState, Todos};
+use crate::Todos;
+use todo_domain::{TodoCompletedDomainEvent, TodoDomainIdentity, TodoState};
 
 /// One modeled state-transfer lifecycle plus explicit physical deletion.
 pub const TODO_READS: ProjectionDescriptor<EventualOnly> = projection! {
@@ -92,7 +93,7 @@ mod tests {
     use distributed::{DomainEventBodyKind, RelationalReadModel, RowValue, TableMutation};
 
     use super::*;
-    use crate::{Todo, TodoPurgedDomainEvent, TodoStatus};
+    use todo_domain::{Todo, TodoPurgedDomainEvent, TodoStatus};
 
     #[test]
     fn state_lifecycle_and_delete_define_one_causal_obligation_target() {
@@ -164,10 +165,6 @@ mod tests {
 
     #[test]
     fn purge_descriptor_and_plan_use_explicit_tombstone_identity() {
-        assert_eq!(
-            Todo::purged_domain_event_descriptor(),
-            TodoPurgedDomainEvent::descriptor()
-        );
         let mut todo = Todo::default();
         todo.create("todo-1", "alice", "Read").unwrap();
         todo.purge("alice").unwrap();
@@ -175,6 +172,10 @@ mod tests {
         assert_eq!(
             occurrence.descriptor().body.kind,
             DomainEventBodyKind::Deletion
+        );
+        assert_eq!(
+            occurrence.descriptor(),
+            &TodoPurgedDomainEvent::descriptor()
         );
         let lowered = TODO_READS
             .server_executor()

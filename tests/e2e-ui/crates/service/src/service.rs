@@ -4,10 +4,9 @@ use std::collections::BTreeMap;
 use std::sync::Arc;
 
 use blob_domain::{
-    BlobGame, BlobGames, BlobLevelStartedDomainEvent, BlobMovedDomainEvent,
-    BlobStartedDomainEvent, BLOB_GAMES,
+    BlobGame, BlobLevelStartedDomainEvent, BlobMovedDomainEvent, BlobStartedDomainEvent,
 };
-use chat_domain::{ChatMessage, ChatMessagePostedDomainEvent, ChatMessages, CHAT_MESSAGES};
+use chat_domain::{ChatMessage, ChatMessagePostedDomainEvent};
 use distributed::graphql::{
     build_surface, read, surface_for_application, typed_command, DistributedClientSurfaceExport,
     Causal, CommandProjectionPreview, CommandProjectionPreviewSource, GraphqlEngine,
@@ -30,11 +29,13 @@ use distributed::{
     QueuedRepository, RelationalReadModel,
 };
 use distributed::projection_protocol::ProjectorTopologyId;
-use e2e_readmodels::AuthUserView;
+use e2e_readmodels::{
+    AuthUsers, BlobGames, ChatMessages, Todos, BLOB_GAMES, CHAT_MESSAGES, TODO_READS,
+};
 use todo_domain::{
     Todo, TodoArchivedDomainEvent, TodoCompletedDomainEvent, TodoCreatedDomainEvent,
     TodoForceArchivedDomainEvent, TodoPurgedDomainEvent, TodoRenamedDomainEvent,
-    TodoReopenedDomainEvent, Todos, TODO_READS,
+    TodoReopenedDomainEvent,
 };
 
 use crate::bounds::{EventStore, Locks, ReadStore};
@@ -192,7 +193,7 @@ fn projection_owners() -> ProjectionOwners {
 fn client_grants() -> BTreeMap<String, BTreeMap<String, RoleGrant>> {
     let all_models = || {
         BTreeMap::from([
-            ("AuthUserView".into(), RoleGrant::all_columns()),
+            ("AuthUsers".into(), RoleGrant::all_columns()),
             ("BlobGames".into(), RoleGrant::all_columns()),
             ("ChatMessages".into(), RoleGrant::all_columns()),
             ("Todos".into(), RoleGrant::all_columns()),
@@ -333,7 +334,7 @@ where
             .field_name("todos_complete")
             .roles(app_roles)
             .emits(distributed::events![TodoCompletedDomainEvent])
-            .preview(todo_domain::complete_preview()),
+            .preview(e2e_readmodels::complete_preview()),
         )
         .handle(complete::handle)
         .typed_command(
@@ -530,14 +531,12 @@ fn build_graphql_engine_with_graphiql(
                 )
                 .grant("admin", read().all_columns()),
         )
-        .model_schema::<ChatMessages>(
-            e2e_readmodels::chat_messages_schema(),
+        .model::<ChatMessages>(
             ModelPermissions::new()
                 .grant("user", read().all_columns())
                 .grant("admin", read().all_columns()),
         )
-        .model_schema::<BlobGames>(
-            e2e_readmodels::blob_games_schema(),
+        .model::<BlobGames>(
             ModelPermissions::new()
                 .grant(
                     "user",
@@ -548,10 +547,9 @@ fn build_graphql_engine_with_graphiql(
                 )
                 .grant("admin", read().all_columns()),
         )
-        // Imported IdP directory (join target for chat.author / blob.owner).
+        // Imported IdP directory (join target for todo/blob owner and chat author).
         // Readable by all authenticated roles; writes only via Zitadel projector.
-        .model_schema::<AuthUserView>(
-            AuthUserView::schema().clone(),
+        .model::<AuthUsers>(
             ModelPermissions::new()
                 .grant("user", read().all_columns())
                 .grant("admin", read().all_columns()),

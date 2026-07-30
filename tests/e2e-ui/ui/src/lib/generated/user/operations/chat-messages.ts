@@ -170,7 +170,7 @@ export const Operation_ChatMessages: ReplicaOperationArtifact<Operation_ChatMess
         "relationships": [
           {
             "field": "author",
-            "targetModel": "AuthUserView",
+            "targetModel": "AuthUsers",
             "kind": "belongs_to",
             "keyMapping": {
               "kind": "direct",
@@ -300,7 +300,7 @@ export const Operation_ChatMessages: ReplicaOperationArtifact<Operation_ChatMess
   ],
   "protocol": {
     "version": 1,
-    "schemaHash": "sha256:760a4526f8da7826b1e9c5e7ab3511c8c8069c67b529f07474b6392ee56ad931",
+    "schemaHash": "sha256:440b6f3a0981cfea572c76e3759ace15d4fa1fe4fba78ed968b08716ff8e0dce",
     "surface": {
       "kind": "application",
       "name": "e2e-ui",

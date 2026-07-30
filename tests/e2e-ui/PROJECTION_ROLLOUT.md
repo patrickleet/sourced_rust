@@ -9,11 +9,12 @@ epochs, and routes from its catalog.
 
 | Artifact | Owner | Required evidence |
 |---|---|---|
-| `TodoState`, `Todos`, `TODO_READS` | Todo bounded context | Domain tests, canonical program vector, output schema pin |
-| `ChatMessageState`, `ChatMessages`, `CHAT_MESSAGES` | Chat bounded context | Domain tests, canonical program vector, output schema pin |
-| `BlobGameState`, `BlobGames`, `BLOB_GAMES` | Blob bounded context | Direct-eligibility tests and no-async-route assertion |
-| `AuthUserView` and provider mapping | Identity integration adapter | Ingestor mapping and authorization tests |
-| Cross-model query relationships | Deployment read-model catalog owner | Schema/storage-identity regression tests |
+| `TodoState` and Todo aggregate events | Todo bounded context | Domain-state capture and replay tests |
+| `ChatMessageState` and Chat aggregate events | Chat bounded context | Domain-state capture and replay tests |
+| `BlobGameState` and Blob aggregate events | Blob bounded context | Domain-state capture and replay tests |
+| `Todos`, `ChatMessages`, `BlobGames`, and their projection programs | Read-model catalog owner | Program vectors, output schema pins, and direct-eligibility tests |
+| `AuthUsers` and provider mapping | Identity integration adapter | Ingestor mapping and authorization tests |
+| Forward query relationships to `AuthUsers` | Deployment read-model catalog owner | Schema/storage-identity regression tests |
 | Projection source, owner, physical topology, route, and activation | Service deployment owner | Catalog validation and exact active-binding handshake |
 | Generated manifest/TypeScript/SDL | Client compiler owner | Generate then byte-for-byte check mode |
 | Projector checkpoints/failure rows | Projector runtime owner | Drain and replay observations |
