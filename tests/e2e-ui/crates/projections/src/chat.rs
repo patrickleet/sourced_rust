@@ -3,8 +3,8 @@
 use distributed::projection;
 use distributed::projection::lower::{DirectCandidate, ProjectionDescriptor};
 
-use crate::ChatMessages;
 use chat_domain::ChatMessageState;
+use e2e_readmodels::ChatMessages;
 
 /// Portable insert-shaped state transfer for chat.
 pub const CHAT_MESSAGES: ProjectionDescriptor<DirectCandidate> = projection! {

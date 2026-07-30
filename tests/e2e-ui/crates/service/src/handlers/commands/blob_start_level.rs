@@ -3,10 +3,11 @@
 use blob_domain::BlobGame;
 use distributed::graphql::{PreparedCommand, Projected};
 use distributed::microsvc::{CausalCommandContext, HandlerError};
+use e2e_projections::BLOB_GAMES;
 use e2e_readmodels::BlobGames;
 use serde::Deserialize;
 
-use crate::handlers::commands::blob_cmd::{commit_blob, load_game, map_domain};
+use crate::handlers::util::rejected;
 
 pub const COMMAND: &str = "blob.start_level";
 
@@ -20,9 +21,12 @@ pub async fn handle(
     input: BlobStartLevelInput,
 ) -> Result<PreparedCommand<Projected<BlobGames>>, HandlerError> {
     let owner = ctx.user_id()?.to_string();
-    let mut game = load_game(ctx, &input.game_id).await?;
+    let repo = ctx.repo();
+    let mut game = repo
+        .get(&input.game_id)
+        .await?
+        .ok_or_else(|| HandlerError::NotFound(input.game_id.clone()))?;
     // Fresh passable layout each level (like original generateLevel)
-    game.start_next_generated_level(&owner)
-        .map_err(map_domain)?;
-    commit_blob(ctx, game)
+    game.start_next_generated_level(&owner).map_err(rejected)?;
+    repo.project(BLOB_GAMES).commit(game)?.projected()
 }

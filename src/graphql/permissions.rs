@@ -174,6 +174,17 @@ impl<M> ModelPermissions<M> {
         self.entries.push((role.to_string(), perm));
         self
     }
+
+    /// Export the same role grants for application-surface compilation.
+    ///
+    /// This keeps runtime GraphQL authorization and generated-client
+    /// authorization sourced from one model-owned declaration.
+    pub fn surface_grants(&self) -> BTreeMap<String, RoleGrant> {
+        self.entries
+            .iter()
+            .map(|(role, permission)| (role.clone(), permission.to_role_grant()))
+            .collect()
+    }
 }
 
 #[cfg(test)]

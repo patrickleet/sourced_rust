@@ -41,9 +41,9 @@ pub trait Handler<'a, D: 'a>: Send + Sync {
 ///
 /// The aggregate type is fixed by the route bundle. The context exposes owned
 /// checkouts and staging operations, but never the dependency value, backend,
-/// repository, or a commit method; the framework retains this route's fenced
-/// durable commit capability and attaches the command-attempt fence after the
-/// handler returns.
+/// raw repository, or a direct I/O commit method; the framework retains this
+/// route's fenced durable commit capability and attaches the command-attempt
+/// fence after the handler returns.
 ///
 /// This is an API capability boundary, not a Rust sandbox. Application handler
 /// code is trusted: a closure can still capture an external client/repository or
@@ -57,6 +57,84 @@ where
     message: &'a Message,
     session: &'a Session,
     workspace: &'a CausalWorkspace<'a, A>,
+}
+
+/// Capability-restricted aggregate repository for one causal command.
+///
+/// It preserves the ordinary repository authoring shape without exposing the
+/// backend or an immediate I/O commit path. Every fluent commit is staged into
+/// the command's fenced workspace for the dispatcher to validate and persist.
+pub struct CausalRepository<'context, 'route, A>
+where
+    A: Aggregate + Send + Sync + 'static,
+{
+    context: &'context CausalCommandContext<'route, A>,
+}
+
+impl<'context, 'route, A> CausalRepository<'context, 'route, A>
+where
+    A: Aggregate + Send + Sync + 'static,
+{
+    /// Get one aggregate as an owned checkout.
+    pub async fn get(
+        &self,
+        id: &str,
+    ) -> Result<Option<crate::microsvc::AggregateCheckout<A>>, HandlerError> {
+        self.context.get(id).await
+    }
+
+    /// Start a new aggregate checkout.
+    pub fn create(&self) -> crate::microsvc::AggregateCheckout<A> {
+        self.context.create()
+    }
+
+    /// Start an empty fluent unit of work and stage its final aggregate.
+    pub fn commit(
+        &self,
+        checkout: crate::microsvc::AggregateCheckout<A>,
+    ) -> Result<PreparedCausalCommit<'_, 'route, A, NoPublication, NoDirectProjection>, HandlerError>
+    {
+        self.context.commit(checkout)
+    }
+
+    /// Start a unit of work that publishes captured domain events.
+    pub fn publish_events(
+        &self,
+    ) -> CausalCommitBuilder<'_, 'route, A, WithPublication, NoDirectProjection> {
+        self.context.publish_events()
+    }
+
+    /// Start a unit of work with one explicit outward domain event.
+    pub fn publish<E: DomainEvent>(
+        &self,
+        event: E,
+    ) -> CausalCommitBuilder<'_, 'route, A, WithPublication, NoDirectProjection> {
+        self.context.publish(event)
+    }
+
+    /// Start a unit of work with a multi-table read-model plan.
+    pub fn read_models(
+        &self,
+        writes: ReadModelWritePlanBuilder,
+    ) -> CausalCommitBuilder<'_, 'route, A, NoPublication, NoDirectProjection> {
+        self.context.read_models(writes)
+    }
+
+    /// Start a low-level integration-envelope publication unit of work.
+    pub fn outbox(
+        &self,
+        message: OutboxMessage,
+    ) -> CausalCommitBuilder<'_, 'route, A, WithPublication, NoDirectProjection> {
+        self.context.outbox(message)
+    }
+
+    /// Start a direct projection-intent unit of work.
+    pub fn project<Projection>(
+        &self,
+        projection: Projection,
+    ) -> CausalCommitBuilder<'_, 'route, A, NoPublication, Projection> {
+        self.context.project(projection)
+    }
 }
 
 /// Type-state marker for a unit of work with no publication leg.
@@ -454,6 +532,24 @@ where
 
     pub fn claim(&self, name: &str) -> Option<&str> {
         self.session.get(name)
+    }
+
+    /// Return the capability-restricted repository facade for this causal
+    /// command.
+    ///
+    /// This deliberately returns no backend or immediate commit capability.
+    /// It exists so handlers retain the familiar repository → get/create →
+    /// mutate → fluent commit shape while the dispatcher still owns I/O.
+    pub fn repo(&self) -> CausalRepository<'_, 'a, A> {
+        CausalRepository { context: self }
+    }
+
+    /// Get one aggregate as an owned checkout without retaining a queue lock.
+    pub async fn get(
+        &self,
+        id: &str,
+    ) -> Result<Option<crate::microsvc::AggregateCheckout<A>>, HandlerError> {
+        self.load(id).await
     }
 
     /// Load one aggregate as an owned checkout without retaining a queue lock.

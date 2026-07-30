@@ -34,15 +34,16 @@ pub async fn handle(
 ) -> Result<PreparedCommand<Causal<ChatPostPayload>>, HandlerError> {
     let author = ctx.user_id()?.to_string();
     let created_at = canonical_near_unix_millis(&input.created_at)?;
+    let repo = ctx.repo();
 
-    if ctx.load(&input.message_id).await?.is_some() {
+    if repo.get(&input.message_id).await?.is_some() {
         return Err(HandlerError::Rejected(format!(
             "message {} already exists",
             input.message_id
         )));
     }
 
-    let mut msg = ctx.create();
+    let mut msg = repo.create();
     msg.post(
         &input.message_id,
         &input.room_id,
@@ -53,7 +54,7 @@ pub async fn handle(
     .map_err(rejected)?;
 
     let state = ChatMessageState::from(&*msg);
-    ctx.publish_events().commit(msg)?.causal(ChatPostPayload {
+    repo.publish_events().commit(msg)?.causal(ChatPostPayload {
         message_id: state.message_id,
         room_id: state.room_id,
         author_id: state.author_id,

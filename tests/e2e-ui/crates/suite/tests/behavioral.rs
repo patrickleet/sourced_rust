@@ -691,9 +691,7 @@ async fn t7_modeled_no_ops_succeed_without_projection_obligations() {
     );
     let status = graphql(
         &base,
-        &format!(
-            r#"{{ commandStatus(commandId: "{rename_id}") {{ state }} }}"#
-        ),
+        &format!(r#"{{ commandStatus(commandId: "{rename_id}") {{ state }} }}"#),
         "alice",
         "user",
     )
@@ -705,9 +703,7 @@ async fn t7_modeled_no_ops_succeed_without_projection_obligations() {
         "zero-occurrence replay must remain durably recoverable as succeeded"
     );
 
-    todos_archive(&base, &tid, "alice", "user")
-        .await
-        .unwrap();
+    todos_archive(&base, &tid, "alice", "user").await.unwrap();
     let mut archived = None;
     for _ in 0..100 {
         if let Some(row) = poll_todo(&base, "alice", &tid).await {
@@ -795,10 +791,7 @@ async fn t9_chat_room_partition_projects_posted_message() {
     );
     let response = graphql(&base, &mutation, "alice", "user").await.unwrap();
     assert!(response.get("errors").is_none(), "{response}");
-    assert_eq!(
-        response["data"]["chat_messages_post"]["room_id"],
-        room_id
-    );
+    assert_eq!(response["data"]["chat_messages_post"]["room_id"], room_id);
 
     let query = format!(
         r#"{{

@@ -1,3 +1,4 @@
+use distributed::graphql::{claim, col, read, ModelPermissions};
 use distributed::ReadModel;
 use serde::{Deserialize, Serialize};
 
@@ -16,4 +17,18 @@ pub struct Todos {
     pub assignee_id: Option<String>,
     #[readmodel(belongs_to = "AuthUsers", foreign_key = "owner_id")]
     pub owner: Option<AuthUsers>,
+}
+
+impl Todos {
+    /// Read authorization attached to the Todo query model.
+    pub fn permissions() -> ModelPermissions<Self> {
+        ModelPermissions::new()
+            .grant(
+                "user",
+                read()
+                    .all_columns()
+                    .rows(col("owner_id").eq(claim("x-user-id"))),
+            )
+            .grant("admin", read().all_columns())
+    }
 }

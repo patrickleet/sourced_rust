@@ -1,6 +1,6 @@
 //! Map Zitadel Action / fixture payloads → provider bus subjects + envelopes.
 
-use e2e_readmodels::{ZitadelEmail, ZitadelUserPayload};
+use e2e_projections::{ZitadelEmail, ZitadelUserPayload};
 use serde::Deserialize;
 use serde_json::Value;
 

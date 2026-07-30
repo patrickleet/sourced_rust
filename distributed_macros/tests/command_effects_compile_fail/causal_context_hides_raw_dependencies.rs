@@ -23,7 +23,6 @@ impl Aggregate for FixtureAggregate {
 }
 
 fn handler(context: &CausalCommandContext<'_, FixtureAggregate>) {
-    let _ = context.repo();
     let _ = context.dependencies();
     let _ = context.read_model_store();
 }

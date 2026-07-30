@@ -5,9 +5,9 @@
 //! starting from the player (Hamiltonian path on the free-cell graph). Small grids
 //! make that check feasible.
 
+use rand::rngs::StdRng;
 use rand::seq::SliceRandom;
 use rand::{Rng, SeedableRng};
-use rand::rngs::StdRng;
 
 use crate::models::tile;
 

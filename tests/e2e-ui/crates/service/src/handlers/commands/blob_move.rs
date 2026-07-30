@@ -3,10 +3,11 @@
 use blob_domain::{BlobGame, Direction};
 use distributed::graphql::{PreparedCommand, Projected};
 use distributed::microsvc::{CausalCommandContext, HandlerError};
+use e2e_projections::BLOB_GAMES;
 use e2e_readmodels::BlobGames;
 use serde::Deserialize;
 
-use crate::handlers::commands::blob_cmd::{commit_blob, load_game, map_domain};
+use crate::handlers::util::rejected;
 
 pub const COMMAND: &str = "blob.move";
 
@@ -28,8 +29,12 @@ pub async fn handle(
         ))
     })?;
 
-    let mut game = load_game(ctx, &input.game_id).await?;
-    game.move_dir(&owner, dir).map_err(map_domain)?;
+    let repo = ctx.repo();
+    let mut game = repo
+        .get(&input.game_id)
+        .await?
+        .ok_or_else(|| HandlerError::NotFound(input.game_id.clone()))?;
+    game.move_dir(&owner, dir).map_err(rejected)?;
 
-    commit_blob(ctx, game)
+    repo.project(BLOB_GAMES).commit(game)?.projected()
 }

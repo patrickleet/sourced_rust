@@ -3,8 +3,8 @@
 use distributed::projection;
 use distributed::projection::lower::{DirectCandidate, ProjectionDescriptor};
 
-use crate::BlobGames;
 use blob_domain::BlobGameState;
+use e2e_readmodels::BlobGames;
 
 /// One complete state upsert for every direct Blob transition.
 pub const BLOB_GAMES: ProjectionDescriptor<DirectCandidate> = projection! {

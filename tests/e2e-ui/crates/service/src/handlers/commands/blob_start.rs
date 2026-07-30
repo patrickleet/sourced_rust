@@ -3,10 +3,11 @@
 use blob_domain::BlobGame;
 use distributed::graphql::{PreparedCommand, Projected};
 use distributed::microsvc::{CausalCommandContext, HandlerError};
+use e2e_projections::BLOB_GAMES;
 use e2e_readmodels::BlobGames;
 use serde::Deserialize;
 
-use crate::handlers::commands::blob_cmd::{commit_blob, map_domain};
+use crate::handlers::util::rejected;
 
 pub const COMMAND: &str = "blob.start";
 
@@ -22,17 +23,18 @@ pub async fn handle(
     input: BlobStartInput,
 ) -> Result<PreparedCommand<Projected<BlobGamePayload>>, HandlerError> {
     let owner = ctx.user_id()?.to_string();
+    let repo = ctx.repo();
 
-    if ctx.load(&input.game_id).await?.is_some() {
+    if repo.get(&input.game_id).await?.is_some() {
         return Err(HandlerError::Rejected(format!(
             "game {} already exists",
             input.game_id
         )));
     }
 
-    let mut game = ctx.create();
+    let mut game = repo.create();
     game.start_with_demo(&input.game_id, &owner)
-        .map_err(map_domain)?;
+        .map_err(rejected)?;
 
-    commit_blob(ctx, game)
+    repo.project(BLOB_GAMES).commit(game)?.projected()
 }

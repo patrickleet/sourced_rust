@@ -79,15 +79,17 @@ pub use projector::{
     ProjectionGraphLoadBuilder, ProjectionReadModelWorkspace, ProjectionRepairHandle,
     ProjectionRepairHandleParseError,
 };
+#[cfg(feature = "graphql")]
+pub use projector::{ModeledProjection, ModeledProjectorRouteBuilder};
 pub use runtime::{DEFAULT_MAX_PUBLISH_ATTEMPTS, DEFAULT_PUBLISH_LEASE};
 #[cfg(all(feature = "graphql", test))]
 pub(crate) use service::CausalCommandProjectionEvidence;
 #[cfg(feature = "graphql")]
 pub use service::GraphqlServiceBindError;
 pub use service::{
-    direct_read_model, CausalCommandContext, CausalCommitBuilder, CommandRequest, CommandResponse,
-    DeliveryKind, DirectReadModelProjection, HandlerNames, HandlerSpec, PreparedCausalCommit,
-    PreparedCommandHandler, RouteBuilder, Routes, Service, TypedRouteBuilder,
+    direct_read_model, CausalCommandContext, CausalCommitBuilder, CausalRepository, CommandRequest,
+    CommandResponse, DeliveryKind, DirectReadModelProjection, HandlerNames, HandlerSpec,
+    PreparedCausalCommit, PreparedCommandHandler, RouteBuilder, Routes, Service, TypedRouteBuilder,
 };
 #[cfg(feature = "graphql")]
 pub(crate) use service::{

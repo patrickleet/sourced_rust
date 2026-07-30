@@ -49,6 +49,8 @@ use crate::microsvc::projector::{
     CausalProjectorRouteBuilder, ErasedProjectorHandler, ProjectionRepairHandle,
     ProjectorRegistration, ProjectorRepairFuture, ProjectorRepairLookupFuture,
 };
+#[cfg(feature = "graphql")]
+use crate::microsvc::projector::{ModeledProjectorHandlerFn, ModeledProjectorRouteBuilder};
 use crate::microsvc::session::Session;
 use crate::outbox::OutboxPublisherConfig;
 use crate::outbox_worker::BusOutboxPublishHook;
@@ -590,6 +592,20 @@ impl<D: Send + Sync + 'static> Routes<D> {
         CausalProjectorRouteBuilder::new(self, projector)
     }
 
+    /// Register a compiler-modeled projection through an explicit event
+    /// handler.
+    ///
+    /// The handler receives the resolved projection token and must apply it
+    /// through its causal projector context. The framework still owns ordered
+    /// delivery, checkpoints, failures, and the atomic read-model commit.
+    #[cfg(feature = "graphql")]
+    pub fn modeled_projector(self, projector: SurfaceProjector) -> ModeledProjectorRouteBuilder<D>
+    where
+        D: CausalProjectionRouteDependencies,
+    {
+        ModeledProjectorRouteBuilder::new(self, projector)
+    }
+
     /// Mount every catalog-pinned local executor in one modeled projection
     /// declaration.
     ///
@@ -598,7 +614,19 @@ impl<D: Send + Sync + 'static> Routes<D> {
     /// draining epoch can finish already-published work; only Active+Causal is
     /// eligible for new client obligations.
     #[cfg(feature = "graphql")]
-    pub fn consume_projection(mut self, projector: SurfaceProjector) -> Self
+    pub fn consume_projection(self, projector: SurfaceProjector) -> Self
+    where
+        D: CausalProjectionRouteDependencies,
+    {
+        self.register_modeled_projection(projector, None)
+    }
+
+    #[cfg(feature = "graphql")]
+    pub(in crate::microsvc) fn register_modeled_projection(
+        mut self,
+        projector: SurfaceProjector,
+        handler: Option<Arc<ModeledProjectorHandlerFn>>,
+    ) -> Self
     where
         D: CausalProjectionRouteDependencies,
     {
@@ -666,6 +694,7 @@ impl<D: Send + Sync + 'static> Routes<D> {
                     compiled,
                     change_epoch,
                     executor,
+                    handle: handler.clone(),
                 }),
             );
         }

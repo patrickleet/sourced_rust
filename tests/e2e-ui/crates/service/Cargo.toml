@@ -19,3 +19,4 @@ todo-domain = { path = "../todo-domain" }
 chat-domain = { path = "../chat-domain" }
 blob-domain = { path = "../blob-domain" }
 e2e-readmodels = { path = "../readmodels" }
+e2e-projections = { path = "../projections" }

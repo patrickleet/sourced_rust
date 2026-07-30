@@ -12,9 +12,12 @@ epochs, and routes from its catalog.
 | `TodoState` and Todo aggregate events | Todo bounded context | Domain-state capture and replay tests |
 | `ChatMessageState` and Chat aggregate events | Chat bounded context | Domain-state capture and replay tests |
 | `BlobGameState` and Blob aggregate events | Blob bounded context | Domain-state capture and replay tests |
-| `Todos`, `ChatMessages`, `BlobGames`, and their projection programs | Read-model catalog owner | Program vectors, output schema pins, and direct-eligibility tests |
-| `AuthUsers` and provider mapping | Identity integration adapter | Ingestor mapping and authorization tests |
-| Forward query relationships to `AuthUsers` | Deployment read-model catalog owner | Schema/storage-identity regression tests |
+| `Todos`, `ChatMessages`, `BlobGames`, relationships, and read RBAC | Read-model owner | Schema, relationship, and authorization tests |
+| Todo, Chat, and Blob projection programs | Projection owner | Program vectors, output schema pins, and direct-eligibility tests |
+| `AuthUsers` query shape and read RBAC | Read-model owner | Schema and authorization tests |
+| Zitadel provider-event contract and `AuthUsers` mapping | Projection owner | Ingestor mapping tests |
+| Forward query relationships to `AuthUsers` | Read-model owner | Schema/storage-identity regression tests |
+| Explicit modeled projector event handlers | Service owner | Handler-application and causal protocol tests |
 | Projection source, owner, physical topology, route, and activation | Service deployment owner | Catalog validation and exact active-binding handshake |
 | Generated manifest/TypeScript/SDL | Client compiler owner | Generate then byte-for-byte check mode |
 | Projector checkpoints/failure rows | Projector runtime owner | Drain and replay observations |

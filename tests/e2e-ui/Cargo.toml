@@ -9,6 +9,7 @@ members = [
     "crates/chat-domain",
     "crates/blob-domain",
     "crates/readmodels",
+    "crates/projections",
     "crates/service",
     "crates/runner",
     "crates/suite",

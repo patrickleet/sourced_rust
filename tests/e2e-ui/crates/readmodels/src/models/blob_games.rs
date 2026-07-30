@@ -1,4 +1,4 @@
-use blob_domain::BlobGameState;
+use distributed::graphql::{claim, col, read, ModelPermissions};
 use distributed::ReadModel;
 use serde::{Deserialize, Serialize};
 
@@ -22,18 +22,16 @@ pub struct BlobGames {
     pub owner: Option<AuthUsers>,
 }
 
-impl From<&BlobGameState> for BlobGames {
-    fn from(state: &BlobGameState) -> Self {
-        Self {
-            game_id: state.game_id.clone(),
-            owner_id: state.owner_id.clone(),
-            score: state.score,
-            player_dead: state.player_dead,
-            current_level: state.current_level,
-            current_level_completed: state.current_level_completed,
-            map_json: state.map_json.clone(),
-            status: state.status.clone(),
-            owner: None,
-        }
+impl BlobGames {
+    /// Read authorization attached to the Blob game query model.
+    pub fn permissions() -> ModelPermissions<Self> {
+        ModelPermissions::new()
+            .grant(
+                "user",
+                read()
+                    .all_columns()
+                    .rows(col("owner_id").eq(claim("x-user-id"))),
+            )
+            .grant("admin", read().all_columns())
     }
 }

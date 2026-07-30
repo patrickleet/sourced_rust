@@ -6,9 +6,9 @@
 use distributed::graphql::{Causal, PreparedCommand};
 use distributed::microsvc::{CausalCommandContext, HandlerError};
 use serde::{Deserialize, Serialize};
-use todo_domain::Todo;
+use todo_domain::{Todo, TodoState};
 
-use crate::handlers::commands::todo_cmd::{commit_todo_events, map_domain};
+use crate::handlers::util::rejected;
 
 pub const COMMAND: &str = "todo.create";
 
@@ -34,22 +34,26 @@ pub async fn handle(
 ) -> Result<PreparedCommand<Causal<TodoCreatePayload>>, HandlerError> {
     // Owner is always the authenticated principal — not client-supplied.
     let owner = ctx.user_id()?.to_string();
+    let repo = ctx.repo();
 
-    if ctx.load(&input.todo_id).await?.is_some() {
+    if repo.get(&input.todo_id).await?.is_some() {
         return Err(HandlerError::Rejected(format!(
             "todo {} already exists",
             input.todo_id
         )));
     }
 
-    let mut todo = ctx.create();
+    let mut todo = repo.create();
     todo.create(&input.todo_id, &owner, &input.title)
-        .map_err(map_domain)?;
+        .map_err(rejected)?;
 
-    commit_todo_events(ctx, todo, |state| TodoCreatePayload {
-        todo_id: state.todo_id,
-        owner_id: state.owner_id,
-        title: state.title,
-        status: state.status,
-    })
+    let state = TodoState::from(&*todo);
+    repo.publish_events()
+        .commit(todo)?
+        .causal(TodoCreatePayload {
+            todo_id: state.todo_id,
+            owner_id: state.owner_id,
+            title: state.title,
+            status: state.status,
+        })
 }

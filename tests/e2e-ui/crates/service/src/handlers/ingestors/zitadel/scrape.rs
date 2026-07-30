@@ -7,7 +7,7 @@ use std::env;
 use std::time::Duration;
 
 use distributed::TransactionalCommit;
-use e2e_readmodels::{ZitadelEmail, ZitadelUserPayload};
+use e2e_projections::{ZitadelEmail, ZitadelUserPayload};
 use serde::Deserialize;
 use serde_json::{json, Value};
 

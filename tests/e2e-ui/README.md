@@ -82,8 +82,15 @@ zero occurrences, mints zero obligations, and completes as `Succeeded`.
 Handlers use the fluent unit of work:
 
 ```rust
+let repo = ctx.repo();
+let mut todo = repo
+    .get(&input.todo_id)
+    .await?
+    .ok_or_else(|| HandlerError::NotFound(input.todo_id.clone()))?;
+todo.complete(&owner).map_err(rejected)?;
+
 let state = TodoState::from(&*todo);
-ctx.publish_events()
+repo.publish_events()
     .commit(todo)?
     .causal(TodoStatusPayload {
         todo_id: state.todo_id,
@@ -94,8 +101,14 @@ ctx.publish_events()
 Blob uses the same projection model through the direct terminal:
 
 ```rust
-let view = BlobGames::from(&game.state());
-ctx.project(BLOB_GAMES).commit(game)?.projected(view)
+let repo = ctx.repo();
+let mut game = repo
+    .get(&input.game_id)
+    .await?
+    .ok_or_else(|| HandlerError::NotFound(input.game_id.clone()))?;
+game.move_dir(&owner, direction).map_err(rejected)?;
+
+repo.project(BLOB_GAMES).commit(game)?.projected()
 ```
 
 `Projected<BlobGames>` means aggregate history, command ledger, read-model row,
@@ -140,6 +153,11 @@ second projection ORM. This fixture adds `Todos.owner`, `BlobGames.owner`, and
 the single relationship declaration; `AuthUsers` does not need reverse
 collections for every model that references it.
 
+Read RBAC is attached to those same query models through
+`Todos::permissions()`, `BlobGames::permissions()`, and their peers. The
+runtime GraphQL engine and generated application surfaces reuse those
+declarations; `service.rs` does not recreate the grants.
+
 ## Outcomes
 
 | Outcome | Guarantee |
@@ -155,19 +173,22 @@ the normal GraphQL command result.
 
 | Path | Purpose |
 |---|---|
-| `crates/todo-domain/src/projection.rs` | State lifecycle, partial preview helper, and explicit purge deletion. |
-| `crates/chat-domain/src/projection.rs` | Insert-shaped causal projection. |
-| `crates/blob-domain/src/projection.rs` | Direct projection plus compile-fail eligibility guards. |
-| `crates/service/src/service.rs` | Deployment catalog, active bindings, routes, grants, and typed commands. |
-| `crates/readmodels/src/lib.rs` | Provider view and deployment-composed cross-domain relationships. |
+| `crates/*-domain/` | Aggregates, replay events, and outward domain-state contracts. |
+| `crates/readmodels/` | Query shapes, relationships, and model-owned read RBAC. |
+| `crates/projections/` | Todo, Chat, and Blob event-to-read-model programs. |
+| `crates/service/src/handlers/events/` | Explicit projector handlers that apply modeled programs. |
+| `crates/service/src/handlers/commands/` | Repository → get/create → domain operation → fluent commit. |
+| `crates/service/src/service.rs` | Deployment catalog, placement, routes, and typed commands. |
 | `ui/src/routes/*/+page.graphql` | Co-located SSR/live reads. |
 | `ui/src/routes/*/+page.svelte` | `*.use()` and ordinary typed command calls. |
 | `ui/src/lib/generated/` | Generator-owned user/admin clients; do not hand-edit. |
 
-Todo and Chat mount catalog-pinned local causal executors with
-`consume_projection`. Blob has a catalog-pinned direct owner and no
-asynchronous event route or second writer. The Zitadel provider ingestor is an
-intentional integration adapter, not a portable aggregate projection.
+Todo and Chat mount catalog-pinned local causal executors through explicit
+`modeled_projector(...).handle(...)` event handlers. Those handlers apply the
+shared plan without repeating its mapping. Blob has a catalog-pinned direct
+owner and no asynchronous event route or second writer. The Zitadel provider
+ingestor remains an integration adapter, while its provider-event-to-`AuthUsers`
+mapping also lives in `e2e-projections` and runs from an explicit event handler.
 
 ## Generation and tests
 

@@ -1,9 +1,10 @@
 //! e2e-ui service library — handlers + GraphQL.
 //!
-//! Domain logic lives in `*-domain`. Read models live in `e2e-readmodels`.
-//! This crate wires thin command handlers + event projectors + Zitadel ingress.
-//! **Commands never write read models** — only projectors do (including auth_users
-//! from provider messages published by the Zitadel ingestor).
+//! Domain logic lives in `*-domain`, query models and read RBAC in
+//! `e2e-readmodels`, and portable event mappings in `e2e-projections`. This
+//! crate owns the explicit command/projector handlers, placement, GraphQL, and
+//! Zitadel ingress. Eventual read models are written by projector handlers;
+//! eligible direct projections are written in the command transaction.
 
 mod bounds;
 mod deps;

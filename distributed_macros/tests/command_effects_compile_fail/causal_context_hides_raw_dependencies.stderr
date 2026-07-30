@@ -1,19 +1,13 @@
-error[E0599]: no method named `repo` found for reference `&CausalCommandContext<'_, FixtureAggregate>` in the current scope
-  --> tests/command_effects_compile_fail/causal_context_has_no_repository.rs:26:21
-   |
-26 |     let _ = context.repo();
-   |                     ^^^^ method not found in `&CausalCommandContext<'_, FixtureAggregate>`
-
 error[E0599]: no method named `dependencies` found for reference `&CausalCommandContext<'_, FixtureAggregate>` in the current scope
-  --> tests/command_effects_compile_fail/causal_context_has_no_repository.rs:27:21
+  --> tests/command_effects_compile_fail/causal_context_hides_raw_dependencies.rs:26:21
    |
-27 |     let _ = context.dependencies();
+26 |     let _ = context.dependencies();
    |                     ^^^^^^^^^^^^ method not found in `&CausalCommandContext<'_, FixtureAggregate>`
 
 error[E0599]: no method named `read_model_store` found for reference `&CausalCommandContext<'_, FixtureAggregate>` in the current scope
-  --> tests/command_effects_compile_fail/causal_context_has_no_repository.rs:28:21
+  --> tests/command_effects_compile_fail/causal_context_hides_raw_dependencies.rs:27:21
    |
-28 |     let _ = context.read_model_store();
+27 |     let _ = context.read_model_store();
    |                     ^^^^^^^^^^^^^^^^
    |
 help: there is a method `read_models` with a similar name, but with different arguments

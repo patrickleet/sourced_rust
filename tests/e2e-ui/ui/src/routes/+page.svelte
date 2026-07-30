@@ -84,7 +84,7 @@
 		},
 		{
 			title: 'Familiar patterns, short handles',
-			body: 'Load aggregate → apply command → publish_events/project → commit → Causal or Projected result. Swap memory for Postgres without rewriting the domain.'
+			body: 'Get repository → get/create aggregate → apply command → publish_events/project → commit → Causal or Projected result. Swap memory for Postgres without rewriting the domain.'
 		},
 		{
 			title: 'Grow without rewriting what you proved',
@@ -104,7 +104,7 @@
 		},
 		{
 			title: 'Patterns as short, swappable verbs',
-			body: 'CausalCommandContext: load / create / publish_events / project / commit. Real design patterns, thin handles, backends you can swap when you grow.'
+			body: 'ctx.repo(): get / create / publish_events / project / commit. The repository shape stays familiar while the framework owns the fenced I/O.'
 		}
 	];
 
@@ -128,7 +128,7 @@
 		},
 		{
 			title: 'Roles and surfaces are real',
-			body: 'Engine RLS filters rows. Elevated mutations live only on e2e-ui-admin. A type name in a bundle is not authorization.'
+			body: 'Read RBAC lives with each query model and drives both engine RLS and generated application surfaces. Elevated mutations live only on e2e-ui-admin. A type name in a bundle is not authorization.'
 		},
 		{
 			title: 'Regenerate after you change the contract',
@@ -139,15 +139,19 @@
 	const crates = [
 		{
 			name: 'todo-domain / chat-domain / blob-domain',
-			role: 'Rules, DomainState, natural read models, and portable projection programs'
+			role: 'Aggregates, replay events, and outward DomainState contracts'
 		},
 		{
 			name: 'e2e-readmodels',
-			role: 'Provider-owned auth_users plus deployment-composed cross-domain joins'
+			role: 'Query shapes, relationships, and model-owned read RBAC'
+		},
+		{
+			name: 'e2e-projections',
+			role: 'Reusable domain-event → read-model programs'
 		},
 		{
 			name: 'e2e-service',
-			role: 'Fluent commits, projection catalog/placement, dual client surfaces, GraphQL'
+			role: 'Explicit command/projector handlers, placement, dual client surfaces, GraphQL'
 		},
 		{
 			name: 'e2e-runner → e2e-ui',
@@ -420,13 +424,13 @@ callbacks: {
   input: TodoCreateInput,
 ) -> Result<PreparedCommand<Causal<TodoCreatePayload>>, HandlerError> {
   let owner = ctx.user_id()?.to_string(); // never from input
-  let mut todo = ctx.create();
+  let repo = ctx.repo();
+  let mut todo = repo.create();
   todo.create(&input.todo_id, &owner, &input.title)?;
-  commit_todo_events(ctx, todo, |state| {
-    TodoCreatePayload {
-      todo_id: state.todo_id, owner_id: state.owner_id,
-      title: state.title, status: state.status,
-    }
+  let state = TodoState::from(&*todo);
+  repo.publish_events().commit(todo)?.causal(TodoCreatePayload {
+    todo_id: state.todo_id, owner_id: state.owner_id,
+    title: state.title, status: state.status,
   })
 }`
 				},
@@ -450,12 +454,12 @@ callbacks: {
 		{
 			n: '04',
 			title: 'Eventual path: one projection, mounted as a consumer',
-			why: 'Todos and chat publish captured domain events with the fluent commit builder. The catalog-pinned projection executes the same portable operations the client preview specialized; ChangeHub wakes @live subscribers.',
-			path: 'todo-domain/projection.rs · service.rs',
+			why: 'Todos and chat publish captured domain events with the fluent commit builder. The projection crate models the mapping once; an explicit event handler applies the catalog-pinned plan. ChangeHub wakes @live subscribers.',
+			path: 'projections/todos.rs · handlers/events/project_todos.rs',
 			label: 'Modeled projector',
 			blocks: [
 				{
-					file: 'todo-domain/projection.rs',
+					file: 'projections/src/todos.rs',
 					label: 'State lifecycle + deletion',
 					code: `pub const TODO_READS: ProjectionDescriptor<EventualOnly> = projection! {
   name: "project_todos";
@@ -468,9 +472,21 @@ callbacks: {
   on "todo.purged" version 1 (deleted: TodoDomainIdentity) {
     delete Todos { key { todo_id: envelope.aggregate_id } };
   }
-};
+};`
+				},
+				{
+					file: 'handlers/events/project_todos.rs',
+					label: 'explicit event-handler boundary',
+					code: `pub async fn handle(
+  context: CausalProjectorContext,
+  projection: ModeledProjection,
+) -> Result<(), HandlerError> {
+  projection.apply(TODO_READS, &context).await
+}
 
-// Routes::new().consume_projection(catalog_pinned_todo_owner)`
+// Routes::new()
+//   .modeled_projector(catalog_pinned_todo_owner)
+//   .handle(project_todos::handle)`
 				}
 			]
 		},
@@ -478,7 +494,7 @@ callbacks: {
 			n: '05',
 			title: 'Strong path: Projected in the same transaction',
 			why: 'Blob maps must not lag. The handler returns PreparedCommand<Projected<BlobGames>> through the fluent direct-projection commit — aggregate, ledger, and query row commit together. No second writer, no dual-write from the UI.',
-			path: 'handlers/commands/blob_move.rs · blob_cmd.rs',
+			path: 'handlers/commands/blob_move.rs · projections/blob.rs',
 			label: 'Projected',
 			blocks: [
 				{
@@ -489,9 +505,11 @@ callbacks: {
   input: BlobMoveInput,
 ) -> Result<PreparedCommand<Projected<BlobGames>>, HandlerError> {
   let owner = ctx.user_id()?.to_string();
-  let mut game = load_game(ctx, &input.game_id).await?;
-  game.move_dir(&owner, dir).map_err(map_domain)?;
-  commit_blob(ctx, game)
+  let repo = ctx.repo();
+  let mut game = repo.get(&input.game_id).await?
+    .ok_or_else(|| HandlerError::NotFound(input.game_id.clone()))?;
+  game.move_dir(&owner, dir).map_err(rejected)?;
+  repo.project(BLOB_GAMES).commit(game)?.projected()
 }`
 				},
 				{
@@ -509,7 +527,7 @@ callbacks: {
 			n: '06',
 			title: 'People have names — join the identity directory',
 			why: 'Import users from Zitadel into auth_users; join from todo.owner, chat.author, and blob.owner. Fix missing people at ingest/scrape — do not copy display names onto every aggregate.',
-			path: 'handlers/ingestors/zitadel · AuthUsers',
+			path: 'handlers/ingestors/zitadel · projections/auth_users.rs · AuthUsers',
 			label: 'Joins',
 			blocks: [
 				{
@@ -521,7 +539,15 @@ callbacks: {
   pub owner: Option<AuthUsers>,
   …
 }
-// The referencing model owns the relationship knowledge.`
+impl BlobGames {
+  pub fn permissions() -> ModelPermissions<Self> {
+    ModelPermissions::new()
+      .grant("user", read().all_columns()
+        .rows(col("owner_id").eq(claim("x-user-id"))))
+      .grant("admin", read().all_columns())
+  }
+}
+// Relationship and read RBAC stay with the query model.`
 				},
 				{
 					file: 'readmodels/models/auth_users.rs',
@@ -635,7 +661,7 @@ callbacks: {
 				<div class="wf-card">
 					<h3>A map you can extend</h3>
 					<p>
-						Domain crates, read models, thin handlers, dual client surfaces, Svelte UI. Point env at
+						Domain crates, read models, projections, explicit handlers, dual client surfaces, Svelte UI. Point env at
 						your database and IdP; the shape of command → history → query stays the same.
 					</p>
 				</div>
@@ -769,10 +795,12 @@ pub struct TodoCreateInput {
 						<span>Load → decide → fluent commit</span>
 						<em>CausalCommandContext</em>
 					</div>
-					<pre><code>{`let mut todo = load_todo(ctx, &input.todo_id).await?;
-todo.complete(&owner).map_err(map_domain)?;
+					<pre><code>{`let repo = ctx.repo();
+let mut todo = repo.get(&input.todo_id).await?
+  .ok_or_else(|| HandlerError::NotFound(input.todo_id.clone()))?;
+todo.complete(&owner).map_err(rejected)?;
 let state = TodoState::from(&*todo);
-ctx.publish_events()
+repo.publish_events()
   .commit(todo)?
   .causal(TodoStatusPayload {
     todo_id: state.todo_id, status: state.status
@@ -784,9 +812,9 @@ ctx.publish_events()
 						<span>Projected — same transaction</span>
 						<em>blob</em>
 					</div>
-					<pre><code>{`ctx.project(BLOB_GAMES)
+					<pre><code>{`repo.project(BLOB_GAMES)
   .commit(game)?
-  .projected(view)
+  .projected()
 // → PreparedCommand<Projected<BlobGames>>
 // Aggregate + command ledger + query row commit atomically.
 // No manual ReadModelWritePlan in the handler.`}</code></pre>
@@ -815,9 +843,10 @@ Service::new()
 			<ol class="wf-flow-map">
 				<li>Write tests for what the model should allow and refuse</li>
 				<li>Implement the plain type until those tests pass</li>
-				<li>Thin handler: session → load/create → domain → stage (+ Causal or Projected)</li>
-				<li>Projector for eventual models; SurfaceDirectProjection for Projected</li>
-				<li>Permissions + client application surface(s)</li>
+				<li>Command handler: repository → get/create → domain method → fluent commit</li>
+				<li>Projection crate: declare event → read-model operations once</li>
+				<li>Event handler: apply the modeled projection for eventual placement</li>
+				<li>Attach read RBAC to each query model; derive application surfaces</li>
 				<li>Co-located <code>+page.graphql</code>, <code>make gen-client</code>, thin UI</li>
 				<li>Swap storage or messaging when you outgrow the laptop setup</li>
 			</ol>

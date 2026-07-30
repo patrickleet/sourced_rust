@@ -1,3 +1,4 @@
+use distributed::graphql::{read, ModelPermissions};
 use distributed::ReadModel;
 use serde::{Deserialize, Serialize};
 
@@ -15,4 +16,13 @@ pub struct ChatMessages {
     pub created_at: String,
     #[readmodel(belongs_to = "AuthUsers", foreign_key = "author_id")]
     pub author: Option<AuthUsers>,
+}
+
+impl ChatMessages {
+    /// Read authorization attached to the Chat query model.
+    pub fn permissions() -> ModelPermissions<Self> {
+        ModelPermissions::new()
+            .grant("user", read().all_columns())
+            .grant("admin", read().all_columns())
+    }
 }

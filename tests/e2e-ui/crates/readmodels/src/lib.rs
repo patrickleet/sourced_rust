@@ -1,21 +1,11 @@
-//! Read models and projection programs for the e2e-ui fixture.
+//! Query models and read authorization for the e2e-ui fixture.
 //!
-//! Domain crates own aggregates, replay events, and outward state contracts.
-//! This crate consumes those contracts to own query models, projection
-//! programs, and deployment-level relationships.
+//! Projection programs live in `e2e-projections`; this crate owns only the
+//! read side's shapes, relationships, and role grants.
 
-mod blob_projection;
-mod chat_projection;
 pub mod models;
-mod todo_projection;
 
-pub use blob_projection::{BlobDirectEligibilityGuards, BLOB_GAMES};
-pub use chat_projection::CHAT_MESSAGES;
-pub use models::{
-    map_zitadel_user_status, map_zitadel_user_upsert, AuthUsers, BlobGames, ChatMessages, Todos,
-    ZitadelEmail, ZitadelUserPayload,
-};
-pub use todo_projection::{complete_preview, TODO_READS};
+pub use models::{AuthUsers, BlobGames, ChatMessages, Todos};
 
 pub fn distributed_manifest() -> distributed::DistributedProjectManifest {
     use distributed::RelationalReadModel;
@@ -27,41 +17,41 @@ pub fn distributed_manifest() -> distributed::DistributedProjectManifest {
         .table_schema(AuthUsers::schema().clone())
 }
 
+/// Role grants compiled from the authorization attached to each read model.
+pub fn application_grants() -> std::collections::BTreeMap<
+    String,
+    std::collections::BTreeMap<String, distributed::graphql::RoleGrant>,
+> {
+    use distributed::graphql::ModelPermissions;
+    use distributed::RelationalReadModel;
+
+    fn add<M: RelationalReadModel>(
+        grants: &mut std::collections::BTreeMap<
+            String,
+            std::collections::BTreeMap<String, distributed::graphql::RoleGrant>,
+        >,
+        permissions: ModelPermissions<M>,
+    ) {
+        for (role, grant) in permissions.surface_grants() {
+            grants
+                .entry(role)
+                .or_default()
+                .insert(M::schema().model_name.clone(), grant);
+        }
+    }
+
+    let mut grants = std::collections::BTreeMap::new();
+    add(&mut grants, Todos::permissions());
+    add(&mut grants, ChatMessages::permissions());
+    add(&mut grants, BlobGames::permissions());
+    add(&mut grants, AuthUsers::permissions());
+    grants
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
-    use blob_domain::{demo_map, BlobGame};
     use distributed::RelationalReadModel;
-
-    #[test]
-    fn canonical_blob_row_reflects_post_move_state() {
-        let mut g = BlobGame::default();
-        g.start_with_demo("g1", "alice").unwrap();
-        let before = BlobGames::from(&g.state());
-        assert_eq!(before.score, 0);
-        assert!(!before.player_dead);
-
-        g.move_dir("alice", blob_domain::Direction::Right).unwrap();
-        let after = BlobGames::from(&g.state());
-        assert_eq!(after.score, 1);
-        assert_eq!(after.game_id, "g1");
-        assert_eq!(after.owner_id, "alice");
-        assert!(after.map_json.contains("2")); // visited tile
-                                               // Map JSON must differ from pre-move
-        assert_ne!(before.map_json, after.map_json);
-        // Demo map player moved off origin
-        let map: Vec<Vec<u8>> = serde_json::from_str(&after.map_json).unwrap();
-        assert_eq!(map[0][0], 2); // visited
-        assert_eq!(map[0][1], 9); // player
-    }
-
-    #[test]
-    fn demo_map_json_roundtrip() {
-        let m = demo_map();
-        let s = serde_json::to_string(&m).unwrap();
-        let back: Vec<Vec<u8>> = serde_json::from_str(&s).unwrap();
-        assert_eq!(m, back);
-    }
 
     #[test]
     fn referencing_models_own_one_way_auth_user_relationships() {
@@ -102,5 +92,31 @@ mod tests {
         assert!(object("Todos").contains("\n  owner: AuthUsers"));
         assert!(object("BlobGames").contains("\n  owner: AuthUsers"));
         assert!(object("ChatMessages").contains("\n  author: AuthUsers"));
+    }
+
+    #[test]
+    fn model_owned_permissions_compile_the_application_grants() {
+        let grants = application_grants();
+        let user = &grants["user"];
+        let admin = &grants["admin"];
+
+        assert_eq!(user.len(), 4);
+        assert_eq!(admin.len(), 4);
+        assert!(matches!(
+            user["Todos"].row_policy,
+            distributed::graphql::SurfaceRowPolicy::Predicate(_)
+        ));
+        assert!(matches!(
+            user["BlobGames"].row_policy,
+            distributed::graphql::SurfaceRowPolicy::Predicate(_)
+        ));
+        assert!(matches!(
+            user["ChatMessages"].row_policy,
+            distributed::graphql::SurfaceRowPolicy::Unrestricted
+        ));
+        assert!(matches!(
+            user["AuthUsers"].row_policy,
+            distributed::graphql::SurfaceRowPolicy::Unrestricted
+        ));
     }
 }

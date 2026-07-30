@@ -5,7 +5,7 @@ use distributed::projection::lower::{EventualOnly, ProjectionDescriptor};
 #[cfg(test)]
 use distributed::Entity;
 
-use crate::Todos;
+use e2e_readmodels::Todos;
 use todo_domain::{TodoCompletedDomainEvent, TodoDomainIdentity, TodoState};
 
 /// One modeled state-transfer lifecycle plus explicit physical deletion.

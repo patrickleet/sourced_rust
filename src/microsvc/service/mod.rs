@@ -45,8 +45,8 @@ pub(crate) use causal::{
     CausalCommandReceiptSource, CausalProjectionEvidenceState,
 };
 pub use handlers::{
-    direct_read_model, CausalCommandContext, CausalCommitBuilder, DirectReadModelProjection,
-    PreparedCausalCommit, PreparedCommandHandler,
+    direct_read_model, CausalCommandContext, CausalCommitBuilder, CausalRepository,
+    DirectReadModelProjection, PreparedCausalCommit, PreparedCommandHandler,
 };
 pub use request::{CommandRequest, CommandResponse};
 pub(crate) use routes::DynBusPublisher;

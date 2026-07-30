@@ -159,7 +159,7 @@ fn generated_modeled_projector(
 
 #[cfg(feature = "graphql")]
 #[test]
-#[should_panic(expected = "mount it with `Routes::consume_projection(...)` instead of the legacy")]
+#[should_panic(expected = "mount it with `Routes::modeled_projector(...).handle(...)`")]
 fn legacy_route_builder_rejects_unit_partition_modeled_projection() {
     let (projector, _) = generated_modeled_projector(
         crate::projection::placement::ProjectionExecutorRoute::local("task11-service").unwrap(),
@@ -170,6 +170,61 @@ fn legacy_route_builder_rejects_unit_partition_modeled_projection() {
         .causal_projector::<TodoChanged>(projector)
         .model::<PrimaryView>()
         .handle(|_context: CausalProjectorContext, _fact: TodoChanged| async move { Ok(()) });
+}
+
+#[cfg(feature = "graphql")]
+#[tokio::test]
+async fn explicit_modeled_projector_handler_applies_the_compiled_projection() {
+    use crate::projection::placement::ProjectionExecutorRoute;
+
+    let repository = InMemoryRepository::new();
+    let bus = InMemoryBus::new();
+    let invoked = Arc::new(AtomicBool::new(false));
+    let handler_invoked = Arc::clone(&invoked);
+    let (projector, topology) =
+        generated_modeled_projector(ProjectionExecutorRoute::local("task11-explicit").unwrap());
+    let routes = Routes::new()
+        .with_read_model_store(repository.clone())
+        .modeled_projector(projector)
+        .handle(move |context, projection| {
+            let invoked = Arc::clone(&handler_invoked);
+            async move {
+                invoked.store(true, Ordering::Release);
+                projection
+                    .apply(GENERATED_MODELED_PROJECTOR, &context)
+                    .await
+            }
+        });
+    let service = Service::new()
+        .named("task11-explicit")
+        .routes(routes)
+        .with_bus(bus.clone());
+    bus.publish_message(modeled_fact_message("todo-explicit", "visible handler", 1))
+        .await
+        .unwrap();
+
+    service.run(RunOptions::idempotent()).await.unwrap();
+
+    assert!(invoked.load(Ordering::Acquire));
+    let ordered = bus.ordered_topic_evidence(FACT_NAME, 0);
+    let snapshot = repository
+        .projection_query_snapshot(&modeled_snapshot_request(
+            &topology,
+            &ordered,
+            "PrimaryView",
+            PrimaryView::schema(),
+            "todo-explicit",
+        ))
+        .await
+        .unwrap();
+    assert_eq!(
+        snapshot
+            .row
+            .as_ref()
+            .and_then(|row| row.get_serde::<String>("title").ok())
+            .as_deref(),
+        Some("visible handler")
+    );
 }
 
 #[cfg(feature = "graphql")]

@@ -3,12 +3,9 @@ name = "e2e-readmodels"
 version.workspace = true
 edition.workspace = true
 publish = false
-description = "Provider read models and deployment-composed query relationships"
+description = "Query models, relationships, and read authorization"
 
 [dependencies]
 distributed = { workspace = true }
 serde = { workspace = true }
 serde_json = { workspace = true }
-todo-domain = { path = "../todo-domain" }
-chat-domain = { path = "../chat-domain" }
-blob-domain = { path = "../blob-domain" }

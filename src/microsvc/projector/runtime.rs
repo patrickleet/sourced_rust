@@ -21,6 +21,7 @@ use super::errors::{
 };
 use super::handle::ProjectionRepairHandle;
 use super::registration::ProjectorHandlerFn;
+use super::registration::{ModeledProjection, ModeledProjectorHandlerFn};
 
 pub(in crate::microsvc) type ProjectorDispatchFuture<'a> =
     Pin<Box<dyn Future<Output = Result<(), HandlerError>> + Send + 'a>>;
@@ -70,6 +71,7 @@ pub(in crate::microsvc) struct RegisteredModeledProjector {
     pub(in crate::microsvc) compiled: CompiledProjectionTopology,
     pub(in crate::microsvc) change_epoch: ProjectionEpoch,
     pub(in crate::microsvc) executor: crate::projection::lower::ProjectionServerExecutorDescriptor,
+    pub(in crate::microsvc) handle: Option<Arc<ModeledProjectorHandlerFn>>,
 }
 
 impl<D> ErasedProjectorHandler<D> for RegisteredModeledProjector
@@ -300,7 +302,33 @@ where
             )?;
             let (context, workspace) =
                 CausalProjectorContext::new(message, D::Store::clone(store), workspace);
-            if let Some(lowered) = lowered {
+            if let Some(handle) = &self.handle {
+                let (projection, applied) =
+                    ModeledProjection::new(self.executor.program_id, lowered);
+                if let Err(error) = handle(context, projection).await {
+                    return handle_projector_error(
+                        store,
+                        failure_input,
+                        self.change_epoch.clone(),
+                        "modeled_handler",
+                        error,
+                    )
+                    .await;
+                }
+                if !applied.load(std::sync::atomic::Ordering::Acquire) {
+                    return handle_projector_error(
+                        store,
+                        failure_input,
+                        self.change_epoch.clone(),
+                        "modeled_handler",
+                        HandlerError::Rejected(
+                            "modeled projector handler returned without applying its projection"
+                                .into(),
+                        ),
+                    )
+                    .await;
+                }
+            } else if let Some(lowered) = lowered {
                 if let Err(error) = context.apply_portable(lowered).await {
                     return handle_projector_error(
                         store,

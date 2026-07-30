@@ -7,9 +7,9 @@
 use distributed::graphql::{Causal, PreparedCommand};
 use distributed::microsvc::{CausalCommandContext, HandlerError};
 use serde::{Deserialize, Serialize};
-use todo_domain::Todo;
+use todo_domain::{Todo, TodoState};
 
-use crate::handlers::commands::todo_cmd::{commit_todo_events, load_todo, map_domain};
+use crate::handlers::util::rejected;
 
 pub const COMMAND: &str = "todo.force_archive";
 
@@ -32,13 +32,20 @@ pub async fn handle(
     input: TodoForceArchiveInput,
 ) -> Result<PreparedCommand<Causal<TodoForceArchivePayload>>, HandlerError> {
     let admin = ctx.user_id()?.to_string();
-    let mut todo = load_todo(ctx, &input.todo_id).await?;
+    let repo = ctx.repo();
+    let mut todo = repo
+        .get(&input.todo_id)
+        .await?
+        .ok_or_else(|| HandlerError::NotFound(input.todo_id.clone()))?;
 
-    todo.force_archive().map_err(map_domain)?;
-    commit_todo_events(ctx, todo, |state| TodoForceArchivePayload {
-        todo_id: state.todo_id,
-        owner_id: state.owner_id,
-        status: state.status,
-        archived_by: admin,
-    })
+    todo.force_archive().map_err(rejected)?;
+    let state = TodoState::from(&*todo);
+    repo.publish_events()
+        .commit(todo)?
+        .causal(TodoForceArchivePayload {
+            todo_id: state.todo_id,
+            owner_id: state.owner_id,
+            status: state.status,
+            archived_by: admin,
+        })
 }

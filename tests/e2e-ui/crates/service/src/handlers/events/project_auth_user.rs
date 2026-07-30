@@ -2,7 +2,7 @@
 
 use distributed::microsvc::{Context, HandlerError};
 use distributed::ReadModelWritePlanBuilder;
-use e2e_readmodels::{map_zitadel_user_status, map_zitadel_user_upsert, ZitadelUserPayload};
+use e2e_projections::{map_zitadel_user_status, map_zitadel_user_upsert, ZitadelUserPayload};
 use serde_json::{json, Value};
 
 use crate::deps::AuthDeps;

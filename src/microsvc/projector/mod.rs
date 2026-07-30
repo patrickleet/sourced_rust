@@ -19,6 +19,10 @@ pub use graph_workspace::{
 };
 pub use handle::{ProjectionRepairHandle, ProjectionRepairHandleParseError};
 pub use registration::CausalProjectorRouteBuilder;
+#[cfg(feature = "graphql")]
+pub(super) use registration::ModeledProjectorHandlerFn;
+#[cfg(feature = "graphql")]
+pub use registration::{ModeledProjection, ModeledProjectorRouteBuilder};
 
 pub(super) use errors::projection_error_is_retryable;
 #[cfg(feature = "graphql")]
