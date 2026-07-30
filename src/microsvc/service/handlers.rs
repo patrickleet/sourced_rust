@@ -385,6 +385,11 @@ where
 {
     /// Select a declaration that may satisfy the narrow direct projection
     /// proof. Ordinary `read_models(plan)` remains independent from this leg.
+    ///
+    /// **Deprecated for application commands.** Prefer placement-selected
+    /// `commit(aggregate)?.projected()` so command code does not name a
+    /// projection. Service registration owns the direct handler.
+    #[doc(hidden)]
     pub fn project<Projection>(
         self,
         projection: Projection,
@@ -472,6 +477,10 @@ where
     /// The dispatcher resolves the descriptor from the authoritative,
     /// ledger-stamped domain-event occurrence, admits only one complete-row
     /// direct proof, and materializes `M` from that exact committed upsert.
+    ///
+    /// Prefer placement-selected [`PreparedCausalCommit::projected`] without a
+    /// preceding `.project(...)` when service registration owns the direct
+    /// handler.
     pub fn projected<M>(self) -> Result<PreparedCommand<Projected<M>>, HandlerError>
     where
         M: RelationalReadModel + Serialize + Send + Sync + 'static,
@@ -479,6 +488,27 @@ where
         self.context
             .workspace
             .prepare_modeled_projected(self.projection)
+            .map_err(workspace_handler_error)
+    }
+}
+
+impl<A, Publication> PreparedCausalCommit<'_, '_, A, Publication, NoDirectProjection>
+where
+    A: Aggregate + Send + Sync + 'static,
+{
+    /// Return the row produced by the placement-selected direct event handler.
+    ///
+    /// Service registration chooses the direct owner for the returned model.
+    /// Command code names neither a projection constant nor a read-model
+    /// mutation; it only seals the unit of work and claims the projected
+    /// terminal.
+    pub fn projected<M>(self) -> Result<PreparedCommand<Projected<M>>, HandlerError>
+    where
+        M: RelationalReadModel + Serialize + Send + Sync + 'static,
+    {
+        self.context
+            .workspace
+            .prepare_placement_selected_projected()
             .map_err(workspace_handler_error)
     }
 }

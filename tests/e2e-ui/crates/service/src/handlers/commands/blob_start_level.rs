@@ -3,7 +3,6 @@
 use blob_domain::BlobGame;
 use distributed::graphql::{PreparedCommand, Projected};
 use distributed::microsvc::{CausalCommandContext, HandlerError};
-use e2e_projections::BLOB_GAMES;
 use e2e_readmodels::BlobGames;
 use serde::Deserialize;
 
@@ -28,5 +27,6 @@ pub async fn handle(
         .ok_or_else(|| HandlerError::NotFound(input.game_id.clone()))?;
     // Fresh passable layout each level (like original generateLevel)
     game.start_next_generated_level(&owner).map_err(rejected)?;
-    repo.project(BLOB_GAMES).commit(game)?.projected()
+    // Placement-selected direct: registration owns project_blob / SAVE_BLOB_GAME.
+    repo.commit(game)?.projected()
 }

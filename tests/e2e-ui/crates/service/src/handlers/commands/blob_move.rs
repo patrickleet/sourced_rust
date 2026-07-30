@@ -3,7 +3,6 @@
 use blob_domain::{BlobGame, Direction};
 use distributed::graphql::{PreparedCommand, Projected};
 use distributed::microsvc::{CausalCommandContext, HandlerError};
-use e2e_projections::BLOB_GAMES;
 use e2e_readmodels::BlobGames;
 use serde::Deserialize;
 
@@ -36,5 +35,7 @@ pub async fn handle(
         .ok_or_else(|| HandlerError::NotFound(input.game_id.clone()))?;
     game.move_dir(&owner, dir).map_err(rejected)?;
 
-    repo.project(BLOB_GAMES).commit(game)?.projected()
+    // Placement-selected direct: service registration owns project_blob /
+    // SAVE_BLOB_GAME. Command code names neither a projection nor a selector.
+    repo.commit(game)?.projected()
 }

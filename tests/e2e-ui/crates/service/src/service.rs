@@ -28,7 +28,10 @@ use distributed::{
     InMemoryRepository, LockError, LockManager, ProjectionEnvelopeField, Queueable,
     QueuedRepository, RelationalReadModel,
 };
-use e2e_projections::{BLOB_GAMES, CHAT_MESSAGES, TODO_READS};
+use e2e_projections::{
+    delete_todo_program, save_blob_game_program, save_chat_message_program, save_todo_program,
+    BLOB_GAMES, CHAT_MESSAGES, TODO_READS,
+};
 use e2e_readmodels::{AuthUsers, BlobGames, ChatMessages, Todos};
 use todo_domain::{
     Todo, TodoArchivedDomainEvent, TodoCompletedDomainEvent, TodoCreatedDomainEvent,
@@ -129,6 +132,10 @@ fn projection_owners() -> ProjectionOwners {
         Some(physical_topology("project_blob", 0x22)),
     )
     .expect("Blob projection binding");
+    // Placement-selected direct: command handlers call commit()?.projected()
+    // without naming BLOB_GAMES. Registration owns the executor.
+    distributed::projection::lower::register_placement_selected_direct_descriptor(&BLOB_GAMES)
+        .expect("Blob placement-selected direct registration");
 
     let catalog = ProjectionCatalog::try_new(vec![
         todo_binding.clone(),
@@ -157,6 +164,24 @@ fn projection_owners() -> ProjectionOwners {
             None,
         )
         .expect("non-overlapping active projection catalog");
+
+    // Mutation IR is the public projector authoring model. Prove the dual-path
+    // runtime mounts still target the same models as SAVE_*/DELETE_* programs.
+    let save_todo = save_todo_program();
+    let delete_todo = delete_todo_program();
+    let save_chat = save_chat_message_program();
+    let save_blob = save_blob_game_program();
+    assert_eq!(save_todo.operations()[0].target().model(), "Todos");
+    assert_eq!(delete_todo.operations()[0].target().model(), "Todos");
+    assert_eq!(save_chat.operations()[0].target().model(), "ChatMessages");
+    assert_eq!(save_blob.operations()[0].target().model(), "BlobGames");
+    assert_eq!(save_todo.ir_version(), 1);
+    let _mutation_catalog = (
+        save_todo.id().expect("save_todo digest"),
+        delete_todo.id().expect("delete_todo digest"),
+        save_chat.id().expect("save_chat digest"),
+        save_blob.id().expect("save_blob digest"),
+    );
 
     ProjectionOwners {
         todo: SurfaceProjector::new("project_todos").modeled(modeled_projection(

@@ -480,6 +480,36 @@ where
         let executor = projection
             .server_executor()
             .map_err(|error| CausalWorkspaceError::ModeledDirectProjection(error.to_string()))?;
+        self.prepare_modeled_projected_from_executor(executor)
+    }
+
+    /// Placement-selected direct projection: the service registration chose the
+    /// executor; command code names neither a projection nor a selector.
+    pub(crate) fn prepare_placement_selected_projected<M>(
+        &self,
+    ) -> Result<PreparedCommand<Projected<M>>, CausalWorkspaceError>
+    where
+        M: RelationalReadModel + Serialize + Send + Sync + 'static,
+    {
+        let schema = M::schema();
+        let executor =
+            crate::projection::lower::placement_selected_direct_for_model(&schema.model_name)
+                .ok_or_else(|| {
+                    CausalWorkspaceError::ModeledDirectProjection(format!(
+                        "no placement-selected direct projection is registered for model `{}`",
+                        schema.model_name
+                    ))
+                })?;
+        self.prepare_modeled_projected_from_executor(executor)
+    }
+
+    fn prepare_modeled_projected_from_executor<M>(
+        &self,
+        executor: ProjectionServerExecutorDescriptor,
+    ) -> Result<PreparedCommand<Projected<M>>, CausalWorkspaceError>
+    where
+        M: RelationalReadModel + Serialize + Send + Sync + 'static,
+    {
         let [output] = executor.outputs.models.as_slice() else {
             return Err(CausalWorkspaceError::ModeledDirectProjection(
                 "a direct descriptor must own exactly one output model".into(),
@@ -1293,6 +1323,33 @@ mod tests {
             "test.modeled-direct",
         )
         .into_contract()
+    }
+
+    #[test]
+    fn placement_selected_projected_uses_registered_executor_without_project_selector() {
+        use crate::projection::lower::register_placement_selected_direct_descriptor;
+
+        register_placement_selected_direct_descriptor(&MODELED_DIRECT)
+            .expect("register placement-selected direct");
+        let repository = modeled_direct_repository();
+        let workspace = CausalWorkspace::new(&repository);
+        let mut aggregate = workspace.create();
+        aggregate
+            .create("placement-1".into(), "authoritative".into())
+            .unwrap();
+        workspace.stage(aggregate).unwrap();
+        let mut prepared = workspace
+            .prepare_placement_selected_projected::<ModeledDirectView>()
+            .expect("placement-selected projected without .project(MODELED_DIRECT)");
+
+        let mut parts = workspace.into_parts().unwrap();
+        parts
+            .prepare_domain_publications("cause-placement")
+            .unwrap();
+        parts
+            .validate_prepared(&modeled_direct_contract(), &mut prepared)
+            .expect("placement-selected proof validates");
+        assert!(parts.resolved_direct_projection.is_some());
     }
 
     #[test]
