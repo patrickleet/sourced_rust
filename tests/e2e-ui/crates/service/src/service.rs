@@ -29,8 +29,8 @@ use distributed::{
     QueuedRepository, RelationalReadModel,
 };
 use e2e_projections::{
-    delete_todo_program, save_blob_game_program, save_chat_message_program, save_todo_program,
-    BLOB_GAMES, CHAT_MESSAGES, TODO_READS,
+    blob_mutation_projection_program, chat_mutation_projection_program,
+    todo_mutation_projection_program, BLOB_GAMES, CHAT_MESSAGES, TODO_READS,
 };
 use e2e_readmodels::{AuthUsers, BlobGames, ChatMessages, Todos};
 use todo_domain::{
@@ -165,22 +165,28 @@ fn projection_owners() -> ProjectionOwners {
         )
         .expect("non-overlapping active projection catalog");
 
-    // Mutation IR is the public projector authoring model. Prove the dual-path
-    // runtime mounts still target the same models as SAVE_*/DELETE_* programs.
-    let save_todo = save_todo_program();
-    let delete_todo = delete_todo_program();
-    let save_chat = save_chat_message_program();
-    let save_blob = save_blob_game_program();
-    assert_eq!(save_todo.operations()[0].target().model(), "Todos");
-    assert_eq!(delete_todo.operations()[0].target().model(), "Todos");
-    assert_eq!(save_chat.operations()[0].target().model(), "ChatMessages");
-    assert_eq!(save_blob.operations()[0].target().model(), "BlobGames");
-    assert_eq!(save_todo.ir_version(), 1);
-    let _mutation_catalog = (
-        save_todo.id().expect("save_todo digest"),
-        delete_todo.id().expect("delete_todo digest"),
-        save_chat.id().expect("save_chat digest"),
-        save_blob.id().expect("save_blob digest"),
+    // Runtime mounts are mutation-backed: descriptor program factories must
+    // match the mutation rewrite programs (real path, not digest theater).
+    assert_eq!(
+        TODO_READS.program().expect("todo program").canonical_bytes().unwrap(),
+        todo_mutation_projection_program()
+            .expect("todo mutation program")
+            .canonical_bytes()
+            .unwrap()
+    );
+    assert_eq!(
+        CHAT_MESSAGES.program().expect("chat program").canonical_bytes().unwrap(),
+        chat_mutation_projection_program()
+            .expect("chat mutation program")
+            .canonical_bytes()
+            .unwrap()
+    );
+    assert_eq!(
+        BLOB_GAMES.program().expect("blob program").canonical_bytes().unwrap(),
+        blob_mutation_projection_program()
+            .expect("blob mutation program")
+            .canonical_bytes()
+            .unwrap()
     );
 
     ProjectionOwners {

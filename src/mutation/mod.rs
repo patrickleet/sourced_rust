@@ -15,6 +15,7 @@ mod bind;
 mod cache;
 mod canonical;
 mod capabilities;
+mod descriptor;
 mod error;
 mod expression;
 mod handler;
@@ -38,6 +39,11 @@ pub use cache::{
 pub use capabilities::{
     MutationFieldCapability, MutationKeyCapability, MutationModelIdentity,
     MutationRelationshipCapability, ReadModelMutationCapabilities,
+};
+pub use descriptor::{
+    assert_mutation_backed_program, body_bindings_for_model, descriptor_from_factories,
+    inventory_single_model, lower_single_model, program_from_mutation_arms,
+    projection_value_type_for_column, resolve_mutation_program, MutationProjectionArm,
 };
 pub use error::MutationProgramError;
 pub use expression::{

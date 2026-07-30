@@ -82,13 +82,15 @@ pub use projection::{
 
 // Event-independent mutation IR, portable handlers, and dual-path interpreters.
 pub use mutation::{
-    body_field_binding, compose_event_preview, lower_mutation_cache, portable_binding, Mutation,
+    body_bindings_for_model, body_field_binding, compose_event_preview, descriptor_from_factories,
+    envelope_binding, inventory_single_model, lower_mutation_cache, lower_single_model,
+    portable_binding, program_from_mutation_arms, resolve_mutation_program, Mutation,
     MutationAssignment, MutationCacheEffect, MutationCacheProgram, MutationCacheVisibility,
     MutationConflictTarget, MutationEventBinding, MutationExpression, MutationField,
     MutationFieldCapability, MutationHandlerCatalog, MutationHandlerPlacement,
     MutationHandlerRegistration, MutationInputBinding, MutationKeyCapability, MutationKeyField,
     MutationKind, MutationOperation, MutationProgram, MutationProgramError, MutationProgramId,
-    MutationProgramLimits, MutationReturning, MutationServerInterpreter,
+    MutationProgramLimits, MutationProjectionArm, MutationReturning, MutationServerInterpreter,
     ReadModelMutationCapabilities, ResolvedMutationValue, MAX_MUTATION_OPERATIONS,
     MUTATION_OPERATION_SEMANTICS_VERSION, MUTATION_PROGRAM_IR_VERSION,
 };
