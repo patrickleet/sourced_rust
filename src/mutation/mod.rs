@@ -1,0 +1,61 @@
+//! Event-independent read-model mutation IR and interpreters.
+//!
+//! Mutations describe finite read-model changes without event selectors,
+//! upcasters, owners, placement, or command-preview data. Portable event
+//! handlers bind domain events to mutation inputs; the server and cache
+//! interpreters consume the same canonical IR.
+//!
+//! During the dual-path rollout, bound mutations adapt to the existing
+//! projection operation vocabulary for physical execution. Legacy
+//! event-owning `projection!` authoring remains until cutover.
+
+#![deny(missing_docs)]
+
+mod bind;
+mod cache;
+mod canonical;
+mod capabilities;
+mod error;
+mod expression;
+mod handler;
+mod preview;
+mod program;
+#[cfg(test)]
+mod relationship_fixture;
+mod server;
+
+#[cfg(test)]
+mod tests;
+
+pub use bind::{
+    body_field_binding, envelope_binding, identity_body_path_binder, required_input_paths,
+    MutationEventBinding, MutationInputBinding,
+};
+pub use cache::{
+    is_cache_writable, lower_mutation_cache, lower_projection_ops_cache, presence_label,
+    MutationCacheEffect, MutationCacheProgram, MutationCacheVisibility,
+};
+pub use capabilities::{
+    MutationFieldCapability, MutationKeyCapability, MutationModelIdentity,
+    MutationRelationshipCapability, ReadModelMutationCapabilities,
+};
+pub use error::MutationProgramError;
+pub use expression::{
+    MutationAssignment, MutationExpression, MutationExpressionObjectField, ResolvedMutationValue,
+    MAX_MUTATION_EXPRESSION_DEPTH, MAX_MUTATION_PATH_SEGMENTS,
+};
+pub use handler::{
+    bindings_from_expressions, portable_binding, CustomMutationHandler, MutationHandlerCatalog,
+    MutationHandlerPlacement, MutationHandlerRegistration, MutationHandlerUniquenessKey,
+};
+pub use preview::{
+    causal_scopes, compose_event_preview, reconcile_with_actual, rewrite_binding_ops,
+    zero_binding_preview, ComposedPreviewLayer, MutationCausalScope, PreviewOwnerContribution,
+};
+pub use program::{
+    Mutation, MutationConflictTarget, MutationField, MutationKeyField, MutationKind,
+    MutationOperation, MutationProgram, MutationProgramId, MutationProgramLimits,
+    MutationReturning, MAX_MUTATION_OPERATIONS, MUTATION_OPERATION_SEMANTICS_VERSION,
+    MUTATION_PROGRAM_IR_VERSION,
+};
+pub use server::{rewrite_program_with_binder, simple_body_bindings, MutationServerInterpreter};

@@ -28,6 +28,7 @@ pub mod manifest;
 #[cfg(feature = "metrics")]
 pub mod metrics;
 pub mod microsvc;
+pub mod mutation;
 pub mod outbox;
 pub mod outbox_worker;
 #[cfg(feature = "postgres")]
@@ -77,6 +78,19 @@ pub use projection::{
     ResolvedProjectionPartition, ResolvedProjectionPartitionRef, ResolvedProjectionPlan,
     ResolvedProjectionRelationshipEffect, ResolvedProjectionValue, MAX_PROJECTION_EXPRESSION_DEPTH,
     MAX_PROJECTION_OPERATIONS_PER_OCCURRENCE, MAX_PROJECTION_PATH_SEGMENTS,
+};
+
+// Event-independent mutation IR, portable handlers, and dual-path interpreters.
+pub use mutation::{
+    body_field_binding, compose_event_preview, lower_mutation_cache, portable_binding, Mutation,
+    MutationAssignment, MutationCacheEffect, MutationCacheProgram, MutationCacheVisibility,
+    MutationConflictTarget, MutationEventBinding, MutationExpression, MutationField,
+    MutationFieldCapability, MutationHandlerCatalog, MutationHandlerPlacement,
+    MutationHandlerRegistration, MutationInputBinding, MutationKeyCapability, MutationKeyField,
+    MutationKind, MutationOperation, MutationProgram, MutationProgramError, MutationProgramId,
+    MutationProgramLimits, MutationReturning, MutationServerInterpreter,
+    ReadModelMutationCapabilities, ResolvedMutationValue, MAX_MUTATION_OPERATIONS,
+    MUTATION_OPERATION_SEMANTICS_VERSION, MUTATION_PROGRAM_IR_VERSION,
 };
 
 pub type SourcedResult<T = ()> = std::result::Result<T, EventRecordError>;
@@ -205,8 +219,9 @@ pub use microsvc::{ROLE_KEY, USER_ID_KEY};
 
 // Re-export proc macros
 pub use distributed_macros::{
-    aggregate, command_confirmations, command_effects, command_input_defaults, digest, projection,
-    sourced, DomainEvent, DomainState, GraphqlInput, GraphqlOutput, ReadModel, Snapshot,
+    aggregate, command_confirmations, command_effects, command_input_defaults, digest, mutation,
+    projection, sourced, DomainEvent, DomainState, GraphqlInput, GraphqlOutput, ReadModel,
+    Snapshot,
 };
 
 // Re-export enqueue macro (requires "emitter" feature)
