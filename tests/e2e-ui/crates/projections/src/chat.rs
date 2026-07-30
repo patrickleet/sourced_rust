@@ -1,10 +1,29 @@
 //! Chat domain-event projections into query models.
+//!
+//! `SAVE_CHAT_MESSAGE` is the event-independent mutation; `CHAT_MESSAGES`
+//! remains the dual-path runtime mount until cutover.
 
+use distributed::mutation;
 use distributed::projection;
 use distributed::projection::lower::{DirectCandidate, ProjectionDescriptor};
+use distributed::{Mutation, MutationProgram};
 
 use chat_domain::ChatMessageState;
 use e2e_readmodels::ChatMessages;
+
+/// Event-independent complete-row upsert for chat messages.
+pub fn save_chat_message() -> Mutation<()> {
+    mutation! {
+        name: "save_chat_message";
+        version: 1;
+        upsert ChatMessages from input.message;
+    }
+}
+
+/// Canonical SAVE_CHAT_MESSAGE mutation program.
+pub fn save_chat_message_program() -> MutationProgram {
+    save_chat_message().program().clone()
+}
 
 /// Portable insert-shaped state transfer for chat.
 pub const CHAT_MESSAGES: ProjectionDescriptor<DirectCandidate> = projection! {
@@ -65,5 +84,19 @@ mod tests {
         assert_eq!(inventory.models.len(), 1);
         assert_eq!(inventory.models[0].model, "ChatMessages");
         assert_eq!(inventory.models[0].storage, "chat_messages");
+    }
+
+    #[test]
+    fn save_chat_message_mutation_is_event_free_complete_upsert() {
+        use distributed::MutationKind;
+
+        let program = save_chat_message_program();
+        assert_eq!(program.operations().len(), 1);
+        assert_eq!(program.operations()[0].kind(), MutationKind::Upsert);
+        assert_eq!(program.operations()[0].target().model(), "ChatMessages");
+        assert_eq!(program.operations()[0].target().storage(), "chat_messages");
+        let json = serde_json::to_value(&program).unwrap().to_string();
+        assert!(!json.contains("event_name"));
+        assert!(!json.contains("chat_message.posted"));
     }
 }

@@ -1,10 +1,30 @@
 //! Blob domain-event projections into query models.
+//!
+//! `SAVE_BLOB_GAME` is the event-independent mutation with typed returning
+//! intent. `BLOB_GAMES` remains the dual-path direct mount until placement-
+//! selected `commit()?.projected()` fully replaces command-side selectors.
 
+use distributed::mutation;
 use distributed::projection;
 use distributed::projection::lower::{DirectCandidate, ProjectionDescriptor};
+use distributed::{Mutation, MutationProgram};
 
 use blob_domain::BlobGameState;
 use e2e_readmodels::BlobGames;
+
+/// Event-independent complete-row upsert for blob games (direct returning path).
+pub fn save_blob_game() -> Mutation<()> {
+    mutation! {
+        name: "save_blob_game";
+        version: 1;
+        upsert BlobGames from input.game;
+    }
+}
+
+/// Canonical SAVE_BLOB_GAME mutation program.
+pub fn save_blob_game_program() -> MutationProgram {
+    save_blob_game().program().clone()
+}
 
 /// One complete state upsert for every direct Blob transition.
 pub const BLOB_GAMES: ProjectionDescriptor<DirectCandidate> = projection! {
@@ -210,6 +230,21 @@ mod tests {
     };
 
     fn assert_eventual_only(_: ProjectionDescriptor<EventualOnly>) {}
+
+    #[test]
+    fn save_blob_game_mutation_is_single_row_event_free_upsert() {
+        use distributed::MutationKind;
+
+        let program = save_blob_game_program();
+        assert_eq!(program.operations().len(), 1);
+        assert_eq!(program.operations()[0].kind(), MutationKind::Upsert);
+        assert_eq!(program.operations()[0].target().model(), "BlobGames");
+        let json = serde_json::to_value(&program).unwrap().to_string();
+        assert!(!json.contains("event_name"));
+        assert!(!json.contains("blob.moved"));
+        // Single-row complete write is the only shape eligible for Projected<M>.
+        assert!(program.operations()[0].fields().len() >= 1);
+    }
 
     fn assert_direct_state_upsert(game: &BlobGame, expected_event: &str) {
         let occurrence = game.entity.pending_domain_events().last().unwrap();

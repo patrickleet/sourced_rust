@@ -1,12 +1,48 @@
 //! Todo domain-event projections into query models.
+//!
+//! Mutation IR (`SAVE_TODO` / `DELETE_TODO`) is the public projector authoring
+//! model. The legacy `projection!` descriptor remains the dual-path runtime
+//! mount until cutover removes event-owning projection macros.
 
+use distributed::mutation;
 use distributed::projection;
 use distributed::projection::lower::{EventualOnly, ProjectionDescriptor};
 #[cfg(test)]
 use distributed::Entity;
+use distributed::{Mutation, MutationProgram};
 
 use e2e_readmodels::Todos;
 use todo_domain::{TodoCompletedDomainEvent, TodoDomainIdentity, TodoState};
+
+/// Event-independent complete-row upsert for Todo state transfer.
+pub fn save_todo() -> Mutation<()> {
+    mutation! {
+        name: "save_todo";
+        version: 1;
+        upsert Todos from input.todo;
+    }
+}
+
+/// Event-independent delete by primary key for Todo purge.
+pub fn delete_todo() -> Mutation<()> {
+    mutation! {
+        name: "delete_todo";
+        version: 1;
+        delete Todos by_pk {
+            todo_id: input.todo_id,
+        };
+    }
+}
+
+/// Canonical SAVE_TODO mutation program (event-independent).
+pub fn save_todo_program() -> MutationProgram {
+    save_todo().program().clone()
+}
+
+/// Canonical DELETE_TODO mutation program (event-independent).
+pub fn delete_todo_program() -> MutationProgram {
+    delete_todo().program().clone()
+}
 
 /// One modeled state-transfer lifecycle plus explicit physical deletion.
 pub const TODO_READS: ProjectionDescriptor<EventualOnly> = projection! {
@@ -189,6 +225,82 @@ mod tests {
             delete.key.get("todo_id"),
             Some(&RowValue::String("todo-1".into()))
         );
+    }
+
+    #[test]
+    fn save_and_delete_mutations_are_event_independent_and_versioned() {
+        use distributed::{MutationKind, MUTATION_PROGRAM_IR_VERSION};
+
+        let save = save_todo_program();
+        let delete = delete_todo_program();
+        assert_eq!(save.ir_version(), MUTATION_PROGRAM_IR_VERSION);
+        assert_eq!(save.operations().len(), 1);
+        assert_eq!(save.operations()[0].kind(), MutationKind::Upsert);
+        assert_eq!(save.operations()[0].target().model(), "Todos");
+        assert_eq!(delete.operations()[0].kind(), MutationKind::Delete);
+        let save_json = serde_json::to_value(&save).unwrap().to_string();
+        assert!(!save_json.contains("event_name"));
+        assert!(!save_json.contains("\"selector\""));
+        // Sugar and explicit primary-key conflict canonicalize identically.
+        let explicit = mutation! {
+            name: "save_todo";
+            version: 1;
+            upsert Todos one {
+                object: input.todo,
+                conflict: primary_key,
+                update: all_input_fields,
+            };
+        };
+        assert_eq!(
+            save.id().unwrap().to_string(),
+            explicit.id().unwrap().to_string()
+        );
+    }
+
+    #[test]
+    fn mutation_rewrite_matches_projection_arm_kinds_for_state_and_purge() {
+        use distributed::{
+            body_field_binding, MutationEventBinding, ProjectionEventSelector, ProjectionValueType,
+            DomainEventBodyKind, DOMAIN_EVENT_OCCURRENCE_VERSION,
+        };
+
+        let selector = ProjectionEventSelector::try_new(
+            DOMAIN_EVENT_OCCURRENCE_VERSION,
+            "todo.completed",
+            1,
+            DomainEventBodyKind::State,
+            "TodoState",
+            1,
+            "urn:distributed:test:todo-state:v1",
+            "sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+            "distributed-json",
+            1,
+        )
+        .unwrap();
+        let bindings = vec![
+            body_field_binding(["todo", "todo_id"], ["todo_id"], ProjectionValueType::String)
+                .unwrap(),
+            body_field_binding(["todo", "owner_id"], ["owner_id"], ProjectionValueType::String)
+                .unwrap(),
+            body_field_binding(["todo", "title"], ["title"], ProjectionValueType::String).unwrap(),
+            body_field_binding(["todo", "status"], ["status"], ProjectionValueType::String)
+                .unwrap(),
+            body_field_binding(
+                ["todo", "assignee_id"],
+                ["assignee_id"],
+                ProjectionValueType::String,
+            )
+            .unwrap(),
+        ];
+        let binding =
+            MutationEventBinding::try_new(selector, bindings, save_todo_program()).unwrap();
+        let arm = binding.to_projection_arm("completed").unwrap();
+        assert_eq!(arm.operations().len(), 1);
+        assert_eq!(
+            arm.operations()[0].kind(),
+            distributed::ProjectionMutationKind::Upsert
+        );
+        assert_eq!(arm.operations()[0].target().model(), "Todos");
     }
 
     #[test]

@@ -5,6 +5,7 @@ mod domain_event;
 mod domain_state;
 mod enqueue;
 mod graphql_types;
+mod mutation;
 mod projection;
 mod read_model;
 mod shared;
@@ -112,6 +113,23 @@ pub fn command_confirmations(input: TokenStream) -> TokenStream {
 #[proc_macro]
 pub fn projection(input: TokenStream) -> TokenStream {
     projection::expand(input)
+}
+
+/// Compile an event-independent read-model mutation program.
+///
+/// Mutations never name events. Portable handlers bind events to mutation
+/// inputs. Generated capabilities are internal; they are not GraphQL fields.
+///
+/// ```ignore
+/// pub const SAVE_TODO: Mutation<TodoInput> = mutation! {
+///     name: "save_todo";
+///     version: 1;
+///     upsert Todos from input.todo;
+/// };
+/// ```
+#[proc_macro]
+pub fn mutation(input: TokenStream) -> TokenStream {
+    mutation::expand(input)
 }
 
 /// Derive `GraphqlInputType` for command mutation input structs.
