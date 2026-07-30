@@ -13,9 +13,13 @@ pub use auth_users::{
     map_zitadel_user_status, map_zitadel_user_upsert, ZitadelEmail, ZitadelUserPayload,
 };
 pub use blob::{
-    save_blob_game, save_blob_game_program, BlobDirectEligibilityGuards, BLOB_GAMES,
+    blob_mutation_projection_program, save_blob_game, save_blob_game_program,
+    BlobDirectEligibilityGuards, BLOB_GAMES,
 };
-pub use chat::{save_chat_message, save_chat_message_program, CHAT_MESSAGES};
+pub use chat::{
+    chat_mutation_projection_program, save_chat_message, save_chat_message_program, CHAT_MESSAGES,
+};
 pub use todos::{
-    complete_preview, delete_todo, delete_todo_program, save_todo, save_todo_program, TODO_READS,
+    complete_preview, delete_todo, delete_todo_program, save_todo, save_todo_program,
+    todo_mutation_projection_program, TODO_READS,
 };

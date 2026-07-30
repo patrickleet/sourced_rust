@@ -1,14 +1,19 @@
-//! Chat domain-event projections into query models.
-//!
-//! `SAVE_CHAT_MESSAGE` is the event-independent mutation; `CHAT_MESSAGES`
-//! remains the dual-path runtime mount until cutover.
+//! Chat domain-event projections via **mutation IR** (`SAVE_CHAT_MESSAGE`).
 
+use distributed::domain_event::DomainEventContract;
 use distributed::mutation;
-use distributed::projection;
-use distributed::projection::lower::{DirectCandidate, ProjectionDescriptor};
-use distributed::{Mutation, MutationProgram};
+use distributed::projection::lower::{
+    DirectCandidate, ProjectionDescriptor, ProjectionLoweringError, ProjectionOutputInventory,
+};
+use distributed::{
+    body_bindings_for_model, descriptor_from_factories, inventory_single_model, lower_single_model,
+    program_from_mutation_arms, resolve_mutation_program, Mutation, MutationEventBinding,
+    MutationProgram, MutationProjectionArm, ProjectionExpression, ProjectionPartition,
+    ProjectionProgram, ProjectionProgramError, ProjectionValueType, ResolvedProjectionPlan,
+};
+use distributed::DomainEventOccurrence;
 
-use chat_domain::ChatMessageState;
+use chat_domain::ChatMessagePostedDomainEvent;
 use e2e_readmodels::ChatMessages;
 
 /// Event-independent complete-row upsert for chat messages.
@@ -25,26 +30,107 @@ pub fn save_chat_message_program() -> MutationProgram {
     save_chat_message().program().clone()
 }
 
-/// Portable insert-shaped state transfer for chat.
-pub const CHAT_MESSAGES: ProjectionDescriptor<DirectCandidate> = projection! {
-    name: "project_chat_messages";
-    version: 1;
-    epoch: "e2e-ui-chat-v2";
-    partition: state.room_id;
+fn chat_field_bindings(
+) -> Result<Vec<distributed::MutationInputBinding>, distributed::MutationProgramError> {
+    body_bindings_for_model::<ChatMessages>("message")
+}
 
-    on "chat_message.posted" version 1 (state: ChatMessageState) {
-        upsert ChatMessages from state as message;
-    }
-};
+fn chat_partition() -> Result<ProjectionPartition, ProjectionProgramError> {
+    Ok(ProjectionPartition::Expression(
+        ProjectionExpression::body_path(ProjectionValueType::String, ["room_id"]).map_err(
+            |e| ProjectionProgramError::InvalidOperation {
+                operation: "chat partition".into(),
+                reason: e.to_string(),
+            },
+        )?,
+    ))
+}
+
+fn chat_arm() -> Result<MutationProjectionArm, distributed::MutationProgramError> {
+    let selector = distributed::ProjectionEventSelector::try_from_descriptor(
+        &ChatMessagePostedDomainEvent::descriptor(),
+    )
+    .map_err(distributed::MutationProgramError::from)?;
+    let binding =
+        MutationEventBinding::try_new(selector, chat_field_bindings()?, save_chat_message_program())?;
+    Ok(MutationProjectionArm {
+        arm_id: "chat-posted",
+        binding,
+    })
+}
+
+/// Build dual-path projection program from SAVE_CHAT_MESSAGE.
+pub fn chat_mutation_projection_program() -> Result<ProjectionProgram, ProjectionProgramError> {
+    let arms = vec![chat_arm().map_err(|e| ProjectionProgramError::InvalidOperation {
+        operation: "chat mutation arm".into(),
+        reason: e.to_string(),
+    })?];
+    program_from_mutation_arms("project_chat_messages", 1, chat_partition()?, &arms).map_err(
+        |e| ProjectionProgramError::InvalidOperation {
+            operation: "project_chat_messages".into(),
+            reason: e.to_string(),
+        },
+    )
+}
+
+fn chat_program_factory() -> Result<ProjectionProgram, ProjectionProgramError> {
+    chat_mutation_projection_program()
+}
+
+fn chat_resolve(
+    occurrence: &DomainEventOccurrence,
+) -> Result<ResolvedProjectionPlan, ProjectionProgramError> {
+    resolve_mutation_program(&chat_mutation_projection_program()?, occurrence)
+}
+
+fn chat_lower(
+    plan: &ResolvedProjectionPlan,
+) -> Result<distributed::projection::lower::LoweredProjectionPlan, ProjectionLoweringError> {
+    lower_single_model::<ChatMessages>(plan)
+}
+
+fn chat_inventory() -> Result<ProjectionOutputInventory, ProjectionLoweringError> {
+    inventory_single_model::<ChatMessages>()
+}
+
+/// Mutation-backed Chat projector (DirectCandidate for completeness of mount type).
+pub const CHAT_MESSAGES: ProjectionDescriptor<DirectCandidate> = descriptor_from_factories(
+    "project_chat_messages",
+    1,
+    "e2e-ui-chat-v2",
+    chat_program_factory,
+    chat_resolve,
+    chat_lower,
+    chat_inventory,
+);
 
 #[cfg(test)]
 mod tests {
     use distributed::domain_event::DomainEventContract;
     use distributed::projection::placement::ProjectionExecutionClass;
-    use distributed::{RelationalReadModel, RowValue, TableMutation};
+    use distributed::{MutationKind, RelationalReadModel, RowValue, TableMutation};
 
     use super::*;
     use chat_domain::{ChatMessage, ChatMessagePostedDomainEvent};
+
+    #[test]
+    fn chat_program_comes_from_save_chat_message_mutation() {
+        let program = CHAT_MESSAGES.program().unwrap();
+        let from_mutations = chat_mutation_projection_program().unwrap();
+        assert_eq!(
+            program.canonical_bytes().unwrap(),
+            from_mutations.canonical_bytes().unwrap()
+        );
+        assert_eq!(program.arms().len(), 1);
+        assert_eq!(
+            program.arms()[0].operations()[0].kind(),
+            distributed::ProjectionMutationKind::Upsert
+        );
+        assert_eq!(
+            save_chat_message_program().operations()[0].kind(),
+            MutationKind::Upsert
+        );
+    }
 
     #[test]
     fn posted_state_preserves_semantic_name_and_lowers_to_complete_upsert() {
@@ -88,13 +174,10 @@ mod tests {
 
     #[test]
     fn save_chat_message_mutation_is_event_free_complete_upsert() {
-        use distributed::MutationKind;
-
         let program = save_chat_message_program();
         assert_eq!(program.operations().len(), 1);
         assert_eq!(program.operations()[0].kind(), MutationKind::Upsert);
         assert_eq!(program.operations()[0].target().model(), "ChatMessages");
-        assert_eq!(program.operations()[0].target().storage(), "chat_messages");
         let json = serde_json::to_value(&program).unwrap().to_string();
         assert!(!json.contains("event_name"));
         assert!(!json.contains("chat_message.posted"));

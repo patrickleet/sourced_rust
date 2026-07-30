@@ -372,7 +372,16 @@ pub struct ResolvedProjectionPlan {
 }
 
 impl ResolvedProjectionPlan {
-    pub(crate) fn resolve(
+    /// Resolve one occurrence against a validated projection program.
+    ///
+    /// Public so mutation-backed descriptors share the same resolution entry
+    /// point as generated `projection!` programs.
+    ///
+    /// # Errors
+    ///
+    /// Rejects selector mismatches, invalid body values, and bounded-value
+    /// violations.
+    pub fn resolve(
         program: &ProjectionProgram,
         occurrence: &DomainEventOccurrence,
     ) -> Result<Self, ProjectionProgramError> {
