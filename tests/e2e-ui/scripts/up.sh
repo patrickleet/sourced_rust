@@ -423,7 +423,14 @@ create_human() {
   fi
   [[ -n "$uid" && "$uid" != "null" ]] || { echo "ERROR: human $username"; exit 1; }
 
-  # Grant project role
+  # Grant project role(s). Admin also receives `user` so they can use the
+  # normal application surface (e2e-ui) and elevated admin paths.
+  local role_keys_json
+  if [[ "$role" == "admin" ]]; then
+    role_keys_json='["admin","user"]'
+  else
+    role_keys_json=$(jq -n --arg r "$role" '[$r]')
+  fi
   grants=$(api POST /management/v1/users/grants/_search "$(jq -n --arg uid "$uid" \
     '{queries: [{userIdQuery: {userId: $uid}}]}')" 2>/dev/null || echo '{}')
   existing=$(echo "$grants" | jq -r --arg pid "$PROJECT_ID" \
@@ -432,10 +439,11 @@ create_human() {
     curl -sS -o /dev/null -X PUT \
       "$ZITADEL_HOST/management/v1/users/$uid/grants/$existing" \
       -H "Authorization: Bearer $ACCESS_TOKEN" -H 'Content-Type: application/json' \
-      -d "$(jq -n --arg r "$role" '{roleKeys: [$r]}')" || true
+      -d "$(jq -n --argjson keys "$role_keys_json" '{roleKeys: $keys}')" || true
   else
     api POST "/management/v1/users/$uid/grants" \
-      "$(jq -n --arg pid "$PROJECT_ID" --arg r "$role" '{projectId: $pid, roleKeys: [$r]}')" >/dev/null
+      "$(jq -n --arg pid "$PROJECT_ID" --argjson keys "$role_keys_json" \
+        '{projectId: $pid, roleKeys: $keys}')" >/dev/null
   fi
   printf '%s' "$uid"
 }
@@ -488,7 +496,7 @@ echo "    alice → $ALICE_UID"
 BOB_UID=$(create_human "bob" "Password1!" "user" "bob@e2e.local")
 echo "    bob → $BOB_UID"
 ADMIN_HUMAN_UID=$(create_human "admin" "Password1!" "admin" "admin@e2e.local")
-echo "    admin → $ADMIN_HUMAN_UID"
+echo "    admin → $ADMIN_HUMAN_UID (roles: admin + user)"
 
 create_machine() {
   local username="$1" role="$2" key_out="$3"
@@ -501,6 +509,13 @@ create_machine() {
       '{userName: $u, name: $u, description: "e2e-ui suite", accessTokenType: "ACCESS_TOKEN_TYPE_JWT"}')" \
       | jq -r '.userId // empty')
   fi
+  # Machine users: admin also gets the normal `user` project role.
+  local role_keys_json
+  if [[ "$role" == "admin" ]]; then
+    role_keys_json='["admin","user"]'
+  else
+    role_keys_json=$(jq -n --arg r "$role" '[$r]')
+  fi
   grants=$(api POST /management/v1/users/grants/_search "$(jq -n --arg uid "$uid" \
     '{queries: [{userIdQuery: {userId: $uid}}]}')" 2>/dev/null || echo '{}')
   existing=$(echo "$grants" | jq -r --arg pid "$PROJECT_ID" \
@@ -509,10 +524,11 @@ create_machine() {
     curl -sS -o /dev/null -X PUT \
       "$ZITADEL_HOST/management/v1/users/$uid/grants/$existing" \
       -H "Authorization: Bearer $ACCESS_TOKEN" -H 'Content-Type: application/json' \
-      -d "$(jq -n --arg r "$role" '{roleKeys: [$r]}')" || true
+      -d "$(jq -n --argjson keys "$role_keys_json" '{roleKeys: $keys}')" || true
   else
     api POST "/management/v1/users/$uid/grants" \
-      "$(jq -n --arg pid "$PROJECT_ID" --arg r "$role" '{projectId: $pid, roleKeys: [$r]}')" >/dev/null
+      "$(jq -n --arg pid "$PROJECT_ID" --argjson keys "$role_keys_json" \
+        '{projectId: $pid, roleKeys: $keys}')" >/dev/null
   fi
   key_resp=$(api POST "/management/v1/users/$uid/keys" \
     "$(jq -n '{type: "KEY_TYPE_JSON", expirationDate: "2029-01-01T00:00:00Z"}')")
