@@ -47,6 +47,8 @@ const E2E_PROTOCOL_TOKEN_KEY: [u8; 32] = [0xe2; 32];
 pub const DISTRIBUTED_CLIENT_SURFACE: &str = "e2e-ui";
 /// Stable elevated surface for routes that intentionally include admin-only fields.
 pub const DISTRIBUTED_ADMIN_CLIENT_SURFACE: &str = "e2e-ui-admin";
+/// Unauthenticated public surface (lobby message peek).
+pub const DISTRIBUTED_PUBLIC_CLIENT_SURFACE: &str = "e2e-ui-public";
 
 #[derive(Clone, Default)]
 struct ClientSurfaceLocks(Arc<InMemoryLockManager>);
@@ -262,6 +264,11 @@ pub fn distributed_client_surface() -> DistributedClientSurfaceExport {
 /// Pool-free elevated application export for admin-only routes.
 pub fn distributed_admin_client_surface() -> DistributedClientSurfaceExport {
     pool_free_client_surface(DISTRIBUTED_ADMIN_CLIENT_SURFACE, &["admin"])
+}
+
+/// Pool-free public (anonymous) application export for unauthenticated lobby peeks.
+pub fn distributed_public_client_surface() -> DistributedClientSurfaceExport {
+    pool_free_client_surface(DISTRIBUTED_PUBLIC_CLIENT_SURFACE, &["anonymous"])
 }
 
 /// Full service: todo + chat commands and projectors.
@@ -523,17 +530,19 @@ fn build_graphql_engine_with_graphiql(
     let projections = projection_owners();
     let mut b = GraphqlEngine::builder(pool)
         .protocol_token_key(E2E_PROTOCOL_TOKEN_KEY)
-        .roles(&["user", "admin"])
+        .roles(&["user", "admin", "anonymous"])
         // e2e-ui: eligible admin+user (multi-role principals may open); schema
         // privilege remains user-only so owner-scoped models keep portable row
         // policies for optimistic list inserts (see distributed_client_surface).
         // e2e-ui-admin: elevated ops / all-rows views (/admin).
+        // e2e-ui-public: unauthenticated lobby read (anonymous privilege).
         .client_application_surface_with_schema_roles(
             DISTRIBUTED_CLIENT_SURFACE,
             ["admin", "user"],
             ["user"],
         )
         .client_application_surface(DISTRIBUTED_ADMIN_CLIENT_SURFACE, ["admin"])
+        .client_application_surface(DISTRIBUTED_PUBLIC_CLIENT_SURFACE, ["anonymous"])
         // user: only own rows. admin: all owners (UI: /admin all-notes view).
         .model::<Todos>(Todos::permissions())
         .model::<ChatMessages>(ChatMessages::permissions())
@@ -785,7 +794,7 @@ mod client_surface_tests {
         }))
         .expect("generated application request");
         let mut session = distributed::microsvc::Session::new();
-        session.set("x-role", "user");
+        session.set("x-roles", "user");
         session.set("x-user-id", "person-1");
         let response = engine.execute(&session, request.clone()).await;
         assert!(
@@ -795,7 +804,6 @@ mod client_surface_tests {
         );
         // Multi-role admin principal may open the same portable contract.
         let mut admin = session.clone();
-        admin.set("x-role", "admin");
         admin.set("x-roles", "admin,user");
         let admin_response = engine.execute(&admin, request).await;
         assert!(

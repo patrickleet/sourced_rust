@@ -99,9 +99,13 @@ mod tests {
         let grants = application_grants();
         let user = &grants["user"];
         let admin = &grants["admin"];
+        let anonymous = &grants["anonymous"];
 
         assert_eq!(user.len(), 4);
         assert_eq!(admin.len(), 4);
+        // Public surface: chat only (anonymous privilege pack).
+        assert!(anonymous.contains_key("ChatMessages"));
+        assert_eq!(anonymous.len(), 1);
         assert!(matches!(
             user["Todos"].row_policy,
             distributed::graphql::SurfaceRowPolicy::Predicate(_)

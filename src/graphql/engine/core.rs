@@ -184,8 +184,32 @@ pub(crate) struct ProtocolRoleInfo {
 
 #[derive(Clone)]
 pub(crate) struct ProtocolApplicationInfo {
+    /// Eligible wire roles (who may open).
     pub(crate) roles: Vec<String>,
+    /// Privilege packs for portable schema + server execution grants.
+    #[allow(dead_code)] // inspected by tests / future multi-privilege diagnostics
+    pub(crate) schema_roles: Vec<String>,
+    /// Privilege role key used for SQL grants / prebuilt schema lookup.
+    /// Single-privilege apps use that role name; multi-privilege apps use
+    /// `app:{name}` with synthetic grants.
+    pub(crate) privilege_key: String,
     pub(crate) surface: ProtocolSurfaceInfo,
+    pub(crate) authorization_fingerprint: String,
+    pub(crate) claim_keys: Vec<String>,
+}
+
+/// Request-scoped execution authority (surface privilege, not identity primary).
+///
+/// Injected into GraphQL request data so compile/live paths authorize with the
+/// opened surface's privilege pack rather than a session primary role.
+#[derive(Clone, Debug)]
+pub struct ExecutionAuthority {
+    /// Role pack key for `permissions` / `schemas` / `role_surfaces`.
+    pub privilege_role: String,
+    /// Asserted identity set (`x-roles`).
+    pub asserted_roles: Vec<String>,
+    /// Named client surface when the request opened one via protocol extensions.
+    pub surface: ClientSurfaceIdentity,
 }
 
 #[derive(Clone)]

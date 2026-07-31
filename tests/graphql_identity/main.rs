@@ -138,8 +138,8 @@ fn f1_zitadel_project_roles_session() {
     };
     let session = map_claims_to_session(&claims, &cfg).unwrap();
     assert_eq!(session.user_id(), Some("user-a-001"));
-    assert_eq!(session.role(), Some("admin"));
     assert_eq!(session.get("x-roles"), Some("admin,customer"));
+    assert_eq!(session.role(), None);
 }
 
 #[test]
@@ -157,8 +157,8 @@ fn f2_groups_array_session() {
     };
     let session = map_claims_to_session(&claims, &cfg).unwrap();
     assert_eq!(session.user_id(), Some("user-b-002"));
-    assert_eq!(session.role(), Some("customer"));
     assert_eq!(session.get("x-roles"), Some("customer"));
+    assert_eq!(session.role(), None);
 }
 
 #[test]
@@ -313,7 +313,7 @@ fn es256_jwks_key_validates_token_when_allowed_by_default() {
 
     let session = OidcValidator::new(cfg).validate_and_map(&token).unwrap();
     assert_eq!(session.user_id(), Some("user-ec-001"));
-    assert_eq!(session.role(), Some("customer"));
+    assert!(session.get("x-roles").map(|r| r.split(",").any(|p| p == "customer")).unwrap_or(false), "expected role customer in x-roles: {:?}", session.get("x-roles"));
 }
 
 // ── F1 success via full validate_and_map + spoof headers ignored ────────────
@@ -337,11 +337,11 @@ fn f1_valid_jwt_maps_session_spoof_headers_ignored() {
     let headers = headers_from(&[
         ("authorization", &format!("Bearer {token}")),
         ("x-user-id", "evil"),
-        ("x-role", "admin"),
+        ("x-roles", "admin"),
     ]);
     let session = resolve_session_sync(&headers, &cfg).unwrap();
     assert_eq!(session.user_id(), Some("user-a-001"));
-    assert_eq!(session.role(), Some("admin"));
+    assert!(session.get("x-roles").map(|r| r.split(",").any(|p| p == "admin")).unwrap_or(false), "expected role admin in x-roles: {:?}", session.get("x-roles"));
     // Client spoof must not replace sub
     assert_ne!(session.user_id(), Some("evil"));
     let _ = &mut cfg;
@@ -353,10 +353,10 @@ fn f1_valid_jwt_maps_session_spoof_headers_ignored() {
 fn f6_hybrid_missing_bearer_trusts_proxy_headers() {
     let keys = mint_keys();
     let cfg = IdentityConfig::hybrid(oidc_cfg(&keys));
-    let headers = headers_from(&[("x-user-id", "gateway-user-9"), ("x-role", "customer")]);
+    let headers = headers_from(&[("x-user-id", "gateway-user-9"), ("x-roles", "customer")]);
     let session = resolve_session_sync(&headers, &cfg).unwrap();
     assert_eq!(session.user_id(), Some("gateway-user-9"));
-    assert_eq!(session.role(), Some("customer"));
+    assert!(session.get("x-roles").map(|r| r.split(",").any(|p| p == "customer")).unwrap_or(false), "expected role customer in x-roles: {:?}", session.get("x-roles"));
 }
 
 // ── F7 Hybrid invalid Bearer → 401, no fallthrough ──────────────────────────
@@ -371,7 +371,7 @@ fn f7_hybrid_invalid_bearer_no_proxy_fallthrough() {
     let headers = headers_from(&[
         ("authorization", &format!("Bearer {bad}")),
         ("x-user-id", "gateway-user-9"),
-        ("x-role", "admin"),
+        ("x-roles", "admin"),
     ]);
     let err = resolve_session_sync(&headers, &cfg).unwrap_err();
     assert_eq!(err, AuthError::Unauthorized);
@@ -409,12 +409,13 @@ fn f10_trusted_proxy_strips_client_identity() {
     let cfg = IdentityConfig::trusted_proxy();
     let headers = headers_from(&[
         ("x-user-id", "attacker"),
-        ("x-role", "admin"),
+        ("x-roles", "admin"),
         ("x-request-id", "req-1"),
     ]);
     let session = resolve_session_sync(&headers, &cfg).unwrap();
     assert!(session.user_id().is_none(), "x-user-id must be stripped");
-    assert!(session.role().is_none(), "x-role must be stripped");
+    assert!(session.get("x-roles").is_none(), "x-roles must be stripped under TrustedProxy");
+    assert!(session.roles().is_empty(), "asserted roles empty after strip");
     assert_eq!(session.get("x-request-id"), Some("req-1"));
 
     // Also exercise strip helper directly
@@ -825,7 +826,7 @@ async fn http_hybrid_invalid_bearer_401() {
                 .uri("/graphql")
                 .header("content-type", "application/json")
                 .header("authorization", "Bearer eyJhbGciOiJub25lIn0.e30.")
-                .header("x-role", "admin")
+                .header("x-roles", "admin")
                 .body(axum::body::Body::from(r#"{"query":"{ id_items { id } }"}"#))
                 .unwrap(),
         )
@@ -850,7 +851,7 @@ fn public_scaffold_default_is_oidc_bearer_not_dev() {
     assert_eq!(unset.oidc.as_ref().unwrap().audience, UNSET_OIDC_AUDIENCE);
 
     // Ambient headers alone must not authenticate under public default.
-    let headers = headers_from(&[("x-user-id", "attacker"), ("x-role", "admin")]);
+    let headers = headers_from(&[("x-user-id", "attacker"), ("x-roles", "admin")]);
     assert_eq!(
         resolve_session_sync(&headers, &unset).unwrap_err(),
         AuthError::Unauthorized
@@ -877,7 +878,7 @@ fn gateway_secret_wrong_is_401() {
     let headers = headers_from(&[
         ("x-gateway-secret", "wrong"),
         ("x-user-id", "u"),
-        ("x-role", "admin"),
+        ("x-roles", "admin"),
     ]);
     assert_eq!(
         resolve_session_sync(&headers, &cfg).unwrap_err(),

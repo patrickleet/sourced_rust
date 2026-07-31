@@ -87,7 +87,6 @@ fn with_identity(
         };
         request
             .header("x-user-id", user_id)
-            .header("x-role", role)
             .header("x-roles", roles)
     }
 }
@@ -104,12 +103,13 @@ pub async fn wait_ready(base: &str, timeout: Duration) -> bool {
     let client = reqwest::Client::new();
     let start = std::time::Instant::now();
     while start.elapsed() < timeout {
+        // Probe as single-role user (multi-role admin requires a named surface).
         let req = with_identity(
             client
                 .post(format!("{base}/graphql"))
                 .header("content-type", "application/json"),
             "probe",
-            "admin",
+            "user",
         )
         .json(&json!({"query":"{ __typename }"}));
         if let Ok(resp) = req.send().await {
@@ -122,8 +122,50 @@ pub async fn wait_ready(base: &str, timeout: Duration) -> bool {
     false
 }
 
+/// Default GraphQL helper: multi-role principals must name a surface.
+/// - `user` → e2e-ui (eligible admin+user, privilege user)
+/// - `admin` → e2e-ui-admin (admin privilege)
 pub async fn graphql(base: &str, query: &str, user_id: &str, role: &str) -> Result<Value, String> {
-    graphql_request(base, json!({ "query": query }), user_id, role).await
+    let (application, surface_roles, schema_hash) = default_application_surface(role)?;
+    graphql_for_application(
+        base,
+        query,
+        user_id,
+        role,
+        application,
+        &surface_roles,
+        &schema_hash,
+    )
+    .await
+}
+
+fn default_application_surface(role: &str) -> Result<(&'static str, Vec<&'static str>, String), String> {
+    use e2e_service::{
+        distributed_admin_client_surface, distributed_client_surface, DISTRIBUTED_ADMIN_CLIENT_SURFACE,
+        DISTRIBUTED_CLIENT_SURFACE,
+    };
+    match role {
+        "admin" => {
+            let manifest = distributed_admin_client_surface()
+                .manifest()
+                .map_err(|e| e.to_string())?;
+            Ok((
+                DISTRIBUTED_ADMIN_CLIENT_SURFACE,
+                vec!["admin"],
+                manifest.schema_fingerprint,
+            ))
+        }
+        _ => {
+            let manifest = distributed_client_surface()
+                .manifest()
+                .map_err(|e| e.to_string())?;
+            Ok((
+                DISTRIBUTED_CLIENT_SURFACE,
+                vec!["admin", "user"],
+                manifest.schema_fingerprint,
+            ))
+        }
+    }
 }
 
 pub async fn graphql_for_application(

@@ -21,30 +21,20 @@ fn requested_protocol_client(request: &Request) -> Result<Option<RequestedProtoc
         .map_err(|_| ())
 }
 
-/// Asserted engine roles for this principal: primary `role` plus `x-roles`.
-pub(crate) fn principal_asserted_roles(session: &Session, primary_role: &str) -> Vec<String> {
-    let mut roles = Vec::new();
-    if !primary_role.is_empty() {
-        roles.push(primary_role.to_string());
-    }
-    if let Some(raw) = session
-        .get("x-roles")
-        .or_else(|| session.get("X-Roles"))
-    {
-        for part in raw.split(',') {
-            let part = part.trim();
-            if part.is_empty() {
-                continue;
-            }
-            if !roles.iter().any(|existing| existing == part) {
-                roles.push(part.to_string());
-            }
-        }
-    }
-    roles
+/// Asserted engine roles for this principal (`x-roles` set only).
+pub(crate) fn principal_asserted_roles(session: &Session) -> Vec<String> {
+    session
+        .roles()
+        .into_iter()
+        .map(|role| role.to_string())
+        .collect()
 }
 
 fn principal_may_open_application(asserted: &[String], eligible: &[String]) -> bool {
+    // Unauthenticated principals may open surfaces that list `anonymous`.
+    if asserted.is_empty() {
+        return eligible.iter().any(|role| role == "anonymous");
+    }
     asserted.iter().any(|role| {
         eligible
             .binary_search_by(|candidate| candidate.as_str().cmp(role.as_str()))
@@ -52,42 +42,128 @@ fn principal_may_open_application(asserted: &[String], eligible: &[String]) -> b
     })
 }
 
-pub(crate) fn select_protocol_surface<'a>(
-    runtime: &'a ProtocolRuntime,
-    role: &str,
+fn principal_has_role(asserted: &[String], role: &str) -> bool {
+    asserted.iter().any(|existing| existing == role)
+}
+
+/// Resolve execution authority for one GraphQL request.
+///
+/// - Identity is the asserted **set** (`x-roles`).
+/// - With a protocol **application** surface: open if any asserted role is
+///   eligible; **privilege_role** is the surface privilege pack key.
+/// - With a protocol **role** surface: named role must be asserted; privilege
+///   is that role.
+/// - Without protocol client: empty set → anonymous; single asserted role →
+///   that role surface; multi-role without a named surface → reject (must open
+///   an application surface).
+pub(crate) fn resolve_execution_authority(
+    inner: &EngineInner,
     session: &Session,
     request: &Request,
-) -> Result<(ClientSurfaceIdentity, &'a ProtocolSurfaceInfo), ()> {
+) -> Result<ExecutionAuthority, ()> {
+    let asserted = principal_asserted_roles(session);
+    let anonymous = inner.anonymous_role.as_str();
+
     let Some(requested) = requested_protocol_client(request)? else {
-        let info = runtime.roles.get(role).ok_or(())?;
-        return Ok((ClientSurfaceIdentity::role(role), &info.surface));
+        return match asserted.len() {
+            0 => {
+                if !inner.schemas.contains_key(anonymous) {
+                    return Err(());
+                }
+                Ok(ExecutionAuthority {
+                    privilege_role: anonymous.to_string(),
+                    asserted_roles: asserted,
+                    surface: ClientSurfaceIdentity::role(anonymous),
+                })
+            }
+            1 => {
+                let only = asserted[0].clone();
+                if !inner.schemas.contains_key(only.as_str()) {
+                    return Err(());
+                }
+                Ok(ExecutionAuthority {
+                    privilege_role: only.clone(),
+                    asserted_roles: asserted,
+                    surface: ClientSurfaceIdentity::role(only),
+                })
+            }
+            _ => Err(()), // multi-role must name an application surface
+        };
     };
+
     match requested.surface {
         ClientSurfaceIdentity::Role { name } => {
-            if name != role {
+            // Anonymous role surface may be opened without asserted roles.
+            let allowed = name == anonymous
+                || principal_has_role(&asserted, &name);
+            if !allowed {
                 return Err(());
             }
+            let Some(runtime) = &inner.protocol else {
+                // Non-protocol engines still honor role membership for bare role surfaces.
+                if !inner.schemas.contains_key(&name) {
+                    return Err(());
+                }
+                return Ok(ExecutionAuthority {
+                    privilege_role: name.clone(),
+                    asserted_roles: asserted,
+                    surface: ClientSurfaceIdentity::role(name),
+                });
+            };
             let info = runtime.roles.get(&name).ok_or(())?;
             if requested.schema_hash != info.surface.schema_fingerprint {
                 return Err(());
             }
-            Ok((ClientSurfaceIdentity::role(name), &info.surface))
+            Ok(ExecutionAuthority {
+                privilege_role: name.clone(),
+                asserted_roles: asserted,
+                surface: ClientSurfaceIdentity::role(name),
+            })
         }
         ClientSurfaceIdentity::Application { name, roles } => {
+            let runtime = inner.protocol.as_ref().ok_or(())?;
             let application = runtime.applications.get(&name).ok_or(())?;
             // Wire roles must equal the registered eligible set (canonical).
-            // Principal may open when any asserted role is eligible — not only
-            // when the primary engine role is the sole surface role.
-            let asserted = principal_asserted_roles(session, role);
             if roles != application.roles
                 || !principal_may_open_application(&asserted, &application.roles)
                 || requested.schema_hash != application.surface.schema_fingerprint
             {
                 return Err(());
             }
+            Ok(ExecutionAuthority {
+                privilege_role: application.privilege_key.clone(),
+                asserted_roles: asserted,
+                surface: ClientSurfaceIdentity::application(name, roles),
+            })
+        }
+    }
+}
+
+/// Protocol surface selection for envelope material (after authority is known).
+pub(crate) fn select_protocol_surface<'a>(
+    runtime: &'a ProtocolRuntime,
+    authority: &ExecutionAuthority,
+) -> Result<(ClientSurfaceIdentity, &'a ProtocolSurfaceInfo, &'a str, &'a [String]), ()> {
+    match &authority.surface {
+        ClientSurfaceIdentity::Role { name } => {
+            let info = runtime.roles.get(name).ok_or(())?;
             Ok((
-                ClientSurfaceIdentity::application(name, roles),
+                ClientSurfaceIdentity::role(name.clone()),
+                &info.surface,
+                info.authorization_fingerprint.as_str(),
+                info.claim_keys.as_slice(),
+            ))
+        }
+        ClientSurfaceIdentity::Application { name, roles } => {
+            let application = runtime.applications.get(name).ok_or(())?;
+            if roles != &application.roles {
+                return Err(());
+            }
+            Ok((
+                ClientSurfaceIdentity::application(name.clone(), roles.clone()),
                 &application.surface,
+                application.authorization_fingerprint.as_str(),
+                application.claim_keys.as_slice(),
             ))
         }
     }

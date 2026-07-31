@@ -14,7 +14,7 @@ use axum::routing::post;
 use axum::Router;
 use futures_util::stream::BoxStream;
 
-use crate::microsvc::{Service, Session, MAX_HTTP_BODY_BYTES, ROLE_KEY, USER_ID_KEY};
+use crate::microsvc::{Service, Session, MAX_HTTP_BODY_BYTES, USER_ID_KEY};
 
 use super::engine::GraphqlEngine;
 use super::identity::{
@@ -27,7 +27,7 @@ const GRAPHIQL_DEV_ROLE: &str = "user";
 
 /// HTML for the GraphiQL IDE served on `GET /graphql` when GraphiQL is enabled.
 ///
-/// Default identity headers (`x-role: user`, `x-user-id: demo`) are injected
+/// Default identity headers (`x-roles: user`, `x-user-id: demo`) are injected
 /// only for local exploration. Production scaffolds use `OidcBearer` (D6) —
 /// these headers are **not** a security mechanism. GraphiQL is off under
 /// production env policy (`graphiql_enabled_from_env`).
@@ -43,11 +43,11 @@ pub fn graphiql_page() -> Html<String> {
         GraphiQLSource::build()
             .endpoint("/graphql")
             .subscription_endpoint("/graphql/ws")
-            .header(ROLE_KEY, GRAPHIQL_DEV_ROLE)
+            .header("x-roles", GRAPHIQL_DEV_ROLE)
             .header(USER_ID_KEY, GRAPHIQL_DEV_USER)
             // Sent as connection_init payload for graphql-transport-ws.
             .ws_connection_param(USER_ID_KEY, GRAPHIQL_DEV_USER)
-            .ws_connection_param(ROLE_KEY, GRAPHIQL_DEV_ROLE)
+            .ws_connection_param("x-roles", GRAPHIQL_DEV_ROLE)
             .title("Distributed GraphQL")
             .finish(),
     )
@@ -518,8 +518,8 @@ fn session_from_connection_init(
     let apply = |session: &mut Session, key: &str, val: &str| {
         if key.eq_ignore_ascii_case(USER_ID_KEY) || key.eq_ignore_ascii_case("x-user-id") {
             session.set(USER_ID_KEY, val);
-        } else if key.eq_ignore_ascii_case(ROLE_KEY) || key.eq_ignore_ascii_case("x-role") {
-            session.set(ROLE_KEY, val);
+        } else if key.eq_ignore_ascii_case("x-roles") || key.eq_ignore_ascii_case("X-Roles") {
+            session.set("x-roles", val);
         }
     };
 
@@ -555,9 +555,9 @@ fn merge_identity_query_params(headers: &mut HeaderMap, query: Option<&str>) {
                     headers.insert("x-user-id", val);
                 }
             }
-            "x-role" if !headers.contains_key("x-role") => {
+            "x-roles" if !headers.contains_key("x-roles") => {
                 if let Ok(val) = axum::http::HeaderValue::from_str(&v) {
-                    headers.insert("x-role", val);
+                    headers.insert("x-roles", val);
                 }
             }
             _ => {}
@@ -663,22 +663,22 @@ mod connection_init_tests {
     fn connection_init_sets_dev_headers() {
         let session = session_from_connection_init(
             Session::new(),
-            &json!({"x-user-id": "alice", "x-role": "user"}),
+            &json!({"x-user-id": "alice", "x-roles": "user"}),
             IdentityMode::DevHeaders,
         );
         assert_eq!(session.user_id(), Some("alice"));
-        assert_eq!(session.role(), Some("user"));
+        assert_eq!(session.get("x-roles"), Some("user"));
     }
 
     #[test]
     fn connection_init_nested_headers() {
         let session = session_from_connection_init(
             Session::new(),
-            &json!({"headers": {"x-user-id": "bob", "x-role": "admin"}}),
+            &json!({"headers": {"x-user-id": "bob", "x-roles": "admin"}}),
             IdentityMode::DevHeaders,
         );
         assert_eq!(session.user_id(), Some("bob"));
-        assert_eq!(session.role(), Some("admin"));
+        assert_eq!(session.get("x-roles"), Some("admin"));
     }
 
     #[test]
@@ -686,7 +686,7 @@ mod connection_init_tests {
         let session =
             session_from_connection_init(Session::new(), &json!({}), IdentityMode::DevHeaders);
         assert_eq!(session.user_id(), None);
-        assert_eq!(session.role(), None);
+        assert!(session.roles().is_empty());
     }
 
     #[test]

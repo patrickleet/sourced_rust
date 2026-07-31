@@ -339,15 +339,25 @@ pub(super) fn ensure_causal_grant(
     contract: &TypedCommandContract,
     session: &Session,
 ) -> Result<(), CausalDispatchError> {
-    if contract.roles.is_empty()
-        || session
-            .role()
-            .is_some_and(|role| contract.roles.iter().any(|allowed| allowed == role))
-    {
-        Ok(())
-    } else {
-        Err(CausalDispatchError::Forbidden)
+    // Identity is a set (`x-roles`). Allow when any asserted role is granted
+    // the command — not a priority-picked primary role.
+    if contract.roles.is_empty() {
+        return Ok(());
     }
+    let asserted = session.roles();
+    if asserted
+        .iter()
+        .any(|role| contract.roles.iter().any(|allowed| allowed == *role))
+    {
+        return Ok(());
+    }
+    // Legacy singleton `x-role` only when x-roles is empty (DevHeaders tools).
+    if let Some(role) = session.role() {
+        if contract.roles.iter().any(|allowed| allowed == role) {
+            return Ok(());
+        }
+    }
+    Err(CausalDispatchError::Forbidden)
 }
 
 #[cfg(feature = "graphql")]
