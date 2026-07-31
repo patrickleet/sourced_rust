@@ -1,6 +1,7 @@
+use distributed::read_model::ReadModelWritePlanBuilder;
 use distributed::{
     sourced, Entity, InMemoryRepository, ReadModel, ReadModelWorkspaceExt,
-    ReadModelWritePlanBuilder, ReadModelWritePlanCommitExt, RowKey, RowValue,
+    ReadModelWritePlanCommitExt, RowKey, RowValue,
 };
 use serde::{Deserialize, Serialize};
 

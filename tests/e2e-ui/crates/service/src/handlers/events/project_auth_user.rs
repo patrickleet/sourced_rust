@@ -1,7 +1,7 @@
 //! Project `zitadel.user.*.v1` → `auth_users` (join target for chat + blob games).
 
 use distributed::microsvc::{Context, HandlerError};
-use distributed::ReadModelWritePlanBuilder;
+use distributed::read_model::ReadModelWritePlanBuilder;
 use e2e_projections::{map_zitadel_user_status, map_zitadel_user_upsert, ZitadelUserPayload};
 use serde_json::{json, Value};
 

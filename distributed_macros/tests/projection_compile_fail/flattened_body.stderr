@@ -1,5 +1,0 @@
-error: projection flat-field metadata does not support #[serde(flatten)]; use an explicit projection mapping
-  --> tests/projection_compile_fail/flattened_body.rs:13:13
-   |
-13 |     #[serde(flatten)]
-   |             ^^^^^^^

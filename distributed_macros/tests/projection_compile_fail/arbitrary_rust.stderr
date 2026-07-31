@@ -1,5 +1,0 @@
-error: unknown projection transform; supported transforms are `string_concat` and `first_present`
-  --> tests/projection_compile_fail/arbitrary_rust.rs:12:30
-   |
-12 |                 set { value: calculate(event.value) }
-   |                              ^^^^^^^^^

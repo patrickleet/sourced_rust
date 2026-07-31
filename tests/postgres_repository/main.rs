@@ -1,4 +1,5 @@
 #![cfg(feature = "postgres")]
+use distributed::read_model::ReadModelWritePlanBuilder;
 
 #[path = "../support/ids.rs"]
 mod ids;
@@ -14,9 +15,9 @@ use outbox_support::find_outbox_by_id;
 
 use distributed::{
     sourced, Aggregate, AggregateBuilder, CommitBatch, Entity, GetStream, OutboxMessage,
-    OutboxMessageStatus, OutboxStore, PostgresRepository, ReadModel, ReadModelWritePlanBuilder,
-    ReadModelWritePlanCommitExt, RepositoryError, RowKey, RowPatch, RowValue, StreamIdentity,
-    StreamWrite, TableSchemaRegistry, TransactionalCommit,
+    OutboxMessageStatus, OutboxStore, PostgresRepository, ReadModel, ReadModelWritePlanCommitExt,
+    RepositoryError, RowKey, RowPatch, RowValue, StreamIdentity, StreamWrite, TableSchemaRegistry,
+    TransactionalCommit,
 };
 use serde::{Deserialize, Serialize};
 

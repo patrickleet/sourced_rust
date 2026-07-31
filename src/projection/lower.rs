@@ -3,7 +3,7 @@
 //! Portable declarations resolve through [`super::ProjectionPlanTemplate`].
 //! This module then maps their logical field names through the existing
 //! [`crate::RelationalReadModel`] schema and stages the same
-//! [`crate::ReadModelWritePlanBuilder`] used by hand-written server code.
+//! [`crate::read_model::ReadModelWritePlanBuilder`] used by hand-written server code.
 
 use std::collections::BTreeMap;
 use std::fmt;
@@ -11,6 +11,7 @@ use std::marker::PhantomData;
 use std::sync::{OnceLock, RwLock};
 
 use super::ResolvedProjectionField;
+use crate::read_model::{ReadModelWritePlanBuilder, RelationalReadModel};
 use crate::table::validate_row_values;
 use crate::{
     ColumnType, DomainEvent, DomainEventOccurrence, DomainState, ExpectedVersion, PatchMode,
@@ -19,10 +20,9 @@ use crate::{
     ProjectionMutationKind, ProjectionOperation, ProjectionPartition, ProjectionPlanTemplate,
     ProjectionProgram, ProjectionProgramError, ProjectionProgramId, ProjectionRelationship,
     ProjectionRelationshipEffect, ProjectionTarget, ProjectionValue, ProjectionValueRef,
-    ProjectionValueType, ReadModelWritePlanBuilder, RelationalReadModel, ResolvedProjectionKey,
-    ResolvedProjectionMutation, ResolvedProjectionPlan, ResolvedProjectionValue, RowKey, RowPatch,
-    RowValue, RowValues, RowWriteMode, TableAdapterCapabilities, TableSchema, TableStoreError,
-    TableWritePlan,
+    ProjectionValueType, ResolvedProjectionKey, ResolvedProjectionMutation, ResolvedProjectionPlan,
+    ResolvedProjectionValue, RowKey, RowPatch, RowValue, RowValues, RowWriteMode,
+    TableAdapterCapabilities, TableSchema, TableStoreError, TableWritePlan,
 };
 
 /// Flat portable Rust field category emitted by the domain-state/event derives.

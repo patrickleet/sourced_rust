@@ -1,4 +1,5 @@
 #![cfg(feature = "sqlite")]
+use distributed::read_model::ReadModelWritePlanBuilder;
 
 #[path = "../support/outbox.rs"]
 mod outbox_support;
@@ -11,9 +12,9 @@ use outbox_support::find_outbox_by_id;
 use distributed::table::TableSchemaRegistry;
 use distributed::{
     sourced, Aggregate, AggregateBuilder, CommitBatch, Entity, GetStream, OutboxMessage,
-    OutboxMessageStatus, OutboxStore, ReadModel, ReadModelWritePlanBuilder,
-    ReadModelWritePlanCommitExt, RepositoryError, RowKey, RowPatch, RowValue, SqliteRepository,
-    StreamIdentity, StreamWrite, TransactionalCommit, OUTBOX_MESSAGES_TABLE,
+    OutboxMessageStatus, OutboxStore, ReadModel, ReadModelWritePlanCommitExt, RepositoryError,
+    RowKey, RowPatch, RowValue, SqliteRepository, StreamIdentity, StreamWrite, TransactionalCommit,
+    OUTBOX_MESSAGES_TABLE,
 };
 use serde::{Deserialize, Serialize};
 

@@ -23,13 +23,13 @@ use checkout::{
 };
 use checkout_saga_service::CheckoutSaga;
 use distributed::microsvc::{Context, Routes, Service, Session};
+use distributed::read_model::ReadModelWritePlanBuilder;
 #[cfg(feature = "sqlite")]
 use distributed::SqliteRepository;
 use distributed::{
     AggregateBuilder, CommitBuilderExt, GetStream, OutboxMessage, OutboxStore,
-    ReadModelWritePlanBuilder, ReadModelWritePlanStore, RelationalReadModel,
-    RelationalReadModelIncludes, RelationalReadModelQueryStore, TableStoreError,
-    TransactionalCommit,
+    ReadModelWritePlanStore, RelationalReadModel, RelationalReadModelIncludes,
+    RelationalReadModelQueryStore, TableStoreError, TransactionalCommit,
 };
 use distributed::{InMemoryReadModelStore, InMemoryRepository, Queueable};
 use projection_service::service as projection_service;

@@ -9,7 +9,6 @@ use serde::Serialize;
 
 use crate::projection::{
     ProjectionInvalidation, ProjectionMutationKind, ProjectionOperation, ProjectionTarget,
-    ProjectionValueType,
 };
 
 use super::expression::{MutationAssignment, ResolvedMutationValue};
@@ -327,10 +326,3 @@ pub fn presence_label(value: &ResolvedMutationValue) -> &'static str {
         ResolvedMutationValue::Unknown => "unknown",
     }
 }
-
-/// Binder type alias used by shared vectors.
-pub type MutationCacheBinder =
-    dyn Fn(
-        &[String],
-        &ProjectionValueType,
-    ) -> Result<crate::projection::ProjectionExpression, MutationProgramError>;

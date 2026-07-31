@@ -5,11 +5,11 @@
 //! handlers bind domain events to mutation inputs; the server and cache
 //! interpreters consume the same canonical IR.
 //!
-//! During the dual-path rollout, bound mutations adapt to the existing
-//! projection operation vocabulary for physical execution. Legacy
-//! event-owning `projection!` authoring remains until cutover.
+//! Bound mutations adapt to the projection operation vocabulary for physical
+//! execution. Event-owning `projection!` authoring has been removed.
 
 #![deny(missing_docs)]
+#![allow(clippy::type_complexity)]
 
 mod bind;
 mod cache;
@@ -41,9 +41,10 @@ pub use capabilities::{
     MutationRelationshipCapability, ReadModelMutationCapabilities,
 };
 pub use descriptor::{
-    assert_mutation_backed_program, body_bindings_for_model, descriptor_from_factories,
-    inventory_single_model, lower_single_model, program_from_mutation_arms,
-    projection_value_type_for_column, resolve_mutation_program, MutationProjectionArm,
+    assert_mutation_backed_program, body_bindings_for_model, delete_by_pk_program_for_model,
+    descriptor_from_factories, inventory_single_model, lower_single_model,
+    program_from_mutation_arms, projection_value_type_for_column, resolve_mutation_program,
+    state_upsert_program_for_model, MutationProjectionArm,
 };
 pub use error::MutationProgramError;
 pub use expression::{

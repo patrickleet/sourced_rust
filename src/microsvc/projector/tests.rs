@@ -47,25 +47,179 @@ struct MalformedView {
 }
 
 #[cfg(feature = "graphql")]
+fn generated_modeled_projector_program(
+) -> Result<crate::ProjectionProgram, crate::ProjectionProgramError> {
+    use crate::mutation::{
+        body_field_binding, program_from_mutation_arms, MutationAssignment, MutationConflictTarget,
+        MutationEventBinding, MutationExpression, MutationField, MutationKeyField, MutationKind,
+        MutationOperation, MutationProgram, MutationProjectionArm,
+    };
+    use crate::projection::{
+        ProjectionEventSelector, ProjectionPartition, ProjectionTarget, ProjectionValueType,
+    };
+
+    let string_path = |segments: &[&str]| {
+        MutationExpression::input_path(
+            ProjectionValueType::String,
+            segments.iter().copied().map(str::to_owned),
+        )
+        .map_err(|e| crate::ProjectionProgramError::InvalidOperation {
+            operation: "task11-generated-multi-table".into(),
+            reason: e.to_string(),
+        })
+    };
+    let key_id = || {
+        MutationKeyField::try_new(0, "id", string_path(&["id"])?).map_err(|e| {
+            crate::ProjectionProgramError::InvalidOperation {
+                operation: "task11-generated-multi-table".into(),
+                reason: e.to_string(),
+            }
+        })
+    };
+    let field = |ordinal, name, path: &[&str]| {
+        MutationField::try_new(ordinal, name, MutationAssignment::set(string_path(path)?)).map_err(
+            |e| crate::ProjectionProgramError::InvalidOperation {
+                operation: "task11-generated-multi-table".into(),
+                reason: e.to_string(),
+            },
+        )
+    };
+    let primary = MutationOperation::try_new(
+        "upsert-primary",
+        0,
+        MutationKind::Upsert,
+        ProjectionTarget::try_new("PrimaryView", "task15_primary_views")?,
+        vec![key_id()?],
+        vec![field(0, "id", &["id"])?, field(1, "title", &["title"])?],
+        Some(MutationConflictTarget::PrimaryKey),
+        Vec::new(),
+        Vec::new(),
+        None,
+    )
+    .map_err(|e| crate::ProjectionProgramError::InvalidOperation {
+        operation: "task11-generated-multi-table".into(),
+        reason: e.to_string(),
+    })?;
+    let secondary = MutationOperation::try_new(
+        "upsert-secondary",
+        1,
+        MutationKind::Upsert,
+        ProjectionTarget::try_new("SecondaryView", "task15_secondary_views")?,
+        vec![key_id()?],
+        vec![field(0, "id", &["id"])?, field(1, "title", &["title"])?],
+        Some(MutationConflictTarget::PrimaryKey),
+        Vec::new(),
+        Vec::new(),
+        None,
+    )
+    .map_err(|e| crate::ProjectionProgramError::InvalidOperation {
+        operation: "task11-generated-multi-table".into(),
+        reason: e.to_string(),
+    })?;
+    let mutation_program =
+        MutationProgram::try_new("task11_multi_mutation", 1, vec![primary, secondary]).map_err(
+            |e| crate::ProjectionProgramError::InvalidOperation {
+                operation: "task11-generated-multi-table".into(),
+                reason: e.to_string(),
+            },
+        )?;
+    let selector =
+        ProjectionEventSelector::try_from_descriptor(&crate::DomainEventDescriptor::state::<
+            TodoChanged,
+        >("task15.todo_changed", 1))?;
+    let bindings = vec![
+        body_field_binding(["id"], ["id"], ProjectionValueType::String).map_err(|e| {
+            crate::ProjectionProgramError::InvalidOperation {
+                operation: "task11-generated-multi-table".into(),
+                reason: e.to_string(),
+            }
+        })?,
+        body_field_binding(["title"], ["title"], ProjectionValueType::String).map_err(|e| {
+            crate::ProjectionProgramError::InvalidOperation {
+                operation: "task11-generated-multi-table".into(),
+                reason: e.to_string(),
+            }
+        })?,
+    ];
+    let binding =
+        MutationEventBinding::try_new(selector, bindings, mutation_program).map_err(|e| {
+            crate::ProjectionProgramError::InvalidOperation {
+                operation: "task11-generated-multi-table".into(),
+                reason: e.to_string(),
+            }
+        })?;
+    program_from_mutation_arms(
+        "task11-generated-multi-table",
+        1,
+        ProjectionPartition::Unit,
+        &[MutationProjectionArm {
+            arm_id: "changed",
+            binding,
+        }],
+    )
+    .map_err(|e| crate::ProjectionProgramError::InvalidOperation {
+        operation: "task11-generated-multi-table".into(),
+        reason: e.to_string(),
+    })
+}
+
+#[cfg(feature = "graphql")]
+fn generated_modeled_projector_resolve(
+    occurrence: &crate::DomainEventOccurrence,
+) -> Result<crate::ResolvedProjectionPlan, crate::ProjectionProgramError> {
+    crate::mutation::resolve_mutation_program(&generated_modeled_projector_program()?, occurrence)
+}
+
+#[cfg(feature = "graphql")]
+fn generated_modeled_projector_lower(
+    plan: &crate::ResolvedProjectionPlan,
+) -> Result<
+    crate::projection::lower::LoweredProjectionPlan,
+    crate::projection::lower::ProjectionLoweringError,
+> {
+    use crate::projection::lower::{finish_lowering, lower_model_mutation};
+    let mut builder = crate::read_model::ReadModelWritePlanBuilder::new();
+    for mutation in plan.mutations() {
+        match mutation.target().model() {
+            "PrimaryView" => lower_model_mutation::<PrimaryView>(&mut builder, mutation)?,
+            "SecondaryView" => lower_model_mutation::<SecondaryView>(&mut builder, mutation)?,
+            other => {
+                return Err(crate::projection::lower::ProjectionLoweringError::Table(
+                    crate::TableStoreError::Metadata(format!("unknown model `{other}`")),
+                ));
+            }
+        }
+    }
+    finish_lowering(builder, plan)
+}
+
+#[cfg(feature = "graphql")]
+fn generated_modeled_projector_inventory() -> Result<
+    crate::projection::lower::ProjectionOutputInventory,
+    crate::projection::lower::ProjectionLoweringError,
+> {
+    use crate::projection::lower::{ProjectionOutputInventory, ProjectionOutputModel};
+    Ok(ProjectionOutputInventory::new(
+        vec![
+            ProjectionOutputModel::of::<PrimaryView>()?,
+            ProjectionOutputModel::of::<SecondaryView>()?,
+        ],
+        Vec::new(),
+    ))
+}
+
+#[cfg(feature = "graphql")]
 const GENERATED_MODELED_PROJECTOR: crate::projection::lower::ProjectionDescriptor<
     crate::projection::lower::EventualOnly,
-> = distributed_macros::projection! {
-    name: "task11-generated-multi-table";
-    version: 1;
-    epoch: "task11-generated-v1";
-    partition: unit;
-
-    on "task15.todo_changed" version 1 (state: TodoChanged) {
-        upsert PrimaryView {
-            key { id: state.id },
-            set { title: state.title }
-        };
-        upsert SecondaryView {
-            key { id: state.id },
-            set { title: state.title }
-        };
-    }
-};
+> = crate::mutation::descriptor_from_factories(
+    "task11-generated-multi-table",
+    1,
+    "task11-generated-v1",
+    generated_modeled_projector_program,
+    generated_modeled_projector_resolve,
+    generated_modeled_projector_lower,
+    generated_modeled_projector_inventory,
+);
 
 fn primary_projector() -> SurfaceProjector {
     SurfaceProjector::new("task15_a_primary")

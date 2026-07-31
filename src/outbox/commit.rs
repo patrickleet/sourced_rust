@@ -614,9 +614,9 @@ mod tests {
 
     #[tokio::test]
     async fn read_models_and_snapshot_commit_in_one_transaction() {
+        use crate::read_model::ReadModelWritePlanBuilder;
         use crate::{
-            Aggregate, ReadModelWorkspaceExt, ReadModelWritePlanBuilder, RowKey, RowValue,
-            SnapshotStore, StreamIdentity,
+            Aggregate, ReadModelWorkspaceExt, RowKey, RowValue, SnapshotStore, StreamIdentity,
         };
 
         let repo = InMemoryRepository::new()
@@ -658,9 +658,10 @@ mod tests {
 
     #[tokio::test]
     async fn aggregate_outbox_read_model_and_snapshot_commit_in_one_transaction() {
+        use crate::read_model::ReadModelWritePlanBuilder;
         use crate::{
-            Aggregate, GetStream, ReadModelWorkspaceExt, ReadModelWritePlanBuilder, RowKey,
-            RowValue, SnapshotStore, StreamIdentity,
+            Aggregate, GetStream, ReadModelWorkspaceExt, RowKey, RowValue, SnapshotStore,
+            StreamIdentity,
         };
 
         let repo = InMemoryRepository::new()

@@ -551,7 +551,7 @@ fn read_model_capabilities_are_internal_metadata() {
     );
     assert!(caps.is_key_field("todo_id"));
     assert_eq!(caps.returning, ["todo_id", "title"]);
-    assert_eq!(caps.field("title").unwrap().nullable, false);
+    assert!(!caps.field("title").unwrap().nullable);
 }
 
 #[test]

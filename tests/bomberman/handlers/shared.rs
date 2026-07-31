@@ -1,7 +1,7 @@
+use distributed::read_model::ReadModelWritePlanBuilder;
 use distributed::{
-    hydrate, Aggregate, GetStream, ReadModelWorkspaceExt, ReadModelWritePlanBuilder,
-    ReadModelWritePlanStore, RelationalReadModelQueryStore, RepositoryError, RowKey, RowValue,
-    StreamIdentity,
+    hydrate, Aggregate, GetStream, ReadModelWorkspaceExt, ReadModelWritePlanStore,
+    RelationalReadModelQueryStore, RepositoryError, RowKey, RowValue, StreamIdentity,
 };
 
 use crate::domain::bomb::Bomb;
