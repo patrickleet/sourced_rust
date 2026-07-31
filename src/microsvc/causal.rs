@@ -897,16 +897,88 @@ mod tests {
         title: String,
     }
 
-    const MODELED_DIRECT: ProjectionDescriptor<DirectCandidate> = distributed_macros::projection! {
-        name: "modeled-direct-workspace";
-        version: 1;
-        epoch: "modeled-direct-workspace-v1";
-        partition: unit;
+    fn modeled_direct_program() -> Result<crate::ProjectionProgram, crate::ProjectionProgramError> {
+        use crate::mutation::{
+            body_bindings_for_model, program_from_mutation_arms, state_upsert_program_for_model,
+            MutationEventBinding, MutationProjectionArm,
+        };
+        use crate::projection::ProjectionEventSelector;
 
-        on "causal.created" version 1 (state: CausalPublishedState) {
-            upsert ModeledDirectView from state as view;
-        }
-    };
+        let program = state_upsert_program_for_model::<ModeledDirectView>(
+            "save_modeled_direct",
+            1,
+            "upsert-view",
+            "view",
+        )
+        .map_err(|e| crate::ProjectionProgramError::InvalidOperation {
+            operation: "modeled-direct".into(),
+            reason: e.to_string(),
+        })?;
+        let selector =
+            ProjectionEventSelector::try_from_descriptor(&crate::DomainEventDescriptor::state::<
+                CausalPublishedState,
+            >("causal.created", 1))?;
+        let binding = MutationEventBinding::try_new(
+            selector,
+            body_bindings_for_model::<ModeledDirectView>("view").map_err(|e| {
+                crate::ProjectionProgramError::InvalidOperation {
+                    operation: "modeled-direct".into(),
+                    reason: e.to_string(),
+                }
+            })?,
+            program,
+        )
+        .map_err(|e| crate::ProjectionProgramError::InvalidOperation {
+            operation: "modeled-direct".into(),
+            reason: e.to_string(),
+        })?;
+        program_from_mutation_arms(
+            "modeled-direct-workspace",
+            1,
+            crate::ProjectionPartition::Unit,
+            &[MutationProjectionArm {
+                arm_id: "created",
+                binding,
+            }],
+        )
+        .map_err(|e| crate::ProjectionProgramError::InvalidOperation {
+            operation: "modeled-direct".into(),
+            reason: e.to_string(),
+        })
+    }
+
+    fn modeled_direct_resolve(
+        occurrence: &crate::DomainEventOccurrence,
+    ) -> Result<crate::ResolvedProjectionPlan, crate::ProjectionProgramError> {
+        crate::mutation::resolve_mutation_program(&modeled_direct_program()?, occurrence)
+    }
+
+    fn modeled_direct_lower(
+        plan: &crate::ResolvedProjectionPlan,
+    ) -> Result<
+        crate::projection::lower::LoweredProjectionPlan,
+        crate::projection::lower::ProjectionLoweringError,
+    > {
+        crate::mutation::lower_single_model::<ModeledDirectView>(plan)
+    }
+
+    fn modeled_direct_inventory() -> Result<
+        crate::projection::lower::ProjectionOutputInventory,
+        crate::projection::lower::ProjectionLoweringError,
+    > {
+        crate::mutation::inventory_single_model::<ModeledDirectView>()
+    }
+
+    const MODELED_DIRECT: ProjectionDescriptor<DirectCandidate> =
+        crate::mutation::descriptor_from_factories(
+            "modeled-direct-workspace",
+            1,
+            "modeled-direct-workspace-v1",
+            modeled_direct_program,
+            modeled_direct_resolve,
+            modeled_direct_lower,
+            modeled_direct_inventory,
+        );
 
     #[derive(Clone, Debug, Serialize, crate::DomainEvent)]
     #[domain_event(name = "causal.background", version = 1)]

@@ -1,5 +1,0 @@
-error: invalidation is fallback policy, not an authoritative row operation
-  --> tests/projection_compile_fail/authoritative_invalidation.rs:10:13
-   |
-10 |             invalidate_model UnknownModel;
-   |             ^^^^^^^^^^^^^^^^

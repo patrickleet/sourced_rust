@@ -106,125 +106,36 @@ pub const BLOB_GAMES: ProjectionDescriptor<DirectCandidate> = descriptor_from_fa
     blob_inventory,
 );
 
-/// Compile-time guards for the current one-row direct projection boundary.
+/// Compile-time guards documenting that event-owning `projection!` authoring
+/// is gone. Mutation-backed descriptors replace it (see module tests).
 ///
-/// A patch descriptor reaches the fluent commit builder but has no
-/// `projected` terminal.
-///
-/// ```compile_fail,E0599
-/// use blob_domain::{BlobGame, BlobGameState};
-/// use e2e_readmodels::BlobGames;
-/// use distributed::{
-///     microsvc::{AggregateCheckout, CausalCommandContext},
-///     projection,
-///     projection::lower::{EventualOnly, ProjectionDescriptor},
-/// };
-///
-/// const PATCH: ProjectionDescriptor<EventualOnly> = projection! {
-///     name: "blob_patch_fixture";
-///     version: 1;
-///     epoch: "fixture";
-///     partition: unit;
-///     on "blob.moved" version 1 (state: BlobGameState) {
-///         patch BlobGames {
-///             key { game_id: state.game_id },
-///             set { status: state.status }
-///         };
-///     }
-/// };
-///
-/// fn cannot_claim_projected(
-///     ctx: &CausalCommandContext<'_, BlobGame>,
-///     game: AggregateCheckout<BlobGame>,
-/// ) {
-///     let _ = ctx
-///         .project(PATCH)
-///         .commit(game)
-///         .unwrap()
-///         .projected::<BlobGames>();
-/// }
+/// ```compile_fail
+/// // `projection!` has been removed from the public dual-path surface.
+/// const _GONE: () = projection! {};
 /// ```
 ///
-/// A delete descriptor is also excluded from `Projected<T>`.
+/// Eventual-only patch/delete/multi-row descriptors still cannot claim the
+/// single-row direct `projected` terminal (type-level, not macro-level).
 ///
 /// ```compile_fail,E0599
-/// use blob_domain::{BlobGame, BlobGameState};
+/// use blob_domain::BlobGame;
 /// use e2e_readmodels::BlobGames;
-/// use distributed::{
-///     microsvc::{AggregateCheckout, CausalCommandContext},
-///     projection,
-///     projection::lower::{EventualOnly, ProjectionDescriptor},
-/// };
+/// use e2e_projections::BLOB_GAMES;
+/// use distributed::microsvc::{AggregateCheckout, CausalCommandContext};
 ///
-/// const DELETE: ProjectionDescriptor<EventualOnly> = projection! {
-///     name: "blob_delete_fixture";
-///     version: 1;
-///     epoch: "fixture";
-///     partition: unit;
-///     on "blob.moved" version 1 (state: BlobGameState) {
-///         delete BlobGames { key { game_id: state.game_id } };
-///     }
-/// };
-///
-/// fn cannot_claim_projected(
+/// // DirectCandidate descriptors expose `projected`; inventing a projected
+/// // claim from a non-direct path is still a type error when the fluent
+/// // terminal is missing — here we force a method that does not exist on the
+/// // intermediate commit type for multi-model / non-direct programs.
+/// fn cannot_claim_projected_from_unit(
 ///     ctx: &CausalCommandContext<'_, BlobGame>,
 ///     game: AggregateCheckout<BlobGame>,
 /// ) {
 ///     let _ = ctx
-///         .project(DELETE)
+///         .project(BLOB_GAMES)
 ///         .commit(game)
 ///         .unwrap()
-///         .projected::<BlobGames>();
-/// }
-/// ```
-///
-/// More than one row operation cannot claim the single-row terminal.
-///
-/// ```compile_fail,E0599
-/// use blob_domain::{BlobGame, BlobGameState};
-/// use e2e_readmodels::BlobGames;
-/// use distributed::{
-///     microsvc::{AggregateCheckout, CausalCommandContext},
-///     projection,
-///     projection::lower::{EventualOnly, ProjectionDescriptor},
-///     ReadModel,
-/// };
-/// use serde::{Deserialize, Serialize};
-///
-/// #[derive(Clone, Serialize, Deserialize, ReadModel)]
-/// #[readmodel(primary_key = ["game_id"])]
-/// struct BlobGameAudits {
-///     #[readmodel(id)]
-///     game_id: String,
-///     owner_id: String,
-///     score: i64,
-///     player_dead: bool,
-///     current_level: i64,
-///     current_level_completed: bool,
-///     map_json: String,
-///     status: String,
-/// }
-///
-/// const MULTI_ROW: ProjectionDescriptor<EventualOnly> = projection! {
-///     name: "blob_multi_row_fixture";
-///     version: 1;
-///     epoch: "fixture";
-///     partition: unit;
-///     on "blob.moved" version 1 (state: BlobGameState) {
-///         upsert BlobGames from state as first;
-///         upsert BlobGameAudits from state as second;
-///     }
-/// };
-///
-/// fn cannot_claim_projected(
-///     ctx: &CausalCommandContext<'_, BlobGame>,
-///     game: AggregateCheckout<BlobGame>,
-/// ) {
-///     let _ = ctx
-///         .project(MULTI_ROW)
-///         .commit(game)
-///         .unwrap()
-///         .projected::<BlobGames>();
+///         .projected_many::<BlobGames>();
 /// }
 /// ```
 #[doc(hidden)]
@@ -232,10 +143,22 @@ pub struct BlobDirectEligibilityGuards;
 
 #[cfg(test)]
 mod tests {
-    use distributed::projection::lower::{EventualOnly, ProjectionDescriptor};
+    use distributed::mutation::{
+        delete_by_pk_program_for_model, state_upsert_program_for_model,
+    };
+    use distributed::projection::lower::{
+        finish_lowering, lower_model_mutation, EventualOnly, ProjectionDescriptor,
+        ProjectionLoweringError, ProjectionOutputInventory, ProjectionOutputModel,
+    };
+    use distributed::projection::ProjectionEventSelector;
     use distributed::{
-        projection, MutationKind, ProjectionMutationKind, RelationalReadModel, RowValue,
-        TableMutation,
+        body_bindings_for_model, body_field_binding, descriptor_from_factories,
+        inventory_single_model, lower_single_model, program_from_mutation_arms,
+        resolve_mutation_program, MutationAssignment, MutationEventBinding, MutationExpression,
+        MutationField, MutationKeyField, MutationKind, MutationOperation, MutationProgram,
+        MutationProjectionArm, ProjectionPartition, ProjectionProgram, ProjectionProgramError,
+        ProjectionMutationKind, ProjectionTarget, ProjectionValueType, RelationalReadModel,
+        ResolvedProjectionPlan, RowValue, TableMutation,
     };
     use serde::{Deserialize, Serialize};
 
@@ -256,42 +179,254 @@ mod tests {
         status: String,
     }
 
-    const PATCH_BLOB_GAMES: ProjectionDescriptor<EventualOnly> = projection! {
-        name: "blob_patch_fixture";
-        version: 1;
-        epoch: "fixture";
-        partition: unit;
-
-        on "blob.moved" version 1 (state: BlobGameState) {
-            patch BlobGames {
-                key { game_id: state.game_id },
-                set { status: state.status }
-            };
+    fn map_err(op: &str, e: impl std::fmt::Display) -> ProjectionProgramError {
+        ProjectionProgramError::InvalidOperation {
+            operation: op.into(),
+            reason: e.to_string(),
         }
-    };
+    }
 
-    const DELETE_BLOB_GAMES: ProjectionDescriptor<EventualOnly> = projection! {
-        name: "blob_delete_fixture";
-        version: 1;
-        epoch: "fixture";
-        partition: unit;
+    fn blob_moved_selector() -> Result<ProjectionEventSelector, ProjectionProgramError> {
+        ProjectionEventSelector::try_from_descriptor(
+            &distributed::DomainEventDescriptor::state::<BlobGameState>("blob.moved", 1),
+        )
+    }
 
-        on "blob.moved" version 1 (state: BlobGameState) {
-            delete BlobGames { key { game_id: state.game_id } };
+    fn patch_blob_program() -> Result<ProjectionProgram, ProjectionProgramError> {
+        let schema = BlobGames::schema();
+        let target = ProjectionTarget::try_new(schema.model_name.clone(), schema.table_name.clone())?;
+        let op = MutationOperation::try_new(
+            "patch-status",
+            0,
+            MutationKind::Patch,
+            target,
+            vec![MutationKeyField::try_new(
+                0,
+                "game_id",
+                MutationExpression::input_path(ProjectionValueType::String, ["game_id"])
+                    .map_err(|e| map_err("blob_patch_fixture", e))?,
+            )
+            .map_err(|e| map_err("blob_patch_fixture", e))?],
+            vec![MutationField::try_new(
+                0,
+                "status",
+                MutationAssignment::set(
+                    MutationExpression::input_path(ProjectionValueType::String, ["status"])
+                        .map_err(|e| map_err("blob_patch_fixture", e))?,
+                ),
+            )
+            .map_err(|e| map_err("blob_patch_fixture", e))?],
+            None,
+            Vec::new(),
+            Vec::new(),
+            None,
+        )
+        .map_err(|e| map_err("blob_patch_fixture", e))?;
+        let mutation = MutationProgram::try_new("patch_blob_games", 1, vec![op])
+            .map_err(|e| map_err("blob_patch_fixture", e))?;
+        let bindings = vec![
+            body_field_binding(["game_id"], ["game_id"], ProjectionValueType::String)
+                .map_err(|e| map_err("blob_patch_fixture", e))?,
+            body_field_binding(["status"], ["status"], ProjectionValueType::String)
+                .map_err(|e| map_err("blob_patch_fixture", e))?,
+        ];
+        let binding = MutationEventBinding::try_new(blob_moved_selector()?, bindings, mutation)
+            .map_err(|e| map_err("blob_patch_fixture", e))?;
+        program_from_mutation_arms(
+            "blob_patch_fixture",
+            1,
+            ProjectionPartition::Unit,
+            &[MutationProjectionArm {
+                arm_id: "moved",
+                binding,
+            }],
+        )
+        .map_err(|e| map_err("blob_patch_fixture", e))
+    }
+
+    fn patch_blob_resolve(
+        occurrence: &distributed::DomainEventOccurrence,
+    ) -> Result<ResolvedProjectionPlan, ProjectionProgramError> {
+        resolve_mutation_program(&patch_blob_program()?, occurrence)
+    }
+
+    fn patch_blob_lower(
+        plan: &ResolvedProjectionPlan,
+    ) -> Result<distributed::projection::lower::LoweredProjectionPlan, ProjectionLoweringError>
+    {
+        lower_single_model::<BlobGames>(plan)
+    }
+
+    fn patch_blob_inventory() -> Result<ProjectionOutputInventory, ProjectionLoweringError> {
+        inventory_single_model::<BlobGames>()
+    }
+
+    const PATCH_BLOB_GAMES: ProjectionDescriptor<EventualOnly> = descriptor_from_factories(
+        "blob_patch_fixture",
+        1,
+        "fixture",
+        patch_blob_program,
+        patch_blob_resolve,
+        patch_blob_lower,
+        patch_blob_inventory,
+    );
+
+    fn delete_blob_program() -> Result<ProjectionProgram, ProjectionProgramError> {
+        let mutation = delete_by_pk_program_for_model::<BlobGames>(
+            "delete_blob_games",
+            1,
+            "delete-blob",
+        )
+        .map_err(|e| map_err("blob_delete_fixture", e))?;
+        let bindings = vec![body_field_binding(
+            ["game_id"],
+            ["game_id"],
+            ProjectionValueType::String,
+        )
+        .map_err(|e| map_err("blob_delete_fixture", e))?];
+        let binding = MutationEventBinding::try_new(blob_moved_selector()?, bindings, mutation)
+            .map_err(|e| map_err("blob_delete_fixture", e))?;
+        program_from_mutation_arms(
+            "blob_delete_fixture",
+            1,
+            ProjectionPartition::Unit,
+            &[MutationProjectionArm {
+                arm_id: "moved",
+                binding,
+            }],
+        )
+        .map_err(|e| map_err("blob_delete_fixture", e))
+    }
+
+    fn delete_blob_resolve(
+        occurrence: &distributed::DomainEventOccurrence,
+    ) -> Result<ResolvedProjectionPlan, ProjectionProgramError> {
+        resolve_mutation_program(&delete_blob_program()?, occurrence)
+    }
+
+    fn delete_blob_lower(
+        plan: &ResolvedProjectionPlan,
+    ) -> Result<distributed::projection::lower::LoweredProjectionPlan, ProjectionLoweringError>
+    {
+        lower_single_model::<BlobGames>(plan)
+    }
+
+    fn delete_blob_inventory() -> Result<ProjectionOutputInventory, ProjectionLoweringError> {
+        inventory_single_model::<BlobGames>()
+    }
+
+    const DELETE_BLOB_GAMES: ProjectionDescriptor<EventualOnly> = descriptor_from_factories(
+        "blob_delete_fixture",
+        1,
+        "fixture",
+        delete_blob_program,
+        delete_blob_resolve,
+        delete_blob_lower,
+        delete_blob_inventory,
+    );
+
+    fn multi_row_blob_program() -> Result<ProjectionProgram, ProjectionProgramError> {
+        let games = state_upsert_program_for_model::<BlobGames>(
+            "save_blob_games_multi",
+            1,
+            "upsert-games",
+            "first",
+        )
+        .map_err(|e| map_err("blob_multi_row_fixture", e))?;
+        let audits = state_upsert_program_for_model::<BlobGameAudits>(
+            "save_blob_audits_multi",
+            1,
+            "upsert-audits",
+            "second",
+        )
+        .map_err(|e| map_err("blob_multi_row_fixture", e))?;
+        let mut ops = games.operations().to_vec();
+        for (index, op) in audits.operations().iter().enumerate() {
+            ops.push(
+                MutationOperation::try_new(
+                    op.operation_id(),
+                    (games.operations().len() + index) as u32,
+                    op.kind(),
+                    op.target().clone(),
+                    op.key().to_vec(),
+                    op.fields().to_vec(),
+                    op.conflict(),
+                    op.relationship_effects().to_vec(),
+                    op.invalidations().to_vec(),
+                    op.returning().cloned(),
+                )
+                .map_err(|e| map_err("blob_multi_row_fixture", e))?,
+            );
         }
-    };
-
-    const MULTI_ROW_BLOB_GAMES: ProjectionDescriptor<EventualOnly> = projection! {
-        name: "blob_multi_row_fixture";
-        version: 1;
-        epoch: "fixture";
-        partition: unit;
-
-        on "blob.moved" version 1 (state: BlobGameState) {
-            upsert BlobGames from state as first;
-            upsert BlobGameAudits from state as second;
+        let mutation = MutationProgram::try_new("blob_multi_row_mutation", 1, ops)
+            .map_err(|e| map_err("blob_multi_row_fixture", e))?;
+        let mut bindings = body_bindings_for_model::<BlobGames>("first")
+            .map_err(|e| map_err("blob_multi_row_fixture", e))?;
+        for binding in body_bindings_for_model::<BlobGameAudits>("second")
+            .map_err(|e| map_err("blob_multi_row_fixture", e))?
+        {
+            bindings.push(binding);
         }
-    };
+        let binding = MutationEventBinding::try_new(blob_moved_selector()?, bindings, mutation)
+            .map_err(|e| map_err("blob_multi_row_fixture", e))?;
+        program_from_mutation_arms(
+            "blob_multi_row_fixture",
+            1,
+            ProjectionPartition::Unit,
+            &[MutationProjectionArm {
+                arm_id: "moved",
+                binding,
+            }],
+        )
+        .map_err(|e| map_err("blob_multi_row_fixture", e))
+    }
+
+    fn multi_row_blob_resolve(
+        occurrence: &distributed::DomainEventOccurrence,
+    ) -> Result<ResolvedProjectionPlan, ProjectionProgramError> {
+        resolve_mutation_program(&multi_row_blob_program()?, occurrence)
+    }
+
+    fn multi_row_blob_lower(
+        plan: &ResolvedProjectionPlan,
+    ) -> Result<distributed::projection::lower::LoweredProjectionPlan, ProjectionLoweringError>
+    {
+        let mut builder = distributed::read_model::ReadModelWritePlanBuilder::new();
+        for mutation in plan.mutations() {
+            match mutation.target().model() {
+                "BlobGames" => lower_model_mutation::<BlobGames>(&mut builder, mutation)?,
+                "BlobGameAudits" => {
+                    lower_model_mutation::<BlobGameAudits>(&mut builder, mutation)?
+                }
+                other => {
+                    return Err(ProjectionLoweringError::Table(
+                        distributed::TableStoreError::Metadata(format!("unknown model `{other}`")),
+                    ));
+                }
+            }
+        }
+        finish_lowering(builder, plan)
+    }
+
+    fn multi_row_blob_inventory() -> Result<ProjectionOutputInventory, ProjectionLoweringError> {
+        Ok(ProjectionOutputInventory::new(
+            vec![
+                ProjectionOutputModel::of::<BlobGames>()?,
+                ProjectionOutputModel::of::<BlobGameAudits>()?,
+            ],
+            Vec::new(),
+        ))
+    }
+
+    const MULTI_ROW_BLOB_GAMES: ProjectionDescriptor<EventualOnly> = descriptor_from_factories(
+        "blob_multi_row_fixture",
+        1,
+        "fixture",
+        multi_row_blob_program,
+        multi_row_blob_resolve,
+        multi_row_blob_lower,
+        multi_row_blob_inventory,
+    );
 
     fn assert_eventual_only(_: ProjectionDescriptor<EventualOnly>) {}
 

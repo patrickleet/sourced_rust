@@ -1,8 +1,9 @@
+use distributed::read_model::ReadModelWritePlanBuilder;
 use distributed::{
-    Aggregate, AggregateBuilder, CommitBatch, GetStream, ReadModel, ReadModelWritePlanBuilder,
-    ReadModelWritePlanCommitExt, ReadModelWritePlanStore, RelationalReadModel,
-    RelationalReadModelQueryStore, RepositoryError, RowKey, RowValue, StreamIdentity, StreamWrite,
-    TableSchemaRegistry, TransactionalCommit, Versioned,
+    Aggregate, AggregateBuilder, CommitBatch, GetStream, ReadModel, ReadModelWritePlanCommitExt,
+    ReadModelWritePlanStore, RelationalReadModel, RelationalReadModelQueryStore, RepositoryError,
+    RowKey, RowValue, StreamIdentity, StreamWrite, TableSchemaRegistry, TransactionalCommit,
+    Versioned,
 };
 use serde::{Deserialize, Serialize};
 

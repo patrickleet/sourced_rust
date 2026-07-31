@@ -127,14 +127,6 @@ where
     ) -> CausalCommitBuilder<'_, 'route, A, WithPublication, NoDirectProjection> {
         self.context.outbox(message)
     }
-
-    /// Start a direct projection-intent unit of work.
-    pub fn project<Projection>(
-        &self,
-        projection: Projection,
-    ) -> CausalCommitBuilder<'_, 'route, A, NoPublication, Projection> {
-        self.context.project(projection)
-    }
 }
 
 /// Type-state marker for a unit of work with no publication leg.
@@ -378,35 +370,6 @@ where
     }
 }
 
-impl<'context, 'route, A, Publication>
-    CausalCommitBuilder<'context, 'route, A, Publication, NoDirectProjection>
-where
-    A: Aggregate + Send + Sync + 'static,
-{
-    /// Select a declaration that may satisfy the narrow direct projection
-    /// proof. Ordinary `read_models(plan)` remains independent from this leg.
-    ///
-    /// **Deprecated for application commands.** Prefer placement-selected
-    /// `commit(aggregate)?.projected()` so command code does not name a
-    /// projection. Service registration owns the direct handler.
-    #[doc(hidden)]
-    pub fn project<Projection>(
-        self,
-        projection: Projection,
-    ) -> CausalCommitBuilder<'context, 'route, A, Publication, Projection> {
-        CausalCommitBuilder {
-            context: self.context,
-            publish_captured_events: self.publish_captured_events,
-            explicit_events: self.explicit_events,
-            outbox_messages: self.outbox_messages,
-            read_model_plans: self.read_model_plans,
-            error: self.error,
-            projection,
-            _publication: PhantomData,
-        }
-    }
-}
-
 /// A causal unit of work sealed by a handler but not yet durably committed.
 pub struct PreparedCausalCommit<'context, 'route, A, Publication, Projection>
 where
@@ -638,14 +601,6 @@ where
         message: OutboxMessage,
     ) -> CausalCommitBuilder<'_, 'a, A, WithPublication, NoDirectProjection> {
         CausalCommitBuilder::empty(self).outbox(message)
-    }
-
-    /// Start a direct projection-intent unit of work.
-    pub fn project<Projection>(
-        &self,
-        projection: Projection,
-    ) -> CausalCommitBuilder<'_, 'a, A, NoPublication, Projection> {
-        CausalCommitBuilder::empty(self).project(projection)
     }
 
     /// Low-level outbox staging retained for framework internals.

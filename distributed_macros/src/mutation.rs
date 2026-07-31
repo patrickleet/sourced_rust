@@ -26,7 +26,9 @@ enum MutationOpSyntax {
     ExplicitUpsert {
         model: Path,
         object_root: Vec<Ident>,
+        #[allow(dead_code)]
         conflict_primary_key: bool,
+        #[allow(dead_code)]
         update_all: bool,
     },
     /// `delete Model by_pk { field: input.path, ... };`
@@ -602,19 +604,4 @@ fn expand_operation(index: u32, operation: &MutationOpSyntax) -> Result<TokenStr
             })
         }
     }
-}
-
-/// Expand `portable_projector!` into a runtime registration + binding descriptor.
-pub(crate) fn expand_portable_projector(input: proc_macro::TokenStream) -> proc_macro::TokenStream {
-    // Minimal placeholder: parse as a token stream and emit a compile_error with guidance
-    // until full AST is needed by fixture migrations. Actual fixtures use the typed
-    // MutationHandlerRegistration API in this epic wave.
-    let _ = input;
-    quote! {
-        compile_error!(
-            "portable_projector! full surface lands with fixture migration; \
-             use MutationHandlerRegistration::try_new + MutationEventBinding for now"
-        );
-    }
-    .into()
 }

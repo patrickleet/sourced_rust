@@ -159,12 +159,13 @@ pub use queued_repo::{
 //
 // Only the quick-start surface is re-exported at the crate root: the traits
 // user models implement (incl. `RelationalReadModelIncludes`, which the
-// `ReadModel` derive expands to), the in-memory default store, the
-// workspace/plan entry points, and the version marker. Load-graph, query, and
-// row-include plumbing stays reachable under `distributed::read_model::*`.
+// `ReadModel` derive expands to), the in-memory default store, workspace
+// entry points, and the version marker. Physical write-plan builders are
+// low-level adapter detail under `distributed::read_model::*` (not projector
+// authoring). Load-graph, query, and row-include plumbing stays there too.
 pub use read_model::{
-    InMemoryReadModelStore, ReadModel, ReadModelChange, ReadModelWorkspaceExt,
-    ReadModelWritePlanBuilder, RelationalReadModel, RelationalReadModelIncludes, Versioned,
+    InMemoryReadModelStore, ReadModel, ReadModelChange, ReadModelWorkspaceExt, RelationalReadModel,
+    RelationalReadModelIncludes, Versioned,
 };
 
 // Neutral table/row primitives: the canonical schema, row, mutation, write-plan,
@@ -219,11 +220,10 @@ macro_rules! graphql_models {
 // Session convenience re-exports used by GraphQL permission filters.
 pub use microsvc::{ROLE_KEY, USER_ID_KEY};
 
-// Re-export proc macros
+// Re-export proc macros (event-owning `projection!` removed — use `mutation!`)
 pub use distributed_macros::{
     aggregate, command_confirmations, command_effects, command_input_defaults, digest, mutation,
-    projection, sourced, DomainEvent, DomainState, GraphqlInput, GraphqlOutput, ReadModel,
-    Snapshot,
+    sourced, DomainEvent, DomainState, GraphqlInput, GraphqlOutput, ReadModel, Snapshot,
 };
 
 // Re-export enqueue macro (requires "emitter" feature)

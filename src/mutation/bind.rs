@@ -237,35 +237,6 @@ pub fn identity_body_path_binder(
     ProjectionExpression::body_path(value_type.clone(), path.iter().cloned()).map_err(Into::into)
 }
 
-/// Bind a constant-only mutation expression tree (no input paths) for tests.
-pub fn reject_input_binder(
-    path: &[String],
-    _value_type: &ProjectionValueType,
-) -> Result<ProjectionExpression, MutationProgramError> {
-    Err(MutationProgramError::MissingInput {
-        path: path.join("."),
-    })
-}
-
-/// Helper: bind a whole state object at `input_root` from event body root.
-pub fn state_object_binding(
-    input_root: impl Into<String>,
-) -> Result<MutationInputBinding, MutationProgramError> {
-    MutationInputBinding::try_new(
-        vec![input_root.into()],
-        // Empty body path is invalid; use a synthetic root marker path that
-        // extend_expression can treat as prefix "". We use body_path with a
-        // single empty-free path: the whole body is represented by path [].
-        // ProjectionExpression forbids empty paths, so bind as constant object
-        // is not right either. Convention: bind path ["$body"] is not used.
-        // Instead, portable macros emit per-field bindings.
-        //
-        // For sugar tests, callers should use per-field bindings or the
-        // identity_body_path_binder rewrite path.
-        ProjectionExpression::constant(crate::projection::ProjectionValue::null()),
-    )
-}
-
 /// Construct a simple field binding: mutation input path <- event body path.
 pub fn body_field_binding(
     input_path: impl IntoIterator<Item = impl Into<String>>,

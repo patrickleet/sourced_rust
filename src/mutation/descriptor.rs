@@ -68,7 +68,7 @@ pub fn lower_single_model<M>(
 where
     M: crate::projection::lower::ProjectionReadModelMetadata,
 {
-    let mut builder = crate::ReadModelWritePlanBuilder::new();
+    let mut builder = crate::read_model::ReadModelWritePlanBuilder::new();
     for mutation in plan.mutations() {
         lower_model_mutation::<M>(&mut builder, mutation)?;
     }
@@ -128,16 +128,6 @@ pub fn assert_mutation_backed_program(
     Ok(())
 }
 
-/// Trait alias helper for models that can be inventory/lower targets.
-pub trait MutationLowerTarget:
-    RelationalReadModel + crate::projection::lower::ProjectionReadModelMetadata
-{
-}
-impl<T> MutationLowerTarget for T where
-    T: RelationalReadModel + crate::projection::lower::ProjectionReadModelMetadata
-{
-}
-
 /// Map a physical column type to the portable projection value type used in
 /// mutation input paths and event body bindings.
 pub fn projection_value_type_for_column(
@@ -179,4 +169,110 @@ where
         )?);
     }
     Ok(bindings)
+}
+
+/// Build a complete-row upsert mutation program for model `M` from `input_root`.
+///
+/// # Errors
+///
+/// Propagates schema or validation failures.
+pub fn state_upsert_program_for_model<M>(
+    name: &str,
+    version: u64,
+    operation_id: &str,
+    input_root: &str,
+) -> Result<super::program::MutationProgram, MutationProgramError>
+where
+    M: RelationalReadModel,
+{
+    use super::expression::{MutationAssignment, MutationExpression};
+    use super::program::{
+        MutationConflictTarget, MutationField, MutationKeyField, MutationKind, MutationOperation,
+        MutationProgram,
+    };
+    use crate::projection::{ProjectionTarget, ProjectionValueType};
+
+    let schema = M::schema();
+    let target = ProjectionTarget::try_new(schema.model_name.clone(), schema.table_name.clone())
+        .map_err(MutationProgramError::from)?;
+    let mut key = Vec::new();
+    for (ordinal, column) in schema.primary_key.columns.iter().enumerate() {
+        let path = vec![input_root.to_owned(), column.clone()];
+        key.push(MutationKeyField::try_new(
+            ordinal as u32,
+            column.clone(),
+            MutationExpression::input_path(ProjectionValueType::String, path)?,
+        )?);
+    }
+    let mut fields = Vec::new();
+    for (ordinal, column) in schema
+        .columns
+        .iter()
+        .filter(|column| !column.skipped)
+        .enumerate()
+    {
+        let value_type = projection_value_type_for_column(&column.column_type);
+        let path = vec![input_root.to_owned(), column.field_name.clone()];
+        fields.push(MutationField::try_new(
+            ordinal as u32,
+            column.field_name.clone(),
+            MutationAssignment::set(MutationExpression::input_path(value_type, path)?),
+        )?);
+    }
+    let op = MutationOperation::try_new(
+        operation_id,
+        0,
+        MutationKind::Upsert,
+        target,
+        key,
+        fields,
+        Some(MutationConflictTarget::PrimaryKey),
+        Vec::new(),
+        Vec::new(),
+        None,
+    )?;
+    MutationProgram::try_new(name, version, vec![op])
+}
+
+/// Build a delete-by-pk mutation program for model `M`.
+///
+/// # Errors
+///
+/// Propagates schema or validation failures.
+pub fn delete_by_pk_program_for_model<M>(
+    name: &str,
+    version: u64,
+    operation_id: &str,
+) -> Result<super::program::MutationProgram, MutationProgramError>
+where
+    M: RelationalReadModel,
+{
+    use super::expression::MutationExpression;
+    use super::program::{MutationKeyField, MutationKind, MutationOperation, MutationProgram};
+    use crate::projection::{ProjectionTarget, ProjectionValueType};
+
+    let schema = M::schema();
+    let target = ProjectionTarget::try_new(schema.model_name.clone(), schema.table_name.clone())
+        .map_err(MutationProgramError::from)?;
+    let mut key = Vec::new();
+    for (ordinal, column) in schema.primary_key.columns.iter().enumerate() {
+        key.push(MutationKeyField::try_new(
+            ordinal as u32,
+            column.clone(),
+            MutationExpression::input_path(ProjectionValueType::String, vec![column.clone()])?,
+        )?);
+    }
+    let op = MutationOperation::try_new(
+        operation_id,
+        0,
+        MutationKind::Delete,
+        target,
+        key,
+        Vec::new(),
+        None,
+        Vec::new(),
+        Vec::new(),
+        None,
+    )?;
+    MutationProgram::try_new(name, version, vec![op])
 }

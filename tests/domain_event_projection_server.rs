@@ -3,12 +3,13 @@ use distributed::projection::lower::{
     related_operation, state_selector, LoweredProjectionPlan, ProjectionAuthoringField,
     ProjectionLoweringError,
 };
+use distributed::read_model::ReadModelWritePlanBuilder;
 use distributed::table::TableSchemaRegistry;
 use distributed::{
     Entity, InMemoryRepository, ProjectionArm, ProjectionEventSet, ProjectionExpression,
     ProjectionMutationKind, ProjectionPartition, ProjectionPlanTemplate, ProjectionProgram,
-    ProjectionProgramError, ProjectionValue, ReadModelWorkspaceExt, ReadModelWritePlanBuilder,
-    ReadModelWritePlanStore, RowKey, RowValue, TableMutation, TableWritePlan,
+    ProjectionProgramError, ProjectionValue, ReadModelWorkspaceExt, ReadModelWritePlanStore,
+    RowKey, RowValue, TableMutation, TableWritePlan,
 };
 use serde::{Deserialize, Serialize};
 

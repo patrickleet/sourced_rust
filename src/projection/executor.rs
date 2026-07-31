@@ -744,25 +744,245 @@ mod tests {
         action: String,
     }
 
+    fn executor_multi_table_program(
+    ) -> Result<crate::ProjectionProgram, crate::ProjectionProgramError> {
+        use crate::mutation::{
+            body_field_binding, program_from_mutation_arms, MutationAssignment,
+            MutationConflictTarget, MutationEventBinding, MutationExpression, MutationField,
+            MutationKeyField, MutationKind, MutationOperation, MutationProgram,
+            MutationProjectionArm,
+        };
+        use crate::projection::{
+            ProjectionEventSelector, ProjectionPartition, ProjectionTarget, ProjectionValueType,
+        };
+
+        let todo_target = ProjectionTarget::try_new("TodoView", "executor_todos")?;
+        let audit_target = ProjectionTarget::try_new("AuditView", "executor_audits")?;
+        let todo_op = MutationOperation::try_new(
+            "upsert-todo",
+            0,
+            MutationKind::Upsert,
+            todo_target,
+            vec![MutationKeyField::try_new(
+                0,
+                "id",
+                MutationExpression::input_path(ProjectionValueType::String, ["id"]).map_err(
+                    |e| crate::ProjectionProgramError::InvalidOperation {
+                        operation: "executor multi".into(),
+                        reason: e.to_string(),
+                    },
+                )?,
+            )
+            .map_err(|e| crate::ProjectionProgramError::InvalidOperation {
+                operation: "executor multi".into(),
+                reason: e.to_string(),
+            })?],
+            vec![
+                MutationField::try_new(
+                    0,
+                    "id",
+                    MutationAssignment::set(
+                        MutationExpression::input_path(ProjectionValueType::String, ["id"])
+                            .map_err(|e| crate::ProjectionProgramError::InvalidOperation {
+                                operation: "executor multi".into(),
+                                reason: e.to_string(),
+                            })?,
+                    ),
+                )
+                .map_err(|e| crate::ProjectionProgramError::InvalidOperation {
+                    operation: "executor multi".into(),
+                    reason: e.to_string(),
+                })?,
+                MutationField::try_new(
+                    1,
+                    "title",
+                    MutationAssignment::set(
+                        MutationExpression::input_path(ProjectionValueType::String, ["title"])
+                            .map_err(|e| crate::ProjectionProgramError::InvalidOperation {
+                                operation: "executor multi".into(),
+                                reason: e.to_string(),
+                            })?,
+                    ),
+                )
+                .map_err(|e| crate::ProjectionProgramError::InvalidOperation {
+                    operation: "executor multi".into(),
+                    reason: e.to_string(),
+                })?,
+            ],
+            Some(MutationConflictTarget::PrimaryKey),
+            Vec::new(),
+            Vec::new(),
+            None,
+        )
+        .map_err(|e| crate::ProjectionProgramError::InvalidOperation {
+            operation: "executor multi".into(),
+            reason: e.to_string(),
+        })?;
+        let audit_op = MutationOperation::try_new(
+            "upsert-audit",
+            1,
+            MutationKind::Upsert,
+            audit_target,
+            vec![MutationKeyField::try_new(
+                0,
+                "id",
+                MutationExpression::input_path(ProjectionValueType::String, ["id"]).map_err(
+                    |e| crate::ProjectionProgramError::InvalidOperation {
+                        operation: "executor multi".into(),
+                        reason: e.to_string(),
+                    },
+                )?,
+            )
+            .map_err(|e| crate::ProjectionProgramError::InvalidOperation {
+                operation: "executor multi".into(),
+                reason: e.to_string(),
+            })?],
+            vec![
+                MutationField::try_new(
+                    0,
+                    "id",
+                    MutationAssignment::set(
+                        MutationExpression::input_path(ProjectionValueType::String, ["id"])
+                            .map_err(|e| crate::ProjectionProgramError::InvalidOperation {
+                                operation: "executor multi".into(),
+                                reason: e.to_string(),
+                            })?,
+                    ),
+                )
+                .map_err(|e| crate::ProjectionProgramError::InvalidOperation {
+                    operation: "executor multi".into(),
+                    reason: e.to_string(),
+                })?,
+                MutationField::try_new(
+                    1,
+                    "action",
+                    MutationAssignment::set(
+                        MutationExpression::input_path(ProjectionValueType::String, ["action"])
+                            .map_err(|e| crate::ProjectionProgramError::InvalidOperation {
+                                operation: "executor multi".into(),
+                                reason: e.to_string(),
+                            })?,
+                    ),
+                )
+                .map_err(|e| crate::ProjectionProgramError::InvalidOperation {
+                    operation: "executor multi".into(),
+                    reason: e.to_string(),
+                })?,
+            ],
+            Some(MutationConflictTarget::PrimaryKey),
+            Vec::new(),
+            Vec::new(),
+            None,
+        )
+        .map_err(|e| crate::ProjectionProgramError::InvalidOperation {
+            operation: "executor multi".into(),
+            reason: e.to_string(),
+        })?;
+        let mutation_program =
+            MutationProgram::try_new("executor_multi_mutation", 1, vec![todo_op, audit_op])
+                .map_err(|e| crate::ProjectionProgramError::InvalidOperation {
+                    operation: "executor multi".into(),
+                    reason: e.to_string(),
+                })?;
+        let selector =
+            ProjectionEventSelector::try_from_descriptor(&crate::DomainEventDescriptor::state::<
+                ExecutorState,
+            >("executor.changed", 1))?;
+        let bindings = vec![
+            body_field_binding(["id"], ["id"], ProjectionValueType::String).map_err(|e| {
+                crate::ProjectionProgramError::InvalidOperation {
+                    operation: "executor multi".into(),
+                    reason: e.to_string(),
+                }
+            })?,
+            body_field_binding(["title"], ["title"], ProjectionValueType::String).map_err(|e| {
+                crate::ProjectionProgramError::InvalidOperation {
+                    operation: "executor multi".into(),
+                    reason: e.to_string(),
+                }
+            })?,
+            body_field_binding(["action"], ["action"], ProjectionValueType::String).map_err(
+                |e| crate::ProjectionProgramError::InvalidOperation {
+                    operation: "executor multi".into(),
+                    reason: e.to_string(),
+                },
+            )?,
+        ];
+        let binding =
+            MutationEventBinding::try_new(selector, bindings, mutation_program).map_err(|e| {
+                crate::ProjectionProgramError::InvalidOperation {
+                    operation: "executor multi".into(),
+                    reason: e.to_string(),
+                }
+            })?;
+        program_from_mutation_arms(
+            "executor-generated-multi-table",
+            1,
+            ProjectionPartition::Unit,
+            &[MutationProjectionArm {
+                arm_id: "changed",
+                binding,
+            }],
+        )
+        .map_err(|e| crate::ProjectionProgramError::InvalidOperation {
+            operation: "executor multi".into(),
+            reason: e.to_string(),
+        })
+    }
+
+    fn executor_multi_table_resolve(
+        occurrence: &crate::DomainEventOccurrence,
+    ) -> Result<crate::ResolvedProjectionPlan, crate::ProjectionProgramError> {
+        crate::mutation::resolve_mutation_program(&executor_multi_table_program()?, occurrence)
+    }
+
+    fn executor_multi_table_lower(
+        plan: &crate::ResolvedProjectionPlan,
+    ) -> Result<
+        crate::projection::lower::LoweredProjectionPlan,
+        crate::projection::lower::ProjectionLoweringError,
+    > {
+        use crate::projection::lower::{finish_lowering, lower_model_mutation};
+        let mut builder = ReadModelWritePlanBuilder::new();
+        for mutation in plan.mutations() {
+            match mutation.target().model() {
+                "TodoView" => lower_model_mutation::<TodoView>(&mut builder, mutation)?,
+                "AuditView" => lower_model_mutation::<AuditView>(&mut builder, mutation)?,
+                other => {
+                    return Err(crate::projection::lower::ProjectionLoweringError::Table(
+                        crate::TableStoreError::Metadata(format!("unknown model `{other}`")),
+                    ));
+                }
+            }
+        }
+        finish_lowering(builder, plan)
+    }
+
+    fn executor_multi_table_inventory() -> Result<
+        crate::projection::lower::ProjectionOutputInventory,
+        crate::projection::lower::ProjectionLoweringError,
+    > {
+        use crate::projection::lower::{ProjectionOutputInventory, ProjectionOutputModel};
+        Ok(ProjectionOutputInventory::new(
+            vec![
+                ProjectionOutputModel::of::<TodoView>()?,
+                ProjectionOutputModel::of::<AuditView>()?,
+            ],
+            Vec::new(),
+        ))
+    }
+
     const GENERATED_MULTI_TABLE: crate::projection::lower::ProjectionDescriptor<
         crate::projection::lower::EventualOnly,
-    > = distributed_macros::projection! {
-        name: "executor-generated-multi-table";
-        version: 1;
-        epoch: "executor-generated-v1";
-        partition: unit;
-
-        on "executor.changed" version 1 (state: ExecutorState) {
-            upsert TodoView {
-                key { id: state.id },
-                set { title: state.title }
-            };
-            upsert AuditView {
-                key { id: state.id },
-                set { action: state.action }
-            };
-        }
-    };
+    > = crate::mutation::descriptor_from_factories(
+        "executor-generated-multi-table",
+        1,
+        "executor-generated-v1",
+        executor_multi_table_program,
+        executor_multi_table_resolve,
+        executor_multi_table_lower,
+        executor_multi_table_inventory,
+    );
 
     fn topology() -> ProjectorTopologyId {
         ProjectorTopologyId::new(1, "executor-tests", [31; 32]).unwrap()
