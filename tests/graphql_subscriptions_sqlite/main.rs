@@ -182,9 +182,11 @@ async fn subscription_unknown_role_returns_error_response() {
         response.is_err(),
         "unknown role must return an error response"
     );
+    // Set-only + surface authority: unconfigured singleton role cannot open a
+    // role surface (no primary-role schema lookup fallback).
     assert_eq!(
         response.errors[0].message,
-        "role `ghost` is not configured for GraphQL"
+        "GraphQL execution requires a named application surface for multi-role principals, a membership-checked role surface, or an anonymous session"
     );
 }
 
