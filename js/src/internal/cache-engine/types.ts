@@ -268,6 +268,12 @@ export interface CacheEngine {
 	 */
 	restoreConfirmed(snapshot: CacheEngineSnapshot): void;
 	/**
+	 * Upsert confirmed records/indexes from a same-scope seed without deleting
+	 * keys the seed omitted. Used when a warm SPA client re-receives a
+	 * route-local SSR dehydrate that is a subset of the session cache.
+	 */
+	mergeConfirmed(snapshot: CacheEngineSnapshot): void;
+	/**
 	 * Drop incomparable/reset base indexes without assigning them a fabricated
 	 * revision. Pending optimistic overlays remain layered above the new gap.
 	 */

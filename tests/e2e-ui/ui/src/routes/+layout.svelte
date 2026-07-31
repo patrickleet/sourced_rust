@@ -49,6 +49,8 @@
 		if (hydrationTimer !== undefined) clearTimeout(hydrationTimer);
 		// Session listeners fence an old credential in the microtask queue.
 		// Apply the separately-authorized navigation seed after that fence.
+		// Same-scope hydrate merges into the warm replica (framework policy):
+		// confirmed keys omitted from this route seed are retained.
 		hydrationTimer = setTimeout(() => {
 			hydrationTimer = undefined;
 			client.hydrate(data.distributed!, data.distributedAuthority!);

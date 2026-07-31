@@ -367,6 +367,49 @@ test('SSR dehydration includes confirmed reachable state and excludes optimistic
 	assert.deepEqual(browserReplica.scope, state.scope);
 });
 
+test('same-scope re-hydrate retains confirmed indexes omitted from a later route seed', () => {
+	// Soft-nav SSR only dehydrates the destination route. A warm SPA client may
+	// already hold confirmed windows from other routes; those must stay.
+	const warm = createDistributedReplica();
+	write(warm, Todos, [{ id: 'todo-1', title: 'todos-row' }], { position: '1' });
+	write(warm, HiddenTodos, [{ id: 'hidden-1', title: 'history-page' }], {
+		position: '1'
+	});
+	warm.read(Todos, {});
+	warm.read(HiddenTodos, {});
+	assert.equal(warm.read(Todos, {}).data.todos[0].title, 'todos-row');
+	assert.equal(
+		warm.read(HiddenTodos, {}).data.hidden_todos[0].title,
+		'history-page'
+	);
+
+	const pageSeed = createDistributedReplica();
+	write(
+		pageSeed,
+		Todos,
+		[{ id: 'todo-1', title: 'todos-row-v2' }],
+		{ position: '2' }
+	);
+	pageSeed.read(Todos, {});
+	// Intentionally omit HiddenTodos from the second seed (route subset).
+	const seed = pageSeed.dehydrate();
+	assert.equal(
+		seed.payload.cache.records.some((record) => record.key.includes('hidden-1')),
+		false,
+		'fixture seed must omit the retained index'
+	);
+
+	assert.equal(warm.hydrate(jsonClone(seed), seed.scope), true);
+	// Overlapping route window upserts.
+	assert.equal(warm.read(Todos, {}).data.todos[0].title, 'todos-row-v2');
+	// Omitted confirmed index remains materializable without a forced wipe.
+	assert.equal(warm.read(HiddenTodos, {}).complete, true);
+	assert.equal(
+		warm.read(HiddenTodos, {}).data.hidden_todos[0].title,
+		'history-page'
+	);
+});
+
 test('hydration rejects malformed, cross-scope, and elevated-schema state atomically', () => {
 	const current = createDistributedReplica();
 	write(current, Todos, [{ id: 'todo-1', title: 'current' }]);

@@ -441,6 +441,25 @@ export class PurposeBuiltCacheEngine implements CacheEngine {
 		});
 	}
 
+	mergeConfirmed(snapshot: CacheEngineSnapshot): void {
+		const restored = parseSnapshot(snapshot);
+		this.#transaction(() => {
+			// Seed is authoritative for keys it contains; keys it omits stay.
+			for (const [key, record] of restored.records) {
+				this.#records.set(key, record);
+				this.#changedDependencies.add(recordSeenDependency(key));
+				this.#changedDependencies.add(recordWildcardDependency(key));
+			}
+			for (const [key, index] of restored.indexes) {
+				this.#indexes.set(key, index);
+				this.#changedDependencies.add(indexDependency(key));
+			}
+			this.#derivedIndexOperations = [];
+			this.#dirty = true;
+			this.#reconcileDerivedIndexes();
+		});
+	}
+
 	discardIndexes(keys: readonly IndexKey[]): void {
 		const unique = new Set<IndexKey>();
 		for (const key of keys) {

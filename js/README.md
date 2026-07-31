@@ -259,6 +259,11 @@ the server sends a separate authority value, and the adapter requires both
 values to match. Session, token, tenant, or role changes abort HTTP and live
 work, discard the old generation, and reconnect under server-issued scope.
 
+Confirmed records and indexes under an active scope stay until auth/scope
+change, stale+revalidate, or a newer authoritative write. Same-scope soft
+navigation merges a route SSR seed into the warm client and does **not** wipe
+keys the seed omitted (a page dehydrate is only the subset for that route).
+
 Use a separate generated surface and replica for elevated routes. A normal
 client cannot import or mix admin artifacts. Configure it as a separate virtual
 module such as `$distributed/admin` and provide it only in the elevated layout.
@@ -289,7 +294,9 @@ const unsubscribe = todos.subscribe((snapshot) => {
 `watch()` reads synchronously, fetches only missing or stale projections,
 deduplicates work, and optionally maintains the generated live operation.
 `read()` is side-effect-free. `dehydrate()` and `hydrate()` transfer confirmed
-request-local state without exposing a public storage schema.
+state without exposing a public storage schema. Cold `hydrate` seeds an empty
+client; warm same-scope `hydrate` merges so soft navigation cannot discard
+confirmed session data the next route did not re-dehydrate.
 
 The replica stores normalized records and exact argument-sensitive indexes,
 not GraphQL response blobs. Generated selection metadata reconstructs each

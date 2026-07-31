@@ -203,7 +203,7 @@ test('replica state never self-authorizes hydration scope', async () => {
 	client.destroy();
 });
 
-test('route misses do no GraphQL work and same-scope navigation replaces hydration', async () => {
+test('route misses do no GraphQL work and same-scope soft-nav merges overlapping seed', async () => {
 	const harness = serverHarness();
 	const missed = await harness.server.load({
 		...harness.event('alice'),
@@ -232,6 +232,9 @@ test('route misses do no GraphQL work and same-scope navigation replaces hydrati
 	const unsubscribe = todos.subscribe((snapshot) => {
 		values.push(snapshot.data.todos?.[0]?.title);
 	});
+	assert.equal(todos.get().data.todos[0].title, 'alice:1');
+	// Overlapping same-scope seed upserts the route window (position/title update)
+	// without requiring a browser GraphQL round-trip.
 	assert.equal(
 		client.hydrate(second.distributed, second.distributedAuthority),
 		true

@@ -839,6 +839,11 @@ export interface DistributedReplica {
 	 * scope for the current SSR response. Returns false on scope/schema mismatch
 	 * and never partially restores malformed state. Persisted state must wait for
 	 * a fresh server scope and pass that scope here.
+	 *
+	 * Cold clients (no active scope) replace from the seed. Warm same-scope
+	 * re-hydrate merges seed records/indexes and retains confirmed keys the seed
+	 * omitted—soft navigation must not wipe session cache because a route only
+	 * dehydrated its page subset. Auth/scope change still purges.
 	 */
 	hydrate(
 		state: ReplicaDehydratedState,

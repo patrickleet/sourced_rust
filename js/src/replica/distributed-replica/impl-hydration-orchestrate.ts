@@ -4,9 +4,11 @@ import {
 	type CacheEngineSnapshot
 } from '../../internal/cache-engine.js';
 import type { GraphqlVariables } from '../../types.js';
-import type {
-	DistributedOpaqueString,
-	DistributedTrustedPreset
+import {
+	compareDistributedDecimal,
+	type DistributedDecimalString,
+	type DistributedOpaqueString,
+	type DistributedTrustedPreset
 } from '../../protocol.js';
 import { matchReplicaTrustedPresetInventory } from '../commands.js';
 import type { ReplicaDiagnosticEventInput } from '../diagnostics.js';
@@ -397,54 +399,90 @@ export function hydrateReplica(
 	}
 
 	if (preserveLocalCommandState) {
+		// Warm same-scope re-hydrate (soft nav / second SSR seed): keep confirmed
+		// records and indexes the route seed omitted. Seed keys upsert; purge only
+		// happens on auth/scope change (closeAuthorizationGeneration path).
 		host.closeActiveTransports();
+		host.queryStates.clear();
+		for (const [key, group] of parsed.operationProtocols) {
+			host.operationProtocols.set(key, group);
+		}
+		for (const [key, generation] of parsed.operationGenerations) {
+			host.operationGenerations.set(key, generation);
+		}
+		for (const [key, clock] of parsed.recordClocks) {
+			host.recordClocks.set(key, clock);
+		}
+		for (const [scopeToken, key] of parsed.recordKeysByScope) {
+			host.recordKeysByScope.set(scopeToken, key);
+		}
+		for (const [scopeToken, clock] of parsed.anonymousRecordClocks) {
+			host.anonymousRecordClocks.set(scopeToken, clock);
+		}
+		host.setTrustedPresets(parsed.trustedPresets);
+		if (
+			compareDistributedDecimal(
+				parsed.nextIndexRevision as DistributedDecimalString,
+				host.getNextIndexRevision() as DistributedDecimalString
+			) > 0
+		) {
+			host.setNextIndexRevision(parsed.nextIndexRevision);
+		}
+		host.setProtocolGeneration(parsed.scope);
+		host.setArtifactBinding(
+			Object.freeze({
+				version: 1,
+				schemaHash: parsed.scope.schemaHash,
+				...(binding?.surfaceIdentity !== undefined
+					? { surfaceIdentity: binding.surfaceIdentity }
+					: {}),
+				...(binding?.trustedPresets !== undefined
+					? { trustedPresets: binding.trustedPresets }
+					: {})
+			})
+		);
+		host.engine.mergeConfirmed(parsed.cache);
 	} else {
 		host.closeAuthorizationGeneration();
-	}
-	host.queryStates.clear();
-	host.operationProtocols.clear();
-	for (const [key, group] of parsed.operationProtocols) {
-		host.operationProtocols.set(key, group);
-	}
-	host.operationGenerations.clear();
-	for (const [key, generation] of parsed.operationGenerations) {
-		host.operationGenerations.set(key, generation);
-	}
-	host.recordClocks.clear();
-	for (const [key, clock] of parsed.recordClocks) {
-		host.recordClocks.set(key, clock);
-	}
-	host.recordKeysByScope.clear();
-	for (const [scopeToken, key] of parsed.recordKeysByScope) {
-		host.recordKeysByScope.set(scopeToken, key);
-	}
-	host.anonymousRecordClocks.clear();
-	for (const [scopeToken, clock] of parsed.anonymousRecordClocks) {
-		host.anonymousRecordClocks.set(scopeToken, clock);
-	}
-	if (!preserveLocalCommandState) {
+		host.queryStates.clear();
+		host.operationProtocols.clear();
+		for (const [key, group] of parsed.operationProtocols) {
+			host.operationProtocols.set(key, group);
+		}
+		host.operationGenerations.clear();
+		for (const [key, generation] of parsed.operationGenerations) {
+			host.operationGenerations.set(key, generation);
+		}
+		host.recordClocks.clear();
+		for (const [key, clock] of parsed.recordClocks) {
+			host.recordClocks.set(key, clock);
+		}
+		host.recordKeysByScope.clear();
+		for (const [scopeToken, key] of parsed.recordKeysByScope) {
+			host.recordKeysByScope.set(scopeToken, key);
+		}
+		host.anonymousRecordClocks.clear();
+		for (const [scopeToken, clock] of parsed.anonymousRecordClocks) {
+			host.anonymousRecordClocks.set(scopeToken, clock);
+		}
 		host.optimisticReceipts.clear();
 		host.diagnosticLayers?.clear();
 		host.setDiagnosticLayerSequence(0);
-	}
-	host.setTrustedPresets(parsed.trustedPresets);
-	host.setNextIndexRevision(parsed.nextIndexRevision);
-	host.setProtocolGeneration(parsed.scope);
-	host.setArtifactBinding(
-		Object.freeze({
-			version: 1,
-			schemaHash: parsed.scope.schemaHash,
-			...(binding?.surfaceIdentity !== undefined
-				? { surfaceIdentity: binding.surfaceIdentity }
-				: {}),
-			...(binding?.trustedPresets !== undefined
-				? { trustedPresets: binding.trustedPresets }
-				: {})
-		})
-	);
-	if (preserveLocalCommandState) {
-		host.engine.restoreConfirmed(parsed.cache);
-	} else {
+		host.setTrustedPresets(parsed.trustedPresets);
+		host.setNextIndexRevision(parsed.nextIndexRevision);
+		host.setProtocolGeneration(parsed.scope);
+		host.setArtifactBinding(
+			Object.freeze({
+				version: 1,
+				schemaHash: parsed.scope.schemaHash,
+				...(binding?.surfaceIdentity !== undefined
+					? { surfaceIdentity: binding.surfaceIdentity }
+					: {}),
+				...(binding?.trustedPresets !== undefined
+					? { trustedPresets: binding.trustedPresets }
+					: {})
+			})
+		);
 		host.engine.restore(parsed.cache);
 	}
 	host.resumeLiveWatches();
@@ -454,7 +492,7 @@ export function hydrateReplica(
 			Object.freeze({
 				kind: 'hydration',
 				action: 'accepted',
-				reason: 'accepted'
+				reason: preserveLocalCommandState ? 'same-scope-merge' : 'accepted'
 			})
 		);
 		host.diagnosticEvent(

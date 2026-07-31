@@ -1,8 +1,12 @@
-# One query owns SSR, normalized reads, and @live — including author join.
-# Framework: unowned join tables (auth_users) do not force live.supported=false;
-# nullable missing author edges keep optimistic parent rows complete.
-query ChatMessages @load @live {
-  chat_messages(where: { room_id: { _eq: "lobby" } }) {
+# Newest page is live (offset 0). Older pages load via the same operation
+# with rising offset; the UI merges by message_id and displays ascending.
+query ChatMessages($limit: Int!, $offset: Int!) @load @live {
+  chat_messages(
+    where: { room_id: { _eq: "lobby" } }
+    limit: $limit
+    offset: $offset
+    order_by: [{ created_at: desc }]
+  ) {
     message_id
     room_id
     author_id

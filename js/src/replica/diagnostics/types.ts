@@ -196,6 +196,7 @@ export type ReplicaDiagnosticEventInput =
 			action: 'accepted' | 'rejected';
 			reason:
 				| 'accepted'
+				| 'same-scope-merge'
 				| 'invalid'
 				| 'scope-mismatch'
 				| 'artifact-mismatch'

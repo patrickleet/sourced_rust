@@ -4,6 +4,7 @@ import {
 } from '@hops-ops/distributed/sveltekit';
 
 import { DISTRIBUTED_ROUTE_OPERATIONS } from '$distributed';
+import { CHAT_PAGE_SIZE } from '$lib/chat/lobby-log';
 import { engineRoleFromGroups } from '$lib/roles';
 import { graphqlHttpUrl } from '$lib/server/graphql';
 
@@ -23,7 +24,11 @@ const distributed = createDistributedSvelteKitServer<Session, LoadEvent>({
 	routes: DISTRIBUTED_ROUTE_OPERATIONS,
 	getSession: (event) => event.locals.auth(),
 	getRole: (session) => engineRoleFromGroups(session?.user?.groups),
-	getUrl: graphqlHttpUrl
+	getUrl: graphqlHttpUrl,
+	// ChatMessages requires limit/offset; seed the live newest page on SSR.
+	variables: {
+		ChatMessages: () => ({ limit: CHAT_PAGE_SIZE, offset: 0 })
+	}
 });
 
 export const load: LayoutServerLoad = distributed.load satisfies (
