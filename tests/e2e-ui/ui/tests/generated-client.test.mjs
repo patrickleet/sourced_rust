@@ -12,7 +12,7 @@ const read = (...segments) =>
 test('co-located operations are the only app-authored GraphQL documents', () => {
 	const documents = [
 		['src/routes/todos/+page.graphql', /query Todos @load/],
-		['src/routes/chat/+page.graphql', /query ChatMessages @load @live/],
+		['src/routes/chat/+page.graphql', /query ChatMessages\(\$limit: Int!, \$offset: Int!\) @load @live/],
 		['src/routes/blob/[[gameId]]/+page.graphql', /query BlobGames @load/],
 		['src/routes/admin/+page.graphql', /query AdminAllTodos @load/]
 	];
@@ -103,7 +103,7 @@ test('pages consume generated operation state and causal commands only', () => {
 		],
 		[
 			'src/routes/chat/+page.svelte',
-			/ChatMessages\.use\(\)/,
+			/ChatMessages\.use\(/,
 			/commands\.chat\.post/
 		],
 		[
@@ -129,6 +129,23 @@ test('pages consume generated operation state and causal commands only', () => {
 		);
 		assert.doesNotMatch(source, /\.resource|commands\.generated/, relative);
 	}
+});
+
+test('chat loads a fixed page of 25 with infinite history helpers', () => {
+	const page = read('src/routes/chat/+page.svelte');
+	const layout = read('src/routes/+layout.server.ts');
+	const helpers = read('src/lib/chat/lobby-log.ts');
+
+	assert.match(helpers, /export const CHAT_PAGE_SIZE = 25/);
+	assert.match(page, /CHAT_PAGE_SIZE/);
+	assert.match(page, /mergeHistoryPage/);
+	assert.match(page, /loadOlder/);
+	assert.match(page, /chat-load-earlier/);
+	assert.match(page, /column-reverse/);
+	assert.match(layout, /CHAT_PAGE_SIZE/);
+	assert.match(layout, /ChatMessages:\s*\(\)\s*=>\s*\(\{\s*limit:\s*CHAT_PAGE_SIZE,\s*offset:\s*0\s*\}\)/);
+	assert.doesNotMatch(page, /PAGE_SIZE = 40|CHAT_PAGE_SIZE = 40/);
+	assert.doesNotMatch(layout, /CHAT_PAGE_SIZE = 40/);
 });
 
 test('Vite owns user/admin compiler entrypoints and generated modules stay state-free', () => {

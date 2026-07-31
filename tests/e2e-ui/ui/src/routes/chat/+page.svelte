@@ -2,16 +2,28 @@
 	/**
 	 * Lobby chat — one generated `@load @live` operation.
 	 *
-	 * SSR, normalized reads, reconnect, and command facts converge through the
-	 * package replica. The page declares no cache keys or subscription document.
+	 * Newest page is live (`offset: 0`). Older history loads the same operation
+	 * with rising offset on scroll-up; rows merge by `message_id` and display
+	 * ascending. The log uses `column-reverse` so SSR/first paint already shows
+	 * the newest end (no JS scroll jump).
 	 */
 	import { tick } from 'svelte';
+	import { useDistributedSvelteKitClient } from '@hops-ops/distributed/sveltekit';
 
 	import {
 		ChatMessages,
 		useCommands,
 		type Operation_ChatMessages_Data
 	} from '$distributed';
+	import {
+		CHAT_PAGE_SIZE,
+		mergeHistoryPage,
+		nearBottom,
+		nearTop,
+		needsHistoryFill,
+		pinScrollBottom,
+		preserveScrollAfterPrepend
+	} from '$lib/chat/lobby-log';
 	import { Button } from '$lib/components/shared/ui';
 	import { AppPage, InlineAlert, PageHeader } from '$lib/components/product';
 	import { isOwnAuthor, sessionDisplayName, sessionPrincipalId } from '$lib/session';
@@ -19,14 +31,23 @@
 	type ChatMsg = Operation_ChatMessages_Data['chat_messages'][number];
 
 	const LOBBY_ROOM = 'lobby';
+	const PAGE_SIZE = CHAT_PAGE_SIZE;
 
 	let { data } = $props();
 	let sendError = $state<string | null>(null);
+	let historyError = $state<string | null>(null);
 	let logEl: HTMLDivElement | undefined = $state();
 	let draft = $state('');
 	let busy = $state(false);
 	/** Local send lifecycle for this session's own messages. */
 	let deliveryById = $state<Record<string, 'sent' | 'delivered'>>({});
+	/** Older pages loaded on scroll-up (already reversed to ascending). */
+	let history = $state<ChatMsg[]>([]);
+	let historyOffset = $state(PAGE_SIZE);
+	let hasMoreHistory = $state(true);
+	let loadingHistory = $state(false);
+	/** Auto-pin to bottom only while the user is already near the end. */
+	let stickToBottom = $state(true);
 
 	/** Same principal the API stamps as author_id (access-token sub). */
 	const me = $derived(
@@ -34,23 +55,101 @@
 	);
 	const displayName = $derived(sessionDisplayName(data.session));
 
-	/** `use()` defaults live because the artifact has a generated companion. */
-	const lobby = ChatMessages.use();
+	/** Live newest page — same variables SSR seeded. */
+	const lobby = ChatMessages.use({ limit: PAGE_SIZE, offset: 0 });
+	// Capture a bound op at init so scroll handlers can open history watches
+	// without re-entering Svelte context.
+	const chat = useDistributedSvelteKitClient().operation(ChatMessages.artifact);
 	const commands = useCommands();
-	// Never blank the list while incomplete (e.g. optimistic row before author
-	// edge is linked). Prefer sparse data over an empty flash.
-	const messages = $derived(
-		Array.isArray($lobby.data?.chat_messages) ? $lobby.data.chat_messages : []
-	);
+
+	// Live page arrives newest-first; reverse for chronological display.
+	const livePage = $derived.by(() => {
+		const rows = Array.isArray($lobby.data?.chat_messages)
+			? $lobby.data.chat_messages
+			: [];
+		return [...rows].reverse();
+	});
+
+	/** History (older) + live (newest), de-duped by message_id. */
+	const messages = $derived.by(() => {
+		const byId = new Map<string, ChatMsg>();
+		for (const m of history) byId.set(m.message_id, m);
+		for (const m of livePage) byId.set(m.message_id, m);
+		return [...byId.values()].sort((a, b) => {
+			const ac = a.created_at ?? '';
+			const bc = b.created_at ?? '';
+			if (ac !== bc) return ac < bc ? -1 : 1;
+			return a.message_id < b.message_id ? -1 : a.message_id > b.message_id ? 1 : 0;
+		});
+	});
+
+	/**
+	 * Soft-nav may leave older offset pages in the replica. Rebuild local
+	 * history from complete cache windows without network.
+	 */
+	function absorbCachedHistory() {
+		let offset = PAGE_SIZE;
+		const collected: ChatMsg[] = [];
+		while (true) {
+			const snap = chat.read({ limit: PAGE_SIZE, offset });
+			const rows = snap.data?.chat_messages;
+			if (!snap.complete || !Array.isArray(rows) || rows.length === 0) break;
+			const page = rows.filter(
+				(m): m is ChatMsg =>
+					typeof m?.message_id === 'string' &&
+					typeof m?.body === 'string' &&
+					typeof m?.created_at === 'string'
+			);
+			if (page.length === 0) break;
+			collected.push(...[...page].reverse());
+			offset += PAGE_SIZE;
+			if (page.length < PAGE_SIZE) {
+				hasMoreHistory = false;
+				break;
+			}
+		}
+		if (collected.length === 0) return;
+		const byId = new Map<string, ChatMsg>();
+		for (const m of collected) byId.set(m.message_id, m);
+		history = [...byId.values()].sort((a, b) => {
+			const ac = a.created_at ?? '';
+			const bc = b.created_at ?? '';
+			if (ac !== bc) return ac < bc ? -1 : 1;
+			return a.message_id < b.message_id ? -1 : a.message_id > b.message_id ? 1 : 0;
+		});
+		historyOffset = offset;
+	}
+
+	absorbCachedHistory();
+
+	function metricsOf(el: HTMLDivElement) {
+		return {
+			scrollTop: el.scrollTop,
+			scrollHeight: el.scrollHeight,
+			clientHeight: el.clientHeight
+		};
+	}
 
 	async function scrollBottom() {
 		await tick();
-		if (logEl) logEl.scrollTop = logEl.scrollHeight;
+		if (logEl && stickToBottom) logEl.scrollTop = pinScrollBottom();
 	}
 
 	$effect(() => {
+		// Depend on message list + element bind so pin / fill run after DOM.
 		messages;
-		void scrollBottom();
+		logEl;
+		if (stickToBottom) void scrollBottom();
+		// First page may not fill the panel — pull history until scrollable.
+		if (
+			logEl &&
+			hasMoreHistory &&
+			!loadingHistory &&
+			messages.length > 0 &&
+			needsHistoryFill(metricsOf(logEl))
+		) {
+			void loadOlder();
+		}
 	});
 
 	function shortId(id: string) {
@@ -103,6 +202,64 @@
 		return deliveryById[messageId] ?? null;
 	}
 
+	function onLogScroll() {
+		if (!logEl) return;
+		const m = metricsOf(logEl);
+		// Detach as soon as the user leaves the newest edge so live updates
+		// cannot re-pin and cancel a scroll-up for history.
+		stickToBottom = nearBottom(m);
+		if (nearTop(m)) void loadOlder();
+	}
+
+	async function loadOlder() {
+		if (loadingHistory || !hasMoreHistory) return;
+		loadingHistory = true;
+		historyError = null;
+		// Reading older history leaves the newest edge.
+		stickToBottom = false;
+		const el = logEl;
+		const prevTop = el?.scrollTop ?? 0;
+		const prevHeight = el?.scrollHeight ?? 0;
+		const offset = historyOffset;
+		try {
+			const store = chat.use({ limit: PAGE_SIZE, offset }, { live: false });
+			try {
+				await store.refetch();
+				// Sparse incomplete rows are possible mid-flight; only keep shaped ones.
+				const page = (store.get().data?.chat_messages ?? []).filter(
+					(m): m is ChatMsg =>
+						typeof m?.message_id === 'string' &&
+						typeof m?.body === 'string' &&
+						typeof m?.created_at === 'string'
+				);
+				const known = new Set([
+					...history.map((m) => m.message_id),
+					...livePage.map((m) => m.message_id)
+				]);
+				const merged = mergeHistoryPage(page, known, offset, PAGE_SIZE);
+				hasMoreHistory = merged.hasMore;
+				historyOffset = merged.nextOffset;
+				if (merged.fresh.length === 0) return;
+				history = [...merged.fresh, ...history];
+				await tick();
+				if (el) {
+					// Content grew at the visual top; keep the same messages in view.
+					el.scrollTop = preserveScrollAfterPrepend(
+						prevTop,
+						prevHeight,
+						el.scrollHeight
+					);
+				}
+			} finally {
+				store.destroy();
+			}
+		} catch (error) {
+			historyError = error instanceof Error ? error.message : 'failed to load history';
+		} finally {
+			loadingHistory = false;
+		}
+	}
+
 	async function onSend(e: Event) {
 		e.preventDefault();
 		const body = draft.trim();
@@ -116,6 +273,8 @@
 		draft = '';
 		// Optimistic: show Sent as soon as the local row appears.
 		deliveryById = { ...deliveryById, [message_id]: 'sent' };
+		// Own sends should land in view.
+		stickToBottom = true;
 		try {
 			const receipt = await commands.chat.post({
 				message_id,
@@ -157,8 +316,7 @@
 				{/if}
 			</div>
 		{/snippet}
-		The generated <code>@load @live</code> artifact owns SSR and reconnect. A typed
-		<code>chat.post</code> command updates the same normalized state. Signed in as
+		Newest {PAGE_SIZE} messages stay live. Scroll up for older history. Signed in as
 		<strong>{displayName}</strong>.
 	</PageHeader>
 
@@ -171,44 +329,82 @@
 			<button type="button" class="ch-link-btn" onclick={() => void lobby.refetch()}>Retry</button>
 		</InlineAlert>
 	{/if}
+	{#if historyError}
+		<InlineAlert label="History">
+			{historyError}
+			<button type="button" class="ch-link-btn" onclick={() => void loadOlder()}>Retry</button>
+		</InlineAlert>
+	{/if}
 	{#if sendError}
 		<InlineAlert label="Mutation">{sendError}</InlineAlert>
 	{/if}
 
 	<div class="ch-shell">
-		<div class="ch-log" bind:this={logEl} role="log" aria-live="polite" aria-relevant="additions">
-			{#if messages.length === 0}
-				<div class="ch-empty">
-					<div class="ch-empty-icon" aria-hidden="true">◇</div>
-					<p>No messages yet. Say hello to the lobby.</p>
-				</div>
-			{:else}
-				{#each messages as m, i (m.message_id)}
-					{@const mine = messageIsMine(m)}
-					{@const authorLabel = mine ? 'You' : authorName(m)}
-					{@const showStatus = isStatusFooterMessage(i)}
-					{@const delivery = showStatus ? deliveryLabel(m.message_id) : null}
-					<div class="ch-msg-block" class:mine style="--i: {i}">
-						<article class="ch-msg" class:mine>
-							<header class="ch-msg-meta">
-								<span class="ch-author" title={m.author_id}>{authorLabel}</span>
-								<time class="ch-when" datetime={m.created_at}>{formatWhen(m.created_at)}</time>
-							</header>
-							<p class="ch-body">{m.body}</p>
-						</article>
-						{#if showStatus}
-							{#if delivery === 'sent'}
-								<p class="ch-status-footer" data-state="sent">Sent</p>
-							{:else if delivery === 'delivered'}
-								<p class="ch-status-footer" data-state="delivered">Delivered</p>
-							{:else}
-								<!-- Own last bubble with no tracked session state (e.g. reload). -->
-								<p class="ch-status-footer" data-state="delivered">Delivered</p>
-							{/if}
-						{/if}
+		<!--
+			column-reverse: main-start is the visual bottom, so scrollTop=0 (the
+			browser default, including SSR HTML) already shows the newest end.
+			No hide-until-JS pin required.
+		-->
+		<div
+			class="ch-log"
+			bind:this={logEl}
+			onscroll={onLogScroll}
+			role="log"
+			aria-live="polite"
+			aria-relevant="additions"
+			data-chat-page-size={PAGE_SIZE}
+			data-has-more-history={hasMoreHistory ? '1' : '0'}
+			data-loading-history={loadingHistory ? '1' : '0'}
+		>
+			<div class="ch-log-stack">
+				{#if loadingHistory}
+					<div class="ch-history-hint" aria-live="polite">Loading earlier messages…</div>
+				{:else if hasMoreHistory && messages.length > 0}
+					<button
+						type="button"
+						class="ch-history-hint ch-history-load"
+						onclick={() => void loadOlder()}
+						data-testid="chat-load-earlier"
+					>
+						Scroll up or click for earlier messages
+					</button>
+				{:else if !hasMoreHistory && messages.length > 0}
+					<div class="ch-history-hint">Beginning of lobby history</div>
+				{/if}
+
+				{#if messages.length === 0}
+					<div class="ch-empty">
+						<div class="ch-empty-icon" aria-hidden="true">◇</div>
+						<p>No messages yet. Say hello to the lobby.</p>
 					</div>
-				{/each}
-			{/if}
+				{:else}
+					{#each messages as m, i (m.message_id)}
+						{@const mine = messageIsMine(m)}
+						{@const authorLabel = mine ? 'You' : authorName(m)}
+						{@const showStatus = isStatusFooterMessage(i)}
+						{@const delivery = showStatus ? deliveryLabel(m.message_id) : null}
+						<div class="ch-msg-block" class:mine style="--i: {i}">
+							<article class="ch-msg" class:mine>
+								<header class="ch-msg-meta">
+									<span class="ch-author" title={m.author_id}>{authorLabel}</span>
+									<time class="ch-when" datetime={m.created_at}>{formatWhen(m.created_at)}</time>
+								</header>
+								<p class="ch-body">{m.body}</p>
+							</article>
+							{#if showStatus}
+								{#if delivery === 'sent'}
+									<p class="ch-status-footer" data-state="sent">Sent</p>
+								{:else if delivery === 'delivered'}
+									<p class="ch-status-footer" data-state="delivered">Delivered</p>
+								{:else}
+									<!-- Own last bubble with no tracked session state (e.g. reload). -->
+									<p class="ch-status-footer" data-state="delivered">Delivered</p>
+								{/if}
+							{/if}
+						</div>
+					{/each}
+				{/if}
+			</div>
 		</div>
 
 		<form class="ch-composer" onsubmit={onSend}>
@@ -251,7 +447,9 @@
 
 		display: flex;
 		flex-direction: column;
-		min-height: min(62vh, 34rem);
+		/* Fixed height so the log scrolls, not the document window. */
+		height: min(calc(100dvh - 13.5rem), 42rem);
+		min-height: 18rem;
 		border-radius: var(--df-radius-lg, 10px);
 		border: 1px solid var(--edge);
 		background: var(--surface);
@@ -323,18 +521,55 @@
 		cursor: pointer;
 	}
 
+	/*
+	 * column-reverse makes main-start the visual bottom. Default scrollTop=0
+	 * (SSR + first paint) already shows newest messages — no JS pin flash.
+	 */
 	.ch-log {
 		flex: 1;
+		min-height: 0;
 		overflow-y: auto;
 		padding: 1.1rem 1rem 0.75rem;
 		display: flex;
+		flex-direction: column-reverse;
+		scroll-behavior: auto;
+	}
+
+	.ch-log-stack {
+		display: flex;
 		flex-direction: column;
 		gap: 0.55rem;
-		scroll-behavior: smooth;
+		/* Grow from the bottom when short; scroll when tall. */
+		min-height: min-content;
+		width: 100%;
+	}
+
+	.ch-history-hint {
+		align-self: center;
+		padding: 0.25rem 0.6rem;
+		font-size: 0.72rem;
+		font-weight: 500;
+		letter-spacing: 0.02em;
+		color: var(--ink-soft);
+		opacity: 0.85;
+	}
+
+	.ch-history-load {
+		border: 1px dashed var(--edge);
+		border-radius: 999px;
+		background: transparent;
+		cursor: pointer;
+		font: inherit;
+	}
+
+	.ch-history-load:hover {
+		opacity: 1;
+		border-color: var(--accent);
+		color: var(--accent);
 	}
 
 	.ch-empty {
-		margin: auto;
+		margin: 2rem auto;
 		text-align: center;
 		color: var(--ink-soft);
 		padding: 2rem 1rem;
@@ -426,6 +661,7 @@
 	}
 
 	.ch-composer {
+		flex-shrink: 0;
 		display: flex;
 		gap: 0.5rem;
 		padding: 0.75rem;

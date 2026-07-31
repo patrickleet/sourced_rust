@@ -13,7 +13,7 @@
     "client:check": "node scripts/distributed-client.mjs check",
     "gen": "make -C .. gen-client",
     "gen:check": "make -C .. check-client",
-    "test": "node --test tests/*.test.mjs"
+    "test": "node --experimental-strip-types --test tests/*.test.mjs"
   },
   "dependencies": {
     "@auth/core": "^0.41.3",

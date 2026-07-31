@@ -23,6 +23,50 @@ test.describe('chat (alice)', () => {
 		});
 	});
 
+	test('scroll-up / load-earlier fetches the next history page', async ({ page }) => {
+		await page.goto('/chat');
+		await expect(page.getByRole('heading', { name: /lobby/i })).toBeVisible({
+			timeout: 20_000
+		});
+
+		// Seed more than one page so offset history is meaningful (page size 25).
+		const stamp = Date.now();
+		const total = 30;
+		for (let i = 0; i < total; i += 1) {
+			const body = `history seed ${stamp} #${String(i).padStart(2, '0')}`;
+			await page.locator('#chat-body').fill(body);
+			await page.getByRole('button', { name: /send/i }).click();
+			await expect(page.locator('.ch-msg', { hasText: body })).toBeVisible({
+				timeout: 15_000
+			});
+		}
+
+		const log = page.locator('.ch-log');
+		await expect(log).toHaveAttribute('data-chat-page-size', '25');
+
+		// Live window is the newest 25 (#05–#29). #00 requires a history page.
+		const olderThanFirstPage = `history seed ${stamp} #00`;
+		const loadEarlier = page.getByTestId('chat-load-earlier');
+
+		// If the panel did not auto-fill, explicitly load / scroll for older rows.
+		if (await loadEarlier.isVisible()) {
+			const before = await page.locator('.ch-msg').count();
+			await loadEarlier.click();
+			await expect
+				.poll(async () => page.locator('.ch-msg').count(), { timeout: 20_000 })
+				.toBeGreaterThan(before);
+		} else {
+			// Chromium column-reverse uses negative scrollTop toward the oldest edge.
+			await log.evaluate((el) => {
+				el.scrollTop = -(el.scrollHeight - el.clientHeight);
+			});
+		}
+
+		await expect(page.locator('.ch-msg', { hasText: olderThanFirstPage })).toBeVisible({
+			timeout: 20_000
+		});
+	});
+
 	test('sending preserves the rendered log while revalidating', async ({ page }) => {
 		await page.goto('/chat');
 		await expect(page.getByRole('heading', { name: /lobby/i })).toBeVisible({

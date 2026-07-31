@@ -42,6 +42,7 @@
 
 		appliedHydration = data.distributed;
 		if (hydrationTimer !== undefined) clearTimeout(hydrationTimer);
+		// Same-scope soft-nav merge is framework-owned on `client.hydrate`.
 		hydrationTimer = setTimeout(() => {
 			hydrationTimer = undefined;
 			client.hydrate(data.distributed!, data.distributedAuthority!);
