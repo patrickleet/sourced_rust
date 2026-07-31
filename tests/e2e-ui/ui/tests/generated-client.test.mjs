@@ -60,6 +60,9 @@ test('normal and elevated command inventories cannot be mixed', () => {
 	assert.doesNotMatch(user, /"name": "todo\.force_archive"/);
 	assert.match(user, /"kind": "application"/);
 	assert.match(user, /"name": "e2e-ui"/);
+	// Eligible roles include admin so multi-role principals can open the portable
+	// user schema without a separate downloadable bundle.
+	assert.match(user, /"roles": \[\s*"admin",\s*"user"\s*\]/);
 
 	assert.match(admin, /"name": "todo\.force_archive"/);
 	assert.match(admin, /"name": "e2e-ui-admin"/);
@@ -205,7 +208,11 @@ test('fixture generation is one dctl pipeline over typed Service inventory', () 
 	assert.match(service, /\.typed_command\(/);
 	assert.match(service, /distributed_client_surface/);
 	assert.match(service, /distributed_admin_client_surface/);
-	assert.match(service, /surface_for_application\(/);
+	// Multi-role: eligible {admin,user} + schema privilege {user} via contract API.
+	assert.match(service, /surface_for_application_contract\(/);
+	assert.match(service, /client_application_surface_with_schema_roles\(/);
+	assert.match(service, /&?\["admin", "user"\]/);
+	assert.match(service, /&?\["user"\]/);
 	assert.match(service, /default input\.todo_id = uuid_v7\(\)/);
 	assert.doesNotMatch(service, /pub fn graphql_commands/);
 });

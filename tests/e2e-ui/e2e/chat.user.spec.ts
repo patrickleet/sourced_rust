@@ -123,13 +123,18 @@ test.describe('chat (alice)', () => {
 			});
 		});
 
+		// Delay the network past the optimistic paint window. Keep headroom on
+		// CI (large lobby after history seeds, main-thread churn) while still
+		// proving the row appears before the fulfilled mutation response.
+		const networkDelayMs = 1_500;
+		const optimisticVisibleMs = 1_000;
 		await page.route('**/graphql', async (route) => {
 			if (!(route.request().postData() ?? '').includes('chat_messages_post')) {
 				await route.continue();
 				return;
 			}
 			const response = await route.fetch();
-			await new Promise((resolve) => setTimeout(resolve, 700));
+			await new Promise((resolve) => setTimeout(resolve, networkDelayMs));
 			await route.fulfill({ response });
 		});
 
@@ -141,7 +146,7 @@ test.describe('chat (alice)', () => {
 		);
 		await page.getByRole('button', { name: /send/i }).click();
 		await expect(page.locator('.ch-msg', { hasText: body })).toBeVisible({
-			timeout: 400
+			timeout: optimisticVisibleMs
 		});
 		await commandResponse;
 		await page.unrouteAll({ behavior: 'wait' });
