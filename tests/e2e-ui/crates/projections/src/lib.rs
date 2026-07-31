@@ -10,4 +10,4 @@ pub use auth_users::{
 };
 pub use blob::{save_blob_game, BlobDirectEligibilityGuards, BLOB_GAMES};
 pub use chat::{save_chat_message, CHAT_MESSAGES};
-pub use todos::{complete_preview, delete_todo, save_todo, TODOS};
+pub use todos::{delete_todo, save_todo, TODOS};

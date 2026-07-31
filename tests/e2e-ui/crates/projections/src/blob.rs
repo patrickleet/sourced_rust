@@ -16,7 +16,7 @@ pub fn save_blob_game() -> Mutation<()> {
     }
 }
 
-/// When these domain events fire, apply [`save_blob_game`] (body → `input.game`).
+// When these domain events fire, apply [`save_blob_game`] (body → `input.game`).
 portable_handlers! {
     pub const BLOB_GAMES: ProjectionDescriptor<DirectCandidate> = {
         name: "project_blob",

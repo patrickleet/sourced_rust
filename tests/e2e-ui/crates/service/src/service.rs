@@ -314,7 +314,13 @@ where
             .field_name("todos_complete")
             .roles(app_roles)
             .emits(distributed::events![TodoCompletedDomainEvent])
-            .preview(e2e_projections::complete_preview()),
+            .preview(distributed::state_preview! {
+                TodoCompletedDomainEvent => todo_domain::TodoState {
+                    todo_id: input.todo_id,
+                    status: "completed",
+                    ..unknown
+                }
+            }),
         )
         .handle(complete::handle)
         .typed_command(

@@ -8,7 +8,7 @@ use e2e_readmodels::Todos;
 use todo_domain::{
     TodoArchivedDomainEvent, TodoCompletedDomainEvent, TodoCreatedDomainEvent,
     TodoForceArchivedDomainEvent, TodoPurgedDomainEvent, TodoReassignedDomainEvent,
-    TodoRenamedDomainEvent, TodoReopenedDomainEvent, TodoState,
+    TodoRenamedDomainEvent, TodoReopenedDomainEvent,
 };
 
 /// Mutation: complete-row upsert for Todo state transfer.
@@ -31,7 +31,7 @@ pub fn delete_todo() -> Mutation<()> {
     }
 }
 
-/// Lifecycle state events → [`save_todo`]; purge → [`delete_todo`].
+// Lifecycle state events → [`save_todo`]; purge → [`delete_todo`].
 portable_handlers! {
     pub const TODOS: ProjectionDescriptor<EventualOnly> = {
         name: "project_todos",
@@ -53,17 +53,6 @@ portable_handlers! {
             on_deleted TodoPurgedDomainEvent as "todo_id"
         }
     };
-}
-
-/// Partial client preview for `todo.complete`.
-pub fn complete_preview() -> distributed::graphql::CommandProjectionPreview {
-    distributed::state_preview! {
-        TodoCompletedDomainEvent => TodoState {
-            todo_id: input.todo_id,
-            status: "completed",
-            ..unknown
-        }
-    }
 }
 
 #[cfg(test)]
