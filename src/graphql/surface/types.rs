@@ -369,23 +369,6 @@ impl SurfaceProjector {
         self
     }
 
-    /// Reuse this exact topology declaration in a typed command confirmation
-    /// plan. `command_confirmations!` calls this hidden seam so applications do
-    /// not repeat projector or model IDs as strings.
-    #[doc(hidden)]
-    pub fn __distributed_confirmation<I, M: crate::read_model::RelationalReadModel>(
-        &self,
-        key: TypedEffectKey<M>,
-    ) -> CompiledProjectionConfirmation<I> {
-        compiled_projection_confirmation(
-            &self.owner.name,
-            &self.owner.facts,
-            &self.owner.models,
-            &self.owner.partition,
-            key,
-        )
-    }
-
     /// Compiler seam for binding one `Projected<M>` command to this exact
     /// registered topology. Ordinary handlers never receive or construct it.
     #[doc(hidden)]

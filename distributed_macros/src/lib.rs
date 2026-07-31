@@ -1,5 +1,5 @@
 mod aggregate;
-mod command_effects;
+mod command_input_defaults;
 mod digest;
 mod domain_event;
 mod domain_state;
@@ -92,12 +92,8 @@ pub fn derive_domain_event(input: TokenStream) -> TokenStream {
 /// Compile declaration-owned generators for canonical command input fields.
 #[proc_macro]
 pub fn command_input_defaults(input: TokenStream) -> TokenStream {
-    command_effects::expand_input_defaults(input)
+    command_input_defaults::expand_input_defaults(input)
 }
-
-// Separately authored `command_effects!` / `command_confirmations!` removed:
-// optimistic cache layers come from mutation IR lowering; causal confirmation
-// derives from `.emits` + portable/modeled event handlers.
 
 /// Compile an event-independent read-model mutation program.
 ///

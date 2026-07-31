@@ -25,23 +25,19 @@ pub(crate) use direct_projection::{
     compiled_direct_projection_target, CommandDirectProjectionTarget, CommandProjectedModel,
     ResolvedDirectProjectionTarget,
 };
-pub(crate) use effect_wire::compiled_projection_confirmation;
+// Public seams used by derives / `command_input_defaults!` only. Separately
+// authored command_effects! / confirmations constructors are gone.
 pub use effect_wire::{
-    __command_confirmations, __command_effects, __command_input_defaults, __effect_assignment,
-    __effect_constant, __effect_delete, __effect_input, __effect_invalidate_model,
-    __effect_invalidate_relationship, __effect_key, __effect_key_assignment, __effect_key_field,
-    __effect_link, __effect_null, __effect_patch, __effect_relationship, __effect_trusted,
-    __effect_unlink, __effect_upsert, __input_default_ulid, __input_default_uuid_v7,
-    CombineEffectNullability, CompiledCommandEffects, CompiledConfirmationPlan,
-    CompiledEffectFieldValue, CompiledEffectKeyField, CompiledEffectOperation,
-    CompiledInputDefault, CompiledInputDefaults, CompiledProjectionConfirmation,
-    EffectAssignmentExpression, EffectInputDescendableKind, EffectInputFieldMarker,
-    EffectInputObjectKind, EffectInputPath, EffectInputPathKind, EffectInputTerminalKind,
-    EffectModelFieldMarker, EffectNullable, EffectPathNullability, EffectRelationshipMarker,
-    EffectRequired, EffectWireBigInt, EffectWireBoolean, EffectWireBytea, EffectWireChecked,
-    EffectWireCompatible, EffectWireFloat, EffectWireJson, EffectWireList, EffectWireLiteral,
-    EffectWireObject, EffectWireString, EffectWireTimestamp, EffectWireUnsupported,
-    TypedEffectExpression, TypedEffectKey, TypedEffectRelationship,
+    __command_input_defaults, __effect_key, __effect_key_assignment, __effect_key_field,
+    __effect_relationship, __input_default_ulid, __input_default_uuid_v7, CombineEffectNullability,
+    CompiledEffectKeyField, CompiledInputDefault, CompiledInputDefaults,
+    EffectInputDescendableKind, EffectInputFieldMarker, EffectInputObjectKind, EffectInputPath,
+    EffectInputPathKind, EffectInputTerminalKind, EffectModelFieldMarker, EffectNullable,
+    EffectPathNullability, EffectRelationshipMarker, EffectRequired, EffectWireBigInt,
+    EffectWireBoolean, EffectWireBytea, EffectWireChecked, EffectWireCompatible, EffectWireFloat,
+    EffectWireJson, EffectWireList, EffectWireLiteral, EffectWireObject, EffectWireString,
+    EffectWireTimestamp, EffectWireUnsupported, TypedEffectExpression, TypedEffectKey,
+    TypedEffectRelationship,
 };
 pub(crate) use effects::{
     CommandEffect, CommandEffects, EffectExpression, EffectFieldValue, EffectKey,

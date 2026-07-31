@@ -22,6 +22,6 @@ fn generated_input_defaults_compile() {
         input: PlanInput;
         default input.id = uuid_v7();
     };
-    let _ = typed_command::<PlanInput, Succeeded<PlanOutput>>("plan.create")
-        .input_defaults(_defaults);
+    let _ =
+        typed_command::<PlanInput, Succeeded<PlanOutput>>("plan.create").input_defaults(_defaults);
 }

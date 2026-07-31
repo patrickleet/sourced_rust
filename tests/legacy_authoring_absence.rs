@@ -57,7 +57,7 @@ fn handlers_source_has_no_command_side_project_selector() {
 }
 
 #[test]
-fn projection_read_model_workspace_is_not_publicly_exported() {
+fn projection_read_model_workspace_is_gone() {
     let microsvc = include_str!(concat!(env!("CARGO_MANIFEST_DIR"), "/src/microsvc/mod.rs"));
     assert!(
         !microsvc.contains("ProjectionReadModelWorkspace"),
@@ -68,10 +68,35 @@ fn projection_read_model_workspace_is_not_publicly_exported() {
         "/src/microsvc/projector/mod.rs"
     ));
     assert!(
-        !projector_mod.contains("pub use graph_workspace")
-            && !projector_mod.contains("ProjectionReadModelWorkspace,"),
-        "graph workspace must not be re-exported from projector mod"
+        !projector_mod.contains("graph_workspace"),
+        "graph_workspace module must be deleted from projector"
     );
+    assert!(
+        !std::path::Path::new(concat!(
+            env!("CARGO_MANIFEST_DIR"),
+            "/src/microsvc/projector/graph_workspace.rs"
+        ))
+        .exists(),
+        "graph_workspace.rs must not exist"
+    );
+}
+
+#[test]
+fn dead_effects_authoring_types_are_not_publicly_reexported() {
+    let graphql_mod = include_str!(concat!(env!("CARGO_MANIFEST_DIR"), "/src/graphql/mod.rs"));
+    for forbidden in [
+        "CompiledCommandEffects",
+        "CompiledConfirmationPlan",
+        "__command_effects",
+        "__command_confirmations",
+        "__effect_upsert",
+        "__effect_patch",
+    ] {
+        assert!(
+            !graphql_mod.contains(forbidden),
+            "{forbidden} must not be re-exported from graphql::"
+        );
+    }
 }
 
 #[test]
@@ -107,5 +132,9 @@ fn macros_crate_does_not_export_effects_or_projection_macros() {
     assert!(
         !macros_lib.contains("pub fn projection("),
         "projection! proc-macro must stay removed"
+    );
+    assert!(
+        macros_lib.contains("mod command_input_defaults"),
+        "input defaults module must use the honest name"
     );
 }

@@ -13,12 +13,11 @@ use std::ops::Deref;
 use sha2::{Digest, Sha256};
 
 use super::command_contract::{
-    compiled_direct_projection_target, compiled_projection_confirmation,
-    validate_projection_confirmation_count, CommandConsistency, CommandDirectProjectionTarget,
-    CommandEffect, CommandEffects, CommandInputDefault, CommandProjectedModel,
-    CommandProjectionConfirmation, CommandProjectionEvents, CommandProjectionPreviewSource,
-    CompiledDirectProjectionTarget, CompiledProjectionConfirmation, EffectExpression,
-    EffectFieldValue, EffectKey, EffectRelationship, TypedEffectKey,
+    compiled_direct_projection_target, validate_projection_confirmation_count, CommandConsistency,
+    CommandDirectProjectionTarget, CommandEffect, CommandEffects, CommandInputDefault,
+    CommandProjectedModel, CommandProjectionConfirmation, CommandProjectionEvents,
+    CommandProjectionPreviewSource, CompiledDirectProjectionTarget, EffectExpression,
+    EffectFieldValue, EffectKey, EffectRelationship,
 };
 use super::filter::{validate_row_policy_operand_literal, FilterExpr, Operand};
 use crate::projection_protocol::ProjectionModelOwnership;

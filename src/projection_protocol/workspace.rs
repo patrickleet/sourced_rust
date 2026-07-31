@@ -258,6 +258,9 @@ impl ProjectionWorkspace {
         ProjectionExecutionSnapshotBatchRequest::new(requests)
     }
 
+    /// Graph include snapshot builder (protocol store API). Retained for
+    /// adapter conformance; portable projectors use single-scope loads.
+    #[allow(dead_code)]
     pub(crate) fn graph_snapshot_request<M>(
         &self,
         key: RowKey,

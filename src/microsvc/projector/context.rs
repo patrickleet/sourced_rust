@@ -6,15 +6,14 @@ use std::sync::{Arc, Mutex};
 use crate::bus::Message;
 use crate::projection_protocol::{
     ProjectionExecutionSnapshotBatch, ProjectionExecutionSnapshotBatchRequest,
-    ProjectionGraphSnapshot, ProjectionGraphSnapshotRequest, ProjectionProtocolError,
-    ProjectionProtocolStore, ProjectionQuerySnapshot, ProjectionQuerySnapshotRequest,
-    ProjectionRecordScope, ProjectionWorkspace, RecordRevision, MAX_PROJECTION_QUERY_BATCH_ROWS,
+    ProjectionProtocolError, ProjectionProtocolStore, ProjectionQuerySnapshot,
+    ProjectionQuerySnapshotRequest, ProjectionRecordScope, ProjectionWorkspace, RecordRevision,
+    MAX_PROJECTION_QUERY_BATCH_ROWS,
 };
 use crate::read_model::RelationalReadModel;
 use crate::table::{key_from_row, RowKey, RowPatch};
 
 use super::super::HandlerError;
-use super::graph_workspace::ProjectionReadModelWorkspace;
 
 #[derive(Default)]
 pub(super) struct ProjectionQueryScopeBudget {
@@ -49,23 +48,6 @@ impl ProjectionQueryScopeBudget {
         current.extend(additions);
         Ok(())
     }
-
-    pub(super) fn reserve_graph_root(
-        &self,
-        root: &ProjectionRecordScope,
-    ) -> Result<usize, ProjectionProtocolError> {
-        self.reserve([root])?;
-        let count = self
-            .scopes
-            .lock()
-            .map_err(|_| {
-                ProjectionProtocolError::InvalidBatch(
-                    "projection query-scope budget is unavailable".into(),
-                )
-            })?
-            .len();
-        Ok(MAX_PROJECTION_QUERY_BATCH_ROWS - count + 1)
-    }
 }
 
 pub(super) trait ProjectionSnapshotReader: Send + Sync {
@@ -86,17 +68,6 @@ pub(super) trait ProjectionSnapshotReader: Send + Sync {
     ) -> Pin<
         Box<
             dyn Future<Output = Result<ProjectionExecutionSnapshotBatch, ProjectionProtocolError>>
-                + Send
-                + 'a,
-        >,
-    >;
-
-    fn graph_snapshot<'a>(
-        &'a self,
-        request: &'a ProjectionGraphSnapshotRequest,
-    ) -> Pin<
-        Box<
-            dyn Future<Output = Result<ProjectionGraphSnapshot, ProjectionProtocolError>>
                 + Send
                 + 'a,
         >,
@@ -131,19 +102,6 @@ where
         >,
     > {
         Box::pin(self.projection_execution_snapshot_batch(request))
-    }
-
-    fn graph_snapshot<'a>(
-        &'a self,
-        request: &'a ProjectionGraphSnapshotRequest,
-    ) -> Pin<
-        Box<
-            dyn Future<Output = Result<ProjectionGraphSnapshot, ProjectionProtocolError>>
-                + Send
-                + 'a,
-        >,
-    > {
-        Box::pin(self.projection_graph_snapshot(request))
     }
 }
 
@@ -211,62 +169,6 @@ impl CausalProjectorContext {
         &self.causation_id
     }
 
-    /// Crate-private graph workspace (not a public authoring API).
-    #[allow(dead_code)] // protocol fixtures / graph_workspace tests
-    pub(crate) fn read_models(&self) -> ProjectionReadModelWorkspace {
-        ProjectionReadModelWorkspace::new(Arc::clone(&self.snapshots), Arc::clone(&self.workspace))
-            .with_query_scope_budget(Arc::clone(&self.query_scopes))
-    }
-
-    /// Apply a crate-private graph workspace. Application handlers use
-    /// [`super::ModeledProjection::apply`] / portable mutation plans instead.
-    #[allow(dead_code)] // protocol fixtures / graph_workspace tests
-    pub(crate) async fn apply(
-        &self,
-        read_models: ProjectionReadModelWorkspace,
-    ) -> Result<&Self, HandlerError> {
-        if !read_models.belongs_to(&self.workspace) {
-            return Err(ProjectionProtocolError::InvalidBatch(
-                "projection read-model workspace belongs to a different causal context".into(),
-            )
-            .into());
-        }
-        let (plan, cached) = read_models.into_execution_parts()?;
-        let prepared = {
-            let workspace = self
-                .workspace
-                .lock()
-                .map_err(|_| unavailable_workspace("prepare graph projection"))?;
-            let workspace = workspace
-                .as_ref()
-                .ok_or_else(|| unavailable_workspace("prepare graph projection"))?;
-            crate::projection::executor::prepare_graph_projection(workspace, plan, cached)?
-        };
-        let snapshots = if prepared.needs_snapshot_read() {
-            self.query_scopes.reserve(
-                prepared
-                    .snapshot_request()
-                    .requests
-                    .iter()
-                    .map(|request| &request.scope),
-            )?;
-            self.snapshots
-                .execution_snapshots(prepared.snapshot_request())
-                .await?
-        } else {
-            ProjectionExecutionSnapshotBatch::default()
-        };
-        prepared.stage(
-            self.workspace
-                .lock()
-                .map_err(|_| unavailable_workspace("apply graph projection"))?
-                .as_mut()
-                .ok_or_else(|| unavailable_workspace("apply graph projection"))?,
-            snapshots,
-        )?;
-        Ok(self)
-    }
-
     pub(crate) async fn apply_portable(
         &self,
         plan: crate::projection::lower::LoweredProjectionPlan,
@@ -306,11 +208,11 @@ impl CausalProjectorContext {
         Ok(self)
     }
 
-    /// Load one live row and its exact revision from one adapter snapshot.
+    /// Protocol lifecycle: load one live row and its exact revision.
     ///
-    /// Missing rows return `Ok(None)`. A durable tombstone fails closed; use a
-    /// separately loaded tombstone revision with [`recreate`](Self::recreate)
-    /// only in an explicit recovery/migration projector.
+    /// Prefer modeled/mutation handlers for ordinary projectors. Missing rows
+    /// return `Ok(None)`. A durable tombstone fails closed; use
+    /// [`recreate`](Self::recreate) only in explicit recovery.
     pub async fn load<M>(&self, key: RowKey) -> Result<Option<LoadedProjection<M>>, HandlerError>
     where
         M: RelationalReadModel,
@@ -379,11 +281,10 @@ impl CausalProjectorContext {
         }
     }
 
-    /// The polished full-row path: create a missing record or save a live one
-    /// under the exact revision read from the same adapter snapshot.
+    /// Protocol lifecycle: create-or-save one full row under the snapshot revision.
     ///
-    /// It never crosses a tombstone. Concurrent writers are caught again by the
-    /// adapter's atomic revision fence at commit.
+    /// Prefer [`super::ModeledProjection::apply`] for application projectors.
+    /// Never crosses a tombstone; concurrent writers are fenced at commit.
     pub async fn project<M>(&self, model: &M) -> Result<&Self, HandlerError>
     where
         M: RelationalReadModel,
