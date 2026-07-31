@@ -28,7 +28,7 @@ use distributed::{
     InMemoryRepository, LockError, LockManager, ProjectionEnvelopeField, Queueable,
     QueuedRepository, RelationalReadModel,
 };
-use e2e_projections::{BLOB_GAMES, CHAT_MESSAGES, TODO_READS};
+use e2e_projections::{BLOB_GAMES, CHAT_MESSAGES, TODOS};
 use e2e_readmodels::{AuthUsers, BlobGames, ChatMessages, Todos};
 use todo_domain::{
     Todo, TodoArchivedDomainEvent, TodoCompletedDomainEvent, TodoCreatedDomainEvent,
@@ -97,7 +97,7 @@ fn projection_owners() -> ProjectionOwners {
     let owner = |name| ProjectionOwner::try_new(name).expect("canonical projection owner");
 
     let todo_binding = ProjectionBinding::materialize_eventual(
-        TODO_READS.eventual(),
+        TODOS.eventual(),
         source(),
         owner("project_todos"),
         "distributed-projection-partition",
@@ -170,7 +170,7 @@ fn projection_owners() -> ProjectionOwners {
 
     ProjectionOwners {
         todo: SurfaceProjector::new("project_todos").modeled(modeled_projection(
-            TODO_READS,
+            TODOS,
             &catalog,
             &active,
             &todo_binding,

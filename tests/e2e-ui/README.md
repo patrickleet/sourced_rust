@@ -47,7 +47,7 @@ pub fn delete_todo() -> Mutation<()> { /* delete by pk */ }
 
 // 2) Portable handlers: which events apply which mutation (the spec)
 portable_handlers! {
-    pub const TODO_READS: ProjectionDescriptor<EventualOnly> = {
+    pub const TODOS: ProjectionDescriptor<EventualOnly> = {
         name: "project_todos",
         version: 1,
         epoch: "e2e-ui-todos-v2",
@@ -77,7 +77,7 @@ typed_command::<TodoCompleteInput, Causal<TodoStatusPayload>>("todo.complete")
     })
 ```
 
-The compiler specializes `TODO_READS` into safe client operations. Known
+The compiler specializes `TODOS` into safe client operations. Known
 fields become an optimistic patch; unknown fields use narrow recovery or
 revalidation. Actual emitted occurrences—not the declaration—mint exact
 obligations for the active projector binding. A no-op command therefore emits

@@ -466,7 +466,7 @@ pub const SAVE_TODO: Mutation<TodoState> = mutation! {
   name: "save_todo"; version: 1;
   upsert Todos from input;
 };
-pub const TODO_READS: ProjectionDescriptor<EventualOnly> =
+pub const TODOS: ProjectionDescriptor<EventualOnly> =
   descriptor_from_factories(/* SAVE_TODO / DELETE_TODO arms */);`
 				},
 				{
@@ -476,7 +476,7 @@ pub const TODO_READS: ProjectionDescriptor<EventualOnly> =
   context: CausalProjectorContext,
   projection: ModeledProjection,
 ) -> Result<(), HandlerError> {
-  projection.apply(TODO_READS, &context).await
+  projection.apply(TODOS, &context).await
 }
 
 // Routes::new()
