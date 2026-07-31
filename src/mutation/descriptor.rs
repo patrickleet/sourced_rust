@@ -1,8 +1,8 @@
-//! Build `ProjectionDescriptor` factories whose **program and resolve** path
-//! are mutation IR (event-independent programs + portable bindings).
+//! Compile portable event handlers + mutations for service registration.
 //!
-//! Physical ORM lowering still uses the existing `lower_model_mutation`
-//! helpers so server execution stays authoritative and shared.
+//! Authors use [`bind_state_body_to_mutation`] / [`bind_delete_to_envelope_id`]
+//! and [`crate::portable_handlers`]. Physical lowering reuses existing ORM
+//! helpers; that rewrite is not part of the public author model.
 
 use crate::projection::lower::{
     finish_lowering, lower_model_mutation, ProjectionDescriptor, ProjectionInventoryFactory,
@@ -18,63 +18,26 @@ use crate::DomainEventOccurrence;
 use super::bind::MutationEventBinding;
 use super::MutationProgramError;
 
-/// One portable event handler: exact event contract → one mutation program.
+/// Opaque portable handler: one event contract → one mutation program.
 ///
-/// Application authors should not construct these by hand; use
-/// [`bind_state_body_to_mutation`], [`bind_delete_to_envelope_id`], or the
-/// [`crate::portable_handlers`] macro. The dual-path projection mount is an
-/// internal detail of compilation.
-pub struct MutationProjectionArm {
-    /// Stable id for the compiled internal mount (derived from the event name).
-    /// Not part of the public author model — prefer [`bind_state_body_to_mutation`].
-    #[doc(hidden)]
-    pub arm_id: &'static str,
-    /// Event → mutation input binding.
-    #[doc(hidden)]
-    pub binding: MutationEventBinding,
+/// Prefer [`bind_state_body_to_mutation`] / [`bind_delete_to_envelope_id`].
+/// Use [`PortableHandler::from_binding`] only when input bindings are custom.
+pub struct PortableHandler {
+    mount_id: &'static str,
+    binding: MutationEventBinding,
 }
 
-impl MutationProjectionArm {
-    /// Event → mutation binding.
-    pub fn binding(&self) -> &MutationEventBinding {
-        &self.binding
+impl PortableHandler {
+    /// Build a handler from an explicit event→mutation binding.
+    pub fn from_binding(mount_id: &'static str, binding: MutationEventBinding) -> Self {
+        Self { mount_id, binding }
     }
 }
 
-/// Build a dual-path `ProjectionProgram` whose arms are mutation rewrites.
+/// Compile portable handlers into the service projection mount.
 ///
-/// # Errors
-///
-/// Propagates rewrite and projection validation failures.
-pub fn program_from_mutation_arms(
-    name: &str,
-    version: u64,
-    partition: ProjectionPartition,
-    arms: &[MutationProjectionArm],
-) -> Result<ProjectionProgram, MutationProgramError> {
-    let mut projection_arms = Vec::with_capacity(arms.len());
-    for arm in arms {
-        projection_arms.push(arm.binding.to_projection_arm(arm.arm_id)?);
-    }
-    ProjectionProgram::try_new(name, version, partition, projection_arms).map_err(Into::into)
-}
-
-/// Map a mutation construction error into a projection program error.
-fn map_handler_compile_error(
-    operation: &str,
-    error: MutationProgramError,
-) -> ProjectionProgramError {
-    ProjectionProgramError::InvalidOperation {
-        operation: operation.into(),
-        reason: error.to_string(),
-    }
-}
-
-/// Compile portable event→mutation handlers into the internal projection mount.
-///
-/// This is the dual-path bridge: **authors declare handlers and mutations**;
-/// the runtime still executes through the existing projection mount. Callers
-/// should use [`crate::portable_handlers`] rather than this function.
+/// Prefer [`crate::portable_handlers`] for unit partition. Use this when the
+/// partition expression is custom (e.g. chat room id).
 ///
 /// # Errors
 ///
@@ -83,25 +46,47 @@ pub fn compile_portable_handlers(
     name: &str,
     version: u64,
     partition: ProjectionPartition,
-    handlers: impl IntoIterator<Item = MutationProjectionArm>,
+    handlers: impl IntoIterator<Item = PortableHandler>,
 ) -> Result<ProjectionProgram, ProjectionProgramError> {
     let handlers: Vec<_> = handlers.into_iter().collect();
-    program_from_mutation_arms(name, version, partition, &handlers)
-        .map_err(|error| map_handler_compile_error(name, error))
+    let mut projection_arms = Vec::with_capacity(handlers.len());
+    for handler in &handlers {
+        projection_arms.push(
+            handler
+                .binding
+                .to_projection_arm(handler.mount_id)
+                .map_err(|error| ProjectionProgramError::InvalidOperation {
+                    operation: name.into(),
+                    reason: error.to_string(),
+                })?,
+        );
+    }
+    ProjectionProgram::try_new(name, version, partition, projection_arms).map_err(|error| {
+        ProjectionProgramError::InvalidOperation {
+            operation: name.into(),
+            reason: error.to_string(),
+        }
+    })
 }
 
-/// @deprecated use [`compile_portable_handlers`].
-#[doc(hidden)]
-pub fn build_mutation_projector_program(
-    name: &str,
-    version: u64,
-    partition: ProjectionPartition,
-    arms: impl IntoIterator<Item = MutationProjectionArm>,
-) -> Result<ProjectionProgram, ProjectionProgramError> {
-    compile_portable_handlers(name, version, partition, arms)
+/// Bind an exact event contract to a mutation program with explicit inputs.
+///
+/// # Errors
+///
+/// Propagates selector or binding construction failures.
+pub fn bind_event_to_mutation(
+    descriptor: &crate::DomainEventDescriptor,
+    inputs: Vec<super::bind::MutationInputBinding>,
+    program: super::program::MutationProgram,
+) -> Result<PortableHandler, MutationProgramError> {
+    let selector = crate::projection::ProjectionEventSelector::try_from_descriptor(descriptor)
+        .map_err(MutationProgramError::from)?;
+    let binding = super::bind::MutationEventBinding::try_new(selector, inputs, program)?;
+    let mount_id = Box::leak(descriptor.name.replace('.', "-").into_boxed_str());
+    Ok(PortableHandler { mount_id, binding })
 }
 
-/// Spec: portable handler binding — domain-event body → mutation input object.
+/// Spec: portable handler — domain-event body → mutation input object.
 ///
 /// When the event fires, every non-skipped model column is bound from the event
 /// body into `input.{input_root}.{field}`.
@@ -113,23 +98,15 @@ pub fn bind_state_body_to_mutation<M>(
     descriptor: &crate::DomainEventDescriptor,
     program: super::program::MutationProgram,
     input_root: &str,
-) -> Result<MutationProjectionArm, MutationProgramError>
+) -> Result<PortableHandler, MutationProgramError>
 where
     M: RelationalReadModel,
 {
-    let selector = crate::projection::ProjectionEventSelector::try_from_descriptor(descriptor)
-        .map_err(MutationProgramError::from)?;
-    let binding = super::bind::MutationEventBinding::try_new(
-        selector,
+    bind_event_to_mutation(
+        descriptor,
         body_bindings_for_model::<M>(input_root)?,
         program,
-    )?;
-    // Stable id for the internal mount only (not part of the public model).
-    let arm_id = Box::leak(descriptor.name.replace('.', "-").into_boxed_str());
-    Ok(MutationProjectionArm {
-        arm_id,
-        binding,
-    })
+    )
 }
 
 /// Bind several domain-event contracts to the same complete-row upsert mutation.
@@ -141,7 +118,7 @@ pub fn bind_state_events_to_mutation<M>(
     program: &super::program::MutationProgram,
     input_root: &str,
     events: &[&crate::DomainEventDescriptor],
-) -> Result<Vec<MutationProjectionArm>, MutationProgramError>
+) -> Result<Vec<PortableHandler>, MutationProgramError>
 where
     M: RelationalReadModel,
 {
@@ -153,7 +130,7 @@ where
         .collect()
 }
 
-/// Spec: portable handler binding — deletion event → delete mutation by PK.
+/// Spec: portable handler — deletion event → delete mutation by PK.
 ///
 /// Fills `input.{pk_field}` from the envelope aggregate id.
 ///
@@ -164,7 +141,7 @@ pub fn bind_delete_to_envelope_id(
     descriptor: &crate::DomainEventDescriptor,
     program: super::program::MutationProgram,
     pk_field: &str,
-) -> Result<MutationProjectionArm, MutationProgramError> {
+) -> Result<PortableHandler, MutationProgramError> {
     let selector = crate::projection::ProjectionEventSelector::try_from_descriptor(descriptor)
         .map_err(MutationProgramError::from)?;
     let inputs = vec![super::bind::envelope_binding(
@@ -172,80 +149,8 @@ pub fn bind_delete_to_envelope_id(
         crate::projection::ProjectionEnvelopeField::AggregateId,
     )?];
     let binding = super::bind::MutationEventBinding::try_new(selector, inputs, program)?;
-    let arm_id = Box::leak(descriptor.name.replace('.', "-").into_boxed_str());
-    Ok(MutationProjectionArm {
-        arm_id,
-        binding,
-    })
-}
-
-// --- Backward-compatible names (hidden; prefer bind_* / compile_portable_handlers) ---
-
-/// @deprecated use [`bind_state_body_to_mutation`].
-#[doc(hidden)]
-pub fn arm_state_upsert_for_model<M>(
-    _arm_id: &'static str,
-    descriptor: &crate::DomainEventDescriptor,
-    program: super::program::MutationProgram,
-    input_root: &str,
-) -> Result<MutationProjectionArm, MutationProgramError>
-where
-    M: RelationalReadModel,
-{
-    bind_state_body_to_mutation::<M>(descriptor, program, input_root)
-}
-
-/// @deprecated use [`bind_state_events_to_mutation`].
-#[doc(hidden)]
-pub fn arms_state_upsert_for_model<M>(
-    program: &super::program::MutationProgram,
-    input_root: &str,
-    events: &[(&'static str, &crate::DomainEventDescriptor)],
-) -> Result<Vec<MutationProjectionArm>, MutationProgramError>
-where
-    M: RelationalReadModel,
-{
-    let descriptors: Vec<_> = events.iter().map(|(_, d)| *d).collect();
-    bind_state_events_to_mutation::<M>(program, input_root, &descriptors)
-}
-
-/// @deprecated use [`bind_delete_to_envelope_id`].
-#[doc(hidden)]
-pub fn arm_delete_pk_from_envelope(
-    _arm_id: &'static str,
-    descriptor: &crate::DomainEventDescriptor,
-    program: super::program::MutationProgram,
-    pk_field: &str,
-) -> Result<MutationProjectionArm, MutationProgramError> {
-    bind_delete_to_envelope_id(descriptor, program, pk_field)
-}
-
-/// Resolve helper monomorphized for a program factory (use with
-/// [`descriptor_from_factories`] or [`mutation_projector!`]).
-pub fn resolve_mutation_projector(
-    program: fn() -> Result<ProjectionProgram, ProjectionProgramError>,
-    occurrence: &DomainEventOccurrence,
-) -> Result<ResolvedProjectionPlan, ProjectionProgramError> {
-    resolve_mutation_program(&program()?, occurrence)
-}
-
-/// Lower helper monomorphized for one output model.
-pub fn lower_mutation_projector<M>(
-    plan: &ResolvedProjectionPlan,
-) -> Result<crate::projection::lower::LoweredProjectionPlan, ProjectionLoweringError>
-where
-    M: crate::projection::lower::ProjectionReadModelMetadata,
-{
-    lower_single_model::<M>(plan)
-}
-
-/// Inventory helper monomorphized for one output model.
-pub fn inventory_mutation_projector<M>(
-) -> Result<ProjectionOutputInventory, ProjectionLoweringError>
-where
-    M: crate::projection::lower::ProjectionReadModelMetadata,
-{
-    inventory_single_model::<M>()
+    let mount_id = Box::leak(descriptor.name.replace('.', "-").into_boxed_str());
+    Ok(PortableHandler { mount_id, binding })
 }
 
 /// Resolve an occurrence through a mutation-backed projection program.
@@ -296,7 +201,7 @@ where
 /// Construct a const-friendly descriptor from static factories.
 ///
 /// The factories **must** derive program/resolve from mutation IR (via
-/// [`program_from_mutation_arms`] / [`resolve_mutation_program`]). Callers that
+/// [`compile_portable_handlers`] / [`resolve_mutation_program`]). Callers that
 /// pass `projection!`-generated factories are not using the mutation path.
 pub const fn descriptor_from_factories<D>(
     name: &'static str,
@@ -310,21 +215,21 @@ pub const fn descriptor_from_factories<D>(
     ProjectionDescriptor::__generated(name, version, epoch, program, resolve, lower, inventory)
 }
 
-/// Helper: assert a program was built from mutation arms (no empty ops).
+/// Assert a compiled handlers program has at least one non-empty handler.
 pub fn assert_mutation_backed_program(
     program: &ProjectionProgram,
 ) -> Result<(), MutationProgramError> {
     if program.arms().is_empty() {
         return Err(MutationProgramError::InvalidOperation {
             operation: program.name().to_owned(),
-            reason: "mutation-backed program requires at least one arm".to_owned(),
+            reason: "portable handlers program requires at least one event binding".to_owned(),
         });
     }
     for arm in program.arms() {
         if arm.operations().is_empty() {
             return Err(MutationProgramError::InvalidOperation {
                 operation: arm.arm_id().to_owned(),
-                reason: "mutation-backed arm has no operations".to_owned(),
+                reason: "handler has no mutation operations".to_owned(),
             });
         }
     }

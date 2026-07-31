@@ -176,7 +176,7 @@ impl MutationHandlerRegistration {
         Ok(digest.finalize().into())
     }
 
-    /// Materialize dual-path projection program for the existing runtime.
+    /// Materialize the internal projection program for the existing runtime.
     ///
     /// # Errors
     ///

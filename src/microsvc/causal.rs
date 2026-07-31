@@ -899,8 +899,8 @@ mod tests {
 
     fn modeled_direct_program() -> Result<crate::ProjectionProgram, crate::ProjectionProgramError> {
         use crate::mutation::{
-            body_bindings_for_model, program_from_mutation_arms, state_upsert_program_for_model,
-            MutationEventBinding, MutationProjectionArm,
+            body_bindings_for_model, compile_portable_handlers, state_upsert_program_for_model,
+            MutationEventBinding, PortableHandler,
         };
         use crate::projection::ProjectionEventSelector;
 
@@ -932,14 +932,11 @@ mod tests {
             operation: "modeled-direct".into(),
             reason: e.to_string(),
         })?;
-        program_from_mutation_arms(
+        compile_portable_handlers(
             "modeled-direct-workspace",
             1,
             crate::ProjectionPartition::Unit,
-            &[MutationProjectionArm {
-                arm_id: "created",
-                binding,
-            }],
+            [PortableHandler::from_binding("created", binding)],
         )
         .map_err(|e| crate::ProjectionProgramError::InvalidOperation {
             operation: "modeled-direct".into(),

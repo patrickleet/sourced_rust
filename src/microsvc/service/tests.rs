@@ -188,13 +188,10 @@ fn causal_direct_program(
     name: &'static str,
     version: u64,
     event_name: &'static str,
-    arm_id: &'static str,
 ) -> Result<crate::ProjectionProgram, crate::ProjectionProgramError> {
     use crate::mutation::{
-        body_bindings_for_model, program_from_mutation_arms, state_upsert_program_for_model,
-        MutationEventBinding, MutationProjectionArm,
+        bind_state_body_to_mutation, compile_portable_handlers, state_upsert_program_for_model,
     };
-    use crate::projection::ProjectionEventSelector;
 
     let program = state_upsert_program_for_model::<CausalProjectionObligationView>(
         "save_causal_direct",
@@ -206,43 +203,29 @@ fn causal_direct_program(
         operation: name.into(),
         reason: e.to_string(),
     })?;
-    let selector =
-        ProjectionEventSelector::try_from_descriptor(&crate::DomainEventDescriptor::state::<
-            CausalDirectState,
-        >(event_name, 1))?;
-    let binding = MutationEventBinding::try_new(
-        selector,
-        body_bindings_for_model::<CausalProjectionObligationView>("view").map_err(|e| {
-            crate::ProjectionProgramError::InvalidOperation {
-                operation: name.into(),
-                reason: e.to_string(),
-            }
-        })?,
+    let descriptor = crate::DomainEventDescriptor::state::<CausalDirectState>(event_name, 1);
+    let handler = bind_state_body_to_mutation::<CausalProjectionObligationView>(
+        &descriptor,
         program,
+        "view",
     )
     .map_err(|e| crate::ProjectionProgramError::InvalidOperation {
         operation: name.into(),
         reason: e.to_string(),
     })?;
-    program_from_mutation_arms(
-        name,
-        version,
-        crate::ProjectionPartition::Unit,
-        &[MutationProjectionArm { arm_id, binding }],
+    compile_portable_handlers(name, version, crate::ProjectionPartition::Unit, [handler]).map_err(
+        |e| crate::ProjectionProgramError::InvalidOperation {
+            operation: name.into(),
+            reason: e.to_string(),
+        },
     )
-    .map_err(|e| crate::ProjectionProgramError::InvalidOperation {
-        operation: name.into(),
-        reason: e.to_string(),
-    })
 }
 
-#[cfg(feature = "graphql")]
 fn causal_direct_v1_program() -> Result<crate::ProjectionProgram, crate::ProjectionProgramError> {
     causal_direct_program(
         "project_causal_direct",
         1,
         "causal.direct-recorded",
-        "direct",
     )
 }
 
@@ -286,12 +269,7 @@ const CAUSAL_DIRECT_PROJECTION: crate::projection::lower::ProjectionDescriptor<
 
 #[cfg(feature = "graphql")]
 fn causal_direct_v2_program() -> Result<crate::ProjectionProgram, crate::ProjectionProgramError> {
-    causal_direct_program(
-        "project_causal_direct",
-        2,
-        "causal.direct-recorded",
-        "direct",
-    )
+    causal_direct_program("project_causal_direct", 2, "causal.direct-recorded")
 }
 
 #[cfg(feature = "graphql")]
@@ -335,10 +313,8 @@ const CAUSAL_ROGUE_DIRECT_PROJECTION: crate::projection::lower::ProjectionDescri
 #[cfg(feature = "graphql")]
 fn causal_sibling_program() -> Result<crate::ProjectionProgram, crate::ProjectionProgramError> {
     use crate::mutation::{
-        body_bindings_for_model, program_from_mutation_arms, state_upsert_program_for_model,
-        MutationEventBinding, MutationProjectionArm,
+        bind_state_body_to_mutation, compile_portable_handlers, state_upsert_program_for_model,
     };
-    use crate::projection::ProjectionEventSelector;
 
     let program = state_upsert_program_for_model::<CausalProjectionSiblingView>(
         "save_causal_sibling",
@@ -350,34 +326,24 @@ fn causal_sibling_program() -> Result<crate::ProjectionProgram, crate::Projectio
         operation: "project_causal_direct_sibling".into(),
         reason: e.to_string(),
     })?;
-    let selector =
-        ProjectionEventSelector::try_from_descriptor(&crate::DomainEventDescriptor::state::<
-            CausalDirectState,
-        >(
-            "causal.direct-sibling-recorded", 1
-        ))?;
-    let binding = MutationEventBinding::try_new(
-        selector,
-        body_bindings_for_model::<CausalProjectionSiblingView>("view").map_err(|e| {
-            crate::ProjectionProgramError::InvalidOperation {
-                operation: "project_causal_direct_sibling".into(),
-                reason: e.to_string(),
-            }
-        })?,
+    let descriptor = crate::DomainEventDescriptor::state::<CausalDirectState>(
+        "causal.direct-sibling-recorded",
+        1,
+    );
+    let handler = bind_state_body_to_mutation::<CausalProjectionSiblingView>(
+        &descriptor,
         program,
+        "view",
     )
     .map_err(|e| crate::ProjectionProgramError::InvalidOperation {
         operation: "project_causal_direct_sibling".into(),
         reason: e.to_string(),
     })?;
-    program_from_mutation_arms(
+    compile_portable_handlers(
         "project_causal_direct_sibling",
         1,
         crate::ProjectionPartition::Unit,
-        &[MutationProjectionArm {
-            arm_id: "sibling",
-            binding,
-        }],
+        [handler],
     )
     .map_err(|e| crate::ProjectionProgramError::InvalidOperation {
         operation: "project_causal_direct_sibling".into(),
@@ -427,10 +393,8 @@ const CAUSAL_SIBLING_DIRECT_PROJECTION: crate::projection::lower::ProjectionDesc
 fn causal_lifecycle_program() -> Result<crate::ProjectionProgram, crate::ProjectionProgramError> {
     use crate::domain_event::DomainEventContract;
     use crate::mutation::{
-        body_bindings_for_model, program_from_mutation_arms, state_upsert_program_for_model,
-        MutationEventBinding, MutationProjectionArm,
+        bind_state_body_to_mutation, compile_portable_handlers, state_upsert_program_for_model,
     };
-    use crate::projection::ProjectionEventSelector;
 
     let program = state_upsert_program_for_model::<CausalLifecycleView>(
         "save_causal_lifecycle",
@@ -442,30 +406,20 @@ fn causal_lifecycle_program() -> Result<crate::ProjectionProgram, crate::Project
         operation: "project_causal_lifecycle".into(),
         reason: e.to_string(),
     })?;
-    let selector =
-        ProjectionEventSelector::try_from_descriptor(&CausalLifecycleRecorded::descriptor())?;
-    let binding = MutationEventBinding::try_new(
-        selector,
-        body_bindings_for_model::<CausalLifecycleView>("view").map_err(|e| {
-            crate::ProjectionProgramError::InvalidOperation {
-                operation: "project_causal_lifecycle".into(),
-                reason: e.to_string(),
-            }
-        })?,
+    let handler = bind_state_body_to_mutation::<CausalLifecycleView>(
+        &CausalLifecycleRecorded::descriptor(),
         program,
+        "view",
     )
     .map_err(|e| crate::ProjectionProgramError::InvalidOperation {
         operation: "project_causal_lifecycle".into(),
         reason: e.to_string(),
     })?;
-    program_from_mutation_arms(
+    compile_portable_handlers(
         "project_causal_lifecycle",
         1,
         crate::ProjectionPartition::Unit,
-        &[MutationProjectionArm {
-            arm_id: "lifecycle",
-            binding,
-        }],
+        [handler],
     )
     .map_err(|e| crate::ProjectionProgramError::InvalidOperation {
         operation: "project_causal_lifecycle".into(),

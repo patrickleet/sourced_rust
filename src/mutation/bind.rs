@@ -101,7 +101,7 @@ impl MutationEventBinding {
         &self.program
     }
 
-    /// Materialize a temporary event-coupled projection arm for dual-path
+    /// Materialize a temporary event-coupled projection arm for the internal projection mount
     /// execution against the existing projection interpreter.
     ///
     /// # Errors
@@ -118,7 +118,7 @@ impl MutationEventBinding {
         ProjectionArm::try_new(arm_id.into(), self.selector.clone(), operations).map_err(Into::into)
     }
 
-    /// Materialize a temporary event-coupled projection program for dual-path
+    /// Materialize a temporary event-coupled projection program for the internal projection mount
     /// execution. The projection program name and version are taken from the
     /// mutation program; partition defaults to unit unless overridden.
     ///

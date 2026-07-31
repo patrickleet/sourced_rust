@@ -2,7 +2,7 @@
 //!
 //! Lowers the same logical mutation IR through Surface authorization and
 //! replica coverage into the existing `ProjectionDelta` algebra. During the
-//! dual-path rollout this module rewrites mutations into projection operations
+//! this module rewrites mutations into projection operations for cache lowering
 //! and reuses projection-delta lowering when available.
 
 use serde::Serialize;
