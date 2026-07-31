@@ -40,11 +40,21 @@ pub fn offline_oidc_identity() -> distributed::graphql::IdentityConfig {
     e2e_service::oidc_bearer_config(OFFLINE_ISSUER, OFFLINE_AUDIENCE, None, Some(jwks))
 }
 
+/// Roles asserted on the access token / session for this principal.
+/// Admins always also hold `user` (local IdP + offline tests).
+fn identity_roles_json(role: &str) -> Value {
+    match role {
+        "admin" => json!(["admin", "user"]),
+        _ => json!([role]),
+    }
+}
+
 fn offline_bearer(subject: &str, role: &str) -> String {
     let now = SystemTime::now()
         .duration_since(UNIX_EPOCH)
         .expect("system clock")
         .as_secs();
+    let roles = identity_roles_json(role);
     let claims = json!({
         "iss": OFFLINE_ISSUER,
         "aud": OFFLINE_AUDIENCE,
@@ -52,7 +62,8 @@ fn offline_bearer(subject: &str, role: &str) -> String {
         "iat": now.saturating_sub(1),
         "nbf": now.saturating_sub(1),
         "exp": now + 3600,
-        "roles": [role]
+        "roles": roles,
+        "groups": roles
     });
     let mut header = Header::new(Algorithm::ES256);
     header.kid = Some(OFFLINE_KID.to_string());
@@ -69,7 +80,15 @@ fn with_identity(
     if OFFLINE_OIDC_ENABLED.load(Ordering::Acquire) {
         request.bearer_auth(offline_bearer(user_id, role))
     } else {
-        request.header("x-user-id", user_id).header("x-role", role)
+        let roles = if role == "admin" {
+            "admin,user"
+        } else {
+            role
+        };
+        request
+            .header("x-user-id", user_id)
+            .header("x-role", role)
+            .header("x-roles", roles)
     }
 }
 
