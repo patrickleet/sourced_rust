@@ -33,7 +33,7 @@ pub fn delete_todo() -> Mutation<()> {
 
 /// Lifecycle state events → [`save_todo`]; purge → [`delete_todo`].
 portable_handlers! {
-    pub const TODO_READS: ProjectionDescriptor<EventualOnly> = {
+    pub const TODOS: ProjectionDescriptor<EventualOnly> = {
         name: "project_todos",
         version: 1,
         epoch: "e2e-ui-todos-v2",
@@ -77,7 +77,7 @@ mod tests {
 
     #[test]
     fn todo_handlers_apply_save_and_delete_mutations() {
-        let program = TODO_READS.program().unwrap();
+        let program = TODOS.program().unwrap();
         assert_eq!(program.arms().len(), 8);
         assert_eq!(save_todo().program().operations()[0].kind(), MutationKind::Upsert);
         assert_eq!(delete_todo().program().operations()[0].kind(), MutationKind::Delete);
@@ -90,14 +90,14 @@ mod tests {
         todo.reassign("alice", "bob").unwrap();
         todo.complete("alice").unwrap();
         let occurrence = todo.entity.pending_domain_events().last().unwrap();
-        let lowered = TODO_READS.server_executor().unwrap().plan(occurrence).unwrap();
+        let lowered = TODOS.server_executor().unwrap().plan(occurrence).unwrap();
         let TableMutation::UpsertRow(row) = &lowered.write_plan.mutations[0] else {
             panic!("expected upsert");
         };
         assert_eq!(row.values.get("status"), Some(&RowValue::String("completed".into())));
         assert_eq!(Todos::schema().table_name, "todos");
         assert_eq!(
-            TODO_READS.eventual().execution_class(),
+            TODOS.eventual().execution_class(),
             ProjectionExecutionClass::Causal
         );
     }
@@ -110,7 +110,7 @@ mod tests {
         let occurrence = todo.entity.pending_domain_events().last().unwrap();
         assert_eq!(occurrence.descriptor().body.kind, DomainEventBodyKind::Deletion);
         assert_eq!(occurrence.descriptor(), &TodoPurgedDomainEvent::descriptor());
-        let lowered = TODO_READS.server_executor().unwrap().plan(occurrence).unwrap();
+        let lowered = TODOS.server_executor().unwrap().plan(occurrence).unwrap();
         let TableMutation::DeleteRow(delete) = &lowered.write_plan.mutations[0] else {
             panic!("expected delete");
         };
