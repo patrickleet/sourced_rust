@@ -15,7 +15,7 @@ use super::MutationProgramError;
 
 /// Authoritative server-side mutation interpreter.
 ///
-/// During the dual-path rollout this adapter rewrites bound mutation programs
+/// This adapter rewrites bound mutation programs for the existing projection mount
 /// into the existing projection operation vocabulary and reuses projection
 /// resolution. Direct and asynchronous commit lifecycles remain owned by the
 /// projection/causal runtime.
@@ -56,7 +56,7 @@ impl MutationServerInterpreter {
         self.binding.selector()
     }
 
-    /// Materialize the dual-path projection program.
+    /// Materialize the internal projection program.
     ///
     /// # Errors
     ///

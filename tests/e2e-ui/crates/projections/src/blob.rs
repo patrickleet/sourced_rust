@@ -1,11 +1,9 @@
-//! Blob: mutation + portable handlers (spec language).
-//!
-//! Command handlers call `commit()?.projected()` without naming this mount.
+//! Blob: mutations + portable handlers.
 
 use distributed::mutation;
 use distributed::portable_handlers;
 use distributed::projection::lower::{DirectCandidate, ProjectionDescriptor};
-use distributed::{Mutation, MutationProgram};
+use distributed::Mutation;
 use blob_domain::BlobGameState;
 use e2e_readmodels::BlobGames;
 
@@ -18,21 +16,7 @@ pub fn save_blob_game() -> Mutation<()> {
     }
 }
 
-/// Canonical mutation program (for tests / registration helpers).
-pub fn save_blob_game_program() -> MutationProgram {
-    save_blob_game().program().clone()
-}
-
-/// Compiled handlers program (internal mount); prefer [`BLOB_GAMES`].
-pub fn blob_mutation_projection_program() -> Result<
-    distributed::ProjectionProgram,
-    distributed::ProjectionProgramError,
-> {
-    BLOB_GAMES.program()
-}
-
-/// When these domain events fire, apply [`save_blob_game`] with the event body
-/// as `input.game`.
+/// When these domain events fire, apply [`save_blob_game`] (body → `input.game`).
 portable_handlers! {
     pub const BLOB_GAMES: ProjectionDescriptor<DirectCandidate> = {
         name: "project_blob",
@@ -49,30 +33,19 @@ portable_handlers! {
     };
 }
 
-/// Compile-time guards: event-owning `projection!` and command-side selectors
-/// are gone.
+/// Compile-time guards for removed authoring surfaces.
 ///
 /// ```compile_fail
 /// const _GONE: () = projection! {};
 /// ```
-///
-/// Live path: `repo.commit(game)?.projected()`.
 ///
 /// ```compile_fail,E0599
 /// use blob_domain::BlobGame;
 /// use e2e_readmodels::BlobGames;
 /// use e2e_projections::BLOB_GAMES;
 /// use distributed::microsvc::{AggregateCheckout, CausalCommandContext};
-///
-/// fn cannot_use_removed_project_selector_or_projected_many(
-///     ctx: &CausalCommandContext<'_, BlobGame>,
-///     game: AggregateCheckout<BlobGame>,
-/// ) {
-///     let _ = ctx
-///         .project(BLOB_GAMES)
-///         .commit(game)
-///         .unwrap()
-///         .projected_many::<BlobGames>();
+/// fn gone(ctx: &CausalCommandContext<'_, BlobGame>, game: AggregateCheckout<BlobGame>) {
+///     let _ = ctx.project(BLOB_GAMES).commit(game).unwrap().projected_many::<BlobGames>();
 /// }
 /// ```
 #[doc(hidden)]
@@ -91,10 +64,10 @@ mod tests {
     use distributed::projection::ProjectionEventSelector;
     use distributed::{
         body_bindings_for_model, body_field_binding, descriptor_from_factories,
-        inventory_single_model, lower_single_model, program_from_mutation_arms,
+        bind_event_to_mutation, compile_portable_handlers, inventory_single_model, lower_single_model,
         resolve_mutation_program, MutationAssignment, MutationEventBinding, MutationExpression,
         MutationField, MutationKeyField, MutationKind, MutationOperation, MutationProgram,
-        MutationProjectionArm, ProjectionPartition, ProjectionProgram, ProjectionProgramError,
+        PortableHandler, ProjectionPartition, ProjectionProgram, ProjectionProgramError,
         ProjectionMutationKind, ProjectionTarget, ProjectionValueType, RelationalReadModel,
         ResolvedProjectionPlan, RowValue, TableMutation,
     };
@@ -170,14 +143,11 @@ mod tests {
         ];
         let binding = MutationEventBinding::try_new(blob_moved_selector()?, bindings, mutation)
             .map_err(|e| map_err("blob_patch_fixture", e))?;
-        program_from_mutation_arms(
+        compile_portable_handlers(
             "blob_patch_fixture",
             1,
             ProjectionPartition::Unit,
-            &[MutationProjectionArm {
-                arm_id: "moved",
-                binding,
-            }],
+            [PortableHandler::from_binding("moved", binding)],
         )
         .map_err(|e| map_err("blob_patch_fixture", e))
     }
@@ -224,14 +194,11 @@ mod tests {
         .map_err(|e| map_err("blob_delete_fixture", e))?];
         let binding = MutationEventBinding::try_new(blob_moved_selector()?, bindings, mutation)
             .map_err(|e| map_err("blob_delete_fixture", e))?;
-        program_from_mutation_arms(
+        compile_portable_handlers(
             "blob_delete_fixture",
             1,
             ProjectionPartition::Unit,
-            &[MutationProjectionArm {
-                arm_id: "moved",
-                binding,
-            }],
+            [PortableHandler::from_binding("moved", binding)],
         )
         .map_err(|e| map_err("blob_delete_fixture", e))
     }
@@ -307,14 +274,11 @@ mod tests {
         }
         let binding = MutationEventBinding::try_new(blob_moved_selector()?, bindings, mutation)
             .map_err(|e| map_err("blob_multi_row_fixture", e))?;
-        program_from_mutation_arms(
+        compile_portable_handlers(
             "blob_multi_row_fixture",
             1,
             ProjectionPartition::Unit,
-            &[MutationProjectionArm {
-                arm_id: "moved",
-                binding,
-            }],
+            [PortableHandler::from_binding("moved", binding)],
         )
         .map_err(|e| map_err("blob_multi_row_fixture", e))
     }
@@ -371,7 +335,7 @@ mod tests {
     #[test]
     fn blob_program_is_built_from_save_blob_game_mutation() {
         let program = BLOB_GAMES.program().unwrap();
-        let from_mutations = blob_mutation_projection_program().unwrap();
+        let from_mutations = BLOB_GAMES.program().unwrap();
         assert_eq!(
             program.canonical_bytes().unwrap(),
             from_mutations.canonical_bytes().unwrap()
@@ -382,14 +346,14 @@ mod tests {
                 && arm.operations()[0].kind() == ProjectionMutationKind::Upsert
         }));
         assert_eq!(
-            save_blob_game_program().operations()[0].kind(),
+            save_blob_game().program().clone().operations()[0].kind(),
             MutationKind::Upsert
         );
     }
 
     #[test]
     fn save_blob_game_mutation_is_single_row_event_free_upsert() {
-        let program = save_blob_game_program();
+        let program = save_blob_game().program().clone();
         assert_eq!(program.operations().len(), 1);
         assert_eq!(program.operations()[0].kind(), MutationKind::Upsert);
         assert_eq!(program.operations()[0].target().model(), "BlobGames");

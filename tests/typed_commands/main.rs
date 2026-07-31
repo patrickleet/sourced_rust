@@ -21,7 +21,6 @@ use distributed::graphql::{
 };
 use distributed::microsvc::{CausalCommandContext, HandlerError, Routes, Service};
 use distributed::microsvc::{Context, Session};
-use distributed::mutation::state_upsert_program_for_model;
 use distributed::projection::catalog::{ProjectionBindingActivation, ProjectionCatalog};
 use distributed::projection::lower::{DirectCandidate, EventualOnly, ProjectionDescriptor};
 use distributed::projection::lower::{
@@ -35,15 +34,45 @@ use distributed::projection::placement::{
 use distributed::projection::ProjectionEventSelector;
 use distributed::projection_protocol::ProjectorTopologyId;
 use distributed::{
-    body_bindings_for_model, body_field_binding, command_input_defaults, descriptor_from_factories,
-    inventory_single_model, lower_single_model, program_from_mutation_arms,
-    resolve_mutation_program, Aggregate, AggregateRepository, DistributedProjectManifest,
-    DomainEventDescriptor, DomainEventOccurrence, Entity, EventRecord, GraphqlInput, GraphqlOutput,
-    InMemoryRepository, MutationAssignment, MutationEventBinding, MutationExpression,
-    MutationField, MutationKeyField, MutationKind, MutationOperation, MutationProgram,
-    MutationProgramError, MutationProjectionArm, ProjectionExpression, ProjectionPartition,
-    ProjectionProgram, ProjectionProgramError, ProjectionValue, ProjectionValueType, ReadModel,
-    RelationalReadModel, ResolvedProjectionPlan, SqliteRepository,
+    body_bindings_for_model,
+    body_field_binding,
+    command_input_defaults,
+    descriptor_from_factories,
+    compile_portable_handlers,
+    inventory_single_model,
+    lower_single_model,
+    resolve_mutation_program,
+    Aggregate,
+    AggregateRepository,
+    DistributedProjectManifest,
+    DomainEventDescriptor,
+    DomainEventOccurrence,
+    Entity,
+    EventRecord,
+    GraphqlInput,
+    GraphqlOutput,
+    InMemoryRepository,
+    MutationAssignment,
+    MutationEventBinding,
+    MutationExpression,
+    MutationField,
+    MutationKeyField,
+    MutationKind,
+    MutationOperation,
+    MutationProgram,
+    MutationProgramError,
+    PortableHandler,
+    ProjectionExpression,
+    ProjectionPartition,
+    ProjectionProgram,
+    ProjectionProgramError,
+    ProjectionValue,
+    ProjectionValueType,
+    ReadModel,
+    RelationalReadModel,
+    ResolvedProjectionPlan,
+    SqliteRepository,
+    state_upsert_program_for_model,
 };
 use serde::{Deserialize, Serialize};
 use tower::util::ServiceExt;
@@ -409,16 +438,12 @@ fn plan_projection_program() -> Result<ProjectionProgram, ProjectionProgramError
         ProjectionValueType::String,
         ["id"],
     )?);
-    program_from_mutation_arms(
+    compile_portable_handlers(
         "typed_commands_plan",
         1,
         partition,
-        &[MutationProjectionArm {
-            arm_id: "changed",
-            binding,
-        }],
+        [PortableHandler::from_binding("changed", binding)],
     )
-    .map_err(|e| map_mut_err("typed_commands_plan", e))
 }
 
 fn plan_projection_resolve(
@@ -492,16 +517,12 @@ fn plan_title_program() -> Result<ProjectionProgram, ProjectionProgramError> {
         mutation,
     )
     .map_err(|e| map_mut_err("typed_commands_plan_title", e))?;
-    program_from_mutation_arms(
+    compile_portable_handlers(
         "typed_commands_plan_title",
         1,
         ProjectionPartition::Unit,
-        &[MutationProjectionArm {
-            arm_id: "changed",
-            binding,
-        }],
+        [PortableHandler::from_binding("changed", binding)],
     )
-    .map_err(|e| map_mut_err("typed_commands_plan_title", e))
 }
 
 fn plan_title_resolve(
@@ -565,16 +586,12 @@ fn plan_close_program() -> Result<ProjectionProgram, ProjectionProgramError> {
         mutation,
     )
     .map_err(|e| map_mut_err("typed_commands_plan_close", e))?;
-    program_from_mutation_arms(
+    compile_portable_handlers(
         "typed_commands_plan_close",
         1,
         ProjectionPartition::Unit,
-        &[MutationProjectionArm {
-            arm_id: "changed",
-            binding,
-        }],
+        [PortableHandler::from_binding("changed", binding)],
     )
-    .map_err(|e| map_mut_err("typed_commands_plan_close", e))
 }
 
 fn plan_close_resolve(
@@ -655,16 +672,12 @@ fn json_projection_program() -> Result<ProjectionProgram, ProjectionProgramError
         mutation,
     )
     .map_err(|e| map_mut_err("typed_commands_json", e))?;
-    program_from_mutation_arms(
+    compile_portable_handlers(
         "typed_commands_json",
         1,
         ProjectionPartition::Unit,
-        &[MutationProjectionArm {
-            arm_id: "changed",
-            binding,
-        }],
+        [PortableHandler::from_binding("changed", binding)],
     )
-    .map_err(|e| map_mut_err("typed_commands_json", e))
 }
 
 fn json_projection_resolve(
@@ -753,16 +766,12 @@ fn composite_projection_program() -> Result<ProjectionProgram, ProjectionProgram
         mutation,
     )
     .map_err(|e| map_mut_err("typed_commands_composite", e))?;
-    program_from_mutation_arms(
+    compile_portable_handlers(
         "typed_commands_composite",
         1,
         ProjectionPartition::Unit,
-        &[MutationProjectionArm {
-            arm_id: "changed",
-            binding,
-        }],
+        [PortableHandler::from_binding("changed", binding)],
     )
-    .map_err(|e| map_mut_err("typed_commands_composite", e))
 }
 
 fn composite_projection_resolve(
@@ -804,16 +813,12 @@ fn bigint_projection_program() -> Result<ProjectionProgram, ProjectionProgramErr
         program,
     )
     .map_err(|e| map_mut_err("typed_commands_bigint", e))?;
-    program_from_mutation_arms(
+    compile_portable_handlers(
         "typed_commands_bigint",
         1,
         ProjectionPartition::Unit,
-        &[MutationProjectionArm {
-            arm_id: "changed",
-            binding,
-        }],
+        [PortableHandler::from_binding("changed", binding)],
     )
-    .map_err(|e| map_mut_err("typed_commands_bigint", e))
 }
 
 fn bigint_projection_resolve(
@@ -882,16 +887,12 @@ fn float_clear_program() -> Result<ProjectionProgram, ProjectionProgramError> {
         mutation,
     )
     .map_err(|e| map_mut_err("typed_commands_float_clear", e))?;
-    program_from_mutation_arms(
+    compile_portable_handlers(
         "typed_commands_float_clear",
         1,
         ProjectionPartition::Unit,
-        &[MutationProjectionArm {
-            arm_id: "cleared",
-            binding,
-        }],
+        [PortableHandler::from_binding("cleared", binding)],
     )
-    .map_err(|e| map_mut_err("typed_commands_float_clear", e))
 }
 
 fn float_clear_resolve(
@@ -960,16 +961,12 @@ fn json_float_clear_program() -> Result<ProjectionProgram, ProjectionProgramErro
         mutation,
     )
     .map_err(|e| map_mut_err("typed_commands_json_float_clear", e))?;
-    program_from_mutation_arms(
+    compile_portable_handlers(
         "typed_commands_json_float_clear",
         1,
         ProjectionPartition::Unit,
-        &[MutationProjectionArm {
-            arm_id: "cleared",
-            binding,
-        }],
+        [PortableHandler::from_binding("cleared", binding)],
     )
-    .map_err(|e| map_mut_err("typed_commands_json_float_clear", e))
 }
 
 fn json_float_clear_resolve(

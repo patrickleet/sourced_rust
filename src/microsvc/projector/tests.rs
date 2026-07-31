@@ -50,9 +50,9 @@ struct MalformedView {
 fn generated_modeled_projector_program(
 ) -> Result<crate::ProjectionProgram, crate::ProjectionProgramError> {
     use crate::mutation::{
-        body_field_binding, program_from_mutation_arms, MutationAssignment, MutationConflictTarget,
+        body_field_binding, compile_portable_handlers, MutationAssignment, MutationConflictTarget,
         MutationEventBinding, MutationExpression, MutationField, MutationKeyField, MutationKind,
-        MutationOperation, MutationProgram, MutationProjectionArm,
+        MutationOperation, MutationProgram, PortableHandler,
     };
     use crate::projection::{
         ProjectionEventSelector, ProjectionPartition, ProjectionTarget, ProjectionValueType,
@@ -148,14 +148,11 @@ fn generated_modeled_projector_program(
                 reason: e.to_string(),
             }
         })?;
-    program_from_mutation_arms(
+    compile_portable_handlers(
         "task11-generated-multi-table",
         1,
         ProjectionPartition::Unit,
-        &[MutationProjectionArm {
-            arm_id: "changed",
-            binding,
-        }],
+        [PortableHandler::from_binding("changed", binding)],
     )
     .map_err(|e| crate::ProjectionProgramError::InvalidOperation {
         operation: "task11-generated-multi-table".into(),
