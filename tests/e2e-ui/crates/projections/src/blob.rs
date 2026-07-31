@@ -1,26 +1,17 @@
-//! Blob domain-event projections via **mutation IR** (`SAVE_BLOB_GAME`).
+//! Blob projections: mutation + placement-selected direct mount.
 //!
-//! Direct placement is registration-owned. Command handlers call
-//! `commit()?.projected()` without naming this descriptor.
+//! Command handlers call `commit()?.projected()` without naming this descriptor.
 
-use distributed::domain_event::DomainEventContract;
 use distributed::mutation;
-use distributed::projection::lower::{
-    DirectCandidate, EventualOnly, ProjectionDescriptor, ProjectionLoweringError,
-    ProjectionOutputInventory,
-};
+use distributed::projection::lower::{DirectCandidate, ProjectionDescriptor};
 use distributed::{
-    body_bindings_for_model, descriptor_from_factories, inventory_single_model, lower_single_model,
-    program_from_mutation_arms, resolve_mutation_program, Mutation, MutationEventBinding,
-    MutationProgram, MutationProjectionArm, ProjectionPartition, ProjectionProgram,
-    ProjectionProgramError, ResolvedProjectionPlan,
+    arm_state_upsert_for_model, build_mutation_projector_program, mutation_projector, Mutation,
+    MutationProgram, ProjectionPartition, ProjectionProgram, ProjectionProgramError,
 };
-use distributed::DomainEventOccurrence;
-
 use blob_domain::BlobGameState;
 use e2e_readmodels::BlobGames;
 
-/// Event-independent complete-row upsert for blob games (direct returning path).
+/// Complete-row upsert for blob games (direct returning path).
 pub fn save_blob_game() -> Mutation<()> {
     mutation! {
         name: "save_blob_game";
@@ -29,82 +20,44 @@ pub fn save_blob_game() -> Mutation<()> {
     }
 }
 
-/// Canonical SAVE_BLOB_GAME mutation program.
+/// Canonical SAVE_BLOB_GAME program.
 pub fn save_blob_game_program() -> MutationProgram {
     save_blob_game().program().clone()
 }
 
-fn blob_state_arm(
-    arm_id: &'static str,
-    event_name: &'static str,
-) -> Result<MutationProjectionArm, distributed::MutationProgramError> {
-    // State-body events for Blob share domain-state capture.
-    let selector = distributed::ProjectionEventSelector::try_from_descriptor(
-        &distributed::DomainEventDescriptor::state::<BlobGameState>(event_name, 1),
-    )
-    .map_err(distributed::MutationProgramError::from)?;
-    let binding = MutationEventBinding::try_new(
-        selector,
-        body_bindings_for_model::<BlobGames>("game")?,
-        save_blob_game_program(),
-    )?;
-    Ok(MutationProjectionArm { arm_id, binding })
-}
-
-/// Build dual-path projection program from SAVE_BLOB_GAME for all blob events.
+/// Projector program: all blob state events → SAVE_BLOB_GAME.
 pub fn blob_mutation_projection_program() -> Result<ProjectionProgram, ProjectionProgramError> {
-    let arms = [
+    let save = save_blob_game_program();
+    let events = [
         ("blob-initialized", "blob.initialized"),
         ("blob-level-started", "blob.level_started"),
         ("blob-started", "blob.started"),
         ("blob-moved", "blob.moved"),
-    ]
-    .into_iter()
-    .map(|(arm_id, event_name)| {
-        blob_state_arm(arm_id, event_name).map_err(|e| ProjectionProgramError::InvalidOperation {
-            operation: arm_id.into(),
-            reason: e.to_string(),
+    ];
+    let arms = events
+        .into_iter()
+        .map(|(arm_id, event_name)| {
+            let descriptor =
+                distributed::DomainEventDescriptor::state::<BlobGameState>(event_name, 1);
+            arm_state_upsert_for_model::<BlobGames>(arm_id, &descriptor, save.clone(), "game")
+                .map_err(|e| ProjectionProgramError::InvalidOperation {
+                    operation: arm_id.into(),
+                    reason: e.to_string(),
+                })
         })
-    })
-    .collect::<Result<Vec<_>, _>>()?;
-    program_from_mutation_arms("project_blob", 1, ProjectionPartition::Unit, &arms).map_err(
-        |e| ProjectionProgramError::InvalidOperation {
-            operation: "project_blob".into(),
-            reason: e.to_string(),
-        },
-    )
+        .collect::<Result<Vec<_>, _>>()?;
+    build_mutation_projector_program("project_blob", 1, ProjectionPartition::Unit, arms)
 }
 
-fn blob_program_factory() -> Result<ProjectionProgram, ProjectionProgramError> {
-    blob_mutation_projection_program()
+mutation_projector! {
+    pub const BLOB_GAMES: ProjectionDescriptor<DirectCandidate> = {
+        name: "project_blob",
+        version: 1,
+        epoch: "e2e-ui-blob-v2",
+        model: BlobGames,
+        program: blob_mutation_projection_program,
+    };
 }
-
-fn blob_resolve(
-    occurrence: &DomainEventOccurrence,
-) -> Result<ResolvedProjectionPlan, ProjectionProgramError> {
-    resolve_mutation_program(&blob_mutation_projection_program()?, occurrence)
-}
-
-fn blob_lower(
-    plan: &ResolvedProjectionPlan,
-) -> Result<distributed::projection::lower::LoweredProjectionPlan, ProjectionLoweringError> {
-    lower_single_model::<BlobGames>(plan)
-}
-
-fn blob_inventory() -> Result<ProjectionOutputInventory, ProjectionLoweringError> {
-    inventory_single_model::<BlobGames>()
-}
-
-/// Mutation-backed Blob direct projector mount.
-pub const BLOB_GAMES: ProjectionDescriptor<DirectCandidate> = descriptor_from_factories(
-    "project_blob",
-    1,
-    "e2e-ui-blob-v2",
-    blob_program_factory,
-    blob_resolve,
-    blob_lower,
-    blob_inventory,
-);
 
 /// Compile-time guards documenting that event-owning `projection!` authoring
 /// is gone. Mutation-backed descriptors replace it (see module tests).

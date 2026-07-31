@@ -1,22 +1,17 @@
-//! Chat domain-event projections via **mutation IR** (`SAVE_CHAT_MESSAGE`).
+//! Chat projections: mutation + room-partitioned portable bind.
 
 use distributed::domain_event::DomainEventContract;
 use distributed::mutation;
-use distributed::projection::lower::{
-    DirectCandidate, ProjectionDescriptor, ProjectionLoweringError, ProjectionOutputInventory,
-};
+use distributed::projection::lower::{DirectCandidate, ProjectionDescriptor};
 use distributed::{
-    body_bindings_for_model, descriptor_from_factories, inventory_single_model, lower_single_model,
-    program_from_mutation_arms, resolve_mutation_program, Mutation, MutationEventBinding,
-    MutationProgram, MutationProjectionArm, ProjectionExpression, ProjectionPartition,
-    ProjectionProgram, ProjectionProgramError, ProjectionValueType, ResolvedProjectionPlan,
+    arm_state_upsert_for_model, build_mutation_projector_program, mutation_projector, Mutation,
+    MutationProgram, ProjectionExpression, ProjectionPartition, ProjectionProgram,
+    ProjectionProgramError, ProjectionValueType,
 };
-use distributed::DomainEventOccurrence;
-
 use chat_domain::ChatMessagePostedDomainEvent;
 use e2e_readmodels::ChatMessages;
 
-/// Event-independent complete-row upsert for chat messages.
+/// Complete-row upsert for chat messages.
 pub fn save_chat_message() -> Mutation<()> {
     mutation! {
         name: "save_chat_message";
@@ -25,14 +20,9 @@ pub fn save_chat_message() -> Mutation<()> {
     }
 }
 
-/// Canonical SAVE_CHAT_MESSAGE mutation program.
+/// Canonical SAVE_CHAT_MESSAGE program.
 pub fn save_chat_message_program() -> MutationProgram {
     save_chat_message().program().clone()
-}
-
-fn chat_field_bindings(
-) -> Result<Vec<distributed::MutationInputBinding>, distributed::MutationProgramError> {
-    body_bindings_for_model::<ChatMessages>("message")
 }
 
 fn chat_partition() -> Result<ProjectionPartition, ProjectionProgramError> {
@@ -46,63 +36,30 @@ fn chat_partition() -> Result<ProjectionPartition, ProjectionProgramError> {
     ))
 }
 
-fn chat_arm() -> Result<MutationProjectionArm, distributed::MutationProgramError> {
-    let selector = distributed::ProjectionEventSelector::try_from_descriptor(
-        &ChatMessagePostedDomainEvent::descriptor(),
-    )
-    .map_err(distributed::MutationProgramError::from)?;
-    let binding =
-        MutationEventBinding::try_new(selector, chat_field_bindings()?, save_chat_message_program())?;
-    Ok(MutationProjectionArm {
-        arm_id: "chat-posted",
-        binding,
-    })
-}
-
-/// Build dual-path projection program from SAVE_CHAT_MESSAGE.
+/// Projector program: chat.posted → SAVE_CHAT_MESSAGE.
 pub fn chat_mutation_projection_program() -> Result<ProjectionProgram, ProjectionProgramError> {
-    let arms = vec![chat_arm().map_err(|e| ProjectionProgramError::InvalidOperation {
-        operation: "chat mutation arm".into(),
-        reason: e.to_string(),
-    })?];
-    program_from_mutation_arms("project_chat_messages", 1, chat_partition()?, &arms).map_err(
-        |e| ProjectionProgramError::InvalidOperation {
-            operation: "project_chat_messages".into(),
-            reason: e.to_string(),
-        },
+    let arm = arm_state_upsert_for_model::<ChatMessages>(
+        "chat-posted",
+        &ChatMessagePostedDomainEvent::descriptor(),
+        save_chat_message_program(),
+        "message",
     )
+    .map_err(|e| ProjectionProgramError::InvalidOperation {
+        operation: "project_chat_messages".into(),
+        reason: e.to_string(),
+    })?;
+    build_mutation_projector_program("project_chat_messages", 1, chat_partition()?, [arm])
 }
 
-fn chat_program_factory() -> Result<ProjectionProgram, ProjectionProgramError> {
-    chat_mutation_projection_program()
+mutation_projector! {
+    pub const CHAT_MESSAGES: ProjectionDescriptor<DirectCandidate> = {
+        name: "project_chat_messages",
+        version: 1,
+        epoch: "e2e-ui-chat-v2",
+        model: ChatMessages,
+        program: chat_mutation_projection_program,
+    };
 }
-
-fn chat_resolve(
-    occurrence: &DomainEventOccurrence,
-) -> Result<ResolvedProjectionPlan, ProjectionProgramError> {
-    resolve_mutation_program(&chat_mutation_projection_program()?, occurrence)
-}
-
-fn chat_lower(
-    plan: &ResolvedProjectionPlan,
-) -> Result<distributed::projection::lower::LoweredProjectionPlan, ProjectionLoweringError> {
-    lower_single_model::<ChatMessages>(plan)
-}
-
-fn chat_inventory() -> Result<ProjectionOutputInventory, ProjectionLoweringError> {
-    inventory_single_model::<ChatMessages>()
-}
-
-/// Mutation-backed Chat projector (DirectCandidate for completeness of mount type).
-pub const CHAT_MESSAGES: ProjectionDescriptor<DirectCandidate> = descriptor_from_factories(
-    "project_chat_messages",
-    1,
-    "e2e-ui-chat-v2",
-    chat_program_factory,
-    chat_resolve,
-    chat_lower,
-    chat_inventory,
-);
 
 #[cfg(test)]
 mod tests {

@@ -45,6 +45,133 @@ pub fn program_from_mutation_arms(
     ProjectionProgram::try_new(name, version, partition, projection_arms).map_err(Into::into)
 }
 
+/// Map a mutation construction error into a projection program error.
+fn map_mutation_arm_error(
+    operation: &str,
+    error: MutationProgramError,
+) -> ProjectionProgramError {
+    ProjectionProgramError::InvalidOperation {
+        operation: operation.into(),
+        reason: error.to_string(),
+    }
+}
+
+/// Build a projector program from mutation arms, with consistent error mapping.
+///
+/// Prefer this over calling [`program_from_mutation_arms`] directly from apps.
+///
+/// # Errors
+///
+/// Propagates program validation failures.
+pub fn build_mutation_projector_program(
+    name: &str,
+    version: u64,
+    partition: ProjectionPartition,
+    arms: impl IntoIterator<Item = MutationProjectionArm>,
+) -> Result<ProjectionProgram, ProjectionProgramError> {
+    let arms: Vec<_> = arms.into_iter().collect();
+    program_from_mutation_arms(name, version, partition, &arms)
+        .map_err(|error| map_mutation_arm_error(name, error))
+}
+
+/// Bind one domain-event contract to a complete-row upsert mutation for model `M`.
+///
+/// Event body fields map to `input_root.field` via schema column names
+/// ([`body_bindings_for_model`]).
+///
+/// # Errors
+///
+/// Propagates selector or binding construction failures.
+pub fn arm_state_upsert_for_model<M>(
+    arm_id: &'static str,
+    descriptor: &crate::DomainEventDescriptor,
+    program: super::program::MutationProgram,
+    input_root: &str,
+) -> Result<MutationProjectionArm, MutationProgramError>
+where
+    M: RelationalReadModel,
+{
+    let selector = crate::projection::ProjectionEventSelector::try_from_descriptor(descriptor)
+        .map_err(MutationProgramError::from)?;
+    let binding = super::bind::MutationEventBinding::try_new(
+        selector,
+        body_bindings_for_model::<M>(input_root)?,
+        program,
+    )?;
+    Ok(MutationProjectionArm { arm_id, binding })
+}
+
+/// Bind several domain-event contracts to the same complete-row upsert mutation.
+///
+/// # Errors
+///
+/// Propagates the first arm construction failure.
+pub fn arms_state_upsert_for_model<M>(
+    program: &super::program::MutationProgram,
+    input_root: &str,
+    events: &[(&'static str, &crate::DomainEventDescriptor)],
+) -> Result<Vec<MutationProjectionArm>, MutationProgramError>
+where
+    M: RelationalReadModel,
+{
+    events
+        .iter()
+        .map(|(arm_id, descriptor)| {
+            arm_state_upsert_for_model::<M>(arm_id, descriptor, program.clone(), input_root)
+        })
+        .collect()
+}
+
+/// Bind a delete mutation whose single (or first) PK field is filled from the
+/// envelope aggregate id.
+///
+/// # Errors
+///
+/// Propagates selector or binding construction failures.
+pub fn arm_delete_pk_from_envelope(
+    arm_id: &'static str,
+    descriptor: &crate::DomainEventDescriptor,
+    program: super::program::MutationProgram,
+    pk_field: &str,
+) -> Result<MutationProjectionArm, MutationProgramError> {
+    let selector = crate::projection::ProjectionEventSelector::try_from_descriptor(descriptor)
+        .map_err(MutationProgramError::from)?;
+    let inputs = vec![super::bind::envelope_binding(
+        [pk_field],
+        crate::projection::ProjectionEnvelopeField::AggregateId,
+    )?];
+    let binding = super::bind::MutationEventBinding::try_new(selector, inputs, program)?;
+    Ok(MutationProjectionArm { arm_id, binding })
+}
+
+/// Resolve helper monomorphized for a program factory (use with
+/// [`descriptor_from_factories`] or [`mutation_projector!`]).
+pub fn resolve_mutation_projector(
+    program: fn() -> Result<ProjectionProgram, ProjectionProgramError>,
+    occurrence: &DomainEventOccurrence,
+) -> Result<ResolvedProjectionPlan, ProjectionProgramError> {
+    resolve_mutation_program(&program()?, occurrence)
+}
+
+/// Lower helper monomorphized for one output model.
+pub fn lower_mutation_projector<M>(
+    plan: &ResolvedProjectionPlan,
+) -> Result<crate::projection::lower::LoweredProjectionPlan, ProjectionLoweringError>
+where
+    M: crate::projection::lower::ProjectionReadModelMetadata,
+{
+    lower_single_model::<M>(plan)
+}
+
+/// Inventory helper monomorphized for one output model.
+pub fn inventory_mutation_projector<M>(
+) -> Result<ProjectionOutputInventory, ProjectionLoweringError>
+where
+    M: crate::projection::lower::ProjectionReadModelMetadata,
+{
+    inventory_single_model::<M>()
+}
+
 /// Resolve an occurrence through a mutation-backed projection program.
 ///
 /// # Errors

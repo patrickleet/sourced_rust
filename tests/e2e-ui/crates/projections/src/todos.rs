@@ -1,31 +1,26 @@
-//! Todo domain-event → read-model projections via **mutation IR**.
+//! Todo projections: mutations + portable event bindings.
 //!
-//! `SAVE_TODO` / `DELETE_TODO` are the public authoring model. The dual-path
-//! `TODO_READS` descriptor's program/resolve factories are built from those
-//! mutations (not from event-owning `projection!`).
+//! Author surface is intentional:
+//! 1. `mutation!` programs (event-free)
+//! 2. arms binding domain events → those mutations
+//! 3. `mutation_projector!` mount (framework owns resolve/lower/inventory)
 
 use distributed::domain_event::DomainEventContract;
 use distributed::mutation;
-use distributed::projection::lower::{
-    EventualOnly, ProjectionDescriptor, ProjectionLoweringError, ProjectionOutputInventory,
-};
+use distributed::projection::lower::{EventualOnly, ProjectionDescriptor};
 use distributed::{
-    body_field_binding, descriptor_from_factories, envelope_binding, inventory_single_model,
-    lower_single_model, program_from_mutation_arms, resolve_mutation_program, Mutation,
-    MutationEventBinding, MutationProgram, MutationProjectionArm, ProjectionEnvelopeField,
-    ProjectionPartition, ProjectionProgram, ProjectionProgramError, ProjectionValueType,
-    ResolvedProjectionPlan,
+    arm_delete_pk_from_envelope, arms_state_upsert_for_model, build_mutation_projector_program,
+    mutation_projector, Mutation, MutationProgram, ProjectionPartition, ProjectionProgram,
+    ProjectionProgramError,
 };
-use distributed::DomainEventOccurrence;
-
 use e2e_readmodels::Todos;
 use todo_domain::{
     TodoArchivedDomainEvent, TodoCompletedDomainEvent, TodoCreatedDomainEvent,
-    TodoDomainIdentity, TodoForceArchivedDomainEvent, TodoPurgedDomainEvent,
-    TodoReassignedDomainEvent, TodoRenamedDomainEvent, TodoReopenedDomainEvent, TodoState,
+    TodoForceArchivedDomainEvent, TodoPurgedDomainEvent, TodoReassignedDomainEvent,
+    TodoRenamedDomainEvent, TodoReopenedDomainEvent, TodoState,
 };
 
-/// Event-independent complete-row upsert for Todo state transfer.
+/// Complete-row upsert for Todo state transfer.
 pub fn save_todo() -> Mutation<()> {
     mutation! {
         name: "save_todo";
@@ -34,7 +29,7 @@ pub fn save_todo() -> Mutation<()> {
     }
 }
 
-/// Event-independent delete by primary key for Todo purge.
+/// Delete by primary key for Todo purge.
 pub fn delete_todo() -> Mutation<()> {
     mutation! {
         name: "delete_todo";
@@ -45,156 +40,63 @@ pub fn delete_todo() -> Mutation<()> {
     }
 }
 
-/// Canonical SAVE_TODO mutation program (event-independent).
+/// Canonical SAVE_TODO program.
 pub fn save_todo_program() -> MutationProgram {
     save_todo().program().clone()
 }
 
-/// Canonical DELETE_TODO mutation program (event-independent).
+/// Canonical DELETE_TODO program.
 pub fn delete_todo_program() -> MutationProgram {
     delete_todo().program().clone()
 }
 
-fn todo_state_bindings() -> Result<Vec<distributed::MutationInputBinding>, distributed::MutationProgramError>
-{
-    Ok(vec![
-        body_field_binding(
-            ["todo", "todo_id"],
-            ["todo_id"],
-            ProjectionValueType::String,
-        )?,
-        body_field_binding(
-            ["todo", "owner_id"],
-            ["owner_id"],
-            ProjectionValueType::String,
-        )?,
-        body_field_binding(["todo", "title"], ["title"], ProjectionValueType::String)?,
-        body_field_binding(["todo", "status"], ["status"], ProjectionValueType::String)?,
-        body_field_binding(
-            ["todo", "assignee_id"],
-            ["assignee_id"],
-            ProjectionValueType::String,
-        )?,
-    ])
-}
-
-fn state_arm(
-    arm_id: &'static str,
-    descriptor: &distributed::DomainEventDescriptor,
-) -> Result<MutationProjectionArm, distributed::MutationProgramError> {
-    let selector = distributed::ProjectionEventSelector::try_from_descriptor(descriptor)
-        .map_err(distributed::MutationProgramError::from)?;
-    let binding =
-        MutationEventBinding::try_new(selector, todo_state_bindings()?, save_todo_program())?;
-    Ok(MutationProjectionArm { arm_id, binding })
-}
-
-fn purge_arm() -> Result<MutationProjectionArm, distributed::MutationProgramError> {
-    let selector = distributed::ProjectionEventSelector::try_from_descriptor(
-        &TodoPurgedDomainEvent::descriptor(),
-    )
-    .map_err(distributed::MutationProgramError::from)?;
-    let inputs = vec![envelope_binding(
-        ["todo_id"],
-        ProjectionEnvelopeField::AggregateId,
-    )?];
-    let binding = MutationEventBinding::try_new(selector, inputs, delete_todo_program())?;
-    Ok(MutationProjectionArm {
-        arm_id: "todo-purged",
-        binding,
-    })
-}
-
-/// Build the dual-path projection program from SAVE_TODO / DELETE_TODO.
+/// Projector program: lifecycle state events → SAVE_TODO, purge → DELETE_TODO.
 pub fn todo_mutation_projection_program() -> Result<ProjectionProgram, ProjectionProgramError> {
-    let arms = vec![
-        state_arm("todo-created", &TodoCreatedDomainEvent::descriptor())
-            .map_err(|e| ProjectionProgramError::InvalidOperation {
-                operation: "todo mutation arm".into(),
-                reason: e.to_string(),
-            })?,
-        state_arm("todo-renamed", &TodoRenamedDomainEvent::descriptor()).map_err(|e| {
-            ProjectionProgramError::InvalidOperation {
-                operation: "todo mutation arm".into(),
-                reason: e.to_string(),
-            }
-        })?,
-        state_arm("todo-completed", &TodoCompletedDomainEvent::descriptor()).map_err(|e| {
-            ProjectionProgramError::InvalidOperation {
-                operation: "todo mutation arm".into(),
-                reason: e.to_string(),
-            }
-        })?,
-        state_arm("todo-reopened", &TodoReopenedDomainEvent::descriptor()).map_err(|e| {
-            ProjectionProgramError::InvalidOperation {
-                operation: "todo mutation arm".into(),
-                reason: e.to_string(),
-            }
-        })?,
-        state_arm("todo-reassigned", &TodoReassignedDomainEvent::descriptor()).map_err(|e| {
-            ProjectionProgramError::InvalidOperation {
-                operation: "todo mutation arm".into(),
-                reason: e.to_string(),
-            }
-        })?,
-        state_arm("todo-archived", &TodoArchivedDomainEvent::descriptor()).map_err(|e| {
-            ProjectionProgramError::InvalidOperation {
-                operation: "todo mutation arm".into(),
-                reason: e.to_string(),
-            }
-        })?,
-        state_arm(
-            "todo-force-archived",
-            &TodoForceArchivedDomainEvent::descriptor(),
+    let save = save_todo_program();
+    let mut arms = arms_state_upsert_for_model::<Todos>(
+        &save,
+        "todo",
+        &[
+            ("todo-created", &TodoCreatedDomainEvent::descriptor()),
+            ("todo-renamed", &TodoRenamedDomainEvent::descriptor()),
+            ("todo-completed", &TodoCompletedDomainEvent::descriptor()),
+            ("todo-reopened", &TodoReopenedDomainEvent::descriptor()),
+            ("todo-reassigned", &TodoReassignedDomainEvent::descriptor()),
+            ("todo-archived", &TodoArchivedDomainEvent::descriptor()),
+            (
+                "todo-force-archived",
+                &TodoForceArchivedDomainEvent::descriptor(),
+            ),
+        ],
+    )
+    .map_err(|e| ProjectionProgramError::InvalidOperation {
+        operation: "project_todos".into(),
+        reason: e.to_string(),
+    })?;
+    arms.push(
+        arm_delete_pk_from_envelope(
+            "todo-purged",
+            &TodoPurgedDomainEvent::descriptor(),
+            delete_todo_program(),
+            "todo_id",
         )
         .map_err(|e| ProjectionProgramError::InvalidOperation {
-            operation: "todo mutation arm".into(),
-            reason: e.to_string(),
-        })?,
-        purge_arm().map_err(|e| ProjectionProgramError::InvalidOperation {
-            operation: "todo mutation arm".into(),
-            reason: e.to_string(),
-        })?,
-    ];
-    program_from_mutation_arms("project_todos", 1, ProjectionPartition::Unit, &arms).map_err(
-        |e| ProjectionProgramError::InvalidOperation {
             operation: "project_todos".into(),
             reason: e.to_string(),
-        },
-    )
+        })?,
+    );
+    build_mutation_projector_program("project_todos", 1, ProjectionPartition::Unit, arms)
 }
 
-fn todo_program_factory() -> Result<ProjectionProgram, ProjectionProgramError> {
-    todo_mutation_projection_program()
+mutation_projector! {
+    pub const TODO_READS: ProjectionDescriptor<EventualOnly> = {
+        name: "project_todos",
+        version: 1,
+        epoch: "e2e-ui-todos-v2",
+        model: Todos,
+        program: todo_mutation_projection_program,
+    };
 }
-
-fn todo_resolve(
-    occurrence: &DomainEventOccurrence,
-) -> Result<ResolvedProjectionPlan, ProjectionProgramError> {
-    let program = todo_mutation_projection_program()?;
-    resolve_mutation_program(&program, occurrence)
-}
-
-fn todo_lower(
-    plan: &ResolvedProjectionPlan,
-) -> Result<distributed::projection::lower::LoweredProjectionPlan, ProjectionLoweringError> {
-    lower_single_model::<Todos>(plan)
-}
-
-fn todo_inventory() -> Result<ProjectionOutputInventory, ProjectionLoweringError> {
-    inventory_single_model::<Todos>()
-}
-
-/// Mutation-backed Todo projector mount (program/resolve from SAVE_TODO/DELETE_TODO).
-pub const TODO_READS: ProjectionDescriptor<EventualOnly> = descriptor_from_factories(
-    "project_todos",
-    1,
-    "e2e-ui-todos-v2",
-    todo_program_factory,
-    todo_resolve,
-    todo_lower,
-    todo_inventory,
-);
 
 /// Partial client preview for `todo.complete`.
 pub fn complete_preview() -> distributed::graphql::CommandProjectionPreview {
@@ -211,10 +113,12 @@ pub fn complete_preview() -> distributed::graphql::CommandProjectionPreview {
 mod tests {
     use distributed::domain_event::DomainEventContract;
     use distributed::projection::placement::ProjectionExecutionClass;
-    use distributed::{DomainEventBodyKind, MutationKind, RelationalReadModel, RowValue, TableMutation};
+    use distributed::{
+        DomainEventBodyKind, MutationKind, RelationalReadModel, RowValue, TableMutation,
+    };
 
     use super::*;
-    use todo_domain::{Todo, TodoPurgedDomainEvent, TodoStatus};
+    use todo_domain::{Todo, TodoPurgedDomainEvent};
 
     #[test]
     fn todo_reads_program_is_built_from_mutation_ir() {
@@ -245,7 +149,10 @@ mod tests {
             .count();
         assert_eq!(upserts, 7, "seven state arms rewrite SAVE_TODO");
         assert_eq!(deletes, 1, "one purge arm rewrites DELETE_TODO");
-        assert_eq!(save_todo_program().operations()[0].kind(), MutationKind::Upsert);
+        assert_eq!(
+            save_todo_program().operations()[0].kind(),
+            MutationKind::Upsert
+        );
         assert_eq!(
             delete_todo_program().operations()[0].kind(),
             MutationKind::Delete

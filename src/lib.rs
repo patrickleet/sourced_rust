@@ -82,18 +82,90 @@ pub use projection::{
 
 // Event-independent mutation IR, portable handlers, and dual-path interpreters.
 pub use mutation::{
-    body_bindings_for_model, body_field_binding, compose_event_preview, descriptor_from_factories,
-    envelope_binding, inventory_single_model, lower_mutation_cache, lower_single_model,
-    portable_binding, program_from_mutation_arms, resolve_mutation_program, Mutation,
-    MutationAssignment, MutationCacheEffect, MutationCacheProgram, MutationCacheVisibility,
-    MutationConflictTarget, MutationEventBinding, MutationExpression, MutationField,
-    MutationFieldCapability, MutationHandlerCatalog, MutationHandlerPlacement,
-    MutationHandlerRegistration, MutationInputBinding, MutationKeyCapability, MutationKeyField,
-    MutationKind, MutationOperation, MutationProgram, MutationProgramError, MutationProgramId,
-    MutationProgramLimits, MutationProjectionArm, MutationReturning, MutationServerInterpreter,
+    arm_delete_pk_from_envelope, arm_state_upsert_for_model, arms_state_upsert_for_model,
+    body_bindings_for_model, body_field_binding, build_mutation_projector_program,
+    compose_event_preview, descriptor_from_factories, envelope_binding,
+    inventory_mutation_projector, inventory_single_model, lower_mutation_cache,
+    lower_mutation_projector, lower_single_model, portable_binding, program_from_mutation_arms,
+    resolve_mutation_program, resolve_mutation_projector, Mutation, MutationAssignment,
+    MutationCacheEffect, MutationCacheProgram, MutationCacheVisibility, MutationConflictTarget,
+    MutationEventBinding, MutationExpression, MutationField, MutationFieldCapability,
+    MutationHandlerCatalog, MutationHandlerPlacement, MutationHandlerRegistration,
+    MutationInputBinding, MutationKeyCapability, MutationKeyField, MutationKind, MutationOperation,
+    MutationProgram, MutationProgramError, MutationProgramId, MutationProgramLimits,
+    MutationProjectionArm, MutationReturning, MutationServerInterpreter,
     ReadModelMutationCapabilities, ResolvedMutationValue, MAX_MUTATION_OPERATIONS,
     MUTATION_OPERATION_SEMANTICS_VERSION, MUTATION_PROGRAM_IR_VERSION,
 };
+
+/// Mount a single-model mutation-backed projector as a `ProjectionDescriptor`.
+///
+/// Application code provides only the mutation program factory and model type;
+/// resolve/lower/inventory factories are generated.
+///
+/// ```ignore
+/// mutation_projector! {
+///     pub const TODO_READS: ProjectionDescriptor<EventualOnly> = {
+///         name: "project_todos",
+///         version: 1,
+///         epoch: "e2e-ui-todos-v2",
+///         model: Todos,
+///         program: todo_program,
+///     };
+/// }
+/// ```
+#[macro_export]
+macro_rules! mutation_projector {
+    (
+        $vis:vis const $id:ident : $desc_ty:ty = {
+            name: $name:literal,
+            version: $version:expr,
+            epoch: $epoch:literal,
+            model: $model:ty,
+            program: $program:path $(,)?
+        } $(;)?
+    ) => {
+        $vis const $id: $desc_ty = {
+            fn __program() -> ::core::result::Result<
+                $crate::ProjectionProgram,
+                $crate::ProjectionProgramError,
+            > {
+                $program()
+            }
+            fn __resolve(
+                occurrence: &$crate::DomainEventOccurrence,
+            ) -> ::core::result::Result<
+                $crate::ResolvedProjectionPlan,
+                $crate::ProjectionProgramError,
+            > {
+                $crate::resolve_mutation_program(&__program()?, occurrence)
+            }
+            fn __lower(
+                plan: &$crate::ResolvedProjectionPlan,
+            ) -> ::core::result::Result<
+                $crate::projection::lower::LoweredProjectionPlan,
+                $crate::projection::lower::ProjectionLoweringError,
+            > {
+                $crate::lower_single_model::<$model>(plan)
+            }
+            fn __inventory() -> ::core::result::Result<
+                $crate::projection::lower::ProjectionOutputInventory,
+                $crate::projection::lower::ProjectionLoweringError,
+            > {
+                $crate::inventory_single_model::<$model>()
+            }
+            $crate::descriptor_from_factories(
+                $name,
+                $version,
+                $epoch,
+                __program,
+                __resolve,
+                __lower,
+                __inventory,
+            )
+        };
+    };
+}
 
 pub type SourcedResult<T = ()> = std::result::Result<T, EventRecordError>;
 
