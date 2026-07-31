@@ -204,12 +204,12 @@ pub async fn run_e1_through_e8(
             .await
             .expect("E1 validate");
         assert_eq!(session.user_id(), Some(sub_a.as_str()), "E1 sub");
-        let role = session.role().map(|s| s.to_string());
+        // Set-only identity: roles live in `x-roles` (Session::roles), not a
+        // priority primary (`Session::role` / `x-role`).
+        let roles: Vec<String> = session.roles().into_iter().map(str::to_string).collect();
         assert!(
-            role.as_deref() == Some("customer")
-                || role.as_deref() == Some("user")
-                || role.as_deref() == Some("admin"),
-            "E1 token A must map an engine role (customer|user|admin), got {role:?}. \
+            roles.iter().any(|r| r == "customer" || r == "user" || r == "admin"),
+            "E1 token A must map an engine role (customer|user|admin), got {roles:?}. \
              Fix IdP bootstrap so access token carries roles/groups/realm_access.roles \
              (or Zitadel project roles)."
         );
@@ -230,7 +230,7 @@ pub async fn run_e1_through_e8(
         let arr = v["data"]["oidc_e2e_items"]
             .as_array()
             .unwrap_or_else(|| panic!("E1 missing data.oidc_e2e_items: {v}"));
-        if role.as_deref() == Some("admin") {
+        if roles.iter().any(|r| r == "admin") {
             // Admin sees all rows; still must execute successfully.
             assert!(!arr.is_empty(), "E1 admin must see rows: {v}");
         } else {
@@ -242,7 +242,7 @@ pub async fn run_e1_through_e8(
                 "E1 isolation owner: {v}"
             );
         }
-        eprintln!("E1 ok sub={sub_a} role={role:?}");
+        eprintln!("E1 ok sub={sub_a} roles={roles:?}");
     }
 
     // E2 — spoof headers ignored

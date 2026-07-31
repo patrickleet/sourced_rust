@@ -1156,7 +1156,7 @@ async fn query_over_http_and_graphql_ws(
     if let Some((user, role)) = identity {
         http_request = http_request
             .header("x-user-id", user)
-            .header("x-roles", roles);
+            .header("x-roles", role);
     }
     let http = http_request
         .send()
@@ -1179,7 +1179,7 @@ async fn query_over_http_and_graphql_ws(
         .await
         .expect("GraphQL WS connect");
     let init_payload = identity
-        .map(|(user, role)| json!({ "x-user-id": user, "x-role": role }))
+        .map(|(user, role)| json!({ "x-user-id": user, "x-roles": role }))
         .unwrap_or_else(|| json!({}));
     socket
         .send(WsMessage::Text(
