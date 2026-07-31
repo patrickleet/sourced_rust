@@ -183,7 +183,20 @@ export const Operation_Todos: ReplicaOperationArtifact<Operation_Todos_Data, Ope
           }
         ],
         "rowPolicy": {
-          "kind": "server_only"
+          "kind": "predicate",
+          "expression": {
+            "kind": "cmp",
+            "value": {
+              "column": "owner_id",
+              "op": "eq",
+              "rhs": {
+                "kind": "claim",
+                "value": {
+                  "header": "x-user-id"
+                }
+              }
+            }
+          }
         }
       },
       "order": {
@@ -298,12 +311,11 @@ export const Operation_Todos: ReplicaOperationArtifact<Operation_Todos_Data, Ope
   ],
   "protocol": {
     "version": 1,
-    "schemaHash": "sha256:986dcd04c1233dd45c01d373bf917f246f2de3926288c5767b10125da29f801f",
+    "schemaHash": "sha256:d75849347f327a082e6db2f670e62e5b3abfe94141ee55331b8d07015a9e1cda",
     "surface": {
       "kind": "application",
       "name": "e2e-ui",
       "roles": [
-        "admin",
         "user"
       ]
     },

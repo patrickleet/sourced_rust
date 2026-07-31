@@ -152,7 +152,7 @@ export const Command_blob_games_move: ReplicaCommandArtifact<Command_blob_games_
   "protocol": {
     "operation": "sha256:6e3c6c00474e126a3fce6b671cd8a06eed988546f161793d39a08cc784ae49c7",
     "protocolHash": "sha256:00fb342f3acb4dc1c1716a43cc3001c748d5f6c500ff831690d820e9e43e2782",
-    "schemaHash": "sha256:8aa9401ece122c33dabc6e6d60c00f99b4b91ff1dc74a7d8c37c08e409034547",
+    "schemaHash": "sha256:77cb9cd73988ae91024cdacbb5245ce0b748281a054cab64f45b8a5badef6738",
     "surface": {
       "kind": "application",
       "name": "e2e-ui-admin",
@@ -314,7 +314,7 @@ export const Command_blob_games_start: ReplicaCommandArtifact<Command_blob_games
   "protocol": {
     "operation": "sha256:4b7ab56a38aec41d21809801ecefc5d7039a09e53a350187152c72a305de1567",
     "protocolHash": "sha256:00fb342f3acb4dc1c1716a43cc3001c748d5f6c500ff831690d820e9e43e2782",
-    "schemaHash": "sha256:8aa9401ece122c33dabc6e6d60c00f99b4b91ff1dc74a7d8c37c08e409034547",
+    "schemaHash": "sha256:77cb9cd73988ae91024cdacbb5245ce0b748281a054cab64f45b8a5badef6738",
     "surface": {
       "kind": "application",
       "name": "e2e-ui-admin",
@@ -476,7 +476,7 @@ export const Command_blob_games_start_level: ReplicaCommandArtifact<Command_blob
   "protocol": {
     "operation": "sha256:37c108a568f62e7391a03728555d7013bb717f14d1957a5c3527151fd70093bf",
     "protocolHash": "sha256:00fb342f3acb4dc1c1716a43cc3001c748d5f6c500ff831690d820e9e43e2782",
-    "schemaHash": "sha256:8aa9401ece122c33dabc6e6d60c00f99b4b91ff1dc74a7d8c37c08e409034547",
+    "schemaHash": "sha256:77cb9cd73988ae91024cdacbb5245ce0b748281a054cab64f45b8a5badef6738",
     "surface": {
       "kind": "application",
       "name": "e2e-ui-admin",
@@ -627,7 +627,7 @@ export const Command_chat_messages_post: ReplicaCommandArtifact<Command_chat_mes
     "capabilities": {
       "arms": [
         {
-          "arm": "pa1:sha256:01f360c252360dc7ee191aa6da7940f2b70f363d229d74238a0432a1a46981d7",
+          "arm": "pa1:sha256:b60f327c5890f71040f772b50dbca208e6c12295869477d9ea4204c4eaf5fac1",
           "event": {
             "id": "pe1:sha256:0b84f94ef8a350d7cd967ce57a5419212f892e7fd7c3a9b6ec75dd080270d0f3",
             "name": "chat_message.posted",
@@ -662,8 +662,7 @@ export const Command_chat_messages_post: ReplicaCommandArtifact<Command_chat_mes
             }
           ],
           "partition": {
-            "expression_fingerprint": "sha256:90bc9d9d24427684c3d4a4e6881baab4585e6398c8e49c555ac19dee73cd5874",
-            "kind": "opaque"
+            "kind": "unit"
           },
           "projection_ref": 0
         }
@@ -753,14 +752,7 @@ export const Command_chat_messages_post: ReplicaCommandArtifact<Command_chat_mes
               ],
               "model": "ChatMessages",
               "partition": {
-                "expression": {
-                  "kind": "input",
-                  "path": [
-                    "room_id"
-                  ]
-                },
-                "kind": "expression",
-                "requires": "current_cache_partition"
+                "kind": "unit"
               }
             }
           },
@@ -776,10 +768,10 @@ export const Command_chat_messages_post: ReplicaCommandArtifact<Command_chat_mes
     "projectionProgramVersion": 2,
     "projections": [
       {
-        "bindingId": "pb1:sha256:edbfffd87cd2c162b37561763cfc2c5c5eb41405fcf5732c774b725a559a1ca3",
+        "bindingId": "pb1:sha256:14c314d30edb663ddf6962d5487573def5960400c3c23a21f93bb564ccdf8eb0",
         "epoch": "e2e-ui-chat-v2",
         "operationSemanticsVersion": 1,
-        "programId": "pp1:sha256:db7d1715d3af967f6a9d351b2c7012bab3c15960288c8832d8c3fdcb3f958683",
+        "programId": "pp1:sha256:8ee4c26f6c722082149b590085111d66ba6153891ab51cdd2867a4fe3178c3c8",
         "programIrVersion": 1
       }
     ],
@@ -788,7 +780,7 @@ export const Command_chat_messages_post: ReplicaCommandArtifact<Command_chat_mes
   "protocol": {
     "operation": "sha256:838e5ccb79daebb523ea3c634bea27077bcea191feabb86e45923470a7b9373d",
     "protocolHash": "sha256:00fb342f3acb4dc1c1716a43cc3001c748d5f6c500ff831690d820e9e43e2782",
-    "schemaHash": "sha256:8aa9401ece122c33dabc6e6d60c00f99b4b91ff1dc74a7d8c37c08e409034547",
+    "schemaHash": "sha256:77cb9cd73988ae91024cdacbb5245ce0b748281a054cab64f45b8a5badef6738",
     "surface": {
       "kind": "application",
       "name": "e2e-ui-admin",
@@ -1043,7 +1035,7 @@ export const Command_todos_archive: ReplicaCommandArtifact<Command_todos_archive
   "protocol": {
     "operation": "sha256:fb2d3a14933841a966836ced65263a9ba2413d5aed8c582d31165aaee6e632ab",
     "protocolHash": "sha256:00fb342f3acb4dc1c1716a43cc3001c748d5f6c500ff831690d820e9e43e2782",
-    "schemaHash": "sha256:8aa9401ece122c33dabc6e6d60c00f99b4b91ff1dc74a7d8c37c08e409034547",
+    "schemaHash": "sha256:77cb9cd73988ae91024cdacbb5245ce0b748281a054cab64f45b8a5badef6738",
     "surface": {
       "kind": "application",
       "name": "e2e-ui-admin",
@@ -1292,7 +1284,7 @@ export const Command_todos_complete: ReplicaCommandArtifact<Command_todos_comple
   "protocol": {
     "operation": "sha256:9b8185c835d3308bda308593486767731acaf4b084a7962b4b17e3e2e319922c",
     "protocolHash": "sha256:00fb342f3acb4dc1c1716a43cc3001c748d5f6c500ff831690d820e9e43e2782",
-    "schemaHash": "sha256:8aa9401ece122c33dabc6e6d60c00f99b4b91ff1dc74a7d8c37c08e409034547",
+    "schemaHash": "sha256:77cb9cd73988ae91024cdacbb5245ce0b748281a054cab64f45b8a5badef6738",
     "surface": {
       "kind": "application",
       "name": "e2e-ui-admin",
@@ -1578,7 +1570,7 @@ export const Command_todos_create: ReplicaCommandArtifact<Command_todos_create_I
   "protocol": {
     "operation": "sha256:187e72cd747aaa13ac0362942d73085a5166401f8cc3a188badeb3e7fa50cacb",
     "protocolHash": "sha256:00fb342f3acb4dc1c1716a43cc3001c748d5f6c500ff831690d820e9e43e2782",
-    "schemaHash": "sha256:8aa9401ece122c33dabc6e6d60c00f99b4b91ff1dc74a7d8c37c08e409034547",
+    "schemaHash": "sha256:77cb9cd73988ae91024cdacbb5245ce0b748281a054cab64f45b8a5badef6738",
     "surface": {
       "kind": "application",
       "name": "e2e-ui-admin",
@@ -1851,7 +1843,7 @@ export const Command_todos_force_archive: ReplicaCommandArtifact<Command_todos_f
   "protocol": {
     "operation": "sha256:50d0d05ce63148fd7c4041478b57656e927f500f938798df61bf7ade6b53ccbf",
     "protocolHash": "sha256:00fb342f3acb4dc1c1716a43cc3001c748d5f6c500ff831690d820e9e43e2782",
-    "schemaHash": "sha256:8aa9401ece122c33dabc6e6d60c00f99b4b91ff1dc74a7d8c37c08e409034547",
+    "schemaHash": "sha256:77cb9cd73988ae91024cdacbb5245ce0b748281a054cab64f45b8a5badef6738",
     "surface": {
       "kind": "application",
       "name": "e2e-ui-admin",
@@ -2053,7 +2045,7 @@ export const Command_todos_purge: ReplicaCommandArtifact<Command_todos_purge_Inp
   "protocol": {
     "operation": "sha256:01875defc418ccf0e607f316baa30d2f9cf8305602976cc5b1ce30cc5078c15e",
     "protocolHash": "sha256:00fb342f3acb4dc1c1716a43cc3001c748d5f6c500ff831690d820e9e43e2782",
-    "schemaHash": "sha256:8aa9401ece122c33dabc6e6d60c00f99b4b91ff1dc74a7d8c37c08e409034547",
+    "schemaHash": "sha256:77cb9cd73988ae91024cdacbb5245ce0b748281a054cab64f45b8a5badef6738",
     "surface": {
       "kind": "application",
       "name": "e2e-ui-admin",
@@ -2319,7 +2311,7 @@ export const Command_todos_rename: ReplicaCommandArtifact<Command_todos_rename_I
   "protocol": {
     "operation": "sha256:a3e8a5ceae1a0f2c33863a4f2bf377a95b79da2157a619eb7823aa845ef681c3",
     "protocolHash": "sha256:00fb342f3acb4dc1c1716a43cc3001c748d5f6c500ff831690d820e9e43e2782",
-    "schemaHash": "sha256:8aa9401ece122c33dabc6e6d60c00f99b4b91ff1dc74a7d8c37c08e409034547",
+    "schemaHash": "sha256:77cb9cd73988ae91024cdacbb5245ce0b748281a054cab64f45b8a5badef6738",
     "surface": {
       "kind": "application",
       "name": "e2e-ui-admin",
@@ -2568,7 +2560,7 @@ export const Command_todos_reopen: ReplicaCommandArtifact<Command_todos_reopen_I
   "protocol": {
     "operation": "sha256:04531ace98fd3ee5e652761abbcb6ebd745d5ff6ed0ad100030f935335c5a35e",
     "protocolHash": "sha256:00fb342f3acb4dc1c1716a43cc3001c748d5f6c500ff831690d820e9e43e2782",
-    "schemaHash": "sha256:8aa9401ece122c33dabc6e6d60c00f99b4b91ff1dc74a7d8c37c08e409034547",
+    "schemaHash": "sha256:77cb9cd73988ae91024cdacbb5245ce0b748281a054cab64f45b8a5badef6738",
     "surface": {
       "kind": "application",
       "name": "e2e-ui-admin",

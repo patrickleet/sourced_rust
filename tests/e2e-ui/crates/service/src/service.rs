@@ -225,12 +225,18 @@ fn pool_free_client_surface(application: &str, roles: &[&str]) -> DistributedCli
 
 /// Pool-free normal application export consumed by `dctl client-manifest`.
 ///
-/// Includes both `user` and `admin`: an admin is still a person using todos/
-/// chat/blob. Elevated-only ops stay on [`distributed_admin_client_surface`].
-/// Differing row policies (owner vs all) become `ServerOnly` on the shared
-/// surface so the server re-checks membership per concrete role.
+/// Built from the `user` grant set only so owner-scoped models (`Todos`,
+/// `BlobGames`) keep a **client-portable** row policy
+/// (`owner_id = claim(x-user-id)`). That lets optimistic creates insert into
+/// list indexes without waiting on the network.
+///
+/// Mixing `admin` (unrestricted) with `user` (owner) on one surface collapses
+/// the policy to `ServerOnly` and blocks local list membership. Elevated
+/// all-rows views stay on [`distributed_admin_client_surface`]. Server-side
+/// admin GraphQL grants are unchanged — an admin session still receives
+/// unrestricted query results when the engine authorizes them.
 pub fn distributed_client_surface() -> DistributedClientSurfaceExport {
-    pool_free_client_surface(DISTRIBUTED_CLIENT_SURFACE, &["admin", "user"])
+    pool_free_client_surface(DISTRIBUTED_CLIENT_SURFACE, &["user"])
 }
 
 /// Pool-free elevated application export for admin-only routes.
@@ -498,9 +504,10 @@ fn build_graphql_engine_with_graphiql(
     let mut b = GraphqlEngine::builder(pool)
         .protocol_token_key(E2E_PROTOCOL_TOKEN_KEY)
         .roles(&["user", "admin"])
-        // e2e-ui: everyone who can sign in (admin is a superset of user).
-        // e2e-ui-admin: elevated ops only (/admin).
-        .client_application_surface(DISTRIBUTED_CLIENT_SURFACE, ["admin", "user"])
+        // e2e-ui: user grant set only so owner-scoped models keep portable row
+        // policies for optimistic list inserts (see distributed_client_surface).
+        // e2e-ui-admin: elevated ops / all-rows views (/admin).
+        .client_application_surface(DISTRIBUTED_CLIENT_SURFACE, ["user"])
         .client_application_surface(DISTRIBUTED_ADMIN_CLIENT_SURFACE, ["admin"])
         // user: only own rows. admin: all owners (UI: /admin all-notes view).
         .model::<Todos>(Todos::permissions())
@@ -617,8 +624,42 @@ mod client_surface_tests {
     }
 
     #[test]
-    fn chat_manifest_retains_dynamic_room_partition_without_unit_resume_capability() {
-        let manifest = distributed_admin_client_surface().manifest().unwrap();
+    fn application_todos_keep_portable_owner_row_policy_for_optimistic_list_inserts() {
+        use distributed::graphql::ClientRowPolicy;
+
+        let manifest = distributed_client_surface().manifest().unwrap();
+        let todos = manifest
+            .models
+            .iter()
+            .find(|model| model.typename == "Todos")
+            .expect("Todos model on application surface");
+        match &todos.row_policy {
+            ClientRowPolicy::Predicate { expression } => {
+                let text = serde_json::to_string(expression).expect("serialize row policy");
+                assert!(
+                    text.contains("x-user-id") && text.contains("owner_id"),
+                    "owner claim predicate must be client-portable: {text}"
+                );
+            }
+            other => panic!(
+                "Todos must not collapse to server-only row policy (blocks optimistic create list membership); got {other:?}"
+            ),
+        }
+
+        let blob = manifest
+            .models
+            .iter()
+            .find(|model| model.typename == "BlobGames")
+            .expect("BlobGames model on application surface");
+        assert!(
+            matches!(blob.row_policy, ClientRowPolicy::Predicate { .. }),
+            "BlobGames should keep portable owner row policy"
+        );
+    }
+
+    #[test]
+    fn chat_manifest_uses_unit_partition_so_lobby_live_can_stay_active() {
+        let manifest = distributed_client_surface().manifest().unwrap();
         let program = manifest
             .projection_programs
             .iter()
@@ -627,13 +668,11 @@ mod client_surface_tests {
         assert!(
             program.arms.iter().all(|arm| matches!(
                 &arm.partition,
-                distributed::graphql::ClientProjectionPartition::Expression { .. }
+                distributed::graphql::ClientProjectionPartition::Unit
             )),
-            "every Chat arm must retain its room-derived partition expression"
-        );
-        assert!(
-            !manifest.capabilities.live_resume,
-            "a room-partitioned projection cannot advertise one unit resume cursor"
+            "lobby chat uses unit partition so the chat_messages live query can advertise \
+             supported index evidence (room isolation stays in the GraphQL where clause). \
+             Surface-wide live_resume may still be false when owner-scoped models share the surface."
         );
     }
 
@@ -699,7 +738,7 @@ mod client_surface_tests {
             build_graphql_engine_with_graphiql(&repository, &service, dev_identity(), None, true)
                 .expect("engine");
         let runtime = engine
-            .client_manifest_for_application(DISTRIBUTED_CLIENT_SURFACE, &["user", "admin"])
+            .client_manifest_for_application(DISTRIBUTED_CLIENT_SURFACE, &["user"])
             .unwrap();
 
         assert_eq!(generated, runtime);
@@ -712,7 +751,7 @@ mod client_surface_tests {
                         "surface": {
                             "kind": "application",
                             "name": DISTRIBUTED_CLIENT_SURFACE,
-                            "roles": ["admin", "user"]
+                            "roles": ["user"]
                         },
                         "schemaHash": generated.schema_fingerprint
                     }

@@ -1,5 +1,6 @@
-# One query declaration owns SSR, normalized cache reads, and its generated
-# live companion. The page never maintains a second subscription document.
+# One query owns SSR, normalized reads, and @live — including author join.
+# Framework: unowned join tables (auth_users) do not force live.supported=false;
+# nullable missing author edges keep optimistic parent rows complete.
 query ChatMessages @load @live {
   chat_messages(where: { room_id: { _eq: "lobby" } }) {
     message_id
@@ -7,5 +8,10 @@ query ChatMessages @load @live {
     author_id
     body
     created_at
+    author {
+      user_id
+      display_name
+      email
+    }
   }
 }

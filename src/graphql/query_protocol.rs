@@ -163,6 +163,13 @@ impl QueryProtocolRuntime {
     /// Build one conservative vector over every physical dependency touched by
     /// an exact query plan. Missing, denied, dynamic, epochless, or ambiguous
     /// ownership makes the vector incomparable; no scalar maximum is invented.
+    ///
+    /// Tables with **zero** surface projectors are skipped rather than failing
+    /// the plan. Join targets such as `auth_users` are often populated by
+    /// integration handlers without a unit-resume owner; they still participate
+    /// in dirty matching via `tables_touched`, but must not force
+    /// `live.supported = false` for an otherwise resumable root model (e.g.
+    /// `chat_messages` with a nested `author` selection).
     pub(crate) fn index_plan(&self, role_surface: &Surface, tables: &[String]) -> QueryIndexPlan {
         if tables.is_empty() {
             return QueryIndexPlan::default();
@@ -183,21 +190,36 @@ impl QueryProtocolRuntime {
                 })
                 .cloned()
                 .collect::<Vec<_>>();
-            let [candidate] = candidates.as_slice() else {
-                return QueryIndexPlan {
-                    comparable: false,
-                    projectors: Vec::new(),
-                };
-            };
-            if !candidate.supports_resume()
-                || !candidate.partition_matches_authorization(role_surface)
-            {
-                return QueryIndexPlan {
-                    comparable: false,
-                    projectors: Vec::new(),
-                };
+            match candidates.as_slice() {
+                [] => {
+                    // Unowned join/lookup table — omit from the resume vector.
+                    continue;
+                }
+                [candidate] => {
+                    if !candidate.supports_resume()
+                        || !candidate.partition_matches_authorization(role_surface)
+                    {
+                        return QueryIndexPlan {
+                            comparable: false,
+                            projectors: Vec::new(),
+                        };
+                    }
+                    selected.insert(candidate.name.clone(), Arc::clone(candidate));
+                }
+                _ => {
+                    // Ambiguous ownership — fail closed.
+                    return QueryIndexPlan {
+                        comparable: false,
+                        projectors: Vec::new(),
+                    };
+                }
             }
-            selected.insert(candidate.name.clone(), Arc::clone(candidate));
+        }
+        if selected.is_empty() {
+            return QueryIndexPlan {
+                comparable: false,
+                projectors: Vec::new(),
+            };
         }
         QueryIndexPlan {
             comparable: true,
