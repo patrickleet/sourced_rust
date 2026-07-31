@@ -394,6 +394,7 @@ fi
 create_human() {
   local username="$1" password="$2" role="$3" email="$4"
   local search uid state
+  # Status logs go to stderr so callers can capture only the user id on stdout.
   search=$(api POST /management/v1/users/_search "$(jq -n --arg n "$username" \
     '{queries: [{userNameQuery: {userName: $n, method: "TEXT_QUERY_METHOD_EQUALS"}}]}')")
   uid=$(echo "$search" | jq -r '.result[0].id // empty')
@@ -401,14 +402,14 @@ create_human() {
 
   # Drop broken INITIAL users (no password) so we can re-import.
   if [[ -n "$uid" && "$state" == "USER_STATE_INITIAL" ]]; then
-    echo "    removing uninitialized $username ($uid)"
+    echo "    removing uninitialized $username ($uid)" >&2
     curl -sS -o /dev/null -X DELETE "$ZITADEL_HOST/management/v1/users/$uid" \
       -H "Authorization: Bearer $ACCESS_TOKEN" || true
     uid=""
   fi
 
   if [[ -z "$uid" ]]; then
-    echo "==> Human user $username (import + password)"
+    echo "==> Human user $username (import + password)" >&2
     uid=$(api POST /management/v1/users/human/_import "$(jq -n \
       --arg u "$username" --arg e "$email" --arg p "$password" \
       '{
@@ -419,9 +420,9 @@ create_human() {
         passwordChangeRequired: false
       }')" | jq -r '.userId // empty')
   else
-    echo "    reusing human $username ($uid, $state)"
+    echo "    reusing human $username ($uid, $state)" >&2
   fi
-  [[ -n "$uid" && "$uid" != "null" ]] || { echo "ERROR: human $username"; exit 1; }
+  [[ -n "$uid" && "$uid" != "null" ]] || { echo "ERROR: human $username" >&2; exit 1; }
 
   # Grant project role(s). Admin also receives `user` so they can use the
   # normal application surface (e2e-ui) and elevated admin paths.
