@@ -68,25 +68,29 @@ mod validation;
 mod tests;
 
 pub use core::{
-    GraphqlBuildError, GraphqlEngine, GraphqlEngineBuilder, GraphqlPool, GraphqlPoolSource,
+    ExecutionAuthority, GraphqlBuildError, GraphqlEngine, GraphqlEngineBuilder, GraphqlPool,
+    GraphqlPoolSource,
 };
 pub use introspection::{graphiql_enabled_from_env, graphiql_enabled_from_env_vars};
 
-pub(crate) use auth::{identity_mode_label, role_authorization_info};
+pub(crate) use auth::{
+    identity_mode_label, insert_synthetic_privilege_permissions, role_authorization_info,
+    role_authorization_info_for_roles,
+};
 pub(crate) use core::{
     CatalogEntry, ClientApplicationRegistration, EngineInner, ProtocolApplicationInfo,
     ProtocolRoleInfo, ProtocolRuntime, ProtocolSurfaceInfo, RoleModelPerm,
 };
 pub(crate) use introspection::is_pure_introspection_request;
 pub(crate) use live_resume::parse_requested_live_resume;
-pub(crate) use metrics::resolve_role;
 pub(crate) use metrics::{
     attach_protocol_response, metrics_status_for_response, protocol_internal_error_response,
     record_metrics,
 };
 pub(crate) use protocol::{
     has_multiple_protocol_query_roots, operation_fingerprint, protocol_multi_root_error_response,
-    protocol_trusted_presets, resolve_protocol_preset, select_protocol_surface,
+    protocol_trusted_presets, resolve_execution_authority, resolve_protocol_preset,
+    select_protocol_surface,
 };
 pub(crate) use validation::{execute_plan, validate_filter, validate_generated_names};
 

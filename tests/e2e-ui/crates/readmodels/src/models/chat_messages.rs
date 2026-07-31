@@ -24,5 +24,7 @@ impl ChatMessages {
         ModelPermissions::new()
             .grant("user", read().all_columns())
             .grant("admin", read().all_columns())
+            // Public lobby peek (anonymous surface): messages only, no writes.
+            .grant("anonymous", read().all_columns())
     }
 }

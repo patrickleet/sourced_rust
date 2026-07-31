@@ -4,7 +4,7 @@ use axum::http::HeaderMap;
 
 use super::oidc::{OidcConfig, OidcValidator, ValidationError, VerifiedPrincipal};
 use super::session_from_all_headers;
-use crate::microsvc::{Session, ROLE_KEY, USER_ID_KEY};
+use crate::microsvc::{Session, USER_ID_KEY};
 
 /// Default identity headers stripped under TrustedProxy (fail-closed).
 pub const DEFAULT_IDENTITY_STRIP_HEADERS: &[&str] = &[
@@ -475,10 +475,10 @@ pub(crate) async fn resolve_identity_with_validator(
     }
 }
 
-/// True if session has no elevated identity (no user id / role from convenience keys).
+/// True if session has no elevated identity (no user id / asserted roles).
 #[allow(dead_code)]
 pub fn is_anonymous_identity(session: &Session) -> bool {
-    session.get(USER_ID_KEY).is_none() && session.get(ROLE_KEY).is_none()
+    session.get(USER_ID_KEY).is_none() && session.roles().is_empty()
 }
 
 #[cfg(test)]
@@ -490,7 +490,7 @@ mod causal_identity_tests {
     fn ambient_and_proxy_identity_never_mint_a_causal_principal() {
         let mut headers = HeaderMap::new();
         headers.insert(USER_ID_KEY, HeaderValue::from_static("spoofed-user"));
-        headers.insert(ROLE_KEY, HeaderValue::from_static("admin"));
+        headers.insert("x-roles", HeaderValue::from_static("admin"));
 
         for config in [
             IdentityConfig::dev_headers(),

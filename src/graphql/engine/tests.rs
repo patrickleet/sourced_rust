@@ -265,7 +265,7 @@ mod client_surface_parity_tests {
         );
 
         let mut session = Session::new();
-        session.set("x-role", "user");
+        session.set("x-roles", "user");
         let deep_introspection = r#"
             query GraphiqlIntrospection {
               __type(name: "OrderView") {
@@ -438,7 +438,7 @@ mod client_surface_parity_tests {
         );
 
         let mut session = Session::new();
-        session.set("x-role", "user");
+        session.set("x-roles", "user");
         session.set("x-tenant", "tenant-a");
         let principal = VerifiedPrincipal::test_oidc(
             "https://issuer.example",
@@ -556,9 +556,79 @@ mod client_surface_parity_tests {
 
     #[cfg(feature = "sqlite")]
     #[tokio::test]
+    async fn multi_role_without_named_surface_is_rejected() {
+        let pool = sqlx::sqlite::SqlitePoolOptions::new()
+            .connect_lazy("sqlite::memory:")
+            .unwrap();
+        let project = DistributedProjectManifest::new("orders-service").table_schema(orders());
+        let engine = GraphqlEngine::from_manifest(&project, pool)
+            .unwrap()
+            .roles(&["admin", "user"])
+            .grant_all("admin")
+            .grant_all("user")
+            .protocol_token_key([7; 32])
+            .build()
+            .unwrap();
+        let mut dual = Session::new();
+        dual.set("x-roles", "admin,user");
+        dual.set("x-user-id", "person-1");
+        let response = engine.execute(&dual, Request::new("{ __typename }")).await;
+        assert!(response.is_err(), "multi-role must name a surface: {response:?}");
+    }
+
+    #[cfg(feature = "sqlite")]
+    #[tokio::test]
+    async fn anonymous_application_surface_opens_without_asserted_roles() {
+        let pool = sqlx::sqlite::SqlitePoolOptions::new()
+            .connect_lazy("sqlite::memory:")
+            .unwrap();
+        let project = DistributedProjectManifest::new("orders-service").table_schema(orders());
+        let engine = GraphqlEngine::from_manifest(&project, pool)
+            .unwrap()
+            .roles(&["anonymous", "user"])
+            .grant_all("anonymous")
+            .grant_all("user")
+            .client_application_surface("public", ["anonymous"])
+            .protocol_token_key([7; 32])
+            .build()
+            .unwrap();
+        let manifest = engine
+            .client_manifest_for_application("public", &["anonymous"])
+            .unwrap();
+        let request: Request = serde_json::from_value(serde_json::json!({
+            "query": "{ __typename }",
+            "extensions": {
+                "distributed": {
+                    "client": {
+                        "surface": {
+                            "kind": "application",
+                            "name": "public",
+                            "roles": ["anonymous"]
+                        },
+                        "schemaHash": manifest.schema_fingerprint
+                    }
+                }
+            }
+        }))
+        .unwrap();
+        let session = Session::new();
+        let response = engine.execute(&session, request).await;
+        assert!(
+            !response.is_err(),
+            "anonymous surface must open with empty identity: {:?}",
+            response.errors
+        );
+        assert_eq!(
+            distributed_extension(&response)["schemaHash"],
+            manifest.schema_fingerprint
+        );
+    }
+
+    #[cfg(feature = "sqlite")]
+    #[tokio::test]
     async fn multi_role_principal_opens_portable_schema_subset_application_surface() {
-        // eligible {admin,user} + schema privilege {user}: admin primary role may
-        // open the portable contract without intersecting unrestricted grants.
+        // eligible {admin,user} + schema privilege {user}: admin asserted alone
+        // may open; execution uses privilege pack user (not admin grants).
         let pool = sqlx::sqlite::SqlitePoolOptions::new()
             .connect_lazy("sqlite::memory:")
             .unwrap();
@@ -640,7 +710,7 @@ mod client_surface_parity_tests {
         // Admin primary alone is eligible — no need for x-roles when admin is
         // on the surface eligible list.
         let mut admin = Session::new();
-        admin.set("x-role", "admin");
+        admin.set("x-roles", "admin");
         admin.set("x-user-id", "person-1");
         let admin_response = engine
             .execute(&admin, request(&manifest.schema_fingerprint))
@@ -653,7 +723,7 @@ mod client_surface_parity_tests {
         );
 
         let mut user = Session::new();
-        user.set("x-role", "user");
+        user.set("x-roles", "user");
         user.set("x-user-id", "person-1");
         let user_response = engine
             .execute(&user, request(&manifest.schema_fingerprint))
@@ -662,11 +732,22 @@ mod client_surface_parity_tests {
         assert_eq!(user_envelope["schemaHash"], manifest.schema_fingerprint);
         assert_ne!(
             user_envelope["cacheScope"], admin_envelope["cacheScope"],
-            "eligible multi-role open must not collapse concrete role cache scopes"
+            "same surface privilege still scopes cache by asserted role set"
+        );
+        // Privilege pack is user for both openers (not admin unrestricted).
+        assert_eq!(
+            engine
+                .inner
+                .protocol
+                .as_ref()
+                .unwrap()
+                .applications["console"]
+                .privilege_key,
+            "user"
         );
 
-        // user-only eligible surface: primary admin alone is denied; dual
-        // asserted roles (x-roles includes user) may open.
+        // user-only eligible surface: admin alone is denied; dual asserted
+        // roles (x-roles includes user) may open.
         let pool2 = sqlx::sqlite::SqlitePoolOptions::new()
             .connect_lazy("sqlite::memory:")
             .unwrap();
@@ -756,7 +837,7 @@ mod client_surface_parity_tests {
         };
 
         let mut user = Session::new();
-        user.set("x-role", "user");
+        user.set("x-roles", "user");
         user.set("x-user-id", "person-1");
         let user_response = engine
             .execute(
@@ -771,7 +852,7 @@ mod client_surface_parity_tests {
         assert_eq!(user_envelope["schemaHash"], manifest.schema_fingerprint);
 
         let mut admin = user.clone();
-        admin.set("x-role", "admin");
+        admin.set("x-roles", "admin");
         let admin_response = engine
             .execute(
                 &admin,
@@ -825,7 +906,7 @@ mod client_surface_parity_tests {
         );
 
         let mut session = Session::new();
-        session.set("x-role", "user");
+        session.set("x-roles", "user");
         session.set("x-user-id", "person-1");
         session.set("x-order-id", "order-1");
         session.set("x-default-status", "assigned");
@@ -851,7 +932,7 @@ mod client_surface_parity_tests {
         assert_eq!(changed["trustedPresets"][0]["value"], "queued");
 
         let mut missing = Session::new();
-        missing.set("x-role", "user");
+        missing.set("x-roles", "user");
         missing.set("x-user-id", "person-1");
         missing.set("x-order-id", "order-1");
         let response = engine
@@ -876,7 +957,7 @@ mod client_surface_parity_tests {
         );
 
         let mut session = Session::new();
-        session.set("x-role", "user");
+        session.set("x-roles", "user");
         session.set("x-user-id", "person-1");
         // `operand_to_bind` accepts the normalized lowercase header for this
         // mixed-case policy claim. The cache-scope envelope must expose the
@@ -905,7 +986,7 @@ mod client_surface_parity_tests {
             &["orders-service"],
         );
         let mut session = Session::new();
-        session.set("x-role", "user");
+        session.set("x-roles", "user");
         session.set("x-user-id", "user-a");
         session.set("x-tenant", "tenant-a");
         session.set("x-organization", "organization-a");
@@ -957,7 +1038,7 @@ mod client_surface_parity_tests {
         );
 
         let mut anonymous = session;
-        anonymous.set("x-role", "anonymous");
+        anonymous.set("x-roles", "anonymous");
         let response = engine
             .execute(&anonymous, Request::new("{ __typename }").data(principal))
             .await;
@@ -974,7 +1055,7 @@ mod client_surface_parity_tests {
 
         let engine = protocol_engine("public/graphql");
         let mut session = Session::new();
-        session.set("x-role", "user");
+        session.set("x-roles", "user");
         let principal = VerifiedPrincipal::test_oidc(
             "https://issuer.example",
             "principal-a",
@@ -1725,7 +1806,7 @@ mod client_surface_parity_tests {
             }),
         ));
         let mut session = Session::new();
-        session.set(crate::microsvc::ROLE_KEY, "admin");
+        session.set("x-roles", "admin");
         let response = engine.execute(&session, request).await;
         assert_eq!(response.errors.len(), 1, "{response:?}");
         assert_eq!(
@@ -1947,7 +2028,7 @@ mod client_surface_parity_tests {
         assert_eq!(encoding, "canonical_json_tuple_v1");
 
         let mut session = Session::new();
-        session.set(crate::microsvc::ROLE_KEY, "admin");
+        session.set("x-roles", "admin");
         let response = engine
             .execute(
                 &session,
@@ -2116,7 +2197,7 @@ mod client_surface_parity_tests {
         );
         let engine = builder.build().unwrap();
         let mut session = Session::new();
-        session.set(crate::microsvc::ROLE_KEY, "restricted");
+        session.set("x-roles", "restricted");
 
         let response = engine
             .execute(

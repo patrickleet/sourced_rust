@@ -849,15 +849,70 @@ impl GraphqlEngineBuilder {
                     ))
                 })?;
                 let trusted_presets = protocol_trusted_presets(&manifest)?;
+                // Privilege pack for execution: single schema role reuses that
+                // role's schema/grants; multi-privilege uses a synthetic key.
+                let privilege_key = if registration.schema_roles.len() == 1 {
+                    registration.schema_roles[0].clone()
+                } else {
+                    format!("app:{application}")
+                };
+                let (authorization_fingerprint, claim_keys) = if registration.schema_roles.len()
+                    == 1
+                {
+                    role_authorization_info(&registration.schema_roles[0], &self.permissions)?
+                } else {
+                    // Multi-privilege: fingerprint the application surface grant
+                    // intersection under the synthetic privilege key.
+                    role_authorization_info_for_roles(
+                        &privilege_key,
+                        &registration.schema_roles,
+                        &self.permissions,
+                    )?
+                };
+                // Ensure the privilege key has a role surface for projection
+                // visibility and a GraphQL schema when synthetic.
+                if registration.schema_roles.len() > 1 {
+                    let app_schema = dyn_schema::build_role_schema(
+                        &application_surface,
+                        self.max_depth,
+                        self.max_complexity,
+                        false,
+                    )
+                    .map_err(GraphqlBuildError)?;
+                    schemas.insert(privilege_key.clone(), app_schema);
+                    if self.graphiql {
+                        let graphiql_schema = dyn_schema::build_role_schema(
+                            &application_surface,
+                            self.max_depth.max(GRAPHIQL_INTROSPECTION_MAX_DEPTH_FLOOR),
+                            self.max_complexity
+                                .max(GRAPHIQL_INTROSPECTION_MAX_COMPLEXITY_FLOOR),
+                            false,
+                        )
+                        .map_err(GraphqlBuildError)?;
+                        graphiql_schemas.insert(privilege_key.clone(), graphiql_schema);
+                    }
+                    role_surfaces.insert(privilege_key.clone(), Arc::clone(&application_surface));
+                    // Intersected grants as ReadPermission under the synthetic key
+                    // so compile_root finds privilege packs.
+                    insert_synthetic_privilege_permissions(
+                        &privilege_key,
+                        &registration.schema_roles,
+                        &mut self.permissions,
+                    );
+                }
                 protocol_applications.insert(
                     application.clone(),
                     ProtocolApplicationInfo {
                         roles: registration.eligible_roles.clone(),
+                        schema_roles: registration.schema_roles.clone(),
+                        privilege_key,
                         surface: ProtocolSurfaceInfo {
                             schema_fingerprint: manifest.schema_fingerprint,
                             protocol_fingerprint: manifest.protocol_fingerprint,
                             trusted_presets,
                         },
+                        authorization_fingerprint,
+                        claim_keys,
                     },
                 );
             }

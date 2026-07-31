@@ -89,11 +89,27 @@ impl Session {
         self.get(USER_ID_KEY)
     }
 
-    /// Get the role under the convenience key [`ROLE_KEY`].
+    /// Get a single role under the convenience key [`ROLE_KEY`].
     ///
-    /// For gateway-specific claim names, use [`Session::get`] instead.
+    /// Prefer [`Session::roles`] — identity is a set (`x-roles`). This helper
+    /// remains for gateways that still inject a singleton role header and for
+    /// metrics labels; GraphQL execution does not use it as identity.
     pub fn role(&self) -> Option<&str> {
         self.get(ROLE_KEY)
+    }
+
+    /// Asserted engine roles for this principal (`x-roles`, comma-separated).
+    ///
+    /// Set-only identity: multi-role principals list every allowlisted role.
+    /// Order is first-seen discovery order from claim mapping.
+    pub fn roles(&self) -> Vec<&str> {
+        let Some(raw) = self.get("x-roles").or_else(|| self.get("X-Roles")) else {
+            return Vec::new();
+        };
+        raw.split(',')
+            .map(str::trim)
+            .filter(|part| !part.is_empty())
+            .collect()
     }
 
     /// Get a session variable by key.

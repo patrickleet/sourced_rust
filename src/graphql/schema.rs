@@ -10,7 +10,7 @@ use async_graphql::dynamic::{
 use async_graphql::Value;
 
 use super::compile::{self, RootKind};
-use super::engine::EngineInner;
+use super::engine::{EngineInner, ExecutionAuthority};
 use super::identity::VerifiedPrincipal;
 use super::naming::{
     bool_exp_name, causal_protocol_type_names, comparison_exp_name, order_by_name,
@@ -268,16 +268,18 @@ pub fn build_role_schema(
                         .data_opt::<Session>()
                         .cloned()
                         .unwrap_or_else(Session::new);
+                    let authority = ctx.data_opt::<ExecutionAuthority>().cloned();
                     let protocol = ctx.data_opt::<ProtocolResponseAccumulator>().cloned();
                     let selection = compile::selection_from_field(ctx.field());
                     SubscriptionFieldFuture::new(async move {
                         let inner = inner.ok_or_else(|| {
                             async_graphql::Error::new("GraphqlEngine not in request data")
                         })?;
-                        let role = session
-                            .role()
-                            .map(|s| s.to_string())
-                            .unwrap_or_else(|| inner.anonymous_role.clone());
+                        let role = privilege_role_for_request(
+                            authority.as_ref(),
+                            &session,
+                            &inner.anonymous_role,
+                        );
                         let stream = super::subscribe::live_query_stream(
                             inner, session, role, model, selection, protocol,
                         )
@@ -702,10 +704,8 @@ async fn resolve_root(
         .data_opt::<Session>()
         .cloned()
         .unwrap_or_else(Session::new);
-    let role = session
-        .role()
-        .map(|s| s.to_string())
-        .unwrap_or_else(|| inner.anonymous_role.clone());
+    let authority = ctx.data_opt::<ExecutionAuthority>();
+    let role = privilege_role_for_request(authority, &session, &inner.anonymous_role);
 
     let selection = compile::selection_from_field(ctx.field());
     let plan = compile::compile_root(&inner, &session, &role, model, kind, &selection)
@@ -739,6 +739,24 @@ async fn resolve_root(
     } else {
         Ok(Some(value))
     }
+}
+
+/// Privilege pack for SQL grants: surface execution authority, else anonymous.
+fn privilege_role_for_request(
+    authority: Option<&ExecutionAuthority>,
+    session: &Session,
+    anonymous_role: &str,
+) -> String {
+    if let Some(authority) = authority {
+        return authority.privilege_role.clone();
+    }
+    // Fallback for schema unit tests that execute without engine request data.
+    session
+        .roles()
+        .first()
+        .map(|role| (*role).to_string())
+        .or_else(|| session.role().map(|s| s.to_string()))
+        .unwrap_or_else(|| anonymous_role.to_string())
 }
 
 /// Closed set of engine-authored GraphQL `extensions.code` values (v1 freeze).

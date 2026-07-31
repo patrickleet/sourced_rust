@@ -2,7 +2,7 @@
 
 use serde_json::Value;
 
-use crate::microsvc::{Session, ROLE_KEY, USER_ID_KEY};
+use crate::microsvc::{Session, USER_ID_KEY};
 
 /// Configuration for claim → Session mapping.
 #[derive(Debug, Clone)]
@@ -11,8 +11,6 @@ pub struct ClaimMapConfig {
     pub subject_claim: String,
     /// Ordered claim paths for role candidates.
     pub role_claims: Vec<String>,
-    /// Priority list for selecting `x-role` (first match wins).
-    pub role_priority: Vec<String>,
     /// Engine-configured role names (schema keys). Empty = accept any candidate.
     pub engine_roles: Vec<String>,
 }
@@ -26,12 +24,6 @@ impl Default for ClaimMapConfig {
                 "groups".into(),
                 "roles".into(),
             ],
-            role_priority: vec![
-                "admin".into(),
-                "operator".into(),
-                "customer".into(),
-                "user".into(),
-            ],
             engine_roles: Vec::new(),
         }
     }
@@ -40,15 +32,16 @@ impl Default for ClaimMapConfig {
 /// Map validated JWT claims JSON to a Session.
 ///
 /// Object role claims: keys sorted lexicographically (D5).
-/// `x-roles`: comma-separated allowlisted candidates in first-seen order.
-/// `x-role`: priority ∩ candidates (D4).
+/// Identity is **set-only**: `x-roles` is the comma-separated allowlisted
+/// candidate set (first-seen order). No priority-picked primary `x-role`.
 pub fn map_claims_to_session(claims: &Value, config: &ClaimMapConfig) -> Result<Session, String> {
     map_claims_to_session_with_provenance(claims, config).map(|mapped| mapped.session)
 }
 
 pub(crate) struct MappedClaims {
     pub(crate) session: Session,
-    pub(crate) selected_role_is_asserted: bool,
+    /// True when at least one engine role was asserted from claims.
+    pub(crate) roles_asserted: bool,
 }
 
 pub(crate) fn map_claims_to_session_with_provenance(
@@ -79,8 +72,8 @@ pub(crate) fn map_claims_to_session_with_provenance(
     }
 
     // Intersect with engine roles when configured.
-    let allowlisted: Vec<String> = if config.engine_roles.is_empty() {
-        candidates.clone()
+    let mut allowlisted: Vec<String> = if config.engine_roles.is_empty() {
+        candidates
     } else {
         candidates
             .into_iter()
@@ -88,27 +81,17 @@ pub(crate) fn map_claims_to_session_with_provenance(
             .collect()
     };
 
-    let x_roles = allowlisted.join(",");
-    // Prefer explicit claim roles; if the subject is authenticated but no role
-    // claim matched engine roles, default to `user` when that role is configured
-    // (common for OIDC apps that assert roles asynchronously or omit them).
-    let asserted_role = select_role(&allowlisted, &config.role_priority);
-    let selected_role_is_asserted = asserted_role.is_some();
-    let x_role = asserted_role.or_else(|| {
-        if config.engine_roles.iter().any(|e| e == "user") {
-            Some("user".into())
-        } else {
-            None
-        }
-    });
+    // Authenticated subject with no matching role claims defaults to `user`
+    // when that pack is configured (OIDC apps that omit roles until assigned).
+    let roles_asserted = !allowlisted.is_empty();
+    if allowlisted.is_empty() && config.engine_roles.iter().any(|e| e == "user") {
+        allowlisted.push("user".into());
+    }
 
     let mut session = Session::new();
     session.set(USER_ID_KEY, sub);
-    if let Some(role) = x_role {
-        session.set(ROLE_KEY, role);
-    }
-    if !x_roles.is_empty() {
-        session.set("x-roles", x_roles);
+    if !allowlisted.is_empty() {
+        session.set("x-roles", allowlisted.join(","));
     }
 
     // Optional standard mappings when present.
@@ -125,7 +108,7 @@ pub(crate) fn map_claims_to_session_with_provenance(
 
     Ok(MappedClaims {
         session,
-        selected_role_is_asserted,
+        roles_asserted,
     })
 }
 
@@ -169,18 +152,6 @@ fn push_unique(out: &mut Vec<String>, s: String) {
     }
 }
 
-fn select_role(allowlisted: &[String], priority: &[String]) -> Option<String> {
-    if allowlisted.is_empty() {
-        return None;
-    }
-    for p in priority {
-        if allowlisted.iter().any(|a| a == p) {
-            return Some(p.clone());
-        }
-    }
-    Some(allowlisted[0].clone())
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -194,7 +165,7 @@ mod tests {
     }
 
     #[test]
-    fn f1_zitadel_project_roles() {
+    fn f1_zitadel_project_roles_are_set_only() {
         let claims = json!({
             "iss": "http://localhost:8080",
             "aud": ["graphql-api", "123@graphql"],
@@ -209,8 +180,10 @@ mod tests {
             map_claims_to_session(&claims, &cfg_with_engine(&["admin", "customer", "user"]))
                 .unwrap();
         assert_eq!(session.user_id(), Some("user-a-001"));
-        assert_eq!(session.role(), Some("admin"));
+        // Lexicographic object keys → admin,customer. No primary x-role.
         assert_eq!(session.get("x-roles"), Some("admin,customer"));
+        assert_eq!(session.role(), None);
+        assert!(session.get("x-role").is_none());
     }
 
     #[test]
@@ -226,7 +199,21 @@ mod tests {
             map_claims_to_session(&claims, &cfg_with_engine(&["admin", "customer", "user"]))
                 .unwrap();
         assert_eq!(session.user_id(), Some("user-b-002"));
-        assert_eq!(session.role(), Some("customer"));
         assert_eq!(session.get("x-roles"), Some("customer"));
+        assert_eq!(session.role(), None);
+    }
+
+    #[test]
+    fn multi_role_does_not_invent_primary() {
+        let claims = json!({
+            "sub": "dual",
+            "roles": ["user", "admin"]
+        });
+        let mapped =
+            map_claims_to_session_with_provenance(&claims, &cfg_with_engine(&["admin", "user"]))
+                .unwrap();
+        assert!(mapped.roles_asserted);
+        assert_eq!(mapped.session.get("x-roles"), Some("user,admin"));
+        assert!(mapped.session.role().is_none());
     }
 }

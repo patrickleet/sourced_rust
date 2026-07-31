@@ -379,7 +379,6 @@ async fn causal_receipt_status_replay_and_nonenumeration_match_http_and_ws() {
         .principal_tenant_claims(["tenant"])
         .engine_roles(&["writer", "reader"]);
     oidc.require_role = true;
-    oidc.claim_map.role_priority = vec!["writer".into(), "reader".into()];
 
     let service = causal_service();
     let pool = sqlx::sqlite::SqlitePoolOptions::new()
@@ -495,7 +494,6 @@ async fn expired_command_status_is_typed_and_transport_independent() {
         .principal_tenant_claims(["tenant"])
         .engine_roles(&["writer", "reader"]);
     oidc.require_role = true;
-    oidc.claim_map.role_priority = vec!["writer".into(), "reader".into()];
 
     let service = causal_service()
         .causal_command_timing(Duration::from_millis(25), Duration::from_millis(100));

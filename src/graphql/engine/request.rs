@@ -2,27 +2,36 @@ use super::*;
 
 impl GraphqlEngine {
     pub async fn execute(&self, session: &Session, mut request: Request) -> Response {
-        let role = resolve_role(session, &self.inner.anonymous_role);
+        let authority = match resolve_execution_authority(&self.inner, session, &request) {
+            Ok(authority) => authority,
+            Err(()) => {
+                return Response::from_errors(vec![ServerError::new(
+                    "GraphQL execution requires a named application surface for multi-role principals, a membership-checked role surface, or an anonymous session",
+                    None,
+                )]);
+            }
+        };
+        let privilege = authority.privilege_role.clone();
         let introspection = self.inner.graphiql && is_pure_introspection_request(&mut request);
         let schema = if introspection {
             self.inner
                 .graphiql_schemas
-                .get(&role)
-                .or_else(|| self.inner.schemas.get(&role))
+                .get(&privilege)
+                .or_else(|| self.inner.schemas.get(&privilege))
         } else {
-            self.inner.schemas.get(&role)
+            self.inner.schemas.get(&privilege)
         };
         let Some(schema) = schema else {
             return Response::from_errors(vec![ServerError::new(
-                format!("role `{role}` is not configured for GraphQL"),
+                format!("privilege pack `{privilege}` is not configured for GraphQL"),
                 None,
             )]);
         };
-        if has_multiple_protocol_query_roots(&self.inner, &role, &mut request) {
+        if has_multiple_protocol_query_roots(&self.inner, &privilege, &mut request) {
             return protocol_multi_root_error_response();
         }
 
-        let accumulator = match self.protocol_accumulator(&role, session, &request) {
+        let accumulator = match self.protocol_accumulator(&authority, session, &request) {
             Ok(accumulator) => accumulator,
             Err(()) => return protocol_internal_error_response(),
         };
@@ -31,7 +40,10 @@ impl GraphqlEngine {
             // future classifier or request extension behaves unexpectedly.
             request = request.only_introspection();
         }
-        let mut request = request.data(session.clone()).data(Arc::clone(&self.inner));
+        let mut request = request
+            .data(session.clone())
+            .data(authority)
+            .data(Arc::clone(&self.inner));
         if let Some(accumulator) = &accumulator {
             request = request.data(accumulator.clone());
         }
@@ -53,29 +65,41 @@ impl GraphqlEngine {
         session: &Session,
         mut request: Request,
     ) -> BoxStream<'static, async_graphql::Response> {
-        let role = resolve_role(session, &self.inner.anonymous_role);
+        let authority = match resolve_execution_authority(&self.inner, session, &request) {
+            Ok(authority) => authority,
+            Err(()) => {
+                return stream::once(async {
+                    Response::from_errors(vec![ServerError::new(
+                        "GraphQL execution requires a named application surface for multi-role principals, a membership-checked role surface, or an anonymous session",
+                        None,
+                    )])
+                })
+                .boxed();
+            }
+        };
+        let privilege = authority.privilege_role.clone();
         let introspection = self.inner.graphiql && is_pure_introspection_request(&mut request);
         let schema = if introspection {
             self.inner
                 .graphiql_schemas
-                .get(&role)
-                .or_else(|| self.inner.schemas.get(&role))
+                .get(&privilege)
+                .or_else(|| self.inner.schemas.get(&privilege))
         } else {
-            self.inner.schemas.get(&role)
+            self.inner.schemas.get(&privilege)
         };
         let Some(schema) = schema.cloned() else {
             return stream::once(async move {
                 Response::from_errors(vec![ServerError::new(
-                    format!("role `{role}` is not configured for GraphQL"),
+                    format!("privilege pack `{privilege}` is not configured for GraphQL"),
                     None,
                 )])
             })
             .boxed();
         };
-        if has_multiple_protocol_query_roots(&self.inner, &role, &mut request) {
+        if has_multiple_protocol_query_roots(&self.inner, &privilege, &mut request) {
             return stream::once(async { protocol_multi_root_error_response() }).boxed();
         }
-        let accumulator = match self.protocol_accumulator(&role, session, &request) {
+        let accumulator = match self.protocol_accumulator(&authority, session, &request) {
             Ok(accumulator) => accumulator,
             Err(()) => {
                 return stream::once(async { protocol_internal_error_response() }).boxed();
@@ -92,6 +116,7 @@ impl GraphqlEngine {
         }
         let mut request = request
             .data(session.clone())
+            .data(authority)
             .data(std::sync::Arc::clone(&self.inner));
         if let Some(accumulator) = &accumulator {
             request = request.data(accumulator.clone());
@@ -104,16 +129,15 @@ impl GraphqlEngine {
 
     fn protocol_accumulator(
         &self,
-        role: &str,
+        authority: &ExecutionAuthority,
         session: &Session,
         request: &Request,
     ) -> Result<Option<ProtocolResponseAccumulator>, ()> {
         let Some(runtime) = &self.inner.protocol else {
             return Ok(None);
         };
-        let role_info = runtime.roles.get(role).ok_or(())?;
-        let (surface_identity, surface_info) =
-            select_protocol_surface(runtime, role, session, request).map_err(|_| ())?;
+        let (surface_identity, surface_info, authorization_fingerprint, claim_keys) =
+            select_protocol_surface(runtime, authority)?;
         let trusted_presets = surface_info
             .trusted_presets
             .iter()
@@ -130,8 +154,7 @@ impl GraphqlEngine {
             .map(crate::command_ledger::PrincipalPartitionId::new)
             .transpose()
             .map_err(|_| ())?;
-        let session_authorization_context = role_info
-            .claim_keys
+        let session_authorization_context = claim_keys
             .iter()
             .map(|key| (key.as_str(), session.get(key)))
             .collect::<Vec<_>>();
@@ -142,7 +165,10 @@ impl GraphqlEngine {
             version: u32,
             namespace: &'a str,
             service_id: &'a str,
-            role: &'a str,
+            /// Privilege pack for this surface (not a primary identity role).
+            privilege: &'a str,
+            /// Full asserted role set for multi-role principals.
+            asserted_roles: &'a [String],
             surface: &'a ClientSurfaceIdentity,
             schema_fingerprint: &'a str,
             protocol_fingerprint: &'a str,
@@ -154,20 +180,19 @@ impl GraphqlEngine {
         }
 
         // Only session values that can affect authorization enter the HMAC:
-        // role/user plus claim keys referenced by this role's row policies.
-        // Ambient headers such as cookies or user-agent must not churn caches.
-        // Raw values and the verified principal partition remain private HMAC
-        // inputs and are never echoed in the response.
+        // privilege pack, asserted roles, user, and claim keys from privilege
+        // policies. Ambient headers must not churn caches.
         let material = CacheScopeMaterial {
             domain: "distributed.graphql.cache-scope",
-            version: 1,
+            version: 2,
             namespace: &runtime.namespace,
             service_id: &runtime.service_id,
-            role,
+            privilege: &authority.privilege_role,
+            asserted_roles: &authority.asserted_roles,
             surface: &surface_identity,
             schema_fingerprint: &surface_info.schema_fingerprint,
             protocol_fingerprint: &surface_info.protocol_fingerprint,
-            authorization_surface_fingerprint: &role_info.authorization_fingerprint,
+            authorization_surface_fingerprint: authorization_fingerprint,
             identity_mode: identity_mode_label(self.inner.identity.mode),
             verified_principal_partition: principal_partition.as_deref(),
             session_authorization_context,
@@ -179,7 +204,7 @@ impl GraphqlEngine {
             .map_err(|_| ())?;
         let envelope = DistributedEnvelopeV1::new(
             surface_info.schema_fingerprint.clone(),
-            role_info.authorization_fingerprint.clone(),
+            authorization_fingerprint.to_string(),
             cache_scope,
             // Generated artifacts submit this exact document. Hashing its
             // bytes matches manifest operation_hash and provides a useful
@@ -189,7 +214,12 @@ impl GraphqlEngine {
         .with_trusted_presets(trusted_presets.clone());
         let accumulator = ProtocolResponseAccumulator::new(envelope, runtime.codec.clone());
         if let Some(principal_scope) = projection_principal {
-            let visibility_surface = self.inner.role_surfaces.get(role).cloned().ok_or(())?;
+            let visibility_surface = self
+                .inner
+                .role_surfaces
+                .get(&authority.privilege_role)
+                .cloned()
+                .ok_or(())?;
             let selected_surface = match &surface_identity {
                 ClientSurfaceIdentity::Role { name } => self.inner.role_surfaces.get(name),
                 ClientSurfaceIdentity::Application { name, .. } => {
@@ -221,7 +251,7 @@ impl GraphqlEngine {
                     export,
                     Arc::clone(&runtime.projection_programs),
                     principal_scope,
-                    role_info.authorization_fingerprint.clone(),
+                    authorization_fingerprint.to_string(),
                     trusted_presets,
                     issued_at_unix_ms,
                 )

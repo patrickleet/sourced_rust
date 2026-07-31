@@ -336,7 +336,7 @@ impl OidcValidator {
                     ValidationError::Other(e)
                 }
             })?;
-        if self.config.require_role && !mapped.selected_role_is_asserted {
+        if self.config.require_role && !mapped.roles_asserted {
             return Err(ValidationError::Other(
                 "require_role: no asserted engine role".into(),
             ));

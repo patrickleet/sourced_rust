@@ -1156,7 +1156,7 @@ async fn query_over_http_and_graphql_ws(
     if let Some((user, role)) = identity {
         http_request = http_request
             .header("x-user-id", user)
-            .header("x-role", role);
+            .header("x-roles", roles);
     }
     let http = http_request
         .send()
