@@ -65,6 +65,9 @@
 			<span class="hib-kicker">{demo.kicker}</span>
 			<h2 id="hib-title-{demo.id}" class="hib-title">How it’s built</h2>
 			<p class="hib-summary">{demo.summary}</p>
+			<p class="hib-path" aria-hidden="true">
+				Browser query → commands / cache → handlers → domain → events
+			</p>
 		</div>
 		<button type="button" class="hib-close" onclick={closePanel} aria-label="Close">
 			<span aria-hidden="true">×</span>
@@ -280,6 +283,15 @@
 		font-size: 0.88rem;
 		line-height: 1.5;
 		color: rgba(244, 242, 236, 0.72);
+	}
+
+	.hib-path {
+		margin: 0.65rem 0 0;
+		font-family: var(--wf-mono, ui-monospace, monospace);
+		font-size: 0.65rem;
+		font-weight: 500;
+		letter-spacing: 0.04em;
+		color: rgba(142, 180, 212, 0.85);
 	}
 
 	.hib-close {
