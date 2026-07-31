@@ -80,40 +80,244 @@ pub use projection::{
     MAX_PROJECTION_OPERATIONS_PER_OCCURRENCE, MAX_PROJECTION_PATH_SEGMENTS,
 };
 
-// Event-independent mutation IR, portable handlers, and dual-path interpreters.
+// Event-independent mutation IR, portable handlers, and interpreters.
 pub use mutation::{
-    arm_delete_pk_from_envelope, arm_state_upsert_for_model, arms_state_upsert_for_model,
-    body_bindings_for_model, body_field_binding, build_mutation_projector_program,
-    compose_event_preview, descriptor_from_factories, envelope_binding,
-    inventory_mutation_projector, inventory_single_model, lower_mutation_cache,
-    lower_mutation_projector, lower_single_model, portable_binding, program_from_mutation_arms,
-    resolve_mutation_program, resolve_mutation_projector, Mutation, MutationAssignment,
-    MutationCacheEffect, MutationCacheProgram, MutationCacheVisibility, MutationConflictTarget,
-    MutationEventBinding, MutationExpression, MutationField, MutationFieldCapability,
-    MutationHandlerCatalog, MutationHandlerPlacement, MutationHandlerRegistration,
-    MutationInputBinding, MutationKeyCapability, MutationKeyField, MutationKind, MutationOperation,
-    MutationProgram, MutationProgramError, MutationProgramId, MutationProgramLimits,
-    MutationProjectionArm, MutationReturning, MutationServerInterpreter,
+    bind_delete_to_envelope_id, bind_state_body_to_mutation, bind_state_events_to_mutation,
+    body_bindings_for_model, body_field_binding, compile_portable_handlers, compose_event_preview,
+    descriptor_from_factories, envelope_binding, inventory_single_model, lower_mutation_cache,
+    lower_single_model, portable_binding, program_from_mutation_arms, resolve_mutation_program,
+    Mutation, MutationAssignment, MutationCacheEffect, MutationCacheProgram,
+    MutationCacheVisibility, MutationConflictTarget, MutationEventBinding, MutationExpression,
+    MutationField, MutationFieldCapability, MutationHandlerCatalog, MutationHandlerPlacement,
+    MutationHandlerRegistration, MutationInputBinding, MutationKeyCapability, MutationKeyField,
+    MutationKind, MutationOperation, MutationProgram, MutationProgramError, MutationProgramId,
+    MutationProgramLimits, MutationProjectionArm, MutationReturning, MutationServerInterpreter,
     ReadModelMutationCapabilities, ResolvedMutationValue, MAX_MUTATION_OPERATIONS,
     MUTATION_OPERATION_SEMANTICS_VERSION, MUTATION_PROGRAM_IR_VERSION,
 };
 
-/// Mount a single-model mutation-backed projector as a `ProjectionDescriptor`.
+/// Spec-shaped authoring: **mutations** + **portable event handlers** for one model.
 ///
-/// Application code provides only the mutation program factory and model type;
-/// resolve/lower/inventory factories are generated.
+/// You declare which events apply which mutation. The framework compiles that
+/// into the service mount. Dual-path projection IR is an internal detail.
 ///
 /// ```ignore
-/// mutation_projector! {
-///     pub const TODO_READS: ProjectionDescriptor<EventualOnly> = {
-///         name: "project_todos",
+/// portable_handlers! {
+///     pub const BLOB_GAMES: ProjectionDescriptor<DirectCandidate> = {
+///         name: "project_blob",
 ///         version: 1,
-///         epoch: "e2e-ui-todos-v2",
-///         model: Todos,
-///         program: todo_program,
+///         epoch: "e2e-ui-blob-v2",
+///         model: BlobGames,
+///         apply save_blob_game {
+///             on_state BlobGameState as "game":
+///                 "blob.initialized", "blob.moved";
+///         }
 ///     };
 /// }
 /// ```
+#[macro_export]
+macro_rules! portable_handlers {
+    // State-body events by name + DomainState type; optional delete binding.
+    (
+        $vis:vis const $id:ident : $desc_ty:ty = {
+            name: $name:literal,
+            version: $version:expr,
+            epoch: $epoch:literal,
+            model: $model:ty,
+            apply $mutation:path {
+                on_state $state:ty as $input_root:literal :
+                    $($event:literal),+ $(,)?
+            }
+            $(
+                , apply $del_mutation:path {
+                    on_deleted $del_event:ty as $pk:literal $(,)?
+                }
+            )?
+            $(,)?
+        } $(;)?
+    ) => {
+        $vis const $id: $desc_ty = {
+            fn __handlers() -> ::core::result::Result<
+                $crate::ProjectionProgram,
+                $crate::ProjectionProgramError,
+            > {
+                let mutation = $mutation().program().clone();
+                let mut handlers = ::std::vec::Vec::new();
+                $(
+                    {
+                        let descriptor =
+                            $crate::DomainEventDescriptor::state::<$state>($event, 1);
+                        handlers.push(
+                            $crate::bind_state_body_to_mutation::<$model>(
+                                &descriptor,
+                                mutation.clone(),
+                                $input_root,
+                            )
+                            .map_err(|e| $crate::ProjectionProgramError::InvalidOperation {
+                                operation: ::std::string::String::from($name),
+                                reason: e.to_string(),
+                            })?,
+                        );
+                    }
+                )+
+                $(
+                    {
+                        use $crate::domain_event::DomainEventContract;
+                        handlers.push(
+                            $crate::bind_delete_to_envelope_id(
+                                &<$del_event>::descriptor(),
+                                $del_mutation().program().clone(),
+                                $pk,
+                            )
+                            .map_err(|e| $crate::ProjectionProgramError::InvalidOperation {
+                                operation: ::std::string::String::from($name),
+                                reason: e.to_string(),
+                            })?,
+                        );
+                    }
+                )?
+                $crate::compile_portable_handlers(
+                    $name,
+                    $version,
+                    $crate::ProjectionPartition::Unit,
+                    handlers,
+                )
+            }
+            fn __resolve(
+                occurrence: &$crate::DomainEventOccurrence,
+            ) -> ::core::result::Result<
+                $crate::ResolvedProjectionPlan,
+                $crate::ProjectionProgramError,
+            > {
+                $crate::resolve_mutation_program(&__handlers()?, occurrence)
+            }
+            fn __lower(
+                plan: &$crate::ResolvedProjectionPlan,
+            ) -> ::core::result::Result<
+                $crate::projection::lower::LoweredProjectionPlan,
+                $crate::projection::lower::ProjectionLoweringError,
+            > {
+                $crate::lower_single_model::<$model>(plan)
+            }
+            fn __inventory() -> ::core::result::Result<
+                $crate::projection::lower::ProjectionOutputInventory,
+                $crate::projection::lower::ProjectionLoweringError,
+            > {
+                $crate::inventory_single_model::<$model>()
+            }
+            $crate::descriptor_from_factories(
+                $name,
+                $version,
+                $epoch,
+                __handlers,
+                __resolve,
+                __lower,
+                __inventory,
+            )
+        };
+    };
+
+    // DomainEventContract types (descriptor() on each) + optional delete.
+    (
+        $vis:vis const $id:ident : $desc_ty:ty = {
+            name: $name:literal,
+            version: $version:expr,
+            epoch: $epoch:literal,
+            model: $model:ty,
+            apply $mutation:path {
+                on_event $($event_ty:ty),+ as $input_root:literal $(,)?
+            }
+            $(
+                , apply $del_mutation:path {
+                    on_deleted $del_event:ty as $pk:literal $(,)?
+                }
+            )?
+            $(,)?
+        } $(;)?
+    ) => {
+        $vis const $id: $desc_ty = {
+            fn __handlers() -> ::core::result::Result<
+                $crate::ProjectionProgram,
+                $crate::ProjectionProgramError,
+            > {
+                use $crate::domain_event::DomainEventContract;
+                let mutation = $mutation().program().clone();
+                let mut handlers = ::std::vec::Vec::new();
+                $(
+                    {
+                        handlers.push(
+                            $crate::bind_state_body_to_mutation::<$model>(
+                                &<$event_ty>::descriptor(),
+                                mutation.clone(),
+                                $input_root,
+                            )
+                            .map_err(|e| $crate::ProjectionProgramError::InvalidOperation {
+                                operation: ::std::string::String::from($name),
+                                reason: e.to_string(),
+                            })?,
+                        );
+                    }
+                )+
+                $(
+                    {
+                        handlers.push(
+                            $crate::bind_delete_to_envelope_id(
+                                &<$del_event>::descriptor(),
+                                $del_mutation().program().clone(),
+                                $pk,
+                            )
+                            .map_err(|e| $crate::ProjectionProgramError::InvalidOperation {
+                                operation: ::std::string::String::from($name),
+                                reason: e.to_string(),
+                            })?,
+                        );
+                    }
+                )?
+                $crate::compile_portable_handlers(
+                    $name,
+                    $version,
+                    $crate::ProjectionPartition::Unit,
+                    handlers,
+                )
+            }
+            fn __resolve(
+                occurrence: &$crate::DomainEventOccurrence,
+            ) -> ::core::result::Result<
+                $crate::ResolvedProjectionPlan,
+                $crate::ProjectionProgramError,
+            > {
+                $crate::resolve_mutation_program(&__handlers()?, occurrence)
+            }
+            fn __lower(
+                plan: &$crate::ResolvedProjectionPlan,
+            ) -> ::core::result::Result<
+                $crate::projection::lower::LoweredProjectionPlan,
+                $crate::projection::lower::ProjectionLoweringError,
+            > {
+                $crate::lower_single_model::<$model>(plan)
+            }
+            fn __inventory() -> ::core::result::Result<
+                $crate::projection::lower::ProjectionOutputInventory,
+                $crate::projection::lower::ProjectionLoweringError,
+            > {
+                $crate::inventory_single_model::<$model>()
+            }
+            $crate::descriptor_from_factories(
+                $name,
+                $version,
+                $epoch,
+                __handlers,
+                __resolve,
+                __lower,
+                __inventory,
+            )
+        };
+    };
+}
+
+/// Lower-level mount when handlers need a custom partition (e.g. chat room_id).
+///
+/// Prefer [`portable_handlers!`] when partition is unit.
 #[macro_export]
 macro_rules! mutation_projector {
     (

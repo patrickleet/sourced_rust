@@ -18,13 +18,27 @@ use crate::DomainEventOccurrence;
 use super::bind::MutationEventBinding;
 use super::MutationProgramError;
 
-/// One event arm: a portable binding of one exact event contract to one
-/// mutation program.
+/// One portable event handler: exact event contract → one mutation program.
+///
+/// Application authors should not construct these by hand; use
+/// [`bind_state_body_to_mutation`], [`bind_delete_to_envelope_id`], or the
+/// [`crate::portable_handlers`] macro. The dual-path projection mount is an
+/// internal detail of compilation.
 pub struct MutationProjectionArm {
-    /// Stable arm id used in the dual-path projection program.
+    /// Stable id for the compiled internal mount (derived from the event name).
+    /// Not part of the public author model — prefer [`bind_state_body_to_mutation`].
+    #[doc(hidden)]
     pub arm_id: &'static str,
-    /// Event → mutation input binding (selector + program).
+    /// Event → mutation input binding.
+    #[doc(hidden)]
     pub binding: MutationEventBinding,
+}
+
+impl MutationProjectionArm {
+    /// Event → mutation binding.
+    pub fn binding(&self) -> &MutationEventBinding {
+        &self.binding
+    }
 }
 
 /// Build a dual-path `ProjectionProgram` whose arms are mutation rewrites.
@@ -46,7 +60,7 @@ pub fn program_from_mutation_arms(
 }
 
 /// Map a mutation construction error into a projection program error.
-fn map_mutation_arm_error(
+fn map_handler_compile_error(
     operation: &str,
     error: MutationProgramError,
 ) -> ProjectionProgramError {
@@ -56,34 +70,46 @@ fn map_mutation_arm_error(
     }
 }
 
-/// Build a projector program from mutation arms, with consistent error mapping.
+/// Compile portable event→mutation handlers into the internal projection mount.
 ///
-/// Prefer this over calling [`program_from_mutation_arms`] directly from apps.
+/// This is the dual-path bridge: **authors declare handlers and mutations**;
+/// the runtime still executes through the existing projection mount. Callers
+/// should use [`crate::portable_handlers`] rather than this function.
 ///
 /// # Errors
 ///
 /// Propagates program validation failures.
+pub fn compile_portable_handlers(
+    name: &str,
+    version: u64,
+    partition: ProjectionPartition,
+    handlers: impl IntoIterator<Item = MutationProjectionArm>,
+) -> Result<ProjectionProgram, ProjectionProgramError> {
+    let handlers: Vec<_> = handlers.into_iter().collect();
+    program_from_mutation_arms(name, version, partition, &handlers)
+        .map_err(|error| map_handler_compile_error(name, error))
+}
+
+/// @deprecated use [`compile_portable_handlers`].
+#[doc(hidden)]
 pub fn build_mutation_projector_program(
     name: &str,
     version: u64,
     partition: ProjectionPartition,
     arms: impl IntoIterator<Item = MutationProjectionArm>,
 ) -> Result<ProjectionProgram, ProjectionProgramError> {
-    let arms: Vec<_> = arms.into_iter().collect();
-    program_from_mutation_arms(name, version, partition, &arms)
-        .map_err(|error| map_mutation_arm_error(name, error))
+    compile_portable_handlers(name, version, partition, arms)
 }
 
-/// Bind one domain-event contract to a complete-row upsert mutation for model `M`.
+/// Spec: portable handler binding — domain-event body → mutation input object.
 ///
-/// Event body fields map to `input_root.field` via schema column names
-/// ([`body_bindings_for_model`]).
+/// When the event fires, every non-skipped model column is bound from the event
+/// body into `input.{input_root}.{field}`.
 ///
 /// # Errors
 ///
 /// Propagates selector or binding construction failures.
-pub fn arm_state_upsert_for_model<M>(
-    arm_id: &'static str,
+pub fn bind_state_body_to_mutation<M>(
     descriptor: &crate::DomainEventDescriptor,
     program: super::program::MutationProgram,
     input_root: &str,
@@ -98,38 +124,43 @@ where
         body_bindings_for_model::<M>(input_root)?,
         program,
     )?;
-    Ok(MutationProjectionArm { arm_id, binding })
+    // Stable id for the internal mount only (not part of the public model).
+    let arm_id = Box::leak(descriptor.name.replace('.', "-").into_boxed_str());
+    Ok(MutationProjectionArm {
+        arm_id,
+        binding,
+    })
 }
 
 /// Bind several domain-event contracts to the same complete-row upsert mutation.
 ///
 /// # Errors
 ///
-/// Propagates the first arm construction failure.
-pub fn arms_state_upsert_for_model<M>(
+/// Propagates the first binding construction failure.
+pub fn bind_state_events_to_mutation<M>(
     program: &super::program::MutationProgram,
     input_root: &str,
-    events: &[(&'static str, &crate::DomainEventDescriptor)],
+    events: &[&crate::DomainEventDescriptor],
 ) -> Result<Vec<MutationProjectionArm>, MutationProgramError>
 where
     M: RelationalReadModel,
 {
     events
         .iter()
-        .map(|(arm_id, descriptor)| {
-            arm_state_upsert_for_model::<M>(arm_id, descriptor, program.clone(), input_root)
+        .map(|descriptor| {
+            bind_state_body_to_mutation::<M>(descriptor, program.clone(), input_root)
         })
         .collect()
 }
 
-/// Bind a delete mutation whose single (or first) PK field is filled from the
-/// envelope aggregate id.
+/// Spec: portable handler binding — deletion event → delete mutation by PK.
+///
+/// Fills `input.{pk_field}` from the envelope aggregate id.
 ///
 /// # Errors
 ///
 /// Propagates selector or binding construction failures.
-pub fn arm_delete_pk_from_envelope(
-    arm_id: &'static str,
+pub fn bind_delete_to_envelope_id(
     descriptor: &crate::DomainEventDescriptor,
     program: super::program::MutationProgram,
     pk_field: &str,
@@ -141,7 +172,52 @@ pub fn arm_delete_pk_from_envelope(
         crate::projection::ProjectionEnvelopeField::AggregateId,
     )?];
     let binding = super::bind::MutationEventBinding::try_new(selector, inputs, program)?;
-    Ok(MutationProjectionArm { arm_id, binding })
+    let arm_id = Box::leak(descriptor.name.replace('.', "-").into_boxed_str());
+    Ok(MutationProjectionArm {
+        arm_id,
+        binding,
+    })
+}
+
+// --- Backward-compatible names (hidden; prefer bind_* / compile_portable_handlers) ---
+
+/// @deprecated use [`bind_state_body_to_mutation`].
+#[doc(hidden)]
+pub fn arm_state_upsert_for_model<M>(
+    _arm_id: &'static str,
+    descriptor: &crate::DomainEventDescriptor,
+    program: super::program::MutationProgram,
+    input_root: &str,
+) -> Result<MutationProjectionArm, MutationProgramError>
+where
+    M: RelationalReadModel,
+{
+    bind_state_body_to_mutation::<M>(descriptor, program, input_root)
+}
+
+/// @deprecated use [`bind_state_events_to_mutation`].
+#[doc(hidden)]
+pub fn arms_state_upsert_for_model<M>(
+    program: &super::program::MutationProgram,
+    input_root: &str,
+    events: &[(&'static str, &crate::DomainEventDescriptor)],
+) -> Result<Vec<MutationProjectionArm>, MutationProgramError>
+where
+    M: RelationalReadModel,
+{
+    let descriptors: Vec<_> = events.iter().map(|(_, d)| *d).collect();
+    bind_state_events_to_mutation::<M>(program, input_root, &descriptors)
+}
+
+/// @deprecated use [`bind_delete_to_envelope_id`].
+#[doc(hidden)]
+pub fn arm_delete_pk_from_envelope(
+    _arm_id: &'static str,
+    descriptor: &crate::DomainEventDescriptor,
+    program: super::program::MutationProgram,
+    pk_field: &str,
+) -> Result<MutationProjectionArm, MutationProgramError> {
+    bind_delete_to_envelope_id(descriptor, program, pk_field)
 }
 
 /// Resolve helper monomorphized for a program factory (use with
