@@ -114,8 +114,10 @@ pub async fn scrape_users_to_outbox<R: TransactionalCommit>(
         match publish_mapped_delivery(repo, &mapped).await {
             Ok(()) => report.published += 1,
             Err(e) => {
-                // Duplicate outbox ids (unchanged fingerprint) are expected on re-scrape.
-                if e.contains("UNIQUE") || e.contains("unique") || e.contains("already") {
+                // Content-addressed scrape ids: unchanged profile re-scrape hits the
+                // outbox unique key. That is the durable "already emitted" cache —
+                // count as skip, not error.
+                if is_expected_scrape_duplicate(&e) {
                     report.skipped += 1;
                 } else {
                     report.errors.push(format!(
@@ -127,6 +129,18 @@ pub async fn scrape_users_to_outbox<R: TransactionalCommit>(
         }
     }
     report
+}
+
+/// True when publish failed because this scrape delivery id was already committed.
+///
+/// Matches repository `DuplicateOutboxMessageInBatch` display text and common
+/// SQL unique-violation wording from drivers.
+fn is_expected_scrape_duplicate(err: &str) -> bool {
+    let lower = err.to_ascii_lowercase();
+    lower.contains("duplicate outbox message id")
+        || lower.contains("duplicateoutboxmessageinbatch")
+        || lower.contains("unique")
+        || lower.contains("already exists")
 }
 
 #[derive(Debug, Clone, Deserialize)]
@@ -461,6 +475,21 @@ mod tests {
         let m = map_management_user(&raw).unwrap();
         assert_eq!(m.message_name, MACHINE_CREATED);
         assert_eq!(m.payload.user_kind, "machine");
+    }
+
+    #[test]
+    fn expected_duplicate_classifies_outbox_unique() {
+        assert!(is_expected_scrape_duplicate(
+            "duplicate outbox message id in commit batch: zitadel-scrape:u1:abc"
+        ));
+        assert!(is_expected_scrape_duplicate(
+            "error: UNIQUE constraint failed: outbox_messages.message_id"
+        ));
+        assert!(is_expected_scrape_duplicate(
+            "duplicate key value violates unique constraint \"outbox_messages_pkey\""
+        ));
+        assert!(!is_expected_scrape_duplicate("connection refused"));
+        assert!(!is_expected_scrape_duplicate("zitadel search HTTP 401"));
     }
 
     #[test]
