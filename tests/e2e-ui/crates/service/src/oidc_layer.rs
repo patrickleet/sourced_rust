@@ -1,5 +1,5 @@
 //! Tower layer: under OidcBearer/Hybrid, **require** a valid access token and
-//! inject claim-derived `x-user-id` / `x-role` for command routes.
+//! inject claim-derived `x-user-id` / `x-roles` for command routes.
 //!
 //! Security: client-supplied identity headers are stripped before validation so
 //! spoofed `x-user-id` cannot pass when Bearer is missing or invalid.
@@ -125,15 +125,15 @@ where
                             req.headers_mut().insert("x-user-id", v);
                         }
                     }
-                    if let Some(role) = session.role() {
-                        if let Ok(v) = axum::http::HeaderValue::from_str(role) {
-                            req.headers_mut().insert("x-role", v);
+                    let roles = session.roles();
+                    if !roles.is_empty() {
+                        let joined = roles.join(",");
+                        if let Ok(v) = axum::http::HeaderValue::from_str(&joined) {
+                            req.headers_mut().insert("x-roles", v);
                         }
-                    } else if session.user_id().is_some() {
-                        // Authenticated but no role claim → default user.
-                        req.headers_mut()
-                            .insert("x-role", axum::http::HeaderValue::from_static("user"));
                     }
+                    // Authenticated with empty role set stays empty (anonymous-eligible
+                    // surfaces only) — no synthetic default role injection.
                     inner.call(req).await
                 }
                 Err(AuthError::Unauthorized) => Ok(unauthorized_response()),
@@ -243,10 +243,12 @@ mod tests {
     fn strip_removes_spoof_headers() {
         let mut h = HeaderMap::new();
         h.insert("x-user-id", "attacker".parse().unwrap());
-        h.insert("x-role", "admin".parse().unwrap());
+        h.insert("x-roles", "admin".parse().unwrap());
+        h.insert("x-role", "admin".parse().unwrap()); // legacy spoof — still stripped
         h.insert("authorization", "Bearer tok".parse().unwrap());
         strip_client_identity(&mut h);
         assert!(!h.contains_key("x-user-id"));
+        assert!(!h.contains_key("x-roles"));
         assert!(!h.contains_key("x-role"));
         // Authorization must survive for resolve_session
         assert!(h.contains_key("authorization"));

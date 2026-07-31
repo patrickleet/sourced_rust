@@ -93,7 +93,7 @@ async fn post_graphql_with_role_returns_data() {
                 .method("POST")
                 .uri("/graphql")
                 .header("content-type", "application/json")
-                .header("x-role", "user")
+                .header("x-roles", "user")
                 .body(axum::body::Body::from(
                     r#"{"query":"{ http_items { id name } }"}"#,
                 ))

@@ -351,12 +351,6 @@ pub(super) fn ensure_causal_grant(
     {
         return Ok(());
     }
-    // Legacy singleton `x-role` only when x-roles is empty (DevHeaders tools).
-    if let Some(role) = session.role() {
-        if contract.roles.iter().any(|allowed| allowed == role) {
-            return Ok(());
-        }
-    }
     Err(CausalDispatchError::Forbidden)
 }
 

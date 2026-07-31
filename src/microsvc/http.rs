@@ -161,7 +161,7 @@ fn status_for_error(error: &HandlerError) -> StatusCode {
 ///
 /// **Trust boundary (security-critical):** every request header is copied
 /// verbatim into the [`Session`] — including identity claims (e.g. the
-/// convenience keys `x-user-id` / `x-role`). The framework does NOT
+/// convenience keys `x-user-id` / `x-roles`). The framework does NOT
 /// authenticate. A trusted proxy in front of this service MUST strip any
 /// client-supplied identity headers and inject only authenticated ones.
 /// Without that proxy, any client can set those headers and assume any

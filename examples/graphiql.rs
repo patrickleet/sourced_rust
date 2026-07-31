@@ -7,7 +7,7 @@
 //! cargo run --example graphiql --features "graphql,sqlite"
 //! ```
 //!
-//! Open the URL in a browser. GraphiQL ships default headers `x-role: user`
+//! Open the URL in a browser. GraphiQL ships default headers `x-roles: user`
 //! and `x-user-id: demo` (edit them in the Headers panel for other roles).
 //!
 //! Override bind address with `GRAPHIQL_ADDR` (default `127.0.0.1:4000`).
@@ -91,7 +91,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
     println!("  Health    →  http://{addr}/health");
     println!();
     println!("  Default headers (already set in GraphiQL):");
-    println!("    x-role: user");
+    println!("    x-roles: user");
     println!("    x-user-id: demo");
     println!();
     println!("  Try:");

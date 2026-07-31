@@ -14,10 +14,11 @@ use std::collections::HashMap;
 /// into this key, or handlers read gateway-specific names via [`Session::get`].
 pub const USER_ID_KEY: &str = "x-user-id";
 
-/// Key used by [`Session::role`].
+/// Key used by [`Session::roles`] — comma-separated asserted engine roles.
 ///
+/// Set-only identity (`x-roles`). There is no singleton primary-role key.
 /// Convenience only — not required. See [`USER_ID_KEY`].
-pub const ROLE_KEY: &str = "x-role";
+pub const ROLE_KEY: &str = "x-roles";
 
 /// Parsed session variables from the incoming request.
 ///
@@ -25,13 +26,14 @@ pub const ROLE_KEY: &str = "x-role";
 /// bus message metadata, or a request body's `session_variables` map. The
 /// framework does not interpret most keys — handlers read what they need.
 ///
-/// [`Session::user_id`] / [`Session::role`] are thin helpers over
+/// [`Session::user_id`] / [`Session::roles`] are thin helpers over
 /// [`USER_ID_KEY`] / [`ROLE_KEY`]. They are not a protocol. Example mappings
 /// a trusted edge might perform:
 ///
 /// | Gateway | Example source claim | Inject as (for helpers) |
 /// |---|---|---|
 /// | JWT middleware | `sub` | `x-user-id` |
+/// | OIDC roles claim map | `roles` / `groups` / … | `x-roles` (comma-separated) |
 /// | Custom ingress | `X-User-Id` | `x-user-id` (after auth) |
 /// | Hasura action | `x-hasura-user-id` | `x-user-id`, or read via `.get("x-hasura-user-id")` |
 ///
@@ -41,7 +43,7 @@ pub const ROLE_KEY: &str = "x-role";
 /// whatever the transport hands it — HTTP request headers, gRPC metadata, or
 /// the request payload's `session_variables`. None of that is verified here.
 /// Identity values (including those under [`USER_ID_KEY`] / [`ROLE_KEY`]) are
-/// trusted at face value by [`Session::user_id`], [`Session::role`], and any
+/// trusted at face value by [`Session::user_id`], [`Session::roles`], and any
 /// handler that reads them.
 ///
 /// You MUST deploy this behind a **trusted proxy / API gateway** that:
@@ -89,27 +91,38 @@ impl Session {
         self.get(USER_ID_KEY)
     }
 
-    /// Get a single role under the convenience key [`ROLE_KEY`].
-    ///
-    /// Prefer [`Session::roles`] — identity is a set (`x-roles`). This helper
-    /// remains for gateways that still inject a singleton role header and for
-    /// metrics labels; GraphQL execution does not use it as identity.
-    pub fn role(&self) -> Option<&str> {
-        self.get(ROLE_KEY)
-    }
-
-    /// Asserted engine roles for this principal (`x-roles`, comma-separated).
+    /// Asserted engine roles for this principal ([`ROLE_KEY`] / `x-roles`).
     ///
     /// Set-only identity: multi-role principals list every allowlisted role.
     /// Order is first-seen discovery order from claim mapping.
     pub fn roles(&self) -> Vec<&str> {
-        let Some(raw) = self.get("x-roles").or_else(|| self.get("X-Roles")) else {
+        let Some(raw) = self.get(ROLE_KEY).or_else(|| self.get("X-Roles")) else {
             return Vec::new();
         };
         raw.split(',')
             .map(str::trim)
             .filter(|part| !part.is_empty())
             .collect()
+    }
+
+    /// True when `role` is a member of the asserted set.
+    pub fn has_role(&self, role: &str) -> bool {
+        self.roles().iter().any(|asserted| *asserted == role)
+    }
+
+    /// Singleton convenience: the sole asserted role, or `None` when the set
+    /// is empty or multi-valued. Prefer [`roles`] / [`has_role`].
+    pub fn role(&self) -> Option<&str> {
+        let Some(raw) = self.get(ROLE_KEY).or_else(|| self.get("X-Roles")) else {
+            return None;
+        };
+        let mut parts = raw.split(',').map(str::trim).filter(|part| !part.is_empty());
+        let first = parts.next()?;
+        if parts.next().is_some() {
+            None
+        } else {
+            Some(first)
+        }
     }
 
     /// Get a session variable by key.
@@ -142,6 +155,7 @@ mod tests {
         let session = Session::new();
         assert_eq!(session.user_id(), None);
         assert_eq!(session.role(), None);
+        assert!(session.roles().is_empty());
         assert!(!session.has("anything"));
     }
 
@@ -153,9 +167,21 @@ mod tests {
         let session = Session::from_map(vars);
 
         assert_eq!(session.user_id(), Some("user-42"));
+        assert_eq!(session.roles(), vec!["customer"]);
         assert_eq!(session.role(), Some("customer"));
+        assert!(session.has_role("customer"));
         assert!(session.has(USER_ID_KEY));
         assert!(!session.has("x-admin-secret"));
+    }
+
+    #[test]
+    fn multi_role_set_is_not_a_singleton() {
+        let mut session = Session::new();
+        session.set(ROLE_KEY, "admin,user");
+        assert_eq!(session.roles(), vec!["admin", "user"]);
+        assert!(session.has_role("admin"));
+        assert!(session.has_role("user"));
+        assert_eq!(session.role(), None);
     }
 
     #[test]
@@ -173,6 +199,7 @@ mod tests {
         let mut session = Session::new();
         session.set(ROLE_KEY, "admin");
         assert_eq!(session.get(ROLE_KEY), Some("admin"));
+        assert_eq!(session.roles(), vec!["admin"]);
         assert_eq!(session.role(), Some("admin"));
     }
 }

@@ -1344,8 +1344,8 @@ curl -X POST http://localhost:3000/counter.initialize \
 curl http://localhost:3000/health
 ```
 
-`x-user-id` / `x-role` are convenience keys for `Session::user_id()` /
-`Session::role()` only — not a required protocol. Your gateway can inject any
+`x-user-id` / `x-roles` are convenience keys for `Session::user_id()` /
+`Session::roles()` only — not a required protocol. Your gateway can inject any
 claim names; handlers read them with `session.get("…")` or map claims to the
 convenience keys at the edge.
 
@@ -1406,7 +1406,7 @@ string map built from whatever the transport provides — HTTP request headers,
 gRPC metadata, and (for gRPC) the request payload's `session_variables`.
 Identity claims are trusted at face value by handlers. Claim **names** are
 deployment convention, not a fixed protocol (`Session::user_id` /
-`Session::role` only look up the convenience keys `x-user-id` / `x-role`).
+`Session::roles` only look up the convenience keys `x-user-id` / `x-roles`).
 
 You **must** deploy `microsvc` behind a **trusted proxy / API gateway**
 (JWT middleware, authenticating ingress, a query-layer action such as Hasura,
@@ -1649,7 +1649,7 @@ under [`src/graphql/identity/`](src/graphql/identity/):
 | **`OidcBearer`** | **Default for public edges:** JWT access tokens (`Authorization: Bearer …`), JWKS (incl. discovery), iss/aud/exp/nbf, alg allowlist (no `alg=none`), claim → engine roles. Configure with `OIDC_ISSUER` / `OIDC_AUDIENCE` (and related). |
 | **`TrustedProxy`** | Mesh/gateway already authenticated; inject trusted headers, strip client spoofing. |
 | **`Hybrid`** | Bearer when present, else trusted proxy headers. |
-| **`DevHeaders`** | Local only: ambient `x-user-id` / `x-role`. **Never** on a public edge. |
+| **`DevHeaders`** | Local only: ambient `x-user-id` / `x-roles`. **Never** on a public edge. |
 
 Scaffolds prefer **`OidcBearer`** whenever OIDC env is set — not DevHeaders.
 
@@ -1693,7 +1693,7 @@ cargo run --example graphiql --features "graphql,sqlite"
 ```
 
 GraphiQL is a **developer** tool. Default headers in the playground trust
-`x-role` / `x-user-id` (DevHeaders-style). For real services:
+`x-roles` / `x-user-id` (DevHeaders-style). For real services:
 
 - Prefer **`graphiql(false)`** or env policy (`GRAPHIQL=0`, production
   `RUST_ENV` / `graphiql_enabled_from_env`) so production never ships the IDE.

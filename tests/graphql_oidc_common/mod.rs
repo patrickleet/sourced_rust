@@ -204,8 +204,7 @@ pub async fn run_e1_through_e8(
             .await
             .expect("E1 validate");
         assert_eq!(session.user_id(), Some(sub_a.as_str()), "E1 sub");
-        // Set-only identity: roles live in `x-roles` (Session::roles), not a
-        // priority primary (`Session::role` / `x-role`).
+        // Set-only identity: roles live in `x-roles` (Session::roles).
         let roles: Vec<String> = session.roles().into_iter().map(str::to_string).collect();
         assert!(
             roles.iter().any(|r| r == "customer" || r == "user" || r == "admin"),
@@ -249,7 +248,7 @@ pub async fn run_e1_through_e8(
     {
         let mut h = bearer_headers(&token_a);
         h.insert("x-user-id", HeaderValue::from_static("evil-spoof"));
-        h.insert("x-role", HeaderValue::from_static("admin"));
+        h.insert("x-roles", HeaderValue::from_static("admin"));
         let session = resolve_session(&h, engine.identity_config())
             .await
             .expect("E2 resolve");

@@ -29,14 +29,13 @@ pub(crate) fn attach_protocol_response(
     }
 }
 
-/// Legacy single-role pick — prefer [`ExecutionAuthority::privilege_role`].
+/// First asserted role, else anonymous — prefer [`ExecutionAuthority::privilege_role`].
 #[allow(dead_code)]
 pub(crate) fn resolve_role(session: &Session, anonymous: &str) -> String {
     session
         .roles()
         .first()
         .map(|role| (*role).to_string())
-        .or_else(|| session.role().filter(|r| !r.is_empty()).map(|s| s.to_string()))
         .unwrap_or_else(|| anonymous.to_string())
 }
 

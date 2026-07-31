@@ -180,7 +180,7 @@ test('replica GraphQL live work merges surface binding with resume and closes on
 	socket.open();
 	assert.deepEqual(socket.sent[0], {
 		type: 'connection_init',
-		payload: { 'x-user-id': 'alice', 'x-role': 'user' }
+		payload: { 'x-user-id': 'alice', 'x-roles': 'user' }
 	});
 	socket.message({ type: 'connection_ack' });
 	assert.deepEqual(socket.sent[1], {

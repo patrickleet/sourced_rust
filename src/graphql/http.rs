@@ -337,7 +337,7 @@ pub async fn microsvc_graphql_get(State(service): State<Arc<Service>>) -> Respon
 /// `headers.Authorization`). Validate with the same OidcBearer path as HTTP.
 ///
 /// **DevHeaders (local):** identity from upgrade headers, query params, or
-/// GraphiQL `wsConnectionParams` (`x-user-id` / `x-role`). Empty clients remain
+/// GraphiQL `wsConnectionParams` (`x-user-id` / `x-roles`). Empty clients remain
 /// anonymous; the GraphiQL page sends its demo identity explicitly.
 pub async fn microsvc_graphql_ws(
     State(service): State<Arc<Service>>,

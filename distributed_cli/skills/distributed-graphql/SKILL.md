@@ -90,7 +90,7 @@ cargo run --example graphiql --features "graphql,sqlite"
 GRAPHIQL=0 cargo run   # disable IDE in production
 ```
 
-Default GraphiQL headers: `x-role: user`, `x-user-id: demo`. Edit in the IDE
+Default GraphiQL headers: `x-roles: user`, `x-user-id: demo`. Edit in the IDE
 Headers panel. See `README § GraphQL query service`.
 
 ### Identity (public GraphQL)
@@ -108,7 +108,7 @@ ambient `DevHeaders` on the public scaffold path.
 | `DevHeaders` | Local GraphiQL / unit tests only (explicit opt-in) |
 
 Wire via `.identity(distributed::graphql::public_oidc_identity_from_env())`.
-Never trust raw client `x-user-id` / `x-role` on a public edge.
+Never trust raw client `x-user-id` / `x-roles` on a public edge.
 
 Pass `change_stream(repo.read_model_changes())` for live subscriptions.
 

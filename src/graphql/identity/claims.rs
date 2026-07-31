@@ -180,10 +180,10 @@ mod tests {
             map_claims_to_session(&claims, &cfg_with_engine(&["admin", "customer", "user"]))
                 .unwrap();
         assert_eq!(session.user_id(), Some("user-a-001"));
-        // Lexicographic object keys → admin,customer. No primary x-role.
+        // Lexicographic object keys → admin,customer. Set-only; no singleton role().
         assert_eq!(session.get("x-roles"), Some("admin,customer"));
+        assert_eq!(session.roles(), vec!["admin", "customer"]);
         assert_eq!(session.role(), None);
-        assert!(session.get("x-role").is_none());
     }
 
     #[test]
@@ -200,7 +200,8 @@ mod tests {
                 .unwrap();
         assert_eq!(session.user_id(), Some("user-b-002"));
         assert_eq!(session.get("x-roles"), Some("customer"));
-        assert_eq!(session.role(), None);
+        assert_eq!(session.roles(), vec!["customer"]);
+        assert_eq!(session.role(), Some("customer"));
     }
 
     #[test]
