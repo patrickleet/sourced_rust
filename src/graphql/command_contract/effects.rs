@@ -17,9 +17,10 @@ pub(crate) enum EffectExpression {
     },
     /// SQL null, emitted only by the type-checked `null()` expression.
     Null,
-    /// Construction-time serialization failure. This private sentinel is
-    /// rejected before contract fingerprinting or Surface/manifest emission.
+    /// Construction-time serialization failure sentinel (legacy effect macro).
+    /// Kept for IR shape stability; no longer constructed after macro removal.
     #[serde(skip)]
+    #[allow(dead_code)]
     InvalidConstant {
         error: String,
     },

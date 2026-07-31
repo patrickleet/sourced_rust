@@ -215,6 +215,10 @@ pub(crate) fn prepare_portable_projection(
 
 /// Prepare a stateful graph diff, retaining exact already-loaded revisions and
 /// querying only previously unseen mutation scopes.
+///
+/// Used by projection protocol unit tests; portable/modeled handlers use
+/// [`prepare_portable_projection`].
+#[cfg_attr(not(test), allow(dead_code))]
 pub(crate) fn prepare_graph_projection(
     workspace: &ProjectionWorkspace,
     plan: TableWritePlan,
