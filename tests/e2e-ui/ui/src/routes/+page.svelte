@@ -504,7 +504,9 @@ pub const TODO_READS: ProjectionDescriptor<EventualOnly> =
   let mut game = repo.get(&input.game_id).await?
     .ok_or_else(|| HandlerError::NotFound(input.game_id.clone()))?;
   game.move_dir(&owner, dir).map_err(rejected)?;
-  repo.project(BLOB_GAMES).commit(game)?.projected()
+  // Placement-selected direct: service owns BLOB_GAMES / SAVE_BLOB_GAME.
+  // Command-side .project(BLOB_GAMES) selector was removed.
+  repo.commit(game)?.projected()
 }`
 				},
 				{
@@ -1069,8 +1071,8 @@ Service
 					<span class="wf-card-kicker">Projected</span>
 					<h3>Blob — row commits with the command</h3>
 					<p>
-						<code>PreparedCommand&lt;Projected&lt;BlobGames&gt;&gt;</code> +
-						<code>project(BLOB_GAMES).commit().projected()</code>. Map/score are in the
+						<code>PreparedCommand&lt;Projected&lt;BlobGames&gt;&gt;</code> via placement-selected
+						<code>commit()?.projected()</code> (no command-side projection selector). Map/score are in the
 						mutation payload; the replica applies them before the call resolves. Revalidation may
 						still race — fences keep your own write from rolling back under a lagging stamp.
 					</p>

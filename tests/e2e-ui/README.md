@@ -95,7 +95,9 @@ repo.publish_events()
     })
 ```
 
-Blob uses the same projection model through the direct terminal:
+Blob uses placement-selected direct projection — the command does **not** name
+a projection selector. Service registration owns `BLOB_GAMES` / `SAVE_BLOB_GAME`;
+handlers only call the fluent terminal:
 
 ```rust
 let repo = ctx.repo();
@@ -105,7 +107,8 @@ let mut game = repo
     .ok_or_else(|| HandlerError::NotFound(input.game_id.clone()))?;
 game.move_dir(&owner, direction).map_err(rejected)?;
 
-repo.project(BLOB_GAMES).commit(game)?.projected()
+// Placement-selected: no `.project(BLOB_GAMES)` — that selector was removed.
+repo.commit(game)?.projected()
 ```
 
 `Projected<BlobGames>` means aggregate history, command ledger, read-model row,
