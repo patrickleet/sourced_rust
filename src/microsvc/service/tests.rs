@@ -221,6 +221,7 @@ fn causal_direct_program(
     )
 }
 
+#[cfg(feature = "graphql")]
 fn causal_direct_v1_program() -> Result<crate::ProjectionProgram, crate::ProjectionProgramError> {
     causal_direct_program(
         "project_causal_direct",

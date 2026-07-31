@@ -173,13 +173,15 @@ async fn t1a_application_surface_returns_actual_todo_upsert_and_causal_obligatio
         }}"#
     );
     let manifest = distributed_client_surface().manifest().unwrap();
+    // Application surface `e2e-ui` is registered with roles ["user"] only; the
+    // protocol selector requires an exact roles match (see select_protocol_surface).
     let response = graphql_for_application(
         &base,
         &mutation,
         "alice",
         "user",
         DISTRIBUTED_CLIENT_SURFACE,
-        &["admin", "user"],
+        &["user"],
         &manifest.schema_fingerprint,
     )
     .await
