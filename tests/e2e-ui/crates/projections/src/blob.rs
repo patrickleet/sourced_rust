@@ -117,22 +117,24 @@ pub const BLOB_GAMES: ProjectionDescriptor<DirectCandidate> = descriptor_from_fa
 /// Eventual-only patch/delete/multi-row descriptors still cannot claim the
 /// single-row direct `projected` terminal (type-level, not macro-level).
 ///
+/// Live path (placement-selected; no command-side selector):
+/// `repo.commit(game)?.projected()`.
+///
 /// ```compile_fail,E0599
 /// use blob_domain::BlobGame;
 /// use e2e_readmodels::BlobGames;
 /// use e2e_projections::BLOB_GAMES;
 /// use distributed::microsvc::{AggregateCheckout, CausalCommandContext};
 ///
-/// // DirectCandidate descriptors expose `projected`; inventing a projected
-/// // claim from a non-direct path is still a type error when the fluent
-/// // terminal is missing — here we force a method that does not exist on the
-/// // intermediate commit type for multi-model / non-direct programs.
-/// fn cannot_claim_projected_from_unit(
+/// // Migration note: command-side `.project(BLOB_GAMES)` was removed.
+/// // Direct registration owns the program; inventing a multi-row projected
+/// // claim is still a type error (no `projected_many` terminal).
+/// fn cannot_use_removed_project_selector_or_projected_many(
 ///     ctx: &CausalCommandContext<'_, BlobGame>,
 ///     game: AggregateCheckout<BlobGame>,
 /// ) {
 ///     let _ = ctx
-///         .project(BLOB_GAMES)
+///         .project(BLOB_GAMES) // removed selector — does not exist
 ///         .commit(game)
 ///         .unwrap()
 ///         .projected_many::<BlobGames>();
