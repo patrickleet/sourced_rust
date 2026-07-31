@@ -220,10 +220,12 @@ macro_rules! graphql_models {
 // Session convenience re-exports used by GraphQL permission filters.
 pub use microsvc::{ROLE_KEY, USER_ID_KEY};
 
-// Re-export proc macros (event-owning `projection!` removed — use `mutation!`)
+// Re-export proc macros (event-owning `projection!` and separately authored
+// `command_effects!` / `command_confirmations!` removed — use `mutation!` +
+// portable/modeled handlers; commands predict events via `.emits`/`.preview`).
 pub use distributed_macros::{
-    aggregate, command_confirmations, command_effects, command_input_defaults, digest, mutation,
-    sourced, DomainEvent, DomainState, GraphqlInput, GraphqlOutput, ReadModel, Snapshot,
+    aggregate, command_input_defaults, digest, mutation, sourced, DomainEvent, DomainState,
+    GraphqlInput, GraphqlOutput, ReadModel, Snapshot,
 };
 
 // Re-export enqueue macro (requires "emitter" feature)

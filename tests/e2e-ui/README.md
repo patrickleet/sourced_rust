@@ -36,26 +36,23 @@ fn record_completed(&mut self) {
     self.status = TodoStatus::Completed;
 }
 
-pub const TODO_READS: ProjectionDescriptor<EventualOnly> = projection! {
-    name: "project_todos";
+// Event-independent mutations (no event names in the IR):
+pub const SAVE_TODO: Mutation<TodoState> = mutation! {
+    name: "save_todo";
     version: 1;
-    epoch: "e2e-ui-todos-v2";
-    partition: unit;
-
-    on [
-        "todo.created",
-        "todo.renamed",
-        "todo.completed",
-        "todo.reopened",
-        "todo.archived"
-    ] version 1 (state: TodoState) {
-        upsert Todos from state as todo;
-    }
-
-    on "todo.purged" version 1 (deleted: TodoDomainIdentity) {
-        delete Todos { key { todo_id: envelope.aggregate_id } };
-    }
+    upsert Todos from input;
 };
+pub const DELETE_TODO: Mutation<TodoDomainIdentity> = mutation! {
+    name: "delete_todo";
+    version: 1;
+    delete Todos { key { todo_id: input.todo_id } };
+};
+
+// Portable descriptor rewrites SAVE_*/DELETE_* arms into the projection
+// executor (see projections/src/todos.rs factories).
+pub const TODO_READS: ProjectionDescriptor<EventualOnly> = descriptor_from_factories(
+    "project_todos", 1, "e2e-ui-todos-v2", /* program/resolve/lower/inventory */
+);
 ```
 
 The command registration links the command to its possible domain event and
@@ -131,21 +128,19 @@ relationship work remain eventual.
   `BlobGames`.
 
 When state transfer is unsuitable, use an explicit sparse domain-event DTO.
-The projection syntax supports upsert, patch, delete, link, unlink, model or
-relationship invalidation, and client revalidation fallback.
+`mutation!` supports upsert, patch, delete, link, unlink, model or relationship
+invalidation; portable handlers bind events to mutation inputs.
 
-## Portable projections and stateful read-model work
+## Portable mutations and modeled projectors
 
-`projection!` is the portable semantic program shared by eventual server
-consumers, eligible same-transaction execution, and client optimism. It can
-fan one event out to multiple tables and relationship operations.
+`mutation!` is the public, event-independent authoring path for read-model
+writes. Portable/modeled event handlers bind domain occurrences to mutation
+programs; the same IR lowers on the server and for role-safe client cache
+optimism. Multi-model atomicity is expressed as multi-op mutation programs, not
+a public projector ORM workspace.
 
-The existing fluent read-model workspace remains the escape hatch for
-data-dependent, stateful work: load current rows/relationships, apply arbitrary
-multi-table ORM plans, and commit atomically. That is not merely an ACK with a
-subscription; its declared output scopes still produce causal obligations.
-What does not execute in the browser becomes a scoped invalidation and
-revalidation.
+Application commands predict events with `.emits` / `.preview` and never name
+projection selectors (Blob uses placement-selected `commit()?.projected()`).
 
 Query relationships are declared once on the referencing read model, without a
 second projection ORM. This fixture adds `Todos.owner`, `BlobGames.owner`, and

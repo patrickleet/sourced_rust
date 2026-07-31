@@ -1,5 +1,0 @@
-error: trusted() preset name must be 1..=128 bytes, have no surrounding whitespace, and contain no control characters
-  --> tests/command_effects_compile_fail/trusted_preset_without_scope.rs:20:35
-   |
-20 |             set { status: trusted("") }
-   |                                   ^^

@@ -11,7 +11,7 @@ use super::direct_projection::{
     CompiledDirectProjectionTarget, DirectProjectionTargetResolutionError,
     ResolvedDirectProjectionTarget,
 };
-use super::effect_wire::{CompiledCommandEffects, CompiledConfirmationPlan, CompiledInputDefaults};
+use super::effect_wire::CompiledInputDefaults;
 use super::effects::{
     invalid_confirmation_constant, invalid_expression_constant, CommandEffects, EffectExpression,
 };
@@ -613,31 +613,14 @@ impl<I, K: CommandOutcome> TypedCommand<I, K> {
         self
     }
 
-    pub fn effects(mut self, effects: CompiledCommandEffects<I>) -> Self {
-        self.contract.effects = effects.0;
-        self.contract.effects.canonicalize();
-        self
-    }
-
     /// Declare values generated once into the canonical command input before
-    /// dispatch. Effects and confirmations must reference the finalized input
-    /// field rather than invoking a generator independently.
+    /// dispatch. Generators are referenced from `.preview` / mutation inputs
+    /// rather than separately authored command effects.
     pub fn input_defaults(mut self, defaults: CompiledInputDefaults<I>) -> Self {
         self.contract.input_defaults = defaults.0;
         self.contract
             .input_defaults
             .sort_by(|left, right| left.path.cmp(&right.path));
-        self
-    }
-
-    /// Declare the finite projector/model/key progress that confirms this
-    /// causal outcome.
-    /// Legacy `Causal<_>` commands require at least one confirmation unless
-    /// they declare an exact emitted-event set for modeled runtime derivation.
-    /// `Succeeded<_>` may omit the plan (terminal succeeded) or provide one.
-    /// `Projected<_>` commands cannot carry asynchronous confirmations.
-    pub fn confirmations(mut self, confirmations: CompiledConfirmationPlan<I>) -> Self {
-        self.contract.confirmations = confirmations.0;
         self
     }
 

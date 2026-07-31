@@ -1,4 +1,10 @@
 //! Commit-less read-model graph workspace for causal projector handlers.
+//!
+//! Crate-private. Application authoring uses modeled/mutation handlers.
+//! APIs here remain for in-crate protocol unit tests; suppress dead_code noise
+//! when the production path only uses portable apply.
+
+#![allow(dead_code)]
 
 use std::collections::{BTreeMap, HashMap, HashSet};
 use std::marker::PhantomData;
@@ -26,28 +32,20 @@ static STORE_FREE_READ_MODELS: () = ();
 
 /// One graph root loaded with its exact causal protocol revision.
 #[derive(Clone, Debug)]
-pub struct LoadedProjectionGraph<M> {
+pub(crate) struct LoadedProjectionGraph<M> {
     /// Hydrated root data, including every requested relationship.
     pub data: M,
     /// Exact protocol revision from the same adapter snapshot as `data`.
     pub revision: RecordRevision,
 }
 
-/// Stateful read-model workspace without a storage commit capability.
+/// Crate-private graph staging workspace for protocol tests and portable apply.
 ///
-/// The only public terminal is
-/// [`CausalProjectorContext::apply`](super::CausalProjectorContext::apply).
-/// The wrapper deliberately has no `Deref`, `into_inner`, or public accessor to
-/// its ordinary workspace.
-///
-/// ```compile_fail
-/// use distributed::microsvc::ProjectionReadModelWorkspace;
-///
-/// async fn bypass(workspace: ProjectionReadModelWorkspace) {
-///     workspace.commit().await.unwrap();
-/// }
-/// ```
-pub struct ProjectionReadModelWorkspace {
+/// Application projectors must use modeled/mutation handlers
+/// ([`super::ModeledProjection::apply`]), not a public load/mutate/sync ORM
+/// authoring surface.
+#[allow(dead_code)] // exercised from `#[cfg(test)]` modules and protocol fixtures
+pub(crate) struct ProjectionReadModelWorkspace {
     snapshots: Arc<dyn ProjectionSnapshotReader>,
     causal: Arc<Mutex<Option<ProjectionWorkspace>>>,
     read_models: ReadModelWorkspace<'static, ()>,
@@ -58,6 +56,7 @@ pub struct ProjectionReadModelWorkspace {
     query_scopes: Arc<ProjectionQueryScopeBudget>,
 }
 
+#[allow(dead_code)] // crate-private staging surface; exercised by cfg(test) modules
 impl ProjectionReadModelWorkspace {
     pub(super) fn new(
         snapshots: Arc<dyn ProjectionSnapshotReader>,
@@ -590,8 +589,8 @@ fn graph_record_scopes(
     Ok(scopes)
 }
 
-/// Builder for one explicit coherent graph load.
-pub struct ProjectionGraphLoadBuilder<'workspace, M>
+/// Builder for one explicit coherent graph load (crate-private).
+pub(crate) struct ProjectionGraphLoadBuilder<'workspace, M>
 where
     M: RelationalReadModel + RelationalReadModelIncludes,
 {

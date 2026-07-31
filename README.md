@@ -1563,24 +1563,25 @@ distributed = { version = "0.1", features = ["graphql", "postgres"] }
 
 ```rust,ignore
 use distributed::graphql::{
-    claim, col, read, typed_command, Fact, GraphqlEngine,
+    claim, col, read, typed_command, Causal, GraphqlEngine,
 };
 use distributed::microsvc::{Routes, Service};
 
 let routes = Routes::new()
     .with_repo(repository.clone().aggregate::<Todo>())
     .typed_command(
-        typed_command::<CreateTodoInput, Fact<TodoStatusPayload>>("todo.create")
+        typed_command::<CreateTodoInput, Causal<TodoStatusPayload>>("todo.create")
             .field_name("todos_create")
             .roles(["user", "admin"])
-            .confirmations(todo_confirmations),
+            .emits(distributed::events![TodoCreatedDomainEvent])
+            .preview(/* state_preview! binding for optimism */),
     )
     .handle(create_todo)
     .typed_command(
-        typed_command::<ForceArchiveInput, Fact<TodoStatusPayload>>("todo.force_archive")
+        typed_command::<ForceArchiveInput, Causal<TodoStatusPayload>>("todo.force_archive")
             .field_name("todos_force_archive")
             .roles(["admin"])
-            .confirmations(todo_confirmations),
+            .emits(distributed::events![TodoArchivedDomainEvent]),
     )
     .handle(force_archive);
 

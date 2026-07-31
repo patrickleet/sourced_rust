@@ -35,15 +35,15 @@ use distributed::projection::placement::{
 use distributed::projection::ProjectionEventSelector;
 use distributed::projection_protocol::ProjectorTopologyId;
 use distributed::{
-    body_bindings_for_model, body_field_binding, command_confirmations, command_effects,
-    command_input_defaults, descriptor_from_factories, inventory_single_model, lower_single_model,
-    program_from_mutation_arms, resolve_mutation_program, Aggregate, AggregateRepository,
-    DistributedProjectManifest, DomainEventDescriptor, DomainEventOccurrence, Entity, EventRecord,
-    GraphqlInput, GraphqlOutput, InMemoryRepository, MutationAssignment, MutationEventBinding,
-    MutationExpression, MutationField, MutationKeyField, MutationKind, MutationOperation,
-    MutationProgram, MutationProgramError, MutationProjectionArm, ProjectionExpression,
-    ProjectionPartition, ProjectionProgram, ProjectionProgramError, ProjectionValue,
-    ProjectionValueType, ReadModel, RelationalReadModel, ResolvedProjectionPlan, SqliteRepository,
+    body_bindings_for_model, body_field_binding, command_input_defaults, descriptor_from_factories,
+    inventory_single_model, lower_single_model, program_from_mutation_arms,
+    resolve_mutation_program, Aggregate, AggregateRepository, DistributedProjectManifest,
+    DomainEventDescriptor, DomainEventOccurrence, Entity, EventRecord, GraphqlInput, GraphqlOutput,
+    InMemoryRepository, MutationAssignment, MutationEventBinding, MutationExpression,
+    MutationField, MutationKeyField, MutationKind, MutationOperation, MutationProgram,
+    MutationProgramError, MutationProjectionArm, ProjectionExpression, ProjectionPartition,
+    ProjectionProgram, ProjectionProgramError, ProjectionValue, ProjectionValueType, ReadModel,
+    RelationalReadModel, ResolvedProjectionPlan, SqliteRepository,
 };
 use serde::{Deserialize, Serialize};
 use tower::util::ServiceExt;
@@ -379,6 +379,7 @@ macro_rules! state_event_contract {
 }
 
 state_event_contract!(PlanChangedDomainEvent, PlanView, "plan.changed");
+state_event_contract!(PlanRenamedDomainEvent, PlanView, "plan.renamed");
 
 fn map_mut_err(operation: &str, err: MutationProgramError) -> ProjectionProgramError {
     ProjectionProgramError::InvalidOperation {
@@ -1248,11 +1249,6 @@ fn direct_plan_projection() -> SurfaceDirectProjection {
         .change_epoch("plan-direct-v1")
 }
 
-fn plan_confirmations() -> distributed::graphql::CompiledConfirmationPlan<PlanInput> {
-    let projector = plan_projector();
-    confirmations_for(&projector)
-}
-
 fn plan_input_defaults() -> distributed::graphql::CompiledInputDefaults<PlanInput> {
     command_input_defaults! {
         input: PlanInput;
@@ -1266,95 +1262,8 @@ fn forged_input_defaults() -> distributed::graphql::CompiledInputDefaults<PlanIn
     ])
 }
 
-fn confirmations_for(
-    projector: &SurfaceProjector,
-) -> distributed::graphql::CompiledConfirmationPlan<PlanInput> {
-    command_confirmations! {
-        input: PlanInput;
-        confirm projector -> PlanView {
-            key { id: input.id },
-            partition: input.id
-        };
-    }
-}
-
 fn plan_permissions(role: &str) -> ModelPermissions<PlanView> {
     ModelPermissions::new().grant(role, read().all_columns())
-}
-
-fn forged_effects() -> distributed::graphql::CompiledCommandEffects<ForgedInput> {
-    let key: distributed::graphql::TypedEffectKey<ForgedView> = __DistributedForgedViewEffectKey {
-        id: distributed::graphql::__effect_key_assignment::<
-            __DistributedForgedViewEffectModelField_id,
-            _,
-        >(distributed::graphql::__effect_input::<
-            ForgedInput,
-            __DistributedForgedInputEffectInputField_id,
-        >()),
-    }
-    .into();
-    distributed::graphql::__command_effects::<ForgedInput>([
-        distributed::graphql::__effect_patch::<ForgedView>(
-            key,
-            vec![distributed::graphql::__effect_assignment::<
-                ForgedCountMarker,
-                _,
-            >(distributed::graphql::__effect_input::<
-                ForgedInput,
-                ForgedTitleMarker,
-            >())],
-        ),
-    ])
-}
-
-fn forged_primary_key_assignment_effects() -> distributed::graphql::CompiledCommandEffects<PlanInput>
-{
-    let key: distributed::graphql::TypedEffectKey<PlanView> = __DistributedPlanViewEffectKey {
-        id: distributed::graphql::__effect_key_assignment::<
-            __DistributedPlanViewEffectModelField_id,
-            _,
-        >(distributed::graphql::__effect_input::<
-            PlanInput,
-            __DistributedPlanInputEffectInputField_id,
-        >()),
-    }
-    .into();
-    distributed::graphql::__command_effects::<PlanInput>([distributed::graphql::__effect_patch::<
-        PlanView,
-    >(
-        key,
-        vec![distributed::graphql::__effect_assignment::<
-            __DistributedPlanViewEffectModelField_id,
-            _,
-        >(distributed::graphql::__effect_input::<
-            PlanInput,
-            __DistributedPlanInputEffectInputField_id,
-        >())],
-    )])
-}
-
-fn two_confirmation_plan(
-    reverse: bool,
-) -> distributed::graphql::CompiledConfirmationPlan<PlanInput> {
-    let first = SurfaceProjector::new("project_a")
-        .facts(["plan.changed"])
-        .models(["PlanView"]);
-    let second = SurfaceProjector::new("project_b")
-        .facts(["plan.changed"])
-        .models(["ForgedView"]);
-    if reverse {
-        command_confirmations! {
-            input: PlanInput;
-            confirm second -> ForgedView { key { id: input.id } };
-            confirm first -> PlanView { key { id: input.id } };
-        }
-    } else {
-        command_confirmations! {
-            input: PlanInput;
-            confirm first -> PlanView { key { id: input.id } };
-            confirm second -> ForgedView { key { id: input.id } };
-        }
-    }
 }
 
 fn service_a(service_id: &str) -> Service {
@@ -1550,41 +1459,35 @@ async fn projected_command_binding_accepts_a_clone_of_the_same_repository_handle
 
 #[tokio::test]
 async fn projector_topology_identity_drift_changes_service_binding_fingerprint() {
-    let declared = SurfaceProjector::new("project_plan")
-        .facts(["plan.changed"])
-        .models(["PlanView"])
-        .partition_by(["id"]);
+    // Modeled path: command contract fingerprint is driven by `.emits` selectors,
+    // not separately authored confirmations.
     let engine_source = Service::new().named("plans").routes(
         causal_routes()
             .typed_command(
                 typed_command::<PlanInput, Succeeded<PlanOutput>>("plan.create")
-                    .confirmations(confirmations_for(&declared)),
+                    .emits(distributed::events![PlanChangedDomainEvent]),
             )
             .handle(succeeded_plan_handler),
     );
     let engine = GraphqlEngine::builder(pool())
         .model::<PlanView>(plan_permissions("anonymous"))
         .service(&engine_source)
-        .client_projectors([declared])
+        .client_projectors([modeled_projector::<PlanView, _>(PLAN_PROJECTION)])
         .build()
         .unwrap();
 
-    let drifted = SurfaceProjector::new("project_plan")
-        .facts(["plan.renamed"])
-        .models(["PlanView"])
-        .partition_by(["id"]);
     let executable = Service::new().named("plans").routes(
         causal_routes()
             .typed_command(
                 typed_command::<PlanInput, Succeeded<PlanOutput>>("plan.create")
-                    .confirmations(confirmations_for(&drifted)),
+                    .emits(distributed::events![PlanRenamedDomainEvent]),
             )
             .handle(succeeded_plan_handler),
     );
     let error = executable
         .try_with_graphql(engine)
         .err()
-        .expect("captured projector topology drift must change service identity");
+        .expect("different emitted event sets must change service identity");
     assert!(error
         .to_string()
         .contains("structural fingerprint mismatch"));
@@ -1764,135 +1667,6 @@ fn pool_free_typed_export_preserves_service_provenance_and_rejects_relabeling() 
     assert!(error
         .to_string()
         .contains("does not match typed Surface provenance"));
-}
-
-#[test]
-fn pool_free_service_and_projector_topology_validate_in_both_call_orders() {
-    let make_service = || {
-        Service::new().named("plans").routes(
-            causal_routes()
-                .typed_command(
-                    typed_command::<PlanInput, Succeeded<PlanOutput>>("plan.create")
-                        .confirmations(plan_confirmations()),
-                )
-                .handle(succeeded_plan_handler),
-        )
-    };
-    let tables = [PlanView::schema().clone()];
-
-    build_surface(&tables, &SurfaceOptions::sqlite())
-        .unwrap()
-        .with_service(&make_service())
-        .unwrap()
-        .with_projectors([plan_projector()])
-        .unwrap();
-    build_surface(&tables, &SurfaceOptions::sqlite())
-        .unwrap()
-        .with_projectors([plan_projector()])
-        .unwrap()
-        .with_service(&make_service())
-        .unwrap();
-
-    let unknown = build_surface(&tables, &SurfaceOptions::sqlite())
-        .unwrap()
-        .with_service(&make_service())
-        .unwrap()
-        .with_projectors([SurfaceProjector::new("some_other_projector")
-            .facts(["plan.changed"])
-            .models(["PlanView"])
-            .partition_by(["id"])])
-        .unwrap_err();
-    assert!(unknown.contains("expects unknown projector `project_plan`"));
-
-    let wrong_model = build_surface(
-        &[PlanView::schema().clone(), ForgedView::schema().clone()],
-        &SurfaceOptions::sqlite(),
-    )
-    .unwrap()
-    .with_projectors([SurfaceProjector::new("project_plan")
-        .facts(["plan.changed"])
-        .models(["ForgedView"])
-        .partition_by(["id"])])
-    .unwrap()
-    .with_service(&make_service())
-    .unwrap_err();
-    assert!(
-        wrong_model.contains("topology identity does not match"),
-        "{wrong_model}"
-    );
-
-    let wrong_facts = build_surface(&tables, &SurfaceOptions::sqlite())
-        .unwrap()
-        .with_service(&make_service())
-        .unwrap()
-        .with_projectors([SurfaceProjector::new("project_plan")
-            .facts(["some.other.fact"])
-            .models(["PlanView"])
-            .partition_by(["id"])])
-        .unwrap_err();
-    assert!(wrong_facts.contains("topology identity does not match"));
-
-    let changed_model_set = build_surface(
-        &[PlanView::schema().clone(), ForgedView::schema().clone()],
-        &SurfaceOptions::sqlite(),
-    )
-    .unwrap()
-    .with_service(&make_service())
-    .unwrap()
-    .with_projectors([SurfaceProjector::new("project_plan")
-        .facts(["plan.changed"])
-        .models(["PlanView", "ForgedView"])
-        .partition_by(["id"])])
-    .unwrap_err();
-    assert!(changed_model_set.contains("topology identity does not match"));
-
-    let captured_reordered = SurfaceProjector::new("project_plan")
-        .facts(["plan.changed", "plan.created", "plan.changed"])
-        .models(["ForgedView", "PlanView", "PlanView"])
-        .partition_by(["id"]);
-    let service = Service::new().named("plans").routes(
-        causal_routes()
-            .typed_command(
-                typed_command::<PlanInput, Succeeded<PlanOutput>>("plan.create")
-                    .confirmations(confirmations_for(&captured_reordered)),
-            )
-            .handle(succeeded_plan_handler),
-    );
-    build_surface(
-        &[PlanView::schema().clone(), ForgedView::schema().clone()],
-        &SurfaceOptions::sqlite(),
-    )
-    .unwrap()
-    .with_service(&service)
-    .unwrap()
-    .with_projectors([SurfaceProjector::new("project_plan")
-        .facts(["plan.created", "plan.changed"])
-        .models(["PlanView", "ForgedView"])
-        .partition_by(["id"])])
-    .expect("fact/model ordering and duplicates are not topology identity drift");
-}
-
-#[test]
-fn pool_free_selection_rejects_omitted_confirmation_topology() {
-    let service = Service::new().named("plans").routes(
-        causal_routes()
-            .typed_command(
-                typed_command::<PlanInput, Causal<PlanOutput>>("plan.fact")
-                    .confirmations(plan_confirmations()),
-            )
-            .handle(fact_plan_handler),
-    );
-    let catalog = build_surface(&[PlanView::schema().clone()], &SurfaceOptions::sqlite())
-        .unwrap()
-        .with_service(&service)
-        .unwrap();
-    let error = surface_for_role(
-        &catalog,
-        "anonymous",
-        &std::collections::BTreeMap::from([("PlanView".into(), RoleGrant::all_columns())]),
-    )
-    .unwrap_err();
-    assert!(error.contains("expects unknown projector `project_plan`"));
 }
 
 #[tokio::test]
@@ -2190,6 +1964,8 @@ async fn json_container_leaves_reach_the_manifest() {
 
 #[tokio::test]
 async fn embedded_primary_keys_reject_keyed_effects_while_composite_keys_remain_normalized() {
+    // Keyed optimistic command_effects! authoring is removed. Embedded BigInt models
+    // still revalidate through modeled mutation lowering; composite keys stay normalized.
     let bigint_manifest = GraphqlEngine::builder(pool())
         .service_id("bigint-read")
         .model::<BigIntKeyView>(ModelPermissions::new().grant("anonymous", read().all_columns()))
@@ -2201,82 +1977,11 @@ async fn embedded_primary_keys_reject_keyed_effects_while_composite_keys_remain_
         bigint_manifest.models[0].normalization,
         distributed::graphql::ModelNormalization::Embedded
     );
-    let bigint_service = Service::new().named("bigint").routes(
-        causal_routes()
-            .typed_command(
-                typed_command::<BigIntKeyInput, Succeeded<PlanOutput>>("bigint.upsert").effects(
-                    command_effects! {
-                        input: BigIntKeyInput;
-                        upsert BigIntKeyView {
-                            key { key: input.key },
-                            set { title: input.title }
-                        };
-                    },
-                ),
-            )
-            .handle(bigint_key_handler),
-    );
-    let error = GraphqlEngine::builder(pool())
-        .model::<BigIntKeyView>(ModelPermissions::new().grant("anonymous", read().all_columns()))
-        .service(&bigint_service)
-        .build()
-        .err()
-        .expect("BigInt identities must not accept keyed optimistic effects");
-    assert!(error.to_string().contains("embedded model `BigIntKeyView`"));
-
-    let relationship_service = Service::new().named("bigint-relationship").routes(
-        causal_routes()
-            .typed_command(
-                typed_command::<BigIntRelationshipInput, Succeeded<PlanOutput>>("bigint.link")
-                    .effects(command_effects! {
-                        input: BigIntRelationshipInput;
-                        link BigIntRelationshipSource.targets -> BigIntRelationshipTarget {
-                            source { key: input.source_key },
-                            target { id: input.target_id }
-                        };
-                    }),
-            )
-            .handle(bigint_relationship_handler),
-    );
-    let error = GraphqlEngine::builder(pool())
-        .model::<BigIntRelationshipSource>(
-            ModelPermissions::new().grant("anonymous", read().all_columns()),
-        )
-        .model::<BigIntRelationshipTarget>(
-            ModelPermissions::new().grant("anonymous", read().all_columns()),
-        )
-        .service(&relationship_service)
-        .build()
-        .err()
-        .expect("relationship effects must reject embedded source identities");
-    assert!(error
-        .to_string()
-        .contains("embedded model `BigIntRelationshipSource`"));
 
     let schema_error = NullableKeyView::schema()
         .validate()
         .expect_err("relational primary keys cannot be nullable");
     assert!(schema_error
-        .to_string()
-        .contains("primary-key column `key` must be non-null"));
-    let nullable_service = Service::new().named("nullable").routes(
-        causal_routes()
-            .typed_command(
-                typed_command::<NullableKeyInput, Succeeded<PlanOutput>>("nullable.delete")
-                    .effects(command_effects! {
-                        input: NullableKeyInput;
-                        delete NullableKeyView { key { key: input.key } };
-                    }),
-            )
-            .handle(nullable_key_handler),
-    );
-    let error = GraphqlEngine::builder(pool())
-        .model::<NullableKeyView>(ModelPermissions::new().grant("anonymous", read().all_columns()))
-        .service(&nullable_service)
-        .build()
-        .err()
-        .expect("nullable identities must be rejected before keyed optimistic effects");
-    assert!(error
         .to_string()
         .contains("primary-key column `key` must be non-null"));
 
@@ -2408,27 +2113,6 @@ async fn embedded_models_retain_global_revalidation_for_modeled_projections() {
 }
 
 #[tokio::test]
-async fn upsert_and_patch_effects_cannot_assign_primary_key_fields() {
-    let service = Service::new().named("plans").routes(
-        causal_routes()
-            .typed_command(
-                typed_command::<PlanInput, Succeeded<PlanOutput>>("plan.bad_patch")
-                    .effects(forged_primary_key_assignment_effects()),
-            )
-            .handle(succeeded_plan_handler),
-    );
-    let error = GraphqlEngine::builder(pool())
-        .model::<PlanView>(plan_permissions("anonymous"))
-        .service(&service)
-        .build()
-        .err()
-        .expect("forged primary-key assignments must fail Surface validation");
-    assert!(error
-        .to_string()
-        .contains("cannot assign primary-key field"));
-}
-
-#[tokio::test]
 async fn succeeded_emitted_event_exports_a_modeled_causal_projection() {
     let command = typed_command::<PlanInput, Succeeded<PlanOutput>>("plan.create")
         .input_defaults(plan_input_defaults())
@@ -2511,65 +2195,9 @@ async fn text_backed_enum_constant_reaches_a_valid_client_manifest() {
 }
 
 #[tokio::test]
-async fn fallible_constant_serialization_returns_a_build_error_without_panicking() {
-    let result = std::panic::catch_unwind(|| {
-        let service = Service::new().named("broken").routes(
-            causal_routes()
-                .typed_command(
-                    typed_command::<PlanInput, Succeeded<PlanOutput>>("broken.patch").effects(
-                        command_effects! {
-                            input: PlanInput;
-                            patch BrokenConstantView {
-                                key { id: input.id },
-                                set { value: constant(BrokenText) }
-                            };
-                        },
-                    ),
-                )
-                .handle(succeeded_plan_handler),
-        );
-        GraphqlEngine::builder(pool())
-            .model::<BrokenConstantView>(
-                ModelPermissions::new().grant("anonymous", read().all_columns()),
-            )
-            .service(&service)
-            .build()
-            .err()
-            .expect("invalid constant serialization must be a configuration error")
-            .to_string()
-    });
-    let error = result.expect("constant construction and registry build must not panic");
-    assert!(error.contains("constant effect value failed to serialize"));
-    assert!(error.contains("broken constant serializer"));
-}
-
-#[tokio::test]
 async fn nonfinite_float_constant_is_rejected_but_explicit_null_is_portable() {
-    let nonfinite = Service::new().named("floats").routes(
-        causal_routes()
-            .typed_command(
-                typed_command::<FloatEffectInput, Succeeded<PlanOutput>>("float.nan").effects(
-                    command_effects! {
-                        input: FloatEffectInput;
-                        patch FloatEffectView {
-                            key { id: input.id },
-                            set { value: constant(f64::NAN) }
-                        };
-                    },
-                ),
-            )
-            .handle(float_effect_handler),
-    );
-    let error = GraphqlEngine::builder(pool())
-        .model::<FloatEffectView>(ModelPermissions::new().grant("anonymous", read().all_columns()))
-        .service(&nonfinite)
-        .build()
-        .err()
-        .expect("non-finite Float constants must not become implicit SQL null");
-    assert!(error
-        .to_string()
-        .contains("non-finite f32/f64 constants cannot be represented"));
-
+    // Non-finite constant rejection via command_effects! is gone with that API.
+    // Explicit null remains portable through modeled mutation projection programs.
     let explicit_null = Service::new().named("floats").routes(
         causal_routes()
             .typed_command(
@@ -2610,85 +2238,8 @@ async fn nonfinite_float_constant_is_rejected_but_explicit_null_is_portable() {
 
 #[tokio::test]
 async fn json_backed_constants_reject_nonfinite_floats_but_preserve_json_null() {
-    let nonfinite_f32 = Service::new().named("json-floats").routes(
-        causal_routes()
-            .typed_command(
-                typed_command::<FloatEffectInput, Succeeded<PlanOutput>>("json-float.infinity")
-                    .effects(command_effects! {
-                        input: FloatEffectInput;
-                        patch JsonFloatEffectView {
-                            key { id: input.id },
-                            set { value_f32: constant(f32::INFINITY) }
-                        };
-                    }),
-            )
-            .handle(float_effect_handler),
-    );
-    let error = GraphqlEngine::builder(pool())
-        .model::<JsonFloatEffectView>(
-            ModelPermissions::new().grant("anonymous", read().all_columns()),
-        )
-        .service(&nonfinite_f32)
-        .build()
-        .err()
-        .expect("non-finite f32 JSON constants must fail before serialization");
-    assert!(error
-        .to_string()
-        .contains("non-finite f32/f64 constants cannot be represented"));
-
-    let nonfinite_f64 = Service::new().named("json-floats").routes(
-        causal_routes()
-            .typed_command(
-                typed_command::<FloatEffectInput, Succeeded<PlanOutput>>("json-float.nan").effects(
-                    command_effects! {
-                        input: FloatEffectInput;
-                        patch JsonFloatEffectView {
-                            key { id: input.id },
-                            set { value_f64: constant(f64::NAN) }
-                        };
-                    },
-                ),
-            )
-            .handle(float_effect_handler),
-    );
-    let error = GraphqlEngine::builder(pool())
-        .model::<JsonFloatEffectView>(
-            ModelPermissions::new().grant("anonymous", read().all_columns()),
-        )
-        .service(&nonfinite_f64)
-        .build()
-        .err()
-        .expect("non-finite f64 JSON constants must fail before serialization");
-    assert!(error
-        .to_string()
-        .contains("non-finite f32/f64 constants cannot be represented"));
-
-    let nested_nonfinite = Service::new().named("json-floats").routes(
-        causal_routes()
-            .typed_command(
-                typed_command::<FloatEffectInput, Succeeded<PlanOutput>>("json-float.nested")
-                    .effects(command_effects! {
-                        input: FloatEffectInput;
-                        patch JsonFloatEffectView {
-                            key { id: input.id },
-                            set { nested_document: constant(NONFINITE_JSON_DOCUMENT) }
-                        };
-                    }),
-            )
-            .handle(float_effect_handler),
-    );
-    let error = GraphqlEngine::builder(pool())
-        .model::<JsonFloatEffectView>(
-            ModelPermissions::new().grant("anonymous", read().all_columns()),
-        )
-        .service(&nested_nonfinite)
-        .build()
-        .err()
-        .expect("nested non-finite JSON constants must fail before serialization");
-    assert!(error
-        .to_string()
-        .contains("non-finite f32/f64 constants cannot be represented"));
-
+    // Non-finite JSON constants via command_effects! removed with that authoring path.
+    // Explicit JSON null remains portable through modeled mutation projection programs.
     let json_null = Service::new().named("json-floats").routes(
         causal_routes()
             .typed_command(
@@ -2731,6 +2282,8 @@ async fn json_backed_constants_reject_nonfinite_floats_but_preserve_json_null() 
 
 #[tokio::test]
 async fn consistency_confirmation_matrix_fails_closed() {
+    // Causal commands without `.emits` (modeled selectors) fail closed — separate
+    // command_confirmations! authoring is gone.
     let missing_fact = Service::new().named("plans").routes(
         causal_routes()
             .typed_command(typed_command::<PlanInput, Causal<PlanOutput>>("plan.fact"))
@@ -2740,27 +2293,10 @@ async fn consistency_confirmation_matrix_fails_closed() {
         .service(&missing_fact)
         .build()
         .err()
-        .expect("fact without a finite plan must fail");
+        .expect("fact without emits/modeled selectors must fail");
     assert!(error
         .to_string()
         .contains("must declare at least one expected projector confirmation"));
-
-    let projected = Service::new().named("plans").routes(
-        causal_routes()
-            .typed_command(
-                typed_command::<PlanInput, Projected<PlanView>>("plan.projected")
-                    .confirmations(plan_confirmations()),
-            )
-            .handle(projected_plan_handler),
-    );
-    let error = GraphqlEngine::builder(pool())
-        .service(&projected)
-        .build()
-        .err()
-        .expect("projected with async confirmation must fail");
-    assert!(error
-        .to_string()
-        .contains("cannot declare asynchronous projector confirmations"));
 }
 
 #[tokio::test]
@@ -2808,58 +2344,4 @@ async fn role_redaction_replaces_an_unsafe_modeled_projection_with_revalidation(
     ));
     assert_eq!(projection.preview_occurrences.len(), 1);
     assert!(projection.preview_occurrences[0].values.is_empty());
-}
-
-#[tokio::test]
-async fn forged_name_valid_marker_types_are_rejected_from_wire_metadata() {
-    let service = Service::new().named("forged").routes(
-        causal_routes()
-            .typed_command(
-                typed_command::<ForgedInput, Succeeded<PlanOutput>>("forged.patch")
-                    .effects(forged_effects()),
-            )
-            .handle(forged_handler),
-    );
-    let error = GraphqlEngine::builder(pool())
-        .model::<ForgedView>(ModelPermissions::new().grant("anonymous", read().all_columns()))
-        .service(&service)
-        .build()
-        .err()
-        .expect("wire String -> BigInt must fail despite forged marker Value types");
-    assert!(error.to_string().contains("has GraphQL type `String`"));
-    assert!(error.to_string().contains("requires `BigInt`"));
-}
-
-#[tokio::test]
-async fn confirmation_set_order_does_not_change_manifest_fingerprint() {
-    let build = |reverse| {
-        let service = Service::new().named("plans").routes(
-            causal_routes()
-                .typed_command(
-                    typed_command::<PlanInput, Succeeded<PlanOutput>>("plan.create")
-                        .confirmations(two_confirmation_plan(reverse)),
-                )
-                .handle(succeeded_plan_handler),
-        );
-        GraphqlEngine::builder(pool())
-            .model::<PlanView>(plan_permissions("anonymous"))
-            .model::<ForgedView>(ModelPermissions::new().grant("anonymous", read().all_columns()))
-            .service(&service)
-            .client_projectors([
-                SurfaceProjector::new("project_a")
-                    .facts(["plan.changed"])
-                    .models(["PlanView"]),
-                SurfaceProjector::new("project_b")
-                    .facts(["plan.changed"])
-                    .models(["ForgedView"]),
-            ])
-            .build()
-            .unwrap()
-            .client_manifest_for_role("anonymous")
-            .unwrap()
-    };
-    let first = build(false);
-    let second = build(true);
-    assert_eq!(first.schema_fingerprint, second.schema_fingerprint);
-    assert_eq!(first.commands, second.commands);
 }
