@@ -26,6 +26,8 @@
 	} from '$lib/chat/lobby-log';
 	import { Button } from '$lib/components/shared/ui';
 	import { AppPage, InlineAlert, PageHeader } from '$lib/components/product';
+	import { HowItsBuilt } from '$lib/components/walkthrough';
+	import { chatWalkthrough } from '$lib/walkthrough';
 	import { isOwnAuthor, sessionDisplayName, sessionPrincipalId } from '$lib/session';
 
 	type ChatMsg = Operation_ChatMessages_Data['chat_messages'][number];
@@ -449,6 +451,8 @@
 		</form>
 	</div>
 </AppPage>
+
+<HowItsBuilt demo={chatWalkthrough} />
 
 <style>
 	/* Lobby shell + messages — page-local only */

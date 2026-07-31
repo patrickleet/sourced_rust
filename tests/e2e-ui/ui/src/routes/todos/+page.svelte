@@ -14,6 +14,8 @@
 		Panel,
 		StatRow
 	} from '$lib/components/product';
+	import { HowItsBuilt } from '$lib/components/walkthrough';
+	import { todosWalkthrough } from '$lib/walkthrough';
 	import { sessionDisplayName } from '$lib/session';
 
 	let { data } = $props();
@@ -231,6 +233,8 @@
 		</details>
 	{/if}
 </AppPage>
+
+<HowItsBuilt demo={todosWalkthrough} />
 
 <style>
 	/* Route-local: composer + task list interaction (not shared chrome) */

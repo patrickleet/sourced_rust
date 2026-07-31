@@ -9,6 +9,8 @@
 	 * and the service unit test `public_surface_opens_and_queries_chat_without_identity`.
 	 */
 	import { AppPage, PageHeader } from '$lib/components/product';
+	import { HowItsBuilt } from '$lib/components/walkthrough';
+	import { publicWalkthrough } from '$lib/walkthrough';
 
 	const SAMPLE = `{
   "query": "{ chat_messages(limit: 10, offset: 0) { message_id body room_id created_at } }",
@@ -48,6 +50,8 @@
 	</ul>
 	<pre class="sample">{SAMPLE}</pre>
 </AppPage>
+
+<HowItsBuilt demo={publicWalkthrough} />
 
 <style>
 	.lead {

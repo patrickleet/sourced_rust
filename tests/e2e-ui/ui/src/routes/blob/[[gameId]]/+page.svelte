@@ -12,6 +12,8 @@
 	import { BlobGames, useCommands } from '$distributed';
 	import { Button } from '$lib/components/shared/ui';
 	import { AppPage, InlineAlert, PageHeader } from '$lib/components/product';
+	import { HowItsBuilt } from '$lib/components/walkthrough';
+	import { blobWalkthrough } from '$lib/walkthrough';
 
 	const TILE = {
 		player: 9,
@@ -364,6 +366,8 @@
 		{/if}
 	</div>
 </AppPage>
+
+<HowItsBuilt demo={blobWalkthrough} />
 
 <style>
 	.blob-page {
