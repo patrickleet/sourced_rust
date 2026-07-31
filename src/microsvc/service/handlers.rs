@@ -120,6 +120,20 @@ where
         self.context.read_models(writes)
     }
 
+    /// Stage one exact projected read-model row for same-transaction commit.
+    ///
+    /// Prefer materializing `row` with [`crate::Mutation::from_state`] so the
+    /// handler write matches the portable mutation IR used for replay/async.
+    pub fn readmodel<M>(
+        &self,
+        row: M,
+    ) -> CausalCommitBuilder<'_, 'route, A, NoPublication, StagedProjectedRow<M>>
+    where
+        M: RelationalReadModel + Serialize + Send + Sync + 'static,
+    {
+        self.context.readmodel(row)
+    }
+
     /// Start a low-level integration-envelope publication unit of work.
     pub fn outbox(
         &self,
@@ -182,6 +196,13 @@ impl<M> Default for DirectReadModelProjection<M> {
 pub const fn direct_read_model<M>() -> DirectReadModelProjection<M> {
     DirectReadModelProjection::new()
 }
+
+/// Handler-owned exact row staged for a same-transaction `Projected<M>` result.
+///
+/// Built by [`CausalRepository::readmodel`] / [`CausalCommandContext::readmodel`].
+/// The row should come from the same mutation program used for event→mutation
+/// replay (typically [`crate::Mutation::from_state`]).
+pub struct StagedProjectedRow<M>(M);
 
 /// Fluent, handler-facing causal unit of work.
 ///
@@ -307,6 +328,29 @@ where
         self
     }
 
+    /// Stage one exact projected read-model row for same-transaction commit.
+    ///
+    /// Unlocks [`PreparedCausalCommit::projected`] without a placement-selected
+    /// service registry entry. Prefer rows from [`crate::Mutation::from_state`].
+    pub fn readmodel<M>(
+        self,
+        row: M,
+    ) -> CausalCommitBuilder<'context, 'route, A, Publication, StagedProjectedRow<M>>
+    where
+        M: RelationalReadModel + Serialize + Send + Sync + 'static,
+    {
+        CausalCommitBuilder {
+            context: self.context,
+            publish_captured_events: self.publish_captured_events,
+            explicit_events: self.explicit_events,
+            outbox_messages: self.outbox_messages,
+            read_model_plans: self.read_model_plans,
+            error: self.error,
+            projection: StagedProjectedRow(row),
+            _publication: PhantomData,
+        }
+    }
+
     /// Stage another aggregate while keeping this builder open.
     ///
     /// Explicit events currently waiting on the builder bind to this aggregate;
@@ -430,6 +474,23 @@ where
     }
 }
 
+impl<A, Publication, M> PreparedCausalCommit<'_, '_, A, Publication, StagedProjectedRow<M>>
+where
+    A: Aggregate + Send + Sync + 'static,
+    M: RelationalReadModel + Serialize + Send + Sync + 'static,
+{
+    /// Return the handler-staged exact row as a same-transaction projected result.
+    ///
+    /// The dispatcher proves one complete-row upsert matching `M` and commits it
+    /// with the aggregate. No service placement registry is consulted.
+    pub fn projected(self) -> Result<PreparedCommand<Projected<M>>, HandlerError> {
+        self.context
+            .workspace
+            .prepare_projected(self.projection.0)
+            .map_err(workspace_handler_error)
+    }
+}
+
 impl<A, Publication>
     PreparedCausalCommit<'_, '_, A, Publication, ProjectionDescriptor<DirectCandidate>>
 where
@@ -441,9 +502,11 @@ where
     /// ledger-stamped domain-event occurrence, admits only one complete-row
     /// direct proof, and materializes `M` from that exact committed upsert.
     ///
-    /// Prefer placement-selected [`PreparedCausalCommit::projected`] without a
-    /// preceding `.project(...)` when service registration owns the direct
-    /// handler.
+    /// Return the row produced by a modeled direct projection descriptor token.
+    ///
+    /// Prefer handler-owned [`CausalRepository::readmodel`] +
+    /// [`PreparedCausalCommit::projected`] on [`StagedProjectedRow`] for new
+    /// projected commands.
     pub fn projected<M>(self) -> Result<PreparedCommand<Projected<M>>, HandlerError>
     where
         M: RelationalReadModel + Serialize + Send + Sync + 'static,
@@ -459,12 +522,11 @@ impl<A, Publication> PreparedCausalCommit<'_, '_, A, Publication, NoDirectProjec
 where
     A: Aggregate + Send + Sync + 'static,
 {
-    /// Return the row produced by the placement-selected direct event handler.
+    /// Placement-selected projected terminal (legacy / registry path).
     ///
-    /// Service registration chooses the direct owner for the returned model.
-    /// Command code names neither a projection constant nor a read-model
-    /// mutation; it only seals the unit of work and claims the projected
-    /// terminal.
+    /// Prefer [`CausalRepository::readmodel`] with a mutation-derived row for
+    /// new code. This path remains for compatibility when a service registers
+    /// a placement-selected direct executor for the returned model.
     pub fn projected<M>(self) -> Result<PreparedCommand<Projected<M>>, HandlerError>
     where
         M: RelationalReadModel + Serialize + Send + Sync + 'static,
@@ -593,6 +655,20 @@ where
         writes: ReadModelWritePlanBuilder,
     ) -> CausalCommitBuilder<'_, 'a, A, NoPublication, NoDirectProjection> {
         CausalCommitBuilder::empty(self).read_models(writes)
+    }
+
+    /// Stage one exact projected read-model row for same-transaction commit.
+    ///
+    /// Prefer rows from [`crate::Mutation::from_state`] so the write matches the
+    /// portable mutation used for event bindings and client cache application.
+    pub fn readmodel<M>(
+        &self,
+        row: M,
+    ) -> CausalCommitBuilder<'_, 'a, A, NoPublication, StagedProjectedRow<M>>
+    where
+        M: RelationalReadModel + Serialize + Send + Sync + 'static,
+    {
+        CausalCommitBuilder::empty(self).readmodel(row)
     }
 
     /// Start a low-level integration-envelope publication unit of work.

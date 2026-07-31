@@ -634,18 +634,29 @@ impl<I, K: CommandOutcome> TypedCommand<I, K> {
         self
     }
 
-    /// Predict one ordered, non-authoritative occurrence for the optimistic
-    /// client overlay.
+    /// Declare known mutation-input fields for client cache application.
     ///
-    /// Service registration rejects a preview whose exact event selector is
-    /// not also present through [`Self::emits`]. Repeating an exact selector
-    /// predicts multiple occurrences in declaration order; it does not promise
-    /// that the server emits any particular cardinality. The authoritative
-    /// ordered command delta later replaces the optimistic overlay.
+    /// Maps command-known values (and unknowns) onto the emitted domain-event
+    /// body shape that portable handlers bind into mutation IR. The client
+    /// applies that mutation to the cache only; the server applies the same
+    /// mutation for real (eventual projector or handler-owned projected row).
+    ///
+    /// Prefer this over thinking of the declaration as "predicting an event
+    /// body" — the domain model defines events; this is known input for the
+    /// event→mutation binding used by optimism.
+    ///
+    /// Service registration rejects a mapping whose exact event selector is
+    /// not also present through [`Self::emits`].
     #[must_use]
-    pub fn preview(mut self, preview: CommandProjectionPreview) -> Self {
-        self.contract.projections.add_preview(preview);
+    pub fn applies(mut self, mapping: CommandProjectionPreview) -> Self {
+        self.contract.projections.add_preview(mapping);
         self
+    }
+
+    /// Alias for [`Self::applies`] (historical name).
+    #[must_use]
+    pub fn preview(self, preview: CommandProjectionPreview) -> Self {
+        self.applies(preview)
     }
 
     pub fn name(&self) -> &str {

@@ -97,10 +97,11 @@ pub use mutation::{
     MUTATION_OPERATION_SEMANTICS_VERSION, MUTATION_PROGRAM_IR_VERSION,
 };
 
-/// Spec-shaped authoring: **mutations** + **portable event handlers** for one model.
+/// Spec-shaped authoring: **mutations** + **event-first portable handlers**.
 ///
-/// You declare which events apply which mutation. The framework compiles that
-/// into the service mount. Dual-path projection IR is an internal detail.
+/// Declare which domain events apply which mutation (`on <events> apply …`).
+/// The framework compiles that into the service mount. Dual-path projection IR
+/// is an internal detail.
 ///
 /// ```ignore
 /// portable_handlers! {
@@ -109,31 +110,24 @@ pub use mutation::{
 ///         version: 1,
 ///         epoch: "e2e-ui-blob-v2",
 ///         model: BlobGames,
-///         apply save_blob_game {
-///             on_state BlobGameState as "game":
-///                 "blob.initialized", "blob.moved";
+///         on_state BlobGameState as "game" apply save_blob_game {
+///             "blob.initialized", "blob.moved",
 ///         }
 ///     };
 /// }
 /// ```
 #[macro_export]
 macro_rules! portable_handlers {
-    // State-body events by name + DomainState type; optional delete binding.
+    // Event-first: state-body events by name + DomainState type.
     (
         $vis:vis const $id:ident : $desc_ty:ty = {
             name: $name:literal,
             version: $version:expr,
             epoch: $epoch:literal,
             model: $model:ty,
-            apply $mutation:path {
-                on_state $state:ty as $input_root:literal :
-                    $($event:literal),+ $(,)?
+            on_state $state:ty as $input_root:literal apply $mutation:path {
+                $($event:literal),+ $(,)?
             }
-            $(
-                , apply $del_mutation:path {
-                    on_deleted $del_event:ty as $pk:literal $(,)?
-                }
-            )?
             $(,)?
         } $(;)?
     ) => {
@@ -161,22 +155,6 @@ macro_rules! portable_handlers {
                         );
                     }
                 )+
-                $(
-                    {
-                        use $crate::domain_event::DomainEventContract;
-                        handlers.push(
-                            $crate::bind_delete_to_envelope_id(
-                                &<$del_event>::descriptor(),
-                                $del_mutation().program().clone(),
-                                $pk,
-                            )
-                            .map_err(|e| $crate::ProjectionProgramError::InvalidOperation {
-                                operation: ::std::string::String::from($name),
-                                reason: e.to_string(),
-                            })?,
-                        );
-                    }
-                )?
                 $crate::compile_portable_handlers(
                     $name,
                     $version,
@@ -218,20 +196,17 @@ macro_rules! portable_handlers {
         };
     };
 
-    // DomainEventContract types (descriptor() on each) + optional delete.
+    // Event-first: DomainEventContract types + optional delete binding.
     (
         $vis:vis const $id:ident : $desc_ty:ty = {
             name: $name:literal,
             version: $version:expr,
             epoch: $epoch:literal,
             model: $model:ty,
-            apply $mutation:path {
-                on_event $($event_ty:ty),+ as $input_root:literal $(,)?
-            }
+            on_event { $($event_ty:ty),+ $(,)? }
+            apply $mutation:path as $input_root:literal
             $(
-                , apply $del_mutation:path {
-                    on_deleted $del_event:ty as $pk:literal $(,)?
-                }
+                , on_deleted $del_event:ty => apply $del_mutation:path as $pk:literal
             )?
             $(,)?
         } $(;)?
@@ -501,7 +476,8 @@ pub use microsvc::{ROLE_KEY, USER_ID_KEY};
 // `command_effects!` / `command_confirmations!` removed — use `mutation!` +
 // portable/modeled handlers; commands predict events via `.emits`/`.preview`).
 pub use distributed_macros::{
-    aggregate, command_input_defaults, digest, mutation, sourced, DomainEvent, DomainState,
+    aggregate, command_input_defaults, digest, mutation, mutation_file, sourced, DomainEvent,
+    DomainState,
     GraphqlInput, GraphqlOutput, ReadModel, Snapshot,
 };
 

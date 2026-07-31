@@ -1,6 +1,6 @@
 //! Todo: mutations + portable handlers.
 
-use distributed::mutation;
+use distributed::mutation_file;
 use distributed::portable_handlers;
 use distributed::projection::lower::{EventualOnly, ProjectionDescriptor};
 use distributed::Mutation;
@@ -12,46 +12,40 @@ use todo_domain::{
 };
 
 /// Mutation: complete-row upsert for Todo state transfer.
+///
+/// Authored as GraphQL-looking syntax-only IR (not a public GraphQL field):
+/// `src/mutations/save_todo.mutation.graphql`.
 pub fn save_todo() -> Mutation<()> {
-    mutation! {
-        name: "save_todo";
-        version: 1;
-        upsert Todos from input.todo;
-    }
+    mutation_file!("src/mutations/save_todo.mutation.graphql")
 }
 
 /// Mutation: delete Todo by primary key (purge).
+///
+/// Authored as GraphQL-looking syntax-only IR (not a public GraphQL field):
+/// `src/mutations/delete_todo.mutation.graphql`.
 pub fn delete_todo() -> Mutation<()> {
-    mutation! {
-        name: "delete_todo";
-        version: 1;
-        delete Todos by_pk {
-            todo_id: input.todo_id,
-        };
-    }
+    mutation_file!("src/mutations/delete_todo.mutation.graphql")
 }
 
 // Lifecycle state events → [`save_todo`]; purge → [`delete_todo`].
+// Event-first: on <events> apply <mutation>.
 portable_handlers! {
     pub const TODOS: ProjectionDescriptor<EventualOnly> = {
         name: "project_todos",
         version: 1,
         epoch: "e2e-ui-todos-v2",
         model: Todos,
-        apply save_todo {
-            on_event
-                TodoCreatedDomainEvent,
-                TodoRenamedDomainEvent,
-                TodoCompletedDomainEvent,
-                TodoReopenedDomainEvent,
-                TodoReassignedDomainEvent,
-                TodoArchivedDomainEvent,
-                TodoForceArchivedDomainEvent
-            as "todo"
-        },
-        apply delete_todo {
-            on_deleted TodoPurgedDomainEvent as "todo_id"
+        on_event {
+            TodoCreatedDomainEvent,
+            TodoRenamedDomainEvent,
+            TodoCompletedDomainEvent,
+            TodoReopenedDomainEvent,
+            TodoReassignedDomainEvent,
+            TodoArchivedDomainEvent,
+            TodoForceArchivedDomainEvent,
         }
+        apply save_todo as "todo",
+        on_deleted TodoPurgedDomainEvent => apply delete_todo as "todo_id",
     };
 }
 
@@ -110,5 +104,31 @@ mod tests {
     fn mutations_are_event_free() {
         let json = serde_json::to_value(save_todo().program()).unwrap().to_string();
         assert!(!json.contains("event_name"));
+    }
+
+    #[test]
+    fn graphql_file_matches_inline_graphql_looking_form() {
+        use distributed::mutation;
+        let from_file = save_todo().program().canonical_bytes().unwrap();
+        let inline = mutation! {
+            mutation SaveTodo {
+                upsert_Todos(object: $input.todo)
+            }
+        };
+        assert_eq!(
+            from_file,
+            inline.program().canonical_bytes().unwrap(),
+            "mutation_file! and inline GraphQL-looking mutation! must share IR"
+        );
+        let classic = mutation! {
+            name: "save_todo";
+            version: 1;
+            upsert Todos from input.todo;
+        };
+        assert_eq!(
+            from_file,
+            classic.program().canonical_bytes().unwrap(),
+            "GraphQL-looking and classic sugar must share IR"
+        );
     }
 }

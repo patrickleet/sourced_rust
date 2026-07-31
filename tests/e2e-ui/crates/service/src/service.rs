@@ -129,10 +129,9 @@ fn projection_owners() -> ProjectionOwners {
         Some(physical_topology("project_blob", 0x22)),
     )
     .expect("Blob projection binding");
-    // Placement-selected direct: command handlers call commit()?.projected()
-    // without naming BLOB_GAMES. Registration owns the executor.
-    distributed::projection::lower::register_placement_selected_direct_descriptor(&BLOB_GAMES)
-        .expect("Blob placement-selected direct registration");
+    // Blob projected commands stage the mutation-derived row in the handler
+    // (`readmodel(row).commit()?.projected()`). Binding/catalog still own
+    // ownership, replay, and async projection for BLOB_GAMES.
 
     let catalog = ProjectionCatalog::try_new(vec![
         todo_binding.clone(),
@@ -260,8 +259,8 @@ where
         HasRepo + HasOutboxStore + ConfigurableOutboxPublisher + Send + Sync + 'static,
 {
     use handlers::commands::{
-        archive, blob_move, blob_start, blob_start_level, chat_post, complete, create,
-        force_archive, payloads, purge, rename, reopen,
+        blob_move, blob_start, blob_start_level, chat_post, payloads, todo_archive, todo_complete,
+        todo_create, todo_force_archive, todo_purge, todo_rename, todo_reopen,
     };
 
     let app_roles = ["user", "admin"];
@@ -270,17 +269,17 @@ where
         .with_repo(repo.clone().queued_with(locks.clone()).aggregate::<Todo>())
         .with_read_model_store(read_models.clone())
         .typed_command(
-            typed_command::<create::TodoCreateInput, Causal<create::TodoCreatePayload>>(
-                create::COMMAND,
+            typed_command::<todo_create::TodoCreateInput, Causal<todo_create::TodoCreatePayload>>(
+                todo_create::COMMAND,
             )
             .field_name("todos_create")
             .roles(app_roles)
             .input_defaults(command_input_defaults! {
-                input: create::TodoCreateInput;
+                input: todo_create::TodoCreateInput;
                 default input.todo_id = uuid_v7();
             })
             .emits(distributed::events![TodoCreatedDomainEvent])
-            .preview(distributed::state_preview! {
+            .applies(distributed::state_preview! {
                 TodoCreatedDomainEvent => todo_domain::TodoState {
                     todo_id: generated.todo_id,
                     owner_id: trusted("x-user-id", "string"),
@@ -290,15 +289,15 @@ where
                 }
             }),
         )
-        .handle(create::handle)
+        .handle(todo_create::handle)
         .typed_command(
-            typed_command::<rename::TodoRenameInput, Causal<rename::TodoRenamePayload>>(
-                rename::COMMAND,
+            typed_command::<todo_rename::TodoRenameInput, Causal<todo_rename::TodoRenamePayload>>(
+                todo_rename::COMMAND,
             )
             .field_name("todos_rename")
             .roles(app_roles)
             .emits(distributed::events![TodoRenamedDomainEvent])
-            .preview(distributed::state_preview! {
+            .applies(distributed::state_preview! {
                 TodoRenamedDomainEvent => todo_domain::TodoState {
                     todo_id: input.todo_id,
                     title: input.title,
@@ -306,15 +305,15 @@ where
                 }
             }),
         )
-        .handle(rename::handle)
+        .handle(todo_rename::handle)
         .typed_command(
-            typed_command::<complete::TodoCompleteInput, Causal<payloads::TodoStatusPayload>>(
-                complete::COMMAND,
+            typed_command::<todo_complete::TodoCompleteInput, Causal<payloads::TodoStatusPayload>>(
+                todo_complete::COMMAND,
             )
             .field_name("todos_complete")
             .roles(app_roles)
             .emits(distributed::events![TodoCompletedDomainEvent])
-            .preview(distributed::state_preview! {
+            .applies(distributed::state_preview! {
                 TodoCompletedDomainEvent => todo_domain::TodoState {
                     todo_id: input.todo_id,
                     status: "completed",
@@ -322,15 +321,15 @@ where
                 }
             }),
         )
-        .handle(complete::handle)
+        .handle(todo_complete::handle)
         .typed_command(
-            typed_command::<reopen::TodoReopenInput, Causal<reopen::TodoReopenPayload>>(
-                reopen::COMMAND,
+            typed_command::<todo_reopen::TodoReopenInput, Causal<todo_reopen::TodoReopenPayload>>(
+                todo_reopen::COMMAND,
             )
             .field_name("todos_reopen")
             .roles(app_roles)
             .emits(distributed::events![TodoReopenedDomainEvent])
-            .preview(distributed::state_preview! {
+            .applies(distributed::state_preview! {
                 TodoReopenedDomainEvent => todo_domain::TodoState {
                     todo_id: input.todo_id,
                     status: "open",
@@ -338,15 +337,15 @@ where
                 }
             }),
         )
-        .handle(reopen::handle)
+        .handle(todo_reopen::handle)
         .typed_command(
-            typed_command::<archive::TodoArchiveInput, Causal<archive::TodoArchivePayload>>(
-                archive::COMMAND,
+            typed_command::<todo_archive::TodoArchiveInput, Causal<todo_archive::TodoArchivePayload>>(
+                todo_archive::COMMAND,
             )
             .field_name("todos_archive")
             .roles(app_roles)
             .emits(distributed::events![TodoArchivedDomainEvent])
-            .preview(distributed::state_preview! {
+            .applies(distributed::state_preview! {
                 TodoArchivedDomainEvent => todo_domain::TodoState {
                     todo_id: input.todo_id,
                     status: "archived",
@@ -354,16 +353,16 @@ where
                 }
             }),
         )
-        .handle(archive::handle)
+        .handle(todo_archive::handle)
         .typed_command(
             typed_command::<
-                force_archive::TodoForceArchiveInput,
-                Causal<force_archive::TodoForceArchivePayload>,
-            >(force_archive::COMMAND)
+                todo_force_archive::TodoForceArchiveInput,
+                Causal<todo_force_archive::TodoForceArchivePayload>,
+            >(todo_force_archive::COMMAND)
             .field_name("todos_force_archive")
             .roles(["admin"])
             .emits(distributed::events![TodoForceArchivedDomainEvent])
-            .preview(distributed::state_preview! {
+            .applies(distributed::state_preview! {
                 TodoForceArchivedDomainEvent => todo_domain::TodoState {
                     todo_id: input.todo_id,
                     status: "archived",
@@ -371,13 +370,13 @@ where
                 }
             }),
         )
-        .handle(force_archive::handle)
+        .handle(todo_force_archive::handle)
         .typed_command(
-            typed_command::<purge::TodoPurgeInput, Causal<purge::TodoPurgePayload>>(purge::COMMAND)
+            typed_command::<todo_purge::TodoPurgeInput, Causal<todo_purge::TodoPurgePayload>>(todo_purge::COMMAND)
                 .field_name("todos_purge")
                 .roles(app_roles)
                 .emits(distributed::events![TodoPurgedDomainEvent])
-                .preview(
+                .applies(
                     CommandProjectionPreview::new()
                         .events(distributed::events![TodoPurgedDomainEvent])
                         .envelope(
@@ -386,7 +385,7 @@ where
                         ),
                 ),
         )
-        .handle(purge::handle)
+        .handle(todo_purge::handle)
         .modeled_projector(projections.todo.clone())
         .handle(handlers::events::project_todos::handle);
 
@@ -404,7 +403,7 @@ where
             .field_name("chat_messages_post")
             .roles(app_roles)
             .emits(distributed::events![ChatMessagePostedDomainEvent])
-            .preview(distributed::state_preview! {
+            .applies(distributed::state_preview! {
                 ChatMessagePostedDomainEvent => chat_domain::ChatMessageState {
                     message_id: input.message_id,
                     room_id: input.room_id,

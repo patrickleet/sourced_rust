@@ -1,8 +1,9 @@
 //! Command: `blob.start` — create game + demo level. Owner = session user.
 
-use blob_domain::BlobGame;
+use blob_domain::{BlobGame, BlobGameState};
 use distributed::graphql::{PreparedCommand, Projected};
 use distributed::microsvc::{CausalCommandContext, HandlerError};
+use e2e_projections::save_blob_game;
 use e2e_readmodels::BlobGames;
 use serde::Deserialize;
 
@@ -35,6 +36,11 @@ pub async fn handle(
     game.start_with_demo(&input.game_id, &owner)
         .map_err(rejected)?;
 
-    // Placement-selected direct: registration owns project_blob / SAVE_BLOB_GAME.
-    repo.commit(game)?.projected()
+    let row = save_blob_game()
+        .from_state(&BlobGameState::from(&*game))
+        .map_err(|error| HandlerError::Other(Box::new(error)))?;
+    repo.readmodel(row)
+        .publish_events()
+        .commit(game)?
+        .projected()
 }

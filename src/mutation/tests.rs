@@ -166,6 +166,43 @@ fn sugar_and_explicit_upsert_canonicalize_identically() {
 }
 
 #[test]
+fn mutation_from_state_materializes_row_from_known_state_json() {
+    #[derive(serde::Serialize)]
+    struct KnownState {
+        todo_id: String,
+        owner_id: String,
+        title: String,
+        status: String,
+    }
+    #[derive(Debug, PartialEq, Eq, serde::Deserialize)]
+    struct TodoRow {
+        todo_id: String,
+        owner_id: String,
+        title: String,
+        status: String,
+    }
+
+    let mutation: Mutation<()> = Mutation::from_program(sugar_save_todo());
+    let row: TodoRow = mutation
+        .from_state(&KnownState {
+            todo_id: "t1".into(),
+            owner_id: "alice".into(),
+            title: "Read".into(),
+            status: "completed".into(),
+        })
+        .expect("from_state should materialize the mutation row shape");
+    assert_eq!(
+        row,
+        TodoRow {
+            todo_id: "t1".into(),
+            owner_id: "alice".into(),
+            title: "Read".into(),
+            status: "completed".into(),
+        }
+    );
+}
+
+#[test]
 fn mutation_program_contains_no_event_selector_fields() {
     let program = explicit_save_todo();
     let json = serde_json::to_value(&program).unwrap();

@@ -1,34 +1,34 @@
 //! Blob: mutations + portable handlers.
 
-use distributed::mutation;
+use blob_domain::BlobGameState;
+use distributed::mutation_file;
 use distributed::portable_handlers;
 use distributed::projection::lower::{DirectCandidate, ProjectionDescriptor};
 use distributed::Mutation;
-use blob_domain::BlobGameState;
 use e2e_readmodels::BlobGames;
 
 /// Mutation: upsert one BlobGames row from `input.game`.
+///
+/// Authored as GraphQL-looking syntax-only IR (not a public GraphQL field):
+/// `src/mutations/save_blob_game.mutation.graphql`.
 pub fn save_blob_game() -> Mutation<()> {
-    mutation! {
-        name: "save_blob_game";
-        version: 1;
-        upsert BlobGames from input.game;
-    }
+    mutation_file!("src/mutations/save_blob_game.mutation.graphql")
 }
 
 // When these domain events fire, apply [`save_blob_game`] (body → `input.game`).
+// Event-first: on <events> apply <mutation>. Command path stages the row via
+// `Mutation::from_state` + `readmodel(row).commit()?.projected()`.
 portable_handlers! {
     pub const BLOB_GAMES: ProjectionDescriptor<DirectCandidate> = {
         name: "project_blob",
         version: 1,
         epoch: "e2e-ui-blob-v2",
         model: BlobGames,
-        apply save_blob_game {
-            on_state BlobGameState as "game":
-                "blob.initialized",
-                "blob.level_started",
-                "blob.started",
-                "blob.moved",
+        on_state BlobGameState as "game" apply save_blob_game {
+            "blob.initialized",
+            "blob.level_started",
+            "blob.started",
+            "blob.moved",
         }
     };
 }
@@ -51,25 +51,22 @@ portable_handlers! {
 #[doc(hidden)]
 pub struct BlobDirectEligibilityGuards;
 
-
 #[cfg(test)]
 mod tests {
-    use distributed::mutation::{
-        delete_by_pk_program_for_model, state_upsert_program_for_model,
-    };
+    use distributed::mutation::{delete_by_pk_program_for_model, state_upsert_program_for_model};
     use distributed::projection::lower::{
         finish_lowering, lower_model_mutation, EventualOnly, ProjectionDescriptor,
         ProjectionLoweringError, ProjectionOutputInventory, ProjectionOutputModel,
     };
     use distributed::projection::ProjectionEventSelector;
     use distributed::{
-        body_bindings_for_model, body_field_binding, descriptor_from_factories,
-        bind_event_to_mutation, compile_portable_handlers, inventory_single_model, lower_single_model,
-        resolve_mutation_program, MutationAssignment, MutationEventBinding, MutationExpression,
-        MutationField, MutationKeyField, MutationKind, MutationOperation, MutationProgram,
-        PortableHandler, ProjectionPartition, ProjectionProgram, ProjectionProgramError,
-        ProjectionMutationKind, ProjectionTarget, ProjectionValueType, RelationalReadModel,
-        ResolvedProjectionPlan, RowValue, TableMutation,
+        bind_event_to_mutation, body_bindings_for_model, body_field_binding,
+        compile_portable_handlers, descriptor_from_factories, inventory_single_model,
+        lower_single_model, resolve_mutation_program, MutationAssignment, MutationEventBinding,
+        MutationExpression, MutationField, MutationKeyField, MutationKind, MutationOperation,
+        MutationProgram, PortableHandler, ProjectionMutationKind, ProjectionPartition,
+        ProjectionProgram, ProjectionProgramError, ProjectionTarget, ProjectionValueType,
+        RelationalReadModel, ResolvedProjectionPlan, RowValue, TableMutation,
     };
     use serde::{Deserialize, Serialize};
 
@@ -98,14 +95,15 @@ mod tests {
     }
 
     fn blob_moved_selector() -> Result<ProjectionEventSelector, ProjectionProgramError> {
-        ProjectionEventSelector::try_from_descriptor(
-            &distributed::DomainEventDescriptor::state::<BlobGameState>("blob.moved", 1),
-        )
+        ProjectionEventSelector::try_from_descriptor(&distributed::DomainEventDescriptor::state::<
+            BlobGameState,
+        >("blob.moved", 1))
     }
 
     fn patch_blob_program() -> Result<ProjectionProgram, ProjectionProgramError> {
         let schema = BlobGames::schema();
-        let target = ProjectionTarget::try_new(schema.model_name.clone(), schema.table_name.clone())?;
+        let target =
+            ProjectionTarget::try_new(schema.model_name.clone(), schema.table_name.clone())?;
         let op = MutationOperation::try_new(
             "patch-status",
             0,
@@ -180,18 +178,14 @@ mod tests {
     );
 
     fn delete_blob_program() -> Result<ProjectionProgram, ProjectionProgramError> {
-        let mutation = delete_by_pk_program_for_model::<BlobGames>(
-            "delete_blob_games",
-            1,
-            "delete-blob",
-        )
-        .map_err(|e| map_err("blob_delete_fixture", e))?;
-        let bindings = vec![body_field_binding(
-            ["game_id"],
-            ["game_id"],
-            ProjectionValueType::String,
-        )
-        .map_err(|e| map_err("blob_delete_fixture", e))?];
+        let mutation =
+            delete_by_pk_program_for_model::<BlobGames>("delete_blob_games", 1, "delete-blob")
+                .map_err(|e| map_err("blob_delete_fixture", e))?;
+        let bindings =
+            vec![
+                body_field_binding(["game_id"], ["game_id"], ProjectionValueType::String)
+                    .map_err(|e| map_err("blob_delete_fixture", e))?,
+            ];
         let binding = MutationEventBinding::try_new(blob_moved_selector()?, bindings, mutation)
             .map_err(|e| map_err("blob_delete_fixture", e))?;
         compile_portable_handlers(
@@ -297,9 +291,7 @@ mod tests {
         for mutation in plan.mutations() {
             match mutation.target().model() {
                 "BlobGames" => lower_model_mutation::<BlobGames>(&mut builder, mutation)?,
-                "BlobGameAudits" => {
-                    lower_model_mutation::<BlobGameAudits>(&mut builder, mutation)?
-                }
+                "BlobGameAudits" => lower_model_mutation::<BlobGameAudits>(&mut builder, mutation)?,
                 other => {
                     return Err(ProjectionLoweringError::Table(
                         distributed::TableStoreError::Metadata(format!("unknown model `{other}`")),
@@ -349,6 +341,20 @@ mod tests {
             save_blob_game().program().clone().operations()[0].kind(),
             MutationKind::Upsert
         );
+    }
+
+    #[test]
+    fn from_state_materializes_blob_games_row_for_handler_owned_projected() {
+        let mut game = BlobGame::default();
+        game.start_with_demo("g1", "alice").unwrap();
+        let state = BlobGameState::from(&game);
+        let row: BlobGames = save_blob_game()
+            .from_state(&state)
+            .expect("mutation from_state builds the projected row");
+        assert_eq!(row.game_id, "g1");
+        assert_eq!(row.owner_id, "alice");
+        assert_eq!(row.map_json, state.map_json);
+        assert!(row.owner.is_none());
     }
 
     #[test]
@@ -417,7 +423,9 @@ mod tests {
             .map(|e| e.descriptor().name.to_string())
             .collect();
         assert!(
-            names.iter().any(|n| n == "blob.initialized" || n == "blob.started"),
+            names
+                .iter()
+                .any(|n| n == "blob.initialized" || n == "blob.started"),
             "unexpected events: {names:?}"
         );
     }
