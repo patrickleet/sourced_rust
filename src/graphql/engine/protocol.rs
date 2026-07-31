@@ -21,9 +21,41 @@ fn requested_protocol_client(request: &Request) -> Result<Option<RequestedProtoc
         .map_err(|_| ())
 }
 
+/// Asserted engine roles for this principal: primary `role` plus `x-roles`.
+pub(crate) fn principal_asserted_roles(session: &Session, primary_role: &str) -> Vec<String> {
+    let mut roles = Vec::new();
+    if !primary_role.is_empty() {
+        roles.push(primary_role.to_string());
+    }
+    if let Some(raw) = session
+        .get("x-roles")
+        .or_else(|| session.get("X-Roles"))
+    {
+        for part in raw.split(',') {
+            let part = part.trim();
+            if part.is_empty() {
+                continue;
+            }
+            if !roles.iter().any(|existing| existing == part) {
+                roles.push(part.to_string());
+            }
+        }
+    }
+    roles
+}
+
+fn principal_may_open_application(asserted: &[String], eligible: &[String]) -> bool {
+    asserted.iter().any(|role| {
+        eligible
+            .binary_search_by(|candidate| candidate.as_str().cmp(role.as_str()))
+            .is_ok()
+    })
+}
+
 pub(crate) fn select_protocol_surface<'a>(
     runtime: &'a ProtocolRuntime,
     role: &str,
+    session: &Session,
     request: &Request,
 ) -> Result<(ClientSurfaceIdentity, &'a ProtocolSurfaceInfo), ()> {
     let Some(requested) = requested_protocol_client(request)? else {
@@ -43,10 +75,12 @@ pub(crate) fn select_protocol_surface<'a>(
         }
         ClientSurfaceIdentity::Application { name, roles } => {
             let application = runtime.applications.get(&name).ok_or(())?;
+            // Wire roles must equal the registered eligible set (canonical).
+            // Principal may open when any asserted role is eligible — not only
+            // when the primary engine role is the sole surface role.
+            let asserted = principal_asserted_roles(session, role);
             if roles != application.roles
-                || roles
-                    .binary_search_by(|candidate| candidate.as_str().cmp(role))
-                    .is_err()
+                || !principal_may_open_application(&asserted, &application.roles)
                 || requested.schema_hash != application.surface.schema_fingerprint
             {
                 return Err(());

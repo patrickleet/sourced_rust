@@ -113,7 +113,7 @@ impl GraphqlEngine {
         };
         let role_info = runtime.roles.get(role).ok_or(())?;
         let (surface_identity, surface_info) =
-            select_protocol_surface(runtime, role, request).map_err(|_| ())?;
+            select_protocol_surface(runtime, role, session, request).map_err(|_| ())?;
         let trusted_presets = surface_info
             .trusted_presets
             .iter()

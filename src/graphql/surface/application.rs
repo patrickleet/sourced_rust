@@ -540,44 +540,83 @@ pub(in crate::graphql::surface) fn validate_surface_filter(
 }
 
 /// Build an explicit named application surface as the structural intersection
-/// of all runtime roles it supports.
+/// of all runtime roles it supports (eligible roles = schema roles).
 ///
 /// A missing role declaration is an error rather than an accidental empty or
-/// admin surface. Commands must be granted to every role; differing row
+/// admin surface. Commands must be granted to every schema role; differing row
 /// predicates become `ServerOnly`, so the client revalidates membership without
 /// learning another role's policy.
+///
+/// Prefer [`surface_for_application_contract`] when eligible principals are a
+/// superset of the schema privilege set (portable multi-role principals).
 pub fn surface_for_application(
     surface: &Surface,
     application: &str,
     roles: &[String],
     grants_by_role: &BTreeMap<String, BTreeMap<String, RoleGrant>>,
 ) -> Result<Surface, String> {
+    surface_for_application_contract(surface, application, roles, roles, grants_by_role)
+}
+
+/// Build an application surface with distinct **eligible** and **schema** roles.
+///
+/// - `eligible_roles`: protocol identity — who may open this client contract
+///   (stamped on `SurfaceSelection` / manifest wire roles).
+/// - `schema_roles`: grant intersection for portable client row policies and
+///   which commands appear on the contract. Must be a non-empty subset of
+///   `eligible_roles`.
+///
+/// Example: eligible `{admin,user}` + schema `{user}` keeps owner-portable
+/// optimism while multi-role admin principals may open the surface.
+pub fn surface_for_application_contract(
+    surface: &Surface,
+    application: &str,
+    eligible_roles: &[String],
+    schema_roles: &[String],
+    grants_by_role: &BTreeMap<String, BTreeMap<String, RoleGrant>>,
+) -> Result<Surface, String> {
     if application.trim().is_empty() {
         return Err("application surface name must not be empty".into());
     }
-    let mut roles = roles.to_vec();
-    roles.sort();
-    roles.dedup();
-    if roles.is_empty() {
+    let mut eligible_roles = eligible_roles.to_vec();
+    let mut schema_roles = schema_roles.to_vec();
+    eligible_roles.sort();
+    eligible_roles.dedup();
+    schema_roles.sort();
+    schema_roles.dedup();
+    if eligible_roles.is_empty() {
         return Err(format!(
-            "application surface `{application}` must declare at least one role"
+            "application surface `{application}` must declare at least one eligible role"
         ));
     }
-    for role in &roles {
+    if schema_roles.is_empty() {
+        return Err(format!(
+            "application surface `{application}` must declare at least one schema role"
+        ));
+    }
+    if schema_roles
+        .iter()
+        .any(|role| !eligible_roles.iter().any(|eligible| eligible == role))
+    {
+        return Err(format!(
+            "application surface `{application}` schema roles must be a subset of eligible roles"
+        ));
+    }
+    for role in &schema_roles {
         let Some(grants) = grants_by_role.get(role) else {
             return Err(format!(
-                "application surface `{application}` references undeclared role `{role}`"
+                "application surface `{application}` references undeclared schema role `{role}`"
             ));
         };
-        // Validate every concrete role before intersecting it. Differing
-        // predicates collapse to ServerOnly below, but that must not hide a
-        // malformed identifier or unsupported relationship traversal.
+        // Validate every schema role before intersecting. Differing predicates
+        // collapse to ServerOnly below, but that must not hide a malformed
+        // identifier or unsupported relationship traversal.
         let _ = surface_for_role(surface, role, grants)?;
     }
 
     let mut common = BTreeMap::new();
     for (model_name, model) in &surface.models {
-        let grants: Option<Vec<&RoleGrant>> = roles
+        let grants: Option<Vec<&RoleGrant>> = schema_roles
             .iter()
             .map(|role| {
                 grants_by_role
@@ -616,18 +655,20 @@ pub fn surface_for_application(
     }
 
     let mut selected = surface_for_role(surface, application, &common)?;
+    // Commands on the client contract must be granted for every schema role.
     selected.commands = surface
         .commands
         .iter()
         .filter(|command| {
             command.roles.is_empty()
-                || roles
+                || schema_roles
                     .iter()
                     .all(|role| command.roles.iter().any(|allowed| allowed == role))
         })
         .cloned()
         .map(|mut command| {
-            command.roles = roles.clone();
+            // Wire identity uses the full eligible set (multi-role openers).
+            command.roles = eligible_roles.clone();
             command
         })
         .collect();
@@ -642,7 +683,7 @@ pub fn surface_for_application(
         .sort_by(|a, b| a.command_name.cmp(&b.command_name));
     selected.selection = SurfaceSelection::Application {
         name: application.to_string(),
-        roles,
+        roles: eligible_roles,
     };
     Ok(selected)
 }

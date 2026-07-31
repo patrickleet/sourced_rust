@@ -141,11 +141,15 @@
 		logEl;
 		if (stickToBottom) void scrollBottom();
 		// First page may not fill the panel — pull history until scrollable.
+		// Wait for the live window to be complete so an empty history page is
+		// not treated as end-of-history while projections are still catching up
+		// during rapid sends.
 		if (
 			logEl &&
 			hasMoreHistory &&
 			!loadingHistory &&
-			messages.length > 0 &&
+			$lobby.complete &&
+			livePage.length > 0 &&
 			needsHistoryFill(metricsOf(logEl))
 		) {
 			void loadOlder();
@@ -225,8 +229,14 @@
 			const store = chat.use({ limit: PAGE_SIZE, offset }, { live: false });
 			try {
 				await store.refetch();
+				const snap = store.get();
+				// Incomplete snapshots must not close the history cursor — empty
+				// mid-flight pages look like end-of-history under projection lag.
+				if (!snap.complete) {
+					return;
+				}
 				// Sparse incomplete rows are possible mid-flight; only keep shaped ones.
-				const page = (store.get().data?.chat_messages ?? []).filter(
+				const page = (snap.data?.chat_messages ?? []).filter(
 					(m): m is ChatMsg =>
 						typeof m?.message_id === 'string' &&
 						typeof m?.body === 'string' &&
@@ -237,6 +247,12 @@
 					...livePage.map((m) => m.message_id)
 				]);
 				const merged = mergeHistoryPage(page, known, offset, PAGE_SIZE);
+				// Empty complete page while the live window is not yet full: the
+				// offset may simply be past currently projected rows. Keep the
+				// cursor open so a later scroll can retry after lag clears.
+				if (page.length === 0 && livePage.length < PAGE_SIZE) {
+					return;
+				}
 				hasMoreHistory = merged.hasMore;
 				historyOffset = merged.nextOffset;
 				if (merged.fresh.length === 0) return;
