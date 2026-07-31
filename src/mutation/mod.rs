@@ -41,10 +41,12 @@ pub use capabilities::{
     MutationRelationshipCapability, ReadModelMutationCapabilities,
 };
 pub use descriptor::{
-    assert_mutation_backed_program, body_bindings_for_model, delete_by_pk_program_for_model,
-    descriptor_from_factories, inventory_single_model, lower_single_model,
+    arm_delete_pk_from_envelope, arm_state_upsert_for_model, arms_state_upsert_for_model,
+    assert_mutation_backed_program, body_bindings_for_model, build_mutation_projector_program,
+    delete_by_pk_program_for_model, descriptor_from_factories, inventory_mutation_projector,
+    inventory_single_model, lower_mutation_projector, lower_single_model,
     program_from_mutation_arms, projection_value_type_for_column, resolve_mutation_program,
-    state_upsert_program_for_model, MutationProjectionArm,
+    resolve_mutation_projector, state_upsert_program_for_model, MutationProjectionArm,
 };
 pub use error::MutationProgramError;
 pub use expression::{
