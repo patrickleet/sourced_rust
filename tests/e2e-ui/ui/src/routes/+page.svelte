@@ -99,15 +99,23 @@
 					</p>
 				</div>
 			{/if}
-			<span class="wf-kicker">Distributed</span>
+			<span class="wf-kicker">Distributed · full stack</span>
 			<h1>
-				CQRS and event sourcing with a <em>deliberately simple</em> developer experience.
+				Full-stack <em>CQRS</em> — Rust domains, GraphQL, and <em>TypeScript</em> clients with
+				first-class <em>OIDC</em> and <em>SvelteKit</em>.
 			</h1>
 			<p class="wf-lede">
-				Plain Rust domains. Deny-by-default GraphQL with first-class OIDC. Dual generated clients
-				and a causal browser replica. This fixture is a living map of the recommended patterns —
+				One inventory from command to browser replica: event-sourced write models, deny-by-default
+				GraphQL reads, generated TS operations and causal commands, Auth.js + IdP sign-in, and a
+				SvelteKit app that SSR-hydrates and stays live over WebSocket. This fixture is the map —
 				not a product marketing site.
 			</p>
+			<ul class="wf-hero-stack" aria-label="Stack highlights">
+				<li>CQRS + event sourcing</li>
+				<li>TypeScript clients</li>
+				<li>First-class OIDC</li>
+				<li>SvelteKit SSR + live</li>
+			</ul>
 			<div class="wf-actions">
 				{#if signedIn}
 					<a class="wf-btn wf-btn-primary" href="#demos">Open a demo</a>
@@ -118,9 +126,10 @@
 				{/if}
 			</div>
 			<div class="wf-meta">
-				<span>tests/e2e-ui</span>
-				<span>API :8791</span>
-				<span>UI :5180</span>
+				<span>Rust service</span>
+				<span>GraphQL · OIDC</span>
+				<span>TS · SvelteKit</span>
+				<span>:8791 · :5180</span>
 			</div>
 			<nav class="wf-toc" aria-label="On this page">
 				<a href="#principles">Principles</a>
