@@ -5,8 +5,8 @@ use distributed::mutation_file;
 use distributed::mutation_projector;
 use distributed::projection::lower::{DirectCandidate, ProjectionDescriptor};
 use distributed::{
-    bind_state_body_to_mutation, compile_portable_handlers, Mutation, ProjectionExpression,
-    ProjectionPartition, ProjectionProgram, ProjectionProgramError, ProjectionValueType,
+    bind_state_body_to_mutation, compile_portable_handlers, Mutation, ProjectionPartition,
+    ProjectionProgram, ProjectionProgramError,
 };
 use chat_domain::ChatMessagePostedDomainEvent;
 use e2e_readmodels::ChatMessages;
@@ -29,15 +29,17 @@ fn chat_handlers() -> Result<ProjectionProgram, ProjectionProgramError> {
         operation: "project_chat_messages".into(),
         reason: e.to_string(),
     })?;
-    let partition = ProjectionPartition::Expression(
-        ProjectionExpression::body_path(ProjectionValueType::String, ["room_id"]).map_err(
-            |e| ProjectionProgramError::InvalidOperation {
-                operation: "chat partition".into(),
-                reason: e.to_string(),
-            },
-        )?,
-    );
-    compile_portable_handlers("project_chat_messages", 1, partition, [handler])
+    // Unit partition so the lobby @live subscription can advertise resumable
+    // index evidence (`live.supported = true`). Room isolation stays on the
+    // GraphQL document (`where: { room_id: { _eq: "lobby" } }`). Expression
+    // partitions are correct for multi-room worker sharding, but they make
+    // live indexes incomparable and the client falls back to Idle.
+    compile_portable_handlers(
+        "project_chat_messages",
+        1,
+        ProjectionPartition::Unit,
+        [handler],
+    )
 }
 
 mutation_projector! {

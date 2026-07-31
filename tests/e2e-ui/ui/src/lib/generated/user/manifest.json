@@ -7,11 +7,10 @@
     "kind": "application",
     "name": "e2e-ui",
     "roles": [
-      "admin",
       "user"
     ]
   },
-  "schema_fingerprint": "sha256:986dcd04c1233dd45c01d373bf917f246f2de3926288c5767b10125da29f801f",
+  "schema_fingerprint": "sha256:d75849347f327a082e6db2f670e62e5b3abfe94141ee55331b8d07015a9e1cda",
   "protocol_fingerprint": "sha256:00fb342f3acb4dc1c1716a43cc3001c748d5f6c500ff831690d820e9e43e2782",
   "scalar_codecs": {
     "BigInt": "json_number_precision_limited",
@@ -46,8 +45,8 @@
       "source_path": "src/routes/chat/+page.graphql",
       "module_path": "operations/chat-messages.ts",
       "export_name": "Operation_ChatMessages",
-      "operation_hash": "sha256:54dd3bd2142cf20a0bcc28d632fbd6cfc69f1d6d9ff94268a90865fd5a56a552",
-      "live_operation_hash": "sha256:3d894c6412e9408d178ad11030c0ed1f8db0066216e70131dae3f61fb1be81b4"
+      "operation_hash": "sha256:68575d8ab4d3956155c0d382a464e6f061d00d34bae8cccb941ce02a5a538641",
+      "live_operation_hash": "sha256:428623bc40b97391be765549b09ec5d88bce1043d2b1cc36c3cce33227121ef6"
     },
     {
       "name": "Todos",

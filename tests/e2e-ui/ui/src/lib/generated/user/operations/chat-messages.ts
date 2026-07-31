@@ -10,19 +10,24 @@ export type Operation_ChatMessages_Data = {
     readonly "author_id": string;
     readonly "body": string;
     readonly "created_at": string;
+    readonly "author": {
+      readonly "user_id": string;
+      readonly "display_name": string;
+      readonly "email": string;
+    };
   }[];
 };
 
 /** Exact canonical query bytes sent to the server. */
-export const Operation_ChatMessagesDocument = "query ChatMessages {\n  chat_messages(where: {room_id: {_eq: \"lobby\"}}) {\n    message_id\n    room_id\n    author_id\n    body\n    created_at\n    _distributed_typename: __typename\n  }\n}\n";
+export const Operation_ChatMessagesDocument = "query ChatMessages {\n  chat_messages(where: {room_id: {_eq: \"lobby\"}}) {\n    message_id\n    room_id\n    author_id\n    body\n    created_at\n    author {\n      user_id\n      display_name\n      email\n      _distributed_typename: __typename\n    }\n    _distributed_typename: __typename\n  }\n}\n";
 
 /** Typed normalized-replica operation descriptor. */
 export const Operation_ChatMessages: ReplicaOperationArtifact<Operation_ChatMessages_Data, Operation_ChatMessages_Variables> = {
-  "id": "sha256:54dd3bd2142cf20a0bcc28d632fbd6cfc69f1d6d9ff94268a90865fd5a56a552",
-  "document": "query ChatMessages {\n  chat_messages(where: {room_id: {_eq: \"lobby\"}}) {\n    message_id\n    room_id\n    author_id\n    body\n    created_at\n    _distributed_typename: __typename\n  }\n}\n",
+  "id": "sha256:68575d8ab4d3956155c0d382a464e6f061d00d34bae8cccb941ce02a5a538641",
+  "document": "query ChatMessages {\n  chat_messages(where: {room_id: {_eq: \"lobby\"}}) {\n    message_id\n    room_id\n    author_id\n    body\n    created_at\n    author {\n      user_id\n      display_name\n      email\n      _distributed_typename: __typename\n    }\n    _distributed_typename: __typename\n  }\n}\n",
   "source": {
     "path": "src/routes/chat/+page.graphql",
-    "line": 3,
+    "line": 4,
     "column": 1
   },
   "variableCodec": {
@@ -287,6 +292,81 @@ export const Operation_ChatMessages: ReplicaOperationArtifact<Operation_ChatMess
             "nullable": false
           },
           {
+            "kind": "branch",
+            "semantic": "relationship",
+            "responseKey": "author",
+            "field": "author",
+            "cardinality": "one",
+            "nullable": false,
+            "dependencies": [
+              "auth_users",
+              "chat_messages"
+            ],
+            "coverage": {
+              "kind": "complete"
+            },
+            "relationship": {
+              "field": "author",
+              "targetModel": "AuthUsers",
+              "kind": "belongs_to",
+              "keyMapping": {
+                "kind": "direct",
+                "local": [
+                  "author_id"
+                ],
+                "remote": [
+                  "user_id"
+                ]
+              },
+              "maintenance": "local",
+              "dependencies": [
+                "auth_users",
+                "chat_messages"
+              ]
+            },
+            "selection": {
+              "typename": "AuthUsers",
+              "storage": {
+                "kind": "normalized",
+                "model": "AuthUsers",
+                "identityFields": [
+                  "user_id"
+                ]
+              },
+              "members": [
+                {
+                  "kind": "scalar",
+                  "responseKey": "user_id",
+                  "field": "user_id",
+                  "codec": "string",
+                  "nullable": false
+                },
+                {
+                  "kind": "scalar",
+                  "responseKey": "display_name",
+                  "field": "display_name",
+                  "codec": "string",
+                  "nullable": false
+                },
+                {
+                  "kind": "scalar",
+                  "responseKey": "email",
+                  "field": "email",
+                  "codec": "string",
+                  "nullable": false
+                },
+                {
+                  "kind": "scalar",
+                  "responseKey": "_distributed_typename",
+                  "field": "__typename",
+                  "codec": "string",
+                  "nullable": false,
+                  "expose": false
+                }
+              ]
+            }
+          },
+          {
             "kind": "scalar",
             "responseKey": "_distributed_typename",
             "field": "__typename",
@@ -300,16 +380,15 @@ export const Operation_ChatMessages: ReplicaOperationArtifact<Operation_ChatMess
   ],
   "protocol": {
     "version": 1,
-    "schemaHash": "sha256:986dcd04c1233dd45c01d373bf917f246f2de3926288c5767b10125da29f801f",
+    "schemaHash": "sha256:d75849347f327a082e6db2f670e62e5b3abfe94141ee55331b8d07015a9e1cda",
     "surface": {
       "kind": "application",
       "name": "e2e-ui",
       "roles": [
-        "admin",
         "user"
       ]
     },
-    "operation": "sha256:54dd3bd2142cf20a0bcc28d632fbd6cfc69f1d6d9ff94268a90865fd5a56a552",
+    "operation": "sha256:68575d8ab4d3956155c0d382a464e6f061d00d34bae8cccb941ce02a5a538641",
     "trustedPresets": [
       {
         "name": "x-user-id",
@@ -318,7 +397,7 @@ export const Operation_ChatMessages: ReplicaOperationArtifact<Operation_ChatMess
     ]
   },
   "live": {
-    "id": "sha256:3d894c6412e9408d178ad11030c0ed1f8db0066216e70131dae3f61fb1be81b4",
-    "document": "subscription ChatMessages_Live {\n  chat_messages(where: {room_id: {_eq: \"lobby\"}}) {\n    message_id\n    room_id\n    author_id\n    body\n    created_at\n    _distributed_typename: __typename\n  }\n}\n"
+    "id": "sha256:428623bc40b97391be765549b09ec5d88bce1043d2b1cc36c3cce33227121ef6",
+    "document": "subscription ChatMessages_Live {\n  chat_messages(where: {room_id: {_eq: \"lobby\"}}) {\n    message_id\n    room_id\n    author_id\n    body\n    created_at\n    author {\n      user_id\n      display_name\n      email\n      _distributed_typename: __typename\n    }\n    _distributed_typename: __typename\n  }\n}\n"
   }
 };

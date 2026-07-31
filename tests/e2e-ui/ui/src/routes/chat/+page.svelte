@@ -25,6 +25,8 @@
 	let logEl: HTMLDivElement | undefined = $state();
 	let draft = $state('');
 	let busy = $state(false);
+	/** Local send lifecycle for this session's own messages. */
+	let deliveryById = $state<Record<string, 'sent' | 'delivered'>>({});
 
 	/** Same principal the API stamps as author_id (access-token sub). */
 	const me = $derived(
@@ -35,7 +37,11 @@
 	/** `use()` defaults live because the artifact has a generated companion. */
 	const lobby = ChatMessages.use();
 	const commands = useCommands();
-	const messages = $derived($lobby.complete ? $lobby.data.chat_messages : []);
+	// Never blank the list while incomplete (e.g. optimistic row before author
+	// edge is linked). Prefer sparse data over an empty flash.
+	const messages = $derived(
+		Array.isArray($lobby.data?.chat_messages) ? $lobby.data.chat_messages : []
+	);
 
 	async function scrollBottom() {
 		await tick();
@@ -63,7 +69,38 @@
 	}
 
 	function messageIsMine(m: ChatMsg): boolean {
-		return isOwnAuthor(m.author_id, me);
+		return isOwnAuthor(m.author_id, me, {
+			authorUserId: m.author?.user_id,
+			displayName: m.author?.display_name
+		});
+	}
+
+	/** Prefer AuthUsers.display_name; fall back to email, then a short id. */
+	function authorName(m: ChatMsg): string {
+		const joined = (m as { author?: { display_name?: string; email?: string } | null })
+			.author;
+		const name = joined?.display_name?.trim();
+		if (name) return name;
+		const email = joined?.email?.trim();
+		if (email) return email.split('@')[0] || email;
+		// Optimistic own rows may lack the author edge until projection lands.
+		if (messageIsMine(m)) return displayName;
+		return shortId(m.author_id);
+	}
+
+	/**
+	 * iMessage-style: only the latest consecutive own message shows a status
+	 * under the bubble (not every message).
+	 */
+	function isStatusFooterMessage(index: number): boolean {
+		const m = messages[index];
+		if (!m || !messageIsMine(m)) return false;
+		const next = messages[index + 1];
+		return next === undefined || !messageIsMine(next);
+	}
+
+	function deliveryLabel(messageId: string): 'sent' | 'delivered' | null {
+		return deliveryById[messageId] ?? null;
 	}
 
 	async function onSend(e: Event) {
@@ -77,14 +114,25 @@
 		// Clear only the submitted draft. Anything typed while this command is
 		// pending belongs to the next message and must survive its completion.
 		draft = '';
+		// Optimistic: show Sent as soon as the local row appears.
+		deliveryById = { ...deliveryById, [message_id]: 'sent' };
 		try {
-			await commands.chat.post({
+			const receipt = await commands.chat.post({
 				message_id,
 				body,
 				room_id: LOBBY_ROOM,
 				created_at: String(now)
 			});
+			// Wait for causal projection when the runtime provides it; otherwise
+			// the command receipt itself is the server confirmation.
+			if (receipt.projected !== undefined) {
+				await receipt.projected;
+			}
+			deliveryById = { ...deliveryById, [message_id]: 'delivered' };
 		} catch (error) {
+			const next = { ...deliveryById };
+			delete next[message_id];
+			deliveryById = next;
 			if (!draft.trim()) draft = body;
 			sendError = error instanceof Error ? error.message : 'send failed';
 		} finally {
@@ -137,14 +185,28 @@
 			{:else}
 				{#each messages as m, i (m.message_id)}
 					{@const mine = messageIsMine(m)}
-					{@const authorLabel = mine ? 'You' : shortId(m.author_id)}
-					<article class="ch-msg" class:mine style="--i: {i}">
-						<header class="ch-msg-meta">
-							<span class="ch-author" title={m.author_id}>{authorLabel}</span>
-							<time class="ch-when" datetime={m.created_at}>{formatWhen(m.created_at)}</time>
-						</header>
-						<p class="ch-body">{m.body}</p>
-					</article>
+					{@const authorLabel = mine ? 'You' : authorName(m)}
+					{@const showStatus = isStatusFooterMessage(i)}
+					{@const delivery = showStatus ? deliveryLabel(m.message_id) : null}
+					<div class="ch-msg-block" class:mine style="--i: {i}">
+						<article class="ch-msg" class:mine>
+							<header class="ch-msg-meta">
+								<span class="ch-author" title={m.author_id}>{authorLabel}</span>
+								<time class="ch-when" datetime={m.created_at}>{formatWhen(m.created_at)}</time>
+							</header>
+							<p class="ch-body">{m.body}</p>
+						</article>
+						{#if showStatus}
+							{#if delivery === 'sent'}
+								<p class="ch-status-footer" data-state="sent">Sent</p>
+							{:else if delivery === 'delivered'}
+								<p class="ch-status-footer" data-state="delivered">Delivered</p>
+							{:else}
+								<!-- Own last bubble with no tracked session state (e.g. reload). -->
+								<p class="ch-status-footer" data-state="delivered">Delivered</p>
+							{/if}
+						{/if}
+					</div>
 				{/each}
 			{/if}
 		</div>
@@ -284,9 +346,22 @@
 		margin-bottom: 0.5rem;
 	}
 
-	.ch-msg {
+	/* iMessage-like block: bubble + optional status under the last own message */
+	.ch-msg-block {
+		display: flex;
+		flex-direction: column;
+		align-items: flex-start;
 		max-width: min(88%, 28rem);
 		align-self: flex-start;
+	}
+
+	.ch-msg-block.mine {
+		align-self: flex-end;
+		align-items: flex-end;
+	}
+
+	.ch-msg {
+		width: 100%;
 		padding: 0.6rem 0.8rem 0.7rem;
 		border-radius: 10px 10px 10px 4px;
 		background: var(--bubble);
@@ -294,7 +369,6 @@
 	}
 
 	.ch-msg.mine {
-		align-self: flex-end;
 		border-radius: 10px 10px 4px 10px;
 		background: var(--bubble-mine);
 		border-color: transparent;
@@ -313,14 +387,34 @@
 		font-size: 0.7rem;
 		font-weight: 600;
 		letter-spacing: 0.04em;
-		text-transform: uppercase;
-		opacity: 0.65;
+		text-transform: none;
+		opacity: 0.75;
 	}
 
 	.ch-when {
 		font-size: 0.68rem;
 		font-variant-numeric: tabular-nums;
 		opacity: 0.5;
+	}
+
+	/* iMessage: small gray caption under the last bubble you sent */
+	.ch-status-footer {
+		margin: 0.15rem 0.35rem 0;
+		padding: 0;
+		font-size: 0.68rem;
+		font-weight: 400;
+		letter-spacing: 0.01em;
+		color: var(--ink-soft);
+		opacity: 0.85;
+		font-variant-numeric: tabular-nums;
+	}
+
+	.ch-status-footer[data-state='sent'] {
+		opacity: 0.7;
+	}
+
+	.ch-status-footer[data-state='delivered'] {
+		opacity: 0.9;
 	}
 
 	.ch-body {

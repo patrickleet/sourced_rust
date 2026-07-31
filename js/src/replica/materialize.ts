@@ -101,6 +101,16 @@ function materializeBranch(
 	if (selection.cardinality === 'one') {
 		const key = index.records[0];
 		if (key === undefined) {
+			// Empty relationship edge: null when the selection allows it.
+			if (selection.nullable) {
+				return {
+					value: null,
+					present: true,
+					complete: indexComplete,
+					stale,
+					identitySignature: `null:${index.metadata.staleReason ?? ''}`
+				};
+			}
 			return {
 				present: false,
 				complete: false,
@@ -213,6 +223,21 @@ function materializeNestedBranch(
 	});
 	const index = reader.index(indexKey);
 	if (index?.metadata?.parentIncarnation !== parentIncarnation) {
+		/*
+		 * Optimistic parent upserts often write the FK row before a relationship
+		 * index exists. For nullable joins (e.g. ChatMessages.author), treat the
+		 * missing edge as an authorized null so the parent list stays complete
+		 * and visible. Required relationships still fail closed as incomplete.
+		 */
+		if (selection.nullable) {
+			return {
+				value: null,
+				present: true,
+				complete: true,
+				stale: index !== undefined,
+				identitySignature: `null-missing-edge:${selection.field}`
+			};
+		}
 		return {
 			present: false,
 			complete: false,
