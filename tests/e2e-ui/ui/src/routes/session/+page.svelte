@@ -2,7 +2,9 @@
 	import { browser } from '$app/environment';
 	import { BadgeCheck, LockKeyhole, LogOut, UserRound } from '@lucide/svelte';
 	import { Button, SimplePage } from '$lib/components/shared/ui';
+	import { HowItsBuilt } from '$lib/components/walkthrough';
 	import { engineRoleFromGroups, isAdminEngineRole } from '$lib/roles';
+	import { sessionWalkthrough } from '$lib/walkthrough';
 	import TokenInspector from './TokenInspector.svelte';
 	import type { PageData } from './$types';
 
@@ -217,6 +219,8 @@
 		</div>
 	{/if}
 </SimplePage>
+
+<HowItsBuilt demo={sessionWalkthrough} />
 
 <style>
 	.session-view {

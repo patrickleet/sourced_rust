@@ -10,6 +10,8 @@
 		PageHeader,
 		StatRow
 	} from '$lib/components/product';
+	import { HowItsBuilt } from '$lib/components/walkthrough';
+	import { adminWalkthrough } from '$lib/walkthrough';
 	import { sessionDisplayName } from '$lib/session';
 
 	let { data } = $props();
@@ -124,6 +126,8 @@
 		admin-gated component tree.
 	</p>
 </AppPage>
+
+<HowItsBuilt demo={adminWalkthrough} />
 
 <style>
 	/* Route-local table surface */

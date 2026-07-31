@@ -725,6 +725,37 @@
 	padding-top: 0.2rem;
 }
 
+.wf-demo-title-row {
+	display: flex;
+	flex-wrap: wrap;
+	align-items: baseline;
+	gap: 0.45rem 0.7rem;
+	margin-bottom: 0.35rem;
+}
+
+.wf-demo-title-row h3 {
+	margin: 0;
+}
+
+.wf-demo-tag {
+	font-family: var(--wf-mono);
+	font-size: 0.62rem;
+	font-weight: 500;
+	letter-spacing: 0.06em;
+	text-transform: uppercase;
+	color: var(--wf-accent);
+	padding: 0.12rem 0.45rem;
+	border: 1px solid var(--wf-line-strong);
+	border-radius: 999px;
+	background: var(--wf-accent-soft);
+}
+
+.wf-band-dark .wf-demo-tag {
+	color: #9ec5e8;
+	border-color: var(--wf-band-dark-line);
+	background: rgba(158, 197, 232, 0.08);
+}
+
 .wf-demo h3 {
 	margin: 0 0 0.4rem;
 	font-size: 1.05rem;
