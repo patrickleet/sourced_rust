@@ -1,15 +1,67 @@
 //! `mutation!` macro: event-independent read-model mutation programs.
+//!
+//! Supports classic sugar and GraphQL-looking syntax-only documents (not public
+//! GraphQL schema fields):
+//!
+//! ```ignore
+//! mutation! {
+//!     mutation SaveTodo {
+//!         upsert_Todos(object: $input.todo)
+//!     }
+//! }
+//! ```
+//!
+//! And file loading via [`mutation_file`]:
+//!
+//! ```ignore
+//! mutation_file!("src/mutations/save_todo.mutation.graphql")
+//! ```
+
+use std::path::PathBuf;
 
 use proc_macro2::TokenStream;
 use quote::quote;
 use syn::parse::{Parse, ParseStream};
-use syn::{braced, Ident, LitInt, LitStr, Path, Result, Token, Type};
+use syn::{braced, parenthesized, Ident, LitInt, LitStr, Path, Result, Token, Type};
 
 pub(crate) fn expand(input: proc_macro::TokenStream) -> proc_macro::TokenStream {
     let input = syn::parse_macro_input!(input as MutationDeclaration);
     expand_declaration(input)
         .unwrap_or_else(syn::Error::into_compile_error)
         .into()
+}
+
+/// Load a `.mutation.graphql` document relative to `CARGO_MANIFEST_DIR`.
+pub(crate) fn expand_file(input: proc_macro::TokenStream) -> proc_macro::TokenStream {
+    let path_lit = syn::parse_macro_input!(input as LitStr);
+    match load_graphql_file(&path_lit) {
+        Ok(decl) => expand_declaration(decl)
+            .unwrap_or_else(syn::Error::into_compile_error)
+            .into(),
+        Err(error) => error.to_compile_error().into(),
+    }
+}
+
+fn load_graphql_file(path_lit: &LitStr) -> Result<MutationDeclaration> {
+    let relative = path_lit.value();
+    let manifest = std::env::var("CARGO_MANIFEST_DIR").map_err(|_| {
+        syn::Error::new(
+            path_lit.span(),
+            "CARGO_MANIFEST_DIR is required to load mutation.graphql files",
+        )
+    })?;
+    let full = PathBuf::from(manifest).join(&relative);
+    let source = std::fs::read_to_string(&full).map_err(|error| {
+        syn::Error::new(
+            path_lit.span(),
+            format!(
+                "failed to read mutation file `{}` (resolved `{}`): {error}",
+                relative,
+                full.display()
+            ),
+        )
+    })?;
+    parse_graphql_document(&source, path_lit.span())
 }
 
 struct MutationDeclaration {
@@ -51,6 +103,14 @@ enum MutationOpSyntax {
 
 impl Parse for MutationDeclaration {
     fn parse(input: ParseStream<'_>) -> Result<Self> {
+        // GraphQL-looking form: `mutation Name { upsert_Model(...) }`
+        if input.peek(Ident) {
+            let keyword: Ident = input.fork().parse()?;
+            if keyword == "mutation" {
+                return parse_graphql_token_document(input);
+            }
+        }
+
         let mut name = None;
         let mut version = None;
         let mut input_ty = None;
@@ -89,8 +149,9 @@ impl Parse for MutationDeclaration {
                 }
             }
             return Err(input.error(
-                "expected mutation operation (`upsert`, `insert`, `update`, `delete`) \
-                 or `name`/`version`/`input` metadata",
+                "expected GraphQL-looking `mutation Name { … }`, classic mutation \
+                 operations (`upsert`, `insert`, `update`, `delete`), or \
+                 `name`/`version`/`input` metadata",
             ));
         }
 
@@ -108,6 +169,248 @@ impl Parse for MutationDeclaration {
             operations,
         })
     }
+}
+
+/// Parse GraphQL-looking tokens inside `mutation! { mutation Name { ops } }`.
+fn parse_graphql_token_document(input: ParseStream<'_>) -> Result<MutationDeclaration> {
+    let mutation_kw: Ident = input.parse()?;
+    if mutation_kw != "mutation" {
+        return Err(syn::Error::new(
+            mutation_kw.span(),
+            "expected `mutation`",
+        ));
+    }
+    let name_ident: Ident = input.parse()?;
+    let mut version: Option<u64> = None;
+    if input.peek(Token![@]) {
+        input.parse::<Token![@]>()?;
+        let attr: Ident = input.parse()?;
+        if attr != "version" {
+            return Err(syn::Error::new(
+                attr.span(),
+                "only `@version(n)` is supported on GraphQL-looking mutations",
+            ));
+        }
+        let version_content;
+        parenthesized!(version_content in input);
+        let lit: LitInt = version_content.parse()?;
+        version = Some(lit.base10_parse()?);
+    }
+    let body;
+    braced!(body in input);
+    let mut operations = Vec::new();
+    while !body.is_empty() {
+        operations.push(parse_graphql_field_operation(&body)?);
+        // Optional trailing commas between field ops.
+        if body.peek(Token![,]) {
+            body.parse::<Token![,]>()?;
+        }
+    }
+    if operations.is_empty() {
+        return Err(syn::Error::new(
+            name_ident.span(),
+            "GraphQL-looking mutation body requires at least one operation",
+        ));
+    }
+    let name = LitStr::new(
+        &pascal_to_snake(&name_ident.to_string()),
+        name_ident.span(),
+    );
+    let version_lit = version.map(|v| {
+        LitInt::new(&v.to_string(), name_ident.span())
+    });
+    Ok(MutationDeclaration {
+        name: Some(name),
+        version: version_lit,
+        input_ty: None,
+        operations,
+    })
+}
+
+/// Parse a raw `.mutation.graphql` text document.
+fn parse_graphql_document(source: &str, span: proc_macro2::Span) -> Result<MutationDeclaration> {
+    // Strip line comments (`# …`).
+    let mut cleaned = String::new();
+    for line in source.lines() {
+        let trimmed = line.split('#').next().unwrap_or("").trim_end();
+        if !trimmed.is_empty() {
+            cleaned.push_str(trimmed);
+            cleaned.push('\n');
+        }
+    }
+    let tokens: TokenStream = cleaned.parse().map_err(|error| {
+        syn::Error::new(span, format!("invalid GraphQL-looking mutation tokens: {error}"))
+    })?;
+    syn::parse2::<MutationDeclaration>(tokens).map_err(|error| {
+        syn::Error::new(
+            span,
+            format!("failed to parse mutation.graphql document: {error}"),
+        )
+    })
+}
+
+fn pascal_to_snake(name: &str) -> String {
+    let mut out = String::new();
+    for (index, ch) in name.chars().enumerate() {
+        if ch.is_uppercase() {
+            if index > 0 {
+                out.push('_');
+            }
+            out.extend(ch.to_lowercase());
+        } else {
+            out.push(ch);
+        }
+    }
+    if out.is_empty() {
+        "mutation".into()
+    } else {
+        out
+    }
+}
+
+/// `upsert_Todos(object: $input.todo)` / `delete_Todos_by_pk(todo_id: $input.todo_id)`.
+fn parse_graphql_field_operation(input: ParseStream<'_>) -> Result<MutationOpSyntax> {
+    let field: Ident = input.parse()?;
+    let field_name = field.to_string();
+    let args;
+    parenthesized!(args in input);
+
+    if let Some(model) = field_name.strip_prefix("upsert_") {
+        let model = model_path_from_name(model, field.span())?;
+        let object_root = parse_graphql_object_arg(&args)?;
+        return Ok(MutationOpSyntax::SugarUpsert {
+            model,
+            input_root: object_root,
+        });
+    }
+    if let Some(model) = field_name
+        .strip_prefix("insert_")
+        .map(|rest| rest.strip_suffix("_one").unwrap_or(rest))
+    {
+        let model = model_path_from_name(model, field.span())?;
+        let object_root = parse_graphql_object_arg(&args)?;
+        return Ok(MutationOpSyntax::InsertOne {
+            model,
+            object_root,
+        });
+    }
+    if let Some(model) = field_name.strip_prefix("delete_").and_then(|rest| {
+        rest.strip_suffix("_by_pk")
+    }) {
+        let model = model_path_from_name(model, field.span())?;
+        let keys = parse_graphql_key_args(&args)?;
+        return Ok(MutationOpSyntax::DeleteByPk { model, keys });
+    }
+    if let Some(model) = field_name
+        .strip_prefix("update_")
+        .and_then(|rest| rest.strip_suffix("_by_pk"))
+        .or_else(|| {
+            field_name
+                .strip_prefix("patch_")
+                .and_then(|rest| rest.strip_suffix("_by_pk"))
+        })
+    {
+        let model = model_path_from_name(model, field.span())?;
+        let (keys, sets) = parse_graphql_update_args(&args)?;
+        return Ok(MutationOpSyntax::UpdateByPk { model, keys, sets });
+    }
+
+    Err(syn::Error::new(
+        field.span(),
+        format!(
+            "unsupported GraphQL-looking mutation field `{field_name}`; \
+             expected upsert_Model, insert_Model[_one], delete_Model_by_pk, \
+             or update_Model_by_pk"
+        ),
+    ))
+}
+
+fn model_path_from_name(name: &str, span: proc_macro2::Span) -> Result<Path> {
+    if name.is_empty() {
+        return Err(syn::Error::new(span, "model name missing from mutation field"));
+    }
+    let ident = Ident::new(name, span);
+    Ok(Path::from(ident))
+}
+
+fn parse_graphql_object_arg(input: ParseStream<'_>) -> Result<Vec<Ident>> {
+    let mut object_root = None;
+    while !input.is_empty() {
+        let key: Ident = input.parse()?;
+        input.parse::<Token![:]>()?;
+        if key != "object" {
+            return Err(syn::Error::new(
+                key.span(),
+                "expected `object: $input…` argument",
+            ));
+        }
+        object_root = Some(parse_graphql_input_path(input)?);
+        if input.peek(Token![,]) {
+            input.parse::<Token![,]>()?;
+        }
+    }
+    object_root.ok_or_else(|| input.error("upsert/insert requires `object: $input…`"))
+}
+
+fn parse_graphql_key_args(input: ParseStream<'_>) -> Result<Vec<(Ident, Vec<Ident>)>> {
+    let mut keys = Vec::new();
+    while !input.is_empty() {
+        let name: Ident = input.parse()?;
+        input.parse::<Token![:]>()?;
+        let path = parse_graphql_input_path(input)?;
+        keys.push((name, path));
+        if input.peek(Token![,]) {
+            input.parse::<Token![,]>()?;
+        }
+    }
+    if keys.is_empty() {
+        return Err(input.error("delete_by_pk requires at least one key argument"));
+    }
+    Ok(keys)
+}
+
+fn parse_graphql_update_args(
+    input: ParseStream<'_>,
+) -> Result<(Vec<(Ident, Vec<Ident>)>, Vec<(Ident, Vec<Ident>)>)> {
+    let mut keys = Vec::new();
+    let mut sets = Vec::new();
+    while !input.is_empty() {
+        let name: Ident = input.parse()?;
+        input.parse::<Token![:]>()?;
+        if name == "_set" {
+            let set_content;
+            braced!(set_content in input);
+            while !set_content.is_empty() {
+                let field: Ident = set_content.parse()?;
+                set_content.parse::<Token![:]>()?;
+                let path = parse_graphql_input_path(&set_content)?;
+                sets.push((field, path));
+                if set_content.peek(Token![,]) {
+                    set_content.parse::<Token![,]>()?;
+                }
+            }
+        } else {
+            let path = parse_graphql_input_path(input)?;
+            keys.push((name, path));
+        }
+        if input.peek(Token![,]) {
+            input.parse::<Token![,]>()?;
+        }
+    }
+    if keys.is_empty() || sets.is_empty() {
+        return Err(input.error(
+            "update_by_pk requires key fields and `_set: { field: $input… }`",
+        ));
+    }
+    Ok((keys, sets))
+}
+
+/// `$input.todo`, `input.todo`, or `$todo_id` / bare paths.
+fn parse_graphql_input_path(input: ParseStream<'_>) -> Result<Vec<Ident>> {
+    if input.peek(Token![$]) {
+        input.parse::<Token![$]>()?;
+    }
+    parse_input_path(input)
 }
 
 fn parse_separator(input: ParseStream<'_>) -> Result<()> {

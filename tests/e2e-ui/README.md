@@ -36,39 +36,41 @@ fn record_completed(&mut self) {
     self.status = TodoStatus::Completed;
 }
 
-// 1) Mutation (event-free)
+// 1) Mutation (event-free, GraphQL-looking syntax-only — not a public GQL field)
+// src/mutations/save_todo.mutation.graphql:
+//   mutation SaveTodo { upsert_Todos(object: $input.todo) }
 pub fn save_todo() -> Mutation<()> {
-    mutation! {
-        name: "save_todo"; version: 1;
-        upsert Todos from input.todo;
-    }
+    mutation_file!("src/mutations/save_todo.mutation.graphql")
 }
-pub fn delete_todo() -> Mutation<()> { /* delete by pk */ }
+pub fn delete_todo() -> Mutation<()> {
+    mutation_file!("src/mutations/delete_todo.mutation.graphql")
+}
 
-// 2) Portable handlers: which events apply which mutation (the spec)
+// 2) Portable handlers: on <events> apply <mutation> (event-first)
 portable_handlers! {
     pub const TODOS: ProjectionDescriptor<EventualOnly> = {
         name: "project_todos",
         version: 1,
         epoch: "e2e-ui-todos-v2",
         model: Todos,
-        apply save_todo {
-            on_event TodoCreatedDomainEvent, TodoCompletedDomainEvent /* … */ as "todo"
-        },
-        apply delete_todo {
-            on_deleted TodoPurgedDomainEvent as "todo_id"
+        on_event {
+            TodoCreatedDomainEvent,
+            TodoCompletedDomainEvent, /* … */
         }
+        apply save_todo as "todo",
+        on_deleted TodoPurgedDomainEvent => apply delete_todo as "todo_id",
     };
 }
 ```
 
-The command registration links the command to its possible domain event and
-optionally previews only values known before dispatch:
+Command registration declares the domain events this command may emit and the
+**known mutation input** used for client cache application (not a separate
+hand-built cache path):
 
 ```rust
 typed_command::<TodoCompleteInput, Causal<TodoStatusPayload>>("todo.complete")
     .emits(events![TodoCompletedDomainEvent])
-    .preview(state_preview! {
+    .applies(state_preview! {
         TodoCompletedDomainEvent => TodoState {
             todo_id: input.todo_id,
             status: "completed",
@@ -77,13 +79,13 @@ typed_command::<TodoCompleteInput, Causal<TodoStatusPayload>>("todo.complete")
     })
 ```
 
-The compiler specializes `TODOS` into safe client operations. Known
-fields become an optimistic patch; unknown fields use narrow recovery or
-revalidation. Actual emitted occurrences—not the declaration—mint exact
-obligations for the active projector binding. A no-op command therefore emits
-zero occurrences, mints zero obligations, and completes as `Succeeded`.
+The compiler specializes `TODOS` into safe client operations: apply the same
+mutation IR to the cache with known fields only; unknown fields use narrow
+recovery or revalidation. Actual emitted occurrences—not the declaration—mint
+exact obligations for the active projector binding. A no-op command therefore
+emits zero occurrences, mints zero obligations, and completes as `Succeeded`.
 
-Handlers use the fluent unit of work:
+Handlers use the fluent unit of work (eventual — projector applies the mutation):
 
 ```rust
 let repo = ctx.repo();
@@ -102,9 +104,8 @@ repo.publish_events()
     })
 ```
 
-Blob uses placement-selected direct projection — the command does **not** name
-a projection selector. Service registration owns `BLOB_GAMES` / `SAVE_BLOB_GAME`;
-handlers only call the fluent terminal:
+Blob uses a **handler-owned projected** commit: materialize the row from the
+same mutation used for event bindings, stage it, and seal `Projected`:
 
 ```rust
 let repo = ctx.repo();
@@ -114,8 +115,12 @@ let mut game = repo
     .ok_or_else(|| HandlerError::NotFound(input.game_id.clone()))?;
 game.move_dir(&owner, direction).map_err(rejected)?;
 
-// Placement-selected: no `.project(BLOB_GAMES)` — that selector was removed.
-repo.commit(game)?.projected()
+let row = save_blob_game()
+    .from_state(&BlobGameState::from(&*game))?;
+repo.readmodel(row)
+    .publish_events()
+    .commit(game)?
+    .projected()
 ```
 
 `Projected<BlobGames>` means aggregate history, command ledger, read-model row,
@@ -149,8 +154,10 @@ programs; the same IR lowers on the server and for role-safe client cache
 optimism. Multi-model atomicity is expressed as multi-op mutation programs, not
 a public projector ORM workspace.
 
-Application commands predict events with `.emits` / `.preview` and never name
-projection selectors (Blob uses placement-selected `commit()?.projected()`).
+Application commands declare `.emits` plus `.applies(...)` known mutation-input
+mapping for client cache application. Eventual commands do not stage rows in
+the handler; Blob stages the mutation-derived row with
+`readmodel(row).commit()?.projected()`.
 
 Query relationships are declared once on the referencing read model, without a
 second projection ORM. This fixture adds `Todos.owner`, `BlobGames.owner`, and

@@ -833,6 +833,36 @@ impl<I> Mutation<I> {
     pub fn id(&self) -> Result<MutationProgramId, MutationProgramError> {
         self.program.id()
     }
+
+    /// Materialize a complete read-model row from known domain/state input.
+    ///
+    /// Used by handler-owned projected commits: apply the same field shape the
+    /// mutation would write (`upsert M from input.root`) from a post-transition
+    /// state DTO. Relationship/query-only fields on `M` that are absent on
+    /// `state` deserialize as their serde defaults (`None`, etc.).
+    ///
+    /// # Errors
+    ///
+    /// Returns encoding failures when `state` cannot be converted into `M`.
+    pub fn from_state<S, M>(&self, state: &S) -> Result<M, MutationProgramError>
+    where
+        S: serde::Serialize,
+        M: serde::de::DeserializeOwned,
+    {
+        let _ = &self.program;
+        let value = serde_json::to_value(state).map_err(|error| {
+            MutationProgramError::Adapter(format!(
+                "mutation `{}` could not encode known state for row materialization: {error}",
+                self.program.name()
+            ))
+        })?;
+        serde_json::from_value(value).map_err(|error| {
+            MutationProgramError::Adapter(format!(
+                "mutation `{}` could not materialize row from known state: {error}",
+                self.program.name()
+            ))
+        })
+    }
 }
 
 fn validate_static_ambiguity(operations: &[MutationOperation]) -> Result<(), MutationProgramError> {

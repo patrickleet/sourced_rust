@@ -98,18 +98,47 @@ pub fn command_input_defaults(input: TokenStream) -> TokenStream {
 /// Compile an event-independent read-model mutation program.
 ///
 /// Mutations never name events. Portable handlers bind events to mutation
-/// inputs. Generated capabilities are internal; they are not GraphQL fields.
+/// inputs. Generated capabilities are internal; they are **not** GraphQL
+/// schema fields.
+///
+/// GraphQL-looking form (preferred surface):
 ///
 /// ```ignore
-/// pub const SAVE_TODO: Mutation<TodoInput> = mutation! {
+/// mutation! {
+///     mutation SaveTodo {
+///         upsert_Todos(object: $input.todo)
+///     }
+/// }
+/// ```
+///
+/// Classic sugar still works:
+///
+/// ```ignore
+/// mutation! {
 ///     name: "save_todo";
 ///     version: 1;
 ///     upsert Todos from input.todo;
-/// };
+/// }
 /// ```
 #[proc_macro]
 pub fn mutation(input: TokenStream) -> TokenStream {
     mutation::expand(input)
+}
+
+/// Load a GraphQL-looking mutation document from a path relative to
+/// `CARGO_MANIFEST_DIR` (e.g. `src/mutations/save_todo.mutation.graphql`).
+///
+/// Syntax-only: compiles to the same `MutationProgram` IR as [`mutation!`].
+/// Not a public GraphQL schema field.
+///
+/// ```ignore
+/// pub fn save_todo() -> Mutation<()> {
+///     mutation_file!("src/mutations/save_todo.mutation.graphql")
+/// }
+/// ```
+#[proc_macro]
+pub fn mutation_file(input: TokenStream) -> TokenStream {
+    mutation::expand_file(input)
 }
 
 /// Derive `GraphqlInputType` for command mutation input structs.

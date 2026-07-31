@@ -1,7 +1,7 @@
 //! Chat: mutation + portable handler (room-partitioned).
 
 use distributed::domain_event::DomainEventContract;
-use distributed::mutation;
+use distributed::mutation_file;
 use distributed::mutation_projector;
 use distributed::projection::lower::{DirectCandidate, ProjectionDescriptor};
 use distributed::{
@@ -12,12 +12,11 @@ use chat_domain::ChatMessagePostedDomainEvent;
 use e2e_readmodels::ChatMessages;
 
 /// Mutation: complete-row upsert for chat messages.
+///
+/// Authored as GraphQL-looking syntax-only IR (not a public GraphQL field):
+/// `src/mutations/save_chat_message.mutation.graphql`.
 pub fn save_chat_message() -> Mutation<()> {
-    mutation! {
-        name: "save_chat_message";
-        version: 1;
-        upsert ChatMessages from input.message;
-    }
+    mutation_file!("src/mutations/save_chat_message.mutation.graphql")
 }
 
 fn chat_handlers() -> Result<ProjectionProgram, ProjectionProgramError> {

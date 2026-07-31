@@ -1,8 +1,9 @@
 //! Command: `blob.move` — direction up|down|left|right.
 
-use blob_domain::{BlobGame, Direction};
+use blob_domain::{BlobGame, BlobGameState, Direction};
 use distributed::graphql::{PreparedCommand, Projected};
 use distributed::microsvc::{CausalCommandContext, HandlerError};
+use e2e_projections::save_blob_game;
 use e2e_readmodels::BlobGames;
 use serde::Deserialize;
 
@@ -35,7 +36,12 @@ pub async fn handle(
         .ok_or_else(|| HandlerError::NotFound(input.game_id.clone()))?;
     game.move_dir(&owner, dir).map_err(rejected)?;
 
-    // Placement-selected direct: service registration owns project_blob /
-    // SAVE_BLOB_GAME. Command code names neither a projection nor a selector.
-    repo.commit(game)?.projected()
+    // Handler-owned projected: same mutation IR as event→mutation bindings.
+    let row = save_blob_game()
+        .from_state(&BlobGameState::from(&*game))
+        .map_err(|error| HandlerError::Other(Box::new(error)))?;
+    repo.readmodel(row)
+        .publish_events()
+        .commit(game)?
+        .projected()
 }
