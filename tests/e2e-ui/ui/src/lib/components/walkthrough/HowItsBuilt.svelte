@@ -4,6 +4,7 @@
 	 * Distributed lens — domain → command → projection → client — not a generic code dump.
 	 */
 	import type { DemoWalkthrough } from '$lib/walkthrough';
+	import { highlightCode } from './highlight';
 
 	interface Props {
 		demo: DemoWalkthrough;
@@ -102,7 +103,7 @@
 							<span class="hib-caption">{sample.caption}</span>
 						{/if}
 					</figcaption>
-					<pre class="hib-code"><code>{sample.code}</code></pre>
+					<pre class="hib-code"><code>{@html highlightCode(sample.code)}</code></pre>
 				</figure>
 			{/each}
 		</div>
@@ -207,14 +208,19 @@
 		top: 0;
 		right: 0;
 		bottom: 0;
-		width: min(28.5rem, 100vw);
+		/* Wide teaching surface — room for code without feeling cramped */
+		width: min(46rem, 100vw);
+		max-width: 100vw;
 		display: flex;
 		flex-direction: column;
 		background: #161615;
 		color: #f0eee8;
-		box-shadow: -20px 0 60px rgba(0, 0, 0, 0.35);
+		/* No shadow while closed — off-screen panels still paint a haze otherwise */
+		box-shadow: none;
 		transform: translateX(100%);
-		transition: transform 0.35s var(--ease, cubic-bezier(0.22, 1, 0.36, 1));
+		transition:
+			transform 0.35s var(--ease, cubic-bezier(0.22, 1, 0.36, 1)),
+			box-shadow 0.35s var(--ease, cubic-bezier(0.22, 1, 0.36, 1));
 		/* Subtle blueprint grid */
 		background-image:
 			linear-gradient(rgba(255, 255, 255, 0.03) 1px, transparent 1px),
@@ -226,10 +232,12 @@
 	.hib-drawer.open {
 		transform: translateX(0);
 		pointer-events: auto;
+		box-shadow: -24px 0 64px rgba(0, 0, 0, 0.4);
 	}
 
 	.hib-drawer:not(.open) {
 		pointer-events: none;
+		box-shadow: none;
 	}
 
 	.hib-head {
@@ -417,11 +425,11 @@
 
 	.hib-code {
 		margin: 0;
-		padding: 0.9rem 0.95rem 1.05rem;
+		padding: 0.95rem 1.05rem 1.15rem;
 		overflow-x: auto;
 		font-family: var(--wf-mono, ui-monospace, monospace);
-		font-size: 0.72rem;
-		line-height: 1.55;
+		font-size: 0.78rem;
+		line-height: 1.58;
 		color: #e8e6e0;
 		tab-size: 2;
 	}
@@ -429,6 +437,34 @@
 	.hib-code code {
 		font-family: inherit;
 		white-space: pre;
+	}
+
+	/* Syntax tokens (from highlight.ts) */
+	.hib-code :global(.tok-comment) {
+		color: #6b7368;
+		font-style: italic;
+	}
+	.hib-code :global(.tok-string) {
+		color: #c4a882;
+	}
+	.hib-code :global(.tok-number) {
+		color: #d4a574;
+	}
+	.hib-code :global(.tok-keyword) {
+		color: #7eb0d6;
+		font-weight: 500;
+	}
+	.hib-code :global(.tok-type) {
+		color: #9ec5a8;
+	}
+	.hib-code :global(.tok-fn) {
+		color: #d4c07a;
+	}
+	.hib-code :global(.tok-attr) {
+		color: #b89fd4;
+	}
+	.hib-code :global(.tok-punct) {
+		color: #8a8a82;
 	}
 
 	.hib-foot {
