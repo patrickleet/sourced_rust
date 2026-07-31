@@ -36,23 +36,37 @@ fn record_completed(&mut self) {
     self.status = TodoStatus::Completed;
 }
 
-// Event-independent mutations (no event names in the IR):
-pub const SAVE_TODO: Mutation<TodoState> = mutation! {
-    name: "save_todo";
-    version: 1;
-    upsert Todos from input;
-};
-pub const DELETE_TODO: Mutation<TodoDomainIdentity> = mutation! {
-    name: "delete_todo";
-    version: 1;
-    delete Todos { key { todo_id: input.todo_id } };
-};
+// 1) Event-independent mutations
+pub fn save_todo() -> Mutation<()> {
+    mutation! {
+        name: "save_todo"; version: 1;
+        upsert Todos from input.todo;
+    }
+}
 
-// Portable descriptor rewrites SAVE_*/DELETE_* arms into the projection
-// executor (see projections/src/todos.rs factories).
-pub const TODO_READS: ProjectionDescriptor<EventualOnly> = descriptor_from_factories(
-    "project_todos", 1, "e2e-ui-todos-v2", /* program/resolve/lower/inventory */
-);
+// 2) Bind domain events → mutations (framework helpers)
+pub fn todo_program() -> Result<ProjectionProgram, _> {
+    let mut arms = arms_state_upsert_for_model::<Todos>(
+        &save_todo().program().clone(), "todo",
+        &[("todo-created", &TodoCreatedDomainEvent::descriptor()), /* … */],
+    )?;
+    arms.push(arm_delete_pk_from_envelope(
+        "todo-purged", &TodoPurgedDomainEvent::descriptor(),
+        delete_todo().program().clone(), "todo_id",
+    )?);
+    build_mutation_projector_program("project_todos", 1, ProjectionPartition::Unit, arms)
+}
+
+// 3) Mount — framework owns resolve / lower / inventory
+mutation_projector! {
+    pub const TODO_READS: ProjectionDescriptor<EventualOnly> = {
+        name: "project_todos",
+        version: 1,
+        epoch: "e2e-ui-todos-v2",
+        model: Todos,
+        program: todo_program,
+    };
+}
 ```
 
 The command registration links the command to its possible domain event and
