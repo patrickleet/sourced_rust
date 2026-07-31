@@ -1,17 +1,15 @@
-//! Blob projections: mutation + placement-selected direct mount.
+//! Blob: mutation + portable handlers (spec language).
 //!
-//! Command handlers call `commit()?.projected()` without naming this descriptor.
+//! Command handlers call `commit()?.projected()` without naming this mount.
 
 use distributed::mutation;
+use distributed::portable_handlers;
 use distributed::projection::lower::{DirectCandidate, ProjectionDescriptor};
-use distributed::{
-    arm_state_upsert_for_model, build_mutation_projector_program, mutation_projector, Mutation,
-    MutationProgram, ProjectionPartition, ProjectionProgram, ProjectionProgramError,
-};
+use distributed::{Mutation, MutationProgram};
 use blob_domain::BlobGameState;
 use e2e_readmodels::BlobGames;
 
-/// Complete-row upsert for blob games (direct returning path).
+/// Mutation: upsert one BlobGames row from `input.game`.
 pub fn save_blob_game() -> Mutation<()> {
     mutation! {
         name: "save_blob_game";
@@ -20,58 +18,45 @@ pub fn save_blob_game() -> Mutation<()> {
     }
 }
 
-/// Canonical SAVE_BLOB_GAME program.
+/// Canonical mutation program (for tests / registration helpers).
 pub fn save_blob_game_program() -> MutationProgram {
     save_blob_game().program().clone()
 }
 
-/// Projector program: all blob state events → SAVE_BLOB_GAME.
-pub fn blob_mutation_projection_program() -> Result<ProjectionProgram, ProjectionProgramError> {
-    let save = save_blob_game_program();
-    let events = [
-        ("blob-initialized", "blob.initialized"),
-        ("blob-level-started", "blob.level_started"),
-        ("blob-started", "blob.started"),
-        ("blob-moved", "blob.moved"),
-    ];
-    let arms = events
-        .into_iter()
-        .map(|(arm_id, event_name)| {
-            let descriptor =
-                distributed::DomainEventDescriptor::state::<BlobGameState>(event_name, 1);
-            arm_state_upsert_for_model::<BlobGames>(arm_id, &descriptor, save.clone(), "game")
-                .map_err(|e| ProjectionProgramError::InvalidOperation {
-                    operation: arm_id.into(),
-                    reason: e.to_string(),
-                })
-        })
-        .collect::<Result<Vec<_>, _>>()?;
-    build_mutation_projector_program("project_blob", 1, ProjectionPartition::Unit, arms)
+/// Compiled handlers program (internal mount); prefer [`BLOB_GAMES`].
+pub fn blob_mutation_projection_program() -> Result<
+    distributed::ProjectionProgram,
+    distributed::ProjectionProgramError,
+> {
+    BLOB_GAMES.program()
 }
 
-mutation_projector! {
+/// When these domain events fire, apply [`save_blob_game`] with the event body
+/// as `input.game`.
+portable_handlers! {
     pub const BLOB_GAMES: ProjectionDescriptor<DirectCandidate> = {
         name: "project_blob",
         version: 1,
         epoch: "e2e-ui-blob-v2",
         model: BlobGames,
-        program: blob_mutation_projection_program,
+        apply save_blob_game {
+            on_state BlobGameState as "game":
+                "blob.initialized",
+                "blob.level_started",
+                "blob.started",
+                "blob.moved",
+        }
     };
 }
 
-/// Compile-time guards documenting that event-owning `projection!` authoring
-/// is gone. Mutation-backed descriptors replace it (see module tests).
+/// Compile-time guards: event-owning `projection!` and command-side selectors
+/// are gone.
 ///
 /// ```compile_fail
-/// // `projection!` has been removed from the public dual-path surface.
 /// const _GONE: () = projection! {};
 /// ```
 ///
-/// Eventual-only patch/delete/multi-row descriptors still cannot claim the
-/// single-row direct `projected` terminal (type-level, not macro-level).
-///
-/// Live path (placement-selected; no command-side selector):
-/// `repo.commit(game)?.projected()`.
+/// Live path: `repo.commit(game)?.projected()`.
 ///
 /// ```compile_fail,E0599
 /// use blob_domain::BlobGame;
@@ -79,15 +64,12 @@ mutation_projector! {
 /// use e2e_projections::BLOB_GAMES;
 /// use distributed::microsvc::{AggregateCheckout, CausalCommandContext};
 ///
-/// // Migration note: command-side `.project(BLOB_GAMES)` was removed.
-/// // Direct registration owns the program; inventing a multi-row projected
-/// // claim is still a type error (no `projected_many` terminal).
 /// fn cannot_use_removed_project_selector_or_projected_many(
 ///     ctx: &CausalCommandContext<'_, BlobGame>,
 ///     game: AggregateCheckout<BlobGame>,
 /// ) {
 ///     let _ = ctx
-///         .project(BLOB_GAMES) // removed selector — does not exist
+///         .project(BLOB_GAMES)
 ///         .commit(game)
 ///         .unwrap()
 ///         .projected_many::<BlobGames>();
@@ -95,6 +77,7 @@ mutation_projector! {
 /// ```
 #[doc(hidden)]
 pub struct BlobDirectEligibilityGuards;
+
 
 #[cfg(test)]
 mod tests {

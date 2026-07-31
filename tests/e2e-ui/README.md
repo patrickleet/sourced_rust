@@ -36,35 +36,28 @@ fn record_completed(&mut self) {
     self.status = TodoStatus::Completed;
 }
 
-// 1) Event-independent mutations
+// 1) Mutation (event-free)
 pub fn save_todo() -> Mutation<()> {
     mutation! {
         name: "save_todo"; version: 1;
         upsert Todos from input.todo;
     }
 }
+pub fn delete_todo() -> Mutation<()> { /* delete by pk */ }
 
-// 2) Bind domain events → mutations (framework helpers)
-pub fn todo_program() -> Result<ProjectionProgram, _> {
-    let mut arms = arms_state_upsert_for_model::<Todos>(
-        &save_todo().program().clone(), "todo",
-        &[("todo-created", &TodoCreatedDomainEvent::descriptor()), /* … */],
-    )?;
-    arms.push(arm_delete_pk_from_envelope(
-        "todo-purged", &TodoPurgedDomainEvent::descriptor(),
-        delete_todo().program().clone(), "todo_id",
-    )?);
-    build_mutation_projector_program("project_todos", 1, ProjectionPartition::Unit, arms)
-}
-
-// 3) Mount — framework owns resolve / lower / inventory
-mutation_projector! {
+// 2) Portable handlers: which events apply which mutation (the spec)
+portable_handlers! {
     pub const TODO_READS: ProjectionDescriptor<EventualOnly> = {
         name: "project_todos",
         version: 1,
         epoch: "e2e-ui-todos-v2",
         model: Todos,
-        program: todo_program,
+        apply save_todo {
+            on_event TodoCreatedDomainEvent, TodoCompletedDomainEvent /* … */ as "todo"
+        },
+        apply delete_todo {
+            on_deleted TodoPurgedDomainEvent as "todo_id"
+        }
     };
 }
 ```
