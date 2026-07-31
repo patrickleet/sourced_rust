@@ -122,15 +122,17 @@ let routes = Routes::new()
     .typed_command(
         typed_command::<CreateOrderInput, Causal<CreateOrderPayload>>("order.create")
             .roles(["user"])
-            .confirmations(/* finite projector proof */),
+            .emits(distributed::events![OrderCreatedDomainEvent])
+            .preview(/* state_preview! for client optimism */),
     )
     .handle(create_order);
 ```
 
-Handlers accept `CausalCommandContext`, stage aggregate/outbox/projection work on
-that context, and return `PreparedCommand<Succeeded<_>>`,
-`PreparedCommand<Causal<_>>`, or `PreparedCommand<Projected<M>>`. Never commit
-outside the framework-owned causal boundary.
+Handlers accept `CausalCommandContext`, stage aggregate/outbox work on that
+context, and return `PreparedCommand<Succeeded<_>>`, `PreparedCommand<Causal<_>>`,
+or `PreparedCommand<Projected<M>>`. Never commit outside the framework-owned
+causal boundary. Projector obligations derive from `.emits` + portable/modeled
+handlers (`mutation!`), not separately authored command confirmations/effects.
 
 ### Command consistency modes
 
@@ -139,14 +141,14 @@ outside the framework-owned causal boundary.
 | Contract | Meaning |
 |----------|---------|
 | `Succeeded<T>` | Command transaction succeeded; no projection visibility is promised. |
-| `Causal<T>` | Domain events committed with finite registered projector confirmations. |
+| `Causal<T>` | Domain events committed; obligations derive from `.emits` + modeled projectors. |
 | `Projected<M>` | Exact read-model row is staged in the same transaction. |
 
 Rules:
 
 1. Use `Projected<M>` only when the exact row is staged with the command.
-2. Use `Causal<T>` only with finite confirmation topology registered on the same
-   service.
+2. Use `Causal<T>` with `.emits` (and optional `.preview`) so modeled projectors
+   can derive finite obligations; do not hand-author command confirmations.
 3. Otherwise use `Succeeded<T>`; never invent a projected row.
 
 Surface IR: SDL is built via `build_surface` → `graphql_sdl_from_surface` (shared inventory

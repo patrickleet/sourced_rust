@@ -1,23 +1,19 @@
 //! Structural gate: competing projector authoring surfaces must stay gone.
 //!
-//! This is a compile-time + runtime check that `projection!` is not re-exported
-//! and command-side `.project(...)` selectors are not part of the public
-//! causal commit API.
+//! Checks that `projection!`, separately authored `command_effects!` /
+//! `command_confirmations!`, command-side `.project(...)` selectors, and the
+//! public `ProjectionReadModelWorkspace` ORM authoring path stay removed.
 
 #![cfg(feature = "graphql")]
 
 #[test]
 fn projection_macro_is_not_in_the_public_prelude() {
-    // If someone re-exports `projection!`, this test file would be the place
-    // to add a trybuild compile_fail. Runtime: ensure mutation! is the path.
     let _ = stringify!(mutation);
-    // The following must not resolve as a public API name in docs/exports.
-    // (Macro absence is enforced by not importing it and by rg in CI.)
-    assert!(!include_str!(concat!(
-        env!("CARGO_MANIFEST_DIR"),
-        "/src/lib.rs"
-    ))
-    .contains("pub use distributed_macros::{\n    aggregate, command_confirmations, command_effects, command_input_defaults, digest, mutation,\n    projection,"));
+    let lib = include_str!(concat!(env!("CARGO_MANIFEST_DIR"), "/src/lib.rs"));
+    assert!(
+        !lib.contains("projection,"),
+        "event-owning projection! must not be re-exported at crate root"
+    );
 }
 
 #[test]
@@ -27,9 +23,24 @@ fn mutation_macro_is_the_public_authoring_export() {
         lib.contains("mutation,"),
         "mutation! must remain publicly re-exported"
     );
+    // Reject live re-exports (comments may still mention the removed macros).
     assert!(
-        !lib.contains("projection,"),
-        "event-owning projection! must not be re-exported at crate root"
+        !lib.contains("command_effects,")
+            && !lib.contains("command_effects }")
+            && !lib.lines().any(|line| {
+                let trimmed = line.trim_start();
+                !trimmed.starts_with("//") && trimmed.contains("command_effects")
+            }),
+        "command_effects! must not be re-exported at crate root"
+    );
+    assert!(
+        !lib.contains("command_confirmations,")
+            && !lib.contains("command_confirmations }")
+            && !lib.lines().any(|line| {
+                let trimmed = line.trim_start();
+                !trimmed.starts_with("//") && trimmed.contains("command_confirmations")
+            }),
+        "command_confirmations! must not be re-exported at crate root"
     );
 }
 
@@ -39,9 +50,62 @@ fn handlers_source_has_no_command_side_project_selector() {
         env!("CARGO_MANIFEST_DIR"),
         "/src/microsvc/service/handlers.rs"
     ));
-    // Public method must not exist: `pub fn project`
     assert!(
         !handlers.contains("pub fn project<"),
         "command-side .project(...) selector must be removed from handlers.rs"
+    );
+}
+
+#[test]
+fn projection_read_model_workspace_is_not_publicly_exported() {
+    let microsvc = include_str!(concat!(env!("CARGO_MANIFEST_DIR"), "/src/microsvc/mod.rs"));
+    assert!(
+        !microsvc.contains("ProjectionReadModelWorkspace"),
+        "ProjectionReadModelWorkspace must not be re-exported from microsvc"
+    );
+    let projector_mod = include_str!(concat!(
+        env!("CARGO_MANIFEST_DIR"),
+        "/src/microsvc/projector/mod.rs"
+    ));
+    assert!(
+        !projector_mod.contains("pub use graph_workspace")
+            && !projector_mod.contains("ProjectionReadModelWorkspace,"),
+        "graph workspace must not be re-exported from projector mod"
+    );
+}
+
+#[test]
+fn typed_command_has_no_public_effects_or_confirmations_builder() {
+    let typed = include_str!(concat!(
+        env!("CARGO_MANIFEST_DIR"),
+        "/src/graphql/command_contract/typed_command.rs"
+    ));
+    assert!(
+        !typed.contains("pub fn effects("),
+        "TypedCommand::effects must be removed"
+    );
+    assert!(
+        !typed.contains("pub fn confirmations("),
+        "TypedCommand::confirmations must be removed"
+    );
+}
+
+#[test]
+fn macros_crate_does_not_export_effects_or_projection_macros() {
+    let macros_lib = include_str!(concat!(
+        env!("CARGO_MANIFEST_DIR"),
+        "/distributed_macros/src/lib.rs"
+    ));
+    assert!(
+        !macros_lib.contains("pub fn command_effects("),
+        "command_effects! proc-macro must be removed"
+    );
+    assert!(
+        !macros_lib.contains("pub fn command_confirmations("),
+        "command_confirmations! proc-macro must be removed"
+    );
+    assert!(
+        !macros_lib.contains("pub fn projection("),
+        "projection! proc-macro must stay removed"
     );
 }

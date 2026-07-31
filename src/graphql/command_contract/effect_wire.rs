@@ -734,16 +734,18 @@ pub(crate) fn compiled_projection_confirmation<I, M: RelationalReadModel>(
     )
 }
 
-/// Compile-checked, declaration-owned projection confirmation plan.
+/// Legacy compile-checked confirmation plan (authoring macro removed).
 ///
-/// The input type parameter prevents a plan built for a lookalike input type
-/// from being attached to a different command declaration.
+/// Retained as a type for wire/internal residual paths; applications must use
+/// `.emits` + portable/modeled handlers instead of hand-authored confirmations.
+#[allow(dead_code)]
 pub struct CompiledConfirmationPlan<I>(
     pub(super) Vec<CommandProjectionConfirmation>,
     PhantomData<fn(I)>,
 );
 
 #[doc(hidden)]
+#[allow(dead_code)]
 pub fn __command_confirmations<I>(
     confirmations: impl IntoIterator<Item = CompiledProjectionConfirmation<I>>,
 ) -> CompiledConfirmationPlan<I> {
@@ -903,10 +905,15 @@ pub fn __command_input_defaults<I>(
     )
 }
 
-/// Opaque, compile-checked effect declaration returned by `command_effects!`.
+/// Legacy compile-checked effect declaration (authoring macro removed).
+///
+/// Optimistic cache layers now come from mutation IR lowering, not separately
+/// authored command effects.
+#[allow(dead_code)]
 pub struct CompiledCommandEffects<I>(pub(super) CommandEffects, PhantomData<fn(I)>);
 
 #[doc(hidden)]
+#[allow(dead_code)]
 pub fn __command_effects<I>(
     operations: impl IntoIterator<Item = CompiledEffectOperation>,
 ) -> CompiledCommandEffects<I> {

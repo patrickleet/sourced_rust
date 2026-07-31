@@ -2126,28 +2126,19 @@ async fn causal_prepared_batch_failure_rolls_back_every_atomic_participant() {
 #[cfg(all(feature = "graphql", feature = "sqlite"))]
 #[tokio::test]
 async fn causal_dispatch_replay_contains_resolved_projection_obligation() {
+    // Separately authored command_confirmations! is removed. Succeeded commands
+    // without modeled `.emits` finish without finite projection obligations; the
+    // outbox fact still stages for downstream projectors.
     let repository = crate::SqliteRepository::connect_and_migrate("sqlite::memory:")
         .await
         .expect("framework migrations should apply");
-    let projector = SurfaceProjector::new("project_causal_obligation")
-        .facts(["causal.obligation_fact"])
-        .models(["CausalProjectionObligationView"])
-        .partition_by(["tenantPartition"]);
-    let confirmations = crate::command_confirmations! {
-        input: CausalProjectionInput;
-        confirm projector -> CausalProjectionObligationView {
-            key { id: input.id },
-            partition: input.partition
-        };
-    };
     let service = Service::new().named("causal-tests").routes(
         Routes::new()
             .with_repo(repository.clone().aggregate::<CausalDispatcherAggregate>())
             .typed_command(
                 typed_command::<CausalProjectionInput, Succeeded<TypedOutput>>(
                     "causal.projection_obligation",
-                )
-                .confirmations(confirmations),
+                ),
             )
             .handle(
                 |context: &CausalCommandContext<'_, CausalDispatcherAggregate>,
@@ -2182,12 +2173,11 @@ async fn causal_dispatch_replay_contains_resolved_projection_obligation() {
                 .grant("anonymous", crate::graphql::read().all_columns()),
         )
         .service(&service)
-        .client_projectors([projector])
         .build()
-        .expect("the public GraphQL binding path should compile projector topology");
+        .expect("succeeded command without separate confirmations should compile");
     let service = service
         .try_with_graphql(engine)
-        .expect("compiled projector topology should bind to the executable service");
+        .expect("compiled service should bind");
     let command_id = causal_test_command_id();
     let principal = causal_test_principal();
 
@@ -2203,28 +2193,15 @@ async fn causal_dispatch_replay_contains_resolved_projection_obligation() {
             principal.clone(),
         )
         .await
-        .expect("matching outbox fact should make the causal dispatch commit");
+        .expect("dispatch should commit");
     assert_eq!(result, json!({ "id": "todo-obligation" }));
 
     let status = service
         .causal_command_status(&command_id, &Session::new(), principal.clone())
         .await
-        .expect("status should evaluate the stored finite obligation batch");
-    assert_eq!(
-        status.state,
-        CausalCommandPublicState::SucceededPendingProjection
-    );
+        .expect("status should load");
     assert_eq!(status.consistency, Some(CommandConsistency::Succeeded));
-    assert_eq!(status.obligations.len(), 1);
-    assert_eq!(status.obligations[0].projector, "project_causal_obligation");
-    assert_eq!(status.evidence.len(), 1);
-    assert_eq!(
-        status.evidence[0].state,
-        CausalProjectionEvidenceState::Pending
-    );
-    assert_eq!(status.evidence[0].obligation_index, 0);
-    assert_eq!(status.evidence[0].incarnation, None);
-    assert_eq!(status.evidence[0].revision, None);
+    assert!(status.obligations.is_empty());
 
     let lookup = service
         .lookup_causal_command(
@@ -2238,16 +2215,7 @@ async fn causal_dispatch_replay_contains_resolved_projection_obligation() {
     let CommandLookup::Replay(replay) = lookup else {
         panic!("completed command should be replayable");
     };
-    assert_eq!(replay.state, CommandLedgerState::SucceededPendingProjection);
-    assert_eq!(replay.projection_obligations.len(), 1);
-
-    let obligation = &replay.projection_obligations[0];
-    assert_eq!(obligation.projector, "project_causal_obligation");
-    assert_eq!(obligation.model, "CausalProjectionObligationView");
-    assert_eq!(obligation.key.fields.len(), 1);
-    assert_eq!(obligation.key.fields[0].field, "id");
-    assert_eq!(obligation.key.fields[0].value, json!("todo-obligation"));
-    assert_eq!(obligation.partition, Some(json!("tenant-a")));
+    assert!(replay.projection_obligations.is_empty());
 
     let pending = repository.outbox_store().pending(10).await.unwrap();
     assert_eq!(pending.len(), 1);

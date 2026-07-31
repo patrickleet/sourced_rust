@@ -75,8 +75,7 @@ pub use dependencies::{
 };
 pub use error::HandlerError;
 pub use projector::{
-    CausalProjectorContext, CausalProjectorRouteBuilder, LoadedProjection, LoadedProjectionGraph,
-    ProjectionGraphLoadBuilder, ProjectionReadModelWorkspace, ProjectionRepairHandle,
+    CausalProjectorContext, CausalProjectorRouteBuilder, LoadedProjection, ProjectionRepairHandle,
     ProjectionRepairHandleParseError,
 };
 #[cfg(feature = "graphql")]

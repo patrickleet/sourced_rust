@@ -461,18 +461,13 @@ callbacks: {
 				{
 					file: 'projections/src/todos.rs',
 					label: 'State lifecycle + deletion',
-					code: `pub const TODO_READS: ProjectionDescriptor<EventualOnly> = projection! {
-  name: "project_todos";
-  epoch: "e2e-ui-todos-v2";
-
-  on ["todo.created", "todo.renamed", "todo.completed", …]
-    version 1 (state: TodoState) {
-      upsert Todos from state as todo;
-  }
-  on "todo.purged" version 1 (deleted: TodoDomainIdentity) {
-    delete Todos { key { todo_id: envelope.aggregate_id } };
-  }
-};`
+					code: `// Event-independent mutations + portable rewrite factories
+pub const SAVE_TODO: Mutation<TodoState> = mutation! {
+  name: "save_todo"; version: 1;
+  upsert Todos from input;
+};
+pub const TODO_READS: ProjectionDescriptor<EventualOnly> =
+  descriptor_from_factories(/* SAVE_TODO / DELETE_TODO arms */);`
 				},
 				{
 					file: 'handlers/events/project_todos.rs',
@@ -812,12 +807,10 @@ repo.publish_events()
 						<span>Projected — same transaction</span>
 						<em>blob</em>
 					</div>
-					<pre><code>{`repo.project(BLOB_GAMES)
-  .commit(game)?
-  .projected()
+					<pre><code>{`repo.commit(game)?.projected()
 // → PreparedCommand<Projected<BlobGames>>
-// Aggregate + command ledger + query row commit atomically.
-// No manual ReadModelWritePlan in the handler.`}</code></pre>
+// Placement-selected direct: no command-side projection selector.
+// Aggregate + command ledger + query row commit atomically.`}</code></pre>
 				</div>
 				<div class="wf-code">
 					<div class="wf-code-bar">
@@ -1086,10 +1079,10 @@ Service
 					<span class="wf-card-kicker">Causal + modeled projection</span>
 					<h3>Todos — paint now, confirm later</h3>
 					<p>
-						Command returns a causal result. Its event set plus <code>state_preview!</code> safely
-						specialize the same <code>projection!</code> program for the replica; actual emitted
-						occurrences mint exact obligations for the active projector epoch. Unknown values
-						revalidate, and history remains the source of truth.
+						Command returns a causal result. Its event set plus <code>state_preview!</code> and
+						<code>mutation!</code> IR safely specialize the same portable program for the replica;
+						actual emitted occurrences mint exact obligations for the active projector epoch.
+						Unknown values revalidate, and history remains the source of truth.
 					</p>
 				</div>
 				<div class="wf-card">

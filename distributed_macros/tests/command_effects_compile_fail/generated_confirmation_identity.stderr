@@ -1,5 +1,0 @@
-error: uuid_v7() cannot be used as an anonymous effect value; declare `default input.field = uuid_v7()` with command_input_defaults! and reference `input.field`
-  --> tests/command_effects_compile_fail/generated_confirmation_identity.rs:22:47
-   |
-22 |         confirm projector -> View { key { id: uuid_v7() } };
-   |                                               ^^^^^^^

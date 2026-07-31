@@ -211,18 +211,17 @@ impl CausalProjectorContext {
         &self.causation_id
     }
 
-    /// Start a stateful read-model graph workspace with no commit capability.
-    pub fn read_models(&self) -> ProjectionReadModelWorkspace {
+    /// Crate-private graph workspace (not a public authoring API).
+    #[allow(dead_code)] // protocol fixtures / graph_workspace tests
+    pub(crate) fn read_models(&self) -> ProjectionReadModelWorkspace {
         ProjectionReadModelWorkspace::new(Arc::clone(&self.snapshots), Arc::clone(&self.workspace))
             .with_query_scope_budget(Arc::clone(&self.query_scopes))
     }
 
-    /// Apply a stateful graph diff through the framework-owned causal
-    /// workspace.
-    ///
-    /// This stages only. The projector runtime seals and commits the complete
-    /// inbox/revision/checkpoint/observation batch after the handler returns.
-    pub async fn apply(
+    /// Apply a crate-private graph workspace. Application handlers use
+    /// [`super::ModeledProjection::apply`] / portable mutation plans instead.
+    #[allow(dead_code)] // protocol fixtures / graph_workspace tests
+    pub(crate) async fn apply(
         &self,
         read_models: ProjectionReadModelWorkspace,
     ) -> Result<&Self, HandlerError> {

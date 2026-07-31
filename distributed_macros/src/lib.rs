@@ -89,23 +89,15 @@ pub fn derive_domain_event(input: TokenStream) -> TokenStream {
     domain_event::derive_domain_event(input)
 }
 
-/// Compile a portable, type-checked optimistic command-effect declaration.
-#[proc_macro]
-pub fn command_effects(input: TokenStream) -> TokenStream {
-    command_effects::expand(input)
-}
-
 /// Compile declaration-owned generators for canonical command input fields.
 #[proc_macro]
 pub fn command_input_defaults(input: TokenStream) -> TokenStream {
     command_effects::expand_input_defaults(input)
 }
 
-/// Compile a finite, typed projector confirmation plan for one command input.
-#[proc_macro]
-pub fn command_confirmations(input: TokenStream) -> TokenStream {
-    command_effects::expand_confirmations(input)
-}
+// Separately authored `command_effects!` / `command_confirmations!` removed:
+// optimistic cache layers come from mutation IR lowering; causal confirmation
+// derives from `.emits` + portable/modeled event handlers.
 
 /// Compile an event-independent read-model mutation program.
 ///

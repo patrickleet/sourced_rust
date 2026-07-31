@@ -1,11 +1,11 @@
 error[E0271]: type mismatch resolving `<__DistributedInputEffectInputField_count as EffectInputFieldMarker>::Value == String`
-  --> tests/command_effects_compile_fail/input_default_wrong_type.rs:11:23
+  --> tests/command_input_defaults_compile_fail/input_default_wrong_type.rs:11:23
    |
 11 |         default input.count = uuid_v7();
    |                       ^^^^^ type mismatch resolving `<__DistributedInputEffectInputField_count as EffectInputFieldMarker>::Value == String`
    |
 note: expected this to be `std::string::String`
-  --> tests/command_effects_compile_fail/input_default_wrong_type.rs:5:12
+  --> tests/command_input_defaults_compile_fail/input_default_wrong_type.rs:5:12
    |
  5 |     count: i64,
    |            ^^^

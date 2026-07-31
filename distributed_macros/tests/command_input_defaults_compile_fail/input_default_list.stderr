@@ -1,11 +1,11 @@
 error[E0271]: type mismatch resolving `<__DistributedInputEffectInputField_ids as EffectInputFieldMarker>::Value == String`
-  --> tests/command_effects_compile_fail/input_default_list.rs:11:23
+  --> tests/command_input_defaults_compile_fail/input_default_list.rs:11:23
    |
 11 |         default input.ids = ulid();
    |                       ^^^ type mismatch resolving `<__DistributedInputEffectInputField_ids as EffectInputFieldMarker>::Value == String`
    |
 note: expected this to be `std::string::String`
-  --> tests/command_effects_compile_fail/input_default_list.rs:5:10
+  --> tests/command_input_defaults_compile_fail/input_default_list.rs:5:10
    |
  5 |     ids: Vec<String>,
    |          ^^^^^^^^^^^

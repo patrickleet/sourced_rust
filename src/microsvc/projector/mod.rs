@@ -14,9 +14,8 @@ mod registration;
 mod runtime;
 
 pub use context::{CausalProjectorContext, LoadedProjection};
-pub use graph_workspace::{
-    LoadedProjectionGraph, ProjectionGraphLoadBuilder, ProjectionReadModelWorkspace,
-};
+// ProjectionReadModelWorkspace lives in graph_workspace and is crate-private
+// (not re-exported): portable/modeled mutation handlers are the public path.
 pub use handle::{ProjectionRepairHandle, ProjectionRepairHandleParseError};
 pub use registration::CausalProjectorRouteBuilder;
 #[cfg(feature = "graphql")]
