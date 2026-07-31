@@ -479,7 +479,7 @@ export const Operation_BlobGames: ReplicaOperationArtifact<Operation_BlobGames_D
   ],
   "protocol": {
     "version": 1,
-    "schemaHash": "sha256:b3425b3e370fee5c714132b46613b4b1b6ac5fda967f0d73f5f2310e59d75f2d",
+    "schemaHash": "sha256:986dcd04c1233dd45c01d373bf917f246f2de3926288c5767b10125da29f801f",
     "surface": {
       "kind": "application",
       "name": "e2e-ui",

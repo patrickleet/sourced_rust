@@ -453,25 +453,36 @@ callbacks: {
 		},
 		{
 			n: '04',
-			title: 'Eventual path: one projection, mounted as a consumer',
-			why: 'Todos and chat publish captured domain events with the fluent commit builder. The projection crate models the mapping once; an explicit event handler applies the catalog-pinned plan. ChangeHub wakes @live subscribers.',
+			title: 'Eventual path: mutations + portable handlers',
+			why: 'Commands emit domain events. Portable handlers bind those events to mutations. The service mounts the handler set once; ChangeHub wakes @live subscribers.',
 			path: 'projections/todos.rs · handlers/events/project_todos.rs',
-			label: 'Modeled projector',
+			label: 'Portable handlers',
 			blocks: [
 				{
 					file: 'projections/src/todos.rs',
-					label: 'State lifecycle + deletion',
-					code: `// Event-independent mutations + portable rewrite factories
-pub const SAVE_TODO: Mutation<TodoState> = mutation! {
-  name: "save_todo"; version: 1;
-  upsert Todos from input;
-};
-pub const TODOS: ProjectionDescriptor<EventualOnly> =
-  descriptor_from_factories(/* SAVE_TODO / DELETE_TODO arms */);`
+					label: 'mutation + which events apply it',
+					code: `pub fn save_todo() -> Mutation<()> {
+  mutation! {
+    name: "save_todo"; version: 1;
+    upsert Todos from input.todo;
+  }
+}
+portable_handlers! {
+  pub const TODOS: ProjectionDescriptor<EventualOnly> = {
+    name: "project_todos", version: 1, epoch: "e2e-ui-todos-v2",
+    model: Todos,
+    apply save_todo {
+      on_event TodoCreatedDomainEvent, /* … */ as "todo"
+    },
+    apply delete_todo {
+      on_deleted TodoPurgedDomainEvent as "todo_id"
+    }
+  };
+}`
 				},
 				{
 					file: 'handlers/events/project_todos.rs',
-					label: 'explicit event-handler boundary',
+					label: 'service mounts the handler set',
 					code: `pub async fn handle(
   context: CausalProjectorContext,
   projection: ModeledProjection,
@@ -480,7 +491,7 @@ pub const TODOS: ProjectionDescriptor<EventualOnly> =
 }
 
 // Routes::new()
-//   .modeled_projector(catalog_pinned_todo_owner)
+//   .modeled_projector(todo_owner)
 //   .handle(project_todos::handle)`
 				}
 			]

@@ -308,7 +308,7 @@ export const Operation_AdminAllTodos: ReplicaOperationArtifact<Operation_AdminAl
   ],
   "protocol": {
     "version": 1,
-    "schemaHash": "sha256:5e84b7ec16c378020144b2580fbd2cfdfeafe0a2f158bcc2ff1f8cf3fae82797",
+    "schemaHash": "sha256:8aa9401ece122c33dabc6e6d60c00f99b4b91ff1dc74a7d8c37c08e409034547",
     "surface": {
       "kind": "application",
       "name": "e2e-ui-admin",

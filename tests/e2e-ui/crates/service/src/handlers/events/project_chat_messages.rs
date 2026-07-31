@@ -1,6 +1,4 @@
-//! Event handler that applies the Chat projector.
-//!
-//! `CHAT_MESSAGES` is mutation-backed via SAVE_CHAT_MESSAGE rewrite.
+//! Apply the ChatMessages portable handlers for matching domain events.
 
 use distributed::microsvc::{CausalProjectorContext, HandlerError, ModeledProjection};
 use e2e_projections::CHAT_MESSAGES;
