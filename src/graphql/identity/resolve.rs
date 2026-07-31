@@ -154,7 +154,7 @@ pub const UNSET_OIDC_AUDIENCE: &str = "unset-audience";
 ///
 /// - When `issuer` and `audience` (or `client_id` as audience fallback) are non-empty → use them.
 /// - When unset → placeholder issuer/audience so requests still require Bearer and reject
-///   ambient `x-user-id` / `x-role` (never [`IdentityMode::DevHeaders`]).
+///   ambient `x-user-id` / `x-roles` (never [`IdentityMode::DevHeaders`]).
 pub fn public_oidc_identity_from_env_vars(
     issuer: Option<&str>,
     audience: Option<&str>,
@@ -238,7 +238,7 @@ mod public_default_tests {
         let cfg = public_oidc_identity_from_env_vars(None, None, None, None);
         let mut headers = HeaderMap::new();
         headers.insert("x-user-id", HeaderValue::from_static("attacker"));
-        headers.insert("x-role", HeaderValue::from_static("admin"));
+        headers.insert("x-roles", HeaderValue::from_static("admin"));
         // No Bearer → require_auth → Unauthorized (not DevHeaders trust)
         assert_eq!(
             resolve_session_sync(&headers, &cfg).unwrap_err(),

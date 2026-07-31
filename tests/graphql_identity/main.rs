@@ -158,7 +158,8 @@ fn f2_groups_array_session() {
     let session = map_claims_to_session(&claims, &cfg).unwrap();
     assert_eq!(session.user_id(), Some("user-b-002"));
     assert_eq!(session.get("x-roles"), Some("customer"));
-    assert_eq!(session.role(), None);
+    assert_eq!(session.roles(), vec!["customer"]);
+    assert_eq!(session.role(), Some("customer"));
 }
 
 #[test]

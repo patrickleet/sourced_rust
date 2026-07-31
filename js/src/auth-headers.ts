@@ -10,7 +10,7 @@ export function buildAuthHeaders(auth: GqlAuth = {}): Record<string, string> {
 		headers.authorization = `Bearer ${token}`;
 	} else if (auth.userId) {
 		headers['x-user-id'] = auth.userId;
-		headers['x-role'] = auth.role ?? 'user';
+		headers['x-roles'] = auth.role ?? 'user';
 	}
 
 	return headers;
@@ -26,7 +26,7 @@ export function wsConnectionInitPayload(auth: GqlAuth = {}): Record<string, stri
 		payload.accessToken = token;
 	} else if (auth.userId) {
 		payload['x-user-id'] = auth.userId;
-		payload['x-role'] = auth.role ?? 'user';
+		payload['x-roles'] = auth.role ?? 'user';
 	}
 
 	return payload;
@@ -38,5 +38,5 @@ export function applyWsDevHeaderParams(url: URL, auth: GqlAuth = {}): void {
 	if (token || !auth.userId) return;
 
 	url.searchParams.set('x-user-id', auth.userId);
-	url.searchParams.set('x-role', auth.role ?? 'user');
+	url.searchParams.set('x-roles', auth.role ?? 'user');
 }

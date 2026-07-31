@@ -45,19 +45,24 @@ pub fn session_has_user(session: &Session) -> bool {
     session.user_id().is_some_and(|s| !s.is_empty())
 }
 
-/// Engine role is `admin` (`x-role` / OIDC claim map). For `guard`.
+/// Engine role set contains `admin` (`x-roles` / OIDC claim map). For `guard`.
 pub fn session_is_admin(session: &Session) -> bool {
-    session.role() == Some("admin")
+    session.has_role("admin")
 }
 
 /// Require engine role `admin` (handler-path Result form).
 pub fn require_admin(session: &Session) -> Result<(), HandlerError> {
-    match session.role() {
-        Some("admin") => Ok(()),
-        Some(other) => Err(HandlerError::Rejected(format!(
-            "admin role required, got `{other}`"
-        ))),
-        None => Err(HandlerError::Unauthorized("missing x-role".into())),
+    if session.has_role("admin") {
+        return Ok(());
+    }
+    let roles = session.roles();
+    if roles.is_empty() {
+        Err(HandlerError::Unauthorized("missing x-roles".into()))
+    } else {
+        Err(HandlerError::Rejected(format!(
+            "admin role required, got `{}`",
+            roles.join(",")
+        )))
     }
 }
 

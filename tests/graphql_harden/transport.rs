@@ -170,7 +170,7 @@ async fn t3_introspection_over_http_respects_role() {
                 .method("POST")
                 .uri("/graphql")
                 .header("content-type", "application/json")
-                .header("x-role", "user")
+                .header("x-roles", "user")
                 .body(axum::body::Body::from(
                     r#"{"query":"{ __schema { queryType { name } } }"}"#,
                 ))

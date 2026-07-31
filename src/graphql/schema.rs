@@ -755,7 +755,6 @@ fn privilege_role_for_request(
         .roles()
         .first()
         .map(|role| (*role).to_string())
-        .or_else(|| session.role().map(|s| s.to_string()))
         .unwrap_or_else(|| anonymous_role.to_string())
 }
 

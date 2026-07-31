@@ -130,7 +130,7 @@ async fn oidc_bearer_graphql_isolation_against_stack() {
         .post(format!("{base}/graphql"))
         .header("content-type", "application/json")
         .header("x-user-id", "spoofed-attacker")
-        .header("x-role", "admin")
+        .header("x-roles", "admin")
         .json(&json!({
             "query": format!(
                 r#"mutation {{ todos_create(commandId: "{spoof_command_id}", input: {{ todo_id: "t-spoof", title: "no" }}) {{ todo_id }} }}"#
@@ -217,7 +217,7 @@ async fn oidc_bearer_graphql_isolation_against_stack() {
         .header("content-type", "application/json")
         .header("authorization", format!("Bearer {user_tok}"))
         .header("x-user-id", "evil")
-        .header("x-role", "admin")
+        .header("x-roles", "admin")
         .json(&json!({"query":"{ todos { todo_id owner_id } }"}))
         .send()
         .await

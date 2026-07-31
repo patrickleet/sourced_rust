@@ -707,7 +707,7 @@ mod client_surface_parity_tests {
             .expect("application protocol request")
         };
 
-        // Admin primary alone is eligible — no need for x-roles when admin is
+        // Admin alone is eligible — singleton set is enough when admin is
         // on the surface eligible list.
         let mut admin = Session::new();
         admin.set("x-roles", "admin");

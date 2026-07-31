@@ -405,7 +405,7 @@ pub async fn assert_http_commands_disabled(base: &str) -> Result<(), String> {
         .post(format!("{base}/todo.create"))
         .header("content-type", "application/json")
         .header("x-user-id", "alice")
-        .header("x-role", "user")
+        .header("x-roles", "user")
         .json(&json!({ "todo_id": "t-should-404", "title": "nope" }))
         .send()
         .await
