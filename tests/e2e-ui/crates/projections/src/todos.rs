@@ -86,6 +86,7 @@ pub fn complete_preview() -> distributed::graphql::CommandProjectionPreview {
 
 #[cfg(test)]
 mod tests {
+    use distributed::domain_event::DomainEventContract;
     use distributed::projection::placement::ProjectionExecutionClass;
     use distributed::{
         DomainEventBodyKind, MutationKind, RelationalReadModel, RowValue, TableMutation,
