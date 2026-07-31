@@ -777,26 +777,28 @@ mod client_surface_tests {
 
         assert_eq!(generated, runtime);
 
-        let request = serde_json::from_value(serde_json::json!({
-            "query": "{ todos @skip(if: true) { todo_id } }",
-            "extensions": {
-                "distributed": {
-                    "client": {
-                        "surface": {
-                            "kind": "application",
-                            "name": DISTRIBUTED_CLIENT_SURFACE,
-                            "roles": ["admin", "user"]
-                        },
-                        "schemaHash": generated.schema_fingerprint
+        let make_request = || {
+            serde_json::from_value(serde_json::json!({
+                "query": "{ todos @skip(if: true) { todo_id } }",
+                "extensions": {
+                    "distributed": {
+                        "client": {
+                            "surface": {
+                                "kind": "application",
+                                "name": DISTRIBUTED_CLIENT_SURFACE,
+                                "roles": ["admin", "user"]
+                            },
+                            "schemaHash": generated.schema_fingerprint
+                        }
                     }
                 }
-            }
-        }))
-        .expect("generated application request");
+            }))
+            .expect("generated application request")
+        };
         let mut session = distributed::microsvc::Session::new();
         session.set("x-roles", "user");
         session.set("x-user-id", "person-1");
-        let response = engine.execute(&session, request.clone()).await;
+        let response = engine.execute(&session, make_request()).await;
         assert!(
             !response.is_err(),
             "the runtime must accept the generated application surface: {:?}",
@@ -805,7 +807,7 @@ mod client_surface_tests {
         // Multi-role admin principal may open the same portable contract.
         let mut admin = session.clone();
         admin.set("x-roles", "admin,user");
-        let admin_response = engine.execute(&admin, request).await;
+        let admin_response = engine.execute(&admin, make_request()).await;
         assert!(
             !admin_response.is_err(),
             "admin with user asserted roles must open e2e-ui: {:?}",
@@ -820,5 +822,80 @@ mod client_surface_tests {
             envelope["schemaHash"], generated.schema_fingerprint,
             "the authoritative response must attest the generated schema"
         );
+    }
+
+    /// Empty-session open of e2e-ui-public + chat query (anonymous privilege).
+    ///
+    /// Bare protocol path for unauthenticated lobby peeks; UI route `/public`
+    /// documents the same surface name and extension shape.
+    #[tokio::test]
+    async fn public_surface_opens_and_queries_chat_without_identity() {
+        let generated = distributed_public_client_surface().manifest().unwrap();
+        assert_eq!(
+            generated.surface,
+            distributed::graphql::ClientSurfaceIdentity::application(
+                DISTRIBUTED_PUBLIC_CLIENT_SURFACE,
+                ["anonymous"],
+            )
+        );
+        let repository = distributed::SqliteRepository::connect_and_migrate("sqlite::memory:")
+            .await
+            .expect("sqlite memory repo");
+        let registry = e2e_readmodels::distributed_manifest()
+            .table_registry()
+            .expect("registry");
+        repository
+            .bootstrap_table_schema_for_dev(&registry)
+            .await
+            .expect("bootstrap tables");
+        let service = build_service(
+            repository.clone(),
+            ClientSurfaceLocks::default(),
+            repository.clone(),
+        );
+        let engine =
+            build_graphql_engine_with_graphiql(&repository, &service, dev_identity(), None, false)
+                .expect("engine");
+        let runtime = engine
+            .client_manifest_for_application(DISTRIBUTED_PUBLIC_CLIENT_SURFACE, &["anonymous"])
+            .expect("public surface registered");
+        assert_eq!(generated.schema_fingerprint, runtime.schema_fingerprint);
+
+        let request = serde_json::from_value(serde_json::json!({
+            "query": "{ chat_messages(limit: 5, offset: 0) { message_id body room_id } }",
+            "extensions": {
+                "distributed": {
+                    "client": {
+                        "surface": {
+                            "kind": "application",
+                            "name": DISTRIBUTED_PUBLIC_CLIENT_SURFACE,
+                            "roles": ["anonymous"]
+                        },
+                        "schemaHash": generated.schema_fingerprint
+                    }
+                }
+            }
+        }))
+        .expect("public application request");
+
+        // No x-user-id, no x-roles — unauthenticated principal.
+        let session = distributed::microsvc::Session::new();
+        let response = engine.execute(&session, request).await;
+        assert!(
+            !response.is_err(),
+            "anonymous open + chat query must succeed: {:?}",
+            response.errors
+        );
+        let data = response.data.into_json().expect("json data");
+        assert!(
+            data.get("chat_messages").and_then(|v| v.as_array()).is_some(),
+            "expected chat_messages array: {data}"
+        );
+        let envelope = response
+            .extensions
+            .get("distributed")
+            .expect("distributed protocol envelope");
+        let envelope = serde_json::to_value(envelope).expect("serialized protocol envelope");
+        assert_eq!(envelope["schemaHash"], generated.schema_fingerprint);
     }
 }
