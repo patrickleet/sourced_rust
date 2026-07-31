@@ -53,7 +53,8 @@ pub use sdl::{
     graphql_sdl_from_surface, SdlOptions,
 };
 pub use surface::{
-    build_surface, role_grants_for_role, surface_for_application, surface_for_role, RoleGrant,
+    build_surface, role_grants_for_role, surface_for_application, surface_for_application_contract,
+    surface_for_role, RoleGrant,
     RootField, RootKind, Surface, SurfaceArgument, SurfaceArgumentKind, SurfaceCommand,
     SurfaceCommandShape, SurfaceDialect, SurfaceDirectProjection, SurfaceModel,
     SurfaceModeledProjection, SurfaceOptions, SurfaceProjectionOwner, SurfaceProjector,

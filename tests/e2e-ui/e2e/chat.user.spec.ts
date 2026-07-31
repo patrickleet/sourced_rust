@@ -43,27 +43,45 @@ test.describe('chat (alice)', () => {
 
 		const log = page.locator('.ch-log');
 		await expect(log).toHaveAttribute('data-chat-page-size', '25');
+		// Live window holds the newest 25; wait until at least that many render.
+		await expect
+			.poll(async () => page.locator('.ch-msg').count(), { timeout: 20_000 })
+			.toBeGreaterThanOrEqual(25);
 
 		// Live window is the newest 25 (#05–#29). #00 requires a history page.
 		const olderThanFirstPage = `history seed ${stamp} #00`;
-		const loadEarlier = page.getByTestId('chat-load-earlier');
 
-		// If the panel did not auto-fill, explicitly load / scroll for older rows.
-		if (await loadEarlier.isVisible()) {
-			const before = await page.locator('.ch-msg').count();
-			await loadEarlier.click();
-			await expect
-				.poll(async () => page.locator('.ch-msg').count(), { timeout: 20_000 })
-				.toBeGreaterThan(before);
-		} else {
-			// Chromium column-reverse uses negative scrollTop toward the oldest edge.
-			await log.evaluate((el) => {
-				el.scrollTop = -(el.scrollHeight - el.clientHeight);
-			});
-		}
+		// Drive history via the product path (scroll to oldest edge under
+		// column-reverse). The load-earlier control sits at the visual top and
+		// is often off-screen while stick-to-bottom is active, so use force
+		// click as a fallback rather than Playwright's auto-scroll-into-view
+		// (which fights column-reverse and can leave the button detached).
+		await expect
+			.poll(
+				async () => {
+					if (
+						(await page.locator('.ch-msg', { hasText: olderThanFirstPage }).count()) > 0
+					) {
+						return true;
+					}
+					await log.evaluate((el) => {
+						const range = Math.max(0, el.scrollHeight - el.clientHeight);
+						// Chromium column-reverse uses negative scrollTop toward oldest.
+						el.scrollTop = range > 0 ? -range : 0;
+						el.dispatchEvent(new Event('scroll', { bubbles: true }));
+					});
+					const loadEarlier = page.getByTestId('chat-load-earlier');
+					if ((await loadEarlier.count()) > 0) {
+						await loadEarlier.click({ force: true });
+					}
+					return false;
+				},
+				{ timeout: 45_000 }
+			)
+			.toBe(true);
 
 		await expect(page.locator('.ch-msg', { hasText: olderThanFirstPage })).toBeVisible({
-			timeout: 20_000
+			timeout: 5_000
 		});
 	});
 

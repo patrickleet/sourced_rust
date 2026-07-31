@@ -44,7 +44,7 @@ use super::query_protocol::QueryProtocolRuntime;
 use super::schema as dyn_schema;
 use super::sdl::{graphql_sdl_for_tables_with_options, graphql_sdl_from_surface, SdlOptions};
 use super::surface::{
-    build_surface, surface_for_application, surface_for_role, Surface, SurfaceDialect,
+    build_surface, surface_for_application_contract, surface_for_role, Surface, SurfaceDialect,
     SurfaceOptions, SurfaceProjectionOwner, SurfaceProjector, SurfaceSelection,
 };
 
@@ -74,8 +74,8 @@ pub use introspection::{graphiql_enabled_from_env, graphiql_enabled_from_env_var
 
 pub(crate) use auth::{identity_mode_label, role_authorization_info};
 pub(crate) use core::{
-    CatalogEntry, EngineInner, ProtocolApplicationInfo, ProtocolRoleInfo, ProtocolRuntime,
-    ProtocolSurfaceInfo, RoleModelPerm,
+    CatalogEntry, ClientApplicationRegistration, EngineInner, ProtocolApplicationInfo,
+    ProtocolRoleInfo, ProtocolRuntime, ProtocolSurfaceInfo, RoleModelPerm,
 };
 pub(crate) use introspection::is_pure_introspection_request;
 pub(crate) use live_resume::parse_requested_live_resume;

@@ -7,7 +7,7 @@ use blob_domain::{
 };
 use chat_domain::{ChatMessage, ChatMessagePostedDomainEvent};
 use distributed::graphql::{
-    build_surface, surface_for_application, typed_command, Causal, CommandProjectionPreview,
+    build_surface, typed_command, Causal, CommandProjectionPreview,
     CommandProjectionPreviewSource, DistributedClientSurfaceExport, GraphqlEngine,
     GraphqlPoolSource, IdentityConfig, OidcConfig, Projected, SurfaceDirectProjection,
     SurfaceModeledProjection, SurfaceOptions, SurfaceProjector,
@@ -190,6 +190,16 @@ fn projection_owners() -> ProjectionOwners {
 }
 
 fn pool_free_client_surface(application: &str, roles: &[&str]) -> DistributedClientSurfaceExport {
+    pool_free_client_surface_contract(application, roles, roles)
+}
+
+fn pool_free_client_surface_contract(
+    application: &str,
+    eligible_roles: &[&str],
+    schema_roles: &[&str],
+) -> DistributedClientSurfaceExport {
+    use distributed::graphql::surface_for_application_contract;
+
     let project = e2e_readmodels::distributed_manifest();
     let repository = InMemoryRepository::new();
     let service = build_service(
@@ -208,15 +218,22 @@ fn pool_free_client_surface(application: &str, roles: &[&str]) -> DistributedCli
         .expect("e2e-ui projector topology should bind")
         .with_service(&service)
         .expect("e2e-ui typed Service inventory should bind");
-    let roles = roles
+    let eligible = eligible_roles
         .iter()
         .map(|role| (*role).to_string())
         .collect::<Vec<_>>();
-    let selected = surface_for_application(
+    let schema = schema_roles
+        .iter()
+        .map(|role| (*role).to_string())
+        .collect::<Vec<_>>();
+    // Schema grants: only schema_roles need entries in the map.
+    let grants = e2e_readmodels::application_grants();
+    let selected = surface_for_application_contract(
         &full,
         application,
-        &roles,
-        &e2e_readmodels::application_grants(),
+        &eligible,
+        &schema,
+        &grants,
     )
     .expect("e2e-ui application Surface should select");
     DistributedClientSurfaceExport::from_project(&project, selected)
@@ -225,18 +242,21 @@ fn pool_free_client_surface(application: &str, roles: &[&str]) -> DistributedCli
 
 /// Pool-free normal application export consumed by `dctl client-manifest`.
 ///
-/// Built from the `user` grant set only so owner-scoped models (`Todos`,
-/// `BlobGames`) keep a **client-portable** row policy
-/// (`owner_id = claim(x-user-id)`). That lets optimistic creates insert into
-/// list indexes without waiting on the network.
+/// **Eligible roles** are `admin` + `user` so multi-role admin principals can
+/// open the normal app client. **Schema privilege** is the `user` grant set
+/// only so owner-scoped models (`Todos`, `BlobGames`) keep a **client-portable**
+/// row policy (`owner_id = claim(x-user-id)`) for optimistic list inserts.
 ///
-/// Mixing `admin` (unrestricted) with `user` (owner) on one surface collapses
-/// the policy to `ServerOnly` and blocks local list membership. Elevated
-/// all-rows views stay on [`distributed_admin_client_surface`]. Server-side
-/// admin GraphQL grants are unchanged — an admin session still receives
-/// unrestricted query results when the engine authorizes them.
+/// Server-side admin GraphQL grants are unchanged — an admin session still
+/// receives unrestricted query results via the concrete admin role surface.
+/// Elevated all-rows views / force-archive stay on
+/// [`distributed_admin_client_surface`].
 pub fn distributed_client_surface() -> DistributedClientSurfaceExport {
-    pool_free_client_surface(DISTRIBUTED_CLIENT_SURFACE, &["user"])
+    pool_free_client_surface_contract(
+        DISTRIBUTED_CLIENT_SURFACE,
+        &["admin", "user"],
+        &["user"],
+    )
 }
 
 /// Pool-free elevated application export for admin-only routes.
@@ -504,10 +524,15 @@ fn build_graphql_engine_with_graphiql(
     let mut b = GraphqlEngine::builder(pool)
         .protocol_token_key(E2E_PROTOCOL_TOKEN_KEY)
         .roles(&["user", "admin"])
-        // e2e-ui: user grant set only so owner-scoped models keep portable row
+        // e2e-ui: eligible admin+user (multi-role principals may open); schema
+        // privilege remains user-only so owner-scoped models keep portable row
         // policies for optimistic list inserts (see distributed_client_surface).
         // e2e-ui-admin: elevated ops / all-rows views (/admin).
-        .client_application_surface(DISTRIBUTED_CLIENT_SURFACE, ["user"])
+        .client_application_surface_with_schema_roles(
+            DISTRIBUTED_CLIENT_SURFACE,
+            ["admin", "user"],
+            ["user"],
+        )
         .client_application_surface(DISTRIBUTED_ADMIN_CLIENT_SURFACE, ["admin"])
         // user: only own rows. admin: all owners (UI: /admin all-notes view).
         .model::<Todos>(Todos::permissions())
@@ -738,7 +763,7 @@ mod client_surface_tests {
             build_graphql_engine_with_graphiql(&repository, &service, dev_identity(), None, true)
                 .expect("engine");
         let runtime = engine
-            .client_manifest_for_application(DISTRIBUTED_CLIENT_SURFACE, &["user"])
+            .client_manifest_for_application(DISTRIBUTED_CLIENT_SURFACE, &["admin", "user"])
             .unwrap();
 
         assert_eq!(generated, runtime);
@@ -751,7 +776,7 @@ mod client_surface_tests {
                         "surface": {
                             "kind": "application",
                             "name": DISTRIBUTED_CLIENT_SURFACE,
-                            "roles": ["user"]
+                            "roles": ["admin", "user"]
                         },
                         "schemaHash": generated.schema_fingerprint
                     }
@@ -762,11 +787,21 @@ mod client_surface_tests {
         let mut session = distributed::microsvc::Session::new();
         session.set("x-role", "user");
         session.set("x-user-id", "person-1");
-        let response = engine.execute(&session, request).await;
+        let response = engine.execute(&session, request.clone()).await;
         assert!(
             !response.is_err(),
             "the runtime must accept the generated application surface: {:?}",
             response.errors
+        );
+        // Multi-role admin principal may open the same portable contract.
+        let mut admin = session.clone();
+        admin.set("x-role", "admin");
+        admin.set("x-roles", "admin,user");
+        let admin_response = engine.execute(&admin, request).await;
+        assert!(
+            !admin_response.is_err(),
+            "admin with user asserted roles must open e2e-ui: {:?}",
+            admin_response.errors
         );
         let envelope = response
             .extensions

@@ -556,6 +556,165 @@ mod client_surface_parity_tests {
 
     #[cfg(feature = "sqlite")]
     #[tokio::test]
+    async fn multi_role_principal_opens_portable_schema_subset_application_surface() {
+        // eligible {admin,user} + schema privilege {user}: admin primary role may
+        // open the portable contract without intersecting unrestricted grants.
+        let pool = sqlx::sqlite::SqlitePoolOptions::new()
+            .connect_lazy("sqlite::memory:")
+            .unwrap();
+        let project = DistributedProjectManifest::new("orders-service").table_schema(orders());
+        let mut builder = GraphqlEngine::from_manifest(&project, pool)
+            .unwrap()
+            .roles(&["admin", "user"])
+            .grant_all("admin")
+            .grant_all("user");
+        // Restricted user policy; unrestricted admin. Schema privilege stays
+        // user-only so the application contract keeps a portable claim preset.
+        builder
+            .permissions
+            .get_mut(&("OrderView".into(), "user".into()))
+            .unwrap()
+            .permission
+            .row_filter = Some(col("status").eq(claim("x-user-id")));
+        let engine = builder
+            .client_application_surface_with_schema_roles("console", ["admin", "user"], ["user"])
+            .protocol_token_key([7; 32])
+            .build()
+            .unwrap();
+
+        let manifest = engine
+            .client_manifest_for_application("console", &["admin", "user"])
+            .expect("registered multi-role application manifest");
+        assert_eq!(
+            manifest.surface,
+            crate::graphql::ClientSurfaceIdentity::application("console", ["admin", "user"])
+        );
+        // Wire roles are eligible; schema privilege is user-only so x-user-id
+        // remains a trusted preset (portable owner-style policy).
+        let application_presets = &engine
+            .inner
+            .protocol
+            .as_ref()
+            .unwrap()
+            .applications["console"]
+            .surface
+            .trusted_presets;
+        assert_eq!(
+            application_presets,
+            &vec![ClientTrustedPresetDescriptor {
+                name: "x-user-id".into(),
+                codec: "string".into(),
+            }]
+        );
+        // Intersecting admin∩user would drop the portable claim (admin has no
+        // row filter). Confirm the user-only role surface still has the claim.
+        assert_eq!(
+            engine.inner.protocol.as_ref().unwrap().roles["user"]
+                .surface
+                .trusted_presets,
+            vec![ClientTrustedPresetDescriptor {
+                name: "x-user-id".into(),
+                codec: "string".into(),
+            }]
+        );
+
+        let request = |schema_hash: &str| -> Request {
+            serde_json::from_value(serde_json::json!({
+                "query": "{ __typename }",
+                "extensions": {
+                    "distributed": {
+                        "client": {
+                            "surface": {
+                                "kind": "application",
+                                "name": "console",
+                                "roles": ["admin", "user"]
+                            },
+                            "schemaHash": schema_hash
+                        }
+                    }
+                }
+            }))
+            .expect("application protocol request")
+        };
+
+        // Admin primary alone is eligible — no need for x-roles when admin is
+        // on the surface eligible list.
+        let mut admin = Session::new();
+        admin.set("x-role", "admin");
+        admin.set("x-user-id", "person-1");
+        let admin_response = engine
+            .execute(&admin, request(&manifest.schema_fingerprint))
+            .await;
+        let admin_envelope = distributed_extension(&admin_response);
+        assert_eq!(admin_envelope["schemaHash"], manifest.schema_fingerprint);
+        assert_eq!(
+            admin_envelope["trustedPresets"],
+            serde_json::json!([{"name": "x-user-id", "codec": "string", "value": "person-1"}])
+        );
+
+        let mut user = Session::new();
+        user.set("x-role", "user");
+        user.set("x-user-id", "person-1");
+        let user_response = engine
+            .execute(&user, request(&manifest.schema_fingerprint))
+            .await;
+        let user_envelope = distributed_extension(&user_response);
+        assert_eq!(user_envelope["schemaHash"], manifest.schema_fingerprint);
+        assert_ne!(
+            user_envelope["cacheScope"], admin_envelope["cacheScope"],
+            "eligible multi-role open must not collapse concrete role cache scopes"
+        );
+
+        // user-only eligible surface: primary admin alone is denied; dual
+        // asserted roles (x-roles includes user) may open.
+        let pool2 = sqlx::sqlite::SqlitePoolOptions::new()
+            .connect_lazy("sqlite::memory:")
+            .unwrap();
+        let project2 = DistributedProjectManifest::new("orders-service").table_schema(orders());
+        let user_only = GraphqlEngine::from_manifest(&project2, pool2)
+            .unwrap()
+            .roles(&["admin", "user"])
+            .grant_all("admin")
+            .grant_all("user")
+            .client_application_surface("console", ["user"])
+            .protocol_token_key([7; 32])
+            .build()
+            .unwrap();
+        let user_only_manifest = user_only
+            .client_manifest_for_application("console", &["user"])
+            .unwrap();
+        let user_only_request = || -> Request {
+            serde_json::from_value(serde_json::json!({
+                "query": "{ __typename }",
+                "extensions": {
+                    "distributed": {
+                        "client": {
+                            "surface": {
+                                "kind": "application",
+                                "name": "console",
+                                "roles": ["user"]
+                            },
+                            "schemaHash": user_only_manifest.schema_fingerprint
+                        }
+                    }
+                }
+            }))
+            .unwrap()
+        };
+        let denied = user_only.execute(&admin, user_only_request()).await;
+        assert!(denied.is_err());
+        assert!(!denied.extensions.contains_key("distributed"));
+        let mut dual = admin.clone();
+        dual.set("x-roles", "admin,user");
+        let allowed = user_only.execute(&dual, user_only_request()).await;
+        assert_eq!(
+            distributed_extension(&allowed)["schemaHash"],
+            user_only_manifest.schema_fingerprint
+        );
+    }
+
+    #[cfg(feature = "sqlite")]
+    #[tokio::test]
     async fn named_application_protocol_selection_is_registered_exact_and_role_bound() {
         let pool = sqlx::sqlite::SqlitePoolOptions::new()
             .connect_lazy("sqlite::memory:")

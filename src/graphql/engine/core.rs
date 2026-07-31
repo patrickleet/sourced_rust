@@ -248,11 +248,22 @@ pub struct GraphqlEngine {
     pub(crate) inner: Arc<EngineInner>,
 }
 
+/// Registration for one named application surface.
+///
+/// `eligible_roles` is the wire/protocol role list (who may open the contract).
+/// `schema_roles` is the grant-intersection set used to build the portable
+/// client schema; it must be a non-empty subset of `eligible_roles`.
+#[derive(Clone, Debug)]
+pub(crate) struct ClientApplicationRegistration {
+    pub(crate) eligible_roles: Vec<String>,
+    pub(crate) schema_roles: Vec<String>,
+}
+
 pub struct GraphqlEngineBuilder {
     pub(crate) service_id: Option<String>,
     pub(crate) protocol_token_key: Option<[u8; 32]>,
     pub(crate) protocol_namespace: Option<String>,
-    pub(crate) client_applications: BTreeMap<String, Vec<String>>,
+    pub(crate) client_applications: BTreeMap<String, ClientApplicationRegistration>,
     pub(crate) command_binding: Option<TypedServiceCommandBinding>,
     pub(crate) causal_storage_identity: Option<crate::command_ledger::CausalStorageIdentity>,
     pub(crate) pool: GraphqlPool,

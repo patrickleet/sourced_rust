@@ -306,19 +306,49 @@ impl GraphqlEngineBuilder {
 
     /// Register one exact named application surface for generated clients.
     ///
-    /// Runtime requests may select only this frozen name/role set. The server
-    /// still authorizes every request as its verified concrete role; the
-    /// application surface controls only the schema generation presented to
-    /// the client.
+    /// `roles` is both the **eligible** principal set (who may open the
+    /// contract) and the **schema privilege** set (grant intersection for the
+    /// portable client schema). Prefer
+    /// [`Self::client_application_surface_with_schema_roles`] when elevated
+    /// principals must open a lower-privilege portable contract.
+    ///
+    /// The server still authorizes every request as its verified concrete role.
     pub fn client_application_surface(
-        mut self,
+        self,
         application: impl Into<String>,
         roles: impl IntoIterator<Item = impl Into<String>>,
     ) -> Self {
+        let roles = roles.into_iter().map(Into::into).collect::<Vec<String>>();
+        self.client_application_surface_with_schema_roles(application, roles.clone(), roles)
+    }
+
+    /// Register an application surface with distinct eligible and schema roles.
+    ///
+    /// - `eligible_roles`: wire/protocol role list; multi-role principals may
+    ///   open the surface when any asserted role is in this set.
+    /// - `schema_roles`: grant intersection for the client schema (must be a
+    ///   non-empty subset of `eligible_roles`). Use e.g. eligible
+    ///   `{admin,user}` + schema `{user}` so portable owner policies survive
+    ///   without collapsing model permission definitions.
+    pub fn client_application_surface_with_schema_roles(
+        mut self,
+        application: impl Into<String>,
+        eligible_roles: impl IntoIterator<Item = impl Into<String>>,
+        schema_roles: impl IntoIterator<Item = impl Into<String>>,
+    ) -> Self {
         let application = application.into();
-        let mut roles = roles.into_iter().map(Into::into).collect::<Vec<String>>();
-        roles.sort();
-        roles.dedup();
+        let mut eligible_roles = eligible_roles
+            .into_iter()
+            .map(Into::into)
+            .collect::<Vec<String>>();
+        let mut schema_roles = schema_roles
+            .into_iter()
+            .map(Into::into)
+            .collect::<Vec<String>>();
+        eligible_roles.sort();
+        eligible_roles.dedup();
+        schema_roles.sort();
+        schema_roles.dedup();
         if application.is_empty()
             || application.len() > 128
             || application.trim() != application
@@ -330,22 +360,40 @@ impl GraphqlEngineBuilder {
             );
             return self;
         }
-        if roles.is_empty()
-            || roles.iter().any(|role| {
-                role.is_empty()
-                    || role.len() > 128
-                    || role.trim() != role
-                    || role.chars().any(char::is_control)
-            })
-        {
+        let invalid_role = |role: &String| {
+            role.is_empty()
+                || role.len() > 128
+                || role.trim() != role
+                || role.chars().any(char::is_control)
+        };
+        if eligible_roles.is_empty() || eligible_roles.iter().any(invalid_role) {
             self.pending_errors.push(format!(
-                "GraphQL client application `{application}` must declare one or more bounded non-empty roles"
+                "GraphQL client application `{application}` must declare one or more bounded non-empty eligible roles"
             ));
             return self;
         }
+        if schema_roles.is_empty() || schema_roles.iter().any(invalid_role) {
+            self.pending_errors.push(format!(
+                "GraphQL client application `{application}` must declare one or more bounded non-empty schema roles"
+            ));
+            return self;
+        }
+        if schema_roles
+            .iter()
+            .any(|role| !eligible_roles.iter().any(|eligible| eligible == role))
+        {
+            self.pending_errors.push(format!(
+                "GraphQL client application `{application}` schema roles must be a subset of eligible roles"
+            ));
+            return self;
+        }
+        let registration = ClientApplicationRegistration {
+            eligible_roles,
+            schema_roles,
+        };
         if self
             .client_applications
-            .insert(application.clone(), roles)
+            .insert(application.clone(), registration)
             .is_some()
         {
             self.pending_errors.push(format!(
@@ -741,12 +789,14 @@ impl GraphqlEngineBuilder {
 
         let mut application_surfaces = BTreeMap::new();
         let mut protocol_applications = BTreeMap::new();
-        for (application, application_roles) in &self.client_applications {
+        for (application, registration) in &self.client_applications {
+            // Schema privilege set drives grant intersection (portable policies).
+            // Eligible set is stamped on the surface identity for protocol open.
             let mut grants_by_role = BTreeMap::new();
-            for role in application_roles {
+            for role in &registration.schema_roles {
                 if !role_surfaces.contains_key(role) {
                     return Err(GraphqlBuildError(format!(
-                        "client application surface `{application}` references unconfigured role `{role}`"
+                        "client application surface `{application}` schema role `{role}` is not configured"
                     )));
                 }
                 grants_by_role.insert(
@@ -759,11 +809,19 @@ impl GraphqlEngineBuilder {
                     ),
                 );
             }
+            for role in &registration.eligible_roles {
+                if !role_surfaces.contains_key(role) {
+                    return Err(GraphqlBuildError(format!(
+                        "client application surface `{application}` eligible role `{role}` is not configured"
+                    )));
+                }
+            }
             let application_surface = Arc::new(
-                surface_for_application(
+                surface_for_application_contract(
                     &full_surface,
                     application,
-                    application_roles,
+                    &registration.eligible_roles,
+                    &registration.schema_roles,
                     &grants_by_role,
                 )
                 .map_err(GraphqlBuildError)?,
@@ -794,7 +852,7 @@ impl GraphqlEngineBuilder {
                 protocol_applications.insert(
                     application.clone(),
                     ProtocolApplicationInfo {
-                        roles: application_roles.clone(),
+                        roles: registration.eligible_roles.clone(),
                         surface: ProtocolSurfaceInfo {
                             schema_fingerprint: manifest.schema_fingerprint,
                             protocol_fingerprint: manifest.protocol_fingerprint,

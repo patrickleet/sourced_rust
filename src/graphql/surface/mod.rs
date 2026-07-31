@@ -45,7 +45,10 @@ mod validation;
 #[cfg(test)]
 mod tests;
 
-pub use application::{role_grants_for_role, surface_for_application, surface_for_role, RoleGrant};
+pub use application::{
+    role_grants_for_role, surface_for_application, surface_for_application_contract,
+    surface_for_role, RoleGrant,
+};
 pub use build::build_surface;
 pub use projections::SurfaceModeledProjection;
 pub(crate) use projections::{
