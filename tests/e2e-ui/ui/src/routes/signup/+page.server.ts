@@ -5,12 +5,13 @@ import {
 	registerHuman,
 	ZitadelAuthError
 } from '$lib/server/zitadel-session';
-import { startOidcSignIn } from '$lib/server/oidc-start';
+import { safeCallbackUrl, startOidcSignIn } from '$lib/server/oidc-start';
 
 export const load: PageServerLoad = async (event) => {
 	const session = await event.locals.auth();
 	if (session?.user) {
-		redirect(303, '/todos');
+		const dest = safeCallbackUrl(event.url);
+		redirect(303, dest === event.url.origin ? '/todos' : dest);
 	}
 
 	// Optional: when coming from /login mid-OIDC, preserve authRequest to finalize without a second password entry.

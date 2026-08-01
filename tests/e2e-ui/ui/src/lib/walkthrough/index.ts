@@ -4,7 +4,6 @@ export {
 	allWalkthroughs,
 	blobWalkthrough,
 	chatWalkthrough,
-	publicWalkthrough,
 	sessionWalkthrough,
 	todosWalkthrough,
 	walkthroughById

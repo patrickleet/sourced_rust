@@ -1,12 +1,14 @@
 import { fail, redirect } from '@sveltejs/kit';
 import type { Actions, PageServerLoad } from './$types';
 import { loginWithPassword, ZitadelAuthError } from '$lib/server/zitadel-session';
-import { startOidcSignIn } from '$lib/server/oidc-start';
+import { safeCallbackUrl, startOidcSignIn } from '$lib/server/oidc-start';
 
 export const load: PageServerLoad = async (event) => {
 	const session = await event.locals.auth();
 	if (session?.user) {
-		redirect(303, '/todos');
+		// Prefer the destination that sent them to login (e.g. /blob, /todos).
+		const dest = safeCallbackUrl(event.url);
+		redirect(303, dest === event.url.origin ? '/todos' : dest);
 	}
 
 	const authRequest = event.url.searchParams.get('authRequest')?.trim() ?? '';
