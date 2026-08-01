@@ -149,9 +149,9 @@ query Todos @load {
 	const codeUi = `// Generated operation + typed commands — no cache recipes in the page
 import { Todos, useCommands } from '$distributed';
 
-const list = Todos.use();
+const query = Todos.use();
 const commands = useCommands();
-const rows = $derived($list.complete ? $list.data.todos : []);
+const todos = $derived($query.complete ? $query.data.todos : []);
 
 await commands.todo.create({ title: text });
 await commands.todo.complete({ todo_id });`;

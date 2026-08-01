@@ -70,10 +70,10 @@
 	const commands = signedIn ? useCommands() : null;
 	// Live page arrives newest-first; reverse for chronological display.
 	const livePage = $derived.by(() => {
-		const rows = Array.isArray($lobby.data?.chat_messages)
+		const pageMessages = Array.isArray($lobby.data?.chat_messages)
 			? $lobby.data.chat_messages
 			: [];
-		return [...rows].reverse();
+		return [...pageMessages].reverse();
 	});
 
 	/** History (older) + live (newest), de-duped by message_id. */
@@ -98,9 +98,9 @@
 		const collected: ChatMsg[] = [];
 		while (true) {
 			const snap = chat.read({ limit: PAGE_SIZE, offset });
-			const rows = snap.data?.chat_messages;
-			if (!snap.complete || !Array.isArray(rows) || rows.length === 0) break;
-			const page = rows.filter(
+			const pageMessages = snap.data?.chat_messages;
+			if (!snap.complete || !Array.isArray(pageMessages) || pageMessages.length === 0) break;
+			const page = pageMessages.filter(
 				(m): m is ChatMsg =>
 					typeof m?.message_id === 'string' &&
 					typeof m?.body === 'string' &&
