@@ -77,6 +77,10 @@
 				simple, realtime, performant, and scalable applications based on distributed systems
 				programming foundations.
 			</p>
+			<p class="wf-lede dist-lede-follow">
+				Made to start simple, and scale big. Run as a single backend service with a UI, or run the
+				same models and handlers as microservices.
+			</p>
 
 			<ul class="wf-hero-stack" aria-label="Stack">
 				<li>Rust</li>

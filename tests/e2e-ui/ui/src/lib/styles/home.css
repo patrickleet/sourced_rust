@@ -1115,6 +1115,13 @@
 
 
 /* —— Distributed product home (dist-*) —— */
+.dist-lede-follow {
+	margin-top: -0.85rem;
+	max-width: var(--wf-measure);
+	font-size: 1.02rem;
+	color: var(--wf-ink);
+}
+
 .dist-hero-note {
 	margin: 1.5rem 0 0;
 	max-width: 36rem;
