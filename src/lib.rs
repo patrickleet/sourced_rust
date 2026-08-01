@@ -82,9 +82,9 @@ pub use projection::{
 
 // Event-independent mutation IR, event→mutation projections, and interpreters.
 pub use mutation::{
-    bind_delete_to_envelope_id, bind_event_to_mutation, bind_state_body_to_mutation,
-    bind_state_events_to_mutation, body_bindings_for_model, body_field_binding,
-    compile_projection, compose_event_preview, delete_by_pk_program_for_model,
+    bind_delete_to_envelope_id, bind_event_apply_mutation, bind_event_to_mutation,
+    bind_state_body_to_mutation, bind_state_events_to_mutation, body_bindings_for_model,
+    body_field_binding, compile_projection, compose_event_preview, delete_by_pk_program_for_model,
     descriptor_from_factories, envelope_binding, inventory_single_model, lower_mutation_cache,
     lower_single_model, portable_binding, resolve_mutation_program, state_upsert_program_for_model,
     Mutation, MutationAssignment, MutationCacheEffect, MutationCacheProgram,
@@ -93,122 +93,59 @@ pub use mutation::{
     MutationHandlerRegistration, MutationInputBinding, MutationKeyCapability, MutationKeyField,
     MutationKind, MutationOperation, MutationProgram, MutationProgramError, MutationProgramId,
     MutationProgramLimits, MutationReturning, MutationServerInterpreter, ProjectionHandler,
-    ReadModelMutationCapabilities, ResolvedMutationValue, MAX_MUTATION_OPERATIONS,
-    MUTATION_OPERATION_SEMANTICS_VERSION, MUTATION_PROGRAM_IR_VERSION,
+    ProjectionInputSource, ReadModelMutationCapabilities, ResolvedMutationValue,
+    MAX_MUTATION_OPERATIONS, MUTATION_OPERATION_SEMANTICS_VERSION, MUTATION_PROGRAM_IR_VERSION,
 };
 
 /// Spec-shaped authoring: **mutations** + **event-first projections**.
 ///
-/// Declare which domain events apply which mutation (`on <events> apply …`).
-/// The framework compiles that into the service mount. Dual-path projection IR
-/// is an internal detail.
+/// One or more `on { events, mutation, input }` arms. `input` declares how the
+/// occurrence fills mutation inputs (`body` = event body object root;
+/// `aggregate_id` = envelope id for delete-by-pk).
 ///
 /// ```ignore
 /// projection! {
-///     pub const BLOB_GAMES: ProjectionDescriptor<DirectCandidate> = {
-///         name: "project_blob",
+///     pub const TODOS: ProjectionDescriptor<EventualOnly> = {
+///         name: "project_todos",
 ///         version: 1,
-///         epoch: "e2e-ui-blob-v2",
-///         model: BlobGames,
-///         on_state BlobGameState as "game" apply save_blob_game {
-///             "blob.initialized", "blob.moved",
-///         }
+///         epoch: "e2e-ui-todos-v2",
+///         model: Todos,
+///         on {
+///             events: [
+///                 TodoCreatedDomainEvent,
+///                 TodoCompletedDomainEvent,
+///             ],
+///             mutation: save_todo,
+///             input: { todo: body },
+///         },
+///         on {
+///             events: [TodoPurgedDomainEvent],
+///             mutation: delete_todo,
+///             input: { todo_id: aggregate_id },
+///         },
 ///     };
 /// }
 /// ```
+///
+/// A `program:` arm remains as an escape hatch for custom partition / multi-binding
+/// factories. Prefer the event-first form when partition is unit.
 #[macro_export]
 macro_rules! projection {
-    // Event-first: state-body events by name + DomainState type.
+    // Event-first: one or more `on { events, mutation, input }` arms.
     (
         $vis:vis const $id:ident : $desc_ty:ty = {
             name: $name:literal,
             version: $version:expr,
             epoch: $epoch:literal,
             model: $model:ty,
-            on_state $state:ty as $input_root:literal apply $mutation:path {
-                $($event:literal),+ $(,)?
-            }
-            $(,)?
-        } $(;)?
-    ) => {
-        $vis const $id: $desc_ty = {
-            fn __handlers() -> ::core::result::Result<
-                $crate::ProjectionProgram,
-                $crate::ProjectionProgramError,
-            > {
-                let mutation = $mutation().program().clone();
-                let mut handlers = ::std::vec::Vec::new();
-                $(
-                    {
-                        let descriptor =
-                            $crate::DomainEventDescriptor::state::<$state>($event, 1);
-                        handlers.push(
-                            $crate::bind_state_body_to_mutation::<$model>(
-                                &descriptor,
-                                mutation.clone(),
-                                $input_root,
-                            )
-                            .map_err(|e| $crate::ProjectionProgramError::InvalidOperation {
-                                operation: ::std::string::String::from($name),
-                                reason: e.to_string(),
-                            })?,
-                        );
-                    }
-                )+
-                $crate::compile_projection(
-                    $name,
-                    $version,
-                    $crate::ProjectionPartition::Unit,
-                    handlers,
-                )
-            }
-            fn __resolve(
-                occurrence: &$crate::DomainEventOccurrence,
-            ) -> ::core::result::Result<
-                $crate::ResolvedProjectionPlan,
-                $crate::ProjectionProgramError,
-            > {
-                $crate::resolve_mutation_program(&__handlers()?, occurrence)
-            }
-            fn __lower(
-                plan: &$crate::ResolvedProjectionPlan,
-            ) -> ::core::result::Result<
-                $crate::projection::lower::LoweredProjectionPlan,
-                $crate::projection::lower::ProjectionLoweringError,
-            > {
-                $crate::lower_single_model::<$model>(plan)
-            }
-            fn __inventory() -> ::core::result::Result<
-                $crate::projection::lower::ProjectionOutputInventory,
-                $crate::projection::lower::ProjectionLoweringError,
-            > {
-                $crate::inventory_single_model::<$model>()
-            }
-            $crate::descriptor_from_factories(
-                $name,
-                $version,
-                $epoch,
-                __handlers,
-                __resolve,
-                __lower,
-                __inventory,
-            )
-        };
-    };
-
-    // Event-first: DomainEventContract types + optional delete binding.
-    (
-        $vis:vis const $id:ident : $desc_ty:ty = {
-            name: $name:literal,
-            version: $version:expr,
-            epoch: $epoch:literal,
-            model: $model:ty,
-            on_event { $($event_ty:ty),+ $(,)? }
-            apply $mutation:path as $input_root:literal
             $(
-                , on_deleted $del_event:ty => apply $del_mutation:path as $pk:literal
-            )?
-            $(,)?
+                on {
+                    events: [ $($event_ty:ty),+ $(,)? ],
+                    mutation: $mutation:path,
+                    input: { $input_key:ident : $input_src:ident },
+                    $(,)?
+                }
+            ),+ $(,)?
         } $(;)?
     ) => {
         $vis const $id: $desc_ty = {
@@ -217,38 +154,27 @@ macro_rules! projection {
                 $crate::ProjectionProgramError,
             > {
                 use $crate::domain_event::DomainEventContract;
-                let mutation = $mutation().program().clone();
                 let mut handlers = ::std::vec::Vec::new();
                 $(
                     {
-                        handlers.push(
-                            $crate::bind_state_body_to_mutation::<$model>(
-                                &<$event_ty>::descriptor(),
-                                mutation.clone(),
-                                $input_root,
-                            )
-                            .map_err(|e| $crate::ProjectionProgramError::InvalidOperation {
-                                operation: ::std::string::String::from($name),
-                                reason: e.to_string(),
-                            })?,
-                        );
+                        let mutation = $mutation().program().clone();
+                        let input_source = $crate::__projection_input_source!($input_src);
+                        $(
+                            handlers.push(
+                                $crate::bind_event_apply_mutation::<$model>(
+                                    &<$event_ty>::descriptor(),
+                                    mutation.clone(),
+                                    ::core::stringify!($input_key),
+                                    input_source,
+                                )
+                                .map_err(|e| $crate::ProjectionProgramError::InvalidOperation {
+                                    operation: ::std::string::String::from($name),
+                                    reason: e.to_string(),
+                                })?,
+                            );
+                        )+
                     }
                 )+
-                $(
-                    {
-                        handlers.push(
-                            $crate::bind_delete_to_envelope_id(
-                                &<$del_event>::descriptor(),
-                                $del_mutation().program().clone(),
-                                $pk,
-                            )
-                            .map_err(|e| $crate::ProjectionProgramError::InvalidOperation {
-                                operation: ::std::string::String::from($name),
-                                reason: e.to_string(),
-                            })?,
-                        );
-                    }
-                )?
                 $crate::compile_projection(
                     $name,
                     $version,
@@ -289,13 +215,9 @@ macro_rules! projection {
             )
         };
     };
-}
 
-/// Lower-level mount when handlers need a custom partition (e.g. chat room_id).
-///
-/// Prefer [`projection!`] when partition is unit.
-#[macro_export]
-macro_rules! mutation_projector {
+    // Escape hatch: custom program factory (partition / multi-binding / etc.).
+    // Prefer the event-first arms above when partition is unit.
     (
         $vis:vis const $id:ident : $desc_ty:ty = {
             name: $name:literal,
@@ -344,6 +266,18 @@ macro_rules! mutation_projector {
                 __inventory,
             )
         };
+    };
+}
+
+/// Map `input: { key: body | aggregate_id }` keywords for [`projection!`].
+#[macro_export]
+#[doc(hidden)]
+macro_rules! __projection_input_source {
+    (body) => {
+        $crate::ProjectionInputSource::Body
+    };
+    (aggregate_id) => {
+        $crate::ProjectionInputSource::AggregateId
     };
 }
 

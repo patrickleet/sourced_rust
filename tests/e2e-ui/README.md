@@ -46,19 +46,26 @@ pub fn delete_todo() -> Mutation<()> {
     mutation_file!("src/mutations/delete_todo.mutation.graphql")
 }
 
-// 2) Portable handlers: on <events> apply <mutation> (event-first)
+// 2) Projections: on { events, mutation, input } (event-first)
 projection! {
     pub const TODOS: ProjectionDescriptor<EventualOnly> = {
         name: "project_todos",
         version: 1,
         epoch: "e2e-ui-todos-v2",
         model: Todos,
-        on_event {
-            TodoCreatedDomainEvent,
-            TodoCompletedDomainEvent, /* … */
-        }
-        apply save_todo as "todo",
-        on_deleted TodoPurgedDomainEvent => apply delete_todo as "todo_id",
+        on {
+            events: [
+                TodoCreatedDomainEvent,
+                TodoCompletedDomainEvent, /* … */
+            ],
+            mutation: save_todo,
+            input: { todo: body },
+        },
+        on {
+            events: [TodoPurgedDomainEvent],
+            mutation: delete_todo,
+            input: { todo_id: aggregate_id },
+        },
     };
 }
 ```

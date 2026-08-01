@@ -153,6 +153,45 @@ pub fn bind_delete_to_envelope_id(
     Ok(ProjectionHandler { mount_id, binding })
 }
 
+/// How a projection arm fills mutation inputs from a domain-event occurrence.
+///
+/// Authoring surface: `input: { <key>: body | aggregate_id }` inside
+/// [`crate::projection!`].
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum ProjectionInputSource {
+    /// Map the post-transition event body field-for-field under `input.<key>`.
+    Body,
+    /// Map the envelope aggregate id into `input.<key>` (typical delete-by-pk).
+    AggregateId,
+}
+
+/// Event-first projection arm with an explicit input binding source.
+///
+/// - [`ProjectionInputSource::Body`] → [`bind_state_body_to_mutation`]
+/// - [`ProjectionInputSource::AggregateId`] → [`bind_delete_to_envelope_id`]
+///
+/// # Errors
+///
+/// Propagates binding construction failures.
+pub fn bind_event_apply_mutation<M>(
+    descriptor: &crate::DomainEventDescriptor,
+    program: super::program::MutationProgram,
+    input_key: &str,
+    source: ProjectionInputSource,
+) -> Result<ProjectionHandler, MutationProgramError>
+where
+    M: RelationalReadModel,
+{
+    match source {
+        ProjectionInputSource::Body => {
+            bind_state_body_to_mutation::<M>(descriptor, program, input_key)
+        }
+        ProjectionInputSource::AggregateId => {
+            bind_delete_to_envelope_id(descriptor, program, input_key)
+        }
+    }
+}
+
 /// Resolve an occurrence through a mutation-backed projection program.
 ///
 /// # Errors
@@ -202,8 +241,7 @@ where
 ///
 /// The factories **must** derive program/resolve from mutation IR (via
 /// [`compile_projection`] / [`resolve_mutation_program`]). Prefer
-/// [`crate::projection!`] or [`crate::mutation_projector!`] so the factories
-/// stay mutation-backed.
+/// [`crate::projection!`] so the factories stay mutation-backed.
 pub const fn descriptor_from_factories<D>(
     name: &'static str,
     version: u64,

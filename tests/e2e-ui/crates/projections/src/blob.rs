@@ -1,6 +1,9 @@
 //! Blob: mutations + projections.
 
-use blob_domain::BlobGameState;
+use blob_domain::{
+    BlobInitializedDomainEvent, BlobLevelStartedDomainEvent, BlobMovedDomainEvent,
+    BlobStartedDomainEvent,
+};
 use distributed::mutation_file;
 use distributed::projection::lower::{DirectCandidate, ProjectionDescriptor};
 use distributed::Mutation;
@@ -15,8 +18,9 @@ pub fn save_blob_game() -> Mutation<()> {
 }
 
 // When these domain events fire, apply [`save_blob_game`] (body → `input.game`).
-// Event-first: on <events> apply <mutation>. Command path stages the row via
-// `Mutation::from_state` + `readmodel(row).commit()?.projected()`.
+// Event-first: on { events, mutation, input } — same shape as todos/chat.
+// Command path stages the row via `Mutation::from_state` +
+// `readmodel(row).commit()?.projected()`.
 // Macro is `projection!` (crate root); `distributed::projection` is the module.
 distributed::projection! {
     pub const BLOB_GAMES: ProjectionDescriptor<DirectCandidate> = {
@@ -24,12 +28,16 @@ distributed::projection! {
         version: 1,
         epoch: "e2e-ui-blob-v2",
         model: BlobGames,
-        on_state BlobGameState as "game" apply save_blob_game {
-            "blob.initialized",
-            "blob.level_started",
-            "blob.started",
-            "blob.moved",
-        }
+        on {
+            events: [
+                BlobInitializedDomainEvent,
+                BlobLevelStartedDomainEvent,
+                BlobStartedDomainEvent,
+                BlobMovedDomainEvent,
+            ],
+            mutation: save_blob_game,
+            input: { game: body },
+        },
     };
 }
 
@@ -71,7 +79,9 @@ mod tests {
     use serde::{Deserialize, Serialize};
 
     use super::*;
-    use blob_domain::{test_map_no_holes, BlobGame, Direction};
+    use blob_domain::{
+        test_map_no_holes, BlobGame, BlobGameState, Direction,
+    };
 
     #[derive(Clone, Serialize, Deserialize, distributed::ReadModel)]
     #[readmodel(primary_key = ["game_id"])]
