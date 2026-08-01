@@ -1,7 +1,4 @@
-import {
-	createDistributedSvelteKitServer,
-	type SveltekitDistributedPageData
-} from '@hops-ops/distributed/sveltekit';
+import { createDistributedSvelteKitServer } from '@hops-ops/distributed/sveltekit';
 
 import { DISTRIBUTED_ROUTE_OPERATIONS } from '$distributed';
 import { CHAT_PAGE_SIZE } from '$lib/chat/lobby-log';
@@ -31,6 +28,20 @@ const distributed = createDistributedSvelteKitServer<Session, LoadEvent>({
 	}
 });
 
-export const load: LayoutServerLoad = distributed.load satisfies (
-	event: LoadEvent
-) => Promise<SveltekitDistributedPageData>;
+/**
+ * Unauthenticated traffic skips the portable user GraphQL surface (no Bearer /
+ * empty identity cannot open e2e-ui). Lobby chat SSR uses the nested public
+ * client under routes/chat when there is no session.
+ */
+export const load: LayoutServerLoad = (async (event) => {
+	const session = await event.locals.auth();
+	if (!session?.user) {
+		return {
+			session: null,
+			accessToken: null,
+			engineRole: null,
+			gqlError: null
+		};
+	}
+	return distributed.load(event);
+}) satisfies LayoutServerLoad;

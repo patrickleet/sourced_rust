@@ -103,9 +103,10 @@ mod tests {
 
         assert_eq!(user.len(), 4);
         assert_eq!(admin.len(), 4);
-        // Public surface: chat only (anonymous privilege pack).
+        // Public surface: lobby chat + directory joins for author names.
         assert!(anonymous.contains_key("ChatMessages"));
-        assert_eq!(anonymous.len(), 1);
+        assert!(anonymous.contains_key("AuthUsers"));
+        assert_eq!(anonymous.len(), 2);
         assert!(matches!(
             user["Todos"].row_policy,
             distributed::graphql::SurfaceRowPolicy::Predicate(_)

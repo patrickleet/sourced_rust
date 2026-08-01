@@ -640,6 +640,9 @@ pub fn oidc_bearer_config(
         "realm_access.roles".into(),
         "urn:zitadel:iam:org:project:roles".into(),
     ];
+    // Allow empty identity so e2e-ui-public (anonymous) can open without a Bearer.
+    // Invalid/malformed tokens still 401.
+    oidc.require_auth = false;
     IdentityConfig::oidc_bearer(oidc)
 }
 

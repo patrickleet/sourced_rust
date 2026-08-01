@@ -7,14 +7,15 @@
 	 * ascending. The log uses `column-reverse` so SSR/first paint already shows
 	 * the newest end (no JS scroll jump).
 	 */
-	import { tick } from 'svelte';
+	import { tick, untrack } from 'svelte';
 	import { useDistributedSvelteKitClient } from '@hops-ops/distributed/sveltekit';
 
 	import {
-		ChatMessages,
+		ChatMessages as UserChatMessages,
 		useCommands,
 		type Operation_ChatMessages_Data
 	} from '$distributed';
+	import { ChatMessages as PublicChatMessages } from '$distributed/public';
 	import {
 		CHAT_PAGE_SIZE,
 		mergeHistoryPage,
@@ -36,6 +37,10 @@
 	const PAGE_SIZE = CHAT_PAGE_SIZE;
 
 	let { data } = $props();
+	/** Guest uses e2e-ui-public; signed-in uses portable e2e-ui (root client). Fixed at mount. */
+	const signedIn = untrack(() => !!data.session?.user);
+	const ChatMessages = signedIn ? UserChatMessages : PublicChatMessages;
+
 	let sendError = $state<string | null>(null);
 	let historyError = $state<string | null>(null);
 	let logEl: HTMLDivElement | undefined = $state();
@@ -62,8 +67,7 @@
 	// Capture a bound op at init so scroll handlers can open history watches
 	// without re-entering Svelte context.
 	const chat = useDistributedSvelteKitClient().operation(ChatMessages.artifact);
-	const commands = useCommands();
-
+	const commands = signedIn ? useCommands() : null;
 	// Live page arrives newest-first; reverse for chronological display.
 	const livePage = $derived.by(() => {
 		const rows = Array.isArray($lobby.data?.chat_messages)
@@ -281,7 +285,7 @@
 	async function onSend(e: Event) {
 		e.preventDefault();
 		const body = draft.trim();
-		if (!body || busy) return;
+		if (!body || busy || !commands) return;
 		const now = Date.now();
 		const message_id = `m-${now.toString(16)}`;
 		sendError = null;
@@ -334,8 +338,12 @@
 				{/if}
 			</div>
 		{/snippet}
-		Newest {PAGE_SIZE} messages stay live. Scroll up for older history. Signed in as
-		<strong>{displayName}</strong>.
+		{#if signedIn}
+			Newest {PAGE_SIZE} messages stay live. Scroll up for older history. Signed in as
+			<strong>{displayName}</strong>.
+		{:else}
+			Reading as <strong>anonymous</strong> (e2e-ui-public). Sign in to post.
+		{/if}
 	</PageHeader>
 
 	{#if data.gqlError}
@@ -425,30 +433,39 @@
 			</div>
 		</div>
 
-		<form class="ch-composer" onsubmit={onSend}>
-			<label class="ch-sr" for="chat-body">Message</label>
-			<input
-				id="chat-body"
-				class="ch-input"
-				name="body"
-				placeholder="Message the lobby…"
-				required
-				autocomplete="off"
-				bind:value={draft}
-			/>
-			<Button type="submit" variant="ink" disabled={!draft.trim() || busy}>
-				Send
-				<svg width="16" height="16" viewBox="0 0 24 24" fill="none" aria-hidden="true">
-					<path
-						d="M5 12h14M13 6l6 6-6 6"
-						stroke="currentColor"
-						stroke-width="2.4"
-						stroke-linecap="round"
-						stroke-linejoin="round"
-					/>
-				</svg>
-			</Button>
-		</form>
+		{#if signedIn}
+			<form class="ch-composer" onsubmit={onSend}>
+				<label class="ch-sr" for="chat-body">Message</label>
+				<input
+					id="chat-body"
+					class="ch-input"
+					name="body"
+					placeholder="Message the lobby…"
+					required
+					autocomplete="off"
+					bind:value={draft}
+				/>
+				<Button type="submit" variant="ink" disabled={!draft.trim() || busy}>
+					Send
+					<svg width="16" height="16" viewBox="0 0 24 24" fill="none" aria-hidden="true">
+						<path
+							d="M5 12h14M13 6l6 6-6 6"
+							stroke="currentColor"
+							stroke-width="2.4"
+							stroke-linecap="round"
+							stroke-linejoin="round"
+						/>
+					</svg>
+				</Button>
+			</form>
+		{:else}
+			<div class="ch-composer ch-composer-guest" data-testid="chat-guest-cta">
+				<p class="ch-guest-copy">
+					Lobby is readable without signing in (anonymous GraphQL). Posting requires a session.
+				</p>
+				<Button variant="ink" href="/signin?callbackUrl=/chat">Sign in to post</Button>
+			</div>
+		{/if}
 	</div>
 </AppPage>
 
@@ -687,6 +704,22 @@
 		padding: 0.75rem;
 		border-top: 1px solid var(--edge);
 		background: rgba(28, 28, 26, 0.02);
+	}
+
+	.ch-composer-guest {
+		flex-wrap: wrap;
+		align-items: center;
+		justify-content: space-between;
+		gap: 0.75rem 1rem;
+	}
+
+	.ch-guest-copy {
+		margin: 0;
+		flex: 1;
+		min-width: 12rem;
+		font-size: 0.88rem;
+		line-height: 1.45;
+		color: var(--ink-soft);
 	}
 
 	.ch-input {

@@ -49,7 +49,7 @@
 			href: '/chat',
 			title: 'Lobby chat',
 			tag: '@load @live',
-			blurb: 'One query for SSR and live frames; posts are commands.'
+			blurb: 'Readable anonymously; posts require sign-in. One query for SSR and live.'
 		},
 		{
 			href: '/blob',
