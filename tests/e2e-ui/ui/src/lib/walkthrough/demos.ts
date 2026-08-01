@@ -20,7 +20,7 @@ export const todosWalkthrough: DemoWalkthrough = {
 		{
 			id: 'query',
 			label: '1 · Query',
-			lede: 'The browser reads through a co-located GraphQL document. @load seeds SSR; the generated operation binds the same document to the replica.',
+			lede: 'The browser reads through a co-located GraphQL document. @load seeds SSR; the generated operation binds the same document to the replica. Row filters are model RBAC — not ad-hoc WHERE in the UI.',
 			principle: 'One replica story for user data.',
 			samples: [
 				{
@@ -36,6 +36,19 @@ export const todosWalkthrough: DemoWalkthrough = {
 }`
 				},
 				{
+					file: 'Todos · ModelPermissions (RBAC)',
+					caption: 'Read grants: user sees own rows; admin sees all. Privilege pack applies at the engine.',
+					code: `ModelPermissions::new()
+  .grant(
+    "user",
+    read().all_columns().rows(
+      col("owner_id").eq(claim("x-user-id")),
+    ),
+  )
+  .grant("admin", read().all_columns())
+// No anonymous grant — /todos requires sign-in`
+				},
+				{
 					file: 'routes/todos/+page.svelte',
 					caption: 'UI data comes from the client replica — not a hand-rolled store.',
 					code: `import { Todos, useCommands } from '$distributed';
@@ -49,7 +62,7 @@ const rows = $derived($list.complete ? $list.data.todos : []);
 		{
 			id: 'commands',
 			label: '2 · Commands',
-			lede: 'Writes go through generated commands. Todos are Causal: the client applies a safe optimistic preview into the replica cache that feeds the UI, then confirms when the projection obligation completes.',
+			lede: 'Writes go through generated commands. Todos are Causal: the client applies a safe optimistic preview into the replica cache that feeds the UI, then confirms when the projection obligation completes. Command RBAC lists who may invoke each mutation.',
 			principle: 'Let the Service declare how the UI catches up.',
 			samples: [
 				{
@@ -61,6 +74,18 @@ await commands.todo.create({ title: text });
 // Inventory preview already painted the row in the replica
 await commands.todo.complete({ todo_id });
 // Causal: optimistic status → projector confirms exact obligation`
+				},
+				{
+					file: 'service · command roles (RBAC)',
+					caption: 'User surface can create/complete; force_archive is admin-only (elevated surface).',
+					code: `// app_roles = ["user", "admin"] on portable mutations
+typed_command::<TodoCreateInput, Causal<…>>(…)
+  .roles(app_roles)   // user + admin may create
+  .emits(…)
+  .preview(…);
+
+typed_command::<TodoForceArchiveInput, Causal<…>>(…)
+  .roles(["admin"])   // not on $distributed user tree`
 				},
 				{
 					file: 'service · typed_command preview',
@@ -186,7 +211,7 @@ export const chatWalkthrough: DemoWalkthrough = {
 		{
 			id: 'query',
 			label: '1 · Query / live',
-			lede: 'One GraphQL operation is both the SSR seed and the live subscription. Newest page stays at offset 0 with @live; history uses the same op with rising offset.',
+			lede: 'One GraphQL operation is both the SSR seed and the live subscription. Newest page stays at offset 0 with @live; history uses the same op with rising offset. Read RBAC allows user, admin, and anonymous.',
 			principle: 'Register once, ship everywhere.',
 			samples: [
 				{
@@ -209,6 +234,16 @@ export const chatWalkthrough: DemoWalkthrough = {
 }`
 				},
 				{
+					file: 'ChatMessages · ModelPermissions (RBAC)',
+					caption: 'Room-shared read for every role pack that includes this model.',
+					code: `ModelPermissions::new()
+  .grant("user", read().all_columns())
+  .grant("admin", read().all_columns())
+  .grant("anonymous", read().all_columns())
+// Guests open e2e-ui-public (anonymous privilege);
+// signed-in clients open e2e-ui (user privilege)`
+				},
+				{
 					file: 'routes/chat/+page.svelte',
 					code: `const lobby = ChatMessages.use({ limit: PAGE_SIZE, offset: 0 });
 // Live page = replica subscription on the same document
@@ -219,7 +254,7 @@ const livePage = $derived(/* reverse $lobby.data.chat_messages */);`
 		{
 			id: 'commands',
 			label: '2 · Commands',
-			lede: 'Post is a generated command. The client replica cache applies a modeled optimistic message so the UI updates immediately; Causal confirmation follows the projector.',
+			lede: 'Post is a generated command for signed-in surfaces only. The client replica cache applies a modeled optimistic message so the UI updates immediately; Causal confirmation follows the projector.',
 			principle: 'One replica story for user data.',
 			samples: [
 				{
@@ -233,6 +268,15 @@ await commands.chat.post({
 });
 // Your bubble appears from replica optimism;
 // others receive the same row via @live after project`
+				},
+				{
+					file: 'service · chat.post roles (RBAC)',
+					caption: 'Mutation roles are app_roles (user + admin). Anonymous surface has no write inventory.',
+					code: `typed_command::<ChatPostInput, Causal<ChatPostPayload>>(…)
+  .roles(app_roles)  // ["user", "admin"]
+  .emits(…);
+// e2e-ui-public: read-only privilege pack — guests see
+// “Sign in to post”, not a composer that 403s later`
 				}
 			]
 		},
@@ -304,7 +348,7 @@ export const blobWalkthrough: DemoWalkthrough = {
 		{
 			id: 'query',
 			label: '1 · Query',
-			lede: 'One operation lists games (and map JSON). URL selects which game is active; the board derives from the replica.',
+			lede: 'One operation lists games (and map JSON). URL selects which game is active; the board derives from the replica. Row RBAC scopes lists to the owner (unless admin).',
 			principle: 'One replica story for user data.',
 			samples: [
 				{
@@ -319,6 +363,15 @@ export const blobWalkthrough: DemoWalkthrough = {
 }`
 				},
 				{
+					file: 'BlobGames · ModelPermissions (RBAC)',
+					caption: 'Same claim pattern as todos — owner-scoped for user.',
+					code: `ModelPermissions::new()
+  .grant("user", read().all_columns()
+    .rows(col("owner_id").eq(claim("x-user-id"))))
+  .grant("admin", read().all_columns())
+// No anonymous — /blob requires sign-in`
+				},
+				{
 					file: 'blob · replica bind',
 					code: `const list = BlobGames.use();
 const games = $derived($list.complete ? $list.data.blob_games : []);
@@ -329,7 +382,7 @@ const games = $derived($list.complete ? $list.data.blob_games : []);
 		{
 			id: 'commands',
 			label: '2 · Commands',
-			lede: 'Moves are Projected commands. Unlike todos, the UI does not guess the next board — it applies atomic results from the server into the client cache that feeds the UI.',
+			lede: 'Moves are Projected commands. Unlike todos, the UI does not guess the next board — it applies atomic results from the server into the client cache that feeds the UI. Command roles match the portable surface.',
 			principle: 'Let the Service declare how the UI catches up.',
 			samples: [
 				{
@@ -341,6 +394,14 @@ const games = $derived($list.complete ? $list.data.blob_games : []);
 });
 // Replica already has the new map_json / score from the payload
 // No dual-write; no “wait for projector” flash`
+				},
+				{
+					file: 'service · blob command roles (RBAC)',
+					caption: 'start / move / start_level are user+admin on e2e-ui.',
+					code: `typed_command::<BlobMoveInput, Projected<BlobGames>>(…)
+  .roles(app_roles);  // ["user", "admin"]
+// Domain still enforces owner_id on the aggregate —
+// RBAC is “who may call”; domain is “who may mutate this game”`
 				}
 			]
 		},
@@ -414,7 +475,7 @@ export const adminWalkthrough: DemoWalkthrough = {
 		{
 			id: 'query',
 			label: '1 · Query',
-			lede: 'Admin list is a different generated client and route registry. Same GraphQL engine, different surface privilege and co-located document.',
+			lede: 'Admin list is a different generated client and route registry. Same GraphQL engine, different surface privilege — admin grant sees every owner’s todos.',
 			principle: 'Roles and surfaces are real.',
 			samples: [
 				{
@@ -424,13 +485,21 @@ export const adminWalkthrough: DemoWalkthrough = {
 const list = AdminAllTodos.use();
 const rows = $derived($list.complete ? $list.data.todos : []);
 // Nested layout provides a second distributed client`
+				},
+				{
+					file: 'Todos · admin read grant (RBAC)',
+					caption: 'e2e-ui-admin privilege pack uses admin grants (all rows).',
+					code: `// ModelPermissions on Todos:
+.grant("admin", read().all_columns())
+// Portable e2e-ui uses schema privilege "user" (owner rows).
+// Elevated e2e-ui-admin opens with admin privilege pack.`
 				}
 			]
 		},
 		{
 			id: 'commands',
 			label: '2 · Commands',
-			lede: 'Elevated mutations only exist on the admin command tree. They still update the admin replica cache that feeds this page’s UI.',
+			lede: 'Elevated mutations only exist on the admin command tree. They still update the admin replica cache that feeds this page’s UI. Command roles are the second RBAC half.',
 			principle: 'You keep the interesting code — scaffolding disappears.',
 			samples: [
 				{
@@ -438,6 +507,14 @@ const rows = $derived($list.complete ? $list.data.todos : []);
 					code: `const commands = useCommands(); // from $distributed/admin
 await commands.todo.force_archive({ todo_id });
 // Not importable from the user $distributed tree`
+				},
+				{
+					file: 'service · force_archive roles (RBAC)',
+					caption: 'Only admin may invoke; surface gate + typed_command roles.',
+					code: `typed_command::<TodoForceArchiveInput, Causal<…>>(…)
+  .roles(["admin"]);
+// Layout: isAdminEngineRole before any GraphQL
+// Artifact: force_archive absent from user command inventory`
 				}
 			]
 		},
@@ -495,7 +572,7 @@ export const sessionWalkthrough: DemoWalkthrough = {
 		{
 			id: 'query',
 			label: '1 · Session UI',
-			lede: 'No GraphQL list here — the “query” is the Auth.js session the layout already loaded. Everything else (todos, chat, blob) reuses that principal.',
+			lede: 'No GraphQL list here — the “query” is the Auth.js session the layout already loaded. Groups map to engine roles; that principal drives RBAC on every other page.',
 			principle: 'Trust the signed-in person, not the request body.',
 			samples: [
 				{
@@ -506,13 +583,24 @@ const engineRole = $derived(
   engineRoleFromGroups(user?.groups)
 );
 // Access token → GraphQL Authorization on every other page`
+				},
+				{
+					file: 'lib/roles.ts · groups → engine role (RBAC)',
+					caption: 'UI + SSR map IdP groups to admin | user before GraphQL.',
+					code: `export function engineRoleFromGroups(groups?: string[]) {
+  if (groups?.includes("admin") || groups?.includes("admins"))
+    return "admin";
+  return "user";
+}
+// Multi-role tokens may assert admin+user in x-roles;
+// surfaces pick which privilege pack executes`
 				}
 			]
 		},
 		{
 			id: 'commands',
 			label: '2 · Tokens',
-			lede: 'Commands and queries do not invent identity. They carry the access token; the engine maps claims to x-user-id + x-roles (set-only).',
+			lede: 'Commands and queries do not invent identity. They carry the access token; the engine maps claims to x-user-id + x-roles (set-only). That set is the RBAC input for grants and .roles([…]).',
 			principle: 'Roles and surfaces are real.',
 			samples: [
 				{
@@ -523,6 +611,13 @@ const engineRole = $derived(
   authority: data.distributedAuthority
 });
 // HTTP Bearer + WS connection_init share this source`
+				},
+				{
+					file: 'identity · claim map (RBAC)',
+					caption: 'OIDC groups/roles claims → allowlisted engine roles on the session.',
+					code: `// OidcConfig claim_map.engine_roles = ["user", "admin"]
+// role_claims: groups, roles, realm_access.roles, Zitadel project roles
+// Session carries x-roles as a set — not a single primary role`
 				}
 			]
 		},
@@ -581,7 +676,7 @@ export const publicWalkthrough: DemoWalkthrough = {
 		{
 			id: 'query',
 			label: '1 · Query',
-			lede: 'The “live” path is optional; the teaching point is opening a surface with no session. Protocol extensions name the application surface and schema hash.',
+			lede: 'The teaching point is opening a surface with no session. Protocol extensions name e2e-ui-public; privilege pack is anonymous (chat + directory joins only).',
 			principle: 'Roles and surfaces are real.',
 			samples: [
 				{
@@ -601,19 +696,33 @@ export const publicWalkthrough: DemoWalkthrough = {
     }
   }
 }`
+				},
+				{
+					file: 'anonymous privilege pack (RBAC)',
+					caption: 'Only models granted to anonymous appear on this surface.',
+					code: `// ChatMessages: grant("anonymous", read().all_columns())
+// AuthUsers:    grant("anonymous", …)  // author display joins
+// Todos / BlobGames: no anonymous grant → absent from public schema`
 				}
 			]
 		},
 		{
 			id: 'commands',
 			label: '2 · No writes',
-			lede: 'Public surface is read-shaped. There is no optimistic command cache on this page — by design.',
+			lede: 'Public surface is read-shaped. There is no optimistic command cache on this page — command RBAC simply does not expose mutations to anonymous.',
 			principle: 'Simplest DX is the goal.',
 			samples: [
 				{
 					file: 'public route',
 					code: `// No useCommands() — unauthenticated lobby peek only
 // Authed clients use e2e-ui / e2e-ui-admin instead`
+				},
+				{
+					file: 'command inventory (RBAC)',
+					caption: 'Public generated client has an empty command surface.',
+					code: `// $distributed/public GeneratedCommands = Record<never, never>
+// chat.post.roles(app_roles) never appears here —
+// fail closed by omission, not by hoping the UI forgets to call it`
 				}
 			]
 		},
