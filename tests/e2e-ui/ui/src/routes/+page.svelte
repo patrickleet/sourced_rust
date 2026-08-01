@@ -1,7 +1,7 @@
 <script lang="ts">
 	/**
-	 * Home — Distributed framework first; demos are destinations.
-	 * Per-demo “How it’s built” slide-outs live on each route.
+	 * Distributed product home — framework first.
+	 * This SvelteKit app is the living playground; deep code walks live on each demo.
 	 */
 	import '$lib/styles/home.css';
 	import { page } from '$app/state';
@@ -11,154 +11,132 @@
 	const signedIn = $derived(!!session?.user);
 	const authConfigError = $derived(page.url.searchParams.get('error') === 'Configuration');
 
-	const frameworkPrinciples = [
+	const pillars = [
 		{
-			title: 'Simplest DX is the goal',
-			body: 'Event sourcing and CQRS are easy to overbuild. Distributed’s job is the opposite: plain domain intent and ordinary UI, while the library carries history, projection, GraphQL, and the browser replica.'
+			title: 'Domain in Rust',
+			body: 'Plain types, methods, and tests. Event sourcing and CQRS stay in the framework so your business rules stay readable.'
 		},
 		{
-			title: 'Start with the domain, not the database',
-			body: 'Model a todo or game as a plain Rust type with methods and unit tests. No HTTP, no SQL, no handler context to prove the rules. Infrastructure plugs in after the behavior is solid.'
+			title: 'GraphQL as the edge',
+			body: 'Deny-by-default reads, first-class OIDC, application surfaces, and command mutations — not a second REST surface to keep in sync.'
 		},
 		{
-			title: 'Know which side of the fence you are on',
-			body: 'Aggregate events replay write-side history. Domain events are the outward contract. Read models stay query-shaped — never dual-write tables from the UI.'
+			title: 'TypeScript clients',
+			body: 'Generated operations and commands for SvelteKit: SSR hydrate, live subscriptions, causal optimism, and Projected boards from one inventory.'
+		}
+	];
+
+	const story = [
+		{
+			n: '01',
+			title: 'Write the domain once',
+			body: 'Aggregates, events, and rules unit-test without HTTP or SQL. Macros record history; you keep the decisions.'
 		},
 		{
-			title: 'You keep the interesting code',
-			body: 'Macros own recording facts and replaying history so methods stay readable. You still own “only the owner can complete this.” Scaffolding disappears; decisions do not.'
+			n: '02',
+			title: 'Register the service',
+			body: 'Commands, projections, and read models live in one typed inventory. Surfaces (user, admin, public) select who may open what.'
 		},
 		{
-			title: 'Register once, ship everywhere',
-			body: 'Commands, domain events, and projections live once in the typed Service inventory. Generation lowers that into GraphQL, typed UI helpers, safe optimism, and dual application surfaces. Drift fails CI on purpose.'
-		},
-		{
-			title: 'Grow without rewriting what you proved',
-			body: 'Start as one process on a laptop. Later split services or change brokers. Domain types and facts you already tested should not need a rewrite.'
+			n: '03',
+			title: 'Ship the UI',
+			body: 'Co-locate GraphQL next to routes. Gen clients. The browser replica is the cache — optimism and live frames are not a second app.'
 		}
 	];
 
 	const demos = [
-		{
-			href: '/todos',
-			title: 'Todos',
-			tag: 'Causal',
-			blurb: 'Owner-scoped list, modeled optimism, projector fill.'
-		},
-		{
-			href: '/chat',
-			title: 'Lobby chat',
-			tag: '@load @live',
-			blurb: 'Readable anonymously; posts require sign-in. One query for SSR and live.'
-		},
-		{
-			href: '/blob',
-			title: 'Blob game',
-			tag: 'Projected',
-			blurb: 'Board commits with the event — no dual-write lag.'
-		},
-		{
-			href: '/admin',
-			title: 'Admin',
-			tag: 'Surface',
-			blurb: 'Separate generated client for elevated ops.'
-		},
-		{
-			href: '/session',
-			title: 'Session',
-			tag: 'OIDC',
-			blurb: 'Who am I to the API — roles and tokens.'
-		},
-		{
-			href: '/public',
-			title: 'Public',
-			tag: 'Anonymous',
-			blurb: 'Empty identity + named public surface.'
-		}
-	];
-
-	const crates = [
-		{ name: '*-domain', role: 'Aggregates, events, DomainState' },
-		{ name: 'e2e-readmodels', role: 'Query shapes + model RBAC' },
-		{ name: 'e2e-projections', role: 'Event → table programs' },
-		{ name: 'e2e-service', role: 'Handlers, surfaces, GraphQL' },
-		{ name: 'e2e-runner', role: 'Process on :8791' },
-		{ name: 'ui/', role: 'SvelteKit · OIDC · demos' }
+		{ href: '/chat', title: 'Lobby chat', tag: 'Live + anonymous', blurb: 'SSR, @live, and guest reads on a public surface.' },
+		{ href: '/todos', title: 'Todos', tag: 'Causal', blurb: 'Owner RLS, modeled optimism, projector fill.' },
+		{ href: '/blob', tag: 'Projected', title: 'Blob game', blurb: 'Atomic board in the mutation payload.' },
+		{ href: '/admin', title: 'Admin', tag: 'Surface', blurb: 'Second client for elevated ops.' },
+		{ href: '/session', title: 'Session', tag: 'OIDC', blurb: 'Tokens, groups, and engine roles.' },
+		{ href: '/public', title: 'Public', tag: 'Anonymous', blurb: 'Empty identity + named surface contract.' }
 	];
 </script>
 
-<div class="wf-home">
+<div class="wf-home dist-home">
 	<section class="wf-hero">
 		<div class="wf-hero-inner">
 			{#if authConfigError}
 				<div class="wf-auth-banner" role="alert">
 					<strong>Identity provider unavailable</strong>
 					<p>
-						Sign-in needs Zitadel. Run <code>make up</code> then
+						Sign-in needs Zitadel. From <code>tests/e2e-ui</code>: <code>make up</code>, then
 						<code>source e2e-ui.env && make run</code>.
 					</p>
 				</div>
 			{/if}
-			<span class="wf-kicker">Distributed · full stack</span>
+
+			<span class="wf-kicker">Distributed</span>
 			<h1>
-				Full-stack <em>CQRS</em> — Rust domains, GraphQL, and <em>TypeScript</em> clients with
-				first-class <em>OIDC</em> and <em>SvelteKit</em>.
+				Build real-time, full-stack apps on <em>event-sourced CQRS</em> —
+				without building the framework yourself.
 			</h1>
 			<p class="wf-lede">
-				One inventory from command to browser replica: event-sourced write models, deny-by-default
-				GraphQL reads, generated TS operations and causal commands, Auth.js + IdP sign-in, and a
-				SvelteKit app that SSR-hydrates and stays live over WebSocket. This fixture is the map —
-				not a product marketing site.
+				<strong>Distributed</strong> is a Rust + TypeScript stack for commands, projections, GraphQL,
+				OIDC, and a browser replica. You write domain intent and UI; the library carries history,
+				authz surfaces, codegen, and live data.
 			</p>
-			<ul class="wf-hero-stack" aria-label="Stack highlights">
-				<li>CQRS + event sourcing</li>
+
+			<ul class="wf-hero-stack" aria-label="Stack">
+				<li>Rust domains</li>
+				<li>GraphQL + OIDC</li>
 				<li>TypeScript clients</li>
-				<li>First-class OIDC</li>
-				<li>SvelteKit SSR + live</li>
+				<li>SvelteKit</li>
 			</ul>
+
 			<div class="wf-actions">
 				{#if signedIn}
-					<a class="wf-btn wf-btn-primary" href="#demos">Open a demo</a>
-					<a class="wf-btn wf-btn-ghost" href="#principles">Principles</a>
+					<a class="wf-btn wf-btn-primary" href="/chat">Open the playground</a>
+					<a class="wf-btn wf-btn-ghost" href="#try">Try demos</a>
 				{:else}
-					<a class="wf-btn wf-btn-primary" href="/signin?callbackUrl=/todos">Sign in with OIDC</a>
-					<a class="wf-btn wf-btn-ghost" href="#principles">Principles</a>
+					<a class="wf-btn wf-btn-primary" href="/chat">Browse the lobby</a>
+					<a class="wf-btn wf-btn-ghost" href="/signin?callbackUrl=/todos">Sign in</a>
 				{/if}
 			</div>
-			<div class="wf-meta">
-				<span>Rust service</span>
-				<span>GraphQL · OIDC</span>
-				<span>TS · SvelteKit</span>
-				<span>:8791 · :5180</span>
-			</div>
-			<nav class="wf-toc" aria-label="On this page">
-				<a href="#principles">Principles</a>
-				<a href="#dx">DX</a>
-				<a href="#demos">Demos</a>
-				<a href="#run">Run</a>
-				<a href="#map">Crate map</a>
-			</nav>
+
+			<p class="dist-hero-note">
+				This site is the official <strong>living playground</strong> for Distributed — not a separate
+				docs theme. Open any demo and use <em>How it’s built</em> for the code walkthrough.
+			</p>
 		</div>
 	</section>
 
-	<section class="wf-band wf-band-dark" id="principles">
+	<section class="wf-band wf-band-dark" id="what">
 		<div class="wf-band-inner">
-			<div class="wf-section-head wf-section-head-wide">
-				<span class="wf-label">Framework principles</span>
-				<h2>What we optimize for</h2>
+			<div class="wf-section-head">
+				<span class="wf-label">What you get</span>
+				<h2>One stack from aggregate to UI</h2>
 				<p>
-					Not “more infrastructure.” The north star is the
-					<strong>simplest path</strong> that keeps write history, queries, and published messages
-					honest — so you can grow later without rewriting the domain you already proved.
+					Meteor made full-stack realtime feel unified. Distributed aims at the same continuity —
+					with explicit write history, deny-by-default GraphQL, and generated clients that stay honest
+					with the server inventory.
 				</p>
 			</div>
-			<ol class="wf-principles">
-				{#each frameworkPrinciples as p, i}
-					<li class="wf-principle">
-						<span class="wf-principle-n" aria-hidden="true">{String(i + 1).padStart(2, '0')}</span>
+			<div class="dist-pillars">
+				{#each pillars as p}
+					<article class="dist-pillar">
+						<h3>{p.title}</h3>
+						<p>{p.body}</p>
+					</article>
+				{/each}
+			</div>
+		</div>
+	</section>
+
+	<section class="wf-band wf-band-light" id="flow">
+		<div class="wf-band-inner">
+			<div class="wf-section-head">
+				<span class="wf-label">How it works</span>
+				<h2>Domain → service → client</h2>
+			</div>
+			<ol class="dist-story">
+				{#each story as step}
+					<li>
+						<span class="dist-story-n" aria-hidden="true">{step.n}</span>
 						<div>
-							<h3>{p.title}</h3>
-							<p>{p.body}</p>
+							<h3>{step.title}</h3>
+							<p>{step.body}</p>
 						</div>
 					</li>
 				{/each}
@@ -166,78 +144,24 @@
 		</div>
 	</section>
 
-	<section class="wf-band wf-band-light" id="dx">
+	<section class="wf-band wf-band-dark" id="try">
 		<div class="wf-band-inner">
 			<div class="wf-section-head">
-				<span class="wf-label">How DX stays simple</span>
-				<h2>Three layers carry the weight</h2>
-			</div>
-			<div class="wf-layers">
-				<div class="wf-layer">
-					<span class="wf-layer-n" aria-hidden="true">01</span>
-					<h4>You write plain domain code</h4>
-					<p class="wf-layer-body">
-						Ordinary methods and tests. Public commands enforce rules; private
-						<code>#[event]</code> helpers record history.
-					</p>
-				</div>
-				<div class="wf-layer">
-					<span class="wf-layer-n" aria-hidden="true">02</span>
-					<h4>One inventory, many surfaces</h4>
-					<p class="wf-layer-body">
-						Describe commands, events, and projections once. Generation expands GraphQL, typed UI
-						helpers, optimism, and dual application clients.
-					</p>
-				</div>
-				<div class="wf-layer">
-					<span class="wf-layer-n" aria-hidden="true">03</span>
-					<h4>Short, swappable verbs</h4>
-					<p class="wf-layer-body">
-						<code>get</code> / <code>create</code> / <code>publish_events</code> /
-						<code>project</code> / <code>commit</code> → <code>Causal</code> or
-						<code>Projected</code>. Swap memory for Postgres without rewriting the domain.
-					</p>
-				</div>
-			</div>
-
-			<div class="wf-subhead">
-				<span class="wf-label">Shape of a feature</span>
-				<h3>Prove the domain before the plumbing</h3>
-			</div>
-			<ol class="wf-flow-map">
-				<li>Unit-test the model</li>
-				<li>Implement the plain type</li>
-				<li>Command handler → fluent commit</li>
-				<li>Projection program (eventual or direct)</li>
-				<li>Read RBAC on the query model</li>
-				<li>Co-located <code>+page.graphql</code> · gen-client · thin UI</li>
-			</ol>
-		</div>
-	</section>
-
-	<section class="wf-band wf-band-dark" id="demos">
-		<div class="wf-band-inner">
-			<div class="wf-section-head">
-				<span class="wf-label">Practice arenas</span>
-				<h2>Demos</h2>
+				<span class="wf-label">Playground</span>
+				<h2>Try it here</h2>
 				<p>
-					Each route is a small story about one way the stack behaves. Open it, then use
-					<strong>How it’s built</strong> (bottom-right) for a tabbed walkthrough of domain →
-					command → projection → client.
+					These routes are real Distributed apps under <code>tests/e2e-ui</code>. Each one has a
+					<strong>How it’s built</strong> panel — browser query, commands, handlers, domain, events,
+					and RBAC.
 				</p>
 			</div>
-			<div class="wf-demos wf-demos-compact">
-				{#each demos as d, i}
-					<a class="wf-demo" href={d.href}>
-						<span class="wf-demo-i">{String(i + 1).padStart(2, '0')}</span>
-						<div>
-							<div class="wf-demo-title-row">
-								<h3>{d.title}</h3>
-								<span class="wf-demo-tag">{d.tag}</span>
-							</div>
-							<p>{d.blurb}</p>
-						</div>
-						<span class="wf-demo-go">Open →</span>
+			<div class="dist-demo-grid">
+				{#each demos as d}
+					<a class="dist-demo-card" href={d.href}>
+						<span class="dist-demo-tag">{d.tag}</span>
+						<h3>{d.title}</h3>
+						<p>{d.blurb}</p>
+						<span class="dist-demo-go">Open →</span>
 					</a>
 				{/each}
 			</div>
@@ -245,80 +169,40 @@
 	</section>
 
 	<section class="wf-band wf-band-light" id="run">
-		<div class="wf-band-inner">
+		<div class="wf-band-inner dist-run">
 			<div class="wf-section-head">
-				<span class="wf-label">Run</span>
-				<h2>Three commands. Full stack.</h2>
-				<p>
-					From <code>tests/e2e-ui</code>. Demo password: <code>Password1!</code> (alice / bob /
-					admin).
-				</p>
+				<span class="wf-label">Local</span>
+				<h2>Run the playground</h2>
+				<p>From the repository:</p>
 			</div>
-			<div class="wf-steps">
-				<div class="wf-step">
-					<h3>Bootstrap</h3>
-					<p><code>make up</code> — Postgres + Zitadel → <code>e2e-ui.env</code></p>
-				</div>
-				<div class="wf-step">
-					<h3>API + UI</h3>
-					<p><code>source e2e-ui.env && make run</code> — :8791 / :5180</p>
-				</div>
-				<div class="wf-step">
-					<h3>Prove it</h3>
-					<p><code>make test</code> · <code>make test-browser</code> · <code>make check-client</code></p>
-				</div>
+			<div class="dist-run-code">
+				<pre><code>{`cd tests/e2e-ui
+make up                    # Postgres + Zitadel → e2e-ui.env
+source e2e-ui.env && make run
+# UI  http://localhost:5180
+# API http://127.0.0.1:8791`}</code></pre>
 			</div>
+			<p class="dist-run-hint">
+				Demo logins after <code>make up</code>: <code>alice</code> / <code>bob</code> /
+				<code>admin</code> · <code>Password1!</code>
+			</p>
 		</div>
 	</section>
 
-	<section class="wf-band wf-band-dark" id="map">
-		<div class="wf-band-inner">
-			<div class="wf-section-head">
-				<span class="wf-label">Repository</span>
-				<h2>Where to look</h2>
-			</div>
-			<dl class="wf-crate-map">
-				{#each crates as c}
-					<div class="wf-crate">
-						<dt>{c.name}</dt>
-						<dd>{c.role}</dd>
-					</div>
-				{/each}
-			</dl>
-			<div class="wf-code wf-code-lead" style="margin-top: 2rem">
-				<div class="wf-code-bar">
-					<span>Mental model</span>
-					<em>system</em>
-				</div>
-				<pre><code>{`Browser
-  OIDC session → Bearer / WS connection_init
-  @load SSR hydrate → one replica
-  commands.* → Causal or Projected
-
-Service
-  OidcBearer → x-user-id + x-roles (set)
-  surface privilege pack for execution
-  inventory → GraphQL + dual clients
-       todos/chat: Causal + projector
-       blob:       Projected (same txn)
-  auth_users from Zitadel for joins`}</code></pre>
-			</div>
-		</div>
-	</section>
-
-	<section class="wf-band wf-band-light">
+	<section class="wf-band wf-band-dark dist-closing">
 		<div class="wf-band-inner">
 			<div class="wf-section-head">
 				<span class="wf-label">Next</span>
-				<h2>Pick a demo and open the drawer</h2>
+				<h2>Build on Distributed</h2>
 				<p>
-					The long walkthroughs moved into each route’s <strong>How it’s built</strong> panel —
-					tabs for domain, command, projection, client, and the principle each layer exercises.
+					Copy the patterns from this playground into your service. Hosting and fleet ops (think
+					Galaxy-class — <strong>ops.com.ai</strong>) are on the roadmap; for now the open-source
+					framework and this fixture are the product surface.
 				</p>
 			</div>
 			<div class="wf-actions">
-				<a class="wf-btn wf-btn-primary" href="/todos">Start with todos</a>
-				<a class="wf-btn wf-btn-ghost" href="/chat">Or lobby chat</a>
+				<a class="wf-btn wf-btn-primary" href="/chat">Start with chat</a>
+				<a class="wf-btn wf-btn-ghost" href="/todos">Or todos</a>
 			</div>
 		</div>
 	</section>
