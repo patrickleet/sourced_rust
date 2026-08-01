@@ -27,7 +27,6 @@ pub fn delete_todo() -> Mutation<()> {
 }
 
 // Lifecycle state events → [`save_todo`]; purge → [`delete_todo`].
-// Event-first: on <events> apply <mutation>.
 // Macro is `projection!` (crate root); `distributed::projection` is the module.
 distributed::projection! {
     pub const TODOS: ProjectionDescriptor<EventualOnly> = {
@@ -35,17 +34,24 @@ distributed::projection! {
         version: 1,
         epoch: "e2e-ui-todos-v2",
         model: Todos,
-        on_event {
-            TodoCreatedDomainEvent,
-            TodoRenamedDomainEvent,
-            TodoCompletedDomainEvent,
-            TodoReopenedDomainEvent,
-            TodoReassignedDomainEvent,
-            TodoArchivedDomainEvent,
-            TodoForceArchivedDomainEvent,
-        }
-        apply save_todo as "todo",
-        on_deleted TodoPurgedDomainEvent => apply delete_todo as "todo_id",
+        on {
+            events: [
+                TodoCreatedDomainEvent,
+                TodoRenamedDomainEvent,
+                TodoCompletedDomainEvent,
+                TodoReopenedDomainEvent,
+                TodoReassignedDomainEvent,
+                TodoArchivedDomainEvent,
+                TodoForceArchivedDomainEvent,
+            ],
+            mutation: save_todo,
+            input: { todo: body },
+        },
+        on {
+            events: [TodoPurgedDomainEvent],
+            mutation: delete_todo,
+            input: { todo_id: aggregate_id },
+        },
     };
 }
 

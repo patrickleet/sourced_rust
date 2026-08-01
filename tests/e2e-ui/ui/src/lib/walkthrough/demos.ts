@@ -188,24 +188,31 @@ fn record_completed(&mut self) {
 			samples: [
 				{
 					file: 'projections/todos.rs',
-					caption: 'Domain events → portable projection program.',
+					caption: 'Domain events → projection (apply mutation).',
 					code: `projection! {
   pub const TODOS: ProjectionDescriptor<EventualOnly> = {
     name: "project_todos",
     version: 1,
     epoch: "e2e-ui-todos-v2",
     model: Todos,
-    on_event {
-      TodoCreatedDomainEvent,
-      TodoRenamedDomainEvent,
-      TodoCompletedDomainEvent,
-      TodoReopenedDomainEvent,
-      TodoReassignedDomainEvent,
-      TodoArchivedDomainEvent,
-      TodoForceArchivedDomainEvent,
-    }
-    apply save_todo as "todo",
-    on_deleted TodoPurgedDomainEvent => apply delete_todo as "todo_id",
+    on {
+      events: [
+        TodoCreatedDomainEvent,
+        TodoRenamedDomainEvent,
+        TodoCompletedDomainEvent,
+        TodoReopenedDomainEvent,
+        TodoReassignedDomainEvent,
+        TodoArchivedDomainEvent,
+        TodoForceArchivedDomainEvent,
+      ],
+      mutation: save_todo,
+      input: { todo: body },
+    },
+    on {
+      events: [TodoPurgedDomainEvent],
+      mutation: delete_todo,
+      input: { todo_id: aggregate_id },
+    },
   };
 }`
 				},
@@ -424,28 +431,18 @@ fn record_posted(
 			samples: [
 				{
 					file: 'projections/chat.rs',
-					code: `mutation_projector! {
+					code: `projection! {
   pub const CHAT_MESSAGES: ProjectionDescriptor<DirectCandidate> = {
     name: "project_chat_messages",
     version: 1,
     epoch: "e2e-ui-chat-v2",
     model: ChatMessages,
-    program: chat_handlers,
+    on {
+      events: [ChatMessagePostedDomainEvent],
+      mutation: save_chat_message,
+      input: { message: body },
+    },
   };
-}
-
-fn chat_handlers() -> Result<ProjectionProgram, ProjectionProgramError> {
-  let handler = bind_state_body_to_mutation::<ChatMessages>(
-    &ChatMessagePostedDomainEvent::descriptor(),
-    save_chat_message().program().clone(),
-    "message",
-  )?;
-  compile_projection(
-    "project_chat_messages",
-    1,
-    ProjectionPartition::Unit,
-    [handler],
-  )
 }`
 				}
 			]
@@ -639,12 +636,16 @@ fn record_moved(
     version: 1,
     epoch: "e2e-ui-blob-v2",
     model: BlobGames,
-    on_state BlobGameState as "game" apply save_blob_game {
-      "blob.initialized",
-      "blob.level_started",
-      "blob.started",
-      "blob.moved",
-    }
+    on {
+      events: [
+        BlobInitializedDomainEvent,
+        BlobLevelStartedDomainEvent,
+        BlobStartedDomainEvent,
+        BlobMovedDomainEvent,
+      ],
+      mutation: save_blob_game,
+      input: { game: body },
+    },
   };
 }`
 				},
@@ -828,14 +829,21 @@ fn record_force_archived(&mut self) {
     version: 1,
     epoch: "e2e-ui-todos-v2",
     model: Todos,
-    on_event {
-      TodoCreatedDomainEvent,
-      /* … */
-      TodoArchivedDomainEvent,
-      TodoForceArchivedDomainEvent, // admin path
-    }
-    apply save_todo as "todo",
-    on_deleted TodoPurgedDomainEvent => apply delete_todo as "todo_id",
+    on {
+      events: [
+        TodoCreatedDomainEvent,
+        /* … */
+        TodoArchivedDomainEvent,
+        TodoForceArchivedDomainEvent, // admin path
+      ],
+      mutation: save_todo,
+      input: { todo: body },
+    },
+    on {
+      events: [TodoPurgedDomainEvent],
+      mutation: delete_todo,
+      input: { todo_id: aggregate_id },
+    },
   };
 }`
 				}
@@ -1173,13 +1181,17 @@ export type GeneratedCommands =
 			samples: [
 				{
 					file: 'projections/chat.rs',
-					code: `mutation_projector! {
+					code: `projection! {
   pub const CHAT_MESSAGES: ProjectionDescriptor<DirectCandidate> = {
     name: "project_chat_messages",
     version: 1,
     epoch: "e2e-ui-chat-v2",
     model: ChatMessages,
-    program: chat_handlers,
+    on {
+      events: [ChatMessagePostedDomainEvent],
+      mutation: save_chat_message,
+      input: { message: body },
+    },
   };
 }
 // ChatMessagePostedDomainEvent → upsert chat_messages

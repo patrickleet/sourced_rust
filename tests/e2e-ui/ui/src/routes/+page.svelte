@@ -21,7 +21,6 @@
 		{ href: '#query-api', label: 'Query API' },
 		{ href: '#projections', label: 'Projections' },
 		{ href: '#replica', label: 'Replica' },
-		{ href: '#pages', label: 'Pages' },
 		{ href: '#sveltekit', label: 'SvelteKit' },
 		{ href: '#oidc', label: 'OIDC' },
 		{ href: '#try', label: 'Playground' }
@@ -94,19 +93,30 @@ projection! {
         name: "project_todos",
         version: 1,
         model: Todos,
-        on_event {
-            TodoCreatedDomainEvent,
-            TodoCompletedDomainEvent,
-            TodoArchivedDomainEvent,
-            // …
-        }
-        apply save_todo as "todo",
-        on_deleted TodoPurgedDomainEvent => apply delete_todo as "todo_id",
+        on {
+            events: [
+                TodoCreatedDomainEvent,
+                TodoCompletedDomainEvent,
+                TodoArchivedDomainEvent,
+                // …
+            ],
+            mutation: save_todo,
+            input: { todo: body },
+        },
+        on {
+            events: [TodoPurgedDomainEvent],
+            mutation: delete_todo,
+            input: { todo_id: aggregate_id },
+        },
     };
-}
+}`;
 
-// save_todo.mutation.graphql (syntax-only IR, not a public GQL field)
-// mutation SaveTodo { upsert_Todos(object: $input.todo) }`;
+	const codeMutationGql = `# Syntax-only IR → MutationProgram (not a public GraphQL field).
+# Same program applies to the SQL read model and the browser replica.
+# Clients never call this — they send domain commands.
+mutation SaveTodo {
+  upsert_Todos(object: $input.todo)
+}`;
 
 	const codeCommand = `// Handler: load aggregate → domain method → commit events
 pub async fn handle(
@@ -396,22 +406,39 @@ Browser replica  →  optimistic UI`;
 						CAP reality: large scalable systems are usually eventually consistent. Separate command
 						and query models make that easy. Aggregates emit events (immutable facts). A
 						<strong>service bus</strong> carries them. <strong>Projections</strong> map those events
-						to read-model mutations — server-side when facts land, and compiled into client
-						optimism so the UI doesn’t invent its own recipes.
+						to read-model mutations — applied on the server when facts land, and compiled into the
+						client so optimism doesn’t invent its own recipes.
+					</p>
+					<p class="wf-why">
+						The mutation file looks like GraphQL, but it is <strong>not a public API</strong>. It is
+						a syntax that lowers to one <code>MutationProgram</code>: the same program applies to
+						the SQL read model and to the browser replica cache. That shared IR is what drives
+						optimistic UI. Exposing insert/upsert/delete on the wire for the client to call is an
+						<strong>anti-pattern</strong> — clients send domain commands; this mutation language is
+						internal update heuristics only.
 					</p>
 					<p class="wf-why">
 						Event storming discovers aggregates and events; a long-term goal of the library is to
 						turn those sessions (with AI) into a large fraction of the baseline wiring.
 					</p>
-					<span class="wf-sample-path">tests/e2e-ui/crates/projections/src/todos.rs</span>
+					<span class="wf-sample-path"
+						>tests/e2e-ui/crates/projections/src/todos.rs · mutations/save_todo.mutation.graphql</span
+					>
 				</div>
 				<div class="wf-code-stack">
 					<div class="wf-code">
 						<div class="wf-code-bar">
-							<span>todos.rs · save_todo.mutation.graphql</span>
+							<span>todos.rs</span>
 							<em>projection</em>
 						</div>
 						<pre><code>{@html highlightCode(codeProjection)}</code></pre>
+					</div>
+					<div class="wf-code">
+						<div class="wf-code-bar">
+							<span>save_todo.mutation.graphql</span>
+							<em>mutation ir</em>
+						</div>
+						<pre><code>{@html highlightCode(codeMutationGql)}</code></pre>
 					</div>
 					<div class="wf-code">
 						<div class="wf-code-bar">
@@ -453,42 +480,11 @@ Browser replica  →  optimistic UI`;
 		</div>
 	</section>
 
-	<section class="wf-band wf-band-dark" id="pages">
+	<section class="wf-band wf-band-dark" id="sveltekit">
 		<div class="wf-band-inner">
 			<article class="wf-story-step">
 				<div class="wf-story-copy">
-					<span class="wf-label">08 · Page data + typed commands</span>
-					<h2 class="wf-step-title">Declare the shape; call the command</h2>
-					<p class="wf-why">
-						Generated TypeScript includes typed command functions. Each page (or operation file)
-						declares the GraphQL selection for the data structure it needs. That’s the full
-						contract for ordinary screens: selection + command, not dual APIs and manual cache
-						policies.
-					</p>
-				</div>
-				<div class="dist-pillars">
-					<article class="dist-pillar">
-						<h3>Selection</h3>
-						<p>GraphQL operations name fields and arguments. The compiler owns normalization and indexes.</p>
-					</article>
-					<article class="dist-pillar">
-						<h3>Commands</h3>
-						<p><code>useCommands()</code> exposes domain verbs with typed inputs and causal results.</p>
-					</article>
-					<article class="dist-pillar">
-						<h3>Honesty</h3>
-						<p>Causal vs Projected semantics stay visible — eventual consistency without lying to the UI.</p>
-					</article>
-				</div>
-			</article>
-		</div>
-	</section>
-
-	<section class="wf-band wf-band-light" id="sveltekit">
-		<div class="wf-band-inner">
-			<article class="wf-story-step">
-				<div class="wf-story-copy">
-					<span class="wf-label">09 · SvelteKit</span>
+					<span class="wf-label">08 · SvelteKit</span>
 					<h2 class="wf-step-title"><code>@load</code>, rehydration, and <code>@live</code></h2>
 					<p class="wf-why">
 						<code>@load</code> makes SSR automatic and rehydrates the client replica from the same
@@ -511,11 +507,11 @@ Browser replica  →  optimistic UI`;
 		</div>
 	</section>
 
-	<section class="wf-band wf-band-dark" id="oidc">
+	<section class="wf-band wf-band-light" id="oidc">
 		<div class="wf-band-inner">
 			<article class="wf-story-step">
 				<div class="wf-story-copy">
-					<span class="wf-label">10 · Identity</span>
+					<span class="wf-label">09 · Identity</span>
 					<h2 class="wf-step-title">First-class OIDC</h2>
 					<p class="wf-why">
 						This playground uses <strong>Zitadel</strong>. Tests also prove
@@ -545,7 +541,7 @@ Browser replica  →  optimistic UI`;
 		</div>
 	</section>
 
-	<section class="wf-band wf-band-light" id="try">
+	<section class="wf-band wf-band-dark" id="try">
 		<div class="wf-band-inner">
 			<div class="wf-section-head">
 				<span class="wf-label">Playground</span>
@@ -556,20 +552,20 @@ Browser replica  →  optimistic UI`;
 					and RBAC.
 				</p>
 			</div>
-			<div class="dist-demo-grid dist-demo-grid-light">
+			<div class="dist-demo-grid">
 				{#each demos as d}
-					<a class="dist-demo-card dist-demo-card-light" href={d.href}>
-						<span class="dist-demo-tag dist-demo-tag-light">{d.tag}</span>
+					<a class="dist-demo-card" href={d.href}>
+						<span class="dist-demo-tag">{d.tag}</span>
 						<h3>{d.title}</h3>
 						<p>{d.blurb}</p>
-						<span class="dist-demo-go dist-demo-go-light">Open →</span>
+						<span class="dist-demo-go">Open →</span>
 					</a>
 				{/each}
 			</div>
 		</div>
 	</section>
 
-	<section class="wf-band wf-band-dark" id="run">
+	<section class="wf-band wf-band-light" id="run">
 		<div class="wf-band-inner dist-run">
 			<div class="wf-section-head">
 				<span class="wf-label">Local</span>
@@ -583,14 +579,14 @@ source e2e-ui.env && make run
 # UI  http://localhost:5180
 # API http://127.0.0.1:8791`}</code></pre>
 			</div>
-			<p class="dist-run-hint">
+			<p class="dist-run-hint dist-run-hint-light">
 				Demo logins after <code>make up</code>: <code>alice</code> / <code>bob</code> /
 				<code>admin</code> · <code>Password1!</code>
 			</p>
 		</div>
 	</section>
 
-	<section class="wf-band wf-band-light dist-closing">
+	<section class="wf-band wf-band-dark dist-closing">
 		<div class="wf-band-inner">
 			<div class="wf-section-head">
 				<span class="wf-label">Next</span>

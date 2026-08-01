@@ -1177,6 +1177,28 @@
 	color: var(--wf-band-dark-soft);
 }
 
+.wf-band-light .dist-pillar {
+	border-color: var(--wf-line);
+	background: var(--wf-bg-elevated);
+}
+
+.wf-band-light .dist-pillar h3 {
+	color: var(--wf-ink);
+}
+
+.wf-band-light .dist-pillar p {
+	color: var(--wf-ink-soft);
+}
+
+.wf-band-light .dist-inline-link {
+	color: var(--wf-accent);
+	border-bottom-color: color-mix(in srgb, var(--wf-accent) 40%, transparent);
+}
+
+.wf-band-light .dist-inline-link:hover {
+	border-bottom-color: var(--wf-accent);
+}
+
 .dist-story {
 	list-style: none;
 	margin: 0;
@@ -1325,6 +1347,10 @@
 	font-size: 0.9rem;
 	line-height: 1.55;
 	color: var(--wf-band-dark-soft);
+}
+
+.dist-run-hint-light {
+	color: var(--wf-ink-soft);
 }
 
 .dist-run-hint code {

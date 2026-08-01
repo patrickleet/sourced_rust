@@ -192,16 +192,45 @@ export function highlightCode(source: string): string {
 			continue;
 		}
 
-		// Strings
-		if (c === '"' || c === "'") {
-			const quote = c;
+		// Rust lifetime / label: 'a, '_, 'static — must not be treated as a string.
+		// (Was breaking `&CausalCommandContext<'_, Todo>` by swallowing to the next '.)
+		if (c === "'" && i + 1 < n && /[A-Za-z_]/.test(source[i + 1]!)) {
+			let j = i + 1;
+			while (j < n && /[A-Za-z0-9_]/.test(source[j]!)) j++;
+			out.push(span('attr', source.slice(i, j)));
+			i = j;
+			continue;
+		}
+
+		// Rust char literal: 'x', '\n', '\''
+		if (c === "'" && i + 1 < n) {
+			let j = i + 1;
+			if (source[j] === '\\' && j + 1 < n) {
+				j += 2; // escaped char
+			} else if (source[j] !== "'") {
+				j += 1; // single char
+			}
+			if (j < n && source[j] === "'") {
+				j += 1;
+				out.push(span('string', source.slice(i, j)));
+				i = j;
+				continue;
+			}
+			// Lone ' — emit as punct, don't eat the line
+			out.push(span('punct', "'"));
+			i = i + 1;
+			continue;
+		}
+
+		// Double-quoted strings (and JS single-quoted only via char-literal path above)
+		if (c === '"') {
 			let j = i + 1;
 			while (j < n) {
 				if (source[j] === '\\') {
 					j += 2;
 					continue;
 				}
-				if (source[j] === quote) {
+				if (source[j] === '"') {
 					j++;
 					break;
 				}

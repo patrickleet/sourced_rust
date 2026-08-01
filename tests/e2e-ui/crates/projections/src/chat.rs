@@ -1,13 +1,14 @@
-//! Chat: mutation + projection (room-partitioned).
+//! Chat: mutation + projection.
+//!
+//! Unit partition so the lobby `@live` subscription can advertise resumable
+//! index evidence (`live.supported = true`). Room isolation stays on the
+//! GraphQL document (`where: { room_id: { _eq: "lobby" } }`). Expression
+//! partitions are correct for multi-room worker sharding, but they make live
+//! indexes incomparable and the client falls back to Idle.
 
-use distributed::domain_event::DomainEventContract;
 use distributed::mutation_file;
-use distributed::mutation_projector;
 use distributed::projection::lower::{DirectCandidate, ProjectionDescriptor};
-use distributed::{
-    bind_state_body_to_mutation, compile_projection, Mutation, ProjectionPartition,
-    ProjectionProgram, ProjectionProgramError,
-};
+use distributed::Mutation;
 use chat_domain::ChatMessagePostedDomainEvent;
 use e2e_readmodels::ChatMessages;
 
@@ -19,36 +20,19 @@ pub fn save_chat_message() -> Mutation<()> {
     mutation_file!("src/mutations/save_chat_message.mutation.graphql")
 }
 
-fn chat_handlers() -> Result<ProjectionProgram, ProjectionProgramError> {
-    let handler = bind_state_body_to_mutation::<ChatMessages>(
-        &ChatMessagePostedDomainEvent::descriptor(),
-        save_chat_message().program().clone(),
-        "message",
-    )
-    .map_err(|e| ProjectionProgramError::InvalidOperation {
-        operation: "project_chat_messages".into(),
-        reason: e.to_string(),
-    })?;
-    // Unit partition so the lobby @live subscription can advertise resumable
-    // index evidence (`live.supported = true`). Room isolation stays on the
-    // GraphQL document (`where: { room_id: { _eq: "lobby" } }`). Expression
-    // partitions are correct for multi-room worker sharding, but they make
-    // live indexes incomparable and the client falls back to Idle.
-    compile_projection(
-        "project_chat_messages",
-        1,
-        ProjectionPartition::Unit,
-        [handler],
-    )
-}
-
-mutation_projector! {
+// Event-first: on { events, mutation, input }.
+// Macro is `projection!` (crate root); `distributed::projection` is the module.
+distributed::projection! {
     pub const CHAT_MESSAGES: ProjectionDescriptor<DirectCandidate> = {
         name: "project_chat_messages",
         version: 1,
         epoch: "e2e-ui-chat-v2",
         model: ChatMessages,
-        program: chat_handlers,
+        on {
+            events: [ChatMessagePostedDomainEvent],
+            mutation: save_chat_message,
+            input: { message: body },
+        },
     };
 }
 
