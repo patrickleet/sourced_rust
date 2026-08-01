@@ -1,7 +1,7 @@
 <footer class="lab-footer">
 	<div class="lab-footer-inner">
 		<div>
-			<div class="lab-footer-brand">e2e-ui · Distributed template</div>
+			<div class="lab-footer-brand">Distributed</div>
 			<p class="lab-footer-tag">
 				Framework fixture: multi-crate CQRS, OIDC, SSR GraphQL, and live subscriptions — run as e2e
 				and kept current with the library.

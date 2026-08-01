@@ -49,7 +49,7 @@
 		<div class="navbar-brand">
 			<a href="/" class="brand-link">
 				<span class="brand-mark" aria-hidden="true">df</span>
-				e2e-ui
+				distributed
 			</a>
 		</div>
 

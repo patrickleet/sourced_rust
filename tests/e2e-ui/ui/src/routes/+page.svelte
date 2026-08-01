@@ -67,22 +67,22 @@
 				</div>
 			{/if}
 
-			<span class="wf-kicker">Distributed</span>
+			<span class="wf-kicker">Cloud native · Rust · TypeScript</span>
 			<h1>
-				Event-sourced CQRS for apps that need to stay
-				<em>realtime and correct</em>.
+				Simple realtime apps on
+				<em>distributed systems foundations</em>.
 			</h1>
 			<p class="wf-lede">
-				<strong>Distributed</strong> is a framework for domain commands, write history, projections,
-				and authz surfaces — with a browser replica for live UIs. You own the model; the stack carries
-				plumbing. GraphQL and SvelteKit are how this playground exposes it, not the product identity.
+				<strong>Distributed</strong> is a cloud-native Rust and TypeScript framework for building
+				simple, realtime, performant, and scalable applications based on distributed systems
+				programming foundations.
 			</p>
 
 			<ul class="wf-hero-stack" aria-label="Stack">
-				<li>CQRS + event sourcing</li>
-				<li>Rust domains</li>
-				<li>Projections</li>
-				<li>TS clients · OIDC</li>
+				<li>Rust</li>
+				<li>TypeScript</li>
+				<li>Realtime</li>
+				<li>Cloud native</li>
 			</ul>
 
 			<div class="wf-actions">
