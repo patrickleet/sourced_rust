@@ -180,15 +180,6 @@ query Todos @load {
   todos { todo_id title status }
 }`;
 
-	const codeFlow = `// One direction. Order matters. The cycle closes at the client.
-
-client
-  →  commands
-  →  aggregate state change
-  →  domain event
-  →  projection
-  →  read model
-  →  client`;
 </script>
 
 <div class="wf-home dist-home">
@@ -535,7 +526,7 @@ client
 					cycle, each section below a stage with real code from this playground.
 				</p>
 			</div>
-			<article class="wf-story-step">
+			<article class="wf-story-step dist-flow-step">
 				<div class="wf-story-copy">
 					<span class="wf-label">01 · Unidirectional</span>
 					<h2 class="wf-step-title">Changes go one way. There is order.</h2>
@@ -550,15 +541,104 @@ client
 						optimistic UI is how the front end meets that honestly.
 					</p>
 				</div>
-				<div class="wf-code-stack">
-					<div class="wf-code">
-						<div class="wf-code-bar">
-							<span>system flow</span>
-							<em>unidirectional</em>
-						</div>
-						<pre><code>{@html highlightCode(codeFlow)}</code></pre>
+				<figure
+					class="dist-flow-diagram"
+					aria-label="Unidirectional system flow: client through GraphQL gateway, then clockwise commands, aggregate, domain event, projection, read model, back to gateway"
+				>
+					<div class="dist-flow-circle">
+						<!--
+							viewBox 360×420 · ring center (180, 220) r=118
+							Nodes on the ring · short gap arcs (pad ±18°)
+						-->
+						<svg class="dist-flow-circle-svg" viewBox="0 0 360 420" aria-hidden="true">
+							<defs>
+								<marker
+									id="dist-flow-arrow"
+									viewBox="0 0 12 12"
+									refX="10"
+									refY="6"
+									markerWidth="7"
+									markerHeight="7"
+									orient="auto"
+									markerUnits="userSpaceOnUse"
+								>
+									<path d="M1 1.5 L11 6 L1 10.5 Z" class="dist-flow-arrowhead" />
+								</marker>
+							</defs>
+
+							<!-- Client → gateway -->
+							<path
+								class="dist-flow-connector"
+								d="M 180 48 L 180 84"
+								marker-end="url(#dist-flow-arrow)"
+							/>
+
+							<!-- Gateway → Commands (18°→42°) -->
+							<path
+								class="dist-flow-connector"
+								d="M 216.46 107.79 A 118 118 0 0 1 258.99 132.33"
+								marker-end="url(#dist-flow-arrow)"
+							/>
+							<!-- Commands → Aggregate (78°→102°) -->
+							<path
+								class="dist-flow-connector"
+								d="M 295.41 195.45 A 118 118 0 0 1 295.41 244.55"
+								marker-end="url(#dist-flow-arrow)"
+							/>
+							<!-- Aggregate → Domain event (138°→162°) -->
+							<path
+								class="dist-flow-connector"
+								d="M 258.99 307.67 A 118 118 0 0 1 216.46 332.21"
+								marker-end="url(#dist-flow-arrow)"
+							/>
+							<!-- Domain event → Projection (198°→222°) -->
+							<path
+								class="dist-flow-connector"
+								d="M 143.54 332.21 A 118 118 0 0 1 101.01 307.67"
+								marker-end="url(#dist-flow-arrow)"
+							/>
+							<!-- Projection → Read model (258°→282°) -->
+							<path
+								class="dist-flow-connector"
+								d="M 64.59 244.55 A 118 118 0 0 1 64.59 195.45"
+								marker-end="url(#dist-flow-arrow)"
+							/>
+							<!-- Read model → Gateway (318°→342°) -->
+							<path
+								class="dist-flow-connector"
+								d="M 101.01 132.33 A 118 118 0 0 1 143.54 107.79"
+								marker-end="url(#dist-flow-arrow)"
+							/>
+						</svg>
+
+						<span class="dist-flow-orbit dist-flow-orbit-client">
+							<span class="dist-flow-chip dist-flow-chip-client">Client</span>
+						</span>
+						<span class="dist-flow-entry-meta" aria-hidden="true">query · command · live</span>
+						<span class="dist-flow-orbit dist-flow-orbit-0">
+							<span class="dist-flow-chip dist-flow-chip-hub">GraphQL gateway</span>
+						</span>
+						<span class="dist-flow-orbit dist-flow-orbit-1">
+							<span class="dist-flow-chip">Commands</span>
+						</span>
+						<span class="dist-flow-orbit dist-flow-orbit-2">
+							<span class="dist-flow-chip">Aggregate</span>
+						</span>
+						<span class="dist-flow-orbit dist-flow-orbit-3">
+							<span class="dist-flow-chip">Domain event</span>
+						</span>
+						<span class="dist-flow-orbit dist-flow-orbit-4">
+							<span class="dist-flow-chip">Projection</span>
+						</span>
+						<span class="dist-flow-orbit dist-flow-orbit-5">
+							<span class="dist-flow-chip dist-flow-chip-rm">Read model</span>
+						</span>
+
+						<span class="dist-flow-circle-core" aria-hidden="true">
+							<span class="dist-flow-core-label">one way</span>
+						</span>
 					</div>
-				</div>
+				</figure>
 			</article>
 		</div>
 	</section>
