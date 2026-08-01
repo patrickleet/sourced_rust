@@ -89,7 +89,7 @@ impl Todos {
 }`;
 
 	const codeProjection = `// Event → mutation mapping (server projector + client optimism)
-portable_handlers! {
+projection! {
     pub const TODOS: ProjectionDescriptor<EventualOnly> = {
         name: "project_todos",
         version: 1,

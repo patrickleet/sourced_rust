@@ -47,7 +47,7 @@ pub fn delete_todo() -> Mutation<()> {
 }
 
 // 2) Portable handlers: on <events> apply <mutation> (event-first)
-portable_handlers! {
+projection! {
     pub const TODOS: ProjectionDescriptor<EventualOnly> = {
         name: "project_todos",
         version: 1,
@@ -144,7 +144,7 @@ relationship work remain eventual.
 
 When state transfer is unsuitable, use an explicit sparse domain-event DTO.
 `mutation!` supports upsert, patch, delete, link, unlink, model or relationship
-invalidation; portable handlers bind events to mutation inputs.
+invalidation; projections bind events to mutation inputs.
 
 ## Portable mutations and modeled projectors
 

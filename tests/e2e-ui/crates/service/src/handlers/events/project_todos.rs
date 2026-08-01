@@ -1,4 +1,4 @@
-//! Apply the Todos portable handlers for matching domain events.
+//! Apply the Todos projection for matching domain events.
 
 use distributed::microsvc::{CausalProjectorContext, HandlerError, ModeledProjection};
 use e2e_projections::TODOS;

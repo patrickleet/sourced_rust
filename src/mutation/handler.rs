@@ -25,7 +25,7 @@ pub enum MutationHandlerPlacement {
     Direct,
 }
 
-/// Ownership and topology metadata for one portable handler.
+/// Ownership and topology metadata for one projection arm.
 #[derive(Clone, Debug, PartialEq, Eq, Serialize)]
 pub struct MutationHandlerRegistration {
     /// Stable projector owner name.
@@ -47,7 +47,7 @@ pub struct MutationHandlerRegistration {
 }
 
 impl MutationHandlerRegistration {
-    /// Construct a portable handler registration.
+    /// Construct a projection arm registration.
     ///
     /// # Errors
     ///
@@ -193,7 +193,7 @@ impl MutationHandlerRegistration {
     }
 }
 
-/// Uniqueness key for portable handler bindings.
+/// Uniqueness key for projection arm bindings.
 #[derive(Clone, Debug, PartialEq, Eq, PartialOrd, Ord, Hash, Serialize)]
 pub struct MutationHandlerUniquenessKey {
     /// Projector owner.
@@ -222,7 +222,7 @@ impl MutationHandlerCatalog {
         }
     }
 
-    /// Register a portable handler, rejecting uniqueness and dual-writer conflicts.
+    /// Register a projection arm, rejecting uniqueness and dual-writer conflicts.
     ///
     /// # Errors
     ///

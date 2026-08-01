@@ -1,12 +1,12 @@
 //! Event-independent read-model mutation IR and interpreters.
 //!
 //! Mutations describe finite read-model changes without event selectors,
-//! upcasters, owners, placement, or command-preview data. Portable event
-//! handlers bind domain events to mutation inputs; the server and cache
-//! interpreters consume the same canonical IR.
+//! upcasters, owners, placement, or command-preview data. Declarative
+//! [`crate::projection!`] bindings map domain events to mutation inputs; the
+//! server and cache interpreters consume the same canonical IR.
 //!
 //! Bound mutations adapt to the projection operation vocabulary for physical
-//! execution. Event-owning `projection!` authoring has been removed.
+//! execution. The old event-owning projection proc-macro authoring path is gone.
 
 #![deny(missing_docs)]
 #![allow(clippy::type_complexity)]
@@ -43,9 +43,9 @@ pub use capabilities::{
 pub use descriptor::{
     assert_mutation_backed_program, bind_delete_to_envelope_id, bind_event_to_mutation,
     bind_state_body_to_mutation, bind_state_events_to_mutation, body_bindings_for_model,
-    compile_portable_handlers, delete_by_pk_program_for_model, descriptor_from_factories,
+    compile_projection, delete_by_pk_program_for_model, descriptor_from_factories,
     inventory_single_model, lower_single_model, projection_value_type_for_column,
-    resolve_mutation_program, state_upsert_program_for_model, PortableHandler,
+    resolve_mutation_program, state_upsert_program_for_model, ProjectionHandler,
 };
 pub use error::MutationProgramError;
 pub use expression::{

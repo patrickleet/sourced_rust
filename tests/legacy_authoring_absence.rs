@@ -1,18 +1,34 @@
 //! Structural gate: competing projector authoring surfaces must stay gone.
 //!
-//! Checks that `projection!`, separately authored `command_effects!` /
-//! `command_confirmations!`, command-side `.project(...)` selectors, and the
-//! public `ProjectionReadModelWorkspace` ORM authoring path stay removed.
+//! Checks that the old event-owning projection **proc-macro**, separately
+//! authored `command_effects!` / `command_confirmations!`, command-side
+//! `.project(...)` selectors, and the public `ProjectionReadModelWorkspace`
+//! ORM authoring path stay removed.
+//!
+//! The declarative `projection!` macro (event→mutation mount) is the current
+//! public authoring surface and is expected in `src/lib.rs`.
 
 #![cfg(feature = "graphql")]
 
 #[test]
-fn projection_macro_is_not_in_the_public_prelude() {
-    let _ = stringify!(mutation);
+fn declarative_projection_macro_is_public_authoring() {
     let lib = include_str!(concat!(env!("CARGO_MANIFEST_DIR"), "/src/lib.rs"));
     assert!(
-        !lib.contains("projection,"),
-        "event-owning projection! must not be re-exported at crate root"
+        lib.contains("macro_rules! projection"),
+        "declarative projection! must be defined at crate root"
+    );
+    // Old gate rejected any `projection,` substring (false-positive on
+    // compile_projection). Ensure the proc-macro path stays gone instead.
+    assert!(
+        !lib.lines().any(|line| {
+            let trimmed = line.trim_start();
+            !trimmed.starts_with("//")
+                && (trimmed.contains("pub use distributed_macros::projection")
+                    || trimmed.contains("projection,")
+                        && trimmed.contains("distributed_macros")
+                        && !trimmed.contains("compile_projection"))
+        }),
+        "event-owning projection proc-macro must not be re-exported"
     );
 }
 

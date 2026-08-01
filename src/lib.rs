@@ -80,11 +80,11 @@ pub use projection::{
     MAX_PROJECTION_OPERATIONS_PER_OCCURRENCE, MAX_PROJECTION_PATH_SEGMENTS,
 };
 
-// Event-independent mutation IR, portable handlers, and interpreters.
+// Event-independent mutation IR, event→mutation projections, and interpreters.
 pub use mutation::{
     bind_delete_to_envelope_id, bind_event_to_mutation, bind_state_body_to_mutation,
     bind_state_events_to_mutation, body_bindings_for_model, body_field_binding,
-    compile_portable_handlers, compose_event_preview, delete_by_pk_program_for_model,
+    compile_projection, compose_event_preview, delete_by_pk_program_for_model,
     descriptor_from_factories, envelope_binding, inventory_single_model, lower_mutation_cache,
     lower_single_model, portable_binding, resolve_mutation_program, state_upsert_program_for_model,
     Mutation, MutationAssignment, MutationCacheEffect, MutationCacheProgram,
@@ -92,19 +92,19 @@ pub use mutation::{
     MutationField, MutationFieldCapability, MutationHandlerCatalog, MutationHandlerPlacement,
     MutationHandlerRegistration, MutationInputBinding, MutationKeyCapability, MutationKeyField,
     MutationKind, MutationOperation, MutationProgram, MutationProgramError, MutationProgramId,
-    MutationProgramLimits, MutationReturning, MutationServerInterpreter, PortableHandler,
+    MutationProgramLimits, MutationReturning, MutationServerInterpreter, ProjectionHandler,
     ReadModelMutationCapabilities, ResolvedMutationValue, MAX_MUTATION_OPERATIONS,
     MUTATION_OPERATION_SEMANTICS_VERSION, MUTATION_PROGRAM_IR_VERSION,
 };
 
-/// Spec-shaped authoring: **mutations** + **event-first portable handlers**.
+/// Spec-shaped authoring: **mutations** + **event-first projections**.
 ///
 /// Declare which domain events apply which mutation (`on <events> apply …`).
 /// The framework compiles that into the service mount. Dual-path projection IR
 /// is an internal detail.
 ///
 /// ```ignore
-/// portable_handlers! {
+/// projection! {
 ///     pub const BLOB_GAMES: ProjectionDescriptor<DirectCandidate> = {
 ///         name: "project_blob",
 ///         version: 1,
@@ -117,7 +117,7 @@ pub use mutation::{
 /// }
 /// ```
 #[macro_export]
-macro_rules! portable_handlers {
+macro_rules! projection {
     // Event-first: state-body events by name + DomainState type.
     (
         $vis:vis const $id:ident : $desc_ty:ty = {
@@ -155,7 +155,7 @@ macro_rules! portable_handlers {
                         );
                     }
                 )+
-                $crate::compile_portable_handlers(
+                $crate::compile_projection(
                     $name,
                     $version,
                     $crate::ProjectionPartition::Unit,
@@ -249,7 +249,7 @@ macro_rules! portable_handlers {
                         );
                     }
                 )?
-                $crate::compile_portable_handlers(
+                $crate::compile_projection(
                     $name,
                     $version,
                     $crate::ProjectionPartition::Unit,
@@ -293,7 +293,7 @@ macro_rules! portable_handlers {
 
 /// Lower-level mount when handlers need a custom partition (e.g. chat room_id).
 ///
-/// Prefer [`portable_handlers!`] when partition is unit.
+/// Prefer [`projection!`] when partition is unit.
 #[macro_export]
 macro_rules! mutation_projector {
     (
@@ -472,9 +472,10 @@ macro_rules! graphql_models {
 // Session convenience re-exports used by GraphQL permission filters.
 pub use microsvc::{ROLE_KEY, USER_ID_KEY};
 
-// Re-export proc macros (event-owning `projection!` and separately authored
-// `command_effects!` / `command_confirmations!` removed — use `mutation!` +
-// portable/modeled handlers; commands predict events via `.emits`/`.preview`).
+// Re-export proc macros. The old event-owning projection proc-macro and
+// separately authored `command_effects!` / `command_confirmations!` are gone.
+// Use `mutation!` / `mutation_file!` + declarative `projection!` (event→mutation
+// mount); commands predict events via `.emits`/`.preview`.
 pub use distributed_macros::{
     aggregate, command_input_defaults, digest, mutation, mutation_file, sourced, DomainEvent,
     DomainState,
