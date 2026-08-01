@@ -2,13 +2,15 @@ import type { DemoWalkthrough } from './types';
 
 /**
  * Tab order is browser-first teaching order for every demo:
- * 1. Query / live subscription (+ read RBAC)
+ * 1. Query / live subscription (+ ReadModel shape + read RBAC)
  * 2. Commands (optimistic cache vs atomic Projected) (+ write RBAC)
  * 3. Command handlers (repo → aggregate → commit)
  * 4. Domain model (plain Rust + macros)
  * 5. Domain events + projections
  *
  * Samples should be real, pasteable shapes from the fixture — not comment-only stubs.
+ * Query tabs should include the read model definition (#[derive(ReadModel)] struct), not only
+ * permissions snippets or GraphQL selection.
  */
 
 export const todosWalkthrough: DemoWalkthrough = {
@@ -22,7 +24,7 @@ export const todosWalkthrough: DemoWalkthrough = {
 		{
 			id: 'query',
 			label: '1 · Query',
-			lede: 'The browser reads through a co-located GraphQL document. @load seeds SSR; the generated operation binds the same document to the replica. Row filters are model RBAC — not ad-hoc WHERE in the UI.',
+			lede: 'The browser reads through a co-located GraphQL document over a declared read model. @load seeds SSR; the generated operation binds the same document to the replica. Shape and row filters live on the model — not ad-hoc WHERE in the UI.',
 			principle: 'One replica story for user data.',
 			samples: [
 				{
@@ -35,6 +37,23 @@ export const todosWalkthrough: DemoWalkthrough = {
     title
     status
   }
+}`
+				},
+				{
+					file: 'readmodels/models/todos.rs · Todos',
+					caption: 'Query-oriented row shape. Plural name infers table `todos`; belongs_to joins the directory.',
+					code: `#[derive(Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize, ReadModel)]
+#[readmodel(primary_key = ["todo_id"])]
+pub struct Todos {
+  #[readmodel(id)]
+  pub todo_id: String,
+  pub owner_id: String,
+  pub title: String,
+  /// open | completed | archived
+  pub status: String,
+  pub assignee_id: Option<String>,
+  #[readmodel(belongs_to = "AuthUsers", foreign_key = "owner_id")]
+  pub owner: Option<AuthUsers>,
 }`
 				},
 				{
@@ -157,11 +176,35 @@ repo.publish_events().commit(todo)?.causal(TodoStatusPayload {
 		{
 			id: 'domain',
 			label: '4 · Domain',
-			lede: 'The model is a plain Rust struct with Distributed macros. Public methods enforce rules; private #[event] helpers record history. Unit-testable with no HTTP or SQL.',
+			lede: 'The write model is a plain Rust aggregate — fields are the consistency boundary. Public methods enforce rules; private #[event] helpers record history. Unit-testable with no HTTP or SQL.',
 			principle: 'Start with the domain, not the database.',
 			samples: [
 				{
+					file: 'todo-domain · Todo',
+					caption: 'Aggregate shape — the consistency boundary.',
+					code: `#[derive(Debug, Clone, Default, Serialize, Deserialize)]
+pub struct Todo {
+  pub entity: Entity,
+  pub todo_id: String,
+  pub owner_id: String,
+  pub title: String,
+  pub status: TodoStatus, // open | completed | archived
+  pub assignee_id: Option<String>,
+  purged: bool,
+  snapshot_generation: u64,
+}
+
+#[sourced(
+  entity,
+  events = "TodoEvent",
+  aggregate_type = "todo",
+  domain_state = TodoState,
+)]
+impl Todo { /* create, complete, rename, archive, … */ }`
+				},
+				{
 					file: 'todo-domain · Todo::complete',
+					caption: 'One command path: validate → record domain event.',
 					code: `pub fn complete(&mut self, owner_id: &str) -> Result<(), TodoError> {
   self.ensure_owner(owner_id)?;
   self.require_mutable()?;
@@ -183,12 +226,12 @@ fn record_completed(&mut self) {
 		{
 			id: 'events',
 			label: '5 · Events',
-			lede: 'Domain methods emit events. Projections are event handlers that upsert (or delete) read-model rows. The UI never dual-writes the todos table.',
+			lede: 'Domain methods emit events. Projections map those events onto syntax-only GraphQL mutations that become MutationProgram IR — upsert or delete read-model rows. The UI never dual-writes the todos table.',
 			principle: 'Know which side of the fence you are on.',
 			samples: [
 				{
 					file: 'projections/todos.rs',
-					caption: 'Domain events → projection (apply mutation).',
+					caption: 'Domain events → projection arms that name mutation programs.',
 					code: `projection! {
   pub const TODOS: ProjectionDescriptor<EventualOnly> = {
     name: "project_todos",
@@ -217,6 +260,22 @@ fn record_completed(&mut self) {
 }`
 				},
 				{
+					file: 'projections/mutations/save_todo.mutation.graphql',
+					caption: 'Not a public schema field — compiles to MutationProgram IR for the projector.',
+					code: `# Syntax-only read-model mutation → MutationProgram IR.
+mutation SaveTodo {
+  upsert_Todos(object: $input.todo)
+}`
+				},
+				{
+					file: 'projections/mutations/delete_todo.mutation.graphql',
+					caption: 'Purge path: delete by primary key from the event aggregate id.',
+					code: `# Syntax-only read-model mutation → MutationProgram IR.
+mutation DeleteTodo {
+  delete_Todos_by_pk(todo_id: $input.todo_id)
+}`
+				},
+				{
 					file: 'handlers/events/project_todos.rs',
 					code: `pub async fn handle(
   context: CausalProjectorContext,
@@ -241,7 +300,7 @@ export const chatWalkthrough: DemoWalkthrough = {
 		{
 			id: 'query',
 			label: '1 · Query / live',
-			lede: 'One GraphQL operation is both the SSR seed and the live subscription. Read RBAC allows user, admin, and anonymous (guests open e2e-ui-public).',
+			lede: 'One GraphQL operation is both the SSR seed and the live subscription over a declared ChatMessages read model. Read RBAC allows user, admin, and anonymous (guests open e2e-ui-public).',
 			principle: 'Register once, ship everywhere.',
 			samples: [
 				{
@@ -261,6 +320,22 @@ export const chatWalkthrough: DemoWalkthrough = {
     created_at
     author { user_id display_name email }
   }
+}`
+				},
+				{
+					file: 'readmodels/models/chat_messages.rs · ChatMessages',
+					caption: 'Insert-shaped row; author is a belongs_to join onto AuthUsers.',
+					code: `#[derive(Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize, ReadModel)]
+#[readmodel(primary_key = ["message_id"])]
+pub struct ChatMessages {
+  #[readmodel(id)]
+  pub message_id: String,
+  pub room_id: String,
+  pub author_id: String,
+  pub body: String,
+  pub created_at: String,
+  #[readmodel(belongs_to = "AuthUsers", foreign_key = "author_id")]
+  pub author: Option<AuthUsers>,
 }`
 				},
 				{
@@ -373,11 +448,35 @@ export type GeneratedCommands = Readonly<Record<never, never>>;`
 		{
 			id: 'domain',
 			label: '4 · Domain',
-			lede: 'Chat domain is plain Rust: posting rules and event recording, testable without GraphQL.',
+			lede: 'Chat domain is a plain Rust aggregate — one message is one consistency boundary. Public methods enforce rules; private #[event] helpers record history. No GraphQL in the model.',
 			principle: 'Start with the domain, not the database.',
 			samples: [
 				{
+					file: 'chat-domain · ChatMessage',
+					caption: 'Aggregate shape — the consistency boundary.',
+					code: `#[derive(Debug, Clone, Default, Serialize, Deserialize)]
+pub struct ChatMessage {
+  pub entity: Entity,
+  pub message_id: String,
+  pub room_id: String,
+  pub author_id: String,
+  pub body: String,
+  /// RFC3339 timestamp (string for portable projections / SQLite text).
+  pub created_at: String,
+  snapshot_delivery_generation: u64,
+}
+
+#[sourced(
+  entity,
+  events = "ChatMessageEvent",
+  aggregate_type = "chat_message",
+  domain_state = ChatMessageState,
+)]
+impl ChatMessage { /* post, … */ }`
+				},
+				{
 					file: 'chat-domain · ChatMessage::post',
+					caption: 'Validate, then record the domain event that becomes history.',
 					code: `pub fn post(
   &mut self,
   message_id: impl Into<String>,
@@ -426,7 +525,7 @@ fn record_posted(
 		{
 			id: 'events',
 			label: '5 · Events',
-			lede: 'Domain events drive the chat_messages projection. ChangeHub wakes @live subscribers when rows land.',
+			lede: 'Domain events drive the chat_messages projection via a named GraphQL mutation program. ChangeHub wakes @live subscribers when rows land.',
 			principle: 'Commands change the world; tables are for reading.',
 			samples: [
 				{
@@ -443,6 +542,14 @@ fn record_posted(
       input: { message: body },
     },
   };
+}`
+				},
+				{
+					file: 'projections/mutations/save_chat_message.mutation.graphql',
+					caption: 'Syntax-only upsert — not a browser-facing mutation.',
+					code: `# Syntax-only read-model mutation → MutationProgram IR.
+mutation SaveChatMessage {
+  upsert_ChatMessages(object: $input.message)
 }`
 				}
 			]
@@ -461,7 +568,7 @@ export const blobWalkthrough: DemoWalkthrough = {
 		{
 			id: 'query',
 			label: '1 · Query',
-			lede: 'One operation lists games (and map JSON). URL selects which game is active; the board derives from the replica. Row RBAC scopes lists to the owner (unless admin).',
+			lede: 'One operation lists games (and map JSON) from the BlobGames read model. URL selects which game is active; the board derives from the replica. Row RBAC scopes lists to the owner (unless admin).',
 			principle: 'One replica story for user data.',
 			samples: [
 				{
@@ -473,6 +580,26 @@ export const blobWalkthrough: DemoWalkthrough = {
     map_json
     owner { user_id display_name }
   }
+}`
+				},
+				{
+					file: 'readmodels/models/blob_games.rs · BlobGames',
+					caption: 'Query-oriented board row; map_json is the serialized level; owner joins AuthUsers.',
+					code: `#[derive(Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize, ReadModel)]
+#[readmodel(primary_key = ["game_id"])]
+pub struct BlobGames {
+  #[readmodel(id)]
+  pub game_id: String,
+  pub owner_id: String,
+  pub score: i64,
+  pub player_dead: bool,
+  pub current_level: i64,
+  pub current_level_completed: bool,
+  pub map_json: String,
+  /// active | dead | level_complete
+  pub status: String,
+  #[readmodel(belongs_to = "AuthUsers", foreign_key = "owner_id")]
+  pub owner: Option<AuthUsers>,
 }`
 				},
 				{
@@ -566,44 +693,46 @@ const games = $derived(
 		{
 			id: 'domain',
 			label: '4 · Domain',
-			lede: 'Movement and scoring live on a plain Rust aggregate with #[event] history.',
+			lede: 'The game is a plain Rust aggregate — score, map, and level live on the write model. Public methods enforce rules; private #[event] helpers record history.',
 			principle: 'Start with the domain, not the database.',
 			samples: [
 				{
-					file: 'blob-domain · BlobGame::move_dir',
-					code: `pub fn move_dir(
-  &mut self,
-  owner_id: &str,
-  direction: Direction,
-) -> Result<(), BlobError> {
-  self.ensure_owner(owner_id)?;
-  if self.player_dead {
-    return Err(BlobError::PlayerDead);
-  }
-  if self.current_level == 0 || self.map.is_empty() {
-    return Err(BlobError::NoActiveLevel);
-  }
-  let (r, c) = self.player_pos()?;
-  let (nr, nc) = match direction {
-    Direction::Up => {
-      if r == 0 {
-        return Err(BlobError::CannotMove("row already 0".into()));
-      }
-      (r - 1, c)
-    }
-    // Down / Left / Right …
-    _ => /* … */ (r, c),
-  };
-  // Simulate tiles → score / dead flags, then:
-  self.record_moved(
-    score,
-    player_dead,
-    level_complete,
-    next_map,
-    direction.as_str().to_string(),
-  )?;
-  Ok(())
+					file: 'blob-domain · BlobGame',
+					caption: 'Aggregate shape — the consistency boundary.',
+					code: `#[derive(Debug, Clone, Default, Serialize, Deserialize)]
+pub struct BlobGame {
+  pub entity: Entity,
+  pub game_id: String,
+  pub owner_id: String,
+  pub score: i64,
+  pub player_dead: bool,
+  /// 0 = no level yet; 1+ = active level index.
+  pub current_level: i64,
+  pub current_level_completed: bool,
+  /// Current level map only.
+  pub map: Vec<Vec<u8>>,
 }
+
+#[sourced(
+  entity,
+  events = "BlobGameEvent",
+  aggregate_type = "blob",
+  domain_state = BlobGameState,
+)]
+impl BlobGame { /* start, move_dir, … */ }`
+				},
+				{
+					file: 'blob-domain · BlobGame::move_dir (event)',
+					caption: 'After rules and tile sim, the move is one domain event.',
+					code: `// … ensure_owner, bounds, tile simulation → score / dead / map …
+
+self.record_moved(
+  score,
+  player_dead,
+  level_complete,
+  next_map,
+  direction.as_str().to_string(),
+)?;
 
 #[event("blob.moved", version = 1, domain)]
 fn record_moved(
@@ -625,7 +754,7 @@ fn record_moved(
 		{
 			id: 'events',
 			label: '5 · Events',
-			lede: 'Domain events still exist for history. For blob, the direct projection path writes the read model in the same commit as the event — not a later eventual handler for the board.',
+			lede: 'Domain events still exist for history. For blob, the same save_blob_game mutation program can run direct (same commit as the event) — not only as a later eventual handler.',
 			principle: 'Know which side of the fence you are on.',
 			samples: [
 				{
@@ -647,6 +776,14 @@ fn record_moved(
       input: { game: body },
     },
   };
+}`
+				},
+				{
+					file: 'projections/mutations/save_blob_game.mutation.graphql',
+					caption: 'Syntax-only upsert used by direct and eventual projection paths.',
+					code: `# Syntax-only read-model mutation → MutationProgram IR.
+mutation SaveBlobGame {
+  upsert_BlobGames(object: $input.game)
 }`
 				},
 				{
@@ -677,7 +814,7 @@ export const adminWalkthrough: DemoWalkthrough = {
 		{
 			id: 'query',
 			label: '1 · Query',
-			lede: 'Admin list is a different generated client and route registry. Same GraphQL engine, different surface privilege — admin grant sees every owner’s todos.',
+			lede: 'Admin list is a different generated client and route registry over the same Todos read model. Same GraphQL engine, different surface privilege — admin grant sees every owner’s todos.',
 			principle: 'Roles and surfaces are real.',
 			samples: [
 				{
@@ -687,6 +824,22 @@ export const adminWalkthrough: DemoWalkthrough = {
 const query = AdminAllTodos.use();
 const commands = useCommands();
 const todos = $derived($query.complete ? $query.data.todos : []);`
+				},
+				{
+					file: 'readmodels/models/todos.rs · Todos',
+					caption: 'Same query model as /todos — elevated surface, not a second table.',
+					code: `#[derive(Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize, ReadModel)]
+#[readmodel(primary_key = ["todo_id"])]
+pub struct Todos {
+  #[readmodel(id)]
+  pub todo_id: String,
+  pub owner_id: String,
+  pub title: String,
+  pub status: String,
+  pub assignee_id: Option<String>,
+  #[readmodel(belongs_to = "AuthUsers", foreign_key = "owner_id")]
+  pub owner: Option<AuthUsers>,
+}`
 				},
 				{
 					file: 'readmodels/models/todos.rs · admin grant',
@@ -793,12 +946,36 @@ const todos = $derived($query.complete ? $query.data.todos : []);`
 		{
 			id: 'domain',
 			label: '4 · Domain',
-			lede: 'Same Todo aggregate — elevated methods live on the domain type, not in the GraphQL layer.',
+			lede: 'Same Todo aggregate as /todos — elevated methods live on the domain type, not in the GraphQL layer. One write model, many surfaces.',
 			principle: 'Start with the domain, not the database.',
 			samples: [
 				{
+					file: 'todo-domain · Todo',
+					caption: 'Same aggregate shape as the user surface.',
+					code: `#[derive(Debug, Clone, Default, Serialize, Deserialize)]
+pub struct Todo {
+  pub entity: Entity,
+  pub todo_id: String,
+  pub owner_id: String,
+  pub title: String,
+  pub status: TodoStatus,
+  pub assignee_id: Option<String>,
+  purged: bool,
+  snapshot_generation: u64,
+}
+
+#[sourced(
+  entity,
+  events = "TodoEvent",
+  aggregate_type = "todo",
+  domain_state = TodoState,
+)]
+impl Todo { /* create, complete, force_archive, … */ }`
+				},
+				{
 					file: 'todo-domain · Todo::force_archive',
-					code: `/// Record an administrator intervention separately from owner archival.
+					caption: 'Admin path is still a domain event on the same aggregate.',
+					code: `/// Administrator intervention — separate event from owner archival.
 pub fn force_archive(&mut self) -> Result<(), TodoError> {
   if !self.is_created() {
     return Err(TodoError::NotCreated);
@@ -818,7 +995,7 @@ fn record_force_archived(&mut self) {
 		{
 			id: 'events',
 			label: '5 · Events',
-			lede: 'Force-archive emits TodoForceArchivedDomainEvent into the same todos projection path as owner archive — every surface’s replica converges on one query model.',
+			lede: 'Force-archive emits TodoForceArchivedDomainEvent into the same todos projection path (and same save_todo mutation) as owner archive — every surface’s replica converges on one query model.',
 			principle: 'Register once, ship everywhere.',
 			samples: [
 				{
@@ -845,6 +1022,22 @@ fn record_force_archived(&mut self) {
       input: { todo_id: aggregate_id },
     },
   };
+}`
+				},
+				{
+					file: 'projections/mutations/save_todo.mutation.graphql',
+					caption: 'Same mutation program as owner complete/archive — force-archive is just another event on this arm.',
+					code: `# Syntax-only read-model mutation → MutationProgram IR.
+mutation SaveTodo {
+  upsert_Todos(object: $input.todo)
+}`
+				},
+				{
+					file: 'projections/mutations/delete_todo.mutation.graphql',
+					caption: 'Purge arm (if ever elevated) still uses the same delete program.',
+					code: `# Syntax-only read-model mutation → MutationProgram IR.
+mutation DeleteTodo {
+  delete_Todos_by_pk(todo_id: $input.todo_id)
 }`
 				}
 			]
@@ -992,9 +1185,28 @@ IdentityConfig::oidc_bearer(oidc)`
 		{
 			id: 'events',
 			label: '5 · Directory',
-			lede: 'People still appear as auth_users via Zitadel ingest/scrape domain events — joins for chat author and blob owner, not a second display-name source.',
+			lede: 'People still appear as AuthUsers via Zitadel ingest/scrape domain events — joins for chat author and blob owner, not a second display-name source.',
 			principle: 'Know which side of the fence you are on.',
 			samples: [
+				{
+					file: 'readmodels/models/auth_users.rs · AuthUsers',
+					caption: 'Imported IdP directory row. PK is OIDC sub / session x-user-id. Filled by ingest, never by commands.',
+					code: `#[derive(Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize, ReadModel)]
+#[table("auth_users")]
+pub struct AuthUsers {
+  #[id("user_id")]
+  pub user_id: String,
+  pub email: String,
+  pub display_name: String,
+  /// human | machine
+  pub user_kind: String,
+  /// pending | approved | rejected
+  pub approval_status: String,
+  /// active | deactivated
+  pub status: String,
+  pub updated_at: String,
+}`
+				},
 				{
 					file: 'handlers/events/project_auth_user.rs',
 					code: `pub const EVENTS: &[&str] = &[
@@ -1064,6 +1276,22 @@ export const publicWalkthrough: DemoWalkthrough = {
       }
     }
   }
+}`
+				},
+				{
+					file: 'readmodels/models/chat_messages.rs · ChatMessages',
+					caption: 'Same lobby model as signed-in chat — surface privilege, not a second shape.',
+					code: `#[derive(Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize, ReadModel)]
+#[readmodel(primary_key = ["message_id"])]
+pub struct ChatMessages {
+  #[readmodel(id)]
+  pub message_id: String,
+  pub room_id: String,
+  pub author_id: String,
+  pub body: String,
+  pub created_at: String,
+  #[readmodel(belongs_to = "AuthUsers", foreign_key = "author_id")]
+  pub author: Option<AuthUsers>,
 }`
 				},
 				{

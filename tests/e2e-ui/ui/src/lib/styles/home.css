@@ -1278,6 +1278,226 @@
 	font-style: normal;
 }
 
+/* Unidirectional flow — circle with dotted directional connectors */
+.dist-flow-diagram {
+	margin: 0.5rem 0 0;
+	padding: 0;
+	border: 0;
+	background: transparent;
+	color: var(--wf-ink);
+	display: flex;
+	flex-direction: column;
+	align-items: center;
+	width: 100%;
+}
+
+.dist-flow-chip {
+	display: inline-flex;
+	align-items: center;
+	justify-content: center;
+	padding: 0.48rem 0.9rem;
+	border-radius: 999px;
+	border: 1px solid var(--wf-line-strong, #cdcabe);
+	background: #f6f5f2;
+	font-family: var(--wf-sans);
+	font-size: 0.86rem;
+	font-weight: 600;
+	letter-spacing: -0.01em;
+	color: var(--wf-ink);
+	white-space: nowrap;
+	box-shadow:
+		0 0 0 3px #f6f5f2,
+		0 1px 2px rgba(28, 28, 26, 0.06);
+}
+
+.dist-flow-chip-client {
+	border-color: rgba(61, 90, 128, 0.4);
+	background: #e8eef4;
+	box-shadow:
+		0 0 0 3px #f6f5f2,
+		0 1px 2px rgba(28, 28, 26, 0.06);
+}
+
+.dist-flow-chip-hub {
+	border-color: rgba(61, 90, 128, 0.55);
+	background: #dce6f0;
+	box-shadow:
+		0 0 0 3px #f6f5f2,
+		0 1px 2px rgba(28, 28, 26, 0.06);
+}
+
+.dist-flow-chip-rm {
+	border-color: rgba(70, 100, 80, 0.45);
+	background: #e4ebe4;
+	box-shadow:
+		0 0 0 3px #f6f5f2,
+		0 1px 2px rgba(28, 28, 26, 0.06);
+}
+
+/* viewBox 360×420 */
+.dist-flow-circle {
+	--flow-size: min(36rem, 100%);
+	position: relative;
+	width: var(--flow-size);
+	aspect-ratio: 360 / 420;
+	margin: 0 auto;
+}
+
+.dist-flow-circle-svg {
+	position: absolute;
+	inset: 0;
+	width: 100%;
+	height: 100%;
+	pointer-events: none;
+	overflow: visible;
+	z-index: 0;
+}
+
+.dist-flow-connector {
+	fill: none;
+	stroke: #6b6a64;
+	stroke-width: 1.5;
+	stroke-dasharray: 2.75 4;
+	stroke-linecap: round;
+	stroke-linejoin: round;
+	opacity: 0.72;
+}
+
+.dist-flow-arrowhead {
+	fill: #5c5b56;
+}
+
+.dist-flow-circle-core {
+	position: absolute;
+	left: 50%;
+	top: calc(220 / 420 * 100%);
+	width: 4.75rem;
+	height: 4.75rem;
+	margin: -2.375rem 0 0 -2.375rem;
+	display: grid;
+	place-items: center;
+	border-radius: 50%;
+	border: 1px dashed rgba(61, 90, 128, 0.4);
+	background: #f6f5f2;
+	z-index: 0;
+}
+
+.dist-flow-core-label {
+	font-family: var(--wf-mono);
+	font-size: 0.62rem;
+	font-weight: 600;
+	letter-spacing: 0.12em;
+	text-transform: uppercase;
+	color: var(--wf-ink-muted, #6b6a64);
+}
+
+.dist-flow-orbit {
+	position: absolute;
+	display: flex;
+	flex-direction: column;
+	align-items: center;
+	transform: translate(-50%, -50%);
+	z-index: 2;
+}
+
+/* Label beside the client→gateway stem */
+.dist-flow-entry-meta {
+	position: absolute;
+	left: 50%;
+	top: calc(62 / 420 * 100%);
+	transform: translate(0.85rem, -50%);
+	font-family: var(--wf-mono);
+	font-size: 0.58rem;
+	font-weight: 600;
+	letter-spacing: 0.08em;
+	text-transform: uppercase;
+	color: var(--wf-ink-muted, #6b6a64);
+	white-space: nowrap;
+	z-index: 1;
+	pointer-events: none;
+}
+
+/*
+  Chips on the ring — center (180, 220) r=118 in 360×420
+  p(θ) = (180 + 118·sinθ, 220 − 118·cosθ)
+*/
+.dist-flow-orbit-client {
+	left: 50%;
+	top: calc(28 / 420 * 100%);
+}
+
+/* Gateway 0° (180, 102) */
+.dist-flow-orbit-0 {
+	left: 50%;
+	top: calc(102 / 420 * 100%);
+}
+
+/* Commands 60° (282.19, 161) */
+.dist-flow-orbit-1 {
+	left: calc(282.19 / 360 * 100%);
+	top: calc(161 / 420 * 100%);
+}
+
+/* Aggregate 120° (282.19, 279) */
+.dist-flow-orbit-2 {
+	left: calc(282.19 / 360 * 100%);
+	top: calc(279 / 420 * 100%);
+}
+
+/* Domain event 180° (180, 338) */
+.dist-flow-orbit-3 {
+	left: 50%;
+	top: calc(338 / 420 * 100%);
+}
+
+/* Projection 240° (77.81, 279) */
+.dist-flow-orbit-4 {
+	left: calc(77.81 / 360 * 100%);
+	top: calc(279 / 420 * 100%);
+}
+
+/* Read model 300° (77.81, 161) */
+.dist-flow-orbit-5 {
+	left: calc(77.81 / 360 * 100%);
+	top: calc(161 / 420 * 100%);
+}
+
+/* Flow step: copy + diagram full width */
+.wf-story-step.dist-flow-step {
+	display: flex;
+	flex-direction: column;
+	gap: 1.75rem;
+}
+
+@media (min-width: 960px) {
+	.wf-story-step.dist-flow-step {
+		grid-template-columns: none;
+		display: flex;
+		flex-direction: column;
+		gap: 2rem;
+	}
+}
+
+.dist-flow-step .wf-story-copy {
+	max-width: 48rem;
+}
+
+.dist-flow-step .dist-flow-diagram {
+	width: 100%;
+	min-width: 0;
+}
+
+@media (min-width: 640px) {
+	.dist-flow-chip {
+		font-size: 0.9rem;
+		padding: 0.52rem 0.95rem;
+	}
+
+	.dist-flow-circle {
+		--flow-size: min(38rem, 92vw);
+	}
+}
+
 #sota-together .wf-section-head-wide p + p {
 	margin-top: 1rem;
 }
