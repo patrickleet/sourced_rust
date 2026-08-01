@@ -10,8 +10,9 @@
 		<div>
 			<h4>Demos</h4>
 			<ul>
-				<li><a href="/todos">Todos</a></li>
 				<li><a href="/chat">Chat</a></li>
+				<li><a href="/todos">Todos</a></li>
+				<li><a href="/blob">Blob</a></li>
 				<li><a href="/session">Session</a></li>
 			</ul>
 		</div>

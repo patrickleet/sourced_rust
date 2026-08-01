@@ -77,19 +77,20 @@
 					class:active={isActive('/chat')}
 					onclick={() => (isMenuOpen = false)}>Chat</a
 				>
+				<!-- Always listed; unauth hits hooks.server → /login?callbackUrl=… then back. -->
+				<a
+					href="/todos"
+					class="nav-link"
+					class:active={isActive('/todos')}
+					onclick={() => (isMenuOpen = false)}>Todos</a
+				>
+				<a
+					href="/blob"
+					class="nav-link"
+					class:active={isActive('/blob')}
+					onclick={() => (isMenuOpen = false)}>Blob</a
+				>
 				{#if isAuthenticated}
-					<a
-						href="/todos"
-						class="nav-link"
-						class:active={isActive('/todos')}
-						onclick={() => (isMenuOpen = false)}>Todos</a
-					>
-					<a
-						href="/blob"
-						class="nav-link"
-						class:active={isActive('/blob')}
-						onclick={() => (isMenuOpen = false)}>Blob</a
-					>
 					<a
 						href="/session"
 						class="nav-link"

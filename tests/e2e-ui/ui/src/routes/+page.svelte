@@ -32,8 +32,7 @@
 		{ href: '/todos', title: 'Todos', tag: 'Causal', blurb: 'Ownership rules, optimistic commands, projector fill.' },
 		{ href: '/blob', tag: 'Projected', title: 'Blob game', blurb: 'Game moves with an atomic board in the response.' },
 		{ href: '/admin', title: 'Admin', tag: 'Surface', blurb: 'Elevated surface — separate client, more power.' },
-		{ href: '/session', title: 'Session', tag: 'OIDC', blurb: 'Who you are to the app: tokens, groups, roles.' },
-		{ href: '/public', title: 'Public', tag: 'Anonymous', blurb: 'What an open surface can show without a user.' }
+		{ href: '/session', title: 'Session', tag: 'OIDC', blurb: 'Who you are to the app: tokens, groups, roles.' }
 	];
 
 	// —— Code samples from the living playground (trimmed for teaching) ——
@@ -199,7 +198,7 @@ query Todos @load {
 			<h1>
 				<strong>Distributed</strong> is a
 				<em>state-of-the-art</em> framework
-				for building distributed systems and applications.
+				for building distributed systems and realtime applications.
 			</h1>
 			<p class="wf-lede">
 				Not a partial toolkit. An end-to-end stack — domain, service, query edge, and live client —

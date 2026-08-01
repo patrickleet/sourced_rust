@@ -22,7 +22,7 @@ export type WalkthroughTab = {
 
 /** Full walkthrough for one demo route. */
 export type DemoWalkthrough = {
-	/** Stable key (chat | todos | blob | admin | session | public) */
+	/** Stable key (chat | todos | blob | admin | session) */
 	id: string;
 	/** Route path */
 	href: string;
