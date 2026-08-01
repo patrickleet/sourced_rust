@@ -1,8 +1,6 @@
 <script lang="ts">
 	/**
-	 * Distributed product home — canon framing from project owner (2026-08-01).
-	 * Features follow CQRS → ES → SQL/RBAC → projections → replica → SvelteKit → OIDC.
-	 * GraphQL is transport/selection, not the product identity.
+	 * Distributed product home — need/story first, then how the framework delivers it.
 	 */
 	import '$lib/styles/home.css';
 	import { page } from '$app/state';
@@ -14,25 +12,28 @@
 	const authConfigError = $derived(page.url.searchParams.get('error') === 'Configuration');
 
 	const toc = [
-		{ href: '#foundations', label: 'Foundations' },
+		{ href: '#claim', label: 'The claim' },
+		{ href: '#sota-backend', label: 'SOTA backend' },
+		{ href: '#sota-rust', label: 'Why Rust' },
+		{ href: '#sota-frontend', label: 'SOTA frontend' },
+		{ href: '#sota-together', label: 'One vehicle' },
+		{ href: '#author', label: 'Backstory' },
+		{ href: '#flow', label: 'How' },
 		{ href: '#cqrs', label: 'CQRS' },
 		{ href: '#aggregates', label: 'Aggregates' },
 		{ href: '#read-models', label: 'Read models' },
-		{ href: '#query-api', label: 'Query API' },
 		{ href: '#projections', label: 'Projections' },
 		{ href: '#replica', label: 'Replica' },
-		{ href: '#sveltekit', label: 'SvelteKit' },
-		{ href: '#oidc', label: 'OIDC' },
 		{ href: '#try', label: 'Playground' }
 	];
 
 	const demos = [
-		{ href: '/chat', title: 'Lobby chat', tag: 'Live + anonymous', blurb: 'SSR, @live, and guest reads on a public surface.' },
-		{ href: '/todos', title: 'Todos', tag: 'Causal', blurb: 'Owner RLS, modeled optimism, projector fill.' },
-		{ href: '/blob', tag: 'Projected', title: 'Blob game', blurb: 'Atomic board in the mutation payload.' },
-		{ href: '/admin', title: 'Admin', tag: 'Surface', blurb: 'Second client for elevated ops.' },
-		{ href: '/session', title: 'Session', tag: 'OIDC', blurb: 'Tokens, groups, and engine roles.' },
-		{ href: '/public', title: 'Public', tag: 'Anonymous', blurb: 'Empty identity + named surface contract.' }
+		{ href: '/chat', title: 'Lobby chat', tag: 'Live + anonymous', blurb: 'A shared room with SSR, live updates, and guest reads.' },
+		{ href: '/todos', title: 'Todos', tag: 'Causal', blurb: 'Ownership rules, optimistic commands, projector fill.' },
+		{ href: '/blob', tag: 'Projected', title: 'Blob game', blurb: 'Game moves with an atomic board in the response.' },
+		{ href: '/admin', title: 'Admin', tag: 'Surface', blurb: 'Elevated surface — separate client, more power.' },
+		{ href: '/session', title: 'Session', tag: 'OIDC', blurb: 'Who you are to the app: tokens, groups, roles.' },
+		{ href: '/public', title: 'Public', tag: 'Anonymous', blurb: 'What an open surface can show without a user.' }
 	];
 
 	// —— Code samples from the living playground (trimmed for teaching) ——
@@ -179,14 +180,15 @@ query Todos @load {
   todos { todo_id title status }
 }`;
 
-	const codeFlow = `// Command path
-Command  →  Aggregate (event-sourced)
-              ↓ emit domain events
-Service bus  →  Projectors
-              ↓ mutations
-Read model (SQL)  →  GraphQL query edge
-              ↓ same mappings
-Browser replica  →  optimistic UI`;
+	const codeFlow = `// One direction. Order matters. The cycle closes at the client.
+
+client
+  →  commands
+  →  aggregate state change
+  →  domain event
+  →  projection
+  →  read model
+  →  client`;
 </script>
 
 <div class="wf-home dist-home">
@@ -202,41 +204,37 @@ Browser replica  →  optimistic UI`;
 				</div>
 			{/if}
 
-			<span class="wf-kicker">Cloud native · Rust · TypeScript</span>
+			<span class="wf-kicker">End to end · Rust · TypeScript</span>
 			<h1>
-				Simple realtime apps on
-				<em>distributed systems foundations</em>.
+				<strong>Distributed</strong> is a
+				<em>state-of-the-art</em> framework
+				for building distributed systems and applications.
 			</h1>
 			<p class="wf-lede">
-				<strong>Distributed</strong> is a cloud-native Rust and TypeScript framework for building
-				simple, realtime, performant, and scalable applications based on distributed systems
-				programming foundations — domain-driven design, CQRS, and event sourcing.
-			</p>
-			<p class="wf-lede dist-lede-follow">
-				Made to start simple, and scale big. Run as a single backend service with a UI, or run the
-				same models and handlers as microservices.
+				Not a partial toolkit. An end-to-end stack — domain, service, query edge, and live client —
+				so engineers who care about quality code can stay on the model and still ship polished, fast,
+				maintainable products.
 			</p>
 
 			<ul class="wf-hero-stack" aria-label="Stack">
-				<li>CQRS</li>
-				<li>Event sourcing</li>
-				<li>SQL read models</li>
-				<li>Realtime</li>
+				<li>Rust</li>
+				<li>TypeScript</li>
+				<li>CQRS / ES</li>
+				<li>SvelteKit</li>
 			</ul>
 
 			<div class="wf-actions">
 				{#if signedIn}
 					<a class="wf-btn wf-btn-primary" href="/chat">Open the playground</a>
-					<a class="wf-btn wf-btn-ghost" href="#features">How it works</a>
+					<a class="wf-btn wf-btn-ghost" href="#claim">Prove it</a>
 				{:else}
 					<a class="wf-btn wf-btn-primary" href="/chat">Browse the lobby</a>
-					<a class="wf-btn wf-btn-ghost" href="#features">How it works</a>
+					<a class="wf-btn wf-btn-ghost" href="#claim">Prove it</a>
 				{/if}
 			</div>
 
 			<p class="dist-hero-note">
-				This site is the official <strong>living playground</strong> for Distributed. Open any demo
-				and use <em>How it’s built</em> for the full code walkthrough.
+				This site is the living playground — real apps under <code>tests/e2e-ui</code>.
 			</p>
 
 			<nav class="wf-toc" aria-label="On this page">
@@ -247,39 +245,316 @@ Browser replica  →  optimistic UI`;
 		</div>
 	</section>
 
-	<!-- Features: canon product narrative -->
-	<section class="wf-band wf-band-dark" id="features">
-		<div class="wf-band-inner">
-			<div class="wf-section-head wf-section-head-wide">
-				<span class="wf-label">Features</span>
-				<h2>What serves you</h2>
-				<p>
-					We built decades of distributed-systems practice into the framework so you don’t have to
-					reinvent it — but you should understand what each piece is <em>for</em>. The models that
-					are best for changing aggregates and the models that are best for querying don’t line up.
-					Distributed keeps them separate on purpose.
-				</p>
+	<section class="wf-band dist-claim-band" id="claim" aria-label="Open loop">
+		<div class="wf-band-inner dist-claim-inner">
+			<p class="dist-claim">
+				“State of the art” is a strong claim… Here’s how we define it.
+			</p>
+			<div class="dist-claim-links">
+				<a href="#sota-backend">Backend</a>
+				<span aria-hidden="true">·</span>
+				<a href="#sota-rust">Rust</a>
+				<span aria-hidden="true">·</span>
+				<a href="#sota-frontend">Front end</a>
+				<span aria-hidden="true">·</span>
+				<a href="#author">Backstory</a>
+				<span aria-hidden="true">·</span>
+				<a href="#flow">How it delivers</a>
 			</div>
 		</div>
 	</section>
 
-	<section class="wf-band wf-band-light" id="foundations">
+	<section class="wf-band wf-band-dark" id="sota-backend">
 		<div class="wf-band-inner">
+			<div class="wf-section-head wf-section-head-wide">
+				<span class="wf-label">State of the art · Backend</span>
+				<h2>Event-driven systems with room to scale</h2>
+				<p>
+					You never get perfect consistency, always-available writes, and surviving network partitions
+					all at once — that is the <strong>CAP theorem</strong>. Under partition you must sacrifice
+					one: usually consistency or availability. Most products that stay up choose availability
+					and accept <strong>eventual consistency</strong> on the read side — with clear rules about
+					what the user can trust immediately.
+				</p>
+			</div>
+
+			<div class="dist-teach">
+				<div class="dist-teach-block">
+					<h3>Unidirectional flow and event-driven architecture</h3>
+					<p>
+						These go hand in hand: <strong>events drive the flow</strong>. Changes move in one
+						direction, with order — command in, domain event out, projections update reads. The UI
+						does not patch database tables; it asks the system to do something, the system records
+						facts, and views update from those facts. Front-end developers already know a cousin of
+						this from Redux-style stores: dispatch → reduce → select. State-of-the-art backends
+						apply the same discipline <strong>across services</strong>, not only inside one SPA —
+						with events as the spine that keeps order honest.
+					</p>
+					<p>
+						Contrast the “microservices” setup you have probably seen: a web of services calling
+						each other over HTTP whenever convenient — A calls B, B calls C, C calls A under load,
+						timeouts cascade, and nobody can explain the order of effects. That is not a
+						distributed system; it is distributed chaos. Event-driven, unidirectional design
+						replaces request spaghetti with a path you can reason about.
+					</p>
+				</div>
+				<div class="dist-teach-block">
+					<h3>CQRS and event sourcing</h3>
+					<p>
+						<strong>Command query responsibility segregation</strong> separates the model that is
+						best for enforcing business rules from the model that is best for answering screens.
+						Commands load <strong>aggregates</strong> (transactional consistency boundaries).
+						Queries hit a <strong>read model</strong> optimized for lists, joins, and filters.
+						<strong>Event sourcing</strong> means the write side records what happened as an
+						append-only history — plain structs / POJOs and methods you can unit-test — instead of
+						only the latest row overwrite.
+					</p>
+				</div>
+				<div class="dist-teach-block">
+					<h3>Domain events and projections</h3>
+					<p>
+						When an aggregate accepts a command, it emits <strong>domain events</strong>: immutable
+						facts about the change. <strong>Projections</strong> subscribe to those facts and update
+						SQL (or other) read models. That is how you keep “what the business decided” separate
+						from “what the UI needs to list,” without dual-writing from the client.
+					</p>
+				</div>
+				<div class="dist-teach-block">
+					<h3>Identity and authorization</h3>
+					<p>
+						Real products need real identity: <strong>OIDC</strong>, sessions, and
+						<strong>JWTs</strong> that carry claims. Authorization belongs next to the data —
+						<strong>RBAC</strong> on rows and columns of the read model, and the same actor claims
+						on commands — not a one-off middleware story per endpoint.
+					</p>
+				</div>
+			</div>
+			<p class="dist-teach-foot">
+				That is the backend half of the bar: event-driven, unidirectional, CQRS/ES, projections, honest
+				consistency tradeoffs, and identity that the model can use. The runtime for that half has to
+				earn its place for reasons beyond “it’s fast.”
+			</p>
+		</div>
+	</section>
+
+	<section class="wf-band wf-band-light" id="sota-rust">
+		<div class="wf-band-inner">
+			<div class="wf-section-head wf-section-head-wide">
+				<span class="wf-label">Why Rust</span>
+				<h2>Performance and safety without giving up a clean domain API</h2>
+				<p>
+					State-of-the-art distributed backends need predictable performance under concurrency, hard
+					edges around memory and data races, and a type system that catches mistakes before they
+					ship. Rust was built for that class of problem — systems work without the usual crash
+					surface of unmanaged languages, and without the GC pauses that make latency SLOs harder.
+				</p>
+			</div>
+
+			<div class="dist-teach">
+				<div class="dist-teach-block">
+					<h3>Memory safety without a garbage collector</h3>
+					<p>
+						Ownership and borrowing enforce “who can touch this data” at compile time. You get
+						C-class control of layout and lifetime, with whole categories of use-after-free and
+						data-race bugs ruled out before the binary runs. For services that process events and
+						commands all day, that is not academic — it is fewer production landmines and more
+						stable latency under load.
+					</p>
+				</div>
+				<div class="dist-teach-block">
+					<h3>Fearless concurrency</h3>
+					<p>
+						Async runtimes (Tokio and friends), channels, and the type system’s
+						<code>Send</code> / <code>Sync</code> bounds make concurrent work explicit. You can
+						share infrastructure across cores without pretending shared mutable state is fine by
+						default. That matches how real backends actually run: many in-flight commands, many
+						projections, many connections.
+					</p>
+				</div>
+				<div class="dist-teach-block">
+					<h3>A type system that encodes the domain</h3>
+					<p>
+						Result types, enums, and strong typing make invalid states harder to represent. Domain
+						errors can be first-class; “this command was rejected” is not a random string thrown
+						from a helper three layers down. When your product is business rules, the language
+						should make those rules hard to mis-wire.
+					</p>
+				</div>
+				<div class="dist-teach-block">
+					<h3>Zero-cost abstractions — and macros as DX</h3>
+					<p>
+						Rust’s ethos is: high-level tools that compile down to efficient machine code. Macros
+						and derives are how frameworks give you a simple authoring surface without a heavy
+						runtime reflection tax. You write something that reads like the domain; the compiler
+						emits the boilerplate for events, serialization, and wiring — so “record this domain
+						event” or “on these events, update the read model” can stay short at the call site while
+						the machinery still owns fingerprints, history, and lowerings.
+					</p>
+					<p>
+						The same idea scales past one language: domain definitions can drive the client too —
+						typed commands, replica metadata, how events map to cache updates — so front-end DX is
+						generated alignment, not a second hand-written stack. Compilers (and codegen) are the
+						framework, end to end.
+					</p>
+				</div>
+			</div>
+			<p class="dist-teach-foot">
+				So yes — Rust, for this class of work. Not as a fashion statement: as a substrate that lets a
+				CQRS/ES stack be both strict and pleasant to author, and a credible source of truth for the
+				client.
+			</p>
+		</div>
+	</section>
+
+	<section class="wf-band wf-band-dark" id="sota-frontend">
+		<div class="wf-band-inner">
+			<div class="wf-section-head wf-section-head-wide">
+				<span class="wf-label">State of the art · Front end</span>
+				<h2>Compilers are the new frameworks</h2>
+				<p>
+					Modern client stacks win when they <em>compile away</em> glue: routing, data loading, type
+					safety, and update paths. A state-of-the-art app path is not “fetch in
+					<code>onMount</code> and hope.” It is server-rendered HTML, a rehydrated client that shares
+					the same data contract, live updates without polling, and <strong>optimistic UI</strong>
+					that stays honest with an eventually consistent backend.
+				</p>
+			</div>
+
+			<div class="dist-teach">
+				<div class="dist-teach-block">
+					<h3>SvelteKit and the compiler mindset</h3>
+					<p>
+						Svelte and SvelteKit push work into the compiler and into load/live primitives so
+						application code stays about the product. The same spirit applies to a full-stack
+						system: generate the client from the server’s truth instead of hand-maintaining a second
+						API and cache story.
+					</p>
+				</div>
+				<div class="dist-teach-block">
+					<h3>GraphQL as selection, not the product</h3>
+					<p>
+						<strong>GraphQL</strong> shines when the read model is already well defined: the page
+						declares the fields it needs. You avoid a REST endpoint per screen. Writes still go
+						through domain <strong>commands</strong> — not table CRUD exposed as “mutations” for the
+						browser to call.
+					</p>
+				</div>
+				<div class="dist-teach-block">
+					<h3>Replica cache and optimistic updates</h3>
+					<p>
+						A <strong>client replica</strong> holds the authorized slice of the read model the UI
+						cares about. When the user fires a command, state-of-the-art UX applies the expected
+						result immediately (optimistic update), then converges when the projection lands. That
+						only works cleanly if the same definitions that update the server read model also drive
+						the client — not a one-off <code>setState</code> recipe per page.
+					</p>
+				</div>
+				<div class="dist-teach-block">
+					<h3>SSR, rehydration, and live</h3>
+					<p>
+						First paint from the server, same query rehydrated on the client, then a live feed for
+						rooms and dashboards. One operation for seed, hydrate, and subscription beats
+						maintaining a separate GraphQL query and WebSocket document that always drift apart.
+					</p>
+				</div>
+			</div>
+			<p class="dist-teach-foot">
+				That is the frontend half of the bar: compiler-owned glue, selection APIs, a replica aligned
+				with the domain, optimistic UI, and real-time without polling theater.
+			</p>
+		</div>
+	</section>
+
+	<section class="wf-band wf-band-light" id="sota-together">
+		<div class="wf-band-inner">
+			<div class="wf-section-head wf-section-head-wide">
+				<span class="wf-label">The bar, whole</span>
+				<h2>Two halves used to be two shopping lists</h2>
+				<p>
+					Brokers, projectors, Hasura-class query layers, a UI framework, OIDC, custom optimistic
+					cache code — each can be excellent alone. The tax is integration: versions, auth boundaries,
+					and two stories for “what a command does to the UI.” State of the art is not collecting
+					best-in-class parts; it is one path from domain event to optimistic row that teams do not
+					reinvent every time.
+				</p>
+				<p>
+					<strong>Distributed</strong> is built to be that path — one coherent system so code
+					generation can keep the developer experience simple. How we got here, then how it delivers.
+				</p>
+			</div>
+			<div class="wf-actions dist-vehicle-actions">
+				<a class="wf-btn wf-btn-primary" href="#author">How this project got here</a>
+				<a class="wf-btn wf-btn-ghost" href="#flow">How it delivers</a>
+			</div>
+		</div>
+	</section>
+
+	<section class="wf-band wf-band-dark" id="author">
+		<div class="wf-band-inner">
+			<div class="wf-section-head wf-section-head-wide">
+				<span class="wf-label">Backstory</span>
+				<h2>Built by someone who’s lived the glue</h2>
+				<p>
+					I’m a multi-time CTO and long-time consultant on microservices and DevOps. Articles I’ve
+					written have been read over a million times; thousands of people took free DevOps classes I
+					ran. I’ve maintained <strong>sourced</strong> and <strong>servicebus</strong> in the Node
+					ecosystem for nearly a decade, and I’ve been a student of domain-driven design since before
+					CQRS/ES was the usual name for the write path — I was in the Google group when the name
+					shifted, went to the conferences, and have helped teams from startups through enterprises
+					actually ship this style of system.
+				</p>
+				<p>
+					Early on I wired pieces together. <strong>Matt Walters</strong> was a mentor who taught me
+					a great deal; he authored Node <code>sourced</code> and <code>servicebus</code>, which
+					inspired parts of what this library does. Later, Knative Eventing replaced much of
+					hand-rolled service-bus plumbing — messaging became more declarative, and language choice
+					less tied to one library. For reads I used Hasura-style SQL: joins, RBAC, generated query
+					APIs, opinionated for CQRS. It worked. It was still a kit of parts.
+				</p>
+				<p>
+					I started <strong>Distributed</strong> in late 2024 (first commits October 2024) as AI
+					became usable for real systems work — and as models got good enough that building the dream
+					framework (everything in one coherent place) stopped being a multi-year solo fantasy. This
+					playground is that system: domain through live UI, with the DX we always wanted.
+				</p>
+			</div>
+			<div class="wf-actions dist-vehicle-actions">
+				<a class="wf-btn wf-btn-primary" href="#flow">How the framework delivers</a>
+				<a class="wf-btn wf-btn-ghost" href="#try">See the demos</a>
+			</div>
+		</div>
+	</section>
+
+	<section class="wf-band wf-band-light" id="flow">
+		<div class="wf-band-inner">
+			<div class="wf-section-head wf-section-head-wide dist-how-head">
+				<span class="wf-label">How Distributed provides it</span>
+				<h2>One unidirectional loop — end to end</h2>
+				<p>
+					That’s the bar. Here’s the magic path that closes it: codegen across the stack, one ordered
+					cycle, each section below a stage with real code from this playground.
+				</p>
+			</div>
 			<article class="wf-story-step">
 				<div class="wf-story-copy">
-					<span class="wf-label">01 · Foundations</span>
-					<h2 class="wf-step-title">DDD, CQRS, and event sourcing — built in</h2>
+					<span class="wf-label">01 · Unidirectional</span>
+					<h2 class="wf-step-title">Changes go one way. There is order.</h2>
 					<p class="wf-why">
-						Domain-driven design, command/query separation, and event sourcing on aggregate roots
-						are the substrate. You capture domain expertise in plain code; the framework owns
-						history, publication, projections, and client wiring.
+						Front-end developers know this from Redux: dispatch in, state updates on a defined path,
+						UI reads the result. Distributed is that idea for the <strong>whole system</strong>.
+					</p>
+					<p class="wf-why">
+						Client → <strong>command</strong> → <strong>aggregate</strong> state change →
+						<strong>domain event</strong> → <strong>projection</strong> → <strong>read model</strong>
+						→ client. No dual-write from the UI. CAP and eventual consistency sit on the read side;
+						optimistic UI is how the front end meets that honestly.
 					</p>
 				</div>
 				<div class="wf-code-stack">
 					<div class="wf-code">
 						<div class="wf-code-bar">
-							<span>mental model</span>
-							<em>flow</em>
+							<span>system flow</span>
+							<em>unidirectional</em>
 						</div>
 						<pre><code>{@html highlightCode(codeFlow)}</code></pre>
 					</div>
@@ -293,13 +568,13 @@ Browser replica  →  optimistic UI`;
 			<article class="wf-story-step">
 				<div class="wf-story-copy">
 					<span class="wf-label">02 · CQRS</span>
-					<h2 class="wf-step-title">Two models, on purpose</h2>
+					<h2 class="wf-step-title">Decisions and views are different models</h2>
 					<p class="wf-why">
-						ORMs and Active Record often collapse “write the domain” into “update rows.” That’s fine
-						for a lot of apps. When the logic matters — changeable, maintainable, full of real
-						expertise — separate the shapes: a <strong>command model</strong> for aggregates, and a
-						<strong>query model</strong> for reads. Command query responsibility segregation is the
-						stance, not an optional diagram.
+						In the business, “complete this todo” is a decision with rules. “Show my open todos”
+						is a question about a list. CQRS keeps those as separate models: commands load
+						aggregates; queries hit a SQL-shaped read model. You avoid forcing both into “update a
+						row,” so domain code stays about rules and screens stay about presentation — and both
+						get simpler.
 					</p>
 				</div>
 				<div class="wf-code-stack">
@@ -320,13 +595,12 @@ Browser replica  →  optimistic UI`;
 			<article class="wf-story-step">
 				<div class="wf-story-copy">
 					<span class="wf-label">03 · Event-sourced aggregates</span>
-					<h2 class="wf-step-title">Plain structs. History. Easy tests.</h2>
+					<h2 class="wf-step-title">Business rules as plain types — with history</h2>
 					<p class="wf-why">
-						A strong model for changing aggregates is event sourcing: you work with plain Rust
-						structures (or plain objects in any language), a repository, and append-only events.
-						You get timeline history, and the part of the system that captures business expertise
-						stays simple to read and unit-test — no HTTP or SQL required. (Event upcasters handle
-						schema evolution when versions move.)
+						Express the business as ordinary Rust structs and methods: who may do what, what state
+						is allowed next. Under the hood that’s event sourcing — repository, append-only
+						events, optional upcasters — so you get a timeline and easy unit tests without putting
+						rules in SQL or HTTP. The domain stays the place where expertise lives.
 					</p>
 					<span class="wf-sample-path">tests/e2e-ui/crates/todo-domain/src/models/todo.rs</span>
 				</div>
@@ -348,11 +622,12 @@ Browser replica  →  optimistic UI`;
 			<article class="wf-story-step">
 				<div class="wf-story-copy">
 					<span class="wf-label">04 · SQL read models + RBAC</span>
-					<h2 class="wf-step-title">SQL is great for querying</h2>
+					<h2 class="wf-step-title">What the user is allowed to see</h2>
 					<p class="wf-why">
-						Tables, rows, columns, joins — and row/column RBAC on that shape. Define a normalized
-						read model once. Permissions live next to the model, not as one-off middleware. The
-						same role claims attach to commands.
+						Screens need tables: lists, filters, joins. Read models are that query shape, with
+						row/column permissions next to the model — “owner sees only their todos,” “admin sees
+						all.” SQL does what it’s good at; auth is not a second story bolted on later. Queries
+						and commands share the same idea of who the actor is.
 					</p>
 					<span class="wf-sample-path">tests/e2e-ui/crates/readmodels/src/models/todos.rs</span>
 				</div>
@@ -374,12 +649,11 @@ Browser replica  →  optimistic UI`;
 			<article class="wf-story-step">
 				<div class="wf-story-copy">
 					<span class="wf-label">05 · Inferred query API</span>
-					<h2 class="wf-step-title">Don’t hand-write query endpoints</h2>
+					<h2 class="wf-step-title">Page needs → typed client</h2>
 					<p class="wf-why">
-						If tables and relationships are defined well, we infer the query surface. GraphQL is
-						how the frontend <em>selects</em> what a page needs — not the product identity. APIs are
-						command calls and queries: commands load aggregates; queries hit the read model. You
-						don’t maintain a parallel REST catalog for every list screen.
+						Once the read model is defined, GraphQL is how the UI selects fields — transport for
+						queries, not the heart of the product. You declare what a page needs; you don’t maintain
+						a REST endpoint per screen. Commands stay domain verbs on the write side.
 					</p>
 					<span class="wf-sample-path">tests/e2e-ui/ui/src/routes/todos/+page.graphql</span>
 				</div>
@@ -400,26 +674,17 @@ Browser replica  →  optimistic UI`;
 		<div class="wf-band-inner">
 			<article class="wf-story-step">
 				<div class="wf-story-copy">
-					<span class="wf-label">06 · Eventual consistency · bus · projections</span>
-					<h2 class="wf-step-title">Immutable facts update the read model</h2>
+					<span class="wf-label">06 · Projections</span>
+					<h2 class="wf-step-title">When the domain changes, views catch up</h2>
 					<p class="wf-why">
-						CAP reality: large scalable systems are usually eventually consistent. Separate command
-						and query models make that easy. Aggregates emit events (immutable facts). A
-						<strong>service bus</strong> carries them. <strong>Projections</strong> map those events
-						to read-model mutations — applied on the server when facts land, and compiled into the
-						client so optimism doesn’t invent its own recipes.
+						Next step in the unidirectional cycle: after a command succeeds, events describe what
+						happened. Projections turn those facts into read-model updates — and the same mapping
+						drives optimistic UI in the browser. You declare “on these events, update the view like
+						this” once; you don’t dual-write tables from the page or invent a second cache language.
 					</p>
 					<p class="wf-why">
-						The mutation file looks like GraphQL, but it is <strong>not a public API</strong>. It is
-						a syntax that lowers to one <code>MutationProgram</code>: the same program applies to
-						the SQL read model and to the browser replica cache. That shared IR is what drives
-						optimistic UI. Exposing insert/upsert/delete on the wire for the client to call is an
-						<strong>anti-pattern</strong> — clients send domain commands; this mutation language is
-						internal update heuristics only.
-					</p>
-					<p class="wf-why">
-						Event storming discovers aggregates and events; a long-term goal of the library is to
-						turn those sessions (with AI) into a large fraction of the baseline wiring.
+						The mutation file looks like GraphQL but is internal IR for that update program, not a
+						public client mutation API. Pages still send domain commands.
 					</p>
 					<span class="wf-sample-path"
 						>tests/e2e-ui/crates/projections/src/todos.rs · mutations/save_todo.mutation.graphql</span
@@ -457,13 +722,13 @@ Browser replica  →  optimistic UI`;
 			<article class="wf-story-step">
 				<div class="wf-story-copy">
 					<span class="wf-label">07 · Browser replica</span>
-					<h2 class="wf-step-title">Optimistic UI without UI cache code</h2>
+					<h2 class="wf-step-title">The cycle closes at the client</h2>
 					<p class="wf-why">
-						Because we own commands, events, projections, read models, and RBAC, we generate
-						TypeScript that knows how commands and events map to mutations. The client keeps a
-						<strong>replica</strong> of the authorized slice of data that matters for the app, and
-						applies those mutations optimistically — based on Rust definitions, not one-off
-						cache hacks in each page.
+						Generated TypeScript carries your inventory into a client replica and typed commands.
+						The page reads <code>query.use()</code> and calls <code>commands.todo…</code> — same
+						business verbs as the server. Optimism applies the projection mapping on the way around
+						the loop, so the UI stays aligned with the model instead of a one-off cache recipe per
+						screen.
 					</p>
 					<span class="wf-sample-path">tests/e2e-ui/ui/src/routes/todos/+page.svelte</span>
 				</div>
@@ -485,12 +750,11 @@ Browser replica  →  optimistic UI`;
 			<article class="wf-story-step">
 				<div class="wf-story-copy">
 					<span class="wf-label">08 · SvelteKit</span>
-					<h2 class="wf-step-title"><code>@load</code>, rehydration, and <code>@live</code></h2>
+					<h2 class="wf-step-title">SSR first, then live — one query</h2>
 					<p class="wf-why">
-						<code>@load</code> makes SSR automatic and rehydrates the client replica from the same
-						operation. <code>@live</code> reuses that query as a WebSocket change feed powered by
-						the <strong>change hub</strong> — push-driven updates instead of polling loops that
-						guess freshness.
+						<code>@load</code> and <code>@live</code> use the same GraphQL operation for server
+						render, rehydrate, and a push change feed. Users get a fast first paint and rooms that
+						stay current without you maintaining a second subscription document or polling.
 					</p>
 					<span class="wf-sample-path">tests/e2e-ui/ui/src/routes/chat/+page.graphql</span>
 				</div>
@@ -511,29 +775,29 @@ Browser replica  →  optimistic UI`;
 		<div class="wf-band-inner">
 			<article class="wf-story-step">
 				<div class="wf-story-copy">
-					<span class="wf-label">09 · Identity</span>
-					<h2 class="wf-step-title">First-class OIDC</h2>
+					<span class="wf-label">09 · OIDC</span>
+					<h2 class="wf-step-title">Who the user is — in the model and the UI</h2>
 					<p class="wf-why">
-						This playground uses <strong>Zitadel</strong>. Tests also prove
-						<strong>Keycloak</strong> and <strong>Authentik</strong> (less fleshed out in demos).
-						Sessions and JWTs supply claims — user id, roles, groups — that feed the same RBAC on
-						queries and commands, and scope the client replica when identity changes.
+						Real products need real identity. OIDC is first-class (Zitadel here; Keycloak and
+						Authentik in tests). Sessions and JWTs become claims the domain already uses for
+						ownership and roles — the same claims that scope the client replica.
 					</p>
 				</div>
 				<div class="dist-pillars">
 					<article class="dist-pillar">
 						<h3>Claims → RBAC</h3>
-						<p>Read models filter rows with claims like <code>x-user-id</code>; command handlers resolve the actor from context.</p>
+						<p>Row filters and command handlers share claims like <code>x-user-id</code> and roles.</p>
 					</article>
 					<article class="dist-pillar">
 						<h3>Surfaces</h3>
-						<p>User, admin, and public clients are separate authorization-scoped inventories — not one open schema.</p>
+						<p>User, admin, and public clients stay separate so elevated power does not leak.</p>
 					</article>
 					<article class="dist-pillar">
 						<h3>Try it</h3>
 						<p>
-							<a class="dist-inline-link" href="/session">Session</a> shows tokens and roles;
-							<a class="dist-inline-link" href="/signin?callbackUrl=/todos">sign in</a> as alice / bob / admin.
+							<a class="dist-inline-link" href="/session">Session</a> ·
+							<a class="dist-inline-link" href="/signin?callbackUrl=/todos">sign in</a>
+							(alice / bob / admin)
 						</p>
 					</article>
 				</div>
@@ -545,11 +809,10 @@ Browser replica  →  optimistic UI`;
 		<div class="wf-band-inner">
 			<div class="wf-section-head">
 				<span class="wf-label">Playground</span>
-				<h2>Try it here</h2>
+				<h2>Small apps, full patterns</h2>
 				<p>
-					Real Distributed apps under <code>tests/e2e-ui</code>. Each route has a
-					<strong>How it’s built</strong> panel — browser query, commands, handlers, domain, events,
-					and RBAC.
+					Real features under <code>tests/e2e-ui</code> — chat, todos, a game, admin. Each has
+					<strong>How it’s built</strong>: from the page down to domain and events.
 				</p>
 			</div>
 			<div class="dist-demo-grid">
@@ -590,11 +853,11 @@ source e2e-ui.env && make run
 		<div class="wf-band-inner">
 			<div class="wf-section-head">
 				<span class="wf-label">Next</span>
-				<h2>Build on Distributed</h2>
+				<h2>Model the domain. Leave the rest to the stack.</h2>
 				<p>
-					Copy the patterns from this playground into your service. Fleet hosting
-					(<strong>ops.com.ai</strong>) is on the roadmap; for now the open-source framework and this
-					fixture are the product surface.
+					Pick a demo close to your problem — todos for ownership and rules, chat for live rooms —
+					and reuse the shapes. The vehicle is one framework, built to scale; you stay on the parts
+					that create customer value. Fleet hosting (<strong>ops.com.ai</strong>) is on the roadmap.
 				</p>
 			</div>
 			<div class="wf-actions">
