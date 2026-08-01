@@ -2,11 +2,13 @@ import type { DemoWalkthrough } from './types';
 
 /**
  * Tab order is browser-first teaching order for every demo:
- * 1. Query / live subscription
- * 2. Commands (optimistic cache vs atomic Projected)
+ * 1. Query / live subscription (+ read RBAC)
+ * 2. Commands (optimistic cache vs atomic Projected) (+ write RBAC)
  * 3. Command handlers (repo → aggregate → commit)
  * 4. Domain model (plain Rust + macros)
  * 5. Domain events + projections
+ *
+ * Samples should be real, pasteable shapes from the fixture — not comment-only stubs.
  */
 
 export const todosWalkthrough: DemoWalkthrough = {
@@ -36,17 +38,20 @@ export const todosWalkthrough: DemoWalkthrough = {
 }`
 				},
 				{
-					file: 'Todos · ModelPermissions (RBAC)',
-					caption: 'Read grants: user sees own rows; admin sees all. Privilege pack applies at the engine.',
-					code: `ModelPermissions::new()
-  .grant(
-    "user",
-    read().all_columns().rows(
-      col("owner_id").eq(claim("x-user-id")),
-    ),
-  )
-  .grant("admin", read().all_columns())
-// No anonymous grant — /todos requires sign-in`
+					file: 'readmodels/models/todos.rs · permissions',
+					caption: 'Read RBAC: user sees own rows; admin sees all.',
+					code: `impl Todos {
+  pub fn permissions() -> ModelPermissions<Self> {
+    ModelPermissions::new()
+      .grant(
+        "user",
+        read()
+          .all_columns()
+          .rows(col("owner_id").eq(claim("x-user-id"))),
+      )
+      .grant("admin", read().all_columns())
+  }
+}`
 				},
 				{
 					file: 'routes/todos/+page.svelte',
@@ -54,15 +59,14 @@ export const todosWalkthrough: DemoWalkthrough = {
 					code: `import { Todos, useCommands } from '$distributed';
 
 const list = Todos.use();
-const rows = $derived($list.complete ? $list.data.todos : []);
-// $list is the same cache SSR hydrated and commands update`
+const rows = $derived($list.complete ? $list.data.todos : []);`
 				}
 			]
 		},
 		{
 			id: 'commands',
 			label: '2 · Commands',
-			lede: 'Writes go through generated commands. Todos are Causal: the client applies a safe optimistic preview into the replica cache that feeds the UI, then confirms when the projection obligation completes. Command RBAC lists who may invoke each mutation.',
+			lede: 'Writes go through generated commands. Todos are Causal: the client applies a safe optimistic preview into the replica cache that feeds the UI, then confirms when the projection obligation completes.',
 			principle: 'Let the Service declare how the UI catches up.',
 			samples: [
 				{
@@ -71,36 +75,40 @@ const rows = $derived($list.complete ? $list.data.todos : []);
 					code: `const commands = useCommands();
 
 await commands.todo.create({ title: text });
-// Inventory preview already painted the row in the replica
-await commands.todo.complete({ todo_id });
-// Causal: optimistic status → projector confirms exact obligation`
+await commands.todo.complete({ todo_id });`
 				},
 				{
-					file: 'service · command roles (RBAC)',
-					caption: 'User surface can create/complete; force_archive is admin-only (elevated surface).',
-					code: `// app_roles = ["user", "admin"] on portable mutations
-typed_command::<TodoCreateInput, Causal<…>>(…)
-  .roles(app_roles)   // user + admin may create
-  .emits(…)
-  .preview(…);
-
-typed_command::<TodoForceArchiveInput, Causal<…>>(…)
-  .roles(["admin"])   // not on $distributed user tree`
+					file: 'service.rs · todos_create (roles + preview)',
+					caption: 'Write RBAC on the inventory; owner is a trusted claim, not input.',
+					code: `typed_command::<TodoCreateInput, Causal<TodoCreatePayload>>(
+  todo_create::COMMAND,
+)
+.field_name("todos_create")
+.roles(app_roles) // ["user", "admin"]
+.input_defaults(command_input_defaults! {
+  input: TodoCreateInput;
+  default input.todo_id = uuid_v7();
+})
+.emits(events![TodoCreatedDomainEvent])
+.applies(state_preview! {
+  TodoCreatedDomainEvent => TodoState {
+    todo_id: generated.todo_id,
+    owner_id: trusted("x-user-id", "string"),
+    title: input.title,
+    status: "open",
+    assignee_id: null,
+  }
+})`
 				},
 				{
-					file: 'service · typed_command preview',
-					caption: 'Safe fields only — known from input, defaults, or trusted claims.',
-					code: `typed_command::<TodoCreateInput, Causal<TodoCreatePayload>>(…)
-  .emits(events![TodoCreatedDomainEvent])
-  .preview(state_preview! {
-    TodoCreatedDomainEvent => TodoState {
-      todo_id: generated.todo_id,
-      owner_id: trusted("x-user-id", "string"),
-      title: input.title,
-      status: "open",
-      assignee_id: null,
-    }
-  })`
+					file: 'service.rs · todos_force_archive roles',
+					caption: 'Elevated mutation: admin only; not on the user client tree.',
+					code: `typed_command::<TodoForceArchiveInput, Causal<TodoForceArchivePayload>>(
+  todo_force_archive::COMMAND,
+)
+.field_name("todos_force_archive")
+.roles(["admin"])
+.emits(events![TodoForceArchivedDomainEvent])`
 				}
 			]
 		},
@@ -111,29 +119,38 @@ typed_command::<TodoForceArchiveInput, Causal<…>>(…)
 			principle: 'Commands change the world; tables are for reading.',
 			samples: [
 				{
-					file: 'handlers/commands · create',
+					file: 'handlers/commands/todo_create.rs',
 					caption: 'repo → create → domain → publish_events → causal',
-					code: `let owner = ctx.user_id()?.to_string(); // never from input
-let repo = ctx.repo();
-let mut todo = repo.create();
-todo.create(&input.todo_id, &owner, &input.title)?;
-let state = TodoState::from(&*todo);
-repo.publish_events()
-  .commit(todo)?
-  .causal(TodoCreatePayload {
+					code: `pub async fn handle(
+  ctx: &CausalCommandContext<'_, Todo>,
+  input: TodoCreateInput,
+) -> Result<PreparedCommand<Causal<TodoCreatePayload>>, HandlerError> {
+  let owner = ctx.user_id()?.to_string();
+  let repo = ctx.repo();
+  let mut todo = repo.create();
+  todo.create(&input.todo_id, &owner, &input.title)
+    .map_err(rejected)?;
+  let state = TodoState::from(&*todo);
+  repo.publish_events().commit(todo)?.causal(TodoCreatePayload {
     todo_id: state.todo_id,
     owner_id: state.owner_id,
     title: state.title,
     status: state.status,
-  })`
+  })
+}`
 				},
 				{
-					file: 'handlers/commands · complete',
-					code: `let mut todo = repo.get(&input.todo_id).await?
-  .ok_or_else(|| HandlerError::NotFound(…))?;
+					file: 'handlers/commands/todo_complete.rs',
+					code: `let mut todo = repo
+  .get(&input.todo_id)
+  .await?
+  .ok_or_else(|| HandlerError::NotFound(input.todo_id.clone()))?;
 todo.complete(&owner).map_err(rejected)?;
 let state = TodoState::from(&*todo);
-repo.publish_events().commit(todo)?.causal(…)`
+repo.publish_events().commit(todo)?.causal(TodoStatusPayload {
+  todo_id: state.todo_id,
+  status: state.status,
+})`
 				}
 			]
 		},
@@ -158,6 +175,7 @@ repo.publish_events().commit(todo)?.causal(…)`
 #[event("todo.completed", version = 1, domain)]
 fn record_completed(&mut self) {
   self.status = TodoStatus::Completed;
+  self.advance_snapshot_generation();
 }`
 				}
 			]
@@ -173,16 +191,21 @@ fn record_completed(&mut self) {
 					caption: 'Domain events → portable projection program.',
 					code: `portable_handlers! {
   pub const TODOS: ProjectionDescriptor<EventualOnly> = {
-    name: "project_todos", version: 1, epoch: "e2e-ui-todos-v2",
+    name: "project_todos",
+    version: 1,
+    epoch: "e2e-ui-todos-v2",
     model: Todos,
-    apply save_todo {
-      on_event TodoCreatedDomainEvent,
-              TodoCompletedDomainEvent,
-              /* … */ as "todo"
-    },
-    apply delete_todo {
-      on_deleted TodoPurgedDomainEvent as "todo_id"
+    on_event {
+      TodoCreatedDomainEvent,
+      TodoRenamedDomainEvent,
+      TodoCompletedDomainEvent,
+      TodoReopenedDomainEvent,
+      TodoReassignedDomainEvent,
+      TodoArchivedDomainEvent,
+      TodoForceArchivedDomainEvent,
     }
+    apply save_todo as "todo",
+    on_deleted TodoPurgedDomainEvent => apply delete_todo as "todo_id",
   };
 }`
 				},
@@ -206,22 +229,22 @@ export const chatWalkthrough: DemoWalkthrough = {
 	title: 'Lobby chat',
 	kicker: 'Browser → live query → Causal post',
 	summary:
-		'Start with the document: @load seeds HTML and @live continues the same query over WebSocket. Posts are optimistic Causal commands into the shared replica.',
+		'Start with the document: @load seeds HTML and @live continues the same query over WebSocket. Posts are optimistic Causal commands into the shared replica. Guests read via e2e-ui-public.',
 	tabs: [
 		{
 			id: 'query',
 			label: '1 · Query / live',
-			lede: 'One GraphQL operation is both the SSR seed and the live subscription. Newest page stays at offset 0 with @live; history uses the same op with rising offset. Read RBAC allows user, admin, and anonymous.',
+			lede: 'One GraphQL operation is both the SSR seed and the live subscription. Read RBAC allows user, admin, and anonymous (guests open e2e-ui-public).',
 			principle: 'Register once, ship everywhere.',
 			samples: [
 				{
 					file: 'routes/chat/+page.graphql',
 					caption: '@load for SSR · @live for WS frames',
-					code: `query ChatMessages @load @live {
+					code: `query ChatMessages($limit: Int!, $offset: Int!) @load @live {
   chat_messages(
     where: { room_id: { _eq: "lobby" } }
-    limit: 40
-    offset: 0
+    limit: $limit
+    offset: $offset
     order_by: [{ created_at: desc }]
   ) {
     message_id
@@ -229,71 +252,114 @@ export const chatWalkthrough: DemoWalkthrough = {
     author_id
     body
     created_at
-    author { display_name }
+    author { user_id display_name email }
   }
 }`
 				},
 				{
-					file: 'ChatMessages · ModelPermissions (RBAC)',
-					caption: 'Room-shared read for every role pack that includes this model.',
-					code: `ModelPermissions::new()
-  .grant("user", read().all_columns())
-  .grant("admin", read().all_columns())
-  .grant("anonymous", read().all_columns())
-// Guests open e2e-ui-public (anonymous privilege);
-// signed-in clients open e2e-ui (user privilege)`
+					file: 'readmodels/models/chat_messages.rs · permissions',
+					caption: 'Room-shared read for user, admin, and anonymous.',
+					code: `impl ChatMessages {
+  pub fn permissions() -> ModelPermissions<Self> {
+    ModelPermissions::new()
+      .grant("user", read().all_columns())
+      .grant("admin", read().all_columns())
+      .grant("anonymous", read().all_columns())
+  }
+}`
 				},
 				{
 					file: 'routes/chat/+page.svelte',
 					code: `const lobby = ChatMessages.use({ limit: PAGE_SIZE, offset: 0 });
-// Live page = replica subscription on the same document
-const livePage = $derived(/* reverse $lobby.data.chat_messages */);`
+const livePage = $derived.by(() => {
+  const rows = Array.isArray($lobby.data?.chat_messages)
+    ? $lobby.data.chat_messages
+    : [];
+  return [...rows].reverse();
+});`
 				}
 			]
 		},
 		{
 			id: 'commands',
 			label: '2 · Commands',
-			lede: 'Post is a generated command for signed-in surfaces only. The client replica cache applies a modeled optimistic message so the UI updates immediately; Causal confirmation follows the projector.',
+			lede: 'Post is a generated command for signed-in surfaces only. The client replica cache applies a modeled optimistic message; Causal confirmation follows the projector.',
 			principle: 'One replica story for user data.',
 			samples: [
 				{
 					file: 'routes/chat/+page.svelte',
 					caption: 'Optimistic via shared client cache that feeds every bound view.',
 					code: `const commands = useCommands();
-
-await commands.chat.post({
-  room_id: "lobby",
-  body: draft.trim()
+const receipt = await commands.chat.post({
+  message_id,
+  body,
+  room_id: LOBBY_ROOM,
+  created_at: String(now),
 });
-// Your bubble appears from replica optimism;
-// others receive the same row via @live after project`
+if (receipt.projected !== undefined) {
+  await receipt.projected;
+}`
 				},
 				{
-					file: 'service · chat.post roles (RBAC)',
-					caption: 'Mutation roles are app_roles (user + admin). Anonymous surface has no write inventory.',
-					code: `typed_command::<ChatPostInput, Causal<ChatPostPayload>>(…)
-  .roles(app_roles)  // ["user", "admin"]
-  .emits(…);
-// e2e-ui-public: read-only privilege pack — guests see
-// “Sign in to post”, not a composer that 403s later`
+					file: 'service.rs · chat_messages_post roles',
+					caption: 'Write RBAC: user + admin only. Public client has zero commands.',
+					code: `typed_command::<ChatPostInput, Causal<ChatPostPayload>>(
+  chat_post::COMMAND,
+)
+.field_name("chat_messages_post")
+.roles(app_roles) // ["user", "admin"]
+.emits(events![ChatMessagePostedDomainEvent])`
+				},
+				{
+					file: 'generated/public/commands.ts',
+					caption: 'e2e-ui-public inventory is intentionally empty.',
+					code: `export const COMMAND_ARTIFACTS = [] as const;
+export type GeneratedCommands = Readonly<Record<never, never>>;`
 				}
 			]
 		},
 		{
 			id: 'handlers',
 			label: '3 · Handlers',
-			lede: 'Handler loads or creates the chat aggregate through the repository, applies the domain post, commits Causal (eventual path).',
+			lede: 'Handler creates the chat aggregate through the repository, applies the domain post, commits Causal (eventual path). Author is always the session principal.',
 			principle: 'Trust the signed-in person, not the request body.',
 			samples: [
 				{
-					file: 'handlers/commands · chat post',
-					caption: 'Author from session — never “I am alice” in the body.',
-					code: `let author = ctx.user_id()?.to_string();
-let repo = ctx.repo();
-let mut room = /* get/create lobby aggregate */;
-room.post(&author, &input.body, …)?;
-repo.publish_events().commit(room)?.causal(ChatPostPayload { … })`
+					file: 'handlers/commands/chat_post.rs',
+					code: `pub async fn handle(
+  ctx: &CausalCommandContext<'_, ChatMessage>,
+  input: ChatPostInput,
+) -> Result<PreparedCommand<Causal<ChatPostPayload>>, HandlerError> {
+  let author = ctx.user_id()?.to_string();
+  let created_at = canonical_near_unix_millis(&input.created_at)?;
+  let repo = ctx.repo();
+
+  if repo.get(&input.message_id).await?.is_some() {
+    return Err(HandlerError::Rejected(format!(
+      "message {} already exists",
+      input.message_id
+    )));
+  }
+
+  let mut msg = repo.create();
+  msg.post(
+    &input.message_id,
+    &input.room_id,
+    &author,
+    &input.body,
+    &created_at,
+  )
+  .map_err(rejected)?;
+
+  let state = ChatMessageState::from(&*msg);
+  repo.publish_events().commit(msg)?.causal(ChatPostPayload {
+    message_id: state.message_id,
+    room_id: state.room_id,
+    author_id: state.author_id,
+    body: state.body,
+    created_at: state.created_at,
+  })
+}`
 				}
 			]
 		},
@@ -304,19 +370,49 @@ repo.publish_events().commit(room)?.causal(ChatPostPayload { … })`
 			principle: 'Start with the domain, not the database.',
 			samples: [
 				{
-					file: 'chat-domain · post',
+					file: 'chat-domain · ChatMessage::post',
 					code: `pub fn post(
   &mut self,
-  author_id: &str,
-  body: &str,
+  message_id: impl Into<String>,
+  room_id: impl Into<String>,
+  author_id: impl Into<String>,
+  body: impl Into<String>,
+  created_at: impl Into<String>,
 ) -> Result<(), ChatError> {
-  // validation, rate, room membership…
-  self.record_posted(author_id, body)?;
+  if self.is_posted() {
+    return Err(ChatError::AlreadyExists);
+  }
+  let body = body.into();
+  let body = body.trim();
+  if body.is_empty() {
+    return Err(ChatError::EmptyBody);
+  }
+  self.record_posted(
+    message_id.into(),
+    room_id.into(),
+    author_id.into(),
+    body.to_string(),
+    created_at.into(),
+  )?;
   Ok(())
 }
 
-#[event("chat.message.posted", version = 1, domain)]
-fn record_posted(&mut self, author_id: &str, body: &str) { … }`
+#[event("chat_message.posted", version = 1, domain)]
+fn record_posted(
+  &mut self,
+  message_id: String,
+  room_id: String,
+  author_id: String,
+  body: String,
+  created_at: String,
+) {
+  self.entity.set_id(&message_id);
+  self.message_id = message_id;
+  self.room_id = room_id;
+  self.author_id = author_id;
+  self.body = body;
+  self.created_at = created_at;
+}`
 				}
 			]
 		},
@@ -327,10 +423,30 @@ fn record_posted(&mut self, author_id: &str, body: &str) { … }`
 			principle: 'Commands change the world; tables are for reading.',
 			samples: [
 				{
-					file: 'projections · chat messages',
-					code: `// on ChatMessagePostedDomainEvent → upsert chat_messages
-// @live subscribers re-query / receive frames from the same model
-// display names join auth_users — not copied onto the message aggregate`
+					file: 'projections/chat.rs',
+					code: `mutation_projector! {
+  pub const CHAT_MESSAGES: ProjectionDescriptor<DirectCandidate> = {
+    name: "project_chat_messages",
+    version: 1,
+    epoch: "e2e-ui-chat-v2",
+    model: ChatMessages,
+    program: chat_handlers,
+  };
+}
+
+fn chat_handlers() -> Result<ProjectionProgram, ProjectionProgramError> {
+  let handler = bind_state_body_to_mutation::<ChatMessages>(
+    &ChatMessagePostedDomainEvent::descriptor(),
+    save_chat_message().program().clone(),
+    "message",
+  )?;
+  compile_portable_handlers(
+    "project_chat_messages",
+    1,
+    ProjectionPartition::Unit,
+    [handler],
+  )
+}`
 				}
 			]
 		}
@@ -363,62 +479,90 @@ export const blobWalkthrough: DemoWalkthrough = {
 }`
 				},
 				{
-					file: 'BlobGames · ModelPermissions (RBAC)',
+					file: 'readmodels/models/blob_games.rs · permissions',
 					caption: 'Same claim pattern as todos — owner-scoped for user.',
-					code: `ModelPermissions::new()
-  .grant("user", read().all_columns()
-    .rows(col("owner_id").eq(claim("x-user-id"))))
-  .grant("admin", read().all_columns())
-// No anonymous — /blob requires sign-in`
+					code: `impl BlobGames {
+  pub fn permissions() -> ModelPermissions<Self> {
+    ModelPermissions::new()
+      .grant(
+        "user",
+        read()
+          .all_columns()
+          .rows(col("owner_id").eq(claim("x-user-id"))),
+      )
+      .grant("admin", read().all_columns())
+  }
+}`
 				},
 				{
-					file: 'blob · replica bind',
+					file: 'routes/blob/[[gameId]]/+page.svelte',
 					code: `const list = BlobGames.use();
-const games = $derived($list.complete ? $list.data.blob_games : []);
-// Active board = games.find(g => g.game_id === routeGameId)`
+const games = $derived(
+  $list.complete ? $list.data.blob_games : []
+);`
 				}
 			]
 		},
 		{
 			id: 'commands',
 			label: '2 · Commands',
-			lede: 'Moves are Projected commands. Unlike todos, the UI does not guess the next board — it applies atomic results from the server into the client cache that feeds the UI. Command roles match the portable surface.',
+			lede: 'Moves are Projected commands. Unlike todos, the UI does not guess the next board — it applies atomic results from the server into the client cache that feeds the UI.',
 			principle: 'Let the Service declare how the UI catches up.',
 			samples: [
 				{
-					file: 'blob · move',
+					file: 'routes/blob/[[gameId]]/+page.svelte',
 					caption: 'consistency: "projected" — authoritative delta before await returns.',
 					code: `const receipt = await commands.blob.move({
   game_id,
-  direction: 'up'
-});
-// Replica already has the new map_json / score from the payload
-// No dual-write; no “wait for projector” flash`
+  direction: 'up',
+});`
 				},
 				{
-					file: 'service · blob command roles (RBAC)',
-					caption: 'start / move / start_level are user+admin on e2e-ui.',
-					code: `typed_command::<BlobMoveInput, Projected<BlobGames>>(…)
-  .roles(app_roles);  // ["user", "admin"]
-// Domain still enforces owner_id on the aggregate —
-// RBAC is “who may call”; domain is “who may mutate this game”`
+					file: 'service.rs · blob.move roles',
+					caption: 'Write RBAC: user + admin on the portable surface.',
+					code: `typed_command::<BlobMoveInput, Projected<BlobGames>>(
+  blob_move::COMMAND,
+)
+.field_name("blob_games_move")
+.roles(app_roles) // ["user", "admin"]`
 				}
 			]
 		},
 		{
 			id: 'handlers',
 			label: '3 · Handlers',
-			lede: 'Same repo pattern: get aggregate, domain move, commit — but commit returns Projected so aggregate, ledger, and query row share one transaction.',
+			lede: 'Same repo pattern: get aggregate, domain move, commit — but the row is staged in-handler and commit returns Projected so aggregate, ledger, and query row share one transaction.',
 			principle: 'Commands change the world; tables are for reading.',
 			samples: [
 				{
 					file: 'handlers/commands/blob_move.rs',
-					code: `let mut game = repo.get(&input.game_id).await?
-  .ok_or_else(|| HandlerError::NotFound(input.game_id.clone()))?;
-game.move_dir(&owner, dir).map_err(rejected)?;
-// Placement-selected direct projection
-repo.commit(game)?.projected()
-// → PreparedCommand<Projected<BlobGames>>`
+					code: `pub async fn handle(
+  ctx: &CausalCommandContext<'_, BlobGame>,
+  input: BlobMoveInput,
+) -> Result<PreparedCommand<Projected<BlobGames>>, HandlerError> {
+  let owner = ctx.user_id()?.to_string();
+  let dir = Direction::parse(&input.direction).ok_or_else(|| {
+    HandlerError::Rejected(format!(
+      "invalid direction \`{}\` (use up|down|left|right)",
+      input.direction
+    ))
+  })?;
+
+  let repo = ctx.repo();
+  let mut game = repo
+    .get(&input.game_id)
+    .await?
+    .ok_or_else(|| HandlerError::NotFound(input.game_id.clone()))?;
+  game.move_dir(&owner, dir).map_err(rejected)?;
+
+  let row = save_blob_game()
+    .from_state(&BlobGameState::from(&*game))
+    .map_err(|error| HandlerError::Other(Box::new(error)))?;
+  repo.readmodel(row)
+    .publish_events()
+    .commit(game)?
+    .projected()
+}`
 				}
 			]
 		},
@@ -429,17 +573,54 @@ repo.commit(game)?.projected()
 			principle: 'Start with the domain, not the database.',
 			samples: [
 				{
-					file: 'blob-domain · move_dir',
+					file: 'blob-domain · BlobGame::move_dir',
 					code: `pub fn move_dir(
   &mut self,
   owner_id: &str,
-  dir: Direction,
+  direction: Direction,
 ) -> Result<(), BlobError> {
   self.ensure_owner(owner_id)?;
-  self.require_alive()?;
-  // tile rules, score, visit marks…
-  self.record_moved(dir)?;
+  if self.player_dead {
+    return Err(BlobError::PlayerDead);
+  }
+  if self.current_level == 0 || self.map.is_empty() {
+    return Err(BlobError::NoActiveLevel);
+  }
+  let (r, c) = self.player_pos()?;
+  let (nr, nc) = match direction {
+    Direction::Up => {
+      if r == 0 {
+        return Err(BlobError::CannotMove("row already 0".into()));
+      }
+      (r - 1, c)
+    }
+    // Down / Left / Right …
+    _ => /* … */ (r, c),
+  };
+  // Simulate tiles → score / dead flags, then:
+  self.record_moved(
+    score,
+    player_dead,
+    level_complete,
+    next_map,
+    direction.as_str().to_string(),
+  )?;
   Ok(())
+}
+
+#[event("blob.moved", version = 1, domain)]
+fn record_moved(
+  &mut self,
+  score: i64,
+  player_dead: bool,
+  current_level_completed: bool,
+  map: Vec<Vec<u8>>,
+  _direction: String,
+) {
+  self.score = score;
+  self.player_dead = player_dead;
+  self.current_level_completed = current_level_completed;
+  self.map = map;
 }`
 				}
 			]
@@ -451,13 +632,33 @@ repo.commit(game)?.projected()
 			principle: 'Know which side of the fence you are on.',
 			samples: [
 				{
-					file: 'service · SurfaceDirectProjection',
-					code: `fn blob_projection() -> SurfaceDirectProjection {
-  SurfaceDirectProjection::new("project_blob")
-    .modeled(catalog.resolve(BLOB_GAMES))
-}
-// typed_command::<…, Projected<BlobGames>>(…)
-// Eventual projectors optional for side tables — board is atomic`
+					file: 'projections/blob.rs',
+					code: `portable_handlers! {
+  pub const BLOB_GAMES: ProjectionDescriptor<DirectCandidate> = {
+    name: "project_blob",
+    version: 1,
+    epoch: "e2e-ui-blob-v2",
+    model: BlobGames,
+    on_state BlobGameState as "game" apply save_blob_game {
+      "blob.initialized",
+      "blob.level_started",
+      "blob.started",
+      "blob.moved",
+    }
+  };
+}`
+				},
+				{
+					file: 'service.rs · projection binding',
+					code: `let blob_binding = ProjectionBinding::materialize_direct(
+  BLOB_GAMES.direct(),
+  source(),
+  owner("project_blob"),
+  /* … */,
+  vec![projection_output::<BlobGames>()],
+  /* … */,
+)?;
+// Handler stages the row via readmodel(row).commit()?.projected()`
 				}
 			]
 		}
@@ -479,42 +680,79 @@ export const adminWalkthrough: DemoWalkthrough = {
 			principle: 'Roles and surfaces are real.',
 			samples: [
 				{
-					file: 'admin · AdminAllTodos',
+					file: 'routes/admin/+page.svelte',
 					code: `import { AdminAllTodos, useCommands } from '$distributed/admin';
 
 const list = AdminAllTodos.use();
-const rows = $derived($list.complete ? $list.data.todos : []);
-// Nested layout provides a second distributed client`
+const commands = useCommands();
+const rows = $derived($list.complete ? $list.data.todos : []);`
 				},
 				{
-					file: 'Todos · admin read grant (RBAC)',
+					file: 'readmodels/models/todos.rs · admin grant',
 					caption: 'e2e-ui-admin privilege pack uses admin grants (all rows).',
-					code: `// ModelPermissions on Todos:
-.grant("admin", read().all_columns())
-// Portable e2e-ui uses schema privilege "user" (owner rows).
-// Elevated e2e-ui-admin opens with admin privilege pack.`
+					code: `impl Todos {
+  pub fn permissions() -> ModelPermissions<Self> {
+    ModelPermissions::new()
+      .grant(
+        "user",
+        read()
+          .all_columns()
+          .rows(col("owner_id").eq(claim("x-user-id"))),
+      )
+      .grant("admin", read().all_columns())
+  }
+}`
+				},
+				{
+					file: 'service.rs · dual surfaces',
+					code: `.client_application_surface_with_schema_roles(
+  "e2e-ui",
+  ["admin", "user"], // eligible
+  ["user"],          // portable privilege pack
+)
+.client_application_surface("e2e-ui-admin", ["admin"])
+.client_application_surface("e2e-ui-public", ["anonymous"])`
 				}
 			]
 		},
 		{
 			id: 'commands',
 			label: '2 · Commands',
-			lede: 'Elevated mutations only exist on the admin command tree. They still update the admin replica cache that feeds this page’s UI. Command roles are the second RBAC half.',
+			lede: 'Elevated mutations only exist on the admin command tree. They still update the admin replica cache that feeds this page’s UI.',
 			principle: 'You keep the interesting code — scaffolding disappears.',
 			samples: [
 				{
-					file: 'admin page',
-					code: `const commands = useCommands(); // from $distributed/admin
-await commands.todo.force_archive({ todo_id });
-// Not importable from the user $distributed tree`
+					file: 'routes/admin/+page.svelte',
+					code: `await commands.todo.force_archive({ todo_id });`
 				},
 				{
-					file: 'service · force_archive roles (RBAC)',
-					caption: 'Only admin may invoke; surface gate + typed_command roles.',
-					code: `typed_command::<TodoForceArchiveInput, Causal<…>>(…)
-  .roles(["admin"]);
-// Layout: isAdminEngineRole before any GraphQL
-// Artifact: force_archive absent from user command inventory`
+					file: 'service.rs · todos_force_archive',
+					caption: 'Write RBAC: admin only; absent from user client inventory.',
+					code: `typed_command::<
+  TodoForceArchiveInput,
+  Causal<TodoForceArchivePayload>,
+>(todo_force_archive::COMMAND)
+.field_name("todos_force_archive")
+.roles(["admin"])
+.emits(events![TodoForceArchivedDomainEvent])
+.applies(state_preview! {
+  TodoForceArchivedDomainEvent => TodoState {
+    todo_id: input.todo_id,
+    status: "archived",
+    ..unknown
+  }
+})`
+				},
+				{
+					file: 'routes/admin/+layout.server.ts',
+					caption: 'Surface gate before any GraphQL.',
+					code: `getRole: (session) => {
+  const role = engineRoleFromGroups(session?.user?.groups);
+  if (!isAdminEngineRole(role)) {
+    error(403, 'Admin role required — sign in as admin');
+  }
+  return role;
+}`
 				}
 			]
 		},
@@ -525,10 +763,29 @@ await commands.todo.force_archive({ todo_id });
 			principle: 'Trust the signed-in person, not the request body.',
 			samples: [
 				{
-					file: 'handlers · force_archive',
-					code: `let mut todo = repo.get(&input.todo_id).await?…;
-todo.force_archive(/* admin path */)?;
-repo.publish_events().commit(todo)?.causal(…)`
+					file: 'handlers/commands/todo_force_archive.rs',
+					code: `pub async fn handle(
+  ctx: &CausalCommandContext<'_, Todo>,
+  input: TodoForceArchiveInput,
+) -> Result<PreparedCommand<Causal<TodoForceArchivePayload>>, HandlerError> {
+  let admin = ctx.user_id()?.to_string();
+  let repo = ctx.repo();
+  let mut todo = repo
+    .get(&input.todo_id)
+    .await?
+    .ok_or_else(|| HandlerError::NotFound(input.todo_id.clone()))?;
+
+  todo.force_archive().map_err(rejected)?;
+  let state = TodoState::from(&*todo);
+  repo.publish_events()
+    .commit(todo)?
+    .causal(TodoForceArchivePayload {
+      todo_id: state.todo_id,
+      owner_id: state.owner_id,
+      status: state.status,
+      archived_by: admin,
+    })
+}`
 				}
 			]
 		},
@@ -539,22 +796,48 @@ repo.publish_events().commit(todo)?.causal(…)`
 			principle: 'Start with the domain, not the database.',
 			samples: [
 				{
-					file: 'todo-domain · force_archive',
-					code: `// Domain still owns “what does archive mean?”
-// Handler only checks admin role / surface before calling it`
+					file: 'todo-domain · Todo::force_archive',
+					code: `/// Record an administrator intervention separately from owner archival.
+pub fn force_archive(&mut self) -> Result<(), TodoError> {
+  if !self.is_created() {
+    return Err(TodoError::NotCreated);
+  }
+  self.record_force_archived()?;
+  Ok(())
+}
+
+#[event("todo.force_archived", version = 1, domain)]
+fn record_force_archived(&mut self) {
+  self.status = TodoStatus::Archived;
+  self.advance_snapshot_generation();
+}`
 				}
 			]
 		},
 		{
 			id: 'events',
 			label: '5 · Events',
-			lede: 'Archive emits domain events into the same todos projection path — every surface’s replica converges on one query model.',
+			lede: 'Force-archive emits TodoForceArchivedDomainEvent into the same todos projection path as owner archive — every surface’s replica converges on one query model.',
 			principle: 'Register once, ship everywhere.',
 			samples: [
 				{
-					file: 'projections/todos.rs',
-					code: `// TodoArchivedDomainEvent → save_todo / status update
-// Admin and user clients both read Todos — different RLS grants`
+					file: 'projections/todos.rs · force archive arm',
+					code: `portable_handlers! {
+  pub const TODOS: ProjectionDescriptor<EventualOnly> = {
+    name: "project_todos",
+    version: 1,
+    epoch: "e2e-ui-todos-v2",
+    model: Todos,
+    on_event {
+      TodoCreatedDomainEvent,
+      /* … */
+      TodoArchivedDomainEvent,
+      TodoForceArchivedDomainEvent, // admin path
+    }
+    apply save_todo as "todo",
+    on_deleted TodoPurgedDomainEvent => apply delete_todo as "todo_id",
+  };
+}`
 				}
 			]
 		}
@@ -577,23 +860,30 @@ export const sessionWalkthrough: DemoWalkthrough = {
 			samples: [
 				{
 					file: 'routes/session/+page.svelte',
-					code: `const session = $derived(data.session);
+					code: `const session = $derived(data.session as SessionLike | null | undefined);
 const user = $derived(session?.user);
 const engineRole = $derived(
   engineRoleFromGroups(user?.groups)
-);
-// Access token → GraphQL Authorization on every other page`
+);`
 				},
 				{
-					file: 'lib/roles.ts · groups → engine role (RBAC)',
+					file: 'lib/roles.ts',
 					caption: 'UI + SSR map IdP groups to admin | user before GraphQL.',
-					code: `export function engineRoleFromGroups(groups?: string[]) {
-  if (groups?.includes("admin") || groups?.includes("admins"))
-    return "admin";
-  return "user";
+					code: `export function engineRoleFromGroups(
+  groups: string[] | undefined,
+): 'admin' | 'user' {
+  if (!groups?.length) return 'user';
+  if (groups.includes('admin') || groups.includes('admins')) {
+    return 'admin';
+  }
+  return 'user';
 }
-// Multi-role tokens may assert admin+user in x-roles;
-// surfaces pick which privilege pack executes`
+
+export function isAdminEngineRole(
+  role: string | null | undefined,
+): boolean {
+  return role === 'admin';
+}`
 				}
 			]
 		},
@@ -604,34 +894,71 @@ const engineRole = $derived(
 			principle: 'Roles and surfaces are real.',
 			samples: [
 				{
-					file: 'layout · provideDistributed',
-					code: `provideDistributed({
-  session: pageData.session, // includes accessToken
-  hydration: data.distributed,
-  authority: data.distributedAuthority
-});
-// HTTP Bearer + WS connection_init share this source`
+					file: 'routes/+layout.svelte',
+					code: `const pageData = createPageDataSessionSource(initialData);
+const client = provideDistributed({
+  session: pageData.session,
+  browser,
+  hydration: initialData.distributed,
+  authority: initialData.distributedAuthority,
+});`
 				},
 				{
-					file: 'identity · claim map (RBAC)',
-					caption: 'OIDC groups/roles claims → allowlisted engine roles on the session.',
-					code: `// OidcConfig claim_map.engine_roles = ["user", "admin"]
-// role_claims: groups, roles, realm_access.roles, Zitadel project roles
-// Session carries x-roles as a set — not a single primary role`
+					file: 'service.rs · oidc_bearer_config',
+					caption: 'OIDC claim map → allowlisted engine roles on the session.',
+					code: `oidc.claim_map.engine_roles = vec![
+  "user".into(),
+  "admin".into(),
+];
+oidc.claim_map.role_claims = vec![
+  "groups".into(),
+  "roles".into(),
+  "realm_access.roles".into(),
+  "urn:zitadel:iam:org:project:roles".into(),
+];
+// Empty identity allowed for e2e-ui-public (anonymous).
+oidc.require_auth = false;
+IdentityConfig::oidc_bearer(oidc)`
 				}
 			]
 		},
 		{
 			id: 'handlers',
 			label: '3 · Edge map',
-			lede: 'OidcBearer validates JWT and injects session variables. Handlers then call ctx.user_id() / roles — repository pattern sits on top of that principal.',
+			lede: 'OidcBearer validates JWT and injects session variables. Handlers then call ctx.user_id() — repository pattern sits on top of that principal.',
 			principle: 'Set-only identity; surface privilege for execution.',
 			samples: [
 				{
-					file: 'service · OidcBearer',
-					code: `// Bearer → validate → Session { x-user-id, x-roles }
-// Multi-role principals open a named application surface
-// Empty identity opens anonymous-eligible public surfaces only`
+					file: 'src/graphql/identity/resolve.rs',
+					code: `IdentityMode::OidcBearer => {
+  let oidc = config.oidc.as_ref().ok_or(AuthError::Unauthorized)?;
+  match extract_bearer(headers)? {
+    None => {
+      if oidc.require_auth {
+        Err(AuthError::Unauthorized)
+      } else {
+        Ok(ResolvedIdentity::unverified(Session::new()))
+      }
+    }
+    Some(token) => oidc_identity(&token, oidc),
+  }
+}`
+				},
+				{
+					file: 'engine · principal_may_open_application',
+					code: `fn principal_may_open_application(
+  asserted: &[String],
+  eligible: &[String],
+) -> bool {
+  if asserted.is_empty() {
+    return eligible.iter().any(|role| role == "anonymous");
+  }
+  asserted.iter().any(|role| {
+    eligible
+      .binary_search_by(|c| c.as_str().cmp(role.as_str()))
+      .is_ok()
+  })
+}`
 				}
 			]
 		},
@@ -642,10 +969,15 @@ const engineRole = $derived(
 			principle: 'Simplest DX is the goal.',
 			samples: [
 				{
-					file: 'lib/roles.ts · auth.ts',
-					code: `// groups → engineRoleFromGroups
+					file: 'ui/src/auth.ts · group claims',
+					code: `const DEFAULT_GROUP_CLAIMS = [
+  'groups',
+  'roles',
+  'urn:zitadel:iam:org:project:roles',
+  'urn:zitadel:iam:org:projects:roles',
+];
 // Auth.js jwt/session callbacks store access + refresh
-// Silent refresh before expiry when refresh_token present`
+// and flatten Zitadel project role keys into session.user.groups`
 				}
 			]
 		},
@@ -656,9 +988,38 @@ const engineRole = $derived(
 			principle: 'Know which side of the fence you are on.',
 			samples: [
 				{
-					file: 'project_auth_user',
-					code: `// zitadel.user.*.v1 → upsert auth_users
-// Chat/blob join on OIDC sub == auth_users.user_id`
+					file: 'handlers/events/project_auth_user.rs',
+					code: `pub const EVENTS: &[&str] = &[
+  "zitadel.user.human.created.v1",
+  "zitadel.user.human.updated.v1",
+  "zitadel.user.human.deactivated.v1",
+  "zitadel.user.human.reactivated.v1",
+  "zitadel.user.machine.created.v1",
+];
+
+pub async fn handle<R, L, S>(
+  ctx: &Context<'_, AuthDeps<R, L, S>>,
+) -> Result<Value, HandlerError> {
+  let payload: ZitadelUserPayload = decode_payload(ctx.message())?;
+  let name = ctx.message().name();
+  let row = if name.contains("deactivated")
+    || name.contains("reactivated")
+  {
+    map_zitadel_user_status(name, &payload)
+  } else {
+    map_zitadel_user_upsert(name, &payload)
+  };
+  let store = ctx.read_model_store();
+  let mut plan = ReadModelWritePlanBuilder::new();
+  plan.upsert(&row).map_err(read_model_error)?;
+  plan.commit(store).await.map_err(read_model_error)?;
+  Ok(json!({
+    "event": name,
+    "user_id": row.user_id,
+    "status": row.status,
+    "display_name": row.display_name,
+  }))
+}`
 				}
 			]
 		}
@@ -680,9 +1041,9 @@ export const publicWalkthrough: DemoWalkthrough = {
 			principle: 'Roles and surfaces are real.',
 			samples: [
 				{
-					file: 'public · GraphQL request',
+					file: 'routes/public/+page.svelte · request body',
 					code: `{
-  "query": "{ chat_messages(limit: 10) { message_id body } }",
+  "query": "{ chat_messages(limit: 10, offset: 0) { message_id body room_id created_at } }",
   "extensions": {
     "distributed": {
       "client": {
@@ -698,11 +1059,23 @@ export const publicWalkthrough: DemoWalkthrough = {
 }`
 				},
 				{
-					file: 'anonymous privilege pack (RBAC)',
+					file: 'readmodels · anonymous grants',
 					caption: 'Only models granted to anonymous appear on this surface.',
-					code: `// ChatMessages: grant("anonymous", read().all_columns())
-// AuthUsers:    grant("anonymous", …)  // author display joins
-// Todos / BlobGames: no anonymous grant → absent from public schema`
+					code: `// ChatMessages
+.grant("anonymous", read().all_columns())
+
+// AuthUsers (author display joins)
+.grant("anonymous", read().all_columns())
+
+// Todos / BlobGames: no anonymous grant
+// → absent from the public client schema`
+				},
+				{
+					file: 'service.rs · public surface registration',
+					code: `.client_application_surface(
+  "e2e-ui-public",
+  ["anonymous"],
+)`
 				}
 			]
 		},
@@ -713,16 +1086,28 @@ export const publicWalkthrough: DemoWalkthrough = {
 			principle: 'Simplest DX is the goal.',
 			samples: [
 				{
-					file: 'public route',
-					code: `// No useCommands() — unauthenticated lobby peek only
-// Authed clients use e2e-ui / e2e-ui-admin instead`
+					file: 'generated/public/commands.ts',
+					code: `export const COMMAND_ARTIFACTS = [] as const;
+
+export const COMMANDS = {} as const;
+
+export type GeneratedCommands =
+  Readonly<Record<never, never>>;`
 				},
 				{
-					file: 'command inventory (RBAC)',
-					caption: 'Public generated client has an empty command surface.',
-					code: `// $distributed/public GeneratedCommands = Record<never, never>
-// chat.post.roles(app_roles) never appears here —
-// fail closed by omission, not by hoping the UI forgets to call it`
+					file: 'generated/public/sveltekit.ts',
+					code: `export function provideDistributed(
+  options: Omit<
+    CreateDistributedSvelteKitOptions<GeneratedCommands>,
+    'createCommands'
+  >,
+): DistributedSvelteKitClient<GeneratedCommands> {
+  return provideDistributedSvelteKitClient(
+    createDistributedSvelteKit<GeneratedCommands>({
+      ...options,
+    }),
+  );
+}`
 				}
 			]
 		},
@@ -733,36 +1118,72 @@ export const publicWalkthrough: DemoWalkthrough = {
 			principle: 'Set-only identity; surface privilege for execution.',
 			samples: [
 				{
-					file: 'engine · resolve_execution_authority',
-					code: `// asserted.is_empty() && eligible contains "anonymous"
-// → open application surface privilege
-// never mint a fake principal role`
+					file: 'src/graphql/engine/protocol.rs',
+					code: `fn principal_may_open_application(
+  asserted: &[String],
+  eligible: &[String],
+) -> bool {
+  // Unauthenticated principals may open surfaces that list \`anonymous\`.
+  if asserted.is_empty() {
+    return eligible.iter().any(|role| role == "anonymous");
+  }
+  asserted.iter().any(|role| {
+    eligible
+      .binary_search_by(|c| c.as_str().cmp(role.as_str()))
+      .is_ok()
+  })
+}`
+				},
+				{
+					file: 'src/graphql/identity/resolve.rs · empty Bearer',
+					code: `None => {
+  if oidc.require_auth {
+    Err(AuthError::Unauthorized)
+  } else {
+    Ok(ResolvedIdentity::unverified(Session::new()))
+  }
+}`
 				}
 			]
 		},
 		{
 			id: 'domain',
 			label: '4 · Chat model',
-			lede: 'Reads still hit the same chat_messages query model and domain history that authenticated clients use — only the surface privilege differs.',
+			lede: 'Reads still hit the same chat_messages query model that authenticated clients use — only the surface privilege differs.',
 			principle: 'Register once, ship everywhere.',
 			samples: [
 				{
-					file: 'ChatMessages · RLS',
-					code: `// anonymous grant: room-shared lobby read
-// same projection as signed-in chat`
+					file: 'readmodels/models/chat_messages.rs',
+					code: `impl ChatMessages {
+  pub fn permissions() -> ModelPermissions<Self> {
+    ModelPermissions::new()
+      .grant("user", read().all_columns())
+      .grant("admin", read().all_columns())
+      .grant("anonymous", read().all_columns())
+  }
+}`
 				}
 			]
 		},
 		{
 			id: 'events',
 			label: '5 · Events',
-			lede: 'Messages still arrive from chat domain events + projection. Public clients only see what anonymous RLS allows.',
+			lede: 'Messages still arrive from chat domain events + projection. Public clients only observe what anonymous RLS allows — they cannot post.',
 			principle: 'Commands change the world; tables are for reading.',
 			samples: [
 				{
-					file: 'chat projection',
-					code: `// ChatMessagePostedDomainEvent → chat_messages
-// Public surface cannot post — only observe`
+					file: 'projections/chat.rs',
+					code: `mutation_projector! {
+  pub const CHAT_MESSAGES: ProjectionDescriptor<DirectCandidate> = {
+    name: "project_chat_messages",
+    version: 1,
+    epoch: "e2e-ui-chat-v2",
+    model: ChatMessages,
+    program: chat_handlers,
+  };
+}
+// ChatMessagePostedDomainEvent → upsert chat_messages
+// Public surface has no chat.post command inventory`
 				}
 			]
 		}
