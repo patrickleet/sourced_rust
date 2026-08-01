@@ -1,7 +1,6 @@
-//! Todo: mutations + portable handlers.
+//! Todo: mutations + projections.
 
 use distributed::mutation_file;
-use distributed::portable_handlers;
 use distributed::projection::lower::{EventualOnly, ProjectionDescriptor};
 use distributed::Mutation;
 use e2e_readmodels::Todos;
@@ -29,7 +28,8 @@ pub fn delete_todo() -> Mutation<()> {
 
 // Lifecycle state events → [`save_todo`]; purge → [`delete_todo`].
 // Event-first: on <events> apply <mutation>.
-portable_handlers! {
+// Macro is `projection!` (crate root); `distributed::projection` is the module.
+distributed::projection! {
     pub const TODOS: ProjectionDescriptor<EventualOnly> = {
         name: "project_todos",
         version: 1,

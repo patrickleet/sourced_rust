@@ -105,7 +105,7 @@ pub fn rewrite_program_with_binder(
 }
 
 /// Convenience: build a single-field body-path binder map for tests and simple
-/// portable handlers.
+/// projections.
 pub fn simple_body_bindings(
     pairs: &[(&[&str], &[&str], ProjectionValueType)],
 ) -> Result<Vec<MutationInputBinding>, MutationProgramError> {

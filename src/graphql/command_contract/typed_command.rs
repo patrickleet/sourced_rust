@@ -637,7 +637,7 @@ impl<I, K: CommandOutcome> TypedCommand<I, K> {
     /// Declare known mutation-input fields for client cache application.
     ///
     /// Maps command-known values (and unknowns) onto the emitted domain-event
-    /// body shape that portable handlers bind into mutation IR. The client
+    /// body shape that projections bind into mutation IR. The client
     /// applies that mutation to the cache only; the server applies the same
     /// mutation for real (eventual projector or handler-owned projected row).
     ///

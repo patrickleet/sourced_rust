@@ -1,11 +1,11 @@
-//! Chat: mutation + portable handler (room-partitioned).
+//! Chat: mutation + projection (room-partitioned).
 
 use distributed::domain_event::DomainEventContract;
 use distributed::mutation_file;
 use distributed::mutation_projector;
 use distributed::projection::lower::{DirectCandidate, ProjectionDescriptor};
 use distributed::{
-    bind_state_body_to_mutation, compile_portable_handlers, Mutation, ProjectionPartition,
+    bind_state_body_to_mutation, compile_projection, Mutation, ProjectionPartition,
     ProjectionProgram, ProjectionProgramError,
 };
 use chat_domain::ChatMessagePostedDomainEvent;
@@ -34,7 +34,7 @@ fn chat_handlers() -> Result<ProjectionProgram, ProjectionProgramError> {
     // GraphQL document (`where: { room_id: { _eq: "lobby" } }`). Expression
     // partitions are correct for multi-room worker sharding, but they make
     // live indexes incomparable and the client falls back to Idle.
-    compile_portable_handlers(
+    compile_projection(
         "project_chat_messages",
         1,
         ProjectionPartition::Unit,

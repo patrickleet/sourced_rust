@@ -189,7 +189,7 @@ fn record_completed(&mut self) {
 				{
 					file: 'projections/todos.rs',
 					caption: 'Domain events → portable projection program.',
-					code: `portable_handlers! {
+					code: `projection! {
   pub const TODOS: ProjectionDescriptor<EventualOnly> = {
     name: "project_todos",
     version: 1,
@@ -440,7 +440,7 @@ fn chat_handlers() -> Result<ProjectionProgram, ProjectionProgramError> {
     save_chat_message().program().clone(),
     "message",
   )?;
-  compile_portable_handlers(
+  compile_projection(
     "project_chat_messages",
     1,
     ProjectionPartition::Unit,
@@ -633,7 +633,7 @@ fn record_moved(
 			samples: [
 				{
 					file: 'projections/blob.rs',
-					code: `portable_handlers! {
+					code: `projection! {
   pub const BLOB_GAMES: ProjectionDescriptor<DirectCandidate> = {
     name: "project_blob",
     version: 1,
@@ -822,7 +822,7 @@ fn record_force_archived(&mut self) {
 			samples: [
 				{
 					file: 'projections/todos.rs · force archive arm',
-					code: `portable_handlers! {
+					code: `projection! {
   pub const TODOS: ProjectionDescriptor<EventualOnly> = {
     name: "project_todos",
     version: 1,

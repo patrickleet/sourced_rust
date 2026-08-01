@@ -190,7 +190,7 @@ fn causal_direct_program(
     event_name: &'static str,
 ) -> Result<crate::ProjectionProgram, crate::ProjectionProgramError> {
     use crate::mutation::{
-        bind_state_body_to_mutation, compile_portable_handlers, state_upsert_program_for_model,
+        bind_state_body_to_mutation, compile_projection, state_upsert_program_for_model,
     };
 
     let program = state_upsert_program_for_model::<CausalProjectionObligationView>(
@@ -213,7 +213,7 @@ fn causal_direct_program(
         operation: name.into(),
         reason: e.to_string(),
     })?;
-    compile_portable_handlers(name, version, crate::ProjectionPartition::Unit, [handler]).map_err(
+    compile_projection(name, version, crate::ProjectionPartition::Unit, [handler]).map_err(
         |e| crate::ProjectionProgramError::InvalidOperation {
             operation: name.into(),
             reason: e.to_string(),
@@ -314,7 +314,7 @@ const CAUSAL_ROGUE_DIRECT_PROJECTION: crate::projection::lower::ProjectionDescri
 #[cfg(feature = "graphql")]
 fn causal_sibling_program() -> Result<crate::ProjectionProgram, crate::ProjectionProgramError> {
     use crate::mutation::{
-        bind_state_body_to_mutation, compile_portable_handlers, state_upsert_program_for_model,
+        bind_state_body_to_mutation, compile_projection, state_upsert_program_for_model,
     };
 
     let program = state_upsert_program_for_model::<CausalProjectionSiblingView>(
@@ -340,7 +340,7 @@ fn causal_sibling_program() -> Result<crate::ProjectionProgram, crate::Projectio
         operation: "project_causal_direct_sibling".into(),
         reason: e.to_string(),
     })?;
-    compile_portable_handlers(
+    compile_projection(
         "project_causal_direct_sibling",
         1,
         crate::ProjectionPartition::Unit,
@@ -394,7 +394,7 @@ const CAUSAL_SIBLING_DIRECT_PROJECTION: crate::projection::lower::ProjectionDesc
 fn causal_lifecycle_program() -> Result<crate::ProjectionProgram, crate::ProjectionProgramError> {
     use crate::domain_event::DomainEventContract;
     use crate::mutation::{
-        bind_state_body_to_mutation, compile_portable_handlers, state_upsert_program_for_model,
+        bind_state_body_to_mutation, compile_projection, state_upsert_program_for_model,
     };
 
     let program = state_upsert_program_for_model::<CausalLifecycleView>(
@@ -416,7 +416,7 @@ fn causal_lifecycle_program() -> Result<crate::ProjectionProgram, crate::Project
         operation: "project_causal_lifecycle".into(),
         reason: e.to_string(),
     })?;
-    compile_portable_handlers(
+    compile_projection(
         "project_causal_lifecycle",
         1,
         crate::ProjectionPartition::Unit,

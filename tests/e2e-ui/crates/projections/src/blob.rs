@@ -1,8 +1,7 @@
-//! Blob: mutations + portable handlers.
+//! Blob: mutations + projections.
 
 use blob_domain::BlobGameState;
 use distributed::mutation_file;
-use distributed::portable_handlers;
 use distributed::projection::lower::{DirectCandidate, ProjectionDescriptor};
 use distributed::Mutation;
 use e2e_readmodels::BlobGames;
@@ -18,7 +17,8 @@ pub fn save_blob_game() -> Mutation<()> {
 // When these domain events fire, apply [`save_blob_game`] (body → `input.game`).
 // Event-first: on <events> apply <mutation>. Command path stages the row via
 // `Mutation::from_state` + `readmodel(row).commit()?.projected()`.
-portable_handlers! {
+// Macro is `projection!` (crate root); `distributed::projection` is the module.
+distributed::projection! {
     pub const BLOB_GAMES: ProjectionDescriptor<DirectCandidate> = {
         name: "project_blob",
         version: 1,
@@ -60,11 +60,11 @@ mod tests {
     };
     use distributed::projection::ProjectionEventSelector;
     use distributed::{
-        bind_event_to_mutation, body_bindings_for_model, body_field_binding,
-        compile_portable_handlers, descriptor_from_factories, inventory_single_model,
+        body_bindings_for_model, body_field_binding,
+        compile_projection, descriptor_from_factories, inventory_single_model,
         lower_single_model, resolve_mutation_program, MutationAssignment, MutationEventBinding,
         MutationExpression, MutationField, MutationKeyField, MutationKind, MutationOperation,
-        MutationProgram, PortableHandler, ProjectionMutationKind, ProjectionPartition,
+        MutationProgram, ProjectionHandler, ProjectionMutationKind, ProjectionPartition,
         ProjectionProgram, ProjectionProgramError, ProjectionTarget, ProjectionValueType,
         RelationalReadModel, ResolvedProjectionPlan, RowValue, TableMutation,
     };
@@ -141,11 +141,11 @@ mod tests {
         ];
         let binding = MutationEventBinding::try_new(blob_moved_selector()?, bindings, mutation)
             .map_err(|e| map_err("blob_patch_fixture", e))?;
-        compile_portable_handlers(
+        compile_projection(
             "blob_patch_fixture",
             1,
             ProjectionPartition::Unit,
-            [PortableHandler::from_binding("moved", binding)],
+            [ProjectionHandler::from_binding("moved", binding)],
         )
         .map_err(|e| map_err("blob_patch_fixture", e))
     }
@@ -188,11 +188,11 @@ mod tests {
             ];
         let binding = MutationEventBinding::try_new(blob_moved_selector()?, bindings, mutation)
             .map_err(|e| map_err("blob_delete_fixture", e))?;
-        compile_portable_handlers(
+        compile_projection(
             "blob_delete_fixture",
             1,
             ProjectionPartition::Unit,
-            [PortableHandler::from_binding("moved", binding)],
+            [ProjectionHandler::from_binding("moved", binding)],
         )
         .map_err(|e| map_err("blob_delete_fixture", e))
     }
@@ -268,11 +268,11 @@ mod tests {
         }
         let binding = MutationEventBinding::try_new(blob_moved_selector()?, bindings, mutation)
             .map_err(|e| map_err("blob_multi_row_fixture", e))?;
-        compile_portable_handlers(
+        compile_projection(
             "blob_multi_row_fixture",
             1,
             ProjectionPartition::Unit,
-            [PortableHandler::from_binding("moved", binding)],
+            [ProjectionHandler::from_binding("moved", binding)],
         )
         .map_err(|e| map_err("blob_multi_row_fixture", e))
     }

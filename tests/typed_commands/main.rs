@@ -38,7 +38,7 @@ use distributed::{
     body_field_binding,
     command_input_defaults,
     descriptor_from_factories,
-    compile_portable_handlers,
+    compile_projection,
     inventory_single_model,
     lower_single_model,
     resolve_mutation_program,
@@ -61,7 +61,7 @@ use distributed::{
     MutationOperation,
     MutationProgram,
     MutationProgramError,
-    PortableHandler,
+    ProjectionHandler,
     ProjectionExpression,
     ProjectionPartition,
     ProjectionProgram,
@@ -438,11 +438,11 @@ fn plan_projection_program() -> Result<ProjectionProgram, ProjectionProgramError
         ProjectionValueType::String,
         ["id"],
     )?);
-    compile_portable_handlers(
+    compile_projection(
         "typed_commands_plan",
         1,
         partition,
-        [PortableHandler::from_binding("changed", binding)],
+        [ProjectionHandler::from_binding("changed", binding)],
     )
 }
 
@@ -517,11 +517,11 @@ fn plan_title_program() -> Result<ProjectionProgram, ProjectionProgramError> {
         mutation,
     )
     .map_err(|e| map_mut_err("typed_commands_plan_title", e))?;
-    compile_portable_handlers(
+    compile_projection(
         "typed_commands_plan_title",
         1,
         ProjectionPartition::Unit,
-        [PortableHandler::from_binding("changed", binding)],
+        [ProjectionHandler::from_binding("changed", binding)],
     )
 }
 
@@ -586,11 +586,11 @@ fn plan_close_program() -> Result<ProjectionProgram, ProjectionProgramError> {
         mutation,
     )
     .map_err(|e| map_mut_err("typed_commands_plan_close", e))?;
-    compile_portable_handlers(
+    compile_projection(
         "typed_commands_plan_close",
         1,
         ProjectionPartition::Unit,
-        [PortableHandler::from_binding("changed", binding)],
+        [ProjectionHandler::from_binding("changed", binding)],
     )
 }
 
@@ -672,11 +672,11 @@ fn json_projection_program() -> Result<ProjectionProgram, ProjectionProgramError
         mutation,
     )
     .map_err(|e| map_mut_err("typed_commands_json", e))?;
-    compile_portable_handlers(
+    compile_projection(
         "typed_commands_json",
         1,
         ProjectionPartition::Unit,
-        [PortableHandler::from_binding("changed", binding)],
+        [ProjectionHandler::from_binding("changed", binding)],
     )
 }
 
@@ -766,11 +766,11 @@ fn composite_projection_program() -> Result<ProjectionProgram, ProjectionProgram
         mutation,
     )
     .map_err(|e| map_mut_err("typed_commands_composite", e))?;
-    compile_portable_handlers(
+    compile_projection(
         "typed_commands_composite",
         1,
         ProjectionPartition::Unit,
-        [PortableHandler::from_binding("changed", binding)],
+        [ProjectionHandler::from_binding("changed", binding)],
     )
 }
 
@@ -813,11 +813,11 @@ fn bigint_projection_program() -> Result<ProjectionProgram, ProjectionProgramErr
         program,
     )
     .map_err(|e| map_mut_err("typed_commands_bigint", e))?;
-    compile_portable_handlers(
+    compile_projection(
         "typed_commands_bigint",
         1,
         ProjectionPartition::Unit,
-        [PortableHandler::from_binding("changed", binding)],
+        [ProjectionHandler::from_binding("changed", binding)],
     )
 }
 
@@ -887,11 +887,11 @@ fn float_clear_program() -> Result<ProjectionProgram, ProjectionProgramError> {
         mutation,
     )
     .map_err(|e| map_mut_err("typed_commands_float_clear", e))?;
-    compile_portable_handlers(
+    compile_projection(
         "typed_commands_float_clear",
         1,
         ProjectionPartition::Unit,
-        [PortableHandler::from_binding("cleared", binding)],
+        [ProjectionHandler::from_binding("cleared", binding)],
     )
 }
 
@@ -961,11 +961,11 @@ fn json_float_clear_program() -> Result<ProjectionProgram, ProjectionProgramErro
         mutation,
     )
     .map_err(|e| map_mut_err("typed_commands_json_float_clear", e))?;
-    compile_portable_handlers(
+    compile_projection(
         "typed_commands_json_float_clear",
         1,
         ProjectionPartition::Unit,
-        [PortableHandler::from_binding("cleared", binding)],
+        [ProjectionHandler::from_binding("cleared", binding)],
     )
 }
 
