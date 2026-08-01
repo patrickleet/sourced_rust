@@ -58,8 +58,8 @@ export const todosWalkthrough: DemoWalkthrough = {
 					caption: 'UI data comes from the client replica — not a hand-rolled store.',
 					code: `import { Todos, useCommands } from '$distributed';
 
-const list = Todos.use();
-const rows = $derived($list.complete ? $list.data.todos : []);`
+const query = Todos.use();
+const todos = $derived($query.complete ? $query.data.todos : []);`
 				}
 			]
 		},
@@ -279,10 +279,10 @@ export const chatWalkthrough: DemoWalkthrough = {
 					file: 'routes/chat/+page.svelte',
 					code: `const lobby = ChatMessages.use({ limit: PAGE_SIZE, offset: 0 });
 const livePage = $derived.by(() => {
-  const rows = Array.isArray($lobby.data?.chat_messages)
+  const pageMessages = Array.isArray($lobby.data?.chat_messages)
     ? $lobby.data.chat_messages
     : [];
-  return [...rows].reverse();
+  return [...pageMessages].reverse();
 });`
 				}
 			]
@@ -493,9 +493,9 @@ export const blobWalkthrough: DemoWalkthrough = {
 				},
 				{
 					file: 'routes/blob/[[gameId]]/+page.svelte',
-					code: `const list = BlobGames.use();
+					code: `const query = BlobGames.use();
 const games = $derived(
-  $list.complete ? $list.data.blob_games : []
+  $query.complete ? $query.data.blob_games : []
 );`
 				}
 			]
@@ -684,9 +684,9 @@ export const adminWalkthrough: DemoWalkthrough = {
 					file: 'routes/admin/+page.svelte',
 					code: `import { AdminAllTodos, useCommands } from '$distributed/admin';
 
-const list = AdminAllTodos.use();
+const query = AdminAllTodos.use();
 const commands = useCommands();
-const rows = $derived($list.complete ? $list.data.todos : []);`
+const todos = $derived($query.complete ? $query.data.todos : []);`
 				},
 				{
 					file: 'readmodels/models/todos.rs · admin grant',

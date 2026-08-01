@@ -41,9 +41,9 @@
 		void goto(gamePath(gameId), { replaceState: replace, noScroll: true, keepFocus: true });
 	}
 
-	const list = BlobGames.use();
+	const query = BlobGames.use();
 	const commands = useCommands();
-	const games = $derived($list.complete ? $list.data.blob_games : []);
+	const games = $derived($query.complete ? $query.data.blob_games : []);
 	const selected = $derived(
 		routeGameId ? (games.find((game) => game.game_id === routeGameId) ?? null) : null
 	);
@@ -237,7 +237,7 @@
 			<InlineAlert label="Command">{actionError}</InlineAlert>
 		{/if}
 
-		{#if routeGameId && $list.loading && !selected && !data.gqlError}
+		{#if routeGameId && $query.loading && !selected && !data.gqlError}
 			<div class="blob-empty">
 				<p class="blob-empty-copy">Loading game…</p>
 			</div>

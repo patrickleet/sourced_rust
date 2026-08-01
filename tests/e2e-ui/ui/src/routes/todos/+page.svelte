@@ -25,13 +25,13 @@
 
 	const who = $derived(sessionDisplayName(data.session));
 
-	const list = Todos.use();
+	const query = Todos.use();
 	const commands = useCommands();
 
-	const rows = $derived($list.complete ? $list.data.todos : []);
-	const open = $derived(rows.filter((todo) => todo.status === 'open'));
-	const done = $derived(rows.filter((todo) => todo.status === 'completed'));
-	const archived = $derived(rows.filter((todo) => todo.status === 'archived'));
+	const todos = $derived($query.complete ? $query.data.todos : []);
+	const open = $derived(todos.filter((todo) => todo.status === 'open'));
+	const done = $derived(todos.filter((todo) => todo.status === 'completed'));
+	const archived = $derived(todos.filter((todo) => todo.status === 'archived'));
 
 	async function onCreate(e: Event) {
 		e.preventDefault();
@@ -48,7 +48,7 @@
 	}
 
 	async function onComplete(todo_id: string) {
-		const target = rows.find((todo) => todo.todo_id === todo_id);
+		const target = todos.find((todo) => todo.todo_id === todo_id);
 		if (!target || target.status !== 'open') return;
 
 		actionError = null;
@@ -60,7 +60,7 @@
 	}
 
 	async function onReopen(todo_id: string) {
-		const target = rows.find((todo) => todo.todo_id === todo_id);
+		const target = todos.find((todo) => todo.todo_id === todo_id);
 		if (!target || target.status !== 'completed') return;
 
 		actionError = null;
@@ -72,7 +72,7 @@
 	}
 
 	async function onArchive(todo_id: string) {
-		const target = rows.find((todo) => todo.todo_id === todo_id);
+		const target = todos.find((todo) => todo.todo_id === todo_id);
 		if (!target || target.status === 'archived') return;
 
 		actionError = null;

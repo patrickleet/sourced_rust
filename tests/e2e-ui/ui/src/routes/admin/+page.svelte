@@ -21,18 +21,18 @@
 	const who = $derived(sessionDisplayName(data.session));
 	const listLimit = 100;
 
-	const list = AdminAllTodos.use();
+	const query = AdminAllTodos.use();
 	const commands = useCommands();
 
 	// The generated query/index plan owns collection order.
-	const rows = $derived($list.complete ? $list.data.todos : []);
-	const owners = $derived([...new Set(rows.map((todo) => todo.owner_id))].sort());
-	const open = $derived(rows.filter((todo) => todo.status !== 'archived'));
-	const atCap = $derived(rows.length >= listLimit);
+	const todos = $derived($query.complete ? $query.data.todos : []);
+	const owners = $derived([...new Set(todos.map((todo) => todo.owner_id))].sort());
+	const open = $derived(todos.filter((todo) => todo.status !== 'archived'));
+	const atCap = $derived(todos.length >= listLimit);
 
 	async function forceArchive(todo_id: string) {
 		if (busy) return;
-		const target = rows.find((todo) => todo.todo_id === todo_id);
+		const target = todos.find((todo) => todo.todo_id === todo_id);
 		if (!target || target.status === 'archived') return;
 
 		actionError = null;
@@ -64,7 +64,7 @@
 
 	<StatRow
 		stats={[
-			{ value: rows.length, label: 'notes' },
+			{ value: todos.length, label: 'notes' },
 			{ value: owners.length, label: 'owners' },
 			{ value: open.length, label: 'active' }
 		]}
@@ -77,7 +77,7 @@
 		</p>
 	{/if}
 
-	{#if rows.length === 0}
+	{#if todos.length === 0}
 		<p class="ad-empty">No todos in the read model yet. Create some as alice/bob on /todos.</p>
 	{:else}
 		<div class="ad-table-wrap">
@@ -92,7 +92,7 @@
 					</tr>
 				</thead>
 				<tbody>
-					{#each rows as t (t.todo_id)}
+					{#each todos as t (t.todo_id)}
 						<tr data-todo-id={t.todo_id}>
 							<td class="ad-owner">{t.owner_id}</td>
 							<td>{t.title}</td>
