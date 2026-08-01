@@ -40,6 +40,19 @@ export const distributedClients = Object.freeze([
 		surface: 'e2e-ui-admin',
 		documents: Object.freeze(['src/routes/admin/+page.graphql']),
 		out: 'src/lib/generated/admin'
+	}),
+	Object.freeze({
+		module: '$distributed/public',
+		manifest: Object.freeze({
+			args: Object.freeze([
+				...manifestArgs,
+				'--entrypoint',
+				'e2e_service::distributed_public_client_surface'
+			])
+		}),
+		surface: 'e2e-ui-public',
+		documents: Object.freeze(['src/routes/chat/+page.graphql']),
+		out: 'src/lib/generated/public'
 	})
 ]);
 

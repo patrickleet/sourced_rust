@@ -5,14 +5,13 @@ import { sequence } from '@sveltejs/kit/hooks';
 async function authorizationHandle({ event, resolve }: { event: RequestEvent; resolve: (event: RequestEvent) => Response | Promise<Response>; }) {
   // Protect admin (website) + fixture app routes
   const path = event.url.pathname;
+  // /chat is intentionally public (anonymous GraphQL read on e2e-ui-public).
   const protectedPrefix =
     path.startsWith('/admin') ||
     path === '/todos' ||
     path.startsWith('/todos/') ||
     path === '/blob' ||
     path.startsWith('/blob/') ||
-    path === '/chat' ||
-    path.startsWith('/chat/') ||
     path === '/session' ||
     path.startsWith('/session/');
 

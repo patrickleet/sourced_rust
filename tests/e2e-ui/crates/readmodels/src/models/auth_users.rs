@@ -29,5 +29,7 @@ impl AuthUsers {
         ModelPermissions::new()
             .grant("user", read().all_columns())
             .grant("admin", read().all_columns())
+            // Public lobby joins author display names without a session.
+            .grant("anonymous", read().all_columns())
     }
 }

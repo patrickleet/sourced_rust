@@ -70,6 +70,13 @@
 				<a href="/" class="nav-link" class:active={isActive('/')} onclick={() => (isMenuOpen = false)}
 					>Home</a
 				>
+				<!-- Lobby is readable anonymously (e2e-ui-public). -->
+				<a
+					href="/chat"
+					class="nav-link"
+					class:active={isActive('/chat')}
+					onclick={() => (isMenuOpen = false)}>Chat</a
+				>
 				{#if isAuthenticated}
 					<a
 						href="/todos"
@@ -82,12 +89,6 @@
 						class="nav-link"
 						class:active={isActive('/blob')}
 						onclick={() => (isMenuOpen = false)}>Blob</a
-					>
-					<a
-						href="/chat"
-						class="nav-link"
-						class:active={isActive('/chat')}
-						onclick={() => (isMenuOpen = false)}>Chat</a
 					>
 					<a
 						href="/session"
