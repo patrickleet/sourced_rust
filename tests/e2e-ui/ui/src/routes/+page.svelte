@@ -13,16 +13,16 @@
 
 	const pillars = [
 		{
-			title: 'Domain in Rust',
-			body: 'Plain types, methods, and tests. Event sourcing and CQRS stay in the framework so your business rules stay readable.'
+			title: 'Event-sourced domains',
+			body: 'Plain Rust types and methods. History, projections, and CQRS plumbing live in the framework — your rules stay unit-testable and readable.'
 		},
 		{
-			title: 'GraphQL as the edge',
-			body: 'Deny-by-default reads, first-class OIDC, application surfaces, and command mutations — not a second REST surface to keep in sync.'
+			title: 'One service inventory',
+			body: 'Commands, domain events, and read models registered once. Application surfaces and RBAC decide who may open what — without dual-writing tables from the UI.'
 		},
 		{
-			title: 'TypeScript clients',
-			body: 'Generated operations and commands for SvelteKit: SSR hydrate, live subscriptions, causal optimism, and Projected boards from one inventory.'
+			title: 'Clients that stay honest',
+			body: 'Generated TypeScript for SvelteKit: a browser replica for reads and commands, causal optimism, Projected results, OIDC — wired to the same inventory, not a second model.'
 		}
 	];
 
@@ -39,8 +39,8 @@
 		},
 		{
 			n: '03',
-			title: 'Ship the UI',
-			body: 'Co-locate GraphQL next to routes. Gen clients. The browser replica is the cache — optimism and live frames are not a second app.'
+			title: 'Ship the product',
+			body: 'Point a SvelteKit app at the service. Generated clients hydrate SSR, stay live, and run commands — GraphQL is how this playground talks; the domain is what you build.'
 		}
 	];
 
@@ -69,21 +69,20 @@
 
 			<span class="wf-kicker">Distributed</span>
 			<h1>
-				Realtime GraphQL and a real domain — the next step after
-				<em>query engines alone</em>.
+				Event-sourced CQRS for apps that need to stay
+				<em>realtime and correct</em>.
 			</h1>
 			<p class="wf-lede">
-				You already know the feel of live GraphQL: subscriptions, optimistic UI, one schema for the
-				client. <strong>Distributed</strong> keeps that edge and adds what comes next — event-sourced
-				commands in Rust, projections you own, OIDC surfaces, and generated TypeScript so the browser
-				replica stays honest with the write model.
+				<strong>Distributed</strong> is a framework for domain commands, write history, projections,
+				and authz surfaces — with a browser replica for live UIs. You own the model; the stack carries
+				plumbing. GraphQL and SvelteKit are how this playground exposes it, not the product identity.
 			</p>
 
 			<ul class="wf-hero-stack" aria-label="Stack">
+				<li>CQRS + event sourcing</li>
 				<li>Rust domains</li>
-				<li>GraphQL + OIDC</li>
-				<li>TypeScript clients</li>
-				<li>SvelteKit</li>
+				<li>Projections</li>
+				<li>TS clients · OIDC</li>
 			</ul>
 
 			<div class="wf-actions">
@@ -107,12 +106,12 @@
 		<div class="wf-band-inner">
 			<div class="wf-section-head">
 				<span class="wf-label">What you get</span>
-				<h2>Live reads — and a write side that scales with you</h2>
+				<h2>The write model is the product</h2>
 				<p>
-					Realtime GraphQL solved the client story. The hard part was always the other half:
-					commands, history, projections, and authz that don’t turn into a second product. Distributed
-					is that evolution — one inventory from aggregate to SvelteKit, without locking you into a
-					single opinionated app shape.
+					Realtime UIs are expected. What’s missing is a simple path to commands, durable history,
+					projections, and role surfaces that don’t fight the client. Distributed is that path —
+					from aggregate to browser replica — without baking the whole app into one opinionated
+					runtime.
 				</p>
 			</div>
 			<div class="dist-pillars">
