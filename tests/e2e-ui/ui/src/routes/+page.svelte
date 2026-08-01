@@ -69,13 +69,14 @@
 
 			<span class="wf-kicker">Distributed</span>
 			<h1>
-				Build real-time, full-stack apps on <em>event-sourced CQRS</em> —
-				without building the framework yourself.
+				Realtime GraphQL and a real domain — the next step after
+				<em>query engines alone</em>.
 			</h1>
 			<p class="wf-lede">
-				<strong>Distributed</strong> is a Rust + TypeScript stack for commands, projections, GraphQL,
-				OIDC, and a browser replica. You write domain intent and UI; the library carries history,
-				authz surfaces, codegen, and live data.
+				You already know the feel of live GraphQL: subscriptions, optimistic UI, one schema for the
+				client. <strong>Distributed</strong> keeps that edge and adds what comes next — event-sourced
+				commands in Rust, projections you own, OIDC surfaces, and generated TypeScript so the browser
+				replica stays honest with the write model.
 			</p>
 
 			<ul class="wf-hero-stack" aria-label="Stack">
@@ -106,11 +107,12 @@
 		<div class="wf-band-inner">
 			<div class="wf-section-head">
 				<span class="wf-label">What you get</span>
-				<h2>One stack from aggregate to UI</h2>
+				<h2>Live reads — and a write side that scales with you</h2>
 				<p>
-					Meteor made full-stack realtime feel unified. Distributed aims at the same continuity —
-					with explicit write history, deny-by-default GraphQL, and generated clients that stay honest
-					with the server inventory.
+					Realtime GraphQL solved the client story. The hard part was always the other half:
+					commands, history, projections, and authz that don’t turn into a second product. Distributed
+					is that evolution — one inventory from aggregate to SvelteKit, without locking you into a
+					single opinionated app shape.
 				</p>
 			</div>
 			<div class="dist-pillars">
@@ -195,9 +197,9 @@ source e2e-ui.env && make run
 				<span class="wf-label">Next</span>
 				<h2>Build on Distributed</h2>
 				<p>
-					Copy the patterns from this playground into your service. Hosting and fleet ops (think
-					Galaxy-class — <strong>ops.com.ai</strong>) are on the roadmap; for now the open-source
-					framework and this fixture are the product surface.
+					Copy the patterns from this playground into your service. Fleet hosting
+					(<strong>ops.com.ai</strong>) is on the roadmap; for now the open-source framework and this
+					fixture are the product surface.
 				</p>
 			</div>
 			<div class="wf-actions">
