@@ -911,6 +911,8 @@
 	border-radius: 0;
 	color: inherit;
 	font-size: inherit;
+	font-family: inherit;
+	white-space: pre;
 }
 
 /* CTA (standalone light-page variant; band CTA uses .wf-cta-band overrides) */
@@ -1316,6 +1318,118 @@
 	border: none;
 	padding: 0;
 	color: inherit;
+}
+
+.dist-run-hint {
+	margin: 0;
+	font-size: 0.9rem;
+	line-height: 1.55;
+	color: var(--wf-band-dark-soft);
+}
+
+.dist-run-hint code {
+	font-size: 0.86em;
+}
+
+/* Feature story: stack code under copy on narrow; side-by-side on wide */
+.wf-home .wf-story-step {
+	padding: 0;
+}
+
+.wf-home .wf-story-copy .wf-label {
+	margin-bottom: 0.65rem;
+}
+
+.wf-home .wf-story-copy .wf-step-title {
+	margin-bottom: 0.85rem;
+}
+
+.wf-home .wf-story-copy .wf-why + .wf-why {
+	margin-top: 0.85rem;
+}
+
+.wf-home .wf-band-dark .wf-story-copy .wf-sample-path {
+	color: var(--wf-band-dark-muted);
+}
+
+.dist-inline-link {
+	color: #b8d4ef;
+	font-weight: 600;
+	text-decoration: none;
+	border-bottom: 1px solid rgba(184, 212, 239, 0.35);
+}
+
+.dist-inline-link:hover {
+	border-bottom-color: #b8d4ef;
+}
+
+/* Light-band demo cards (playground sits on light ground) */
+.dist-demo-grid-light {
+	/* inherits grid from .dist-demo-grid */
+}
+
+.dist-demo-card-light {
+	border-color: var(--wf-line);
+	background: var(--wf-bg-elevated);
+}
+
+.dist-demo-card-light:hover {
+	border-color: var(--wf-line-strong);
+	background: #fff;
+	transform: translateY(-1px);
+}
+
+.dist-demo-tag-light {
+	color: var(--wf-accent);
+}
+
+.dist-demo-card-light h3 {
+	color: var(--wf-ink);
+}
+
+.dist-demo-card-light p {
+	color: var(--wf-ink-soft);
+}
+
+.dist-demo-go-light {
+	color: var(--wf-accent);
+}
+
+/* Closing band on light ground */
+.dist-closing.wf-band-light .wf-section-head h2 {
+	color: var(--wf-ink);
+}
+
+/*
+ * Syntax tokens from highlight.ts (same palette as HowItsBuilt panels).
+ * home.css is a global stylesheet — no :global(); that is Svelte-scoped only.
+ * Higher specificity than band `.wf-code code { color: … }` so tokens win.
+ */
+.wf-home .wf-code pre code .tok-comment {
+	color: #6b7368;
+	font-style: italic;
+}
+.wf-home .wf-code pre code .tok-string {
+	color: #c4a882;
+}
+.wf-home .wf-code pre code .tok-number {
+	color: #d4a574;
+}
+.wf-home .wf-code pre code .tok-keyword {
+	color: #7eb0d6;
+	font-weight: 500;
+}
+.wf-home .wf-code pre code .tok-type {
+	color: #9ec5a8;
+}
+.wf-home .wf-code pre code .tok-fn {
+	color: #d4c07a;
+}
+.wf-home .wf-code pre code .tok-attr {
+	color: #b89fd4;
+}
+.wf-home .wf-code pre code .tok-punct {
+	color: #8a8a82;
 }
 
 .dist-run-hint {
