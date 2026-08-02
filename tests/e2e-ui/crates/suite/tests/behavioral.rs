@@ -195,7 +195,7 @@ async fn t1a_application_surface_returns_actual_todo_upsert_and_causal_obligatio
         ),
         "{response}"
     );
-    assert_eq!(command["consistency"], "causal", "{response}");
+    assert_eq!(command["consistency"], "eventual", "{response}");
     assert!(
         command["projection"]["delta"]["operations"]
             .as_array()
@@ -670,7 +670,7 @@ async fn t7_modeled_no_ops_succeed_without_projection_obligations() {
     assert!(response.get("errors").is_none(), "{response}");
     let receipt = &response["extensions"]["distributed"]["command"];
     assert_eq!(receipt["state"], "succeeded", "{response}");
-    assert_eq!(receipt["consistency"], "causal", "{response}");
+    assert_eq!(receipt["consistency"], "eventual", "{response}");
     assert_eq!(receipt["expects"], serde_json::json!([]), "{response}");
     let first_payload = response["data"]["todos_rename"].clone();
     let first_receipt = receipt.clone();

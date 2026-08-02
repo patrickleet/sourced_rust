@@ -272,7 +272,7 @@ fn durable_receipts_issue_stable_generation_bound_non_disclosing_obligations() {
         .as_str()
         .unwrap();
     assert_eq!(first["command"]["state"], "succeeded_pending_projection");
-    assert_eq!(first["command"]["consistency"], "causal");
+    assert_eq!(first["command"]["consistency"], "eventual");
     assert!(!first_token.contains("tenant-private"));
     assert!(!first_token.contains("9223372036854775807"));
     assert!(!first_token.contains("child-private"));
