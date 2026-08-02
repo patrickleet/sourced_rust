@@ -89,9 +89,22 @@ mod tests {
             let tail = &sdl[start..];
             &tail[..tail.find("\n}\n").unwrap()]
         };
-        assert!(object("Todos").contains("\n  owner: AuthUsers"));
-        assert!(object("BlobGames").contains("\n  owner: AuthUsers"));
-        assert!(object("ChatMessages").contains("\n  author: AuthUsers"));
+        // belongs_to is always GraphQL-nullable (Option join), even when the FK
+        // column is non-null — required for optimistic parent rows before the
+        // join edge is linked. (Last field may be truncated before the closing
+        // brace, so match without requiring a trailing newline.)
+        for name in ["Todos", "BlobGames", "ChatMessages"] {
+            let body = object(name);
+            let join = if name == "ChatMessages" { "author" } else { "owner" };
+            assert!(
+                body.contains(&format!("\n  {join}: AuthUsers")),
+                "{name} missing nullable AuthUsers join:\n{body}"
+            );
+            assert!(
+                !body.contains(&format!("\n  {join}: AuthUsers!")),
+                "{name} must not mark belongs_to non-null:\n{body}"
+            );
+        }
     }
 
     #[test]

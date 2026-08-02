@@ -1732,12 +1732,14 @@ flow.
 
 Copyable product shape (not a toy workshop): multi-crate domains, GraphQL-only
 edge, real OIDC, SSR, live subscriptions, and a teaching **Blob** aggregate that
-uses atomic `Projected<BlobGameView>` (direct-only — no async blob projector).
+uses atomic `Projected<BlobGames>` (direct placement: same mutation IR as
+eventual, applied in the command handler so the response can carry the row —
+no async blob event handler).
 
 | Piece | Role |
 |---|---|
 | Domain crates | Pure aggregates: todos, chat, blob |
-| Read models | Projector-owned rows *and* direct `Projected` rows (blob) — no dual-write from handlers |
+| Read models | Eventual projector rows (todos/chat) *and* handler-owned `Projected` rows (blob) — one mutation IR, different apply site |
 | GraphQL edge | Owner RLS, admin surfaces, joins to `auth_users`, chat live sub, blob commands |
 | Identity | Zitadel + Auth.js (PKCE), optional Zitadel user-scrape → `auth_users` |
 | SvelteKit | `$distributed` / `$distributed/admin`, SSR from co-located `+page.graphql`, hydration, generated live ops + optimistic commands |

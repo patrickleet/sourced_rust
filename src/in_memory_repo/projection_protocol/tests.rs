@@ -1301,7 +1301,7 @@ async fn stale_direct_attempt_is_fenced_before_projection_drift_is_inspected() {
     let direct = direct_batch(attempt.causation_id().as_str());
     let completion = attempt
         .complete(
-            TerminalCommandState::Projected,
+            TerminalCommandState::Atomic,
             serde_json::json!({"projected": "must-not-run"}),
             retention,
         )

@@ -482,7 +482,7 @@ impl CommandCompletion {
         &mut self,
         evidence: &SameTransactionProjectionEvidence,
     ) -> Result<(), CommandLedgerError> {
-        if self.state != TerminalCommandState::Projected {
+        if self.state != TerminalCommandState::Atomic {
             return Err(CommandLedgerError::Invalid(
                 "direct projection evidence may only complete a projected command".into(),
             ));
@@ -525,14 +525,14 @@ impl CommandCompletion {
 
     pub(super) fn validate_direct_projection(&self) -> Result<(), CommandLedgerError> {
         match (self.state, self.direct_projection.is_some()) {
-            (TerminalCommandState::Projected, true)
+            (TerminalCommandState::Atomic, true)
             | (
                 TerminalCommandState::Succeeded
                 | TerminalCommandState::SucceededPendingProjection
                 | TerminalCommandState::Rejected,
                 false,
             ) => Ok(()),
-            (TerminalCommandState::Projected, false) => Err(CommandLedgerError::Invalid(
+            (TerminalCommandState::Atomic, false) => Err(CommandLedgerError::Invalid(
                 "projected command completion has no exact direct projection evidence".into(),
             )),
             (_, true) => Err(CommandLedgerError::Invalid(

@@ -181,7 +181,7 @@ const commandArtifact = Object.freeze({
 			])
 		})
 	}),
-	consistency: 'causal',
+	consistency: 'eventual',
 	projection: Object.freeze({
 		version: 2,
 		deltaWireVersion: 1,
@@ -673,7 +673,7 @@ test('replica integration exposes structural normalization, index, layer, receip
 		commandId: 'command-private-a',
 		causationId: 'private-causation',
 		state: 'succeeded_pending_projection',
-		consistency: 'causal',
+		consistency: 'eventual',
 		expects: [
 			{
 				projection: 'todos',

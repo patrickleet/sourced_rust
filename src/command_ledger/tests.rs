@@ -467,8 +467,8 @@ where
             CommandLedgerState::SucceededPendingProjection,
         ),
         (
-            TerminalCommandState::Projected,
-            CommandLedgerState::Projected,
+            TerminalCommandState::Atomic,
+            CommandLedgerState::Atomic,
         ),
         (TerminalCommandState::Rejected, CommandLedgerState::Rejected),
     ];
@@ -498,7 +498,7 @@ where
             )
             .unwrap();
         let expected_direct_projection =
-            (terminal_state == TerminalCommandState::Projected).then(|| {
+            (terminal_state == TerminalCommandState::Atomic).then(|| {
                 let evidence = direct_projection_evidence(&format!("terminal-{index}"));
                 completion.attach_direct_projection(&evidence).unwrap();
                 evidence.replay_value()
@@ -1073,7 +1073,7 @@ fn stale_attempt_cannot_complete_after_reclaim() {
 fn completion_rejects_inconsistent_projection_obligation_states() {
     for state in [
         TerminalCommandState::Succeeded,
-        TerminalCommandState::Projected,
+        TerminalCommandState::Atomic,
         TerminalCommandState::Rejected,
     ] {
         assert!(matches!(
@@ -1099,7 +1099,7 @@ fn completion_rejects_inconsistent_projection_obligation_states() {
 
     for state in [
         TerminalCommandState::Succeeded,
-        TerminalCommandState::Projected,
+        TerminalCommandState::Atomic,
         TerminalCommandState::Rejected,
     ] {
         assert!(fresh_attempt()
@@ -1159,7 +1159,7 @@ fn completion_rejects_malformed_projection_obligations() {
 fn replay_rejects_inconsistent_projection_obligation_states() {
     for state in [
         CommandLedgerState::Succeeded,
-        CommandLedgerState::Projected,
+        CommandLedgerState::Atomic,
         CommandLedgerState::Rejected,
     ] {
         let row = completed_replay_record(state, vec![resolved_obligation("unexpected")]);
@@ -1345,7 +1345,7 @@ fn modeled_projection_metadata_bounds_fail_before_completion() {
     }
     assert!(matches!(
         fresh_attempt().complete_with_projection_metadata(
-            TerminalCommandState::Projected,
+            TerminalCommandState::Atomic,
             serde_json::json!({"ok": true}),
             b"{}".to_vec(),
             Duration::from_secs(300),
@@ -1720,7 +1720,7 @@ async fn sqlite_adapter_enforces_attempt_fence_and_replays() {
 
     let completion = second
         .complete(
-            TerminalCommandState::Projected,
+            TerminalCommandState::Atomic,
             serde_json::json!({"winner": true}),
             Duration::from_secs(300),
         )
@@ -1736,7 +1736,7 @@ async fn sqlite_adapter_enforces_attempt_fence_and_replays() {
         .unwrap()
     {
         CommandLookup::Replay(replay) => {
-            assert_eq!(replay.state, CommandLedgerState::Projected);
+            assert_eq!(replay.state, CommandLedgerState::Atomic);
             assert_eq!(replay.causation_id, cause);
             assert_eq!(replay.outcome, serde_json::json!({"winner": true}));
         }
@@ -1771,7 +1771,7 @@ fn durable_success_states_use_only_the_succeeded_vocabulary() {
             CommandLedgerState::SucceededPendingProjection,
             "succeeded_pending_projection",
         ),
-        (CommandLedgerState::Projected, "projected"),
+        (CommandLedgerState::Atomic, "atomic"),
     ];
 
     for (state, encoded) in cases {

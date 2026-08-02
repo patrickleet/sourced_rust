@@ -23,7 +23,7 @@ use crate::graphql::command_contract::{
     validate_resolved_direct_plan, CommandCommitProofError, CommandOutcome, ProjectionCommitProof,
     ResolvedDirectProjectionTarget, TypedCommandContract,
 };
-use crate::graphql::{PrepareCommandError, PreparedCommand, Projected};
+use crate::graphql::{PrepareCommandError, PreparedCommand, Atomic};
 use crate::outbox::{OutboxMessage, PreparedDomainEvent};
 use crate::projection::lower::{
     DirectCandidate, LoweredProjectionPlan, ProjectionDescriptor,
@@ -441,11 +441,11 @@ where
     }
 
     /// Atomically stage the returned view as one full-row upsert and prepare a
-    /// non-forgeable `Projected<M>` completion tied to that exact row.
-    pub(crate) fn prepare_projected<M>(
+    /// non-forgeable `Atomic<M>` completion tied to that exact row.
+    pub(crate) fn prepare_atomic<M>(
         &self,
         model: M,
-    ) -> Result<PreparedCommand<Projected<M>>, CausalWorkspaceError>
+    ) -> Result<PreparedCommand<Atomic<M>>, CausalWorkspaceError>
     where
         M: RelationalReadModel + Serialize + Send + Sync + 'static,
     {
@@ -453,7 +453,7 @@ where
         builder.upsert(&model)?;
         let plan = builder.into_write_plan()?;
         let proof = ProjectionCommitProof::for_model(&model)?;
-        let prepared = PreparedCommand::prepare_projected(model, proof)?;
+        let prepared = PreparedCommand::prepare_atomic(model, proof)?;
 
         let mut state = self
             .state
@@ -470,24 +470,24 @@ where
     /// Prepare a projected result whose exact row will be resolved from the
     /// authoritative domain-event occurrence after the dispatcher stamps its
     /// ledger causation.
-    pub(crate) fn prepare_modeled_projected<M>(
+    pub(crate) fn prepare_modeled_atomic<M>(
         &self,
         projection: ProjectionDescriptor<DirectCandidate>,
-    ) -> Result<PreparedCommand<Projected<M>>, CausalWorkspaceError>
+    ) -> Result<PreparedCommand<Atomic<M>>, CausalWorkspaceError>
     where
         M: RelationalReadModel + Serialize + Send + Sync + 'static,
     {
         let executor = projection
             .server_executor()
             .map_err(|error| CausalWorkspaceError::ModeledDirectProjection(error.to_string()))?;
-        self.prepare_modeled_projected_from_executor(executor)
+        self.prepare_modeled_atomic_from_executor(executor)
     }
 
     /// Placement-selected direct projection: the service registration chose the
     /// executor; command code names neither a projection nor a selector.
-    pub(crate) fn prepare_placement_selected_projected<M>(
+    pub(crate) fn prepare_placement_selected_atomic<M>(
         &self,
-    ) -> Result<PreparedCommand<Projected<M>>, CausalWorkspaceError>
+    ) -> Result<PreparedCommand<Atomic<M>>, CausalWorkspaceError>
     where
         M: RelationalReadModel + Serialize + Send + Sync + 'static,
     {
@@ -500,13 +500,13 @@ where
                         schema.model_name
                     ))
                 })?;
-        self.prepare_modeled_projected_from_executor(executor)
+        self.prepare_modeled_atomic_from_executor(executor)
     }
 
-    fn prepare_modeled_projected_from_executor<M>(
+    fn prepare_modeled_atomic_from_executor<M>(
         &self,
         executor: ProjectionServerExecutorDescriptor,
-    ) -> Result<PreparedCommand<Projected<M>>, CausalWorkspaceError>
+    ) -> Result<PreparedCommand<Atomic<M>>, CausalWorkspaceError>
     where
         M: RelationalReadModel + Serialize + Send + Sync + 'static,
     {
@@ -526,7 +526,7 @@ where
                 executor.name, schema.model_name, schema.table_name
             )));
         }
-        let prepared = PreparedCommand::prepare_modeled_projected();
+        let prepared = PreparedCommand::prepare_modeled_atomic();
 
         let mut state = self
             .state
@@ -1286,14 +1286,14 @@ mod tests {
             id: "v-1".into(),
             title: "projected".into(),
         };
-        let mut prepared = workspace.prepare_projected(view).unwrap();
+        let mut prepared = workspace.prepare_atomic(view).unwrap();
         let mut aggregate = workspace.load("a-1").await.unwrap().unwrap();
         aggregate.entity_mut().digest_empty("Projected").unwrap();
         workspace.stage(aggregate).unwrap();
         let mut parts = workspace.into_parts().unwrap();
 
         let contract =
-            crate::graphql::typed_command::<TestInput, Projected<TestView>>("test.project")
+            crate::graphql::typed_command::<TestInput, Atomic<TestView>>("test.project")
                 .into_contract();
         parts.validate_prepared(&contract, &mut prepared).unwrap();
     }
@@ -1303,14 +1303,14 @@ mod tests {
         let repository = loaded_repo();
         let workspace = CausalWorkspace::new(&repository);
         let mut prepared = workspace
-            .prepare_projected(TestView {
+            .prepare_atomic(TestView {
                 id: "v-1".into(),
                 title: "projected".into(),
             })
             .unwrap();
         let mut parts = workspace.into_parts().unwrap();
         let contract =
-            crate::graphql::typed_command::<TestInput, Projected<TestView>>("test.project")
+            crate::graphql::typed_command::<TestInput, Atomic<TestView>>("test.project")
                 .into_contract();
 
         assert!(matches!(
@@ -1324,7 +1324,7 @@ mod tests {
         let repository = loaded_repo();
         let workspace = CausalWorkspace::new(&repository);
         let mut prepared = workspace
-            .prepare_projected(TestView {
+            .prepare_atomic(TestView {
                 id: "v-1".into(),
                 title: "returned".into(),
             })
@@ -1342,7 +1342,7 @@ mod tests {
         workspace.stage_read_models(conflicting).unwrap();
         let mut parts = workspace.into_parts().unwrap();
         let contract =
-            crate::graphql::typed_command::<TestInput, Projected<TestView>>("test.project")
+            crate::graphql::typed_command::<TestInput, Atomic<TestView>>("test.project")
                 .into_contract();
 
         assert!(matches!(
@@ -1356,7 +1356,7 @@ mod tests {
         let repository = loaded_repo();
         let workspace = CausalWorkspace::new(&repository);
         let mut prepared = workspace
-            .prepare_projected(TestView {
+            .prepare_atomic(TestView {
                 id: "v-1".into(),
                 title: "returned".into(),
             })
@@ -1372,7 +1372,7 @@ mod tests {
             .values
             .insert("title", RowValue::String("different".into()));
         let contract =
-            crate::graphql::typed_command::<TestInput, Projected<TestView>>("test.project")
+            crate::graphql::typed_command::<TestInput, Atomic<TestView>>("test.project")
                 .into_contract();
 
         assert!(matches!(
@@ -1388,7 +1388,7 @@ mod tests {
     }
 
     fn modeled_direct_contract() -> TypedCommandContract {
-        crate::graphql::typed_command::<TestInput, Projected<ModeledDirectView>>(
+        crate::graphql::typed_command::<TestInput, Atomic<ModeledDirectView>>(
             "test.modeled-direct",
         )
         .into_contract()
@@ -1408,7 +1408,7 @@ mod tests {
             .unwrap();
         workspace.stage(aggregate).unwrap();
         let mut prepared = workspace
-            .prepare_placement_selected_projected::<ModeledDirectView>()
+            .prepare_placement_selected_atomic::<ModeledDirectView>()
             .expect("placement-selected projected without .project(MODELED_DIRECT)");
 
         let mut parts = workspace.into_parts().unwrap();
@@ -1431,7 +1431,7 @@ mod tests {
             .unwrap();
         workspace.stage(aggregate).unwrap();
         let mut prepared = workspace
-            .prepare_modeled_projected::<ModeledDirectView>(MODELED_DIRECT)
+            .prepare_modeled_atomic::<ModeledDirectView>(MODELED_DIRECT)
             .unwrap();
 
         let mut parts = workspace.into_parts().unwrap();
@@ -1479,7 +1479,7 @@ mod tests {
             .unwrap();
         workspace.stage(aggregate).unwrap();
         let mut prepared = workspace
-            .prepare_modeled_projected::<ModeledDirectView>(MODELED_DIRECT)
+            .prepare_modeled_atomic::<ModeledDirectView>(MODELED_DIRECT)
             .unwrap();
         let mut separate = ReadModelWritePlanBuilder::new();
         separate
@@ -1511,7 +1511,7 @@ mod tests {
             .unwrap();
         workspace.stage(aggregate).unwrap();
         let mut prepared = workspace
-            .prepare_modeled_projected::<ModeledDirectView>(MODELED_DIRECT)
+            .prepare_modeled_atomic::<ModeledDirectView>(MODELED_DIRECT)
             .unwrap();
 
         let mut parts = workspace.into_parts().unwrap();
@@ -1539,7 +1539,7 @@ mod tests {
             .unwrap();
         workspace.stage(aggregate).unwrap();
         let mut prepared = workspace
-            .prepare_modeled_projected::<ModeledDirectView>(MODELED_DIRECT)
+            .prepare_modeled_atomic::<ModeledDirectView>(MODELED_DIRECT)
             .unwrap();
         let mut parts = workspace.into_parts().unwrap();
         parts
@@ -1562,7 +1562,7 @@ mod tests {
             .unwrap();
         workspace.stage(aggregate).unwrap();
         let mut prepared = workspace
-            .prepare_modeled_projected::<ModeledDirectView>(MODELED_DIRECT)
+            .prepare_modeled_atomic::<ModeledDirectView>(MODELED_DIRECT)
             .unwrap();
         let mut parts = workspace.into_parts().unwrap();
         parts
@@ -1586,7 +1586,7 @@ mod tests {
         aggregate.rename("renamed".into()).unwrap();
         workspace.stage(aggregate).unwrap();
         let mut prepared = workspace
-            .prepare_modeled_projected::<ModeledDirectView>(MODELED_DIRECT)
+            .prepare_modeled_atomic::<ModeledDirectView>(MODELED_DIRECT)
             .unwrap();
         let mut parts = workspace.into_parts().unwrap();
         parts
@@ -1617,7 +1617,7 @@ mod tests {
             )
             .unwrap();
         let mut prepared = workspace
-            .prepare_modeled_projected::<ModeledDirectView>(MODELED_DIRECT)
+            .prepare_modeled_atomic::<ModeledDirectView>(MODELED_DIRECT)
             .unwrap();
         let mut parts = workspace.into_parts().unwrap();
         parts

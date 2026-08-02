@@ -1153,6 +1153,7 @@ test('pagination plans make complete and offset maintenance decisions explicit',
 		}).decision,
 		'local'
 	);
+	// OFFSET_PAGINATION marks insert/delete/reorder as revalidate (policy gate).
 	assert.equal(
 		decideReplicaPaginationMaintenance(OFFSET_PAGINATION, offset, {
 			kind: 'insert'
@@ -1244,7 +1245,7 @@ test('pagination refuses unknown, mismatched, unsafe offset, and unproven cursor
 	);
 });
 
-test('offset locality requires a proven non-full first page', () => {
+test('offset locality: first-page insert always; delete/reorder need non-full page', () => {
 	const safe = { kind: 'offset', offset: 0, limit: 10, returned: 9 };
 	for (const kind of ['insert', 'delete', 'reorder', 'stable_update']) {
 		assert.equal(
@@ -1257,11 +1258,21 @@ test('offset locality requires a proven non-full first page', () => {
 		);
 	}
 
+	// Full first page: insert stays local; delete/reorder still fail closed.
+	assert.equal(
+		decideReplicaPaginationMaintenance(
+			LOCAL_OFFSET_PAGINATION,
+			{ kind: 'offset', offset: 0, limit: 10, returned: 10 },
+			{ kind: 'insert' }
+		).decision,
+		'local'
+	);
+
 	for (const [coverage, kind, code] of [
 		[
 			{ kind: 'offset', offset: 0, limit: 10, returned: 10 },
-			'insert',
-			'insert_changes_offset_window'
+			'delete',
+			'delete_changes_offset_window'
 		],
 		[
 			{ kind: 'offset', offset: 1, limit: 10, returned: 1 },
@@ -1272,6 +1283,11 @@ test('offset locality requires a proven non-full first page', () => {
 			{ kind: 'offset', offset: 0, limit: 10 },
 			'reorder',
 			'reorder_changes_offset_window'
+		],
+		[
+			{ kind: 'offset', offset: 1, limit: 10, returned: 1 },
+			'insert',
+			'insert_changes_offset_window'
 		]
 	]) {
 		assert.equal(

@@ -148,7 +148,7 @@ fn command() -> ManifestCommand {
             version: 2,
             consistency: ManifestCommandConsistency {
                 version: 1,
-                kind: ManifestConsistencyKind::Causal,
+                kind: ManifestConsistencyKind::Eventual,
             },
             direct_projection: None,
             input_defaults: Some(ManifestInputDefaults {

@@ -2837,7 +2837,7 @@ mod tests {
         let causation_id = attempt.causation_id().as_str().to_string();
         let completion = attempt
             .complete(
-                TerminalCommandState::Projected,
+                TerminalCommandState::Atomic,
                 serde_json::json!({"projected": true}),
                 retention,
             )
@@ -2907,7 +2907,7 @@ mod tests {
         let failed_causation = failed_attempt.causation_id().as_str().to_string();
         let failed_completion = failed_attempt
             .complete(
-                TerminalCommandState::Projected,
+                TerminalCommandState::Atomic,
                 serde_json::json!({"projected": "must-roll-back"}),
                 retention,
             )
@@ -2925,7 +2925,7 @@ mod tests {
         sqlx::query(
             "CREATE TRIGGER fail_direct_ledger_completion \
              BEFORE UPDATE OF state ON command_ledger \
-             WHEN NEW.state = 'projected' \
+             WHEN NEW.state = 'atomic' \
              BEGIN SELECT RAISE(ABORT, 'forced direct ledger failure'); END",
         )
         .execute(repository.pool())
@@ -2987,7 +2987,7 @@ mod tests {
         let fenced_causation = fenced_attempt.causation_id().as_str().to_string();
         let fenced_completion = fenced_attempt
             .complete(
-                TerminalCommandState::Projected,
+                TerminalCommandState::Atomic,
                 serde_json::json!({"projected": "must-not-run"}),
                 retention,
             )

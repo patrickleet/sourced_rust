@@ -277,7 +277,7 @@ fn causal_surface_commands_accept_modeled_event_selectors_but_not_empty_authorit
         )
     };
     let mut modeled = test_command("order.modeled", "order_modeled", output());
-    modeled.consistency = CommandConsistency::Causal;
+    modeled.consistency = CommandConsistency::Eventual;
     modeled.projections.selectors.push(
         crate::ProjectionEventSelector::try_new(
             1,
@@ -302,7 +302,7 @@ fn causal_surface_commands_accept_modeled_event_selectors_but_not_empty_authorit
     );
 
     let mut empty = test_command("order.empty", "order_empty", output());
-    empty.consistency = CommandConsistency::Causal;
+    empty.consistency = CommandConsistency::Eventual;
     let error = build_surface(&[orders()], &SurfaceOptions::sqlite())
         .unwrap()
         .with_typed_commands(&test_inventory([empty]))
@@ -917,7 +917,7 @@ fn projected_output_reuse_and_sdl_emission_use_the_same_exact_predicate() {
         roles: Vec::new(),
         input: SurfaceCommandShape::None,
         output: SurfaceCommandShape::Typed(output),
-        consistency: CommandConsistency::Projected,
+        consistency: CommandConsistency::Atomic,
         input_defaults: Vec::new(),
         effects: Some(CommandEffects::revalidate()),
         confirmations: Vec::new(),

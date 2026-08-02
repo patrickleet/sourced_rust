@@ -86,8 +86,8 @@ export function validateArtifact<TInput, TOutput>(
 	validateDefaults(artifact.input, artifact.inputDefaults);
 	if (
 		artifact.consistency !== 'succeeded' &&
-		artifact.consistency !== 'causal' &&
-		artifact.consistency !== 'projected'
+		artifact.consistency !== 'eventual' &&
+		artifact.consistency !== 'atomic'
 	) {
 		artifactInvalid('artifact.consistency');
 	}
@@ -418,7 +418,7 @@ export function validateConfirmations<TInput, TOutput>(
 ): void {
 	const confirmations = artifact.confirmations;
 	if (confirmations === undefined) {
-		if (artifact.consistency === 'causal') {
+		if (artifact.consistency === 'eventual') {
 			artifactInvalid('artifact.confirmations');
 		}
 		return;
@@ -441,7 +441,7 @@ export function validateConfirmations<TInput, TOutput>(
 	} else {
 		artifactInvalid('artifact.confirmations.kind');
 	}
-	if (artifact.consistency === 'projected') {
+	if (artifact.consistency === 'atomic') {
 		artifactInvalid('artifact.confirmations');
 	}
 	if (confirmations.kind === 'finite') {
@@ -466,10 +466,10 @@ export function validateDirectProjection<TInput, TOutput>(
 	artifact: ReplicaCommandArtifact<TInput, TOutput>
 ): void {
 	const direct = artifact.directProjection;
-	if (artifact.consistency === 'projected' && direct === undefined) {
+	if (artifact.consistency === 'atomic' && direct === undefined) {
 		artifactInvalid('artifact.directProjection');
 	}
-	if (artifact.consistency !== 'projected' && direct !== undefined) {
+	if (artifact.consistency !== 'atomic' && direct !== undefined) {
 		artifactInvalid('artifact.directProjection');
 	}
 	if (direct === undefined) return;
@@ -548,7 +548,7 @@ export function validateRevalidation<TInput, TOutput>(
 	}
 	if (
 		((artifact.projection?.preview.operations.length ?? 0) === 0 &&
-			artifact.consistency !== 'projected') &&
+			artifact.consistency !== 'atomic') &&
 		!plan.required
 	) {
 		artifactInvalid('artifact.revalidation.required');

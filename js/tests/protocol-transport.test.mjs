@@ -21,7 +21,7 @@ function distributedEnvelope() {
 			commandId: 'opaque-command-id',
 			causationId: 'opaque-causation-id',
 			state: 'succeeded_pending_projection',
-			consistency: 'causal',
+			consistency: 'eventual',
 			expects: [
 				{
 					projection: 'todos',

@@ -512,7 +512,7 @@ pub struct CommandConsistencyExtension {
     pub kind: String,
 }
 
-/// Opaque same-transaction target for one `Projected<T>` command.
+/// Opaque same-transaction target for one `Atomic<T>` command.
 ///
 /// The topology digest binds the scope-codec version, accepted facts, complete
 /// owned schemas, partition declaration, and physical ownership on the server.

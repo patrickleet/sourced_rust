@@ -236,7 +236,7 @@ function artifact(options = {}) {
 		}),
 		input: Object.freeze({ kind: 'object', definition: TodoInput }),
 		output: Object.freeze({ kind: 'object', definition: ResultOutput }),
-		consistency: options.consistency ?? 'causal',
+		consistency: options.consistency ?? 'eventual',
 		...(options.modeled === false ? {} : { projection: projection(operation) }),
 		...(options.directProjection === undefined
 			? {}
@@ -267,7 +267,7 @@ function directProjectionArtifact() {
 	return Object.freeze({
 		...artifact({
 			name: 'todo.project',
-			consistency: 'projected',
+			consistency: 'atomic',
 			modeled: false,
 			directProjection: Object.freeze({
 				topology: Object.freeze({
@@ -381,7 +381,7 @@ function commandMetadata(request, options = {}) {
 			commandId: request.commandId,
 			causationId,
 			state,
-			consistency: options.consistency ?? 'causal',
+			consistency: options.consistency ?? 'eventual',
 			expects: [],
 			observations: [],
 			records: []
@@ -451,7 +451,7 @@ function commandMetadata(request, options = {}) {
 		commandId: request.commandId,
 		causationId,
 		state,
-		consistency: options.consistency ?? 'causal',
+		consistency: options.consistency ?? 'eventual',
 		expects: obligations.map((obligation) => ({
 			projection: PROGRAM,
 			model: obligation.model,
@@ -927,7 +927,7 @@ test('draining lifecycle status revalidates without applying old-scope delta and
 		commandId: COMMAND_A,
 		causationId: `cause:${COMMAND_A}`,
 		state,
-		consistency: 'causal',
+		consistency: 'eventual',
 		projectionDisposition: 'revalidate',
 		expects: [],
 		observations: [],
@@ -956,7 +956,7 @@ test('draining lifecycle status revalidates without applying old-scope delta and
 						disposition(
 							statusCalls === 1
 								? 'succeeded_pending_projection'
-								: 'projected'
+								: 'atomic'
 						)
 					)
 				);
@@ -999,7 +999,7 @@ test('draining lifecycle status revalidates without applying old-scope delta and
 	assert.notEqual(replica.layer(COMMAND_A), undefined);
 
 	terminalRefresh.resolve();
-	assert.equal((await terminalStatus).state, 'projected');
+	assert.equal((await terminalStatus).state, 'atomic');
 	assert.equal(replica.replacements.length, 0);
 	assert.equal(replica.layer(COMMAND_A), undefined);
 	assert.equal(replica.record('todo-1'), undefined);
@@ -1030,7 +1030,7 @@ test('generated Draining command handles a fresh succeeded response through curr
 		commandId,
 		causationId: `cause:${commandId}`,
 		state: 'succeeded',
-		consistency: 'causal',
+		consistency: 'eventual',
 		projectionDisposition: 'revalidate',
 		expects: [],
 		observations: [],
@@ -1134,7 +1134,7 @@ test('draining lifecycle live frames keep polling while pending and retire only 
 		commandId: commandRequest.commandId,
 		causationId: `cause:${commandRequest.commandId}`,
 		state,
-		consistency: 'causal',
+		consistency: 'eventual',
 		projectionDisposition: 'revalidate',
 		expects: [],
 		observations: [],
@@ -1193,7 +1193,7 @@ test('draining lifecycle live frames keep polling while pending and retire only 
 	terminalObserved = true;
 	runtime.observeResult({
 		extensions: envelope(commandRequest, {
-			command: disposition('projected')
+			command: disposition('atomic')
 		}).extensions
 	});
 	await tick();
@@ -1210,7 +1210,7 @@ test('draining lifecycle live frames keep polling while pending and retire only 
 
 	runtime.observeResult({
 		extensions: envelope(commandRequest, {
-			command: disposition('projected')
+			command: disposition('atomic')
 		}).extensions
 	});
 	await tick();
@@ -1221,7 +1221,7 @@ test('draining lifecycle live frames keep polling while pending and retire only 
 	assert.equal(backgroundErrors.length, 1);
 
 	terminalRefresh.resolve();
-	assert.equal((await projected).state, 'projected');
+	assert.equal((await projected).state, 'atomic');
 	assert.equal(replica.replacements.length, 1);
 	assert.equal(replica.layer(COMMAND_A), undefined);
 	assert.equal(replica.record('todo-1'), undefined);
@@ -1365,9 +1365,9 @@ test('live command state cannot regress before actual projection mutation', asyn
 	runtime.dispose();
 });
 
-for (const statusState of ['projected', 'succeeded_pending_projection']) {
+for (const statusState of ['atomic', 'succeeded_pending_projection']) {
 	test(`live terminal progression ${
-		statusState === 'projected'
+		statusState === 'atomic'
 			? 'permits an idempotent status replay'
 			: 'rejects a later status regression'
 	}`, async () => {
@@ -1399,10 +1399,10 @@ for (const statusState of ['projected', 'succeeded_pending_projection']) {
 		);
 		liveMetadata = Object.freeze({
 			...receipt.metadata,
-			state: 'projected'
+			state: 'atomic'
 		});
 		const projected =
-			statusState === 'projected'
+			statusState === 'atomic'
 				? receipt.projected
 				: assert.rejects(receipt.projected, {
 						code: 'REPLICA_COMMAND_PROTOCOL_INVALID'
@@ -1412,9 +1412,9 @@ for (const statusState of ['projected', 'succeeded_pending_projection']) {
 				command: liveMetadata
 			}).extensions
 		});
-		if (statusState === 'projected') {
-			assert.equal((await receipt.status()).state, 'projected');
-			assert.equal((await projected).state, 'projected');
+		if (statusState === 'atomic') {
+			assert.equal((await receipt.status()).state, 'atomic');
+			assert.equal((await projected).state, 'atomic');
 		} else {
 			await assert.rejects(receipt.status(), {
 				code: 'REPLICA_COMMAND_PROTOCOL_INVALID'
@@ -1451,7 +1451,7 @@ test('invalid live progression cannot poison a later valid status transition', a
 	);
 	projectedMetadata = Object.freeze({
 		...receipt.metadata,
-		state: 'projected'
+		state: 'atomic'
 	});
 	const projected = assert.rejects(receipt.projected, {
 		code: 'REPLICA_COMMAND_PROTOCOL_INVALID'
@@ -1465,7 +1465,7 @@ test('invalid live progression cannot poison a later valid status transition', a
 		}).extensions
 	});
 	await projected;
-	assert.equal((await receipt.status()).state, 'projected');
+	assert.equal((await receipt.status()).state, 'atomic');
 	runtime.dispose();
 });
 
@@ -1812,8 +1812,8 @@ test('direct Projected results retain the canonical record-clock path', async ()
 				const metadata = {
 					commandId: request.commandId,
 					causationId: `cause:${request.commandId}`,
-					state: 'projected',
-					consistency: 'projected',
+					state: 'atomic',
+					consistency: 'atomic',
 					expects: [],
 					observations: [],
 					records: [
@@ -1845,7 +1845,7 @@ test('direct Projected results retain the canonical record-clock path', async ()
 		{ id: 'todo-1', title: 'preview' },
 		{ commandId: COMMAND_A }
 	);
-	assert.equal(receipt.state, 'projected');
+	assert.equal(receipt.state, 'atomic');
 	assert.equal(replica.direct.length, 1);
 	assert.equal(replica.record('todo-1').fields.title, 'canonical');
 	assert.equal(replica.layer(COMMAND_A), undefined);
@@ -2499,6 +2499,80 @@ for (const scenario of ['older-row', 'newer-row', 'newer-tombstone']) {
 	});
 }
 
+test('Projected with portable preview IR does not require a causal projection-delta response', async () => {
+	// Direct commands may export the same mutation program for `.applies`
+	// previews. The response still seals via confirmDirectProjection only —
+	// no async projection-delta envelope.
+	const replica = new TestReplica();
+	const directWithPreview = Object.freeze({
+		...artifact({
+			name: 'todo.project',
+			consistency: 'atomic',
+			modeled: true,
+			directProjection: Object.freeze({
+				topology: Object.freeze({
+					version: 1,
+					name: 'todos',
+					digest: HASH_D
+				}),
+				model: Todo.id,
+				identityFields: Todo.identityFields,
+				changeEpoch: 'todos-v1'
+			})
+		}),
+		output: Object.freeze({
+			kind: 'object',
+			definition: Object.freeze({
+				name: Todo.id,
+				fields: Object.freeze([scalar('id', 'ID'), scalar('title')])
+			})
+		})
+	});
+	const runtime = createReplicaCommandRuntime(
+		replica,
+		{
+			dispatch(request) {
+				return Promise.resolve(
+					envelope(request, {
+						command: {
+							commandId: request.commandId,
+							causationId: `cause:${request.commandId}`,
+							state: 'atomic',
+							consistency: 'atomic',
+							expects: [],
+							observations: [],
+							records: [
+								{
+									model: Todo.id,
+									scopeToken: token('record-scope', 7),
+									incarnation: '1',
+									revision: '2',
+									tombstone: false
+								}
+							]
+						},
+						data: {
+							[request.mutationField]: {
+								id: 'todo-1',
+								title: 'from-handler'
+							}
+						}
+					})
+				);
+			}
+		},
+		{ project: directWithPreview }
+	);
+	const receipt = await runtime.commands.project(
+		{ id: 'todo-1', title: 'preview' },
+		{ commandId: COMMAND_A }
+	);
+	assert.equal(receipt.result.title, 'from-handler');
+	assert.equal((await receipt.projected).state, 'atomic');
+	assert.equal(replica.record('todo-1').fields.title, 'from-handler');
+	runtime.dispose();
+});
+
 test('link obligations may name any server-selected affected model', async () => {
 	const replica = new TestReplica();
 	const runtime = createReplicaCommandRuntime(
@@ -2562,7 +2636,7 @@ async function directProjectionRuntime() {
 	const directArtifact = Object.freeze({
 		...artifact({
 			name: 'todo.project',
-			consistency: 'projected',
+			consistency: 'atomic',
 			modeled: false,
 			directProjection: Object.freeze({
 				topology: Object.freeze({
@@ -2592,8 +2666,8 @@ async function directProjectionRuntime() {
 						command: {
 							commandId: request.commandId,
 							causationId: `cause:${request.commandId}`,
-							state: 'projected',
-							consistency: 'projected',
+							state: 'atomic',
+							consistency: 'atomic',
 							expects: [],
 							observations: [],
 							records: [

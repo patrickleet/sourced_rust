@@ -561,7 +561,7 @@ export type ReplicaOperationArtifact<
 	TVariables extends GraphqlVariables = GraphqlVariables
 > = ReplicaProtocolOperationArtifact<TData, TVariables>;
 
-export type ReplicaWriteSource = 'network' | 'live' | 'ssr' | 'restore' | 'projected';
+export type ReplicaWriteSource = 'network' | 'live' | 'ssr' | 'restore' | 'atomic';
 
 export type ReplicaResultEnvelope<TData = unknown> = {
 	readonly data?: TData | null;

@@ -24,7 +24,7 @@ pub(super) fn projected_output_typename<'a>(
         }
     }
     let consistency = &command.extensions.consistency;
-    if consistency.kind != ManifestConsistencyKind::Projected {
+    if consistency.kind != ManifestConsistencyKind::Atomic {
         return None;
     }
     let ManifestCommandShape::Object { definition } = &command.output else {

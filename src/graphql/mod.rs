@@ -37,10 +37,10 @@ pub use command_contract::{
 pub use command_contract::{
     __command_projection_event_descriptor, __command_projection_event_preview,
     __command_projection_events, __command_projection_preview_constant,
-    __command_projection_state_preview, typed_command, Causal, CommandConsistency,
+    __command_projection_state_preview, typed_command, Eventual, CommandConsistency,
     CommandProjectionEventSet, CommandProjectionPreview, CommandProjectionPreviewSource,
     CompiledDirectProjectionTarget, CompiledInputDefaults, PrepareCommandError, PreparedCommand,
-    Projected, Succeeded, TypedCommand, TypedEffectExpression, TypedEffectKey,
+    Atomic, Succeeded, TypedCommand, TypedEffectExpression, TypedEffectKey,
     TypedEffectRelationship,
 };
 pub use naming::{

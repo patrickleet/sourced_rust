@@ -17,11 +17,11 @@ use crate::graphql::command_contract::CommandConsistency;
 #[cfg(feature = "graphql")]
 use crate::graphql::identity::VerifiedPrincipal;
 use crate::graphql::{
-    typed_command, Causal, GraphqlInputType, GraphqlOutputType, GraphqlTypeDef, GraphqlTypeField,
+    typed_command, Eventual, GraphqlInputType, GraphqlOutputType, GraphqlTypeDef, GraphqlTypeField,
     PreparedCommand, Succeeded,
 };
 #[cfg(feature = "graphql")]
-use crate::graphql::{Projected, SurfaceDirectProjection, SurfaceProjector};
+use crate::graphql::{Atomic, SurfaceDirectProjection, SurfaceProjector};
 #[cfg(feature = "graphql")]
 use crate::microsvc::HasOutboxStore;
 use crate::microsvc::{
@@ -1279,7 +1279,7 @@ fn causal_status_projection_failure_precedes_observed_and_pending_evidence() {
             item(0, CausalProjectionEvidenceState::Observed),
             item(1, CausalProjectionEvidenceState::Observed),
         ]),
-        CausalCommandPublicState::Projected
+        CausalCommandPublicState::Atomic
     );
     assert_eq!(
         collapse_projection_evidence(&[
@@ -2191,7 +2191,7 @@ async fn graphql_terminal_replay_revalidates_after_active_projection_starts_drai
                 .with_repo(repository.clone().aggregate::<CausalDispatcherAggregate>())
                 .with_read_model_store(repository.clone())
                 .typed_command(
-                    typed_command::<CausalTestInput, Causal<TypedOutput>>("causal.lifecycle")
+                    typed_command::<CausalTestInput, Eventual<TypedOutput>>("causal.lifecycle")
                         .roles(["user"])
                         .emits(crate::events![CausalLifecycleRecorded]),
                 )
@@ -2206,7 +2206,7 @@ async fn graphql_terminal_replay_revalidates_after_active_projection_starts_drai
                             context
                                 .publish_events()
                                 .commit(checkout)?
-                                .causal(TypedOutput { id: input.id })
+                                .eventual(TypedOutput { id: input.id })
                         })();
                         async move { result }
                     },
@@ -2456,7 +2456,7 @@ async fn engine_rejects_incompatible_direct_owner_before_typed_command_binding()
             .with_repo(repository.clone().aggregate::<CausalDispatcherAggregate>())
             .typed_command(typed_command::<
                 CausalProjectionInput,
-                Projected<CausalProjectionObligationView>,
+                Atomic<CausalProjectionObligationView>,
             >("causal.direct"))
             .handle(
                 move |_context: &CausalCommandContext<'_, CausalDispatcherAggregate>,
@@ -2549,11 +2549,11 @@ async fn projected_command_auto_binds_bootstraps_and_replays_exact_direct_eviden
         Routes::new()
             .with_repo(repository.clone().aggregate::<CausalDispatcherAggregate>())
             // No direct-target/cache/projection call is present: the
-            // `Projected<M>` output and Surface owner are the complete
+            // `Atomic<M>` output and Surface owner are the complete
             // declaration.
             .typed_command(typed_command::<
                 CausalProjectionInput,
-                Projected<CausalProjectionObligationView>,
+                Atomic<CausalProjectionObligationView>,
             >("causal.direct"))
             .handle(
                 move |context: &CausalCommandContext<'_, CausalDispatcherAggregate>,
@@ -2564,7 +2564,7 @@ async fn projected_command_auto_binds_bootstraps_and_replays_exact_direct_eviden
                         let mut checkout = context.create();
                         checkout.record_direct(input.id.clone())?;
                         // Placement-selected: registration owns CAUSAL_DIRECT_PROJECTION.
-                        context.commit(checkout)?.projected()
+                        context.commit(checkout)?.atomic()
                     })();
                     async move { result }
                 },
@@ -2642,7 +2642,7 @@ async fn projected_command_auto_binds_bootstraps_and_replays_exact_direct_eviden
         .service(&service)
         .client_projection_owners([projection.into()])
         .build()
-        .expect("ordinary Projected<M> declaration should auto-bind its unique owner");
+        .expect("ordinary Atomic<M> declaration should auto-bind its unique owner");
     let service = service
         .try_with_graphql(engine)
         .expect("bound direct target should attach to its executable route");
@@ -2701,10 +2701,10 @@ async fn projected_command_auto_binds_bootstraps_and_replays_exact_direct_eviden
         .causal_command_status(&command_id, &Session::new(), causal_test_principal())
         .await
         .expect("direct projected status should use ledger replay evidence");
-    assert_eq!(direct_status.state, CausalCommandPublicState::Projected);
+    assert_eq!(direct_status.state, CausalCommandPublicState::Atomic);
     assert_eq!(
         direct_status.consistency,
-        Some(CommandConsistency::Projected)
+        Some(CommandConsistency::Atomic)
     );
     assert!(direct_status.obligations.is_empty());
     assert!(direct_status.evidence.is_empty());
@@ -2749,7 +2749,7 @@ async fn projected_command_auto_binds_bootstraps_and_replays_exact_direct_eviden
     let CommandLookup::Replay(first_replay) = lookup else {
         panic!("projected command should be terminally replayable");
     };
-    assert_eq!(first_replay.state, CommandLedgerState::Projected);
+    assert_eq!(first_replay.state, CommandLedgerState::Atomic);
     let evidence = first_replay
         .direct_projection
         .clone()

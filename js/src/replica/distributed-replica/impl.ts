@@ -1421,7 +1421,7 @@ export class DistributedReplicaImpl implements DistributedReplicaApi {
 		}
 		for (const [id, receipt] of receiptPlan.updates) {
 			if (receiptPlan.satisfied.includes(id)) {
-				this.#retireDiagnosticLayer(id, 'retired', 'projected', receipt);
+				this.#retireDiagnosticLayer(id, 'retired', 'atomic', receipt);
 				this.#optimisticReceipts.delete(id);
 			} else {
 				this.#optimisticReceipts.set(id, receipt);
@@ -1696,7 +1696,7 @@ export class DistributedReplicaImpl implements DistributedReplicaApi {
 	#retireDiagnosticLayer(
 		id: string,
 		action: 'retired' | 'rejected',
-		receiptState: 'projected' | 'rejected',
+		receiptState: 'atomic' | 'rejected',
 		receipt?: OptimisticReceiptState
 	): void {
 		retireDiagnosticLayerOn(this.#diagnosticsHost(), id, action, receiptState, receipt);

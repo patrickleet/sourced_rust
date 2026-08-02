@@ -573,8 +573,8 @@ pub(crate) struct ManifestProjectionTopologyIdentity {
 #[serde(rename_all = "snake_case")]
 pub(crate) enum ManifestConsistencyKind {
     Succeeded,
-    Causal,
-    Projected,
+    Eventual,
+    Atomic,
 }
 
 #[derive(Clone, Debug, PartialEq, Eq, Deserialize)]

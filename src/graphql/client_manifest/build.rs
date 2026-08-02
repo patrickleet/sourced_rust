@@ -317,8 +317,8 @@ pub(super) fn client_manifest_from_surface_with_execution(
             version: 1,
             kind: match command.consistency {
                 CommandConsistency::Succeeded => "succeeded",
-                CommandConsistency::Causal => "causal",
-                CommandConsistency::Projected => "projected",
+                CommandConsistency::Eventual => "eventual",
+                CommandConsistency::Atomic => "atomic",
             }
             .into(),
         };

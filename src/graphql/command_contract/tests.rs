@@ -129,11 +129,11 @@ impl GraphqlOutputType for Payload {
 
 #[test]
 fn preparation_serializes_and_retains_the_typed_payload_until_commit() {
-    let prepared = PreparedCommand::<Causal<Payload>>::prepare(Payload {
+    let prepared = PreparedCommand::<Eventual<Payload>>::prepare(Payload {
         id: "todo-1".into(),
     })
     .unwrap();
-    assert_eq!(prepared.consistency(), CommandConsistency::Causal);
+    assert_eq!(prepared.consistency(), CommandConsistency::Eventual);
     assert_eq!(prepared.serialized_payload()["id"], "todo-1");
     let (committed, serialized) = prepared.finalize_after_commit();
     assert_eq!(committed.payload().id, "todo-1");
@@ -142,7 +142,7 @@ fn preparation_serializes_and_retains_the_typed_payload_until_commit() {
 
 #[test]
 fn projected_output_is_generated_from_relational_schema_without_graphql_output_derive() {
-    let contract = typed_command::<Input, Projected<ProjectedRow>>("row.project").into_contract();
+    let contract = typed_command::<Input, Atomic<ProjectedRow>>("row.project").into_contract();
 
     assert_eq!(contract.output.name, "ProjectedRow");
     assert_eq!(
@@ -170,8 +170,8 @@ fn projected_output_is_generated_from_relational_schema_without_graphql_output_d
 fn successful_consistency_wire_vocabulary_is_exact_and_breaking() {
     let cases = [
         (CommandConsistency::Succeeded, "\"succeeded\""),
-        (CommandConsistency::Causal, "\"causal\""),
-        (CommandConsistency::Projected, "\"projected\""),
+        (CommandConsistency::Eventual, "\"causal\""),
+        (CommandConsistency::Atomic, "\"projected\""),
     ];
 
     for (consistency, encoded) in cases {
@@ -656,8 +656,8 @@ fn succeeded_without_confirmations_allows_an_empty_domain_batch() {
 
 #[test]
 fn causal_without_a_finite_confirmation_fails_at_commit_validation() {
-    let contract = typed_command::<Input, Causal<Payload>>("todo.create").into_contract();
-    let prepared = PreparedCommand::<Causal<Payload>>::prepare(Payload {
+    let contract = typed_command::<Input, Eventual<Payload>>("todo.create").into_contract();
+    let prepared = PreparedCommand::<Eventual<Payload>>::prepare(Payload {
         id: "todo-1".into(),
     })
     .unwrap();

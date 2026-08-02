@@ -390,12 +390,12 @@ test('causal confirmation writes base and retires its layer atomically', () => {
 	);
 
 	engine.confirmOptimisticLayer('complete-1', (writer) => {
-		writer.writeRecord({ key: TODO, revision: 2, fields: { status: 'projected' } });
+		writer.writeRecord({ key: TODO, revision: 2, fields: { status: 'atomic' } });
 	});
 	assert.equal(calls, 1);
-	assert.deepEqual(values, ['projected']);
+	assert.deepEqual(values, ['atomic']);
 	assert.equal(engine.optimisticLayerState('complete-1'), undefined);
-	assert.equal(engine.read((reader) => reader.record(TODO)?.fields.status), 'projected');
+	assert.equal(engine.read((reader) => reader.record(TODO)?.fields.status), 'atomic');
 });
 
 test('same-entity optimistic layers confirm and reject out of order without cross-rollback', () => {

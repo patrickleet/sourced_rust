@@ -736,10 +736,8 @@ export function maintainEntityIndex(
 		index.metadata.coverage.limit !== undefined &&
 		records.length > index.metadata.coverage.limit
 	) {
-		// Locality above is possible only because the base first page was
-		// non-full, so this is the complete optimistic ordered set. Preserve the
-		// operation's exact window when stacked optimistic inserts cross its
-		// limit.
+		// First-page inserts re-sort known members then clamp to the operation
+		// window so a full live page still shows optimistic rows that sort in.
 		records = records.slice(0, index.metadata.coverage.limit);
 	}
 	return sameStringList(records, current)
@@ -781,6 +779,11 @@ export function certifyOffsetCoverage(
 		typeof artifact.maxLimit === 'number'
 			? Math.min(configuredLimit, artifact.maxLimit)
 			: configuredLimit;
+	// First-page inserts remain local even when hasNext is true: membership is
+	// re-sorted and truncated to the limit among known rows. Delete/reorder on a
+	// page with a next boundary still fail closed (unseen fill-in).
+	const hasNextBlocksLocality =
+		coverage.hasNext === true && changeKind !== 'insert';
 	if (
 		typeof expectedOffset !== 'number' ||
 		!Number.isSafeInteger(expectedOffset) ||
@@ -792,7 +795,7 @@ export function certifyOffsetCoverage(
 		coverage.offset !== expectedOffset ||
 		coverage.limit !== expectedLimit ||
 		coverage.returned !== confirmedRecords ||
-		coverage.hasNext === true
+		hasNextBlocksLocality
 	) {
 		return reason(
 			'invalid_index_metadata',

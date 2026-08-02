@@ -635,7 +635,7 @@ export function createReplicaCommandRuntime<
 		switch (metadata.state) {
 			case 'succeeded':
 			case 'succeeded_pending_projection':
-			case 'projected':
+			case 'atomic':
 				return validateActualProjection(prepared, metadata, authority);
 			case 'in_progress':
 			case 'rejected':
@@ -889,7 +889,9 @@ export function createReplicaCommandRuntime<
 						 * delta.
 						 */
 						statusRequiresRevalidation = true;
-					} else {
+					} else if (prepared.consistency !== 'atomic') {
+						// Projected rows are confirmed on the mutation response,
+						// not via async projection-delta status envelopes.
 						const validated = validateProjectionForState(
 							prepared as ReplicaPreparedCommand<unknown, unknown>,
 							status.metadata,
@@ -945,7 +947,7 @@ export function createReplicaCommandRuntime<
 					break;
 				case 'succeeded':
 				case 'succeeded_pending_projection':
-				case 'projected': {
+				case 'atomic': {
 					const metadata = status.metadata!;
 					if (metadata.projectionDisposition === 'revalidate') {
 						if (metadata.state === 'succeeded_pending_projection') {
@@ -1020,7 +1022,7 @@ export function createReplicaCommandRuntime<
 							settleTrackedProjection(tracker, pending);
 						}
 					} else if (
-						metadata.state === 'projected' ||
+						metadata.state === 'atomic' ||
 						(metadata.state === 'succeeded' &&
 							metadata.expects.length === 0 &&
 							(prepared.revalidation.required ||
@@ -1365,24 +1367,32 @@ export function createReplicaCommandRuntime<
 				}
 			);
 		}
+		/*
+		 * Ship contract: Atomic seals from the atomic GraphQL row +
+		 * direct `records` (confirmDirectProjection). Causal applies
+		 * projection-delta when present. Same portable IR for `.applies`
+		 * previews either way — different response proof by design.
+		 */
 		let actualRequiresRevalidation = false;
-		try {
-			actualRequiresRevalidation = applyActualProjection(
-				prepared as ReplicaPreparedCommand<unknown, unknown>,
-				metadata,
-				authority
-			);
-		} catch (error) {
-			rejectUnmanagedLayer(prepared.commandId);
-			revalidateInBackground(prepared, authority);
-			throw new ReplicaCommandRuntimeError(
-				'REPLICA_COMMAND_PROTOCOL_INVALID',
-				{
-					commandId: prepared.commandId,
-					cause: error,
-					...(statusArtifact === undefined ? {} : { recovery })
-				}
-			);
+		if (prepared.consistency !== 'atomic') {
+			try {
+				actualRequiresRevalidation = applyActualProjection(
+					prepared as ReplicaPreparedCommand<unknown, unknown>,
+					metadata,
+					authority
+				);
+			} catch (error) {
+				rejectUnmanagedLayer(prepared.commandId);
+				revalidateInBackground(prepared, authority);
+				throw new ReplicaCommandRuntimeError(
+					'REPLICA_COMMAND_PROTOCOL_INVALID',
+					{
+						commandId: prepared.commandId,
+						cause: error,
+						...(statusArtifact === undefined ? {} : { recovery })
+					}
+				);
+			}
 		}
 		let projected:
 			| Promise<ReplicaCommandProjectedOutcome<TOutput>>
@@ -1390,8 +1400,8 @@ export function createReplicaCommandRuntime<
 		let projectionLifecycle:
 			| Promise<ReplicaCommandProjectedOutcome<TOutput>>
 			| undefined;
-		if (prepared.consistency === 'projected') {
-			if (metadata.state !== 'projected') {
+		if (prepared.consistency === 'atomic') {
+			if (metadata.state !== 'atomic') {
 				statusTracker.state = metadata.state;
 				statusTracker.metadata = metadata;
 				throw new ReplicaCommandRuntimeError(
@@ -1423,7 +1433,7 @@ export function createReplicaCommandRuntime<
 			projected = Promise.resolve(
 				Object.freeze({
 					commandId: prepared.commandId,
-					state: 'projected' as const,
+					state: 'atomic' as const,
 					result: output,
 					metadata
 				})

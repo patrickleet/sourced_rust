@@ -145,20 +145,12 @@ pub fn build_surface(tables: &[TableSchema], options: &SurfaceOptions) -> Result
                 rel.kind,
                 RelationshipKind::HasMany | RelationshipKind::ManyToMany
             );
-            let nullable = if matches!(rel.kind, RelationshipKind::BelongsTo) {
-                schema
-                    .columns
-                    .iter()
-                    .find(|column| {
-                        rel.foreign_key.as_deref().is_some_and(|key| {
-                            column.column_name == key || column.field_name == key
-                        })
-                    })
-                    .map(|column| column.nullable)
-                    .unwrap_or(true)
-            } else {
-                false
-            };
+            // Belongs-to is always `Option<T>` in the read-model macro, and the
+            // client materializer needs a nullable edge so optimistic parent
+            // upserts remain complete before the join target is linked (e.g.
+            // ChatMessages.author → AuthUsers). FK column nullability is a
+            // storage constraint, not GraphQL join nullability.
+            let nullable = matches!(rel.kind, RelationshipKind::BelongsTo);
             let (keys, mut dependencies) = relationship_keys(schema, rel, target, &by_table)?;
             dependencies.sort();
             dependencies.dedup();

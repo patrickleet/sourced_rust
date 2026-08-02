@@ -536,7 +536,7 @@ impl ProjectionServerExecutorDescriptor {
 /// Process-wide registry of placement-selected direct projection executors.
 ///
 /// Service construction registers each direct modeled owner by output model
-/// name. Command handlers then call `commit()?.projected()` without naming a
+/// name. Command handlers then call `commit()?.atomic()` without naming a
 /// projection selector; the runtime looks up the executor by returned model.
 static PLACEMENT_SELECTED_DIRECT: OnceLock<
     RwLock<BTreeMap<String, ProjectionServerExecutorDescriptor>>,
@@ -572,7 +572,7 @@ pub fn placement_selected_direct_for_model(
 }
 
 /// Register every single-model output of a direct descriptor for placement
-/// selection. Multi-model descriptors are not eligible for `Projected<M>`.
+/// selection. Multi-model descriptors are not eligible for `Atomic<M>`.
 ///
 /// # Errors
 ///

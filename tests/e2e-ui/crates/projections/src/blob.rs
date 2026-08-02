@@ -20,7 +20,7 @@ pub fn save_blob_game() -> Mutation<()> {
 // When these domain events fire, apply [`save_blob_game`] (body → `input.game`).
 // Event-first: on { events, mutation, input } — same shape as todos/chat.
 // Command path stages the row via `Mutation::from_state` +
-// `readmodel(row).commit()?.projected()`.
+// `readmodel(row).commit()?.atomic()`.
 // Macro is `projection!` (crate root); `distributed::projection` is the module.
 distributed::projection! {
     pub const BLOB_GAMES: ProjectionDescriptor<DirectCandidate> = {

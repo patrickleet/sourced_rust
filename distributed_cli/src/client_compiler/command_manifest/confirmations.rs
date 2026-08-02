@@ -22,18 +22,18 @@ pub(super) fn validate_confirmations(
 ) -> Result<(), ClientCompileError> {
     let confirmations = command.extensions.confirmations.as_ref();
     match (command.extensions.consistency.kind, confirmations) {
-        (ManifestConsistencyKind::Causal, None) => {
+        (ManifestConsistencyKind::Eventual, None) => {
             return Err(command_error(
                 command,
                 "client.manifest.command_confirmations",
-                "causal consistency requires confirmations",
+                "eventual consistency requires confirmations",
             ));
         }
-        (ManifestConsistencyKind::Projected, Some(_)) => {
+        (ManifestConsistencyKind::Atomic, Some(_)) => {
             return Err(command_error(
                 command,
                 "client.manifest.command_confirmations",
-                "projected consistency cannot declare asynchronous confirmations",
+                "atomic consistency cannot declare asynchronous confirmations",
             ));
         }
         _ => {}

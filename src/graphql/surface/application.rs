@@ -305,8 +305,13 @@ pub fn surface_for_role(
                 .into_iter()
                 .collect()
         };
+        // Direct owners never advertise async facts (binding_facts is empty).
+        // Selected programs still export for client `.applies` previews — that is
+        // IR inventory, not eventual fact topology.
         let selected_facts = if projector.modeled.is_empty() {
             projector.facts.clone()
+        } else if projector.is_direct() {
+            Vec::new()
         } else {
             modeled
                 .iter()

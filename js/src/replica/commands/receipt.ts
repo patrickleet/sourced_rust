@@ -45,7 +45,16 @@ export function verifyReplicaCommandReceipt<TInput, TOutput>(
 			receiptMismatch('receipt.expects');
 		}
 	} else if (receipt.projection === undefined) {
-		receiptMismatch('receipt.expects');
+		/*
+		 * Ship contract (see server routes: Projected never persists eventual
+		 * modeled projection metadata):
+		 * - Causal: response carries projection-delta (+ expects) when modeled.
+		 * - Projected: response carries typed row + direct `records`; optional
+		 *   `.applies` previews use the same IR but seal via the row, not a delta.
+		 */
+		if (prepared.consistency !== 'atomic') {
+			receiptMismatch('receipt.expects');
+		}
 	}
 	return Object.freeze({
 		kind: receipt.state === 'in_progress' ? 'deferred' : 'matched',

@@ -31,7 +31,7 @@ export type DistributedCommandState =
 	| 'in_progress'
 	| 'succeeded'
 	| 'succeeded_pending_projection'
-	| 'projected'
+	| 'atomic'
 	| 'rejected'
 	| 'projection_failed'
 	| 'expired'
@@ -39,8 +39,8 @@ export type DistributedCommandState =
 
 export type DistributedCommandConsistency =
 	| 'succeeded'
-	| 'causal'
-	| 'projected';
+	| 'eventual'
+	| 'atomic';
 
 /** Current-scope handling for authenticated historical projector evidence. */
 export type DistributedProjectionDisposition = 'revalidate';
@@ -229,7 +229,7 @@ const COMMAND_STATES = new Set<DistributedCommandState>([
 	'in_progress',
 	'succeeded',
 	'succeeded_pending_projection',
-	'projected',
+	'atomic',
 	'rejected',
 	'projection_failed',
 	'expired',
@@ -238,8 +238,8 @@ const COMMAND_STATES = new Set<DistributedCommandState>([
 
 const COMMAND_CONSISTENCIES = new Set<DistributedCommandConsistency>([
 	'succeeded',
-	'causal',
-	'projected'
+	'eventual',
+	'atomic'
 ]);
 
 const MAX_PUBLIC_NAME_LENGTH = 512;
@@ -505,7 +505,7 @@ function parseCommand(value: unknown): DistributedCommandMetadata {
 			![
 				'succeeded',
 				'succeeded_pending_projection',
-				'projected',
+				'atomic',
 				'projection_failed'
 			].includes(state))
 	) {

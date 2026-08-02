@@ -11,7 +11,8 @@ pub(crate) enum DistributedCommandState {
     InProgress,
     Succeeded,
     SucceededPendingProjection,
-    Projected,
+    /// Terminal state for an atomic command (same-tx read-model row sealed).
+    Atomic,
     Rejected,
     ProjectionFailed,
     Expired,
@@ -23,8 +24,8 @@ pub(crate) enum DistributedCommandState {
 #[serde(rename_all = "snake_case")]
 pub(crate) enum DistributedCommandConsistency {
     Succeeded,
-    Causal,
-    Projected,
+    Eventual,
+    Atomic,
 }
 
 /// Current-scope handling for durable projection work that was committed

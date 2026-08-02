@@ -74,7 +74,7 @@ direct command routes when that transport is intentional and independently
 authenticated.
 
 Build the executable `Service` first and pass that exact instance to
-`GraphqlEngineBuilder::service`. For `Projected<M>`, pass the repository handle
+`GraphqlEngineBuilder::service`. For `Atomic<M>`, pass the repository handle
 itself as the GraphQL pool source; a separately cloned raw pool cannot prove the
 same transactional storage identity. Configure a stable, nonzero 32-byte
 protocol key on every replica serving the same endpoint.
@@ -134,22 +134,34 @@ or `PreparedCommand<Projected<M>>`. Never commit outside the framework-owned
 causal boundary. Projector obligations derive from `.emits` + portable/modeled
 handlers (`mutation!`), not separately authored command confirmations/effects.
 
-### Command consistency modes
+### Command consistency modes (ship contract)
 
-**Command success does not imply projection visibility.**
+**Same portable mutation IR.** Different **response proof** — do not collapse them.
 
-| Contract | Meaning |
-|----------|---------|
-| `Succeeded<T>` | Command transaction succeeded; no projection visibility is promised. |
-| `Causal<T>` | Domain events committed; obligations derive from `.emits` + modeled projectors. |
-| `Projected<M>` | Exact read-model row is staged in the same transaction. |
+| Contract | Meaning | Mutation response | Client seal |
+|----------|---------|-------------------|-------------|
+| `Succeeded<T>` | Tx succeeded; no projection promise | Payload only | Revalidate / live |
+| `Eventual<T>` | Events committed; Eventual projectors apply later | Payload + **projection-delta** + `expects` | `.applies` → wait obligations |
+| `Atomic<M>` | Exact row in **same** command tx | **Typed row `M`** + direct **`records[]`** (no eventual modeled metadata, empty `expects`) | `.applies` optional; **`confirmDirectProjection(row, records)`** before await settles |
+
+Handler for Atomic — this *is* returning atomic read-model updates:
+
+```rust
+let row = save_*(...).from_state(...)?;
+repo.readmodel(row).publish_events().commit(agg)?.projected()
+```
 
 Rules:
 
-1. Use `Projected<M>` only when the exact row is staged with the command.
-2. Use `Causal<T>` with `.emits` (and optional `.preview`) so modeled projectors
-   can derive finite obligations; do not hand-author command confirmations.
-3. Otherwise use `Succeeded<T>`; never invent a projected row.
+1. Use `Atomic<M>` only when the exact row is staged in-handler
+   (`readmodel(row).…commit()?.projected()`). Server will not attach causal
+   projection-delta metadata to same-tx commands (by design).
+2. Use `Eventual<T>` with `.emits` + `.applies(state_preview! { … })` so eventual
+   projectors and client previews share one IR.
+3. Direct may export portable programs for `.applies` (`is_preview_eligible`);
+   that is not `is_causally_eligible` (Eventual-only obligations).
+4. Do not board-sim Projected UI — the returned row is authoritative.
+5. Otherwise `Succeeded<T>`; never invent a projected row.
 
 Surface IR: SDL is built via `build_surface` → `graphql_sdl_from_surface` (shared inventory
 for dialect-honest comparison ops, role grants, typed commands, and generated

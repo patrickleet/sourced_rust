@@ -289,10 +289,12 @@ Rules the fixture demonstrates:
 
 - **Domain unit tests first** (`cargo test -p todo-domain`) — no repository
 - **Owner from session**, never from untrusted create body
-- **Projectors only** write read models (commands commit aggregate + outbox)
+- **One mutation IR, two apply sites:** Eventual projectors (event handlers)
+  write todos/chat; Blob stages the same IR in the command handler and seals
+  `Projected` so the response can carry the row (impossible on an event handler)
 - GraphQL row filter: `owner_id = claim(x-user-id)` for role `user`
-- **Typed causal GraphQL commands** run through the OIDC command proxy; generic
-  direct command POST routes are disabled
+- **Typed GraphQL commands** (`Causal` / `Projected`) via the OIDC command
+  proxy; generic direct command POST routes are disabled
 - **Generated client**: `dctl client` produces the typed replica/query/command
   artifacts consumed by the SvelteKit app
 - **Subscriptions**: wire `SqliteRepository::read_model_changes()` into

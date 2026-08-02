@@ -310,16 +310,22 @@ same replica and GraphQL transport. A command call:
 
 1. validates and freezes its typed input;
 2. fills generated UUIDv7, ULID, or literal defaults exactly once;
-3. applies the generated optimistic effect transaction;
+3. applies the generated optimistic effect transaction (from `.applies` /
+   portable mutation IR — works for **Eventual and Direct** when fields are known);
 4. dispatches the exact compiler-owned mutation;
 5. keeps ambiguous commits recoverable by command ID;
 6. confirms or rejects only its own optimistic layer;
-7. resolves projected completion only after exact causal evidence arrives.
+7. retires the layer on the path that placement allows:
+   - **Causal / Eventual** — wait for projection obligations (event handler ran
+     async; there is no authoritative row on the command response);
+   - **Projected / Direct** — normalize the **returned** row
+     (`confirmDirectProjection`) before the call settles. The server waited in
+     the command handler because it could; an event handler cannot.
 
 Applications do not provide list targets, merge functions, mutation update
-callbacks, or invalidation maps. If the compiler cannot prove safe maintenance,
-the generated plan marks the affected projection stale and the replica performs
-one deduplicated revalidation.
+callbacks, board simulators, or invalidation maps. If the compiler cannot prove
+safe maintenance, the generated plan marks the affected projection stale and
+the replica performs one deduplicated revalidation.
 
 Callers may bound their own causal wait without inventing a rollback:
 

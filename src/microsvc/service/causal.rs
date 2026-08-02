@@ -226,7 +226,8 @@ pub(crate) enum CausalCommandPublicState {
     InProgress,
     Succeeded,
     SucceededPendingProjection,
-    Projected,
+    /// Terminal for an atomic command (same-tx read-model row sealed).
+    Atomic,
     Rejected,
     ProjectionFailed,
     Expired,
@@ -240,7 +241,7 @@ impl CausalCommandPublicState {
             Self::InProgress => "in_progress",
             Self::Succeeded => "succeeded",
             Self::SucceededPendingProjection => "succeeded_pending_projection",
-            Self::Projected => "projected",
+            Self::Atomic => "atomic",
             Self::Rejected => "rejected",
             Self::ProjectionFailed => "projection_failed",
             Self::Expired => "expired",
@@ -379,7 +380,7 @@ pub(super) fn replay_result(
     match replay.state {
         CommandLedgerState::Succeeded
         | CommandLedgerState::SucceededPendingProjection
-        | CommandLedgerState::Projected
+        | CommandLedgerState::Atomic
         | CommandLedgerState::ProjectionFailed => {
             let receipt = CausalCommandReceiptSource::from_replay(consistency, replay)?;
             Ok(CausalDispatchResult {
@@ -641,8 +642,8 @@ where
             });
             let (state, evidence) = match receipt.state {
                 CommandLedgerState::Succeeded => (CausalCommandPublicState::Succeeded, Vec::new()),
-                CommandLedgerState::Projected => (
-                    CausalCommandPublicState::Projected,
+                CommandLedgerState::Atomic => (
+                    CausalCommandPublicState::Atomic,
                     (0..receipt
                         .projection_metadata
                         .as_ref()
@@ -956,7 +957,7 @@ pub(super) fn collapse_projection_evidence(
             .iter()
             .all(|item| item.state == CausalProjectionEvidenceState::Observed)
     {
-        CausalCommandPublicState::Projected
+        CausalCommandPublicState::Atomic
     } else {
         CausalCommandPublicState::SucceededPendingProjection
     }

@@ -106,7 +106,7 @@ impl std::fmt::Display for CommandCommitProofError {
 
 impl std::error::Error for CommandCommitProofError {}
 
-/// Private evidence tying a `Projected<M>` payload to one exact full-row
+/// Private evidence tying a `Atomic<M>` payload to one exact full-row
 /// upsert. Application handlers can obtain this only through the causal
 /// workspace's stage-and-prepare operation.
 pub(crate) struct ProjectionCommitProof {

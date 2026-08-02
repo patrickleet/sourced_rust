@@ -594,7 +594,7 @@ fn projected_manifest() -> JsonValue {
         "operation_hash": fingerprint(mutation),
         "extensions": {
             "version": 2,
-            "consistency": {"version": 1, "kind": "projected"},
+            "consistency": {"version": 1, "kind": "atomic"},
             "direct_projection": {
                 "topology": {
                     "version": 1,
@@ -764,7 +764,7 @@ fn generated_command_types_manifest() -> JsonValue {
 fn embedded_model_invalidation_manifest() -> JsonValue {
     let mut value = generated_command_types_manifest();
     let command = &mut value["commands"][0];
-    command["extensions"]["consistency"]["kind"] = json!("causal");
+    command["extensions"]["consistency"]["kind"] = json!("eventual");
     command["extensions"]
         .as_object_mut()
         .unwrap()
@@ -2778,7 +2778,7 @@ fn command_protocol_and_extensions_are_preserved_exactly() {
         "operation_hash": fingerprint(mutation),
         "extensions": {
             "version": 2,
-            "consistency": {"version": 1, "kind": "causal"},
+            "consistency": {"version": 1, "kind": "eventual"},
             "input_defaults": {
                 "version": 1,
                 "defaults": [{"path": ["id"], "generator": "uuid_v7"}]
@@ -3464,7 +3464,7 @@ fn manifest_v2_parses_exact_projection_program_binding_and_preview_contract() {
         "operation_hash": fingerprint(mutation),
         "extensions": {
             "version": 2,
-            "consistency": {"version": 1, "kind": "causal"},
+            "consistency": {"version": 1, "kind": "eventual"},
             "input_defaults": {
                 "version": 1,
                 "defaults": [{"path": ["id"], "generator": "uuid_v7"}]
@@ -3768,7 +3768,7 @@ fn rejects_commands_without_causal_identity_or_normative_input_defaults() {
             "operation_hash": fingerprint(operation),
             "extensions": {
                 "version": 2,
-                "consistency": {"version": 1, "kind": "projected"},
+                "consistency": {"version": 1, "kind": "atomic"},
                 "input_defaults": {
                     "version": 1,
                     "defaults": [{"path": ["id"], "generator": generator}]

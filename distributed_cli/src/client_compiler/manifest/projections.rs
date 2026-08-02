@@ -104,19 +104,36 @@ pub(crate) fn validate_projection_manifest(
                 ),
             ));
         }
+        // Direct may export the same portable program for `.applies` previews.
+        // Server apply site is still the command handler (Projected response);
+        // client never runs this as an async eventual obligation.
         if binding.placement == ManifestProjectionPlacement::Direct
             && program_ids.contains(binding.program_id.as_str())
+            && binding.execution_class != ManifestProjectionExecutionClass::Causal
         {
             return Err(projection_error(
                 "client.manifest.projection_placement",
                 format!(
-                    "direct projection binding `{}` cannot expose an executable eventual client program",
+                    "direct projection binding `{}` may only expose a program when causal (preview IR)",
                     binding.binding_id
                 ),
             ));
         }
     }
     Ok((programs, bindings))
+}
+
+/// Active causal binding that may contribute client preview composition.
+///
+/// Eventual: async projector path + local `.applies` previews.
+/// Direct: same mutation IR; handler-owned Projected apply; previews optional.
+fn is_preview_eligible_binding(binding: &ManifestProjectionBinding) -> bool {
+    binding.state == ManifestProjectionBindingState::Active
+        && binding.execution_class == ManifestProjectionExecutionClass::Causal
+        && matches!(
+            binding.placement,
+            ManifestProjectionPlacement::Eventual | ManifestProjectionPlacement::Direct
+        )
 }
 
 pub(crate) fn validate_command_projections(
@@ -231,17 +248,14 @@ pub(crate) fn validate_command_projections(
                     )
                 })?;
             let eligible = bindings.iter().filter(|binding| {
-                binding.program_id == selected.program_id
-                    && binding.state == ManifestProjectionBindingState::Active
-                    && binding.placement == ManifestProjectionPlacement::Eventual
-                    && binding.execution_class == ManifestProjectionExecutionClass::Causal
+                binding.program_id == selected.program_id && is_preview_eligible_binding(binding)
             });
             if eligible.count() != 1 {
                 return Err(command_projection_error(
                     command,
                     "client.manifest.command_projection_eligibility",
                     format!(
-                        "selected program `{}` requires exactly one active eventual causal binding",
+                        "selected program `{}` requires exactly one active causal binding (eventual or direct)",
                         selected.program_id
                     ),
                 ));

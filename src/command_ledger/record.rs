@@ -421,7 +421,7 @@ impl CommandLedgerRecord {
         }
         let direct_projection = envelope.remove("direct_projection");
         match (&direct_projection, self.state) {
-            (Some(value), CommandLedgerState::Projected) => {
+            (Some(value), CommandLedgerState::Atomic) => {
                 SameTransactionProjectionEvidence::validate_replay_value(value).map_err(
                     |error| {
                         CommandLedgerError::Corrupt(format!(
@@ -431,7 +431,7 @@ impl CommandLedgerRecord {
                     },
                 )?;
             }
-            (None, CommandLedgerState::Projected) => {
+            (None, CommandLedgerState::Atomic) => {
                 return Err(CommandLedgerError::Corrupt(format!(
                     "command `{}` projected replay has no exact direct projection evidence",
                     self.key.command_id()

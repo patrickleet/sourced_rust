@@ -8,7 +8,7 @@ pub mod tile;
 
 pub use blob_error::BlobError;
 pub use blob_game::{
-    test_map_no_holes, test_map_with_hole, BlobGame,
+    simulate_move, test_map_no_holes, test_map_with_hole, BlobGame, MovePreview,
     BlobGameInitializedDomainEvent as BlobInitializedDomainEvent,
     BlobGameLevelStartedDomainEvent as BlobLevelStartedDomainEvent,
     BlobGameMovedDomainEvent as BlobMovedDomainEvent,

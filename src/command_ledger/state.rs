@@ -12,7 +12,8 @@ pub(crate) enum CommandLedgerState {
     RetryableUnknown,
     Succeeded,
     SucceededPendingProjection,
-    Projected,
+    /// Terminal for an **atomic** command (same-tx read-model row sealed).
+    Atomic,
     Rejected,
     ProjectionFailed,
     Expired,
@@ -25,7 +26,7 @@ impl CommandLedgerState {
             Self::RetryableUnknown => "retryable_unknown",
             Self::Succeeded => "succeeded",
             Self::SucceededPendingProjection => "succeeded_pending_projection",
-            Self::Projected => "projected",
+            Self::Atomic => "atomic",
             Self::Rejected => "rejected",
             Self::ProjectionFailed => "projection_failed",
             Self::Expired => "expired",
@@ -38,7 +39,7 @@ impl CommandLedgerState {
             "retryable_unknown" => Ok(Self::RetryableUnknown),
             "succeeded" => Ok(Self::Succeeded),
             "succeeded_pending_projection" => Ok(Self::SucceededPendingProjection),
-            "projected" => Ok(Self::Projected),
+            "atomic" => Ok(Self::Atomic),
             "rejected" => Ok(Self::Rejected),
             "projection_failed" => Ok(Self::ProjectionFailed),
             "expired" => Ok(Self::Expired),
@@ -53,7 +54,7 @@ impl CommandLedgerState {
             self,
             Self::Succeeded
                 | Self::SucceededPendingProjection
-                | Self::Projected
+                | Self::Atomic
                 | Self::Rejected
                 | Self::ProjectionFailed
         )
@@ -65,7 +66,7 @@ impl CommandLedgerState {
 pub(crate) enum TerminalCommandState {
     Succeeded,
     SucceededPendingProjection,
-    Projected,
+    Atomic,
     Rejected,
 }
 
@@ -74,7 +75,7 @@ impl From<TerminalCommandState> for CommandLedgerState {
         match value {
             TerminalCommandState::Succeeded => Self::Succeeded,
             TerminalCommandState::SucceededPendingProjection => Self::SucceededPendingProjection,
-            TerminalCommandState::Projected => Self::Projected,
+            TerminalCommandState::Atomic => Self::Atomic,
             TerminalCommandState::Rejected => Self::Rejected,
         }
     }
@@ -86,7 +87,7 @@ pub(super) fn validate_projection_obligation_semantics(
 ) -> Result<(), String> {
     match state {
         CommandLedgerState::Succeeded
-        | CommandLedgerState::Projected
+        | CommandLedgerState::Atomic
         | CommandLedgerState::Rejected => {
             if !obligations.is_empty() {
                 return Err(format!(

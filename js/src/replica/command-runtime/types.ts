@@ -138,7 +138,7 @@ export interface ReplicaCommandTransport {
 
 export type ReplicaCommandProjectedOutcome<TOutput> = Readonly<{
 	commandId: string;
-	state: 'projected';
+	state: 'atomic';
 	/** Present for same-transaction Projected<T>, absent for async facts. */
 	result?: TOutput;
 	metadata?: DistributedCommandMetadata;
@@ -158,7 +158,7 @@ export type ReplicaCommandReceipt<TOutput> = Readonly<{
 	commandId: string;
 	state: Extract<
 		DistributedCommandState,
-		'succeeded' | 'succeeded_pending_projection' | 'projected'
+		'succeeded' | 'succeeded_pending_projection' | 'atomic'
 	>;
 	/** Typed application payload returned by the generated mutation. */
 	result: TOutput;
