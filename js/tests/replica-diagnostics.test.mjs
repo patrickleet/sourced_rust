@@ -12,6 +12,11 @@ import {
 	inspectReplicaCommandArtifact,
 	inspectReplicaOperationArtifact
 } from '../dist/replica/index.js';
+import {
+	COMMAND_CONSISTENCY,
+	COMMAND_STATE,
+	commandReceipt
+} from './fixtures/command-protocol.mjs';
 
 const Todo = Object.freeze({
 	id: 'Todo',
@@ -181,7 +186,7 @@ const commandArtifact = Object.freeze({
 			])
 		})
 	}),
-	consistency: 'eventual',
+	consistency: COMMAND_CONSISTENCY.EVENTUAL,
 	projection: Object.freeze({
 		version: 2,
 		deltaWireVersion: 1,
@@ -669,21 +674,24 @@ test('replica integration exposes structural normalization, index, layer, receip
 			fields: { title: 'later private title' }
 		});
 	});
-	replica.markOptimisticLayerAccepted('command-private-a', {
-		commandId: 'command-private-a',
-		causationId: 'private-causation',
-		state: 'succeeded_pending_projection',
-		consistency: 'eventual',
-		expects: [
-			{
-				projection: 'todos',
-				model: 'Todo',
-				scopeToken: 'private-obligation-token'
-			}
-		],
-		observations: [],
+	replica.markOptimisticLayerAccepted(
+		'command-private-a',
+		commandReceipt({
+			commandId: 'command-private-a',
+			causationId: 'private-causation',
+			state: COMMAND_STATE.PENDING_PROJECTION,
+			consistency: COMMAND_CONSISTENCY.EVENTUAL,
+			expects: [
+				{
+					projection: 'todos',
+					model: 'Todo',
+					scopeToken: 'private-obligation-token'
+				}
+			],
+			observations: [],
 			records: []
-		});
+		})
+	);
 	const acceptedReceipt = diagnostics
 		.snapshot()
 		.receipts.find(

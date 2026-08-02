@@ -13,6 +13,7 @@ import {
 	prepareReplicaCommand,
 	ReplicaCommandContractError
 } from '../dist/replica/index.js';
+import { COMMAND_CONSISTENCY } from './fixtures/command-protocol.mjs';
 
 const HASH_A = `sha256:${'a'.repeat(64)}`;
 const HASH_B = `sha256:${'b'.repeat(64)}`;
@@ -74,7 +75,7 @@ function presetArtifact(overrides = {}) {
 				]
 			}
 		},
-		consistency: 'succeeded',
+		consistency: COMMAND_CONSISTENCY.SUCCEEDED,
 		projection: {
 			version: 2,
 			deltaWireVersion: 1,

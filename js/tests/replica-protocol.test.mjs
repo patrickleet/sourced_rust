@@ -10,6 +10,11 @@ import {
 	createDistributedReplica,
 	replicaRecordKey
 } from '../dist/replica/index.js';
+import {
+	COMMAND_CONSISTENCY,
+	COMMAND_STATE,
+	commandReceipt
+} from './fixtures/command-protocol.mjs';
 
 const Todo = Object.freeze({
 	id: 'TodoView',
@@ -468,11 +473,11 @@ function commandMetadata(options = {}) {
 		authorizationGeneration: 'auth-1',
 		cacheScope: 'cache:a',
 		operation: 'command:todo',
-		command: {
+		command: commandReceipt({
 			commandId: options.commandId ?? 'cmd-1',
 			causationId: options.causationId ?? 'cause-1',
-			state: options.state ?? 'succeeded_pending_projection',
-			consistency: 'eventual',
+			state: options.state ?? COMMAND_STATE.PENDING_PROJECTION,
+			consistency: COMMAND_CONSISTENCY.EVENTUAL,
 			expects: [
 				{
 					projection: 'todos-projector',
@@ -483,7 +488,7 @@ function commandMetadata(options = {}) {
 			...(options.observations === undefined
 				? {}
 				: { observations: options.observations })
-		}
+		})
 	}).command;
 }
 
