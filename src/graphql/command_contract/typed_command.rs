@@ -653,12 +653,6 @@ impl<I, K: CommandOutcome> TypedCommand<I, K> {
         self
     }
 
-    /// Alias for [`Self::applies`] (historical name).
-    #[must_use]
-    pub fn preview(self, preview: CommandProjectionPreview) -> Self {
-        self.applies(preview)
-    }
-
     pub fn name(&self) -> &str {
         &self.contract.name
     }
