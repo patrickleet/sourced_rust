@@ -17,7 +17,8 @@ import type { DemoWalkthrough } from './types';
  *   `.applies` previews until obligations complete (no response row).
  * - Atomic (Direct placement + Atomic command): command handler applies IR
  *   same-tx → wait and return the row; confirm before await settles.
- *   Optional `.applies` for known pre-network fields — never a UI board-sim.
+ *   Same `.applies` path when input carries known fields (blob move fills
+ *   board fields from the pure simulate_move twin of the domain).
  */
 
 export const todosWalkthrough: DemoWalkthrough = {
