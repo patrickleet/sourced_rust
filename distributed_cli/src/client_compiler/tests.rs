@@ -3168,7 +3168,7 @@ fn command_protocol_and_extensions_are_preserved_exactly() {
     assert!(!commands.contains("\"token\""));
     assert!(!commands.contains("\"effects\""));
     assert!(!commands.contains("\"confirmations\""));
-    assert!(commands.contains("\"consistency\": \"causal\""));
+    assert!(commands.contains("\"consistency\": \"eventual\""));
     assert!(commands.contains("\"revalidation\""));
     assert!(commands.contains("\"trustedPresets\": []"));
     assert!(commands.contains("export function prepareCommand_createTodo"));

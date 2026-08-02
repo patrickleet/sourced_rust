@@ -71,7 +71,7 @@ fn client_manifest_uses_service_surface_export() {
     assert_eq!(manifest["capabilities"]["query_fallback"], "revalidate");
     assert_eq!(
         manifest["commands"][0]["extensions"]["consistency"]["kind"],
-        "projected"
+        "atomic"
     );
     assert_eq!(
         manifest["commands"][0]["extensions"]["direct_projection"]["topology"]["version"],
