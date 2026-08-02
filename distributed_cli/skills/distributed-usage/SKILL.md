@@ -18,6 +18,13 @@ shapes. If you find yourself hand-writing service plumbing, routing, broker
 topology, or deploy YAML, stop — the framework or CLI almost certainly
 generates it, and hand-rolled copies drift.
 
+**Composition direction (logical app vs runtime vs process role):** see
+[docs/application-composition.md](../../../docs/application-composition.md).
+Same packages re-cut as monolith or microservices; Eventual projectors may
+live in another process; Atomic seals stay collocated with the command
+handler (CAP). Persistence, locks, bus, and transports pair as one runtime
+plane — not open-coded per dialect in `main`.
+
 **Always reach for the highest-level API first.** The macros and one-call
 conveniences are the recommended surface, not sugar:
 

@@ -245,6 +245,18 @@ handler applies the same mutation IR and returns the row. The Zitadel provider
 ingestor remains an integration adapter, while its provider-event-to-`AuthUsers`
 mapping also lives in `e2e-projections` and runs from an explicit event handler.
 
+## Application composition (framework direction)
+
+e2e-ui is the Full-process reference. Long-term wiring should follow
+[docs/application-composition.md](../../docs/application-composition.md):
+
+- **Logical:** command defs + projection mounts + surfaces (product graph)
+- **Process role:** Full | CommandWriter | EventualProjector | QueryApi
+- **Runtime:** store + locks + bus + workers + GraphQL (dialect / host)
+
+Atomic commands stay collocated with their write path; Eventual projectors
+may run in another process on the same packages.
+
 ## Generation and tests
 
 ```bash
