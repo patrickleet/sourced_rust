@@ -1574,7 +1574,7 @@ let routes = Routes::new()
             .field_name("todos_create")
             .roles(["user", "admin"])
             .emits(distributed::events![TodoCreatedDomainEvent])
-            .preview(/* state_preview! binding for optimism */),
+            .applies(/* state_preview! binding for optimism */),
     )
     .handle(create_todo)
     .typed_command(

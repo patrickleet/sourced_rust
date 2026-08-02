@@ -308,7 +308,7 @@ fn causal_full_surface() -> Surface {
                     .field_name("todos_complete")
                     .roles(["admin", "user"])
                     .emits(crate::events![ManifestTodoProjected])
-                    .preview(crate::event_preview! {
+                    .applies(crate::event_preview! {
                         ManifestTodoProjected => ManifestTodoProjected {
                             todo_id: input.todo_id,
                             ..unknown

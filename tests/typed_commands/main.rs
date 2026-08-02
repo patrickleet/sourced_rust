@@ -1748,7 +1748,7 @@ async fn generated_input_default_is_reused_as_the_effect_key_and_fingerprinted()
         typed_command::<PlanInput, Succeeded<PlanOutput>>("plan.create")
             .input_defaults(plan_input_defaults())
             .emits(distributed::events![PlanChangedDomainEvent])
-            .preview(distributed::state_preview! {
+            .applies(distributed::state_preview! {
                 PlanChangedDomainEvent => PlanView {
                     id: generated.id,
                     title: input.title,
@@ -1824,7 +1824,7 @@ async fn generated_input_default_is_reused_as_the_effect_key_and_fingerprinted()
             .typed_command(
                 typed_command::<PlanInput, Succeeded<PlanOutput>>("plan.create")
                     .emits(distributed::events![PlanChangedDomainEvent])
-                    .preview(distributed::state_preview! {
+                    .applies(distributed::state_preview! {
                         PlanChangedDomainEvent => PlanView {
                             id: input.id,
                             title: input.title,
@@ -1909,7 +1909,7 @@ async fn json_container_leaves_reach_the_manifest() {
             .typed_command(
                 typed_command::<JsonPatchInput, Succeeded<PlanOutput>>("json.patch")
                     .emits(distributed::events![JsonChangedDomainEvent])
-                    .preview(distributed::state_preview! {
+                    .applies(distributed::state_preview! {
                         JsonChangedDomainEvent => JsonView {
                             id: input.id,
                             ..unknown
@@ -1987,7 +1987,7 @@ async fn embedded_primary_keys_reject_keyed_effects_while_composite_keys_remain_
             .typed_command(
                 typed_command::<CompositeKeyInput, Succeeded<PlanOutput>>("composite.patch")
                     .emits(distributed::events![CompositeChangedDomainEvent])
-                    .preview(distributed::state_preview! {
+                    .applies(distributed::state_preview! {
                         CompositeChangedDomainEvent => CompositeKeyView {
                             tenant_id: input.tenant_id,
                             id: input.id,
@@ -2050,7 +2050,7 @@ async fn embedded_models_retain_global_revalidation_for_modeled_projections() {
             .typed_command(
                 typed_command::<BigIntKeyInput, Succeeded<PlanOutput>>("bigint.invalidate")
                     .emits(distributed::events![BigIntChangedDomainEvent])
-                    .preview(distributed::state_preview! {
+                    .applies(distributed::state_preview! {
                         BigIntChangedDomainEvent => BigIntKeyView {
                             key: input.key,
                             title: input.title,
@@ -2114,7 +2114,7 @@ async fn succeeded_emitted_event_exports_a_modeled_causal_projection() {
     let command = typed_command::<PlanInput, Succeeded<PlanOutput>>("plan.create")
         .input_defaults(plan_input_defaults())
         .emits(distributed::events![PlanChangedDomainEvent])
-        .preview(distributed::state_preview! {
+        .applies(distributed::state_preview! {
             PlanChangedDomainEvent => PlanView {
                 id: generated.id,
                 title: input.title,
@@ -2301,7 +2301,7 @@ async fn role_redaction_replaces_an_unsafe_modeled_projection_with_revalidation(
     let command = typed_command::<PlanInput, Succeeded<PlanOutput>>("plan.create")
         .input_defaults(plan_input_defaults())
         .emits(distributed::events![PlanChangedDomainEvent])
-        .preview(distributed::state_preview! {
+        .applies(distributed::state_preview! {
             PlanChangedDomainEvent => PlanView {
                 id: generated.id,
                 title: input.title,

@@ -170,8 +170,8 @@ fn projected_output_is_generated_from_relational_schema_without_graphql_output_d
 fn successful_consistency_wire_vocabulary_is_exact_and_breaking() {
     let cases = [
         (CommandConsistency::Succeeded, "\"succeeded\""),
-        (CommandConsistency::Eventual, "\"causal\""),
-        (CommandConsistency::Atomic, "\"projected\""),
+        (CommandConsistency::Eventual, "\"eventual\""),
+        (CommandConsistency::Atomic, "\"atomic\""),
     ];
 
     for (consistency, encoded) in cases {
@@ -181,8 +181,11 @@ fn successful_consistency_wire_vocabulary_is_exact_and_breaking() {
             consistency
         );
     }
+    // No wire aliases / back-compat names.
     assert!(serde_json::from_str::<CommandConsistency>("\"accepted\"").is_err());
     assert!(serde_json::from_str::<CommandConsistency>("\"fact\"").is_err());
+    assert!(serde_json::from_str::<CommandConsistency>("\"causal\"").is_err());
+    assert!(serde_json::from_str::<CommandConsistency>("\"projected\"").is_err());
 }
 
 #[test]
@@ -235,7 +238,7 @@ fn command_registration_distrusts_manual_event_contracts() {
 
     let mismatched_state = typed_command::<Input, Succeeded<Payload>>("todo.dishonest-state")
         .emits(crate::events![DishonestStateContract])
-        .preview(crate::state_preview! {
+        .applies(crate::state_preview! {
             DishonestStateContract => TodoState {
                 todo_id: input.id,
                 ..unknown
@@ -253,7 +256,7 @@ fn command_registration_distrusts_manual_event_contracts() {
 fn command_preview_requires_membership_and_rejects_server_only_sources() {
     let outside = typed_command::<Input, Succeeded<Payload>>("todo.outside")
         .emits(crate::events![TodoCompleted])
-        .preview(crate::event_preview! {
+        .applies(crate::event_preview! {
             TodoRenamed => TodoRenamed {
                 todo_id: input.id,
                 ..unknown
@@ -268,7 +271,7 @@ fn command_preview_requires_membership_and_rejects_server_only_sources() {
 
     let server_only = typed_command::<Input, Succeeded<Payload>>("todo.server-only")
         .emits(crate::events![TodoCompleted])
-        .preview(
+        .applies(
             CommandProjectionPreview::new()
                 .events(crate::events![TodoCompleted])
                 .field(["todo_id"], CommandProjectionPreviewSource::ServerOnly),
@@ -285,7 +288,7 @@ fn command_preview_requires_membership_and_rejects_server_only_sources() {
 fn partial_preview_retains_known_unknown_and_typed_constant_sources() {
     let contract = typed_command::<Input, Succeeded<Payload>>("todo.partial")
         .emits(crate::events![TodoCompleted])
-        .preview(crate::event_preview! {
+        .applies(crate::event_preview! {
             TodoCompleted => TodoCompleted {
                 todo_id: input.id,
                 status: "completed",
@@ -301,13 +304,13 @@ fn partial_preview_retains_known_unknown_and_typed_constant_sources() {
 fn repeated_preview_declarations_preserve_synthetic_occurrence_order() {
     let contract = typed_command::<Input, Succeeded<Payload>>("todo.repeated-preview")
         .emits(crate::events![TodoCompleted])
-        .preview(crate::event_preview! {
+        .applies(crate::event_preview! {
             TodoCompleted => TodoCompleted {
                 todo_id: "first",
                 ..unknown
             }
         })
-        .preview(crate::event_preview! {
+        .applies(crate::event_preview! {
             TodoCompleted => TodoCompleted {
                 todo_id: input.id,
                 ..unknown

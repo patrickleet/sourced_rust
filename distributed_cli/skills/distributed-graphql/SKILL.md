@@ -123,7 +123,7 @@ let routes = Routes::new()
         typed_command::<CreateOrderInput, Causal<CreateOrderPayload>>("order.create")
             .roles(["user"])
             .emits(distributed::events![OrderCreatedDomainEvent])
-            .preview(/* state_preview! for client optimism */),
+            .applies(/* state_preview! for client optimism */),
     )
     .handle(create_order);
 ```
