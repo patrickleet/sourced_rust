@@ -166,34 +166,3 @@ test('demo commands export preview IR for client optimism', () => {
 		}
 	}
 });
-
-test('ChatMessages.author join is nullable so optimistic rows materialize', () => {
-	const chatOp = fs.readFileSync(
-		path.join(uiRoot, 'src/lib/generated/user/operations/chat-messages.ts'),
-		'utf8'
-	);
-	// Selection branch for author must be nullable:true (missing edge → null).
-	assert.match(
-		chatOp,
-		/"responseKey":\s*"author"[\s\S]*?"cardinality":\s*"one"[\s\S]*?"nullable":\s*true/,
-		'ChatMessages.author must be nullable for optimistic parent materialization'
-	);
-	assert.match(
-		chatOp,
-		/readonly "author":\s*\{[\s\S]*?\}\s*\|\s*null/,
-		'TypeScript data type must allow author | null'
-	);
-});
-
-test('ChatMessages first page uses offset pagination with local insert policy', () => {
-	const chatOp = fs.readFileSync(
-		path.join(uiRoot, 'src/lib/generated/user/operations/chat-messages.ts'),
-		'utf8'
-	);
-	assert.match(chatOp, /"kind":\s*"offset"/);
-	assert.match(
-		chatOp,
-		/"pagination":\s*\{[\s\S]*?"insert":\s*"local"/,
-		'chat list must allow local optimistic inserts on the first page'
-	);
-});

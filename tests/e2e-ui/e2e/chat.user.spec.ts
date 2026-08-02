@@ -49,6 +49,27 @@ test.describe('chat (alice)', () => {
 			.poll(async () => page.locator('.ch-msg').count(), { timeout: 20_000 })
 			.toBeGreaterThanOrEqual(25);
 
+		// A full first page must still accept an optimistic local insert. This
+		// used to live in a second scenario that seeded the same 25 rows again.
+		const fullPageBody = `history optimism ${stamp}`;
+		const fullPageMessage = page.locator('.ch-msg', { hasText: fullPageBody });
+		const fullPageResponse = await expectOptimisticPaint(page, {
+			needle: 'chat_messages_post',
+			holdMs: 1_500,
+			assertWithinMs: 1_000,
+			act: async () => {
+				await page.locator('#chat-body').fill(fullPageBody);
+				await page.getByRole('button', { name: /send/i }).click();
+			},
+			assertOptimistic: async () => {
+				await expect(fullPageMessage).toBeVisible({ timeout: 200 });
+			},
+			assertConverged: async () => {
+				await expect(fullPageMessage).toBeVisible();
+			}
+		});
+		expect(fullPageResponse.ok()).toBeTruthy();
+
 		// Live window is the newest 25 (#05–#29). #00 requires a history page.
 		const olderThanFirstPage = `history seed ${stamp} #00`;
 

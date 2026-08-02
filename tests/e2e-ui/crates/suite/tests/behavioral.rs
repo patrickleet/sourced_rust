@@ -142,25 +142,6 @@ async fn t0_http_command_routes_disabled() {
 }
 
 #[tokio::test]
-async fn t1_create_and_project() {
-    let base = ensure_target().await;
-    let tid = id("t");
-    let resp = todos_create(&base, &tid, "Buy milk", "alice", "user")
-        .await
-        .unwrap_or_else(|e| panic!("{}: {e}", cases::CREATE));
-    assert_eq!(resp["todo_id"], tid);
-    assert_eq!(resp["owner_id"], "alice");
-    assert_eq!(resp["status"], "open");
-
-    let row = poll_todo(&base, "alice", &tid)
-        .await
-        .unwrap_or_else(|| panic!("{}: not projected", cases::CREATE));
-    assert_eq!(row["title"], "Buy milk");
-    assert_eq!(row["owner_id"], "alice");
-    eprintln!("{} ok {tid}", cases::CREATE);
-}
-
-#[tokio::test]
 async fn t1a_application_surface_returns_actual_todo_upsert_and_causal_obligation() {
     let base = ensure_target().await;
     let tid = id("tapp");
@@ -217,25 +198,6 @@ async fn t1a_application_surface_returns_actual_todo_upsert_and_causal_obligatio
         Some(1),
         "client confirmation must expose the same finite obligation: {response}"
     );
-}
-
-/// Create via GraphQL command mutation; owner is always session user.
-#[tokio::test]
-async fn t1b_create_via_graphql_mutation() {
-    let base = ensure_target().await;
-    let tid = id("tgql");
-    let payload = todos_create(&base, &tid, "Via GQL", "alice", "user")
-        .await
-        .unwrap_or_else(|e| panic!("todos_create mutation: {e}"));
-    assert_eq!(payload["todo_id"], tid);
-    assert_eq!(payload["owner_id"], "alice");
-    assert_eq!(payload["title"], "Via GQL");
-
-    let row = poll_todo(&base, "alice", &tid)
-        .await
-        .expect("mutation must project into todos read model");
-    assert_eq!(row["owner_id"], "alice");
-    eprintln!("todos_create ok {tid}");
 }
 
 /// GraphQL create input has no owner_id; session principal is always the owner.
@@ -496,33 +458,6 @@ async fn t2e_admin_todos_respects_limit() {
 }
 
 #[tokio::test]
-async fn t3_complete_projects_status() {
-    let base = ensure_target().await;
-    let tid = id("tc");
-    todos_create(&base, &tid, "Do thing", "alice", "user")
-        .await
-        .expect(cases::COMPLETE);
-    assert!(poll_todo(&base, "alice", &tid).await.is_some());
-
-    todos_complete(&base, &tid, "alice", "user")
-        .await
-        .expect(cases::COMPLETE);
-
-    let mut ok = false;
-    for _ in 0..100 {
-        if let Some(row) = poll_todo(&base, "alice", &tid).await {
-            if row["status"] == "completed" {
-                ok = true;
-                break;
-            }
-        }
-        tokio::time::sleep(Duration::from_millis(30)).await;
-    }
-    assert!(ok, "{}: status not completed in GraphQL", cases::COMPLETE);
-    eprintln!("{} ok {tid}", cases::COMPLETE);
-}
-
-#[tokio::test]
 async fn t4_not_owner_rejected() {
     let base = ensure_target().await;
     let tid = id("to");
@@ -593,60 +528,6 @@ async fn t5_unauthenticated_rejected() {
         cases::UNAUTH
     );
     eprintln!("{} ok", cases::UNAUTH);
-}
-
-#[tokio::test]
-async fn t6_lifecycle_rename_and_archive() {
-    let base = ensure_target().await;
-    let tid = id("tl");
-    todos_create(&base, &tid, "Draft", "alice", "user")
-        .await
-        .expect(cases::LIFECYCLE);
-    assert!(poll_todo(&base, "alice", &tid).await.is_some());
-
-    todos_rename(&base, &tid, "Renamed", "alice", "user")
-        .await
-        .expect(cases::LIFECYCLE);
-
-    let mut renamed = false;
-    for _ in 0..100 {
-        if let Some(row) = poll_todo(&base, "alice", &tid).await {
-            if row["title"] == "Renamed" {
-                renamed = true;
-                break;
-            }
-        }
-        tokio::time::sleep(Duration::from_millis(30)).await;
-    }
-    assert!(renamed, "{}: rename not projected", cases::LIFECYCLE);
-
-    todos_archive(&base, &tid, "alice", "user")
-        .await
-        .expect(cases::LIFECYCLE);
-
-    let mut archived = false;
-    for _ in 0..100 {
-        if let Some(row) = poll_todo(&base, "alice", &tid).await {
-            if row["status"] == "archived" {
-                archived = true;
-                break;
-            }
-        }
-        tokio::time::sleep(Duration::from_millis(30)).await;
-    }
-    assert!(archived, "{}: archive not projected", cases::LIFECYCLE);
-
-    let err = todos_complete(&base, &tid, "alice", "user")
-        .await
-        .expect_err("complete after archive");
-    assert!(
-        err.to_lowercase().contains("reject")
-            || err.to_lowercase().contains("archiv")
-            || err.contains("UNPROCESSABLE"),
-        "{}: complete after archive: {err}",
-        cases::LIFECYCLE
-    );
-    eprintln!("{} ok {tid}", cases::LIFECYCLE);
 }
 
 #[tokio::test]

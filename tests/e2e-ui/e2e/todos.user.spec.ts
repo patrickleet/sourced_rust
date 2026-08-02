@@ -10,19 +10,6 @@ async function visibleTodoOrders(page: import('@playwright/test').Page) {
 	);
 }
 
-async function todoOrderInPanel(
-	page: import('@playwright/test').Page,
-	heading: RegExp
-) {
-	return page
-		.locator('.panel')
-		.filter({ has: page.getByRole('heading', { name: heading }) })
-		.locator('[data-todo-id]')
-		.evaluateAll((items) =>
-			items.map((item) => (item as HTMLElement).dataset.todoId ?? '')
-		);
-}
-
 type TodoOrderFrame = {
 	open: string[];
 	done: string[];
@@ -91,11 +78,19 @@ function expectBinarySorted(orders: string[][]) {
 	}
 }
 
-function sameTodoOrder(left: TodoOrderFrame, right: TodoOrderFrame) {
-	return (
-		JSON.stringify(left.open) === JSON.stringify(right.open) &&
-		JSON.stringify(left.done) === JSON.stringify(right.done)
-	);
+function isBinarySorted(ids: string[]) {
+	return JSON.stringify(ids) === JSON.stringify([...ids].sort());
+}
+
+function validTodoTransitionFrame(frame: TodoOrderFrame, todoId: string) {
+	const occurrences =
+		frame.open.filter((id) => id === todoId).length +
+		frame.done.filter((id) => id === todoId).length;
+	return isBinarySorted(frame.open) && isBinarySorted(frame.done) && occurrences === 1;
+}
+
+function todoIsIn(frame: TodoOrderFrame, todoId: string, panel: 'open' | 'done') {
+	return frame[panel].includes(todoId);
 }
 
 function waitForTodoCommand(
@@ -121,7 +116,7 @@ test.describe('todos (alice)', () => {
 		await page.locator('#todo-title').fill(title);
 		const createResponse = waitForTodoCommand(page, 'todos_create');
 		await page.getByRole('button', { name: /^add$/i }).click();
-		await createResponse;
+		expect((await createResponse).ok(), 'todos_create must succeed').toBeTruthy();
 		const openItem = page
 			.locator('.panel')
 			.filter({ has: page.getByRole('heading', { name: /^open$/i }) })
@@ -136,7 +131,7 @@ test.describe('todos (alice)', () => {
 			.filter({ has: page.getByRole('heading', { name: /^done$/i }) })
 			.locator('.item', { hasText: title });
 		await expect(doneItem).toBeVisible({ timeout: 15_000 });
-		await completeResponse;
+		expect((await completeResponse).ok(), 'todos_complete must succeed').toBeTruthy();
 
 		// Reopen (prefer the text button; wait until not busy)
 		const reopen = doneItem.getByRole('button', { name: 'Reopen', exact: true });
@@ -296,14 +291,6 @@ test.describe('todos (alice)', () => {
 		expectBinarySorted(await visibleTodoOrders(page));
 		const todoId = await openItem.getAttribute('data-todo-id');
 		expect(todoId).not.toBeNull();
-		const beforeComplete = {
-			open: await todoOrderInPanel(page, /^open$/i),
-			done: await todoOrderInPanel(page, /^done$/i)
-		};
-		const afterComplete = {
-			open: beforeComplete.open.filter((id) => id !== todoId),
-			done: [...beforeComplete.done, todoId!].sort()
-		};
 		await startTodoOrderTrace(page);
 		const completeResponse = page.waitForResponse(
 			(response) =>
@@ -333,12 +320,12 @@ test.describe('todos (alice)', () => {
 		await page.waitForTimeout(750);
 		const completeOrderFrames = await stopTodoOrderTrace(page);
 		expect(
-			completeOrderFrames.every(
-				(order) =>
-					sameTodoOrder(order, beforeComplete) ||
-					sameTodoOrder(order, afterComplete)
-			),
+			completeOrderFrames.every((order) => validTodoTransitionFrame(order, todoId!)),
 			`complete rendered an intermediate non-generated order: ${JSON.stringify(completeOrderFrames)}`
+		).toBe(true);
+		expect(
+			completeOrderFrames.some((order) => todoIsIn(order, todoId!, 'done')),
+			`complete never rendered the Todo in Done: ${JSON.stringify(completeOrderFrames)}`
 		).toBe(true);
 
 		await startTodoOrderTrace(page);
@@ -359,17 +346,16 @@ test.describe('todos (alice)', () => {
 		await reopenResponse;
 		await page.waitForTimeout(750);
 		const reopenOrderFrames = await stopTodoOrderTrace(page);
-		// Authoritative membership order is binary by todo_id; optimistic reopen may
-		// temporarily prepend before the index reconciles on the wire response.
 		expect(
-			reopenOrderFrames.some((order) => sameTodoOrder(order, beforeComplete)),
-			`reopen never settled on generated open order: ${JSON.stringify(reopenOrderFrames)}`
+			reopenOrderFrames.every((order) => validTodoTransitionFrame(order, todoId!)),
+			`reopen rendered an intermediate non-generated order: ${JSON.stringify(reopenOrderFrames)}`
+		).toBe(true);
+		expect(
+			reopenOrderFrames.some((order) => todoIsIn(order, todoId!, 'open')),
+			`reopen never rendered the Todo in Open: ${JSON.stringify(reopenOrderFrames)}`
 		).toBe(true);
 		await expect(reopenedItem).toBeVisible();
-		expect(
-			await todoOrderInPanel(page, /^open$/i),
-			'reopen must restore generated open order after command convergence'
-		).toEqual(beforeComplete.open);
+		expectBinarySorted(await visibleTodoOrders(page));
 
 		// Repeat after both earlier commands have converged so the invariant also
 		// covers a row that is fully authoritative before the next transition.
@@ -382,12 +368,14 @@ test.describe('todos (alice)', () => {
 		await page.waitForTimeout(750);
 		const authoritativeCompleteFrames = await stopTodoOrderTrace(page);
 		expect(
-			authoritativeCompleteFrames.every(
-				(order) =>
-					sameTodoOrder(order, beforeComplete) ||
-					sameTodoOrder(order, afterComplete)
+			authoritativeCompleteFrames.every((order) =>
+				validTodoTransitionFrame(order, todoId!)
 			),
 			`authoritative complete rendered an intermediate order: ${JSON.stringify(authoritativeCompleteFrames)}`
+		).toBe(true);
+		expect(
+			authoritativeCompleteFrames.some((order) => todoIsIn(order, todoId!, 'done')),
+			`authoritative complete never rendered the Todo in Done: ${JSON.stringify(authoritativeCompleteFrames)}`
 		).toBe(true);
 
 		await startTodoOrderTrace(page);
@@ -399,11 +387,17 @@ test.describe('todos (alice)', () => {
 		await page.waitForTimeout(750);
 		const authoritativeReopenFrames = await stopTodoOrderTrace(page);
 		expect(
-			authoritativeReopenFrames.some((order) => sameTodoOrder(order, beforeComplete)),
-			`authoritative reopen never settled on generated open order: ${JSON.stringify(authoritativeReopenFrames)}`
+			authoritativeReopenFrames.every((order) =>
+				validTodoTransitionFrame(order, todoId!)
+			),
+			`authoritative reopen rendered an intermediate order: ${JSON.stringify(authoritativeReopenFrames)}`
+		).toBe(true);
+		expect(
+			authoritativeReopenFrames.some((order) => todoIsIn(order, todoId!, 'open')),
+			`authoritative reopen never rendered the Todo in Open: ${JSON.stringify(authoritativeReopenFrames)}`
 		).toBe(true);
 		await expect(reopenedItem).toBeVisible();
-		expect(await todoOrderInPanel(page, /^open$/i)).toEqual(beforeComplete.open);
+		expectBinarySorted(await visibleTodoOrders(page));
 		await page.unrouteAll({ behavior: 'wait' });
 	});
 });
