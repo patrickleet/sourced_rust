@@ -263,7 +263,6 @@ may run in another process on the same packages.
 make gen-client
 make check-client
 make test
-make test-live
 make test-browser
 ```
 
@@ -273,25 +272,25 @@ Client optimism is proven in two layers:
 
 1. **Offline artifacts** (`ui/tests/optimism-artifacts.test.mjs`, run via `make ui-test` /
    UI `npm test`): every demo write command must export non-empty
-   `projection.preview.operations`; Atomic also needs `directProjection`; chat
-   `author` must be nullable and the live list must allow local first-page inserts.
-2. **Browser paint-before-wire** (`e2e/optimism.user.spec.ts` +
+   `projection.preview.operations`; Atomic also needs `directProjection`.
+2. **Browser paint-before-wire** (the Chat, Todo, and Blob product journeys plus
    `e2e/helpers/optimism.ts`): hold the GraphQL mutation response longer than the
-   assert deadline and require the UI to update first. Chat (including a full
-   first page), todos create/complete, and blob move continuity are covered.
+   assert deadline and require the UI to update first. The same journey then
+   proves authoritative convergence and continuity.
 
 ```bash
 # offline
 cd ui && npm test -- tests/optimism-artifacts.test.mjs
 
 # browser (stack up: make up && make run)
-npx playwright test e2e/optimism.user.spec.ts --project=chromium-user
+npx playwright test e2e/chat.user.spec.ts e2e/todos.user.spec.ts \
+  e2e/blob.user.spec.ts --project=chromium-user
 ```
 
-`make test-live` needs the local Postgres/Zitadel stack. Browser tests also need
-the UI/API processes and a checked-in Playwright runtime. The always-on offline
-path uses SQLite plus `DevHeaders`; production-shaped identity uses
-`OidcBearer`.
+Browser tests need the local Postgres/Zitadel stack, UI/API processes, and a
+checked-in Playwright runtime. The always-on offline path uses SQLite plus
+`DevHeaders`; the root GraphQL identity and live provider suites own detailed
+`OidcBearer` isolation/spoof/401 coverage.
 
 After changing a model, command, projection, grant, or `+page.graphql`, run the
 supported generator and commit its deterministic output. Never repair

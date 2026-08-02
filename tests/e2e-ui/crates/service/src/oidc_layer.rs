@@ -189,7 +189,7 @@ async fn dispatch_named(
 ///
 /// App writes are GraphQL-only (`Service::without_http_command_routes`). Zitadel
 /// Action ingress still needs HTTP, so those two command names are mounted
-/// explicitly — `POST /todo.create` stays 404 (suite T0 / oidc_pg).
+/// explicitly — `POST /todo.create` stays 404 (suite T0).
 ///
 /// Note: `microsvc::router` already applies `.with_state(service)`, so handlers
 /// cannot use `State<Arc<Service>>`. Capture the `Arc` in the route closures.

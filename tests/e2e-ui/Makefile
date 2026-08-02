@@ -3,10 +3,9 @@
 #   make up          # Docker: Postgres + Zitadel + bootstrap env
 #   make run         # API + UI (uses e2e-ui.env if present)
 #   make test         # offline unit/suite/UI structural
-#   make test-live    # against stack (E2E_STACK=1)
 #   make test-browser # Playwright UI e2e (needs make up + make run)
 
-.PHONY: all up down run run-api stop test test-domain test-suite test-live \
+.PHONY: all up down run run-api stop test test-domain test-suite \
 	test-browser test-browser-install js-install js-build ui-install ui-build ui-check ui-test \
 	gen-client check-client check clean help
 
@@ -106,13 +105,6 @@ test-domain:
 
 test-suite:
 	cargo test -p e2e-suite --test behavioral $(CARGO_TEST_FLAGS)
-	cargo test -p e2e-suite --test oidc_pg -- --nocapture
-
-## Live OIDC+Postgres (requires make up + API running with e2e-ui.env)
-test-live:
-	@if [ ! -f $(ENV_FILE) ]; then echo "missing $(ENV_FILE) — run make up"; exit 1; fi
-	set -a; . ./$(ENV_FILE); set +a; \
-	E2E_STACK=1 cargo test -p e2e-suite --test oidc_pg -- --nocapture
 
 ## Browser e2e (Playwright). Requires make up + make run (UI :5180, API :8791).
 test-browser-install:
@@ -167,7 +159,6 @@ help:
 	@echo "  make up         Postgres + Zitadel + OIDC bootstrap → e2e-ui.env"
 	@echo "  make run        API + UI (source e2e-ui.env when present)"
 	@echo "  make test       offline suite + UI structural"
-	@echo "  make test-live  OIDC isolation against stack"
 	@echo "  make gen-client      typed Service → generated user/admin clients"
 	@echo "  make check-client    verify generated artifacts byte-for-byte"
 	@echo "  make down       docker compose down"

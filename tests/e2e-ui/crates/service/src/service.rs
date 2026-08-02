@@ -536,7 +536,7 @@ where
         )
         .handle(blob_start_level::handle);
 
-    // GraphQL-only public write surface (POST /todo.* must 404 — suite T0 / oidc_pg).
+    // GraphQL-only public write surface (POST /todo.* must 404 — suite T0).
     // Zitadel Action ingress still needs HTTP: those commands are registered above and
     // re-mounted explicitly in `serve_with_oidc` when HTTP command wildcards are off.
     Service::new()

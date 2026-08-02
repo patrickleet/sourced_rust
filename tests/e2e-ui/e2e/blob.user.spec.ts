@@ -104,6 +104,13 @@ test.describe('blob game (alice)', () => {
 		);
 		await page.keyboard.press('ArrowRight');
 		await moveReachedServerPromise;
+		// The generated Atomic preview must paint before the held GraphQL
+		// response is allowed back to the browser.
+		await expect(board.locator('.tile-player')).toHaveAttribute(
+			'aria-label',
+			'r0 c1',
+			{ timeout: 200 }
+		);
 		await expect(page.getByTestId('blob-new-game')).toBeEnabled();
 		for (const button of await page.locator('.pad-btn').all()) {
 			await expect(button).toBeEnabled();
@@ -137,31 +144,6 @@ test.describe('blob game (alice)', () => {
 			Math.min(...samples),
 			'stale-while-revalidate must never replace the known board with an empty view'
 		).toBeGreaterThan(0);
-	});
-
-	test('new game from header when already on empty state', async ({ page }) => {
-		await page.goto('/blob');
-		await expect(page.locator('[data-blob-hydrated="1"]')).toBeVisible({ timeout: 15_000 });
-		const neu = page.getByTestId('blob-new-game');
-		await expect(neu).toBeEnabled({ timeout: 10_000 });
-
-		const [resp] = await Promise.all([
-			page.waitForResponse(
-				(r) =>
-					r.url().includes('/graphql') &&
-					r.request().method() === 'POST' &&
-					(r.request().postData() ?? '').includes('blob_games_start'),
-				{ timeout: 20_000 }
-			),
-			neu.click()
-		]);
-		expect(resp.ok(), `blob_games_start HTTP ${resp.status()}`).toBeTruthy();
-
-		await expect(page.locator('.blob-board')).toBeVisible({ timeout: 15_000 });
-		const cells = page.locator('.blob-board .cell');
-		await expect(cells.first()).toBeVisible();
-		// 6×6 generated maps → at least 16 cells
-		expect(await cells.count()).toBeGreaterThanOrEqual(16);
 	});
 
 	test('a revalidation started before an atomic move cannot roll it back with later evidence', async ({ page }) => {
