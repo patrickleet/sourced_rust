@@ -1,4 +1,5 @@
 import { test, expect } from '@playwright/test';
+import { expectOptimisticPaint } from './helpers/optimism';
 
 test.describe('chat (alice)', () => {
 	test('post a lobby message and see it in the log', async ({ page }) => {
@@ -123,33 +124,20 @@ test.describe('chat (alice)', () => {
 			});
 		});
 
-		// Delay the network past the optimistic paint window. Keep headroom on
-		// CI (large lobby after history seeds, main-thread churn) while still
-		// proving the row appears before the fulfilled mutation response.
-		const networkDelayMs = 1_500;
-		const optimisticVisibleMs = 1_000;
-		await page.route('**/graphql', async (route) => {
-			if (!(route.request().postData() ?? '').includes('chat_messages_post')) {
-				await route.continue();
-				return;
-			}
-			const response = await route.fetch();
-			await new Promise((resolve) => setTimeout(resolve, networkDelayMs));
-			await route.fulfill({ response });
-		});
-
 		const body = `continuity message ${Date.now()}`;
-		await page.locator('#chat-body').fill(body);
-		const commandResponse = page.waitForResponse(
-			(response) =>
-				(response.request().postData() ?? '').includes('chat_messages_post')
-		);
-		await page.getByRole('button', { name: /send/i }).click();
-		await expect(page.locator('.ch-msg', { hasText: body })).toBeVisible({
-			timeout: optimisticVisibleMs
+		const msg = page.locator('.ch-msg', { hasText: body });
+		await expectOptimisticPaint(page, {
+			needle: 'chat_messages_post',
+			holdMs: 1_500,
+			assertWithinMs: 1_000,
+			act: async () => {
+				await page.locator('#chat-body').fill(body);
+				await page.getByRole('button', { name: /send/i }).click();
+			},
+			assertOptimistic: async () => {
+				await expect(msg).toBeVisible({ timeout: 200 });
+			}
 		});
-		await commandResponse;
-		await page.unrouteAll({ behavior: 'wait' });
 
 		const samples = await page.evaluate(() => {
 			const state = globalThis as typeof globalThis & {

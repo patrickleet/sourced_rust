@@ -255,6 +255,27 @@ make test-live
 make test-browser
 ```
 
+### Optimism regression gates
+
+Client optimism is proven in two layers:
+
+1. **Offline artifacts** (`ui/tests/optimism-artifacts.test.mjs`, run via `make ui-test` /
+   UI `npm test`): every demo write command must export non-empty
+   `projection.preview.operations`; Atomic also needs `directProjection`; chat
+   `author` must be nullable and the live list must allow local first-page inserts.
+2. **Browser paint-before-wire** (`e2e/optimism.user.spec.ts` +
+   `e2e/helpers/optimism.ts`): hold the GraphQL mutation response longer than the
+   assert deadline and require the UI to update first. Chat (including a full
+   first page), todos create/complete, and blob move continuity are covered.
+
+```bash
+# offline
+cd ui && npm test -- tests/optimism-artifacts.test.mjs
+
+# browser (stack up: make up && make run)
+npx playwright test e2e/optimism.user.spec.ts --project=chromium-user
+```
+
 `make test-live` needs the local Postgres/Zitadel stack. Browser tests also need
 the UI/API processes and a checked-in Playwright runtime. The always-on offline
 path uses SQLite plus `DevHeaders`; production-shaped identity uses
