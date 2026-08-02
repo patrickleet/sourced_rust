@@ -163,11 +163,13 @@ test.describe('demo optimism @optimism', () => {
 		expect(response.ok()).toBeTruthy();
 	});
 
-	test('blob: board stays mounted while a move response is held', async ({ page }) => {
+	test('blob: move paints the board before the held mutation response', async ({
+		page
+	}) => {
 		/**
-		 * Blob move .applies preview is intentionally thin (patch owner_id).
-		 * Atomic path seals from the response row before await resolves.
-		 * Prove continuity under hold: no empty flash, board remains.
+		 * Same client path as todos/chat: command input fills `.applies`
+		 * preview (map_json etc from pure simulate_move twin). Hold the wire
+		 * and require the player cell to move before the response fulfills.
 		 */
 		await page.goto('/blob');
 		await expect(page.locator('[data-blob-hydrated="1"]')).toBeVisible({
@@ -189,51 +191,34 @@ test.describe('demo optimism @optimism', () => {
 		expect(startResp.ok()).toBeTruthy();
 		const board = page.locator('.blob-board');
 		await expect(board).toBeVisible({ timeout: 15_000 });
-		await expect(board.locator('.cell').first()).toBeVisible();
-
-		await page.evaluate(() => {
-			const samples = [document.querySelectorAll('.blob-board').length];
-			const observer = new MutationObserver(() => {
-				samples.push(document.querySelectorAll('.blob-board').length);
-			});
-			const root = document.querySelector('.blob-page');
-			if (root === null) throw new Error('blob page root missing');
-			observer.observe(root, { childList: true, subtree: true });
-			Object.assign(globalThis, {
-				__optimismBlobSamples: samples,
-				__optimismBlobObserver: observer
-			});
-		});
+		// Generated levels start at r0 c0.
+		await expect(board.locator('.tile-player')).toHaveAttribute(
+			'aria-label',
+			'r0 c0'
+		);
 
 		const response = await expectOptimisticPaint(page, {
 			needle: 'blob_games_move',
 			holdMs: HOLD_MS,
-			// Continuity: board still present soon after keypress while held.
 			assertWithinMs: ASSERT_MS,
 			act: async () => {
 				await page.keyboard.press('ArrowRight');
 			},
 			assertOptimistic: async () => {
-				await expect(board).toBeVisible({ timeout: 200 });
-				await expect(page.locator('.blob-empty')).toHaveCount(0);
+				await expect(board.locator('.tile-player')).toHaveAttribute(
+					'aria-label',
+					'r0 c1',
+					{ timeout: 200 }
+				);
 			},
 			assertConverged: async () => {
-				await expect(board).toBeVisible();
+				await expect(board.locator('.tile-player')).toHaveAttribute(
+					'aria-label',
+					'r0 c1'
+				);
+				await expect(page.locator('.blob-empty')).toHaveCount(0);
 			}
 		});
 		expect(response.ok(), `blob_games_move HTTP ${response.status()}`).toBeTruthy();
-
-		const samples = await page.evaluate(() => {
-			const state = globalThis as typeof globalThis & {
-				__optimismBlobSamples: number[];
-				__optimismBlobObserver: MutationObserver;
-			};
-			state.__optimismBlobObserver.disconnect();
-			return state.__optimismBlobSamples;
-		});
-		expect(
-			Math.min(...samples),
-			'held move must never replace the known board with an empty view'
-		).toBeGreaterThan(0);
 	});
 });

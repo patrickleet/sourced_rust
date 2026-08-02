@@ -637,21 +637,28 @@ const games = $derived(
 		{
 			id: 'commands',
 			label: '2 · Commands',
-			lede: 'Moves are Atomic commands. Same mutation IR as an eventual projector — but applied in the command handler, so we wait for the row and put it on the response. That is not possible when projection is an event handler: there you only have `.applies` previews until the async path catches up. The client writes the returned row into the replica before await resolves.',
+			lede: 'Moves are Atomic commands but use the same client optimism path as Eventual: fill command input, `.applies` paints the replica, then the network seals. Server-side the mutation IR runs in the command handler (not an event projector) so we can also wait for the authoritative row and return it.',
 			principle: 'Let the Service declare how the UI catches up.',
 			samples: [
 				{
 					file: 'routes/blob/[[gameId]]/+page.svelte',
-					caption: 'Atomic response row is already in the replica when this settles.',
-					code: `await commands.blob.move({
+					caption: 'Pure simulate_move fills input (like chat body); `.applies` paints before the wire.',
+					code: `const preview = simulateMove(board, score, direction);
+await commands.blob.move({
   game_id,
-  direction: 'up',
+  direction,
+  map_json: preview.map_json,
+  score: preview.score,
+  player_dead: preview.player_dead,
+  current_level,
+  current_level_completed: preview.level_complete,
+  status: preview.status,
 });
-// confirmDirectProjection applied the returned BlobGames row`
+// optimistic layer already has the board; atomic row seals on response`
 				},
 				{
 					file: 'service.rs · blob.move',
-					caption: 'Same IR as eventual; apply site is the handler (Atomic).',
+					caption: 'Same client `.applies` path; apply site is the handler (Atomic).',
 					code: `typed_command::<BlobMoveInput, Atomic<BlobGames>>(
   blob_move::COMMAND,
 )
@@ -662,7 +669,12 @@ const games = $derived(
   BlobMovedDomainEvent => BlobGameState {
     game_id: input.game_id,
     owner_id: trusted("x-user-id", "string"),
-    ..unknown
+    score: input.score,
+    player_dead: input.player_dead,
+    current_level: input.current_level,
+    current_level_completed: input.current_level_completed,
+    map_json: input.map_json,
+    status: input.status,
   }
 })`
 				}

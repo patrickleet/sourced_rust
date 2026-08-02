@@ -19,8 +19,14 @@ import type {
 import { COMMAND_STATUS } from './protocol.js';
 
 export type Command_blob_games_move_Input = {
+  readonly "current_level": number;
+  readonly "current_level_completed": boolean;
   readonly "direction": string;
   readonly "game_id": string;
+  readonly "map_json": string;
+  readonly "player_dead": boolean;
+  readonly "score": number;
+  readonly "status": string;
 };
 
 export type Command_blob_games_move_Output = {
@@ -54,6 +60,22 @@ export const Command_blob_games_move: ReplicaCommandArtifact<Command_blob_games_
     "definition": {
       "fields": [
         {
+          "codec": "json_number_precision_limited",
+          "itemNullable": false,
+          "list": false,
+          "name": "current_level",
+          "nullable": false,
+          "typeName": "BigInt"
+        },
+        {
+          "codec": "boolean",
+          "itemNullable": false,
+          "list": false,
+          "name": "current_level_completed",
+          "nullable": false,
+          "typeName": "Boolean"
+        },
+        {
           "codec": "string",
           "itemNullable": false,
           "list": false,
@@ -66,6 +88,38 @@ export const Command_blob_games_move: ReplicaCommandArtifact<Command_blob_games_
           "itemNullable": false,
           "list": false,
           "name": "game_id",
+          "nullable": false,
+          "typeName": "String"
+        },
+        {
+          "codec": "string",
+          "itemNullable": false,
+          "list": false,
+          "name": "map_json",
+          "nullable": false,
+          "typeName": "String"
+        },
+        {
+          "codec": "boolean",
+          "itemNullable": false,
+          "list": false,
+          "name": "player_dead",
+          "nullable": false,
+          "typeName": "Boolean"
+        },
+        {
+          "codec": "json_number_precision_limited",
+          "itemNullable": false,
+          "list": false,
+          "name": "score",
+          "nullable": false,
+          "typeName": "BigInt"
+        },
+        {
+          "codec": "string",
+          "itemNullable": false,
+          "list": false,
+          "name": "status",
           "nullable": false,
           "typeName": "String"
         }
@@ -225,27 +279,34 @@ export const Command_blob_games_move: ReplicaCommandArtifact<Command_blob_games_
       "operations": [
         {
           "mutation": {
-            "if_present": true,
-            "op": "patch",
-            "scope": {
-              "key": [
-                {
-                  "field": "game_id",
-                  "ordinal": 0,
-                  "value": {
-                    "kind": "input",
-                    "path": [
-                      "game_id"
-                    ]
-                  }
+            "fields": [
+              {
+                "field": "current_level",
+                "value": {
+                  "kind": "input",
+                  "path": [
+                    "current_level"
+                  ]
                 }
-              ],
-              "model": "BlobGames",
-              "partition": {
-                "kind": "unit"
-              }
-            },
-            "set": [
+              },
+              {
+                "field": "current_level_completed",
+                "value": {
+                  "kind": "input",
+                  "path": [
+                    "current_level_completed"
+                  ]
+                }
+              },
+              {
+                "field": "map_json",
+                "value": {
+                  "kind": "input",
+                  "path": [
+                    "map_json"
+                  ]
+                }
+              },
               {
                 "field": "owner_id",
                 "value": {
@@ -253,24 +314,45 @@ export const Command_blob_games_move: ReplicaCommandArtifact<Command_blob_games_
                   "kind": "trusted_preset",
                   "name": "x-user-id"
                 }
+              },
+              {
+                "field": "player_dead",
+                "value": {
+                  "kind": "input",
+                  "path": [
+                    "player_dead"
+                  ]
+                }
+              },
+              {
+                "field": "score",
+                "value": {
+                  "kind": "input",
+                  "path": [
+                    "score"
+                  ]
+                }
+              },
+              {
+                "field": "status",
+                "value": {
+                  "kind": "input",
+                  "path": [
+                    "status"
+                  ]
+                }
               }
-            ]
-          },
-          "occurrence_ordinal": 0,
-          "projection_refs": [
-            0
-          ]
-        }
-      ],
-      "recoveries": [
-        {
-          "condition": "if_record_missing",
-          "occurrence_ordinal": 0,
-          "projection_refs": [
-            0
-          ],
-          "target": {
-            "kind": "record",
+            ],
+            "op": "upsert",
+            "replace": [
+              "current_level",
+              "current_level_completed",
+              "map_json",
+              "owner_id",
+              "player_dead",
+              "score",
+              "status"
+            ],
             "scope": {
               "key": [
                 {
@@ -289,9 +371,14 @@ export const Command_blob_games_move: ReplicaCommandArtifact<Command_blob_games_
                 "kind": "unit"
               }
             }
-          }
+          },
+          "occurrence_ordinal": 0,
+          "projection_refs": [
+            0
+          ]
         }
       ],
+      "recoveries": [],
       "version": 1
     },
     "projectionProgramVersion": 2,
@@ -309,7 +396,7 @@ export const Command_blob_games_move: ReplicaCommandArtifact<Command_blob_games_
   "protocol": {
     "operation": "sha256:6e3c6c00474e126a3fce6b671cd8a06eed988546f161793d39a08cc784ae49c7",
     "protocolHash": "sha256:00fb342f3acb4dc1c1716a43cc3001c748d5f6c500ff831690d820e9e43e2782",
-    "schemaHash": "sha256:99f8c2633da466ee562364a1f1a66294315e471a27f6d7ef9c39bbf9ab1dca02",
+    "schemaHash": "sha256:07cb6726a98d4df6450e18869b6d37ea2ba5d9cf4d44b09875266b5239a4ee14",
     "surface": {
       "kind": "application",
       "name": "e2e-ui-admin",
@@ -333,7 +420,7 @@ export const Command_blob_games_move: ReplicaCommandArtifact<Command_blob_games_
       "BlobGames"
     ],
     "relationships": [],
-    "required": true,
+    "required": false,
     "version": 1
   },
   "trustedPresets": [
@@ -654,7 +741,7 @@ export const Command_blob_games_start: ReplicaCommandArtifact<Command_blob_games
   "protocol": {
     "operation": "sha256:4b7ab56a38aec41d21809801ecefc5d7039a09e53a350187152c72a305de1567",
     "protocolHash": "sha256:00fb342f3acb4dc1c1716a43cc3001c748d5f6c500ff831690d820e9e43e2782",
-    "schemaHash": "sha256:99f8c2633da466ee562364a1f1a66294315e471a27f6d7ef9c39bbf9ab1dca02",
+    "schemaHash": "sha256:07cb6726a98d4df6450e18869b6d37ea2ba5d9cf4d44b09875266b5239a4ee14",
     "surface": {
       "kind": "application",
       "name": "e2e-ui-admin",
@@ -999,7 +1086,7 @@ export const Command_blob_games_start_level: ReplicaCommandArtifact<Command_blob
   "protocol": {
     "operation": "sha256:37c108a568f62e7391a03728555d7013bb717f14d1957a5c3527151fd70093bf",
     "protocolHash": "sha256:00fb342f3acb4dc1c1716a43cc3001c748d5f6c500ff831690d820e9e43e2782",
-    "schemaHash": "sha256:99f8c2633da466ee562364a1f1a66294315e471a27f6d7ef9c39bbf9ab1dca02",
+    "schemaHash": "sha256:07cb6726a98d4df6450e18869b6d37ea2ba5d9cf4d44b09875266b5239a4ee14",
     "surface": {
       "kind": "application",
       "name": "e2e-ui-admin",
@@ -1309,7 +1396,7 @@ export const Command_chat_messages_post: ReplicaCommandArtifact<Command_chat_mes
   "protocol": {
     "operation": "sha256:838e5ccb79daebb523ea3c634bea27077bcea191feabb86e45923470a7b9373d",
     "protocolHash": "sha256:00fb342f3acb4dc1c1716a43cc3001c748d5f6c500ff831690d820e9e43e2782",
-    "schemaHash": "sha256:99f8c2633da466ee562364a1f1a66294315e471a27f6d7ef9c39bbf9ab1dca02",
+    "schemaHash": "sha256:07cb6726a98d4df6450e18869b6d37ea2ba5d9cf4d44b09875266b5239a4ee14",
     "surface": {
       "kind": "application",
       "name": "e2e-ui-admin",
@@ -1564,7 +1651,7 @@ export const Command_todos_archive: ReplicaCommandArtifact<Command_todos_archive
   "protocol": {
     "operation": "sha256:fb2d3a14933841a966836ced65263a9ba2413d5aed8c582d31165aaee6e632ab",
     "protocolHash": "sha256:00fb342f3acb4dc1c1716a43cc3001c748d5f6c500ff831690d820e9e43e2782",
-    "schemaHash": "sha256:99f8c2633da466ee562364a1f1a66294315e471a27f6d7ef9c39bbf9ab1dca02",
+    "schemaHash": "sha256:07cb6726a98d4df6450e18869b6d37ea2ba5d9cf4d44b09875266b5239a4ee14",
     "surface": {
       "kind": "application",
       "name": "e2e-ui-admin",
@@ -1813,7 +1900,7 @@ export const Command_todos_complete: ReplicaCommandArtifact<Command_todos_comple
   "protocol": {
     "operation": "sha256:9b8185c835d3308bda308593486767731acaf4b084a7962b4b17e3e2e319922c",
     "protocolHash": "sha256:00fb342f3acb4dc1c1716a43cc3001c748d5f6c500ff831690d820e9e43e2782",
-    "schemaHash": "sha256:99f8c2633da466ee562364a1f1a66294315e471a27f6d7ef9c39bbf9ab1dca02",
+    "schemaHash": "sha256:07cb6726a98d4df6450e18869b6d37ea2ba5d9cf4d44b09875266b5239a4ee14",
     "surface": {
       "kind": "application",
       "name": "e2e-ui-admin",
@@ -2099,7 +2186,7 @@ export const Command_todos_create: ReplicaCommandArtifact<Command_todos_create_I
   "protocol": {
     "operation": "sha256:187e72cd747aaa13ac0362942d73085a5166401f8cc3a188badeb3e7fa50cacb",
     "protocolHash": "sha256:00fb342f3acb4dc1c1716a43cc3001c748d5f6c500ff831690d820e9e43e2782",
-    "schemaHash": "sha256:99f8c2633da466ee562364a1f1a66294315e471a27f6d7ef9c39bbf9ab1dca02",
+    "schemaHash": "sha256:07cb6726a98d4df6450e18869b6d37ea2ba5d9cf4d44b09875266b5239a4ee14",
     "surface": {
       "kind": "application",
       "name": "e2e-ui-admin",
@@ -2372,7 +2459,7 @@ export const Command_todos_force_archive: ReplicaCommandArtifact<Command_todos_f
   "protocol": {
     "operation": "sha256:50d0d05ce63148fd7c4041478b57656e927f500f938798df61bf7ade6b53ccbf",
     "protocolHash": "sha256:00fb342f3acb4dc1c1716a43cc3001c748d5f6c500ff831690d820e9e43e2782",
-    "schemaHash": "sha256:99f8c2633da466ee562364a1f1a66294315e471a27f6d7ef9c39bbf9ab1dca02",
+    "schemaHash": "sha256:07cb6726a98d4df6450e18869b6d37ea2ba5d9cf4d44b09875266b5239a4ee14",
     "surface": {
       "kind": "application",
       "name": "e2e-ui-admin",
@@ -2574,7 +2661,7 @@ export const Command_todos_purge: ReplicaCommandArtifact<Command_todos_purge_Inp
   "protocol": {
     "operation": "sha256:01875defc418ccf0e607f316baa30d2f9cf8305602976cc5b1ce30cc5078c15e",
     "protocolHash": "sha256:00fb342f3acb4dc1c1716a43cc3001c748d5f6c500ff831690d820e9e43e2782",
-    "schemaHash": "sha256:99f8c2633da466ee562364a1f1a66294315e471a27f6d7ef9c39bbf9ab1dca02",
+    "schemaHash": "sha256:07cb6726a98d4df6450e18869b6d37ea2ba5d9cf4d44b09875266b5239a4ee14",
     "surface": {
       "kind": "application",
       "name": "e2e-ui-admin",
@@ -2840,7 +2927,7 @@ export const Command_todos_rename: ReplicaCommandArtifact<Command_todos_rename_I
   "protocol": {
     "operation": "sha256:a3e8a5ceae1a0f2c33863a4f2bf377a95b79da2157a619eb7823aa845ef681c3",
     "protocolHash": "sha256:00fb342f3acb4dc1c1716a43cc3001c748d5f6c500ff831690d820e9e43e2782",
-    "schemaHash": "sha256:99f8c2633da466ee562364a1f1a66294315e471a27f6d7ef9c39bbf9ab1dca02",
+    "schemaHash": "sha256:07cb6726a98d4df6450e18869b6d37ea2ba5d9cf4d44b09875266b5239a4ee14",
     "surface": {
       "kind": "application",
       "name": "e2e-ui-admin",
@@ -3089,7 +3176,7 @@ export const Command_todos_reopen: ReplicaCommandArtifact<Command_todos_reopen_I
   "protocol": {
     "operation": "sha256:04531ace98fd3ee5e652761abbcb6ebd745d5ff6ed0ad100030f935335c5a35e",
     "protocolHash": "sha256:00fb342f3acb4dc1c1716a43cc3001c748d5f6c500ff831690d820e9e43e2782",
-    "schemaHash": "sha256:99f8c2633da466ee562364a1f1a66294315e471a27f6d7ef9c39bbf9ab1dca02",
+    "schemaHash": "sha256:07cb6726a98d4df6450e18869b6d37ea2ba5d9cf4d44b09875266b5239a4ee14",
     "surface": {
       "kind": "application",
       "name": "e2e-ui-admin",
