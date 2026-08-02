@@ -38,7 +38,7 @@ stack of deliberate files. Start here:
 | [`ui/src/routes/+layout.svelte`](tests/e2e-ui/ui/src/routes/+layout.svelte) | `provideDistributed` + SSR hydration into the causal replica. |
 | [`ui/src/routes/admin/+layout.server.ts`](tests/e2e-ui/ui/src/routes/admin/+layout.server.ts) | Elevated surface is a **second** generated client + role gate — not smuggled into the user bundle. |
 | [`crates/service/src/service.rs`](tests/e2e-ui/crates/service/src/service.rs) | Inventory, RLS (`owner_id = claim(x-user-id)`), dual client surfaces (`e2e-ui` / `e2e-ui-admin`), OIDC claim map. |
-| [`crates/service/src/handlers/commands/blob_move.rs`](tests/e2e-ui/crates/service/src/handlers/commands/blob_move.rs) | `PreparedCommand<Projected<BlobGameView>>` — map/score written with the event, not dual-written later. |
+| [`crates/service/src/handlers/commands/blob_move.rs`](tests/e2e-ui/crates/service/src/handlers/commands/blob_move.rs) | `PreparedCommand<Atomic<BlobGameView>>` — map/score written with the event, not dual-written later. |
 | [`crates/todo-domain/src/models/todo.rs`](tests/e2e-ui/crates/todo-domain/src/models/todo.rs) | Plain aggregate: `create` / `ensure_owner` / `@sourced` events — no GraphQL in the domain. |
 | [`crates/readmodels/src/models/blob_game_view.rs`](tests/e2e-ui/crates/readmodels/src/models/blob_game_view.rs) | `#[table]` + `belongs_to` owner join — GraphQL shape from the read model. |
 | [`ui/src/auth.ts`](tests/e2e-ui/ui/src/auth.ts) | Real Auth.js + Zitadel scopes/groups → engine roles. |
@@ -47,7 +47,7 @@ stack of deliberate files. Start here:
   SvelteKit  ──GraphQL HTTP/WS──►  Rust edge (GraphqlEngine + microsvc)
        │                                │
        │  @hops-ops/distributed         ├── mutations → aggregates
-       │  causal replica + commands     ├── Projected rows (blob) with events
+       │  causal replica + commands     ├── Atomic rows (blob) with events
        │  dctl-generated ops            └── projector rows (todos, chat)
 ```
 
@@ -1523,9 +1523,9 @@ let loaded = repo
 
 Auto-generated GraphQL over relational read models — Hasura-style filtering,
 ordering, pagination, relationships, role-based column allowlists and row
-filters, live subscriptions after write-plan commits, and typed **causal command
-mutations** derived from the executable `Service` (including atomic
-`Projected<T>` and eventual `Fact` + projector paths).
+filters, live subscriptions after write-plan commits, and typed command
+mutations derived from the executable `Service` (including `Atomic<T>` and
+`Eventual<T>` + projector paths).
 
 This is the public query/command edge for full-stack apps. The companion
 TypeScript package [`@hops-ops/distributed`](js/) (see
@@ -1563,14 +1563,14 @@ distributed = { version = "0.1", features = ["graphql", "postgres"] }
 
 ```rust,ignore
 use distributed::graphql::{
-    claim, col, read, typed_command, Causal, GraphqlEngine,
+    claim, col, read, typed_command, Eventual, GraphqlEngine,
 };
 use distributed::microsvc::{Routes, Service};
 
 let routes = Routes::new()
     .with_repo(repository.clone().aggregate::<Todo>())
     .typed_command(
-        typed_command::<CreateTodoInput, Causal<TodoStatusPayload>>("todo.create")
+        typed_command::<CreateTodoInput, Eventual<TodoStatusPayload>>("todo.create")
             .field_name("todos_create")
             .roles(["user", "admin"])
             .emits(distributed::events![TodoCreatedDomainEvent])
@@ -1578,7 +1578,7 @@ let routes = Routes::new()
     )
     .handle(create_todo)
     .typed_command(
-        typed_command::<ForceArchiveInput, Causal<TodoStatusPayload>>("todo.force_archive")
+        typed_command::<ForceArchiveInput, Eventual<TodoStatusPayload>>("todo.force_archive")
             .field_name("todos_force_archive")
             .roles(["admin"])
             .emits(distributed::events![TodoArchivedDomainEvent]),
@@ -1732,14 +1732,14 @@ flow.
 
 Copyable product shape (not a toy workshop): multi-crate domains, GraphQL-only
 edge, real OIDC, SSR, live subscriptions, and a teaching **Blob** aggregate that
-uses atomic `Projected<BlobGames>` (direct placement: same mutation IR as
+uses `Atomic<BlobGames>` (direct placement: same mutation IR as
 eventual, applied in the command handler so the response can carry the row —
 no async blob event handler).
 
 | Piece | Role |
 |---|---|
 | Domain crates | Pure aggregates: todos, chat, blob |
-| Read models | Eventual projector rows (todos/chat) *and* handler-owned `Projected` rows (blob) — one mutation IR, different apply site |
+| Read models | Eventual projector rows (todos/chat) *and* handler-owned `Atomic` rows (blob) — one mutation IR, different apply site |
 | GraphQL edge | Owner RLS, admin surfaces, joins to `auth_users`, chat live sub, blob commands |
 | Identity | Zitadel + Auth.js (PKCE), optional Zitadel user-scrape → `auth_users` |
 | SvelteKit | `$distributed` / `$distributed/admin`, SSR from co-located `+page.graphql`, hydration, generated live ops + optimistic commands |
@@ -1780,7 +1780,7 @@ See [`js/README.md`](js/README.md) for package API and packaging.
 | `tests/graphql_*` | Engine, HTTP, SDL, dialects, harden (authz/DoS/inject), causal transport |
 | `tests/graphql_identity` | Always-on OIDC/JWT matrix (mock JWKS; no Docker) |
 | `tests/graphql_oidc_{zitadel,keycloak,authentik}` | **Live** multi-IdP e2e (compose + real JWKS; gated) |
-| `tests/typed_commands` | Causal command / Projected / Fact registration |
+| `tests/typed_commands` | Eventual / Atomic / Succeeded command registration |
 | `tests/e2e-ui` | Multi-crate product template + SvelteKit + Zitadel UI login + Playwright |
 | `js/tests` | Replica, command runtime, adapters |
 | `examples/graphiql.rs` | Seeded local playground |
@@ -2119,7 +2119,7 @@ Blob game, live chat, GraphiQL.
 | [`js/`](js/) | `@hops-ops/distributed` — transport, causal replica, SvelteKit/React |
 | [`examples/graphiql.rs`](examples/graphiql.rs) | Seeded GraphQL playground (`--features "graphql,sqlite"`) |
 | `tests/graphql_*` | Engine, HTTP/WS, harden, identity, multi-IdP OIDC |
-| `tests/typed_commands/` | Causal command / `Projected` / `Fact` registration |
+| `tests/typed_commands/` | Eventual / `Atomic` / `Succeeded` command registration |
 | `tests/microsvc/` | Handlers on HTTP, gRPC, bus, session |
 | `tests/read_models/`, `tests/distributed_read_model/` | Atomic vs eventual projections |
 | `tests/sourced*` / `tests/snapshots/` / `tests/upcasting/` | Macros, snapshots, event versioning |

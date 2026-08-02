@@ -316,9 +316,9 @@ same replica and GraphQL transport. A command call:
 5. keeps ambiguous commits recoverable by command ID;
 6. confirms or rejects only its own optimistic layer;
 7. retires the layer on the path that placement allows:
-   - **Causal / Eventual** — wait for projection obligations (event handler ran
+   - **Eventual** — wait for projection obligations (event handler ran
      async; there is no authoritative row on the command response);
-   - **Projected / Direct** — normalize the **returned** row
+   - **Atomic / Direct** — normalize the **returned** row
      (`confirmDirectProjection`) before the call settles. The server waited in
      the command handler because it could; an event handler cannot.
 

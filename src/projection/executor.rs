@@ -751,10 +751,9 @@ mod tests {
     fn executor_multi_table_program(
     ) -> Result<crate::ProjectionProgram, crate::ProjectionProgramError> {
         use crate::mutation::{
-            body_field_binding, compile_projection, MutationAssignment,
-            MutationConflictTarget, MutationEventBinding, MutationExpression, MutationField,
-            MutationKeyField, MutationKind, MutationOperation, MutationProgram,
-            ProjectionHandler,
+            body_field_binding, compile_projection, MutationAssignment, MutationConflictTarget,
+            MutationEventBinding, MutationExpression, MutationField, MutationKeyField,
+            MutationKind, MutationOperation, MutationProgram, ProjectionHandler,
         };
         use crate::projection::{
             ProjectionEventSelector, ProjectionPartition, ProjectionTarget, ProjectionValueType,

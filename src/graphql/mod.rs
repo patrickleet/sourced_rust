@@ -37,10 +37,10 @@ pub use command_contract::{
 pub use command_contract::{
     __command_projection_event_descriptor, __command_projection_event_preview,
     __command_projection_events, __command_projection_preview_constant,
-    __command_projection_state_preview, typed_command, Eventual, CommandConsistency,
+    __command_projection_state_preview, typed_command, Atomic, CommandConsistency,
     CommandProjectionEventSet, CommandProjectionPreview, CommandProjectionPreviewSource,
-    CompiledDirectProjectionTarget, CompiledInputDefaults, PrepareCommandError, PreparedCommand,
-    Atomic, Succeeded, TypedCommand, TypedEffectExpression, TypedEffectKey,
+    CompiledDirectProjectionTarget, CompiledInputDefaults, Eventual, PrepareCommandError,
+    PreparedCommand, Succeeded, TypedCommand, TypedEffectExpression, TypedEffectKey,
     TypedEffectRelationship,
 };
 pub use naming::{
@@ -54,12 +54,11 @@ pub use sdl::{
 };
 pub use surface::{
     build_surface, role_grants_for_role, surface_for_application, surface_for_application_contract,
-    surface_for_role, RoleGrant,
-    RootField, RootKind, Surface, SurfaceArgument, SurfaceArgumentKind, SurfaceCommand,
-    SurfaceCommandShape, SurfaceDialect, SurfaceDirectProjection, SurfaceModel,
-    SurfaceModeledProjection, SurfaceOptions, SurfaceProjectionOwner, SurfaceProjector,
-    SurfaceRelationshipAggregate, SurfaceRelationshipKeys, SurfaceRowPolicy, SurfaceTypeDef,
-    SurfaceTypeField,
+    surface_for_role, RoleGrant, RootField, RootKind, Surface, SurfaceArgument,
+    SurfaceArgumentKind, SurfaceCommand, SurfaceCommandShape, SurfaceDialect,
+    SurfaceDirectProjection, SurfaceModel, SurfaceModeledProjection, SurfaceOptions,
+    SurfaceProjectionOwner, SurfaceProjector, SurfaceRelationshipAggregate,
+    SurfaceRelationshipKeys, SurfaceRowPolicy, SurfaceTypeDef, SurfaceTypeField,
 };
 
 pub use filter::{claim, col, lit, rel, ClaimRef, ColRef, FilterExpr, LitValue, Operand};

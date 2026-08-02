@@ -55,7 +55,16 @@ impl PostgresTestSchema {
     }
 
     pub async fn repository(&self) -> PostgresRepository {
-        let repo = PostgresRepository::new(
+        let repo = self.repository_unmigrated().await;
+        repo.migrate()
+            .await
+            .expect("Postgres test repository should migrate");
+        repo
+    }
+
+    #[allow(dead_code)]
+    pub async fn repository_unmigrated(&self) -> PostgresRepository {
+        PostgresRepository::new(
             PgPoolOptions::new()
                 .max_connections(5)
                 .after_connect({
@@ -72,11 +81,7 @@ impl PostgresTestSchema {
                 .connect(&self.database_url)
                 .await
                 .expect("Postgres test repository should connect"),
-        );
-        repo.migrate()
-            .await
-            .expect("Postgres test repository should migrate");
-        repo
+        )
     }
 }
 

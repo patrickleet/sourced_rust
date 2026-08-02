@@ -10,13 +10,13 @@ use async_graphql::Request;
 use axum::body::Body;
 use axum::http::Request as HttpRequest;
 use distributed::graphql::{
-    build_surface, graphql_router_with_service, read, surface_for_role, typed_command, Causal,
+    build_surface, graphql_router_with_service, read, surface_for_role, typed_command, Atomic,
     ClientProjectionAssignment, ClientProjectionExecutionClass, ClientProjectionExpression,
     ClientProjectionFallback, ClientProjectionInvalidation, ClientProjectionMutationKind,
     ClientProjectionPartition, ClientProjectionPreviewSource, ClientProjectionValue,
     ClientProjectionValueType, DistributedClientSurfaceExport, EffectInputFieldMarker,
-    EffectModelFieldMarker, GraphqlEngine, GraphqlInputType, GraphqlOutputType, GraphqlTypeDef,
-    GraphqlTypeField, ModelPermissions, PreparedCommand, Projected, RoleGrant, Succeeded,
+    EffectModelFieldMarker, Eventual, GraphqlEngine, GraphqlInputType, GraphqlOutputType,
+    GraphqlTypeDef, GraphqlTypeField, ModelPermissions, PreparedCommand, RoleGrant, Succeeded,
     SurfaceDirectProjection, SurfaceModeledProjection, SurfaceOptions, SurfaceProjector,
 };
 use distributed::microsvc::{CausalCommandContext, HandlerError, Routes, Service};
@@ -34,45 +34,15 @@ use distributed::projection::placement::{
 use distributed::projection::ProjectionEventSelector;
 use distributed::projection_protocol::ProjectorTopologyId;
 use distributed::{
-    body_bindings_for_model,
-    body_field_binding,
-    command_input_defaults,
-    descriptor_from_factories,
-    compile_projection,
-    inventory_single_model,
-    lower_single_model,
-    resolve_mutation_program,
-    Aggregate,
-    AggregateRepository,
-    DistributedProjectManifest,
-    DomainEventDescriptor,
-    DomainEventOccurrence,
-    Entity,
-    EventRecord,
-    GraphqlInput,
-    GraphqlOutput,
-    InMemoryRepository,
-    MutationAssignment,
-    MutationEventBinding,
-    MutationExpression,
-    MutationField,
-    MutationKeyField,
-    MutationKind,
-    MutationOperation,
-    MutationProgram,
-    MutationProgramError,
-    ProjectionHandler,
-    ProjectionExpression,
-    ProjectionPartition,
-    ProjectionProgram,
-    ProjectionProgramError,
-    ProjectionValue,
-    ProjectionValueType,
-    ReadModel,
-    RelationalReadModel,
-    ResolvedProjectionPlan,
-    SqliteRepository,
-    state_upsert_program_for_model,
+    body_bindings_for_model, body_field_binding, command_input_defaults, compile_projection,
+    descriptor_from_factories, inventory_single_model, lower_single_model,
+    resolve_mutation_program, state_upsert_program_for_model, Aggregate, AggregateRepository,
+    DistributedProjectManifest, DomainEventDescriptor, DomainEventOccurrence, Entity, EventRecord,
+    GraphqlInput, GraphqlOutput, InMemoryRepository, MutationAssignment, MutationEventBinding,
+    MutationExpression, MutationField, MutationKeyField, MutationKind, MutationOperation,
+    MutationProgram, MutationProgramError, ProjectionExpression, ProjectionHandler,
+    ProjectionPartition, ProjectionProgram, ProjectionProgramError, ProjectionValue,
+    ProjectionValueType, ReadModel, RelationalReadModel, ResolvedProjectionPlan, SqliteRepository,
 };
 use serde::{Deserialize, Serialize};
 use tower::util::ServiceExt;
@@ -1115,16 +1085,16 @@ async fn renamed_default_handler(
 async fn fact_plan_handler(
     _context: &CausalCommandContext<'_, FixtureAggregate>,
     input: PlanInput,
-) -> Result<PreparedCommand<Causal<PlanOutput>>, HandlerError> {
-    Ok(PreparedCommand::<Causal<PlanOutput>>::prepare(PlanOutput { id: input.id }).unwrap())
+) -> Result<PreparedCommand<Eventual<PlanOutput>>, HandlerError> {
+    Ok(PreparedCommand::<Eventual<PlanOutput>>::prepare(PlanOutput { id: input.id }).unwrap())
 }
 
 async fn projected_plan_handler(
     _context: &CausalCommandContext<'_, FixtureAggregate>,
     _input: PlanInput,
-) -> Result<PreparedCommand<Projected<PlanView>>, HandlerError> {
+) -> Result<PreparedCommand<Atomic<PlanView>>, HandlerError> {
     Err(HandlerError::Rejected(
-        "projected preparation requires CausalCommandContext::projected".into(),
+        "atomic preparation requires CausalCommandContext::atomic".into(),
     ))
 }
 
@@ -1297,7 +1267,7 @@ fn projected_service(service_id: &str, repository: SqliteRepository) -> Service 
     Service::new().named(service_id).routes(
         Routes::new()
             .with_repo(AggregateRepository::<_, FixtureAggregate>::new(repository))
-            .typed_command(typed_command::<PlanInput, Projected<PlanView>>(
+            .typed_command(typed_command::<PlanInput, Atomic<PlanView>>(
                 "plan.projected",
             ))
             .handle(projected_plan_handler),
@@ -1401,7 +1371,7 @@ async fn projected_command_binding_rejects_a_raw_pool_source() {
     let error = service
         .try_with_graphql(engine)
         .err()
-        .expect("Projected commands must reject a raw GraphQL pool");
+        .expect("Atomic commands must reject a raw GraphQL pool");
     assert!(
         error
             .to_string()
@@ -1427,7 +1397,7 @@ async fn projected_command_binding_rejects_an_independent_repository_over_the_sa
     let error = service
         .try_with_graphql(engine)
         .err()
-        .expect("Projected commands must reject a different repository identity");
+        .expect("Atomic commands must reject a different repository identity");
     assert!(
         error
             .to_string()
@@ -1451,7 +1421,7 @@ async fn projected_command_binding_accepts_a_clone_of_the_same_repository_handle
 
     service
         .try_with_graphql(engine)
-        .expect("a repository clone must preserve the Projected storage identity");
+        .expect("a repository clone must preserve the Atomic storage identity");
 }
 
 #[tokio::test]
@@ -2279,11 +2249,13 @@ async fn json_backed_constants_reject_nonfinite_floats_but_preserve_json_null() 
 
 #[tokio::test]
 async fn consistency_confirmation_matrix_fails_closed() {
-    // Causal commands without `.emits` (modeled selectors) fail closed — separate
+    // Eventual commands without `.emits` (modeled selectors) fail closed — separate
     // command_confirmations! authoring is gone.
     let missing_fact = Service::new().named("plans").routes(
         causal_routes()
-            .typed_command(typed_command::<PlanInput, Causal<PlanOutput>>("plan.fact"))
+            .typed_command(typed_command::<PlanInput, Eventual<PlanOutput>>(
+                "plan.fact",
+            ))
             .handle(fact_plan_handler),
     );
     let error = GraphqlEngine::builder(pool())

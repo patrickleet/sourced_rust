@@ -120,7 +120,7 @@ Declare each GraphQL mutation on the executable route:
 let routes = Routes::new()
     .with_repo(repository.aggregate::<Order>())
     .typed_command(
-        typed_command::<CreateOrderInput, Causal<CreateOrderPayload>>("order.create")
+        typed_command::<CreateOrderInput, Eventual<CreateOrderPayload>>("order.create")
             .roles(["user"])
             .emits(distributed::events![OrderCreatedDomainEvent])
             .applies(/* state_preview! for client optimism */),
@@ -129,8 +129,8 @@ let routes = Routes::new()
 ```
 
 Handlers accept `CausalCommandContext`, stage aggregate/outbox work on that
-context, and return `PreparedCommand<Succeeded<_>>`, `PreparedCommand<Causal<_>>`,
-or `PreparedCommand<Projected<M>>`. Never commit outside the framework-owned
+context, and return `PreparedCommand<Succeeded<_>>`, `PreparedCommand<Eventual<_>>`,
+or `PreparedCommand<Atomic<M>>`. Never commit outside the framework-owned
 causal boundary. Projector obligations derive from `.emits` + portable/modeled
 handlers (`mutation!`), not separately authored command confirmations/effects.
 
@@ -148,19 +148,19 @@ Handler for Atomic — this *is* returning atomic read-model updates:
 
 ```rust
 let row = save_*(...).from_state(...)?;
-repo.readmodel(row).publish_events().commit(agg)?.projected()
+repo.readmodel(row).publish_events().commit(agg)?.atomic()
 ```
 
 Rules:
 
 1. Use `Atomic<M>` only when the exact row is staged in-handler
-   (`readmodel(row).…commit()?.projected()`). Server will not attach causal
+   (`readmodel(row).…commit()?.atomic()`). Server will not attach causal
    projection-delta metadata to same-tx commands (by design).
 2. Use `Eventual<T>` with `.emits` + `.applies(state_preview! { … })` so eventual
    projectors and client previews share one IR.
 3. Direct may export portable programs for `.applies` (`is_preview_eligible`);
    that is not `is_causally_eligible` (Eventual-only obligations).
-4. Do not board-sim Projected UI — the returned row is authoritative.
+4. Do not board-sim Atomic UI — the returned row is authoritative.
 5. Otherwise `Succeeded<T>`; never invent a projected row.
 
 Surface IR: SDL is built via `build_surface` → `graphql_sdl_from_surface` (shared inventory

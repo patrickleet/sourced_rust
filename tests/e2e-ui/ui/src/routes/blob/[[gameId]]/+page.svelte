@@ -214,8 +214,15 @@
 
 	onMount(() => {
 		hydrated = true;
+		const testWindow = window as Window & {
+			__distributedBlobRefetch?: () => Promise<void>;
+		};
+		testWindow.__distributedBlobRefetch = () => query.refetch();
 		window.addEventListener('keydown', onKey);
-		return () => window.removeEventListener('keydown', onKey);
+		return () => {
+			window.removeEventListener('keydown', onKey);
+			delete testWindow.__distributedBlobRefetch;
+		};
 	});
 </script>
 

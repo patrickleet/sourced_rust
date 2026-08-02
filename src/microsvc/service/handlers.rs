@@ -10,7 +10,7 @@ use crate::aggregate::Aggregate;
 use crate::bus::Message;
 use crate::domain_event::DomainEvent;
 use crate::graphql::command_contract::CommandOutcome;
-use crate::graphql::{Eventual, GraphqlOutputType, PreparedCommand, Atomic, Succeeded};
+use crate::graphql::{Atomic, Eventual, GraphqlOutputType, PreparedCommand, Succeeded};
 use crate::microsvc::causal::{AggregatePublication, CausalWorkspace, CausalWorkspaceError};
 use crate::microsvc::context::Context;
 use crate::microsvc::error::HandlerError;

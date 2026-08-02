@@ -538,8 +538,7 @@ pub(crate) fn compile_command_preview(
                     && binding.execution_class == ManifestProjectionExecutionClass::Causal
                     && matches!(
                         binding.placement,
-                        ManifestProjectionPlacement::Eventual
-                            | ManifestProjectionPlacement::Direct
+                        ManifestProjectionPlacement::Eventual | ManifestProjectionPlacement::Direct
                     )
             })
             .expect("manifest validation proved one eligible binding");

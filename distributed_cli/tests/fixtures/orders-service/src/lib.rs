@@ -5,8 +5,8 @@ use std::any::TypeId;
 
 use distributed::graphql::{
     build_surface, surface_for_role, typed_command, DistributedClientSurfaceExport,
-    GraphqlInputType, GraphqlOutputType, GraphqlTypeDef, GraphqlTypeField, PreparedCommand,
-    Projected, RoleGrant, SurfaceOptions, SurfaceProjector,
+    Atomic, GraphqlInputType, GraphqlOutputType, GraphqlTypeDef, GraphqlTypeField, PreparedCommand,
+    RoleGrant, SurfaceOptions, SurfaceProjector,
 };
 use distributed::microsvc::{CausalCommandContext, HandlerError, Routes, Service};
 use distributed::{
@@ -96,7 +96,7 @@ impl Aggregate for FixtureAggregate {
 async fn project_order(
     _context: &CausalCommandContext<'_, FixtureAggregate>,
     _input: ProjectOrderInput,
-) -> Result<PreparedCommand<Projected<OrderView>>, HandlerError> {
+) -> Result<PreparedCommand<Atomic<OrderView>>, HandlerError> {
     Err(HandlerError::Rejected(
         "manifest-only fixture does not execute commands".into(),
     ))
@@ -118,7 +118,7 @@ pub fn distributed_client_surface() -> DistributedClientSurfaceExport {
                 InMemoryRepository::new(),
             ))
             .typed_command(
-                typed_command::<ProjectOrderInput, Projected<OrderView>>("order.project")
+                typed_command::<ProjectOrderInput, Atomic<OrderView>>("order.project")
                     .field_name("orders_project")
                     .roles(["user"]),
             )

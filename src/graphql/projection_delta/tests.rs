@@ -3124,6 +3124,7 @@ fn modeled_fixture(
     modeled_fixture_config(state, execution, ProjectionMutationKind::Upsert, false)
 }
 
+#[cfg(feature = "graphql")]
 fn modeled_fixture_with_opaque_fallback(state: ProjectionBindingState) -> ModeledFixture {
     let fixture = modeled_fixture(state, ProjectionExecutionClass::Causal);
     let mut surface = fixture.surface;
@@ -3453,6 +3454,7 @@ fn selected_export(surface: &crate::graphql::Surface) -> DistributedClientSurfac
     DistributedClientSurfaceExport::from_selected("delta-service", selected).unwrap()
 }
 
+#[cfg(feature = "graphql")]
 fn selected_export_with_owner_policy(
     surface: &crate::graphql::Surface,
 ) -> DistributedClientSurfaceExport {

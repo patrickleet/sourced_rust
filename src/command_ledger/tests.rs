@@ -466,10 +466,7 @@ where
             TerminalCommandState::SucceededPendingProjection,
             CommandLedgerState::SucceededPendingProjection,
         ),
-        (
-            TerminalCommandState::Atomic,
-            CommandLedgerState::Atomic,
-        ),
+        (TerminalCommandState::Atomic, CommandLedgerState::Atomic),
         (TerminalCommandState::Rejected, CommandLedgerState::Rejected),
     ];
 

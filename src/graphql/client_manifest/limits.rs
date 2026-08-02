@@ -22,6 +22,7 @@ impl Default for ClientExecutionLimits {
 }
 
 impl ClientExecutionLimits {
+    #[cfg(feature = "graphql")]
     pub(crate) fn from_runtime(
         max_depth: usize,
         max_complexity: usize,

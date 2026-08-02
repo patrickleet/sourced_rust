@@ -75,7 +75,7 @@ pub trait GraphqlOutputType {
 /// Build a command-output object from the same relational schema that owns
 /// the generated query object.
 ///
-/// Projected command results contain stored columns only. Relationships stay
+/// Atomic command results contain stored columns only. Relationships stay
 /// query-time fields and are never invented by a same-transaction row result.
 pub(crate) fn read_model_graphql_type<M>() -> GraphqlTypeDef
 where

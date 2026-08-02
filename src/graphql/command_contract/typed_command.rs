@@ -15,7 +15,7 @@ use super::effect_wire::CompiledInputDefaults;
 use super::effects::{
     invalid_confirmation_constant, invalid_expression_constant, CommandEffects, EffectExpression,
 };
-use super::outcomes::{CommandConsistency, CommandOutcome, Atomic};
+use super::outcomes::{Atomic, CommandConsistency, CommandOutcome};
 use super::projection_obligations::{
     CommandInputDefault, CommandProjectionConfirmation, ProjectionObligationResolutionError,
 };

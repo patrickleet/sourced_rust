@@ -75,7 +75,7 @@ Command registration declares the domain events this command may emit and the
 hand-built cache path):
 
 ```rust
-typed_command::<TodoCompleteInput, Causal<TodoStatusPayload>>("todo.complete")
+typed_command::<TodoCompleteInput, Eventual<TodoStatusPayload>>("todo.complete")
     .emits(events![TodoCompletedDomainEvent])
     .applies(state_preview! {
         TodoCompletedDomainEvent => TodoState {

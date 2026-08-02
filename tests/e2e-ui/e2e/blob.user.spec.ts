@@ -164,7 +164,7 @@ test.describe('blob game (alice)', () => {
 		expect(await cells.count()).toBeGreaterThanOrEqual(16);
 	});
 
-	test('a revalidation started before a projected move cannot roll it back with later evidence', async ({ page }) => {
+	test('a revalidation started before an atomic move cannot roll it back with later evidence', async ({ page }) => {
 		await page.goto('/blob');
 		await expect(page.locator('[data-blob-hydrated="1"]')).toBeVisible({ timeout: 15_000 });
 		const start = page.getByTestId('blob-start-game');
@@ -309,8 +309,21 @@ test.describe('blob game (alice)', () => {
 				expectedLabel
 			);
 		};
+		const refetch = () =>
+			page.evaluate(() => {
+				const refetchBlobGames = (
+					globalThis as typeof globalThis & {
+						__distributedBlobRefetch?: () => Promise<void>;
+					}
+				).__distributedBlobRefetch;
+				if (refetchBlobGames === undefined) {
+					throw new Error('Blob refetch test hook is unavailable');
+				}
+				return refetchBlobGames();
+			});
 
 		await move('ArrowRight', 'r0 c1');
+		const heldRefetch = refetch();
 		await heldQuery;
 		expect(
 			raisedHeldRevision,
@@ -338,7 +351,8 @@ test.describe('blob game (alice)', () => {
 		);
 		released = true;
 		releaseHeldQuery();
-		await newerQuery;
+		await heldRefetch;
+		await Promise.all([newerQuery, refetch()]);
 		await expect(page.locator('.blob-board .tile-player')).toHaveAttribute(
 			'aria-label',
 			nextMove.label

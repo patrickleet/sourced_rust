@@ -139,7 +139,7 @@ export interface ReplicaCommandTransport {
 export type ReplicaCommandProjectedOutcome<TOutput> = Readonly<{
 	commandId: string;
 	state: 'atomic';
-	/** Present for same-transaction Projected<T>, absent for async facts. */
+	/** Present for same-transaction Atomic<T>, absent for async facts. */
 	result?: TOutput;
 	metadata?: DistributedCommandMetadata;
 }>;
@@ -166,7 +166,7 @@ export type ReplicaCommandReceipt<TOutput> = Readonly<{
 	/** One exact generated status read. Calls coalesce while in flight. */
 	status(): Promise<ReplicaCommandStatus>;
 	/**
-	 * Causal visibility awaitable. It is omitted when no finite projection
+	 * Eventual visibility awaitable. It is omitted when no finite projection
 	 * contract exists and never resolves because a wall-clock timer elapsed.
 	 */
 	projected?: Promise<ReplicaCommandProjectedOutcome<TOutput>>;

@@ -207,7 +207,9 @@ pub async fn run_e1_through_e8(
         // Set-only identity: roles live in `x-roles` (Session::roles).
         let roles: Vec<String> = session.roles().into_iter().map(str::to_string).collect();
         assert!(
-            roles.iter().any(|r| r == "customer" || r == "user" || r == "admin"),
+            roles
+                .iter()
+                .any(|r| r == "customer" || r == "user" || r == "admin"),
             "E1 token A must map an engine role (customer|user|admin), got {roles:?}. \
              Fix IdP bootstrap so access token carries roles/groups/realm_access.roles \
              (or Zitadel project roles)."

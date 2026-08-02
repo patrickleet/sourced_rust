@@ -126,7 +126,7 @@ impl Service {
     /// Typed commands are compared by service ID, a canonical structural
     /// fingerprint, and exact Rust input/output `TypeId`s. A validated engine
     /// may attach and serve reads and durable typed mutations only when its
-    /// opaque causal protocol tokens are configured. `Projected` commands
+    /// opaque causal protocol tokens are configured. `Atomic` commands
     /// additionally require the engine and command repository to carry the
     /// same opaque causal-storage identity. Services with no typed commands
     /// may attach a read-only engine.
@@ -227,7 +227,7 @@ impl Service {
         if !projected_identities.is_empty() {
             let engine_identity = engine.causal_storage_identity().ok_or_else(|| {
                 GraphqlServiceBindError(
-                    "Projected commands require a GraphQL pool derived from the same repository handle"
+                    "Atomic commands require a GraphQL pool derived from the same repository handle"
                         .into(),
                 )
             })?;
@@ -236,7 +236,7 @@ impl Service {
                 .any(|identity| *identity != engine_identity)
             {
                 return Err(GraphqlServiceBindError(
-                    "Projected command repository and GraphQL query pool storage identities differ"
+                    "Atomic command repository and GraphQL query pool storage identities differ"
                         .into(),
                 ));
             }

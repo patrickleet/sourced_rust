@@ -4,10 +4,12 @@ use std::pin::Pin;
 use std::sync::Arc;
 
 use crate::graphql::SurfaceProjector;
+#[cfg(feature = "graphql")]
 use crate::projection::lower::ProjectionDescriptor;
 use crate::projection_protocol::{CompiledProjectionTopology, ProjectionEpoch};
 use crate::read_model::RelationalReadModel;
 use crate::table::TableSchema;
+#[cfg(feature = "graphql")]
 use crate::ProjectionProgramId;
 
 use super::super::dependencies::CausalProjectionRouteDependencies;
@@ -29,6 +31,7 @@ where
     Arc::new(move |context, input| Box::pin(handler(context, input)))
 }
 
+#[cfg(feature = "graphql")]
 pub(in crate::microsvc) type ModeledProjectorHandlerFn =
     dyn Fn(CausalProjectorContext, ModeledProjection) -> ProjectorHandlerFuture + Send + Sync;
 
@@ -47,12 +50,14 @@ where
 /// capability-restricted [`CausalProjectorContext`]. The runtime rejects a
 /// handler that returns success without applying the token.
 #[must_use = "a modeled projection handler must apply this token"]
+#[cfg(feature = "graphql")]
 pub struct ModeledProjection {
     program_id: ProjectionProgramId,
     plan: Option<crate::projection::lower::LoweredProjectionPlan>,
     applied: Arc<std::sync::atomic::AtomicBool>,
 }
 
+#[cfg(feature = "graphql")]
 impl ModeledProjection {
     pub(in crate::microsvc) fn new(
         program_id: ProjectionProgramId,

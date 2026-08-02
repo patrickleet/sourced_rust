@@ -124,9 +124,7 @@ where
 {
     events
         .iter()
-        .map(|descriptor| {
-            bind_state_body_to_mutation::<M>(descriptor, program.clone(), input_root)
-        })
+        .map(|descriptor| bind_state_body_to_mutation::<M>(descriptor, program.clone(), input_root))
         .collect()
 }
 

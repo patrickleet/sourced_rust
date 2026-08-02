@@ -260,6 +260,7 @@ impl ProjectorTopologyId {
     /// This remains crate-private: public callers select registered projector
     /// declarations and cannot mint topology authority from database-shaped
     /// bytes.
+    #[cfg(any(feature = "postgres", feature = "sqlite"))]
     pub(crate) fn from_canonical_bytes(
         canonical_bytes: &[u8],
     ) -> Result<Self, ProjectionProtocolValidationError> {
