@@ -102,7 +102,7 @@ export function commandStatusOutput(
 		case 'in_progress':
 		case 'succeeded':
 		case 'succeeded_pending_projection':
-		case 'projected':
+		case 'atomic':
 		case 'rejected':
 		case 'projection_failed':
 		case 'expired':
@@ -192,12 +192,12 @@ export function isStatusTransition(
 		case 'succeeded_pending_projection':
 			return (
 				next === 'succeeded_pending_projection' ||
-				next === 'projected' ||
+				next === 'atomic' ||
 				next === 'projection_failed' ||
 				next === 'expired'
 			);
-		case 'projected':
-			return next === 'projected' || next === 'expired';
+		case 'atomic':
+			return next === 'atomic' || next === 'expired';
 		case 'rejected':
 			return next === 'rejected' || next === 'expired';
 		case 'projection_failed':

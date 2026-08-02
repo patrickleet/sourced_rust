@@ -3,8 +3,10 @@
 	 * Blob Game — URL-routed selection from one generated replica operation.
 	 *
 	 * - URL (`/blob` | `/blob/{gameId}`) selects which game is active.
-	 * - Board and history derive directly from `BlobGames.use()`.
-	 * - Projected command payloads enter that same replica before calls resolve.
+	 * - Board and history derive from `BlobGames.use()`.
+	 * - Commands are Atomic: same mutation IR as eventual, applied in the
+	 *   command handler; the response row is written into the replica before
+	 *   await resolves (`.applies` previews paint when known fields allow).
 	 */
 	import { onMount } from 'svelte';
 	import { goto } from '$app/navigation';
@@ -110,6 +112,7 @@
 		const game_id = newGameId();
 		try {
 			const receipt = await commands.blob.start({ game_id });
+			// Atomic response row is already in the replica before resolve.
 			navigateToGame(receipt.result.game_id, true);
 		} catch (e) {
 			actionError = e instanceof Error ? e.message : 'Start failed';
@@ -140,8 +143,7 @@
 
 	async function move(direction: Direction) {
 		if (!selected || playerDead || levelComplete || !hasBoard || commandPending) return;
-		// The replica already contains enough board state to recognize an edge.
-		// Treat it as a game no-op instead of dispatching a predictably rejected command.
+		// Edge no-op: don't dispatch a predictably rejected command.
 		if (!canMove(direction)) {
 			actionError = null;
 			return;
@@ -149,6 +151,8 @@
 		commandPending = true;
 		actionError = null;
 		try {
+			// Same mutation IR as eventual projection; applied in the handler.
+			// Response row is written into the replica before this await settles.
 			await commands.blob.move({ game_id: selected.game_id, direction });
 		} catch (error) {
 			actionError = error instanceof Error ? error.message : 'Move failed';
@@ -213,11 +217,12 @@
 	<div class="blob-page" data-blob-hydrated={hydrated ? '1' : '0'}>
 		<div class="blob-title-row">
 			<PageHeader
-				kicker="URL select · generated replica · projected commands"
+				kicker="URL select · generated replica · atomic commands"
 				title="Blob Game"
 			>
 				Board and history render from the same generated <code>BlobGames</code>
-				operation. Typed projected commands update that replica before they resolve.
+				operation. Atomic commands apply the same mutation IR in the handler
+				and return the row — the replica updates before the call resolves.
 			</PageHeader>
 			<Button
 				type="button"

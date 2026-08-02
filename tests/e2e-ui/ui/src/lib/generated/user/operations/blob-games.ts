@@ -18,7 +18,7 @@ export type Operation_BlobGames_Data = {
       readonly "display_name": string;
       readonly "email": string;
       readonly "status": string;
-    };
+    } | null;
   }[];
 };
 
@@ -402,7 +402,7 @@ export const Operation_BlobGames: ReplicaOperationArtifact<Operation_BlobGames_D
             "responseKey": "owner",
             "field": "owner",
             "cardinality": "one",
-            "nullable": false,
+            "nullable": true,
             "dependencies": [
               "auth_users",
               "blob_games"
@@ -492,7 +492,7 @@ export const Operation_BlobGames: ReplicaOperationArtifact<Operation_BlobGames_D
   ],
   "protocol": {
     "version": 1,
-    "schemaHash": "sha256:da7c794af0c598477861fc14d93448db126605a709e423dc65153d3328f3cef1",
+    "schemaHash": "sha256:1ed2eb0d47c6c18d52b214fca4103fb28dd28f9b6f7f709d41775e91eb795671",
     "surface": {
       "kind": "application",
       "name": "e2e-ui",

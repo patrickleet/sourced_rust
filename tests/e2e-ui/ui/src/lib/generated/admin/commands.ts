@@ -36,7 +36,7 @@ export type Command_blob_games_move_Output = {
 
 /** Exact typed causal command descriptor and full mutation bytes. */
 export const Command_blob_games_move: ReplicaCommandArtifact<Command_blob_games_move_Input, Command_blob_games_move_Output> = {
-  "consistency": "projected",
+  "consistency": "atomic",
   "directProjection": {
     "changeEpoch": "e2e-ui-blob-v2",
     "identityFields": [
@@ -149,10 +149,167 @@ export const Command_blob_games_move: ReplicaCommandArtifact<Command_blob_games_
     },
     "kind": "object"
   },
+  "projection": {
+    "capabilities": {
+      "arms": [
+        {
+          "arm": "pa1:sha256:5e3c05e88fb0e8534b7a7060a2ffc8363be53d4acf288884a99dd47c6c2bbaf6",
+          "event": {
+            "id": "pe1:sha256:4cb4df45a7e94b85927dce706128b4657169200ac929f220fe90eb714167ea32",
+            "name": "blob.moved",
+            "version": 1
+          },
+          "mutations": [
+            {
+              "delete": false,
+              "fields": [
+                "current_level",
+                "current_level_completed",
+                "map_json",
+                "owner_id",
+                "player_dead",
+                "score",
+                "status"
+              ],
+              "key": [
+                "game_id"
+              ],
+              "kind": "record",
+              "model": "BlobGames",
+              "patch": true,
+              "replace": [
+                "current_level",
+                "current_level_completed",
+                "map_json",
+                "owner_id",
+                "player_dead",
+                "score",
+                "status"
+              ],
+              "upsert": true
+            },
+            {
+              "kind": "model",
+              "model": "BlobGames"
+            }
+          ],
+          "partition": {
+            "kind": "unit"
+          },
+          "projection_ref": 0
+        }
+      ],
+      "version": 1
+    },
+    "deltaWireVersion": 1,
+    "eventSet": [
+      {
+        "id": "pe1:sha256:4cb4df45a7e94b85927dce706128b4657169200ac929f220fe90eb714167ea32",
+        "name": "blob.moved",
+        "version": 1
+      }
+    ],
+    "fallback": "revalidate",
+    "operationSemanticsVersion": 1,
+    "preview": {
+      "occurrences": [
+        {
+          "event": {
+            "id": "pe1:sha256:4cb4df45a7e94b85927dce706128b4657169200ac929f220fe90eb714167ea32",
+            "name": "blob.moved",
+            "version": 1
+          },
+          "ordinal": 0
+        }
+      ],
+      "operations": [
+        {
+          "mutation": {
+            "if_present": true,
+            "op": "patch",
+            "scope": {
+              "key": [
+                {
+                  "field": "game_id",
+                  "ordinal": 0,
+                  "value": {
+                    "kind": "input",
+                    "path": [
+                      "game_id"
+                    ]
+                  }
+                }
+              ],
+              "model": "BlobGames",
+              "partition": {
+                "kind": "unit"
+              }
+            },
+            "set": [
+              {
+                "field": "owner_id",
+                "value": {
+                  "codec": "string",
+                  "kind": "trusted_preset",
+                  "name": "x-user-id"
+                }
+              }
+            ]
+          },
+          "occurrence_ordinal": 0,
+          "projection_refs": [
+            0
+          ]
+        }
+      ],
+      "recoveries": [
+        {
+          "condition": "if_record_missing",
+          "occurrence_ordinal": 0,
+          "projection_refs": [
+            0
+          ],
+          "target": {
+            "kind": "record",
+            "scope": {
+              "key": [
+                {
+                  "field": "game_id",
+                  "ordinal": 0,
+                  "value": {
+                    "kind": "input",
+                    "path": [
+                      "game_id"
+                    ]
+                  }
+                }
+              ],
+              "model": "BlobGames",
+              "partition": {
+                "kind": "unit"
+              }
+            }
+          }
+        }
+      ],
+      "version": 1
+    },
+    "projectionProgramVersion": 2,
+    "projections": [
+      {
+        "bindingId": "pb1:sha256:390665fd6f82aa8283633636c9d74010d08bd4194a5965329a8967f02145e775",
+        "epoch": "e2e-ui-blob-v2",
+        "operationSemanticsVersion": 1,
+        "programId": "pp1:sha256:5b95a587dbe4c35b80f7fbe1c953861538a7066568535520f36417d81e95deed",
+        "programIrVersion": 1
+      }
+    ],
+    "version": 2
+  },
   "protocol": {
     "operation": "sha256:6e3c6c00474e126a3fce6b671cd8a06eed988546f161793d39a08cc784ae49c7",
     "protocolHash": "sha256:00fb342f3acb4dc1c1716a43cc3001c748d5f6c500ff831690d820e9e43e2782",
-    "schemaHash": "sha256:77cb9cd73988ae91024cdacbb5245ce0b748281a054cab64f45b8a5badef6738",
+    "schemaHash": "sha256:99f8c2633da466ee562364a1f1a66294315e471a27f6d7ef9c39bbf9ab1dca02",
     "surface": {
       "kind": "application",
       "name": "e2e-ui-admin",
@@ -179,6 +336,12 @@ export const Command_blob_games_move: ReplicaCommandArtifact<Command_blob_games_
     "required": true,
     "version": 1
   },
+  "trustedPresets": [
+    {
+      "codec": "string",
+      "name": "x-user-id"
+    }
+  ],
   "version": 2
 };
 
@@ -206,7 +369,7 @@ export type Command_blob_games_start_Output = {
 
 /** Exact typed causal command descriptor and full mutation bytes. */
 export const Command_blob_games_start: ReplicaCommandArtifact<Command_blob_games_start_Input, Command_blob_games_start_Output> = {
-  "consistency": "projected",
+  "consistency": "atomic",
   "directProjection": {
     "changeEpoch": "e2e-ui-blob-v2",
     "identityFields": [
@@ -311,10 +474,187 @@ export const Command_blob_games_start: ReplicaCommandArtifact<Command_blob_games
     },
     "kind": "object"
   },
+  "projection": {
+    "capabilities": {
+      "arms": [
+        {
+          "arm": "pa1:sha256:0bd0a921fe2005ba7459142f64bc8cb812ff97a5b8b8e5c7610b1fa1f8779dc3",
+          "event": {
+            "id": "pe1:sha256:1290e03c3c7b7f25e17bcbf337a9effe39024985d1b3195b78e147d01c411832",
+            "name": "blob.started",
+            "version": 1
+          },
+          "mutations": [
+            {
+              "delete": false,
+              "fields": [
+                "current_level",
+                "current_level_completed",
+                "map_json",
+                "owner_id",
+                "player_dead",
+                "score",
+                "status"
+              ],
+              "key": [
+                "game_id"
+              ],
+              "kind": "record",
+              "model": "BlobGames",
+              "patch": true,
+              "replace": [
+                "current_level",
+                "current_level_completed",
+                "map_json",
+                "owner_id",
+                "player_dead",
+                "score",
+                "status"
+              ],
+              "upsert": true
+            },
+            {
+              "kind": "model",
+              "model": "BlobGames"
+            }
+          ],
+          "partition": {
+            "kind": "unit"
+          },
+          "projection_ref": 0
+        }
+      ],
+      "version": 1
+    },
+    "deltaWireVersion": 1,
+    "eventSet": [
+      {
+        "id": "pe1:sha256:1290e03c3c7b7f25e17bcbf337a9effe39024985d1b3195b78e147d01c411832",
+        "name": "blob.started",
+        "version": 1
+      }
+    ],
+    "fallback": "revalidate",
+    "operationSemanticsVersion": 1,
+    "preview": {
+      "occurrences": [
+        {
+          "event": {
+            "id": "pe1:sha256:1290e03c3c7b7f25e17bcbf337a9effe39024985d1b3195b78e147d01c411832",
+            "name": "blob.started",
+            "version": 1
+          },
+          "ordinal": 0
+        }
+      ],
+      "operations": [
+        {
+          "mutation": {
+            "if_present": true,
+            "op": "patch",
+            "scope": {
+              "key": [
+                {
+                  "field": "game_id",
+                  "ordinal": 0,
+                  "value": {
+                    "kind": "input",
+                    "path": [
+                      "game_id"
+                    ]
+                  }
+                }
+              ],
+              "model": "BlobGames",
+              "partition": {
+                "kind": "unit"
+              }
+            },
+            "set": [
+              {
+                "field": "map_json",
+                "value": {
+                  "kind": "constant",
+                  "value": {
+                    "type": "string",
+                    "value": "[]"
+                  }
+                }
+              },
+              {
+                "field": "owner_id",
+                "value": {
+                  "codec": "string",
+                  "kind": "trusted_preset",
+                  "name": "x-user-id"
+                }
+              },
+              {
+                "field": "status",
+                "value": {
+                  "kind": "constant",
+                  "value": {
+                    "type": "string",
+                    "value": "active"
+                  }
+                }
+              }
+            ]
+          },
+          "occurrence_ordinal": 0,
+          "projection_refs": [
+            0
+          ]
+        }
+      ],
+      "recoveries": [
+        {
+          "condition": "if_record_missing",
+          "occurrence_ordinal": 0,
+          "projection_refs": [
+            0
+          ],
+          "target": {
+            "kind": "record",
+            "scope": {
+              "key": [
+                {
+                  "field": "game_id",
+                  "ordinal": 0,
+                  "value": {
+                    "kind": "input",
+                    "path": [
+                      "game_id"
+                    ]
+                  }
+                }
+              ],
+              "model": "BlobGames",
+              "partition": {
+                "kind": "unit"
+              }
+            }
+          }
+        }
+      ],
+      "version": 1
+    },
+    "projectionProgramVersion": 2,
+    "projections": [
+      {
+        "bindingId": "pb1:sha256:390665fd6f82aa8283633636c9d74010d08bd4194a5965329a8967f02145e775",
+        "epoch": "e2e-ui-blob-v2",
+        "operationSemanticsVersion": 1,
+        "programId": "pp1:sha256:5b95a587dbe4c35b80f7fbe1c953861538a7066568535520f36417d81e95deed",
+        "programIrVersion": 1
+      }
+    ],
+    "version": 2
+  },
   "protocol": {
     "operation": "sha256:4b7ab56a38aec41d21809801ecefc5d7039a09e53a350187152c72a305de1567",
     "protocolHash": "sha256:00fb342f3acb4dc1c1716a43cc3001c748d5f6c500ff831690d820e9e43e2782",
-    "schemaHash": "sha256:77cb9cd73988ae91024cdacbb5245ce0b748281a054cab64f45b8a5badef6738",
+    "schemaHash": "sha256:99f8c2633da466ee562364a1f1a66294315e471a27f6d7ef9c39bbf9ab1dca02",
     "surface": {
       "kind": "application",
       "name": "e2e-ui-admin",
@@ -341,6 +681,12 @@ export const Command_blob_games_start: ReplicaCommandArtifact<Command_blob_games
     "required": true,
     "version": 1
   },
+  "trustedPresets": [
+    {
+      "codec": "string",
+      "name": "x-user-id"
+    }
+  ],
   "version": 2
 };
 
@@ -368,7 +714,7 @@ export type Command_blob_games_start_level_Output = {
 
 /** Exact typed causal command descriptor and full mutation bytes. */
 export const Command_blob_games_start_level: ReplicaCommandArtifact<Command_blob_games_start_level_Input, Command_blob_games_start_level_Output> = {
-  "consistency": "projected",
+  "consistency": "atomic",
   "directProjection": {
     "changeEpoch": "e2e-ui-blob-v2",
     "identityFields": [
@@ -473,10 +819,187 @@ export const Command_blob_games_start_level: ReplicaCommandArtifact<Command_blob
     },
     "kind": "object"
   },
+  "projection": {
+    "capabilities": {
+      "arms": [
+        {
+          "arm": "pa1:sha256:94432c8441e0aae2ca119bbb0c31bdae1b1939d1ae400a3332e9d4ad1e0117fa",
+          "event": {
+            "id": "pe1:sha256:58d7c7232baea0e7e441e034db8d7d0f90eb3529cf2c7b7b661bb53c9c11cb76",
+            "name": "blob.level_started",
+            "version": 1
+          },
+          "mutations": [
+            {
+              "delete": false,
+              "fields": [
+                "current_level",
+                "current_level_completed",
+                "map_json",
+                "owner_id",
+                "player_dead",
+                "score",
+                "status"
+              ],
+              "key": [
+                "game_id"
+              ],
+              "kind": "record",
+              "model": "BlobGames",
+              "patch": true,
+              "replace": [
+                "current_level",
+                "current_level_completed",
+                "map_json",
+                "owner_id",
+                "player_dead",
+                "score",
+                "status"
+              ],
+              "upsert": true
+            },
+            {
+              "kind": "model",
+              "model": "BlobGames"
+            }
+          ],
+          "partition": {
+            "kind": "unit"
+          },
+          "projection_ref": 0
+        }
+      ],
+      "version": 1
+    },
+    "deltaWireVersion": 1,
+    "eventSet": [
+      {
+        "id": "pe1:sha256:58d7c7232baea0e7e441e034db8d7d0f90eb3529cf2c7b7b661bb53c9c11cb76",
+        "name": "blob.level_started",
+        "version": 1
+      }
+    ],
+    "fallback": "revalidate",
+    "operationSemanticsVersion": 1,
+    "preview": {
+      "occurrences": [
+        {
+          "event": {
+            "id": "pe1:sha256:58d7c7232baea0e7e441e034db8d7d0f90eb3529cf2c7b7b661bb53c9c11cb76",
+            "name": "blob.level_started",
+            "version": 1
+          },
+          "ordinal": 0
+        }
+      ],
+      "operations": [
+        {
+          "mutation": {
+            "if_present": true,
+            "op": "patch",
+            "scope": {
+              "key": [
+                {
+                  "field": "game_id",
+                  "ordinal": 0,
+                  "value": {
+                    "kind": "input",
+                    "path": [
+                      "game_id"
+                    ]
+                  }
+                }
+              ],
+              "model": "BlobGames",
+              "partition": {
+                "kind": "unit"
+              }
+            },
+            "set": [
+              {
+                "field": "map_json",
+                "value": {
+                  "kind": "constant",
+                  "value": {
+                    "type": "string",
+                    "value": "[]"
+                  }
+                }
+              },
+              {
+                "field": "owner_id",
+                "value": {
+                  "codec": "string",
+                  "kind": "trusted_preset",
+                  "name": "x-user-id"
+                }
+              },
+              {
+                "field": "status",
+                "value": {
+                  "kind": "constant",
+                  "value": {
+                    "type": "string",
+                    "value": "active"
+                  }
+                }
+              }
+            ]
+          },
+          "occurrence_ordinal": 0,
+          "projection_refs": [
+            0
+          ]
+        }
+      ],
+      "recoveries": [
+        {
+          "condition": "if_record_missing",
+          "occurrence_ordinal": 0,
+          "projection_refs": [
+            0
+          ],
+          "target": {
+            "kind": "record",
+            "scope": {
+              "key": [
+                {
+                  "field": "game_id",
+                  "ordinal": 0,
+                  "value": {
+                    "kind": "input",
+                    "path": [
+                      "game_id"
+                    ]
+                  }
+                }
+              ],
+              "model": "BlobGames",
+              "partition": {
+                "kind": "unit"
+              }
+            }
+          }
+        }
+      ],
+      "version": 1
+    },
+    "projectionProgramVersion": 2,
+    "projections": [
+      {
+        "bindingId": "pb1:sha256:390665fd6f82aa8283633636c9d74010d08bd4194a5965329a8967f02145e775",
+        "epoch": "e2e-ui-blob-v2",
+        "operationSemanticsVersion": 1,
+        "programId": "pp1:sha256:5b95a587dbe4c35b80f7fbe1c953861538a7066568535520f36417d81e95deed",
+        "programIrVersion": 1
+      }
+    ],
+    "version": 2
+  },
   "protocol": {
     "operation": "sha256:37c108a568f62e7391a03728555d7013bb717f14d1957a5c3527151fd70093bf",
     "protocolHash": "sha256:00fb342f3acb4dc1c1716a43cc3001c748d5f6c500ff831690d820e9e43e2782",
-    "schemaHash": "sha256:77cb9cd73988ae91024cdacbb5245ce0b748281a054cab64f45b8a5badef6738",
+    "schemaHash": "sha256:99f8c2633da466ee562364a1f1a66294315e471a27f6d7ef9c39bbf9ab1dca02",
     "surface": {
       "kind": "application",
       "name": "e2e-ui-admin",
@@ -503,6 +1026,12 @@ export const Command_blob_games_start_level: ReplicaCommandArtifact<Command_blob
     "required": true,
     "version": 1
   },
+  "trustedPresets": [
+    {
+      "codec": "string",
+      "name": "x-user-id"
+    }
+  ],
   "version": 2
 };
 
@@ -530,7 +1059,7 @@ export type Command_chat_messages_post_Output = {
 
 /** Exact typed causal command descriptor and full mutation bytes. */
 export const Command_chat_messages_post: ReplicaCommandArtifact<Command_chat_messages_post_Input, Command_chat_messages_post_Output> = {
-  "consistency": "causal",
+  "consistency": "eventual",
   "document": "mutation Client_chat_messages_post($commandId: ID!, $input: ChatPostInput!) { chat_messages_post(commandId: $commandId, input: $input) { author_id body created_at message_id room_id } }",
   "input": {
     "definition": {
@@ -780,7 +1309,7 @@ export const Command_chat_messages_post: ReplicaCommandArtifact<Command_chat_mes
   "protocol": {
     "operation": "sha256:838e5ccb79daebb523ea3c634bea27077bcea191feabb86e45923470a7b9373d",
     "protocolHash": "sha256:00fb342f3acb4dc1c1716a43cc3001c748d5f6c500ff831690d820e9e43e2782",
-    "schemaHash": "sha256:77cb9cd73988ae91024cdacbb5245ce0b748281a054cab64f45b8a5badef6738",
+    "schemaHash": "sha256:99f8c2633da466ee562364a1f1a66294315e471a27f6d7ef9c39bbf9ab1dca02",
     "surface": {
       "kind": "application",
       "name": "e2e-ui-admin",
@@ -834,7 +1363,7 @@ export type Command_todos_archive_Output = {
 
 /** Exact typed causal command descriptor and full mutation bytes. */
 export const Command_todos_archive: ReplicaCommandArtifact<Command_todos_archive_Input, Command_todos_archive_Output> = {
-  "consistency": "causal",
+  "consistency": "eventual",
   "document": "mutation Client_todos_archive($commandId: ID!, $input: TodoArchiveInput!) { todos_archive(commandId: $commandId, input: $input) { status todo_id } }",
   "input": {
     "definition": {
@@ -1035,7 +1564,7 @@ export const Command_todos_archive: ReplicaCommandArtifact<Command_todos_archive
   "protocol": {
     "operation": "sha256:fb2d3a14933841a966836ced65263a9ba2413d5aed8c582d31165aaee6e632ab",
     "protocolHash": "sha256:00fb342f3acb4dc1c1716a43cc3001c748d5f6c500ff831690d820e9e43e2782",
-    "schemaHash": "sha256:77cb9cd73988ae91024cdacbb5245ce0b748281a054cab64f45b8a5badef6738",
+    "schemaHash": "sha256:99f8c2633da466ee562364a1f1a66294315e471a27f6d7ef9c39bbf9ab1dca02",
     "surface": {
       "kind": "application",
       "name": "e2e-ui-admin",
@@ -1083,7 +1612,7 @@ export type Command_todos_complete_Output = {
 
 /** Exact typed causal command descriptor and full mutation bytes. */
 export const Command_todos_complete: ReplicaCommandArtifact<Command_todos_complete_Input, Command_todos_complete_Output> = {
-  "consistency": "causal",
+  "consistency": "eventual",
   "document": "mutation Client_todos_complete($commandId: ID!, $input: TodoCompleteInput!) { todos_complete(commandId: $commandId, input: $input) { status todo_id } }",
   "input": {
     "definition": {
@@ -1284,7 +1813,7 @@ export const Command_todos_complete: ReplicaCommandArtifact<Command_todos_comple
   "protocol": {
     "operation": "sha256:9b8185c835d3308bda308593486767731acaf4b084a7962b4b17e3e2e319922c",
     "protocolHash": "sha256:00fb342f3acb4dc1c1716a43cc3001c748d5f6c500ff831690d820e9e43e2782",
-    "schemaHash": "sha256:77cb9cd73988ae91024cdacbb5245ce0b748281a054cab64f45b8a5badef6738",
+    "schemaHash": "sha256:99f8c2633da466ee562364a1f1a66294315e471a27f6d7ef9c39bbf9ab1dca02",
     "surface": {
       "kind": "application",
       "name": "e2e-ui-admin",
@@ -1335,7 +1864,7 @@ export type Command_todos_create_Output = {
 
 /** Exact typed causal command descriptor and full mutation bytes. */
 export const Command_todos_create: ReplicaCommandArtifact<Command_todos_create_Input, Command_todos_create_Output> = {
-  "consistency": "causal",
+  "consistency": "eventual",
   "document": "mutation Client_todos_create($commandId: ID!, $input: TodoCreateInput!) { todos_create(commandId: $commandId, input: $input) { owner_id status title todo_id } }",
   "input": {
     "definition": {
@@ -1570,7 +2099,7 @@ export const Command_todos_create: ReplicaCommandArtifact<Command_todos_create_I
   "protocol": {
     "operation": "sha256:187e72cd747aaa13ac0362942d73085a5166401f8cc3a188badeb3e7fa50cacb",
     "protocolHash": "sha256:00fb342f3acb4dc1c1716a43cc3001c748d5f6c500ff831690d820e9e43e2782",
-    "schemaHash": "sha256:77cb9cd73988ae91024cdacbb5245ce0b748281a054cab64f45b8a5badef6738",
+    "schemaHash": "sha256:99f8c2633da466ee562364a1f1a66294315e471a27f6d7ef9c39bbf9ab1dca02",
     "surface": {
       "kind": "application",
       "name": "e2e-ui-admin",
@@ -1626,7 +2155,7 @@ export type Command_todos_force_archive_Output = {
 
 /** Exact typed causal command descriptor and full mutation bytes. */
 export const Command_todos_force_archive: ReplicaCommandArtifact<Command_todos_force_archive_Input, Command_todos_force_archive_Output> = {
-  "consistency": "causal",
+  "consistency": "eventual",
   "document": "mutation Client_todos_force_archive($commandId: ID!, $input: TodoForceArchiveInput!) { todos_force_archive(commandId: $commandId, input: $input) { archived_by owner_id status todo_id } }",
   "input": {
     "definition": {
@@ -1843,7 +2372,7 @@ export const Command_todos_force_archive: ReplicaCommandArtifact<Command_todos_f
   "protocol": {
     "operation": "sha256:50d0d05ce63148fd7c4041478b57656e927f500f938798df61bf7ade6b53ccbf",
     "protocolHash": "sha256:00fb342f3acb4dc1c1716a43cc3001c748d5f6c500ff831690d820e9e43e2782",
-    "schemaHash": "sha256:77cb9cd73988ae91024cdacbb5245ce0b748281a054cab64f45b8a5badef6738",
+    "schemaHash": "sha256:99f8c2633da466ee562364a1f1a66294315e471a27f6d7ef9c39bbf9ab1dca02",
     "surface": {
       "kind": "application",
       "name": "e2e-ui-admin",
@@ -1891,7 +2420,7 @@ export type Command_todos_purge_Output = {
 
 /** Exact typed causal command descriptor and full mutation bytes. */
 export const Command_todos_purge: ReplicaCommandArtifact<Command_todos_purge_Input, Command_todos_purge_Output> = {
-  "consistency": "causal",
+  "consistency": "eventual",
   "document": "mutation Client_todos_purge($commandId: ID!, $input: TodoPurgeInput!) { todos_purge(commandId: $commandId, input: $input) { purged todo_id } }",
   "input": {
     "definition": {
@@ -2045,7 +2574,7 @@ export const Command_todos_purge: ReplicaCommandArtifact<Command_todos_purge_Inp
   "protocol": {
     "operation": "sha256:01875defc418ccf0e607f316baa30d2f9cf8305602976cc5b1ce30cc5078c15e",
     "protocolHash": "sha256:00fb342f3acb4dc1c1716a43cc3001c748d5f6c500ff831690d820e9e43e2782",
-    "schemaHash": "sha256:77cb9cd73988ae91024cdacbb5245ce0b748281a054cab64f45b8a5badef6738",
+    "schemaHash": "sha256:99f8c2633da466ee562364a1f1a66294315e471a27f6d7ef9c39bbf9ab1dca02",
     "surface": {
       "kind": "application",
       "name": "e2e-ui-admin",
@@ -2095,7 +2624,7 @@ export type Command_todos_rename_Output = {
 
 /** Exact typed causal command descriptor and full mutation bytes. */
 export const Command_todos_rename: ReplicaCommandArtifact<Command_todos_rename_Input, Command_todos_rename_Output> = {
-  "consistency": "causal",
+  "consistency": "eventual",
   "document": "mutation Client_todos_rename($commandId: ID!, $input: TodoRenameInput!) { todos_rename(commandId: $commandId, input: $input) { status title todo_id } }",
   "input": {
     "definition": {
@@ -2311,7 +2840,7 @@ export const Command_todos_rename: ReplicaCommandArtifact<Command_todos_rename_I
   "protocol": {
     "operation": "sha256:a3e8a5ceae1a0f2c33863a4f2bf377a95b79da2157a619eb7823aa845ef681c3",
     "protocolHash": "sha256:00fb342f3acb4dc1c1716a43cc3001c748d5f6c500ff831690d820e9e43e2782",
-    "schemaHash": "sha256:77cb9cd73988ae91024cdacbb5245ce0b748281a054cab64f45b8a5badef6738",
+    "schemaHash": "sha256:99f8c2633da466ee562364a1f1a66294315e471a27f6d7ef9c39bbf9ab1dca02",
     "surface": {
       "kind": "application",
       "name": "e2e-ui-admin",
@@ -2359,7 +2888,7 @@ export type Command_todos_reopen_Output = {
 
 /** Exact typed causal command descriptor and full mutation bytes. */
 export const Command_todos_reopen: ReplicaCommandArtifact<Command_todos_reopen_Input, Command_todos_reopen_Output> = {
-  "consistency": "causal",
+  "consistency": "eventual",
   "document": "mutation Client_todos_reopen($commandId: ID!, $input: TodoReopenInput!) { todos_reopen(commandId: $commandId, input: $input) { status todo_id } }",
   "input": {
     "definition": {
@@ -2560,7 +3089,7 @@ export const Command_todos_reopen: ReplicaCommandArtifact<Command_todos_reopen_I
   "protocol": {
     "operation": "sha256:04531ace98fd3ee5e652761abbcb6ebd745d5ff6ed0ad100030f935335c5a35e",
     "protocolHash": "sha256:00fb342f3acb4dc1c1716a43cc3001c748d5f6c500ff831690d820e9e43e2782",
-    "schemaHash": "sha256:77cb9cd73988ae91024cdacbb5245ce0b748281a054cab64f45b8a5badef6738",
+    "schemaHash": "sha256:99f8c2633da466ee562364a1f1a66294315e471a27f6d7ef9c39bbf9ab1dca02",
     "surface": {
       "kind": "application",
       "name": "e2e-ui-admin",

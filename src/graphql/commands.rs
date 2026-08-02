@@ -97,7 +97,7 @@ impl TypedCommandInventory {
         self.contracts.clone()
     }
 
-    /// Bind every confirmation and ordinary `Projected<M>` target to the exact
+    /// Bind every confirmation and ordinary `Atomic<M>` target to the exact
     /// compiled projector registry. Runtime lowering never reconstructs
     /// authority from projector/model strings.
     #[cfg(feature = "graphql")]
@@ -177,7 +177,7 @@ impl TypedCommandInventory {
                 confirmation.bind_protocol_topology(topology.clone());
             }
 
-            if contract.consistency != CommandConsistency::Projected {
+            if contract.consistency != CommandConsistency::Atomic {
                 continue;
             }
             let projected = contract.projected_model.as_ref().ok_or_else(|| {

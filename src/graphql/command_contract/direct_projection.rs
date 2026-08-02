@@ -17,7 +17,7 @@ use crate::read_model::RelationalReadModel;
 use crate::table::{TableMutation, TableSchema};
 use crate::{ProjectionProgramId, ResolvedProjectionPlan};
 
-/// Compiler-retained relational identity for one ordinary `Projected<M>`
+/// Compiler-retained relational identity for one ordinary `Atomic<M>`
 /// declaration before the GraphQL Surface resolves its unique physical owner.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub(crate) struct CommandProjectedModel {
@@ -102,7 +102,7 @@ impl CommandProjectedModel {
     }
 }
 
-/// Compiler-owned direct target for one `Projected<M>` command.
+/// Compiler-owned direct target for one `Atomic<M>` command.
 ///
 /// This metadata is deliberately hidden from ordinary handler code. Generated
 /// declarations bind it once; application handlers select the narrow

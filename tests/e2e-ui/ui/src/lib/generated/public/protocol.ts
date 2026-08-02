@@ -3,7 +3,7 @@
 export const CLIENT_PROTOCOL = {
 	version: 1,
 	serviceId: "e2e-ui",
-	schemaHash: "sha256:dbcac3b0a98f6be6c99f7df770ec477d02a2292a8fe9f56f7c6470346f1683ac",
+	schemaHash: "sha256:38f1e9dc9669426ed5a3bcc8fcef21f4414434abe4397d55bb524d2c2a7755d6",
 	protocolHash: "sha256:00fb342f3acb4dc1c1716a43cc3001c748d5f6c500ff831690d820e9e43e2782",
 	surface: {"kind":"application","name":"e2e-ui-public","roles":["anonymous"]},
 	trustedPresets: [],

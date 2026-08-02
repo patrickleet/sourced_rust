@@ -3,7 +3,7 @@ import type { DemoWalkthrough } from './types';
 /**
  * Tab order is browser-first teaching order for every demo:
  * 1. Query / live subscription (+ ReadModel shape + read RBAC)
- * 2. Commands (optimistic cache vs atomic Projected) (+ write RBAC)
+ * 2. Commands (optimistic cache vs Atomic) (+ write RBAC)
  * 3. Command handlers (repo → aggregate → commit)
  * 4. Domain model (plain Rust + macros)
  * 5. Domain events + projections
@@ -11,6 +11,13 @@ import type { DemoWalkthrough } from './types';
  * Samples should be real, pasteable shapes from the fixture — not comment-only stubs.
  * Query tabs should include the read model definition (#[derive(ReadModel)] struct), not only
  * permissions snippets or GraphQL selection.
+ *
+ * Consistency teaching (same mutation IR; apply site differs):
+ * - Eventual (placement + command): event handler applies IR async → client
+ *   `.applies` previews until obligations complete (no response row).
+ * - Atomic (Direct placement + Atomic command): command handler applies IR
+ *   same-tx → wait and return the row; confirm before await settles.
+ *   Optional `.applies` for known pre-network fields — never a UI board-sim.
  */
 
 export const todosWalkthrough: DemoWalkthrough = {
@@ -19,7 +26,7 @@ export const todosWalkthrough: DemoWalkthrough = {
 	title: 'Todos',
 	kicker: 'Browser → command → domain → projection',
 	summary:
-		'Start on the page: one @load query feeds the replica. Commands update a client-side cache optimistically; the server commits Causal and projectors catch up.',
+		'Start on the page: one @load query feeds the replica. Commands are Eventual: `.applies` paints a safe optimistic preview; the event handler applies the same mutation IR later, so the client cannot wait for a response row — only obligations.',
 	tabs: [
 		{
 			id: 'query',
@@ -85,7 +92,7 @@ const todos = $derived($query.complete ? $query.data.todos : []);`
 		{
 			id: 'commands',
 			label: '2 · Commands',
-			lede: 'Writes go through generated commands. Todos are Causal: the client applies a safe optimistic preview into the replica cache that feeds the UI, then confirms when the projection obligation completes.',
+			lede: 'Writes go through generated commands. Todos are Eventual: the client applies a safe optimistic preview into the replica cache that feeds the UI, then confirms when the projection obligation completes.',
 			principle: 'Let the Service declare how the UI catches up.',
 			samples: [
 				{
@@ -99,7 +106,7 @@ await commands.todo.complete({ todo_id });`
 				{
 					file: 'service.rs · todos_create (roles + preview)',
 					caption: 'Write RBAC on the inventory; owner is a trusted claim, not input.',
-					code: `typed_command::<TodoCreateInput, Causal<TodoCreatePayload>>(
+					code: `typed_command::<TodoCreateInput, Eventual<TodoCreatePayload>>(
   todo_create::COMMAND,
 )
 .field_name("todos_create")
@@ -122,7 +129,7 @@ await commands.todo.complete({ todo_id });`
 				{
 					file: 'service.rs · todos_force_archive roles',
 					caption: 'Elevated mutation: admin only; not on the user client tree.',
-					code: `typed_command::<TodoForceArchiveInput, Causal<TodoForceArchivePayload>>(
+					code: `typed_command::<TodoForceArchiveInput, Eventual<TodoForceArchivePayload>>(
   todo_force_archive::COMMAND,
 )
 .field_name("todos_force_archive")
@@ -134,7 +141,7 @@ await commands.todo.complete({ todo_id });`
 		{
 			id: 'handlers',
 			label: '3 · Handlers',
-			lede: 'Command handlers use the repository pattern: get or create the aggregate, call a domain method, commit. Todos choose eventual consistency (Causal + projector).',
+			lede: 'Command handlers use the repository pattern: get or create the aggregate, call a domain method, commit. Todos choose eventual consistency (Eventual + projector).',
 			principle: 'Commands change the world; tables are for reading.',
 			samples: [
 				{
@@ -143,14 +150,14 @@ await commands.todo.complete({ todo_id });`
 					code: `pub async fn handle(
   ctx: &CausalCommandContext<'_, Todo>,
   input: TodoCreateInput,
-) -> Result<PreparedCommand<Causal<TodoCreatePayload>>, HandlerError> {
+) -> Result<PreparedCommand<Eventual<TodoCreatePayload>>, HandlerError> {
   let owner = ctx.user_id()?.to_string();
   let repo = ctx.repo();
   let mut todo = repo.create();
   todo.create(&input.todo_id, &owner, &input.title)
     .map_err(rejected)?;
   let state = TodoState::from(&*todo);
-  repo.publish_events().commit(todo)?.causal(TodoCreatePayload {
+  repo.publish_events().commit(todo)?.eventual(TodoCreatePayload {
     todo_id: state.todo_id,
     owner_id: state.owner_id,
     title: state.title,
@@ -166,7 +173,7 @@ await commands.todo.complete({ todo_id });`
   .ok_or_else(|| HandlerError::NotFound(input.todo_id.clone()))?;
 todo.complete(&owner).map_err(rejected)?;
 let state = TodoState::from(&*todo);
-repo.publish_events().commit(todo)?.causal(TodoStatusPayload {
+repo.publish_events().commit(todo)?.eventual(TodoStatusPayload {
   todo_id: state.todo_id,
   status: state.status,
 })`
@@ -293,9 +300,9 @@ export const chatWalkthrough: DemoWalkthrough = {
 	id: 'chat',
 	href: '/chat',
 	title: 'Lobby chat',
-	kicker: 'Browser → live query → Causal post',
+	kicker: 'Browser → live query → Eventual post',
 	summary:
-		'Start with the document: @load seeds HTML and @live continues the same query over WebSocket. Posts are optimistic Causal commands into the shared replica. Guests read via e2e-ui-public.',
+		'Start with the document: @load seeds HTML and @live continues the same query over WebSocket. Posts are optimistic Eventual commands into the shared replica. Guests read via e2e-ui-public.',
 	tabs: [
 		{
 			id: 'query',
@@ -365,7 +372,7 @@ const livePage = $derived.by(() => {
 		{
 			id: 'commands',
 			label: '2 · Commands',
-			lede: 'Post is a generated command for signed-in surfaces only. The client replica cache applies a modeled optimistic message; Causal confirmation follows the projector.',
+			lede: 'Post is a generated command for signed-in surfaces only. The client replica cache applies a modeled optimistic message; Eventual confirmation follows the projector.',
 			principle: 'One replica story for user data.',
 			samples: [
 				{
@@ -385,7 +392,7 @@ if (receipt.projected !== undefined) {
 				{
 					file: 'service.rs · chat_messages_post roles',
 					caption: 'Write RBAC: user + admin only. Public client has zero commands.',
-					code: `typed_command::<ChatPostInput, Causal<ChatPostPayload>>(
+					code: `typed_command::<ChatPostInput, Eventual<ChatPostPayload>>(
   chat_post::COMMAND,
 )
 .field_name("chat_messages_post")
@@ -403,7 +410,7 @@ export type GeneratedCommands = Readonly<Record<never, never>>;`
 		{
 			id: 'handlers',
 			label: '3 · Handlers',
-			lede: 'Handler creates the chat aggregate through the repository, applies the domain post, commits Causal (eventual path). Author is always the session principal.',
+			lede: 'Handler creates the chat aggregate through the repository, applies the domain post, commits Eventual (projector path). Author is always the session principal.',
 			principle: 'Trust the signed-in person, not the request body.',
 			samples: [
 				{
@@ -411,7 +418,7 @@ export type GeneratedCommands = Readonly<Record<never, never>>;`
 					code: `pub async fn handle(
   ctx: &CausalCommandContext<'_, ChatMessage>,
   input: ChatPostInput,
-) -> Result<PreparedCommand<Causal<ChatPostPayload>>, HandlerError> {
+) -> Result<PreparedCommand<Eventual<ChatPostPayload>>, HandlerError> {
   let author = ctx.user_id()?.to_string();
   let created_at = canonical_near_unix_millis(&input.created_at)?;
   let repo = ctx.repo();
@@ -434,7 +441,7 @@ export type GeneratedCommands = Readonly<Record<never, never>>;`
   .map_err(rejected)?;
 
   let state = ChatMessageState::from(&*msg);
-  repo.publish_events().commit(msg)?.causal(ChatPostPayload {
+  repo.publish_events().commit(msg)?.eventual(ChatPostPayload {
     message_id: state.message_id,
     room_id: state.room_id,
     author_id: state.author_id,
@@ -561,9 +568,9 @@ export const blobWalkthrough: DemoWalkthrough = {
 	id: 'blob',
 	href: '/blob',
 	title: 'Blob game',
-	kicker: 'Browser → Projected (atomic) · no lag',
+	kicker: 'Browser → Atomic · no lag',
 	summary:
-		'Still start in the browser: one @load query owns the board. Moves return Projected — the replica applies the authoritative board from the mutation payload before the call resolves (atomic, not eventual optimism).',
+		'Still start in the browser: one @load query owns the board. Moves are Atomic — same save_blob_game mutation IR as eventual, applied in the command handler so the response row can update the replica before await resolves.',
 	tabs: [
 		{
 			id: 'query',
@@ -630,32 +637,41 @@ const games = $derived(
 		{
 			id: 'commands',
 			label: '2 · Commands',
-			lede: 'Moves are Projected commands. Unlike todos, the UI does not guess the next board — it applies atomic results from the server into the client cache that feeds the UI.',
+			lede: 'Moves are Atomic commands. Same mutation IR as an eventual projector — but applied in the command handler, so we wait for the row and put it on the response. That is not possible when projection is an event handler: there you only have `.applies` previews until the async path catches up. The client writes the returned row into the replica before await resolves.',
 			principle: 'Let the Service declare how the UI catches up.',
 			samples: [
 				{
 					file: 'routes/blob/[[gameId]]/+page.svelte',
-					caption: 'consistency: "projected" — authoritative delta before await returns.',
-					code: `const receipt = await commands.blob.move({
+					caption: 'Atomic response row is already in the replica when this settles.',
+					code: `await commands.blob.move({
   game_id,
   direction: 'up',
-});`
+});
+// confirmDirectProjection applied the returned BlobGames row`
 				},
 				{
-					file: 'service.rs · blob.move roles',
-					caption: 'Write RBAC: user + admin on the portable surface.',
-					code: `typed_command::<BlobMoveInput, Projected<BlobGames>>(
+					file: 'service.rs · blob.move',
+					caption: 'Same IR as eventual; apply site is the handler (Atomic).',
+					code: `typed_command::<BlobMoveInput, Atomic<BlobGames>>(
   blob_move::COMMAND,
 )
 .field_name("blob_games_move")
-.roles(app_roles) // ["user", "admin"]`
+.roles(app_roles)
+.emits(events![BlobMovedDomainEvent])
+.applies(state_preview! {
+  BlobMovedDomainEvent => BlobGameState {
+    game_id: input.game_id,
+    owner_id: trusted("x-user-id", "string"),
+    ..unknown
+  }
+})`
 				}
 			]
 		},
 		{
 			id: 'handlers',
 			label: '3 · Handlers',
-			lede: 'Same repo pattern: get aggregate, domain move, commit — but the row is staged in-handler and commit returns Projected so aggregate, ledger, and query row share one transaction.',
+			lede: 'Get aggregate, domain move, stage the mutation-derived row, commit Atomic — one transaction for aggregate, ledger, and query row. Because we are still in the command handler we can wait and return that row; an event handler cannot.',
 			principle: 'Commands change the world; tables are for reading.',
 			samples: [
 				{
@@ -663,7 +679,7 @@ const games = $derived(
 					code: `pub async fn handle(
   ctx: &CausalCommandContext<'_, BlobGame>,
   input: BlobMoveInput,
-) -> Result<PreparedCommand<Projected<BlobGames>>, HandlerError> {
+) -> Result<PreparedCommand<Atomic<BlobGames>>, HandlerError> {
   let owner = ctx.user_id()?.to_string();
   let dir = Direction::parse(&input.direction).ok_or_else(|| {
     HandlerError::Rejected(format!(
@@ -685,7 +701,7 @@ const games = $derived(
   repo.readmodel(row)
     .publish_events()
     .commit(game)?
-    .projected()
+    .atomic()
 }`
 				}
 			]
@@ -754,7 +770,7 @@ fn record_moved(
 		{
 			id: 'events',
 			label: '5 · Events',
-			lede: 'Domain events still exist for history. For blob, the same save_blob_game mutation program can run direct (same commit as the event) — not only as a later eventual handler.',
+			lede: 'Domain events still exist for history. For blob, the same save_blob_game mutation program runs direct in the command handler (same commit as the event) — so the response can carry the row. Eventual placement would run that IR in an event handler instead, with no response channel to the waiting client.',
 			principle: 'Know which side of the fence you are on.',
 			samples: [
 				{
@@ -796,7 +812,7 @@ mutation SaveBlobGame {
   vec![projection_output::<BlobGames>()],
   /* … */,
 )?;
-// Handler stages the row via readmodel(row).commit()?.projected()`
+// Handler stages the row via readmodel(row).commit()?.atomic()`
 				}
 			]
 		}
@@ -809,7 +825,7 @@ export const adminWalkthrough: DemoWalkthrough = {
 	title: 'Admin surface',
 	kicker: 'Browser → second client → elevated command',
 	summary:
-		'Start with the elevated query on e2e-ui-admin. Force-archive is a Causal command on that surface only — still optimistic cache on the admin replica, still repo → aggregate → commit on the server.',
+		'Start with the elevated query on e2e-ui-admin. Force-archive is an Eventual command on that surface only — still optimistic cache on the admin replica, still repo → aggregate → commit on the server.',
 	tabs: [
 		{
 			id: 'query',
@@ -884,7 +900,7 @@ pub struct Todos {
 					caption: 'Write RBAC: admin only; absent from user client inventory.',
 					code: `typed_command::<
   TodoForceArchiveInput,
-  Causal<TodoForceArchivePayload>,
+  Eventual<TodoForceArchivePayload>,
 >(todo_force_archive::COMMAND)
 .field_name("todos_force_archive")
 .roles(["admin"])
@@ -913,7 +929,7 @@ pub struct Todos {
 		{
 			id: 'handlers',
 			label: '3 · Handlers',
-			lede: 'Handler still uses repo.get → domain force_archive → Causal commit. Authorization is role + surface, not a special HTTP path.',
+			lede: 'Handler still uses repo.get → domain force_archive → Eventual commit. Authorization is role + surface, not a special HTTP path.',
 			principle: 'Trust the signed-in person, not the request body.',
 			samples: [
 				{
@@ -921,7 +937,7 @@ pub struct Todos {
 					code: `pub async fn handle(
   ctx: &CausalCommandContext<'_, Todo>,
   input: TodoForceArchiveInput,
-) -> Result<PreparedCommand<Causal<TodoForceArchivePayload>>, HandlerError> {
+) -> Result<PreparedCommand<Eventual<TodoForceArchivePayload>>, HandlerError> {
   let admin = ctx.user_id()?.to_string();
   let repo = ctx.repo();
   let mut todo = repo
@@ -933,7 +949,7 @@ pub struct Todos {
   let state = TodoState::from(&*todo);
   repo.publish_events()
     .commit(todo)?
-    .causal(TodoForceArchivePayload {
+    .eventual(TodoForceArchivePayload {
       todo_id: state.todo_id,
       owner_id: state.owner_id,
       status: state.status,

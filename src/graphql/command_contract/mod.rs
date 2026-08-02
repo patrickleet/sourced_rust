@@ -4,7 +4,7 @@
 //! handler may prepare a typed payload, but it cannot choose which projection
 //! confirmations count. That finite plan belongs to the command declaration,
 //! and only the framework-owned command-ledger committer may turn a preparation into
-//! an [`Succeeded`], [`Causal`], or [`Projected`] value.
+//! an [`Succeeded`], [`Eventual`], or [`Atomic`] value.
 
 #![cfg_attr(not(feature = "graphql"), allow(dead_code))]
 
@@ -44,7 +44,7 @@ pub(crate) use effects::{
     EffectRelationship,
 };
 pub use outcomes::{
-    Causal, CommandConsistency, CommandOutcome, PrepareCommandError, PreparedCommand, Projected,
+    Eventual, CommandConsistency, CommandOutcome, PrepareCommandError, PreparedCommand, Atomic,
     Succeeded,
 };
 pub(crate) use projection_obligations::{

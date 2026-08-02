@@ -262,11 +262,29 @@ impl SurfaceModeledProjection {
         &self.route
     }
 
-    /// Whether this exact selected registration may mint client causal work.
+    /// Whether this exact selected registration may mint **async causal work**
+    /// (confirmations / obligations waiting on eventual projectors).
+    ///
+    /// Direct / same-transaction projected rows are not in this set: the command
+    /// response already carries the authoritative row. Previews for Direct still
+    /// use [`Self::is_preview_eligible`].
     pub fn is_causally_eligible(&self) -> bool {
         self.state == ProjectionBindingState::Active
             && self.placement == ProjectionPlacement::Eventual
             && self.execution_class == ProjectionExecutionClass::Causal
+    }
+
+    /// Whether this registration may contribute **client cache previews** from
+    /// `.applies` / event→mutation IR.
+    ///
+    /// Same mutation IR as the server; apply site differs (command handler
+    /// Projected vs eventual event handler). Background-only consumers are
+    /// excluded. Direct and Eventual causal placements both qualify when Active
+    /// and a selected program is present for composition.
+    pub fn is_preview_eligible(&self) -> bool {
+        self.state == ProjectionBindingState::Active
+            && self.execution_class == ProjectionExecutionClass::Causal
+            && self.selected_program().is_some()
     }
 
     /// Whether this exact live registration may validate causal work minted
@@ -399,24 +417,27 @@ impl SurfaceModeledProjection {
         if output_models.is_empty() {
             return Ok(None);
         }
-        let selected = if self.placement == ProjectionPlacement::Direct {
+        // Direct and Eventual both export selected arms: client previews compose
+        // the same portable mutation IR. Server apply site differs (handler-owned
+        // same-tx Projected vs eventual event handler).
+        let mut arms = Vec::new();
+        for arm in program.arms() {
+            let operations = arm
+                .operations()
+                .iter()
+                .filter_map(|operation| select_operation(operation, models))
+                .collect::<Vec<_>>();
+            if !operations.is_empty() {
+                arms.push(SurfaceProjectionArm {
+                    arm_id: arm.arm_id().to_owned(),
+                    selector: arm.selector().clone(),
+                    operations,
+                });
+            }
+        }
+        let selected = if arms.is_empty() {
             None
         } else {
-            let mut arms = Vec::new();
-            for arm in program.arms() {
-                let operations = arm
-                    .operations()
-                    .iter()
-                    .filter_map(|operation| select_operation(operation, models))
-                    .collect::<Vec<_>>();
-                if !operations.is_empty() {
-                    arms.push(SurfaceProjectionArm {
-                        arm_id: arm.arm_id().to_owned(),
-                        selector: arm.selector().clone(),
-                        operations,
-                    });
-                }
-            }
             Some(SurfaceSelectedProjectionProgram {
                 name: program.name().to_owned(),
                 version: program.version(),

@@ -58,21 +58,33 @@ export function decideReplicaPaginationMaintenance(
 		if (
 			coverage.kind === 'offset' &&
 			coverage.offset === 0 &&
-			coverage.limit !== undefined &&
-			coverage.returned !== undefined &&
-			coverage.returned < coverage.limit
+			coverage.limit !== undefined
 		) {
-			// A non-full first page proves that the server returned the complete
-			// ordered set. The index runtime can therefore apply all optimistic
-			// membership/order changes and truncate back to the declared limit.
-			return PAGINATION_LOCAL;
+			/*
+			 * First-page (offset 0) locality:
+			 * - insert: always local when a limit is known. The maintainer
+			 *   re-sorts known members and truncates to the window, so a full
+			 *   lobby page still shows an optimistic chat/todo at the front.
+			 * - delete/reorder: only when the page is non-full (complete ordered
+			 *   set). A full page with hasNext cannot prove the next boundary
+			 *   after a delete or order change.
+			 */
+			if (change.kind === 'insert') {
+				return PAGINATION_LOCAL;
+			}
+			if (
+				coverage.returned !== undefined &&
+				coverage.returned < coverage.limit
+			) {
+				return PAGINATION_LOCAL;
+			}
 		}
 	}
 	const [code, message]: readonly [ReplicaQueryPlanReasonCode, string] =
 		change.kind === 'insert'
 			? [
 					'insert_changes_offset_window',
-					'an insert is local only for a proven non-full first offset page'
+					'an insert is local only for the first offset page (offset 0) with a known limit'
 				]
 			: change.kind === 'delete'
 				? [

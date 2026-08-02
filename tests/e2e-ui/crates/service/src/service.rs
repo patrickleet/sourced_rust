@@ -7,9 +7,9 @@ use blob_domain::{
 };
 use chat_domain::{ChatMessage, ChatMessagePostedDomainEvent};
 use distributed::graphql::{
-    build_surface, typed_command, Causal, CommandProjectionPreview,
+    build_surface, typed_command, Eventual, CommandProjectionPreview,
     CommandProjectionPreviewSource, DistributedClientSurfaceExport, GraphqlEngine,
-    GraphqlPoolSource, IdentityConfig, OidcConfig, Projected, SurfaceDirectProjection,
+    GraphqlPoolSource, IdentityConfig, OidcConfig, Atomic, SurfaceDirectProjection,
     SurfaceModeledProjection, SurfaceOptions, SurfaceProjector,
 };
 use distributed::microsvc::{
@@ -132,7 +132,7 @@ fn projection_owners() -> ProjectionOwners {
     )
     .expect("Blob projection binding");
     // Blob projected commands stage the mutation-derived row in the handler
-    // (`readmodel(row).commit()?.projected()`). Binding/catalog still own
+    // (`readmodel(row).commit()?.atomic()`). Binding/catalog still own
     // ownership, replay, and async projection for BLOB_GAMES.
 
     let catalog = ProjectionCatalog::try_new(vec![
@@ -302,7 +302,7 @@ where
         .with_repo(repo.clone().queued_with(locks.clone()).aggregate::<Todo>())
         .with_read_model_store(read_models.clone())
         .typed_command(
-            typed_command::<todo_create::TodoCreateInput, Causal<todo_create::TodoCreatePayload>>(
+            typed_command::<todo_create::TodoCreateInput, Eventual<todo_create::TodoCreatePayload>>(
                 todo_create::COMMAND,
             )
             .field_name("todos_create")
@@ -324,7 +324,7 @@ where
         )
         .handle(todo_create::handle)
         .typed_command(
-            typed_command::<todo_rename::TodoRenameInput, Causal<todo_rename::TodoRenamePayload>>(
+            typed_command::<todo_rename::TodoRenameInput, Eventual<todo_rename::TodoRenamePayload>>(
                 todo_rename::COMMAND,
             )
             .field_name("todos_rename")
@@ -340,7 +340,7 @@ where
         )
         .handle(todo_rename::handle)
         .typed_command(
-            typed_command::<todo_complete::TodoCompleteInput, Causal<payloads::TodoStatusPayload>>(
+            typed_command::<todo_complete::TodoCompleteInput, Eventual<payloads::TodoStatusPayload>>(
                 todo_complete::COMMAND,
             )
             .field_name("todos_complete")
@@ -356,7 +356,7 @@ where
         )
         .handle(todo_complete::handle)
         .typed_command(
-            typed_command::<todo_reopen::TodoReopenInput, Causal<todo_reopen::TodoReopenPayload>>(
+            typed_command::<todo_reopen::TodoReopenInput, Eventual<todo_reopen::TodoReopenPayload>>(
                 todo_reopen::COMMAND,
             )
             .field_name("todos_reopen")
@@ -372,7 +372,7 @@ where
         )
         .handle(todo_reopen::handle)
         .typed_command(
-            typed_command::<todo_archive::TodoArchiveInput, Causal<todo_archive::TodoArchivePayload>>(
+            typed_command::<todo_archive::TodoArchiveInput, Eventual<todo_archive::TodoArchivePayload>>(
                 todo_archive::COMMAND,
             )
             .field_name("todos_archive")
@@ -390,7 +390,7 @@ where
         .typed_command(
             typed_command::<
                 todo_force_archive::TodoForceArchiveInput,
-                Causal<todo_force_archive::TodoForceArchivePayload>,
+                Eventual<todo_force_archive::TodoForceArchivePayload>,
             >(todo_force_archive::COMMAND)
             .field_name("todos_force_archive")
             .roles(["admin"])
@@ -405,7 +405,7 @@ where
         )
         .handle(todo_force_archive::handle)
         .typed_command(
-            typed_command::<todo_purge::TodoPurgeInput, Causal<todo_purge::TodoPurgePayload>>(todo_purge::COMMAND)
+            typed_command::<todo_purge::TodoPurgeInput, Eventual<todo_purge::TodoPurgePayload>>(todo_purge::COMMAND)
                 .field_name("todos_purge")
                 .roles(app_roles)
                 .emits(distributed::events![TodoPurgedDomainEvent])
@@ -430,7 +430,7 @@ where
         )
         .with_read_model_store(read_models.clone())
         .typed_command(
-            typed_command::<chat_post::ChatPostInput, Causal<chat_post::ChatPostPayload>>(
+            typed_command::<chat_post::ChatPostInput, Eventual<chat_post::ChatPostPayload>>(
                 chat_post::COMMAND,
             )
             .field_name("chat_messages_post")
@@ -471,26 +471,66 @@ where
         .with_repo(repo.queued_with(locks).aggregate::<BlobGame>())
         .with_read_model_store(read_models)
         .typed_command(
-            typed_command::<blob_start::BlobStartInput, Projected<BlobGames>>(blob_start::COMMAND)
+            typed_command::<blob_start::BlobStartInput, Atomic<BlobGames>>(blob_start::COMMAND)
                 .field_name("blob_games_start")
                 .roles(app_roles)
-                .emits(distributed::events![BlobStartedDomainEvent]),
+                .emits(distributed::events![BlobStartedDomainEvent])
+                // Same mutation IR as eventual. Projected waits for the handler
+                // row and returns it (confirmDirectProjection). `.applies` is
+                // optional pre-network shell — map_json is RNG server-side.
+                .applies(distributed::state_preview! {
+                    BlobStartedDomainEvent => blob_domain::BlobGameState {
+                        game_id: input.game_id,
+                        owner_id: trusted("x-user-id", "string"),
+                        score: 0,
+                        player_dead: unknown,
+                        current_level: 1,
+                        current_level_completed: unknown,
+                        map_json: "[]",
+                        status: "active",
+                    }
+                }),
         )
         .handle(blob_start::handle)
         .typed_command(
-            typed_command::<blob_move::BlobMoveInput, Projected<BlobGames>>(blob_move::COMMAND)
+            typed_command::<blob_move::BlobMoveInput, Atomic<BlobGames>>(blob_move::COMMAND)
                 .field_name("blob_games_move")
                 .roles(app_roles)
-                .emits(distributed::events![BlobMovedDomainEvent]),
+                .emits(distributed::events![BlobMovedDomainEvent])
+                // Identity for preview binding; board fields come back Projected.
+                .applies(distributed::state_preview! {
+                    BlobMovedDomainEvent => blob_domain::BlobGameState {
+                        game_id: input.game_id,
+                        owner_id: trusted("x-user-id", "string"),
+                        score: unknown,
+                        player_dead: unknown,
+                        current_level: unknown,
+                        current_level_completed: unknown,
+                        map_json: unknown,
+                        status: unknown,
+                    }
+                }),
         )
         .handle(blob_move::handle)
         .typed_command(
-            typed_command::<blob_start_level::BlobStartLevelInput, Projected<BlobGames>>(
+            typed_command::<blob_start_level::BlobStartLevelInput, Atomic<BlobGames>>(
                 blob_start_level::COMMAND,
             )
             .field_name("blob_games_start_level")
             .roles(app_roles)
-            .emits(distributed::events![BlobLevelStartedDomainEvent]),
+            .emits(distributed::events![BlobLevelStartedDomainEvent])
+            .applies(distributed::state_preview! {
+                BlobLevelStartedDomainEvent => blob_domain::BlobGameState {
+                    game_id: input.game_id,
+                    owner_id: trusted("x-user-id", "string"),
+                    score: unknown,
+                    player_dead: unknown,
+                    current_level: unknown,
+                    current_level_completed: unknown,
+                    map_json: "[]",
+                    status: "active",
+                }
+            }),
         )
         .handle(blob_start_level::handle);
 

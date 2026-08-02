@@ -70,7 +70,7 @@ pub(in crate::graphql::surface) fn validate_and_canonicalize_commands(
                     definition,
                     models,
                 )? {
-                    // `Projected<M>` deliberately returns the already-exposed
+                    // `Atomic<M>` deliberately returns the already-exposed
                     // normalized model object. Do not claim or re-emit a second
                     // GraphQL type with the same name.
                 } else {
@@ -173,7 +173,7 @@ pub(crate) fn projected_output_reuses_surface_model(
     definition: &SurfaceTypeDef,
     models: &BTreeMap<String, SurfaceModel>,
 ) -> Result<bool, String> {
-    if consistency != CommandConsistency::Projected {
+    if consistency != CommandConsistency::Atomic {
         return Ok(false);
     }
     let Some(projected) = projected else {
@@ -275,7 +275,7 @@ pub(in crate::graphql::surface) fn validate_command_confirmations(
 ) -> Result<(), String> {
     validate_projection_confirmation_count(&command.command_name, command.confirmations.len())?;
     match command.consistency {
-        CommandConsistency::Causal
+        CommandConsistency::Eventual
             if command.confirmations.is_empty() && command.projections.selectors.is_empty() =>
         {
             return Err(format!(
@@ -283,19 +283,19 @@ pub(in crate::graphql::surface) fn validate_command_confirmations(
                 command.command_name
             ));
         }
-        CommandConsistency::Projected if !command.confirmations.is_empty() => {
+        CommandConsistency::Atomic if !command.confirmations.is_empty() => {
             return Err(format!(
                 "typed projected command `{}` cannot declare asynchronous projector confirmations",
                 command.command_name
             ));
         }
-        CommandConsistency::Projected if command.projected_model.is_none() => {
+        CommandConsistency::Atomic if command.projected_model.is_none() => {
             return Err(format!(
                 "typed projected command `{}` is missing its compiler-retained relational model",
                 command.command_name
             ));
         }
-        CommandConsistency::Succeeded | CommandConsistency::Causal
+        CommandConsistency::Succeeded | CommandConsistency::Eventual
             if command.projected_model.is_some() || command.direct_projection.is_some() =>
         {
             return Err(format!(
@@ -470,7 +470,7 @@ pub(in crate::graphql::surface) fn bind_surface_direct_projection_targets(
             confirmation.bind_protocol_topology(topology.clone());
         }
 
-        if command.consistency != CommandConsistency::Projected {
+        if command.consistency != CommandConsistency::Atomic {
             continue;
         }
         let projected = command.projected_model.as_ref().ok_or_else(|| {

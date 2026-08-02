@@ -1,6 +1,6 @@
 //! Command: `todo.complete` — owner-only (aggregate enforces).
 
-use distributed::graphql::{Causal, PreparedCommand};
+use distributed::graphql::{Eventual, PreparedCommand};
 use distributed::microsvc::{CausalCommandContext, HandlerError};
 use serde::Deserialize;
 use todo_domain::{Todo, TodoState};
@@ -18,7 +18,7 @@ pub struct TodoCompleteInput {
 pub async fn handle(
     ctx: &CausalCommandContext<'_, Todo>,
     input: TodoCompleteInput,
-) -> Result<PreparedCommand<Causal<TodoStatusPayload>>, HandlerError> {
+) -> Result<PreparedCommand<Eventual<TodoStatusPayload>>, HandlerError> {
     let owner = ctx.user_id()?.to_string();
     let repo = ctx.repo();
     let mut todo = repo
@@ -30,7 +30,7 @@ pub async fn handle(
     let state = TodoState::from(&*todo);
     repo.publish_events()
         .commit(todo)?
-        .causal(TodoStatusPayload {
+        .eventual(TodoStatusPayload {
             todo_id: state.todo_id,
             status: state.status,
         })

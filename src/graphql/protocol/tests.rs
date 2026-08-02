@@ -86,7 +86,7 @@ fn command(id: &str) -> DistributedCommandMetadata {
         command_id: id.into(),
         causation_id: "cause-17".into(),
         state: DistributedCommandState::SucceededPendingProjection,
-        consistency: DistributedCommandConsistency::Causal,
+        consistency: DistributedCommandConsistency::Eventual,
         projection_disposition: None,
         expects: vec![DistributedProjectionExpectation {
             projection: "todos".into(),
@@ -116,7 +116,7 @@ fn receipt() -> CausalCommandReceiptSource {
         command_id: "0190a000-0000-7000-8000-000000000042".into(),
         command_name: "todo.complete".into(),
         causation_id: "0190a000-0000-7000-8000-000000000017".into(),
-        consistency: CommandConsistency::Causal,
+        consistency: CommandConsistency::Eventual,
         state: CommandLedgerState::SucceededPendingProjection,
         outcome: serde_json::json!({ "accepted": true }),
         obligations: vec![CausalCommandProjectionObligation {
@@ -141,8 +141,8 @@ fn direct_projected_receipt() -> CausalCommandReceiptSource {
         17,
     )
     .unwrap();
-    receipt.consistency = CommandConsistency::Projected;
-    receipt.state = CommandLedgerState::Projected;
+    receipt.consistency = CommandConsistency::Atomic;
+    receipt.state = CommandLedgerState::Atomic;
     receipt.obligations.clear();
     receipt.direct_projection = Some(SameTransactionProjectionEvidence {
         records: vec![ProjectionRecordMetadata {
@@ -309,8 +309,8 @@ fn direct_projected_receipt_replays_exact_record_revision_as_decimal_strings() {
     let first = accumulator(17, "principal-a", "sha256:schema-a");
     first.record_receipt(&receipt).unwrap();
     let command = serde_json::to_value(first.snapshot().unwrap()).unwrap()["command"].clone();
-    assert_eq!(command["state"], "projected");
-    assert_eq!(command["consistency"], "projected");
+    assert_eq!(command["state"], "atomic");
+    assert_eq!(command["consistency"], "atomic");
     assert_eq!(command["records"][0]["incarnation"], "3");
     assert_eq!(command["records"][0]["revision"], "9007199254740991");
     assert_eq!(command["records"][0]["tombstone"], false);
@@ -354,7 +354,7 @@ fn projected_status_exposes_only_matching_opaque_observations() {
     let accumulator = accumulator(5, "principal-a", "sha256:schema-a");
     accumulator
         .record_status(&CausalCommandPublicStatus {
-            state: CausalCommandPublicState::Projected,
+            state: CausalCommandPublicState::Atomic,
             command_id: source.command_id,
             command_name: Some(source.command_name),
             causation_id: Some(source.causation_id.clone()),
@@ -373,7 +373,7 @@ fn projected_status_exposes_only_matching_opaque_observations() {
         })
         .unwrap();
     let command = serde_json::to_value(accumulator.snapshot().unwrap()).unwrap()["command"].clone();
-    assert_eq!(command["state"], "projected");
+    assert_eq!(command["state"], "atomic");
     assert_eq!(
         command["observations"][0]["causationId"],
         source.causation_id

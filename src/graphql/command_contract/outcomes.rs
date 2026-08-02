@@ -21,10 +21,11 @@ pub enum CommandConsistency {
     /// The command transaction succeeded. With no confirmation plan this is
     /// terminal; with an explicit finite plan it is pending projection.
     Succeeded,
-    /// Domain events were committed and declared projectors are expected.
-    Causal,
-    /// The returned view was committed in the command transaction.
-    Projected,
+    /// Aggregate committed; read models update **eventually** (projectors /
+    /// event handlers after the command transaction).
+    Eventual,
+    /// Aggregate + read-model row in the **same** command transaction.
+    Atomic,
 }
 
 mod sealed {
@@ -41,23 +42,25 @@ pub struct Succeeded<T> {
     payload: T,
 }
 
-/// A committed command result with finite causal projection obligations.
+/// Eventual aggregate + read-model update: domain events committed; projectors
+/// apply later. Client may use `.applies` previews until obligations complete.
 ///
 /// There is intentionally no public constructor. The durable command
 /// committer is the only framework component allowed to create this wrapper.
 #[derive(Clone, Debug, PartialEq, Eq)]
-pub struct Causal<T> {
+pub struct Eventual<T> {
     payload: T,
 }
 
-/// A committed same-transaction projection result.
+/// Atomic aggregate + read-model update: exact row staged and returned in the
+/// command transaction (`readmodel(row).…commit()?.atomic()`).
 ///
 /// There is intentionally no public constructor. The durable command
 /// committer is the only framework component allowed to create this wrapper.
 /// `T` must be a relational read model, and preparation is available only
 /// through the framework-owned workspace that stages the exact row upsert.
 #[derive(Clone, Debug, PartialEq, Eq)]
-pub struct Projected<T> {
+pub struct Atomic<T> {
     payload: T,
 }
 
@@ -88,16 +91,16 @@ macro_rules! committed_outcome {
 }
 
 committed_outcome!(Succeeded, CommandConsistency::Succeeded);
-committed_outcome!(Causal, CommandConsistency::Causal);
+committed_outcome!(Eventual, CommandConsistency::Eventual);
 
-impl<T> sealed::Outcome for Projected<T> where T: RelationalReadModel {}
+impl<T> sealed::Outcome for Atomic<T> where T: RelationalReadModel {}
 
-impl<T> CommandOutcome for Projected<T>
+impl<T> CommandOutcome for Atomic<T>
 where
     T: RelationalReadModel + Serialize + Send + Sync + 'static,
 {
     type Payload = T;
-    const CONSISTENCY: CommandConsistency = CommandConsistency::Projected;
+    const CONSISTENCY: CommandConsistency = CommandConsistency::Atomic;
 
     fn payload(&self) -> &T {
         &self.payload
@@ -143,9 +146,9 @@ macro_rules! crate_committed_constructor {
 }
 
 crate_committed_constructor!(Succeeded);
-crate_committed_constructor!(Causal);
+crate_committed_constructor!(Eventual);
 
-impl<T> Projected<T>
+impl<T> Atomic<T>
 where
     T: RelationalReadModel,
 {
@@ -156,7 +159,7 @@ where
 }
 
 impl<T> sealed::PreparableOutcome for Succeeded<T> {}
-impl<T> sealed::PreparableOutcome for Causal<T> {}
+impl<T> sealed::PreparableOutcome for Eventual<T> {}
 
 /// Sealed type-level contract implemented by committed command outcomes.
 pub trait CommandOutcome: sealed::Outcome + Send + Sync + 'static {
@@ -172,8 +175,8 @@ pub trait CommandOutcome: sealed::Outcome + Send + Sync + 'static {
     fn __graphql_output_type() -> GraphqlTypeDef;
 
     /// Compiler-only model identity retained by an ordinary
-    /// `typed_command::<I, Projected<M>>` declaration. The sealed default keeps
-    /// succeeded/causal outcomes unbound while `Projected<M>` supplies its exact
+    /// `typed_command::<I, Atomic<M>>` declaration. The sealed default keeps
+    /// succeeded/eventual outcomes unbound while `Atomic<M>` supplies its exact
     /// relational schema without an application-facing projection target API.
     #[doc(hidden)]
     fn __projected_model() -> Option<(TypeId, &'static TableSchema)> {
@@ -285,13 +288,13 @@ impl<K: CommandOutcome> PreparedCommand<K> {
         }
 
         match K::CONSISTENCY {
-            CommandConsistency::Succeeded | CommandConsistency::Causal => {
+            CommandConsistency::Succeeded | CommandConsistency::Eventual => {
                 if self.projection_proof.is_some() || modeled_direct_plan.is_some() {
                     return Err(CommandCommitProofError::UnexpectedProjectionProof);
                 }
                 contract.validate_outbox_fact_coverage(outbox_messages)
             }
-            CommandConsistency::Projected => {
+            CommandConsistency::Atomic => {
                 if !has_staged_aggregate_events && outbox_messages.is_empty() {
                     return Err(CommandCommitProofError::DurableEventMissing);
                 }
@@ -389,7 +392,7 @@ impl<K: CommandOutcome> PreparedCommand<K> {
     /// Remove the proof-matched projected upsert from ordinary table plans and
     /// seal it as the repository's causal direct-projection participant.
     ///
-    /// Succeeded and Causal commands return no participant. A Projected command
+    /// Succeeded and Eventual commands return no participant. An Atomic command
     /// must have exactly one resolved declaration-owned target; the extracted
     /// mutation is never also submitted through the legacy/raw plan path.
     pub(crate) fn seal_direct_projection(
@@ -400,13 +403,13 @@ impl<K: CommandOutcome> PreparedCommand<K> {
         causation_id: &str,
     ) -> Result<Option<SameTransactionProjectionBatch>, CommandCommitProofError> {
         match K::CONSISTENCY {
-            CommandConsistency::Succeeded | CommandConsistency::Causal => {
+            CommandConsistency::Succeeded | CommandConsistency::Eventual => {
                 if target.is_some() || modeled_direct_plan.is_some() {
                     return Err(CommandCommitProofError::UnexpectedDirectProjectionTarget);
                 }
                 Ok(None)
             }
-            CommandConsistency::Projected => {
+            CommandConsistency::Atomic => {
                 let target =
                     target.ok_or(CommandCommitProofError::MissingDirectProjectionTarget)?;
                 let proof = self
@@ -447,13 +450,13 @@ impl<K: CommandOutcome> PreparedCommand<K> {
     }
 }
 
-impl<M> PreparedCommand<Projected<M>>
+impl<M> PreparedCommand<Atomic<M>>
 where
     M: RelationalReadModel + Serialize + Send + Sync + 'static,
 {
     /// Build a projected completion from the exact model value whose full-row
     /// upsert was staged by the framework-owned causal workspace.
-    pub(crate) fn prepare_projected(
+    pub(crate) fn prepare_atomic(
         payload: M,
         proof: ProjectionCommitProof,
     ) -> Result<Self, PrepareCommandError> {
@@ -467,7 +470,7 @@ where
         })
     }
 
-    pub(crate) fn prepare_modeled_projected() -> Self {
+    pub(crate) fn prepare_modeled_atomic() -> Self {
         Self {
             payload: None,
             serialized_payload: None,
@@ -483,7 +486,7 @@ where
     K: CommandOutcome + sealed::PreparableOutcome,
 {
     /// Prepare a succeeded or causal payload for the durable committer.
-    /// Projected results require a staged transactional proof and do
+    /// Atomic results require a staged transactional proof and do
     /// not implement the private preparation capability.
     pub fn prepare(payload: K::Payload) -> Result<Self, PrepareCommandError> {
         Self::prepare_payload(payload)

@@ -10,7 +10,7 @@ use crate::aggregate::Aggregate;
 use crate::bus::Message;
 use crate::domain_event::DomainEvent;
 use crate::graphql::command_contract::CommandOutcome;
-use crate::graphql::{Causal, GraphqlOutputType, PreparedCommand, Projected, Succeeded};
+use crate::graphql::{Eventual, GraphqlOutputType, PreparedCommand, Atomic, Succeeded};
 use crate::microsvc::causal::{AggregatePublication, CausalWorkspace, CausalWorkspaceError};
 use crate::microsvc::context::Context;
 use crate::microsvc::error::HandlerError;
@@ -174,7 +174,7 @@ pub struct NoDirectProjection;
 /// ) where
 ///     A: Aggregate + Send + Sync + 'static,
 /// {
-///     let _ = commit.projected(());
+///     let _ = commit.atomic(());
 /// }
 /// ```
 pub struct DirectReadModelProjection<M>(PhantomData<fn() -> M>);
@@ -197,7 +197,7 @@ pub const fn direct_read_model<M>() -> DirectReadModelProjection<M> {
     DirectReadModelProjection::new()
 }
 
-/// Handler-owned exact row staged for a same-transaction `Projected<M>` result.
+/// Handler-owned exact row staged for a same-transaction `Atomic<M>` result.
 ///
 /// Built by [`CausalRepository::readmodel`] / [`CausalCommandContext::readmodel`].
 /// The row should come from the same mutation program used for event→mutation
@@ -444,7 +444,7 @@ where
 {
     /// Prepare a causal result. This terminal exists only after a publication
     /// leg; the dispatcher additionally proves actual durable outbox coverage.
-    pub fn causal<T>(self, payload: T) -> Result<PreparedCommand<Causal<T>>, HandlerError>
+    pub fn eventual<T>(self, payload: T) -> Result<PreparedCommand<Eventual<T>>, HandlerError>
     where
         T: GraphqlOutputType + Serialize + Send + Sync + 'static,
     {
@@ -462,14 +462,14 @@ where
     /// This method is available only when the preceding `project(...)` token is
     /// eligible for `M`. Dispatcher proof validation still rejects missing
     /// ownership, conflicts, partial rows, or a mismatched returned value.
-    pub fn projected(self, payload: M) -> Result<PreparedCommand<Projected<M>>, HandlerError>
+    pub fn atomic(self, payload: M) -> Result<PreparedCommand<Atomic<M>>, HandlerError>
     where
         M: RelationalReadModel + Serialize + Send + Sync + 'static,
     {
         let _ = self.projection;
         self.context
             .workspace
-            .prepare_projected(payload)
+            .prepare_atomic(payload)
             .map_err(workspace_handler_error)
     }
 }
@@ -483,10 +483,10 @@ where
     ///
     /// The dispatcher proves one complete-row upsert matching `M` and commits it
     /// with the aggregate. No service placement registry is consulted.
-    pub fn projected(self) -> Result<PreparedCommand<Projected<M>>, HandlerError> {
+    pub fn atomic(self) -> Result<PreparedCommand<Atomic<M>>, HandlerError> {
         self.context
             .workspace
-            .prepare_projected(self.projection.0)
+            .prepare_atomic(self.projection.0)
             .map_err(workspace_handler_error)
     }
 }
@@ -507,13 +507,13 @@ where
     /// Prefer handler-owned [`CausalRepository::readmodel`] +
     /// [`PreparedCausalCommit::projected`] on [`StagedProjectedRow`] for new
     /// projected commands.
-    pub fn projected<M>(self) -> Result<PreparedCommand<Projected<M>>, HandlerError>
+    pub fn atomic<M>(self) -> Result<PreparedCommand<Atomic<M>>, HandlerError>
     where
         M: RelationalReadModel + Serialize + Send + Sync + 'static,
     {
         self.context
             .workspace
-            .prepare_modeled_projected(self.projection)
+            .prepare_modeled_atomic(self.projection)
             .map_err(workspace_handler_error)
     }
 }
@@ -527,13 +527,13 @@ where
     /// Prefer [`CausalRepository::readmodel`] with a mutation-derived row for
     /// new code. This path remains for compatibility when a service registers
     /// a placement-selected direct executor for the returned model.
-    pub fn projected<M>(self) -> Result<PreparedCommand<Projected<M>>, HandlerError>
+    pub fn atomic<M>(self) -> Result<PreparedCommand<Atomic<M>>, HandlerError>
     where
         M: RelationalReadModel + Serialize + Send + Sync + 'static,
     {
         self.context
             .workspace
-            .prepare_placement_selected_projected()
+            .prepare_placement_selected_atomic()
             .map_err(workspace_handler_error)
     }
 }

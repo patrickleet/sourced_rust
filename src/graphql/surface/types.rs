@@ -294,7 +294,7 @@ impl SurfaceProjectionOwner {
 ///
 /// This is the only projection declaration accepted by
 /// [`crate::microsvc::Routes::causal_projector`]. Use
-/// [`SurfaceDirectProjection`] when `Projected<T>` owns the row entirely
+/// [`SurfaceDirectProjection`] when `Atomic<T>` owns the row entirely
 /// inside the command transaction.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct SurfaceProjector {
@@ -369,7 +369,7 @@ impl SurfaceProjector {
         self
     }
 
-    /// Compiler seam for binding one `Projected<M>` command to this exact
+    /// Compiler seam for binding one `Atomic<M>` command to this exact
     /// registered topology. Ordinary handlers never receive or construct it.
     #[doc(hidden)]
     pub fn __distributed_direct_projection<I, M>(&self) -> CompiledDirectProjectionTarget<I, M>
@@ -392,7 +392,7 @@ impl From<SurfaceProjector> for SurfaceProjectionOwner {
     }
 }
 
-/// Same-transaction-only projection owner for `Projected<T>` commands.
+/// Same-transaction-only projection owner for `Atomic<T>` commands.
 ///
 /// It intentionally has no fact inventory and cannot be passed to an
 /// asynchronous projector route. The owner still supplies the complete model

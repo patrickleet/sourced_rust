@@ -243,7 +243,7 @@ function baseArtifact(overrides = {}) {
 				{ path: ['id'], generator: 'uuid_v7' }
 			]
 		},
-		consistency: 'causal',
+		consistency: 'eventual',
 		projection: baseProjection(),
 		revalidation: {
 			version: 1,
@@ -259,7 +259,7 @@ function baseArtifact(overrides = {}) {
 function projectedArtifact(directOverrides = {}) {
 	return baseArtifact({
 		output: PROJECTED_OUTPUT,
-		consistency: 'projected',
+		consistency: 'atomic',
 		projection: undefined,
 		directProjection: {
 			topology: {
@@ -1042,7 +1042,7 @@ test('unavailable confirmation contracts always force conservative revalidation'
 });
 
 test('generated Draining command authorizes lifecycle revalidation without projection application authority', () => {
-	assert.equal(GENERATED_DRAINING_COMMAND.consistency, 'causal');
+	assert.equal(GENERATED_DRAINING_COMMAND.consistency, 'eventual');
 	assert.equal(GENERATED_DRAINING_COMMAND.projection, undefined);
 	assert.equal(GENERATED_DRAINING_COMMAND.revalidation.required, true);
 	const prepared = prepareReplicaCommand(
@@ -1081,7 +1081,7 @@ test('revalidation disposition without projection or command-level capability fa
 		() =>
 			verifyReplicaCommandReceipt(
 				prepared,
-				receipt(prepared, 'projected', {
+				receipt(prepared, 'atomic', {
 					projectionDisposition: 'revalidate'
 				})
 			),
@@ -1151,7 +1151,7 @@ test('projected commands close the direct projection partition from finalized in
 	assert.equal(Object.isFrozen(prepared.directProjection.topology), true);
 	assert.equal(Object.isFrozen(prepared.directProjection.identityFields), true);
 	assert.deepEqual(
-		verifyReplicaCommandReceipt(prepared, receipt(prepared, 'projected')),
+		verifyReplicaCommandReceipt(prepared, receipt(prepared, 'atomic')),
 		{ kind: 'matched', revalidate: false }
 	);
 });

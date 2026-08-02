@@ -1112,7 +1112,7 @@ where
             }
             let projection_metadata = match protocol.as_ref() {
                 Some(protocol)
-                    if self.contract.consistency != CommandConsistency::Projected
+                    if self.contract.consistency != CommandConsistency::Atomic
                         && !self.contract.projections.selectors.is_empty() =>
                 {
                     if !projection_obligations.is_empty() {
@@ -1207,24 +1207,24 @@ where
             };
 
             let terminal_state = match (&projection_metadata, self.contract.consistency) {
-                (Some(metadata), CommandConsistency::Succeeded | CommandConsistency::Causal)
+                (Some(metadata), CommandConsistency::Succeeded | CommandConsistency::Eventual)
                     if metadata.obligations.is_empty() =>
                 {
                     TerminalCommandState::Succeeded
                 }
-                (Some(_), CommandConsistency::Succeeded | CommandConsistency::Causal) => {
+                (Some(_), CommandConsistency::Succeeded | CommandConsistency::Eventual) => {
                     TerminalCommandState::SucceededPendingProjection
                 }
-                (Some(_), CommandConsistency::Projected) => unreachable!(
+                (Some(_), CommandConsistency::Atomic) => unreachable!(
                     "same-transaction commands do not persist eventual modeled metadata"
                 ),
                 (None, CommandConsistency::Succeeded) if self.contract.confirmations.is_empty() => {
                     TerminalCommandState::Succeeded
                 }
-                (None, CommandConsistency::Succeeded | CommandConsistency::Causal) => {
+                (None, CommandConsistency::Succeeded | CommandConsistency::Eventual) => {
                     TerminalCommandState::SucceededPendingProjection
                 }
-                (None, CommandConsistency::Projected) => TerminalCommandState::Projected,
+                (None, CommandConsistency::Atomic) => TerminalCommandState::Atomic,
             };
             let replay_payload = prepared.serialized_payload().clone();
             let publisher = aggregate_repository.outbox_publisher();
@@ -1693,7 +1693,7 @@ where
             .flat_map(|handlers| handlers.values())
             .filter_map(|handler| match handler {
                 RegisteredHandler::Causal(handler)
-                    if handler.contract().consistency == CommandConsistency::Projected =>
+                    if handler.contract().consistency == CommandConsistency::Atomic =>
                 {
                     Some(handler.storage_identity(&self.dependencies))
                 }

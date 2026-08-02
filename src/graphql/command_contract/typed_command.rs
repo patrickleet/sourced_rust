@@ -15,7 +15,7 @@ use super::effect_wire::CompiledInputDefaults;
 use super::effects::{
     invalid_confirmation_constant, invalid_expression_constant, CommandEffects, EffectExpression,
 };
-use super::outcomes::{CommandConsistency, CommandOutcome, Projected};
+use super::outcomes::{CommandConsistency, CommandOutcome, Atomic};
 use super::projection_obligations::{
     CommandInputDefault, CommandProjectionConfirmation, ProjectionObligationResolutionError,
 };
@@ -44,7 +44,7 @@ pub(crate) struct TypedCommandContract {
     pub input_defaults: Vec<CommandInputDefault>,
     pub effects: CommandEffects,
     pub confirmations: Vec<CommandProjectionConfirmation>,
-    /// Present automatically for `Projected<M>` before Surface ownership is
+    /// Present automatically for `Atomic<M>` before Surface ownership is
     /// resolved. This never requires an application declaration.
     pub projected_model: Option<CommandProjectedModel>,
     pub direct_projection: Option<CommandDirectProjectionTarget>,
@@ -254,7 +254,7 @@ impl TypedCommandContract {
         &self,
         outbox_messages: &[OutboxMessage],
     ) -> Result<(), CommandCommitProofError> {
-        if self.consistency == CommandConsistency::Causal
+        if self.consistency == CommandConsistency::Eventual
             && self.confirmations.is_empty()
             && self.projections.selectors.is_empty()
         {
@@ -407,7 +407,7 @@ impl TypedServiceCommandBinding {
                 ));
             }
             match contract.consistency {
-                CommandConsistency::Causal
+                CommandConsistency::Eventual
                     if contract.confirmations.is_empty()
                         && contract.projections.selectors.is_empty() =>
                 {
@@ -416,19 +416,19 @@ impl TypedServiceCommandBinding {
                         contract.name
                     ));
                 }
-                CommandConsistency::Projected if !contract.confirmations.is_empty() => {
+                CommandConsistency::Atomic if !contract.confirmations.is_empty() => {
                     return Err(format!(
                         "typed projected command `{}` cannot declare asynchronous projector confirmations",
                         contract.name
                     ));
                 }
-                CommandConsistency::Projected if contract.projected_model.is_none() => {
+                CommandConsistency::Atomic if contract.projected_model.is_none() => {
                     return Err(format!(
                         "typed projected command `{}` is missing its compiler-retained relational model",
                         contract.name
                     ));
                 }
-                CommandConsistency::Succeeded | CommandConsistency::Causal
+                CommandConsistency::Succeeded | CommandConsistency::Eventual
                     if contract.projected_model.is_some()
                         || contract.direct_projection.is_some() =>
                 {
@@ -437,9 +437,9 @@ impl TypedServiceCommandBinding {
                         contract.name
                     ));
                 }
-                CommandConsistency::Causal
+                CommandConsistency::Eventual
                 | CommandConsistency::Succeeded
-                | CommandConsistency::Projected => {}
+                | CommandConsistency::Atomic => {}
             }
             if let Some(projected) = &contract.projected_model {
                 if projected.output_type_id != contract.output_type_id {
@@ -677,7 +677,7 @@ impl<I, K: CommandOutcome> TypedCommand<I, K> {
     }
 }
 
-impl<I, M> TypedCommand<I, Projected<M>>
+impl<I, M> TypedCommand<I, Atomic<M>>
 where
     I: GraphqlInputType + DeserializeOwned + Send + 'static,
     M: RelationalReadModel + Serialize + Send + Sync + 'static,

@@ -724,7 +724,7 @@ export function graphqlError(error: unknown): GqlError {
 }
 
 export function assertWriteSource(source: ReplicaWriteSource): void {
-	if (!['network', 'live', 'ssr', 'restore', 'projected'].includes(source)) {
+	if (!['network', 'live', 'ssr', 'restore', 'atomic'].includes(source)) {
 		throw new TypeError(`unsupported replica write source: ${source}`);
 	}
 }

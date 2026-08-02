@@ -45,7 +45,7 @@ export type OptimisticHost = {
 	retireDiagnosticLayer(
 		id: string,
 		action: 'retired' | 'rejected',
-		receiptState: 'projected' | 'rejected',
+		receiptState: 'atomic' | 'rejected',
 		receipt?: OptimisticReceiptState
 	): void;
 };
@@ -223,7 +223,7 @@ export function confirmOptimisticLayerOn<T>(
 	const result = host.engine.confirmOptimisticLayer(id, (writer) =>
 		update(baseWriter(writer))
 	);
-	host.retireDiagnosticLayer(id, 'retired', 'projected');
+	host.retireDiagnosticLayer(id, 'retired', 'atomic');
 	host.optimisticReceipts.delete(id);
 	host.syncDiagnostics();
 	return result;

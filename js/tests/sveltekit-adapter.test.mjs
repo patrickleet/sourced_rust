@@ -289,7 +289,7 @@ test('caller projection cancellation does not hide a globally pending command', 
 
 	resolveGlobal({
 		commandId: receipt.commandId,
-		state: 'projected'
+		state: 'atomic'
 	});
 	await flushMicrotasks();
 	assert.deepEqual(query.get().pending, []);

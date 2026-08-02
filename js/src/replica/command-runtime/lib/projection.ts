@@ -254,7 +254,7 @@ export function settleProjectionSuccess(controller: PendingProjection): void {
 	controller.resolve(
 		Object.freeze({
 			commandId: controller.commandId,
-			state: 'projected',
+			state: 'atomic',
 			metadata: controller.metadata
 		})
 	);

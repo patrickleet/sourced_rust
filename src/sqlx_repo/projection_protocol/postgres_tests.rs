@@ -1594,7 +1594,7 @@ mod postgres_tests {
         let causation_id = attempt.causation_id().as_str().to_string();
         let completion = attempt
             .complete(
-                TerminalCommandState::Projected,
+                TerminalCommandState::Atomic,
                 serde_json::json!({"postgres_projected": true}),
                 retention,
             )

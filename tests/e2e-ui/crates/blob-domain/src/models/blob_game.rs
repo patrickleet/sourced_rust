@@ -63,6 +63,108 @@ fn status_of(player_dead: bool, level_complete: bool) -> String {
     }
 }
 
+/// Pure post-move board snapshot (no ownership / aggregate checks).
+///
+/// Shared by the aggregate and client-side optimistic preview (TypeScript port
+/// in e2e-ui must stay byte-identical for tile rules).
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct MovePreview {
+    pub map: Vec<Vec<u8>>,
+    pub score: i64,
+    pub player_dead: bool,
+    pub level_complete: bool,
+}
+
+impl MovePreview {
+    pub fn status(&self) -> String {
+        status_of(self.player_dead, self.level_complete)
+    }
+}
+
+/// Apply one direction to a map + score. Pure — used by [`BlobGame::move_dir`]
+/// and mirrored in the e2e-ui optimistic board sim.
+pub fn simulate_move(
+    map: &[Vec<u8>],
+    score: i64,
+    direction: Direction,
+) -> Result<MovePreview, BlobError> {
+    if map.is_empty() || map[0].is_empty() {
+        return Err(BlobError::NoActiveLevel);
+    }
+    let (r, c) = player_pos_in(map)?;
+    let (nr, nc) = match direction {
+        Direction::Up => {
+            if r == 0 {
+                return Err(BlobError::CannotMove("row already 0".into()));
+            }
+            (r - 1, c)
+        }
+        Direction::Down => {
+            if r + 1 >= map.len() {
+                return Err(BlobError::CannotMove("already at bottom edge".into()));
+            }
+            (r + 1, c)
+        }
+        Direction::Left => {
+            if c == 0 {
+                return Err(BlobError::CannotMove("column already 0".into()));
+            }
+            (r, c - 1)
+        }
+        Direction::Right => {
+            if c + 1 >= map[r].len() {
+                return Err(BlobError::CannotMove("already at right edge".into()));
+            }
+            (r, c + 1)
+        }
+    };
+
+    let mut next_map = map.to_vec();
+    let mut score = score;
+    let mut player_dead = false;
+    let mut level_complete = false;
+
+    next_map[r][c] = tile::VISITED;
+    match next_map[nr][nc] {
+        tile::HOLE => next_map[nr][nc] = tile::DEAD_BY_HOLE,
+        tile::VISITED => next_map[nr][nc] = tile::DEAD_BY_SUICIDE,
+        tile::UNVISITED | tile::PLAYER => {
+            score += 1;
+            next_map[nr][nc] = tile::PLAYER;
+        }
+        _ => next_map[nr][nc] = tile::DEAD_BY_SUICIDE,
+    }
+    for row in &next_map {
+        if row.contains(&tile::DEAD_BY_HOLE) || row.contains(&tile::DEAD_BY_SUICIDE) {
+            player_dead = true;
+            level_complete = false;
+            break;
+        }
+    }
+    if !player_dead {
+        let any_u = next_map.iter().any(|row| row.contains(&tile::UNVISITED));
+        level_complete = !any_u;
+    }
+
+    Ok(MovePreview {
+        map: next_map,
+        score,
+        player_dead,
+        level_complete,
+    })
+}
+
+fn player_pos_in(map: &[Vec<u8>]) -> Result<(usize, usize), BlobError> {
+    for (r, row) in map.iter().enumerate() {
+        for (c, &t) in row.iter().enumerate() {
+            if t == tile::PLAYER {
+                return Ok((r, c));
+            }
+        }
+    }
+    Err(BlobError::NoActiveLevel)
+}
+
 #[derive(Debug, Clone, Default, Serialize, Deserialize)]
 pub struct BlobGame {
     #[serde(skip, default)]
@@ -107,15 +209,9 @@ impl BlobGame {
         }
     }
 
+    #[cfg(test)]
     fn player_pos(&self) -> Result<(usize, usize), BlobError> {
-        for (r, row) in self.map.iter().enumerate() {
-            for (c, &t) in row.iter().enumerate() {
-                if t == tile::PLAYER {
-                    return Ok((r, c));
-                }
-            }
-        }
-        Err(BlobError::NoActiveLevel)
+        player_pos_in(&self.map)
     }
 }
 
@@ -247,67 +343,12 @@ impl BlobGame {
         if self.current_level == 0 || self.map.is_empty() {
             return Err(BlobError::NoActiveLevel);
         }
-        let (r, c) = self.player_pos()?;
-        let (nr, nc) = match direction {
-            Direction::Up => {
-                if r == 0 {
-                    return Err(BlobError::CannotMove("row already 0".into()));
-                }
-                (r - 1, c)
-            }
-            Direction::Down => {
-                if r + 1 >= self.map.len() {
-                    return Err(BlobError::CannotMove("already at bottom edge".into()));
-                }
-                (r + 1, c)
-            }
-            Direction::Left => {
-                if c == 0 {
-                    return Err(BlobError::CannotMove("column already 0".into()));
-                }
-                (r, c - 1)
-            }
-            Direction::Right => {
-                if c + 1 >= self.map[r].len() {
-                    return Err(BlobError::CannotMove("already at right edge".into()));
-                }
-                (r, c + 1)
-            }
-        };
-        // Capture post-move snapshot via event recorder.
-        let mut next_map = self.map.clone();
-        let mut score = self.score;
-        let mut player_dead = self.player_dead;
-        let mut level_complete = self.current_level_completed;
-
-        // Simulate on temps then record once.
-        next_map[r][c] = tile::VISITED;
-        match next_map[nr][nc] {
-            tile::HOLE => next_map[nr][nc] = tile::DEAD_BY_HOLE,
-            tile::VISITED => next_map[nr][nc] = tile::DEAD_BY_SUICIDE,
-            tile::UNVISITED | tile::PLAYER => {
-                score += 1;
-                next_map[nr][nc] = tile::PLAYER;
-            }
-            _ => next_map[nr][nc] = tile::DEAD_BY_SUICIDE,
-        }
-        for row in &next_map {
-            if row.contains(&tile::DEAD_BY_HOLE) || row.contains(&tile::DEAD_BY_SUICIDE) {
-                player_dead = true;
-                level_complete = false;
-                break;
-            }
-        }
-        if !player_dead {
-            let any_u = next_map.iter().any(|row| row.contains(&tile::UNVISITED));
-            level_complete = !any_u;
-        }
-
+        let preview = simulate_move(&self.map, self.score, direction)?;
         self.record_moved(
-            score,
-            player_dead,
-            level_complete,
-            next_map,
+            preview.score,
+            preview.player_dead,
+            preview.level_complete,
+            preview.map,
             direction.as_str().to_string(),
         )?;
         Ok(())
@@ -351,6 +392,18 @@ mod tests {
         assert_eq!(g.current_level, 1);
         assert!(!g.current_level_completed);
         assert_eq!(g.player_pos().unwrap(), (0, 0));
+    }
+
+    #[test]
+    fn simulate_move_matches_move_dir() {
+        let mut g = BlobGame::default();
+        g.start_with_map("g1", "alice", test_map_no_holes()).unwrap();
+        let preview = simulate_move(&g.map, g.score, Direction::Right).unwrap();
+        g.move_dir("alice", Direction::Right).unwrap();
+        assert_eq!(g.map, preview.map);
+        assert_eq!(g.score, preview.score);
+        assert_eq!(g.player_dead, preview.player_dead);
+        assert_eq!(g.current_level_completed, preview.level_complete);
     }
 
     #[test]

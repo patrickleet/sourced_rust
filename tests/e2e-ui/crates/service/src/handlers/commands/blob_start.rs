@@ -1,7 +1,7 @@
 //! Command: `blob.start` — create game + demo level. Owner = session user.
 
 use blob_domain::{BlobGame, BlobGameState};
-use distributed::graphql::{PreparedCommand, Projected};
+use distributed::graphql::{PreparedCommand, Atomic};
 use distributed::microsvc::{CausalCommandContext, HandlerError};
 use e2e_projections::save_blob_game;
 use e2e_readmodels::BlobGames;
@@ -21,7 +21,7 @@ pub type BlobGamePayload = BlobGames;
 pub async fn handle(
     ctx: &CausalCommandContext<'_, BlobGame>,
     input: BlobStartInput,
-) -> Result<PreparedCommand<Projected<BlobGamePayload>>, HandlerError> {
+) -> Result<PreparedCommand<Atomic<BlobGamePayload>>, HandlerError> {
     let owner = ctx.user_id()?.to_string();
     let repo = ctx.repo();
 
@@ -42,5 +42,5 @@ pub async fn handle(
     repo.readmodel(row)
         .publish_events()
         .commit(game)?
-        .projected()
+        .atomic()
 }

@@ -1,6 +1,6 @@
 //! Command: `todo.purge` — owner-only physical read-model deletion.
 
-use distributed::graphql::{Causal, PreparedCommand};
+use distributed::graphql::{Eventual, PreparedCommand};
 use distributed::microsvc::{CausalCommandContext, HandlerError};
 use serde::{Deserialize, Serialize};
 use todo_domain::Todo;
@@ -23,7 +23,7 @@ pub struct TodoPurgePayload {
 pub async fn handle(
     ctx: &CausalCommandContext<'_, Todo>,
     input: TodoPurgeInput,
-) -> Result<PreparedCommand<Causal<TodoPurgePayload>>, HandlerError> {
+) -> Result<PreparedCommand<Eventual<TodoPurgePayload>>, HandlerError> {
     let owner = ctx.user_id()?.to_string();
     let repo = ctx.repo();
     let mut todo = repo
@@ -34,7 +34,7 @@ pub async fn handle(
 
     repo.publish_events()
         .commit(todo)?
-        .causal(TodoPurgePayload {
+        .eventual(TodoPurgePayload {
             todo_id: input.todo_id,
             purged: true,
         })

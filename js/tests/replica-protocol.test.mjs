@@ -472,7 +472,7 @@ function commandMetadata(options = {}) {
 			commandId: options.commandId ?? 'cmd-1',
 			causationId: options.causationId ?? 'cause-1',
 			state: options.state ?? 'succeeded_pending_projection',
-			consistency: 'causal',
+			consistency: 'eventual',
 			expects: [
 				{
 					projection: 'todos-projector',
@@ -568,7 +568,7 @@ test('authoritative revalidation succeeds against confirmed data while a server-
 	fetches[1].resolve(
 		frame('2', [
 			{ id: 'todo-1', title: 'base' },
-			{ id: 'todo-2', title: 'projected' }
+			{ id: 'todo-2', title: 'atomic' }
 		])
 	);
 	await new Promise((resolve) => setImmediate(resolve));
@@ -589,7 +589,7 @@ test('authoritative revalidation succeeds against confirmed data while a server-
 	fetches[2].resolve(
 		frame('3', [
 			{ id: 'todo-1', title: 'base' },
-			{ id: 'todo-2', title: 'projected' }
+			{ id: 'todo-2', title: 'atomic' }
 		])
 	);
 	await revalidation;
@@ -605,7 +605,7 @@ test('authoritative revalidation succeeds against confirmed data while a server-
 	assert.equal(watch.get().stale, false);
 	assert.deepEqual(watch.get().data.todos, [
 		{ id: 'todo-1', title: 'base' },
-		{ id: 'todo-2', title: 'projected' }
+		{ id: 'todo-2', title: 'atomic' }
 	]);
 	watch.destroy();
 });
@@ -1890,7 +1890,7 @@ test('only exact causation and expectation observations retire optimism', () => 
 	write(replica, {
 		position: '3',
 		revision: '3',
-		rows: [{ id: 'todo-1', title: 'projected' }],
+		rows: [{ id: 'todo-1', title: 'atomic' }],
 		observations: [
 			{
 				causationId: 'cause-1',
@@ -1900,7 +1900,7 @@ test('only exact causation and expectation observations retire optimism', () => 
 			}
 		]
 	});
-	assert.equal(replica.read(Todos, {}).data.todos[0].title, 'projected');
+	assert.equal(replica.read(Todos, {}).data.todos[0].title, 'atomic');
 });
 
 test('discarded or incomplete snapshots cannot use observations to retire optimism', () => {

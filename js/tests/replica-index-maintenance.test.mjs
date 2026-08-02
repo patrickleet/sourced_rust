@@ -758,8 +758,15 @@ test('missing dependencies, claims, and offset windows become precise stale deci
 			])
 		]
 	)[0];
-	assert.equal(decision.kind, 'stale');
-	assert.equal(decision.reason.code, 'insert_changes_offset_window');
+	// Full first page still accepts inserts: re-sort + truncate to limit.
+	assert.equal(decision.kind, 'write');
+	assert.equal(decision.records.length, 10);
+	assert.equal(decision.records[0], replicaRecordKey(Todo, 'offset'));
+	assert.equal(
+		decision.records.includes(replicaRecordKey(Todo, 'base-9')),
+		false,
+		'drops the worst page member after the optimistic insert'
+	);
 
 	const first = record(Todo, 'first', {
 		id: 'first',
@@ -785,10 +792,10 @@ test('missing dependencies, claims, and offset windows become precise stale deci
 				coverage: Object.freeze(coverage)
 			})
 		});
+	// Mismatched offset / returned still fail closed.
 	for (const coverage of [
 		{ kind: 'offset', offset: 1, limit: 10, returned: 2 },
-		{ kind: 'offset', offset: 0, limit: 10, returned: 1 },
-		{ kind: 'offset', offset: 0, limit: 10, returned: 2, hasNext: true }
+		{ kind: 'offset', offset: 0, limit: 10, returned: 1 }
 	]) {
 		decision = offsetRegistry.evaluate(
 			snapshot([first, boundary], [forgedCoverage(coverage)]),
@@ -806,6 +813,37 @@ test('missing dependencies, claims, and offset windows become precise stale deci
 		assert.equal(decision.kind, 'stale');
 		assert.equal(decision.reason.code, 'invalid_index_metadata');
 	}
+	// hasNext on the first page does not block optimistic inserts.
+	decision = offsetRegistry.evaluate(
+		snapshot(
+			[first, boundary],
+			[
+				forgedCoverage({
+					kind: 'offset',
+					offset: 0,
+					limit: 10,
+					returned: 2,
+					hasNext: true
+				})
+			]
+		),
+		[
+			layer('has-next-insert', [
+				upsert(Todo, 'third', {
+					id: 'third',
+					active: true,
+					rank: 0,
+					tenantId: 'tenant-1'
+				})
+			])
+		]
+	)[0];
+	assert.equal(decision.kind, 'write');
+	assert.deepEqual(decision.records, [
+		replicaRecordKey(Todo, 'third'),
+		first.key,
+		boundary.key
+	]);
 });
 
 test('stacked local offset inserts preserve the exact first-page limit', () => {

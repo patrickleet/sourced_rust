@@ -1,7 +1,7 @@
 use super::*;
 use crate::graphql::{
     build_surface, claim, col, rel, surface_for_application, surface_for_role, typed_command,
-    Causal, GraphqlInputType, GraphqlOutputType, GraphqlTypeDef, GraphqlTypeField, PreparedCommand,
+    Eventual, GraphqlInputType, GraphqlOutputType, GraphqlTypeDef, GraphqlTypeField, PreparedCommand,
     RoleGrant, Succeeded, SurfaceCommand, SurfaceOptions, SurfaceProjector, SurfaceTypeField,
 };
 use crate::microsvc::{CausalCommandContext, HandlerError, Routes, Service};
@@ -253,9 +253,9 @@ async fn complete_handler(
 async fn complete_causal_handler(
     _context: &CausalCommandContext<'_, ManifestAggregate>,
     _input: CompleteInput,
-) -> Result<PreparedCommand<Causal<CompletePayload>>, HandlerError> {
+) -> Result<PreparedCommand<Eventual<CompletePayload>>, HandlerError> {
     Ok(
-        PreparedCommand::<Causal<CompletePayload>>::prepare(CompletePayload)
+        PreparedCommand::<Eventual<CompletePayload>>::prepare(CompletePayload)
             .expect("serializable command payload"),
     )
 }
@@ -304,7 +304,7 @@ fn causal_full_surface() -> Surface {
                 crate::InMemoryRepository::new(),
             ))
             .typed_command(
-                typed_command::<CompleteInput, Causal<CompletePayload>>("todo.complete")
+                typed_command::<CompleteInput, Eventual<CompletePayload>>("todo.complete")
                     .field_name("todos_complete")
                     .roles(["admin", "user"])
                     .emits(crate::events![ManifestTodoProjected])
@@ -516,7 +516,7 @@ fn projected_surface() -> Surface {
             name: todo_model.object_name,
             fields: output_fields,
         }),
-        consistency: CommandConsistency::Projected,
+        consistency: CommandConsistency::Atomic,
         input_defaults: Vec::new(),
         effects: Some(CommandEffects::revalidate()),
         confirmations: Vec::new(),

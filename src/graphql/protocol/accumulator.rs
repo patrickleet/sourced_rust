@@ -672,7 +672,7 @@ impl ProtocolResponseAccumulator {
             .map_or(receipt.obligations.len(), |metadata| {
                 metadata.obligations.len()
             });
-        let observed = if receipt.state == CommandLedgerState::Projected {
+        let observed = if receipt.state == CommandLedgerState::Atomic {
             (0..obligation_count).collect::<Vec<_>>()
         } else {
             Vec::new()
@@ -1017,8 +1017,8 @@ fn modeled_obligation_label(
 fn command_consistency(value: CommandConsistency) -> DistributedCommandConsistency {
     match value {
         CommandConsistency::Succeeded => DistributedCommandConsistency::Succeeded,
-        CommandConsistency::Causal => DistributedCommandConsistency::Causal,
-        CommandConsistency::Projected => DistributedCommandConsistency::Projected,
+        CommandConsistency::Eventual => DistributedCommandConsistency::Eventual,
+        CommandConsistency::Atomic => DistributedCommandConsistency::Atomic,
     }
 }
 
@@ -1031,7 +1031,7 @@ fn command_state(value: CommandLedgerState) -> DistributedCommandState {
         CommandLedgerState::SucceededPendingProjection => {
             DistributedCommandState::SucceededPendingProjection
         }
-        CommandLedgerState::Projected => DistributedCommandState::Projected,
+        CommandLedgerState::Atomic => DistributedCommandState::Atomic,
         CommandLedgerState::Rejected => DistributedCommandState::Rejected,
         CommandLedgerState::ProjectionFailed => DistributedCommandState::ProjectionFailed,
         CommandLedgerState::Expired => DistributedCommandState::Expired,
@@ -1045,7 +1045,7 @@ fn public_command_state(value: CausalCommandPublicState) -> DistributedCommandSt
         CausalCommandPublicState::SucceededPendingProjection => {
             DistributedCommandState::SucceededPendingProjection
         }
-        CausalCommandPublicState::Projected => DistributedCommandState::Projected,
+        CausalCommandPublicState::Atomic => DistributedCommandState::Atomic,
         CausalCommandPublicState::Rejected => DistributedCommandState::Rejected,
         CausalCommandPublicState::ProjectionFailed => DistributedCommandState::ProjectionFailed,
         CausalCommandPublicState::Expired => DistributedCommandState::Expired,

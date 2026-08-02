@@ -101,7 +101,7 @@ pub(crate) fn validate_direct_projections(
         let consistency = command.extensions.consistency.kind;
         let direct = command.extensions.direct_projection.as_ref();
         match (consistency, direct) {
-            (ManifestConsistencyKind::Projected, None) => {
+            (ManifestConsistencyKind::Atomic, None) => {
                 return Err(ClientCompileError::manifest(
                     "client.manifest.direct_projection_required",
                     format!(
@@ -110,7 +110,7 @@ pub(crate) fn validate_direct_projections(
                     ),
                 ));
             }
-            (ManifestConsistencyKind::Projected, Some(direct)) => {
+            (ManifestConsistencyKind::Atomic, Some(direct)) => {
                 if validate_direct_projection(command, direct, models, projectors)? {
                     requiring_revalidation.insert(command.name.clone());
                 }

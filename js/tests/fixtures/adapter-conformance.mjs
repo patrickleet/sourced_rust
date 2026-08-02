@@ -464,13 +464,13 @@ export async function assertReplicaAdapterConformance({ mount }) {
 		await adapter.settle(() => {
 			replica.confirmOptimisticLayer('cmd-pending', (writer) =>
 				writer.writeRecord(TodoModel, 'todo-1', '3', {
-					fields: { title: 'projected' }
+					fields: { title: 'atomic' }
 				})
 			);
 		});
 		assert.equal(
 			currentTitle(adapter.getSnapshot()),
-			'projected',
+			'atomic',
 			'Projected confirmation must atomically replace the pending layer'
 		);
 
@@ -485,7 +485,7 @@ export async function assertReplicaAdapterConformance({ mount }) {
 		await adapter.settle(() => {
 			assert.equal(replica.rejectOptimisticLayer('cmd-rejected'), true);
 		});
-		assert.equal(currentTitle(adapter.getSnapshot()), 'projected');
+		assert.equal(currentTitle(adapter.getSnapshot()), 'atomic');
 
 		const backgroundFetches = transport.fetches.filter(
 			(entry) => !entry.response.settled
@@ -496,7 +496,7 @@ export async function assertReplicaAdapterConformance({ mount }) {
 					entry.response.resolve(
 						todoFrame(
 							TodosArtifact,
-							[{ id: 'todo-1', title: 'projected', status: 'done' }],
+							[{ id: 'todo-1', title: 'atomic', status: 'done' }],
 							{ position: '30' }
 						)
 					);

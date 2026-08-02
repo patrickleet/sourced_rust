@@ -1,6 +1,6 @@
 //! Command: `todo.reopen` — owner-only (aggregate enforces).
 
-use distributed::graphql::{Causal, PreparedCommand};
+use distributed::graphql::{Eventual, PreparedCommand};
 use distributed::microsvc::{CausalCommandContext, HandlerError};
 use serde::Deserialize;
 use todo_domain::{Todo, TodoState};
@@ -20,7 +20,7 @@ pub struct TodoReopenInput {
 pub async fn handle(
     ctx: &CausalCommandContext<'_, Todo>,
     input: TodoReopenInput,
-) -> Result<PreparedCommand<Causal<TodoReopenPayload>>, HandlerError> {
+) -> Result<PreparedCommand<Eventual<TodoReopenPayload>>, HandlerError> {
     let owner = ctx.user_id()?.to_string();
     let repo = ctx.repo();
     let mut todo = repo
@@ -32,7 +32,7 @@ pub async fn handle(
     let state = TodoState::from(&*todo);
     repo.publish_events()
         .commit(todo)?
-        .causal(TodoReopenPayload {
+        .eventual(TodoReopenPayload {
             todo_id: state.todo_id,
             status: state.status,
         })

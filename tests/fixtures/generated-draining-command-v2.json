@@ -1,5 +1,5 @@
 {
-  "consistency": "causal",
+  "consistency": "eventual",
   "document": "mutation Client_todos_complete($commandId: ID!, $input: CompleteTodoInput!) { todos_complete(commandId: $commandId, input: $input) { todo_id } }",
   "input": {
     "definition": {

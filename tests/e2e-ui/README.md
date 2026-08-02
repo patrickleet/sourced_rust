@@ -112,7 +112,7 @@ repo.publish_events()
 ```
 
 Blob uses a **handler-owned projected** commit: materialize the row from the
-same mutation used for event bindings, stage it, and seal `Projected`:
+same mutation used for event bindings, stage it, and seal `Atomic`:
 
 ```rust
 let repo = ctx.repo();
@@ -130,10 +130,41 @@ repo.readmodel(row)
     .projected()
 ```
 
-`Projected<BlobGames>` means aggregate history, command ledger, read-model row,
+`Atomic<BlobGames>` means aggregate history, command ledger, read-model row,
 and response evidence commit atomically. Its deliberately narrow eligibility
 is one complete row upsert; patches, deletes, multi-row programs, and stateful
 relationship work remain eventual.
+
+### Ship contract: same IR, two response proofs (agents)
+
+There is **one** portable mutation program (e.g. `save_blob_game` /
+`save_todo`). Placement chooses *where* it runs. The **command response**
+differs on purpose — do **not** collapse them into “always send a causal delta.”
+
+| Contract | Apply site | Mutation response (ship) | Client seal |
+|---|---|---|---|
+| **`Eventual<T>`** + Eventual | Event handler after commit | Payload + **projection-delta** + `expects` | `.applies` preview; retire on obligations |
+| **`Atomic<M>`** + Direct | Command handler, same tx | **Typed row `M`** + direct **`records[]`**. No eventual modeled metadata, empty `expects` | Optional `.applies`; **`confirmDirectProjection(row, records)`** before `await` settles |
+
+Handler for Atomic — this *is* returning atomic read-model updates:
+
+```rust
+let row = save_blob_game().from_state(&BlobGameState::from(&*game))?;
+repo.readmodel(row).publish_events().commit(game)?.projected()
+// GraphQL returns BlobGames; extensions.records from same-tx evidence.
+```
+
+Server enforces the split: same-transaction commands **do not** persist eventual
+modeled projection metadata (`routes.rs`). The typed row + records *are* the
+atomic proof — not a re-encoded causal delta.
+
+Do **not**:
+
+- reimplement domain rules in the UI (“board-sim”) for Atomic commands;
+- require a causal projection-delta on Atomic responses (client bug / wrong API);
+- treat Direct as “no client program” — Direct may export preview IR for `.applies`
+  (`is_preview_eligible`) without becoming Eventual;
+- conflate `is_causally_eligible` (Eventual-only obligations) with preview eligibility.
 
 ## Vocabulary
 
@@ -162,9 +193,12 @@ optimism. Multi-model atomicity is expressed as multi-op mutation programs, not
 a public projector ORM workspace.
 
 Application commands declare `.emits` plus `.applies(...)` known mutation-input
-mapping for client cache application. Eventual commands do not stage rows in
-the handler; Blob stages the mutation-derived row with
-`readmodel(row).commit()?.projected()`.
+mapping for client cache application. Both Eventual and Direct surfaces may
+export those previews from the portable program. Eventual commands do not stage
+rows in the handler (the event handler applies the mutation later). Blob stages
+the mutation-derived row with `readmodel(row).commit()?.projected()` so the
+GraphQL response carries the authoritative row — possible only because apply
+happens in the command handler, not in a later event handler.
 
 Query relationships are declared once on the referencing read model, without a
 second projection ORM. This fixture adds `Todos.owner`, `BlobGames.owner`, and
@@ -182,8 +216,8 @@ declarations; `service.rs` does not recreate the grants.
 | Outcome | Guarantee |
 |---|---|
 | `Succeeded<T>` | Command transaction succeeded; no projection wait is promised. |
-| `Causal<T>` | Actual emitted occurrences created durable obligations for the exact active causal projector bindings. Zero actual occurrences complete immediately as succeeded. |
-| `Projected<T>` | The eligible canonical read-model row committed in the command transaction and is returned as evidence. |
+| `Eventual<T>` | Actual emitted occurrences created durable obligations for the exact active causal projector bindings. Zero actual occurrences complete immediately as succeeded. |
+| `Atomic<T>` | Eligible canonical read-model row committed in the command transaction **and returned on the response** (handler-owned apply). Client normalizes that row before the call settles. |
 
 `Accepted` is reserved for genuine fire-and-forget transport acceptance, not
 the normal GraphQL command result.
@@ -204,8 +238,10 @@ the normal GraphQL command result.
 
 Todo and Chat mount catalog-pinned local causal executors through explicit
 `modeled_projector(...).handle(...)` event handlers. Those handlers apply the
-shared plan without repeating its mapping. Blob has a catalog-pinned direct
-owner and no asynchronous event route or second writer. The Zitadel provider
+shared plan without repeating its mapping — that is why the waiting client only
+has `.applies` previews until obligations complete. Blob has a catalog-pinned
+direct owner and no asynchronous event route or second writer: the command
+handler applies the same mutation IR and returns the row. The Zitadel provider
 ingestor remains an integration adapter, while its provider-event-to-`AuthUsers`
 mapping also lives in `e2e-projections` and runs from an explicit event handler.
 

@@ -4,7 +4,7 @@ pub(super) fn command_direct_projection_extension(
     command: &SurfaceCommand,
     surface: &Surface,
 ) -> Result<Option<CommandDirectProjectionExtension>, ClientManifestError> {
-    let projected = command.consistency == CommandConsistency::Projected;
+    let projected = command.consistency == CommandConsistency::Atomic;
     let Some(target) = command.direct_projection.as_ref() else {
         return if projected {
             Err(ClientManifestError(format!(

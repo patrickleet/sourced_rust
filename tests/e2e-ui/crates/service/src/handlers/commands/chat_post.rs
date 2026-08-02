@@ -1,7 +1,7 @@
 //! Command: `chat.post` — author is always the authenticated session user.
 
 use chat_domain::{ChatMessage, ChatMessageState};
-use distributed::graphql::{Causal, PreparedCommand};
+use distributed::graphql::{Eventual, PreparedCommand};
 use distributed::microsvc::{CausalCommandContext, HandlerError};
 use serde::{Deserialize, Serialize};
 
@@ -31,7 +31,7 @@ pub struct ChatPostPayload {
 pub async fn handle(
     ctx: &CausalCommandContext<'_, ChatMessage>,
     input: ChatPostInput,
-) -> Result<PreparedCommand<Causal<ChatPostPayload>>, HandlerError> {
+) -> Result<PreparedCommand<Eventual<ChatPostPayload>>, HandlerError> {
     let author = ctx.user_id()?.to_string();
     let created_at = canonical_near_unix_millis(&input.created_at)?;
     let repo = ctx.repo();
@@ -54,7 +54,7 @@ pub async fn handle(
     .map_err(rejected)?;
 
     let state = ChatMessageState::from(&*msg);
-    repo.publish_events().commit(msg)?.causal(ChatPostPayload {
+    repo.publish_events().commit(msg)?.eventual(ChatPostPayload {
         message_id: state.message_id,
         room_id: state.room_id,
         author_id: state.author_id,

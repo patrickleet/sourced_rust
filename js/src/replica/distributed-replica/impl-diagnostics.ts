@@ -230,7 +230,7 @@ export function retireDiagnosticLayer(
 	host: DiagnosticsHost,
 	id: string,
 	action: 'retired' | 'rejected',
-	receiptState: 'projected' | 'rejected',
+	receiptState: 'atomic' | 'rejected',
 	receipt?: OptimisticReceiptState
 ): void {
 	const layers = host.diagnosticLayers;

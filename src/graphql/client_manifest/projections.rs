@@ -106,7 +106,10 @@ pub(super) fn command_projection_extension(
     let mut slot_origins = Vec::new();
     for owner in &surface.projectors {
         for modeled in &owner.modeled {
-            if !modeled.is_causally_eligible() {
+            // Preview composition uses portable mutation IR for both Eventual
+            // and Direct placements. Async causal obligations still use
+            // `is_causally_eligible` (Eventual-only) elsewhere.
+            if !modeled.is_preview_eligible() {
                 continue;
             }
             let Some(program) = modeled.selected_program() else {
@@ -1560,10 +1563,17 @@ mod tests {
     }
 
     #[test]
-    fn direct_bindings_export_inventory_without_an_executable_program() {
-        let surface = surface_with_modeled([modeled(6, ProjectionPlacement::Direct, None)]);
+    fn direct_bindings_export_program_and_command_previews() {
+        // Same mutation IR as eventual; server apply site is the command handler
+        // (Projected). Client still composes .applies previews from the program.
+        let selector = typed_selector::<PreviewA>();
+        let surface = surface_with_modeled([modeled(
+            6,
+            ProjectionPlacement::Direct,
+            Some(selected_program("direct-preview", [selector])),
+        )]);
         let (programs, bindings) = projection_manifest(&surface).unwrap();
-        assert!(programs.is_empty());
+        assert_eq!(programs.len(), 1);
         assert_eq!(bindings.len(), 1);
         assert_eq!(bindings[0].placement, ClientProjectionPlacement::Direct);
 
@@ -1577,12 +1587,21 @@ mod tests {
                     CommandProjectionPreviewSource::input(["value"]),
                 ),
         );
-        assert!(
-            command_projection_extension(&command, &surface, &[])
-                .unwrap()
-                .is_none(),
-            "direct projections are reconciled by the projected response, not event previews"
-        );
+        let projection = command_projection_extension(&command, &surface, &[])
+            .unwrap()
+            .expect("direct placement still exports applies previews");
+        assert_eq!(projection.event_set.len(), 1);
+        assert_eq!(projection.preview_occurrences.len(), 1);
+        assert_eq!(projection.program_arms.len(), 1);
+    }
+
+    #[test]
+    fn direct_binding_without_selected_program_exports_inventory_only() {
+        let surface = surface_with_modeled([modeled(7, ProjectionPlacement::Direct, None)]);
+        let (programs, bindings) = projection_manifest(&surface).unwrap();
+        assert!(programs.is_empty());
+        assert_eq!(bindings.len(), 1);
+        assert_eq!(bindings[0].placement, ClientProjectionPlacement::Direct);
     }
 
     #[test]

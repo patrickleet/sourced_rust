@@ -535,8 +535,12 @@ pub(crate) fn compile_command_preview(
             .find(|binding| {
                 binding.program_id == program_id
                     && binding.state == ManifestProjectionBindingState::Active
-                    && binding.placement == ManifestProjectionPlacement::Eventual
                     && binding.execution_class == ManifestProjectionExecutionClass::Causal
+                    && matches!(
+                        binding.placement,
+                        ManifestProjectionPlacement::Eventual
+                            | ManifestProjectionPlacement::Direct
+                    )
             })
             .expect("manifest validation proved one eligible binding");
         identities.push(PreviewProjectionIdentity {
@@ -1851,7 +1855,7 @@ mod tests {
                 version: 2,
                 consistency: ManifestCommandConsistency {
                     version: 1,
-                    kind: ManifestConsistencyKind::Causal,
+                    kind: ManifestConsistencyKind::Eventual,
                 },
                 direct_projection: None,
                 input_defaults: None,

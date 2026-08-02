@@ -1,7 +1,7 @@
 //! Command: `blob.move` — direction up|down|left|right.
 
 use blob_domain::{BlobGame, BlobGameState, Direction};
-use distributed::graphql::{PreparedCommand, Projected};
+use distributed::graphql::{PreparedCommand, Atomic};
 use distributed::microsvc::{CausalCommandContext, HandlerError};
 use e2e_projections::save_blob_game;
 use e2e_readmodels::BlobGames;
@@ -20,7 +20,7 @@ pub struct BlobMoveInput {
 pub async fn handle(
     ctx: &CausalCommandContext<'_, BlobGame>,
     input: BlobMoveInput,
-) -> Result<PreparedCommand<Projected<BlobGames>>, HandlerError> {
+) -> Result<PreparedCommand<Atomic<BlobGames>>, HandlerError> {
     let owner = ctx.user_id()?.to_string();
     let dir = Direction::parse(&input.direction).ok_or_else(|| {
         HandlerError::Rejected(format!(
@@ -43,5 +43,5 @@ pub async fn handle(
     repo.readmodel(row)
         .publish_events()
         .commit(game)?
-        .projected()
+        .atomic()
 }

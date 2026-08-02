@@ -408,8 +408,8 @@ fn command_type_field_json(field: &ManifestTypeField) -> JsonValue {
 fn consistency_label(kind: ManifestConsistencyKind) -> &'static str {
     match kind {
         ManifestConsistencyKind::Succeeded => "succeeded",
-        ManifestConsistencyKind::Causal => "causal",
-        ManifestConsistencyKind::Projected => "projected",
+        ManifestConsistencyKind::Eventual => "eventual",
+        ManifestConsistencyKind::Atomic => "atomic",
     }
 }
 

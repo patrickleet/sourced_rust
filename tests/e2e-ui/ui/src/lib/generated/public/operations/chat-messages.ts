@@ -17,7 +17,7 @@ export type Operation_ChatMessages_Data = {
       readonly "user_id": string;
       readonly "display_name": string;
       readonly "email": string;
-    };
+    } | null;
   }[];
 };
 
@@ -337,7 +337,7 @@ export const Operation_ChatMessages: ReplicaOperationArtifact<Operation_ChatMess
             "responseKey": "author",
             "field": "author",
             "cardinality": "one",
-            "nullable": false,
+            "nullable": true,
             "dependencies": [
               "auth_users",
               "chat_messages"
@@ -420,7 +420,7 @@ export const Operation_ChatMessages: ReplicaOperationArtifact<Operation_ChatMess
   ],
   "protocol": {
     "version": 1,
-    "schemaHash": "sha256:dbcac3b0a98f6be6c99f7df770ec477d02a2292a8fe9f56f7c6470346f1683ac",
+    "schemaHash": "sha256:38f1e9dc9669426ed5a3bcc8fcef21f4414434abe4397d55bb524d2c2a7755d6",
     "surface": {
       "kind": "application",
       "name": "e2e-ui-public",
