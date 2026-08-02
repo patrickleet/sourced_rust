@@ -12,6 +12,7 @@ import {
 } from '../dist/sveltekit/index.js';
 import { getAllContexts } from 'svelte';
 import { render } from 'svelte/server';
+import { COMMAND_CONSISTENCY } from './fixtures/command-protocol.mjs';
 import {
 	assertReplicaAdapterConformance,
 	ControlledReplicaTransport,
@@ -438,7 +439,7 @@ test('Svelte composition shares one diagnostics sink with operations and generat
 				])
 			})
 		}),
-		consistency: 'succeeded',
+		consistency: COMMAND_CONSISTENCY.SUCCEEDED,
 		effects: Object.freeze({
 			version: 1,
 			operations: Object.freeze([

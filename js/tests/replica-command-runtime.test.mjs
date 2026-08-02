@@ -15,6 +15,11 @@ import {
 	replicaRecordKey,
 	ReplicaCommandContractError
 } from '../dist/replica/index.js';
+import {
+	COMMAND_CONSISTENCY,
+	COMMAND_STATE,
+	commandReceipt
+} from './fixtures/command-protocol.mjs';
 
 const HASH_A = `sha256:${'a'.repeat(64)}`;
 const HASH_B = `sha256:${'b'.repeat(64)}`;
@@ -236,7 +241,7 @@ function artifact(options = {}) {
 		}),
 		input: Object.freeze({ kind: 'object', definition: TodoInput }),
 		output: Object.freeze({ kind: 'object', definition: ResultOutput }),
-		consistency: options.consistency ?? 'eventual',
+		consistency: options.consistency ?? COMMAND_CONSISTENCY.EVENTUAL,
 		...(options.modeled === false ? {} : { projection: projection(operation) }),
 		...(options.directProjection === undefined
 			? {}
@@ -267,7 +272,7 @@ function directProjectionArtifact() {
 	return Object.freeze({
 		...artifact({
 			name: 'todo.project',
-			consistency: 'atomic',
+			consistency: COMMAND_CONSISTENCY.ATOMIC,
 			modeled: false,
 			directProjection: Object.freeze({
 				topology: Object.freeze({
@@ -374,18 +379,18 @@ function deltaMutation(request, options = {}) {
 }
 
 function commandMetadata(request, options = {}) {
-	const state = options.state ?? 'succeeded_pending_projection';
+	const state = options.state ?? COMMAND_STATE.PENDING_PROJECTION;
 	const causationId = options.causationId ?? `cause:${request.commandId}`;
 	if (state === 'in_progress' && options.projection === false) {
-		return {
+		return commandReceipt({
 			commandId: request.commandId,
 			causationId,
 			state,
-			consistency: options.consistency ?? 'eventual',
+			consistency: options.consistency ?? COMMAND_CONSISTENCY.EVENTUAL,
 			expects: [],
 			observations: [],
 			records: []
-		};
+		});
 	}
 	const obligations = Array.from(
 		{ length: options.obligations ?? 1 },
@@ -447,11 +452,11 @@ function commandMetadata(request, options = {}) {
 		obligations,
 		revalidate: options.revalidate ?? false
 	};
-	return {
+	return commandReceipt({
 		commandId: request.commandId,
 		causationId,
 		state,
-		consistency: options.consistency ?? 'eventual',
+		consistency: options.consistency ?? COMMAND_CONSISTENCY.EVENTUAL,
 		expects: obligations.map((obligation) => ({
 			projection: PROGRAM,
 			model: obligation.model,
@@ -460,7 +465,7 @@ function commandMetadata(request, options = {}) {
 		observations: options.observations ?? [],
 		records: options.records ?? [],
 		projection: projectionMetadata
-	};
+	});
 }
 
 function envelope(request, options = {}) {
@@ -927,7 +932,7 @@ test('draining lifecycle status revalidates without applying old-scope delta and
 		commandId: COMMAND_A,
 		causationId: `cause:${COMMAND_A}`,
 		state,
-		consistency: 'eventual',
+		consistency: COMMAND_CONSISTENCY.EVENTUAL,
 		projectionDisposition: 'revalidate',
 		expects: [],
 		observations: [],
@@ -1030,7 +1035,7 @@ test('generated Draining command handles a fresh succeeded response through curr
 		commandId,
 		causationId: `cause:${commandId}`,
 		state: 'succeeded',
-		consistency: 'eventual',
+		consistency: COMMAND_CONSISTENCY.EVENTUAL,
 		projectionDisposition: 'revalidate',
 		expects: [],
 		observations: [],
@@ -1134,7 +1139,7 @@ test('draining lifecycle live frames keep polling while pending and retire only 
 		commandId: commandRequest.commandId,
 		causationId: `cause:${commandRequest.commandId}`,
 		state,
-		consistency: 'eventual',
+		consistency: COMMAND_CONSISTENCY.EVENTUAL,
 		projectionDisposition: 'revalidate',
 		expects: [],
 		observations: [],
@@ -1813,7 +1818,7 @@ test('direct Atomic results retain the canonical record-clock path', async () =>
 					commandId: request.commandId,
 					causationId: `cause:${request.commandId}`,
 					state: 'atomic',
-					consistency: 'atomic',
+					consistency: COMMAND_CONSISTENCY.ATOMIC,
 					expects: [],
 					observations: [],
 					records: [
@@ -2507,7 +2512,7 @@ test('Atomic with portable preview IR does not require an eventual projection-de
 	const directWithPreview = Object.freeze({
 		...artifact({
 			name: 'todo.project',
-			consistency: 'atomic',
+			consistency: COMMAND_CONSISTENCY.ATOMIC,
 			modeled: true,
 			directProjection: Object.freeze({
 				topology: Object.freeze({
@@ -2538,7 +2543,7 @@ test('Atomic with portable preview IR does not require an eventual projection-de
 							commandId: request.commandId,
 							causationId: `cause:${request.commandId}`,
 							state: 'atomic',
-							consistency: 'atomic',
+							consistency: COMMAND_CONSISTENCY.ATOMIC,
 							expects: [],
 							observations: [],
 							records: [
@@ -2636,7 +2641,7 @@ async function directProjectionRuntime() {
 	const directArtifact = Object.freeze({
 		...artifact({
 			name: 'todo.project',
-			consistency: 'atomic',
+			consistency: COMMAND_CONSISTENCY.ATOMIC,
 			modeled: false,
 			directProjection: Object.freeze({
 				topology: Object.freeze({
@@ -2667,7 +2672,7 @@ async function directProjectionRuntime() {
 							commandId: request.commandId,
 							causationId: `cause:${request.commandId}`,
 							state: 'atomic',
-							consistency: 'atomic',
+							consistency: COMMAND_CONSISTENCY.ATOMIC,
 							expects: [],
 							observations: [],
 							records: [

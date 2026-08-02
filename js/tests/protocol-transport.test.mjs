@@ -9,6 +9,11 @@ import {
 	requestGraphql,
 	subscribe
 } from '@hops-ops/distributed';
+import {
+	COMMAND_CONSISTENCY,
+	COMMAND_STATE,
+	commandReceipt
+} from './fixtures/command-protocol.mjs';
 
 function distributedEnvelope() {
 	return {
@@ -17,11 +22,11 @@ function distributedEnvelope() {
 		authorizationGeneration: 'auth-1',
 		cacheScope: 'opaque:principal-and-grants',
 		operation: 'sha256:operation',
-		command: {
+		command: commandReceipt({
 			commandId: 'opaque-command-id',
 			causationId: 'opaque-causation-id',
-			state: 'succeeded_pending_projection',
-			consistency: 'eventual',
+			state: COMMAND_STATE.PENDING_PROJECTION,
+			consistency: COMMAND_CONSISTENCY.EVENTUAL,
 			expects: [
 				{
 					projection: 'todos',
@@ -46,7 +51,7 @@ function distributedEnvelope() {
 					tombstone: false
 				}
 			]
-		},
+		}),
 		snapshot: {
 			scopeToken: 'opaque:query-snapshot',
 			recordsComplete: true,
@@ -99,6 +104,11 @@ function responseExtensions() {
 }
 
 test('protocol parser validates receipts while retaining future metadata opaquely', () => {
+	assert.deepEqual(COMMAND_CONSISTENCY, {
+		SUCCEEDED: 'succeeded',
+		EVENTUAL: 'eventual',
+		ATOMIC: 'atomic'
+	});
 	const extensions = parseGraphqlResponseExtensions(responseExtensions());
 	assert.deepEqual(extensions, responseExtensions());
 	assert.equal(

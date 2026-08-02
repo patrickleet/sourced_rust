@@ -7,6 +7,10 @@ import {
 	ReplicaCommandContractError,
 	verifyReplicaCommandReceipt
 } from '../dist/replica/index.js';
+import {
+	COMMAND_CONSISTENCY,
+	commandReceipt
+} from './fixtures/command-protocol.mjs';
 
 const HASH_A = `sha256:${'a'.repeat(64)}`;
 const HASH_B = `sha256:${'b'.repeat(64)}`;
@@ -243,7 +247,7 @@ function baseArtifact(overrides = {}) {
 				{ path: ['id'], generator: 'uuid_v7' }
 			]
 		},
-		consistency: 'eventual',
+		consistency: COMMAND_CONSISTENCY.EVENTUAL,
 		projection: baseProjection(),
 		revalidation: {
 			version: 1,
@@ -259,7 +263,7 @@ function baseArtifact(overrides = {}) {
 function projectedArtifact(directOverrides = {}) {
 	return baseArtifact({
 		output: PROJECTED_OUTPUT,
-		consistency: 'atomic',
+		consistency: COMMAND_CONSISTENCY.ATOMIC,
 		projection: undefined,
 		directProjection: {
 			topology: {
@@ -277,7 +281,7 @@ function projectedArtifact(directOverrides = {}) {
 }
 
 function receipt(prepared, state, overrides = {}) {
-	return {
+	return commandReceipt({
 		commandId: prepared.commandId,
 		causationId: 'opaque-causation',
 		state,
@@ -286,7 +290,7 @@ function receipt(prepared, state, overrides = {}) {
 		observations: [],
 		records: [],
 		...overrides
-	};
+	});
 }
 
 function expectation(projection, model, token) {
@@ -459,7 +463,7 @@ test('none inputs and typed JSON fields produce exact canonical transport variab
 				'mutation Client_rebuildTodos($commandId: ID!) { rebuildTodos(commandId: $commandId) }',
 			input: { kind: 'none' },
 			inputDefaults: undefined,
-			consistency: 'succeeded',
+			consistency: COMMAND_CONSISTENCY.SUCCEEDED,
 			projection: undefined,
 			revalidation: {
 				version: 1,
@@ -483,7 +487,7 @@ test('none inputs and typed JSON fields produce exact canonical transport variab
 				'mutation Client_importTodos($commandId: ID!, $input: ImportTodosInput!) { importTodos(commandId: $commandId, input: $input) }',
 			input: JSON_IMPORT_INPUT,
 			inputDefaults: undefined,
-			consistency: 'succeeded',
+			consistency: COMMAND_CONSISTENCY.SUCCEEDED,
 			projection: undefined,
 			revalidation: {
 				version: 1,
@@ -513,7 +517,7 @@ test('none inputs and typed JSON fields produce exact canonical transport variab
 						'mutation Client_importTodos($commandId: ID!, $input: ImportTodosInput!) { importTodos(commandId: $commandId, input: $input) }',
 					input: JSON_IMPORT_INPUT,
 					inputDefaults: undefined,
-					consistency: 'succeeded',
+					consistency: COMMAND_CONSISTENCY.SUCCEEDED,
 					projection: undefined,
 					revalidation: {
 						version: 1,
@@ -1000,7 +1004,7 @@ test('modeled receipts defer without a delta and take obligations from server me
 		() =>
 			verifyReplicaCommandReceipt(prepared, {
 				...receipt(prepared, 'succeeded_pending_projection'),
-				consistency: 'succeeded'
+				consistency: COMMAND_CONSISTENCY.SUCCEEDED
 			}),
 		(error) =>
 			error instanceof ReplicaCommandContractError &&
@@ -1010,7 +1014,7 @@ test('modeled receipts defer without a delta and take obligations from server me
 
 test('unavailable confirmation contracts always force conservative revalidation', () => {
 	const artifact = baseArtifact({
-		consistency: 'succeeded',
+		consistency: COMMAND_CONSISTENCY.SUCCEEDED,
 		projection: undefined,
 		revalidation: {
 			version: 1,
@@ -1093,7 +1097,7 @@ test('revalidation disposition without projection or command-level capability fa
 
 test('succeeded commands without finite confirmations require canonical revalidation', () => {
 	const invalid = baseArtifact({
-		consistency: 'succeeded',
+		consistency: COMMAND_CONSISTENCY.SUCCEEDED,
 		projection: undefined
 	});
 	const input = { meta: { count: 1 }, title: 'No finite fence' };
@@ -1113,7 +1117,7 @@ test('succeeded commands without finite confirmations require canonical revalida
 	);
 
 	const valid = baseArtifact({
-		consistency: 'succeeded',
+		consistency: COMMAND_CONSISTENCY.SUCCEEDED,
 		projection: undefined,
 		revalidation: {
 			...invalid.revalidation,

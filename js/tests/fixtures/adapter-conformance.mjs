@@ -4,6 +4,7 @@ import {
 	createDistributedReplica,
 	createReplicaCommandRuntime
 } from '../../dist/replica/index.js';
+import { COMMAND_CONSISTENCY } from './command-protocol.mjs';
 
 export const REACT_FIXTURE_SCHEMA = `sha256:${'a'.repeat(64)}`;
 export const REACT_FIXTURE_SURFACE = Object.freeze({
@@ -48,7 +49,7 @@ const RequiredRevalidationCommand = Object.freeze({
 			])
 		})
 	}),
-	consistency: 'succeeded',
+	consistency: COMMAND_CONSISTENCY.SUCCEEDED,
 	effects: Object.freeze({
 		version: 1,
 		operations: Object.freeze([]),
