@@ -497,17 +497,19 @@ where
                 .field_name("blob_games_move")
                 .roles(app_roles)
                 .emits(distributed::events![BlobMovedDomainEvent])
-                // Identity for preview binding; board fields come back Projected.
+                // Same client path as todos/chat: `.applies` maps command input
+                // into the optimistic layer. Client fills board fields from the
+                // pure simulate_move twin; server recomputes via domain.
                 .applies(distributed::state_preview! {
                     BlobMovedDomainEvent => blob_domain::BlobGameState {
                         game_id: input.game_id,
                         owner_id: trusted("x-user-id", "string"),
-                        score: unknown,
-                        player_dead: unknown,
-                        current_level: unknown,
-                        current_level_completed: unknown,
-                        map_json: unknown,
-                        status: unknown,
+                        score: input.score,
+                        player_dead: input.player_dead,
+                        current_level: input.current_level,
+                        current_level_completed: input.current_level_completed,
+                        map_json: input.map_json,
+                        status: input.status,
                     }
                 }),
         )

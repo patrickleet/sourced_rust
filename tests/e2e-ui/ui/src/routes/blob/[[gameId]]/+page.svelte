@@ -4,28 +4,25 @@
 	 *
 	 * - URL (`/blob` | `/blob/{gameId}`) selects which game is active.
 	 * - Board and history derive from `BlobGames.use()`.
-	 * - Commands are Atomic: same mutation IR as eventual, applied in the
-	 *   command handler; the response row is written into the replica before
-	 *   await resolves (`.applies` previews paint when known fields allow).
+	 * - Commands are Atomic (same client optimism path as Eventual): `.applies`
+	 *   paints from command input; the handler applies the same mutation IR and
+	 *   the response row seals before await resolves.
 	 */
 	import { onMount } from 'svelte';
 	import { goto } from '$app/navigation';
 	import { page } from '$app/state';
 	import { BlobGames, useCommands } from '$distributed';
+	import {
+		parseBoard,
+		simulateMove,
+		SimulateMoveError,
+		TILE,
+		type Direction
+	} from '$lib/blob/simulate-move';
 	import { Button } from '$lib/components/shared/ui';
 	import { AppPage, InlineAlert, PageHeader } from '$lib/components/product';
 	import { HowItsBuilt } from '$lib/components/walkthrough';
 	import { blobWalkthrough } from '$lib/walkthrough';
-
-	const TILE = {
-		player: 9,
-		hole: 0,
-		unvisited: 1,
-		visited: 2,
-		deadBySuicide: 3,
-		deadByHole: 4
-	} as const;
-	type Direction = 'up' | 'down' | 'left' | 'right';
 
 	let { data } = $props();
 	let actionError = $state<string | null>(null);
@@ -52,13 +49,7 @@
 	const board = $derived.by(() => {
 		if (!selected) return [];
 		try {
-			const value = JSON.parse(selected.map_json || '[]') as unknown;
-			return Array.isArray(value) &&
-				value.every(
-					(row) => Array.isArray(row) && row.every((cell) => typeof cell === 'number')
-				)
-				? (value as number[][])
-				: [];
+			return parseBoard(selected.map_json || '[]');
 		} catch {
 			return [];
 		}
@@ -148,12 +139,31 @@
 			actionError = null;
 			return;
 		}
+		let preview;
+		try {
+			// Pure domain twin → command input (same pattern as chat body /
+			// created_at). `.applies` maps these into the optimistic layer.
+			preview = simulateMove(board, score, direction);
+		} catch (error) {
+			if (error instanceof SimulateMoveError) {
+				actionError = null;
+				return;
+			}
+			throw error;
+		}
 		commandPending = true;
 		actionError = null;
 		try {
-			// Same mutation IR as eventual projection; applied in the handler.
-			// Response row is written into the replica before this await settles.
-			await commands.blob.move({ game_id: selected.game_id, direction });
+			await commands.blob.move({
+				game_id: selected.game_id,
+				direction,
+				map_json: preview.map_json,
+				score: preview.score,
+				player_dead: preview.player_dead,
+				current_level: currentLevel,
+				current_level_completed: preview.level_complete,
+				status: preview.status
+			});
 		} catch (error) {
 			actionError = error instanceof Error ? error.message : 'Move failed';
 		} finally {
@@ -221,8 +231,9 @@
 				title="Blob Game"
 			>
 				Board and history render from the same generated <code>BlobGames</code>
-				operation. Atomic commands apply the same mutation IR in the handler
-				and return the row — the replica updates before the call resolves.
+				operation. Moves use the same client optimism path as todos/chat
+				(<code>.applies</code> from command input); the handler applies the
+				same mutation IR and seals the atomic row before await resolves.
 			</PageHeader>
 			<Button
 				type="button"

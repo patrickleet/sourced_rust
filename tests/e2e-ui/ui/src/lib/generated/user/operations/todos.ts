@@ -311,7 +311,7 @@ export const Operation_Todos: ReplicaOperationArtifact<Operation_Todos_Data, Ope
   ],
   "protocol": {
     "version": 1,
-    "schemaHash": "sha256:1ed2eb0d47c6c18d52b214fca4103fb28dd28f9b6f7f709d41775e91eb795671",
+    "schemaHash": "sha256:081dd7d6d000e5add4aead3b9254442c5e89c076a6543c9550611d3dd6280642",
     "surface": {
       "kind": "application",
       "name": "e2e-ui",

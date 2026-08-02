@@ -10,7 +10,7 @@
       "admin"
     ]
   },
-  "schema_fingerprint": "sha256:99f8c2633da466ee562364a1f1a66294315e471a27f6d7ef9c39bbf9ab1dca02",
+  "schema_fingerprint": "sha256:07cb6726a98d4df6450e18869b6d37ea2ba5d9cf4d44b09875266b5239a4ee14",
   "protocol_fingerprint": "sha256:00fb342f3acb4dc1c1716a43cc3001c748d5f6c500ff831690d820e9e43e2782",
   "scalar_codecs": {
     "BigInt": "json_number_precision_limited",
@@ -24,7 +24,6 @@
     "Timestamptz": "string_unvalidated_timestamp"
   },
   "commands_requiring_revalidation": [
-    "blob.move",
     "blob.start",
     "blob.start_level",
     "todo.archive",
