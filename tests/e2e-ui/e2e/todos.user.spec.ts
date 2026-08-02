@@ -285,11 +285,10 @@ test.describe('todos (alice)', () => {
 			.locator('.panel')
 			.filter({ has: page.getByRole('heading', { name: /^open$/i }) })
 			.locator('.item', { hasText: title });
-		// Create upserts the record optimistically but list membership is
-		// authoritative (index write); the delayed route proves later complete/
-		// reopen transitions paint from the optimistic layer before the wire.
+		// Create must paint list membership optimistically under the delayed route
+		// (first-page offset insert + truncate). Assert before the wire returns.
+		await expect(openItem).toBeVisible({ timeout: 400 });
 		await createResponse;
-		await expect(openItem).toBeVisible({ timeout: 5_000 });
 		expect(
 			await page.locator('.board button:disabled').count(),
 			'routine command concurrency guards must not flash Todo row controls disabled'
