@@ -94,8 +94,7 @@ pub(crate) fn resolve_execution_authority(
     match requested.surface {
         ClientSurfaceIdentity::Role { name } => {
             // Anonymous role surface may be opened without asserted roles.
-            let allowed = name == anonymous
-                || principal_has_role(&asserted, &name);
+            let allowed = name == anonymous || principal_has_role(&asserted, &name);
             if !allowed {
                 return Err(());
             }
@@ -143,7 +142,15 @@ pub(crate) fn resolve_execution_authority(
 pub(crate) fn select_protocol_surface<'a>(
     runtime: &'a ProtocolRuntime,
     authority: &ExecutionAuthority,
-) -> Result<(ClientSurfaceIdentity, &'a ProtocolSurfaceInfo, &'a str, &'a [String]), ()> {
+) -> Result<
+    (
+        ClientSurfaceIdentity,
+        &'a ProtocolSurfaceInfo,
+        &'a str,
+        &'a [String],
+    ),
+    (),
+> {
     match &authority.surface {
         ClientSurfaceIdentity::Role { name } => {
             let info = runtime.roles.get(name).ok_or(())?;

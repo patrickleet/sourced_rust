@@ -44,7 +44,7 @@ pub(crate) use effects::{
     EffectRelationship,
 };
 pub use outcomes::{
-    Eventual, CommandConsistency, CommandOutcome, PrepareCommandError, PreparedCommand, Atomic,
+    Atomic, CommandConsistency, CommandOutcome, Eventual, PrepareCommandError, PreparedCommand,
     Succeeded,
 };
 pub(crate) use projection_obligations::{

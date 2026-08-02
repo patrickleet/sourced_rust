@@ -8,13 +8,11 @@ BEGIN
   FOR r IN
     SELECT c.conname
     FROM pg_constraint c
-    JOIN pg_class t ON c.conrelid = t.oid
-    WHERE t.relname = 'command_ledger'
+    WHERE c.conrelid = 'command_ledger'::regclass
       AND c.contype = 'c'
       AND (
         pg_get_constraintdef(c.oid) LIKE '%projected%'
         OR pg_get_constraintdef(c.oid) LIKE '%state IN%'
-        OR c.conname LIKE 'command_ledger%check%'
       )
   LOOP
     EXECUTE format('ALTER TABLE command_ledger DROP CONSTRAINT %I', r.conname);

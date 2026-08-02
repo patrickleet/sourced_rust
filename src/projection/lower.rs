@@ -503,6 +503,7 @@ pub struct ProjectionServerExecutorDescriptor {
     /// Canonical output inventory.
     pub outputs: ProjectionOutputInventory,
     selectors: Vec<ProjectionEventSelector>,
+    #[cfg_attr(not(feature = "graphql"), allow(dead_code))]
     unit_partition: bool,
     resolve: ProjectionResolver,
     lower: ProjectionLowerer,
@@ -515,6 +516,7 @@ impl ProjectionServerExecutorDescriptor {
             .any(|selector| selector.matches(occurrence))
     }
 
+    #[cfg(feature = "graphql")]
     pub(crate) fn has_unit_partition(&self) -> bool {
         self.unit_partition
     }

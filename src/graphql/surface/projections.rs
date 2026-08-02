@@ -289,6 +289,7 @@ impl SurfaceModeledProjection {
 
     /// Whether this exact live registration may validate causal work minted
     /// before or during a rollout.
+    #[cfg(feature = "graphql")]
     pub(crate) fn is_causal_evidence_eligible(&self) -> bool {
         matches!(
             self.state,
@@ -461,6 +462,7 @@ impl SurfaceModeledProjection {
         Some((self.raw_program.as_ref()?, self.raw_binding.as_ref()?))
     }
 
+    #[cfg(feature = "graphql")]
     pub(crate) fn server_executor(
         &self,
     ) -> Option<&crate::projection::lower::ProjectionServerExecutorDescriptor> {

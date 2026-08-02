@@ -4,6 +4,7 @@ use distributed::projection::lower::{
     ProjectionLoweringError,
 };
 use distributed::read_model::ReadModelWritePlanBuilder;
+#[cfg(feature = "sqlite")]
 use distributed::table::TableSchemaRegistry;
 use distributed::{
     Entity, InMemoryRepository, ProjectionArm, ProjectionEventSet, ProjectionExpression,

@@ -34,7 +34,7 @@ CREATE TABLE IF NOT EXISTS command_ledger (
     'retryable_unknown',
     'succeeded',
     'succeeded_pending_projection',
-    'atomic',
+    'projected',
     'rejected',
     'projection_failed',
     'expired'
@@ -57,7 +57,7 @@ CREATE TABLE IF NOT EXISTS command_ledger (
     (state IN (
         'succeeded',
         'succeeded_pending_projection',
-        'atomic',
+        'projected',
         'rejected',
         'projection_failed'
       )

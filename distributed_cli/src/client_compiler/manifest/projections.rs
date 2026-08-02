@@ -105,7 +105,7 @@ pub(crate) fn validate_projection_manifest(
             ));
         }
         // Direct may export the same portable program for `.applies` previews.
-        // Server apply site is still the command handler (Projected response);
+        // Server apply site is still the command handler (Atomic response);
         // client never runs this as an async eventual obligation.
         if binding.placement == ManifestProjectionPlacement::Direct
             && program_ids.contains(binding.program_id.as_str())
@@ -126,7 +126,7 @@ pub(crate) fn validate_projection_manifest(
 /// Active causal binding that may contribute client preview composition.
 ///
 /// Eventual: async projector path + local `.applies` previews.
-/// Direct: same mutation IR; handler-owned Projected apply; previews optional.
+/// Direct: same mutation IR; handler-owned Atomic apply; previews optional.
 fn is_preview_eligible_binding(binding: &ManifestProjectionBinding) -> bool {
     binding.state == ManifestProjectionBindingState::Active
         && binding.execution_class == ManifestProjectionExecutionClass::Causal

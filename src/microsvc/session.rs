@@ -107,16 +107,17 @@ impl Session {
 
     /// True when `role` is a member of the asserted set.
     pub fn has_role(&self, role: &str) -> bool {
-        self.roles().iter().any(|asserted| *asserted == role)
+        self.roles().contains(&role)
     }
 
     /// Singleton convenience: the sole asserted role, or `None` when the set
     /// is empty or multi-valued. Prefer [`roles`] / [`has_role`].
     pub fn role(&self) -> Option<&str> {
-        let Some(raw) = self.get(ROLE_KEY).or_else(|| self.get("X-Roles")) else {
-            return None;
-        };
-        let mut parts = raw.split(',').map(str::trim).filter(|part| !part.is_empty());
+        let raw = self.get(ROLE_KEY).or_else(|| self.get("X-Roles"))?;
+        let mut parts = raw
+            .split(',')
+            .map(str::trim)
+            .filter(|part| !part.is_empty());
         let first = parts.next()?;
         if parts.next().is_some() {
             None

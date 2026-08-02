@@ -412,8 +412,7 @@ pub use microsvc::{ROLE_KEY, USER_ID_KEY};
 // mount); commands predict events via `.emits`/`.preview`.
 pub use distributed_macros::{
     aggregate, command_input_defaults, digest, mutation, mutation_file, sourced, DomainEvent,
-    DomainState,
-    GraphqlInput, GraphqlOutput, ReadModel, Snapshot,
+    DomainState, GraphqlInput, GraphqlOutput, ReadModel, Snapshot,
 };
 
 // Re-export enqueue macro (requires "emitter" feature)

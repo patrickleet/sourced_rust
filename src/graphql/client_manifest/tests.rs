@@ -1,8 +1,9 @@
 use super::*;
 use crate::graphql::{
     build_surface, claim, col, rel, surface_for_application, surface_for_role, typed_command,
-    Eventual, GraphqlInputType, GraphqlOutputType, GraphqlTypeDef, GraphqlTypeField, PreparedCommand,
-    RoleGrant, Succeeded, SurfaceCommand, SurfaceOptions, SurfaceProjector, SurfaceTypeField,
+    Eventual, GraphqlInputType, GraphqlOutputType, GraphqlTypeDef, GraphqlTypeField,
+    PreparedCommand, RoleGrant, Succeeded, SurfaceCommand, SurfaceOptions, SurfaceProjector,
+    SurfaceTypeField,
 };
 use crate::microsvc::{CausalCommandContext, HandlerError, Routes, Service};
 use crate::table::{
@@ -760,7 +761,7 @@ fn role_manifest_is_deterministic_and_hides_denied_identity_and_commands() {
     assert_eq!(first.schema_fingerprint, second.schema_fingerprint);
     assert_eq!(
         first.schema_fingerprint,
-        "sha256:a3c6c2b019a334c393c6c97e7879d2de9830b48c4eaa002051035857a5c0dd81"
+        "sha256:d170cb2de47ed71c0127206a5a42970abff278cec2bcb494551da554053f3a83"
     );
     assert_eq!(
         first.protocol_fingerprint,
@@ -805,7 +806,7 @@ fn role_manifest_is_deterministic_and_hides_denied_identity_and_commands() {
         .iter()
         .find(|rel| rel.name == "owner")
         .unwrap();
-    assert!(!owner.nullable);
+    assert!(owner.nullable);
     assert_eq!(owner.key_mapping, RelationshipKeyMapping::Embedded);
     assert_eq!(owner.maintenance, ClientRelationshipMaintenance::Revalidate);
     assert_eq!(owner.dependencies, vec!["todos", "users"]);
@@ -1482,7 +1483,7 @@ fn filter_execution_limits_are_schema_fingerprinted_without_changing_protocol_ep
 }
 
 #[test]
-fn relationship_nullability_is_copied_from_the_authoritative_surface() {
+fn belongs_to_relationships_stay_nullable_independent_of_fk_storage() {
     let mut fingerprints = Vec::new();
     for nullable in [false, true] {
         let mut todo_schema = todos();
@@ -1508,7 +1509,7 @@ fn relationship_nullability_is_copied_from_the_authoritative_surface() {
             .find(|relationship| relationship.name == "owner")
             .expect("surface relationship")
             .nullable;
-        assert_eq!(surface_nullable, nullable);
+        assert!(surface_nullable);
 
         let manifest = client_manifest_from_surface(
             "todos-service",
@@ -1527,11 +1528,11 @@ fn relationship_nullability_is_copied_from_the_authoritative_surface() {
             .find(|relationship| relationship.name == "owner")
             .unwrap();
         assert_eq!(owner.nullable, surface_nullable);
-        assert_eq!(serde_json::to_value(owner).unwrap()["nullable"], nullable);
+        assert_eq!(serde_json::to_value(owner).unwrap()["nullable"], true);
     }
     assert_ne!(
         fingerprints[0], fingerprints[1],
-        "relationship nullability is part of the schema fingerprint"
+        "foreign-key storage nullability remains part of the schema fingerprint"
     );
 }
 

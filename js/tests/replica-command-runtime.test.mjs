@@ -1802,7 +1802,7 @@ test('delete remains a provisional tombstone while its causal obligation is pend
 	runtime.dispose();
 });
 
-test('direct Projected results retain the canonical record-clock path', async () => {
+test('direct Atomic results retain the canonical record-clock path', async () => {
 	const replica = new TestReplica();
 	const directArtifact = directProjectionArtifact();
 	const runtime = createReplicaCommandRuntime(
@@ -2170,7 +2170,7 @@ test('every modeled projection requires a coordinator before dispatch or layers'
 	assert.deepEqual(replica.semanticChanges, []);
 });
 
-test('unmodeled direct Projected commands do not require a revalidation coordinator', () => {
+test('unmodeled direct Atomic commands do not require a revalidation coordinator', () => {
 	const replica = new TestReplica();
 	replica.revalidate = undefined;
 	const runtime = createReplicaCommandRuntime(
@@ -2467,7 +2467,7 @@ test('commands fail before optimism when no authoritative scope is available', a
 });
 
 for (const scenario of ['older-row', 'newer-row', 'newer-tombstone']) {
-	test(`Projected direct path fences ${scenario}`, async () => {
+	test(`Atomic direct path fences ${scenario}`, async () => {
 		const { replica, runtime } = await directProjectionRuntime();
 		replica.engine.batch((writer) => {
 			if (scenario === 'newer-tombstone') {
@@ -2499,7 +2499,7 @@ for (const scenario of ['older-row', 'newer-row', 'newer-tombstone']) {
 	});
 }
 
-test('Projected with portable preview IR does not require a causal projection-delta response', async () => {
+test('Atomic with portable preview IR does not require an eventual projection-delta response', async () => {
 	// Direct commands may export the same mutation program for `.applies`
 	// previews. The response still seals via confirmDirectProjection only —
 	// no async projection-delta envelope.

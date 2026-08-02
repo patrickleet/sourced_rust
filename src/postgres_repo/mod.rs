@@ -49,6 +49,11 @@ static POSTGRES_MIGRATOR: LazyLock<Migrator> = LazyLock::new(|| {
             "projection protocol",
             include_str!("../../migrations/postgres/0003_projection_protocol.sql"),
         ),
+        (
+            4,
+            "command ledger atomic state",
+            include_str!("../../migrations/postgres/0004_command_ledger_atomic_state.sql"),
+        ),
     ])
 });
 const POSTGRES_BACKEND: &str = "postgres";

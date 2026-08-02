@@ -471,7 +471,7 @@ export async function assertReplicaAdapterConformance({ mount }) {
 		assert.equal(
 			currentTitle(adapter.getSnapshot()),
 			'atomic',
-			'Projected confirmation must atomically replace the pending layer'
+			'Atomic confirmation must replace the pending layer atomically'
 		);
 
 		await adapter.settle(() => {

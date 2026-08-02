@@ -314,7 +314,14 @@ fn es256_jwks_key_validates_token_when_allowed_by_default() {
 
     let session = OidcValidator::new(cfg).validate_and_map(&token).unwrap();
     assert_eq!(session.user_id(), Some("user-ec-001"));
-    assert!(session.get("x-roles").map(|r| r.split(",").any(|p| p == "customer")).unwrap_or(false), "expected role customer in x-roles: {:?}", session.get("x-roles"));
+    assert!(
+        session
+            .get("x-roles")
+            .map(|r| r.split(",").any(|p| p == "customer"))
+            .unwrap_or(false),
+        "expected role customer in x-roles: {:?}",
+        session.get("x-roles")
+    );
 }
 
 // ── F1 success via full validate_and_map + spoof headers ignored ────────────
@@ -342,7 +349,14 @@ fn f1_valid_jwt_maps_session_spoof_headers_ignored() {
     ]);
     let session = resolve_session_sync(&headers, &cfg).unwrap();
     assert_eq!(session.user_id(), Some("user-a-001"));
-    assert!(session.get("x-roles").map(|r| r.split(",").any(|p| p == "admin")).unwrap_or(false), "expected role admin in x-roles: {:?}", session.get("x-roles"));
+    assert!(
+        session
+            .get("x-roles")
+            .map(|r| r.split(",").any(|p| p == "admin"))
+            .unwrap_or(false),
+        "expected role admin in x-roles: {:?}",
+        session.get("x-roles")
+    );
     // Client spoof must not replace sub
     assert_ne!(session.user_id(), Some("evil"));
     let _ = &mut cfg;
@@ -357,7 +371,14 @@ fn f6_hybrid_missing_bearer_trusts_proxy_headers() {
     let headers = headers_from(&[("x-user-id", "gateway-user-9"), ("x-roles", "customer")]);
     let session = resolve_session_sync(&headers, &cfg).unwrap();
     assert_eq!(session.user_id(), Some("gateway-user-9"));
-    assert!(session.get("x-roles").map(|r| r.split(",").any(|p| p == "customer")).unwrap_or(false), "expected role customer in x-roles: {:?}", session.get("x-roles"));
+    assert!(
+        session
+            .get("x-roles")
+            .map(|r| r.split(",").any(|p| p == "customer"))
+            .unwrap_or(false),
+        "expected role customer in x-roles: {:?}",
+        session.get("x-roles")
+    );
 }
 
 // ── F7 Hybrid invalid Bearer → 401, no fallthrough ──────────────────────────
@@ -415,8 +436,14 @@ fn f10_trusted_proxy_strips_client_identity() {
     ]);
     let session = resolve_session_sync(&headers, &cfg).unwrap();
     assert!(session.user_id().is_none(), "x-user-id must be stripped");
-    assert!(session.get("x-roles").is_none(), "x-roles must be stripped under TrustedProxy");
-    assert!(session.roles().is_empty(), "asserted roles empty after strip");
+    assert!(
+        session.get("x-roles").is_none(),
+        "x-roles must be stripped under TrustedProxy"
+    );
+    assert!(
+        session.roles().is_empty(),
+        "asserted roles empty after strip"
+    );
     assert_eq!(session.get("x-request-id"), Some("req-1"));
 
     // Also exercise strip helper directly

@@ -856,19 +856,18 @@ impl GraphqlEngineBuilder {
                 } else {
                     format!("app:{application}")
                 };
-                let (authorization_fingerprint, claim_keys) = if registration.schema_roles.len()
-                    == 1
-                {
-                    role_authorization_info(&registration.schema_roles[0], &self.permissions)?
-                } else {
-                    // Multi-privilege: fingerprint the application surface grant
-                    // intersection under the synthetic privilege key.
-                    role_authorization_info_for_roles(
-                        &privilege_key,
-                        &registration.schema_roles,
-                        &self.permissions,
-                    )?
-                };
+                let (authorization_fingerprint, claim_keys) =
+                    if registration.schema_roles.len() == 1 {
+                        role_authorization_info(&registration.schema_roles[0], &self.permissions)?
+                    } else {
+                        // Multi-privilege: fingerprint the application surface grant
+                        // intersection under the synthetic privilege key.
+                        role_authorization_info_for_roles(
+                            &privilege_key,
+                            &registration.schema_roles,
+                            &self.permissions,
+                        )?
+                    };
                 // Ensure the privilege key has a role surface for projection
                 // visibility and a GraphQL schema when synthetic.
                 if registration.schema_roles.len() > 1 {

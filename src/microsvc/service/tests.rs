@@ -16,8 +16,10 @@ use crate::command_ledger::{
 use crate::graphql::command_contract::CommandConsistency;
 #[cfg(feature = "graphql")]
 use crate::graphql::identity::VerifiedPrincipal;
+#[cfg(all(feature = "graphql", feature = "sqlite"))]
+use crate::graphql::Eventual;
 use crate::graphql::{
-    typed_command, Eventual, GraphqlInputType, GraphqlOutputType, GraphqlTypeDef, GraphqlTypeField,
+    typed_command, GraphqlInputType, GraphqlOutputType, GraphqlTypeDef, GraphqlTypeField,
     PreparedCommand, Succeeded,
 };
 #[cfg(feature = "graphql")]
@@ -204,30 +206,23 @@ fn causal_direct_program(
         reason: e.to_string(),
     })?;
     let descriptor = crate::DomainEventDescriptor::state::<CausalDirectState>(event_name, 1);
-    let handler = bind_state_body_to_mutation::<CausalProjectionObligationView>(
-        &descriptor,
-        program,
-        "view",
-    )
-    .map_err(|e| crate::ProjectionProgramError::InvalidOperation {
-        operation: name.into(),
-        reason: e.to_string(),
-    })?;
-    compile_projection(name, version, crate::ProjectionPartition::Unit, [handler]).map_err(
-        |e| crate::ProjectionProgramError::InvalidOperation {
+    let handler =
+        bind_state_body_to_mutation::<CausalProjectionObligationView>(&descriptor, program, "view")
+            .map_err(|e| crate::ProjectionProgramError::InvalidOperation {
+                operation: name.into(),
+                reason: e.to_string(),
+            })?;
+    compile_projection(name, version, crate::ProjectionPartition::Unit, [handler]).map_err(|e| {
+        crate::ProjectionProgramError::InvalidOperation {
             operation: name.into(),
             reason: e.to_string(),
-        },
-    )
+        }
+    })
 }
 
 #[cfg(feature = "graphql")]
 fn causal_direct_v1_program() -> Result<crate::ProjectionProgram, crate::ProjectionProgramError> {
-    causal_direct_program(
-        "project_causal_direct",
-        1,
-        "causal.direct-recorded",
-    )
+    causal_direct_program("project_causal_direct", 1, "causal.direct-recorded")
 }
 
 #[cfg(feature = "graphql")]
@@ -331,15 +326,12 @@ fn causal_sibling_program() -> Result<crate::ProjectionProgram, crate::Projectio
         "causal.direct-sibling-recorded",
         1,
     );
-    let handler = bind_state_body_to_mutation::<CausalProjectionSiblingView>(
-        &descriptor,
-        program,
-        "view",
-    )
-    .map_err(|e| crate::ProjectionProgramError::InvalidOperation {
-        operation: "project_causal_direct_sibling".into(),
-        reason: e.to_string(),
-    })?;
+    let handler =
+        bind_state_body_to_mutation::<CausalProjectionSiblingView>(&descriptor, program, "view")
+            .map_err(|e| crate::ProjectionProgramError::InvalidOperation {
+                operation: "project_causal_direct_sibling".into(),
+                reason: e.to_string(),
+            })?;
     compile_projection(
         "project_causal_direct_sibling",
         1,
@@ -2702,10 +2694,7 @@ async fn projected_command_auto_binds_bootstraps_and_replays_exact_direct_eviden
         .await
         .expect("direct projected status should use ledger replay evidence");
     assert_eq!(direct_status.state, CausalCommandPublicState::Atomic);
-    assert_eq!(
-        direct_status.consistency,
-        Some(CommandConsistency::Atomic)
-    );
+    assert_eq!(direct_status.consistency, Some(CommandConsistency::Atomic));
     assert!(direct_status.obligations.is_empty());
     assert!(direct_status.evidence.is_empty());
     let direct_status_evidence = direct_status

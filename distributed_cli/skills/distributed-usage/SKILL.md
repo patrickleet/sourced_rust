@@ -163,7 +163,7 @@ Rules that prevent real bugs:
 For a browser-facing GraphQL service, use the typed causal command path instead
 of exposing a raw `Context`/`serde_json::Value` handler as the mutation contract:
 
-- declare `.typed_command(typed_command::<Input, Succeeded<Payload> | Causal<Payload> | Projected<Model>>(...))`
+- declare `.typed_command(typed_command::<Input, Succeeded<Payload> | Eventual<Payload> | Atomic<Model>>(...))`
   on the executable route;
 - implement the handler with `CausalCommandContext` and return a
   `PreparedCommand<_>` so the framework owns commit, ledger, outbox, and
@@ -298,9 +298,9 @@ Rules the fixture demonstrates:
 - **Owner from session**, never from untrusted create body
 - **One mutation IR, two apply sites:** Eventual projectors (event handlers)
   write todos/chat; Blob stages the same IR in the command handler and seals
-  `Projected` so the response can carry the row (impossible on an event handler)
+  `Atomic` so the response can carry the row (impossible on an event handler)
 - GraphQL row filter: `owner_id = claim(x-user-id)` for role `user`
-- **Typed GraphQL commands** (`Causal` / `Projected`) via the OIDC command
+- **Typed GraphQL commands** (`Eventual` / `Atomic`) via the OIDC command
   proxy; generic direct command POST routes are disabled
 - **Generated client**: `dctl client` produces the typed replica/query/command
   artifacts consumed by the SvelteKit app

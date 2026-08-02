@@ -46,10 +46,10 @@ export function verifyReplicaCommandReceipt<TInput, TOutput>(
 		}
 	} else if (receipt.projection === undefined) {
 		/*
-		 * Ship contract (see server routes: Projected never persists eventual
+		 * Ship contract (see server routes: Atomic never persists eventual
 		 * modeled projection metadata):
-		 * - Causal: response carries projection-delta (+ expects) when modeled.
-		 * - Projected: response carries typed row + direct `records`; optional
+		 * - Eventual: response carries projection-delta (+ expects) when modeled.
+		 * - Atomic: response carries typed row + direct `records`; optional
 		 *   `.applies` previews use the same IR but seal via the row, not a delta.
 		 */
 		if (prepared.consistency !== 'atomic') {

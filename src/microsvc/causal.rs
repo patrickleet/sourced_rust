@@ -23,7 +23,7 @@ use crate::graphql::command_contract::{
     validate_resolved_direct_plan, CommandCommitProofError, CommandOutcome, ProjectionCommitProof,
     ResolvedDirectProjectionTarget, TypedCommandContract,
 };
-use crate::graphql::{PrepareCommandError, PreparedCommand, Atomic};
+use crate::graphql::{Atomic, PrepareCommandError, PreparedCommand};
 use crate::outbox::{OutboxMessage, PreparedDomainEvent};
 use crate::projection::lower::{
     DirectCandidate, LoweredProjectionPlan, ProjectionDescriptor,
@@ -1292,9 +1292,8 @@ mod tests {
         workspace.stage(aggregate).unwrap();
         let mut parts = workspace.into_parts().unwrap();
 
-        let contract =
-            crate::graphql::typed_command::<TestInput, Atomic<TestView>>("test.project")
-                .into_contract();
+        let contract = crate::graphql::typed_command::<TestInput, Atomic<TestView>>("test.project")
+            .into_contract();
         parts.validate_prepared(&contract, &mut prepared).unwrap();
     }
 
@@ -1309,9 +1308,8 @@ mod tests {
             })
             .unwrap();
         let mut parts = workspace.into_parts().unwrap();
-        let contract =
-            crate::graphql::typed_command::<TestInput, Atomic<TestView>>("test.project")
-                .into_contract();
+        let contract = crate::graphql::typed_command::<TestInput, Atomic<TestView>>("test.project")
+            .into_contract();
 
         assert!(matches!(
             parts.validate_prepared(&contract, &mut prepared),
@@ -1341,9 +1339,8 @@ mod tests {
             .unwrap();
         workspace.stage_read_models(conflicting).unwrap();
         let mut parts = workspace.into_parts().unwrap();
-        let contract =
-            crate::graphql::typed_command::<TestInput, Atomic<TestView>>("test.project")
-                .into_contract();
+        let contract = crate::graphql::typed_command::<TestInput, Atomic<TestView>>("test.project")
+            .into_contract();
 
         assert!(matches!(
             parts.validate_prepared(&contract, &mut prepared),
@@ -1371,9 +1368,8 @@ mod tests {
         mutation
             .values
             .insert("title", RowValue::String("different".into()));
-        let contract =
-            crate::graphql::typed_command::<TestInput, Atomic<TestView>>("test.project")
-                .into_contract();
+        let contract = crate::graphql::typed_command::<TestInput, Atomic<TestView>>("test.project")
+            .into_contract();
 
         assert!(matches!(
             parts.validate_prepared(&contract, &mut prepared),
@@ -1388,10 +1384,8 @@ mod tests {
     }
 
     fn modeled_direct_contract() -> TypedCommandContract {
-        crate::graphql::typed_command::<TestInput, Atomic<ModeledDirectView>>(
-            "test.modeled-direct",
-        )
-        .into_contract()
+        crate::graphql::typed_command::<TestInput, Atomic<ModeledDirectView>>("test.modeled-direct")
+            .into_contract()
     }
 
     #[test]

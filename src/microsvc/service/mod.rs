@@ -44,12 +44,12 @@ pub(crate) use causal::{
     CausalCommandProjectionObligation, CausalCommandPublicState, CausalCommandPublicStatus,
     CausalCommandReceiptSource, CausalProjectionEvidenceState,
 };
+#[allow(unused_imports)] // public API surface for handler-owned projected commits
+pub use handlers::StagedProjectedRow;
 pub use handlers::{
     direct_read_model, CausalCommandContext, CausalCommitBuilder, CausalRepository,
     DirectReadModelProjection, PreparedCausalCommit, PreparedCommandHandler,
 };
-#[allow(unused_imports)] // public API surface for handler-owned projected commits
-pub use handlers::StagedProjectedRow;
 pub use request::{CommandRequest, CommandResponse};
 pub(crate) use routes::DynBusPublisher;
 pub use routes::{

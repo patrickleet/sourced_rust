@@ -18,7 +18,7 @@ epochs, and routes from its catalog.
 | Zitadel provider-event contract and `AuthUsers` mapping | Projection owner | Ingestor mapping tests |
 | Forward query relationships to `AuthUsers` | Read-model owner | Schema/storage-identity regression tests |
 | Explicit modeled projector event handlers (Eventual apply site) | Service owner | Handler-application and causal protocol tests |
-| Handler-owned `Projected` staging (Direct apply site; same mutation IR) | Service / command owner | Returning-row proof + client `confirmDirectProjection` |
+| Handler-owned `Atomic` staging (Direct apply site; same mutation IR) | Service / command owner | Returning-row proof + client `confirmDirectProjection` |
 | Projection source, owner, physical topology, route, and activation | Service deployment owner | Catalog validation and exact active-binding handshake |
 | Generated manifest/TypeScript/SDL | Client compiler owner | Generate then byte-for-byte check mode |
 | Projector checkpoints/failure rows | Projector runtime owner | Drain and replay observations |

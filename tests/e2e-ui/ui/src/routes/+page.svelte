@@ -29,8 +29,8 @@
 
 	const demos = [
 		{ href: '/chat', title: 'Lobby chat', tag: 'Live + anonymous', blurb: 'A shared room with SSR, live updates, and guest reads.' },
-		{ href: '/todos', title: 'Todos', tag: 'Causal', blurb: 'Ownership rules, optimistic commands, projector fill.' },
-		{ href: '/blob', tag: 'Projected', title: 'Blob game', blurb: 'Game moves with an atomic board in the response.' },
+		{ href: '/todos', title: 'Todos', tag: 'Eventual', blurb: 'Ownership rules, optimistic commands, projector fill.' },
+		{ href: '/blob', tag: 'Atomic', title: 'Blob game', blurb: 'Game moves with an atomic board in the response.' },
 		{ href: '/admin', title: 'Admin', tag: 'Surface', blurb: 'Elevated surface — separate client, more power.' },
 		{ href: '/session', title: 'Session', tag: 'OIDC', blurb: 'Who you are to the app: tokens, groups, roles.' }
 	];
@@ -122,7 +122,7 @@ mutation SaveTodo {
 pub async fn handle(
     ctx: &CausalCommandContext<'_, Todo>,
     input: TodoArchiveInput,
-) -> Result<PreparedCommand<Causal<TodoArchivePayload>>, HandlerError> {
+) -> Result<PreparedCommand<Eventual<TodoArchivePayload>>, HandlerError> {
     let owner = ctx.user_id()?.to_string();
     let mut todo = ctx.repo()
         .get(&input.todo_id).await?
@@ -130,7 +130,7 @@ pub async fn handle(
     todo.archive(&owner).map_err(rejected)?;
 
     let state = TodoState::from(&*todo);
-    ctx.repo().publish_events().commit(todo)?.causal(TodoArchivePayload {
+    ctx.repo().publish_events().commit(todo)?.eventual(TodoArchivePayload {
         todo_id: state.todo_id,
         status: state.status,
     })

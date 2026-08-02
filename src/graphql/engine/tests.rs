@@ -573,7 +573,10 @@ mod client_surface_parity_tests {
         dual.set("x-roles", "admin,user");
         dual.set("x-user-id", "person-1");
         let response = engine.execute(&dual, Request::new("{ __typename }")).await;
-        assert!(response.is_err(), "multi-role must name a surface: {response:?}");
+        assert!(
+            response.is_err(),
+            "multi-role must name a surface: {response:?}"
+        );
     }
 
     #[cfg(feature = "sqlite")]
@@ -661,12 +664,7 @@ mod client_surface_parity_tests {
         );
         // Wire roles are eligible; schema privilege is user-only so x-user-id
         // remains a trusted preset (portable owner-style policy).
-        let application_presets = &engine
-            .inner
-            .protocol
-            .as_ref()
-            .unwrap()
-            .applications["console"]
+        let application_presets = &engine.inner.protocol.as_ref().unwrap().applications["console"]
             .surface
             .trusted_presets;
         assert_eq!(
@@ -736,13 +734,7 @@ mod client_surface_parity_tests {
         );
         // Privilege pack is user for both openers (not admin unrestricted).
         assert_eq!(
-            engine
-                .inner
-                .protocol
-                .as_ref()
-                .unwrap()
-                .applications["console"]
-                .privilege_key,
+            engine.inner.protocol.as_ref().unwrap().applications["console"].privilege_key,
             "user"
         );
 
@@ -1818,29 +1810,29 @@ mod client_surface_parity_tests {
     #[cfg(feature = "sqlite")]
     const SQLITE_RESTRICTED_GOLDENS: ArtifactGoldens = ArtifactGoldens {
         manifest: "sha256:a2b97c4156fd9e6c99c3ad516af5cf2c57781fa4f13757902685989a691b2515",
-        static_sdl: "sha256:8a20c1fa94fff628c42a49105664ee74fb917ba85e63ca559d20719376c64b99",
-        runtime_sdl: "sha256:30b8a229a2670e974a623ccec5d514a08656d2b28935adf73d13d350c911fc19",
+        static_sdl: "sha256:6ac07aaa60a726bdde7c1632125a3ab933766931187654dacc2dd4ab19ffece1",
+        runtime_sdl: "sha256:fb41d43fa1b58fec7224d768124abc8bb0b30407e1ee56b44f620ddc8d8c0007",
     };
 
     #[cfg(feature = "sqlite")]
     const SQLITE_ADMIN_GOLDENS: ArtifactGoldens = ArtifactGoldens {
         manifest: "sha256:4619fb257bd0b3b0155ebdff5f34a8d15f6c23bc0fc8a99459e7d56aad444932",
-        static_sdl: "sha256:2fc19b61914de28ee914fa851fa4c9508d16883fd2979ae009865065ba0ffd20",
-        runtime_sdl: "sha256:384854eead7c691058b3098a049c1b1bbecd1438e05d3bf12fb5d6211f081b2b",
+        static_sdl: "sha256:4d7ba7651ff632d32e538a083165ff718e094858c6c5bdb2705d38d9f0665e2f",
+        runtime_sdl: "sha256:be0f13249ec0cb394457572097a1d201649deeec1eba9c980f48b1751a13062b",
     };
 
     #[cfg(feature = "postgres")]
     const POSTGRES_RESTRICTED_GOLDENS: ArtifactGoldens = ArtifactGoldens {
         manifest: "sha256:a2b97c4156fd9e6c99c3ad516af5cf2c57781fa4f13757902685989a691b2515",
-        static_sdl: "sha256:8a20c1fa94fff628c42a49105664ee74fb917ba85e63ca559d20719376c64b99",
-        runtime_sdl: "sha256:30b8a229a2670e974a623ccec5d514a08656d2b28935adf73d13d350c911fc19",
+        static_sdl: "sha256:6ac07aaa60a726bdde7c1632125a3ab933766931187654dacc2dd4ab19ffece1",
+        runtime_sdl: "sha256:fb41d43fa1b58fec7224d768124abc8bb0b30407e1ee56b44f620ddc8d8c0007",
     };
 
     #[cfg(feature = "postgres")]
     const POSTGRES_ADMIN_GOLDENS: ArtifactGoldens = ArtifactGoldens {
         manifest: "sha256:66cddbcf76eac385f94de011497fe4752f7fb6102de28c14c24d83c67367788b",
-        static_sdl: "sha256:a0e46c91321b65612079734417b15871aac9f8622396f086f154ba19cec2a934",
-        runtime_sdl: "sha256:8a3bb1c740de44c011c38fc0285f7aa2cd4dc251ff65bb26ef2eff434e9dfec7",
+        static_sdl: "sha256:d128621aea3ffa6c38abc44a9b7f3b2716aada4af4b579b10e7c415040281751",
+        runtime_sdl: "sha256:ae58e2ed718955a6d400197a4cfa2f363d3057c80c6f4e528d10615a3df804cb",
     };
 
     #[cfg(feature = "sqlite")]

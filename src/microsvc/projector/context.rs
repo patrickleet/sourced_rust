@@ -4,8 +4,11 @@ use std::pin::Pin;
 use std::sync::{Arc, Mutex};
 
 use crate::bus::Message;
+#[cfg(feature = "graphql")]
 use crate::projection_protocol::{
     ProjectionExecutionSnapshotBatch, ProjectionExecutionSnapshotBatchRequest,
+};
+use crate::projection_protocol::{
     ProjectionProtocolError, ProjectionProtocolStore, ProjectionQuerySnapshot,
     ProjectionQuerySnapshotRequest, ProjectionRecordScope, ProjectionWorkspace, RecordRevision,
     MAX_PROJECTION_QUERY_BATCH_ROWS,
@@ -62,6 +65,7 @@ pub(super) trait ProjectionSnapshotReader: Send + Sync {
         >,
     >;
 
+    #[cfg(feature = "graphql")]
     fn execution_snapshots<'a>(
         &'a self,
         request: &'a ProjectionExecutionSnapshotBatchRequest,
@@ -91,6 +95,7 @@ where
         Box::pin(self.projection_query_snapshot(request))
     }
 
+    #[cfg(feature = "graphql")]
     fn execution_snapshots<'a>(
         &'a self,
         request: &'a ProjectionExecutionSnapshotBatchRequest,
@@ -169,6 +174,7 @@ impl CausalProjectorContext {
         &self.causation_id
     }
 
+    #[cfg(feature = "graphql")]
     pub(crate) async fn apply_portable(
         &self,
         plan: crate::projection::lower::LoweredProjectionPlan,

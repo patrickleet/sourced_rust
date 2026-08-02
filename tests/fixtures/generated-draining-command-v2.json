@@ -39,7 +39,7 @@
   "protocol": {
     "operation": "sha256:bb3a777dd32f7d40cccc173fafdbc7464f5dc50a3d17587909689a880fb0205a",
     "protocolHash": "sha256:00fb342f3acb4dc1c1716a43cc3001c748d5f6c500ff831690d820e9e43e2782",
-    "schemaHash": "sha256:7f2f497eafc0542fe3a063b50c3e9ab2f118d122ca2e373aa04a01b11bec8410",
+    "schemaHash": "sha256:2a4fd759519caaa13088228accd4fad4df3a0bc1bd19d1a9be323ad58cab29c1",
     "surface": {
       "kind": "role",
       "name": "admin"

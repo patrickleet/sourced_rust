@@ -475,7 +475,7 @@ where
                 .field_name("blob_games_start")
                 .roles(app_roles)
                 .emits(distributed::events![BlobStartedDomainEvent])
-                // Same mutation IR as eventual. Projected waits for the handler
+                // Same mutation IR as eventual. Atomic waits for the handler
                 // row and returns it (confirmDirectProjection). `.applies` is
                 // optional pre-network shell — map_json is RNG server-side.
                 .applies(distributed::state_preview! {

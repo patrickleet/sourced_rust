@@ -71,6 +71,8 @@ struct MutationDeclaration {
     operations: Vec<MutationOpSyntax>,
 }
 
+type GraphqlFieldBinding = (Ident, Vec<Ident>);
+
 enum MutationOpSyntax {
     /// `upsert Model from input.root;`
     SugarUpsert { model: Path, input_root: Vec<Ident> },
@@ -86,13 +88,13 @@ enum MutationOpSyntax {
     /// `delete Model by_pk { field: input.path, ... };`
     DeleteByPk {
         model: Path,
-        keys: Vec<(Ident, Vec<Ident>)>,
+        keys: Vec<GraphqlFieldBinding>,
     },
     /// `update Model by_pk { key..., _set: { field: expr, ... } };`
     UpdateByPk {
         model: Path,
-        keys: Vec<(Ident, Vec<Ident>)>,
-        sets: Vec<(Ident, Vec<Ident>)>,
+        keys: Vec<GraphqlFieldBinding>,
+        sets: Vec<GraphqlFieldBinding>,
     },
     /// `insert Model one { object: input.root };`
     InsertOne {
@@ -175,10 +177,7 @@ impl Parse for MutationDeclaration {
 fn parse_graphql_token_document(input: ParseStream<'_>) -> Result<MutationDeclaration> {
     let mutation_kw: Ident = input.parse()?;
     if mutation_kw != "mutation" {
-        return Err(syn::Error::new(
-            mutation_kw.span(),
-            "expected `mutation`",
-        ));
+        return Err(syn::Error::new(mutation_kw.span(), "expected `mutation`"));
     }
     let name_ident: Ident = input.parse()?;
     let mut version: Option<u64> = None;
@@ -212,13 +211,8 @@ fn parse_graphql_token_document(input: ParseStream<'_>) -> Result<MutationDeclar
             "GraphQL-looking mutation body requires at least one operation",
         ));
     }
-    let name = LitStr::new(
-        &pascal_to_snake(&name_ident.to_string()),
-        name_ident.span(),
-    );
-    let version_lit = version.map(|v| {
-        LitInt::new(&v.to_string(), name_ident.span())
-    });
+    let name = LitStr::new(&pascal_to_snake(&name_ident.to_string()), name_ident.span());
+    let version_lit = version.map(|v| LitInt::new(&v.to_string(), name_ident.span()));
     Ok(MutationDeclaration {
         name: Some(name),
         version: version_lit,
@@ -239,7 +233,10 @@ fn parse_graphql_document(source: &str, span: proc_macro2::Span) -> Result<Mutat
         }
     }
     let tokens: TokenStream = cleaned.parse().map_err(|error| {
-        syn::Error::new(span, format!("invalid GraphQL-looking mutation tokens: {error}"))
+        syn::Error::new(
+            span,
+            format!("invalid GraphQL-looking mutation tokens: {error}"),
+        )
     })?;
     syn::parse2::<MutationDeclaration>(tokens).map_err(|error| {
         syn::Error::new(
@@ -289,14 +286,12 @@ fn parse_graphql_field_operation(input: ParseStream<'_>) -> Result<MutationOpSyn
     {
         let model = model_path_from_name(model, field.span())?;
         let object_root = parse_graphql_object_arg(&args)?;
-        return Ok(MutationOpSyntax::InsertOne {
-            model,
-            object_root,
-        });
+        return Ok(MutationOpSyntax::InsertOne { model, object_root });
     }
-    if let Some(model) = field_name.strip_prefix("delete_").and_then(|rest| {
-        rest.strip_suffix("_by_pk")
-    }) {
+    if let Some(model) = field_name
+        .strip_prefix("delete_")
+        .and_then(|rest| rest.strip_suffix("_by_pk"))
+    {
         let model = model_path_from_name(model, field.span())?;
         let keys = parse_graphql_key_args(&args)?;
         return Ok(MutationOpSyntax::DeleteByPk { model, keys });
@@ -327,7 +322,10 @@ fn parse_graphql_field_operation(input: ParseStream<'_>) -> Result<MutationOpSyn
 
 fn model_path_from_name(name: &str, span: proc_macro2::Span) -> Result<Path> {
     if name.is_empty() {
-        return Err(syn::Error::new(span, "model name missing from mutation field"));
+        return Err(syn::Error::new(
+            span,
+            "model name missing from mutation field",
+        ));
     }
     let ident = Ident::new(name, span);
     Ok(Path::from(ident))
@@ -352,7 +350,7 @@ fn parse_graphql_object_arg(input: ParseStream<'_>) -> Result<Vec<Ident>> {
     object_root.ok_or_else(|| input.error("upsert/insert requires `object: $input…`"))
 }
 
-fn parse_graphql_key_args(input: ParseStream<'_>) -> Result<Vec<(Ident, Vec<Ident>)>> {
+fn parse_graphql_key_args(input: ParseStream<'_>) -> Result<Vec<GraphqlFieldBinding>> {
     let mut keys = Vec::new();
     while !input.is_empty() {
         let name: Ident = input.parse()?;
@@ -371,7 +369,7 @@ fn parse_graphql_key_args(input: ParseStream<'_>) -> Result<Vec<(Ident, Vec<Iden
 
 fn parse_graphql_update_args(
     input: ParseStream<'_>,
-) -> Result<(Vec<(Ident, Vec<Ident>)>, Vec<(Ident, Vec<Ident>)>)> {
+) -> Result<(Vec<GraphqlFieldBinding>, Vec<GraphqlFieldBinding>)> {
     let mut keys = Vec::new();
     let mut sets = Vec::new();
     while !input.is_empty() {
@@ -398,9 +396,7 @@ fn parse_graphql_update_args(
         }
     }
     if keys.is_empty() || sets.is_empty() {
-        return Err(input.error(
-            "update_by_pk requires key fields and `_set: { field: $input… }`",
-        ));
+        return Err(input.error("update_by_pk requires key fields and `_set: { field: $input… }`"));
     }
     Ok((keys, sets))
 }

@@ -21,6 +21,7 @@ use super::errors::{
 };
 use super::handle::ProjectionRepairHandle;
 use super::registration::ProjectorHandlerFn;
+#[cfg(feature = "graphql")]
 use super::registration::{ModeledProjection, ModeledProjectorHandlerFn};
 
 pub(in crate::microsvc) type ProjectorDispatchFuture<'a> =
@@ -67,6 +68,7 @@ pub(super) struct RegisteredProjector<I> {
     pub(super) handle: Arc<ProjectorHandlerFn<I>>,
 }
 
+#[cfg(feature = "graphql")]
 pub(in crate::microsvc) struct RegisteredModeledProjector {
     pub(in crate::microsvc) compiled: CompiledProjectionTopology,
     pub(in crate::microsvc) change_epoch: ProjectionEpoch,
@@ -74,6 +76,7 @@ pub(in crate::microsvc) struct RegisteredModeledProjector {
     pub(in crate::microsvc) handle: Option<Arc<ModeledProjectorHandlerFn>>,
 }
 
+#[cfg(feature = "graphql")]
 impl<D> ErasedProjectorHandler<D> for RegisteredModeledProjector
 where
     D: CausalProjectionRouteDependencies + Send + Sync + 'static,

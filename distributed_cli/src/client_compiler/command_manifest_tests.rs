@@ -336,7 +336,7 @@ fn rejects_empty_outputs_and_ambiguous_command_type_namespaces() {
     };
     definition.name = "Todo".into();
     let error = validate(&non_projected_model_output)
-        .expect_err("only an exact Projected<T> output may reuse its model object type");
+        .expect_err("only an exact Atomic<T> output may reuse its model object type");
     assert_eq!(error.code, "client.manifest.command_type_namespace");
 }
 

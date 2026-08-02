@@ -890,7 +890,7 @@ export function createReplicaCommandRuntime<
 						 */
 						statusRequiresRevalidation = true;
 					} else if (prepared.consistency !== 'atomic') {
-						// Projected rows are confirmed on the mutation response,
+						// Atomic rows are confirmed on the mutation response,
 						// not via async projection-delta status envelopes.
 						const validated = validateProjectionForState(
 							prepared as ReplicaPreparedCommand<unknown, unknown>,
@@ -1369,7 +1369,7 @@ export function createReplicaCommandRuntime<
 		}
 		/*
 		 * Ship contract: Atomic seals from the atomic GraphQL row +
-		 * direct `records` (confirmDirectProjection). Causal applies
+		 * direct `records` (confirmDirectProjection). Eventual applies
 		 * projection-delta when present. Same portable IR for `.applies`
 		 * previews either way — different response proof by design.
 		 */
