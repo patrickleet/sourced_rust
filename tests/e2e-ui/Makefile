@@ -5,7 +5,7 @@
 #   make test         # offline unit/suite/UI structural
 #   make test-browser # Playwright UI e2e (needs make up + make run)
 
-.PHONY: all up down run run-api stop test test-domain test-suite \
+.PHONY: all up down run run-api stop test ci-offline test-domain test-suite \
 	test-browser test-browser-install js-install js-build ui-install ui-build ui-check ui-test \
 	gen-client check-client check clean help
 
@@ -100,6 +100,23 @@ stop:
 test: test-domain test-suite ui-install ui-build ui-check ui-test
 	@echo "OK — offline domain + suite + UI build + typecheck + structural tests"
 
+## CI-only orchestration: install/build shared JS prerequisites once, then overlap
+## independent Rust and UI pipelines without running UI writers concurrently.
+ci-offline: ui-install
+	@set -eu; \
+	status=0; \
+	$(MAKE) test-domain test-suite & rust_pid=$$!; \
+	( cd ui && \
+		$(NPM) run client:check && \
+		$(NPM) run build && \
+		$(NPM) run check && \
+		$(NPM) test \
+	) & ui_pid=$$!; \
+	wait $$rust_pid || status=$$?; \
+	wait $$ui_pid || status=$$?; \
+	[ $$status -eq 0 ] || exit $$status; \
+	echo "OK — generated drift + offline Rust/UI suites"
+
 test-domain:
 	cargo test -p todo-domain -p chat-domain $(CARGO_TEST_FLAGS)
 
@@ -159,6 +176,7 @@ help:
 	@echo "  make up         Postgres + Zitadel + OIDC bootstrap → e2e-ui.env"
 	@echo "  make run        API + UI (source e2e-ui.env when present)"
 	@echo "  make test       offline suite + UI structural"
+	@echo "  make ci-offline CI drift + offline suites with safe pipeline overlap"
 	@echo "  make gen-client      typed Service → generated user/admin clients"
 	@echo "  make check-client    verify generated artifacts byte-for-byte"
 	@echo "  make down       docker compose down"
