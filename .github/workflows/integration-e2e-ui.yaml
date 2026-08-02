@@ -42,10 +42,10 @@ jobs:
             js/package-lock.json
             tests/e2e-ui/ui/package-lock.json
 
-      # One Make invocation deduplicates js-build/ui-install prerequisites while
-      # retaining both byte-for-byte generated drift and the complete offline gate.
+      # Install/build shared JS prerequisites once, then overlap the independent
+      # Rust and UI pipelines while retaining byte-for-byte generated drift.
       - name: Verify generated artifacts and run offline suite
-        run: make check-client test
+        run: make ci-offline
 
   browser:
     name: e2e-ui Playwright (live stack)
