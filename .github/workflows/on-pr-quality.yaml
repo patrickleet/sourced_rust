@@ -3,6 +3,10 @@ name: Rust Quality Pipeline for PRs
 on:
   pull_request:
 
+concurrency:
+  group: ${{ github.workflow }}-${{ github.event.pull_request.number || github.ref }}
+  cancel-in-progress: true
+
 jobs:
   # Framework monorepo keeps its existing quality provider. The reusable
   # quality.yaml in this directory is the contract for *consumers* (domain

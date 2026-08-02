@@ -33,5 +33,10 @@ jobs:
       - name: Install dependencies
         run: npm ci
 
-      - name: Run package quality checks
+      - name: Run package quality checks on the minimum supported Node
+        if: matrix.node-version == '20'
         run: npm run quality
+
+      - name: Run package compatibility checks on current Node
+        if: matrix.node-version == '24'
+        run: npm run check && npm run pack:smoke && npm run publint
