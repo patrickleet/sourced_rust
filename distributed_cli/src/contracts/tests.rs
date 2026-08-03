@@ -1064,6 +1064,98 @@ fn migration_inventory_rejects_checksum_path_and_symlink_mutations() {
 }
 
 #[test]
+fn migration_inventory_redacts_sensitive_and_non_normal_paths() {
+    let (root, sqlite_sql, postgres_sql) = create_migration_fixture("inventory-path-redaction");
+    let inventory_path = root.path().join(MIGRATION_INVENTORY_PATH);
+    let unique_secret = "migration-path-secret-7f5e1c9b";
+    let mut sensitive: Value =
+        serde_json::from_slice(&fs::read(&inventory_path).expect("read inventory"))
+            .expect("inventory value");
+    sensitive["migrations"][0]["sqlite"]["path"] =
+        Value::String(format!("migrations/sqlite/password={unique_secret}.sql"));
+    let sensitive_json = serde_json::to_string(&sensitive).expect("sensitive path JSON");
+    let error = MigrationInventory::from_json_str(&sensitive_json)
+        .expect_err("credential-like path must fail safely");
+    for rendered in [
+        error.message().to_string(),
+        error.to_string(),
+        format!("{error:?}"),
+    ] {
+        assert!(
+            !rendered.contains(unique_secret),
+            "sensitive path leaked from error rendering: {rendered}"
+        );
+    }
+    write_json_value(&inventory_path, &sensitive);
+    let checked = check_migration_inventory(root.path());
+    for rendered in [
+        checked.human(),
+        checked.to_json().expect("sensitive diagnostic JSON"),
+        format!("{checked:?}"),
+    ] {
+        assert!(
+            !rendered.contains(unique_secret),
+            "sensitive path leaked from diagnostic rendering: {rendered}"
+        );
+    }
+
+    let traversal_sentinel = "migration-traversal-sentinel-3c2a8e1d";
+    let mut traversal = sensitive;
+    traversal["migrations"][0]["sqlite"]["path"] =
+        Value::String(format!("migrations/sqlite/../{traversal_sentinel}.sql"));
+    let traversal_error = MigrationInventory::from_json_str(
+        &serde_json::to_string(&traversal).expect("traversal path JSON"),
+    )
+    .expect_err("non-normal path must fail safely");
+    assert!(!traversal_error.message().contains(traversal_sentinel));
+    assert!(!format!("{traversal_error:?}").contains(traversal_sentinel));
+
+    let safe_relative = "migrations/sqlite/safe-relative-diagnostic.sql";
+    traversal["migrations"][0]["sqlite"]["path"] = Value::String(safe_relative.to_string());
+    MigrationInventory::from_json_str(
+        &serde_json::to_string(&traversal).expect("safe relative path JSON"),
+    )
+    .expect("safe relative path should remain structurally valid");
+    write_json_value(&inventory_path, &traversal);
+    let safe_error = MigrationInventory::from_repository_root(root.path())
+        .expect_err("missing safe relative path must be reported");
+    assert!(safe_error.message().contains(safe_relative));
+    let safe_checked = check_migration_inventory(root.path());
+    assert!(safe_checked.human().contains(safe_relative));
+    assert!(safe_checked
+        .to_json()
+        .expect("safe relative diagnostic JSON")
+        .contains(safe_relative));
+
+    write_migration_inventory(
+        root.path(),
+        &[migration_entry(
+            1,
+            "migrations/sqlite/0001_initial.sql",
+            &sqlite_sql,
+            "migrations/postgres/0001_initial.sql",
+            &postgres_sql,
+        )],
+    );
+    write_repository_file(
+        root.path(),
+        &format!("migrations/sqlite/password={unique_secret}.sql"),
+        b"CREATE TABLE secret_path (id INTEGER);\n",
+    );
+    let extra_checked = check_migration_inventory(root.path());
+    for rendered in [
+        extra_checked.human(),
+        extra_checked.to_json().expect("extra diagnostic JSON"),
+        format!("{extra_checked:?}"),
+    ] {
+        assert!(
+            !rendered.contains(unique_secret),
+            "sensitive extra path leaked from diagnostic rendering: {rendered}"
+        );
+    }
+}
+
+#[test]
 fn migration_inventory_rejects_json_nesting_before_parse_and_ignores_strings() {
     let nested_json = |count: usize| format!("{}0{}", "[".repeat(count), "]".repeat(count));
     let at_limit = format!(
@@ -1127,6 +1219,25 @@ fn migration_inventory_rejects_total_and_top_level_entry_floods() {
     assert!(!error
         .message()
         .contains(&root.path().to_string_lossy().to_string()));
+}
+
+#[test]
+fn migration_inventory_directory_diagnostics_are_deterministic() {
+    let (root, _, _) = create_migration_fixture("directory-order");
+    fs::create_dir(root.path().join("migrations/zzz-invalid"))
+        .expect("late invalid dialect directory");
+    fs::create_dir(root.path().join("migrations/aaa-invalid"))
+        .expect("early invalid dialect directory");
+
+    let first = check_migration_inventory(root.path());
+    let second = check_migration_inventory(root.path());
+    assert_eq!(first.human(), second.human());
+    assert_eq!(
+        first.to_json().expect("first diagnostic JSON"),
+        second.to_json().expect("second diagnostic JSON")
+    );
+    assert!(first.human().contains("migrations/aaa-invalid"));
+    assert!(!first.human().contains("migrations/zzz-invalid"));
 }
 
 fn write_json_value(path: &Path, value: &Value) {
