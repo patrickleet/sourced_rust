@@ -21,11 +21,18 @@ pub const MAX_CATALOG_BYTES: usize = 1024 * 1024;
 pub const MAX_CATALOG_ENTRIES: usize = 256;
 /// Maximum number of physical files walked by one catalog validation.
 pub const MAX_CATALOG_FILES: usize = 8_192;
+/// Maximum number of unique physical directories walked by one validation.
+pub const MAX_CATALOG_DIRECTORIES: usize = 2_048;
+/// Maximum number of physical directory entries inspected by one validation.
+pub const MAX_CATALOG_DIRECTORY_ENTRIES: usize = 4_096;
+/// Maximum physical directory nesting depth accepted during discovery.
+pub const MAX_CATALOG_DIRECTORY_DEPTH: usize = 64;
 /// Maximum matches permitted for one catalog source glob.
 pub const MAX_CATALOG_GLOB_MATCHES: usize = 2_048;
 
 const MAX_CATALOG_STRING_BYTES: usize = 4 * 1024;
-const MAX_CATALOG_JSON_DEPTH: usize = 24;
+/// Maximum JSON nesting depth accepted before typed catalog deserialization.
+pub const MAX_CATALOG_JSON_DEPTH: usize = 24;
 const MAX_CLIENT_DECLARATIONS: usize = 64;
 const MAX_CLIENT_DOCUMENTS: usize = 64;
 
@@ -189,6 +196,7 @@ impl ContractCatalog {
 
     /// Serialize sorted catalog maps/sets as canonical bytes.
     pub fn canonical_bytes(&self) -> Result<Vec<u8>, ContractError> {
+        self.validate_structure()?;
         serde_json::to_vec(self).map_err(|error| {
             ContractError::new(
                 ContractDiagnosticCode::CatalogInvalid,
@@ -480,6 +488,7 @@ pub struct ClientDeclaration {
     /// Rust-declared application surface.
     pub surface: String,
     /// Co-located GraphQL files or bounded globs.
+    #[serde(deserialize_with = "deserialize_documents")]
     pub documents: BTreeSet<String>,
     /// Compiler-owned output directory, relative to the UI root.
     pub output: String,
@@ -531,6 +540,7 @@ impl ClientInventory {
 
     /// Serialize a normalized client order and sorted document sets.
     pub fn canonical_bytes(&self) -> Result<Vec<u8>, ContractError> {
+        self.validate()?;
         let mut clients = self.clients.clone();
         clients.sort_by(|left, right| left.module.cmp(&right.module));
         serde_json::to_vec(&Self {
@@ -663,6 +673,22 @@ where
         }
     }
     Ok(entries)
+}
+
+fn deserialize_documents<'de, D>(deserializer: D) -> Result<BTreeSet<String>, D::Error>
+where
+    D: Deserializer<'de>,
+{
+    let documents = Vec::<String>::deserialize(deserializer)?;
+    let mut unique_documents = BTreeSet::new();
+    for document in documents {
+        if !unique_documents.insert(document.clone()) {
+            return Err(D::Error::custom(format!(
+                "duplicate client document `{document}`"
+            )));
+        }
+    }
+    Ok(unique_documents)
 }
 
 fn parse_json_document(input: &str, label: &str) -> Result<Value, ContractError> {
@@ -807,6 +833,12 @@ fn validate_identifier(value: &str, label: &str) -> Result<(), ContractError> {
             format!("{label} must be a non-empty trimmed value"),
         ));
     }
+    if is_secret_like(value) {
+        return Err(ContractError::new(
+            ContractDiagnosticCode::EnvironmentValue,
+            format!("{label} contains credential-like material"),
+        ));
+    }
     if value.len() > MAX_CATALOG_STRING_BYTES
         || value.contains('\0')
         || value.contains('\\')
@@ -863,8 +895,15 @@ fn looks_like_timestamp(value: &str) -> bool {
 }
 
 fn validate_catalog_path(value: &str, allow_glob: bool) -> Result<(), ContractError> {
+    if is_secret_like(value) {
+        return Err(ContractError::new(
+            ContractDiagnosticCode::EnvironmentValue,
+            "catalog metadata contains credential-like path material",
+        ));
+    }
     if value.is_empty()
         || value.trim() != value
+        || value.len() > MAX_CATALOG_STRING_BYTES
         || value.contains('\0')
         || value.contains('\\')
         || value.starts_with('/')
@@ -894,6 +933,23 @@ fn validate_catalog_path(value: &str, allow_glob: bool) -> Result<(), ContractEr
 }
 
 fn validate_client_module(value: &str) -> Result<(), ContractError> {
+    if is_secret_like(value) {
+        return Err(ContractError::new(
+            ContractDiagnosticCode::EnvironmentValue,
+            "client module contains credential-like material",
+        ));
+    }
+    if value.len() > MAX_CATALOG_STRING_BYTES
+        || value.trim() != value
+        || value.contains('\0')
+        || value.contains('\\')
+        || value.contains("..")
+    {
+        return Err(ContractError::new(
+            ContractDiagnosticCode::CatalogInvalid,
+            format!("client module `{value}` is not portable"),
+        ));
+    }
     let mut segments = value.split('/');
     if segments.next() != Some("$distributed") {
         return Err(ContractError::new(
@@ -903,6 +959,10 @@ fn validate_client_module(value: &str) -> Result<(), ContractError> {
     }
     if segments.any(|segment| {
         segment.is_empty()
+            || !segment
+                .as_bytes()
+                .first()
+                .is_some_and(|byte| byte.is_ascii_alphanumeric())
             || !segment
                 .bytes()
                 .all(|byte| byte.is_ascii_alphanumeric() || b"._-".contains(&byte))
@@ -927,6 +987,7 @@ fn validate_client_document(value: &str) -> Result<(), ContractError> {
         || value.starts_with('*')
         || value.starts_with('?')
         || value.starts_with('[')
+        || value.starts_with(']')
         || value.starts_with('{')
     {
         return Err(ContractError::new(
@@ -938,7 +999,14 @@ fn validate_client_document(value: &str) -> Result<(), ContractError> {
 }
 
 fn validate_entrypoint(value: &str) -> Result<(), ContractError> {
+    if is_secret_like(value) {
+        return Err(ContractError::new(
+            ContractDiagnosticCode::EnvironmentValue,
+            "client manifest entrypoint contains credential-like material",
+        ));
+    }
     if value.is_empty()
+        || value.len() > MAX_CATALOG_STRING_BYTES
         || value.split("::").any(|segment| {
             segment.is_empty()
                 || !segment
@@ -1008,6 +1076,7 @@ struct PhysicalPathWalker {
     root: PathBuf,
     files: BTreeSet<PathBuf>,
     directories: BTreeSet<PathBuf>,
+    directory_entries: usize,
 }
 
 impl PhysicalPathWalker {
@@ -1016,6 +1085,7 @@ impl PhysicalPathWalker {
             root,
             files: BTreeSet::new(),
             directories: BTreeSet::new(),
+            directory_entries: 0,
         }
     }
 
@@ -1110,73 +1180,105 @@ impl PhysicalPathWalker {
     }
 
     fn walk_directory(&mut self, directory: &Path, declared: &str) -> Result<(), ContractError> {
-        let directory = fs::canonicalize(directory).map_err(|error| {
-            ContractError::new(
-                ContractDiagnosticCode::CatalogPath,
-                format!("resolve catalog directory `{declared}`: {error}"),
-            )
-        })?;
-        if !self.directories.insert(directory.clone()) {
-            return Ok(());
-        }
-        let mut entries = fs::read_dir(&directory)
-            .map_err(|error| {
+        let mut pending = vec![(directory.to_path_buf(), 0usize)];
+        while let Some((directory, depth)) = pending.pop() {
+            if depth > MAX_CATALOG_DIRECTORY_DEPTH {
+                return Err(ContractError::new(
+                    ContractDiagnosticCode::CatalogInputLimit,
+                    format!(
+                        "catalog directory depth exceeds {MAX_CATALOG_DIRECTORY_DEPTH} at `{declared}`"
+                    ),
+                ));
+            }
+            if !self.directories.insert(directory.clone()) {
+                continue;
+            }
+            if self.directories.len() > MAX_CATALOG_DIRECTORIES {
+                return Err(ContractError::new(
+                    ContractDiagnosticCode::CatalogInputLimit,
+                    format!("catalog directories exceed {MAX_CATALOG_DIRECTORIES} at `{declared}`"),
+                ));
+            }
+
+            let mut entries = Vec::new();
+            for entry in fs::read_dir(&directory).map_err(|error| {
                 ContractError::new(
                     ContractDiagnosticCode::CatalogPath,
                     format!("read catalog directory `{declared}`: {error}"),
                 )
-            })?
-            .collect::<Result<Vec<_>, _>>()
-            .map_err(|error| {
-                ContractError::new(
-                    ContractDiagnosticCode::CatalogPath,
-                    format!("read catalog directory `{declared}`: {error}"),
-                )
-            })?;
-        entries.sort_by_key(|entry| entry.file_name());
-        for entry in entries {
-            let path = entry.path();
-            let symlink = fs::symlink_metadata(&path)
-                .map_err(|error| {
+            })? {
+                let entry = entry.map_err(|error| {
+                    ContractError::new(
+                        ContractDiagnosticCode::CatalogPath,
+                        format!("read catalog directory `{declared}`: {error}"),
+                    )
+                })?;
+                self.record_directory_entry(declared)?;
+                entries.push(entry);
+            }
+            entries.sort_by_key(|entry| entry.file_name());
+
+            let mut child_directories = Vec::new();
+            for entry in entries {
+                let path = entry.path();
+                let symlink = fs::symlink_metadata(&path)
+                    .map_err(|error| {
+                        ContractError::new(
+                            ContractDiagnosticCode::CatalogPath,
+                            format!("inspect catalog entry `{declared}`: {error}"),
+                        )
+                    })?
+                    .file_type()
+                    .is_symlink();
+                let canonical = fs::canonicalize(&path).map_err(|error| {
+                    ContractError::new(
+                        if symlink {
+                            ContractDiagnosticCode::CatalogSymlinkEscape
+                        } else {
+                            ContractDiagnosticCode::CatalogPath
+                        },
+                        format!("resolve catalog entry `{declared}`: {error}"),
+                    )
+                })?;
+                if !canonical.starts_with(&self.root) {
+                    return Err(ContractError::new(
+                        ContractDiagnosticCode::CatalogSymlinkEscape,
+                        format!("catalog entry under `{declared}` escapes the repository root"),
+                    ));
+                }
+                let metadata = fs::metadata(&canonical).map_err(|error| {
                     ContractError::new(
                         ContractDiagnosticCode::CatalogPath,
                         format!("inspect catalog entry `{declared}`: {error}"),
                     )
-                })?
-                .file_type()
-                .is_symlink();
-            let canonical = fs::canonicalize(&path).map_err(|error| {
-                ContractError::new(
-                    if symlink {
-                        ContractDiagnosticCode::CatalogSymlinkEscape
-                    } else {
-                        ContractDiagnosticCode::CatalogPath
-                    },
-                    format!("resolve catalog entry `{declared}`: {error}"),
-                )
-            })?;
-            if !canonical.starts_with(&self.root) {
-                return Err(ContractError::new(
-                    ContractDiagnosticCode::CatalogSymlinkEscape,
-                    format!("catalog entry under `{declared}` escapes the repository root"),
-                ));
+                })?;
+                if metadata.is_dir() {
+                    child_directories.push(canonical);
+                } else if metadata.is_file() {
+                    self.record_file(canonical, declared)?;
+                } else {
+                    return Err(ContractError::new(
+                        ContractDiagnosticCode::CatalogSpecialFile,
+                        format!("catalog entry under `{declared}` is special or unsupported"),
+                    ));
+                }
             }
-            let metadata = fs::metadata(&canonical).map_err(|error| {
-                ContractError::new(
-                    ContractDiagnosticCode::CatalogPath,
-                    format!("inspect catalog entry `{declared}`: {error}"),
-                )
-            })?;
-            if metadata.is_dir() {
-                self.walk_directory(&canonical, declared)?;
-            } else if metadata.is_file() {
-                self.record_file(canonical, declared)?;
-            } else {
-                return Err(ContractError::new(
-                    ContractDiagnosticCode::CatalogSpecialFile,
-                    format!("catalog entry under `{declared}` is special or unsupported"),
-                ));
+            for child in child_directories.into_iter().rev() {
+                pending.push((child, depth + 1));
             }
+        }
+        Ok(())
+    }
+
+    fn record_directory_entry(&mut self, declared: &str) -> Result<(), ContractError> {
+        self.directory_entries += 1;
+        if self.directory_entries > MAX_CATALOG_DIRECTORY_ENTRIES {
+            return Err(ContractError::new(
+                ContractDiagnosticCode::CatalogInputLimit,
+                format!(
+                    "catalog directory entries exceed {MAX_CATALOG_DIRECTORY_ENTRIES} at `{declared}`"
+                ),
+            ));
         }
         Ok(())
     }

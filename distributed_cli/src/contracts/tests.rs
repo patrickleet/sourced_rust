@@ -1,6 +1,13 @@
 use super::*;
 use serde_json::Value;
+use std::fs;
 use std::path::{Path, PathBuf};
+use std::time::{SystemTime, UNIX_EPOCH};
+
+#[cfg(unix)]
+use std::os::unix::fs::symlink;
+#[cfg(unix)]
+use std::os::unix::net::UnixListener;
 
 fn repository_root() -> PathBuf {
     Path::new(env!("CARGO_MANIFEST_DIR"))
@@ -23,6 +30,74 @@ fn fixture(name: &str) -> &'static str {
             include_str!("../../tests/fixtures/contracts/catalog/catalog-environment-value.json")
         }
         _ => panic!("unknown catalog fixture {name}"),
+    }
+}
+
+fn path_catalog(source: &str) -> ContractCatalog {
+    let input = serde_json::json!({
+        "schema_version": 1,
+        "entries": {
+            "path-test": {
+                "id": "path-test",
+                "kind": "migration_inventory",
+                "scope": { "id": "path/test" },
+                "owner": "test/path",
+                "identity": {
+                    "kind": "migration_inventory",
+                    "value": "sha256:path-test"
+                },
+                "provenance": {
+                    "sources": [source],
+                    "generator": "test.path"
+                },
+                "outputs": { "output": "inside.txt" }
+            }
+        }
+    });
+    ContractCatalog::from_json_str(&input.to_string()).expect("path catalog JSON")
+}
+
+struct TemporaryDirectory(PathBuf);
+
+impl TemporaryDirectory {
+    fn new(label: &str) -> Self {
+        let timestamp = SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .expect("system clock after Unix epoch")
+            .as_nanos();
+        let base = std::env::temp_dir();
+        for attempt in 0..100 {
+            let path = base.join(format!(
+                "distributed-contracts-{label}-{}-{timestamp}-{attempt}",
+                std::process::id()
+            ));
+            if fs::create_dir(&path).is_ok() {
+                return Self(path);
+            }
+        }
+        panic!("could not create temporary directory for {label}");
+    }
+
+    fn path(&self) -> &Path {
+        &self.0
+    }
+
+    #[cfg(unix)]
+    fn new_short(label: &str) -> Self {
+        let base = std::env::temp_dir();
+        for attempt in 0..100 {
+            let path = base.join(format!("dct-{label}-{}-{attempt}", std::process::id()));
+            if fs::create_dir(&path).is_ok() {
+                return Self(path);
+            }
+        }
+        panic!("could not create short temporary directory for {label}");
+    }
+}
+
+impl Drop for TemporaryDirectory {
+    fn drop(&mut self) {
+        let _ = fs::remove_dir_all(&self.0);
     }
 }
 
@@ -122,6 +197,133 @@ fn catalog_rejects_unknown_kinds_duplicate_owners_outputs_and_unbounded_globs() 
     assert_eq!(
         unbounded_glob.code(),
         ContractDiagnosticCode::CatalogUnboundedGlob
+    );
+}
+
+#[test]
+fn catalog_rejects_absolute_paths_and_exhausting_filesystem_traversal() {
+    let absolute = ContractCatalog::from_json_str(
+        &serde_json::json!({
+            "schema_version": 1,
+            "entries": {
+                "absolute": {
+                    "id": "absolute",
+                    "kind": "migration_inventory",
+                    "scope": { "id": "path/absolute" },
+                    "owner": "test/absolute",
+                    "identity": {
+                        "kind": "migration_inventory",
+                        "value": "sha256:absolute"
+                    },
+                    "provenance": {
+                        "sources": ["/etc/passwd"],
+                        "generator": "test.absolute"
+                    },
+                    "outputs": { "output": "inside.txt" }
+                }
+            }
+        })
+        .to_string(),
+    )
+    .expect_err("absolute paths must fail");
+    assert_eq!(absolute.code(), ContractDiagnosticCode::CatalogPath);
+
+    let root = TemporaryDirectory::new("traversal");
+    fs::write(root.path().join("inside.txt"), b"output").expect("output fixture");
+    let empty_tree = root.path().join("empty-tree");
+    fs::create_dir(&empty_tree).expect("empty tree");
+    for index in 0..=MAX_CATALOG_DIRECTORIES {
+        fs::create_dir(empty_tree.join(format!("directory-{index:04}")))
+            .expect("empty child directory");
+    }
+    let traversal = path_catalog("empty-tree")
+        .validate_paths(root.path())
+        .expect_err("empty directories must be bounded");
+    assert_eq!(traversal.code(), ContractDiagnosticCode::CatalogInputLimit);
+
+    let deep_tree = root.path().join("deep-tree");
+    fs::create_dir(&deep_tree).expect("deep tree");
+    let mut current = deep_tree;
+    for depth in 0..=MAX_CATALOG_DIRECTORY_DEPTH {
+        current = current.join(format!("level-{depth:02}"));
+        fs::create_dir(&current).expect("deep child directory");
+    }
+    let depth_error = path_catalog("deep-tree")
+        .validate_paths(root.path())
+        .expect_err("directory depth must be bounded");
+    assert_eq!(
+        depth_error.code(),
+        ContractDiagnosticCode::CatalogInputLimit
+    );
+
+    let many_entries = root.path().join("many-entries");
+    fs::create_dir(&many_entries).expect("many-entry directory");
+    for index in 0..=MAX_CATALOG_DIRECTORY_ENTRIES {
+        fs::write(many_entries.join(format!("file-{index:04}")), b"entry")
+            .expect("many-entry file");
+    }
+    let entry_error = path_catalog("many-entries")
+        .validate_paths(root.path())
+        .expect_err("directory entries must be bounded");
+    assert_eq!(
+        entry_error.code(),
+        ContractDiagnosticCode::CatalogInputLimit
+    );
+}
+
+#[test]
+fn catalog_rejects_excessive_json_bytes_and_depth() {
+    let oversized = format!(
+        "{{\"schema_version\":1,\"entries\":{{}},\"padding\":\"{}\"}}",
+        "x".repeat(MAX_CATALOG_BYTES)
+    );
+    let byte_error = ContractCatalog::from_json_str(&oversized)
+        .expect_err("oversized JSON must fail before parsing");
+    assert_eq!(byte_error.code(), ContractDiagnosticCode::CatalogInputLimit);
+
+    let mut deeply_nested = String::from("{\"padding\":");
+    for _ in 0..=MAX_CATALOG_JSON_DEPTH {
+        deeply_nested.push('[');
+    }
+    deeply_nested.push_str("null");
+    for _ in 0..=MAX_CATALOG_JSON_DEPTH {
+        deeply_nested.push(']');
+    }
+    deeply_nested.push('}');
+    let depth_error =
+        ContractCatalog::from_json_str(&deeply_nested).expect_err("deeply nested JSON must fail");
+    assert_eq!(
+        depth_error.code(),
+        ContractDiagnosticCode::CatalogInputLimit
+    );
+}
+
+#[cfg(unix)]
+#[test]
+fn catalog_rejects_symlink_and_special_file_paths() {
+    let root = TemporaryDirectory::new_short("filesystem");
+    let outside = TemporaryDirectory::new("outside");
+    fs::write(root.path().join("inside.txt"), b"output").expect("output fixture");
+    let outside_file = outside.path().join("outside.txt");
+    fs::write(&outside_file, b"outside").expect("outside fixture");
+
+    symlink(&outside_file, root.path().join("escaped")).expect("symlink fixture");
+    let symlink_error = path_catalog("escaped")
+        .validate_paths(root.path())
+        .expect_err("symlink escapes must fail");
+    assert_eq!(
+        symlink_error.code(),
+        ContractDiagnosticCode::CatalogSymlinkEscape
+    );
+
+    let socket_path = root.path().join("special.sock");
+    let _listener = UnixListener::bind(&socket_path).expect("socket fixture");
+    let special_error = path_catalog("special.sock")
+        .validate_paths(root.path())
+        .expect_err("special files must fail");
+    assert_eq!(
+        special_error.code(),
+        ContractDiagnosticCode::CatalogSpecialFile
     );
 }
 
@@ -245,6 +447,29 @@ fn human_and_json_diagnostics_preserve_same_facts_and_redact_values() {
     assert!(!decoded.human().contains("postgres://"));
     assert!(!decoded.human().contains("password="));
     assert!(!decoded.human().contains("token="));
+
+    let mut directly_mutated = migration;
+    directly_mutated.scope = Some("secret=scope".to_string());
+    directly_mutated.owner = "postgres://user:password@example.invalid/db".to_string();
+    directly_mutated
+        .source_paths
+        .insert("token=source".to_string());
+    directly_mutated
+        .derived_paths
+        .insert("secret=derived".to_string());
+    directly_mutated.semantic_path = Some("password=semantic".to_string());
+    directly_mutated.required_classification = Some("token=classification".to_string());
+    directly_mutated.repair_command = "secret=repair".to_string();
+    directly_mutated.detail = "password=detail".to_string();
+
+    let direct_human = directly_mutated.human();
+    let direct_json = serde_json::to_string(&directly_mutated).expect("direct diagnostic JSON");
+    assert!(!direct_human.contains("postgres://"));
+    assert!(!direct_human.contains("password="));
+    assert!(!direct_human.contains("token="));
+    assert!(!direct_json.contains("postgres://"));
+    assert!(!direct_json.contains("password="));
+    assert!(!direct_json.contains("token="));
 }
 
 #[test]
@@ -261,4 +486,55 @@ fn client_inventory_canonicalizes_client_and_document_order() {
             .canonical_bytes()
             .expect("reversed canonical inventory")
     );
+}
+
+#[test]
+fn canonical_bytes_reject_direct_public_secret_mutation() {
+    let mut catalog = ContractCatalog::from_json_str(fixture("valid")).expect("valid catalog");
+    catalog
+        .entries
+        .get_mut("application-manifest")
+        .expect("application entry")
+        .identity
+        .value = "postgres://user:password@example.invalid/db".to_string();
+    let catalog_error = catalog
+        .canonical_bytes()
+        .expect_err("catalog serialization must validate public mutations");
+    assert_eq!(
+        catalog_error.code(),
+        ContractDiagnosticCode::EnvironmentValue
+    );
+
+    let mut inventory = ClientInventory::from_json_str(include_str!(
+        "../../../tests/e2e-ui/ui/distributed.clients.json"
+    ))
+    .expect("valid client inventory");
+    inventory.clients[0]
+        .documents
+        .insert("src/routes/token=secret.graphql".to_string());
+    let inventory_error = inventory
+        .canonical_bytes()
+        .expect_err("client serialization must validate public mutations");
+    assert_eq!(
+        inventory_error.code(),
+        ContractDiagnosticCode::EnvironmentValue
+    );
+}
+
+#[test]
+fn client_inventory_rust_schema_matches_shared_parity_vectors() {
+    let vectors: Value = serde_json::from_str(include_str!(
+        "../../tests/fixtures/contracts/client-inventory-parity.json"
+    ))
+    .expect("client inventory parity JSON");
+    for vector in vectors["vectors"].as_array().expect("parity vectors") {
+        let name = vector["name"].as_str().expect("parity vector name");
+        let expected = vector["valid"].as_bool().expect("parity vector result");
+        let input = serde_json::to_string(&vector["inventory"]).expect("parity inventory JSON");
+        assert_eq!(
+            ClientInventory::from_json_str(&input).is_ok(),
+            expected,
+            "Rust client inventory parity vector `{name}`"
+        );
+    }
 }

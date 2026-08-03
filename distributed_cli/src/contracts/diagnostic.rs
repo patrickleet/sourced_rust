@@ -126,7 +126,7 @@ impl<'de> Deserialize<'de> for SafeDiagnosticValue {
 }
 
 /// One stable, safely redacted contract diagnostic.
-#[derive(Clone, Debug, Deserialize, Eq, Ord, PartialEq, PartialOrd, Serialize)]
+#[derive(Clone, Debug, Deserialize, Eq, Ord, PartialEq, PartialOrd)]
 #[serde(deny_unknown_fields)]
 pub struct ContractDiagnostic {
     /// Stable classification code.
@@ -183,6 +183,31 @@ pub struct ContractDiagnostic {
         skip_serializing_if = "String::is_empty"
     )]
     pub detail: String,
+}
+
+#[derive(Serialize)]
+struct RedactedContractDiagnostic {
+    code: ContractDiagnosticCode,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    artifact_kind: Option<ContractArtifactKind>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    scope: Option<String>,
+    owner: String,
+    source_paths: BTreeSet<String>,
+    derived_paths: BTreeSet<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    semantic_path: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    expected: Option<SafeDiagnosticValue>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    observed: Option<SafeDiagnosticValue>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    required_classification: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    merge_base_available: Option<bool>,
+    repair_command: String,
+    #[serde(skip_serializing_if = "String::is_empty")]
+    detail: String,
 }
 
 impl ContractDiagnostic {
@@ -243,6 +268,42 @@ impl ContractDiagnostic {
 
     /// Render the exact facts in the human-readable format.
     pub fn human(&self) -> String {
+        self.redacted().human_unchecked()
+    }
+
+    fn redacted(&self) -> Self {
+        Self {
+            code: self.code,
+            artifact_kind: self.artifact_kind,
+            scope: self.scope.as_deref().map(redact_value),
+            owner: redact_value(&self.owner),
+            source_paths: self
+                .source_paths
+                .iter()
+                .map(|value| redact_value(value))
+                .collect(),
+            derived_paths: self
+                .derived_paths
+                .iter()
+                .map(|value| redact_value(value))
+                .collect(),
+            semantic_path: self.semantic_path.as_deref().map(redact_value),
+            expected: self
+                .expected
+                .as_ref()
+                .map(|value| SafeDiagnosticValue::new(value.as_str())),
+            observed: self
+                .observed
+                .as_ref()
+                .map(|value| SafeDiagnosticValue::new(value.as_str())),
+            required_classification: self.required_classification.as_deref().map(redact_value),
+            merge_base_available: self.merge_base_available,
+            repair_command: redact_value(&self.repair_command),
+            detail: redact_value(&self.detail),
+        }
+    }
+
+    fn human_unchecked(&self) -> String {
         let mut output = self.code.to_string();
         if !self.detail.is_empty() {
             output.push_str(": ");
@@ -280,9 +341,37 @@ impl ContractDiagnostic {
         output
     }
 
+    fn redacted_wire(&self) -> RedactedContractDiagnostic {
+        let redacted = self.redacted();
+        RedactedContractDiagnostic {
+            code: redacted.code,
+            artifact_kind: redacted.artifact_kind,
+            scope: redacted.scope,
+            owner: redacted.owner,
+            source_paths: redacted.source_paths,
+            derived_paths: redacted.derived_paths,
+            semantic_path: redacted.semantic_path,
+            expected: redacted.expected,
+            observed: redacted.observed,
+            required_classification: redacted.required_classification,
+            merge_base_available: redacted.merge_base_available,
+            repair_command: redacted.repair_command,
+            detail: redacted.detail,
+        }
+    }
+
     /// Serialize the same safely redacted facts used by [`Self::human`].
     pub fn to_json(&self) -> Result<String, serde_json::Error> {
         serde_json::to_string(self)
+    }
+}
+
+impl Serialize for ContractDiagnostic {
+    fn serialize<S>(&self, serializer: S) -> Result<S::Ok, S::Error>
+    where
+        S: serde::Serializer,
+    {
+        self.redacted_wire().serialize(serializer)
     }
 }
 
