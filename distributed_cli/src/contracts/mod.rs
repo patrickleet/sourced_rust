@@ -30,6 +30,7 @@ pub use diagnostic::{
 pub use migrations::{
     check_migration_history, check_migration_inventory, BaselineAvailability, MigrationDialect,
     MigrationEntry, MigrationFile, MigrationHistoryCheck, MigrationInventory, MAX_MIGRATIONS,
-    MAX_MIGRATION_INVENTORY_BYTES, MAX_MIGRATION_SQL_BYTES, MIGRATION_INVENTORY_PATH,
+    MAX_MIGRATION_INVENTORY_BYTES, MAX_MIGRATION_JSON_DEPTH, MAX_MIGRATION_SQL_BYTES,
+    MAX_MIGRATION_TOP_LEVEL_ENTRIES, MAX_MIGRATION_TOTAL_ENTRIES, MIGRATION_INVENTORY_PATH,
     MIGRATION_INVENTORY_SCHEMA_VERSION, MIGRATION_OWNER, MIGRATION_SCOPE,
 };

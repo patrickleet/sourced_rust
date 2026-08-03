@@ -10,6 +10,11 @@ const INVENTORY_VERSION: u32 = 1;
 const MAX_INVENTORY_BYTES: usize = 1024 * 1024;
 const MAX_SQL_BYTES: usize = 4 * 1024 * 1024;
 const MAX_MIGRATIONS: usize = 256;
+const MAX_JSON_DEPTH: usize = 24;
+const MAX_TOTAL_ENTRIES: usize = MAX_MIGRATIONS * 4;
+const MAX_TOP_LEVEL_ENTRIES: usize = 64;
+const MAX_DIRECTORIES: usize = 4_096;
+const MAX_SQL_FILES: usize = MAX_MIGRATIONS * 2;
 
 #[derive(Debug, Deserialize)]
 #[serde(deny_unknown_fields)]
@@ -113,7 +118,13 @@ fn emit_migration_inventory() {
     let root = fs::canonicalize(&manifest_dir)
         .unwrap_or_else(|error| panic!("resolve repository root for migrations: {error}"));
     let inventory_path = root.join(INVENTORY_PATH);
-    let bytes = read_bounded_file(&inventory_path, MAX_INVENTORY_BYTES, "migration inventory");
+    let bytes = read_bounded_file(
+        &root,
+        &inventory_path,
+        MAX_INVENTORY_BYTES,
+        "migration inventory",
+    );
+    validate_json_nesting(&bytes).unwrap_or_else(|error| panic!("parse {INVENTORY_PATH}: {error}"));
     let inventory: Inventory = serde_json::from_slice(&bytes)
         .unwrap_or_else(|error| panic!("parse {INVENTORY_PATH}: {error}"));
     validate_inventory(&root, &inventory);
@@ -190,6 +201,9 @@ fn validate_inventory(root: &Path, inventory: &Inventory) {
         if migration.version > i64::MAX as u64
             || migration.description.is_empty()
             || migration.description.trim() != migration.description
+            || migration.description.len() > 4 * 1024
+            || migration.description.contains('\0')
+            || is_secret_like(&migration.description)
         {
             panic!(
                 "{INVENTORY_PATH} migration {} has an invalid description or version",
@@ -222,7 +236,7 @@ fn validate_inventory(root: &Path, inventory: &Inventory) {
                 );
             }
             let sql_path = root.join(&file.path);
-            let sql = read_bounded_file(&sql_path, MAX_SQL_BYTES, "migration SQL");
+            let sql = read_bounded_file(root, &sql_path, MAX_SQL_BYTES, "migration SQL");
             if std::str::from_utf8(&sql).is_err() {
                 panic!("migration SQL `{}` is not UTF-8", file.path);
             }
@@ -254,8 +268,11 @@ fn validate_inventory(root: &Path, inventory: &Inventory) {
 
 fn validate_path(root: &Path, dialect: Dialect, file: &MigrationFile) {
     let path = Path::new(&file.path);
+    let display_path = declared_path_display(&file.path);
     if file.path.is_empty()
         || file.path.trim() != file.path
+        || file.path.len() > 4 * 1024
+        || file.path.contains('\0')
         || file.path.contains('\\')
         || !file.path.ends_with(".sql")
         || path.is_absolute()
@@ -263,11 +280,12 @@ fn validate_path(root: &Path, dialect: Dialect, file: &MigrationFile) {
             .components()
             .any(|component| !matches!(component, Component::Normal(_)))
         || !path.starts_with(dialect.directory())
+        || is_secret_like(&file.path)
     {
         panic!(
             "{INVENTORY_PATH} {} migration path `{}` is outside `{}`",
             dialect.name(),
-            file.path,
+            display_path,
             dialect.directory()
         );
     }
@@ -278,40 +296,114 @@ fn validate_path(root: &Path, dialect: Dialect, file: &MigrationFile) {
         };
         current.push(component);
         let metadata = fs::symlink_metadata(&current)
-            .unwrap_or_else(|error| panic!("inspect migration path `{}`: {error}", file.path));
+            .unwrap_or_else(|error| panic!("inspect migration path `{display_path}`: {error}"));
         if metadata.file_type().is_symlink() {
-            panic!("migration path `{}` must not be a symlink", file.path);
+            panic!("migration path `{display_path}` must not be a symlink");
         }
     }
 }
 
-fn read_bounded_file(path: &Path, limit: usize, label: &str) -> Vec<u8> {
+fn declared_path_display(path: &str) -> String {
+    let path_value = Path::new(path);
+    if path_value.is_absolute()
+        || path.contains('\\')
+        || path_value
+            .components()
+            .any(|component| matches!(component, Component::Prefix(_) | Component::RootDir))
+    {
+        "<outside-repository>".to_string()
+    } else {
+        path.to_string()
+    }
+}
+
+fn is_secret_like(value: &str) -> bool {
+    let lower = value.to_ascii_lowercase();
+    lower.contains("postgres://")
+        || lower.contains("postgresql://")
+        || lower.contains("mysql://")
+        || lower.contains("mongodb://")
+        || lower.contains("bearer ")
+        || lower.contains("password=")
+        || lower.contains("token=")
+        || lower.contains("secret=")
+        || lower.contains("-----begin ")
+}
+
+fn validate_json_nesting(input: &[u8]) -> Result<(), &'static str> {
+    let mut depth = 0usize;
+    let mut escaped = false;
+    let mut in_string = false;
+
+    for byte in input {
+        if in_string {
+            if escaped {
+                escaped = false;
+            } else if *byte == b'\\' {
+                escaped = true;
+            } else if *byte == b'"' {
+                in_string = false;
+            }
+            continue;
+        }
+
+        match *byte {
+            b'"' => in_string = true,
+            b'{' | b'[' => {
+                depth = depth.saturating_add(1);
+                if depth > MAX_JSON_DEPTH {
+                    return Err("migration inventory exceeds maximum JSON nesting depth");
+                }
+            }
+            b'}' | b']' => depth = depth.saturating_sub(1),
+            _ => {}
+        }
+    }
+
+    Ok(())
+}
+
+fn relative_path_display(root: &Path, path: &Path) -> String {
+    path.strip_prefix(root)
+        .map(|relative| {
+            relative
+                .to_string_lossy()
+                .replace(std::path::MAIN_SEPARATOR, "/")
+        })
+        .unwrap_or_else(|_| "<outside-repository>".to_string())
+}
+
+fn read_bounded_file(root: &Path, path: &Path, limit: usize, label: &str) -> Vec<u8> {
+    let relative = relative_path_display(root, path);
     let metadata = fs::symlink_metadata(path)
-        .unwrap_or_else(|error| panic!("read {label} `{}`: {error}", path.display()));
+        .unwrap_or_else(|error| panic!("read {label} `{relative}`: {error}"));
     if metadata.file_type().is_symlink() {
-        panic!("{label} `{}` must not be a symlink", path.display());
+        panic!("{label} `{relative}` must not be a symlink");
     }
     if !metadata.is_file() {
-        panic!("{label} `{}` is not a regular file", path.display());
+        panic!("{label} `{relative}` is not a regular file");
     }
     if metadata.len() > limit as u64 {
-        panic!("{label} `{}` exceeds {limit} bytes", path.display());
+        panic!("{label} `{relative}` exceeds {limit} bytes");
     }
-    let file = File::open(path)
-        .unwrap_or_else(|error| panic!("read {label} `{}`: {error}", path.display()));
-    let opened_size = file
+    let file =
+        File::open(path).unwrap_or_else(|error| panic!("read {label} `{relative}`: {error}"));
+    let opened_metadata = file
         .metadata()
-        .unwrap_or_else(|error| panic!("inspect {label} `{}`: {error}", path.display()))
-        .len();
+        .unwrap_or_else(|error| panic!("inspect opened {label} `{relative}`: {error}"));
+    if !opened_metadata.is_file() {
+        panic!("opened {label} `{relative}` is not a regular file");
+    }
+    let opened_size = opened_metadata.len();
     if opened_size > limit as u64 {
-        panic!("opened {label} `{}` exceeds {limit} bytes", path.display());
+        panic!("opened {label} `{relative}` exceeds {limit} bytes");
     }
     let mut bytes = Vec::with_capacity(opened_size as usize);
     file.take(limit as u64 + 1)
         .read_to_end(&mut bytes)
-        .unwrap_or_else(|error| panic!("read {label} `{}`: {error}", path.display()));
+        .unwrap_or_else(|error| panic!("read {label} `{relative}`: {error}"));
     if bytes.len() > limit {
-        panic!("{label} `{}` exceeds {limit} bytes", path.display());
+        panic!("{label} `{relative}` exceeds {limit} bytes");
     }
     bytes
 }
@@ -319,64 +411,92 @@ fn read_bounded_file(path: &Path, limit: usize, label: &str) -> Vec<u8> {
 fn collect_sql_files(root: &Path, dialect: Dialect) -> BTreeMap<String, ()> {
     let mut pending = vec![root.join(dialect.directory())];
     let mut files = BTreeMap::new();
+    let mut directories = 0usize;
+    let mut entries_seen = 0usize;
     while let Some(directory) = pending.pop() {
+        directories += 1;
+        if directories > MAX_DIRECTORIES {
+            panic!(
+                "{} migration directory tree exceeds {MAX_DIRECTORIES} directories",
+                dialect.name()
+            );
+        }
         let directory_metadata = fs::symlink_metadata(&directory).unwrap_or_else(|error| {
             panic!(
                 "inspect migration directory `{}`: {error}",
-                directory.display()
+                relative_path_display(root, &directory)
             )
         });
         if directory_metadata.file_type().is_symlink() {
             panic!(
                 "migration directory `{}` must not be a symlink",
-                directory.display()
+                relative_path_display(root, &directory)
             );
         }
         if !directory_metadata.is_dir() {
             panic!(
                 "migration directory `{}` is not a directory",
-                directory.display()
+                relative_path_display(root, &directory)
             );
         }
         let entries = fs::read_dir(&directory).unwrap_or_else(|error| {
             panic!(
                 "read migration directory `{}`: {error}",
-                directory.display()
+                relative_path_display(root, &directory)
             )
         });
-        let mut entries = entries
-            .collect::<Result<Vec<_>, _>>()
-            .unwrap_or_else(|error| panic!("read migration directory: {error}"));
-        entries.sort_by_key(|entry| entry.file_name());
         for entry in entries {
+            entries_seen += 1;
+            if entries_seen > MAX_TOTAL_ENTRIES {
+                panic!(
+                    "migration directory tree exceeds {MAX_TOTAL_ENTRIES} entries for {}",
+                    dialect.name()
+                );
+            }
+            let entry = entry.unwrap_or_else(|error| {
+                panic!(
+                    "read migration directory entry for {}: {error}",
+                    dialect.name()
+                )
+            });
             let path = entry.path();
             let metadata = fs::symlink_metadata(&path).unwrap_or_else(|error| {
-                panic!("inspect migration path `{}`: {error}", path.display())
+                panic!(
+                    "inspect migration path `{}`: {error}",
+                    relative_path_display(root, &path)
+                )
             });
             if metadata.file_type().is_symlink() {
-                panic!("migration path `{}` must not be a symlink", path.display());
+                panic!(
+                    "migration path `{}` must not be a symlink",
+                    relative_path_display(root, &path)
+                );
             }
             if metadata.is_dir() {
                 pending.push(path);
                 continue;
             }
             if !metadata.is_file() {
-                panic!("migration path `{}` is not a regular file", path.display());
+                panic!(
+                    "migration path `{}` is not a regular file",
+                    relative_path_display(root, &path)
+                );
             }
             if path.extension().and_then(|extension| extension.to_str()) != Some("sql") {
                 continue;
             }
             let relative = path
                 .strip_prefix(root)
-                .unwrap_or_else(|_| {
-                    panic!(
-                        "migration path `{}` escaped repository root",
-                        path.display()
-                    )
-                })
+                .unwrap_or_else(|_| panic!("migration path escaped repository root"))
                 .to_string_lossy()
                 .replace(std::path::MAIN_SEPARATOR, "/");
             files.insert(relative, ());
+            if files.len() > MAX_SQL_FILES {
+                panic!(
+                    "{} migration directory tree contains more than {MAX_SQL_FILES} SQL files",
+                    dialect.name()
+                );
+            }
         }
     }
     files
@@ -394,14 +514,22 @@ fn validate_dialect_directories(root: &Path) {
     }
     let entries = fs::read_dir(&migrations)
         .unwrap_or_else(|error| panic!("read migrations directory: {error}"));
+    let mut entries_seen = 0usize;
     for entry in entries {
+        entries_seen += 1;
+        if entries_seen > MAX_TOP_LEVEL_ENTRIES {
+            panic!("migrations directory exceeds {MAX_TOP_LEVEL_ENTRIES} entries");
+        }
         let path = entry
             .unwrap_or_else(|error| panic!("read migrations entry: {error}"))
             .path();
         let metadata = fs::symlink_metadata(&path)
             .unwrap_or_else(|error| panic!("inspect migrations entry: {error}"));
         if metadata.file_type().is_symlink() {
-            panic!("migration path `{}` must not be a symlink", path.display());
+            panic!(
+                "migration path `{}` must not be a symlink",
+                relative_path_display(root, &path)
+            );
         }
         if !metadata.is_dir() {
             continue;
