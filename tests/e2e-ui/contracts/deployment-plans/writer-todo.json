@@ -1,0 +1,15 @@
+{
+  "name": "e2e-ui-writer-todo",
+  "application": "e2e-ui",
+  "processes": [
+    {
+      "id": "todo-writer",
+      "mounts": [
+        {
+          "kind": "command",
+          "id": "todo.create"
+        }
+      ]
+    }
+  ]
+}

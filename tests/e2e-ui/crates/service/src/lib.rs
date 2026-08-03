@@ -10,6 +10,7 @@ mod application;
 mod bounds;
 mod deps;
 pub mod handlers;
+mod host;
 mod oidc_layer;
 mod service;
 
@@ -17,6 +18,7 @@ pub use application::{
     DISTRIBUTED_ADMIN_CLIENT_SURFACE, DISTRIBUTED_CLIENT_SURFACE, DISTRIBUTED_PUBLIC_CLIENT_SURFACE,
     E2E_UI_APPLICATION, E2E_UI_MODULE_IDS,
 };
+pub use host::{run_e2e_host, HostOptions};
 pub use e2e_readmodels::distributed_manifest;
 /// Zitadel Management API scrape (reconcile missed Action events).
 pub use handlers::ingestors::zitadel::{
