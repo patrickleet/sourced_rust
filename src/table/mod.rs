@@ -7,6 +7,7 @@
 //! typed staging/load surface on top of them.
 
 mod error;
+mod catalog;
 mod metadata;
 mod mutation;
 mod plan;
@@ -14,6 +15,7 @@ mod registry;
 mod sql;
 
 pub use error::TableStoreError;
+pub use catalog::ReadModelCatalog;
 pub use metadata::{
     ColumnType, ForeignKey, PrimaryKey, RelationshipDef, RelationshipKind, RowKey, RowValue,
     RowValues, TableColumn, TableIndex, TableKind, TableSchema, DEFAULT_TABLE_VERSION_COLUMN,

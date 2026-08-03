@@ -12,8 +12,9 @@ export type ProjectionDeltaSurface =
 	| Readonly<{
 			kind: 'application';
 			name: string;
-			roles: readonly string[];
-	  }>;
+			eligible_roles: readonly string[];
+			schema_roles: readonly string[];
+		}>;
 
 export type ProjectionDeltaIdentity = Readonly<{
 	manifest_version: 2;

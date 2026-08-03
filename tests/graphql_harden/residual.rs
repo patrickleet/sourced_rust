@@ -3,7 +3,7 @@
 use async_graphql::Request;
 use distributed::graphql::{claim, col, read, GraphqlEngine, ModelPermissions};
 use distributed::{
-    DistributedProjectManifest, RelationalReadModel, RelationshipDef, RelationshipKind,
+    ReadModelCatalog, RelationalReadModel, RelationshipDef, RelationshipKind,
 };
 
 use super::common::{
@@ -42,12 +42,12 @@ async fn a8_nested_has_many_without_child_grant_is_unknown_field() {
         target_foreign_key: None,
     }];
     let child = ChildView::schema().clone();
-    let manifest = DistributedProjectManifest::new("a8")
+    let manifest = ReadModelCatalog::new("a8")
         .table_schema(parent)
         .table_schema(child);
 
     // Parent granted; child model has **no** permission for this role.
-    let engine = GraphqlEngine::from_manifest(&manifest, pool)
+    let engine = GraphqlEngine::from_schema_catalog(&manifest, pool)
         .unwrap()
         .roles(&["user"])
         .permission::<ParentView>("user", read().all_columns())
@@ -112,11 +112,11 @@ async fn a12_rel_where_without_target_grant_is_unknown_field() {
         target_foreign_key: None,
     }];
     let child = ChildView::schema().clone();
-    let manifest = DistributedProjectManifest::new("a12")
+    let manifest = ReadModelCatalog::new("a12")
         .table_schema(parent)
         .table_schema(child);
 
-    let engine = GraphqlEngine::from_manifest(&manifest, pool)
+    let engine = GraphqlEngine::from_schema_catalog(&manifest, pool)
         .unwrap()
         .roles(&["user"])
         .permission::<ParentView>("user", read().all_columns())

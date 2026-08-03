@@ -96,7 +96,7 @@ tokio = {{ version = "1", features = ["macros", "net", "rt-multi-thread"] }}
 pub mod manifest;
 {models}{read_models}{query}pub mod service;
 
-pub use manifest::distributed_manifest;
+pub use manifest::{{application_manifest, read_model_catalog, service_descriptor}};
 "#
         )
     }
@@ -205,17 +205,33 @@ async fn main() -> Result<(), {error_type}> {{
             .map(|model| format!("        .read_model::<{}>()\n", model.view_ident))
             .collect::<String>();
         format!(
-            r#"use distributed::{{
-    DistributedProjectManifest, ServiceManifest,
+r#"use distributed::{{
+    Application, ApplicationManifest, ReadModelCatalog, SurfaceSpec,
 }};
 
-{read_model_import}pub fn distributed_manifest() -> DistributedProjectManifest {{
-    DistributedProjectManifest::new({project_name})
-{read_model_registration}        .service(crate::service::manifest())
+{read_model_import}pub fn application_manifest() -> ApplicationManifest {{
+    let catalog = read_model_catalog();
+    let surface = distributed::graphql::build_surface(
+        &catalog.tables,
+        &distributed::graphql::SurfaceOptions::sqlite(),
+    )
+    .expect("read-model catalog should compile into an application Surface");
+    let surface = SurfaceSpec::from_surface({project_name}, &surface)
+        .expect("application Surface contract should be portable");
+    Application::new({project_name})
+        .surface(surface)
+        .build()
+        .expect("application manifest should compile")
+        .manifest()
+        .clone()
 }}
 
-pub fn service_manifest() -> ServiceManifest {{
-    crate::service::manifest()
+pub fn read_model_catalog() -> ReadModelCatalog {{
+    ReadModelCatalog::new({project_name})
+{read_model_registration}}}
+
+pub fn service_descriptor() -> distributed::microsvc::ServiceDescriptor {{
+    crate::service::descriptor()
 }}
 "#,
             project_name = rust_string(&self.names.package_name),
@@ -234,13 +250,13 @@ pub fn service_manifest() -> ServiceManifest {{
         let mut manifest_imports = vec![
             "microsvc::{Routes, Service}",
             repo_import,
-            "ServiceManifest",
+            "ServiceDescriptor",
         ];
         if self.metrics == Some(MetricsTarget::Prometheus) {
-            manifest_imports.push("MetricsEndpointManifest");
+            manifest_imports.push("MetricsEndpointDescriptor");
         }
         if self.tracing {
-            manifest_imports.push("TracingManifest");
+            manifest_imports.push("TracingDescriptor");
         }
         if self.query_api && !self.commands.is_empty() {
             manifest_imports.push("AggregateRepository");
@@ -316,12 +332,12 @@ pub fn service_manifest() -> ServiceManifest {{
             ServiceTransport::Knative => "knative",
         };
         let manifest_metrics = if self.metrics == Some(MetricsTarget::Prometheus) {
-            "        .metrics(MetricsEndpointManifest::prometheus_default())\n"
+            "        .metrics(MetricsEndpointDescriptor::prometheus_default())\n"
         } else {
             ""
         };
         let manifest_tracing = if self.tracing {
-            "        .tracing(TracingManifest::otlp())\n"
+            "        .tracing(TracingDescriptor::otlp())\n"
         } else {
             ""
         };
@@ -411,8 +427,8 @@ pub async fn build_with_graphql() -> Result<Arc<Service>, Box<dyn std::error::Er
 
 {protocol_key_helper}
 
-pub fn manifest() -> ServiceManifest {{
-    ServiceManifest::new({service_name})
+pub fn descriptor() -> ServiceDescriptor {{
+    ServiceDescriptor::new({service_name})
 {manifest_commands}{manifest_events}{manifest_metrics}{manifest_tracing}        .transport({transport})
 }}
 "#,
@@ -441,8 +457,8 @@ pub fn build(repo: ServiceRepo) -> Arc<Service> {{
     Arc::new(Service::new().named({service_name}).routes(routes))
 }}
 
-pub fn manifest() -> ServiceManifest {{
-    ServiceManifest::new({service_name})
+pub fn descriptor() -> ServiceDescriptor {{
+    ServiceDescriptor::new({service_name})
 {manifest_commands}{manifest_events}{manifest_metrics}{manifest_tracing}        .transport({transport})
 }}
 "#,
@@ -779,7 +795,7 @@ pub fn build_engine(
     // issuer (still OidcBearer; ambient headers never trusted). For local
     // GraphiQL ambient headers only, pass IdentityMode::DevHeaders explicitly.
     let identity = distributed::graphql::public_oidc_identity_from_env();
-    GraphqlEngine::from_manifest(&crate::distributed_manifest(), source)?
+    GraphqlEngine::from_schema_catalog(&crate::read_model_catalog(), source)?
         .service(service){protocol_key_builder}
         .roles(roles::ALL)
         .grant_all(roles::USER)

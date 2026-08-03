@@ -168,7 +168,7 @@ pub struct RelationshipDef {
 /// Discriminator for tables owned by the framework vs read-model projections.
 ///
 /// Operational tables (outbox, inbox, …) are never exposed on the GraphQL query
-/// surface; `from_manifest` / `graphql_sdl` consume only `ReadModel` entries.
+/// surface; schema-catalog adapters consume only `ReadModel` entries.
 #[derive(Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
 pub enum TableKind {
     #[default]

@@ -25,7 +25,7 @@ second GraphQL command registry.
 
 ### Add a model exposure
 
-1. Ensure the read model is in `distributed_manifest()`.
+1. Ensure the read model is in `read_model_catalog()`.
 2. Add `src/query/<table>.rs`:
 
 ```rust

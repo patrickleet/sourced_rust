@@ -37,7 +37,7 @@ use distributed::{
     body_bindings_for_model, body_field_binding, command_input_defaults, compile_projection,
     descriptor_from_factories, inventory_single_model, lower_single_model,
     resolve_mutation_program, state_upsert_program_for_model, Aggregate, AggregateRepository,
-    DistributedProjectManifest, DomainEventDescriptor, DomainEventOccurrence, Entity, EventRecord,
+    ReadModelCatalog, DomainEventDescriptor, DomainEventOccurrence, Entity, EventRecord,
     GraphqlInput, GraphqlOutput, InMemoryRepository, MutationAssignment, MutationEventBinding,
     MutationExpression, MutationField, MutationKeyField, MutationKind, MutationOperation,
     MutationProgram, MutationProgramError, ProjectionExpression, ProjectionHandler,
@@ -1620,17 +1620,15 @@ fn pool_free_typed_export_preserves_service_provenance_and_rejects_relabeling() 
         &std::collections::BTreeMap::from([("PlanView".into(), RoleGrant::all_columns())]),
     )
     .unwrap();
-    let project = DistributedProjectManifest::new("plans").table_schema(PlanView::schema().clone());
-    let manifest = DistributedClientSurfaceExport::from_project(&project, selected.clone())
+    let manifest = DistributedClientSurfaceExport::from_selected("plans", selected.clone())
         .unwrap()
         .manifest()
         .unwrap();
     assert_eq!(manifest.service_id, "plans");
     assert_eq!(manifest.commands[0].name, "plan.create");
 
-    let relabeled =
-        DistributedProjectManifest::new("other-plans").table_schema(PlanView::schema().clone());
-    let error = DistributedClientSurfaceExport::from_project(&relabeled, selected).unwrap_err();
+    let error = DistributedClientSurfaceExport::from_selected("other-plans", selected)
+        .unwrap_err();
     assert!(error
         .to_string()
         .contains("does not match typed Surface provenance"));

@@ -57,6 +57,7 @@
 
 mod causal;
 mod context;
+mod descriptor;
 mod dependencies;
 mod error;
 mod message_router;
@@ -74,6 +75,11 @@ pub use dependencies::{
     HasRepo, ReadModelStoreDependencies, RepoDependencies, RepoReadModelDependencies,
 };
 pub use error::HandlerError;
+pub use descriptor::{
+    MessageEndpointDescriptor, MetricsEndpointDescriptor, ServiceDescriptor,
+    ServiceObservabilityDescriptor, TraceExportMode, TracePropagationMode, TracingDescriptor,
+    TransportDescriptor,
+};
 pub use projector::{
     CausalProjectorContext, CausalProjectorRouteBuilder, LoadedProjection, ProjectionRepairHandle,
     ProjectionRepairHandleParseError,
@@ -93,7 +99,8 @@ pub use service::{
 #[cfg(feature = "graphql")]
 pub(crate) use service::{
     CausalCommandProjectionObligation, CausalCommandPublicState, CausalCommandPublicStatus,
-    CausalCommandReceiptSource, CausalProjectionEvidenceState,
+    CausalCommandReceiptSource, CausalDispatchError, CausalDispatchResult,
+    CausalProjectionEvidenceState,
 };
 pub use session::{Session, ROLE_KEY, USER_ID_KEY};
 

@@ -38,10 +38,17 @@ pub(super) fn client_manifest_from_surface_with_execution(
         (
             SurfaceSelection::Application {
                 name: selected_name,
-                roles: selected_roles,
+                eligible_roles: selected_eligible_roles,
+                schema_roles: selected_schema_roles,
             },
-            ClientSurfaceIdentity::Application { name, roles },
-        ) if selected_name == name && selected_roles == roles => {}
+            ClientSurfaceIdentity::Application {
+                name,
+                eligible_roles,
+                schema_roles,
+            },
+        ) if selected_name == name
+            && selected_eligible_roles == eligible_roles
+            && selected_schema_roles == schema_roles => {}
         _ => {
             return Err(ClientManifestError(
                 "client Surface identity does not match its authorization selection provenance"

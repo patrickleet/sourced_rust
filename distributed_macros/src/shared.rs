@@ -1,3 +1,4 @@
+use proc_macro_crate::{crate_name, FoundCrate};
 use quote::{quote, ToTokens};
 use sha2::{Digest, Sha256};
 use syn::{
@@ -7,6 +8,28 @@ use syn::{
 
 // Shared helpers
 // ============================================================================
+
+/// Resolve the framework crate as it is named by the consuming package.
+///
+/// Proc-macro output is compiled in the caller's crate, so a literal
+/// `::distributed` path is wrong when the dependency is renamed or re-exported.
+/// `FoundCrate::Itself` also keeps framework-internal macro tests hygienic.
+pub(crate) fn framework_path() -> syn::Result<proc_macro2::TokenStream> {
+    match crate_name("distributed") {
+        Ok(FoundCrate::Itself) => Ok(quote!(crate)),
+        Ok(FoundCrate::Name(name)) => {
+            let ident = syn::Ident::new(&name, proc_macro2::Span::call_site());
+            Ok(quote!(::#ident))
+        }
+        Err(error) => Err(syn::Error::new(
+            proc_macro2::Span::call_site(),
+            format!(
+                "unable to resolve the `distributed` dependency for generated code: {}; add the framework dependency or re-export it under that package",
+                error
+            ),
+        )),
+    }
+}
 
 /// Extract parameter names and types from a method signature (excludes `self`).
 ///
@@ -53,10 +76,11 @@ fn returns_result(sig: &syn::Signature) -> bool {
 pub(crate) fn ensure_sourced_result_signature(
     sig: &mut syn::Signature,
     attr_name: &str,
+    framework: &proc_macro2::TokenStream,
 ) -> Result<bool, syn::Error> {
     match &sig.output {
         ReturnType::Default => {
-            sig.output = syn::parse_quote!(-> distributed::SourcedResult<()>);
+            sig.output = syn::parse_quote!(-> #framework::SourcedResult<()>);
             Ok(true)
         }
         ReturnType::Type(_, _) if returns_result(sig) => Ok(false),
@@ -338,6 +362,7 @@ fn projection_field_metadata_with_rename<'a>(
 }
 
 pub(crate) fn projection_body_metadata_tokens(
+    framework: &proc_macro2::TokenStream,
     role: &str,
     type_name: &str,
     version: u64,
@@ -378,12 +403,12 @@ pub(crate) fn projection_body_metadata_tokens(
         let present = field.present;
         let always_present = field.always_present;
         quote! {
-            distributed::projection::lower::ProjectionBodyFieldMetadata {
+            #framework::projection::lower::ProjectionBodyFieldMetadata {
                 rust_name: #rust_name,
                 wire_name: #wire_name,
                 rust_type: #rust_type,
                 portable_type:
-                    distributed::projection::lower::ProjectionPortableType::#portable_kind,
+                    #framework::projection::lower::ProjectionPortableType::#portable_kind,
                 nullable: #nullable,
                 present: #present,
                 always_present: #always_present,
@@ -392,7 +417,7 @@ pub(crate) fn projection_body_metadata_tokens(
     });
     Ok(quote! {
         const PROJECTION_FIELDS: &'static [
-            distributed::projection::lower::ProjectionBodyFieldMetadata
+            #framework::projection::lower::ProjectionBodyFieldMetadata
         ] = &[#(#entries),*];
         const PROJECTION_SCHEMA_FINGERPRINT: &'static str = #fingerprint;
     })

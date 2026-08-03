@@ -211,21 +211,39 @@ impl ProjectionDeltaIdentity {
 #[serde(tag = "kind", rename_all = "snake_case", deny_unknown_fields)]
 pub(crate) enum ProjectionSurfaceIdentity {
     Role { name: String },
-    Application { name: String, roles: Vec<String> },
+    Application {
+        name: String,
+        eligible_roles: Vec<String>,
+        schema_roles: Vec<String>,
+    },
 }
 
 impl ProjectionSurfaceIdentity {
     fn validate(&self) -> Result<(), ClientCompileError> {
         match self {
             Self::Role { name } => nonempty(name, "role surface"),
-            Self::Application { name, roles } => {
+            Self::Application {
+                name,
+                eligible_roles,
+                schema_roles,
+            } => {
                 nonempty(name, "application surface")?;
-                if roles.is_empty() {
+                if eligible_roles.is_empty() {
                     return Err(invalid(
-                        "ProjectionDelta application roles must be sorted, unique, and non-empty",
+                        "ProjectionDelta application eligible roles must be sorted, unique, and non-empty",
                     ));
                 }
-                validate_names(roles, "application roles")
+                validate_names(eligible_roles, "application eligible roles")?;
+                if schema_roles.is_empty()
+                    || !schema_roles
+                        .iter()
+                        .all(|role| eligible_roles.iter().any(|eligible| eligible == role))
+                {
+                    return Err(invalid(
+                        "ProjectionDelta application schema roles must be a sorted, unique, non-empty subset of eligible roles",
+                    ));
+                }
+                validate_names(schema_roles, "application schema roles")
             }
         }
     }
@@ -864,7 +882,8 @@ mod tests {
             let mut delta = vector();
             delta.identity.surface = ProjectionSurfaceIdentity::Application {
                 name: "web".into(),
-                roles,
+                eligible_roles: roles,
+                schema_roles: Vec::new(),
             };
             assert!(
                 delta.canonical_bytes().is_err(),
@@ -875,7 +894,8 @@ mod tests {
         let mut delta = vector();
         delta.identity.surface = ProjectionSurfaceIdentity::Application {
             name: "web".into(),
-            roles: vec!["admin".into(), "user".into()],
+            eligible_roles: vec!["admin".into(), "user".into()],
+            schema_roles: vec!["admin".into(), "user".into()],
         };
         assert!(delta.canonical_bytes().is_ok());
     }

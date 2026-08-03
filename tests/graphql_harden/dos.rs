@@ -250,7 +250,7 @@ async fn d8_nested_has_many_exceeds_complexity_budget() {
     use distributed::graphql::{read, GraphqlEngine};
     use distributed::ReadModel;
     use distributed::{
-        DistributedProjectManifest, RelationalReadModel, RelationshipDef, RelationshipKind,
+        ReadModelCatalog, RelationalReadModel, RelationshipDef, RelationshipKind,
     };
     use serde::{Deserialize, Serialize};
 
@@ -317,13 +317,13 @@ async fn d8_nested_has_many_exceeds_complexity_budget() {
         target_foreign_key: None,
     }];
     let grand = GrandView::schema().clone();
-    let manifest = DistributedProjectManifest::new("cx")
+    let manifest = ReadModelCatalog::new("cx")
         .table_schema(parent)
         .table_schema(child)
         .table_schema(grand);
 
     // Default max_complexity (500) + max_depth high enough that depth is not the limit.
-    let engine = GraphqlEngine::from_manifest(&manifest, pool)
+    let engine = GraphqlEngine::from_schema_catalog(&manifest, pool)
         .unwrap()
         .roles(&["user"])
         .max_depth(8)
@@ -367,7 +367,7 @@ async fn d8_shallow_nested_has_many_within_budget() {
     use distributed::graphql::{read, GraphqlEngine};
     use distributed::ReadModel;
     use distributed::{
-        DistributedProjectManifest, RelationalReadModel, RelationshipDef, RelationshipKind,
+        ReadModelCatalog, RelationalReadModel, RelationshipDef, RelationshipKind,
     };
     use serde::{Deserialize, Serialize};
 
@@ -413,10 +413,10 @@ async fn d8_shallow_nested_has_many_within_budget() {
         target_foreign_key: None,
     }];
     let child = ChildView::schema().clone();
-    let manifest = DistributedProjectManifest::new("cx2")
+    let manifest = ReadModelCatalog::new("cx2")
         .table_schema(parent)
         .table_schema(child);
-    let engine = GraphqlEngine::from_manifest(&manifest, pool)
+    let engine = GraphqlEngine::from_schema_catalog(&manifest, pool)
         .unwrap()
         .roles(&["user"])
         .permission::<ParentView>("user", read().all_columns())
@@ -444,7 +444,7 @@ async fn d8_low_max_complexity_rejects_single_nest() {
     use distributed::graphql::{read, GraphqlEngine};
     use distributed::ReadModel;
     use distributed::{
-        DistributedProjectManifest, RelationalReadModel, RelationshipDef, RelationshipKind,
+        ReadModelCatalog, RelationalReadModel, RelationshipDef, RelationshipKind,
     };
     use serde::{Deserialize, Serialize};
 
@@ -490,10 +490,10 @@ async fn d8_low_max_complexity_rejects_single_nest() {
         target_foreign_key: None,
     }];
     let child = ChildView::schema().clone();
-    let manifest = DistributedProjectManifest::new("cx3")
+    let manifest = ReadModelCatalog::new("cx3")
         .table_schema(parent)
         .table_schema(child);
-    let engine = GraphqlEngine::from_manifest(&manifest, pool)
+    let engine = GraphqlEngine::from_schema_catalog(&manifest, pool)
         .unwrap()
         .roles(&["user"])
         .max_complexity(20)

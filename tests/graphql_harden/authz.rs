@@ -4,7 +4,7 @@
 use async_graphql::Request;
 use distributed::graphql::{claim, col, read, GraphqlEngine, ModelPermissions};
 use distributed::{
-    DistributedProjectManifest, RelationalReadModel, RelationshipDef, RelationshipKind,
+    ReadModelCatalog, RelationalReadModel, RelationshipDef, RelationshipKind,
 };
 
 use super::common::{
@@ -197,12 +197,12 @@ async fn a5_nested_relationship_column_allowlist_denies() {
         target_foreign_key: None,
     }];
     let child = ChildView::schema().clone();
-    let manifest = DistributedProjectManifest::new("rel-authz")
+    let manifest = ReadModelCatalog::new("rel-authz")
         .table_schema(parent)
         .table_schema(child);
 
     // Parent: all columns; child: only child_id (not name).
-    let engine = GraphqlEngine::from_manifest(&manifest, pool)
+    let engine = GraphqlEngine::from_schema_catalog(&manifest, pool)
         .unwrap()
         .roles(&["user"])
         .permission::<ParentView>("user", read().all_columns())
@@ -252,11 +252,11 @@ fn parent_child_engine(pool: sqlx::SqlitePool) -> GraphqlEngine {
         target_foreign_key: None,
     }];
     let child = ChildView::schema().clone();
-    let manifest = DistributedProjectManifest::new("rel")
+    let manifest = ReadModelCatalog::new("rel")
         .table_schema(parent)
         .table_schema(child);
 
-    GraphqlEngine::from_manifest(&manifest, pool)
+    GraphqlEngine::from_schema_catalog(&manifest, pool)
         .unwrap()
         .roles(&["user"])
         .grant_all("user")

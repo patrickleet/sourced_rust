@@ -1,5 +1,5 @@
-error[E0425]: cannot find value `MISSING_COMMAND_SPEC` in this scope
- --> tests/compile_fail/application_module_missing_spec.rs:4:20
+error: command declarations derive their optional runtime mount; maintain one `commands: [*_DEFINITION]` list and remove `mounts`
+ --> tests/compile_fail/application_module_missing_spec.rs:5:9
   |
-4 |         commands: [MISSING_COMMAND_SPEC],
-  |                    ^^^^^^^^^^^^^^^^^^^^ not found in this scope
+5 |         mounts: [MISSING_COMMAND_MOUNT],
+  |         ^^^^^^

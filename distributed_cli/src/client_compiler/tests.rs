@@ -2296,7 +2296,12 @@ fn application_surfaces_are_explicit_and_fingerprint_separate_chunks() {
         "query Todos { todos { id } }",
     );
     let mut common = manifest();
-    common["surface"] = json!({"kind": "application", "name": "web-common", "roles": ["user"]});
+    common["surface"] = json!({
+        "kind": "application",
+        "name": "web-common",
+        "eligible_roles": ["user"],
+        "schema_roles": ["user"],
+    });
     refresh_schema_fingerprint(&mut common);
     let common_fingerprint = common["schema_fingerprint"]
         .as_str()
@@ -2304,7 +2309,7 @@ fn application_surfaces_are_explicit_and_fingerprint_separate_chunks() {
         .to_string();
     let common_project = compile_client(ClientCompileInput::new(
         common.clone(),
-        ClientSurfaceSelector::application("web-common"),
+        ClientSurfaceSelector::application("web-common", ["user"], ["user"]),
         vec![document.clone()],
     ))
     .expect("compile exact application surface");
@@ -2319,11 +2324,16 @@ fn application_surfaces_are_explicit_and_fingerprint_separate_chunks() {
     assert_eq!(mismatch.code, "client.manifest.surface_mismatch");
 
     let mut elevated = manifest();
-    elevated["surface"] = json!({"kind": "application", "name": "web-admin", "roles": ["admin"]});
+    elevated["surface"] = json!({
+        "kind": "application",
+        "name": "web-admin",
+        "eligible_roles": ["admin"],
+        "schema_roles": ["admin"],
+    });
     refresh_schema_fingerprint(&mut elevated);
     let elevated_project = compile_client(ClientCompileInput::new(
         elevated,
-        ClientSurfaceSelector::application("web-admin"),
+        ClientSurfaceSelector::application("web-admin", ["admin"], ["admin"]),
         vec![document],
     ))
     .expect("compile separate elevated application surface");

@@ -601,7 +601,7 @@ mod tests {
         assert!(main.contains("tracer_provider.shutdown()"));
 
         let service = contents(&project, "src/service.rs");
-        assert!(service.contains(".tracing(TracingManifest::otlp())"));
+        assert!(service.contains(".tracing(TracingDescriptor::otlp())"));
 
         let values = contents(&project, ".gitops/deploy/values.yaml");
         assert!(values.contains("enabled: true"));

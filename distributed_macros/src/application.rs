@@ -11,6 +11,7 @@ struct ApplicationInput {
     modules: Vec<Expr>,
     surfaces: Vec<Expr>,
     capabilities: Vec<Expr>,
+    extensions: Vec<Expr>,
 }
 
 impl Parse for ApplicationInput {
@@ -33,6 +34,7 @@ impl Parse for ApplicationInput {
             modules: Vec::new(),
             surfaces: Vec::new(),
             capabilities: Vec::new(),
+            extensions: Vec::new(),
         };
         while !content.is_empty() {
             let field: Ident = content.parse()?;
@@ -44,6 +46,7 @@ impl Parse for ApplicationInput {
                 "capabilities" | "required_capabilities" => {
                     output.capabilities = parse_expr_array(&content)?
                 }
+                "extensions" => output.extensions = parse_expr_array(&content)?,
                 other => {
                     return Err(syn::Error::new(
                         field.span(),
@@ -74,6 +77,7 @@ fn parse_expr_array(input: ParseStream<'_>) -> syn::Result<Vec<Expr>> {
 }
 
 pub fn expand(input: proc_macro2::TokenStream) -> syn::Result<TokenStream> {
+    let framework = crate::shared::framework_path()?;
     let input = syn::parse2::<ApplicationInput>(input)?;
     let ApplicationInput {
         visibility,
@@ -82,6 +86,7 @@ pub fn expand(input: proc_macro2::TokenStream) -> syn::Result<TokenStream> {
         modules,
         surfaces,
         capabilities,
+        extensions,
     } = input;
     let accessor = format_ident!("{}", name.to_string().to_lowercase());
     let modules = modules.iter().map(|value| quote! { (&*#value).clone() });
@@ -90,23 +95,28 @@ pub fn expand(input: proc_macro2::TokenStream) -> syn::Result<TokenStream> {
         .iter()
         .map(|value| quote! { #value })
         .collect::<Vec<_>>();
+    let extensions = extensions
+        .iter()
+        .map(|value| quote! { (&*#value).clone() })
+        .collect::<Vec<_>>();
     let capability_builder = if capabilities.is_empty() {
         quote! {}
     } else {
         quote! { .required_capabilities([#(#capabilities),*]) }
     };
     Ok(quote! {
-        #visibility static #name: ::std::sync::LazyLock<::distributed::application::Application> =
+        #visibility static #name: ::std::sync::LazyLock<#framework::application::Application> =
             ::std::sync::LazyLock::new(|| {
-                ::distributed::application::Application::new(#id)
+                #framework::application::Application::new(#id)
                     .modules([#(#modules),*])
                     .surfaces([#(#surfaces),*])
+                    .extensions([#(#extensions),*])
                     #capability_builder
                     .build()
                     .unwrap_or_else(|error| panic!("invalid generated application: {error}"))
             });
 
-        #visibility fn #accessor() -> &'static ::distributed::application::Application {
+        #visibility fn #accessor() -> &'static #framework::application::Application {
             &#name
         }
     })

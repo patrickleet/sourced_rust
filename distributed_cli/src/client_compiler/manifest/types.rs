@@ -55,7 +55,11 @@ pub(crate) struct ManifestComplexityWeights {
 #[serde(tag = "kind", rename_all = "snake_case", deny_unknown_fields)]
 pub(crate) enum ManifestSurface {
     Role { name: String },
-    Application { name: String, roles: Vec<String> },
+    Application {
+        name: String,
+        eligible_roles: Vec<String>,
+        schema_roles: Vec<String>,
+    },
 }
 
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]

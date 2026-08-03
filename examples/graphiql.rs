@@ -19,7 +19,7 @@ use std::sync::Arc;
 use distributed::graphql::GraphqlEngine;
 use distributed::microsvc::{serve, Service};
 use distributed::{
-    ColumnType, DistributedProjectManifest, PrimaryKey, TableColumn, TableKind, TableSchema,
+    ColumnType, ReadModelCatalog, PrimaryKey, TableColumn, TableKind, TableSchema,
 };
 use sqlx::sqlite::SqlitePoolOptions;
 
@@ -76,9 +76,9 @@ async fn seed_pool() -> sqlx::SqlitePool {
 async fn main() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
     let addr = std::env::var("GRAPHIQL_ADDR").unwrap_or_else(|_| "127.0.0.1:4000".into());
     let pool = seed_pool().await;
-    let manifest = DistributedProjectManifest::new("graphiql-demo").table_schema(orders_schema());
+    let manifest = ReadModelCatalog::new("graphiql-demo").table_schema(orders_schema());
 
-    let engine = GraphqlEngine::from_manifest(&manifest, pool)?
+    let engine = GraphqlEngine::from_schema_catalog(&manifest, pool)?
         .roles(&["user", "anonymous"])
         .grant_all("user")
         .graphiql(true)

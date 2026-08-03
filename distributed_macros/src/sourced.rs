@@ -12,7 +12,7 @@ use crate::aggregate::{
 };
 use crate::shared::{
     canonical_object_schema, ensure_sourced_result_signature, extract_params_with_types,
-    generate_digest_call, generate_enqueue_call, projection_body_metadata_tokens,
+    framework_path, generate_digest_call, generate_enqueue_call, projection_body_metadata_tokens,
     schema_fingerprint, validate_domain_event_name_literal,
     wrap_result_body_with_guard_and_postlude,
 };
@@ -314,6 +314,7 @@ fn expand_domain_capture(
     };
     let version = event_version(event_attr.version.as_ref());
     let event_name = &event_attr.event_name;
+    let framework = framework_path()?;
 
     match mode {
         DomainMode::State => {
@@ -382,6 +383,7 @@ fn expand_domain_capture(
                 #(#projection_field_definitions),*
             }))?;
             let projection_metadata = projection_body_metadata_tokens(
+                &framework,
                 "domain_event",
                 &body_type_name,
                 version.base10_parse::<u64>()?,
@@ -630,6 +632,7 @@ fn expand_domain_capture(
 }
 
 pub(crate) fn expand_sourced(attr: TokenStream2, item: TokenStream2) -> syn::Result<TokenStream2> {
+    let framework = framework_path()?;
     let args = parse_sourced_args.parse2(attr)?;
     let mut impl_block = syn::parse2::<ItemImpl>(item)?;
 
@@ -722,7 +725,7 @@ pub(crate) fn expand_sourced(attr: TokenStream2, item: TokenStream2) -> syn::Res
                         ensure_domain_body_has_no_early_exit(&method.block)?;
                     }
                     let signature_synthesized =
-                        ensure_sourced_result_signature(&mut method.sig, "event")?;
+                        ensure_sourced_result_signature(&mut method.sig, "event", &framework)?;
 
                     let params = extract_params_with_types(&method.sig, "event")?;
                     let param_name_refs: Vec<&Ident> =

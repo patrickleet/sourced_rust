@@ -1,4 +1,4 @@
-//! The manifest harness: `describe`/`schema`/`client-manifest` compile a tiny
+//! The artifact harness: `describe`/`schema`/`client-manifest` compile a tiny
 //! generated crate that depends on the target service and calls its portable
 //! export entrypoint. This module owns that codegen and the nested `cargo`
 //! invocations; the `cli` module maps flags onto
@@ -46,9 +46,8 @@ impl HarnessMode {
     fn default_entrypoint(self) -> &'static str {
         match self {
             HarnessMode::ClientManifest => "distributed_client_surface",
-            HarnessMode::DescribeJson | HarnessMode::SchemaSql(_) | HarnessMode::SchemaGraphql => {
-                "distributed_manifest"
-            }
+            HarnessMode::DescribeJson => "application_manifest",
+            HarnessMode::SchemaSql(_) | HarnessMode::SchemaGraphql => "read_model_catalog",
         }
     }
 }
@@ -161,8 +160,7 @@ fn harness_main_rs(entrypoint: &str, mode: HarnessMode) -> String {
         HarnessMode::DescribeJson => format!(
             r#"fn main() {{
     let manifest = {entrypoint}();
-    let envelope = distributed::DistributedManifestEnvelope::new(manifest);
-    println!("{{}}", serde_json::to_string_pretty(&envelope).expect("manifest should serialize"));
+    println!("{{}}", serde_json::to_string_pretty(&manifest).expect("manifest should serialize"));
 }}
 "#
         ),
@@ -173,12 +171,10 @@ fn harness_main_rs(entrypoint: &str, mode: HarnessMode) -> String {
             };
             format!(
                 r#"fn main() {{
-    let manifest = {entrypoint}();
-    let envelope = distributed::DistributedManifestEnvelope::new(manifest);
-    let statements = envelope
-        .project
+    let catalog = {entrypoint}();
+    let statements = catalog
         .sql_statements(distributed::table::TableSqlDialect::{dialect})
-        .expect("manifest SQL should render");
+        .expect("read-model SQL should render");
     if !statements.is_empty() {{
         println!("{{}}", statements.join("\n\n"));
     }}
@@ -188,12 +184,9 @@ fn harness_main_rs(entrypoint: &str, mode: HarnessMode) -> String {
         }
         HarnessMode::SchemaGraphql => format!(
             r#"fn main() {{
-    let manifest = {entrypoint}();
-    let envelope = distributed::DistributedManifestEnvelope::new(manifest);
-    let sdl = envelope
-        .project
-        .graphql_sdl()
-        .expect("manifest GraphQL SDL should render");
+    let catalog = {entrypoint}();
+    let sdl = distributed::graphql::graphql_sdl_for_tables(&catalog.tables)
+        .expect("read-model GraphQL SDL should render");
     print!("{{}}", sdl);
 }}
 "#
@@ -363,7 +356,7 @@ mod tests {
     #[test]
     fn schema_harness_uses_public_table_module_sql_dialect() {
         let main_rs = harness_main_rs(
-            "orders_service::distributed_manifest",
+            "orders_service::read_model_catalog",
             HarnessMode::SchemaSql(SchemaDialect::Postgres),
         );
 

@@ -100,7 +100,11 @@ pub struct ProjectionDeltaIdentity {
 #[serde(tag = "kind", rename_all = "snake_case", deny_unknown_fields)]
 pub enum ProjectionDeltaSurfaceIdentity {
     Role { name: String },
-    Application { name: String, roles: Vec<String> },
+    Application {
+        name: String,
+        eligible_roles: Vec<String>,
+        schema_roles: Vec<String>,
+    },
 }
 
 /// Exact selected program/binding compatibility pins.
@@ -453,10 +457,15 @@ impl From<&crate::graphql::client_manifest::ClientSurfaceIdentity>
             crate::graphql::client_manifest::ClientSurfaceIdentity::Role { name } => {
                 Self::Role { name: name.clone() }
             }
-            crate::graphql::client_manifest::ClientSurfaceIdentity::Application { name, roles } => {
+            crate::graphql::client_manifest::ClientSurfaceIdentity::Application {
+                name,
+                eligible_roles,
+                schema_roles,
+            } => {
                 Self::Application {
                     name: name.clone(),
-                    roles: roles.clone(),
+                    eligible_roles: eligible_roles.clone(),
+                    schema_roles: schema_roles.clone(),
                 }
             }
         }
@@ -467,14 +476,33 @@ impl ProjectionDeltaSurfaceIdentity {
     fn validate(&self) -> Result<(), ProjectionDeltaError> {
         match self {
             Self::Role { name } => validate_identity("role surface", name),
-            Self::Application { name, roles } => {
+            Self::Application {
+                name,
+                eligible_roles,
+                schema_roles,
+            } => {
                 validate_identity("application surface", name)?;
-                if roles.is_empty() {
+                if eligible_roles.is_empty() {
                     return Err(ProjectionDeltaError::InvalidIdentity {
-                        field: "application roles",
+                        field: "application eligible roles",
                     });
                 }
-                validate_names("application roles", roles)
+                validate_names("application eligible roles", eligible_roles)?;
+                if schema_roles.is_empty() {
+                    return Err(ProjectionDeltaError::InvalidIdentity {
+                        field: "application schema roles",
+                    });
+                }
+                validate_names("application schema roles", schema_roles)?;
+                if schema_roles
+                    .iter()
+                    .any(|role| !eligible_roles.iter().any(|eligible| eligible == role))
+                {
+                    return Err(ProjectionDeltaError::InvalidIdentity {
+                        field: "application schema roles",
+                    });
+                }
+                Ok(())
             }
         }
     }

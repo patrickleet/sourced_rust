@@ -16,7 +16,10 @@ mod keyword {
 
 pub fn expand_input_defaults(input: proc_macro::TokenStream) -> proc_macro::TokenStream {
     match syn::parse::<CommandInputDefaults>(input) {
-        Ok(defaults) => defaults.expand().into(),
+        Ok(defaults) => match crate::shared::framework_path() {
+            Ok(framework) => defaults.expand(framework).into(),
+            Err(error) => error.to_compile_error().into(),
+        },
         Err(error) => error.to_compile_error().into(),
     }
 }
@@ -55,14 +58,14 @@ impl Parse for CommandInputDefaults {
 }
 
 impl CommandInputDefaults {
-    fn expand(self) -> TokenStream {
+    fn expand(self, framework: TokenStream) -> TokenStream {
         let input = self.input;
         let defaults = self
             .defaults
             .into_iter()
-            .map(|default| default.expand(&input));
+            .map(|default| default.expand(&input, &framework));
         quote! {
-            distributed::graphql::__command_input_defaults::<#input>(
+            #framework::graphql::__command_input_defaults::<#input>(
                 vec![#(#defaults),*]
             )
         }
@@ -110,7 +113,7 @@ impl InputDefault {
         Ok(Self { field, generator })
     }
 
-    fn expand(self, input: &Path) -> TokenStream {
+    fn expand(self, input: &Path, framework: &TokenStream) -> TokenStream {
         let marker_name = format_ident!(
             "__Distributed{}EffectInputField_{}",
             input.segments.last().unwrap().ident,
@@ -120,10 +123,10 @@ impl InputDefault {
         let marker = marker_path(input, marker_name);
         match self.generator {
             InputDefaultGenerator::UuidV7 => quote! {
-                distributed::graphql::__input_default_uuid_v7::<#input, #marker>()
+                #framework::graphql::__input_default_uuid_v7::<#input, #marker>()
             },
             InputDefaultGenerator::Ulid => quote! {
-                distributed::graphql::__input_default_ulid::<#input, #marker>()
+                #framework::graphql::__input_default_ulid::<#input, #marker>()
             },
         }
     }

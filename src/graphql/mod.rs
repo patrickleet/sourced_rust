@@ -38,7 +38,7 @@ pub use command_contract::{
     __command_projection_event_descriptor, __command_projection_event_preview,
     __command_projection_events, __command_projection_preview_constant,
     __command_projection_state_preview, typed_command, Atomic, CommandConsistency,
-    CommandProjectionEventSet, CommandProjectionPreview, CommandProjectionPreviewSource,
+    CommandOutcome, CommandProjectionEventSet, CommandProjectionPreview, CommandProjectionPreviewSource,
     CompiledDirectProjectionTarget, CompiledInputDefaults, Eventual, PrepareCommandError,
     PreparedCommand, Succeeded, TypedCommand, TypedEffectExpression, TypedEffectKey,
     TypedEffectRelationship,

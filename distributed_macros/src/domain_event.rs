@@ -5,7 +5,7 @@ use syn::{Data, DeriveInput, Fields, LitInt, LitStr};
 
 use crate::shared::{
     canonical_object_schema, projection_body_metadata_tokens, schema_fingerprint,
-    validate_domain_event_name_literal,
+    validate_domain_event_name_literal, framework_path,
 };
 
 pub(crate) fn derive_domain_event(input: TokenStream) -> TokenStream {
@@ -16,6 +16,7 @@ pub(crate) fn derive_domain_event(input: TokenStream) -> TokenStream {
 }
 
 pub(crate) fn expand_domain_event(input: DeriveInput) -> syn::Result<proc_macro2::TokenStream> {
+    let framework = framework_path()?;
     let (event_name, version) = parse_domain_event_descriptor(&input)?;
     let fields = named_fields(&input)?;
     if !input.generics.params.is_empty() {
@@ -46,6 +47,7 @@ pub(crate) fn expand_domain_event(input: DeriveInput) -> syn::Result<proc_macro2
     );
     let fingerprint = schema_fingerprint(&schema);
     let projection_metadata = projection_body_metadata_tokens(
+        &framework,
         "domain_event",
         &type_name,
         version,
@@ -57,13 +59,13 @@ pub(crate) fn expand_domain_event(input: DeriveInput) -> syn::Result<proc_macro2
     let fingerprint = LitStr::new(&fingerprint, Span::call_site());
 
     Ok(quote! {
-        impl distributed::DomainEvent for #name {
-            const DESCRIPTOR: distributed::DomainEventDescriptor =
-                distributed::DomainEventDescriptor {
+        impl #framework::DomainEvent for #name {
+            const DESCRIPTOR: #framework::DomainEventDescriptor =
+                #framework::DomainEventDescriptor {
                     name: std::borrow::Cow::Borrowed(#event_name),
                     version: #version,
-                    body: distributed::DomainEventBodyDescriptor::distributed_json(
-                        distributed::DomainEventBodyKind::Event,
+                    body: #framework::DomainEventBodyDescriptor::distributed_json(
+                        #framework::DomainEventBodyKind::Event,
                         #type_name,
                         #version,
                         #schema,
@@ -72,18 +74,18 @@ pub(crate) fn expand_domain_event(input: DeriveInput) -> syn::Result<proc_macro2
                 };
         }
 
-        impl distributed::domain_event::DomainEventContract for #name {
+        impl #framework::domain_event::DomainEventContract for #name {
             const EVENT_NAME: &'static str = #event_name;
             const EVENT_VERSION: u64 = #version;
 
-            fn descriptor() -> distributed::DomainEventDescriptor {
-                <Self as distributed::DomainEvent>::DESCRIPTOR.clone()
+            fn descriptor() -> #framework::DomainEventDescriptor {
+                <Self as #framework::DomainEvent>::DESCRIPTOR.clone()
             }
         }
 
-        impl distributed::domain_event::DomainEventBodyContract<Self> for #name {}
+        impl #framework::domain_event::DomainEventBodyContract<Self> for #name {}
 
-        impl distributed::projection::lower::ProjectionBodyMetadata for #name {
+        impl #framework::projection::lower::ProjectionBodyMetadata for #name {
             #projection_metadata
         }
     })

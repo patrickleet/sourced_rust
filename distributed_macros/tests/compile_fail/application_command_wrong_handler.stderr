@@ -1,5 +1,5 @@
-error: typed command handlers must be async
- --> tests/compile_fail/application_command_wrong_handler.rs:2:1
-  |
-2 | fn wrong_handler(_input: ()) {}
-  | ^^
+error: first Result type must be PreparedCommand<Outcome>
+  --> tests/compile_fail/application_command_wrong_handler.rs:12:13
+   |
+12 | ) -> Result<(), distributed::microsvc::HandlerError> {
+   |             ^^

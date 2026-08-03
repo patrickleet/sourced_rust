@@ -9,7 +9,6 @@ struct ModuleInput {
     name: Ident,
     id: LitStr,
     commands: Vec<Expr>,
-    mounts: Vec<Expr>,
     projections: Vec<Expr>,
     surfaces: Vec<Expr>,
     capabilities: Vec<Expr>,
@@ -33,7 +32,6 @@ impl Parse for ModuleInput {
             name,
             id: LitStr::new("", proc_macro2::Span::call_site()),
             commands: Vec::new(),
-            mounts: Vec::new(),
             projections: Vec::new(),
             surfaces: Vec::new(),
             capabilities: Vec::new(),
@@ -44,7 +42,12 @@ impl Parse for ModuleInput {
             match field.to_string().as_str() {
                 "id" => output.id = content.parse()?,
                 "commands" => output.commands = parse_expr_array(&content)?,
-                "mounts" => output.mounts = parse_expr_array(&content)?,
+                "mounts" => {
+                    return Err(syn::Error::new(
+                        field.span(),
+                        "command declarations derive their optional runtime mount; maintain one `commands: [*_DEFINITION]` list and remove `mounts`",
+                    ))
+                }
                 "projections" => output.projections = parse_expr_array(&content)?,
                 "surfaces" => output.surfaces = parse_expr_array(&content)?,
                 "capabilities" | "required_capabilities" => {
@@ -80,20 +83,23 @@ fn parse_expr_array(input: ParseStream<'_>) -> syn::Result<Vec<Expr>> {
 }
 
 pub fn expand(input: proc_macro2::TokenStream) -> syn::Result<TokenStream> {
+    let framework = crate::shared::framework_path()?;
     let input = syn::parse2::<ModuleInput>(input)?;
     let ModuleInput {
         visibility,
         name,
         id,
         commands,
-        mounts,
         projections,
         surfaces,
         capabilities,
     } = input;
     let accessor = format_ident!("{}", name.to_string().to_lowercase());
+    let command_ids = commands
+        .iter()
+        .map(command_definition_id)
+        .collect::<syn::Result<Vec<_>>>()?;
     let commands = commands.iter().map(|value| quote! { (&*#value).clone() });
-    let mounts = mounts.iter().map(|value| quote! { (&*#value).clone() });
     let projections = projections
         .iter()
         .map(|value| quote! { (&*#value).clone() });
@@ -108,11 +114,14 @@ pub fn expand(input: proc_macro2::TokenStream) -> syn::Result<TokenStream> {
         quote! { .required_capabilities([#(#capabilities),*]) }
     };
     Ok(quote! {
-        #visibility static #name: ::std::sync::LazyLock<::distributed::application::Module> =
+        const _: () = #framework::application::assert_unique_command_ids(
+            &[#(#command_ids),*]
+        );
+
+        #visibility static #name: ::std::sync::LazyLock<#framework::application::Module> =
             ::std::sync::LazyLock::new(|| {
-                ::distributed::application::Module::builder(#id)
-                    .commands([#(#commands),*])
-                    .mounts([#(#mounts),*])
+            #framework::application::Module::builder(#id)
+                    .command_definitions([#(#commands),*])
                     .projections([#(#projections),*])
                     .surfaces([#(#surfaces),*])
                     #capability_builder
@@ -120,8 +129,37 @@ pub fn expand(input: proc_macro2::TokenStream) -> syn::Result<TokenStream> {
                     .unwrap_or_else(|error| panic!("invalid generated module: {error}"))
             });
 
-        #visibility fn #accessor() -> &'static ::distributed::application::Module {
+        #visibility fn #accessor() -> &'static #framework::application::Module {
             &#name
         }
     })
+}
+
+fn command_definition_id(value: &Expr) -> syn::Result<syn::Path> {
+    let Expr::Path(path) = value else {
+        return Err(syn::Error::new_spanned(
+            value,
+            "module command entries must be generated *_DEFINITION paths",
+        ));
+    };
+    let mut id_path = path.path.clone();
+    let Some(last) = id_path.segments.last_mut() else {
+        return Err(syn::Error::new_spanned(
+            value,
+            "module command entries must be generated *_DEFINITION paths",
+        ));
+    };
+    if !last.ident.to_string().ends_with("_DEFINITION") {
+        return Err(syn::Error::new_spanned(
+            value,
+            "module command entries must use the generated *_DEFINITION value so spec and mount cannot diverge",
+        ));
+    }
+    let span = last.ident.span();
+    let name = last.ident.to_string();
+    let name = name
+        .strip_suffix("_DEFINITION")
+        .expect("checked generated definition suffix");
+    last.ident = syn::Ident::new(&format!("{name}_COMMAND_ID"), span);
+    Ok(id_path)
 }
