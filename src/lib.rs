@@ -21,6 +21,7 @@ pub mod __private {
 
 pub mod aggregate;
 pub mod application;
+pub mod command_dispatch;
 pub mod bus;
 pub mod domain_event;
 pub mod entity;
@@ -66,9 +67,14 @@ pub use entity::{
 // crate root for contract-only packages.
 pub use application::{
     Application, ApplicationError, ApplicationManifest, CommandMount, CommandMountHandler,
-    CommandMountRegistrar, CommandSpec,
-    ContractCompiler, LogicalId, Module, ModuleManifest, ProjectionSpec, SurfaceSpec,
-    APPLICATION_MANIFEST_SCHEMA_VERSION,
+    CommandMountRegistrar, CommandSpec, ContractCompiler, DeploymentPlan, LogicalId, Module,
+    ModuleManifest, MountSelector, ProcessIntent, ProcessPreset, ProjectionSpec, SurfaceSpec,
+    APPLICATION_MANIFEST_SCHEMA_VERSION, DEPLOYMENT_PLAN_SCHEMA_VERSION,
+};
+pub use command_dispatch::{
+    CommandDispatchEnvelope, CommandDispatchError, CommandDispatchReceipt, CommandDispatcher,
+    LocalCommandDispatcher, RemoteCommandDispatcher, RemoteDispatchConfig, RemoteTrustMode,
+    SharedCommandDispatcher, APPROVED_REMOTE_DISPATCH_PROFILE, COMMAND_DISPATCH_ENVELOPE_VERSION,
 };
 
 // Domain events: typed outward contracts distinct from replay events/snapshots.
