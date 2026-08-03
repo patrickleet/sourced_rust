@@ -10,7 +10,6 @@ use super::error::{ApplicationError, ApplicationResult};
 use super::plan::{DeploymentPlan, ProcessPlan};
 use crate::command_dispatch::SharedCommandDispatcher;
 use std::collections::BTreeSet;
-use std::sync::Arc;
 
 /// Provider-backed capabilities available to the host at bind time.
 #[derive(Clone, Debug, Default)]
@@ -184,8 +183,7 @@ mod tests {
         use crate::command_dispatch::{CommandDispatchError, CommandDispatcher};
         use crate::microsvc::{CommandRequest, CommandResponse};
         use async_trait::async_trait;
-        use std::sync::Arc;
-
+        
         struct Stub;
         #[async_trait]
         impl CommandDispatcher for Stub {
