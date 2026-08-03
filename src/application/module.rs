@@ -72,6 +72,50 @@ pub struct SurfaceAggregateSpec {
 }
 
 impl ModelSpec {
+    /// Construct a minimal portable model contract for composition tests and
+    /// plan fixtures. Surfaces may still re-author richer model material.
+    pub fn try_new(
+        id: impl Into<String>,
+        table: impl Into<String>,
+        fields: impl IntoIterator<Item = ModelFieldSpec>,
+        primary_key: impl IntoIterator<Item = impl Into<String>>,
+    ) -> ApplicationResult<Self> {
+        let id = LogicalId::try_new("model", id)?.into_string();
+        let table = LogicalId::try_new("model table", table)?.into_string();
+        let mut fields = fields.into_iter().collect::<Vec<_>>();
+        fields.sort_by(|left, right| left.name.cmp(&right.name));
+        let mut primary_key = primary_key
+            .into_iter()
+            .map(Into::into)
+            .collect::<Vec<_>>();
+        primary_key.sort();
+        primary_key.dedup();
+        if fields.is_empty() {
+            return Err(ApplicationError::InvalidSpec(format!(
+                "model `{id}` must declare at least one field"
+            )));
+        }
+        if primary_key.is_empty() {
+            return Err(ApplicationError::InvalidSpec(format!(
+                "model `{id}` must declare a primary key"
+            )));
+        }
+        let mut spec = Self {
+            id: id.clone(),
+            table,
+            object: id,
+            fields,
+            primary_key,
+            relationships: Vec::new(),
+            row_policy: serde_json::json!({ "kind": "unrestricted" }),
+            role_limit: None,
+            aggregations: false,
+            fingerprint: String::new(),
+        };
+        spec.refresh_fingerprint()?;
+        Ok(spec)
+    }
+
     fn refresh_fingerprint(&mut self) -> ApplicationResult<()> {
         let mut value = serde_json::to_value(&*self)?;
         if let serde_json::Value::Object(fields) = &mut value {
@@ -132,6 +176,14 @@ impl ProjectionSpec {
         spec.canonicalize();
         spec.refresh_fingerprint()?;
         Ok(spec)
+    }
+
+    /// Mark the projection as direct (Atomic seal) and refresh its fingerprint.
+    pub fn with_direct(mut self, direct: bool) -> ApplicationResult<Self> {
+        self.direct = direct;
+        self.canonicalize();
+        self.refresh_fingerprint()?;
+        Ok(self)
     }
 
     fn from_owner(owner: &SurfaceProjectionOwner) -> ApplicationResult<Self> {
@@ -747,6 +799,7 @@ pub struct ModuleBuilder {
     id: String,
     definitions: Vec<CommandDefinition>,
     projections: Vec<ProjectionSpec>,
+    models: Vec<ModelSpec>,
     surfaces: Vec<SurfaceSpec>,
     required_capabilities: Vec<String>,
 }
@@ -757,6 +810,7 @@ impl ModuleBuilder {
             id: id.into(),
             definitions: Vec::new(),
             projections: Vec::new(),
+            models: Vec::new(),
             surfaces: Vec::new(),
             required_capabilities: Vec::new(),
         }
@@ -784,6 +838,16 @@ impl ModuleBuilder {
 
     pub fn projections(mut self, projections: impl IntoIterator<Item = ProjectionSpec>) -> Self {
         self.projections.extend(projections);
+        self
+    }
+
+    pub fn model(mut self, model: ModelSpec) -> Self {
+        self.models.push(model);
+        self
+    }
+
+    pub fn models(mut self, models: impl IntoIterator<Item = ModelSpec>) -> Self {
+        self.models.extend(models);
         self
     }
 
@@ -918,10 +982,12 @@ impl ModuleBuilder {
         }
         let events = event_by_name.into_values().collect();
 
-        let mut models = surfaces
-            .iter()
-            .flat_map(|surface| surface.models.iter().cloned())
-            .collect::<Vec<_>>();
+        let mut models = self.models;
+        models.extend(
+            surfaces
+                .iter()
+                .flat_map(|surface| surface.models.iter().cloned()),
+        );
         models.sort_by(|left, right| left.id.cmp(&right.id));
         models = dedup_identical("model", models, |model| model.id.clone())?;
 
