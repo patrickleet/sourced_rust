@@ -64,6 +64,7 @@ mod message_router;
 mod projector;
 mod runtime;
 mod service;
+mod workers;
 mod session;
 
 pub use crate::bus::{Message, MessageKind, PayloadDecodeError, SubscriptionPlan};
@@ -91,6 +92,7 @@ pub use runtime::{DEFAULT_MAX_PUBLISH_ATTEMPTS, DEFAULT_PUBLISH_LEASE};
 pub(crate) use service::CausalCommandProjectionEvidence;
 #[cfg(feature = "graphql")]
 pub use service::GraphqlServiceBindError;
+pub use workers::{spawn_outbox_publish_loop, spawn_service_consumer_loop};
 pub use service::{
     direct_read_model, CausalCommandContext, CausalCommitBuilder, CausalRepository, CommandRequest,
     CommandResponse, DeliveryKind, DirectReadModelProjection, HandlerNames, HandlerSpec,

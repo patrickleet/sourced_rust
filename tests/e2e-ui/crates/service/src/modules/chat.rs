@@ -5,7 +5,7 @@ use distributed::graphql::{typed_command, Eventual, SurfaceProjector};
 use distributed::microsvc::{
     ConfigurableOutboxPublisher, HasOutboxStore, HasRepo, RepoReadModelDependencies, Routes,
 };
-use distributed::{AggregateBuilder, AggregateRepository, Queueable, QueuedRepository};
+use distributed::{AggregateBuilder, AggregateRepository, QueuedRepository};
 
 use crate::bounds::{EventStore, Locks, ReadStore};
 use crate::handlers;
@@ -38,9 +38,7 @@ where
     AggregateRepository<QueuedRepository<R, L>, ChatMessage>:
         HasRepo + HasOutboxStore + ConfigurableOutboxPublisher + Send + Sync + 'static,
 {
-    Routes::new()
-        .with_repo(repo.queued_with(locks).aggregate::<ChatMessage>())
-        .with_read_model_store(read_models)
+    Routes::for_aggregate::<R, L, ChatMessage, S>(repo, locks, read_models)
         .typed_command(
             typed_command::<chat_post::ChatPostInput, Eventual<chat_post::ChatPostPayload>>(
                 chat_post::COMMAND,

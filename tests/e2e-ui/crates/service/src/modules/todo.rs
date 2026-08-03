@@ -9,7 +9,7 @@ use distributed::microsvc::{
 };
 use distributed::{
     command_input_defaults, AggregateBuilder, AggregateRepository, ProjectionEnvelopeField,
-    Queueable, QueuedRepository,
+    QueuedRepository,
 };
 use todo_domain::{
     Todo, TodoArchivedDomainEvent, TodoCompletedDomainEvent, TodoCreatedDomainEvent,
@@ -30,7 +30,7 @@ pub const MODULE_ID: &str = "todo";
 type TodoRoutes<R, L, S> =
     Routes<RepoReadModelDependencies<AggregateRepository<QueuedRepository<R, L>, Todo>, S>>;
 
-/// Mount todo commands and the todo projector into a Routes bundle.
+/// Mount todo commands and the todo projector.
 pub fn routes<R, L, S>(
     repo: R,
     locks: L,
@@ -51,9 +51,7 @@ where
     AggregateRepository<QueuedRepository<R, L>, Todo>:
         HasRepo + HasOutboxStore + ConfigurableOutboxPublisher + Send + Sync + 'static,
 {
-    Routes::new()
-        .with_repo(repo.queued_with(locks).aggregate::<Todo>())
-        .with_read_model_store(read_models)
+    Routes::for_aggregate::<R, L, Todo, S>(repo, locks, read_models)
         .typed_command(
             typed_command::<todo_create::TodoCreateInput, Eventual<todo_create::TodoCreatePayload>>(
                 todo_create::COMMAND,
