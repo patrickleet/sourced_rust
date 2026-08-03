@@ -1,0 +1,10 @@
+[package]
+name = "application-contract-only"
+version = "0.1.0"
+edition = "2021"
+publish = false
+
+[workspace]
+
+[dependencies]
+distributed = { path = "../../..", default-features = false }

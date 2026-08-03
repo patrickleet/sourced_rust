@@ -1,0 +1,5 @@
+error: typed command handlers must be async
+ --> tests/compile_fail/application_command_wrong_handler.rs:2:1
+  |
+2 | fn wrong_handler(_input: ()) {}
+  | ^^

@@ -67,6 +67,42 @@ impl DistributedClientSurfaceExport {
         Ok(Self::new(service_id, identity, surface, execution))
     }
 
+    /// Build a selected client contract without executable service provenance.
+    ///
+    /// This is the contract-only compiler boundary. It accepts the same
+    /// already-selected Surface IR as the runtime export but never constructs
+    /// a repository, lock manager, Service, or handler mount.
+    pub fn from_contract(
+        service_id: impl Into<String>,
+        surface: impl Into<Arc<Surface>>,
+    ) -> Result<Self, ClientManifestError> {
+        let surface = surface.into();
+        let service_id = service_id.into();
+        let identity = match &surface.selection {
+            SurfaceSelection::Catalog => {
+                return Err(ClientManifestError(
+                    "client exports require an explicitly role- or application-selected Surface"
+                        .into(),
+                ));
+            }
+            SurfaceSelection::Role { name } => ClientSurfaceIdentity::role(name),
+            SurfaceSelection::Application { name, roles } => {
+                ClientSurfaceIdentity::application(name, roles.clone())
+            }
+        };
+        if surface.service_binding.is_some() {
+            return Err(ClientManifestError(
+                "contract-only client export cannot carry executable Service provenance".into(),
+            ));
+        }
+        Ok(Self::new(
+            service_id,
+            identity,
+            surface,
+            ClientExecutionLimits::default(),
+        ))
+    }
+
     /// Build a portable export whose service identity comes from the same
     /// project manifest that supplied its table inventory.
     pub fn from_project(

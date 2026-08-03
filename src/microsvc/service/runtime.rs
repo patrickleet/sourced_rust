@@ -18,6 +18,7 @@ use super::helpers::{
 use super::helpers::{microsvc_dispatch_span, microsvc_handler_span};
 use super::request::{CommandRequest, CommandResponse};
 use super::routes::{CausalCommandPolicy, DynBusPublisher, ErasedRoutes, HandlerSpec, Routes};
+use crate::application::CommandSpec;
 use crate::bus::{
     Message, MessageKind, OrderedDelivery, RunOptions, SubscriptionPlan, TransportError,
 };
@@ -399,6 +400,18 @@ impl Service {
             .flat_map(|routes| routes.typed_command_contracts())
             .cloned()
             .collect()
+    }
+
+    /// Compile every explicitly registered typed command into portable specs.
+    /// The returned values contain no Service, repository, or handler pointer.
+    pub fn command_specs(&self) -> crate::application::ApplicationResult<Vec<CommandSpec>> {
+        let mut specs = self
+            .typed_command_contracts()
+            .iter()
+            .map(crate::application::CommandSpec::from_contract)
+            .collect::<crate::application::ApplicationResult<Vec<_>>>()?;
+        specs.sort_by(|left, right| left.id.cmp(&right.id));
+        Ok(specs)
     }
 
     pub(crate) fn typed_command_binding(&self) -> Result<TypedServiceCommandBinding, String> {

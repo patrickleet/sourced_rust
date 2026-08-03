@@ -1,12 +1,13 @@
 use serde::{Deserialize, Serialize};
 
-use crate::table::{
-    generate_table_migration_artifacts, table_schema_statements, TableSchema, TableSchemaRegistry,
-    TableSqlDialect,
-};
-use crate::{RelationalReadModel, TableMigrationArtifact, TableStoreError};
+pub use crate::application::{ApplicationManifest, APPLICATION_MANIFEST_SCHEMA_VERSION};
+pub use crate::table::TableSqlDialect;
 
-pub const DISTRIBUTED_MANIFEST_SCHEMA_VERSION: u32 = 1;
+/// Compatibility name for the complete logical manifest owner.
+pub type DistributedProjectManifest = ApplicationManifest;
+
+pub const DISTRIBUTED_MANIFEST_SCHEMA_VERSION: u32 =
+    crate::application::APPLICATION_MANIFEST_SCHEMA_VERSION;
 
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub struct DistributedManifestEnvelope {
@@ -20,102 +21,6 @@ impl DistributedManifestEnvelope {
             schema_version: DISTRIBUTED_MANIFEST_SCHEMA_VERSION,
             project,
         }
-    }
-}
-
-#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
-pub struct DistributedProjectManifest {
-    pub name: String,
-    pub tables: Vec<TableSchema>,
-    pub services: Vec<ServiceManifest>,
-}
-
-impl DistributedProjectManifest {
-    pub fn new(name: impl Into<String>) -> Self {
-        Self {
-            name: name.into(),
-            tables: Vec::new(),
-            services: Vec::new(),
-        }
-    }
-
-    pub fn read_model<M>(mut self) -> Self
-    where
-        M: RelationalReadModel,
-    {
-        self.try_register_read_model::<M>()
-            .expect("read model schema should be valid in distributed manifest");
-        self
-    }
-
-    pub fn try_read_model<M>(mut self) -> Result<Self, TableStoreError>
-    where
-        M: RelationalReadModel,
-    {
-        self.try_register_read_model::<M>()?;
-        Ok(self)
-    }
-
-    pub fn try_register_read_model<M>(&mut self) -> Result<&mut Self, TableStoreError>
-    where
-        M: RelationalReadModel,
-    {
-        self.try_register_table_schema(M::schema().clone())
-    }
-
-    pub fn table_schema(mut self, schema: TableSchema) -> Self {
-        self.try_register_table_schema(schema)
-            .expect("table schema should be valid in distributed manifest");
-        self
-    }
-
-    pub fn try_table_schema(mut self, schema: TableSchema) -> Result<Self, TableStoreError> {
-        self.try_register_table_schema(schema)?;
-        Ok(self)
-    }
-
-    pub fn try_register_table_schema(
-        &mut self,
-        schema: TableSchema,
-    ) -> Result<&mut Self, TableStoreError> {
-        let mut registry = self.table_registry()?;
-        registry.register_schema(schema.clone())?;
-        self.tables.push(schema);
-        Ok(self)
-    }
-
-    pub fn service(mut self, service: ServiceManifest) -> Self {
-        self.services.push(service);
-        self
-    }
-
-    pub fn table_registry(&self) -> Result<TableSchemaRegistry, TableStoreError> {
-        let mut registry = TableSchemaRegistry::new();
-        for schema in &self.tables {
-            registry.register_schema(schema.clone())?;
-        }
-        Ok(registry)
-    }
-
-    pub fn sql_statements(&self, dialect: TableSqlDialect) -> Result<Vec<String>, TableStoreError> {
-        table_schema_statements(&self.table_registry()?, dialect)
-    }
-
-    pub fn sql_migration_artifacts(
-        &self,
-        dialect: TableSqlDialect,
-    ) -> Result<Vec<TableMigrationArtifact>, TableStoreError> {
-        generate_table_migration_artifacts(&self.table_registry()?, dialect)
-    }
-
-    pub fn envelope(self) -> DistributedManifestEnvelope {
-        DistributedManifestEnvelope::new(self)
-    }
-
-    /// Render the dialect-independent GraphQL SDL artifact for all
-    /// [`TableKind::ReadModel`] tables in this manifest.
-    pub fn graphql_sdl(&self) -> Result<String, String> {
-        crate::graphql::graphql_sdl_for_tables(&self.tables)
     }
 }
 

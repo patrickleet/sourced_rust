@@ -34,6 +34,8 @@ required-features = ["graphql", "sqlite"]
 
 [features]
 default = []
+application-runtime = []
+runtime = ["application-runtime"]
 emitter = ["dep:event-emitter-rs"]
 metrics = []
 http = ["dep:axum", "dep:reqwest", "dep:tokio"]

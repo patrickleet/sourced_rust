@@ -1,10 +1,13 @@
 mod aggregate;
+mod application;
+mod command;
 mod command_input_defaults;
 mod digest;
 mod domain_event;
 mod domain_state;
 mod enqueue;
 mod graphql_types;
+mod module;
 mod mutation;
 // Event-owning `projection!` authoring removed (mutation projectors cutover).
 mod read_model;
@@ -14,6 +17,31 @@ mod sourced;
 
 use proc_macro::TokenStream;
 use syn::DeriveInput;
+
+/// Generate one typed command's portable contract and optional executable
+/// mount from the same handler declaration.
+#[proc_macro_attribute]
+pub fn command(attr: TokenStream, item: TokenStream) -> TokenStream {
+    command::expand(attr.into(), item.into())
+        .unwrap_or_else(|error| error.to_compile_error())
+        .into()
+}
+
+/// Register an explicit logical module.
+#[proc_macro]
+pub fn module(input: TokenStream) -> TokenStream {
+    module::expand(input.into())
+        .unwrap_or_else(|error| error.to_compile_error())
+        .into()
+}
+
+/// Register an explicit application and its selected modules/surfaces.
+#[proc_macro]
+pub fn application(input: TokenStream) -> TokenStream {
+    application::expand(input.into())
+        .unwrap_or_else(|error| error.to_compile_error())
+        .into()
+}
 
 /// Attribute macro that automatically queues a local event for emission.
 #[proc_macro_attribute]
