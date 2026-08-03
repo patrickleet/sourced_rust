@@ -170,7 +170,7 @@ client manifests).
 ## SDL artifact (CI gate)
 
 ```bash
-dctl schema --format graphql --out schema.graphql
+distributed schema --format graphql --out schema.graphql
 git diff --exit-code schema.graphql
 ```
 
@@ -179,7 +179,7 @@ git diff --exit-code schema.graphql
 ## Scaffold
 
 ```bash
-dctl scaffold my-service --query-api --read-models --store sqlite
+distributed scaffold my-service --query-api --read-models --store sqlite
 ```
 
 Emits typed causal handlers, a service-derived GraphQL engine, `src/query/`

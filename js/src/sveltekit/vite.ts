@@ -69,7 +69,7 @@ export type DistributedSvelteKitManifestSource =
 	| string
 	| Readonly<{
 			/**
-			 * Arguments passed to the configured dctl command. The first value
+			 * Arguments passed to the configured distributed command. The first value
 			 * must be `client-manifest`; stdout becomes ephemeral compiler input.
 			 */
 			args: readonly string[];
@@ -78,13 +78,13 @@ export type DistributedSvelteKitManifestSource =
 export type DistributedSvelteKitClientCompiler = Readonly<{
 	/** `$distributed` or an explicit elevated entrypoint such as `$distributed/admin`. */
 	module: string;
-	/** Existing manifest path, or canonical `dctl client-manifest` argv. */
+	/** Existing manifest path, or canonical `distributed client-manifest` argv. */
 	manifest: DistributedSvelteKitManifestSource;
 	/** Verify exactly one concrete role. Mutually exclusive with `surface`. */
 	role?: string;
 	/** Verify exactly one Rust-declared application surface. */
 	surface?: string;
-	/** GraphQL globs passed verbatim as repeated `dctl client --documents`. */
+	/** GraphQL globs passed verbatim as repeated `distributed client --documents`. */
 	documents: readonly string[];
 	/** Explicit `OPERATION=/route` fallbacks. */
 	routes?: readonly string[];
@@ -93,9 +93,9 @@ export type DistributedSvelteKitClientCompiler = Readonly<{
 }>;
 
 export type DistributedSvelteKitViteOptions = Readonly<{
-	/** Project root used for dctl cwd, document globs, and output containment. */
+	/** Project root used for distributed cwd, document globs, and output containment. */
 	cwd?: string;
-	/** Executable invoked without a shell. Defaults to `dctl`. */
+	/** Executable invoked without a shell. Defaults to `distributed`. */
 	command?: string;
 	/** Prefix argv, e.g. `cargo run ... --`; never interpreted by a shell. */
 	commandArgs?: readonly string[];
@@ -184,7 +184,7 @@ export async function generateDistributedSvelteKit(
 	await runCompilerOnce(options, 'generate');
 }
 
-/** Check every configured surface through canonical `dctl client --check`; never write. */
+/** Check every configured surface through canonical `distributed client --check`; never write. */
 export async function checkDistributedSvelteKit(
 	options: DistributedSvelteKitViteOptions
 ): Promise<void> {
@@ -394,7 +394,7 @@ export function distributedSvelteKitAliases(
 	options: Pick<DistributedSvelteKitViteOptions, 'cwd' | 'clients'>
 ): Readonly<Record<string, string>> {
 	const integration = resolveIntegration(
-		{ ...options, command: 'dctl', commandArgs: [] },
+		{ ...options, command: 'distributed', commandArgs: [] },
 		options.cwd ?? process.cwd()
 	);
 	validateResolvedPathsSync(integration);
@@ -419,7 +419,7 @@ function resolveIntegration(
 		throw new TypeError('distributedSvelteKit requires configuration');
 	}
 	const cwd = resolve(options.cwd ?? fallbackCwd);
-	const command = (options.command ?? 'dctl').trim();
+	const command = (options.command ?? 'distributed').trim();
 	if (command.length === 0) {
 		throw new TypeError('Distributed SvelteKit command must not be empty');
 	}
@@ -771,7 +771,7 @@ async function materializeManifest(
 		JSON.parse(result.stdout) as unknown;
 	} catch (error) {
 		throw new Error(
-			`dctl client-manifest for ${client.module} did not emit valid JSON`,
+			`distributed client-manifest for ${client.module} did not emit valid JSON`,
 			{ cause: error }
 		);
 	}
@@ -795,13 +795,13 @@ async function validateGeneratedEntrypoint(
 	const metadata = await lstat(entry);
 	if (metadata.isSymbolicLink() || !metadata.isFile()) {
 		throw new Error(
-			`dctl client for ${module} did not emit a regular ${GENERATED_SVELTEKIT_MODULE}`
+			`distributed client for ${module} did not emit a regular ${GENERATED_SVELTEKIT_MODULE}`
 		);
 	}
 	const canonical = await realpath(entry);
 	if (!isWithin(root, canonical)) {
 		throw new Error(
-			`dctl client entrypoint ${canonical} escaped project root ${root}`
+			`distributed client entrypoint ${canonical} escaped project root ${root}`
 		);
 	}
 }

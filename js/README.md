@@ -4,7 +4,7 @@ The generated, end-to-end typed client for
 [Distributed](https://github.com/hops-ops/distributed) services.
 
 Rust table, relationship, role, and command definitions produce one authorized
-client surface. `dctl client` combines that surface with application GraphQL
+client surface. `distributed client` combines that surface with application GraphQL
 documents and emits typed operations, live companions, route-load plans, and
 commands. This package executes those artifacts through one normalized,
 causally consistent browser replica.
@@ -37,9 +37,9 @@ by the `/sveltekit` and `/react` entry points, respectively.
 The service, not the browser, owns authorization and GraphQL semantics:
 
 ```bash
-dctl client-manifest > target/distributed-client.json
+distributed client-manifest > target/distributed-client.json
 
-dctl client \
+distributed client \
   --manifest target/distributed-client.json \
   --role user \
   --documents 'src/**/*.graphql' \
@@ -128,7 +128,7 @@ keeps ordinary application documents out of the admin tree; each trust boundary
 has its own Rust manifest entrypoint, generated directory, virtual module, and
 request-local replica. A single-surface application can omit the second entry.
 
-The Vite integration runs `dctl client` at startup/build, watches GraphQL
+The Vite integration runs `distributed client` at startup/build, watches GraphQL
 documents, stages all surfaces, commits a rollback-capable multi-output
 transaction, then triggers one reload. It exposes the generated Svelte wrapper
 through the configured virtual module:
@@ -440,7 +440,7 @@ command pipeline, or package-owned codegen executable.
 
 To move an existing pilot application:
 
-1. rerun `dctl client` and import its operation/command artifacts;
+1. rerun `distributed client` and import its operation/command artifacts;
 2. compose one replica through the framework adapter or core transport;
 3. remove handwritten cache targets, merge/update callbacks, and invalidation
    policies;

@@ -1,11 +1,11 @@
-//! The `dctl` command surface: clap types plus the [`run`] dispatcher. Generation
-//! lives in the crate's `generate`/`atlas` modules and the `describe`/`schema`
-//! harness in `manifest_harness`; this module maps flags onto those types and
-//! owns the scaffold's filesystem / process side effects (writing files,
-//! running `gh`).
+//! The `distributed` command surface: clap types plus the [`run_distributed`]
+//! dispatcher. Generation lives in the crate's `generate`/`atlas` modules and
+//! the `describe`/`schema` harness in `manifest_harness`; this module maps
+//! flags onto those types and owns filesystem / process side effects.
 //!
-//! `hops` mounts [`ServiceArgs`] under `hops service` and dispatches with [`run`],
-//! re-exporting the commands rather than reimplementing them.
+//! Host CLIs (for example `hops`) may mount [`ServiceArgs`] under a nested
+//! service command and dispatch with [`run`], re-exporting rather than
+//! reimplementing service-related commands.
 
 use clap::{ArgGroup, Args, Subcommand, ValueEnum};
 use std::collections::{BTreeMap, BTreeSet};
@@ -19,6 +19,10 @@ use crate::client_compiler::{
     compile_client, ClientCompileInput, ClientDocument, ClientRouteRegistration,
     ClientSurfaceSelector, GeneratedClientFile, GeneratedClientProject,
 };
+use crate::contracts::{
+    contracts_accept, contracts_check, unknown_scope_diagnostic, ContractAcceptScope,
+    ContractCatalog,
+};
 use crate::manifest_harness::{run_manifest_harness, HarnessMode, HarnessOptions};
 use crate::skills::{embedded_skills, generate_skills, SkillsInitSpec, AGENTS_MD_FILE};
 use crate::{
@@ -30,6 +34,33 @@ use crate::{
 const DISTRIBUTED_MANIFEST_SCHEMA_VERSION: u64 = 1;
 const DISTRIBUTED_CLIENT_MANIFEST_VERSION: u64 = 2;
 
+/// Top-level standalone CLI arguments for the `distributed` binary.
+#[derive(Args, Debug)]
+pub struct DistributedArgs {
+    #[command(subcommand)]
+    pub command: DistributedCommands,
+}
+
+#[derive(Subcommand, Debug)]
+pub enum DistributedCommands {
+    /// Aggregate contract lifecycle check and accept
+    Contracts(ContractsArgs),
+    /// Scaffold a new Distributed microservice crate
+    #[command(alias = "create")]
+    Scaffold(ScaffoldArgs),
+    /// Print a service's explicit ApplicationManifest as JSON
+    Describe(DescribeArgs),
+    /// Compile role/application-scoped GraphQL operations into client artifacts
+    Client(ClientArgs),
+    /// Compile the service's authorized client Surface manifest as JSON
+    ClientManifest(ClientManifestArgs),
+    /// Render schema artifacts (SQL or an Atlas Operator resource) from a read-model catalog
+    Schema(SchemaArgs),
+    /// Extract the embedded Distributed agent skills into a project
+    Skills(SkillsArgs),
+}
+
+/// Library adapter for embedding service-related commands under another CLI.
 #[derive(Args, Debug)]
 pub struct ServiceArgs {
     #[command(subcommand)]
@@ -51,6 +82,55 @@ pub enum ServiceCommands {
     Schema(SchemaArgs),
     /// Extract the embedded Distributed agent skills into a project
     Skills(SkillsArgs),
+}
+
+#[derive(Args, Debug)]
+pub struct ContractsArgs {
+    #[command(subcommand)]
+    pub command: ContractsCommands,
+}
+
+#[derive(Subcommand, Debug)]
+pub enum ContractsCommands {
+    /// Read-only aggregate contract check (never writes tracked files)
+    Check(ContractsCheckArgs),
+    /// Exact-scope accept with staging, atomic replace, and rollback
+    Accept(ContractsAcceptArgs),
+}
+
+#[derive(Args, Debug)]
+pub struct ContractsCheckArgs {
+    /// Catalog root directory
+    #[arg(long, default_value = ".")]
+    pub root: PathBuf,
+    /// Path to the contract catalog JSON (relative to root or absolute)
+    #[arg(long, default_value = "contracts/catalog.json")]
+    pub catalog: PathBuf,
+    /// Output format
+    #[arg(long, value_enum, default_value = "human")]
+    pub output: ContractsOutput,
+}
+
+#[derive(Args, Debug)]
+pub struct ContractsAcceptArgs {
+    /// Catalog root directory
+    #[arg(long, default_value = ".")]
+    pub root: PathBuf,
+    /// Exact accept scope (no broad wildcards)
+    #[arg(long)]
+    pub scope: String,
+    /// Staged payload file: JSON object mapping portable relative paths to UTF-8 contents
+    #[arg(long)]
+    pub staged: PathBuf,
+    /// Output format
+    #[arg(long, value_enum, default_value = "human")]
+    pub output: ContractsOutput,
+}
+
+#[derive(Clone, Copy, Debug, ValueEnum)]
+pub enum ContractsOutput {
+    Human,
+    Json,
 }
 
 #[derive(Args, Debug)]
@@ -436,8 +516,24 @@ impl From<GitopsPromote> for GitopsPromoteTarget {
     }
 }
 
-/// Dispatch a parsed service command. The `dctl` binary and any host CLI (e.g.
-/// `hops service`) both call this.
+/// Dispatch the standalone `distributed` binary command tree.
+pub fn run_distributed(args: &DistributedArgs) -> Result<(), Box<dyn Error>> {
+    match &args.command {
+        DistributedCommands::Contracts(contracts) => run_contracts(contracts),
+        DistributedCommands::Scaffold(scaffold) => run_scaffold(scaffold),
+        DistributedCommands::Describe(describe) => run_describe(describe),
+        DistributedCommands::Client(client) => run_client(client),
+        DistributedCommands::ClientManifest(client) => run_client_manifest(client),
+        DistributedCommands::Schema(schema) => run_schema(schema),
+        DistributedCommands::Skills(skills) => match &skills.command {
+            SkillsCommands::Init(init) => run_skills_init(init),
+            SkillsCommands::List => run_skills_list(),
+        },
+    }
+}
+
+/// Dispatch a parsed service command. Host CLIs (for example `hops service`)
+/// call this without mounting the aggregate contracts surface.
 pub fn run(args: &ServiceArgs) -> Result<(), Box<dyn Error>> {
     match &args.command {
         ServiceCommands::Scaffold(scaffold) => run_scaffold(scaffold),
@@ -449,6 +545,86 @@ pub fn run(args: &ServiceArgs) -> Result<(), Box<dyn Error>> {
             SkillsCommands::Init(init) => run_skills_init(init),
             SkillsCommands::List => run_skills_list(),
         },
+    }
+}
+
+fn run_contracts(args: &ContractsArgs) -> Result<(), Box<dyn Error>> {
+    match &args.command {
+        ContractsCommands::Check(check) => run_contracts_check(check),
+        ContractsCommands::Accept(accept) => run_contracts_accept(accept),
+    }
+}
+
+fn run_contracts_check(args: &ContractsCheckArgs) -> Result<(), Box<dyn Error>> {
+    let root = absolute_path(&args.root)?;
+    let catalog_path = if args.catalog.is_absolute() {
+        args.catalog.clone()
+    } else {
+        root.join(&args.catalog)
+    };
+    let catalog = ContractCatalog::from_path(&catalog_path)?;
+    let report = contracts_check(&catalog, &root, std::iter::empty());
+    match args.output {
+        ContractsOutput::Human => {
+            if report.human.is_empty() {
+                println!("contracts check: ok");
+            } else {
+                println!("{}", report.human);
+            }
+        }
+        ContractsOutput::Json => {
+            println!("{}", serde_json::to_string_pretty(&report.result)?);
+        }
+    }
+    if report.ok {
+        Ok(())
+    } else {
+        Err("contracts check failed".into())
+    }
+}
+
+fn run_contracts_accept(args: &ContractsAcceptArgs) -> Result<(), Box<dyn Error>> {
+    let Some(scope) = ContractAcceptScope::parse(&args.scope) else {
+        let diagnostic = unknown_scope_diagnostic(&args.scope);
+        return Err(diagnostic.human().into());
+    };
+    let root = absolute_path(&args.root)?;
+    let staged_source = fs::read_to_string(&args.staged)?;
+    let staged_json: serde_json::Value = serde_json::from_str(&staged_source)?;
+    let object = staged_json
+        .as_object()
+        .ok_or("staged payload must be a JSON object of path -> string contents")?;
+    let mut staged = BTreeMap::new();
+    for (path, value) in object {
+        let contents = value
+            .as_str()
+            .ok_or_else(|| format!("staged path `{path}` must map to a UTF-8 string"))?;
+        staged.insert(path.clone(), contents.as_bytes().to_vec());
+    }
+    let report = contracts_accept(&root, scope, &staged)?;
+    match args.output {
+        ContractsOutput::Human => {
+            if report.noop {
+                println!("contracts accept: no-op ({})", report.scope);
+            } else {
+                println!(
+                    "contracts accept: updated {} path(s) for scope {}",
+                    report.changed_paths.len(),
+                    report.scope
+                );
+                for path in &report.changed_paths {
+                    println!("  {path}");
+                }
+            }
+        }
+        ContractsOutput::Json => {
+            println!("{}", serde_json::to_string_pretty(&report)?);
+        }
+    }
+    if report.ok {
+        Ok(())
+    } else {
+        Err("contracts accept failed".into())
     }
 }
 
@@ -1205,7 +1381,7 @@ fn stale_generated_client_files(
             MAX_GENERATED_CLIENT_ARTIFACT_BYTES,
             "stale generated client artifact",
         )?;
-        if !contents.starts_with("/** GENERATED by dctl client. Do not edit. */") {
+        if !contents.starts_with("/** GENERATED by distributed client. Do not edit. */") {
             return Err(format!(
                 "refusing to remove {} because its compiler ownership marker is missing",
                 path.display()
@@ -1269,7 +1445,7 @@ fn check_client_project(
     }
     drift.sort();
     Err(format!(
-        "generated Distributed client artifacts are stale:\n  {}\nrun `dctl client` without --check to regenerate",
+        "generated Distributed client artifacts are stale:\n  {}\nrun `distributed client` without --check to regenerate",
         drift.join("\n  ")
     )
     .into())

@@ -28,10 +28,10 @@ grep -q 'src/query/' "$SKILL"
 grep -q 'with_graphql' "$SKILL"
 echo "OK: README + skill present and teach query layout"
 
-# 2) Build dctl
+# 2) Build distributed
 cd "$ROOT"
 cargo build -p distributed_cli --quiet
-DCTL="$ROOT/target/debug/dctl"
+DCTL="$ROOT/target/debug/distributed"
 test -x "$DCTL"
 
 # 3) Scaffold --query-api (as skill documents)

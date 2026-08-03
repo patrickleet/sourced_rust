@@ -1,4 +1,4 @@
-//! End-to-end compile tests for `dctl scaffold`: scaffold a project, point its
+//! End-to-end compile tests for `distributed scaffold`: scaffold a project, point its
 //! `distributed` dependency at this workspace, and `cargo check` the output.
 //!
 //! The fast generation tests only assert rendered text, so template drift
@@ -34,10 +34,10 @@ fn scaffold(dir_name: &str, extra_args: &[&str]) -> PathBuf {
         ])
         .args(extra_args)
         .output()
-        .expect("dctl should run");
+        .expect("distributed should run");
     assert!(
         output.status.success(),
-        "dctl scaffold {extra_args:?} failed:\n{}",
+        "distributed scaffold {extra_args:?} failed:\n{}",
         String::from_utf8_lossy(&output.stderr)
     );
     out_dir

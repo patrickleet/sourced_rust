@@ -156,7 +156,7 @@ export type ReplicaCommandRevalidationPlan = {
 };
 
 /**
- * Framework-neutral executable command descriptor emitted by `dctl client`.
+ * Framework-neutral executable command descriptor emitted by `distributed client`.
  *
  * The compiler has already validated the Rust-owned declaration. Runtime
  * validation remains fail-closed so a stale or hand-edited artifact cannot

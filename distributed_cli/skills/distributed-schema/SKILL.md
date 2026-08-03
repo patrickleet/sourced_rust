@@ -1,11 +1,11 @@
 ---
 name: distributed-schema
-description: Inspect a Distributed read-model catalog and render schema artifacts - dctl describe (application JSON), dctl schema (migration SQL or an Atlas Operator resource), and the explicit application/read-model artifact contract. Use when working on read-model schemas, migrations, or schema automation.
+description: Inspect a Distributed read-model catalog and render schema artifacts - distributed describe (application JSON), distributed schema (migration SQL or an Atlas Operator resource), and the explicit application/read-model artifact contract. Use when working on read-model schemas, migrations, or schema automation.
 ---
 
 # Manifests and schema artifacts
 
-`dctl describe` and `dctl schema` are the artifact toolchain for a Distributed
+`distributed describe` and `distributed schema` are the artifact toolchain for a Distributed
 service. Both **compile the target crate**, but they call different explicit
 owners: `describe` defaults to `<crate>::application_manifest` for the logical
 application artifact, while `schema` defaults to `<crate>::read_model_catalog`
@@ -35,25 +35,25 @@ A read model not registered here is invisible to `schema` — no SQL is rendered
 for it. When you add a `#[derive(ReadModel)]` type, register it; the logical
 application entrypoint must select its own Surface contract explicitly.
 
-## `dctl describe` — manifest JSON
+## `distributed describe` — manifest JSON
 
 ```bash
-dctl describe                                              # current directory
-dctl describe --manifest-path path/to/Cargo.toml --package orders-service
+distributed describe                                              # current directory
+distributed describe --manifest-path path/to/Cargo.toml --package orders-service
 ```
 
 Prints the versioned manifest envelope. The contract other tooling relies on:
-a numeric `schema_version` (currently `1`) and a `project` object. `dctl`
+a numeric `schema_version` (currently `1`) and a `project` object. `distributed`
 rejects envelopes with a missing/different `schema_version`, so treat the
 envelope as a stable machine interface, not free-form JSON.
 
-## `dctl schema` — SQL or Atlas resource
+## `distributed schema` — SQL or Atlas resource
 
 Renders the **desired-state** schema for the manifest's read models and
 operational tables. Output goes to stdout (or `--out <file>`).
 
 ```bash
-dctl schema --dialect postgres        # migration SQL (or --dialect sqlite)
+distributed schema --dialect postgres        # migration SQL (or --dialect sqlite)
 ```
 
 ### Atlas Operator resource
@@ -63,7 +63,7 @@ for the ariga atlas-operator, which diffs the live database and applies the
 migration in-cluster — declarative schema via GitOps:
 
 ```bash
-dctl schema --format atlas \
+distributed schema --format atlas \
   --name orders \
   --namespace data \
   --db-secret orders-db \
@@ -80,7 +80,7 @@ dctl schema --format atlas \
 - `--dev-url` sets `spec.devURL`, the scratch database Atlas uses to plan
   changes.
 - The resource goes to **stdout** deliberately — redirect it to wherever schema
-  manifests live (service repo or a GitOps repo). `dctl` does not pick a
+  manifests live (service repo or a GitOps repo). `distributed` does not pick a
   location.
 
 ## Running in CI
@@ -97,14 +97,14 @@ dependencies resolvable:
 Typical schema-gate step: render and diff so schema drift fails the build.
 
 ```bash
-dctl schema --dialect postgres --out rendered.sql
+distributed schema --dialect postgres --out rendered.sql
 git diff --exit-code rendered.sql
 ```
 
 Or regenerate the Atlas resource and let the GitOps PR carry the change:
 
 ```bash
-dctl schema --format atlas --name orders --db-secret orders-db \
+distributed schema --format atlas --name orders --db-secret orders-db \
   --out manifests/orders.schema.yaml
 ```
 
@@ -117,7 +117,7 @@ dctl schema --format atlas --name orders --db-secret orders-db \
   `#[readmodel(table = "...", primary_key = ["a", "b"])]`, `#[index(...)]`.
 - Rendered SQL is desired-state, not a diff. Diffing against the live database
   is the Atlas operator's job (`--format atlas`) or your migration tool's.
-- `dctl schema` and `dctl describe` also ship as `hops service schema` /
+- `distributed schema` and `distributed describe` also ship as `hops service schema` /
   `hops service describe`.
 
 ## Reference

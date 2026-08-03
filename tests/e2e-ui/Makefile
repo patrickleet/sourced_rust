@@ -157,7 +157,7 @@ ui-test: ui-install
 gen-client: ui-install
 	cd ui && $(NPM) run client:generate
 
-## Byte/file-set drift check through dctl --check; never repairs generated files.
+## Byte/file-set drift check through distributed --check; never repairs generated files.
 check-client: ui-install
 	cd ui && $(NPM) run client:check
 

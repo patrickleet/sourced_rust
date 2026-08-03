@@ -242,7 +242,7 @@ fn pool_free_client_surface_contract(
         .expect("e2e-ui application Surface should export")
 }
 
-/// Pool-free normal application export consumed by `dctl client-manifest`.
+/// Pool-free normal application export consumed by `distributed client-manifest`.
 ///
 /// **Eligible roles** are `admin` + `user` so multi-role admin principals can
 /// open the normal app client. **Schema privilege** is the `user` grant set
