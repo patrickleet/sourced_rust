@@ -8,6 +8,7 @@
 mod artifact;
 mod catalog;
 mod diagnostic;
+mod migrations;
 
 #[cfg(test)]
 mod tests;
@@ -25,4 +26,10 @@ pub use catalog::{
 };
 pub use diagnostic::{
     ContractCheckResult, ContractDiagnostic, ContractDiagnosticCode, SafeDiagnosticValue,
+};
+pub use migrations::{
+    check_migration_history, check_migration_inventory, BaselineAvailability, MigrationDialect,
+    MigrationEntry, MigrationFile, MigrationHistoryCheck, MigrationInventory, MAX_MIGRATIONS,
+    MAX_MIGRATION_INVENTORY_BYTES, MAX_MIGRATION_SQL_BYTES, MIGRATION_INVENTORY_PATH,
+    MIGRATION_INVENTORY_SCHEMA_VERSION, MIGRATION_OWNER, MIGRATION_SCOPE,
 };

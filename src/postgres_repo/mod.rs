@@ -20,7 +20,7 @@ use crate::repository::RepositoryError;
 use crate::sqlx_repo::read_model::quote_identifier;
 use crate::sqlx_repo::repo::{
     embedded_migrator, outbox_message_from_row, system_time_epoch_secs, SqlxOutboxStore,
-    SqlxRepository,
+    SqlxRepository, POSTGRES_MIGRATIONS,
 };
 use crate::sqlx_repo::{
     self, is_postgres_unique_violation, read_model_i64_from_u64 as sqlx_read_model_i64_from_u64,
@@ -32,30 +32,8 @@ use crate::table::{
     ColumnType, RowValue, TableColumn as ColumnDef, TableStoreError as ReadModelError,
 };
 
-static POSTGRES_MIGRATOR: LazyLock<Migrator> = LazyLock::new(|| {
-    embedded_migrator(&[
-        (
-            1,
-            "initial",
-            include_str!("../../migrations/postgres/0001_initial.sql"),
-        ),
-        (
-            2,
-            "command ledger",
-            include_str!("../../migrations/postgres/0002_command_ledger.sql"),
-        ),
-        (
-            3,
-            "projection protocol",
-            include_str!("../../migrations/postgres/0003_projection_protocol.sql"),
-        ),
-        (
-            4,
-            "command ledger atomic state",
-            include_str!("../../migrations/postgres/0004_command_ledger_atomic_state.sql"),
-        ),
-    ])
-});
+static POSTGRES_MIGRATOR: LazyLock<Migrator> =
+    LazyLock::new(|| embedded_migrator(POSTGRES_MIGRATIONS));
 const POSTGRES_BACKEND: &str = "postgres";
 const BIGINT_STORAGE: &str = "bigint storage";
 

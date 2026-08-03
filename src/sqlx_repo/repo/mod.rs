@@ -90,6 +90,10 @@ use snapshots::*;
 
 pub(crate) use backend::embedded_migrator;
 pub use backend::SqlxRepoBackend;
+#[cfg(feature = "postgres")]
+pub(crate) use backend::POSTGRES_MIGRATIONS;
+#[cfg(feature = "sqlite")]
+pub(crate) use backend::SQLITE_MIGRATIONS;
 pub(crate) use errors::{repository_storage_error, system_time_epoch_secs};
 #[cfg(feature = "sqlite")]
 pub(crate) use outbox::outbox_message_by_id;

@@ -21,7 +21,7 @@ use crate::repository::RepositoryError;
 use crate::sqlx_repo::read_model::quote_identifier;
 use crate::sqlx_repo::repo::{
     embedded_migrator, outbox_message_by_id, system_time_epoch_secs, SqlxOutboxStore,
-    SqlxRepository,
+    SqlxRepository, SQLITE_MIGRATIONS,
 };
 use crate::sqlx_repo::{
     self, is_sqlite_unique_constraint, read_model_i64_from_u64 as sqlx_read_model_i64_from_u64,
@@ -33,30 +33,7 @@ use crate::table::{
     ColumnType, RowValue, TableColumn as ColumnDef, TableStoreError as ReadModelError,
 };
 
-static SQLITE_MIGRATOR: LazyLock<Migrator> = LazyLock::new(|| {
-    embedded_migrator(&[
-        (
-            1,
-            "initial",
-            include_str!("../../migrations/sqlite/0001_initial.sql"),
-        ),
-        (
-            2,
-            "command ledger",
-            include_str!("../../migrations/sqlite/0002_command_ledger.sql"),
-        ),
-        (
-            3,
-            "projection protocol",
-            include_str!("../../migrations/sqlite/0003_projection_protocol.sql"),
-        ),
-        (
-            4,
-            "command ledger atomic state",
-            include_str!("../../migrations/sqlite/0004_command_ledger_atomic_state.sql"),
-        ),
-    ])
-});
+static SQLITE_MIGRATOR: LazyLock<Migrator> = LazyLock::new(|| embedded_migrator(SQLITE_MIGRATIONS));
 const SQLITE_BACKEND: &str = "sqlite";
 const SIGNED_INTEGER_STORAGE: &str = "signed integer storage";
 

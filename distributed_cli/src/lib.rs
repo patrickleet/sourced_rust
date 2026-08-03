@@ -37,12 +37,16 @@ pub use client_compiler::{
     GeneratedClientProject, GeneratedOperationSummary, GeneratedRoutePlan,
 };
 pub use contracts::{
-    ArtifactIdentity, ArtifactPredecessor, ArtifactProvenance, ClientDeclaration, ClientInventory,
+    check_migration_history, check_migration_inventory, ArtifactIdentity, ArtifactPredecessor,
+    ArtifactProvenance, BaselineAvailability, ClientDeclaration, ClientInventory,
     ContractArtifactKind, ContractCatalog, ContractCheckResult, ContractDiagnostic,
     ContractDiagnosticCode, ContractEntry, ContractError, ContractScope,
-    EnvironmentPolicyReference, SafeDiagnosticValue, MAX_CATALOG_BYTES, MAX_CATALOG_DIRECTORIES,
-    MAX_CATALOG_DIRECTORY_DEPTH, MAX_CATALOG_DIRECTORY_ENTRIES, MAX_CATALOG_ENTRIES,
-    MAX_CATALOG_FILES, MAX_CATALOG_GLOB_MATCHES, MAX_CATALOG_JSON_DEPTH,
+    EnvironmentPolicyReference, MigrationDialect, MigrationEntry, MigrationFile,
+    MigrationHistoryCheck, MigrationInventory, SafeDiagnosticValue, MAX_CATALOG_BYTES,
+    MAX_CATALOG_DIRECTORIES, MAX_CATALOG_DIRECTORY_DEPTH, MAX_CATALOG_DIRECTORY_ENTRIES,
+    MAX_CATALOG_ENTRIES, MAX_CATALOG_FILES, MAX_CATALOG_GLOB_MATCHES, MAX_CATALOG_JSON_DEPTH,
+    MAX_MIGRATIONS, MAX_MIGRATION_INVENTORY_BYTES, MAX_MIGRATION_SQL_BYTES,
+    MIGRATION_INVENTORY_PATH, MIGRATION_INVENTORY_SCHEMA_VERSION, MIGRATION_OWNER, MIGRATION_SCOPE,
 };
 pub use generate::{generate_service_scaffold, package_name};
 pub use skills::{embedded_skills, generate_skills, EmbeddedFile, EmbeddedSkill, SkillsInitSpec};

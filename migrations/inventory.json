@@ -1,0 +1,53 @@
+{
+  "schema_version": 1,
+  "migrations": [
+    {
+      "version": 1,
+      "description": "initial",
+      "sqlite": {
+        "path": "migrations/sqlite/0001_initial.sql",
+        "sha256": "9a3f07064df04b3d5ddc8e4895bd682d9afbc864cf9871a5957fc4a81c2d75a1"
+      },
+      "postgres": {
+        "path": "migrations/postgres/0001_initial.sql",
+        "sha256": "fe5c1345b8d1fc672561cf66a6a916354be85d0e597a5b50b14f01c7a4895d39"
+      }
+    },
+    {
+      "version": 2,
+      "description": "command ledger",
+      "sqlite": {
+        "path": "migrations/sqlite/0002_command_ledger.sql",
+        "sha256": "91f9267d5326fd0b8d51305b38bbc6a14a39fb22a28ef888d24d3dde1120348f"
+      },
+      "postgres": {
+        "path": "migrations/postgres/0002_command_ledger.sql",
+        "sha256": "905e8c31b285544a4a0b5c357c55497774c59112d4cc52176f10d962514db883"
+      }
+    },
+    {
+      "version": 3,
+      "description": "projection protocol",
+      "sqlite": {
+        "path": "migrations/sqlite/0003_projection_protocol.sql",
+        "sha256": "786de26e41b3809e74eb53f209f2d0a03ff1ec11e7de121b1a2cbd7093ffa307"
+      },
+      "postgres": {
+        "path": "migrations/postgres/0003_projection_protocol.sql",
+        "sha256": "087bbab7045c598e54a995e612b8734c6fea87029b8951d15a820ae7ee0d3d72"
+      }
+    },
+    {
+      "version": 4,
+      "description": "command ledger atomic state",
+      "sqlite": {
+        "path": "migrations/sqlite/0004_command_ledger_atomic_state.sql",
+        "sha256": "fb9729bbea27d6c450eee84931547dc1528b04bc275ec46441841fc01ca5643e"
+      },
+      "postgres": {
+        "path": "migrations/postgres/0004_command_ledger_atomic_state.sql",
+        "sha256": "bc49ca9c58a294b7c5876c9fcde8a14a8b6110594a06c48b37720d320a22d97e"
+      }
+    }
+  ]
+}
