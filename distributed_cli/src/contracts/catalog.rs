@@ -9,6 +9,7 @@ use serde::{Deserialize, Deserializer, Serialize};
 use serde_json::Value;
 use std::collections::{BTreeMap, BTreeSet};
 use std::fs;
+use std::io::Read;
 use std::path::{Component, Path, PathBuf};
 
 /// Version of the repository catalog wire format.
@@ -177,7 +178,7 @@ impl ContractCatalog {
                 "catalog path is not a regular file",
             ));
         }
-        let bytes = read_bounded_file(path, MAX_CATALOG_BYTES, "catalog")?;
+        let bytes = read_bounded_file(&canonical_catalog, MAX_CATALOG_BYTES, "catalog")?;
         let input = std::str::from_utf8(&bytes).map_err(|_| {
             ContractError::new(
                 ContractDiagnosticCode::CatalogInvalid,
@@ -251,18 +252,24 @@ impl ContractCatalog {
 
     /// Validate and return a pure aggregate result for a read-only check.
     pub fn check(&self, root: impl AsRef<Path>) -> ContractCheckResult {
-        let mut result = ContractCheckResult {
-            catalog_identity: self
-                .canonical_bytes()
-                .ok()
-                .map(|bytes| canonical_digest(&bytes)),
-            artifacts: self
-                .entries
-                .iter()
-                .map(|(id, entry)| (id.clone(), entry.identity.clone()))
-                .collect(),
-            diagnostics: BTreeSet::new(),
+        let mut result = ContractCheckResult::default();
+        if let Err(error) = self.validate_structure() {
+            result.push(diagnostic_for_error(&error));
+            return result;
+        }
+        let canonical_catalog = match self.canonical_bytes() {
+            Ok(bytes) => bytes,
+            Err(error) => {
+                result.push(diagnostic_for_error(&error));
+                return result;
+            }
         };
+        result.catalog_identity = Some(canonical_digest(&canonical_catalog));
+        result.artifacts = self
+            .entries
+            .iter()
+            .map(|(id, entry)| (id.clone(), entry.identity.clone()))
+            .collect();
         if let Err(error) = self.validate_paths(root) {
             result.push(diagnostic_for_error(&error));
         }
@@ -365,11 +372,14 @@ impl ContractCatalog {
             }
             for source in &entry.provenance.sources {
                 validate_catalog_path(source, true)?;
-                if contains_glob(source) && entry.provenance.glob_limit.is_none() {
-                    return Err(ContractError::new(
-                        ContractDiagnosticCode::CatalogUnboundedGlob,
-                        format!("source glob `{source}` has no finite match limit"),
-                    ));
+                if contains_glob(source) {
+                    validate_bounded_glob(source)?;
+                    if entry.provenance.glob_limit.is_none() {
+                        return Err(ContractError::new(
+                            ContractDiagnosticCode::CatalogUnboundedGlob,
+                            format!("source glob `{source}` has no finite match limit"),
+                        ));
+                    }
                 }
             }
             if entry.outputs.is_empty() {
@@ -1028,6 +1038,35 @@ fn contains_glob(value: &str) -> bool {
         .any(|byte| matches!(byte, b'*' | b'?' | b'[' | b']' | b'{'))
 }
 
+fn validate_bounded_glob(value: &str) -> Result<(), ContractError> {
+    if value.contains("**") {
+        return Err(ContractError::new(
+            ContractDiagnosticCode::CatalogUnboundedGlob,
+            format!("recursive catalog glob `{value}` is not bounded by a match limit"),
+        ));
+    }
+    let components = value.split('/').collect::<Vec<_>>();
+    let glob_components = components
+        .iter()
+        .enumerate()
+        .filter(|(_, component)| contains_glob(component))
+        .map(|(index, _)| index)
+        .collect::<Vec<_>>();
+    if glob_components.len() != 1 || glob_components[0] != components.len() - 1 {
+        return Err(ContractError::new(
+            ContractDiagnosticCode::CatalogUnboundedGlob,
+            format!("catalog glob `{value}` must match entries in one bounded directory"),
+        ));
+    }
+    Ok(())
+}
+
+fn glob_parent(value: &str) -> PathBuf {
+    value
+        .rsplit_once('/')
+        .map_or_else(PathBuf::new, |(parent, _)| PathBuf::from(parent))
+}
+
 fn read_bounded_file(path: &Path, limit: usize, label: &str) -> Result<Vec<u8>, ContractError> {
     let metadata = fs::symlink_metadata(path).map_err(|error| {
         ContractError::new(
@@ -1048,18 +1087,42 @@ fn read_bounded_file(path: &Path, limit: usize, label: &str) -> Result<Vec<u8>, 
                 format!("{label} symlink does not resolve to a regular file"),
             ));
         }
-    } else if !metadata.is_file() {
+    }
+    let metadata = fs::metadata(path).map_err(|error| {
+        ContractError::new(
+            ContractDiagnosticCode::CatalogPath,
+            format!("inspect {label}: {error}"),
+        )
+    })?;
+    if !metadata.is_file() {
         return Err(ContractError::new(
             ContractDiagnosticCode::CatalogSpecialFile,
             format!("{label} must be a regular file"),
         ));
     }
-    let bytes = fs::read(path).map_err(|error| {
+    let file_size = metadata.len();
+    if file_size > limit as u64 {
+        return Err(ContractError::new(
+            ContractDiagnosticCode::CatalogInputLimit,
+            format!("{label} is {file_size} bytes; maximum supported size is {limit}"),
+        ));
+    }
+    let read_limit = limit.saturating_add(1);
+    let file = fs::File::open(path).map_err(|error| {
         ContractError::new(
             ContractDiagnosticCode::CatalogPath,
             format!("read {label}: {error}"),
         )
     })?;
+    let mut bytes = Vec::with_capacity(file_size as usize);
+    file.take(read_limit as u64)
+        .read_to_end(&mut bytes)
+        .map_err(|error| {
+            ContractError::new(
+                ContractDiagnosticCode::CatalogPath,
+                format!("read {label}: {error}"),
+            )
+        })?;
     if bytes.len() > limit {
         return Err(ContractError::new(
             ContractDiagnosticCode::CatalogInputLimit,
@@ -1102,6 +1165,8 @@ impl PhysicalPathWalker {
                     format!("{label} glob `{declared}` has no finite match limit"),
                 )
             })?;
+            validate_bounded_glob(declared)?;
+            self.guard_glob_candidates(&glob_parent(declared), declared, label)?;
             let pattern = self.root.join(declared);
             let pattern = pattern.to_str().ok_or_else(|| {
                 ContractError::new(
@@ -1143,6 +1208,79 @@ impl PhysicalPathWalker {
         self.walk_target(&self.root.join(declared), declared, label)
     }
 
+    fn guard_glob_candidates(
+        &mut self,
+        parent: &Path,
+        declared: &str,
+        label: &str,
+    ) -> Result<(), ContractError> {
+        let candidate_directory = fs::canonicalize(self.root.join(parent)).map_err(|error| {
+            ContractError::new(
+                ContractDiagnosticCode::CatalogPath,
+                format!("resolve {label} glob directory `{declared}`: {error}"),
+            )
+        })?;
+        if !candidate_directory.starts_with(&self.root) {
+            return Err(ContractError::new(
+                ContractDiagnosticCode::CatalogSymlinkEscape,
+                format!("{label} glob directory `{declared}` escapes the repository root"),
+            ));
+        }
+        let metadata = fs::metadata(&candidate_directory).map_err(|error| {
+            ContractError::new(
+                ContractDiagnosticCode::CatalogPath,
+                format!("inspect {label} glob directory `{declared}`: {error}"),
+            )
+        })?;
+        if !metadata.is_dir() {
+            return Err(ContractError::new(
+                ContractDiagnosticCode::CatalogPath,
+                format!("{label} glob directory `{declared}` is not a directory"),
+            ));
+        }
+        let depth = candidate_directory
+            .strip_prefix(&self.root)
+            .map_err(|_| {
+                ContractError::new(
+                    ContractDiagnosticCode::CatalogSymlinkEscape,
+                    format!("{label} glob directory `{declared}` escapes the repository root"),
+                )
+            })?
+            .components()
+            .count();
+        if depth > MAX_CATALOG_DIRECTORY_DEPTH {
+            return Err(ContractError::new(
+                ContractDiagnosticCode::CatalogInputLimit,
+                format!(
+                    "catalog directory depth exceeds {MAX_CATALOG_DIRECTORY_DEPTH} at `{declared}`"
+                ),
+            ));
+        }
+        if self.directories.insert(candidate_directory)
+            && self.directories.len() > MAX_CATALOG_DIRECTORIES
+        {
+            return Err(ContractError::new(
+                ContractDiagnosticCode::CatalogInputLimit,
+                format!("catalog directories exceed {MAX_CATALOG_DIRECTORIES} at `{declared}`"),
+            ));
+        }
+        for entry in fs::read_dir(self.root.join(parent)).map_err(|error| {
+            ContractError::new(
+                ContractDiagnosticCode::CatalogPath,
+                format!("read {label} glob directory `{declared}`: {error}"),
+            )
+        })? {
+            entry.map_err(|error| {
+                ContractError::new(
+                    ContractDiagnosticCode::CatalogPath,
+                    format!("read {label} glob directory `{declared}`: {error}"),
+                )
+            })?;
+            self.record_directory_entry(declared)?;
+        }
+        Ok(())
+    }
+
     fn walk_target(
         &mut self,
         path: &Path,
@@ -1170,7 +1308,8 @@ impl PhysicalPathWalker {
         if metadata.is_file() {
             self.record_file(canonical, declared)
         } else if metadata.is_dir() {
-            self.walk_directory(&canonical, declared)
+            let depth = self.relative_depth(&canonical, declared)?;
+            self.walk_directory(&canonical, declared, depth)
         } else {
             Err(ContractError::new(
                 ContractDiagnosticCode::CatalogSpecialFile,
@@ -1179,8 +1318,24 @@ impl PhysicalPathWalker {
         }
     }
 
-    fn walk_directory(&mut self, directory: &Path, declared: &str) -> Result<(), ContractError> {
-        let mut pending = vec![(directory.to_path_buf(), 0usize)];
+    fn relative_depth(&self, path: &Path, declared: &str) -> Result<usize, ContractError> {
+        path.strip_prefix(&self.root)
+            .map(|relative| relative.components().count())
+            .map_err(|_| {
+                ContractError::new(
+                    ContractDiagnosticCode::CatalogSymlinkEscape,
+                    format!("catalog path `{declared}` escapes the repository root"),
+                )
+            })
+    }
+
+    fn walk_directory(
+        &mut self,
+        directory: &Path,
+        declared: &str,
+        initial_depth: usize,
+    ) -> Result<(), ContractError> {
+        let mut pending = vec![(directory.to_path_buf(), initial_depth)];
         while let Some((directory, depth)) = pending.pop() {
             if depth > MAX_CATALOG_DIRECTORY_DEPTH {
                 return Err(ContractError::new(

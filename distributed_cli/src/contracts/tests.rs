@@ -1,7 +1,8 @@
 use super::*;
 use serde_json::Value;
-use std::fs;
+use std::fs::{self, OpenOptions};
 use std::path::{Path, PathBuf};
+use std::process::Command;
 use std::time::{SystemTime, UNIX_EPOCH};
 
 #[cfg(unix)]
@@ -55,6 +56,41 @@ fn path_catalog(source: &str) -> ContractCatalog {
         }
     });
     ContractCatalog::from_json_str(&input.to_string()).expect("path catalog JSON")
+}
+
+fn glob_catalog(source: &str, glob_limit: usize) -> ContractCatalog {
+    let input = serde_json::json!({
+        "schema_version": 1,
+        "entries": {
+            "glob-test": {
+                "id": "glob-test",
+                "kind": "migration_inventory",
+                "scope": { "id": "path/glob" },
+                "owner": "test/glob",
+                "identity": {
+                    "kind": "migration_inventory",
+                    "value": "sha256:glob-test"
+                },
+                "provenance": {
+                    "sources": [source],
+                    "generator": "test.glob",
+                    "glob_limit": glob_limit
+                },
+                "outputs": { "output": "inside.txt" }
+            }
+        }
+    });
+    ContractCatalog::from_json_str(&input.to_string()).expect("glob catalog JSON")
+}
+
+fn create_sparse_file(path: &Path, length: usize) {
+    let file = OpenOptions::new()
+        .create(true)
+        .truncate(true)
+        .write(true)
+        .open(path)
+        .expect("sparse file");
+    file.set_len(length as u64).expect("sparse file length");
 }
 
 struct TemporaryDirectory(PathBuf);
@@ -124,6 +160,49 @@ fn catalog_references_one_declarative_client_inventory() {
         .expect("canonical catalog parses")
         .canonical_bytes()
         .expect("second canonical catalog")
+    );
+}
+
+#[test]
+fn catalog_from_path_accepts_repository_relative_catalog_name() {
+    if std::env::var_os("DISTRIBUTED_CATALOG_RELATIVE_PATH_CHILD").is_some() {
+        ContractCatalog::from_path("distributed.contracts.json")
+            .expect("repository-relative catalog path should resolve from the repository root");
+        return;
+    }
+
+    let status = Command::new(std::env::current_exe().expect("contract test executable"))
+        .current_dir(repository_root())
+        .env("DISTRIBUTED_CATALOG_RELATIVE_PATH_CHILD", "1")
+        .args([
+            "--exact",
+            "contracts::tests::catalog_from_path_accepts_repository_relative_catalog_name",
+            "--quiet",
+        ])
+        .status()
+        .expect("run repository-relative catalog test from the repository root");
+    assert!(status.success());
+}
+
+#[test]
+fn catalog_and_inventory_reject_sparse_oversized_files_before_reading() {
+    let root = TemporaryDirectory::new("sparse-input");
+    let catalog_path = root.path().join("distributed.contracts.json");
+    create_sparse_file(&catalog_path, MAX_CATALOG_BYTES + 1);
+    let catalog_error = ContractCatalog::from_path(&catalog_path)
+        .expect_err("sparse oversized catalog must fail before allocation");
+    assert_eq!(
+        catalog_error.code(),
+        ContractDiagnosticCode::CatalogInputLimit
+    );
+
+    let inventory_path = root.path().join("distributed.clients.json");
+    create_sparse_file(&inventory_path, MAX_CATALOG_BYTES + 1);
+    let inventory_error = ClientInventory::from_path(&inventory_path)
+        .expect_err("sparse oversized inventory must fail before allocation");
+    assert_eq!(
+        inventory_error.code(),
+        ContractDiagnosticCode::CatalogInputLimit
     );
 }
 
@@ -198,6 +277,56 @@ fn catalog_rejects_unknown_kinds_duplicate_owners_outputs_and_unbounded_globs() 
         unbounded_glob.code(),
         ContractDiagnosticCode::CatalogUnboundedGlob
     );
+}
+
+#[test]
+fn catalog_rejects_recursive_globs_even_with_a_match_limit() {
+    let mut recursive_glob: Value =
+        serde_json::from_str(fixture("valid")).expect("valid fixture JSON");
+    recursive_glob["entries"]["application-manifest"]["provenance"]["sources"][0] =
+        Value::String("migrations/**/*.sql".to_string());
+    recursive_glob["entries"]["application-manifest"]["provenance"]["glob_limit"] = Value::from(1);
+    let recursive_glob = ContractCatalog::from_json_str(
+        &serde_json::to_string(&recursive_glob).expect("recursive glob JSON"),
+    )
+    .expect_err("recursive globs must fail despite a match limit");
+    assert_eq!(
+        recursive_glob.code(),
+        ContractDiagnosticCode::CatalogUnboundedGlob
+    );
+}
+
+#[test]
+fn catalog_glob_discovery_bounds_candidate_directory_entries() {
+    let root = TemporaryDirectory::new("glob-candidates");
+    fs::write(root.path().join("inside.txt"), b"output").expect("output fixture");
+    let candidates = root.path().join("candidates");
+    fs::create_dir(&candidates).expect("candidate directory");
+    for index in 0..=MAX_CATALOG_DIRECTORY_ENTRIES {
+        fs::write(
+            candidates.join(format!("candidate-{index:04}.txt")),
+            b"candidate",
+        )
+        .expect("candidate fixture");
+    }
+
+    let error = glob_catalog("candidates/*.sql", 1)
+        .validate_paths(root.path())
+        .expect_err("glob candidate traversal must be bounded independently of matches");
+    assert_eq!(error.code(), ContractDiagnosticCode::CatalogInputLimit);
+}
+
+#[test]
+fn catalog_accepts_a_glob_within_a_bounded_candidate_directory() {
+    let root = TemporaryDirectory::new("bounded-glob");
+    fs::write(root.path().join("inside.txt"), b"output").expect("output fixture");
+    let candidates = root.path().join("candidates");
+    fs::create_dir(&candidates).expect("candidate directory");
+    fs::write(candidates.join("selected.sql"), b"candidate").expect("candidate fixture");
+
+    glob_catalog("candidates/*.sql", 1)
+        .validate_paths(root.path())
+        .expect("bounded glob candidate traversal");
 }
 
 #[test]
@@ -464,12 +593,16 @@ fn human_and_json_diagnostics_preserve_same_facts_and_redact_values() {
 
     let direct_human = directly_mutated.human();
     let direct_json = serde_json::to_string(&directly_mutated).expect("direct diagnostic JSON");
+    let direct_debug = format!("{directly_mutated:?}");
     assert!(!direct_human.contains("postgres://"));
     assert!(!direct_human.contains("password="));
     assert!(!direct_human.contains("token="));
     assert!(!direct_json.contains("postgres://"));
     assert!(!direct_json.contains("password="));
     assert!(!direct_json.contains("token="));
+    assert!(!direct_debug.contains("postgres://"));
+    assert!(!direct_debug.contains("password="));
+    assert!(!direct_debug.contains("token="));
 }
 
 #[test]
@@ -519,6 +652,57 @@ fn canonical_bytes_reject_direct_public_secret_mutation() {
         inventory_error.code(),
         ContractDiagnosticCode::EnvironmentValue
     );
+}
+
+#[test]
+fn check_and_aggregate_renderers_do_not_leak_mutated_artifact_identity() {
+    let mut catalog = ContractCatalog::from_json_str(fixture("valid")).expect("valid catalog");
+    catalog
+        .entries
+        .get_mut("application-manifest")
+        .expect("application entry")
+        .identity
+        .value = "postgres://user:password@example.invalid/db".to_string();
+
+    let checked = catalog.check(repository_root());
+    assert!(checked.artifacts.is_empty());
+    let checked_json = checked.to_json().expect("checked JSON");
+    let checked_canonical =
+        String::from_utf8(checked.canonical_bytes().expect("checked canonical JSON"))
+            .expect("checked JSON is UTF-8");
+    let checked_debug = format!("{checked:?}");
+    assert!(!checked_json.contains("postgres://"));
+    assert!(!checked_canonical.contains("postgres://"));
+    assert!(!checked_debug.contains("postgres://"));
+
+    let mut directly_mutated = ContractCheckResult {
+        catalog_identity: Some("token=identity".to_string()),
+        ..Default::default()
+    };
+    directly_mutated.artifacts.insert(
+        "secret=entry".to_string(),
+        ArtifactIdentity::new(
+            ContractArtifactKind::ApplicationManifest,
+            "password=artifact",
+        ),
+    );
+    let direct_json = directly_mutated.to_json().expect("aggregate JSON");
+    let direct_canonical = String::from_utf8(
+        directly_mutated
+            .canonical_bytes()
+            .expect("aggregate canonical JSON"),
+    )
+    .expect("aggregate JSON is UTF-8");
+    let direct_debug = format!("{directly_mutated:?}");
+    assert!(!direct_json.contains("token=identity"));
+    assert!(!direct_json.contains("secret=entry"));
+    assert!(!direct_json.contains("password=artifact"));
+    assert!(!direct_canonical.contains("token=identity"));
+    assert!(!direct_canonical.contains("secret=entry"));
+    assert!(!direct_canonical.contains("password=artifact"));
+    assert!(!direct_debug.contains("token=identity"));
+    assert!(!direct_debug.contains("secret=entry"));
+    assert!(!direct_debug.contains("password=artifact"));
 }
 
 #[test]

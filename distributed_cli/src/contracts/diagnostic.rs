@@ -126,7 +126,7 @@ impl<'de> Deserialize<'de> for SafeDiagnosticValue {
 }
 
 /// One stable, safely redacted contract diagnostic.
-#[derive(Clone, Debug, Deserialize, Eq, Ord, PartialEq, PartialOrd)]
+#[derive(Clone, Deserialize, Eq, Ord, PartialEq, PartialOrd)]
 #[serde(deny_unknown_fields)]
 pub struct ContractDiagnostic {
     /// Stable classification code.
@@ -185,7 +185,7 @@ pub struct ContractDiagnostic {
     pub detail: String,
 }
 
-#[derive(Serialize)]
+#[derive(Debug, Serialize)]
 struct RedactedContractDiagnostic {
     code: ContractDiagnosticCode,
     #[serde(skip_serializing_if = "Option::is_none")]
@@ -381,8 +381,17 @@ impl fmt::Display for ContractDiagnostic {
     }
 }
 
+impl fmt::Debug for ContractDiagnostic {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        formatter
+            .debug_struct("ContractDiagnostic")
+            .field("facts", &self.redacted_wire())
+            .finish()
+    }
+}
+
 /// Aggregated read-only contract-check output.
-#[derive(Clone, Debug, Default, Deserialize, Eq, PartialEq, Serialize)]
+#[derive(Clone, Default, Deserialize, Eq, PartialEq)]
 #[serde(deny_unknown_fields)]
 pub struct ContractCheckResult {
     /// Identity of the canonical catalog, when serialization succeeded.
@@ -394,6 +403,57 @@ pub struct ContractCheckResult {
     /// Sorted independent diagnostics.
     #[serde(default)]
     pub diagnostics: BTreeSet<ContractDiagnostic>,
+}
+
+#[derive(Serialize)]
+struct RedactedContractCheckResult {
+    #[serde(skip_serializing_if = "Option::is_none")]
+    catalog_identity: Option<String>,
+    artifacts: BTreeMap<String, ArtifactIdentity>,
+    diagnostics: BTreeSet<ContractDiagnostic>,
+}
+
+impl ContractCheckResult {
+    fn redacted_wire(&self) -> RedactedContractCheckResult {
+        RedactedContractCheckResult {
+            catalog_identity: self.catalog_identity.as_deref().map(redact_value),
+            artifacts: self
+                .artifacts
+                .iter()
+                .map(|(entry_id, identity)| {
+                    (
+                        redact_value(entry_id),
+                        ArtifactIdentity {
+                            kind: identity.kind,
+                            value: redact_value(&identity.value),
+                        },
+                    )
+                })
+                .collect(),
+            diagnostics: self.diagnostics.clone(),
+        }
+    }
+}
+
+impl Serialize for ContractCheckResult {
+    fn serialize<S>(&self, serializer: S) -> Result<S::Ok, S::Error>
+    where
+        S: serde::Serializer,
+    {
+        self.redacted_wire().serialize(serializer)
+    }
+}
+
+impl fmt::Debug for ContractCheckResult {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        let redacted = self.redacted_wire();
+        formatter
+            .debug_struct("ContractCheckResult")
+            .field("catalog_identity", &redacted.catalog_identity)
+            .field("artifacts", &redacted.artifacts)
+            .field("diagnostics", &redacted.diagnostics)
+            .finish()
+    }
 }
 
 impl ContractCheckResult {
