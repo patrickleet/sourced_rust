@@ -1,25 +1,136 @@
 use super::*;
 
-/// Build an embedded migrator from statically included migration files
-/// (`(version, description, sql)` per file, in order). sqlx's `migrate!`
-/// macro would assemble this at compile time but drags in the whole
-/// proc-macro stack; here the checksums are computed once at first use, so
-/// keep each backend's list in sync with its `migrations/` directory.
-pub(crate) fn embedded_migrator(files: &[(i64, &'static str, &'static str)]) -> Migrator {
+/// One migration registration emitted by the root build script.
+#[derive(Clone, Copy)]
+pub(crate) struct EmbeddedMigration {
+    pub(crate) version: i64,
+    pub(crate) description: &'static str,
+    pub(crate) sql: &'static str,
+}
+
+include!(concat!(env!("OUT_DIR"), "/migration_inventory.rs"));
+
+/// Build an embedded migrator from the validated, generated migration inventory.
+pub(crate) fn embedded_migrator(files: &[EmbeddedMigration]) -> Migrator {
     Migrator::with_migrations(
         files
             .iter()
-            .map(|&(version, description, sql)| {
+            .map(|migration| {
                 Migration::new(
-                    version,
-                    description.into(),
+                    migration.version,
+                    migration.description.into(),
                     MigrationType::Simple,
-                    sqlx::SqlSafeStr::into_sql_str(sql),
+                    sqlx::SqlSafeStr::into_sql_str(migration.sql),
                     false,
                 )
             })
             .collect(),
     )
+}
+
+#[expect(
+    clippy::items_after_test_module,
+    reason = "migration parity tests stay beside generated registration data"
+)]
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[cfg(feature = "sqlite")]
+    #[test]
+    fn generated_sqlite_inventory_preserves_order_descriptions_and_bytes() {
+        let versions = SQLITE_MIGRATIONS
+            .iter()
+            .map(|migration| migration.version)
+            .collect::<Vec<_>>();
+        let descriptions = SQLITE_MIGRATIONS
+            .iter()
+            .map(|migration| migration.description)
+            .collect::<Vec<_>>();
+        let sql = SQLITE_MIGRATIONS
+            .iter()
+            .map(|migration| migration.sql)
+            .collect::<Vec<_>>();
+        assert_eq!(versions, vec![1, 2, 3, 4]);
+        assert_eq!(
+            descriptions,
+            vec![
+                "initial",
+                "command ledger",
+                "projection protocol",
+                "command ledger atomic state"
+            ]
+        );
+        assert_eq!(
+            sql,
+            vec![
+                include_str!(concat!(
+                    env!("CARGO_MANIFEST_DIR"),
+                    "/migrations/sqlite/0001_initial.sql"
+                )),
+                include_str!(concat!(
+                    env!("CARGO_MANIFEST_DIR"),
+                    "/migrations/sqlite/0002_command_ledger.sql"
+                )),
+                include_str!(concat!(
+                    env!("CARGO_MANIFEST_DIR"),
+                    "/migrations/sqlite/0003_projection_protocol.sql"
+                )),
+                include_str!(concat!(
+                    env!("CARGO_MANIFEST_DIR"),
+                    "/migrations/sqlite/0004_command_ledger_atomic_state.sql"
+                )),
+            ]
+        );
+    }
+
+    #[cfg(feature = "postgres")]
+    #[test]
+    fn generated_postgres_inventory_preserves_order_descriptions_and_bytes() {
+        let versions = POSTGRES_MIGRATIONS
+            .iter()
+            .map(|migration| migration.version)
+            .collect::<Vec<_>>();
+        let descriptions = POSTGRES_MIGRATIONS
+            .iter()
+            .map(|migration| migration.description)
+            .collect::<Vec<_>>();
+        let sql = POSTGRES_MIGRATIONS
+            .iter()
+            .map(|migration| migration.sql)
+            .collect::<Vec<_>>();
+        assert_eq!(versions, vec![1, 2, 3, 4]);
+        assert_eq!(
+            descriptions,
+            vec![
+                "initial",
+                "command ledger",
+                "projection protocol",
+                "command ledger atomic state"
+            ]
+        );
+        assert_eq!(
+            sql,
+            vec![
+                include_str!(concat!(
+                    env!("CARGO_MANIFEST_DIR"),
+                    "/migrations/postgres/0001_initial.sql"
+                )),
+                include_str!(concat!(
+                    env!("CARGO_MANIFEST_DIR"),
+                    "/migrations/postgres/0002_command_ledger.sql"
+                )),
+                include_str!(concat!(
+                    env!("CARGO_MANIFEST_DIR"),
+                    "/migrations/postgres/0003_projection_protocol.sql"
+                )),
+                include_str!(concat!(
+                    env!("CARGO_MANIFEST_DIR"),
+                    "/migrations/postgres/0004_command_ledger_atomic_state.sql"
+                )),
+            ]
+        );
+    }
 }
 
 /// Group stream identities by aggregate type so each type is one id-list

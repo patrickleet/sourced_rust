@@ -1,0 +1,20 @@
+{
+  "schema_version": 1,
+  "release_tag": "v3.3.4",
+  "revision": "f57543ddeb9e293cf366dba1a2330b34ce6509f0",
+  "migration_count": 1,
+  "migrations": [
+    {
+      "version": 1,
+      "description": "initial",
+      "sqlite": {
+        "path": "sqlite/0001_initial.sql",
+        "sha256": "9a3f07064df04b3d5ddc8e4895bd682d9afbc864cf9871a5957fc4a81c2d75a1"
+      },
+      "postgres": {
+        "path": "postgres/0001_initial.sql",
+        "sha256": "fe5c1345b8d1fc672561cf66a6a916354be85d0e597a5b50b14f01c7a4895d39"
+      }
+    }
+  ]
+}

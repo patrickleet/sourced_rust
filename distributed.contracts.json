@@ -8,16 +8,7 @@
       "owner": "distributed/migrations",
       "identity": { "kind": "migration_inventory", "value": "ref:migrations" },
       "provenance": {
-        "sources": [
-          "migrations/postgres/0001_initial.sql",
-          "migrations/postgres/0002_command_ledger.sql",
-          "migrations/postgres/0003_projection_protocol.sql",
-          "migrations/postgres/0004_command_ledger_atomic_state.sql",
-          "migrations/sqlite/0001_initial.sql",
-          "migrations/sqlite/0002_command_ledger.sql",
-          "migrations/sqlite/0003_projection_protocol.sql",
-          "migrations/sqlite/0004_command_ledger_atomic_state.sql"
-        ],
+        "sources": ["migrations/inventory.json"],
         "generator": "distributed.migrations"
       },
       "outputs": { "catalog": "distributed.contracts.json" },

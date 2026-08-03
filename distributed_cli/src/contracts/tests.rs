@@ -1,9 +1,11 @@
 use super::*;
-use serde_json::Value;
+use serde_json::{json, Value};
 use std::fs::{self, OpenOptions};
 use std::path::{Path, PathBuf};
 use std::process::Command;
 use std::time::{SystemTime, UNIX_EPOCH};
+
+use sha2::{Digest, Sha256};
 
 #[cfg(unix)]
 use std::os::unix::fs::symlink;
@@ -56,6 +58,110 @@ fn path_catalog(source: &str) -> ContractCatalog {
         }
     });
     ContractCatalog::from_json_str(&input.to_string()).expect("path catalog JSON")
+}
+
+fn migration_checksum(bytes: &[u8]) -> String {
+    Sha256::digest(bytes)
+        .iter()
+        .map(|byte| format!("{byte:02x}"))
+        .collect()
+}
+
+fn write_repository_file(root: &Path, relative: &str, bytes: &[u8]) {
+    let path = root.join(relative);
+    fs::create_dir_all(path.parent().expect("migration file parent"))
+        .expect("migration file parent directory");
+    fs::write(path, bytes).expect("migration fixture file");
+}
+
+fn migration_entry(
+    version: u64,
+    sqlite_path: &str,
+    sqlite_sql: &[u8],
+    postgres_path: &str,
+    postgres_sql: &[u8],
+) -> Value {
+    json!({
+        "version": version,
+        "description": if version == 1 { "initial" } else { "next" },
+        "sqlite": {
+            "path": sqlite_path,
+            "sha256": migration_checksum(sqlite_sql)
+        },
+        "postgres": {
+            "path": postgres_path,
+            "sha256": migration_checksum(postgres_sql)
+        }
+    })
+}
+
+fn write_migration_inventory(root: &Path, entries: &[Value]) {
+    let path = root.join(MIGRATION_INVENTORY_PATH);
+    fs::create_dir_all(path.parent().expect("inventory parent directory"))
+        .expect("inventory parent directory");
+    fs::write(
+        path,
+        serde_json::to_vec_pretty(&json!({
+            "schema_version": MIGRATION_INVENTORY_SCHEMA_VERSION,
+            "migrations": entries
+        }))
+        .expect("migration inventory JSON"),
+    )
+    .expect("migration inventory file");
+}
+
+fn create_migration_fixture(label: &str) -> (TemporaryDirectory, Vec<u8>, Vec<u8>) {
+    let root = TemporaryDirectory::new_short(label);
+    let sqlite_sql = b"CREATE TABLE one (id INTEGER PRIMARY KEY);\n".to_vec();
+    let postgres_sql = b"CREATE TABLE one (id BIGINT PRIMARY KEY);\n".to_vec();
+    let sqlite_path = "migrations/sqlite/0001_initial.sql";
+    let postgres_path = "migrations/postgres/0001_initial.sql";
+    write_repository_file(root.path(), sqlite_path, &sqlite_sql);
+    write_repository_file(root.path(), postgres_path, &postgres_sql);
+    write_migration_inventory(
+        root.path(),
+        &[migration_entry(
+            1,
+            sqlite_path,
+            &sqlite_sql,
+            postgres_path,
+            &postgres_sql,
+        )],
+    );
+    (root, sqlite_sql, postgres_sql)
+}
+
+fn git_fixture_command(root: &Path, args: &[&str]) -> std::process::Output {
+    Command::new("git")
+        .arg("-C")
+        .arg(root)
+        .args(args)
+        .output()
+        .expect("invoke git fixture command")
+}
+
+fn commit_migration_fixture(root: &Path) -> String {
+    for args in [
+        ["init", "-q"].as_slice(),
+        ["config", "user.email", "migration-tests@example.invalid"].as_slice(),
+        ["config", "user.name", "Migration Tests"].as_slice(),
+        ["add", "--all"].as_slice(),
+        ["commit", "-qm", "baseline"].as_slice(),
+    ] {
+        let output = git_fixture_command(root, args);
+        assert!(
+            output.status.success(),
+            "git fixture command {:?} failed: {}",
+            args,
+            String::from_utf8_lossy(&output.stderr)
+        );
+    }
+    let output = git_fixture_command(root, &["rev-parse", "HEAD"]);
+    assert!(output.status.success(), "read fixture revision");
+    String::from_utf8(output.stdout)
+        .expect("fixture revision UTF-8")
+        .trim()
+        .to_string()
 }
 
 fn glob_catalog(source: &str, glob_limit: usize) -> ContractCatalog {
@@ -762,4 +868,387 @@ fn client_inventory_rust_schema_matches_shared_parity_vectors() {
             "Rust client inventory parity vector `{name}`"
         );
     }
+}
+
+#[test]
+fn migration_inventory_rejects_missing_extra_and_dialect_drift() {
+    let (root, sqlite_sql, postgres_sql) = create_migration_fixture("inventory-vectors");
+    let inventory = MigrationInventory::from_repository_root(root.path())
+        .expect("valid migration fixture inventory");
+    assert_eq!(inventory.migrations[0].version, 1);
+
+    let inventory_path = root.path().join(MIGRATION_INVENTORY_PATH);
+    let mut missing_dialect: Value =
+        serde_json::from_slice(&fs::read(&inventory_path).expect("read inventory"))
+            .expect("inventory value");
+    missing_dialect["migrations"][0]
+        .as_object_mut()
+        .expect("migration object")
+        .remove("sqlite");
+    let missing_dialect_error = MigrationInventory::from_json_str(
+        &serde_json::to_string(&missing_dialect).expect("missing dialect JSON"),
+    )
+    .expect_err("missing dialect must fail");
+    assert_eq!(
+        missing_dialect_error.code(),
+        ContractDiagnosticCode::MigrationInventory
+    );
+
+    fs::remove_file(root.path().join("migrations/sqlite/0001_initial.sql"))
+        .expect("remove declared migration");
+    let missing_file = check_migration_inventory(root.path());
+    assert!(!missing_file.is_ok());
+    assert!(missing_file.human().contains("CTL-MIG-INVENTORY"));
+    assert!(missing_file
+        .human()
+        .contains("migrations/sqlite/0001_initial.sql"));
+    write_repository_file(
+        root.path(),
+        "migrations/sqlite/0001_initial.sql",
+        &sqlite_sql,
+    );
+
+    write_repository_file(
+        root.path(),
+        "migrations/sqlite/0002_extra.sql",
+        b"CREATE TABLE extra (id INTEGER);\n",
+    );
+    let extra_file = check_migration_inventory(root.path());
+    assert!(!extra_file.is_ok());
+    assert!(extra_file
+        .human()
+        .contains("migrations/sqlite/0002_extra.sql"));
+    fs::remove_file(root.path().join("migrations/sqlite/0002_extra.sql"))
+        .expect("remove extra migration");
+
+    let mut dialect_drift: Value =
+        serde_json::from_slice(&fs::read(&inventory_path).expect("read inventory"))
+            .expect("inventory value");
+    dialect_drift["migrations"][0]["postgres"]["path"] =
+        Value::String("migrations/mysql/0001_initial.sql".to_string());
+    let dialect_drift_error = MigrationInventory::from_json_str(
+        &serde_json::to_string(&dialect_drift).expect("dialect drift JSON"),
+    )
+    .expect_err("dialect drift must fail");
+    assert_eq!(
+        dialect_drift_error.code(),
+        ContractDiagnosticCode::MigrationInventory
+    );
+    assert!(dialect_drift_error
+        .message()
+        .contains("migrations/mysql/0001_initial.sql"));
+    assert_eq!(
+        migration_checksum(&postgres_sql),
+        inventory.migrations[0].postgres.sha256
+    );
+}
+
+#[test]
+fn migration_inventory_rejects_duplicate_and_non_consecutive_versions() {
+    let (root, sqlite_sql, postgres_sql) = create_migration_fixture("inventory-order");
+    let inventory_path = root.path().join(MIGRATION_INVENTORY_PATH);
+    let mut non_consecutive: Value =
+        serde_json::from_slice(&fs::read(&inventory_path).expect("read inventory"))
+            .expect("inventory value");
+    non_consecutive["migrations"][0]["version"] = Value::from(2_u64);
+    let error = MigrationInventory::from_json_str(
+        &serde_json::to_string(&non_consecutive).expect("non-consecutive JSON"),
+    )
+    .expect_err("non-consecutive version must fail");
+    assert_eq!(error.code(), ContractDiagnosticCode::MigrationInventory);
+
+    let mut duplicate =
+        serde_json::from_slice::<Value>(&fs::read(&inventory_path).expect("read inventory"))
+            .expect("inventory value");
+    duplicate["migrations"] = json!([
+        migration_entry(
+            1,
+            "migrations/sqlite/0001_initial.sql",
+            &sqlite_sql,
+            "migrations/postgres/0001_initial.sql",
+            &postgres_sql,
+        ),
+        migration_entry(
+            1,
+            "migrations/sqlite/0002_duplicate.sql",
+            &sqlite_sql,
+            "migrations/postgres/0002_duplicate.sql",
+            &postgres_sql,
+        )
+    ]);
+    let error = MigrationInventory::from_json_str(
+        &serde_json::to_string(&duplicate).expect("duplicate JSON"),
+    )
+    .expect_err("duplicate version must fail");
+    assert_eq!(error.code(), ContractDiagnosticCode::MigrationInventory);
+}
+
+#[test]
+fn migration_inventory_rejects_checksum_path_and_symlink_mutations() {
+    let (root, sqlite_sql, postgres_sql) = create_migration_fixture("inventory-security");
+    let inventory_path = root.path().join(MIGRATION_INVENTORY_PATH);
+    let mut bad_checksum: Value =
+        serde_json::from_slice(&fs::read(&inventory_path).expect("read inventory"))
+            .expect("inventory value");
+    bad_checksum["migrations"][0]["sqlite"]["sha256"] = Value::String("0".repeat(64));
+    write_json_value(&inventory_path, &bad_checksum);
+    let error = MigrationInventory::from_repository_root(root.path())
+        .expect_err("checksum mutation must fail");
+    assert_eq!(error.code(), ContractDiagnosticCode::MigrationInventory);
+    assert!(error.message().contains("0001_initial.sql"));
+
+    let valid = migration_entry(
+        1,
+        "migrations/sqlite/0001_initial.sql",
+        &sqlite_sql,
+        "migrations/postgres/0001_initial.sql",
+        &postgres_sql,
+    );
+    write_migration_inventory(root.path(), std::slice::from_ref(&valid));
+    let mut bad_path: Value =
+        serde_json::from_slice(&fs::read(&inventory_path).expect("read inventory"))
+            .expect("inventory value");
+    bad_path["migrations"][0]["sqlite"]["path"] =
+        Value::String("migrations/sqlite/../outside.sql".to_string());
+    let error = MigrationInventory::from_json_str(
+        &serde_json::to_string(&bad_path).expect("path mutation JSON"),
+    )
+    .expect_err("path traversal must fail");
+    assert_eq!(error.code(), ContractDiagnosticCode::MigrationInventory);
+
+    #[cfg(unix)]
+    {
+        write_migration_inventory(root.path(), std::slice::from_ref(&valid));
+        fs::remove_file(root.path().join("migrations/sqlite/0001_initial.sql"))
+            .expect("remove migration for symlink fixture");
+        let outside = root.path().join("outside.sql");
+        fs::write(&outside, &sqlite_sql).expect("outside SQL");
+        symlink(
+            &outside,
+            root.path().join("migrations/sqlite/0001_initial.sql"),
+        )
+        .expect("migration symlink");
+        let error = MigrationInventory::from_repository_root(root.path())
+            .expect_err("symlink migration must fail");
+        assert_eq!(error.code(), ContractDiagnosticCode::CatalogSymlinkEscape);
+    }
+}
+
+fn write_json_value(path: &Path, value: &Value) {
+    fs::write(
+        path,
+        serde_json::to_vec_pretty(value).expect("JSON value serialization"),
+    )
+    .expect("JSON value file");
+}
+
+#[test]
+fn migration_inventory_is_deterministic_and_preserves_runtime_order() {
+    let inventory = MigrationInventory::from_repository_root(repository_root())
+        .expect("repository migration inventory");
+    let versions = inventory
+        .migrations
+        .iter()
+        .map(|migration| migration.version)
+        .collect::<Vec<_>>();
+    assert_eq!(versions, vec![1, 2, 3, 4]);
+    assert_eq!(
+        inventory.canonical_bytes().expect("canonical inventory"),
+        inventory
+            .canonical_bytes()
+            .expect("second canonical inventory")
+    );
+}
+
+#[test]
+fn released_v3_3_4_migration_fixture_matches_provenance() {
+    let baseline: Value = serde_json::from_str(include_str!(
+        "../../../tests/fixtures/migrations/v3.3.4/baseline.json"
+    ))
+    .expect("released migration baseline JSON");
+    assert_eq!(baseline["release_tag"], "v3.3.4");
+    assert_eq!(
+        baseline["revision"],
+        "f57543ddeb9e293cf366dba1a2330b34ce6509f0"
+    );
+    assert_eq!(baseline["migration_count"], 1);
+    assert_eq!(
+        baseline["migrations"][0]["sqlite"]["sha256"],
+        migration_checksum(include_bytes!(
+            "../../../tests/fixtures/migrations/v3.3.4/sqlite/0001_initial.sql"
+        ))
+    );
+    assert_eq!(
+        baseline["migrations"][0]["postgres"]["sha256"],
+        migration_checksum(include_bytes!(
+            "../../../tests/fixtures/migrations/v3.3.4/postgres/0001_initial.sql"
+        ))
+    );
+}
+
+#[test]
+fn baseline_history_rejects_coordinated_sql_and_checksum_edits() {
+    let (root, base_sqlite, base_postgres) = create_migration_fixture("history-edit");
+    let base_revision = commit_migration_fixture(root.path());
+
+    let mutated_sqlite = b"CREATE TABLE one (id INTEGER PRIMARY KEY, changed INTEGER);\n";
+    write_repository_file(
+        root.path(),
+        "migrations/sqlite/0001_initial.sql",
+        mutated_sqlite,
+    );
+    write_migration_inventory(
+        root.path(),
+        &[migration_entry(
+            1,
+            "migrations/sqlite/0001_initial.sql",
+            mutated_sqlite,
+            "migrations/postgres/0001_initial.sql",
+            &base_postgres,
+        )],
+    );
+    let current = MigrationInventory::from_repository_root(root.path())
+        .expect("coordinated local checksum edit remains current-tree valid");
+    let refused = current.check_history(root.path(), &base_revision);
+    assert!(!refused.is_verified());
+    assert!(refused.human().contains("CTL-MIG-HISTORY"));
+    assert!(refused
+        .human()
+        .contains("migrations/sqlite/0001_initial.sql"));
+    assert!(refused.human().contains("add migration 2"));
+
+    let migration_two_sqlite = b"ALTER TABLE one ADD COLUMN added INTEGER;\n";
+    let migration_two_postgres = b"ALTER TABLE one ADD COLUMN added BIGINT;\n";
+    write_repository_file(
+        root.path(),
+        "migrations/sqlite/0001_initial.sql",
+        &base_sqlite,
+    );
+    write_repository_file(
+        root.path(),
+        "migrations/sqlite/0002_next.sql",
+        migration_two_sqlite,
+    );
+    write_repository_file(
+        root.path(),
+        "migrations/postgres/0002_next.sql",
+        migration_two_postgres,
+    );
+    write_migration_inventory(
+        root.path(),
+        &[
+            migration_entry(
+                1,
+                "migrations/sqlite/0001_initial.sql",
+                &base_sqlite,
+                "migrations/postgres/0001_initial.sql",
+                &base_postgres,
+            ),
+            migration_entry(
+                2,
+                "migrations/sqlite/0002_next.sql",
+                migration_two_sqlite,
+                "migrations/postgres/0002_next.sql",
+                migration_two_postgres,
+            ),
+        ],
+    );
+    let repaired = MigrationInventory::from_repository_root(root.path())
+        .expect("restored baseline plus new migration inventory");
+    let accepted = repaired.check_history(root.path(), &base_revision);
+    assert!(accepted.is_verified(), "{}", accepted.human());
+}
+
+#[test]
+fn baseline_history_rejects_description_delete_renumber_and_reorder() {
+    let (root, first_sqlite, first_postgres) = create_migration_fixture("history-vectors");
+    let second_sqlite = b"ALTER TABLE one ADD COLUMN added INTEGER;\n";
+    let second_postgres = b"ALTER TABLE one ADD COLUMN added BIGINT;\n";
+    write_repository_file(
+        root.path(),
+        "migrations/sqlite/0002_next.sql",
+        second_sqlite,
+    );
+    write_repository_file(
+        root.path(),
+        "migrations/postgres/0002_next.sql",
+        second_postgres,
+    );
+    let baseline_entries = vec![
+        migration_entry(
+            1,
+            "migrations/sqlite/0001_initial.sql",
+            &first_sqlite,
+            "migrations/postgres/0001_initial.sql",
+            &first_postgres,
+        ),
+        migration_entry(
+            2,
+            "migrations/sqlite/0002_next.sql",
+            second_sqlite,
+            "migrations/postgres/0002_next.sql",
+            second_postgres,
+        ),
+    ];
+    write_migration_inventory(root.path(), &baseline_entries);
+    let base_revision = commit_migration_fixture(root.path());
+    let baseline = MigrationInventory::from_repository_root(root.path())
+        .expect("two-migration baseline inventory");
+
+    let mut description = baseline.clone();
+    description.migrations[0].description = "edited".to_string();
+    let refused = description.check_history(root.path(), &base_revision);
+    assert!(!refused.is_verified());
+    assert!(refused.human().contains("description changed"));
+
+    fs::remove_file(root.path().join("migrations/sqlite/0002_next.sql"))
+        .expect("remove deleted sqlite migration");
+    fs::remove_file(root.path().join("migrations/postgres/0002_next.sql"))
+        .expect("remove deleted postgres migration");
+    let mut deleted = baseline.clone();
+    deleted.migrations.pop();
+    let refused = deleted.check_history(root.path(), &base_revision);
+    assert!(!refused.is_verified());
+    assert!(refused.human().contains("baseline migration 2 was deleted"));
+    assert!(refused.human().contains("add migration 2"));
+
+    write_repository_file(
+        root.path(),
+        "migrations/sqlite/0002_next.sql",
+        second_sqlite,
+    );
+    write_repository_file(
+        root.path(),
+        "migrations/postgres/0002_next.sql",
+        second_postgres,
+    );
+    let mut renumbered = baseline.clone();
+    renumbered.migrations[1].version = 3;
+    let refused = renumbered.check_history(root.path(), &base_revision);
+    assert!(!refused.is_verified());
+    assert!(refused.human().contains("CTL-MIG-HISTORY"));
+    assert!(refused.human().contains("order or numbering changed"));
+
+    let mut reordered = baseline;
+    reordered.migrations.swap(0, 1);
+    let refused = reordered.check_history(root.path(), &base_revision);
+    assert!(!refused.is_verified());
+    assert!(refused.human().contains("CTL-MIG-HISTORY"));
+    assert!(refused.human().contains("order or numbering changed"));
+}
+
+#[test]
+fn unavailable_merge_base_is_reported_not_verified() {
+    let root = repository_root();
+    let inventory =
+        MigrationInventory::from_repository_root(&root).expect("repository migration inventory");
+    let result = inventory.check_history(&root, "missing-merge-base-for-test");
+    assert!(result.is_unavailable());
+    assert!(!result.is_verified());
+    assert!(matches!(
+        result.baseline,
+        BaselineAvailability::Unavailable { .. }
+    ));
+    assert!(result.human().contains("history evidence unavailable"));
+    assert!(result.human().contains("merge_base_available=false"));
 }
