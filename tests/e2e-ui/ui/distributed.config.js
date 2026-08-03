@@ -1,17 +1,92 @@
 import { dirname, resolve } from 'node:path';
+import { closeSync, fstatSync, openSync, readSync, statSync } from 'node:fs';
 import { fileURLToPath } from 'node:url';
-import clientInventory from './distributed.clients.json' with { type: 'json' };
 
 const uiRoot = dirname(fileURLToPath(import.meta.url));
 const e2eRoot = resolve(uiRoot, '..');
 const distributedRoot = resolve(uiRoot, '../../..');
+const clientInventoryPath = resolve(uiRoot, 'distributed.clients.json');
 
 const CLIENT_INVENTORY_SCHEMA_VERSION = 1;
+const MAX_CLIENT_INVENTORY_BYTES = 1024 * 1024;
+const MAX_CLIENT_JSON_DEPTH = 24;
+const MAX_CLIENT_JSON_BRACKET_DEPTH = MAX_CLIENT_JSON_DEPTH + 1;
 const MAX_CLIENT_STRING_BYTES = 4 * 1024;
 const CLIENT_MODULE = /^\$distributed(?:\/[A-Za-z0-9][A-Za-z0-9._-]*)*$/;
 const CLIENT_INVENTORY_KEYS = new Set(['schema_version', 'clients']);
 const SECRET_LIKE = /(?:postgres(?:ql)?:\/\/|mysql:\/\/|mongodb:\/\/|bearer |password=|token=|secret=|-----begin )/i;
 const textEncoder = new TextEncoder();
+
+function readBoundedInventory(filePath) {
+	const preflight = statSync(filePath);
+	if (!preflight.isFile()) {
+		throw new TypeError('distributed.clients.json must be a regular file');
+	}
+	if (preflight.size > MAX_CLIENT_INVENTORY_BYTES) {
+		throw new TypeError(
+			`distributed.clients.json exceeds maximum size ${MAX_CLIENT_INVENTORY_BYTES} bytes`
+		);
+	}
+
+	const descriptor = openSync(filePath, 'r');
+	try {
+		const metadata = fstatSync(descriptor);
+		if (!metadata.isFile()) {
+			throw new TypeError('distributed.clients.json must be a regular file');
+		}
+		if (metadata.size > MAX_CLIENT_INVENTORY_BYTES) {
+			throw new TypeError(
+				`distributed.clients.json exceeds maximum size ${MAX_CLIENT_INVENTORY_BYTES} bytes`
+			);
+		}
+
+		const buffer = Buffer.allocUnsafe(MAX_CLIENT_INVENTORY_BYTES + 1);
+		let offset = 0;
+		while (offset < buffer.length) {
+			const bytesRead = readSync(descriptor, buffer, offset, buffer.length - offset, null);
+			if (bytesRead === 0) break;
+			offset += bytesRead;
+		}
+		if (offset > MAX_CLIENT_INVENTORY_BYTES) {
+			throw new TypeError(
+				`distributed.clients.json exceeds maximum size ${MAX_CLIENT_INVENTORY_BYTES} bytes`
+			);
+		}
+		return new TextDecoder('utf-8', { fatal: true }).decode(buffer.subarray(0, offset));
+	} finally {
+		closeSync(descriptor);
+	}
+}
+
+function assertJsonNestingDepth(source) {
+	let depth = 0;
+	let inString = false;
+	let escaped = false;
+	for (const character of source) {
+		if (inString) {
+			if (escaped) {
+				escaped = false;
+			} else if (character === '\\') {
+				escaped = true;
+			} else if (character === '"') {
+				inString = false;
+			}
+			continue;
+		}
+		if (character === '"') {
+			inString = true;
+		} else if (character === '{' || character === '[') {
+			depth += 1;
+			if (depth > MAX_CLIENT_JSON_BRACKET_DEPTH) {
+				throw new TypeError(
+					`distributed.clients.json exceeds maximum JSON nesting depth ${MAX_CLIENT_JSON_DEPTH}`
+				);
+			}
+		} else if (character === '}' || character === ']') {
+			depth -= 1;
+		}
+	}
+}
 
 function assertPortablePath(value, label, { allowGlob = false } = {}) {
 	if (
@@ -24,6 +99,7 @@ function assertPortablePath(value, label, { allowGlob = false } = {}) {
 		SECRET_LIKE.test(value) ||
 		value.startsWith('/') ||
 		value.startsWith('~') ||
+		textEncoder.encode(value)[1] === 0x3a ||
 		value.split('/').some((part) => part === '..' || part === '.') ||
 		(!allowGlob && /[*?\[\]{]/.test(value))
 	) {
@@ -147,7 +223,19 @@ export function validateClientInventory(value) {
 	);
 }
 
-const clientDeclarations = validateClientInventory(clientInventory);
+export function loadClientInventory(filePath = clientInventoryPath) {
+	const source = readBoundedInventory(filePath);
+	assertJsonNestingDepth(source);
+	let value;
+	try {
+		value = JSON.parse(source);
+	} catch (error) {
+		throw new TypeError(`distributed.clients.json is invalid JSON: ${error.message}`);
+	}
+	return validateClientInventory(value);
+}
+
+const clientDeclarations = loadClientInventory();
 
 const manifestArgs = [
 	'client-manifest',

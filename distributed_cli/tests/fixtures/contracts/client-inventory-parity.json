@@ -48,6 +48,21 @@
       }
     },
     {
+      "name": "module segments cannot contain dot-dot",
+      "valid": false,
+      "inventory": {
+        "schema_version": 1,
+        "clients": [
+          {
+            "module": "$distributed/client..nested",
+            "surface": "e2e-ui",
+            "documents": ["src/routes/example/+page.graphql"],
+            "output": "src/lib/generated/example"
+          }
+        ]
+      }
+    },
+    {
       "name": "dot-dot identifiers are invalid",
       "valid": false,
       "inventory": {
@@ -73,6 +88,21 @@
             "surface": "e2e-ui",
             "documents": ["src/routes/token=secret.graphql"],
             "output": "src/lib/generated/example"
+          }
+        ]
+      }
+    },
+    {
+      "name": "windows absolute output paths are invalid",
+      "valid": false,
+      "inventory": {
+        "schema_version": 1,
+        "clients": [
+          {
+            "module": "$distributed/client",
+            "surface": "e2e-ui",
+            "documents": ["src/routes/example/+page.graphql"],
+            "output": "C:/generated/example"
           }
         ]
       }
