@@ -177,10 +177,12 @@ impl CommandDispatcher for RemoteCommandDispatcher {
 }
 
 /// In-memory loopback transport for parity tests.
+#[allow(dead_code)]
 pub struct LoopbackRemoteTransport {
     handler: Arc<dyn Fn(CommandRequest) -> CommandResponse + Send + Sync>,
 }
 
+#[allow(dead_code)]
 impl LoopbackRemoteTransport {
     pub fn new(
         handler: impl Fn(CommandRequest) -> CommandResponse + Send + Sync + 'static,

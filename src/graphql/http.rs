@@ -205,6 +205,10 @@ pub fn graphql_router(engine: Arc<GraphqlEngine>) -> Router {
 }
 
 /// GraphQL router that can dispatch command mutations through a [`Service`].
+///
+/// Prefer [`graphql_router_with_dispatcher`] for new hosts: local command
+/// mounts are still Service-backed, but the public host API is the dispatcher
+/// boundary rather than attaching `Service` directly.
 pub fn graphql_router_with_service(engine: Arc<GraphqlEngine>, service: Arc<Service>) -> Router {
     service
         .validate_graphql_engine(&engine)
@@ -227,6 +231,19 @@ pub fn graphql_router_with_service(engine: Arc<GraphqlEngine>, service: Arc<Serv
     );
     router = router.layer(DefaultBodyLimit::max(MAX_HTTP_BODY_BYTES));
     router.with_state(state)
+}
+
+/// GraphQL router whose command mutations dispatch through a local
+/// [`crate::command_dispatch::LocalCommandDispatcher`].
+///
+/// Schema/client compilation never requires this handle. Only mutation/status
+/// execution does. The local adapter remains the sole production causal
+/// executor until remote causal receipts land fully behind the same trait.
+pub fn graphql_router_with_dispatcher(
+    engine: Arc<GraphqlEngine>,
+    dispatcher: Arc<crate::command_dispatch::LocalCommandDispatcher>,
+) -> Router {
+    graphql_router_with_service(engine, Arc::clone(dispatcher.service()))
 }
 
 #[derive(Clone)]
