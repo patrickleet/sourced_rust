@@ -43,3 +43,9 @@ compose-up:
 
 compose-down:
 	$(DOCKER_COMPOSE) down $(COMPOSE_DOWN_FLAGS)
+
+.PHONY: contracts-check
+
+## Read-only aggregate contract lifecycle check (never writes tracked files).
+contracts-check:
+	$(CARGO) run -p distributed_cli --quiet -- contracts check --root . --catalog contracts/catalog.json --output human

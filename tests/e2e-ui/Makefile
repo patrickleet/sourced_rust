@@ -7,7 +7,7 @@
 
 .PHONY: all up down run run-api stop test ci-offline test-domain test-suite \
 	test-browser test-browser-install js-install js-build ui-install ui-build ui-check ui-test \
-	gen-client check-client check clean help
+	gen-client check-client contracts-check check clean help
 
 # Defaults only — do NOT `include e2e-ui.env` (shell-quoted dotenv breaks Make).
 # Recipes `source` the env file so values stay clean.
@@ -160,6 +160,14 @@ gen-client: ui-install
 ## Byte/file-set drift check through distributed --check; never repairs generated files.
 check-client: ui-install
 	cd ui && $(NPM) run client:check
+
+## Aggregate read-only contract check (repo root catalog when present).
+contracts-check:
+	@if [ -f ../../contracts/catalog.json ] || [ -f contracts/catalog.json ]; then \
+	  $(MAKE) -C ../.. contracts-check; \
+	else \
+	  echo "contracts-check: no catalog yet; skipping aggregate gate"; \
+	fi
 
 check: check-client
 	cargo check --workspace

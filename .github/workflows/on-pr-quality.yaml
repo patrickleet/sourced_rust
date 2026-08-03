@@ -8,6 +8,30 @@ concurrency:
   cancel-in-progress: true
 
 jobs:
+  contracts:
+    name: Run fail-fast contract lifecycle check
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+      - name: Resolve PR merge-base
+        id: base
+        run: |
+          git fetch origin "${{ github.base_ref }}" --depth=1
+          base=$(git merge-base HEAD "origin/${{ github.base_ref }}" || true)
+          echo "sha=${base}" >> "$GITHUB_OUTPUT"
+          echo "merge-base=${base}"
+      - name: Install Rust toolchain
+        uses: dtolnay/rust-toolchain@stable
+      - name: Run contracts check
+        run: |
+          if [ -f contracts/catalog.json ]; then
+            cargo run -p distributed_cli --quiet -- contracts check --root . --catalog contracts/catalog.json --output json
+          else
+            echo "No contracts/catalog.json yet; gate is present and ready for producers."
+          fi
+
   # Framework monorepo keeps its existing quality provider. The reusable
   # quality.yaml in this directory is the contract for *consumers* (domain
   # crates / Distributed libraries), not for this workspace's entry pipeline.
@@ -34,16 +58,20 @@ jobs:
     uses: ./.github/workflows/integration-kafka.yaml
 
   distributed-cli:
+    needs: [contracts]
     uses: ./.github/workflows/integration-distributed-cli.yaml
 
   observability:
     uses: ./.github/workflows/integration-observability.yaml
 
   graphql:
+    needs: [contracts]
     uses: ./.github/workflows/integration-graphql.yaml
 
   e2e-ui:
+    needs: [contracts]
     uses: ./.github/workflows/integration-e2e-ui.yaml
 
   js-client:
+    needs: [contracts]
     uses: ./.github/workflows/integration-js.yaml
