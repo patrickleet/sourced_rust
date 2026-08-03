@@ -12,6 +12,7 @@
 extern crate self as distributed;
 
 pub mod aggregate;
+pub mod application;
 pub mod bus;
 pub mod domain_event;
 pub mod entity;
@@ -51,6 +52,15 @@ pub use entity::{
     upcast_events, upcast_events_for_replay, upcast_payload, BitcodePayloadCodec, Entity,
     EventRecord, EventRecordError, EventUpcaster, PayloadCodec, UpcastError, BITCODE_PAYLOAD_CODEC,
     BITCODE_PAYLOAD_CODEC_VERSION,
+};
+
+// Placement-independent application composition. The module path remains the
+// canonical namespace; these common contract types are also convenient at the
+// crate root for contract-only packages.
+pub use application::{
+    Application, ApplicationError, ApplicationManifest, CommandMount, CommandSpec,
+    ContractCompiler, LogicalId, Module, ModuleManifest, ProjectionSpec, SurfaceSpec,
+    APPLICATION_MANIFEST_SCHEMA_VERSION,
 };
 
 // Domain events: typed outward contracts distinct from replay events/snapshots.
@@ -411,8 +421,9 @@ pub use microsvc::{ROLE_KEY, USER_ID_KEY};
 // Use `mutation!` / `mutation_file!` + declarative `projection!` (event→mutation
 // mount); commands predict events via `.emits`/`.preview`.
 pub use distributed_macros::{
-    aggregate, command_input_defaults, digest, mutation, mutation_file, sourced, DomainEvent,
-    DomainState, GraphqlInput, GraphqlOutput, ReadModel, Snapshot,
+    aggregate, application, command, command_input_defaults, digest, module, mutation,
+    mutation_file, sourced, DomainEvent, DomainState, GraphqlInput, GraphqlOutput, ReadModel,
+    Snapshot,
 };
 
 // Re-export enqueue macro (requires "emitter" feature)

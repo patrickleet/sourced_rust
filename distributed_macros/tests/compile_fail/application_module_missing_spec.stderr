@@ -1,0 +1,5 @@
+error[E0425]: cannot find value `MISSING_COMMAND_SPEC` in this scope
+ --> tests/compile_fail/application_module_missing_spec.rs:4:20
+  |
+4 |         commands: [MISSING_COMMAND_SPEC],
+  |                    ^^^^^^^^^^^^^^^^^^^^ not found in this scope

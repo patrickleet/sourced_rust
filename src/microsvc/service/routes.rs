@@ -21,6 +21,7 @@ use super::handlers::{
     ProjectorBootstrapFuture,
 };
 use crate::aggregate::Aggregate;
+use crate::application::{CommandMount, CommandSpec};
 use crate::bus::{Bus, Message, MessageKind, MessagePublisher, OrderedDelivery, TransportError};
 #[cfg(feature = "graphql")]
 use crate::command_ledger::{
@@ -501,6 +502,7 @@ pub struct Routes<D> {
     pub(super) dependencies: D,
     handlers: HashMap<MessageKind, HashMap<String, RegisteredHandler<D>>>,
     handler_specs: Vec<HandlerSpec>,
+    command_mounts: Vec<CommandMount>,
     projectors: Vec<Arc<dyn ErasedProjectorHandler<D>>>,
     modeled_local_services: BTreeSet<String>,
     outbox_configurator: Option<OutboxConfigurator<D>>,
@@ -513,6 +515,7 @@ impl<D: Send + Sync + 'static> Routes<D> {
             dependencies,
             handlers: HashMap::new(),
             handler_specs: Vec::new(),
+            command_mounts: Vec::new(),
             projectors: Vec::new(),
             modeled_local_services: BTreeSet::new(),
             outbox_configurator: None,
@@ -531,6 +534,7 @@ impl<D: Send + Sync + 'static> Routes<D> {
         assert!(
             self.handlers.is_empty()
                 && self.handler_specs.is_empty()
+                && self.command_mounts.is_empty()
                 && self.projectors.is_empty()
                 && self.modeled_local_services.is_empty(),
             "Routes::{builder} must be called before registering handlers"
@@ -577,6 +581,23 @@ impl<D: Send + Sync + 'static> Routes<D> {
             contract,
             _types: std::marker::PhantomData,
         }
+    }
+
+    /// Compile the registered typed declarations into portable command specs.
+    pub fn command_specs(&self) -> crate::application::ApplicationResult<Vec<CommandSpec>> {
+        let mut specs = self
+            .typed_contracts()
+            .into_iter()
+            .map(CommandSpec::from_contract)
+            .collect::<crate::application::ApplicationResult<Vec<_>>>()?;
+        specs.sort_by(|left, right| left.id.cmp(&right.id));
+        Ok(specs)
+    }
+
+    /// Executable mounts created when typed handlers are registered. These
+    /// mounts are never part of a serialized application manifest.
+    pub fn command_mounts(&self) -> &[CommandMount] {
+        &self.command_mounts
     }
 
     /// Register one typed, ordered causal projector using the exact
@@ -771,12 +792,16 @@ impl<D: Send + Sync + 'static> Routes<D> {
             MessageKind::Command,
             route_name,
         );
+        let spec = CommandSpec::from_contract(&contract)
+            .unwrap_or_else(|error| panic!("typed command contract cannot compile: {error}"));
+        let mount = CommandMount::from_handler(spec, handle.clone());
         by_name.insert(
             route_name.to_string(),
             RegisteredHandler::Causal(Box::new(
                 RegisteredCausalHandler::<D::Aggregate, I, K>::new(contract, guard, handle),
             )),
         );
+        self.command_mounts.push(mount);
         self.handler_specs.push(HandlerSpec::command(route_name));
         self
     }
