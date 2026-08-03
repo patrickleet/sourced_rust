@@ -24,6 +24,8 @@ pub enum ContractAcceptScope {
     GeneratedClientTree,
     ApplicationManifest,
     DeploymentPlan,
+    /// Exact client-program scope: `program:<id>`.
+    Program { id: String },
 }
 
 impl ContractAcceptScope {
@@ -35,18 +37,27 @@ impl ContractAcceptScope {
             "generated_client_tree" => Some(Self::GeneratedClientTree),
             "application_manifest" => Some(Self::ApplicationManifest),
             "deployment_plan" => Some(Self::DeploymentPlan),
+            other if other.starts_with("program:") => {
+                let id = other.trim_start_matches("program:").to_string();
+                if id.is_empty() {
+                    None
+                } else {
+                    Some(Self::Program { id })
+                }
+            }
             _ => None,
         }
     }
 
-    pub const fn as_str(self) -> &'static str {
+    pub fn as_str(&self) -> String {
         match self {
-            Self::Catalog => "catalog",
-            Self::MigrationInventory => "migration_inventory",
-            Self::SurfaceClientManifest => "surface_client_manifest",
-            Self::GeneratedClientTree => "generated_client_tree",
-            Self::ApplicationManifest => "application_manifest",
-            Self::DeploymentPlan => "deployment_plan",
+            Self::Catalog => "catalog".into(),
+            Self::MigrationInventory => "migration_inventory".into(),
+            Self::SurfaceClientManifest => "surface_client_manifest".into(),
+            Self::GeneratedClientTree => "generated_client_tree".into(),
+            Self::ApplicationManifest => "application_manifest".into(),
+            Self::DeploymentPlan => "deployment_plan".into(),
+            Self::Program { id } => format!("program:{id}"),
         }
     }
 }
@@ -102,7 +113,7 @@ pub fn contracts_accept(
     if staged.is_empty() {
         return Ok(ContractsAcceptReport {
             ok: true,
-            scope: scope.as_str().into(),
+            scope: scope.as_str(),
             changed_paths: Vec::new(),
             noop: true,
             rolled_back: false,
@@ -130,7 +141,7 @@ pub fn contracts_accept(
     if noop {
         return Ok(ContractsAcceptReport {
             ok: true,
-            scope: scope.as_str().into(),
+            scope: scope.as_str(),
             changed_paths: Vec::new(),
             noop: true,
             rolled_back: false,
@@ -171,7 +182,7 @@ pub fn contracts_accept(
 
     Ok(ContractsAcceptReport {
         ok: true,
-        scope: scope.as_str().into(),
+        scope: scope.as_str(),
         changed_paths: changed,
         noop: false,
         rolled_back: false,
