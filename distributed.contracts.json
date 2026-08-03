@@ -1,0 +1,111 @@
+{
+  "schema_version": 1,
+  "entries": {
+    "migration-inventory": {
+      "id": "migration-inventory",
+      "kind": "migration_inventory",
+      "scope": { "id": "repository/migrations" },
+      "owner": "distributed/migrations",
+      "identity": { "kind": "migration_inventory", "value": "ref:migrations" },
+      "provenance": {
+        "sources": [
+          "migrations/postgres/0001_initial.sql",
+          "migrations/postgres/0002_command_ledger.sql",
+          "migrations/postgres/0003_projection_protocol.sql",
+          "migrations/postgres/0004_command_ledger_atomic_state.sql",
+          "migrations/sqlite/0001_initial.sql",
+          "migrations/sqlite/0002_command_ledger.sql",
+          "migrations/sqlite/0003_projection_protocol.sql",
+          "migrations/sqlite/0004_command_ledger_atomic_state.sql"
+        ],
+        "generator": "distributed.migrations"
+      },
+      "outputs": { "catalog": "distributed.contracts.json" },
+      "lifecycle": ["check"]
+    },
+    "surface-e2e-ui": {
+      "id": "surface-e2e-ui",
+      "kind": "surface_client_manifest",
+      "scope": { "id": "client/e2e-ui/surface" },
+      "owner": "query-layer/e2e-ui/surface",
+      "identity": { "kind": "surface_client_manifest", "value": "ref:client/e2e-ui" },
+      "provenance": {
+        "sources": ["tests/e2e-ui/ui/distributed.clients.json"],
+        "generator": "query-layer.client-manifest"
+      },
+      "outputs": {
+        "surface-manifest-user": "tests/e2e-ui/ui/src/lib/generated/user/manifest.json"
+      },
+      "lifecycle": ["check"]
+    },
+    "surface-e2e-ui-admin": {
+      "id": "surface-e2e-ui-admin",
+      "kind": "surface_client_manifest",
+      "scope": { "id": "client/e2e-ui-admin/surface" },
+      "owner": "query-layer/e2e-ui-admin/surface",
+      "identity": { "kind": "surface_client_manifest", "value": "ref:client/e2e-ui-admin" },
+      "provenance": {
+        "sources": ["tests/e2e-ui/ui/distributed.clients.json"],
+        "generator": "query-layer.client-manifest"
+      },
+      "outputs": {
+        "surface-manifest-admin": "tests/e2e-ui/ui/src/lib/generated/admin/manifest.json"
+      },
+      "lifecycle": ["check"]
+    },
+    "surface-e2e-ui-public": {
+      "id": "surface-e2e-ui-public",
+      "kind": "surface_client_manifest",
+      "scope": { "id": "client/e2e-ui-public/surface" },
+      "owner": "query-layer/e2e-ui-public/surface",
+      "identity": { "kind": "surface_client_manifest", "value": "ref:client/e2e-ui-public" },
+      "provenance": {
+        "sources": ["tests/e2e-ui/ui/distributed.clients.json"],
+        "generator": "query-layer.client-manifest"
+      },
+      "outputs": {
+        "surface-manifest-public": "tests/e2e-ui/ui/src/lib/generated/public/manifest.json"
+      },
+      "lifecycle": ["check"]
+    },
+    "generated-e2e-ui": {
+      "id": "generated-e2e-ui",
+      "kind": "generated_client_tree",
+      "scope": { "id": "client/e2e-ui/generated" },
+      "owner": "query-layer/e2e-ui/generated",
+      "identity": { "kind": "generated_client_tree", "value": "ref:client/e2e-ui/generated" },
+      "provenance": {
+        "sources": ["tests/e2e-ui/ui/distributed.clients.json"],
+        "generator": "query-layer.client-compiler"
+      },
+      "outputs": { "generated-tree-user": "tests/e2e-ui/ui/src/lib/generated/user" },
+      "lifecycle": ["check"]
+    },
+    "generated-e2e-ui-admin": {
+      "id": "generated-e2e-ui-admin",
+      "kind": "generated_client_tree",
+      "scope": { "id": "client/e2e-ui-admin/generated" },
+      "owner": "query-layer/e2e-ui-admin/generated",
+      "identity": { "kind": "generated_client_tree", "value": "ref:client/e2e-ui-admin/generated" },
+      "provenance": {
+        "sources": ["tests/e2e-ui/ui/distributed.clients.json"],
+        "generator": "query-layer.client-compiler"
+      },
+      "outputs": { "generated-tree-admin": "tests/e2e-ui/ui/src/lib/generated/admin" },
+      "lifecycle": ["check"]
+    },
+    "generated-e2e-ui-public": {
+      "id": "generated-e2e-ui-public",
+      "kind": "generated_client_tree",
+      "scope": { "id": "client/e2e-ui-public/generated" },
+      "owner": "query-layer/e2e-ui-public/generated",
+      "identity": { "kind": "generated_client_tree", "value": "ref:client/e2e-ui-public/generated" },
+      "provenance": {
+        "sources": ["tests/e2e-ui/ui/distributed.clients.json"],
+        "generator": "query-layer.client-compiler"
+      },
+      "outputs": { "generated-tree-public": "tests/e2e-ui/ui/src/lib/generated/public" },
+      "lifecycle": ["check"]
+    }
+  }
+}

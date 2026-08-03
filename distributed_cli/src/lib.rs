@@ -20,6 +20,7 @@
 mod atlas;
 mod cli;
 mod client_compiler;
+pub mod contracts;
 mod generate;
 mod manifest_harness;
 mod skills;
@@ -34,6 +35,12 @@ pub use client_compiler::{
     compile_client, ClientCompileError, ClientCompileInput, ClientDocument, ClientRouteDiscovery,
     ClientRouteRegistration, ClientSourceLocation, ClientSurfaceSelector, GeneratedClientFile,
     GeneratedClientProject, GeneratedOperationSummary, GeneratedRoutePlan,
+};
+pub use contracts::{
+    ArtifactIdentity, ArtifactPredecessor, ArtifactProvenance, ClientDeclaration, ClientInventory,
+    ContractArtifactKind, ContractCatalog, ContractCheckResult, ContractDiagnostic,
+    ContractDiagnosticCode, ContractEntry, ContractError, ContractScope,
+    EnvironmentPolicyReference, SafeDiagnosticValue,
 };
 pub use generate::{generate_service_scaffold, package_name};
 pub use skills::{embedded_skills, generate_skills, EmbeddedFile, EmbeddedSkill, SkillsInitSpec};
