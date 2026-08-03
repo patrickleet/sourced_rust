@@ -7,7 +7,7 @@ use distributed::graphql::{typed_command, Atomic, SurfaceDirectProjection};
 use distributed::microsvc::{
     ConfigurableOutboxPublisher, HasOutboxStore, HasRepo, RepoReadModelDependencies, Routes,
 };
-use distributed::{AggregateBuilder, AggregateRepository, Queueable, QueuedRepository};
+use distributed::{AggregateBuilder, AggregateRepository, QueuedRepository};
 use e2e_readmodels::BlobGames;
 
 use crate::bounds::{EventStore, Locks, ReadStore};
@@ -41,9 +41,7 @@ where
         HasRepo + HasOutboxStore + ConfigurableOutboxPublisher + Send + Sync + 'static,
 {
     let _ = _blob_direct;
-    Routes::new()
-        .with_repo(repo.queued_with(locks).aggregate::<BlobGame>())
-        .with_read_model_store(read_models)
+    Routes::for_aggregate::<R, L, BlobGame, S>(repo, locks, read_models)
         .typed_command(
             typed_command::<blob_start::BlobStartInput, Atomic<BlobGames>>(blob_start::COMMAND)
                 .field_name("blob_games_start")

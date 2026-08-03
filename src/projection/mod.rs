@@ -19,8 +19,13 @@ mod provenance;
 // contract before their owning tasks define one.
 pub mod catalog;
 pub mod executor;
+pub mod local_mounts;
 pub mod lower;
 pub mod placement;
+
+pub use local_mounts::{
+    LocalDirectMount, LocalEventualMount, LocalProjectionMounts, LocalProjectionMountsBuilder,
+};
 
 pub use error::ProjectionProgramError;
 pub use expression::{

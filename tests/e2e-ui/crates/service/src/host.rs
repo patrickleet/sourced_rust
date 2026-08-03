@@ -1,18 +1,17 @@
-//! One-screen host bootstrap for the e2e-ui application (task 13).
+//! One-screen host bootstrap for the e2e-ui application.
 //!
-//! The runner binary should only select environment and call [`run_e2e_host`].
-//! Dialect adapters, outbox/consumer workers, GraphQL attachment, and Zitadel
-//! extension scheduling live here as framework-facing process wiring.
+//! Dialect selection and identity remain here. Outbox/consumer loops use
+//! framework worker helpers.
 
 use std::sync::Arc;
 use std::time::Duration;
 
-use distributed::bus::{PostgresBus, RunOptions, SqliteBus};
+use distributed::bus::{PostgresBus, SqliteBus};
 use distributed::command_dispatch::LocalCommandDispatcher;
 use distributed::graphql::IdentityConfig;
+use distributed::microsvc::{spawn_outbox_publish_loop, spawn_service_consumer_loop};
 use distributed::{
-    BusPublisher, OutboxDispatcher, PostgresLockManager, PostgresRepository, SqliteLockManager,
-    SqliteRepository,
+    PostgresLockManager, PostgresRepository, SqliteLockManager, SqliteRepository,
 };
 
 use crate::{
@@ -54,7 +53,6 @@ async fn run_sqlite(
         .map_err(|e| format!("manifest: {e}"))?;
     repo.bootstrap_table_schema_for_dev(&registry).await?;
     let locks = SqliteLockManager::new(repo.pool().clone());
-
     let bus = SqliteBus::new(repo.pool().clone()).group(BUS_GROUP);
     bus.ensure_tables().await?;
 
@@ -63,12 +61,23 @@ async fn run_sqlite(
         .with_bus(SqliteBus::new(repo.pool().clone()).group(BUS_GROUP));
     let gql = build_graphql_engine(&repo, &service, options.identity.clone(), Some(change_rx))?;
     let service = Arc::new(service.try_with_graphql(gql)?);
-    // Public host boundary is the command dispatcher; HTTP OIDC serve still
-    // consumes Service until microsvc GraphQL routes bind dispatcher directly.
     let _dispatcher = Arc::new(LocalCommandDispatcher::new(Arc::clone(&service)));
 
-    spawn_outbox_sqlite(repo.clone());
-    spawn_consumer_sqlite(repo.clone(), locks);
+    spawn_outbox_publish_loop(
+        repo.outbox_store(),
+        Arc::new(SqliteBus::new(repo.pool().clone()).group(BUS_GROUP)),
+        "e2e-ui",
+        Duration::from_secs(30),
+        5,
+    );
+    {
+        let repo = repo.clone();
+        let locks = locks.clone();
+        spawn_service_consumer_loop(move || {
+            let bus = SqliteBus::new(repo.pool().clone()).group(BUS_GROUP);
+            build_service(repo.clone(), locks.clone(), repo.clone()).with_bus(bus)
+        });
+    }
     spawn_zitadel_scrape(repo.clone());
 
     eprintln!("e2e-ui (sqlite) listening on http://{}", options.bind);
@@ -86,7 +95,6 @@ async fn run_postgres(
         .map_err(|e| format!("manifest: {e}"))?;
     repo.bootstrap_table_schema_for_dev(&registry).await?;
     let locks = PostgresLockManager::new(repo.pool().clone());
-
     let bus = PostgresBus::new(repo.pool().clone()).group(BUS_GROUP);
     bus.ensure_tables().await?;
 
@@ -97,8 +105,21 @@ async fn run_postgres(
     let service = Arc::new(service.try_with_graphql(gql)?);
     let _dispatcher = Arc::new(LocalCommandDispatcher::new(Arc::clone(&service)));
 
-    spawn_outbox_postgres(repo.clone());
-    spawn_consumer_postgres(repo.clone(), locks);
+    spawn_outbox_publish_loop(
+        repo.outbox_store(),
+        Arc::new(PostgresBus::new(repo.pool().clone()).group(BUS_GROUP)),
+        "e2e-ui",
+        Duration::from_secs(30),
+        5,
+    );
+    {
+        let repo = repo.clone();
+        let locks = locks.clone();
+        spawn_service_consumer_loop(move || {
+            let bus = PostgresBus::new(repo.pool().clone()).group(BUS_GROUP);
+            build_service(repo.clone(), locks.clone(), repo.clone()).with_bus(bus)
+        });
+    }
     spawn_zitadel_scrape(repo.clone());
 
     eprintln!("e2e-ui (postgres) listening on http://{}", options.bind);
@@ -131,84 +152,4 @@ where
             );
         }
     }
-}
-
-fn spawn_outbox_sqlite(repo: SqliteRepository) {
-    tokio::spawn(async move {
-        let bus = Arc::new(SqliteBus::new(repo.pool().clone()).group(BUS_GROUP));
-        let dispatcher = OutboxDispatcher::new(
-            repo.outbox_store(),
-            BusPublisher::new(bus),
-            format!("outbox:{}", std::process::id()),
-            Duration::from_secs(30),
-            5,
-        )
-        .with_service("e2e-ui");
-        loop {
-            match dispatcher.dispatch_batch(32).await {
-                Ok(o) if o.published > 0 || o.claimed > 0 => {}
-                Ok(_) => tokio::time::sleep(Duration::from_millis(25)).await,
-                Err(e) => {
-                    eprintln!("outbox: {e}");
-                    tokio::time::sleep(Duration::from_millis(100)).await;
-                }
-            }
-        }
-    });
-}
-
-fn spawn_consumer_sqlite(repo: SqliteRepository, locks: SqliteLockManager) {
-    tokio::spawn(async move {
-        loop {
-            let bus = SqliteBus::new(repo.pool().clone()).group(BUS_GROUP);
-            let service = build_service(repo.clone(), locks.clone(), repo.clone()).with_bus(bus);
-            match service.run(RunOptions::idempotent()).await {
-                Ok(()) => tokio::time::sleep(Duration::from_millis(25)).await,
-                Err(e) => {
-                    eprintln!("consumer: {e}");
-                    tokio::time::sleep(Duration::from_millis(100)).await;
-                }
-            }
-        }
-    });
-}
-
-fn spawn_outbox_postgres(repo: PostgresRepository) {
-    tokio::spawn(async move {
-        let bus = Arc::new(PostgresBus::new(repo.pool().clone()).group(BUS_GROUP));
-        let dispatcher = OutboxDispatcher::new(
-            repo.outbox_store(),
-            BusPublisher::new(bus),
-            format!("outbox:{}", std::process::id()),
-            Duration::from_secs(30),
-            5,
-        )
-        .with_service("e2e-ui");
-        loop {
-            match dispatcher.dispatch_batch(32).await {
-                Ok(o) if o.published > 0 || o.claimed > 0 => {}
-                Ok(_) => tokio::time::sleep(Duration::from_millis(25)).await,
-                Err(e) => {
-                    eprintln!("outbox: {e}");
-                    tokio::time::sleep(Duration::from_millis(100)).await;
-                }
-            }
-        }
-    });
-}
-
-fn spawn_consumer_postgres(repo: PostgresRepository, locks: PostgresLockManager) {
-    tokio::spawn(async move {
-        loop {
-            let bus = PostgresBus::new(repo.pool().clone()).group(BUS_GROUP);
-            let service = build_service(repo.clone(), locks.clone(), repo.clone()).with_bus(bus);
-            match service.run(RunOptions::idempotent()).await {
-                Ok(()) => tokio::time::sleep(Duration::from_millis(25)).await,
-                Err(e) => {
-                    eprintln!("consumer: {e}");
-                    tokio::time::sleep(Duration::from_millis(100)).await;
-                }
-            }
-        }
-    });
 }

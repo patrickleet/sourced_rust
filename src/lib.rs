@@ -89,7 +89,7 @@ pub use domain_event::{
 
 // Logical projection contracts. Physical read-model lowering deliberately lives
 // behind adapters and is not part of this semantic surface.
-pub use projection::{
+pub use projection::{LocalProjectionMounts, LocalProjectionMountsBuilder, 
     ProjectionArm, ProjectionAssignment, ProjectionEnvelopeField, ProjectionEventSelector,
     ProjectionEventSet, ProjectionExpression, ProjectionField, ProjectionInvalidation,
     ProjectionKeyField, ProjectionMutationKind, ProjectionMutationProvenance,
