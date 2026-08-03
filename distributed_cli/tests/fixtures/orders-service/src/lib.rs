@@ -1,4 +1,4 @@
-//! Minimal Distributed service fixture for `dctl` manifest-harness integration
+//! Minimal Distributed service fixture for `distributed` manifest-harness integration
 //! tests: one read model (→ an `orders` table) registered in the read-model catalog.
 
 use std::any::TypeId;
@@ -102,7 +102,7 @@ async fn project_order(
     ))
 }
 
-/// The entrypoint `dctl schema` calls by default
+/// The entrypoint `distributed schema` calls by default
 /// (`<crate>::read_model_catalog`). This is the physical read-model catalog,
 /// not the logical application manifest.
 pub fn read_model_catalog() -> ReadModelCatalog {
@@ -126,7 +126,7 @@ pub fn application_manifest() -> ApplicationManifest {
         .clone()
 }
 
-/// Pool-free client export used by `dctl client-manifest`. Both the CLI harness
+/// Pool-free client export used by `distributed client-manifest`. Both the CLI harness
 /// and a runtime engine finish through `DistributedClientSurfaceExport::manifest`.
 pub fn distributed_client_surface() -> DistributedClientSurfaceExport {
     let catalog = read_model_catalog();

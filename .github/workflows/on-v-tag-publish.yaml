@@ -40,7 +40,7 @@ jobs:
       manifest_path: distributed_macros/Cargo.toml
       cargo_publish_args: "--locked"
 
-  # distributed_cli (the `dctl` binary + generation library) has no internal
+  # distributed_cli (the `distributed` binary + generation library) has no internal
   # workspace dependencies, so it publishes independently of the macros/core crates.
   publish-cli:
     needs: release-preflight
@@ -116,6 +116,6 @@ jobs:
       contents: write
     uses: unbounded-tech/workflows-rust/.github/workflows/release.yaml@v2.3.0
     with:
-      binary_name: dctl
+      binary_name: distributed
       # Cargo.lock is intentionally untracked for this library workspace.
-      build_args: "--release --package distributed_cli --bin dctl"
+      build_args: "--release --package distributed_cli --bin distributed"

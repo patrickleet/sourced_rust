@@ -16,7 +16,7 @@ existing unbounded-tech quality provider plus the integration/* jobs below —
 | [`integration-js.yaml`](./integration-js.yaml) | yes | **This repo:** install, typecheck, test, build, and packed-consumer smoke test for `js/` |
 | [`on-pr-quality.yaml`](./on-pr-quality.yaml) | entry | **This repo** PR gate (not the consumer quality contract) |
 | [`on-push-main-version-and-tag.yaml`](./on-push-main-version-and-tag.yaml) | entry | **This repo** main → **vnext** tag |
-| [`on-v-tag-publish.yaml`](./on-v-tag-publish.yaml) | entry | **This repo** crates.io + npm + `dctl` binary release |
+| [`on-v-tag-publish.yaml`](./on-v-tag-publish.yaml) | entry | **This repo** crates.io + npm + `distributed` binary release |
 
 **Version tagging (anywhere):** `unbounded-tech/workflow-vnext-tag`  
 **GitHub Release only (domain crates):** `unbounded-tech/workflow-simple-release`
@@ -136,4 +136,4 @@ quality contract.
 ## Out of scope (for now)
 
 - crates.io publish reusable (framework still uses `unbounded-tech` publish helpers in `on-v-tag-publish.yaml`)
-- image / GitOps promote (service scaffolds via `dctl`)
+- image / GitOps promote (service scaffolds via `distributed`)

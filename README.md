@@ -48,7 +48,7 @@ stack of deliberate files. Start here:
        │                                │
        │  @hops-ops/distributed         ├── mutations → aggregates
        │  causal replica + commands     ├── Atomic rows (blob) with events
-       │  dctl-generated ops            └── projector rows (todos, chat)
+       │  distributed-generated ops            └── projector rows (todos, chat)
 ```
 
 JS package deep-dive: [`js/README.md`](js/README.md).
@@ -93,7 +93,7 @@ e2e-ui boots **Zitadel** for the browser path; the three stacks prove the same
 | GraphQL query service | Filters, order, pagination, relationships, RBAC, live subs, causal mutations |
 | npm JS client | Artifacts, HTTP/WS transport, **causal replica**, diagnostics, SvelteKit/React |
 | microsvc | One handler inventory on HTTP, gRPC, bus, GraphQL, or direct dispatch |
-| `dctl` | Scaffold, SQL/Atlas/SDL, **client-manifest / client** codegen |
+| `distributed` | Scaffold, SQL/Atlas/SDL, **client-manifest / client** codegen |
 
 ## Use as a Dependency
 
@@ -184,7 +184,7 @@ Most application crates should depend on `distributed` only. The proc macros
 (`#[sourced]`, `#[digest]`, `#[derive(ReadModel)]`, `#[derive(Snapshot)]`) are
 re-exported from `distributed`; do not add `distributed_macros` directly unless
 you are working on the macro crate itself. The `distributed_cli` crate installs
-the `dctl` tooling and is not needed as a runtime dependency unless you are
+the `distributed` tooling and is not needed as a runtime dependency unless you are
 embedding the CLI in another command such as `hops service`.
 
 ## Quick Start (library)
@@ -1515,7 +1515,7 @@ let loaded = repo
 - **Internal loads:** PK-anchored includes —
   `store.workspace().load(...).include(...).one()` (one-level, opt-in).
 - **Schema lifecycle:** `ReadModelSchemaRegistry` + adapter for migration artifacts
-  and startup verification; `dctl schema` / `read_model_catalog()` for SQL.
+  and startup verification; `distributed schema` / `read_model_catalog()` for SQL.
 - **Non-goals:** public query APIs belong on the GraphQL layer below (not the ORM
   include loader); do not write projections outside the projection path.
 
@@ -1531,7 +1531,7 @@ This is the public query/command edge for full-stack apps. The companion
 TypeScript package [`@hops-ops/distributed`](js/) (see
 [`js/README.md`](js/README.md)) supplies transport, a normalized causal replica,
 command runtime, diagnostics, and SvelteKit/React adapters. End-to-end template:
-[`tests/e2e-ui/`](tests/e2e-ui/). Scaffold with `dctl scaffold … --query-api`.
+[`tests/e2e-ui/`](tests/e2e-ui/). Scaffold with `distributed scaffold … --query-api`.
 Example playground: `cargo run --example graphiql --features "graphql,sqlite"`.
 
 ### Enable
@@ -1546,7 +1546,7 @@ distributed = { version = "0.1", features = ["graphql", "postgres"] }
 
 `graphql` implies `http` (Axum router, including `/graphql/ws`). SDL helpers under
 `distributed::graphql::{naming,sdl}` compile without the feature so
-`dctl schema --format graphql` works in tooling crates.
+`distributed schema --format graphql` works in tooling crates.
 
 ### Scope
 
@@ -1704,14 +1704,14 @@ GraphiQL is a **developer** tool. Default headers in the playground trust
 
 ```bash
 # Optional human-readable GraphQL SDL artifact
-dctl schema --format graphql --out schema.graphql
+distributed schema --format graphql --out schema.graphql
 git diff --exit-code schema.graphql   # drift gate
 ```
 
 The Rust `Service` inventory and GraphQL `Surface` IR are the source of truth
 for schema, authorization, commands, optimistic effects, and client artifacts.
-`dctl client-manifest` exports one role or named application surface, and
-`dctl client` compiles that manifest with co-located `.graphql` operations into
+`distributed client-manifest` exports one role or named application surface, and
+`distributed client` compiles that manifest with co-located `.graphql` operations into
 typed query/live/command modules. Common and elevated applications use separate
 manifest entrypoints, document sets, generated directories, virtual modules,
 and request-local replicas; an admin superset is never bundled into the common
@@ -1767,8 +1767,8 @@ make check-client # generated user/admin clients are current
 Generate app clients from the Rust surface:
 
 ```bash
-dctl client-manifest …   # export role/app surface IR
-dctl client …            # compile co-located .graphql → typed modules
+distributed client-manifest …   # export role/app surface IR
+distributed client …            # compile co-located .graphql → typed modules
 ```
 
 See [`js/README.md`](js/README.md) for package API and packaging.
@@ -1934,13 +1934,13 @@ A v1 event automatically chains through v1→v2→v3; a v2 event only goes throu
 - **No stored data modified**: Upcasters are read-time transformations.
 - **Zero overhead when unused**: Aggregates with no upcasters take the fast hydration path.
 
-## Service CLI (`dctl`)
+## Service CLI (`distributed`)
 
-The [`distributed_cli`](distributed_cli/) crate ships `dctl` — tooling to scaffold
+The [`distributed_cli`](distributed_cli/) crate ships `distributed` — tooling to scaffold
 services, inspect a service's logical application artifact, and render physical
 read-model schema artifacts. It is
 also a library, so `hops` mounts the same commands under `hops service` (anything
-below as `dctl <cmd>` works as `hops service <cmd>`).
+below as `distributed <cmd>` works as `hops service <cmd>`).
 
 The CLI exists to keep the generated and handwritten parts of a back-end service
 separate. A Distributed service should usually reduce to a small custom surface:
@@ -1958,9 +1958,9 @@ shapes. Boilerplate service setup, manifest discovery, schema output, and GitOps
 artifacts stay deterministic.
 
 ```bash
-cargo install distributed_cli            # installs `dctl`
+cargo install distributed_cli            # installs `distributed`
 
-dctl scaffold orders \
+distributed scaffold orders \
   --model order \
   --read-models \
   --command order.submit \
@@ -1973,8 +1973,8 @@ dctl scaffold orders \
 
 cd orders
 cargo test
-dctl describe                  # print the ApplicationManifest as JSON
-dctl schema --dialect postgres # render migration SQL from read models
+distributed describe                  # print the ApplicationManifest as JSON
+distributed schema --dialect postgres # render migration SQL from read models
 ```
 
 Use the event-storming board as the input:
@@ -2019,14 +2019,14 @@ pub fn read_model_catalog() -> distributed::ReadModelCatalog {
 
 ### Apply schema in-cluster with Atlas
 
-`dctl schema --format atlas` wraps the desired-state SQL into an `AtlasSchema`
+`distributed schema --format atlas` wraps the desired-state SQL into an `AtlasSchema`
 (`db.atlasgo.io/v1alpha1`) for the [ariga atlas-operator](https://github.com/ariga/atlas-operator),
 so migrations apply declaratively in-cluster. The resource is written to
 **stdout** — redirect it wherever you keep schema manifests (a file, or a separate
-GitOps repo); `dctl` does not choose a location for it.
+GitOps repo); `distributed` does not choose a location for it.
 
 ```bash
-dctl schema --format atlas --name orders --db-secret orders-db > orders.schema.yaml
+distributed schema --format atlas --name orders --db-secret orders-db > orders.schema.yaml
 ```
 
 Use `--db-secret`/`--db-secret-key` for a Secret reference (GitOps-friendly) or

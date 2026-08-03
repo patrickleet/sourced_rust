@@ -1,6 +1,6 @@
 ---
 name: distributed-usage
-description: Build Distributed CQRS/event-sourced Rust services where you mostly write models and handlers while the framework and dctl generate persistence, transports, manifests, and deploy wiring. Use model-first TDD to specify plain aggregate behavior with fast unit tests before implementing models and thin handlers. Use when designing, testing, writing, or modifying a Distributed service or domain model.
+description: Build Distributed CQRS/event-sourced Rust services where you mostly write models and handlers while the framework and distributed generate persistence, transports, manifests, and deploy wiring. Use model-first TDD to specify plain aggregate behavior with fast unit tests before implementing models and thin handlers. Use when designing, testing, writing, or modifying a Distributed service or domain model.
 ---
 
 # Using the Distributed framework
@@ -11,7 +11,7 @@ description: Build Distributed CQRS/event-sourced Rust services where you mostly
 first, then write thin handlers around proven behavior.**
 
 Everything else — service wiring, transports, persistence, manifests, schema,
-CI/GitOps — is deterministic structure the framework, macros, and `dctl`
+CI/GitOps — is deterministic structure the framework, macros, and `distributed`
 generate. Your authored surface is deliberately small: aggregate models
 (`#[sourced]` event methods), command/event handler bodies, and read-model
 shapes. If you find yourself hand-writing service plumbing, routing, broker
@@ -49,7 +49,7 @@ traits — production swaps are one constructor line, never a handler change.
 ## Workflow
 
 1. Scaffold a service instead of hand-rolling layout:
-   `dctl scaffold <name> --model <agg> --command <agg.action> --event <fact.happened> --store postgres --transport http --bus nats --gitops`
+   `distributed scaffold <name> --model <agg> --command <agg.action> --event <fact.happened> --store postgres --transport http --bus nats --gitops`
    (from an event-storming board: aggregates → `--model`, commands →
    `--command`, events/policies → `--event`, query views → `--read-models`).
 2. Write failing, colocated unit tests against the aggregate command API you
@@ -171,7 +171,7 @@ of exposing a raw `Context`/`serde_json::Value` handler as the mutation contract
 - bind that exact `Service` through `GraphqlEngineBuilder::service`, configure
   public OIDC, and call `.without_http_command_routes()` so browser writes use
   only the GraphQL command proxy;
-- generate the strictly typed client with `dctl client`.
+- generate the strictly typed client with `distributed client`.
 
 Use the `distributed-graphql` skill for the complete route, consistency,
 authorization, and client-generation contract. The raw handler form below
@@ -302,7 +302,7 @@ Rules the fixture demonstrates:
 - GraphQL row filter: `owner_id = claim(x-user-id)` for role `user`
 - **Typed GraphQL commands** (`Eventual` / `Atomic`) via the OIDC command
   proxy; generic direct command POST routes are disabled
-- **Generated client**: `dctl client` produces the typed replica/query/command
+- **Generated client**: `distributed client` produces the typed replica/query/command
   artifacts consumed by the SvelteKit app
 - **Subscriptions**: wire `SqliteRepository::read_model_changes()` into
   `GraphqlEngineBuilder::change_stream`; clients use WebSocket `/graphql/ws`
@@ -312,7 +312,7 @@ Run the full app: `cd tests/e2e-ui && make`. Suite: `make test`.
 ## Manifest entrypoint
 
 Every service should export `read_model_catalog()` registering its read
-models — `dctl describe` and `dctl schema` compile the crate and call it:
+models — `distributed describe` and `distributed schema` compile the crate and call it:
 
 ```rust
 pub fn read_model_catalog() -> distributed::ReadModelCatalog {

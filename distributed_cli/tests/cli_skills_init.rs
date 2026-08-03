@@ -1,4 +1,4 @@
-//! Integration tests for `dctl skills init` / `dctl skills list`: drive the
+//! Integration tests for `distributed skills init` / `distributed skills list`: drive the
 //! real binary against temp directories and assert the extracted skill tree,
 //! harness wiring, idempotent re-runs, and drift semantics. No network, no
 //! repo checkout — the skills are embedded in the binary.
@@ -9,7 +9,7 @@ use std::process::{Command, Output};
 
 const SKILL_NAMES: [&str; 3] = ["distributed-usage", "distributed-ci", "distributed-schema"];
 const BEGIN: &str =
-    "<!-- distributed:skills:begin (managed by dctl skills init; do not edit inside) -->";
+    "<!-- distributed:skills:begin (managed by distributed skills init; do not edit inside) -->";
 const END: &str = "<!-- distributed:skills:end -->";
 
 /// A fresh project directory under the target tmpdir.
@@ -20,21 +20,21 @@ fn project_dir(name: &str) -> PathBuf {
     dir
 }
 
-/// Run `dctl skills <args...>` with the given project directory as cwd.
+/// Run `distributed skills <args...>` with the given project directory as cwd.
 fn dctl_skills(cwd: &Path, args: &[&str]) -> Output {
     Command::new(env!("CARGO_BIN_EXE_dctl"))
         .arg("skills")
         .args(args)
         .current_dir(cwd)
         .output()
-        .expect("dctl should run")
+        .expect("distributed should run")
 }
 
 fn init_ok(cwd: &Path, args: &[&str]) -> (String, String) {
     let output = dctl_skills(cwd, args);
     assert!(
         output.status.success(),
-        "dctl skills {args:?} failed:\n{}",
+        "distributed skills {args:?} failed:\n{}",
         String::from_utf8_lossy(&output.stderr)
     );
     (

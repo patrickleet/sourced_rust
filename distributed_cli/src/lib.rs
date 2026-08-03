@@ -1,21 +1,9 @@
-//! The `dctl` CLI for Distributed services — both a binary and a library.
+//! The `distributed` CLI for Distributed applications — both a binary and a library.
 //!
-//! It bundles two things in one crate so there is no cross-repo coordination:
-//!
-//! - **Pure generation** (the [`generate`]/[`atlas`] modules): the rules for a
-//!   Distributed service project — Cargo layout, Rust source templates, manifest
-//!   wiring, GitOps/Knative inference, GitHub workflows, and Atlas schema
-//!   resources. These perform no I/O — [`generate_service_scaffold`] takes a
-//!   [`ServiceScaffoldSpec`] and returns a [`GeneratedProject`];
-//!   [`render_atlas_schema`] wraps desired-state SQL into an `AtlasSchema`.
-//! - **The command surface** (the [`cli`] module): the clap types and [`run`]
-//!   dispatcher that own the filesystem / process side effects (writing files,
-//!   running `gh`, compiling the manifest harness).
-//!
-//! The `dctl` binary parses [`ServiceArgs`] and calls [`run`]. Another CLI (e.g.
-//! `hops`) can depend on this crate, mount [`ServiceArgs`] under its own
-//! subcommand, and dispatch with [`run`] — re-exporting the commands rather than
-//! reimplementing them.
+//! It bundles pure generation (`generate` / `atlas`), the contract lifecycle
+//! surface (`contracts`), and the clap command surface (`cli`). The standalone
+//! binary parses [`DistributedArgs`] and dispatches with [`run_distributed`].
+//! Host CLIs such as `hops` may mount [`ServiceArgs`] and dispatch with [`run`].
 
 mod atlas;
 mod cli;
@@ -27,9 +15,11 @@ mod skills;
 
 pub use atlas::{render_atlas_schema, AtlasDatabaseUrl, AtlasSchemaSpec};
 pub use cli::{
-    run, AgentHarness, Bus, ClientArgs, ClientManifestArgs, DescribeArgs, Framework, GitopsPromote,
-    ManifestFormat, Metrics, ScaffoldArgs, SchemaArgs, SchemaDialect, SchemaFormat, ServiceArgs,
-    ServiceCommands, SkillsArgs, SkillsCommands, SkillsInitArgs, Store, Transport,
+    run, run_distributed, AgentHarness, Bus, ClientArgs, ClientManifestArgs, ContractsAcceptArgs,
+    ContractsArgs, ContractsCheckArgs, ContractsCommands, ContractsOutput, DescribeArgs,
+    DistributedArgs, DistributedCommands, Framework, GitopsPromote, ManifestFormat, Metrics,
+    ScaffoldArgs, SchemaArgs, SchemaDialect, SchemaFormat, ServiceArgs, ServiceCommands,
+    SkillsArgs, SkillsCommands, SkillsInitArgs, Store, Transport,
 };
 pub use client_compiler::{
     compile_client, ClientCompileError, ClientCompileInput, ClientDocument, ClientRouteDiscovery,
@@ -38,12 +28,13 @@ pub use client_compiler::{
 };
 pub use contracts::{
     check_migration_history, check_migration_inventory, check_predecessor_chain,
-    classify_snapshot_diff, diff_snapshots, snapshot_from_json, ArtifactIdentity,
-    ArtifactPredecessor, ArtifactProvenance, BaselineAvailability, ClassifiedChange,
-    ClientDeclaration, ClientInventory, ContractArtifactKind, ContractCatalog,
-    ContractCheckResult, ContractDiagnostic, ContractDiagnosticCode, ContractEntry, ContractError,
-    ContractScope, EnvironmentPolicyReference, LifecycleDecision, MigrationDialect, MigrationEntry,
-    MigrationFile, MigrationHistoryCheck, MigrationInventory, ObservedPredecessor, SafeDiagnosticValue,
+    classify_snapshot_diff, contracts_accept, contracts_check, diff_snapshots, snapshot_from_json,
+    ArtifactIdentity, ArtifactPredecessor, ArtifactProvenance, BaselineAvailability,
+    ClassifiedChange, ClientDeclaration, ClientInventory, ContractAcceptScope, ContractArtifactKind,
+    ContractCatalog, ContractCheckResult, ContractDiagnostic, ContractDiagnosticCode, ContractEntry,
+    ContractError, ContractScope, ContractsAcceptReport, ContractsCheckReport,
+    EnvironmentPolicyReference, LifecycleDecision, MigrationDialect, MigrationEntry, MigrationFile,
+    MigrationHistoryCheck, MigrationInventory, ObservedPredecessor, SafeDiagnosticValue,
     SemanticSnapshot, SnapshotChange, SnapshotDiff, SnapshotEntry, MAX_CATALOG_BYTES,
     MAX_CATALOG_DIRECTORIES, MAX_CATALOG_DIRECTORY_DEPTH, MAX_CATALOG_DIRECTORY_ENTRIES,
     MAX_CATALOG_ENTRIES, MAX_CATALOG_FILES, MAX_CATALOG_GLOB_MATCHES, MAX_CATALOG_JSON_DEPTH,

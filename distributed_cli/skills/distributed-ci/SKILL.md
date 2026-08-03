@@ -1,11 +1,11 @@
 ---
 name: distributed-ci
-description: Set up CI, release workflows, and GitOps promotion for a Distributed service with dctl scaffold flags (--github, --gitops, --gitops-promote). Use when configuring pipelines, previews, releases, or deploy automation.
+description: Set up CI, release workflows, and GitOps promotion for a Distributed service with distributed scaffold flags (--github, --gitops, --gitops-promote). Use when configuring pipelines, previews, releases, or deploy automation.
 ---
 
 # CI and GitOps for Distributed services
 
-`dctl scaffold` generates the whole delivery pipeline — Helm deploy chart,
+`distributed scaffold` generates the whole delivery pipeline — Helm deploy chart,
 GitHub Actions workflows, and promotion charts — from flags. Prefer
 regenerating/extending these artifacts over hand-writing pipeline YAML.
 
@@ -74,7 +74,7 @@ set, because the promotion charts target `.gitops/deploy`.
 
 ## Gotchas
 
-- `dctl scaffold` **refuses a non-empty directory** without `--force`; adding
+- `distributed scaffold` **refuses a non-empty directory** without `--force`; adding
   CI to an existing service means running scaffold with `--force` in a clean
   worktree and reviewing the diff, or copying the generated workflows in.
 - The three GitHub repos gate independent slices — you can adopt
@@ -93,5 +93,5 @@ set, because the promotion charts target `.gitops/deploy`.
 
 ## Reference
 
-Full flag list: `dctl scaffold --help`. The same commands ship as
+Full flag list: `distributed scaffold --help`. The same commands ship as
 `hops service scaffold ...` when using the `hops` CLI.

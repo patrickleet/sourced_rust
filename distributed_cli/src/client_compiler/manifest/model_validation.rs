@@ -245,7 +245,7 @@ pub(crate) fn validate_execution_limits(
         return Err(ClientCompileError::manifest(
             "client.manifest.complexity_version",
             format!(
-                "unsupported query complexity contract version {}; dctl requires version 1",
+                "unsupported query complexity contract version {}; distributed requires version 1",
                 execution.complexity.version
             ),
         ));

@@ -89,7 +89,7 @@ jobs:
           kubeconform -v
       - name: Scaffold service with metrics and tracing
         run: |
-          cargo run -p distributed_cli --bin dctl -- scaffold observability-orders \
+          cargo run -p distributed_cli --bin distributed -- scaffold observability-orders \
             --path target/tmp/scaffold-observability \
             --store in-memory --transport http \
             --metrics prometheus --tracing --gitops \

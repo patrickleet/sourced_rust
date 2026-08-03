@@ -75,14 +75,14 @@ pub(crate) fn run_manifest_harness(
     // resolves its inherited dependencies against the generated harness.
     let harness_root = package
         .target_directory
-        .join("dctl-manifest-harness")
+        .join("distributed-manifest-harness")
         .join(&package.name);
     let harness_dir = harness_root.join(mode.cache_key());
     fs::create_dir_all(harness_dir.join("src"))?;
     fs::write(
         harness_dir.join("Cargo.toml"),
         harness_cargo_toml(
-            &format!("dctl-manifest-harness-{}", mode.cache_key()),
+            &format!("distributed-manifest-harness-{}", mode.cache_key()),
             &crate_ident,
             &package.name,
             &package.directory,
@@ -340,7 +340,7 @@ mod tests {
     #[test]
     fn harness_is_standalone_inside_cached_target_directory() {
         let cargo_toml = harness_cargo_toml(
-            "dctl-manifest-harness-schema-postgres",
+            "distributed-manifest-harness-schema-postgres",
             "todo_model",
             "todo-model",
             Path::new("/tmp/todo-model"),
@@ -350,7 +350,7 @@ mod tests {
         );
 
         assert!(cargo_toml.contains("\n[workspace]\n"));
-        assert!(cargo_toml.contains("name = \"dctl-manifest-harness-schema-postgres\""));
+        assert!(cargo_toml.contains("name = \"distributed-manifest-harness-schema-postgres\""));
     }
 
     #[test]

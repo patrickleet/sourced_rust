@@ -296,7 +296,7 @@ export const distributedViteOptions = Object.freeze({
 		'-p',
 		'distributed_cli',
 		'--bin',
-		'dctl',
+		'distributed',
 		'--'
 	]),
 	clients: distributedClients

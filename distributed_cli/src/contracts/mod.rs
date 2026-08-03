@@ -12,6 +12,7 @@ mod classification;
 mod diagnostic;
 mod migrations;
 mod snapshots;
+mod transaction;
 
 #[cfg(test)]
 mod tests;
@@ -44,4 +45,8 @@ pub use migrations::{
 pub use snapshots::{
     diff_snapshots, snapshot_from_json, SemanticSnapshot, SnapshotChange, SnapshotDiff,
     SnapshotEntry, MAX_SNAPSHOT_DEPTH, MAX_SNAPSHOT_PATHS, MAX_SNAPSHOT_VALUE_BYTES,
+};
+pub use transaction::{
+    contracts_accept, contracts_check, unknown_scope_diagnostic, ContractAcceptScope,
+    ContractsAcceptReport, ContractsCheckReport,
 };

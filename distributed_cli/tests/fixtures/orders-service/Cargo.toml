@@ -1,4 +1,4 @@
-# Standalone fixture compiled by the `dctl` manifest harness in integration tests.
+# Standalone fixture compiled by the `distributed` manifest harness in integration tests.
 # Its own `[workspace]` decouples it from the repo workspace.
 [package]
 name = "orders-service"
