@@ -15,6 +15,7 @@ const MAX_TOTAL_ENTRIES: usize = MAX_MIGRATIONS * 4;
 const MAX_TOP_LEVEL_ENTRIES: usize = 64;
 const MAX_DIRECTORIES: usize = 4_096;
 const MAX_SQL_FILES: usize = MAX_MIGRATIONS * 2;
+const REDACTED_MIGRATION_PATH: &str = "<redacted-migration-path>";
 
 #[derive(Debug, Deserialize)]
 #[serde(deny_unknown_fields)]
@@ -212,6 +213,7 @@ fn validate_inventory(root: &Path, inventory: &Inventory) {
         }
         for dialect in Dialect::ALL {
             let file = dialect.file(migration);
+            let display_path = declared_path_display(&file.path);
             validate_path(root, dialect, file);
             if file.sha256.len() != 64
                 || !file.sha256.bytes().all(|byte| byte.is_ascii_hexdigit())
@@ -223,7 +225,7 @@ fn validate_inventory(root: &Path, inventory: &Inventory) {
                 panic!(
                     "{INVENTORY_PATH} {} migration `{}` has an invalid SHA-256",
                     dialect.name(),
-                    file.path
+                    display_path
                 );
             }
             if paths
@@ -232,20 +234,20 @@ fn validate_inventory(root: &Path, inventory: &Inventory) {
             {
                 panic!(
                     "{INVENTORY_PATH} migration path `{}` is declared more than once",
-                    file.path
+                    display_path
                 );
             }
             let sql_path = root.join(&file.path);
             let sql = read_bounded_file(root, &sql_path, MAX_SQL_BYTES, "migration SQL");
             if std::str::from_utf8(&sql).is_err() {
-                panic!("migration SQL `{}` is not UTF-8", file.path);
+                panic!("migration SQL `{display_path}` is not UTF-8");
             }
             let observed = sha256_hex(&sql);
             if observed != file.sha256 {
                 panic!(
                     "{INVENTORY_PATH} {} migration `{}` checksum mismatch: expected {}, observed {}",
                     dialect.name(),
-                    file.path,
+                    display_path,
                     file.sha256,
                     observed
                 );
@@ -256,8 +258,9 @@ fn validate_inventory(root: &Path, inventory: &Inventory) {
         let actual = collect_sql_files(root, dialect);
         for path in actual.keys() {
             if !paths.contains_key(path) {
+                let display_path = declared_path_display(path);
                 panic!(
-                    "{INVENTORY_PATH} extra {} migration file `{path}` is not registered",
+                    "{INVENTORY_PATH} extra {} migration file `{display_path}` is not registered",
                     dialect.name()
                 );
             }
@@ -305,13 +308,14 @@ fn validate_path(root: &Path, dialect: Dialect, file: &MigrationFile) {
 
 fn declared_path_display(path: &str) -> String {
     let path_value = Path::new(path);
-    if path_value.is_absolute()
+    if is_secret_like(path)
+        || path_value.is_absolute()
         || path.contains('\\')
         || path_value
             .components()
-            .any(|component| matches!(component, Component::Prefix(_) | Component::RootDir))
+            .any(|component| !matches!(component, Component::Normal(_)))
     {
-        "<outside-repository>".to_string()
+        REDACTED_MIGRATION_PATH.to_string()
     } else {
         path.to_string()
     }
@@ -364,13 +368,15 @@ fn validate_json_nesting(input: &[u8]) -> Result<(), &'static str> {
 }
 
 fn relative_path_display(root: &Path, path: &Path) -> String {
-    path.strip_prefix(root)
+    let relative = path
+        .strip_prefix(root)
         .map(|relative| {
             relative
                 .to_string_lossy()
                 .replace(std::path::MAIN_SEPARATOR, "/")
         })
-        .unwrap_or_else(|_| "<outside-repository>".to_string())
+        .unwrap_or_else(|_| "<outside-repository>".to_string());
+    declared_path_display(&relative)
 }
 
 fn read_bounded_file(root: &Path, path: &Path, limit: usize, label: &str) -> Vec<u8> {
@@ -439,26 +445,34 @@ fn collect_sql_files(root: &Path, dialect: Dialect) -> BTreeMap<String, ()> {
                 relative_path_display(root, &directory)
             );
         }
-        let entries = fs::read_dir(&directory).unwrap_or_else(|error| {
+        let mut read_entries = fs::read_dir(&directory).unwrap_or_else(|error| {
             panic!(
                 "read migration directory `{}`: {error}",
                 relative_path_display(root, &directory)
             )
         });
-        for entry in entries {
-            entries_seen += 1;
-            if entries_seen > MAX_TOTAL_ENTRIES {
+        let remaining_entries = MAX_TOTAL_ENTRIES - entries_seen;
+        let mut entries = Vec::with_capacity(remaining_entries);
+        loop {
+            let Some(entry) = read_entries.next() else {
+                break;
+            };
+            if entries_seen >= MAX_TOTAL_ENTRIES {
                 panic!(
                     "migration directory tree exceeds {MAX_TOTAL_ENTRIES} entries for {}",
                     dialect.name()
                 );
             }
-            let entry = entry.unwrap_or_else(|error| {
+            entries_seen += 1;
+            entries.push(entry.unwrap_or_else(|error| {
                 panic!(
                     "read migration directory entry for {}: {error}",
                     dialect.name()
                 )
-            });
+            }));
+        }
+        entries.sort_by_key(|entry| entry.file_name());
+        for entry in entries {
             let path = entry.path();
             let metadata = fs::symlink_metadata(&path).unwrap_or_else(|error| {
                 panic!(
@@ -512,17 +526,23 @@ fn validate_dialect_directories(root: &Path) {
     if !migrations_metadata.is_dir() {
         panic!("migrations path is not a directory");
     }
-    let entries = fs::read_dir(&migrations)
+    let mut read_entries = fs::read_dir(&migrations)
         .unwrap_or_else(|error| panic!("read migrations directory: {error}"));
     let mut entries_seen = 0usize;
-    for entry in entries {
-        entries_seen += 1;
-        if entries_seen > MAX_TOP_LEVEL_ENTRIES {
+    let mut entries = Vec::with_capacity(MAX_TOP_LEVEL_ENTRIES);
+    loop {
+        let Some(entry) = read_entries.next() else {
+            break;
+        };
+        if entries_seen >= MAX_TOP_LEVEL_ENTRIES {
             panic!("migrations directory exceeds {MAX_TOP_LEVEL_ENTRIES} entries");
         }
-        let path = entry
-            .unwrap_or_else(|error| panic!("read migrations entry: {error}"))
-            .path();
+        entries_seen += 1;
+        entries.push(entry.unwrap_or_else(|error| panic!("read migrations entry: {error}")));
+    }
+    entries.sort_by_key(|entry| entry.file_name());
+    for entry in entries {
+        let path = entry.path();
         let metadata = fs::symlink_metadata(&path)
             .unwrap_or_else(|error| panic!("inspect migrations entry: {error}"));
         if metadata.file_type().is_symlink() {
@@ -539,7 +559,10 @@ fn validate_dialect_directories(root: &Path) {
             .and_then(|value| value.to_str())
             .unwrap_or_default();
         if !matches!(name, "sqlite" | "postgres") {
-            panic!("unsupported migration dialect directory `migrations/{name}`");
+            panic!(
+                "unsupported migration dialect directory `{}`",
+                relative_path_display(root, &path)
+            );
         }
     }
 }
