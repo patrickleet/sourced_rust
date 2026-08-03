@@ -6,13 +6,20 @@
 //! HTTP, GraphQL execution, brokers, and deployment clients are not required
 //! to construct these values.
 
+mod capability;
 mod command;
 mod error;
 mod identity;
 mod manifest;
 mod module;
+mod mount;
+mod plan;
 mod registration;
+mod topology;
 
+pub use capability::{
+    Capability, CapabilityReason, CapabilityRequirement, SchemaLifecycleRequirement,
+};
 pub use command::{
     CommandDefinition, CommandMount, CommandMountFuture, CommandMountHandler, CommandMountRegistrar,
     CommandSpec, CommandTypeField, CommandTypeSpec, EventSpec, TypeSpec,
@@ -34,7 +41,13 @@ pub use module::{
     ProjectionSpec, SurfaceAggregateSpec, SurfaceArgumentSpec, SurfaceCommandSpec, SurfaceRootSpec,
     SurfaceSpec,
 };
+pub use mount::{MountSelector, ProcessPreset};
+pub use plan::{
+    compile_deployment_plan, DeploymentPlan, PlanFingerprint, ProcessIntent, ProcessPlan,
+    DEPLOYMENT_PLAN_SCHEMA_VERSION, MAX_DEPLOYMENT_PLAN_BYTES,
+};
 pub use registration::{Application, ApplicationBuilder, ContractCompiler};
+pub use topology::TopologyIntent;
 
 /// Compile-time duplicate check emitted by the module macro for generated
 /// command definition IDs. It compares the complete IDs, not a truncated or

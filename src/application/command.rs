@@ -248,6 +248,20 @@ impl CommandSpec {
         Ok(spec)
     }
 
+    /// Attach Atomic direct-projection proof material and recompute the fingerprint.
+    pub fn with_direct_projection(
+        mut self,
+        projected_model: impl Into<String>,
+        proof: serde_json::Value,
+    ) -> ApplicationResult<Self> {
+        self.consistency = CommandConsistency::Atomic;
+        self.projected_model = Some(LogicalId::try_new("projected model", projected_model)?.into_string());
+        self.direct_projection = Some(proof);
+        self.refresh_fingerprint()?;
+        self.validate()?;
+        Ok(self)
+    }
+
     /// Build a portable spec from the framework's existing typed declaration.
     pub fn from_typed_command<I, K>(command: &TypedCommand<I, K>) -> ApplicationResult<Self>
     where
