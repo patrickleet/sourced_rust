@@ -7,8 +7,11 @@
 
 mod artifact;
 mod catalog;
+mod chain;
+mod classification;
 mod diagnostic;
 mod migrations;
+mod snapshots;
 
 #[cfg(test)]
 mod tests;
@@ -24,6 +27,10 @@ pub use catalog::{
     MAX_CATALOG_DIRECTORY_ENTRIES, MAX_CATALOG_ENTRIES, MAX_CATALOG_FILES,
     MAX_CATALOG_GLOB_MATCHES, MAX_CATALOG_JSON_DEPTH,
 };
+pub use chain::{check_predecessor_chain, ObservedPredecessor};
+pub use classification::{
+    classify_snapshot_diff, decisions_are_distinct, ClassifiedChange, LifecycleDecision,
+};
 pub use diagnostic::{
     ContractCheckResult, ContractDiagnostic, ContractDiagnosticCode, SafeDiagnosticValue,
 };
@@ -33,4 +40,8 @@ pub use migrations::{
     MAX_MIGRATION_INVENTORY_BYTES, MAX_MIGRATION_JSON_DEPTH, MAX_MIGRATION_SQL_BYTES,
     MAX_MIGRATION_TOP_LEVEL_ENTRIES, MAX_MIGRATION_TOTAL_ENTRIES, MIGRATION_INVENTORY_PATH,
     MIGRATION_INVENTORY_SCHEMA_VERSION, MIGRATION_OWNER, MIGRATION_SCOPE,
+};
+pub use snapshots::{
+    diff_snapshots, snapshot_from_json, SemanticSnapshot, SnapshotChange, SnapshotDiff,
+    SnapshotEntry, MAX_SNAPSHOT_DEPTH, MAX_SNAPSHOT_PATHS, MAX_SNAPSHOT_VALUE_BYTES,
 };
