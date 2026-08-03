@@ -15,6 +15,7 @@ mod module;
 mod mount;
 mod plan;
 mod registration;
+mod runtime_host;
 mod topology;
 
 pub use capability::{
@@ -47,6 +48,7 @@ pub use plan::{
     DEPLOYMENT_PLAN_SCHEMA_VERSION, MAX_DEPLOYMENT_PLAN_BYTES,
 };
 pub use registration::{Application, ApplicationBuilder, ContractCompiler};
+pub use runtime_host::{bind_single_process, CapabilityProviders, RuntimeHost};
 pub use topology::TopologyIntent;
 
 /// Compile-time duplicate check emitted by the module macro for generated
