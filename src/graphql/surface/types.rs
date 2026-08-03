@@ -61,7 +61,7 @@ pub enum SurfaceRowPolicy {
 }
 
 /// Semantic category for one GraphQL field argument.
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq, serde::Serialize)]
 pub enum SurfaceArgumentKind {
     Filter,
     Order,
@@ -71,7 +71,7 @@ pub enum SurfaceArgumentKind {
 }
 
 /// One accepted root/relationship argument from the shared Surface IR.
-#[derive(Clone, Debug, PartialEq, Eq)]
+#[derive(Clone, Debug, PartialEq, Eq, serde::Serialize)]
 pub struct SurfaceArgument {
     pub name: String,
     pub kind: SurfaceArgumentKind,
@@ -105,7 +105,7 @@ pub struct RootField {
 }
 
 /// Column field on an object type (after skips / role filter).
-#[derive(Clone, Debug, PartialEq, Eq)]
+#[derive(Clone, Debug, PartialEq, Eq, serde::Serialize)]
 pub struct ColumnField {
     pub name: String,
     pub scalar: String,
@@ -129,7 +129,7 @@ pub struct RelField {
     pub aggregate: Option<SurfaceRelationshipAggregate>,
 }
 
-#[derive(Clone, Debug, PartialEq, Eq)]
+#[derive(Clone, Debug, PartialEq, Eq, serde::Serialize)]
 pub struct SurfaceRelationshipAggregate {
     pub name: String,
     pub type_name: String,
@@ -565,10 +565,168 @@ impl std::fmt::Debug for Surface {
 pub(crate) enum SurfaceSelection {
     Catalog,
     Role { name: String },
-    Application { name: String, roles: Vec<String> },
+    Application {
+        name: String,
+        eligible_roles: Vec<String>,
+        schema_roles: Vec<String>,
+    },
 }
 
 impl Surface {
+    /// Serialize the complete behavior-affecting Surface IR once. Application
+    /// manifests, SDL metadata, and client exports use this snapshot as their
+    /// shared identity input; none of them re-walks a table catalog.
+    pub(crate) fn canonical_contract_value(&self) -> Result<serde_json::Value, String> {
+        let selection = match &self.selection {
+            SurfaceSelection::Catalog => serde_json::json!({"kind": "catalog"}),
+            SurfaceSelection::Role { name } => serde_json::json!({"kind": "role", "name": name}),
+            SurfaceSelection::Application {
+                name,
+                eligible_roles,
+                schema_roles,
+            } => {
+                let mut eligible_roles = eligible_roles.clone();
+                let mut schema_roles = schema_roles.clone();
+                eligible_roles.sort();
+                eligible_roles.dedup();
+                schema_roles.sort();
+                schema_roles.dedup();
+                serde_json::json!({
+                    "kind": "application",
+                    "name": name,
+                    "eligible_roles": eligible_roles,
+                    "schema_roles": schema_roles,
+                })
+            }
+        };
+        let models = self
+            .models
+            .values()
+            .map(|model| {
+                let mut columns = model.columns.clone();
+                columns.sort_by(|left, right| left.name.cmp(&right.name));
+                let mut primary_key = model.primary_key.clone();
+                primary_key.sort();
+                let mut relationships = model
+                    .relationships
+                    .iter()
+                    .map(|relationship| {
+                        serde_json::json!({
+                            "name": relationship.name,
+                            "target_model": relationship.target_model,
+                            "target_object": relationship.target_object,
+                            "kind": format!("{:?}", relationship.kind).to_ascii_lowercase(),
+                            "list": relationship.list,
+                            "nullable": relationship.nullable,
+                            "arguments": relationship
+                                .arguments
+                                .iter()
+                                .map(argument_value)
+                                .collect::<Vec<_>>(),
+                            "keys": relationship_keys_value(&relationship.keys),
+                            "dependencies": relationship.dependencies,
+                            "aggregate": relationship.aggregate.as_ref().map(|aggregate| {
+                                serde_json::json!({
+                                    "name": aggregate.name,
+                                    "type_name": aggregate.type_name,
+                                    "arguments": aggregate
+                                        .arguments
+                                        .iter()
+                                        .map(argument_value)
+                                        .collect::<Vec<_>>(),
+                                    "dependencies": aggregate.dependencies,
+                                })
+                            }),
+                        })
+                    })
+                    .collect::<Vec<_>>();
+                relationships.sort_by(|left, right| left["name"].as_str().cmp(&right["name"].as_str()));
+                serde_json::json!({
+                    "model_name": model.model_name,
+                    "table_name": model.table_name,
+                    "object_name": model.object_name,
+                    "columns": columns,
+                    "relationships": relationships,
+                    "primary_key": primary_key,
+                    "row_policy": row_policy_value(&model.row_policy),
+                    "role_limit": model.role_limit,
+                    "aggregations": model.aggregations,
+                })
+            })
+            .collect::<Vec<_>>();
+        let mut roots = self
+            .query_fields
+            .iter()
+            .map(|root| root_value("query", root))
+            .chain(self.subscription_fields.iter().map(|root| root_value("subscription", root)))
+            .collect::<Vec<_>>();
+        roots.sort_by(|left, right| {
+            (left["operation"].as_str(), left["name"].as_str())
+                .cmp(&(right["operation"].as_str(), right["name"].as_str()))
+        });
+        let mut commands = self
+            .commands
+            .iter()
+            .map(|command| {
+                serde_json::json!({
+                    "command_name": command.command_name,
+                    "field_name": command.field_name,
+                    "roles": command.roles,
+                    "input": command_shape_value(&command.input),
+                    "output": command_shape_value(&command.output),
+                    "consistency": command.consistency,
+                    "input_defaults": command.input_defaults,
+                    "effects": command.effects,
+                    "confirmations": command.confirmations,
+                    "projected_model": command.projected_model.as_ref().map(|model| model.model.clone()),
+                    "direct_projection": command.direct_projection.as_ref().map(|target| target.canonical_value()),
+                    "projections": command.projections,
+                    "confirmation_unavailable": command.confirmation_unavailable,
+                })
+            })
+            .collect::<Vec<_>>();
+        commands.sort_by(|left, right| left["command_name"].as_str().cmp(&right["command_name"].as_str()));
+        let mut projectors = self
+            .projectors
+            .iter()
+            .map(|owner| {
+                let modeled = owner
+                    .modeled
+                    .iter()
+                    .map(|modeled| modeled.canonical_contract_value())
+                    .collect::<Result<Vec<_>, _>>()?;
+                Ok::<_, String>(serde_json::json!({
+                    "name": owner.name,
+                    "facts": owner.facts,
+                    "models": owner.models,
+                    "dependencies": owner.dependencies,
+                    "change_epoch": owner.change_epoch,
+                    "partition": owner.partition,
+                    "kind": if owner.is_direct() { "direct" } else { "async" },
+                    "modeled": modeled,
+                }))
+            })
+            .collect::<Result<Vec<_>, _>>()?;
+        projectors.sort_by(|left, right| left["name"].as_str().cmp(&right["name"].as_str()));
+        let value = serde_json::json!({
+            "version": 1,
+            "selection": selection,
+            "dialect": format!("{:?}", self.dialect).to_ascii_lowercase(),
+            "aggregates": self.aggregates,
+            "subscriptions": self.subscriptions,
+            "default_limit": self.default_limit,
+            "max_limit": self.max_limit,
+            "models": models,
+            "roots": roots,
+            "comparison_ops": self.comparison_ops,
+            "commands": commands,
+            "commands_attached": self.commands_attached,
+            "projectors": projectors,
+            "projectors_attached": self.projectors_attached,
+        });
+        Ok(crate::application::canonical_json(&value))
+    }
+
     /// Inventory of query root field names (sorted).
     pub fn query_root_names(&self) -> Vec<&str> {
         let mut names: Vec<&str> = self.query_fields.iter().map(|f| f.name.as_str()).collect();
@@ -602,8 +760,9 @@ impl Surface {
     }
 
     /// Attach the crate-private typed command inventory to this unselected
-    /// catalog surface. Public callers derive this exclusively via
-    /// [`Surface::with_service`].
+    /// catalog surface. The inventory must be bound before authorization
+    /// selection so role/application filtering operates on the declaration-owned
+    /// typed command contracts.
     pub(crate) fn with_typed_commands(
         mut self,
         commands: &crate::graphql::commands::TypedCommandInventory,
@@ -633,6 +792,41 @@ impl Surface {
             validate_command_confirmation_topology(&self.commands, &self.projectors, &self.models)?;
         }
         self.commands_attached = true;
+        Ok(self)
+    }
+
+    /// Bind one explicit logical module's retained typed command contracts to
+    /// this unselected catalog Surface without constructing executable runtime
+    /// state. The module definitions are the authoritative source; public
+    /// command JSON is never used to reconstruct typed shapes or effects.
+    pub fn with_module(self, module: &crate::application::Module) -> Result<Self, String> {
+        self.with_modules(std::iter::once(module))
+    }
+
+    /// Bind several explicit logical modules before role/application
+    /// authorization selection.
+    pub fn with_modules<'a, I>(
+        mut self,
+        modules: I,
+    ) -> Result<Self, String>
+    where
+        I: IntoIterator<Item = &'a crate::application::Module>,
+    {
+        if !matches!(self.selection, SurfaceSelection::Catalog) {
+            return Err(
+                "module commands can only be attached to the unselected catalog Surface before authorization selection"
+                    .into(),
+            );
+        }
+        if self.commands_attached {
+            return Err("a command registry has already been attached to this Surface".into());
+        }
+        let mut contracts = Vec::new();
+        for module in modules {
+            contracts.extend(module.typed_command_contracts()?);
+        }
+        let inventory = crate::graphql::commands::TypedCommandInventory::from_contracts(&contracts)?;
+        self = self.with_typed_commands(&inventory)?;
         Ok(self)
     }
 
@@ -812,5 +1006,107 @@ impl Surface {
         self.projectors_attached = true;
         validate_command_confirmation_topology(&self.commands, &self.projectors, &self.models)?;
         Ok(self)
+    }
+}
+
+fn root_value(operation: &str, root: &RootField) -> serde_json::Value {
+    serde_json::json!({
+        "operation": operation,
+        "name": root.name,
+        "kind": match root.kind {
+            RootKind::List => "list",
+            RootKind::ByPk => "by_pk",
+            RootKind::Aggregate => "aggregate",
+        },
+        "object": root.object,
+        "model_name": root.model_name,
+        "arguments": root.arguments.iter().map(argument_value).collect::<Vec<_>>(),
+        "dependencies": root.dependencies,
+        "default_limit": root.default_limit,
+        "max_limit": root.max_limit,
+    })
+}
+
+fn argument_value(argument: &SurfaceArgument) -> serde_json::Value {
+    serde_json::json!({
+        "name": argument.name,
+        "kind": argument_kind_name(argument.kind),
+        "type_name": argument.type_name,
+        "nullable": argument.nullable,
+        "list": argument.list,
+    })
+}
+
+fn argument_kind_name(kind: SurfaceArgumentKind) -> &'static str {
+    match kind {
+        SurfaceArgumentKind::Filter => "filter",
+        SurfaceArgumentKind::Order => "order",
+        SurfaceArgumentKind::Limit => "limit",
+        SurfaceArgumentKind::Offset => "offset",
+        SurfaceArgumentKind::PrimaryKey => "primary_key",
+    }
+}
+
+fn command_shape_value(shape: &SurfaceCommandShape) -> serde_json::Value {
+    match shape {
+        SurfaceCommandShape::None => serde_json::Value::Null,
+        SurfaceCommandShape::Typed(definition) => type_def_value(definition),
+    }
+}
+
+fn type_def_value(definition: &SurfaceTypeDef) -> serde_json::Value {
+    serde_json::json!({
+        "name": definition.name,
+        "fields": definition.fields.iter().map(|field| serde_json::json!({
+            "name": field.name,
+            "type_name": field.type_name,
+            "nullable": field.nullable,
+            "list": field.list,
+            "item_nullable": field.item_nullable,
+            "nested": field.nested.as_deref().map(type_def_value),
+        })).collect::<Vec<_>>(),
+    })
+}
+
+fn row_policy_value(policy: &SurfaceRowPolicy) -> serde_json::Value {
+    match policy {
+        SurfaceRowPolicy::Unrestricted => serde_json::json!({"kind": "unrestricted"}),
+        SurfaceRowPolicy::Predicate(predicate) => {
+            serde_json::json!({"kind": "predicate", "expression": predicate})
+        }
+        SurfaceRowPolicy::ServerOnly => serde_json::json!({"kind": "server_only"}),
+    }
+}
+
+fn relationship_keys_value(keys: &SurfaceRelationshipKeys) -> serde_json::Value {
+    match keys {
+        SurfaceRelationshipKeys::Direct { local, remote } => {
+            serde_json::json!({"kind": "direct", "local": local, "remote": remote})
+        }
+        SurfaceRelationshipKeys::Through {
+            local,
+            remote,
+            table,
+            source_foreign_key,
+            target_foreign_key,
+        } => serde_json::json!({
+            "kind": "through",
+            "local": local,
+            "remote": remote,
+            "table": table,
+            "source_foreign_key": source_foreign_key,
+            "target_foreign_key": target_foreign_key,
+        }),
+        SurfaceRelationshipKeys::ThroughOpaque {
+            local,
+            remote,
+            dependency,
+        } => serde_json::json!({
+            "kind": "through_opaque",
+            "local": local,
+            "remote": remote,
+            "dependency": dependency,
+        }),
+        SurfaceRelationshipKeys::Embedded => serde_json::json!({"kind": "embedded"}),
     }
 }

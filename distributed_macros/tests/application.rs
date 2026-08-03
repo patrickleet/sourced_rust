@@ -4,7 +4,7 @@
 
 use distributed::graphql::Succeeded;
 use distributed::microsvc::{CausalCommandContext, HandlerError};
-use distributed::{Aggregate, Entity, EventRecord, GraphqlInput, GraphqlOutput};
+use distributed::{Aggregate, DomainEvent, Entity, EventRecord, GraphqlInput, GraphqlOutput};
 use serde::{Deserialize, Serialize};
 
 #[derive(Default)]
@@ -34,6 +34,7 @@ impl Aggregate for FixtureAggregate {
 
 #[derive(Clone, Deserialize, GraphqlInput)]
 pub struct CreateInput {
+    id: String,
     title: String,
 }
 
@@ -42,9 +43,22 @@ pub struct CreateOutput {
     id: String,
 }
 
+#[derive(Clone, Serialize, DomainEvent)]
+#[domain_event(name = "todo.created", version = 1)]
+pub struct TodoCreated {
+    id: String,
+}
+
 #[distributed::command(
     id = "todo.create",
     roles(user, admin),
+    emits(TodoCreated),
+    applies(distributed::event_preview! {
+        TodoCreated => TodoCreated {
+            id: input.id,
+            ..unknown
+        }
+    }),
     default(title = uuid_v7),
     input = CreateInput,
     outcome = Succeeded<CreateOutput>
@@ -59,7 +73,7 @@ pub async fn handle(
 distributed::module! {
     pub TODO_MODULE {
         id: "todo",
-        commands: [HANDLE_SPEC],
+        commands: [HANDLE_DEFINITION],
         capabilities: ["events"],
     }
 }
@@ -83,6 +97,10 @@ fn command_module_and_application_macros_share_one_portable_spec() {
     let spec = handle_spec().expect("generated command spec");
     assert_eq!(spec.id, "todo.create");
     assert_eq!(spec.roles, ["admin", "user"]);
+    assert_eq!(spec.emits[0].name, "todo.created");
+    assert!(spec.applies.as_array().is_some_and(|values| !values.is_empty()));
+    assert!(spec.defaults.as_array().is_some_and(|values| !values.is_empty()));
+    assert!(!spec.effects.is_null());
     assert!(!spec.fingerprint.is_empty());
     assert_eq!(
         spec.canonical_bytes().unwrap(),
@@ -100,7 +118,7 @@ fn command_module_and_application_macros_share_one_portable_spec() {
 
     #[cfg(feature = "application-runtime")]
     {
-        assert!(HANDLE_MOUNT.is_executable());
         assert_eq!(HANDLE_MOUNT.spec().id, "todo.create");
+        assert_eq!(HANDLE_MOUNT.spec().fingerprint, spec.fingerprint);
     }
 }

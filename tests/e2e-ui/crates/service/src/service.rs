@@ -817,7 +817,7 @@ mod client_surface_tests {
             build_graphql_engine_with_graphiql(&repository, &service, dev_identity(), None, true)
                 .expect("engine");
         let runtime = engine
-            .client_manifest_for_application(DISTRIBUTED_CLIENT_SURFACE, &["admin", "user"])
+            .client_manifest_for_application(DISTRIBUTED_CLIENT_SURFACE, &["admin", "user"], &["admin", "user"])
             .unwrap();
 
         assert_eq!(generated, runtime);
@@ -881,6 +881,7 @@ mod client_surface_tests {
             distributed::graphql::ClientSurfaceIdentity::application(
                 DISTRIBUTED_PUBLIC_CLIENT_SURFACE,
                 ["anonymous"],
+                ["anonymous"],
             )
         );
         let repository = distributed::SqliteRepository::connect_and_migrate("sqlite::memory:")
@@ -902,7 +903,7 @@ mod client_surface_tests {
             build_graphql_engine_with_graphiql(&repository, &service, dev_identity(), None, false)
                 .expect("engine");
         let runtime = engine
-            .client_manifest_for_application(DISTRIBUTED_PUBLIC_CLIENT_SURFACE, &["anonymous"])
+            .client_manifest_for_application(DISTRIBUTED_PUBLIC_CLIENT_SURFACE, &["anonymous"], &["anonymous"])
             .expect("public surface registered");
         assert_eq!(generated.schema_fingerprint, runtime.schema_fingerprint);
 

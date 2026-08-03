@@ -723,8 +723,12 @@ export function validateProjectionMetadataAuthority(
 		(identity.surface.kind === 'application' &&
 			(authority.surface.kind !== 'application' ||
 				compareStringArrays(
-					identity.surface.roles,
-					authority.surface.roles
+					identity.surface.eligible_roles,
+					authority.surface.eligible_roles
+				) !== 0 ||
+				compareStringArrays(
+					identity.surface.schema_roles,
+					authority.surface.schema_roles
 				) !== 0)) ||
 		identity.schema_fingerprint !== authority.schemaHash ||
 		identity.protocol_fingerprint !== authority.protocolHash ||
@@ -802,23 +806,39 @@ function parseSurface(value: unknown, path: string): ProjectionDeltaSurface {
 	if (value.kind === 'application') {
 		const application = exactRecord(
 			value,
-			['kind', 'name', 'roles'],
+			['kind', 'name', 'eligible_roles', 'schema_roles'],
 			[],
 			path
 		);
-		const roles = boundedArray(application.roles, `${path}.roles`).map(
-			(role, index) => identityString(role, `${path}.roles[${index}]`)
+		const eligibleRoles = boundedArray(
+			application.eligible_roles,
+			`${path}.eligible_roles`
+		).map(
+			(role, index) =>
+				identityString(role, `${path}.eligible_roles[${index}]`)
 		);
-		if (roles.length === 0) invalid(`${path}.roles`);
+		const schemaRoles = boundedArray(
+			application.schema_roles,
+			`${path}.schema_roles`
+		).map((role, index) =>
+			identityString(role, `${path}.schema_roles[${index}]`)
+		);
+		if (eligibleRoles.length === 0) invalid(`${path}.eligible_roles`);
+		if (schemaRoles.length === 0) invalid(`${path}.schema_roles`);
 		assertStrictOrder(
-			roles,
+			eligibleRoles,
 			compareUtf8,
-			`${path}.roles`
+			`${path}.eligible_roles`
 		);
+		assertStrictOrder(schemaRoles, compareUtf8, `${path}.schema_roles`);
+		if (schemaRoles.some((role) => !eligibleRoles.includes(role))) {
+			invalid(`${path}.schema_roles`);
+		}
 		return Object.freeze({
 			kind: 'application' as const,
 			name: identityString(application.name, `${path}.name`),
-			roles: Object.freeze(roles)
+			eligible_roles: Object.freeze(eligibleRoles),
+			schema_roles: Object.freeze(schemaRoles)
 		});
 	}
 	invalid(`${path}.kind`);

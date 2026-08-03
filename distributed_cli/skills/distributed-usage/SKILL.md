@@ -285,7 +285,7 @@ Copy the **e2e-ui** fixture under `tests/e2e-ui/` (README; see `tests/e2e-ui/REA
 crates/
   todo-domain/     # personal todos (owner-scoped)
   chat-domain/     # lobby chat (shared room)
-  readmodels/      # projections + distributed_manifest
+  readmodels/      # projections + read_model_catalog
   service/         # thin command handlers + event projectors + GraphQL
   runner/          # store + bus + bind
   suite/           # HTTP/GraphQL behavioral cases
@@ -311,12 +311,12 @@ Run the full app: `cd tests/e2e-ui && make`. Suite: `make test`.
 
 ## Manifest entrypoint
 
-Every service should export `distributed_manifest()` registering its read
+Every service should export `read_model_catalog()` registering its read
 models — `dctl describe` and `dctl schema` compile the crate and call it:
 
 ```rust
-pub fn distributed_manifest() -> distributed::DistributedProjectManifest {
-    distributed::DistributedProjectManifest::new("todos").read_model::<TodoView>()
+pub fn read_model_catalog() -> distributed::ReadModelCatalog {
+    distributed::ReadModelCatalog::new("todos").read_model::<TodoView>()
 }
 ```
 

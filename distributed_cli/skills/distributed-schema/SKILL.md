@@ -1,21 +1,22 @@
 ---
 name: distributed-schema
-description: Inspect a Distributed service manifest and render schema artifacts - dctl describe (manifest JSON), dctl schema (migration SQL or an Atlas Operator resource), and the distributed_manifest() envelope contract. Use when working on read-model schemas, migrations, or schema automation.
+description: Inspect a Distributed read-model catalog and render schema artifacts - dctl describe (application JSON), dctl schema (migration SQL or an Atlas Operator resource), and the explicit application/read-model artifact contract. Use when working on read-model schemas, migrations, or schema automation.
 ---
 
 # Manifests and schema artifacts
 
-`dctl describe` and `dctl schema` are the schema toolchain for a Distributed
-service. Both **compile the target crate** and call its exported manifest
-function — by default `<crate>::distributed_manifest` (override with
-`--entrypoint <path>`).
+`dctl describe` and `dctl schema` are the artifact toolchain for a Distributed
+service. Both **compile the target crate**, but they call different explicit
+owners: `describe` defaults to `<crate>::application_manifest` for the logical
+application artifact, while `schema` defaults to `<crate>::read_model_catalog`
+for physical read-model SQL/SDL (override with `--entrypoint <path>`).
 
 ## The manifest entrypoint
 
 The service must export a function that registers its read models / tables:
 
 ```rust
-use distributed::{DistributedProjectManifest, ReadModel};
+use distributed::{ReadModelCatalog, ReadModel};
 
 #[derive(Clone, Debug, Default, PartialEq, Serialize, Deserialize, ReadModel)]
 #[table("orders")]
@@ -25,13 +26,14 @@ pub struct OrderView {
     pub status: String,
 }
 
-pub fn distributed_manifest() -> DistributedProjectManifest {
-    DistributedProjectManifest::new("orders").read_model::<OrderView>()
+pub fn read_model_catalog() -> ReadModelCatalog {
+    ReadModelCatalog::new("orders").read_model::<OrderView>()
 }
 ```
 
-A read model not registered here is invisible to `describe`/`schema` — no SQL
-is rendered for it. When you add a `#[derive(ReadModel)]` type, register it.
+A read model not registered here is invisible to `schema` — no SQL is rendered
+for it. When you add a `#[derive(ReadModel)]` type, register it; the logical
+application entrypoint must select its own Surface contract explicitly.
 
 ## `dctl describe` — manifest JSON
 

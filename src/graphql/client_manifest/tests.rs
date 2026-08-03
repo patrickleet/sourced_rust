@@ -908,12 +908,12 @@ fn role_and_application_partition_manifests_hide_raw_paths_and_denied_values() {
         );
     let all_grants = grants();
     let role = surface_for_role(&full, "user", &all_grants["user"]).unwrap();
-    let application = surface_for_application(&full, "web", &["user".into()], &all_grants).unwrap();
+    let application = surface_for_application(&full, "web", &["user".into()], &["user".into()], &all_grants).unwrap();
 
     for (identity, selected) in [
         (ClientSurfaceIdentity::role("user"), role),
         (
-            ClientSurfaceIdentity::application("web", ["user"]),
+            ClientSurfaceIdentity::application("web", ["user"], ["user"]),
             application,
         ),
     ] {
@@ -1833,11 +1833,17 @@ fn application_surface_is_common_contract_with_safe_role_limit_semantics() {
     let full = full_surface();
     let all_grants = grants();
     let selected =
-        surface_for_application(&full, "web", &["user".into(), "admin".into()], &all_grants)
+        surface_for_application(
+            &full,
+            "web",
+            &["user".into(), "admin".into()],
+            &["user".into(), "admin".into()],
+            &all_grants,
+        )
             .unwrap();
     let manifest = client_manifest_from_surface(
         "todos-service",
-        ClientSurfaceIdentity::application("web", ["admin", "user"]),
+        ClientSurfaceIdentity::application("web", ["admin", "user"], ["admin", "user"]),
         &selected,
     )
     .unwrap();
@@ -1937,6 +1943,7 @@ fn mixed_target_projectors_are_omitted_for_role_and_application_surfaces() {
     let application = surface_for_application(
         &full,
         "web",
+        &["admin".into(), "restricted".into()],
         &["admin".into(), "restricted".into()],
         &BTreeMap::from([("admin".into(), admin), ("restricted".into(), restricted)]),
     )
@@ -2309,12 +2316,20 @@ fn relational_row_policy_is_server_only_when_relationship_key_is_hidden() {
 fn application_role_sets_are_canonical_before_fingerprinting() {
     let full = full_surface();
     let selected =
-        surface_for_application(&full, "web", &["admin".into(), "user".into()], &grants()).unwrap();
+        surface_for_application(
+            &full,
+            "web",
+            &["admin".into(), "user".into()],
+            &["admin".into(), "user".into()],
+            &grants(),
+        )
+        .unwrap();
     let first = client_manifest_from_surface(
         "todos-service",
         ClientSurfaceIdentity::Application {
             name: "web".into(),
-            roles: vec!["user".into(), "admin".into(), "user".into()],
+            eligible_roles: vec!["user".into(), "admin".into(), "user".into()],
+            schema_roles: vec!["user".into(), "admin".into(), "user".into()],
         },
         &selected,
     )
@@ -2323,7 +2338,8 @@ fn application_role_sets_are_canonical_before_fingerprinting() {
         "todos-service",
         ClientSurfaceIdentity::Application {
             name: "web".into(),
-            roles: vec!["admin".into(), "user".into()],
+            eligible_roles: vec!["admin".into(), "user".into()],
+            schema_roles: vec!["admin".into(), "user".into()],
         },
         &selected,
     )
@@ -2332,7 +2348,7 @@ fn application_role_sets_are_canonical_before_fingerprinting() {
     assert_eq!(first.schema_fingerprint, second.schema_fingerprint);
     assert_eq!(
         first.surface,
-        ClientSurfaceIdentity::application("web", ["admin", "user"])
+        ClientSurfaceIdentity::application("web", ["admin", "user"], ["admin", "user"])
     );
 }
 
@@ -2346,9 +2362,9 @@ fn catalog_or_mismatched_surface_cannot_be_labeled_as_authorized() {
         .contains("explicitly role- or application-selected"));
 
     let selected = surface_for_role(&full, "user", &grants()["user"]).unwrap();
-    let wrong_project = DistributedProjectManifest::new("wrong-service").table_schema(users());
     let inventory_error =
-        DistributedClientSurfaceExport::from_project(&wrong_project, selected.clone()).unwrap_err();
+        DistributedClientSurfaceExport::from_selected("wrong-service", selected.clone())
+            .unwrap_err();
     assert!(inventory_error.to_string().contains("does not match"));
 
     let error = client_manifest_from_surface(

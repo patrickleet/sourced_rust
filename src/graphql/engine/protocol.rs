@@ -119,12 +119,17 @@ pub(crate) fn resolve_execution_authority(
                 surface: ClientSurfaceIdentity::role(name),
             })
         }
-        ClientSurfaceIdentity::Application { name, roles } => {
+        ClientSurfaceIdentity::Application {
+            name,
+            eligible_roles,
+            schema_roles,
+        } => {
             let runtime = inner.protocol.as_ref().ok_or(())?;
             let application = runtime.applications.get(&name).ok_or(())?;
             // Wire roles must equal the registered eligible set (canonical).
-            if roles != application.roles
-                || !principal_may_open_application(&asserted, &application.roles)
+            if eligible_roles != application.eligible_roles
+                || schema_roles != application.schema_roles
+                || !principal_may_open_application(&asserted, &application.eligible_roles)
                 || requested.schema_hash != application.surface.schema_fingerprint
             {
                 return Err(());
@@ -132,7 +137,11 @@ pub(crate) fn resolve_execution_authority(
             Ok(ExecutionAuthority {
                 privilege_role: application.privilege_key.clone(),
                 asserted_roles: asserted,
-                surface: ClientSurfaceIdentity::application(name, roles),
+                surface: ClientSurfaceIdentity::application_with_schema_roles(
+                    name,
+                    eligible_roles,
+                    schema_roles,
+                ),
             })
         }
     }
@@ -161,13 +170,23 @@ pub(crate) fn select_protocol_surface<'a>(
                 info.claim_keys.as_slice(),
             ))
         }
-        ClientSurfaceIdentity::Application { name, roles } => {
+        ClientSurfaceIdentity::Application {
+            name,
+            eligible_roles,
+            schema_roles,
+        } => {
             let application = runtime.applications.get(name).ok_or(())?;
-            if roles != &application.roles {
+            if eligible_roles != &application.eligible_roles
+                || schema_roles != &application.schema_roles
+            {
                 return Err(());
             }
             Ok((
-                ClientSurfaceIdentity::application(name.clone(), roles.clone()),
+                ClientSurfaceIdentity::application_with_schema_roles(
+                    name.clone(),
+                    eligible_roles.clone(),
+                    schema_roles.clone(),
+                ),
                 &application.surface,
                 application.authorization_fingerprint.as_str(),
                 application.claim_keys.as_slice(),

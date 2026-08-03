@@ -54,8 +54,14 @@ export function sameSurface(
 	return (
 		left.kind === 'role' ||
 		(right.kind === 'application' &&
-			left.roles.length === right.roles.length &&
-			left.roles.every((role, index) => role === right.roles[index]))
+			left.eligible_roles.length === right.eligible_roles.length &&
+			left.eligible_roles.every(
+				(role, index) => role === right.eligible_roles[index]
+			) &&
+			left.schema_roles.length === right.schema_roles.length &&
+			left.schema_roles.every(
+				(role, index) => role === right.schema_roles[index]
+			))
 	);
 }
 
@@ -65,7 +71,8 @@ export function cloneSurface(surface: ReplicaClientSurface): ReplicaClientSurfac
 		: Object.freeze({
 				kind: 'application',
 				name: surface.name,
-				roles: Object.freeze([...surface.roles])
+				eligible_roles: Object.freeze([...surface.eligible_roles]),
+				schema_roles: Object.freeze([...surface.schema_roles])
 			});
 }
 

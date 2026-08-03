@@ -41,13 +41,13 @@ pub enum ServiceCommands {
     /// Scaffold a new Distributed microservice crate
     #[command(alias = "create")]
     Scaffold(ScaffoldArgs),
-    /// Print a service's Distributed project manifest as JSON
+    /// Print a service's explicit ApplicationManifest as JSON
     Describe(DescribeArgs),
     /// Compile role/application-scoped GraphQL operations into client artifacts
     Client(ClientArgs),
     /// Compile the service's authorized client Surface manifest as JSON
     ClientManifest(ClientManifestArgs),
-    /// Render schema artifacts (SQL or an Atlas Operator resource) from a manifest
+    /// Render schema artifacts (SQL or an Atlas Operator resource) from a read-model catalog
     Schema(SchemaArgs),
     /// Extract the embedded Distributed agent skills into a project
     Skills(SkillsArgs),
@@ -130,7 +130,7 @@ pub struct ScaffoldArgs {
     /// Model aggregate to scaffold. May be repeated.
     #[arg(long)]
     pub model: Vec<String>,
-    /// Generate placeholder read-model modules and register them in distributed_manifest().
+    /// Generate placeholder read-model modules and register them in read_model_catalog().
     #[arg(long)]
     pub read_models: bool,
     /// Generate src/query/ GraphQL skeleton, enable the graphql feature, and wire with_graphql.
@@ -201,7 +201,7 @@ pub struct DescribeArgs {
     /// Disable default features on the target service dependency.
     #[arg(long)]
     pub no_default_features: bool,
-    /// Manifest function to call. Defaults to <crate>::distributed_manifest.
+    /// Application manifest function to call. Defaults to <crate>::application_manifest.
     #[arg(long)]
     pub entrypoint: Option<String>,
     /// Output format.
@@ -255,6 +255,12 @@ pub struct ClientArgs {
     /// Verify that the manifest is selected for this named application surface.
     #[arg(long)]
     pub surface: Option<String>,
+    /// Explicit eligible application roles (repeat for each role).
+    #[arg(long, value_name = "ROLE", requires = "surface")]
+    pub eligible_role: Vec<String>,
+    /// Explicit schema application roles (repeat for each role).
+    #[arg(long, value_name = "ROLE", requires = "surface")]
+    pub schema_role: Vec<String>,
     /// GraphQL document glob. Repeat for multiple source roots.
     #[arg(long, required = true, value_name = "GLOB")]
     pub documents: Vec<String>,
@@ -286,7 +292,7 @@ pub struct SchemaArgs {
     /// Disable default features on the target service dependency.
     #[arg(long)]
     pub no_default_features: bool,
-    /// Manifest function to call. Defaults to <crate>::distributed_manifest.
+    /// Read-model catalog function to call. Defaults to <crate>::read_model_catalog.
     #[arg(long)]
     pub entrypoint: Option<String>,
     /// SQL dialect to render.
@@ -796,7 +802,19 @@ fn run_client(args: &ClientArgs) -> Result<(), Box<dyn Error>> {
         })?;
     let selector = match (&args.role, &args.surface) {
         (Some(role), None) => ClientSurfaceSelector::role(role.clone()),
-        (None, Some(surface)) => ClientSurfaceSelector::application(surface.clone()),
+        (None, Some(surface)) if !args.eligible_role.is_empty() && !args.schema_role.is_empty() => {
+            ClientSurfaceSelector::application(
+                surface.clone(),
+                args.eligible_role.clone(),
+                args.schema_role.clone(),
+            )
+        }
+        (None, Some(_)) => {
+            return Err(
+                "application compilation requires at least one --eligible-role and --schema-role"
+                    .into(),
+            );
+        }
         _ => {
             return Err("pass exactly one of --role <name> or --surface <application-name>".into());
         }
@@ -1366,7 +1384,7 @@ fn run_schema(args: &SchemaArgs) -> Result<(), Box<dyn Error>> {
         let msg = err.to_string();
         if msg.contains("graphql_sdl") || msg.contains("no method named `graphql_sdl`") {
             format!(
-                "target service's distributed version predates graphql schema support — upgrade distributed to a version that provides DistributedProjectManifest::graphql_sdl(): {msg}"
+                "target service's distributed version predates read-model GraphQL schema support — upgrade distributed to a version that provides graphql_sdl_for_tables(): {msg}"
             ).into()
         } else {
             err

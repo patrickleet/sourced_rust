@@ -1515,7 +1515,7 @@ let loaded = repo
 - **Internal loads:** PK-anchored includes —
   `store.workspace().load(...).include(...).one()` (one-level, opt-in).
 - **Schema lifecycle:** `ReadModelSchemaRegistry` + adapter for migration artifacts
-  and startup verification; `dctl schema` / `distributed_manifest()` for SQL.
+  and startup verification; `dctl schema` / `read_model_catalog()` for SQL.
 - **Non-goals:** public query APIs belong on the GraphQL layer below (not the ORM
   include loader); do not write projections outside the projection path.
 
@@ -1591,7 +1591,7 @@ let service = Service::new()
     // Optional: keep commands on GraphQL/bus/direct dispatch only.
     .without_http_command_routes();
 
-let engine = GraphqlEngine::from_manifest(&manifest, &repository)?
+let engine = GraphqlEngine::from_schema_catalog(&manifest, &repository)?
     // This exact executable inventory is the only mutation source.
     .service(&service)
     // Stable nonzero deployment secret shared by replicas of this endpoint.
@@ -1937,14 +1937,15 @@ A v1 event automatically chains through v1→v2→v3; a v2 event only goes throu
 ## Service CLI (`dctl`)
 
 The [`distributed_cli`](distributed_cli/) crate ships `dctl` — tooling to scaffold
-services, inspect a service's project manifest, and render schema artifacts. It is
+services, inspect a service's logical application artifact, and render physical
+read-model schema artifacts. It is
 also a library, so `hops` mounts the same commands under `hops service` (anything
 below as `dctl <cmd>` works as `hops service <cmd>`).
 
 The CLI exists to keep the generated and handwritten parts of a back-end service
 separate. A Distributed service should usually reduce to a small custom surface:
 aggregate models, command/event handlers, read models, and the occasional
-handwritten integration. The framework, macros, manifest, and CLI generate the
+handwritten integration. The framework, macros, application artifacts, and CLI generate the
 repeatable wiring around that surface.
 
 That boundary matters for AI-assisted development. AI generation is
@@ -1972,7 +1973,7 @@ dctl scaffold orders \
 
 cd orders
 cargo test
-dctl describe                  # print the project manifest as JSON
+dctl describe                  # print the ApplicationManifest as JSON
 dctl schema --dialect postgres # render migration SQL from read models
 ```
 
@@ -2004,13 +2005,15 @@ a **private** listener — unauthenticated by design.
 applicable. Do **not** label metrics with `user_id`, `tenant_id`, free-form paths,
 or raw command input (unknown commands bucket as `message=unknown`).
 
-`describe`/`schema` compile your crate and call its `distributed_manifest()`
-entrypoint (override with `--entrypoint`), which registers the [read
-models](#read-models) and tables that define the schema:
+`describe`/`schema` compile your crate and call explicit artifact entrypoints
+(override with `--entrypoint`). `describe` reads the logical
+`application_manifest()` owner; `schema` reads the separate
+`read_model_catalog()` owner that registers the [read models](#read-models) and
+tables defining physical schema:
 
 ```rust,ignore
-pub fn distributed_manifest() -> distributed::DistributedProjectManifest {
-    distributed::DistributedProjectManifest::new("orders").read_model::<OrderView>()
+pub fn read_model_catalog() -> distributed::ReadModelCatalog {
+    distributed::ReadModelCatalog::new("orders").read_model::<OrderView>()
 }
 ```
 

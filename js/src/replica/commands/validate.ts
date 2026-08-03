@@ -123,16 +123,37 @@ export function validateClientSurface(
 	if (surface.kind === 'role') return;
 	if (
 		surface.kind !== 'application' ||
-		!Array.isArray(surface.roles) ||
-		surface.roles.length === 0
+		!Array.isArray(surface.eligible_roles) ||
+		!Array.isArray(surface.schema_roles) ||
+		surface.eligible_roles.length === 0 ||
+		surface.schema_roles.length === 0
 	) {
 		artifactInvalid(path);
 	}
-	const roles = new Set<string>();
-	for (let index = 0; index < surface.roles.length; index += 1) {
-		const role = requiredString(surface.roles[index], `${path}.roles[${index}]`);
-		if (roles.has(role)) artifactInvalid(`${path}.roles[${index}]`);
-		roles.add(role);
+	const eligibleRoles = new Set<string>();
+	for (let index = 0; index < surface.eligible_roles.length; index += 1) {
+		const role = requiredString(
+			surface.eligible_roles[index],
+			`${path}.eligible_roles[${index}]`
+		);
+		if (eligibleRoles.has(role)) artifactInvalid(`${path}.eligible_roles[${index}]`);
+		if (index > 0 && surface.eligible_roles[index - 1]! >= role) {
+			artifactInvalid(`${path}.eligible_roles[${index}]`);
+		}
+		eligibleRoles.add(role);
+	}
+	const schemaRoles = new Set<string>();
+	for (let index = 0; index < surface.schema_roles.length; index += 1) {
+		const role = requiredString(
+			surface.schema_roles[index],
+			`${path}.schema_roles[${index}]`
+		);
+		if (schemaRoles.has(role)) artifactInvalid(`${path}.schema_roles[${index}]`);
+		if (index > 0 && surface.schema_roles[index - 1]! >= role) {
+			artifactInvalid(`${path}.schema_roles[${index}]`);
+		}
+		if (!eligibleRoles.has(role)) artifactInvalid(`${path}.schema_roles[${index}]`);
+		schemaRoles.add(role);
 	}
 }
 

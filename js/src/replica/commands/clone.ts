@@ -31,7 +31,8 @@ export function cloneClientSurface(surface: ReplicaClientSurface): ReplicaClient
 		: Object.freeze({
 				kind: 'application' as const,
 				name: surface.name,
-				roles: Object.freeze([...surface.roles])
+				eligible_roles: Object.freeze([...surface.eligible_roles]),
+				schema_roles: Object.freeze([...surface.schema_roles])
 			});
 }
 
@@ -316,4 +317,3 @@ export function generateDefault(
 			artifactInvalid(`${path}.generator`);
 	}
 }
-

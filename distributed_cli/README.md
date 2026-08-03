@@ -2,8 +2,8 @@
 
 Service tooling for [Distributed](https://crates.io/crates/distributed): a `dctl`
 binary — and a library — that scaffolds service crates, inspects a service's
-project manifest, and renders schema artifacts (SQL or an Atlas Operator
-resource).
+logical ApplicationManifest, and renders physical read-model schema artifacts
+(SQL or an Atlas Operator resource).
 
 ```bash
 cargo install distributed_cli   # installs the `dctl` binary
@@ -74,14 +74,15 @@ directories are never touched. After a CLI upgrade, re-run with `--force` to
 refresh existing skill files to the binary's embedded content; without
 `--force`, differing files are treated as local edits and skipped.
 
-## The project manifest entrypoint
+## The artifact entrypoints
 
-`describe` and `schema` work by compiling your service crate and calling an
-exported manifest function — by default `<crate>::distributed_manifest`. Add one
-to your service that registers its read models / tables and services:
+`describe` compiles your service crate and calls the explicit logical
+application-manifest entrypoint — by default `<crate>::application_manifest`.
+`schema` calls the separate physical read-model catalog entrypoint — by default
+`<crate>::read_model_catalog`. Keep those owners separate:
 
 ```rust
-use distributed::{DistributedProjectManifest, ReadModel};
+use distributed::{ReadModelCatalog, ReadModel};
 use serde::{Deserialize, Serialize};
 
 #[derive(Clone, Debug, Default, PartialEq, Serialize, Deserialize, ReadModel)]
@@ -92,8 +93,8 @@ pub struct OrderView {
     pub status: String,
 }
 
-pub fn distributed_manifest() -> DistributedProjectManifest {
-    DistributedProjectManifest::new("orders").read_model::<OrderView>()
+pub fn read_model_catalog() -> ReadModelCatalog {
+    ReadModelCatalog::new("orders").read_model::<OrderView>()
 }
 ```
 

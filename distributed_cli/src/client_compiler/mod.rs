@@ -66,7 +66,11 @@ impl ClientCompileInput {
 #[serde(tag = "kind", rename_all = "snake_case")]
 pub enum ClientSurfaceSelector {
     Role { name: String },
-    Application { name: String },
+    Application {
+        name: String,
+        eligible_roles: Vec<String>,
+        schema_roles: Vec<String>,
+    },
 }
 
 impl ClientSurfaceSelector {
@@ -74,8 +78,22 @@ impl ClientSurfaceSelector {
         Self::Role { name: name.into() }
     }
 
-    pub fn application(name: impl Into<String>) -> Self {
-        Self::Application { name: name.into() }
+    pub fn application(
+        name: impl Into<String>,
+        eligible_roles: impl IntoIterator<Item = impl Into<String>>,
+        schema_roles: impl IntoIterator<Item = impl Into<String>>,
+    ) -> Self {
+        let mut eligible_roles = eligible_roles.into_iter().map(Into::into).collect::<Vec<_>>();
+        let mut schema_roles = schema_roles.into_iter().map(Into::into).collect::<Vec<_>>();
+        eligible_roles.sort();
+        eligible_roles.dedup();
+        schema_roles.sort();
+        schema_roles.dedup();
+        Self::Application {
+            name: name.into(),
+            eligible_roles,
+            schema_roles,
+        }
     }
 }
 

@@ -1,11 +1,10 @@
-use super::error::{ApplicationError, ApplicationResult};
-use super::manifest::ApplicationManifest;
+use std::sync::Arc;
+
+use super::error::ApplicationResult;
+use super::manifest::{ApplicationExtension, ApplicationManifest, ManifestProvenance};
 use super::module::{Module, SurfaceSpec};
-use crate::graphql::surface::{build_surface, Surface, SurfaceOptions};
-use crate::graphql::{
-    ClientManifestError, DistributedClientManifest, DistributedClientSurfaceExport,
-};
-use crate::table::TableSchema;
+use crate::graphql::surface::Surface;
+use crate::graphql::{ClientManifestError, DistributedClientManifest, DistributedClientSurfaceExport};
 
 /// Explicit application registration. No linker inventory or source scan is
 /// consulted; only the values supplied to this constructor participate.
@@ -94,7 +93,8 @@ pub struct ApplicationBuilder {
     modules: Vec<Module>,
     surfaces: Vec<SurfaceSpec>,
     required_capabilities: Vec<String>,
-    provenance: Option<super::manifest::ManifestProvenance>,
+    extensions: Vec<ApplicationExtension>,
+    provenance: Option<ManifestProvenance>,
 }
 
 impl ApplicationBuilder {
@@ -104,6 +104,7 @@ impl ApplicationBuilder {
             modules: Vec::new(),
             surfaces: Vec::new(),
             required_capabilities: Vec::new(),
+            extensions: Vec::new(),
             provenance: None,
         }
     }
@@ -142,7 +143,20 @@ impl ApplicationBuilder {
         self
     }
 
-    pub fn provenance(mut self, provenance: super::manifest::ManifestProvenance) -> Self {
+    pub fn extension(mut self, extension: ApplicationExtension) -> Self {
+        self.extensions.push(extension);
+        self
+    }
+
+    pub fn extensions(
+        mut self,
+        extensions: impl IntoIterator<Item = ApplicationExtension>,
+    ) -> Self {
+        self.extensions.extend(extensions);
+        self
+    }
+
+    pub fn provenance(mut self, provenance: ManifestProvenance) -> Self {
         self.provenance = Some(provenance);
         self
     }
@@ -155,6 +169,7 @@ impl ApplicationBuilder {
             .extend(self.required_capabilities);
         application.manifest.required_capabilities.sort();
         application.manifest.required_capabilities.dedup();
+        application.manifest.extensions.extend(self.extensions);
         if let Some(provenance) = self.provenance {
             application.manifest = application.manifest.with_provenance(provenance);
         }
@@ -166,31 +181,19 @@ impl ApplicationBuilder {
 /// Pure compiler entrypoint for contract-only packages.
 pub struct ContractCompiler {
     name: String,
-    tables: Vec<TableSchema>,
-    options: SurfaceOptions,
     modules: Vec<Module>,
-    surfaces: Vec<SurfaceSpec>,
+    surface: Option<Arc<Surface>>,
+    surface_spec: Option<SurfaceSpec>,
 }
 
 impl ContractCompiler {
     pub fn new(name: impl Into<String>) -> Self {
         Self {
             name: name.into(),
-            tables: Vec::new(),
-            options: SurfaceOptions::sqlite(),
             modules: Vec::new(),
-            surfaces: Vec::new(),
+            surface: None,
+            surface_spec: None,
         }
-    }
-
-    pub fn tables(mut self, tables: impl IntoIterator<Item = TableSchema>) -> Self {
-        self.tables.extend(tables);
-        self
-    }
-
-    pub fn options(mut self, options: SurfaceOptions) -> Self {
-        self.options = options;
-        self
     }
 
     pub fn modules(mut self, modules: impl IntoIterator<Item = Module>) -> Self {
@@ -198,53 +201,121 @@ impl ContractCompiler {
         self
     }
 
-    pub fn surfaces(mut self, surfaces: impl IntoIterator<Item = SurfaceSpec>) -> Self {
-        self.surfaces.extend(surfaces);
-        self
+    /// Bind the concrete authoritative Surface once. Every compiler output
+    /// uses this exact value and its compiled `SurfaceSpec`; no table inventory
+    /// or caller-supplied unrelated Surface is accepted beside the manifest.
+    pub fn with_surface(
+        mut self,
+        id: impl Into<String>,
+        surface: impl Into<Arc<Surface>>,
+    ) -> Result<Self, String> {
+        let surface = surface.into();
+        let spec = SurfaceSpec::from_surface(id, &surface).map_err(|error| error.to_string())?;
+        if let Some(existing) = &self.surface_spec {
+            if existing.id != spec.id || existing.fingerprint != spec.fingerprint {
+                return Err(format!(
+                    "ContractCompiler already has a different authoritative Surface contract"
+                ));
+            }
+            return Err("ContractCompiler accepts exactly one authoritative Surface contract".into());
+        }
+        self.surface = Some(surface);
+        self.surface_spec = Some(spec);
+        Ok(self)
     }
 
-    /// Build the shared Surface IR without a repository or Service.
+    /// Construct a compiler around one authoritative Surface contract.
+    pub fn from_surface(
+        name: impl Into<String>,
+        surface_id: impl Into<String>,
+        surface: impl Into<Arc<Surface>>,
+    ) -> Result<Self, String> {
+        Self::new(name).with_surface(surface_id, surface)
+    }
+
+    /// Return the already-bound shared Surface IR.
     pub fn surface(&self) -> Result<Surface, String> {
-        build_surface(&self.tables, &self.options)
+        self.surface
+            .as_deref()
+            .cloned()
+            .ok_or_else(|| "ContractCompiler requires one bound Surface contract".into())
     }
 
     /// Render SDL directly from the contract-only Surface IR.
     pub fn graphql_sdl(&self) -> Result<String, String> {
-        crate::graphql::graphql_sdl_from_surface(&self.surface()?)
+        crate::graphql::graphql_sdl_from_surface(
+            self.surface
+                .as_deref()
+                .ok_or_else(|| "ContractCompiler requires one bound Surface contract".to_owned())?,
+        )
     }
 
-    /// Compile a selected client surface without executable service
-    /// provenance. The caller supplies a role/application-selected Surface
-    /// produced by the shared IR pipeline.
-    pub fn client_manifest(
-        &self,
-        service_id: impl Into<String>,
-        surface: impl Into<std::sync::Arc<Surface>>,
-    ) -> Result<DistributedClientManifest, ClientManifestError> {
-        DistributedClientSurfaceExport::from_contract(service_id, surface)?.manifest()
+    /// Compile the selected client artifact from the same Surface identity.
+    pub fn client_manifest(&self) -> Result<DistributedClientManifest, ClientManifestError> {
+        let surface = self.surface.clone().ok_or_else(|| {
+            ClientManifestError("ContractCompiler requires one bound Surface contract".into())
+        })?;
+        let expected = self.bound_surface_spec().map_err(ClientManifestError)?;
+        let export = DistributedClientSurfaceExport::from_contract(self.name.clone(), surface)?;
+        let actual = SurfaceSpec::from_surface(expected.id.clone(), export.surface().as_ref())
+            .map_err(|error| ClientManifestError(error.to_string()))?;
+        if actual.id != expected.id || actual.fingerprint != expected.fingerprint {
+            return Err(ClientManifestError(
+                "client manifest Surface identity diverges from the compiler contract".into(),
+            ));
+        }
+        export.manifest()
     }
 
     /// Compile the logical manifest without mounting a handler.
     pub fn manifest(&self) -> ApplicationResult<ApplicationManifest> {
-        let mut manifest = ApplicationManifest::try_from_modules(
+        let manifest = ApplicationManifest::try_from_modules(
             self.name.clone(),
             self.modules.clone(),
-            self.surfaces.clone(),
+            self.surface_spec.clone().into_iter(),
         )?;
-        for table in &self.tables {
-            manifest
-                .try_register_table_schema(table.clone())
-                .map_err(|error| ApplicationError::InvalidSpec(error.to_string()))?;
+        let expected = self
+            .bound_surface_spec()
+            .map_err(crate::application::ApplicationError::InvalidSpec)?;
+        if manifest
+            .surfaces
+            .iter()
+            .find(|surface| surface.id == expected.id)
+            .is_none_or(|surface| surface.fingerprint != expected.fingerprint)
+        {
+            return Err(crate::application::ApplicationError::NonCanonical(
+                "compiler Surface identity",
+            ));
         }
-        manifest.refresh_fingerprints()?;
         Ok(manifest)
     }
 
     pub fn compile(&self) -> ApplicationResult<Application> {
-        Application::try_new(
+        let application = Application::try_new(
             self.name.clone(),
             self.modules.clone(),
-            self.surfaces.clone(),
-        )
+            self.surface_spec.clone().into_iter(),
+        )?;
+        let expected = self
+            .bound_surface_spec()
+            .map_err(crate::application::ApplicationError::InvalidSpec)?;
+        if application
+            .manifest()
+            .surfaces
+            .iter()
+            .find(|surface| surface.id == expected.id)
+            .is_none_or(|surface| surface.fingerprint != expected.fingerprint)
+        {
+            return Err(crate::application::ApplicationError::NonCanonical(
+                "compiler Surface identity",
+            ));
+        }
+        Ok(application)
+    }
+
+    fn bound_surface_spec(&self) -> Result<SurfaceSpec, String> {
+        self.surface_spec
+            .clone()
+            .ok_or_else(|| "ContractCompiler requires one bound Surface contract".into())
     }
 }

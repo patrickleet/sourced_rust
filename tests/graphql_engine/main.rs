@@ -112,8 +112,8 @@ async fn isolated_multi_column_primary_key_builds_with_full_by_pk_tuple() {
         relationships: Vec::new(),
         kind: TableKind::ReadModel,
     };
-    let manifest = distributed::DistributedProjectManifest::new("t").table_schema(schema);
-    let engine = GraphqlEngine::from_manifest(&manifest, pool().await)
+    let manifest = distributed::ReadModelCatalog::new("t").table_schema(schema);
+    let engine = GraphqlEngine::from_schema_catalog(&manifest, pool().await)
         .unwrap()
         .roles(&["user"])
         .grant_all("user")
@@ -129,8 +129,8 @@ async fn isolated_multi_column_primary_key_builds_with_full_by_pk_tuple() {
 #[tokio::test]
 async fn grant_all_builds_and_sdl_for_role() {
     let schema = simple_schema("Item", "items");
-    let manifest = distributed::DistributedProjectManifest::new("t").table_schema(schema);
-    let engine = GraphqlEngine::from_manifest(&manifest, pool().await)
+    let manifest = distributed::ReadModelCatalog::new("t").table_schema(schema);
+    let engine = GraphqlEngine::from_schema_catalog(&manifest, pool().await)
         .unwrap()
         .roles(&["user", "anonymous"])
         .grant_all("user")
@@ -162,8 +162,8 @@ async fn duplicate_table_name_errors() {
 async fn unknown_column_in_permission_via_grant_ok() {
     // grant_all uses all_columns — valid
     let schema = simple_schema("Item", "items");
-    let manifest = distributed::DistributedProjectManifest::new("t").table_schema(schema);
-    GraphqlEngine::from_manifest(&manifest, pool().await)
+    let manifest = distributed::ReadModelCatalog::new("t").table_schema(schema);
+    GraphqlEngine::from_schema_catalog(&manifest, pool().await)
         .unwrap()
         .grant_all("user")
         .build()
@@ -172,10 +172,10 @@ async fn unknown_column_in_permission_via_grant_ok() {
 
 #[tokio::test]
 async fn build_handles_bidirectional_relationship_schemas() {
-    let manifest = distributed::DistributedProjectManifest::new("t")
+    let manifest = distributed::ReadModelCatalog::new("t")
         .table_schema(bidirectional_parent_schema())
         .table_schema(bidirectional_child_schema());
-    let engine = GraphqlEngine::from_manifest(&manifest, pool().await)
+    let engine = GraphqlEngine::from_schema_catalog(&manifest, pool().await)
         .unwrap()
         .grant_all("user")
         .build()

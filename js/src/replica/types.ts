@@ -543,7 +543,8 @@ export type ReplicaClientSurface =
 	| {
 			readonly kind: 'application';
 			readonly name: string;
-			readonly roles: readonly string[];
+			readonly eligible_roles: readonly string[];
+			readonly schema_roles: readonly string[];
 	  };
 
 /** Compiler-owned causal artifact. Protocol and variable identity are inseparable. */

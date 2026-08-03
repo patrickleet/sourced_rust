@@ -36,7 +36,6 @@ use super::surface::{
     SurfaceCommand, SurfaceCommandShape, SurfaceRelationshipKeys, SurfaceRowPolicy,
     SurfaceSelection, SurfaceTypeDef,
 };
-use crate::manifest::DistributedProjectManifest;
 use crate::table::RelationshipKind;
 
 use build::client_manifest_from_surface_with_execution;

@@ -59,7 +59,7 @@ static SKILLS: [EmbeddedSkill; 4] = [
     },
     EmbeddedSkill {
         name: "distributed-schema",
-        description: "Inspect a Distributed service manifest and render schema artifacts - dctl describe (manifest JSON), dctl schema (migration SQL or an Atlas Operator resource), and the distributed_manifest() envelope contract. Use when working on read-model schemas, migrations, or schema automation.",
+        description: "Inspect a Distributed read-model catalog and render schema artifacts - dctl describe (application JSON), dctl schema (migration SQL or an Atlas Operator resource), and the explicit application/read-model artifact contract. Use when working on read-model schemas, migrations, or schema automation.",
         files: &[EmbeddedFile {
             relative_path: "SKILL.md",
             contents: include_str!("../skills/distributed-schema/SKILL.md"),

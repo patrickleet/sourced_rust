@@ -117,9 +117,9 @@ fn m2m_link_schema() -> TableSchema {
 async fn list_filter_and_by_pk() {
     let schema = orders_schema();
 
-    let manifest = distributed::DistributedProjectManifest::new("orders").table_schema(schema);
+    let manifest = distributed::ReadModelCatalog::new("orders").table_schema(schema);
     let pool = setup_pool().await;
-    let engine = GraphqlEngine::from_manifest(&manifest, pool)
+    let engine = GraphqlEngine::from_schema_catalog(&manifest, pool)
         .unwrap()
         .roles(&["user", "anonymous"])
         .grant_all("user")
@@ -307,10 +307,10 @@ async fn sqlite_binds_follow_projection_then_where_order_for_relationships() {
         sqlx::query(sql).execute(&pool).await.unwrap();
     }
 
-    let manifest = distributed::DistributedProjectManifest::new("rel")
+    let manifest = distributed::ReadModelCatalog::new("rel")
         .table_schema(parent_schema())
         .table_schema(child_schema());
-    let engine = GraphqlEngine::from_manifest(&manifest, pool)
+    let engine = GraphqlEngine::from_schema_catalog(&manifest, pool)
         .unwrap()
         .roles(&["user"])
         .grant_all("user")
@@ -514,10 +514,10 @@ async fn belongs_to_joins_source_fk_to_target_primary_key() {
         sqlx::query(sql).execute(&pool).await.unwrap();
     }
 
-    let manifest = distributed::DistributedProjectManifest::new("posts")
+    let manifest = distributed::ReadModelCatalog::new("posts")
         .table_schema(author_schema())
         .table_schema(post_schema());
-    let engine = GraphqlEngine::from_manifest(&manifest, pool)
+    let engine = GraphqlEngine::from_schema_catalog(&manifest, pool)
         .unwrap()
         .roles(&["user"])
         .grant_all("user")
@@ -541,16 +541,16 @@ async fn belongs_to_joins_source_fk_to_target_primary_key() {
 async fn permissions_filter_by_claim() {
     let schema = orders_schema();
     let manifest =
-        distributed::DistributedProjectManifest::new("orders").table_schema(schema.clone());
+        distributed::ReadModelCatalog::new("orders").table_schema(schema.clone());
     let pool = setup_pool().await;
 
     // Value-based path: grant_all then we need typed permission — use builder
-    // with table_schema upgrade. from_manifest exposes all ReadModel tables.
+    // with table_schema upgrade. The read-model catalog exposes all ReadModel tables.
     // Use permission via a hand-built approach: grant_all for user is full;
     // for restricted, register with filter via engine builder internals...
     // Spec API: .permission requires RelationalReadModelIncludes.
     // For fixture without derive, use grant_all and a second role without grants.
-    let engine = GraphqlEngine::from_manifest(&manifest, pool)
+    let engine = GraphqlEngine::from_schema_catalog(&manifest, pool)
         .unwrap()
         .roles(&["user", "anonymous"])
         .grant_all("user")
@@ -597,7 +597,7 @@ async fn domain_service_shaped_fixture() {
             kind: TableKind::ReadModel,
         });
     }
-    let mut manifest = distributed::DistributedProjectManifest::new("domain");
+    let mut manifest = distributed::ReadModelCatalog::new("domain");
     for t in tables {
         manifest = manifest.table_schema(t);
     }
@@ -617,7 +617,7 @@ async fn domain_service_shaped_fixture() {
         sqlx::query(ddl).execute(&pool).await.unwrap();
     }
 
-    let engine = GraphqlEngine::from_manifest(&manifest, pool)
+    let engine = GraphqlEngine::from_schema_catalog(&manifest, pool)
         .unwrap()
         .roles(&["user"])
         .grant_all("user")

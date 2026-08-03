@@ -501,7 +501,10 @@ export function replicaClientRequestExtensions<
 			: Object.freeze({
 					kind: 'application' as const,
 					name: protocol.surface.name,
-					roles: Object.freeze([...protocol.surface.roles])
+					eligible_roles: Object.freeze([
+						...protocol.surface.eligible_roles
+					]),
+					schema_roles: Object.freeze([...protocol.surface.schema_roles])
 				});
 	return Object.freeze({
 		extensions: Object.freeze({
@@ -629,17 +632,34 @@ export function validatedSurfaceIdentity(
 	}
 	if (
 		value.kind !== 'application' ||
-		!Array.isArray(value.roles) ||
-		value.roles.length === 0 ||
-		value.roles.some(
+		!Array.isArray(value.eligible_roles) ||
+		!Array.isArray(value.schema_roles) ||
+		value.eligible_roles.length === 0 ||
+		value.schema_roles.length === 0 ||
+		value.eligible_roles.some(
 			(role) => typeof role !== 'string' || role.length === 0
 		) ||
-		new Set(value.roles).size !== value.roles.length ||
-		[...value.roles].sort().some((role, index) => role !== value.roles[index])
+		value.schema_roles.some(
+			(role) => typeof role !== 'string' || role.length === 0
+		) ||
+		new Set(value.eligible_roles).size !== value.eligible_roles.length ||
+		new Set(value.schema_roles).size !== value.schema_roles.length ||
+		[...value.eligible_roles].sort().some(
+			(role, index) => role !== value.eligible_roles[index]
+		) ||
+		[...value.schema_roles].sort().some(
+			(role, index) => role !== value.schema_roles[index]
+		) ||
+		value.schema_roles.some((role) => !value.eligible_roles.includes(role))
 	) {
 		throw new TypeError('replica artifact client surface is invalid');
 	}
-	return JSON.stringify(['application', value.name, value.roles]);
+	return JSON.stringify([
+		'application',
+		value.name,
+		value.eligible_roles,
+		value.schema_roles
+	]);
 }
 
 export function snapshotFrom<TData>(

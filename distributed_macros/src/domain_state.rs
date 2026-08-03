@@ -3,7 +3,9 @@ use proc_macro2::Span;
 use quote::quote;
 use syn::{Data, DeriveInput, Fields, LitInt, LitStr};
 
-use crate::shared::{canonical_object_schema, projection_body_metadata_tokens, schema_fingerprint};
+use crate::shared::{
+    canonical_object_schema, framework_path, projection_body_metadata_tokens, schema_fingerprint,
+};
 
 pub(crate) fn derive_domain_state(input: TokenStream) -> TokenStream {
     let input = syn::parse_macro_input!(input as DeriveInput);
@@ -13,6 +15,7 @@ pub(crate) fn derive_domain_state(input: TokenStream) -> TokenStream {
 }
 
 pub(crate) fn expand_domain_state(input: DeriveInput) -> syn::Result<proc_macro2::TokenStream> {
+    let framework = framework_path()?;
     let version = parse_domain_state_version(&input)?;
     let fields = named_fields(&input)?;
     if !input.generics.params.is_empty() {
@@ -43,6 +46,7 @@ pub(crate) fn expand_domain_state(input: DeriveInput) -> syn::Result<proc_macro2
     );
     let fingerprint = schema_fingerprint(&schema);
     let projection_metadata = projection_body_metadata_tokens(
+        &framework,
         "domain_state",
         &type_name,
         version,
@@ -54,9 +58,9 @@ pub(crate) fn expand_domain_state(input: DeriveInput) -> syn::Result<proc_macro2
     let fingerprint = LitStr::new(&fingerprint, Span::call_site());
 
     Ok(quote! {
-        impl distributed::DomainState for #name {
-            const DESCRIPTOR: distributed::DomainStateDescriptor =
-                distributed::DomainStateDescriptor::distributed_json(
+        impl #framework::DomainState for #name {
+            const DESCRIPTOR: #framework::DomainStateDescriptor =
+                #framework::DomainStateDescriptor::distributed_json(
                     #type_name,
                     #version,
                     #schema,
@@ -64,7 +68,7 @@ pub(crate) fn expand_domain_state(input: DeriveInput) -> syn::Result<proc_macro2
                 );
         }
 
-        impl distributed::projection::lower::ProjectionBodyMetadata for #name {
+        impl #framework::projection::lower::ProjectionBodyMetadata for #name {
             #projection_metadata
         }
     })

@@ -778,7 +778,7 @@ fn selected_surfaces_reject_command_and_projector_reattachment() {
 
     let grants_by_role = BTreeMap::from([("user".into(), grants)]);
     let application =
-        surface_for_application(&full, "web", &["user".into()], &grants_by_role).unwrap();
+        surface_for_application(&full, "web", &["user".into()], &["user".into()], &grants_by_role).unwrap();
     assert!(application
         .clone()
         .with_typed_commands(&TypedCommandInventory::empty())

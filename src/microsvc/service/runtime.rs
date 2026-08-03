@@ -18,7 +18,7 @@ use super::helpers::{
 use super::helpers::{microsvc_dispatch_span, microsvc_handler_span};
 use super::request::{CommandRequest, CommandResponse};
 use super::routes::{CausalCommandPolicy, DynBusPublisher, ErasedRoutes, HandlerSpec, Routes};
-use crate::application::CommandSpec;
+use crate::application::{CommandMount, CommandMountRegistrar, CommandSpec};
 use crate::bus::{
     Message, MessageKind, OrderedDelivery, RunOptions, SubscriptionPlan, TransportError,
 };
@@ -50,6 +50,7 @@ pub struct Service {
     handler_specs: Vec<HandlerSpec>,
     causal_command_policy: CausalCommandPolicy,
     runner: Option<ServiceRunner>,
+    registered_command_mounts: Vec<CommandMount>,
     /// When false, HTTP does not mount `POST /{command}` (GraphQL / health only).
     /// Commands remain dispatchable via GraphQL mutations and in-process `dispatch`.
     http_command_routes: bool,
@@ -67,6 +68,7 @@ impl Service {
             handler_specs: Vec::new(),
             causal_command_policy: CausalCommandPolicy::default(),
             runner: None,
+            registered_command_mounts: Vec::new(),
             http_command_routes: true,
             #[cfg(feature = "graphql")]
             graphql: None,
@@ -300,6 +302,169 @@ impl Service {
         self.name.as_deref()
     }
 
+    /// Exact generated mounts registered with this service. The returned
+    /// values contain portable identity only; typed execution still requires
+    /// the authenticated causal dispatch path.
+    pub fn registered_command_mounts(&self) -> &[CommandMount] {
+        &self.registered_command_mounts
+    }
+
+    /// Register one explicit command mount against the already-installed
+    /// typed route inventory. The route's canonical command spec is the only
+    /// authority; a stale or lookalike mount is rejected before dispatch.
+    pub fn register_command_mount(
+        &mut self,
+        mount: CommandMount,
+    ) -> Result<(), HandlerError> {
+        self.register_command_mount_inner(mount)
+    }
+
+    /// Invoke a registered mount through the service adapter. The request
+    /// still enters the normal transport boundary, so typed causal routes
+    /// retain their authentication/receipt/projection-proof requirements.
+    pub async fn dispatch_mount(
+        &self,
+        mount: &CommandMount,
+        request: &CommandRequest,
+    ) -> CommandResponse {
+        match self.dispatch_mount_result(mount, request).await {
+            Ok(response) => response,
+            Err(error) => CommandResponse {
+                status: error.status_code(),
+                body: serde_json::json!({ "error": error.to_string() }),
+            },
+        }
+    }
+
+    pub(crate) async fn dispatch_mount_result(
+        &self,
+        mount: &CommandMount,
+        request: &CommandRequest,
+    ) -> Result<CommandResponse, HandlerError> {
+        if request.command != mount.spec().id {
+            return Err(HandlerError::Rejected(format!(
+                "command request `{}` does not match mount `{}`",
+                request.command,
+                mount.spec().id
+            )));
+        }
+        if !self
+            .registered_command_mounts
+            .iter()
+            .any(|registered| registered.spec().id == mount.spec().id
+                && registered.spec().fingerprint == mount.spec().fingerprint)
+        {
+            return Err(HandlerError::Rejected(
+                "command mount was not registered against this service".into(),
+            ));
+        }
+        if mount.typed_route_name().is_some() {
+            return Err(HandlerError::Unauthorized(
+                "typed command mounts require the authenticated causal dispatch adapter".into(),
+            ));
+        }
+        mount.invoke(request).await
+    }
+
+    #[cfg(feature = "graphql")]
+    #[allow(dead_code)]
+    pub(crate) async fn dispatch_registered_mount_causally(
+        &self,
+        mount: &CommandMount,
+        request: &CommandRequest,
+        command_id: &str,
+        session: Session,
+        principal: VerifiedPrincipal,
+    ) -> Result<CausalDispatchResult, CausalDispatchError> {
+        self.ensure_registered_mount(mount)
+            .map_err(CausalDispatchError::Handler)?;
+        if mount.typed_route_name() != Some(request.command.as_str()) {
+            return Err(CausalDispatchError::BadRequest(
+                "typed command mount route identity does not match the request".into(),
+            ));
+        }
+        self.dispatch_causal_with_receipt(
+            &request.command,
+            command_id,
+            request.input.clone(),
+            session,
+            principal,
+        )
+        .await
+    }
+
+    fn register_command_mount_inner(
+        &mut self,
+        mount: CommandMount,
+    ) -> Result<(), HandlerError> {
+        let Some(indices) = self
+            .index
+            .get(&MessageKind::Command)
+            .and_then(|commands| commands.get(&mount.spec().id))
+        else {
+            return Err(HandlerError::UnknownCommand(mount.spec().id.clone()));
+        };
+        if indices.len() != 1 {
+            return Err(HandlerError::Rejected(format!(
+                "command mount `{}` has ambiguous service routes",
+                mount.spec().id
+            )));
+        }
+        if mount.typed_route_name() != Some(mount.spec().id.as_str()) {
+            return Err(HandlerError::Rejected(format!(
+                "command mount `{}` is not the generated typed-route registration for its declaration",
+                mount.spec().id
+            )));
+        }
+        let expected = self
+            .routes
+            .get(indices[0])
+            .and_then(|routes| {
+                routes
+                    .typed_command_contracts()
+                    .into_iter()
+                    .find(|contract| contract.name == mount.spec().id)
+                    .and_then(|contract| CommandSpec::from_contract(contract).ok())
+            })
+            .ok_or_else(|| {
+                HandlerError::Rejected(format!(
+                    "command mount `{}` is not backed by a typed causal route",
+                    mount.spec().id
+                ))
+            })?;
+        if expected.fingerprint != mount.spec().fingerprint {
+            return Err(HandlerError::Rejected(format!(
+                "command mount `{}` has a stale declaration fingerprint",
+                mount.spec().id
+            )));
+        }
+        if self.registered_command_mounts.iter().any(|registered| {
+            registered.spec().id == mount.spec().id
+        }) {
+            return Err(HandlerError::Rejected(format!(
+                "command mount `{}` is registered more than once",
+                mount.spec().id
+            )));
+        }
+        self.registered_command_mounts.push(mount);
+        Ok(())
+    }
+
+    #[cfg(feature = "graphql")]
+    #[allow(dead_code)]
+    fn ensure_registered_mount(&self, mount: &CommandMount) -> Result<(), HandlerError> {
+        if self.registered_command_mounts.iter().any(|registered| {
+            registered.spec().id == mount.spec().id
+                && registered.spec().fingerprint == mount.spec().fingerprint
+        }) {
+            Ok(())
+        } else {
+            Err(HandlerError::Rejected(
+                "command mount was not registered against this service".into(),
+            ))
+        }
+    }
+
     /// Install the bus run behavior (used by `with_bus`).
     pub(crate) fn set_runner(&mut self, runner: ServiceRunner) {
         self.runner = Some(runner);
@@ -344,6 +509,7 @@ impl Service {
             .into_iter()
             .cloned()
             .collect::<Vec<_>>();
+        let command_mounts = routes.command_mounts().to_vec();
         #[cfg(feature = "graphql")]
         assert!(
             self.graphql.is_none() || typed_commands.is_empty(),
@@ -391,6 +557,7 @@ impl Service {
                 .push(route_index);
         }
         self.handler_specs.extend_from_slice(routes.handler_specs());
+        self.registered_command_mounts.extend(command_mounts);
         self.routes.push(Box::new(routes));
     }
 
@@ -980,6 +1147,50 @@ impl Service {
                     ),
                 )
             })
+    }
+}
+
+impl CommandMountRegistrar for Service {
+    fn register_command_mount(
+        &mut self,
+        mount: CommandMount,
+    ) -> Result<(), HandlerError> {
+        self.register_command_mount_inner(mount)
+    }
+}
+
+impl crate::application::CommandMountExecution for Service {
+    fn invoke_mount<'a>(
+        &'a self,
+        mount: &'a CommandMount,
+        request: CommandRequest,
+        invocation: crate::application::CommandMountInvocation,
+    ) -> crate::application::CommandMountExecutionFuture<'a> {
+        Box::pin(async move {
+            match invocation {
+                crate::application::CommandMountInvocation::Transport => self
+                    .dispatch_mount_result(mount, &request)
+                    .await
+                    .map(crate::application::CommandMountExecutionResult::Transport)
+                    .map_err(crate::application::CommandMountExecutionError::Handler),
+                #[cfg(feature = "graphql")]
+                crate::application::CommandMountInvocation::Authenticated {
+                    command_id,
+                    session,
+                    principal,
+                } => self
+                    .dispatch_registered_mount_causally(
+                        mount,
+                        &request,
+                        &command_id,
+                        session,
+                        principal,
+                    )
+                    .await
+                    .map(crate::application::CommandMountExecutionResult::Causal)
+                    .map_err(crate::application::CommandMountExecutionError::Causal),
+            }
+        })
     }
 }
 

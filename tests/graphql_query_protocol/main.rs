@@ -13,7 +13,7 @@ use distributed::microsvc::{
     CausalProjectorContext, HandlerError, Routes, Service, Session, ROLE_KEY,
 };
 use distributed::projection_protocol::ProjectionChangeRetention;
-use distributed::{DistributedProjectManifest, ReadModel, RelationalReadModel, SqliteRepository};
+use distributed::{ReadModelCatalog, ReadModel, RelationalReadModel, SqliteRepository};
 use futures_util::{stream::BoxStream, SinkExt, StreamExt};
 use serde::{Deserialize, Serialize};
 use serde_json::{json, Value};
@@ -274,7 +274,7 @@ async fn protocol_fixture_with_retention(retention: u64) -> ProtocolFixture {
             ProjectionChangeRetention::new(retention)
                 .expect("positive retained projection change count"),
         );
-    let manifest = DistributedProjectManifest::new(SERVICE_ID)
+    let manifest = ReadModelCatalog::new(SERVICE_ID)
         .read_model::<CausalQueryView>()
         .read_model::<LegacyQueryView>();
     repository
@@ -597,7 +597,7 @@ async fn embedded_models_emit_index_evidence_without_record_evidence() {
         .await
         .expect("migrated embedded SQLite repository");
     let manifest =
-        DistributedProjectManifest::new(EMBEDDED_SERVICE_ID).read_model::<EmbeddedQueryView>();
+        ReadModelCatalog::new(EMBEDDED_SERVICE_ID).read_model::<EmbeddedQueryView>();
     repository
         .bootstrap_table_schema_for_dev(
             &manifest

@@ -11,6 +11,14 @@
 // Allow proc-macros to reference this crate by name even when used internally
 extern crate self as distributed;
 
+/// Macro implementation support. External packages may rename the
+/// distributed dependency and re-export it under the generated path; the
+/// generated code must not require a direct serde dependency of its own.
+#[doc(hidden)]
+pub mod __private {
+    pub use serde;
+}
+
 pub mod aggregate;
 pub mod application;
 pub mod bus;
@@ -25,7 +33,6 @@ pub mod emitter;
 pub mod graphql;
 mod in_memory_repo;
 pub mod lock;
-pub mod manifest;
 #[cfg(feature = "metrics")]
 pub mod metrics;
 pub mod microsvc;
@@ -58,7 +65,8 @@ pub use entity::{
 // canonical namespace; these common contract types are also convenient at the
 // crate root for contract-only packages.
 pub use application::{
-    Application, ApplicationError, ApplicationManifest, CommandMount, CommandSpec,
+    Application, ApplicationError, ApplicationManifest, CommandMount, CommandMountHandler,
+    CommandMountRegistrar, CommandSpec,
     ContractCompiler, LogicalId, Module, ModuleManifest, ProjectionSpec, SurfaceSpec,
     APPLICATION_MANIFEST_SCHEMA_VERSION,
 };
@@ -376,13 +384,8 @@ pub use table::{
     TableIndex, TableKind, TableMigrationArtifact, TableModel, TableMutation, TableRowMutation,
     TableSchema, TableSchemaAdapter, TableSchemaAdapterCapabilities, TableSchemaBootstrap,
     TableSchemaIssue, TableSchemaIssueKind, TableSchemaRegistry, TableSchemaRegistryExt,
-    TableSchemaVerification, TableStoreError, TableWritePlan, DEFAULT_TABLE_VERSION_COLUMN,
-};
-
-pub use manifest::{
-    DistributedManifestEnvelope, DistributedProjectManifest, MessageEndpointManifest,
-    MetricsEndpointManifest, ServiceManifest, ServiceObservabilityManifest, TraceExportMode,
-    TracePropagationMode, TracingManifest, TransportManifest, DISTRIBUTED_MANIFEST_SCHEMA_VERSION,
+    ReadModelCatalog, TableSchemaVerification, TableStoreError, TableWritePlan,
+    DEFAULT_TABLE_VERSION_COLUMN,
 };
 pub use trace_context::{
     is_valid_traceparent, TraceContext, CAUSATION_ID, CORRELATION_ID, TRACEPARENT, TRACESTATE,
@@ -414,7 +417,11 @@ macro_rules! graphql_models {
 }
 
 // Session convenience re-exports used by GraphQL permission filters.
-pub use microsvc::{ROLE_KEY, USER_ID_KEY};
+pub use microsvc::{
+    MessageEndpointDescriptor, MetricsEndpointDescriptor, ROLE_KEY, ServiceDescriptor,
+    ServiceObservabilityDescriptor, TraceExportMode, TracePropagationMode, TracingDescriptor,
+    TransportDescriptor, USER_ID_KEY,
+};
 
 // Re-export proc macros. The old event-owning projection proc-macro and
 // separately authored `command_effects!` / `command_confirmations!` are gone.

@@ -4,7 +4,7 @@
 //! it wants (e.g. stdout → any file, or a separate schema repo) — this crate
 //! intentionally does **not** decide a `.gitops/` location for it.
 //!
-//! The desired-state SQL (e.g. `DistributedProjectManifest::sql_statements`) goes
+//! The desired-state SQL (e.g. `ReadModelCatalog::sql_statements`) goes
 //! into `spec.schema.sql`; the operator diffs the live database against it and
 //! applies the change.
 //!
