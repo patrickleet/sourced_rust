@@ -1,0 +1,120 @@
+{
+  "vectors": [
+    {
+      "name": "null optional entrypoint is valid",
+      "valid": true,
+      "inventory": {
+        "schema_version": 1,
+        "clients": [
+          {
+            "module": "$distributed/client",
+            "surface": "e2e-ui",
+            "documents": ["src/routes/example/+page.graphql"],
+            "output": "src/lib/generated/example",
+            "manifest_entrypoint": null
+          }
+        ]
+      }
+    },
+    {
+      "name": "unknown top-level field is invalid",
+      "valid": false,
+      "inventory": {
+        "schema_version": 1,
+        "clients": [
+          {
+            "module": "$distributed/client",
+            "surface": "e2e-ui",
+            "documents": ["src/routes/example/+page.graphql"],
+            "output": "src/lib/generated/example"
+          }
+        ],
+        "extra": true
+      }
+    },
+    {
+      "name": "module segments must begin with an alphanumeric",
+      "valid": false,
+      "inventory": {
+        "schema_version": 1,
+        "clients": [
+          {
+            "module": "$distributed/.client",
+            "surface": "e2e-ui",
+            "documents": ["src/routes/example/+page.graphql"],
+            "output": "src/lib/generated/example"
+          }
+        ]
+      }
+    },
+    {
+      "name": "dot-dot identifiers are invalid",
+      "valid": false,
+      "inventory": {
+        "schema_version": 1,
+        "clients": [
+          {
+            "module": "$distributed/client",
+            "surface": "e2e..ui",
+            "documents": ["src/routes/example/+page.graphql"],
+            "output": "src/lib/generated/example"
+          }
+        ]
+      }
+    },
+    {
+      "name": "secret-like paths are invalid",
+      "valid": false,
+      "inventory": {
+        "schema_version": 1,
+        "clients": [
+          {
+            "module": "$distributed/client",
+            "surface": "e2e-ui",
+            "documents": ["src/routes/token=secret.graphql"],
+            "output": "src/lib/generated/example"
+          }
+        ]
+      }
+    },
+    {
+      "name": "duplicate documents are invalid",
+      "valid": false,
+      "inventory": {
+        "schema_version": 1,
+        "clients": [
+          {
+            "module": "$distributed/client",
+            "surface": "e2e-ui",
+            "documents": [
+              "src/routes/example/+page.graphql",
+              "src/routes/example/+page.graphql"
+            ],
+            "output": "src/lib/generated/example"
+          }
+        ]
+      }
+    },
+    {
+      "name": "duplicate modules are invalid",
+      "valid": false,
+      "inventory": {
+        "schema_version": 1,
+        "clients": [
+          {
+            "module": "$distributed/client",
+            "surface": "e2e-ui",
+            "documents": ["src/routes/example/+page.graphql"],
+            "output": "src/lib/generated/example"
+          },
+          {
+            "module": "$distributed/client",
+            "surface": "e2e-admin",
+            "documents": ["src/routes/admin/+page.graphql"],
+            "output": "src/lib/generated/admin"
+          }
+        ]
+      }
+    }
+  ]
+}

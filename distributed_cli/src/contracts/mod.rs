@@ -19,7 +19,9 @@ pub use artifact::{
 pub use catalog::{
     ClientDeclaration, ClientInventory, ContractCatalog, ContractEntry, ContractError,
     ContractScope, CLIENT_DECLARATION_SCHEMA_VERSION, CONTRACT_CATALOG_SCHEMA_VERSION,
-    MAX_CATALOG_BYTES, MAX_CATALOG_ENTRIES, MAX_CATALOG_FILES, MAX_CATALOG_GLOB_MATCHES,
+    MAX_CATALOG_BYTES, MAX_CATALOG_DIRECTORIES, MAX_CATALOG_DIRECTORY_DEPTH,
+    MAX_CATALOG_DIRECTORY_ENTRIES, MAX_CATALOG_ENTRIES, MAX_CATALOG_FILES,
+    MAX_CATALOG_GLOB_MATCHES, MAX_CATALOG_JSON_DEPTH,
 };
 pub use diagnostic::{
     ContractCheckResult, ContractDiagnostic, ContractDiagnosticCode, SafeDiagnosticValue,
