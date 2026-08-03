@@ -1,5 +1,12 @@
 import { dirname, resolve } from 'node:path';
-import { closeSync, fstatSync, openSync, readSync, statSync } from 'node:fs';
+import {
+	closeSync,
+	constants,
+	fstatSync,
+	lstatSync,
+	openSync,
+	readSync
+} from 'node:fs';
 import { fileURLToPath } from 'node:url';
 
 const uiRoot = dirname(fileURLToPath(import.meta.url));
@@ -18,7 +25,10 @@ const SECRET_LIKE = /(?:postgres(?:ql)?:\/\/|mysql:\/\/|mongodb:\/\/|bearer |pas
 const textEncoder = new TextEncoder();
 
 function readBoundedInventory(filePath) {
-	const preflight = statSync(filePath);
+	const preflight = lstatSync(filePath);
+	if (preflight.isSymbolicLink()) {
+		throw new TypeError('distributed.clients.json must not be a symlink');
+	}
 	if (!preflight.isFile()) {
 		throw new TypeError('distributed.clients.json must be a regular file');
 	}
@@ -28,7 +38,16 @@ function readBoundedInventory(filePath) {
 		);
 	}
 
-	const descriptor = openSync(filePath, 'r');
+	let descriptor;
+	try {
+		const noFollow = constants.O_NOFOLLOW ?? 0;
+		descriptor = openSync(filePath, constants.O_RDONLY | noFollow);
+	} catch (error) {
+		if (error?.code === 'ELOOP') {
+			throw new TypeError('distributed.clients.json must not be a symlink');
+		}
+		throw error;
+	}
 	try {
 		const metadata = fstatSync(descriptor);
 		if (!metadata.isFile()) {
@@ -229,8 +248,8 @@ export function loadClientInventory(filePath = clientInventoryPath) {
 	let value;
 	try {
 		value = JSON.parse(source);
-	} catch (error) {
-		throw new TypeError(`distributed.clients.json is invalid JSON: ${error.message}`);
+	} catch {
+		throw new TypeError('distributed.clients.json is invalid JSON; check its syntax');
 	}
 	return validateClientInventory(value);
 }

@@ -316,6 +316,28 @@ fn catalog_glob_discovery_bounds_candidate_directory_entries() {
     assert_eq!(error.code(), ContractDiagnosticCode::CatalogInputLimit);
 }
 
+#[cfg(unix)]
+#[test]
+fn catalog_glob_uses_canonical_symlinked_parent_for_candidate_limits() {
+    let root = TemporaryDirectory::new_short("glob-symlink-parent");
+    fs::write(root.path().join("inside.txt"), b"output").expect("output fixture");
+    let target = root.path().join("candidate-target");
+    fs::create_dir(&target).expect("candidate target directory");
+    for index in 0..=MAX_CATALOG_DIRECTORY_ENTRIES {
+        fs::write(
+            target.join(format!("candidate-{index:04}.txt")),
+            b"candidate",
+        )
+        .expect("candidate fixture");
+    }
+    symlink(&target, root.path().join("candidates")).expect("symlinked candidate directory");
+
+    let error = glob_catalog("candidates/*.sql", 1)
+        .validate_paths(root.path())
+        .expect_err("symlinked glob candidate traversal must be bounded");
+    assert_eq!(error.code(), ContractDiagnosticCode::CatalogInputLimit);
+}
+
 #[test]
 fn catalog_accepts_a_glob_within_a_bounded_candidate_directory() {
     let root = TemporaryDirectory::new("bounded-glob");
@@ -454,6 +476,25 @@ fn catalog_rejects_symlink_and_special_file_paths() {
         special_error.code(),
         ContractDiagnosticCode::CatalogSpecialFile
     );
+}
+
+#[cfg(unix)]
+#[test]
+fn client_inventory_loader_rejects_symlink_inputs() {
+    let root = TemporaryDirectory::new_short("inventory-symlink");
+    let inventory = root.path().join("distributed.clients.json");
+    fs::write(
+        &inventory,
+        include_str!("../../../tests/e2e-ui/ui/distributed.clients.json"),
+    )
+    .expect("inventory fixture");
+    let link = root.path().join("inventory-link.json");
+    symlink(&inventory, &link).expect("inventory symlink fixture");
+
+    let error = ClientInventory::from_path(&link)
+        .expect_err("inventory symlink inputs must be rejected before following them");
+    assert_eq!(error.code(), ContractDiagnosticCode::CatalogSymlinkEscape);
+    assert_eq!(error.message(), "client inventory must not be a symlink");
 }
 
 #[test]

@@ -47,6 +47,19 @@ test('Vite client inventory loading rejects a sparse oversized file before readi
 	}
 });
 
+test('Vite client inventory loading rejects symlink inputs', () => {
+	const temporaryRoot = fs.mkdtempSync(path.join(os.tmpdir(), 'distributed-client-inventory-'));
+	const inventoryPath = path.join(temporaryRoot, 'distributed.clients.json');
+	const linkPath = path.join(temporaryRoot, 'inventory-link.json');
+	fs.writeFileSync(inventoryPath, fs.readFileSync(path.join(uiRoot, 'distributed.clients.json')));
+	fs.symlinkSync(inventoryPath, linkPath);
+	try {
+		assert.throws(() => loadClientInventory(linkPath), /must not be a symlink/);
+	} finally {
+		fs.rmSync(temporaryRoot, { recursive: true, force: true });
+	}
+});
+
 test('Vite client inventory loading rejects excessive JSON nesting before parsing', () => {
 	const temporaryRoot = fs.mkdtempSync(path.join(os.tmpdir(), 'distributed-client-inventory-'));
 	const inventoryPath = path.join(temporaryRoot, 'deep.json');
@@ -54,6 +67,29 @@ test('Vite client inventory loading rejects excessive JSON nesting before parsin
 	fs.writeFileSync(inventoryPath, `${'['.repeat(depth)}null${']'.repeat(depth)}`);
 	try {
 		assert.throws(() => loadClientInventory(inventoryPath), /nesting depth/);
+	} finally {
+		fs.rmSync(temporaryRoot, { recursive: true, force: true });
+	}
+});
+
+test('Vite invalid JSON errors do not echo malformed secret-like source text', () => {
+	const temporaryRoot = fs.mkdtempSync(path.join(os.tmpdir(), 'distributed-client-inventory-'));
+	const inventoryPath = path.join(temporaryRoot, 'malformed.json');
+	const secret = 'password=super-secret-value';
+	fs.writeFileSync(
+		inventoryPath,
+		`{"schema_version":1,"clients":[{"module":"$distributed","documents":["${secret}`
+	);
+	try {
+		assert.throws(
+			() => loadClientInventory(inventoryPath),
+			(error) => {
+				assert.match(error.message, /invalid JSON/);
+				assert.doesNotMatch(error.message, /super-secret-value/);
+				assert.doesNotMatch(error.message, /password=/);
+				return true;
+			}
+		);
 	} finally {
 		fs.rmSync(temporaryRoot, { recursive: true, force: true });
 	}
