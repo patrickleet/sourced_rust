@@ -236,7 +236,7 @@ mod client_surface_parity_tests {
                 .unwrap()
                 .roles(&["user"])
                 .grant_all("user")
-                .client_application_surface("console", ["user"])
+                .client_application_surface("console", ["user"], ["user"])
                 .protocol_token_key([7; 32])
                 .graphiql(graphiql)
                 .build()
@@ -591,7 +591,7 @@ mod client_surface_parity_tests {
             .roles(&["anonymous", "user"])
             .grant_all("anonymous")
             .grant_all("user")
-            .client_application_surface("public", ["anonymous"])
+            .client_application_surface("public", ["anonymous"], ["anonymous"])
             .protocol_token_key([7; 32])
             .build()
             .unwrap();
@@ -755,7 +755,7 @@ mod client_surface_parity_tests {
             .roles(&["admin", "user"])
             .grant_all("admin")
             .grant_all("user")
-            .client_application_surface("console", ["user"])
+            .client_application_surface("console", ["user"], ["user"])
             .protocol_token_key([7; 32])
             .build()
             .unwrap();
@@ -805,7 +805,7 @@ mod client_surface_parity_tests {
             .roles(&["admin", "user"])
             .grant_all("admin")
             .grant_all("user")
-            .client_application_surface("console", ["admin", "user"])
+            .client_application_surface("console", ["admin", "user"], ["admin", "user"])
             .protocol_token_key([7; 32])
             .build()
             .unwrap();
