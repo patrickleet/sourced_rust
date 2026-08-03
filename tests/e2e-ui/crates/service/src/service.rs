@@ -43,12 +43,9 @@ use crate::handlers;
 // their own per-deployment key rather than copying this development value.
 const E2E_PROTOCOL_TOKEN_KEY: [u8; 32] = [0xe2; 32];
 
-/// Stable normal-application surface shared by user and admin sessions.
-pub const DISTRIBUTED_CLIENT_SURFACE: &str = "e2e-ui";
-/// Stable elevated surface for routes that intentionally include admin-only fields.
-pub const DISTRIBUTED_ADMIN_CLIENT_SURFACE: &str = "e2e-ui-admin";
-/// Unauthenticated public surface (lobby message peek).
-pub const DISTRIBUTED_PUBLIC_CLIENT_SURFACE: &str = "e2e-ui-public";
+pub use crate::application::{
+    DISTRIBUTED_ADMIN_CLIENT_SURFACE, DISTRIBUTED_CLIENT_SURFACE, DISTRIBUTED_PUBLIC_CLIENT_SURFACE,
+};
 
 #[derive(Clone, Default)]
 struct ClientSurfaceLocks(Arc<InMemoryLockManager>);
@@ -238,7 +235,7 @@ fn pool_free_client_surface_contract(
         &grants,
     )
     .expect("e2e-ui application Surface should select");
-    DistributedClientSurfaceExport::from_project(&project, selected)
+    DistributedClientSurfaceExport::from_selected("e2e-ui", selected)
         .expect("e2e-ui application Surface should export")
 }
 
@@ -583,8 +580,8 @@ fn build_graphql_engine_with_graphiql(
             ["admin", "user"],
             ["user"],
         )
-        .client_application_surface(DISTRIBUTED_ADMIN_CLIENT_SURFACE, ["admin"])
-        .client_application_surface(DISTRIBUTED_PUBLIC_CLIENT_SURFACE, ["anonymous"])
+        .client_application_surface(DISTRIBUTED_ADMIN_CLIENT_SURFACE, ["admin"], ["admin"])
+        .client_application_surface(DISTRIBUTED_PUBLIC_CLIENT_SURFACE, ["anonymous"], ["anonymous"])
         // user: only own rows. admin: all owners (UI: /admin all-notes view).
         .model::<Todos>(Todos::permissions())
         .model::<ChatMessages>(ChatMessages::permissions())

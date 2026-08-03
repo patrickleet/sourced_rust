@@ -7,10 +7,12 @@ pub mod models;
 
 pub use models::{AuthUsers, BlobGames, ChatMessages, Todos};
 
-pub fn distributed_manifest() -> distributed::DistributedProjectManifest {
+pub fn distributed_manifest() -> distributed::ReadModelCatalog {
     use distributed::RelationalReadModel;
 
-    distributed::DistributedProjectManifest::new("e2e-ui")
+    // Schema-only catalog (physical tables). ApplicationManifest is the logical
+    // application contract and is composed separately.
+    distributed::ReadModelCatalog::new("e2e-ui")
         .table_schema(Todos::schema().clone())
         .table_schema(ChatMessages::schema().clone())
         .table_schema(BlobGames::schema().clone())
