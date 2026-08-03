@@ -19,7 +19,7 @@ use std::collections::{BTreeMap, BTreeSet};
 use std::fs::{self, File};
 use std::io::Read;
 use std::path::{Component, Path, PathBuf};
-use std::process::Command;
+use std::process::{Command, Stdio};
 
 /// The current migration inventory wire format.
 pub const MIGRATION_INVENTORY_SCHEMA_VERSION: u32 = 1;
@@ -31,6 +31,12 @@ pub const MAX_MIGRATION_INVENTORY_BYTES: usize = 1024 * 1024;
 pub const MAX_MIGRATION_SQL_BYTES: usize = 4 * 1024 * 1024;
 /// Maximum number of migrations in one inventory.
 pub const MAX_MIGRATIONS: usize = 256;
+/// Maximum nesting depth of JSON objects and arrays in an inventory.
+pub const MAX_MIGRATION_JSON_DEPTH: usize = 24;
+/// Maximum number of entries traversed beneath one dialect directory tree.
+pub const MAX_MIGRATION_TOTAL_ENTRIES: usize = MAX_MIGRATIONS * 4;
+/// Maximum number of direct entries beneath `migrations`.
+pub const MAX_MIGRATION_TOP_LEVEL_ENTRIES: usize = 64;
 /// The stable owner and scope used by migration diagnostics.
 pub const MIGRATION_OWNER: &str = "distributed/migrations";
 pub const MIGRATION_SCOPE: &str = "repository/migrations";
@@ -126,9 +132,10 @@ impl MigrationInventory {
                 input.len()
             )));
         }
+        validate_json_nesting(input)?;
         let value: Value = serde_json::from_str(input)
             .map_err(|error| inventory_error(format!("parse migration inventory JSON: {error}")))?;
-        validate_json_value(&value, 0)?;
+        validate_json_value(&value, 1)?;
         let inventory: Self = serde_json::from_value(value)
             .map_err(|error| inventory_error(format!("parse migration inventory JSON: {error}")))?;
         inventory.validate_structure()?;
@@ -561,10 +568,15 @@ fn compare_history(
         .iter()
         .map(|migration| (migration.version, migration))
         .collect::<BTreeMap<_, _>>();
-    let next_version = current
+    let current_last = current
         .migrations
         .last()
-        .map_or(1, |migration| migration.version.saturating_add(1));
+        .map_or(0, |migration| migration.version);
+    let baseline_last = baseline
+        .migrations
+        .last()
+        .map_or(0, |migration| migration.version);
+    let next_version = current_last.max(baseline_last).saturating_add(1);
 
     let baseline_versions = baseline
         .migrations
@@ -731,6 +743,10 @@ where
     let repair = format!(
         "restore the baseline migration from {base_revision} and add migration {next_version}"
     );
+    let paths = paths
+        .into_iter()
+        .map(|path| declared_path_display(path.as_ref()))
+        .collect::<Vec<_>>();
     ContractDiagnostic::new(
         ContractDiagnosticCode::MigrationHistory,
         Some(ContractArtifactKind::MigrationInventory),
@@ -792,8 +808,43 @@ fn inventory_error(message: String) -> ContractError {
     ContractError::new(ContractDiagnosticCode::MigrationInventory, message)
 }
 
+fn validate_json_nesting(input: &str) -> Result<(), ContractError> {
+    let mut depth = 0usize;
+    let mut escaped = false;
+    let mut in_string = false;
+
+    for byte in input.bytes() {
+        if in_string {
+            if escaped {
+                escaped = false;
+            } else if byte == b'\\' {
+                escaped = true;
+            } else if byte == b'"' {
+                in_string = false;
+            }
+            continue;
+        }
+
+        match byte {
+            b'"' => in_string = true,
+            b'{' | b'[' => {
+                depth = depth.saturating_add(1);
+                if depth > MAX_MIGRATION_JSON_DEPTH {
+                    return Err(inventory_error(
+                        "migration inventory exceeds maximum JSON nesting depth".to_string(),
+                    ));
+                }
+            }
+            b'}' | b']' => depth = depth.saturating_sub(1),
+            _ => {}
+        }
+    }
+
+    Ok(())
+}
+
 fn validate_json_value(value: &Value, depth: usize) -> Result<(), ContractError> {
-    if depth > 24 {
+    if depth > MAX_MIGRATION_JSON_DEPTH {
         return Err(inventory_error(
             "migration inventory exceeds maximum JSON nesting depth".to_string(),
         ));
@@ -806,7 +857,12 @@ fn validate_json_value(value: &Value, depth: usize) -> Result<(), ContractError>
                         "migration inventory contains a credential-like field `{key}`"
                     )));
                 }
-                validate_json_value(child, depth + 1)?;
+                let child_depth = if child.is_object() || child.is_array() {
+                    depth + 1
+                } else {
+                    depth
+                };
+                validate_json_value(child, child_depth)?;
             }
         }
         Value::Array(array) => {
@@ -816,7 +872,12 @@ fn validate_json_value(value: &Value, depth: usize) -> Result<(), ContractError>
                 ));
             }
             for child in array {
-                validate_json_value(child, depth + 1)?;
+                let child_depth = if child.is_object() || child.is_array() {
+                    depth + 1
+                } else {
+                    depth
+                };
+                validate_json_value(child, child_depth)?;
             }
         }
         Value::String(string) => {
@@ -853,13 +914,15 @@ fn validate_checksum(checksum: &str, path: &str) -> Result<(), ContractError> {
             .any(|character| character.is_ascii_uppercase())
     {
         return Err(inventory_error(format!(
-            "migration `{path}` must declare one lowercase 64-character SHA-256 checksum"
+            "migration `{}` must declare one lowercase 64-character SHA-256 checksum",
+            declared_path_display(path)
         )));
     }
     Ok(())
 }
 
 fn validate_migration_path(path: &str, dialect: MigrationDialect) -> Result<(), ContractError> {
+    let display_path = declared_path_display(path);
     if path.is_empty()
         || path.trim() != path
         || path.len() > 4 * 1024
@@ -868,8 +931,8 @@ fn validate_migration_path(path: &str, dialect: MigrationDialect) -> Result<(), 
         || !path.ends_with(".sql")
     {
         return Err(inventory_error(format!(
-            "{} migration path `{path}` is not a portable SQL path",
-            dialect
+            "{} migration path `{display_path}` is not a portable SQL path",
+            dialect,
         )));
     }
     let path_value = Path::new(path);
@@ -880,18 +943,32 @@ fn validate_migration_path(path: &str, dialect: MigrationDialect) -> Result<(), 
         || !path_value.starts_with(dialect.directory())
     {
         return Err(inventory_error(format!(
-            "{} migration path `{path}` must remain beneath `{}`",
+            "{} migration path `{display_path}` must remain beneath `{}`",
             dialect,
             dialect.directory()
         )));
     }
     if is_secret_like(path) {
         return Err(inventory_error(format!(
-            "{} migration path `{path}` contains sensitive material",
-            dialect
+            "{} migration path `{display_path}` contains sensitive material",
+            dialect,
         )));
     }
     Ok(())
+}
+
+fn declared_path_display(path: &str) -> String {
+    let path_value = Path::new(path);
+    if path_value.is_absolute()
+        || path.contains('\\')
+        || path_value
+            .components()
+            .any(|component| matches!(component, Component::Prefix(_) | Component::RootDir))
+    {
+        "<outside-repository>".to_string()
+    } else {
+        path.to_string()
+    }
 }
 
 fn canonical_repository_root(root: &Path) -> Result<PathBuf, ContractError> {
@@ -900,10 +977,7 @@ fn canonical_repository_root(root: &Path) -> Result<PathBuf, ContractError> {
     if metadata.file_type().is_symlink() {
         return Err(ContractError::new(
             ContractDiagnosticCode::CatalogSymlinkEscape,
-            format!(
-                "migration repository root `{}` must not be a symlink",
-                root.display()
-            ),
+            "migration repository root must not be a symlink".to_string(),
         ));
     }
     let root = fs::canonicalize(root)
@@ -935,11 +1009,7 @@ fn relative_path(root: &Path, path: &Path) -> Result<PathBuf, ContractError> {
         .strip_prefix(&absolute_root)
         .map(Path::to_path_buf)
         .map_err(|_| {
-            inventory_error(format!(
-                "migration inventory path `{}` escaped repository root `{}`",
-                path.display(),
-                root.display()
-            ))
+            inventory_error("migration inventory path escaped repository root".to_string())
         })
 }
 
@@ -966,6 +1036,7 @@ fn read_migration_file(
     dialect: MigrationDialect,
 ) -> Result<Vec<u8>, ContractError> {
     let path = root.join(&declaration.path);
+    let display_path = declared_path_display(&declaration.path);
     let mut current = root.to_path_buf();
     let components = Path::new(&declaration.path)
         .components()
@@ -974,7 +1045,7 @@ fn read_migration_file(
         let Component::Normal(component) = component else {
             return Err(inventory_error(format!(
                 "{} migration path `{}` contains traversal",
-                dialect, declaration.path
+                dialect, display_path
             )));
         };
         current.push(component);
@@ -982,12 +1053,12 @@ fn read_migration_file(
             if error.kind() == std::io::ErrorKind::NotFound {
                 inventory_error(format!(
                     "missing {} migration file `{}`",
-                    dialect, declaration.path
+                    dialect, display_path
                 ))
             } else {
                 inventory_error(format!(
                     "inspect {} migration file `{}`: {error}",
-                    dialect, declaration.path
+                    dialect, display_path
                 ))
             }
         })?;
@@ -996,55 +1067,55 @@ fn read_migration_file(
                 ContractDiagnosticCode::CatalogSymlinkEscape,
                 format!(
                     "{} migration file `{}` must not be a symlink",
-                    dialect, declaration.path
+                    dialect, display_path
                 ),
             ));
         }
         if index + 1 != components.len() && !metadata.is_dir() {
             return Err(inventory_error(format!(
                 "{} migration path `{}` has a non-directory parent",
-                dialect, declaration.path
+                dialect, display_path
             )));
         }
     }
     let metadata = fs::metadata(&path).map_err(|error| {
         inventory_error(format!(
             "inspect {} migration file `{}`: {error}",
-            dialect, declaration.path
+            dialect, display_path
         ))
     })?;
     if !metadata.is_file() {
         return Err(
             ContractDiagnosticCode::CatalogSpecialFile.into_error(format!(
                 "{} migration file `{}` is not regular",
-                dialect, declaration.path
+                dialect, display_path
             )),
         );
     }
     let file = File::open(&path).map_err(|error| {
         inventory_error(format!(
             "open {} migration file `{}`: {error}",
-            dialect, declaration.path
+            dialect, display_path
         ))
     })?;
     let opened_metadata = file.metadata().map_err(|error| {
         inventory_error(format!(
             "inspect opened {} migration file `{}`: {error}",
-            dialect, declaration.path
+            dialect, display_path
         ))
     })?;
     if !opened_metadata.is_file() {
         return Err(
             ContractDiagnosticCode::CatalogSpecialFile.into_error(format!(
                 "opened {} migration file `{}` is not regular",
-                dialect, declaration.path
+                dialect, display_path
             )),
         );
     }
     if opened_metadata.len() > MAX_MIGRATION_SQL_BYTES as u64 {
         return Err(inventory_error(format!(
             "{} migration file `{}` exceeds {MAX_MIGRATION_SQL_BYTES} bytes",
-            dialect, declaration.path
+            dialect, display_path
         )));
     }
     let mut bytes = Vec::with_capacity(opened_metadata.len() as usize);
@@ -1053,16 +1124,26 @@ fn read_migration_file(
         .map_err(|error| {
             inventory_error(format!(
                 "read {} migration file `{}`: {error}",
-                dialect, declaration.path
+                dialect, display_path
             ))
         })?;
     if bytes.len() > MAX_MIGRATION_SQL_BYTES {
         return Err(inventory_error(format!(
             "{} migration file `{}` exceeds {MAX_MIGRATION_SQL_BYTES} bytes",
-            dialect, declaration.path
+            dialect, display_path
         )));
     }
     Ok(bytes)
+}
+
+fn relative_path_display(root: &Path, path: &Path) -> String {
+    path.strip_prefix(root)
+        .map(|relative| {
+            relative
+                .to_string_lossy()
+                .replace(std::path::MAIN_SEPARATOR, "/")
+        })
+        .unwrap_or_else(|_| "<outside-repository>".to_string())
 }
 
 fn collect_sql_files(
@@ -1073,6 +1154,7 @@ fn collect_sql_files(
     let mut result = BTreeSet::new();
     let mut pending = vec![directory];
     let mut directories = 0;
+    let mut entries_seen = 0usize;
     while let Some(directory) = pending.pop() {
         directories += 1;
         if directories > DIALECT_DIRECTORY_LIMIT {
@@ -1085,7 +1167,7 @@ fn collect_sql_files(
             inventory_error(format!(
                 "inspect {} migration directory `{}`: {error}",
                 dialect,
-                directory.display()
+                relative_path_display(root, &directory)
             ))
         })?;
         if directory_metadata.file_type().is_symlink() {
@@ -1094,7 +1176,7 @@ fn collect_sql_files(
                 format!(
                     "{} migration directory `{}` must not be a symlink",
                     dialect,
-                    directory.display()
+                    relative_path_display(root, &directory)
                 ),
             ));
         }
@@ -1102,24 +1184,33 @@ fn collect_sql_files(
             return Err(inventory_error(format!(
                 "{} migration directory `{}` is not a directory",
                 dialect,
-                directory.display()
+                relative_path_display(root, &directory)
             )));
         }
         let entries = fs::read_dir(&directory).map_err(|error| {
             inventory_error(format!(
                 "read {} migration directory `{}`: {error}",
                 dialect,
-                directory.display()
+                relative_path_display(root, &directory)
             ))
         })?;
-        let mut entries = entries
-            .collect::<Result<Vec<_>, _>>()
-            .map_err(|error| inventory_error(format!("read migration directory: {error}")))?;
-        entries.sort_by_key(|entry| entry.file_name());
         for entry in entries {
+            entries_seen += 1;
+            if entries_seen > MAX_MIGRATION_TOTAL_ENTRIES {
+                return Err(inventory_error(format!(
+                    "{} migration directory tree exceeds {MAX_MIGRATION_TOTAL_ENTRIES} entries",
+                    dialect
+                )));
+            }
+            let entry = entry.map_err(|error| {
+                inventory_error(format!("read {dialect} migration directory entry: {error}"))
+            })?;
             let path = entry.path();
             let metadata = fs::symlink_metadata(&path).map_err(|error| {
-                inventory_error(format!("inspect migration directory entry: {error}"))
+                inventory_error(format!(
+                    "inspect {dialect} migration directory entry `{}`: {error}",
+                    relative_path_display(root, &path)
+                ))
             })?;
             if metadata.file_type().is_symlink() {
                 return Err(ContractError::new(
@@ -1127,7 +1218,7 @@ fn collect_sql_files(
                     format!(
                         "{} migration path `{}` must not be a symlink",
                         dialect,
-                        path.display()
+                        relative_path_display(root, &path)
                     ),
                 ));
             }
@@ -1140,7 +1231,7 @@ fn collect_sql_files(
                     ContractDiagnosticCode::CatalogSpecialFile.into_error(format!(
                         "{} migration path `{}` is not regular",
                         dialect,
-                        path.display()
+                        relative_path_display(root, &path)
                     )),
                 );
             }
@@ -1180,7 +1271,14 @@ fn validate_no_extra_dialect_directories(root: &Path) -> Result<(), ContractErro
     }
     let entries = fs::read_dir(&migrations)
         .map_err(|error| inventory_error(format!("read migrations directory: {error}")))?;
+    let mut entries_seen = 0usize;
     for entry in entries {
+        entries_seen += 1;
+        if entries_seen > MAX_MIGRATION_TOP_LEVEL_ENTRIES {
+            return Err(inventory_error(format!(
+                "migrations directory exceeds {MAX_MIGRATION_TOP_LEVEL_ENTRIES} entries"
+            )));
+        }
         let entry =
             entry.map_err(|error| inventory_error(format!("read migrations entry: {error}")))?;
         let path = entry.path();
@@ -1189,7 +1287,10 @@ fn validate_no_extra_dialect_directories(root: &Path) -> Result<(), ContractErro
         if metadata.file_type().is_symlink() {
             return Err(ContractError::new(
                 ContractDiagnosticCode::CatalogSymlinkEscape,
-                format!("migration path `{}` must not be a symlink", path.display()),
+                format!(
+                    "migration path `{}` must not be a symlink",
+                    relative_path_display(root, &path)
+                ),
             ));
         }
         if !metadata.is_dir() {
@@ -1273,8 +1374,12 @@ fn read_bounded_file(path: &Path, limit: usize, label: &str) -> Result<Vec<u8>, 
         File::open(path).map_err(|error| inventory_error(format!("read {label}: {error}")))?;
     let opened_size = file
         .metadata()
-        .map_err(|error| inventory_error(format!("inspect opened {label}: {error}")))?
-        .len();
+        .map_err(|error| inventory_error(format!("inspect opened {label}: {error}")))?;
+    if !opened_size.is_file() {
+        return Err(ContractDiagnosticCode::CatalogSpecialFile
+            .into_error(format!("opened {label} is not a regular file")));
+    }
+    let opened_size = opened_size.len();
     if opened_size > limit as u64 {
         return Err(inventory_error(format!(
             "opened {label} is {opened_size} bytes; maximum supported size is {limit}"
@@ -1312,23 +1417,65 @@ fn git_revision_exists(root: &Path, revision: &str) -> bool {
         .arg(root)
         .args(["rev-parse", "--verify", "--quiet", "--end-of-options"])
         .arg(format!("{revision}^{{commit}}"))
-        .output()
-        .is_ok_and(|output| output.status.success())
+        .stdin(Stdio::null())
+        .stdout(Stdio::null())
+        .stderr(Stdio::null())
+        .status()
+        .is_ok_and(|status| status.success())
 }
 
 fn git_file(root: &Path, revision: &str, path: &str) -> Result<Vec<u8>, String> {
     let object = format!("{revision}:{path}");
-    let output = Command::new("git")
+    let limit = if path == MIGRATION_INVENTORY_PATH {
+        MAX_MIGRATION_INVENTORY_BYTES
+    } else {
+        MAX_MIGRATION_SQL_BYTES
+    };
+    let mut child = Command::new("git")
         .arg("-C")
         .arg(root)
         .args(["show", "--no-ext-diff", "--format=", "--end-of-options"])
         .arg(object)
-        .output()
+        .stdin(Stdio::null())
+        .stdout(Stdio::piped())
+        .stderr(Stdio::null())
+        .spawn()
         .map_err(|_| "could not invoke Git for the explicit revision".to_string())?;
-    if !output.status.success() {
+    let mut stdout = child.stdout.take().ok_or_else(|| {
+        terminate_child(&mut child);
+        "Git did not provide a readable baseline stream".to_string()
+    })?;
+    let mut bytes = Vec::new();
+    let mut buffer = [0u8; 8 * 1024];
+    loop {
+        match stdout.read(&mut buffer) {
+            Ok(0) => break,
+            Ok(read) => {
+                if read > limit.saturating_sub(bytes.len()) {
+                    terminate_child(&mut child);
+                    return Err(format!("baseline file exceeds {limit} bytes"));
+                }
+                bytes.extend_from_slice(&buffer[..read]);
+            }
+            Err(_) => {
+                terminate_child(&mut child);
+                return Err("could not read the explicit Git baseline file".to_string());
+            }
+        }
+    }
+    drop(stdout);
+    let status = child
+        .wait()
+        .map_err(|_| "could not wait for Git baseline file".to_string())?;
+    if !status.success() {
         return Err("Git did not provide the requested baseline file".to_string());
     }
-    Ok(output.stdout)
+    Ok(bytes)
+}
+
+fn terminate_child(child: &mut std::process::Child) {
+    let _ = child.kill();
+    let _ = child.wait();
 }
 
 trait DiagnosticCodeError {

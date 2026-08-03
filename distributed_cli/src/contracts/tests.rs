@@ -1016,6 +1016,21 @@ fn migration_inventory_rejects_checksum_path_and_symlink_mutations() {
     .expect_err("path traversal must fail");
     assert_eq!(error.code(), ContractDiagnosticCode::MigrationInventory);
 
+    bad_path["migrations"][0]["sqlite"]["path"] = Value::String(
+        root.path()
+            .join("outside.sql")
+            .to_string_lossy()
+            .into_owned(),
+    );
+    let error = MigrationInventory::from_json_str(
+        &serde_json::to_string(&bad_path).expect("absolute path JSON"),
+    )
+    .expect_err("absolute path must fail without exposing the machine path");
+    assert_eq!(error.code(), ContractDiagnosticCode::MigrationInventory);
+    assert!(!error
+        .message()
+        .contains(&root.path().to_string_lossy().to_string()));
+
     #[cfg(unix)]
     {
         write_migration_inventory(root.path(), std::slice::from_ref(&valid));
@@ -1032,6 +1047,86 @@ fn migration_inventory_rejects_checksum_path_and_symlink_mutations() {
             .expect_err("symlink migration must fail");
         assert_eq!(error.code(), ContractDiagnosticCode::CatalogSymlinkEscape);
     }
+
+    let declared_path = root.path().join("migrations/sqlite/0001_initial.sql");
+    if declared_path.is_symlink() {
+        fs::remove_file(&declared_path).expect("remove migration symlink");
+    } else if declared_path.exists() {
+        fs::remove_file(&declared_path).expect("remove migration file for special-file fixture");
+    }
+    fs::create_dir(&declared_path).expect("migration special-file fixture");
+    let error = MigrationInventory::from_repository_root(root.path())
+        .expect_err("directory at declared SQL path must fail");
+    assert_eq!(error.code(), ContractDiagnosticCode::CatalogSpecialFile);
+    assert!(!error
+        .message()
+        .contains(&root.path().to_string_lossy().to_string()));
+}
+
+#[test]
+fn migration_inventory_rejects_json_nesting_before_parse_and_ignores_strings() {
+    let nested_json = |count: usize| format!("{}0{}", "[".repeat(count), "]".repeat(count));
+    let at_limit = format!(
+        r#"{{"schema_version":1,"migrations":[],"padding":{}}}"#,
+        nested_json(MAX_MIGRATION_JSON_DEPTH - 1)
+    );
+    let at_limit_error = MigrationInventory::from_json_str(&at_limit)
+        .expect_err("the configured JSON nesting limit should reach serde");
+    assert!(!at_limit_error
+        .message()
+        .contains("maximum JSON nesting depth"));
+
+    let over_limit = format!(
+        r#"{{"schema_version":1,"migrations":[],"padding":{}}}"#,
+        nested_json(MAX_MIGRATION_JSON_DEPTH)
+    );
+    let over_limit_error = MigrationInventory::from_json_str(&over_limit)
+        .expect_err("JSON beyond the configured nesting limit must fail");
+    assert!(over_limit_error
+        .message()
+        .contains("maximum JSON nesting depth"));
+
+    let string_delimiters = r#"{"schema_version":1,"migrations":[],"padding":"braces {[ ]} and an escaped quote: \" plus [nested]"}"#;
+    let string_error = MigrationInventory::from_json_str(string_delimiters)
+        .expect_err("unknown string field should fail structural parsing");
+    assert!(!string_error
+        .message()
+        .contains("maximum JSON nesting depth"));
+}
+
+#[test]
+fn migration_inventory_rejects_total_and_top_level_entry_floods() {
+    let (root, _, _) = create_migration_fixture("entry-flood");
+    for index in 0..=MAX_MIGRATION_TOTAL_ENTRIES {
+        write_repository_file(
+            root.path(),
+            &format!("migrations/sqlite/noise-{index:04}.txt"),
+            b"not SQL",
+        );
+    }
+    let error = MigrationInventory::from_repository_root(root.path())
+        .expect_err("non-SQL entries must count toward the dialect traversal bound");
+    assert_eq!(error.code(), ContractDiagnosticCode::MigrationInventory);
+    assert!(error.message().contains("entries"));
+    assert!(!error
+        .message()
+        .contains(&root.path().to_string_lossy().to_string()));
+
+    let (root, _, _) = create_migration_fixture("top-level-entry-flood");
+    for index in 0..=MAX_MIGRATION_TOP_LEVEL_ENTRIES {
+        write_repository_file(
+            root.path(),
+            &format!("migrations/top-level-noise-{index:03}.txt"),
+            b"ignored top-level file",
+        );
+    }
+    let error = MigrationInventory::from_repository_root(root.path())
+        .expect_err("top-level migrations entries must be bounded");
+    assert_eq!(error.code(), ContractDiagnosticCode::MigrationInventory);
+    assert!(error.message().contains("migrations directory"));
+    assert!(!error
+        .message()
+        .contains(&root.path().to_string_lossy().to_string()));
 }
 
 fn write_json_value(path: &Path, value: &Value) {
@@ -1210,7 +1305,7 @@ fn baseline_history_rejects_description_delete_renumber_and_reorder() {
     let refused = deleted.check_history(root.path(), &base_revision);
     assert!(!refused.is_verified());
     assert!(refused.human().contains("baseline migration 2 was deleted"));
-    assert!(refused.human().contains("add migration 2"));
+    assert!(refused.human().contains("add migration 3"));
 
     write_repository_file(
         root.path(),
@@ -1235,6 +1330,164 @@ fn baseline_history_rejects_description_delete_renumber_and_reorder() {
     assert!(!refused.is_verified());
     assert!(refused.human().contains("CTL-MIG-HISTORY"));
     assert!(refused.human().contains("order or numbering changed"));
+}
+
+#[test]
+fn baseline_newer_deletion_repair_never_reuses_immutable_version() {
+    let (root, first_sqlite, first_postgres) = create_migration_fixture("history-newer");
+    let second_sqlite = b"ALTER TABLE one ADD COLUMN second INTEGER;\n";
+    let second_postgres = b"ALTER TABLE one ADD COLUMN second BIGINT;\n";
+    let third_sqlite = b"ALTER TABLE one ADD COLUMN third INTEGER;\n";
+    let third_postgres = b"ALTER TABLE one ADD COLUMN third BIGINT;\n";
+    write_repository_file(
+        root.path(),
+        "migrations/sqlite/0002_second.sql",
+        second_sqlite,
+    );
+    write_repository_file(
+        root.path(),
+        "migrations/postgres/0002_second.sql",
+        second_postgres,
+    );
+    write_repository_file(
+        root.path(),
+        "migrations/sqlite/0003_third.sql",
+        third_sqlite,
+    );
+    write_repository_file(
+        root.path(),
+        "migrations/postgres/0003_third.sql",
+        third_postgres,
+    );
+    let baseline_entries = vec![
+        migration_entry(
+            1,
+            "migrations/sqlite/0001_initial.sql",
+            &first_sqlite,
+            "migrations/postgres/0001_initial.sql",
+            &first_postgres,
+        ),
+        migration_entry(
+            2,
+            "migrations/sqlite/0002_second.sql",
+            second_sqlite,
+            "migrations/postgres/0002_second.sql",
+            second_postgres,
+        ),
+        migration_entry(
+            3,
+            "migrations/sqlite/0003_third.sql",
+            third_sqlite,
+            "migrations/postgres/0003_third.sql",
+            third_postgres,
+        ),
+    ];
+    write_migration_inventory(root.path(), &baseline_entries);
+    let base_revision = commit_migration_fixture(root.path());
+    let baseline =
+        MigrationInventory::from_repository_root(root.path()).expect("newer baseline inventory");
+
+    fs::remove_file(root.path().join("migrations/sqlite/0003_third.sql"))
+        .expect("remove deleted third sqlite migration");
+    fs::remove_file(root.path().join("migrations/postgres/0003_third.sql"))
+        .expect("remove deleted third postgres migration");
+    let mut deleted = baseline.clone();
+    deleted.migrations.pop();
+    let refused = deleted.check_history(root.path(), &base_revision);
+    assert!(!refused.is_verified());
+    assert!(refused.human().contains("baseline migration 3 was deleted"));
+    assert!(refused.human().contains("add migration 4"));
+    assert!(!refused.human().contains("add migration 3"));
+}
+
+#[test]
+fn oversized_git_baseline_object_is_unavailable_without_leaking_contents() {
+    let (root, base_sqlite, base_postgres) = create_migration_fixture("history-oversized");
+    let oversized_sql = vec![b'x'; MAX_MIGRATION_SQL_BYTES + 1];
+    write_repository_file(
+        root.path(),
+        "migrations/sqlite/0001_initial.sql",
+        &oversized_sql,
+    );
+    write_migration_inventory(
+        root.path(),
+        &[migration_entry(
+            1,
+            "migrations/sqlite/0001_initial.sql",
+            &oversized_sql,
+            "migrations/postgres/0001_initial.sql",
+            &base_postgres,
+        )],
+    );
+    let base_revision = commit_migration_fixture(root.path());
+
+    write_repository_file(
+        root.path(),
+        "migrations/sqlite/0001_initial.sql",
+        &base_sqlite,
+    );
+    write_migration_inventory(
+        root.path(),
+        &[migration_entry(
+            1,
+            "migrations/sqlite/0001_initial.sql",
+            &base_sqlite,
+            "migrations/postgres/0001_initial.sql",
+            &base_postgres,
+        )],
+    );
+    let current = MigrationInventory::from_repository_root(root.path())
+        .expect("current tree remains valid after oversized baseline");
+    let refused = current.check_history(root.path(), &base_revision);
+    assert!(refused.is_unavailable());
+    assert!(!refused.is_verified());
+    assert!(refused
+        .baseline
+        .reason()
+        .expect("oversized baseline reason")
+        .contains("exceeds"));
+    let human = refused.human();
+    assert!(human.contains("history evidence unavailable"));
+    assert!(!human.contains("xxxxxxxx"));
+
+    let (root, current_sqlite, current_postgres) =
+        create_migration_fixture("history-inventory-limit");
+    let inventory_path = root.path().join(MIGRATION_INVENTORY_PATH);
+    let mut oversized_inventory: Value =
+        serde_json::from_slice(&fs::read(&inventory_path).expect("read inventory baseline"))
+            .expect("inventory baseline JSON");
+    oversized_inventory["padding"] = Value::String("y".repeat(MAX_MIGRATION_INVENTORY_BYTES));
+    write_json_value(&inventory_path, &oversized_inventory);
+    let inventory_base_revision = commit_migration_fixture(root.path());
+    write_repository_file(
+        root.path(),
+        "migrations/sqlite/0001_initial.sql",
+        &current_sqlite,
+    );
+    write_repository_file(
+        root.path(),
+        "migrations/postgres/0001_initial.sql",
+        &current_postgres,
+    );
+    write_migration_inventory(
+        root.path(),
+        &[migration_entry(
+            1,
+            "migrations/sqlite/0001_initial.sql",
+            &current_sqlite,
+            "migrations/postgres/0001_initial.sql",
+            &current_postgres,
+        )],
+    );
+    let current = MigrationInventory::from_repository_root(root.path())
+        .expect("current tree remains valid after oversized inventory baseline");
+    let refused = current.check_history(root.path(), &inventory_base_revision);
+    assert!(refused.is_unavailable());
+    assert!(refused
+        .baseline
+        .reason()
+        .expect("oversized inventory baseline reason")
+        .contains("exceeds"));
 }
 
 #[test]
