@@ -96,7 +96,9 @@ pub use engine::{
     GraphqlEngineBuilder, GraphqlPool, GraphqlPoolSource,
 };
 #[cfg(feature = "graphql")]
-pub use http::{graphiql_page, graphql_router, graphql_router_with_service};
+pub use http::{
+    graphiql_page, graphql_router, graphql_router_with_dispatcher, graphql_router_with_service,
+};
 #[cfg(feature = "graphql")]
 pub use identity::{
     extract_bearer, map_claims_to_session, public_oidc_identity_from_env,
