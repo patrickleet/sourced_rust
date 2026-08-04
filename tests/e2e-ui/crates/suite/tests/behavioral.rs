@@ -163,6 +163,7 @@ async fn t1a_application_surface_returns_actual_todo_upsert_and_causal_obligatio
         "user",
         DISTRIBUTED_CLIENT_SURFACE,
         &["admin", "user"],
+        &["user"],
         &manifest.schema_fingerprint,
     )
     .await
