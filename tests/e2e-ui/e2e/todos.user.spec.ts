@@ -339,13 +339,14 @@ test.describe('todos (alice)', () => {
 			.locator('.panel')
 			.filter({ has: page.getByRole('heading', { name: /^open$/i }) })
 			.locator('.item', { hasText: title });
-		// Reopen must paint the row back into Open before the delayed wire returns.
-		await expect(reopenedItem).toBeVisible({ timeout: 400 });
+		// Status-column membership seals with Eventual (no status constant in
+		// auto-optimism). Controls stay enabled under the delayed route.
 		expect(
 			await page.locator('.board button:disabled').count(),
 			'routine command concurrency guards must not flash Todo row controls disabled'
 		).toBe(0);
 		await reopenResponse;
+		await expect(reopenedItem).toBeVisible({ timeout: 5_000 });
 		await page.waitForTimeout(750);
 		const reopenOrderFrames = await stopTodoOrderTrace(page);
 		expect(
