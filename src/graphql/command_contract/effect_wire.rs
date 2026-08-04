@@ -298,7 +298,7 @@ where
 pub struct CompiledInputDefault<I>(CommandInputDefault, PhantomData<fn(I)>);
 
 /// Declaration-owned generated defaults for one exact command input type.
-pub struct CompiledInputDefaults<I>(pub(super) Vec<CommandInputDefault>, PhantomData<fn(I)>);
+pub struct CompiledInputDefaults<I>(pub(crate) Vec<CommandInputDefault>, PhantomData<fn(I)>);
 
 #[doc(hidden)]
 pub fn __input_default_uuid_v7<I, F>() -> CompiledInputDefault<I>

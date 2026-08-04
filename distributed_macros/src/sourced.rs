@@ -214,6 +214,15 @@ struct EventMethodInfo {
     event_name: LitStr,
     method_name: Ident,
     params: Vec<(Ident, syn::Type)>,
+    /// Present when this recorder has `domain` and therefore a generated
+    /// outward domain-event marker type.
+    domain_event_type: Option<Ident>,
+}
+
+/// Public aggregate method that may capture one or more domain events.
+struct DomainCommandTransition {
+    method_name: Ident,
+    domain_event_types: Vec<Ident>,
 }
 
 struct DomainExpansion {
@@ -776,10 +785,20 @@ pub(crate) fn expand_sourced(attr: TokenStream2, item: TokenStream2) -> syn::Res
                     );
                     method.block = new_body;
 
+                    let domain_event_type = if event_attr.domain.is_some() {
+                        Some(identity_domain_event_type(
+                            &struct_name,
+                            &event_attr.event_name,
+                        )?)
+                    } else {
+                        None
+                    };
+
                     event_methods.push(EventMethodInfo {
                         event_name: event_attr.event_name,
                         method_name: method.sig.ident.clone(),
                         params,
+                        domain_event_type,
                     });
                 }
                 Ok(None) => { /* not an event method, skip */ }
@@ -787,6 +806,9 @@ pub(crate) fn expand_sourced(attr: TokenStream2, item: TokenStream2) -> syn::Res
             }
         }
     }
+
+    let domain_command_transitions =
+        discover_domain_command_transitions(&impl_block, &event_methods);
 
     let deletion_identity = if uses_deletion_identity {
         let identity = format_ident!("{struct_name}DomainIdentity");
@@ -967,6 +989,9 @@ pub(crate) fn expand_sourced(attr: TokenStream2, item: TokenStream2) -> syn::Res
         &upcasters_method,
     );
 
+    let domain_commands_module =
+        expand_domain_commands_module(&struct_name, &domain_command_transitions);
+
     let expanded = quote! {
         #impl_block
         #enum_def
@@ -974,11 +999,156 @@ pub(crate) fn expand_sourced(attr: TokenStream2, item: TokenStream2) -> syn::Res
         #try_from_impl
         #(#generated_domain_types)*
         #deletion_identity
+        #domain_commands_module
         #upcaster_wrappers
         #aggregate_impl
     };
 
     Ok(expanded)
+}
+
+fn discover_domain_command_transitions(
+    impl_block: &ItemImpl,
+    event_methods: &[EventMethodInfo],
+) -> Vec<DomainCommandTransition> {
+    let recorders: std::collections::BTreeMap<String, Ident> = event_methods
+        .iter()
+        .filter_map(|event| {
+            event
+                .domain_event_type
+                .clone()
+                .map(|domain_event_type| (event.method_name.to_string(), domain_event_type))
+        })
+        .collect();
+    if recorders.is_empty() {
+        return Vec::new();
+    }
+
+    let mut transitions = Vec::new();
+    for item in &impl_block.items {
+        let syn::ImplItem::Fn(method) = item else {
+            continue;
+        };
+        // Domain recorders themselves are not command transitions.
+        if recorders.contains_key(&method.sig.ident.to_string()) {
+            continue;
+        }
+        if !matches!(method.vis, syn::Visibility::Public(_)) {
+            continue;
+        }
+
+        let mut finder = DomainEventCallFinder {
+            recorders: &recorders,
+            found: std::collections::BTreeMap::new(),
+        };
+        finder.visit_block(&method.block);
+        if finder.found.is_empty() {
+            continue;
+        }
+        transitions.push(DomainCommandTransition {
+            method_name: method.sig.ident.clone(),
+            domain_event_types: finder.found.into_values().collect(),
+        });
+    }
+    transitions
+}
+
+struct DomainEventCallFinder<'a> {
+    recorders: &'a std::collections::BTreeMap<String, Ident>,
+    found: std::collections::BTreeMap<String, Ident>,
+}
+
+impl<'ast> Visit<'ast> for DomainEventCallFinder<'_> {
+    fn visit_expr_method_call(&mut self, node: &'ast syn::ExprMethodCall) {
+        if is_self_receiver(&node.receiver) {
+            if let Some(domain_event_type) = self.recorders.get(&node.method.to_string()) {
+                self.found
+                    .entry(domain_event_type.to_string())
+                    .or_insert_with(|| domain_event_type.clone());
+            }
+        }
+        syn::visit::visit_expr_method_call(self, node);
+    }
+}
+
+fn is_self_receiver(expression: &Expr) -> bool {
+    match expression {
+        Expr::Path(path) => path.path.is_ident("self"),
+        Expr::Paren(paren) => is_self_receiver(&paren.expr),
+        Expr::Group(group) => is_self_receiver(&group.expr),
+        _ => false,
+    }
+}
+
+fn method_name_to_type_ident(method_name: &Ident) -> Ident {
+    let pascal = method_name
+        .to_string()
+        .split('_')
+        .filter(|part| !part.is_empty())
+        .map(|part| {
+            let mut chars = part.chars();
+            match chars.next() {
+                Some(first) => first.to_uppercase().collect::<String>() + chars.as_str(),
+                None => String::new(),
+            }
+        })
+        .collect::<String>();
+    format_ident!("{}", pascal)
+}
+
+fn expand_domain_commands_module(
+    aggregate: &Ident,
+    transitions: &[DomainCommandTransition],
+) -> TokenStream2 {
+    if transitions.is_empty() {
+        return TokenStream2::new();
+    }
+
+    let transition_items = transitions.iter().map(|transition| {
+        let type_name = method_name_to_type_ident(&transition.method_name);
+        let method_name = transition.method_name.to_string();
+        let aggregate_name = aggregate.to_string();
+        let event_types = &transition.domain_event_types;
+        let doc = format!(
+            "Outward domain-event set for `{aggregate_name}::{method_name}`.\n\n\
+             Derived from direct `self.<recorder>()` calls to `#[event(..., domain)]` \
+             methods in this `#[sourced]` impl. Use with \
+             [`distributed::graphql::TypedCommand::emits_events`]."
+        );
+        quote! {
+            #[doc = #doc]
+            pub enum #type_name {}
+
+            impl distributed::graphql::CommandEventSet for #type_name {
+                fn command_event_set() -> distributed::graphql::CommandProjectionEventSet {
+                    distributed::graphql::__command_projection_events([
+                        #(
+                            distributed::graphql::__command_projection_event_descriptor::<
+                                super::#event_types,
+                            >()
+                        ),*
+                    ])
+                }
+            }
+        }
+    });
+
+    let aggregate_name = aggregate.to_string();
+    let module_doc = format!(
+        "Domain command transitions for `{aggregate_name}`.\n\n\
+         Each type is a zero-sized witness for the outward domain events a public \
+         aggregate method may capture. Prefer \
+         `typed_command(...).emits_events::<domain_commands::Create>()` over a \
+         hand-duplicated `events![...]` list when the domain method already owns \
+         the transition."
+    );
+
+    quote! {
+        #[doc = #module_doc]
+        pub mod domain_commands {
+            #(#transition_items)*
+        }
+    }
 }
 
 // ============================================================================

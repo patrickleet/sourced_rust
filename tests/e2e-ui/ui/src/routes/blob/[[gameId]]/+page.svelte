@@ -4,21 +4,14 @@
 	 *
 	 * - URL (`/blob` | `/blob/{gameId}`) selects which game is active.
 	 * - Board and history derive from `BlobGames.use()`.
-	 * - Commands are Atomic (same client optimism path as Eventual): `.applies`
-	 *   paints from command input; the handler applies the same mutation IR and
-	 *   the response row seals before await resolves.
+	 * - Commands are Atomic: thin input (`game_id` + `direction`); board updates
+	 *   when the authoritative row seals on the response.
 	 */
 	import { onMount } from 'svelte';
 	import { goto } from '$app/navigation';
 	import { page } from '$app/state';
 	import { BlobGames, useCommands } from '$distributed';
-	import {
-		parseBoard,
-		simulateMove,
-		SimulateMoveError,
-		TILE,
-		type Direction
-	} from '$lib/blob/simulate-move';
+	import { parseBoard, TILE, type Direction } from '$lib/blob/board';
 	import { Button } from '$lib/components/shared/ui';
 	import { AppPage, InlineAlert, PageHeader } from '$lib/components/product';
 	import { HowItsBuilt } from '$lib/components/walkthrough';
@@ -139,30 +132,12 @@
 			actionError = null;
 			return;
 		}
-		let preview;
-		try {
-			// Pure domain twin → command input (same pattern as chat body /
-			// created_at). `.applies` maps these into the optimistic layer.
-			preview = simulateMove(board, score, direction);
-		} catch (error) {
-			if (error instanceof SimulateMoveError) {
-				actionError = null;
-				return;
-			}
-			throw error;
-		}
 		commandPending = true;
 		actionError = null;
 		try {
 			await commands.blob.move({
 				game_id: selected.game_id,
-				direction,
-				map_json: preview.map_json,
-				score: preview.score,
-				player_dead: preview.player_dead,
-				current_level: currentLevel,
-				current_level_completed: preview.level_complete,
-				status: preview.status
+				direction
 			});
 		} catch (error) {
 			actionError = error instanceof Error ? error.message : 'Move failed';

@@ -1,21 +1,14 @@
 //! Todo bounded-context module: command mounts + eventual projector.
 
-use distributed::graphql::{
-    typed_command, CommandProjectionPreview, CommandProjectionPreviewSource, Eventual,
-    SurfaceProjector,
-};
+use distributed::graphql::{Eventual, SurfaceProjector};
 use distributed::microsvc::{
     ConfigurableOutboxPublisher, HasOutboxStore, HasRepo, RepoReadModelDependencies, Routes,
 };
 use distributed::{
-    command_input_defaults, AggregateBuilder, AggregateRepository, ProjectionEnvelopeField,
-    QueuedRepository,
+    command_input_defaults, AggregateBuilder, AggregateRepository, QueuedRepository,
 };
-use todo_domain::{
-    Todo, TodoArchivedDomainEvent, TodoCompletedDomainEvent, TodoCreatedDomainEvent,
-    TodoForceArchivedDomainEvent, TodoPurgedDomainEvent, TodoRenamedDomainEvent,
-    TodoReopenedDomainEvent,
-};
+use todo_domain::domain_commands;
+use todo_domain::Todo;
 
 use crate::bounds::{EventStore, Locks, ReadStore};
 use crate::handlers;
@@ -52,125 +45,65 @@ where
         HasRepo + HasOutboxStore + ConfigurableOutboxPublisher + Send + Sync + 'static,
 {
     Routes::for_aggregate::<R, L, Todo, S>(repo, locks, read_models)
-        .typed_command(
-            typed_command::<todo_create::TodoCreateInput, Eventual<todo_create::TodoCreatePayload>>(
-                todo_create::COMMAND,
-            )
-            .field_name("todos_create")
-            .roles(["user", "admin"].into_iter())
-            .input_defaults(command_input_defaults! {
-                input: todo_create::TodoCreateInput;
-                default input.todo_id = uuid_v7();
-            })
-            .emits(distributed::events![TodoCreatedDomainEvent])
-            .applies(distributed::state_preview! {
-                TodoCreatedDomainEvent => todo_domain::TodoState {
-                    todo_id: generated.todo_id,
-                    owner_id: trusted("x-user-id", "string"),
-                    title: input.title,
-                    status: "open",
-                    assignee_id: null,
-                }
-            }),
-        )
+        .command_transition::<
+            domain_commands::Create,
+            todo_create::TodoCreateInput,
+            Eventual<todo_create::TodoCreatePayload>,
+        >(todo_create::COMMAND)
+        .field_name("todos_create")
+        .roles(["user", "admin"].into_iter())
+        .input_defaults(command_input_defaults! {
+            input: todo_create::TodoCreateInput;
+            default input.todo_id = uuid_v7();
+        })
         .handle(todo_create::handle)
-        .typed_command(
-            typed_command::<todo_rename::TodoRenameInput, Eventual<todo_rename::TodoRenamePayload>>(
-                todo_rename::COMMAND,
-            )
-            .field_name("todos_rename")
-            .roles(["user", "admin"].into_iter())
-            .emits(distributed::events![TodoRenamedDomainEvent])
-            .applies(distributed::state_preview! {
-                TodoRenamedDomainEvent => todo_domain::TodoState {
-                    todo_id: input.todo_id,
-                    title: input.title,
-                    ..unknown
-                }
-            }),
-        )
+        .command_transition::<
+            domain_commands::Rename,
+            todo_rename::TodoRenameInput,
+            Eventual<todo_rename::TodoRenamePayload>,
+        >(todo_rename::COMMAND)
+        .field_name("todos_rename")
+        .roles(["user", "admin"].into_iter())
         .handle(todo_rename::handle)
-        .typed_command(
-            typed_command::<todo_complete::TodoCompleteInput, Eventual<payloads::TodoStatusPayload>>(
-                todo_complete::COMMAND,
-            )
-            .field_name("todos_complete")
-            .roles(["user", "admin"].into_iter())
-            .emits(distributed::events![TodoCompletedDomainEvent])
-            .applies(distributed::state_preview! {
-                TodoCompletedDomainEvent => todo_domain::TodoState {
-                    todo_id: input.todo_id,
-                    status: "completed",
-                    ..unknown
-                }
-            }),
-        )
+        .command_transition::<
+            domain_commands::Complete,
+            todo_complete::TodoCompleteInput,
+            Eventual<payloads::TodoStatusPayload>,
+        >(todo_complete::COMMAND)
+        .field_name("todos_complete")
+        .roles(["user", "admin"].into_iter())
         .handle(todo_complete::handle)
-        .typed_command(
-            typed_command::<todo_reopen::TodoReopenInput, Eventual<todo_reopen::TodoReopenPayload>>(
-                todo_reopen::COMMAND,
-            )
-            .field_name("todos_reopen")
-            .roles(["user", "admin"].into_iter())
-            .emits(distributed::events![TodoReopenedDomainEvent])
-            .applies(distributed::state_preview! {
-                TodoReopenedDomainEvent => todo_domain::TodoState {
-                    todo_id: input.todo_id,
-                    status: "open",
-                    ..unknown
-                }
-            }),
-        )
+        .command_transition::<
+            domain_commands::Reopen,
+            todo_reopen::TodoReopenInput,
+            Eventual<todo_reopen::TodoReopenPayload>,
+        >(todo_reopen::COMMAND)
+        .field_name("todos_reopen")
+        .roles(["user", "admin"].into_iter())
         .handle(todo_reopen::handle)
-        .typed_command(
-            typed_command::<todo_archive::TodoArchiveInput, Eventual<todo_archive::TodoArchivePayload>>(
-                todo_archive::COMMAND,
-            )
-            .field_name("todos_archive")
-            .roles(["user", "admin"].into_iter())
-            .emits(distributed::events![TodoArchivedDomainEvent])
-            .applies(distributed::state_preview! {
-                TodoArchivedDomainEvent => todo_domain::TodoState {
-                    todo_id: input.todo_id,
-                    status: "archived",
-                    ..unknown
-                }
-            }),
-        )
+        .command_transition::<
+            domain_commands::Archive,
+            todo_archive::TodoArchiveInput,
+            Eventual<todo_archive::TodoArchivePayload>,
+        >(todo_archive::COMMAND)
+        .field_name("todos_archive")
+        .roles(["user", "admin"].into_iter())
         .handle(todo_archive::handle)
-        .typed_command(
-            typed_command::<
-                todo_force_archive::TodoForceArchiveInput,
-                Eventual<todo_force_archive::TodoForceArchivePayload>,
-            >(todo_force_archive::COMMAND)
-            .field_name("todos_force_archive")
-            .roles(["admin"])
-            .emits(distributed::events![TodoForceArchivedDomainEvent])
-            .applies(distributed::state_preview! {
-                TodoForceArchivedDomainEvent => todo_domain::TodoState {
-                    todo_id: input.todo_id,
-                    status: "archived",
-                    ..unknown
-                }
-            }),
-        )
+        .command_transition::<
+            domain_commands::ForceArchive,
+            todo_force_archive::TodoForceArchiveInput,
+            Eventual<todo_force_archive::TodoForceArchivePayload>,
+        >(todo_force_archive::COMMAND)
+        .field_name("todos_force_archive")
+        .roles(["admin"])
         .handle(todo_force_archive::handle)
-        .typed_command(
-            typed_command::<todo_purge::TodoPurgeInput, Eventual<todo_purge::TodoPurgePayload>>(
-                todo_purge::COMMAND,
-            )
-            .field_name("todos_purge")
-            .roles(["user", "admin"].into_iter())
-            .emits(distributed::events![TodoPurgedDomainEvent])
-            .applies(
-                CommandProjectionPreview::new()
-                    .events(distributed::events![TodoPurgedDomainEvent])
-                    .envelope(
-                        ProjectionEnvelopeField::AggregateId,
-                        CommandProjectionPreviewSource::input(["todo_id"]),
-                    ),
-            ),
-        )
+        .command_transition::<
+            domain_commands::Purge,
+            todo_purge::TodoPurgeInput,
+            Eventual<todo_purge::TodoPurgePayload>,
+        >(todo_purge::COMMAND)
+        .field_name("todos_purge")
+        .roles(["user", "admin"].into_iter())
         .handle(todo_purge::handle)
         .modeled_projector(todo_projector)
         .handle(handlers::events::project_todos::handle)

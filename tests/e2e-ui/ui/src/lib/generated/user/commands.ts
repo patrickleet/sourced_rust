@@ -19,14 +19,8 @@ import type {
 import { COMMAND_STATUS } from './protocol.js';
 
 export type Command_blob_games_move_Input = {
-  readonly "current_level": number;
-  readonly "current_level_completed": boolean;
   readonly "direction": string;
   readonly "game_id": string;
-  readonly "map_json": string;
-  readonly "player_dead": boolean;
-  readonly "score": number;
-  readonly "status": string;
 };
 
 export type Command_blob_games_move_Output = {
@@ -50,7 +44,7 @@ export const Command_blob_games_move: ReplicaCommandArtifact<Command_blob_games_
     ],
     "model": "BlobGames",
     "topology": {
-      "digest": "sha256:2222222222222222222222222222222222222222222222222222222222222222",
+      "digest": "sha256:bfbfbfbfbfbfbfbfbfbfbfbfbfbfbfbfbfbfbfbfbfbfbfbfbfbfbfbfbfbfbfbf",
       "name": "project_blob",
       "version": 1
     }
@@ -59,22 +53,6 @@ export const Command_blob_games_move: ReplicaCommandArtifact<Command_blob_games_
   "input": {
     "definition": {
       "fields": [
-        {
-          "codec": "json_number_precision_limited",
-          "itemNullable": false,
-          "list": false,
-          "name": "current_level",
-          "nullable": false,
-          "typeName": "BigInt"
-        },
-        {
-          "codec": "boolean",
-          "itemNullable": false,
-          "list": false,
-          "name": "current_level_completed",
-          "nullable": false,
-          "typeName": "Boolean"
-        },
         {
           "codec": "string",
           "itemNullable": false,
@@ -88,38 +66,6 @@ export const Command_blob_games_move: ReplicaCommandArtifact<Command_blob_games_
           "itemNullable": false,
           "list": false,
           "name": "game_id",
-          "nullable": false,
-          "typeName": "String"
-        },
-        {
-          "codec": "string",
-          "itemNullable": false,
-          "list": false,
-          "name": "map_json",
-          "nullable": false,
-          "typeName": "String"
-        },
-        {
-          "codec": "boolean",
-          "itemNullable": false,
-          "list": false,
-          "name": "player_dead",
-          "nullable": false,
-          "typeName": "Boolean"
-        },
-        {
-          "codec": "json_number_precision_limited",
-          "itemNullable": false,
-          "list": false,
-          "name": "score",
-          "nullable": false,
-          "typeName": "BigInt"
-        },
-        {
-          "codec": "string",
-          "itemNullable": false,
-          "list": false,
-          "name": "status",
           "nullable": false,
           "typeName": "String"
         }
@@ -279,34 +225,27 @@ export const Command_blob_games_move: ReplicaCommandArtifact<Command_blob_games_
       "operations": [
         {
           "mutation": {
-            "fields": [
-              {
-                "field": "current_level",
-                "value": {
-                  "kind": "input",
-                  "path": [
-                    "current_level"
-                  ]
+            "if_present": true,
+            "op": "patch",
+            "scope": {
+              "key": [
+                {
+                  "field": "game_id",
+                  "ordinal": 0,
+                  "value": {
+                    "kind": "input",
+                    "path": [
+                      "game_id"
+                    ]
+                  }
                 }
-              },
-              {
-                "field": "current_level_completed",
-                "value": {
-                  "kind": "input",
-                  "path": [
-                    "current_level_completed"
-                  ]
-                }
-              },
-              {
-                "field": "map_json",
-                "value": {
-                  "kind": "input",
-                  "path": [
-                    "map_json"
-                  ]
-                }
-              },
+              ],
+              "model": "BlobGames",
+              "partition": {
+                "kind": "unit"
+              }
+            },
+            "set": [
               {
                 "field": "owner_id",
                 "value": {
@@ -314,45 +253,24 @@ export const Command_blob_games_move: ReplicaCommandArtifact<Command_blob_games_
                   "kind": "trusted_preset",
                   "name": "x-user-id"
                 }
-              },
-              {
-                "field": "player_dead",
-                "value": {
-                  "kind": "input",
-                  "path": [
-                    "player_dead"
-                  ]
-                }
-              },
-              {
-                "field": "score",
-                "value": {
-                  "kind": "input",
-                  "path": [
-                    "score"
-                  ]
-                }
-              },
-              {
-                "field": "status",
-                "value": {
-                  "kind": "input",
-                  "path": [
-                    "status"
-                  ]
-                }
               }
-            ],
-            "op": "upsert",
-            "replace": [
-              "current_level",
-              "current_level_completed",
-              "map_json",
-              "owner_id",
-              "player_dead",
-              "score",
-              "status"
-            ],
+            ]
+          },
+          "occurrence_ordinal": 0,
+          "projection_refs": [
+            0
+          ]
+        }
+      ],
+      "recoveries": [
+        {
+          "condition": "if_record_missing",
+          "occurrence_ordinal": 0,
+          "projection_refs": [
+            0
+          ],
+          "target": {
+            "kind": "record",
             "scope": {
               "key": [
                 {
@@ -371,20 +289,15 @@ export const Command_blob_games_move: ReplicaCommandArtifact<Command_blob_games_
                 "kind": "unit"
               }
             }
-          },
-          "occurrence_ordinal": 0,
-          "projection_refs": [
-            0
-          ]
+          }
         }
       ],
-      "recoveries": [],
       "version": 1
     },
     "projectionProgramVersion": 2,
     "projections": [
       {
-        "bindingId": "pb1:sha256:390665fd6f82aa8283633636c9d74010d08bd4194a5965329a8967f02145e775",
+        "bindingId": "pb1:sha256:b40b478dc0256eca20d7601a495b1bef3c09eb809c5efd79b2d9dd77637cd712",
         "epoch": "e2e-ui-blob-v2",
         "operationSemanticsVersion": 1,
         "programId": "pp1:sha256:5b95a587dbe4c35b80f7fbe1c953861538a7066568535520f36417d81e95deed",
@@ -396,12 +309,15 @@ export const Command_blob_games_move: ReplicaCommandArtifact<Command_blob_games_
   "protocol": {
     "operation": "sha256:6e3c6c00474e126a3fce6b671cd8a06eed988546f161793d39a08cc784ae49c7",
     "protocolHash": "sha256:00fb342f3acb4dc1c1716a43cc3001c748d5f6c500ff831690d820e9e43e2782",
-    "schemaHash": "sha256:081dd7d6d000e5add4aead3b9254442c5e89c076a6543c9550611d3dd6280642",
+    "schemaHash": "sha256:c5a1e49d2bc4087419948d97f4cc666928d2bf8a0a6b30c3d3bf040a9692f56f",
     "surface": {
+      "eligible_roles": [
+        "admin",
+        "user"
+      ],
       "kind": "application",
       "name": "e2e-ui",
-      "roles": [
-        "admin",
+      "schema_roles": [
         "user"
       ]
     },
@@ -421,7 +337,7 @@ export const Command_blob_games_move: ReplicaCommandArtifact<Command_blob_games_
       "BlobGames"
     ],
     "relationships": [],
-    "required": false,
+    "required": true,
     "version": 1
   },
   "trustedPresets": [
@@ -465,7 +381,7 @@ export const Command_blob_games_start: ReplicaCommandArtifact<Command_blob_games
     ],
     "model": "BlobGames",
     "topology": {
-      "digest": "sha256:2222222222222222222222222222222222222222222222222222222222222222",
+      "digest": "sha256:bfbfbfbfbfbfbfbfbfbfbfbfbfbfbfbfbfbfbfbfbfbfbfbfbfbfbfbfbfbfbfbf",
       "name": "project_blob",
       "version": 1
     }
@@ -660,31 +576,11 @@ export const Command_blob_games_start: ReplicaCommandArtifact<Command_blob_games
             },
             "set": [
               {
-                "field": "map_json",
-                "value": {
-                  "kind": "constant",
-                  "value": {
-                    "type": "string",
-                    "value": "[]"
-                  }
-                }
-              },
-              {
                 "field": "owner_id",
                 "value": {
                   "codec": "string",
                   "kind": "trusted_preset",
                   "name": "x-user-id"
-                }
-              },
-              {
-                "field": "status",
-                "value": {
-                  "kind": "constant",
-                  "value": {
-                    "type": "string",
-                    "value": "active"
-                  }
                 }
               }
             ]
@@ -730,7 +626,7 @@ export const Command_blob_games_start: ReplicaCommandArtifact<Command_blob_games
     "projectionProgramVersion": 2,
     "projections": [
       {
-        "bindingId": "pb1:sha256:390665fd6f82aa8283633636c9d74010d08bd4194a5965329a8967f02145e775",
+        "bindingId": "pb1:sha256:b40b478dc0256eca20d7601a495b1bef3c09eb809c5efd79b2d9dd77637cd712",
         "epoch": "e2e-ui-blob-v2",
         "operationSemanticsVersion": 1,
         "programId": "pp1:sha256:5b95a587dbe4c35b80f7fbe1c953861538a7066568535520f36417d81e95deed",
@@ -742,12 +638,15 @@ export const Command_blob_games_start: ReplicaCommandArtifact<Command_blob_games
   "protocol": {
     "operation": "sha256:4b7ab56a38aec41d21809801ecefc5d7039a09e53a350187152c72a305de1567",
     "protocolHash": "sha256:00fb342f3acb4dc1c1716a43cc3001c748d5f6c500ff831690d820e9e43e2782",
-    "schemaHash": "sha256:081dd7d6d000e5add4aead3b9254442c5e89c076a6543c9550611d3dd6280642",
+    "schemaHash": "sha256:c5a1e49d2bc4087419948d97f4cc666928d2bf8a0a6b30c3d3bf040a9692f56f",
     "surface": {
+      "eligible_roles": [
+        "admin",
+        "user"
+      ],
       "kind": "application",
       "name": "e2e-ui",
-      "roles": [
-        "admin",
+      "schema_roles": [
         "user"
       ]
     },
@@ -811,7 +710,7 @@ export const Command_blob_games_start_level: ReplicaCommandArtifact<Command_blob
     ],
     "model": "BlobGames",
     "topology": {
-      "digest": "sha256:2222222222222222222222222222222222222222222222222222222222222222",
+      "digest": "sha256:bfbfbfbfbfbfbfbfbfbfbfbfbfbfbfbfbfbfbfbfbfbfbfbfbfbfbfbfbfbfbfbf",
       "name": "project_blob",
       "version": 1
     }
@@ -1006,31 +905,11 @@ export const Command_blob_games_start_level: ReplicaCommandArtifact<Command_blob
             },
             "set": [
               {
-                "field": "map_json",
-                "value": {
-                  "kind": "constant",
-                  "value": {
-                    "type": "string",
-                    "value": "[]"
-                  }
-                }
-              },
-              {
                 "field": "owner_id",
                 "value": {
                   "codec": "string",
                   "kind": "trusted_preset",
                   "name": "x-user-id"
-                }
-              },
-              {
-                "field": "status",
-                "value": {
-                  "kind": "constant",
-                  "value": {
-                    "type": "string",
-                    "value": "active"
-                  }
                 }
               }
             ]
@@ -1076,7 +955,7 @@ export const Command_blob_games_start_level: ReplicaCommandArtifact<Command_blob
     "projectionProgramVersion": 2,
     "projections": [
       {
-        "bindingId": "pb1:sha256:390665fd6f82aa8283633636c9d74010d08bd4194a5965329a8967f02145e775",
+        "bindingId": "pb1:sha256:b40b478dc0256eca20d7601a495b1bef3c09eb809c5efd79b2d9dd77637cd712",
         "epoch": "e2e-ui-blob-v2",
         "operationSemanticsVersion": 1,
         "programId": "pp1:sha256:5b95a587dbe4c35b80f7fbe1c953861538a7066568535520f36417d81e95deed",
@@ -1088,12 +967,15 @@ export const Command_blob_games_start_level: ReplicaCommandArtifact<Command_blob
   "protocol": {
     "operation": "sha256:37c108a568f62e7391a03728555d7013bb717f14d1957a5c3527151fd70093bf",
     "protocolHash": "sha256:00fb342f3acb4dc1c1716a43cc3001c748d5f6c500ff831690d820e9e43e2782",
-    "schemaHash": "sha256:081dd7d6d000e5add4aead3b9254442c5e89c076a6543c9550611d3dd6280642",
+    "schemaHash": "sha256:c5a1e49d2bc4087419948d97f4cc666928d2bf8a0a6b30c3d3bf040a9692f56f",
     "surface": {
+      "eligible_roles": [
+        "admin",
+        "user"
+      ],
       "kind": "application",
       "name": "e2e-ui",
-      "roles": [
-        "admin",
+      "schema_roles": [
         "user"
       ]
     },
@@ -1312,15 +1194,27 @@ export const Command_chat_messages_post: ReplicaCommandArtifact<Command_chat_mes
       "operations": [
         {
           "mutation": {
-            "fields": [
-              {
-                "field": "author_id",
-                "value": {
-                  "codec": "string",
-                  "kind": "trusted_preset",
-                  "name": "x-user-id"
+            "if_present": true,
+            "op": "patch",
+            "scope": {
+              "key": [
+                {
+                  "field": "message_id",
+                  "ordinal": 0,
+                  "value": {
+                    "kind": "input",
+                    "path": [
+                      "message_id"
+                    ]
+                  }
                 }
-              },
+              ],
+              "model": "ChatMessages",
+              "partition": {
+                "kind": "unit"
+              }
+            },
+            "set": [
               {
                 "field": "body",
                 "value": {
@@ -1348,14 +1242,23 @@ export const Command_chat_messages_post: ReplicaCommandArtifact<Command_chat_mes
                   ]
                 }
               }
-            ],
-            "op": "upsert",
-            "replace": [
-              "author_id",
-              "body",
-              "created_at",
-              "room_id"
-            ],
+            ]
+          },
+          "occurrence_ordinal": 0,
+          "projection_refs": [
+            0
+          ]
+        }
+      ],
+      "recoveries": [
+        {
+          "condition": "if_record_missing",
+          "occurrence_ordinal": 0,
+          "projection_refs": [
+            0
+          ],
+          "target": {
+            "kind": "record",
             "scope": {
               "key": [
                 {
@@ -1374,20 +1277,15 @@ export const Command_chat_messages_post: ReplicaCommandArtifact<Command_chat_mes
                 "kind": "unit"
               }
             }
-          },
-          "occurrence_ordinal": 0,
-          "projection_refs": [
-            0
-          ]
+          }
         }
       ],
-      "recoveries": [],
       "version": 1
     },
     "projectionProgramVersion": 2,
     "projections": [
       {
-        "bindingId": "pb1:sha256:14c314d30edb663ddf6962d5487573def5960400c3c23a21f93bb564ccdf8eb0",
+        "bindingId": "pb1:sha256:cbf168dbe404c58a31770556f4a957af30ded9ed2becc1ba4dabdcd0d8f086e2",
         "epoch": "e2e-ui-chat-v2",
         "operationSemanticsVersion": 1,
         "programId": "pp1:sha256:8ee4c26f6c722082149b590085111d66ba6153891ab51cdd2867a4fe3178c3c8",
@@ -1399,12 +1297,15 @@ export const Command_chat_messages_post: ReplicaCommandArtifact<Command_chat_mes
   "protocol": {
     "operation": "sha256:838e5ccb79daebb523ea3c634bea27077bcea191feabb86e45923470a7b9373d",
     "protocolHash": "sha256:00fb342f3acb4dc1c1716a43cc3001c748d5f6c500ff831690d820e9e43e2782",
-    "schemaHash": "sha256:081dd7d6d000e5add4aead3b9254442c5e89c076a6543c9550611d3dd6280642",
+    "schemaHash": "sha256:c5a1e49d2bc4087419948d97f4cc666928d2bf8a0a6b30c3d3bf040a9692f56f",
     "surface": {
+      "eligible_roles": [
+        "admin",
+        "user"
+      ],
       "kind": "application",
       "name": "e2e-ui",
-      "roles": [
-        "admin",
+      "schema_roles": [
         "user"
       ]
     },
@@ -1424,15 +1325,9 @@ export const Command_chat_messages_post: ReplicaCommandArtifact<Command_chat_mes
       "ChatMessages"
     ],
     "relationships": [],
-    "required": false,
+    "required": true,
     "version": 1
   },
-  "trustedPresets": [
-    {
-      "codec": "string",
-      "name": "x-user-id"
-    }
-  ],
   "version": 2
 };
 
@@ -1591,13 +1486,11 @@ export const Command_todos_archive: ReplicaCommandArtifact<Command_todos_archive
             },
             "set": [
               {
-                "field": "status",
+                "field": "owner_id",
                 "value": {
-                  "kind": "constant",
-                  "value": {
-                    "type": "string",
-                    "value": "archived"
-                  }
+                  "codec": "string",
+                  "kind": "trusted_preset",
+                  "name": "x-user-id"
                 }
               }
             ]
@@ -1643,7 +1536,7 @@ export const Command_todos_archive: ReplicaCommandArtifact<Command_todos_archive
     "projectionProgramVersion": 2,
     "projections": [
       {
-        "bindingId": "pb1:sha256:e2362e52f9a9ca6832af4e4bfc9ce77b83358ddfefdd864cebfdc7ce23212e90",
+        "bindingId": "pb1:sha256:03b1f0abe72f7c4990809715c7db5fad3c4a187c73fe399859062f82af983eae",
         "epoch": "e2e-ui-todos-v2",
         "operationSemanticsVersion": 1,
         "programId": "pp1:sha256:c41935c886137d267269a792855a0255ce3b24ebcdf8a867801a94cd715e1d0e",
@@ -1655,12 +1548,15 @@ export const Command_todos_archive: ReplicaCommandArtifact<Command_todos_archive
   "protocol": {
     "operation": "sha256:fb2d3a14933841a966836ced65263a9ba2413d5aed8c582d31165aaee6e632ab",
     "protocolHash": "sha256:00fb342f3acb4dc1c1716a43cc3001c748d5f6c500ff831690d820e9e43e2782",
-    "schemaHash": "sha256:081dd7d6d000e5add4aead3b9254442c5e89c076a6543c9550611d3dd6280642",
+    "schemaHash": "sha256:c5a1e49d2bc4087419948d97f4cc666928d2bf8a0a6b30c3d3bf040a9692f56f",
     "surface": {
+      "eligible_roles": [
+        "admin",
+        "user"
+      ],
       "kind": "application",
       "name": "e2e-ui",
-      "roles": [
-        "admin",
+      "schema_roles": [
         "user"
       ]
     },
@@ -1683,6 +1579,12 @@ export const Command_todos_archive: ReplicaCommandArtifact<Command_todos_archive
     "required": true,
     "version": 1
   },
+  "trustedPresets": [
+    {
+      "codec": "string",
+      "name": "x-user-id"
+    }
+  ],
   "version": 2
 };
 
@@ -1841,13 +1743,11 @@ export const Command_todos_complete: ReplicaCommandArtifact<Command_todos_comple
             },
             "set": [
               {
-                "field": "status",
+                "field": "owner_id",
                 "value": {
-                  "kind": "constant",
-                  "value": {
-                    "type": "string",
-                    "value": "completed"
-                  }
+                  "codec": "string",
+                  "kind": "trusted_preset",
+                  "name": "x-user-id"
                 }
               }
             ]
@@ -1893,7 +1793,7 @@ export const Command_todos_complete: ReplicaCommandArtifact<Command_todos_comple
     "projectionProgramVersion": 2,
     "projections": [
       {
-        "bindingId": "pb1:sha256:e2362e52f9a9ca6832af4e4bfc9ce77b83358ddfefdd864cebfdc7ce23212e90",
+        "bindingId": "pb1:sha256:03b1f0abe72f7c4990809715c7db5fad3c4a187c73fe399859062f82af983eae",
         "epoch": "e2e-ui-todos-v2",
         "operationSemanticsVersion": 1,
         "programId": "pp1:sha256:c41935c886137d267269a792855a0255ce3b24ebcdf8a867801a94cd715e1d0e",
@@ -1905,12 +1805,15 @@ export const Command_todos_complete: ReplicaCommandArtifact<Command_todos_comple
   "protocol": {
     "operation": "sha256:9b8185c835d3308bda308593486767731acaf4b084a7962b4b17e3e2e319922c",
     "protocolHash": "sha256:00fb342f3acb4dc1c1716a43cc3001c748d5f6c500ff831690d820e9e43e2782",
-    "schemaHash": "sha256:081dd7d6d000e5add4aead3b9254442c5e89c076a6543c9550611d3dd6280642",
+    "schemaHash": "sha256:c5a1e49d2bc4087419948d97f4cc666928d2bf8a0a6b30c3d3bf040a9692f56f",
     "surface": {
+      "eligible_roles": [
+        "admin",
+        "user"
+      ],
       "kind": "application",
       "name": "e2e-ui",
-      "roles": [
-        "admin",
+      "schema_roles": [
         "user"
       ]
     },
@@ -1933,6 +1836,12 @@ export const Command_todos_complete: ReplicaCommandArtifact<Command_todos_comple
     "required": true,
     "version": 1
   },
+  "trustedPresets": [
+    {
+      "codec": "string",
+      "name": "x-user-id"
+    }
+  ],
   "version": 2
 };
 
@@ -2107,29 +2016,33 @@ export const Command_todos_create: ReplicaCommandArtifact<Command_todos_create_I
       "operations": [
         {
           "mutation": {
-            "fields": [
-              {
-                "field": "assignee_id",
-                "value": {
-                  "kind": "null"
+            "if_present": true,
+            "op": "patch",
+            "scope": {
+              "key": [
+                {
+                  "field": "todo_id",
+                  "ordinal": 0,
+                  "value": {
+                    "kind": "generated_default",
+                    "path": [
+                      "todo_id"
+                    ]
+                  }
                 }
-              },
+              ],
+              "model": "Todos",
+              "partition": {
+                "kind": "unit"
+              }
+            },
+            "set": [
               {
                 "field": "owner_id",
                 "value": {
                   "codec": "string",
                   "kind": "trusted_preset",
                   "name": "x-user-id"
-                }
-              },
-              {
-                "field": "status",
-                "value": {
-                  "kind": "constant",
-                  "value": {
-                    "type": "string",
-                    "value": "open"
-                  }
                 }
               },
               {
@@ -2141,14 +2054,23 @@ export const Command_todos_create: ReplicaCommandArtifact<Command_todos_create_I
                   ]
                 }
               }
-            ],
-            "op": "upsert",
-            "replace": [
-              "assignee_id",
-              "owner_id",
-              "status",
-              "title"
-            ],
+            ]
+          },
+          "occurrence_ordinal": 0,
+          "projection_refs": [
+            0
+          ]
+        }
+      ],
+      "recoveries": [
+        {
+          "condition": "if_record_missing",
+          "occurrence_ordinal": 0,
+          "projection_refs": [
+            0
+          ],
+          "target": {
+            "kind": "record",
             "scope": {
               "key": [
                 {
@@ -2167,20 +2089,15 @@ export const Command_todos_create: ReplicaCommandArtifact<Command_todos_create_I
                 "kind": "unit"
               }
             }
-          },
-          "occurrence_ordinal": 0,
-          "projection_refs": [
-            0
-          ]
+          }
         }
       ],
-      "recoveries": [],
       "version": 1
     },
     "projectionProgramVersion": 2,
     "projections": [
       {
-        "bindingId": "pb1:sha256:e2362e52f9a9ca6832af4e4bfc9ce77b83358ddfefdd864cebfdc7ce23212e90",
+        "bindingId": "pb1:sha256:03b1f0abe72f7c4990809715c7db5fad3c4a187c73fe399859062f82af983eae",
         "epoch": "e2e-ui-todos-v2",
         "operationSemanticsVersion": 1,
         "programId": "pp1:sha256:c41935c886137d267269a792855a0255ce3b24ebcdf8a867801a94cd715e1d0e",
@@ -2192,12 +2109,15 @@ export const Command_todos_create: ReplicaCommandArtifact<Command_todos_create_I
   "protocol": {
     "operation": "sha256:187e72cd747aaa13ac0362942d73085a5166401f8cc3a188badeb3e7fa50cacb",
     "protocolHash": "sha256:00fb342f3acb4dc1c1716a43cc3001c748d5f6c500ff831690d820e9e43e2782",
-    "schemaHash": "sha256:081dd7d6d000e5add4aead3b9254442c5e89c076a6543c9550611d3dd6280642",
+    "schemaHash": "sha256:c5a1e49d2bc4087419948d97f4cc666928d2bf8a0a6b30c3d3bf040a9692f56f",
     "surface": {
+      "eligible_roles": [
+        "admin",
+        "user"
+      ],
       "kind": "application",
       "name": "e2e-ui",
-      "roles": [
-        "admin",
+      "schema_roles": [
         "user"
       ]
     },
@@ -2217,7 +2137,7 @@ export const Command_todos_create: ReplicaCommandArtifact<Command_todos_create_I
       "Todos"
     ],
     "relationships": [],
-    "required": false,
+    "required": true,
     "version": 1
   },
   "trustedPresets": [
@@ -2389,7 +2309,7 @@ export const Command_todos_purge: ReplicaCommandArtifact<Command_todos_purge_Inp
     "projectionProgramVersion": 2,
     "projections": [
       {
-        "bindingId": "pb1:sha256:e2362e52f9a9ca6832af4e4bfc9ce77b83358ddfefdd864cebfdc7ce23212e90",
+        "bindingId": "pb1:sha256:03b1f0abe72f7c4990809715c7db5fad3c4a187c73fe399859062f82af983eae",
         "epoch": "e2e-ui-todos-v2",
         "operationSemanticsVersion": 1,
         "programId": "pp1:sha256:c41935c886137d267269a792855a0255ce3b24ebcdf8a867801a94cd715e1d0e",
@@ -2401,12 +2321,15 @@ export const Command_todos_purge: ReplicaCommandArtifact<Command_todos_purge_Inp
   "protocol": {
     "operation": "sha256:01875defc418ccf0e607f316baa30d2f9cf8305602976cc5b1ce30cc5078c15e",
     "protocolHash": "sha256:00fb342f3acb4dc1c1716a43cc3001c748d5f6c500ff831690d820e9e43e2782",
-    "schemaHash": "sha256:081dd7d6d000e5add4aead3b9254442c5e89c076a6543c9550611d3dd6280642",
+    "schemaHash": "sha256:c5a1e49d2bc4087419948d97f4cc666928d2bf8a0a6b30c3d3bf040a9692f56f",
     "surface": {
+      "eligible_roles": [
+        "admin",
+        "user"
+      ],
       "kind": "application",
       "name": "e2e-ui",
-      "roles": [
-        "admin",
+      "schema_roles": [
         "user"
       ]
     },
@@ -2605,6 +2528,14 @@ export const Command_todos_rename: ReplicaCommandArtifact<Command_todos_rename_I
             },
             "set": [
               {
+                "field": "owner_id",
+                "value": {
+                  "codec": "string",
+                  "kind": "trusted_preset",
+                  "name": "x-user-id"
+                }
+              },
+              {
                 "field": "title",
                 "value": {
                   "kind": "input",
@@ -2656,7 +2587,7 @@ export const Command_todos_rename: ReplicaCommandArtifact<Command_todos_rename_I
     "projectionProgramVersion": 2,
     "projections": [
       {
-        "bindingId": "pb1:sha256:e2362e52f9a9ca6832af4e4bfc9ce77b83358ddfefdd864cebfdc7ce23212e90",
+        "bindingId": "pb1:sha256:03b1f0abe72f7c4990809715c7db5fad3c4a187c73fe399859062f82af983eae",
         "epoch": "e2e-ui-todos-v2",
         "operationSemanticsVersion": 1,
         "programId": "pp1:sha256:c41935c886137d267269a792855a0255ce3b24ebcdf8a867801a94cd715e1d0e",
@@ -2668,12 +2599,15 @@ export const Command_todos_rename: ReplicaCommandArtifact<Command_todos_rename_I
   "protocol": {
     "operation": "sha256:a3e8a5ceae1a0f2c33863a4f2bf377a95b79da2157a619eb7823aa845ef681c3",
     "protocolHash": "sha256:00fb342f3acb4dc1c1716a43cc3001c748d5f6c500ff831690d820e9e43e2782",
-    "schemaHash": "sha256:081dd7d6d000e5add4aead3b9254442c5e89c076a6543c9550611d3dd6280642",
+    "schemaHash": "sha256:c5a1e49d2bc4087419948d97f4cc666928d2bf8a0a6b30c3d3bf040a9692f56f",
     "surface": {
+      "eligible_roles": [
+        "admin",
+        "user"
+      ],
       "kind": "application",
       "name": "e2e-ui",
-      "roles": [
-        "admin",
+      "schema_roles": [
         "user"
       ]
     },
@@ -2696,6 +2630,12 @@ export const Command_todos_rename: ReplicaCommandArtifact<Command_todos_rename_I
     "required": true,
     "version": 1
   },
+  "trustedPresets": [
+    {
+      "codec": "string",
+      "name": "x-user-id"
+    }
+  ],
   "version": 2
 };
 
@@ -2854,13 +2794,11 @@ export const Command_todos_reopen: ReplicaCommandArtifact<Command_todos_reopen_I
             },
             "set": [
               {
-                "field": "status",
+                "field": "owner_id",
                 "value": {
-                  "kind": "constant",
-                  "value": {
-                    "type": "string",
-                    "value": "open"
-                  }
+                  "codec": "string",
+                  "kind": "trusted_preset",
+                  "name": "x-user-id"
                 }
               }
             ]
@@ -2906,7 +2844,7 @@ export const Command_todos_reopen: ReplicaCommandArtifact<Command_todos_reopen_I
     "projectionProgramVersion": 2,
     "projections": [
       {
-        "bindingId": "pb1:sha256:e2362e52f9a9ca6832af4e4bfc9ce77b83358ddfefdd864cebfdc7ce23212e90",
+        "bindingId": "pb1:sha256:03b1f0abe72f7c4990809715c7db5fad3c4a187c73fe399859062f82af983eae",
         "epoch": "e2e-ui-todos-v2",
         "operationSemanticsVersion": 1,
         "programId": "pp1:sha256:c41935c886137d267269a792855a0255ce3b24ebcdf8a867801a94cd715e1d0e",
@@ -2918,12 +2856,15 @@ export const Command_todos_reopen: ReplicaCommandArtifact<Command_todos_reopen_I
   "protocol": {
     "operation": "sha256:04531ace98fd3ee5e652761abbcb6ebd745d5ff6ed0ad100030f935335c5a35e",
     "protocolHash": "sha256:00fb342f3acb4dc1c1716a43cc3001c748d5f6c500ff831690d820e9e43e2782",
-    "schemaHash": "sha256:081dd7d6d000e5add4aead3b9254442c5e89c076a6543c9550611d3dd6280642",
+    "schemaHash": "sha256:c5a1e49d2bc4087419948d97f4cc666928d2bf8a0a6b30c3d3bf040a9692f56f",
     "surface": {
+      "eligible_roles": [
+        "admin",
+        "user"
+      ],
       "kind": "application",
       "name": "e2e-ui",
-      "roles": [
-        "admin",
+      "schema_roles": [
         "user"
       ]
     },
@@ -2946,6 +2887,12 @@ export const Command_todos_reopen: ReplicaCommandArtifact<Command_todos_reopen_I
     "required": true,
     "version": 1
   },
+  "trustedPresets": [
+    {
+      "codec": "string",
+      "name": "x-user-id"
+    }
+  ],
   "version": 2
 };
 

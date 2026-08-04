@@ -267,6 +267,183 @@ mod client_surface_tests {
     }
 
     #[test]
+    fn todo_commands_auto_derive_optimism_without_applies() {
+        use distributed::graphql::ClientProjectionPreviewSource;
+
+        let manifest = distributed_client_surface().manifest().unwrap();
+        let create = manifest
+            .commands
+            .iter()
+            .find(|command| command.mutation_field == "todos_create")
+            .expect("todos_create command");
+        let projection = create
+            .extensions
+            .projection
+            .as_ref()
+            .expect("todos_create must export projection extension");
+        assert!(
+            !projection.preview_occurrences.is_empty(),
+            "auto-optimism must invent preview occurrences from emits + projection arms"
+        );
+        let sources: Vec<_> = projection
+            .preview_occurrences
+            .iter()
+            .flat_map(|occurrence| occurrence.values.iter().map(|value| &value.source))
+            .collect();
+        assert!(
+            sources.iter().any(|source| matches!(
+                source,
+                ClientProjectionPreviewSource::Input { path } if path == &["title"]
+            )),
+            "create title must map from command input: {sources:?}"
+        );
+        assert!(
+            sources.iter().any(|source| matches!(
+                source,
+                ClientProjectionPreviewSource::GeneratedDefault { path } if path == &["todo_id"]
+            )),
+            "create todo_id must map from generated default: {sources:?}"
+        );
+        assert!(
+            sources.iter().any(|source| matches!(
+                source,
+                ClientProjectionPreviewSource::TrustedPreset { name, codec }
+                    if name == "x-user-id" && codec == "string"
+            )),
+            "create owner_id must map from row-policy claim: {sources:?}"
+        );
+
+        // Sparse update commands only need the known input slots.
+        let rename = manifest
+            .commands
+            .iter()
+            .find(|command| command.mutation_field == "todos_rename")
+            .expect("todos_rename command");
+        let rename_projection = rename
+            .extensions
+            .projection
+            .as_ref()
+            .expect("todos_rename projection");
+        let rename_sources: Vec<_> = rename_projection
+            .preview_occurrences
+            .iter()
+            .flat_map(|occurrence| occurrence.values.iter().map(|value| &value.source))
+            .collect();
+        assert!(
+            rename_sources.iter().any(|source| matches!(
+                source,
+                ClientProjectionPreviewSource::Input { path } if path == &["title"]
+            )),
+            "rename title must map from input without .applies: {rename_sources:?}"
+        );
+        assert!(
+            rename_sources.iter().any(|source| matches!(
+                source,
+                ClientProjectionPreviewSource::Input { path } if path == &["todo_id"]
+            )),
+            "rename todo_id must map from input without .applies: {rename_sources:?}"
+        );
+
+        let purge = manifest
+            .commands
+            .iter()
+            .find(|command| command.mutation_field == "todos_purge")
+            .expect("todos_purge command");
+        let purge_projection = purge
+            .extensions
+            .projection
+            .as_ref()
+            .expect("todos_purge projection");
+        let purge_sources: Vec<_> = purge_projection
+            .preview_occurrences
+            .iter()
+            .flat_map(|occurrence| occurrence.values.iter().map(|value| &value.source))
+            .collect();
+        assert!(
+            purge_sources.iter().any(|source| matches!(
+                source,
+                ClientProjectionPreviewSource::Input { path } if path == &["todo_id"]
+            )),
+            "purge aggregate id must map from input without envelope .applies: {purge_sources:?}"
+        );
+    }
+
+    #[test]
+    fn chat_and_blob_commands_auto_derive_optimism_without_applies() {
+        use distributed::graphql::ClientProjectionPreviewSource;
+
+        let manifest = distributed_client_surface().manifest().unwrap();
+
+        let post = manifest
+            .commands
+            .iter()
+            .find(|command| command.mutation_field == "chat_messages_post")
+            .expect("chat_messages_post command");
+        let post_projection = post
+            .extensions
+            .projection
+            .as_ref()
+            .expect("chat post projection");
+        let post_sources: Vec<_> = post_projection
+            .preview_occurrences
+            .iter()
+            .flat_map(|occurrence| occurrence.values.iter().map(|value| &value.source))
+            .collect();
+        assert!(
+            !post_projection.preview_occurrences.is_empty(),
+            "chat post must auto-derive preview occurrences"
+        );
+        assert!(
+            post_sources.iter().any(|source| matches!(
+                source,
+                ClientProjectionPreviewSource::Input { path } if path == &["body"]
+            )),
+            "chat body from input: {post_sources:?}"
+        );
+        assert!(
+            post_sources.iter().any(|source| matches!(
+                source,
+                ClientProjectionPreviewSource::Input { path } if path == &["message_id"]
+            )),
+            "chat message_id from input: {post_sources:?}"
+        );
+        // ChatMessages has no owner-claim row policy (lobby is public-readable), so
+        // author_id is not auto-derived as TrustedPreset — remains Unknown until
+        // revalidation. That is intentional without a residual .applies map.
+
+        let blob_move = manifest
+            .commands
+            .iter()
+            .find(|command| command.mutation_field == "blob_games_move")
+            .expect("blob_games_move command");
+        let move_projection = blob_move
+            .extensions
+            .projection
+            .as_ref()
+            .expect("blob move projection");
+        assert!(
+            !move_projection.preview_occurrences.is_empty(),
+            "blob move still exports projection arms for Atomic sealing"
+        );
+        // Thin input: only game_id + direction. Board fields are not client-known;
+        // Atomic response seals the row (no simulate_move fat input).
+        let move_input = match &blob_move.input {
+            distributed::graphql::ClientCommandShape::Object { definition } => definition,
+            other => panic!("blob move should be object input, got {other:?}"),
+        };
+        let field_names: Vec<_> = move_input
+            .fields
+            .iter()
+            .map(|field| field.name.as_str())
+            .collect();
+        assert_eq!(
+            field_names,
+            vec!["direction", "game_id"],
+            "blob move input must stay thin (no preview board fields)"
+        );
+    }
+
+    #[test]
     fn chat_manifest_uses_unit_partition_so_lobby_live_can_stay_active() {
         let manifest = distributed_client_surface().manifest().unwrap();
         let program = manifest

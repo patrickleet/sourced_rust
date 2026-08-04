@@ -204,6 +204,24 @@ fn command_events_are_exact_values_independent_of_projector_declarations() {
 }
 
 #[test]
+fn command_transition_fills_emits_from_domain_event_set() {
+    let from_transition =
+        super::command_transition::<TodoCompleted, Input, Succeeded<Payload>>("todo.complete")
+            .into_contract();
+    let from_emits = typed_command::<Input, Succeeded<Payload>>("todo.complete")
+        .emits(crate::events![TodoCompleted])
+        .into_contract();
+    assert_eq!(
+        from_transition.projections.selectors,
+        from_emits.projections.selectors
+    );
+    assert_eq!(
+        from_transition.projections.selectors[0].event_name(),
+        "todo.completed"
+    );
+}
+
+#[test]
 fn command_event_registration_rejects_duplicates_and_conflicting_schemas() {
     let duplicate = typed_command::<Input, Succeeded<Payload>>("todo.duplicate")
         .emits(crate::events![TodoCompleted])

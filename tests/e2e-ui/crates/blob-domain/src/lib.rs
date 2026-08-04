@@ -9,7 +9,7 @@ pub mod models;
 pub use levels::{demo_map, generate_level, generate_level_with, is_hamiltonian_passable};
 pub use models::tile;
 pub use models::{
-    simulate_move, test_map_no_holes, test_map_with_hole, BlobError, BlobGame, BlobGameState,
-    BlobInitializedDomainEvent, BlobLevelStartedDomainEvent, BlobMovedDomainEvent,
+    domain_commands, simulate_move, test_map_no_holes, test_map_with_hole, BlobError, BlobGame,
+    BlobGameState, BlobInitializedDomainEvent, BlobLevelStartedDomainEvent, BlobMovedDomainEvent,
     BlobStartedDomainEvent, Direction, MovePreview,
 };

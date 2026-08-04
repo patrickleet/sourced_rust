@@ -408,6 +408,48 @@ pub fn __command_projection_preview_constant(
     }
 }
 
+/// Type-level source of a command's outward domain-event set.
+///
+/// Implemented for:
+/// - every [`DomainEventContract`] marker (for example `TodoCreatedDomainEvent`)
+/// - tuples of those markers
+/// - `#[sourced]`-generated `domain_commands::*` transition witnesses (public
+///   aggregate methods that call domain-marked `#[event]` recorders)
+///
+/// Prefer [`crate::graphql::TypedCommand::emits_events`] with these types over
+/// hand-maintaining a parallel event list when the domain already owns the
+/// transition.
+pub trait CommandEventSet {
+    /// Build the sealed event-set value used by command registration.
+    fn command_event_set() -> CommandProjectionEventSet;
+}
+
+impl<E: DomainEventContract> CommandEventSet for E {
+    fn command_event_set() -> CommandProjectionEventSet {
+        __command_projection_events([__command_projection_event_descriptor::<E>()])
+    }
+}
+
+macro_rules! impl_command_event_set_tuple {
+    ($($E:ident),+) => {
+        impl<$($E: DomainEventContract),+> CommandEventSet for ($($E,)+) {
+            fn command_event_set() -> CommandProjectionEventSet {
+                __command_projection_events([
+                    $(__command_projection_event_descriptor::<$E>()),+
+                ])
+            }
+        }
+    };
+}
+
+impl_command_event_set_tuple!(E1, E2);
+impl_command_event_set_tuple!(E1, E2, E3);
+impl_command_event_set_tuple!(E1, E2, E3, E4);
+impl_command_event_set_tuple!(E1, E2, E3, E4, E5);
+impl_command_event_set_tuple!(E1, E2, E3, E4, E5, E6);
+impl_command_event_set_tuple!(E1, E2, E3, E4, E5, E6, E7);
+impl_command_event_set_tuple!(E1, E2, E3, E4, E5, E6, E7, E8);
+
 /// Declare an exact, type-checked outward domain-event set.
 #[macro_export]
 macro_rules! events {
