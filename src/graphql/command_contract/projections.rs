@@ -154,11 +154,97 @@ pub(crate) struct CommandProjectionEventPreview {
     pub preview: CommandProjectionPreview,
 }
 
+/// Pure reducer over a known cache row for client auto-optimism.
+///
+/// The server/domain owns the pure semantics (e.g. `blob_domain::simulate_move`);
+/// the client module/export is the shipped TypeScript twin invoked by the
+/// replica when applying `projection.pureReduces`.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize)]
+pub struct CommandProjectionPureReduce {
+    /// Stable pure id, e.g. `blob.simulate_move`.
+    pub fn_name: String,
+    /// Path under app `$lib` without extension, e.g. `blob/simulate-move`.
+    pub client_module: String,
+    /// Named export in that module, e.g. `simulateMove`.
+    pub client_export: String,
+    /// Projection model id (e.g. `BlobGames`).
+    pub model: String,
+    /// Record key fields: `name` is the model field; `source` is input/default/preset.
+    pub key: Vec<CommandProjectionPureArg>,
+    /// Pure function arguments (resolved like preview values).
+    pub args: Vec<CommandProjectionPureArg>,
+    /// Fields taken from the pure result and patched onto the known row.
+    pub assign: Vec<String>,
+}
+
+/// One named pure-reduce binding (key field or pure arg).
+#[derive(Clone, Debug, PartialEq, Eq, Serialize)]
+pub struct CommandProjectionPureArg {
+    pub name: String,
+    pub source: CommandProjectionPreviewSource,
+}
+
+impl CommandProjectionPureReduce {
+    pub fn new(
+        fn_name: impl Into<String>,
+        client_module: impl Into<String>,
+        client_export: impl Into<String>,
+        model: impl Into<String>,
+    ) -> Self {
+        Self {
+            fn_name: fn_name.into(),
+            client_module: client_module.into(),
+            client_export: client_export.into(),
+            model: model.into(),
+            key: Vec::new(),
+            args: Vec::new(),
+            assign: Vec::new(),
+        }
+    }
+
+    #[must_use]
+    pub fn key_input(
+        mut self,
+        field: impl Into<String>,
+        path: impl IntoIterator<Item = impl Into<String>>,
+    ) -> Self {
+        self.key.push(CommandProjectionPureArg {
+            name: field.into(),
+            source: CommandProjectionPreviewSource::input(path),
+        });
+        self
+    }
+
+    #[must_use]
+    pub fn arg_input(
+        mut self,
+        name: impl Into<String>,
+        path: impl IntoIterator<Item = impl Into<String>>,
+    ) -> Self {
+        self.args.push(CommandProjectionPureArg {
+            name: name.into(),
+            source: CommandProjectionPreviewSource::input(path),
+        });
+        self
+    }
+
+    #[must_use]
+    pub fn assign(mut self, fields: impl IntoIterator<Item = impl Into<String>>) -> Self {
+        self.assign
+            .extend(fields.into_iter().map(Into::into));
+        self.assign.sort();
+        self.assign.dedup();
+        self
+    }
+}
+
 /// Exact outward events a command may emit, independent of any projector.
 #[derive(Clone, Debug, Default, PartialEq, Eq, Serialize)]
 pub(crate) struct CommandProjectionEvents {
     pub selectors: Vec<ProjectionEventSelector>,
     pub previews: Vec<CommandProjectionEventPreview>,
+    /// Pure reducers over known cache rows (client auto-optimism).
+    pub pure_reduces: Vec<CommandProjectionPureReduce>,
     pub declaration_errors: Vec<String>,
 }
 
@@ -190,6 +276,10 @@ impl CommandProjectionEvents {
                     preview: preview.clone(),
                 }
             }));
+    }
+
+    pub(crate) fn add_pure_reduce(&mut self, reduce: CommandProjectionPureReduce) {
+        self.pure_reduces.push(reduce);
     }
 
     pub(crate) fn canonicalize_and_validate(&mut self, command: &str) -> Result<(), String> {
@@ -266,6 +356,65 @@ impl CommandProjectionEvents {
                     | CommandProjectionPreviewSource::Unknown => {}
                 }
             }
+        }
+        for reduce in &mut self.pure_reduces {
+            if reduce.fn_name.trim().is_empty()
+                || reduce.client_module.trim().is_empty()
+                || reduce.client_export.trim().is_empty()
+                || reduce.model.trim().is_empty()
+            {
+                return Err(format!(
+                    "typed command `{command}` pure reduce requires non-empty fn, client_module, client_export, and model"
+                ));
+            }
+            if reduce.key.is_empty() {
+                return Err(format!(
+                    "typed command `{command}` pure reduce `{}` requires at least one key field",
+                    reduce.fn_name
+                ));
+            }
+            if reduce.assign.is_empty() {
+                return Err(format!(
+                    "typed command `{command}` pure reduce `{}` requires at least one assign field",
+                    reduce.fn_name
+                ));
+            }
+            reduce.key.sort_by(|a, b| a.name.cmp(&b.name));
+            reduce.args.sort_by(|a, b| a.name.cmp(&b.name));
+            reduce.assign.sort();
+            reduce.assign.dedup();
+            for arg in reduce.key.iter().chain(reduce.args.iter()) {
+                match &arg.source {
+                    CommandProjectionPreviewSource::InputPath { path }
+                    | CommandProjectionPreviewSource::GeneratedDefaultPath { path } => {
+                        validate_path(command, "pure reduce", path)?;
+                    }
+                    CommandProjectionPreviewSource::TrustedPreset { name, codec } => {
+                        if name.trim().is_empty() || codec.trim().is_empty() {
+                            return Err(format!(
+                                "typed command `{command}` pure reduce trusted preset name and codec must not be empty"
+                            ));
+                        }
+                    }
+                    other => {
+                        return Err(format!(
+                            "typed command `{command}` pure reduce `{}` arg `{}` uses unsupported source {other:?}",
+                            reduce.fn_name, arg.name
+                        ));
+                    }
+                }
+            }
+        }
+        self.pure_reduces
+            .sort_by(|left, right| left.fn_name.cmp(&right.fn_name));
+        if self
+            .pure_reduces
+            .windows(2)
+            .any(|pair| pair[0].fn_name == pair[1].fn_name)
+        {
+            return Err(format!(
+                "typed command `{command}` repeats pure reduce fn name"
+            ));
         }
         Ok(())
     }

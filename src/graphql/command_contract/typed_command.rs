@@ -20,7 +20,9 @@ use super::projection_obligations::{
     CommandInputDefault, CommandProjectionConfirmation, ProjectionObligationResolutionError,
 };
 use super::projection_proof::{canonical_json, CommandCommitProofError};
-use super::projections::{CommandProjectionEvents, CommandProjectionPreview};
+use super::projections::{
+    CommandProjectionEvents, CommandProjectionPreview, CommandProjectionPureReduce,
+};
 use crate::graphql::naming;
 use crate::graphql::types::{GraphqlInputType, GraphqlTypeDef};
 use crate::microsvc::Session;
@@ -686,6 +688,17 @@ impl<I, K: CommandOutcome> TypedCommand<I, K> {
     #[must_use]
     pub fn applies(mut self, mapping: CommandProjectionPreview) -> Self {
         self.contract.projections.add_preview(mapping);
+        self
+    }
+
+    /// Declare a pure reducer over a known cache row for client auto-optimism.
+    ///
+    /// The pure function is domain-owned (e.g. `blob_domain::simulate_move`);
+    /// `client_module` / `client_export` name the TypeScript twin shipped with
+    /// the generated client and registered as `pureFunctions[fn_name]`.
+    #[must_use]
+    pub fn preview_reduce_known_record(mut self, reduce: CommandProjectionPureReduce) -> Self {
+        self.contract.projections.add_pure_reduce(reduce);
         self
     }
 

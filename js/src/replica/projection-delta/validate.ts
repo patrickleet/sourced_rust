@@ -729,7 +729,7 @@ function parsePureReduces(
 					'occurrence_ordinal',
 					'projection_refs'
 				],
-				[],
+				['clientModule', 'clientExport'],
 				itemPath
 			);
 			const fn = reduce.fn;
@@ -763,8 +763,18 @@ function parsePureReduces(
 					});
 				}
 			);
+			const clientModule =
+				typeof reduce.clientModule === 'string'
+					? (reduce.clientModule as string)
+					: undefined;
+			const clientExport =
+				typeof reduce.clientExport === 'string'
+					? (reduce.clientExport as string)
+					: undefined;
 			return Object.freeze({
 				fn: fn as string,
+				...(clientModule === undefined ? {} : { clientModule }),
+				...(clientExport === undefined ? {} : { clientExport }),
 				scope: parsePreviewScope(reduce.scope, `${itemPath}.scope`),
 				args: Object.freeze(args),
 				assign: Object.freeze(assign),

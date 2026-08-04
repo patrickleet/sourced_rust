@@ -1074,7 +1074,28 @@ pub(crate) struct ManifestCommandProjection {
     pub(crate) event_set: Vec<ManifestProjectionEventRef>,
     pub(crate) program_arms: Vec<ManifestCommandProjectionArmRef>,
     pub(crate) preview_occurrences: Vec<ManifestCommandProjectionPreviewOccurrence>,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub(crate) pure_reduces: Vec<ManifestCommandPureReduce>,
     pub(crate) fallback: ManifestProjectionFallback,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub(crate) struct ManifestCommandPureReduce {
+    pub(crate) fn_name: String,
+    pub(crate) client_module: String,
+    pub(crate) client_export: String,
+    pub(crate) model: String,
+    pub(crate) key: Vec<ManifestCommandPureArg>,
+    pub(crate) args: Vec<ManifestCommandPureArg>,
+    pub(crate) assign: Vec<String>,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub(crate) struct ManifestCommandPureArg {
+    pub(crate) name: String,
+    pub(crate) source: ManifestProjectionPreviewSource,
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]

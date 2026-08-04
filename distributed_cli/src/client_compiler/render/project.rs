@@ -46,6 +46,12 @@ pub(crate) fn render_project(
         path: "commands.ts".into(),
         contents: render_commands(manifest)?,
     });
+    if let Some(pures) = super::commands::render_pures(manifest)? {
+        files.push(GeneratedClientFile {
+            path: "pures.ts".into(),
+            contents: pures,
+        });
+    }
     files.push(GeneratedClientFile {
         path: "protocol.ts".into(),
         contents: render_protocol(manifest)?,

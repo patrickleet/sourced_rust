@@ -843,7 +843,31 @@ pub struct CommandProjectionExtension {
     /// The client applies these in ordinal order as one overlay. The actual
     /// ordered command delta reconciles and replaces that overlay.
     pub preview_occurrences: Vec<CommandProjectionPreviewOccurrence>,
+    /// Pure reducers over known cache rows (client auto-optimism).
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub pure_reduces: Vec<ClientCommandPureReduce>,
     pub fallback: ClientProjectionFallback,
+}
+
+/// Pure reduce declaration on the client manifest (server-exported).
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct ClientCommandPureReduce {
+    pub fn_name: String,
+    pub client_module: String,
+    pub client_export: String,
+    pub model: String,
+    pub key: Vec<ClientCommandPureArg>,
+    pub args: Vec<ClientCommandPureArg>,
+    pub assign: Vec<String>,
+}
+
+/// Pure reduce key/arg with preview-style source.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct ClientCommandPureArg {
+    pub name: String,
+    pub source: ClientProjectionPreviewSource,
 }
 
 impl<'de> Deserialize<'de> for CommandProjectionExtension {
@@ -859,6 +883,8 @@ impl<'de> Deserialize<'de> for CommandProjectionExtension {
             event_set: Vec<ClientProjectionEventRef>,
             program_arms: Vec<CommandProjectionArmRef>,
             preview_occurrences: Vec<CommandProjectionPreviewOccurrence>,
+            #[serde(default)]
+            pure_reduces: Vec<ClientCommandPureReduce>,
             fallback: ClientProjectionFallback,
         }
 
@@ -919,6 +945,7 @@ impl<'de> Deserialize<'de> for CommandProjectionExtension {
             event_set: wire.event_set,
             program_arms: wire.program_arms,
             preview_occurrences: wire.preview_occurrences,
+            pure_reduces: wire.pure_reduces,
             fallback: wire.fallback,
         })
     }

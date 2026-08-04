@@ -251,6 +251,10 @@ export type ProjectionCapabilityArm = Readonly<{
  */
 export type ProjectionPreviewPureReduce = Readonly<{
 	fn: string;
+	/** App lib-relative module (gen-client); optional at runtime. */
+	clientModule?: string;
+	/** Named export (gen-client); optional at runtime. */
+	clientExport?: string;
 	scope: ProjectionPreviewScope;
 	args: readonly Readonly<{
 		name: string;

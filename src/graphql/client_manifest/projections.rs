@@ -258,11 +258,69 @@ pub(super) fn command_projection_extension(
         }
     }
 
+    let pure_reduces = command
+        .projections
+        .pure_reduces
+        .iter()
+        .map(|reduce| {
+            use crate::graphql::command_contract::CommandProjectionPreviewSource as ServerSource;
+            use crate::graphql::client_manifest::ClientProjectionPreviewSource as ClientSource;
+            let map_source = |source: &ServerSource| -> Result<ClientSource, ClientManifestError> {
+                Ok(match source {
+                    ServerSource::InputPath { path } => ClientSource::Input {
+                        path: path.clone(),
+                    },
+                    ServerSource::GeneratedDefaultPath { path } => ClientSource::GeneratedDefault {
+                        path: path.clone(),
+                    },
+                    ServerSource::TrustedPreset { name, codec } => ClientSource::TrustedPreset {
+                        name: name.clone(),
+                        codec: codec.clone(),
+                    },
+                    other => {
+                        return Err(ClientManifestError(format!(
+                            "command `{}` pure reduce uses unsupported source {other:?}",
+                            command.command_name
+                        )));
+                    }
+                })
+            };
+            Ok(crate::graphql::client_manifest::ClientCommandPureReduce {
+                fn_name: reduce.fn_name.clone(),
+                client_module: reduce.client_module.clone(),
+                client_export: reduce.client_export.clone(),
+                model: reduce.model.clone(),
+                key: reduce
+                    .key
+                    .iter()
+                    .map(|arg| {
+                        Ok(crate::graphql::client_manifest::ClientCommandPureArg {
+                            name: arg.name.clone(),
+                            source: map_source(&arg.source)?,
+                        })
+                    })
+                    .collect::<Result<Vec<_>, ClientManifestError>>()?,
+                args: reduce
+                    .args
+                    .iter()
+                    .map(|arg| {
+                        Ok(crate::graphql::client_manifest::ClientCommandPureArg {
+                            name: arg.name.clone(),
+                            source: map_source(&arg.source)?,
+                        })
+                    })
+                    .collect::<Result<Vec<_>, ClientManifestError>>()?,
+                assign: reduce.assign.clone(),
+            })
+        })
+        .collect::<Result<Vec<_>, ClientManifestError>>()?;
+
     Ok(Some(CommandProjectionExtension {
         version: COMMAND_PROJECTION_EXTENSION_VERSION,
         event_set,
         program_arms,
         preview_occurrences,
+        pure_reduces,
         fallback: ClientProjectionFallback::Revalidate,
     }))
 }

@@ -79,9 +79,40 @@ pub(crate) struct CompiledCommandProjection {
     event_set: Vec<ManifestProjectionEventRef>,
     capabilities: ProjectionCapabilities,
     preview: PreviewPlan,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pure_reduces: Vec<CompiledPureReduce>,
     fallback: ManifestProjectionFallback,
     #[serde(skip)]
     selected_models: BTreeSet<String>,
+}
+
+/// Client pure-reduce IR (`pureReduces` on the projection artifact).
+///
+/// Field names match the rest of the projection preview wire (`occurrence_ordinal`,
+/// `projection_refs` snake_case). `client_module` / `client_export` are gen-time
+/// only (drive `pures.ts`); inventory is taken from the manifest, not this body.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize)]
+struct CompiledPureReduce {
+    /// Stable pure id used as pureFunctions key.
+    #[serde(rename = "fn")]
+    pure_fn: String,
+    /// App `$lib`-relative module without extension (for gen-client pures.ts).
+    #[serde(skip)]
+    client_module: String,
+    /// Named export in that module.
+    #[serde(skip)]
+    client_export: String,
+    scope: PreviewScope,
+    args: Vec<CompiledPureArg>,
+    assign: Vec<String>,
+    occurrence_ordinal: u32,
+    projection_refs: Vec<u32>,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq, Serialize)]
+struct CompiledPureArg {
+    name: String,
+    value: PreviewExpression,
 }
 
 impl CompiledCommandProjection {
@@ -89,6 +120,9 @@ impl CompiledCommandProjection {
         let mut models = BTreeSet::new();
         for operation in &self.preview.operations {
             operation.mutation.collect_models(&mut models);
+        }
+        for reduce in &self.pure_reduces {
+            models.insert(reduce.scope.model.clone());
         }
         for recovery in &self.preview.recoveries {
             recovery.target.collect_models(&mut models);
@@ -625,6 +659,7 @@ pub(crate) fn compile_command_preview(
     validate_preview_inventory(&operations, &recoveries)?;
     let operations = canonicalize_operations(operations)?;
     let recoveries = canonicalize_recoveries(recoveries, &operations)?;
+    let pure_reduces = compile_pure_reduces(extension, &projection_refs, &occurrences)?;
     let compiled = CompiledCommandProjection {
         version: extension.version,
         delta_wire_version: PROJECTION_DELTA_WIRE_VERSION,
@@ -642,6 +677,7 @@ pub(crate) fn compile_command_preview(
             operations,
             recoveries,
         },
+        pure_reduces,
         fallback: extension.fallback,
         selected_models,
     };
@@ -1454,6 +1490,116 @@ fn source_knowledge(source: &ManifestProjectionPreviewSource) -> Knowledge {
         ManifestProjectionPreviewSource::Absent => Knowledge::Absent,
         ManifestProjectionPreviewSource::Unknown => Knowledge::Unknown,
     }
+}
+
+fn compile_pure_reduces(
+    extension: &super::super::manifest::ManifestCommandProjection,
+    projection_refs: &BTreeMap<&str, u32>,
+    occurrences: &[PreviewOccurrence],
+) -> Result<Vec<CompiledPureReduce>, ClientCompileError> {
+    if extension.pure_reduces.is_empty() {
+        return Ok(Vec::new());
+    }
+    // Pure reduce is bound to the first preview occurrence when present so the
+    // JS validator's occurrence_ordinal < occurrenceCount check passes. Pure
+    // still needs at least one selected program arm (projection_refs).
+    if projection_refs.is_empty() {
+        return Err(ClientCompileError::manifest(
+            "client.projection_pure_reduce",
+            "pure reduce requires at least one selected projection program",
+        ));
+    }
+    if occurrences.is_empty() {
+        return Err(ClientCompileError::manifest(
+            "client.projection_pure_reduce",
+            "pure reduce requires at least one preview occurrence so auto-optimism can order the overlay",
+        ));
+    }
+    let occurrence_ordinal = 0u32;
+    let mut refs: Vec<u32> = projection_refs.values().copied().collect();
+    refs.sort_unstable();
+    refs.dedup();
+    let mut compiled = Vec::with_capacity(extension.pure_reduces.len());
+    for reduce in &extension.pure_reduces {
+        if reduce.key.is_empty() {
+            return Err(ClientCompileError::manifest(
+                "client.projection_pure_reduce",
+                format!(
+                    "pure reduce `{}` requires at least one key field",
+                    reduce.fn_name
+                ),
+            ));
+        }
+        if reduce.assign.is_empty() {
+            return Err(ClientCompileError::manifest(
+                "client.projection_pure_reduce",
+                format!(
+                    "pure reduce `{}` requires at least one assign field",
+                    reduce.fn_name
+                ),
+            ));
+        }
+        compiled.push(compile_one_pure_reduce(
+            reduce,
+            occurrence_ordinal,
+            refs.clone(),
+        )?);
+    }
+    Ok(compiled)
+}
+
+fn compile_one_pure_reduce(
+    reduce: &super::super::manifest::ManifestCommandPureReduce,
+    occurrence_ordinal: u32,
+    projection_refs: Vec<u32>,
+) -> Result<CompiledPureReduce, ClientCompileError> {
+    let mut key = Vec::with_capacity(reduce.key.len());
+    for (ordinal, field) in reduce.key.iter().enumerate() {
+        let Knowledge::Known(value) = source_knowledge(&field.source) else {
+            return Err(ClientCompileError::manifest(
+                "client.projection_pure_reduce",
+                format!(
+                    "pure reduce `{}` key `{}` must resolve from input, default, or trusted preset",
+                    reduce.fn_name, field.name
+                ),
+            ));
+        };
+        key.push(PreviewKeyField {
+            ordinal: ordinal as u32,
+            field: field.name.clone(),
+            value,
+        });
+    }
+    let mut args = Vec::with_capacity(reduce.args.len());
+    for arg in &reduce.args {
+        let Knowledge::Known(value) = source_knowledge(&arg.source) else {
+            return Err(ClientCompileError::manifest(
+                "client.projection_pure_reduce",
+                format!(
+                    "pure reduce `{}` arg `{}` must resolve from input, default, or trusted preset",
+                    reduce.fn_name, arg.name
+                ),
+            ));
+        };
+        args.push(CompiledPureArg {
+            name: arg.name.clone(),
+            value,
+        });
+    }
+    Ok(CompiledPureReduce {
+        pure_fn: reduce.fn_name.clone(),
+        client_module: reduce.client_module.clone(),
+        client_export: reduce.client_export.clone(),
+        scope: PreviewScope {
+            partition: PreviewPartition::Unit,
+            model: reduce.model.clone(),
+            key,
+        },
+        args,
+        assign: reduce.assign.clone(),
+        occurrence_ordinal,
+        projection_refs,
+    })
 }
 
 fn evaluate_expression(
