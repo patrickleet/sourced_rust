@@ -27,7 +27,7 @@ fn run_scaffold(dir_name: &str, extra_args: &[&str]) -> (Output, PathBuf) {
 /// Run `distributed scaffold orders --path <out_dir> <extra_args...>` without touching
 /// the directory first (error-path tests pre-populate it).
 fn scaffold_into(out_dir: &Path, extra_args: &[&str]) -> Output {
-    Command::new(env!("CARGO_BIN_EXE_dctl"))
+    Command::new(env!("CARGO_BIN_EXE_distributed"))
         .args([
             "scaffold",
             "orders",
@@ -242,7 +242,7 @@ fn scaffold_refuses_a_non_empty_directory() {
 #[test]
 fn describe_reports_a_missing_manifest() {
     let missing = Path::new(env!("CARGO_TARGET_TMPDIR")).join("no-such-dir/Cargo.toml");
-    let output = Command::new(env!("CARGO_BIN_EXE_dctl"))
+    let output = Command::new(env!("CARGO_BIN_EXE_distributed"))
         .args(["describe", "--manifest-path", missing.to_str().unwrap()])
         .output()
         .expect("distributed should run");

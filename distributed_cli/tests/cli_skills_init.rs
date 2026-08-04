@@ -22,7 +22,7 @@ fn project_dir(name: &str) -> PathBuf {
 
 /// Run `distributed skills <args...>` with the given project directory as cwd.
 fn dctl_skills(cwd: &Path, args: &[&str]) -> Output {
-    Command::new(env!("CARGO_BIN_EXE_dctl"))
+    Command::new(env!("CARGO_BIN_EXE_distributed"))
         .arg("skills")
         .args(args)
         .current_dir(cwd)

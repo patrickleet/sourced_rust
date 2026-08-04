@@ -22,7 +22,7 @@ fn fixture_manifest() -> PathBuf {
 fn distributed(args: &[&str]) -> String {
     let root = distributed_root();
     let manifest = fixture_manifest();
-    let output = Command::new(env!("CARGO_BIN_EXE_dctl"))
+    let output = Command::new(env!("CARGO_BIN_EXE_distributed"))
         .args(args)
         .args(["--manifest-path", manifest.to_str().unwrap()])
         .args(["--distributed-path", root.to_str().unwrap()])
