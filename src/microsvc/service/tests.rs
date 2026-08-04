@@ -1119,7 +1119,7 @@ async fn typed_direct_dispatch_fails_before_invoking_guard_or_handler() {
         .dispatch(
             "todo.guarded_create",
             json!({ "id": "todo-1" }),
-            session_with_role("user"),
+            Session::new(),
         )
         .await
         .expect_err("typed causal commands must reject before application guards");

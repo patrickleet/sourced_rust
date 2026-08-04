@@ -1046,32 +1046,27 @@ fn read_utf8_bounded(path: &Path, limit: usize, label: &str) -> Result<String, B
 /// Application surfaces already declare these on the exported manifest; the
 /// client compiler should not require them again on the CLI when `--surface`
 /// is used.
+///
+/// Kind/name mismatches deliberately return empty role lists so
+/// `compile_client` can emit the shared `client.manifest.surface_mismatch`
+/// diagnostic (one validation path for CLI and library callers).
 fn application_roles_from_manifest(
     manifest: &serde_json::Value,
     surface_name: &str,
 ) -> Result<(Vec<String>, Vec<String>), Box<dyn Error>> {
-    let surface = manifest
-        .get("surface")
-        .ok_or("client manifest is missing surface")?;
+    let Some(surface) = manifest.get("surface") else {
+        return Ok((Vec::new(), Vec::new()));
+    };
     let kind = surface
         .get("kind")
         .and_then(|value| value.as_str())
         .unwrap_or("");
-    if kind != "application" {
-        return Err(format!(
-            "client manifest surface kind is `{kind}`, expected `application` for --surface"
-        )
-        .into());
-    }
     let name = surface
         .get("name")
         .and_then(|value| value.as_str())
         .unwrap_or("");
-    if name != surface_name {
-        return Err(format!(
-            "client manifest surface name is `{name}`, expected `{surface_name}`"
-        )
-        .into());
+    if kind != "application" || name != surface_name {
+        return Ok((Vec::new(), Vec::new()));
     }
     let roles = |field: &str| -> Result<Vec<String>, Box<dyn Error>> {
         let values = surface
