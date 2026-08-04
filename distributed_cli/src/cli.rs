@@ -1830,8 +1830,24 @@ fn validate_manifest_json(envelope: &serde_json::Value) -> Result<(), Box<dyn Er
         )
         .into());
     }
-    if envelope.get("project").is_none() {
-        return Err("manifest JSON is missing project".into());
+    // `describe` emits ApplicationManifest JSON (logical composition artifact),
+    // not the retired DistributedManifestEnvelope { project: ... } shape.
+    if envelope
+        .get("name")
+        .and_then(serde_json::Value::as_str)
+        .map(str::is_empty)
+        .unwrap_or(true)
+    {
+        return Err("application manifest JSON is missing non-empty string name".into());
+    }
+    for field in ["modules", "commands", "events", "projections", "models", "surfaces"] {
+        if envelope
+            .get(field)
+            .and_then(serde_json::Value::as_array)
+            .is_none()
+        {
+            return Err(format!("application manifest JSON is missing array {field}").into());
+        }
     }
     Ok(())
 }
