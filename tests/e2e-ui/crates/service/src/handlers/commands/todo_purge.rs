@@ -5,7 +5,7 @@ use distributed::microsvc::{CausalCommandContext, HandlerError};
 use serde::{Deserialize, Serialize};
 use todo_domain::Todo;
 
-use crate::handlers::util::rejected;
+use crate::handlers::util::{principal, rejected};
 
 pub const COMMAND: &str = "todo.purge";
 
@@ -24,7 +24,7 @@ pub async fn handle(
     ctx: &CausalCommandContext<'_, Todo>,
     input: TodoPurgeInput,
 ) -> Result<PreparedCommand<Eventual<TodoPurgePayload>>, HandlerError> {
-    let owner = ctx.user_id()?.to_string();
+    let owner = principal(ctx)?;
     let repo = ctx.repo();
     let mut todo = repo
         .get(&input.todo_id)

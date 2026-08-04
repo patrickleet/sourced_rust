@@ -16,6 +16,7 @@ use crate::handlers::commands::{
     payloads, todo_archive, todo_complete, todo_create, todo_force_archive, todo_purge, todo_rename,
     todo_reopen,
 };
+use crate::handlers::util::{causal_has_user, causal_is_admin};
 
 /// Logical module id for composition inventories.
 pub const MODULE_ID: &str = "todo";
@@ -56,7 +57,7 @@ where
             input: todo_create::TodoCreateInput;
             default input.todo_id = uuid_v7();
         })
-        .handle(todo_create::handle)
+        .guarded(causal_has_user, todo_create::handle)
         .command_transition::<
             domain_commands::Rename,
             todo_rename::TodoRenameInput,
@@ -64,7 +65,7 @@ where
         >(todo_rename::COMMAND)
         .field_name("todos_rename")
         .roles(["user", "admin"].into_iter())
-        .handle(todo_rename::handle)
+        .guarded(causal_has_user, todo_rename::handle)
         .command_transition::<
             domain_commands::Complete,
             todo_complete::TodoCompleteInput,
@@ -72,7 +73,7 @@ where
         >(todo_complete::COMMAND)
         .field_name("todos_complete")
         .roles(["user", "admin"].into_iter())
-        .handle(todo_complete::handle)
+        .guarded(causal_has_user, todo_complete::handle)
         .command_transition::<
             domain_commands::Reopen,
             todo_reopen::TodoReopenInput,
@@ -80,7 +81,7 @@ where
         >(todo_reopen::COMMAND)
         .field_name("todos_reopen")
         .roles(["user", "admin"].into_iter())
-        .handle(todo_reopen::handle)
+        .guarded(causal_has_user, todo_reopen::handle)
         .command_transition::<
             domain_commands::Archive,
             todo_archive::TodoArchiveInput,
@@ -88,7 +89,7 @@ where
         >(todo_archive::COMMAND)
         .field_name("todos_archive")
         .roles(["user", "admin"].into_iter())
-        .handle(todo_archive::handle)
+        .guarded(causal_has_user, todo_archive::handle)
         .command_transition::<
             domain_commands::ForceArchive,
             todo_force_archive::TodoForceArchiveInput,
@@ -96,7 +97,7 @@ where
         >(todo_force_archive::COMMAND)
         .field_name("todos_force_archive")
         .roles(["admin"])
-        .handle(todo_force_archive::handle)
+        .guarded(causal_is_admin, todo_force_archive::handle)
         .command_transition::<
             domain_commands::Purge,
             todo_purge::TodoPurgeInput,
@@ -104,7 +105,7 @@ where
         >(todo_purge::COMMAND)
         .field_name("todos_purge")
         .roles(["user", "admin"].into_iter())
-        .handle(todo_purge::handle)
+        .guarded(causal_has_user, todo_purge::handle)
         .modeled_projector(todo_projector)
         .handle(handlers::events::project_todos::handle)
 }

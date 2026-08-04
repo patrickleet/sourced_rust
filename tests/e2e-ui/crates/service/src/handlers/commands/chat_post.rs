@@ -5,7 +5,7 @@ use distributed::graphql::{Eventual, PreparedCommand};
 use distributed::microsvc::{CausalCommandContext, HandlerError};
 use serde::{Deserialize, Serialize};
 
-use crate::handlers::util::rejected;
+use crate::handlers::util::{principal, rejected};
 
 pub const COMMAND: &str = "chat.post";
 
@@ -32,7 +32,7 @@ pub async fn handle(
     ctx: &CausalCommandContext<'_, ChatMessage>,
     input: ChatPostInput,
 ) -> Result<PreparedCommand<Eventual<ChatPostPayload>>, HandlerError> {
-    let author = ctx.user_id()?.to_string();
+    let author = principal(ctx)?;
     let created_at = canonical_near_unix_millis(&input.created_at)?;
     let repo = ctx.repo();
 

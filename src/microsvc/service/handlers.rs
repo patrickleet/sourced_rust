@@ -575,9 +575,15 @@ where
         self.message.trace_context()
     }
 
+    /// Session for this command attempt (transport/gateway claims).
+    pub fn session(&self) -> &Session {
+        self.session
+    }
+
     pub fn user_id(&self) -> Result<&str, HandlerError> {
         self.session
             .user_id()
+            .filter(|s| !s.is_empty())
             .ok_or_else(|| HandlerError::Unauthorized("missing user ID in session".into()))
     }
 

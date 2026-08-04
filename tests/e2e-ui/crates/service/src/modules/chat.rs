@@ -11,6 +11,7 @@ use distributed::{AggregateBuilder, AggregateRepository, QueuedRepository};
 use crate::bounds::{EventStore, Locks, ReadStore};
 use crate::handlers;
 use crate::handlers::commands::chat_post;
+use crate::handlers::util::causal_has_user;
 
 /// Logical module id for composition inventories.
 pub const MODULE_ID: &str = "chat";
@@ -47,7 +48,7 @@ where
         >(chat_post::COMMAND)
         .field_name("chat_messages_post")
         .roles(["user", "admin"].into_iter())
-        .handle(chat_post::handle)
+        .guarded(causal_has_user, chat_post::handle)
         // Zitadel Action ingress + on-demand scrape remain non-GraphQL
         // integration commands (explicit extension mounts).
         .command(handlers::ingestors::zitadel::COMMAND)

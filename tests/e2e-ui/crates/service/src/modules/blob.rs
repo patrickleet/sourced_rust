@@ -13,6 +13,7 @@ use e2e_readmodels::BlobGames;
 
 use crate::bounds::{EventStore, Locks, ReadStore};
 use crate::handlers::commands::{blob_move, blob_start, blob_start_level};
+use crate::handlers::util::causal_has_user;
 
 /// Logical module id for composition inventories.
 pub const MODULE_ID: &str = "blob";
@@ -55,7 +56,7 @@ where
         >(blob_start::COMMAND)
         .field_name("blob_games_start")
         .roles(["user", "admin"].into_iter())
-        .handle(blob_start::handle)
+        .guarded(causal_has_user, blob_start::handle)
         .command_transition::<
             domain_commands::MoveDir,
             blob_move::BlobMoveInput,
@@ -81,7 +82,7 @@ where
                 "status",
             ]),
         )
-        .handle(blob_move::handle)
+        .guarded(causal_has_user, blob_move::handle)
         .command_transition::<
             domain_commands::StartLevel,
             blob_start_level::BlobStartLevelInput,
@@ -89,5 +90,5 @@ where
         >(blob_start_level::COMMAND)
         .field_name("blob_games_start_level")
         .roles(["user", "admin"].into_iter())
-        .handle(blob_start_level::handle)
+        .guarded(causal_has_user, blob_start_level::handle)
 }
