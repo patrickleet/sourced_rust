@@ -1,3 +1,3 @@
-//! Re-export pure direction from [`blob_core`].
+//! Re-export pure direction from [`crate::core`].
 
-pub use blob_core::Direction;
+pub use crate::core::Direction;

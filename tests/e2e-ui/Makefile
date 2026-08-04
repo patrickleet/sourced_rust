@@ -118,7 +118,7 @@ ci-offline: ui-install
 	echo "OK — generated drift + offline Rust/UI suites"
 
 test-domain:
-	cargo test -p todo-domain -p chat-domain -p blob-core -p blob-domain $(CARGO_TEST_FLAGS)
+	cargo test -p todo-domain -p chat-domain -p blob-domain $(CARGO_TEST_FLAGS)
 
 test-suite:
 	cargo test -p e2e-suite --test behavioral $(CARGO_TEST_FLAGS)
@@ -140,12 +140,13 @@ js-install:
 js-build: js-install
 	cd $(JS_DIR) && $(NPM) run build
 
-## Pure blob board rules → ui/src/lib/blob/pkg (wasm-pack; requires wasm32-unknown-unknown).
+## blob-domain pure core → ui/src/lib/blob/pkg (wasm-pack; requires wasm32-unknown-unknown).
 wasm:
 	@command -v wasm-pack >/dev/null || { echo "wasm-pack required: cargo install wasm-pack"; exit 1; }
 	@rustup target list --installed | grep -q wasm32-unknown-unknown || rustup target add wasm32-unknown-unknown
 	@out="$(CURDIR)/ui/src/lib/blob/pkg"; \
-	  wasm-pack build crates/blob-wasm --target web --out-dir "$$out" --out-name blob_wasm
+	  wasm-pack build crates/blob-domain --target web --out-dir "$$out" --out-name blob_wasm \
+	    -- --no-default-features --features wasm
 
 ui-install: js-build wasm
 	cd ui && $(NPM) install
@@ -178,7 +179,7 @@ contracts-check:
 
 check: check-client
 	cargo check --workspace
-	cargo test -p todo-domain -p chat-domain -p blob-core -p blob-domain --no-run
+	cargo test -p todo-domain -p chat-domain -p blob-domain --no-run
 	cargo test -p e2e-suite --test behavioral --no-run
 
 clean: stop
@@ -192,7 +193,7 @@ help:
 	@echo "  make run        API + UI (source e2e-ui.env when present)"
 	@echo "  make test       offline suite + UI structural"
 	@echo "  make ci-offline CI drift + offline suites with safe pipeline overlap"
-	@echo "  make wasm            blob-core pure → ui/src/lib/blob/pkg (wasm-pack)"
+	@echo "  make wasm            blob-domain core → ui/src/lib/blob/pkg (wasm-pack)"
 	@echo "  make gen-client      typed Service → generated user/admin clients"
 	@echo "  make check-client    verify generated artifacts byte-for-byte"
 	@echo "  make down       docker compose down"

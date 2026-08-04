@@ -1,7 +1,7 @@
 //! Pure post-move board snapshot.
 
-use crate::tile;
-use crate::Direction;
+use super::tile;
+use super::Direction;
 
 /// Pure post-move board snapshot (no ownership / aggregate checks).
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -117,7 +117,7 @@ fn player_pos_in(map: &[Vec<u8>]) -> Result<(usize, usize), SimulateError> {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::tile::*;
+    use super::tile::*;
 
     fn tiny() -> Vec<Vec<u8>> {
         vec![

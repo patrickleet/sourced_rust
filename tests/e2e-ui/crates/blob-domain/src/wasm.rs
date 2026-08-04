@@ -1,9 +1,9 @@
-//! Client WASM surface for blob pure reduces.
+//! Client WASM surface for pure board rules (`--features wasm`).
 //!
 //! JS calls [`blob_simulate_move`] with `map_json`, score, and direction; gets
-//! JSON fields for the optimistic patch (or null / undefined on fail-closed).
+//! JSON fields for the optimistic patch (or undefined on fail-closed).
 
-use blob_core::{simulate_move, Direction};
+use crate::core::{simulate_move, Direction};
 use wasm_bindgen::prelude::*;
 
 /// Apply one move for known-row optimism.

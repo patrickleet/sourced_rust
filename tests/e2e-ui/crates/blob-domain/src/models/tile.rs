@@ -1,3 +1,3 @@
-//! Re-export pure tile constants from [`blob_core`].
+//! Re-export pure tile constants from [`crate::core`].
 
-pub use blob_core::tile::*;
+pub use crate::core::tile::*;

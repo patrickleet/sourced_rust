@@ -1,11 +1,12 @@
 /**
- * Client pure for `blob.simulate_move` — thin host over `blob-core` WASM.
+ * Client pure for `blob.simulate_move` — thin host over `blob-domain` WASM.
  *
- * Board rules live once in Rust (`blob_core::simulate_move`). This module only
- * loads the wasm package, adapts replica record/args, and fails closed when the
- * module is not ready or the move is impossible.
+ * Board rules live once in Rust (`blob_domain::core::simulate_move`). This
+ * module only loads the wasm package, adapts replica record/args, and fails
+ * closed when the module is not ready or the move is impossible.
  *
- * Build: `make wasm` (or `make ui-install`) → `./pkg` from wasm-pack.
+ * Build: `make wasm` (or `make ui-install`) → `./pkg` from wasm-pack
+ * (`--features wasm --no-default-features` on blob-domain).
  */
 
 export type BlobMoveResult = Readonly<{
@@ -33,7 +34,7 @@ function isBrowser(): boolean {
 }
 
 /**
- * Load and instantiate blob-core WASM. Safe to call multiple times.
+ * Load and instantiate blob-domain pure WASM. Safe to call multiple times.
  * No-op on the server (SSR) — pure reduce fails closed until the client inits.
  */
 export function ensureBlobWasm(): Promise<void> {

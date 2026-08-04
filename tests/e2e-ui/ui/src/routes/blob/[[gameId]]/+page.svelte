@@ -191,7 +191,7 @@
 
 	onMount(() => {
 		hydrated = true;
-		// Ensure blob-core WASM is ready before pure-reduce optimism on move.
+		// Ensure blob-domain pure WASM is ready before pure-reduce optimism on move.
 		void ensureBlobWasm().catch(() => {
 			/* fail-closed pure until reload */
 		});

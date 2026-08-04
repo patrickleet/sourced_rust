@@ -63,13 +63,13 @@ fn status_of(player_dead: bool, level_complete: bool) -> String {
     }
 }
 
-// Pure post-move board snapshot — defined in `blob_core`, re-exported here.
-pub use blob_core::{simulate_move, MovePreview};
+// Pure post-move board snapshot — defined in `crate::core`, re-exported here.
+pub use crate::core::{simulate_move, MovePreview};
 
-fn map_simulate_err(err: blob_core::SimulateError) -> BlobError {
+fn map_simulate_err(err: crate::core::SimulateError) -> BlobError {
     match err {
-        blob_core::SimulateError::NoActiveLevel => BlobError::NoActiveLevel,
-        blob_core::SimulateError::CannotMove(msg) => BlobError::CannotMove(msg.into()),
+        crate::core::SimulateError::NoActiveLevel => BlobError::NoActiveLevel,
+        crate::core::SimulateError::CannotMove(msg) => BlobError::CannotMove(msg.into()),
     }
 }
 

@@ -12,7 +12,7 @@ const api = process.env.E2E_API_ORIGIN || process.env.E2E_BASE_URL || 'http://12
 export default defineConfig({
 	plugins: [distributedSvelteKit(distributedViteOptions), sveltekit()],
 	css: { devSourcemap: true },
-	// blob-core pure package (wasm-pack --target web)
+	// blob-domain pure package (wasm-pack --features wasm)
 	assetsInclude: ['**/*.wasm'],
 	server: {
 		port: 5180,
