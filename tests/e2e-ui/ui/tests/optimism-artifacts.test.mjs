@@ -99,16 +99,8 @@ const DEMO_COMMANDS = Object.freeze([
 		name: 'blob.move',
 		mutationField: 'blob_games_move',
 		consistency: 'atomic',
-		demo: 'blob',
-		// Board fields must be input-backed for paint-before-wire.
-		previewFields: [
-			'map_json',
-			'score',
-			'player_dead',
-			'status',
-			'current_level',
-			'current_level_completed'
-		]
+		demo: 'blob'
+		// Thin input (game_id + direction); board seals via Atomic response.
 	},
 	{
 		name: 'blob.start_level',
