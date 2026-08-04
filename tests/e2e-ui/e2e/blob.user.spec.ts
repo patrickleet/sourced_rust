@@ -104,27 +104,23 @@ test.describe('blob game (alice)', () => {
 		);
 		await page.keyboard.press('ArrowRight');
 		await moveReachedServerPromise;
-		// Thin move input is game_id + direction only — the client cannot
-		// simulate the board. Keep controls enabled while the Atomic response
-		// is held, then seal position from the authoritative payload.
+		// Pure reduce (blob.simulate_move) paints the next board from the known
+		// cache row + direction before the held GraphQL response returns.
+		await expect(board.locator('.tile-player')).toHaveAttribute(
+			'aria-label',
+			'r0 c1',
+			{ timeout: 200 }
+		);
 		await expect(page.getByTestId('blob-new-game')).toBeEnabled();
 		for (const button of await page.locator('.pad-btn').all()) {
 			await expect(button).toBeEnabled();
 		}
-		// Board stays on the pre-move tile until Atomic seals.
-		await expect(board.locator('.tile-player')).toHaveAttribute('aria-label', 'r0 c0', {
-			timeout: 200
-		});
 		releaseMove();
 		const moveResp = await moveResponsePromise;
 		expect(moveResp.ok(), `blob_games_move HTTP ${moveResp.status()}`).toBeTruthy();
 		await page.unrouteAll({ behavior: 'wait' });
 		await expect(board).toBeVisible();
 		await expect(page.locator('.inline-alert, .blob-empty')).toHaveCount(0);
-		// Atomic seal paints the authoritative player cell after the wire returns.
-		await expect(board.locator('.tile-player')).toHaveAttribute('aria-label', 'r0 c1', {
-			timeout: 5_000
-		});
 
 		// History lists this game
 		await expect(page.getByRole('heading', { name: /your games/i })).toBeVisible({

@@ -34,6 +34,7 @@ import {
 	replicaCommandAuthority,
 	replicaCommandDirectProjection,
 	replicaCommandProjectionDelta,
+	replicaCommandReadRecord,
 	replicaResultObservation,
 	type ReplicaCommandAuthorityRegistration,
 	type ReplicaCommandAuthoritySnapshot,
@@ -84,6 +85,7 @@ import type {
 	ReplicaResultEnvelope,
 	ReplicaSnapshot,
 	ReplicaTransport,
+	ReplicaValue,
 	ReplicaWatch,
 	ReplicaWriteSource,
 	WatchReplicaOptions
@@ -1641,6 +1643,22 @@ export class DistributedReplicaImpl implements DistributedReplicaApi {
 				incarnation: record.incarnation,
 				presentFields: Object.freeze(Object.keys(record.fields).sort())
 			});
+		});
+	}
+
+	/**
+	 * Package-private live fields for pure-reduce optimism.
+	 * @internal
+	 */
+	[replicaCommandReadRecord](
+		model: ReplicaModelArtifact,
+		identity: ReplicaIdentity
+	): Readonly<Record<string, ReplicaValue>> | undefined {
+		const key = replicaRecordKey(model, identity);
+		return this.#engine.read((reader) => {
+			const record = reader.record(key);
+			if (!record) return undefined;
+			return Object.freeze({ ...record.fields });
 		});
 	}
 

@@ -243,6 +243,25 @@ export type ProjectionCapabilityArm = Readonly<{
 	mutations: readonly ProjectionCapabilityMutation[];
 }>;
 
+/**
+ * Pure reduce: load the known cache row for `scope`, run a named pure function
+ * with resolved `args`, and patch `assign` fields from the result.
+ *
+ * Fail-closed: missing row or pure failure → no invent (same as patch ifPresent).
+ */
+export type ProjectionPreviewPureReduce = Readonly<{
+	fn: string;
+	scope: ProjectionPreviewScope;
+	args: readonly Readonly<{
+		name: string;
+		value: ProjectionPreviewValue;
+	}>[];
+	/** Fields taken from the pure result and written onto the known record. */
+	assign: readonly string[];
+	occurrence_ordinal: number;
+	projection_refs: readonly number[];
+}>;
+
 export type ProjectionPreviewMutation =
 	| Readonly<{
 			op: 'upsert';
@@ -327,6 +346,11 @@ export type ReplicaCommandProjection = Readonly<{
 			target: ProjectionPreviewRecoveryTarget;
 		}>[];
 	}>;
+	/**
+	 * Optional pure reducers over known cache rows. Expanded at optimistic
+	 * apply time (needs the live record); not ordinary preview expressions.
+	 */
+	pureReduces?: readonly ProjectionPreviewPureReduce[];
 	fallback: 'revalidate';
 }>;
 
@@ -359,12 +383,25 @@ export type PreparedProjectionOperation =
 			kind: 'invalidate_relationship';
 			relationship: string;
 			source: PreparedProjectionScope;
+	  }>
+	| Readonly<{
+			kind: 'reduce_known_record';
+			fn: string;
+			scope: PreparedProjectionScope;
+			args: Readonly<Record<string, ReplicaValue>>;
+			assign: readonly string[];
 	  }>;
 
 export type PreparedProjectionScope = Readonly<{
 	model: string;
 	key: readonly Readonly<{ field: string; value: ReplicaValue }>[];
 }>;
+
+/** Named pure function: known record + resolved args → fields to patch. */
+export type ReplicaPureFunction = (
+	record: Readonly<Record<string, ReplicaValue>>,
+	args: Readonly<Record<string, ReplicaValue>>
+) => Readonly<Record<string, ReplicaValue>> | null;
 
 export type PreparedCommandProjection = Readonly<{
 	contract: ReplicaCommandProjection;

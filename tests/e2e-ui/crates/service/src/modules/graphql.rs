@@ -425,8 +425,8 @@ mod client_surface_tests {
             !move_projection.preview_occurrences.is_empty(),
             "blob move still exports projection arms for Atomic sealing"
         );
-        // Thin input: only game_id + direction. Board fields are not client-known;
-        // Atomic response seals the row (no simulate_move fat input).
+        // Thin input: only game_id + direction. Board fields come from pure
+        // reduce (`blob.simulate_move` over the known cache row) + Atomic seal.
         let move_input = match &blob_move.input {
             distributed::graphql::ClientCommandShape::Object { definition } => definition,
             other => panic!("blob move should be object input, got {other:?}"),
@@ -439,7 +439,7 @@ mod client_surface_tests {
         assert_eq!(
             field_names,
             vec!["direction", "game_id"],
-            "blob move input must stay thin (no preview board fields)"
+            "blob move input must stay thin (no fat board fields on the wire)"
         );
     }
 

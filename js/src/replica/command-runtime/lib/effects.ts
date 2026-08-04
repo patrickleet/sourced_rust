@@ -3,21 +3,38 @@ import {
 } from '../../commands.js';
 import type {
 	PreparedProjectionOperation,
-	PreparedProjectionScope
+	PreparedProjectionScope,
+	ReplicaPureFunction
 } from '../../projection-delta/index.js';
 import { replicaRecordKey } from '../../identity.js';
 import type { ReplicaIndexSemanticChange } from '../../index-maintenance.js';
 import type {
+	ReplicaIdentity,
 	ReplicaModelArtifact,
 	ReplicaOptimisticWriter,
 	ReplicaValue
 } from '../../types.js';
 
+export type PureReduceHost = Readonly<{
+	/** Read live cache fields for a known record (pre-layer). Fail-closed on miss. */
+	readRecord?: (
+		model: ReplicaModelArtifact,
+		identity: ReplicaIdentity
+	) => Readonly<Record<string, ReplicaValue>> | undefined;
+	pureFunctions?: Readonly<Record<string, ReplicaPureFunction>>;
+}>;
+
+/**
+ * Expand pure reducers against known cache rows, then apply ordinary ops.
+ * Missing row / unknown pure / pure null → skip that reduce (no invent).
+ */
 export function applyOptimisticEffects(
 	writer: ReplicaOptimisticWriter,
-	effects: readonly PreparedProjectionOperation[]
+	effects: readonly PreparedProjectionOperation[],
+	host: PureReduceHost = {}
 ): void {
-	for (const effect of effects) {
+	const expanded = expandReduceKnownRecord(effects, host);
+	for (const effect of expanded) {
 		switch (effect.kind) {
 			case 'upsert':
 			case 'patch': {
@@ -44,11 +61,69 @@ export function applyOptimisticEffects(
 			case 'unlink':
 			case 'invalidate_model':
 			case 'invalidate_relationship':
+			case 'reduce_known_record':
 				// Task 8 consumes the exact semantic context. Guessing a to-one
 				// record link for a to-many relationship would corrupt truth.
+				// reduce_known_record is expanded above.
 				break;
 		}
 	}
+}
+
+function expandReduceKnownRecord(
+	effects: readonly PreparedProjectionOperation[],
+	host: PureReduceHost
+): readonly PreparedProjectionOperation[] {
+	const out: PreparedProjectionOperation[] = [];
+	for (const effect of effects) {
+		if (effect.kind !== 'reduce_known_record') {
+			out.push(effect);
+			continue;
+		}
+		const pure = host.pureFunctions?.[effect.fn];
+		const read = host.readRecord;
+		if (pure === undefined || read === undefined) {
+			continue;
+		}
+		const model = modelFromKey(effect.scope);
+		const identity = identityFromKey(effect.scope);
+		const current = read(model, identity);
+		if (current === undefined) {
+			continue;
+		}
+		let next: Readonly<Record<string, ReplicaValue>> | null;
+		try {
+			next = pure(current, effect.args);
+		} catch {
+			continue;
+		}
+		if (next === null) {
+			continue;
+		}
+		const fields: Record<string, ReplicaValue> = Object.create(null) as Record<
+			string,
+			ReplicaValue
+		>;
+		for (const field of effect.assign) {
+			if (!Object.prototype.hasOwnProperty.call(next, field)) {
+				continue;
+			}
+			fields[field] = next[field] as ReplicaValue;
+		}
+		if (Object.keys(fields).length === 0) {
+			continue;
+		}
+		out.push(
+			Object.freeze({
+				kind: 'patch' as const,
+				scope: effect.scope,
+				fields: Object.freeze(fields),
+				unset: Object.freeze([]) as readonly string[],
+				ifPresent: true as const
+			})
+		);
+	}
+	return Object.freeze(out);
 }
 
 export function preparedSemanticChanges<TInput, TOutput>(
@@ -61,9 +136,10 @@ export function preparedSemanticChanges<TInput, TOutput>(
 			case 'upsert':
 			case 'patch':
 			case 'delete':
+			case 'reduce_known_record':
 				// DistributedReplica captures ordinary writer mutations into the
 				// same layer context. Supplying them again would double-apply the
-				// semantic record operation.
+				// semantic record operation. Pure reduce expands to patch first.
 				break;
 			case 'link':
 			case 'unlink': {
@@ -126,6 +202,7 @@ export function preparedDispatchKeys<TInput, TOutput>(
 			case 'upsert':
 			case 'patch':
 			case 'delete':
+			case 'reduce_known_record':
 				addScope(effect.scope);
 				break;
 			case 'link':

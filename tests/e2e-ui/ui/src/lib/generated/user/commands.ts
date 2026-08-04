@@ -16,6 +16,7 @@ import type {
   ReplicaValue
 } from '@hops-ops/distributed/replica';
 
+import { BLOB_PURE_FUNCTIONS } from '../../blob/simulate-move.js';
 import { COMMAND_STATUS } from './protocol.js';
 
 export type Command_blob_games_move_Input = {
@@ -302,6 +303,45 @@ export const Command_blob_games_move: ReplicaCommandArtifact<Command_blob_games_
         "operationSemanticsVersion": 1,
         "programId": "pp1:sha256:5b95a587dbe4c35b80f7fbe1c953861538a7066568535520f36417d81e95deed",
         "programIrVersion": 1
+      }
+    ],
+    "pureReduces": [
+      {
+        "assign": [
+          "map_json",
+          "score",
+          "player_dead",
+          "current_level_completed",
+          "status"
+        ],
+        "args": [
+          {
+            "name": "direction",
+            "value": {
+              "kind": "input",
+              "path": ["direction"]
+            }
+          }
+        ],
+        "fn": "blob.simulate_move",
+        "occurrence_ordinal": 0,
+        "projection_refs": [0],
+        "scope": {
+          "key": [
+            {
+              "field": "game_id",
+              "ordinal": 0,
+              "value": {
+                "kind": "input",
+                "path": ["game_id"]
+              }
+            }
+          ],
+          "model": "BlobGames",
+          "partition": {
+            "kind": "unit"
+          }
+        }
       }
     ],
     "version": 2
@@ -2936,6 +2976,11 @@ export function createCommands(
 ): GeneratedCommandRuntime {
   return createReplicaCommandRuntime(replica, transport, COMMANDS, {
     ...options,
+    // Pure inventory for projection.pureReduces (blob board auto-optimism).
+    pureFunctions: {
+      ...BLOB_PURE_FUNCTIONS,
+      ...(options?.pureFunctions ?? {})
+    },
     status: COMMAND_STATUS
   });
 }

@@ -7,6 +7,7 @@ export {
 	replicaCommandProjectionDelta,
 	replicaCommandProjectedLifecycle,
 	replicaCommandProjectedLifecycleOf,
+	replicaCommandReadRecord,
 	replicaResultObservation
 } from './command-runtime/index.js';
 export type {
