@@ -1,7 +1,8 @@
 //! Chat + identity-ingestor module: room messages, Zitadel ingress, auth_user projector.
 
-use chat_domain::{ChatMessage, ChatMessagePostedDomainEvent};
-use distributed::graphql::{typed_command, Eventual, SurfaceProjector};
+use chat_domain::domain_commands;
+use chat_domain::ChatMessage;
+use distributed::graphql::{Eventual, SurfaceProjector};
 use distributed::microsvc::{
     ConfigurableOutboxPublisher, HasOutboxStore, HasRepo, RepoReadModelDependencies, Routes,
 };
@@ -39,23 +40,13 @@ where
         HasRepo + HasOutboxStore + ConfigurableOutboxPublisher + Send + Sync + 'static,
 {
     Routes::for_aggregate::<R, L, ChatMessage, S>(repo, locks, read_models)
-        .typed_command(
-            typed_command::<chat_post::ChatPostInput, Eventual<chat_post::ChatPostPayload>>(
-                chat_post::COMMAND,
-            )
-            .field_name("chat_messages_post")
-            .roles(["user", "admin"].into_iter())
-            .emits(distributed::events![ChatMessagePostedDomainEvent])
-            .applies(distributed::state_preview! {
-                ChatMessagePostedDomainEvent => chat_domain::ChatMessageState {
-                    message_id: input.message_id,
-                    room_id: input.room_id,
-                    author_id: trusted("x-user-id", "string"),
-                    body: input.body,
-                    created_at: input.created_at,
-                }
-            }),
-        )
+        .command_transition::<
+            domain_commands::Post,
+            chat_post::ChatPostInput,
+            Eventual<chat_post::ChatPostPayload>,
+        >(chat_post::COMMAND)
+        .field_name("chat_messages_post")
+        .roles(["user", "admin"].into_iter())
         .handle(chat_post::handle)
         // Zitadel Action ingress + on-demand scrape remain non-GraphQL
         // integration commands (explicit extension mounts).

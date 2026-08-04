@@ -70,20 +70,19 @@ projection! {
 }
 ```
 
-Command registration declares the domain events this command may emit and the
-**known mutation input** used for client cache application (not a separate
-hand-built cache path):
+Command registration binds a **domain transition** (emit set) and lets the
+framework auto-derive client cache previews from input + defaults + claims
+(not a separate hand-built mapping):
 
 ```rust
-typed_command::<TodoCompleteInput, Eventual<TodoStatusPayload>>("todo.complete")
-    .emits(events![TodoCompletedDomainEvent])
-    .applies(state_preview! {
-        TodoCompletedDomainEvent => TodoState {
-            todo_id: input.todo_id,
-            status: "completed",
-            ..unknown
-        }
-    })
+.command_transition::<
+    domain_commands::Complete,
+    TodoCompleteInput,
+    Eventual<TodoStatusPayload>,
+>("todo.complete")
+.field_name("todos_complete")
+.roles(["user", "admin"])
+.handle(todo_complete::handle)
 ```
 
 The compiler specializes `TODOS` into safe client operations: apply the same
@@ -143,8 +142,8 @@ differs on purpose — do **not** collapse them into “always send a causal del
 
 | Contract | Apply site | Mutation response (ship) | Client seal |
 |---|---|---|---|
-| **`Eventual<T>`** + Eventual | Event handler after commit | Payload + **projection-delta** + `expects` | `.applies` preview; retire on obligations |
-| **`Atomic<M>`** + Direct | Command handler, same tx | **Typed row `M`** + direct **`records[]`**. No eventual modeled metadata, empty `expects` | Optional `.applies`; **`confirmDirectProjection(row, records)`** before `await` settles |
+| **`Eventual<T>`** + Eventual | Event handler after commit | Payload + **projection-delta** + `expects` | Auto-optimism preview; retire on obligations |
+| **`Atomic<M>`** + Direct | Command handler, same tx | **Typed row `M`** + direct **`records[]`**. No eventual modeled metadata, empty `expects` | Auto-optimism when input known; **`confirmDirectProjection(row, records)`** before `await` settles |
 
 Handler for Atomic — this *is* returning atomic read-model updates:
 
@@ -192,8 +191,9 @@ programs; the same IR lowers on the server and for role-safe client cache
 optimism. Multi-model atomicity is expressed as multi-op mutation programs, not
 a public projector ORM workspace.
 
-Application commands declare `.emits` plus `.applies(...)` known mutation-input
-mapping for client cache application. Both Eventual and Direct surfaces may
+Application commands use `command_transition` so the emit set comes from the
+domain (`domain_commands::*`); client cache previews are auto-derived from
+input, defaults, and row-policy claims. Both Eventual and Direct surfaces may
 export those previews from the portable program. Eventual commands do not stage
 rows in the handler (the event handler applies the mutation later). Blob stages
 the mutation-derived row with `readmodel(row).commit()?.projected()` so the

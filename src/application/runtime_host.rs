@@ -114,11 +114,11 @@ pub fn bind_single_process(
 mod tests {
     use super::*;
     use crate::application::{
-        compile_deployment_plan, Application, CommandDefinition, CommandSpec, CommandTypeField,
-        CommandTypeSpec, ModelFieldSpec, ModelSpec, Module, ProcessIntent, ProcessPreset,
-        ProjectionSpec,
+        compile_deployment_plan, Application, CommandDefinition, CommandSpec, CommandTypeSpec,
+        ModelFieldSpec, ModelSpec, Module, ProcessIntent, ProcessPreset, ProjectionSpec,
     };
     use crate::graphql::CommandConsistency;
+    use std::sync::Arc;
 
     fn manifest() -> crate::application::ApplicationManifest {
         let model = ModelSpec::try_new(

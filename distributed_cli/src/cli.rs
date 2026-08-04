@@ -978,18 +978,22 @@ fn run_client(args: &ClientArgs) -> Result<(), Box<dyn Error>> {
         })?;
     let selector = match (&args.role, &args.surface) {
         (Some(role), None) => ClientSurfaceSelector::role(role.clone()),
-        (None, Some(surface)) if !args.eligible_role.is_empty() && !args.schema_role.is_empty() => {
-            ClientSurfaceSelector::application(
-                surface.clone(),
-                args.eligible_role.clone(),
-                args.schema_role.clone(),
-            )
-        }
-        (None, Some(_)) => {
-            return Err(
-                "application compilation requires at least one --eligible-role and --schema-role"
-                    .into(),
-            );
+        (None, Some(surface)) => {
+            // Prefer explicit CLI roles when both lists are provided; otherwise
+            // take eligible/schema roles from the application surface in the
+            // manifest (one source of truth — no dual inventory config).
+            let (eligible_roles, schema_roles) =
+                if !args.eligible_role.is_empty() && !args.schema_role.is_empty() {
+                    (args.eligible_role.clone(), args.schema_role.clone())
+                } else if !args.eligible_role.is_empty() || !args.schema_role.is_empty() {
+                    return Err(
+                        "pass both --eligible-role and --schema-role, or neither (to use the manifest surface)"
+                            .into(),
+                    );
+                } else {
+                    application_roles_from_manifest(&manifest, surface)?
+                };
+            ClientSurfaceSelector::application(surface.clone(), eligible_roles, schema_roles)
         }
         _ => {
             return Err("pass exactly one of --role <name> or --surface <application-name>".into());
@@ -1035,6 +1039,60 @@ fn read_utf8_bounded(path: &Path, limit: usize, label: &str) -> Result<String, B
     }
     String::from_utf8(bytes)
         .map_err(|error| format!("{label} {} is not UTF-8: {error}", path.display()).into())
+}
+
+/// Read application eligible/schema roles from the client manifest surface.
+///
+/// Application surfaces already declare these on the exported manifest; the
+/// client compiler should not require them again on the CLI when `--surface`
+/// is used.
+fn application_roles_from_manifest(
+    manifest: &serde_json::Value,
+    surface_name: &str,
+) -> Result<(Vec<String>, Vec<String>), Box<dyn Error>> {
+    let surface = manifest
+        .get("surface")
+        .ok_or("client manifest is missing surface")?;
+    let kind = surface
+        .get("kind")
+        .and_then(|value| value.as_str())
+        .unwrap_or("");
+    if kind != "application" {
+        return Err(format!(
+            "client manifest surface kind is `{kind}`, expected `application` for --surface"
+        )
+        .into());
+    }
+    let name = surface
+        .get("name")
+        .and_then(|value| value.as_str())
+        .unwrap_or("");
+    if name != surface_name {
+        return Err(format!(
+            "client manifest surface name is `{name}`, expected `{surface_name}`"
+        )
+        .into());
+    }
+    let roles = |field: &str| -> Result<Vec<String>, Box<dyn Error>> {
+        let values = surface
+            .get(field)
+            .and_then(|value| value.as_array())
+            .ok_or_else(|| format!("client manifest surface is missing non-empty `{field}`"))?;
+        let roles = values
+            .iter()
+            .map(|value| {
+                value
+                    .as_str()
+                    .map(str::to_owned)
+                    .ok_or_else(|| format!("client manifest surface `{field}` must be strings"))
+            })
+            .collect::<Result<Vec<_>, _>>()?;
+        if roles.is_empty() {
+            return Err(format!("client manifest surface `{field}` must not be empty").into());
+        }
+        Ok(roles)
+    };
+    Ok((roles("eligible_roles")?, roles("schema_roles")?))
 }
 
 fn collect_client_documents(patterns: &[String]) -> Result<Vec<ClientDocument>, Box<dyn Error>> {

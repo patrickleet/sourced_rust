@@ -600,6 +600,25 @@ where
     }
 }
 
+/// Begin a typed command whose outward emit set is owned by a domain transition.
+///
+/// `S` is typically a `#[sourced]` `domain_commands::*` witness (for example
+/// `domain_commands::Create`) or a domain-event marker. The emit set is filled
+/// automatically — callers do not also call [`.emits`](TypedCommand::emits) /
+/// [`.emits_events`](TypedCommand::emits_events) unless they intentionally
+/// extend the set.
+///
+/// Prefer this over [`typed_command`] plus a hand-written event list when the
+/// domain already defines the transition.
+pub fn command_transition<S, I, K>(name: &'static str) -> TypedCommand<I, K>
+where
+    S: super::CommandEventSet,
+    I: GraphqlInputType + DeserializeOwned + Send + 'static,
+    K: CommandOutcome,
+{
+    typed_command::<I, K>(name).emits_events::<S>()
+}
+
 impl<I, K: CommandOutcome> TypedCommand<I, K> {
     pub fn field_name(mut self, field_name: impl Into<String>) -> Self {
         self.contract.field_name = field_name.into();
@@ -628,9 +647,26 @@ impl<I, K: CommandOutcome> TypedCommand<I, K> {
     ///
     /// This declaration is intentionally independent of projector ownership:
     /// one occurrence can fan out to zero, one, or many modeled programs.
+    ///
+    /// Prefer [`Self::emits_events`] when the set is a domain event marker or a
+    /// `#[sourced]` `domain_commands::*` transition witness.
     #[must_use]
     pub fn emits(mut self, events: super::CommandProjectionEventSet) -> Self {
         self.contract.projections.add_event_set(events);
+        self
+    }
+
+    /// Declare outward domain events from a type-level [`super::CommandEventSet`].
+    ///
+    /// Equivalent to [`.emits`](Self::emits)`(events![...])` for the same
+    /// domain-event contracts, without a second hand-written event list when
+    /// the domain already owns the transition (event marker or generated
+    /// `domain_commands` witness).
+    #[must_use]
+    pub fn emits_events<S: super::CommandEventSet>(mut self) -> Self {
+        self.contract
+            .projections
+            .add_event_set(S::command_event_set());
         self
     }
 

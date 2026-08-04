@@ -14,11 +14,10 @@ import type { DemoWalkthrough } from './types';
  *
  * Consistency teaching (same mutation IR; apply site differs):
  * - Eventual (placement + command): event handler applies IR async → client
- *   `.applies` previews until obligations complete (no response row).
+ *   auto-optimism previews until obligations complete (no response row).
  * - Atomic (Direct placement + Atomic command): command handler applies IR
  *   same-tx → wait and return the row; confirm before await settles.
- *   Same `.applies` path when input carries known fields (blob move fills
- *   board fields from the pure simulate_move twin of the domain).
+ *   Atomic blob move uses thin input; the sealed response row updates the board.
  */
 
 export const todosWalkthrough: DemoWalkthrough = {
@@ -27,7 +26,7 @@ export const todosWalkthrough: DemoWalkthrough = {
 	title: 'Todos',
 	kicker: 'Browser → command → domain → projection',
 	summary:
-		'Start on the page: one @load query feeds the replica. Commands are Eventual: `.applies` paints a safe optimistic preview; the event handler applies the same mutation IR later, so the client cannot wait for a response row — only obligations.',
+		'Start on the page: one @load query feeds the replica. Commands are Eventual: auto-optimism paints a safe preview from input + domain transition; the event handler applies the same mutation IR later, so the client cannot wait for a response row — only obligations.',
 	tabs: [
 		{
 			id: 'query',
@@ -105,37 +104,32 @@ await commands.todo.create({ title: text });
 await commands.todo.complete({ todo_id });`
 				},
 				{
-					file: 'service.rs · todos_create (roles + preview)',
-					caption: 'Write RBAC on the inventory; owner is a trusted claim, not input.',
-					code: `typed_command::<TodoCreateInput, Eventual<TodoCreatePayload>>(
-  todo_create::COMMAND,
-)
+					file: 'modules/todo.rs · todos_create',
+					caption: 'Write RBAC on the inventory; emit set from domain transition; owner claim is auto-optimism.',
+					code: `.command_transition::<
+  domain_commands::Create,
+  TodoCreateInput,
+  Eventual<TodoCreatePayload>,
+>(todo_create::COMMAND)
 .field_name("todos_create")
-.roles(app_roles) // ["user", "admin"]
+.roles(["user", "admin"])
 .input_defaults(command_input_defaults! {
   input: TodoCreateInput;
   default input.todo_id = uuid_v7();
 })
-.emits(events![TodoCreatedDomainEvent])
-.applies(state_preview! {
-  TodoCreatedDomainEvent => TodoState {
-    todo_id: generated.todo_id,
-    owner_id: trusted("x-user-id", "string"),
-    title: input.title,
-    status: "open",
-    assignee_id: null,
-  }
-})`
+.handle(todo_create::handle)`
 				},
 				{
-					file: 'service.rs · todos_force_archive roles',
+					file: 'modules/todo.rs · todos_force_archive',
 					caption: 'Elevated mutation: admin only; not on the user client tree.',
-					code: `typed_command::<TodoForceArchiveInput, Eventual<TodoForceArchivePayload>>(
-  todo_force_archive::COMMAND,
-)
+					code: `.command_transition::<
+  domain_commands::ForceArchive,
+  TodoForceArchiveInput,
+  Eventual<TodoForceArchivePayload>,
+>(todo_force_archive::COMMAND)
 .field_name("todos_force_archive")
 .roles(["admin"])
-.emits(events![TodoForceArchivedDomainEvent])`
+.handle(todo_force_archive::handle)`
 				}
 			]
 		},
@@ -391,14 +385,16 @@ if (receipt.projected !== undefined) {
 }`
 				},
 				{
-					file: 'service.rs · chat_messages_post roles',
-					caption: 'Write RBAC: user + admin only. Public client has zero commands.',
-					code: `typed_command::<ChatPostInput, Eventual<ChatPostPayload>>(
-  chat_post::COMMAND,
-)
+					file: 'modules/chat.rs · chat_messages_post',
+					caption: 'Write RBAC: user + admin only. Emit set from domain_commands::Post. Public client has zero commands.',
+					code: `.command_transition::<
+  domain_commands::Post,
+  ChatPostInput,
+  Eventual<ChatPostPayload>,
+>(chat_post::COMMAND)
 .field_name("chat_messages_post")
-.roles(app_roles) // ["user", "admin"]
-.emits(events![ChatMessagePostedDomainEvent])`
+.roles(["user", "admin"])
+.handle(chat_post::handle)`
 				},
 				{
 					file: 'generated/public/commands.ts',
@@ -638,46 +634,29 @@ const games = $derived(
 		{
 			id: 'commands',
 			label: '2 · Commands',
-			lede: 'Moves are Atomic commands but use the same client optimism path as Eventual: fill command input, `.applies` paints the replica, then the network seals. Server-side the mutation IR runs in the command handler (not an event projector) so we can also wait for the authoritative row and return it.',
-			principle: 'Let the Service declare how the UI catches up.',
+			lede: 'Moves are Atomic: send only game_id + direction. The handler runs domain rules, stages the row, and the sealed response updates the replica. No client twin of game logic.',
+			principle: 'The domain owns outcomes; the client does not reimplement them.',
 			samples: [
 				{
 					file: 'routes/blob/[[gameId]]/+page.svelte',
-					caption: 'Pure simulate_move fills input (like chat body); `.applies` paints before the wire.',
-					code: `const preview = simulateMove(board, score, direction);
-await commands.blob.move({
+					caption: 'Thin input — board comes from the Atomic row.',
+					code: `await commands.blob.move({
   game_id,
   direction,
-  map_json: preview.map_json,
-  score: preview.score,
-  player_dead: preview.player_dead,
-  current_level,
-  current_level_completed: preview.level_complete,
-  status: preview.status,
 });
-// optimistic layer already has the board; atomic row seals on response`
+// replica updates when the sealed BlobGames row arrives`
 				},
 				{
-					file: 'service.rs · blob.move',
-					caption: 'Same client `.applies` path; apply site is the handler (Atomic).',
-					code: `typed_command::<BlobMoveInput, Atomic<BlobGames>>(
-  blob_move::COMMAND,
-)
+					file: 'modules/blob.rs · blob.move',
+					caption: 'Emit set from domain_commands::MoveDir; apply site is the handler (Atomic).',
+					code: `.command_transition::<
+  domain_commands::MoveDir,
+  BlobMoveInput,
+  Atomic<BlobGames>,
+>(blob_move::COMMAND)
 .field_name("blob_games_move")
-.roles(app_roles)
-.emits(events![BlobMovedDomainEvent])
-.applies(state_preview! {
-  BlobMovedDomainEvent => BlobGameState {
-    game_id: input.game_id,
-    owner_id: trusted("x-user-id", "string"),
-    score: input.score,
-    player_dead: input.player_dead,
-    current_level: input.current_level,
-    current_level_completed: input.current_level_completed,
-    map_json: input.map_json,
-    status: input.status,
-  }
-})`
+.roles(["user", "admin"])
+.handle(blob_move::handle)`
 				}
 			]
 		},
@@ -909,22 +888,16 @@ pub struct Todos {
 					code: `await commands.todo.force_archive({ todo_id });`
 				},
 				{
-					file: 'service.rs · todos_force_archive',
+					file: 'modules/todo.rs · todos_force_archive',
 					caption: 'Write RBAC: admin only; absent from user client inventory.',
-					code: `typed_command::<
+					code: `.command_transition::<
+  domain_commands::ForceArchive,
   TodoForceArchiveInput,
   Eventual<TodoForceArchivePayload>,
 >(todo_force_archive::COMMAND)
 .field_name("todos_force_archive")
 .roles(["admin"])
-.emits(events![TodoForceArchivedDomainEvent])
-.applies(state_preview! {
-  TodoForceArchivedDomainEvent => TodoState {
-    todo_id: input.todo_id,
-    status: "archived",
-    ..unknown
-  }
-})`
+.handle(todo_force_archive::handle)`
 				},
 				{
 					file: 'routes/admin/+layout.server.ts',

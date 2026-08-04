@@ -32,12 +32,16 @@ use crate::command_ledger::{
 };
 #[cfg(feature = "graphql")]
 use crate::graphql::command_contract::CommandConsistency;
-use crate::graphql::command_contract::{CommandOutcome, TypedCommandContract};
+use crate::graphql::command_contract::{
+    CommandEventSet, CommandOutcome, CompiledInputDefaults, TypedCommandContract,
+};
 #[cfg(feature = "graphql")]
 use crate::graphql::command_input::canonicalize_command_input;
 #[cfg(feature = "graphql")]
 use crate::graphql::identity::VerifiedPrincipal;
-use crate::graphql::{SurfaceProjector, TypedCommand};
+use crate::graphql::{
+    command_transition, GraphqlInputType, SurfaceProjector, TypedCommand,
+};
 #[cfg(feature = "graphql")]
 use crate::microsvc::causal::CausalWorkspace;
 use crate::microsvc::context::Context;
@@ -461,18 +465,50 @@ impl<D: Send + Sync + 'static> RouteBuilder<D> {
 
 impl<D, I, K> TypedRouteBuilder<D, I, K>
 where
-    D: CausalRouteDependencies + Send + Sync + 'static,
-    D::Aggregate: Aggregate + Send + Sync + 'static,
-    I: serde::de::DeserializeOwned + Send + 'static,
     K: CommandOutcome,
 {
+    /// Override the GraphQL mutation field name (defaults from the command id).
+    #[must_use]
+    pub fn field_name(mut self, field_name: impl Into<String>) -> Self {
+        self.contract.field_name = field_name.into();
+        self
+    }
+
+    /// Restrict the command to these surface roles.
+    #[must_use]
+    pub fn roles(mut self, roles: impl IntoIterator<Item = impl Into<String>>) -> Self {
+        self.contract.roles = roles.into_iter().map(Into::into).collect();
+        self.contract.roles.sort();
+        self.contract.roles.dedup();
+        self
+    }
+
+    /// Declare values generated once into the canonical command input before
+    /// dispatch.
+    #[must_use]
+    pub fn input_defaults(mut self, defaults: CompiledInputDefaults<I>) -> Self {
+        self.contract.input_defaults = defaults.0;
+        self.contract
+            .input_defaults
+            .sort_by(|left, right| left.path.cmp(&right.path));
+        self
+    }
+
     /// Attach the mount produced by the same command declaration. The route
     /// adapter checks its identity before registration.
     pub fn mount(mut self, mount: CommandMount) -> Self {
         self.mount = Some(mount);
         self
     }
+}
 
+impl<D, I, K> TypedRouteBuilder<D, I, K>
+where
+    D: CausalRouteDependencies + Send + Sync + 'static,
+    D::Aggregate: Aggregate + Send + Sync + 'static,
+    I: serde::de::DeserializeOwned + Send + 'static,
+    K: CommandOutcome,
+{
     /// Register a typed causal command handler without a guard.
     pub fn handle<F>(self, handler: F) -> Routes<D>
     where
@@ -592,6 +628,23 @@ impl<D: Send + Sync + 'static> Routes<D> {
             mount: None,
             _types: std::marker::PhantomData,
         }
+    }
+
+    /// Register a typed command whose outward emit set comes from a domain
+    /// transition witness (`domain_commands::*` or a domain-event marker).
+    ///
+    /// Equivalent to
+    /// [`typed_command`](Self::typed_command)`(command_transition::<S, I, K>(name))`
+    /// so callers do not also declare `.emits` / `.emits_events`.
+    ///
+    /// Chain `.field_name`, `.roles`, `.input_defaults`, then `.handle`.
+    pub fn command_transition<S, I, K>(self, name: &'static str) -> TypedRouteBuilder<D, I, K>
+    where
+        S: CommandEventSet,
+        I: GraphqlInputType + serde::de::DeserializeOwned + Send + 'static,
+        K: CommandOutcome,
+    {
+        self.typed_command(command_transition::<S, I, K>(name))
     }
 
     /// Compile the registered typed declarations into portable command specs.

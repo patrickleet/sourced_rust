@@ -156,68 +156,106 @@ pub(super) fn command_projection_extension(
         .collect();
 
     let mut preview_occurrences = Vec::new();
-    for preview in &command.projections.previews {
-        let preview_event = event_ref(&preview.selector);
-        if program_arms.iter().all(|arm| arm.event != preview_event) {
-            continue;
-        }
-        let occurrence_origins = slot_origins
-            .iter()
-            .filter(|origin| origin.event == preview.selector)
-            .collect::<Vec<_>>();
-        let mut values = occurrence_origins
-            .into_iter()
-            .map(|origin| {
-                let source = preview
-                    .preview
-                    .fields
-                    .iter()
-                    .find(|field| {
-                        let target = match field.envelope {
-                            Some(envelope) => SlotTarget::Envelope { field: envelope },
-                            None => SlotTarget::BodyPath {
-                                path: field.body_path.clone(),
-                            },
-                        };
-                        target == origin.target
-                    })
-                    .map(|field| {
-                        client_preview_source(
-                            &field.source,
-                            matches!(origin.target, SlotTarget::BodyPath { .. }),
-                            match origin.target {
-                                SlotTarget::Envelope { field } => Some(field),
-                                SlotTarget::BodyPath { .. } => None,
-                            },
-                            field.body_type,
-                            field.body_rust_type,
-                            field.body_nullable,
-                            field.body_always_present,
-                            &origin.value_type,
-                            command,
-                        )
-                    })
-                    .transpose()?
-                    .unwrap_or(ClientProjectionPreviewSource::Unknown);
-                Ok(CommandProjectionPreviewValue {
+    if command.projections.previews.is_empty() {
+        // Automatic optimism: input + defaults + row-policy claims + emits +
+        // projection arms. No third mapping document is required. Unresolved
+        // slots stay Unknown and fall back to revalidation.
+        let claim_presets = surface_row_policy_claim_presets(surface);
+        let mut seen_event_ids = BTreeSet::new();
+        for selector in emitted {
+            let preview_event = event_ref(selector);
+            if !seen_event_ids.insert(preview_event.id.clone()) {
+                continue;
+            }
+            if program_arms.iter().all(|arm| arm.event != preview_event) {
+                continue;
+            }
+            let mut values = slot_origins
+                .iter()
+                .filter(|origin| origin.event == *selector)
+                .map(|origin| CommandProjectionPreviewValue {
                     slot: origin.slot.clone(),
-                    source,
+                    source: auto_preview_source(origin, command, &claim_presets),
                 })
-            })
-            .collect::<Result<Vec<_>, ClientManifestError>>()?;
-        values.sort_by(|left, right| left.slot.cmp(&right.slot));
-        values.dedup_by(|left, right| left.slot == right.slot);
-        let ordinal = u32::try_from(preview_occurrences.len()).map_err(|_| {
-            ClientManifestError(format!(
-                "command `{}` declares too many projection preview occurrences",
-                command.command_name
-            ))
-        })?;
-        preview_occurrences.push(CommandProjectionPreviewOccurrence {
-            ordinal,
-            event: preview_event,
-            values,
-        });
+                .collect::<Vec<_>>();
+            values.sort_by(|left, right| left.slot.cmp(&right.slot));
+            values.dedup_by(|left, right| left.slot == right.slot);
+            let ordinal = u32::try_from(preview_occurrences.len()).map_err(|_| {
+                ClientManifestError(format!(
+                    "command `{}` declares too many projection preview occurrences",
+                    command.command_name
+                ))
+            })?;
+            preview_occurrences.push(CommandProjectionPreviewOccurrence {
+                ordinal,
+                event: preview_event,
+                values,
+            });
+        }
+    } else {
+        for preview in &command.projections.previews {
+            let preview_event = event_ref(&preview.selector);
+            if program_arms.iter().all(|arm| arm.event != preview_event) {
+                continue;
+            }
+            let occurrence_origins = slot_origins
+                .iter()
+                .filter(|origin| origin.event == preview.selector)
+                .collect::<Vec<_>>();
+            let mut values = occurrence_origins
+                .into_iter()
+                .map(|origin| {
+                    let source = preview
+                        .preview
+                        .fields
+                        .iter()
+                        .find(|field| {
+                            let target = match field.envelope {
+                                Some(envelope) => SlotTarget::Envelope { field: envelope },
+                                None => SlotTarget::BodyPath {
+                                    path: field.body_path.clone(),
+                                },
+                            };
+                            target == origin.target
+                        })
+                        .map(|field| {
+                            client_preview_source(
+                                &field.source,
+                                matches!(origin.target, SlotTarget::BodyPath { .. }),
+                                match origin.target {
+                                    SlotTarget::Envelope { field } => Some(field),
+                                    SlotTarget::BodyPath { .. } => None,
+                                },
+                                field.body_type,
+                                field.body_rust_type,
+                                field.body_nullable,
+                                field.body_always_present,
+                                &origin.value_type,
+                                command,
+                            )
+                        })
+                        .transpose()?
+                        .unwrap_or(ClientProjectionPreviewSource::Unknown);
+                    Ok(CommandProjectionPreviewValue {
+                        slot: origin.slot.clone(),
+                        source,
+                    })
+                })
+                .collect::<Result<Vec<_>, ClientManifestError>>()?;
+            values.sort_by(|left, right| left.slot.cmp(&right.slot));
+            values.dedup_by(|left, right| left.slot == right.slot);
+            let ordinal = u32::try_from(preview_occurrences.len()).map_err(|_| {
+                ClientManifestError(format!(
+                    "command `{}` declares too many projection preview occurrences",
+                    command.command_name
+                ))
+            })?;
+            preview_occurrences.push(CommandProjectionPreviewOccurrence {
+                ordinal,
+                event: preview_event,
+                values,
+            });
+        }
     }
 
     Ok(Some(CommandProjectionExtension {
@@ -227,6 +265,230 @@ pub(super) fn command_projection_extension(
         preview_occurrences,
         fallback: ClientProjectionFallback::Revalidate,
     }))
+}
+
+/// Map row-policy `column == claim(header)` bindings to trusted-preset sources.
+///
+/// Keyed by the model field / body-path leaf name so automatic optimism can
+/// fill owner-like slots without a third mapping API.
+fn surface_row_policy_claim_presets(
+    surface: &Surface,
+) -> BTreeMap<String, (String, String)> {
+    let mut presets = BTreeMap::new();
+    for model in surface.models.values() {
+        let SurfaceRowPolicy::Predicate(expression) = &model.row_policy else {
+            continue;
+        };
+        collect_row_policy_claim_presets(expression, model, surface, &mut presets);
+    }
+    presets
+}
+
+fn collect_row_policy_claim_presets(
+    expression: &FilterExpr,
+    model: &crate::graphql::surface::SurfaceModel,
+    surface: &Surface,
+    presets: &mut BTreeMap<String, (String, String)>,
+) {
+    match expression {
+        FilterExpr::And(expressions) | FilterExpr::Or(expressions) => {
+            for expression in expressions {
+                collect_row_policy_claim_presets(expression, model, surface, presets);
+            }
+        }
+        FilterExpr::Not(expression) => {
+            collect_row_policy_claim_presets(expression, model, surface, presets);
+        }
+        FilterExpr::Cmp {
+            column,
+            rhs: Operand::Claim(claim),
+            ..
+        } => {
+            insert_row_policy_claim_preset(model, column, &claim.header, presets);
+        }
+        FilterExpr::In { column, values, .. } => {
+            for value in values {
+                if let Operand::Claim(claim) = value {
+                    insert_row_policy_claim_preset(model, column, &claim.header, presets);
+                }
+            }
+        }
+        FilterExpr::Rel { field, predicate } => {
+            let Some(relationship) = model
+                .relationships
+                .iter()
+                .find(|relationship| relationship.name == *field)
+            else {
+                return;
+            };
+            let Some(target) = surface.models.get(&relationship.target_model) else {
+                return;
+            };
+            collect_row_policy_claim_presets(predicate, target, surface, presets);
+        }
+        FilterExpr::Cmp { .. } | FilterExpr::IsNull { .. } => {}
+    }
+}
+
+fn insert_row_policy_claim_preset(
+    model: &crate::graphql::surface::SurfaceModel,
+    column: &str,
+    claim: &str,
+    presets: &mut BTreeMap<String, (String, String)>,
+) {
+    let codec = resolve_row_policy_column_codec(model, column);
+    let Some(codec) = codec else {
+        return;
+    };
+    if matches!(codec, "base64" | "json") {
+        return;
+    }
+    // Index by the policy column text and every alias (logical field name,
+    // physical column name) so body-path leaves and GraphQL field names both
+    // resolve when they describe the same column.
+    let mut keys = BTreeSet::from([column.to_owned()]);
+    if let Some(schema_column) = model.schema.columns.iter().find(|candidate| {
+        !candidate.skipped
+            && (candidate.field_name == column || candidate.column_name == column)
+    }) {
+        keys.insert(schema_column.field_name.clone());
+        keys.insert(schema_column.column_name.clone());
+    }
+    for field in &model.columns {
+        if field.name == column || keys.contains(&field.name) {
+            keys.insert(field.name.clone());
+        }
+    }
+    for key in keys {
+        match presets.entry(key) {
+            std::collections::btree_map::Entry::Vacant(entry) => {
+                entry.insert((claim.to_owned(), codec.to_owned()));
+            }
+            std::collections::btree_map::Entry::Occupied(entry)
+                if entry.get().0 == claim && entry.get().1 == codec => {}
+            // Conflicting claim/codec for the same column is not portable; leave
+            // the first binding and let remaining slots fall through to Unknown.
+            std::collections::btree_map::Entry::Occupied(_) => {}
+        }
+    }
+}
+
+fn resolve_row_policy_column_codec(
+    model: &crate::graphql::surface::SurfaceModel,
+    column: &str,
+) -> Option<&'static str> {
+    if let Some(field) = model.columns.iter().find(|field| field.name == column) {
+        return super::scalar_codec(&field.scalar);
+    }
+    let schema_column = model.schema.columns.iter().find(|candidate| {
+        !candidate.skipped
+            && (candidate.field_name == column || candidate.column_name == column)
+    })?;
+    if let Some(field) = model
+        .columns
+        .iter()
+        .find(|field| field.name == schema_column.column_name)
+    {
+        return super::scalar_codec(&field.scalar);
+    }
+    match schema_column.column_type {
+        crate::table::ColumnType::Text | crate::table::ColumnType::Timestamp => Some("string"),
+        crate::table::ColumnType::Boolean => Some("boolean"),
+        crate::table::ColumnType::Integer => Some("int32"),
+        crate::table::ColumnType::UnsignedInteger => Some("json_number_precision_limited"),
+        crate::table::ColumnType::Float => Some("float64"),
+        crate::table::ColumnType::Json => Some("json"),
+        crate::table::ColumnType::Bytes => Some("base64"),
+        crate::table::ColumnType::Unsupported(_) => None,
+    }
+}
+
+/// Derive one client preview source from command input / defaults / claims.
+fn auto_preview_source(
+    origin: &SlotOrigin,
+    command: &SurfaceCommand,
+    claim_presets: &BTreeMap<String, (String, String)>,
+) -> ClientProjectionPreviewSource {
+    match &origin.target {
+        SlotTarget::Envelope {
+            field: ProjectionEnvelopeField::AggregateId,
+        } => {
+            if let Some(path) = auto_aggregate_id_path(command, &origin.value_type) {
+                if command.input_defaults.iter().any(|default| default.path == path) {
+                    ClientProjectionPreviewSource::GeneratedDefault { path }
+                } else {
+                    ClientProjectionPreviewSource::Input { path }
+                }
+            } else {
+                ClientProjectionPreviewSource::Unknown
+            }
+        }
+        SlotTarget::Envelope { .. } => ClientProjectionPreviewSource::Unknown,
+        SlotTarget::BodyPath { path } => {
+            if command_input_field(&command.input, path).is_some_and(|field| {
+                input_field_compatible(field, &origin.value_type, None, None)
+            }) {
+                if command
+                    .input_defaults
+                    .iter()
+                    .any(|default| default.path == *path)
+                {
+                    return ClientProjectionPreviewSource::GeneratedDefault {
+                        path: path.clone(),
+                    };
+                }
+                return ClientProjectionPreviewSource::Input {
+                    path: path.clone(),
+                };
+            }
+            if let Some(leaf) = path.last() {
+                if let Some((name, codec)) = claim_presets.get(leaf) {
+                    if codec_compatible(codec, &origin.value_type) {
+                        return ClientProjectionPreviewSource::TrustedPreset {
+                            name: name.clone(),
+                            codec: codec.clone(),
+                        };
+                    }
+                }
+            }
+            ClientProjectionPreviewSource::Unknown
+        }
+    }
+}
+
+/// Pick the best aggregate-id input path: generated id-like fields first, then
+/// explicit id-like fields (`id`, `*_id`, or GraphQL `ID`).
+fn auto_aggregate_id_path(
+    command: &SurfaceCommand,
+    expected: &ProjectionValueType,
+) -> Option<Vec<String>> {
+    let SurfaceCommandShape::Typed(definition) = &command.input else {
+        return None;
+    };
+    let mut generated = Vec::new();
+    let mut explicit = Vec::new();
+    for field in &definition.fields {
+        if field.list || !input_field_compatible(field, expected, None, None) {
+            continue;
+        }
+        let id_like = field.type_name == "ID"
+            || field.name == "id"
+            || field.name.ends_with("_id");
+        if !id_like {
+            continue;
+        }
+        let path = vec![field.name.clone()];
+        if command
+            .input_defaults
+            .iter()
+            .any(|default| default.path == path)
+        {
+            generated.push(path);
+        } else {
+            explicit.push(path);
+        }
+    }
+    generated.into_iter().chain(explicit).next()
 }
 
 fn lower_program(
@@ -1224,7 +1486,7 @@ mod tests {
     }
 
     #[test]
-    fn allowed_event_arms_do_not_invent_optimistic_occurrences() {
+    fn allowed_event_arms_auto_derive_optimistic_occurrences_when_previews_absent() {
         let selector_a = typed_selector::<PreviewA>();
         let selector_b = typed_selector::<PreviewB>();
         let surface = surface_with_modeled([modeled(
@@ -1245,10 +1507,179 @@ mod tests {
             .expect("eligible allowed arms remain visible");
         assert_eq!(projection.event_set.len(), 2);
         assert_eq!(projection.program_arms.len(), 2);
-        assert!(
-            projection.preview_occurrences.is_empty(),
-            "an allowed actual event is not an optimistic prediction"
+        assert_eq!(
+            projection.preview_occurrences.len(),
+            2,
+            "emits + projection arms auto-derive one occurrence per event when .applies is absent"
         );
+        // AggregateId envelope has no id-like input field named value → Unknown.
+        assert!(projection
+            .preview_occurrences
+            .iter()
+            .all(|occurrence| occurrence.values.iter().all(|value| {
+                matches!(value.source, ClientProjectionPreviewSource::Unknown)
+            })));
+    }
+
+    #[test]
+    fn auto_optimism_maps_input_defaults_and_row_policy_claims() {
+        use crate::graphql::command_contract::{CommandInputDefault, InputDefaultGenerator};
+        use crate::graphql::{claim, col};
+
+        let selector = typed_selector::<PreviewA>();
+        let selected = SurfaceSelectedProjectionProgram {
+            name: "auto-optimism".into(),
+            version: 1,
+            ir_version: crate::projection::PROJECTION_PROGRAM_IR_VERSION,
+            operation_semantics_version: crate::projection::PROJECTION_OPERATION_SEMANTICS_VERSION,
+            partition: ProjectionPartition::Unit,
+            arms: vec![SurfaceProjectionArm {
+                arm_id: "auto-arm".into(),
+                selector,
+                operations: vec![SurfaceProjectionOperation {
+                    operation_id: "auto-upsert".into(),
+                    staging_ordinal: 0,
+                    kind: ProjectionMutationKind::Upsert,
+                    model: "TodoView".into(),
+                    storage: "todos".into(),
+                    key: vec![ProjectionKeyField::try_new(
+                        0,
+                        "todo_id",
+                        ProjectionExpression::body_path(ProjectionValueType::String, ["todo_id"])
+                            .unwrap(),
+                    )
+                    .unwrap()],
+                    fields: vec![
+                        crate::projection::ProjectionField::try_new(
+                            0,
+                            "owner_id",
+                            crate::projection::ProjectionAssignment::Set(
+                                ProjectionExpression::body_path(
+                                    ProjectionValueType::String,
+                                    ["owner_id"],
+                                )
+                                .unwrap(),
+                            ),
+                        )
+                        .unwrap(),
+                        crate::projection::ProjectionField::try_new(
+                            1,
+                            "title",
+                            crate::projection::ProjectionAssignment::Set(
+                                ProjectionExpression::body_path(
+                                    ProjectionValueType::String,
+                                    ["title"],
+                                )
+                                .unwrap(),
+                            ),
+                        )
+                        .unwrap(),
+                    ],
+                    relationship_effects: Vec::new(),
+                    invalidations: Vec::new(),
+                    force_revalidate: false,
+                }],
+            }],
+        };
+        let mut surface =
+            surface_with_modeled([modeled(30, ProjectionPlacement::Eventual, Some(selected))]);
+        surface.models.get_mut("TodoView").unwrap().row_policy =
+            crate::graphql::surface::SurfaceRowPolicy::Predicate(
+                col("owner_id").eq(claim("x-user-id")),
+            );
+
+        let mut command = SurfaceCommand {
+            command_name: "todo.create".into(),
+            field_name: "todos_create".into(),
+            roles: vec!["user".into()],
+            input: SurfaceCommandShape::Typed(SurfaceTypeDef {
+                name: "TodoCreateInput".into(),
+                fields: vec![
+                    SurfaceTypeField {
+                        name: "todo_id".into(),
+                        type_name: "ID".into(),
+                        nullable: false,
+                        list: false,
+                        item_nullable: false,
+                        nested: None,
+                    },
+                    SurfaceTypeField {
+                        name: "title".into(),
+                        type_name: "String".into(),
+                        nullable: false,
+                        list: false,
+                        item_nullable: false,
+                        nested: None,
+                    },
+                ],
+            }),
+            output: SurfaceCommandShape::None,
+            consistency: CommandConsistency::Succeeded,
+            input_defaults: vec![CommandInputDefault {
+                path: vec!["todo_id".into()],
+                generator: InputDefaultGenerator::UuidV7,
+            }],
+            effects: None,
+            confirmations: Vec::new(),
+            projected_model: None,
+            direct_projection: None,
+            projections: Default::default(),
+            confirmation_unavailable: false,
+        };
+        command.projections.add_event_set(crate::events![PreviewA]);
+
+        let projection = command_projection_extension(&command, &surface, &[])
+            .unwrap()
+            .expect("auto optimism extension");
+        assert_eq!(projection.preview_occurrences.len(), 1);
+        let sources: BTreeMap<_, _> = projection.preview_occurrences[0]
+            .values
+            .iter()
+            .map(|value| (value.slot.clone(), value.source.clone()))
+            .collect();
+        // Resolve slots via lowered program so we match opaque ids.
+        let (programs, _) = projection_manifest(&surface).unwrap();
+        let arm = &programs[0].arms[0];
+        let todo_slot = match &arm.operations[0].key[0].expression {
+            ClientProjectionExpression::Slot { slot, .. } => slot.clone(),
+            other => panic!("expected key slot, got {other:?}"),
+        };
+        let owner_slot = match &arm.operations[0].fields.iter().find(|f| f.name == "owner_fk") {
+            Some(field) => match &field.assignment {
+                ClientProjectionAssignment::Set {
+                    expression: ClientProjectionExpression::Slot { slot, .. },
+                } => slot.clone(),
+                other => panic!("expected owner slot set, got {other:?}"),
+            },
+            None => panic!("owner field missing"),
+        };
+        let title_slot = match &arm.operations[0]
+            .fields
+            .iter()
+            .find(|f| f.name == "todo_title")
+        {
+            Some(field) => match &field.assignment {
+                ClientProjectionAssignment::Set {
+                    expression: ClientProjectionExpression::Slot { slot, .. },
+                } => slot.clone(),
+                other => panic!("expected title slot set, got {other:?}"),
+            },
+            None => panic!("title field missing"),
+        };
+        assert!(matches!(
+            sources.get(&todo_slot),
+            Some(ClientProjectionPreviewSource::GeneratedDefault { path })
+                if path == &["todo_id"]
+        ));
+        assert!(matches!(
+            sources.get(&owner_slot),
+            Some(ClientProjectionPreviewSource::TrustedPreset { name, codec })
+                if name == "x-user-id" && codec == "string"
+        ));
+        assert!(matches!(
+            sources.get(&title_slot),
+            Some(ClientProjectionPreviewSource::Input { path }) if path == &["title"]
+        ));
     }
 
     #[test]

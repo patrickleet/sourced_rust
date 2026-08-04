@@ -420,12 +420,15 @@ export const Operation_ChatMessages: ReplicaOperationArtifact<Operation_ChatMess
   ],
   "protocol": {
     "version": 1,
-    "schemaHash": "sha256:081dd7d6d000e5add4aead3b9254442c5e89c076a6543c9550611d3dd6280642",
+    "schemaHash": "sha256:c5a1e49d2bc4087419948d97f4cc666928d2bf8a0a6b30c3d3bf040a9692f56f",
     "surface": {
       "kind": "application",
       "name": "e2e-ui",
-      "roles": [
+      "eligible_roles": [
         "admin",
+        "user"
+      ],
+      "schema_roles": [
         "user"
       ]
     },

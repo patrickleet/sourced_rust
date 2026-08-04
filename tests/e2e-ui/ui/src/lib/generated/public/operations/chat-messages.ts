@@ -420,11 +420,14 @@ export const Operation_ChatMessages: ReplicaOperationArtifact<Operation_ChatMess
   ],
   "protocol": {
     "version": 1,
-    "schemaHash": "sha256:38f1e9dc9669426ed5a3bcc8fcef21f4414434abe4397d55bb524d2c2a7755d6",
+    "schemaHash": "sha256:8b97b318dfce045d1e9ea9430d9ab4ce0824825e965d15a6863b12cf5aaf60b9",
     "surface": {
       "kind": "application",
       "name": "e2e-ui-public",
-      "roles": [
+      "eligible_roles": [
+        "anonymous"
+      ],
+      "schema_roles": [
         "anonymous"
       ]
     },

@@ -253,6 +253,20 @@ mod tests {
     }
 
     #[test]
+    fn domain_commands_create_matches_created_event_contract() {
+        use distributed::domain_event::DomainEventContract;
+        use distributed::graphql::CommandEventSet;
+
+        let from_transition = domain_commands::Create::command_event_set();
+        let from_event = distributed::events![TodoCreatedDomainEvent];
+        assert_eq!(
+            from_transition, from_event,
+            "Create transition must materialize the same emit set as TodoCreatedDomainEvent"
+        );
+        assert_eq!(TodoCreatedDomainEvent::EVENT_NAME, "todo.created");
+    }
+
+    #[test]
     fn create_after_purge_is_rejected_without_emitting_events() {
         let mut todo = open_todo();
         todo.purge("alice").unwrap();

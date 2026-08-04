@@ -308,20 +308,18 @@ export const Operation_AdminAllTodos: ReplicaOperationArtifact<Operation_AdminAl
   ],
   "protocol": {
     "version": 1,
-    "schemaHash": "sha256:07cb6726a98d4df6450e18869b6d37ea2ba5d9cf4d44b09875266b5239a4ee14",
+    "schemaHash": "sha256:e54b7973b1b303cb20b91b2a2f57c21a18bbfc586e94626954e3bc984286b68f",
     "surface": {
       "kind": "application",
       "name": "e2e-ui-admin",
-      "roles": [
+      "eligible_roles": [
+        "admin"
+      ],
+      "schema_roles": [
         "admin"
       ]
     },
     "operation": "sha256:3436d01402748d8c4f2f5d2ff5f1173fea89786c8e902de09a24bd03596eaf27",
-    "trustedPresets": [
-      {
-        "name": "x-user-id",
-        "codec": "string"
-      }
-    ]
+    "trustedPresets": []
   }
 };
