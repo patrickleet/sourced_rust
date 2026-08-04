@@ -1701,7 +1701,14 @@ async fn succeeded_command_without_preview_exports_modeled_revalidation_contract
     let projection = command.extensions.projection.as_ref().unwrap();
     assert_eq!(projection.fallback, ClientProjectionFallback::Revalidate);
     assert_eq!(projection.program_arms.len(), 1);
-    assert!(projection.preview_occurrences.is_empty());
+    // No explicit `.applies` — auto-optimism still invents one occurrence per
+    // emitted event that has a matching projection arm. Unresolved slots stay
+    // Unknown and fall back to revalidation (see client_manifest projections).
+    assert_eq!(
+        projection.preview_occurrences.len(),
+        1,
+        "emits + projection arms auto-derive preview occurrences when .applies is empty"
+    );
     assert_eq!(
         manifest.projection_programs[0].arms[0].operations[0].kind,
         ClientProjectionMutationKind::Upsert
