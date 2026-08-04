@@ -49,6 +49,7 @@ import {
 	replicaCommandAuthority,
 	replicaCommandProjectionDelta,
 	replicaCommandProjectedLifecycle,
+	replicaCommandReadRecord,
 	replicaResultObservation
 } from './symbols.js';
 import type {
@@ -1157,10 +1158,18 @@ export function createReplicaCommandRuntime<
 			);
 		}
 		try {
+			const pureHost = {
+				readRecord: replica[replicaCommandReadRecord]?.bind(replica),
+				pureFunctions: options.pureFunctions
+			};
 			(replica as SemanticReplica).createOptimisticLayer(
 				prepared.commandId,
 				(writer) =>
-					applyOptimisticEffects(writer, prepared.optimistic.operations),
+					applyOptimisticEffects(
+						writer,
+						prepared.optimistic.operations,
+						pureHost
+					),
 				semanticChanges
 			);
 		} catch (error) {

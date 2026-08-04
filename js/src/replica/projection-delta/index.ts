@@ -25,7 +25,9 @@ export type {
 	ProjectionDeltaRecoveryTarget,
 	ProjectionDeltaScope,
 	ProjectionDeltaValue,
+	ProjectionPreviewPureReduce,
 	ProjectionPreviewScope,
 	ProjectionPreviewValue,
-	ReplicaCommandProjection
+	ReplicaCommandProjection,
+	ReplicaPureFunction
 } from './types.js';

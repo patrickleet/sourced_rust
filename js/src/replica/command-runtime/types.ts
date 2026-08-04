@@ -23,11 +23,13 @@ import type {
 	ReplicaResultEnvelope,
 	ReplicaValue
 } from '../types.js';
+import type { ReplicaPureFunction } from '../projection-delta/index.js';
 import {
 	replicaCommandAuthority,
 	replicaCommandDirectProjection,
 	replicaCommandProjectionDelta,
 	replicaCommandProjectedLifecycle,
+	replicaCommandReadRecord,
 	replicaResultObservation
 } from './symbols.js';
 
@@ -79,6 +81,10 @@ export type ReplicaCommandAuthorityHost = DistributedReplica & {
 		update: (writer: ReplicaOptimisticWriter) => void,
 		semanticChanges: readonly ReplicaIndexSemanticChange[]
 	) => boolean;
+	readonly [replicaCommandReadRecord]?: (
+		model: ReplicaModelArtifact,
+		identity: ReplicaIdentity
+	) => Readonly<Record<string, ReplicaValue>> | undefined;
 };
 
 export type ReplicaCommandTransportRequest = Readonly<{
@@ -314,6 +320,11 @@ export type ReplicaCommandRuntimeOptions = Readonly<{
 	status?: ReplicaCommandStatusArtifact;
 	/** Optional shared replica diagnostics sink used only for static artifact inspection. */
 	diagnostics?: ReplicaDiagnosticsSink;
+	/**
+	 * Named pure functions referenced by `artifact.projection.pureReduces`.
+	 * Generated clients ship their inventory; apps do not invent board sims ad hoc.
+	 */
+	pureFunctions?: Readonly<Record<string, ReplicaPureFunction>>;
 }>;
 
 export interface ReplicaCommandRuntime<

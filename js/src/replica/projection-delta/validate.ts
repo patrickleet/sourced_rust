@@ -386,14 +386,14 @@ export function validateCommandProjectionArtifact(
 			'version',
 			'deltaWireVersion',
 			'projectionProgramVersion',
-				'operationSemanticsVersion',
-				'projections',
-				'eventSet',
-				'capabilities',
-				'preview',
+			'operationSemanticsVersion',
+			'projections',
+			'eventSet',
+			'capabilities',
+			'preview',
 			'fallback'
 		],
-		[],
+		['pureReduces'],
 		path
 	);
 	if (
@@ -677,6 +677,12 @@ export function validateCommandProjectionArtifact(
 				invalid(`${path}.preview.recoveries`);
 			}
 		}
+			const pureReduces = parsePureReduces(
+				projection.pureReduces,
+				occurrences.length,
+				projections.length,
+				`${path}.pureReduces`
+			);
 			const parsed = Object.freeze({
 			version: 2 as const,
 			deltaWireVersion: 1 as const,
@@ -694,6 +700,7 @@ export function validateCommandProjectionArtifact(
 			operations: Object.freeze(operations),
 			recoveries: Object.freeze(recoveries)
 		}),
+			...(pureReduces.length === 0 ? {} : { pureReduces }),
 			fallback: 'revalidate' as const
 			});
 			if (encoder.encode(JSON.stringify(parsed)).byteLength > MAX_BODY_BYTES) {
@@ -701,6 +708,76 @@ export function validateCommandProjectionArtifact(
 			}
 			return parsed;
 	}
+
+function parsePureReduces(
+	value: unknown,
+	occurrenceCount: number,
+	projectionCount: number,
+	path: string
+): readonly import('./types.js').ProjectionPreviewPureReduce[] {
+	if (value === undefined) return Object.freeze([]);
+	return Object.freeze(
+		boundedArray(value, path).map((item, index) => {
+			const itemPath = `${path}[${index}]`;
+			const reduce = exactRecord(
+				item,
+				[
+					'fn',
+					'scope',
+					'args',
+					'assign',
+					'occurrence_ordinal',
+					'projection_refs'
+				],
+				[],
+				itemPath
+			);
+			const fn = reduce.fn;
+			if (typeof fn !== 'string' || fn.length === 0 || fn.length > 128) {
+				invalid(`${itemPath}.fn`);
+			}
+			const occurrenceOrdinal = boundedOrdinal(
+				reduce.occurrence_ordinal,
+				`${itemPath}.occurrence_ordinal`
+			);
+			if (occurrenceOrdinal >= occurrenceCount) invalid(itemPath);
+			const assign = boundedArray(reduce.assign, `${itemPath}.assign`).map(
+				(field, fieldIndex) => {
+					if (typeof field !== 'string' || field.length === 0) {
+						invalid(`${itemPath}.assign[${fieldIndex}]`);
+					}
+					return field as string;
+				}
+			);
+			if (assign.length === 0) invalid(`${itemPath}.assign`);
+			const args = boundedArray(reduce.args, `${itemPath}.args`).map(
+				(arg, argIndex) => {
+					const argPath = `${itemPath}.args[${argIndex}]`;
+					const entry = exactRecord(arg, ['name', 'value'], [], argPath);
+					if (typeof entry.name !== 'string' || entry.name.length === 0) {
+						invalid(`${argPath}.name`);
+					}
+					return Object.freeze({
+						name: entry.name as string,
+						value: parsePreviewValue(entry.value, `${argPath}.value`, 0)
+					});
+				}
+			);
+			return Object.freeze({
+				fn: fn as string,
+				scope: parsePreviewScope(reduce.scope, `${itemPath}.scope`),
+				args: Object.freeze(args),
+				assign: Object.freeze(assign),
+				occurrence_ordinal: occurrenceOrdinal,
+				projection_refs: projectionRefs(
+					reduce.projection_refs,
+					projectionCount,
+					`${itemPath}.projection_refs`
+				)
+			});
+		})
+	);
+}
 
 export function validateProjectionMetadataAuthority(
 	metadata: CommandProjectionMetadata,

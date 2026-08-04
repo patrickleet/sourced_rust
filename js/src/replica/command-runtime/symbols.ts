@@ -38,3 +38,12 @@ export const replicaCommandProjectionDelta = Symbol(
 export const replicaCommandProjectedLifecycle = Symbol(
 	'distributed.replica.command-projected-lifecycle'
 );
+/**
+ * Package-private live-record field read for pure reduce optimism.
+ * Returns undefined when the record is not present (fail closed).
+ *
+ * @internal
+ */
+export const replicaCommandReadRecord = Symbol(
+	'distributed.replica.command-read-record'
+);
