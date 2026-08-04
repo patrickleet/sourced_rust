@@ -16,8 +16,9 @@ import type {
   ReplicaValue
 } from '@hops-ops/distributed/replica';
 
-import { BLOB_PURE_FUNCTIONS } from '../../blob/simulate-move.js';
 import { COMMAND_STATUS } from './protocol.js';
+
+import { PURE_FUNCTIONS } from './pures.js';
 
 export type Command_blob_games_move_Input = {
   readonly "direction": string;
@@ -307,25 +308,29 @@ export const Command_blob_games_move: ReplicaCommandArtifact<Command_blob_games_
     ],
     "pureReduces": [
       {
-        "assign": [
-          "map_json",
-          "score",
-          "player_dead",
-          "current_level_completed",
-          "status"
-        ],
         "args": [
           {
             "name": "direction",
             "value": {
               "kind": "input",
-              "path": ["direction"]
+              "path": [
+                "direction"
+              ]
             }
           }
         ],
+        "assign": [
+          "current_level_completed",
+          "map_json",
+          "player_dead",
+          "score",
+          "status"
+        ],
         "fn": "blob.simulate_move",
         "occurrence_ordinal": 0,
-        "projection_refs": [0],
+        "projection_refs": [
+          0
+        ],
         "scope": {
           "key": [
             {
@@ -333,7 +338,9 @@ export const Command_blob_games_move: ReplicaCommandArtifact<Command_blob_games_
               "ordinal": 0,
               "value": {
                 "kind": "input",
-                "path": ["game_id"]
+                "path": [
+                  "game_id"
+                ]
               }
             }
           ],
@@ -349,7 +356,7 @@ export const Command_blob_games_move: ReplicaCommandArtifact<Command_blob_games_
   "protocol": {
     "operation": "sha256:6e3c6c00474e126a3fce6b671cd8a06eed988546f161793d39a08cc784ae49c7",
     "protocolHash": "sha256:00fb342f3acb4dc1c1716a43cc3001c748d5f6c500ff831690d820e9e43e2782",
-    "schemaHash": "sha256:c5a1e49d2bc4087419948d97f4cc666928d2bf8a0a6b30c3d3bf040a9692f56f",
+    "schemaHash": "sha256:40f8b08fb8905bfdf5981a23819fa2c4bfd5df06c0f293fee68acc2050ce2f54",
     "surface": {
       "eligible_roles": [
         "admin",
@@ -678,7 +685,7 @@ export const Command_blob_games_start: ReplicaCommandArtifact<Command_blob_games
   "protocol": {
     "operation": "sha256:4b7ab56a38aec41d21809801ecefc5d7039a09e53a350187152c72a305de1567",
     "protocolHash": "sha256:00fb342f3acb4dc1c1716a43cc3001c748d5f6c500ff831690d820e9e43e2782",
-    "schemaHash": "sha256:c5a1e49d2bc4087419948d97f4cc666928d2bf8a0a6b30c3d3bf040a9692f56f",
+    "schemaHash": "sha256:40f8b08fb8905bfdf5981a23819fa2c4bfd5df06c0f293fee68acc2050ce2f54",
     "surface": {
       "eligible_roles": [
         "admin",
@@ -1007,7 +1014,7 @@ export const Command_blob_games_start_level: ReplicaCommandArtifact<Command_blob
   "protocol": {
     "operation": "sha256:37c108a568f62e7391a03728555d7013bb717f14d1957a5c3527151fd70093bf",
     "protocolHash": "sha256:00fb342f3acb4dc1c1716a43cc3001c748d5f6c500ff831690d820e9e43e2782",
-    "schemaHash": "sha256:c5a1e49d2bc4087419948d97f4cc666928d2bf8a0a6b30c3d3bf040a9692f56f",
+    "schemaHash": "sha256:40f8b08fb8905bfdf5981a23819fa2c4bfd5df06c0f293fee68acc2050ce2f54",
     "surface": {
       "eligible_roles": [
         "admin",
@@ -1337,7 +1344,7 @@ export const Command_chat_messages_post: ReplicaCommandArtifact<Command_chat_mes
   "protocol": {
     "operation": "sha256:838e5ccb79daebb523ea3c634bea27077bcea191feabb86e45923470a7b9373d",
     "protocolHash": "sha256:00fb342f3acb4dc1c1716a43cc3001c748d5f6c500ff831690d820e9e43e2782",
-    "schemaHash": "sha256:c5a1e49d2bc4087419948d97f4cc666928d2bf8a0a6b30c3d3bf040a9692f56f",
+    "schemaHash": "sha256:40f8b08fb8905bfdf5981a23819fa2c4bfd5df06c0f293fee68acc2050ce2f54",
     "surface": {
       "eligible_roles": [
         "admin",
@@ -1588,7 +1595,7 @@ export const Command_todos_archive: ReplicaCommandArtifact<Command_todos_archive
   "protocol": {
     "operation": "sha256:fb2d3a14933841a966836ced65263a9ba2413d5aed8c582d31165aaee6e632ab",
     "protocolHash": "sha256:00fb342f3acb4dc1c1716a43cc3001c748d5f6c500ff831690d820e9e43e2782",
-    "schemaHash": "sha256:c5a1e49d2bc4087419948d97f4cc666928d2bf8a0a6b30c3d3bf040a9692f56f",
+    "schemaHash": "sha256:40f8b08fb8905bfdf5981a23819fa2c4bfd5df06c0f293fee68acc2050ce2f54",
     "surface": {
       "eligible_roles": [
         "admin",
@@ -1845,7 +1852,7 @@ export const Command_todos_complete: ReplicaCommandArtifact<Command_todos_comple
   "protocol": {
     "operation": "sha256:9b8185c835d3308bda308593486767731acaf4b084a7962b4b17e3e2e319922c",
     "protocolHash": "sha256:00fb342f3acb4dc1c1716a43cc3001c748d5f6c500ff831690d820e9e43e2782",
-    "schemaHash": "sha256:c5a1e49d2bc4087419948d97f4cc666928d2bf8a0a6b30c3d3bf040a9692f56f",
+    "schemaHash": "sha256:40f8b08fb8905bfdf5981a23819fa2c4bfd5df06c0f293fee68acc2050ce2f54",
     "surface": {
       "eligible_roles": [
         "admin",
@@ -2149,7 +2156,7 @@ export const Command_todos_create: ReplicaCommandArtifact<Command_todos_create_I
   "protocol": {
     "operation": "sha256:187e72cd747aaa13ac0362942d73085a5166401f8cc3a188badeb3e7fa50cacb",
     "protocolHash": "sha256:00fb342f3acb4dc1c1716a43cc3001c748d5f6c500ff831690d820e9e43e2782",
-    "schemaHash": "sha256:c5a1e49d2bc4087419948d97f4cc666928d2bf8a0a6b30c3d3bf040a9692f56f",
+    "schemaHash": "sha256:40f8b08fb8905bfdf5981a23819fa2c4bfd5df06c0f293fee68acc2050ce2f54",
     "surface": {
       "eligible_roles": [
         "admin",
@@ -2361,7 +2368,7 @@ export const Command_todos_purge: ReplicaCommandArtifact<Command_todos_purge_Inp
   "protocol": {
     "operation": "sha256:01875defc418ccf0e607f316baa30d2f9cf8305602976cc5b1ce30cc5078c15e",
     "protocolHash": "sha256:00fb342f3acb4dc1c1716a43cc3001c748d5f6c500ff831690d820e9e43e2782",
-    "schemaHash": "sha256:c5a1e49d2bc4087419948d97f4cc666928d2bf8a0a6b30c3d3bf040a9692f56f",
+    "schemaHash": "sha256:40f8b08fb8905bfdf5981a23819fa2c4bfd5df06c0f293fee68acc2050ce2f54",
     "surface": {
       "eligible_roles": [
         "admin",
@@ -2639,7 +2646,7 @@ export const Command_todos_rename: ReplicaCommandArtifact<Command_todos_rename_I
   "protocol": {
     "operation": "sha256:a3e8a5ceae1a0f2c33863a4f2bf377a95b79da2157a619eb7823aa845ef681c3",
     "protocolHash": "sha256:00fb342f3acb4dc1c1716a43cc3001c748d5f6c500ff831690d820e9e43e2782",
-    "schemaHash": "sha256:c5a1e49d2bc4087419948d97f4cc666928d2bf8a0a6b30c3d3bf040a9692f56f",
+    "schemaHash": "sha256:40f8b08fb8905bfdf5981a23819fa2c4bfd5df06c0f293fee68acc2050ce2f54",
     "surface": {
       "eligible_roles": [
         "admin",
@@ -2896,7 +2903,7 @@ export const Command_todos_reopen: ReplicaCommandArtifact<Command_todos_reopen_I
   "protocol": {
     "operation": "sha256:04531ace98fd3ee5e652761abbcb6ebd745d5ff6ed0ad100030f935335c5a35e",
     "protocolHash": "sha256:00fb342f3acb4dc1c1716a43cc3001c748d5f6c500ff831690d820e9e43e2782",
-    "schemaHash": "sha256:c5a1e49d2bc4087419948d97f4cc666928d2bf8a0a6b30c3d3bf040a9692f56f",
+    "schemaHash": "sha256:40f8b08fb8905bfdf5981a23819fa2c4bfd5df06c0f293fee68acc2050ce2f54",
     "surface": {
       "eligible_roles": [
         "admin",
@@ -2976,9 +2983,8 @@ export function createCommands(
 ): GeneratedCommandRuntime {
   return createReplicaCommandRuntime(replica, transport, COMMANDS, {
     ...options,
-    // Pure inventory for projection.pureReduces (blob board auto-optimism).
     pureFunctions: {
-      ...BLOB_PURE_FUNCTIONS,
+      ...PURE_FUNCTIONS,
       ...(options?.pureFunctions ?? {})
     },
     status: COMMAND_STATUS

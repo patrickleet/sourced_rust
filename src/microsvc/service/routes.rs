@@ -494,6 +494,16 @@ where
         self
     }
 
+    /// Pure reducer over a known cache row for client auto-optimism.
+    #[must_use]
+    pub fn preview_reduce_known_record(
+        mut self,
+        reduce: crate::graphql::CommandProjectionPureReduce,
+    ) -> Self {
+        self.contract.projections.add_pure_reduce(reduce);
+        self
+    }
+
     /// Attach the mount produced by the same command declaration. The route
     /// adapter checks its identity before registration.
     pub fn mount(mut self, mount: CommandMount) -> Self {

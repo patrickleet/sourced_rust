@@ -2,7 +2,9 @@
 
 use blob_domain::domain_commands;
 use blob_domain::BlobGame;
-use distributed::graphql::{Atomic, SurfaceDirectProjection};
+use distributed::graphql::{
+    Atomic, CommandProjectionPureReduce, SurfaceDirectProjection,
+};
 use distributed::microsvc::{
     ConfigurableOutboxPublisher, HasOutboxStore, HasRepo, RepoReadModelDependencies, Routes,
 };
@@ -61,6 +63,24 @@ where
         >(blob_move::COMMAND)
         .field_name("blob_games_move")
         .roles(["user", "admin"].into_iter())
+        // Domain pure: blob_domain::simulate_move — client twin at $lib/blob/simulate-move.
+        .preview_reduce_known_record(
+            CommandProjectionPureReduce::new(
+                "blob.simulate_move",
+                "blob/simulate-move",
+                "simulateMove",
+                "BlobGames",
+            )
+            .key_input("game_id", ["game_id"])
+            .arg_input("direction", ["direction"])
+            .assign([
+                "map_json",
+                "score",
+                "player_dead",
+                "current_level_completed",
+                "status",
+            ]),
+        )
         .handle(blob_move::handle)
         .command_transition::<
             domain_commands::StartLevel,
