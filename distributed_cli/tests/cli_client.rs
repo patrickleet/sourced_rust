@@ -312,7 +312,7 @@ fn write_document(project: &Path, relative: &str, source: &str) {
 }
 
 fn dctl_client(project: &Path, args: &[&str]) -> Output {
-    Command::new(env!("CARGO_BIN_EXE_dctl"))
+    Command::new(env!("CARGO_BIN_EXE_distributed"))
         .arg("client")
         .args(args)
         .current_dir(project)

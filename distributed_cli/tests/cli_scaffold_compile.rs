@@ -23,7 +23,7 @@ fn distributed_root() -> PathBuf {
 fn scaffold(dir_name: &str, extra_args: &[&str]) -> PathBuf {
     let out_dir = Path::new(env!("CARGO_TARGET_TMPDIR")).join(dir_name);
     let _ = fs::remove_dir_all(&out_dir);
-    let output = Command::new(env!("CARGO_BIN_EXE_dctl"))
+    let output = Command::new(env!("CARGO_BIN_EXE_distributed"))
         .args([
             "scaffold",
             "orders",
