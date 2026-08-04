@@ -1,7 +1,7 @@
 //! BlobGame aggregate — grid trail game (remake of ig-blob-game-model-service).
 //!
-//! Tile ints match JS `constants.ts` (player=9, hole=0, unvisited=1, visited=2,
-//! dead_by_suicide=3, dead_by_hole=4). Read models update only from emitted facts.
+//! Pure board rules live in [`blob_core`] (WASM-eligible). Tile ints match the
+//! client board helpers (player=9, hole=0, unvisited=1, visited=2, …).
 
 pub mod levels;
 pub mod models;

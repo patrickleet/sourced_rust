@@ -1,31 +1,3 @@
-use serde::{Deserialize, Serialize};
+//! Re-export pure direction from [`blob_core`].
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
-#[serde(rename_all = "snake_case")]
-pub enum Direction {
-    Up,
-    Down,
-    Left,
-    Right,
-}
-
-impl Direction {
-    pub fn parse(s: &str) -> Option<Self> {
-        match s.trim().to_ascii_lowercase().as_str() {
-            "up" => Some(Self::Up),
-            "down" => Some(Self::Down),
-            "left" => Some(Self::Left),
-            "right" => Some(Self::Right),
-            _ => None,
-        }
-    }
-
-    pub fn as_str(self) -> &'static str {
-        match self {
-            Self::Up => "up",
-            Self::Down => "down",
-            Self::Left => "left",
-            Self::Right => "right",
-        }
-    }
-}
+pub use blob_core::Direction;

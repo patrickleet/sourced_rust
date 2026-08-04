@@ -4,14 +4,16 @@
 	 *
 	 * - URL (`/blob` | `/blob/{gameId}`) selects which game is active.
 	 * - Board and history derive from `BlobGames.use()`.
-	 * - Commands are Atomic: thin input (`game_id` + `direction`); board updates
-	 *   when the authoritative row seals on the response.
+	 * - Commands are Atomic: thin input (`game_id` + `direction`). Known-row pure
+	 *   optimism runs `blob.simulate_move` via blob-core WASM; Atomic seal is
+	 *   still server authority.
 	 */
 	import { onMount } from 'svelte';
 	import { goto } from '$app/navigation';
 	import { page } from '$app/state';
 	import { BlobGames, useCommands } from '$distributed';
 	import { parseBoard, TILE, type Direction } from '$lib/blob/board';
+	import { ensureBlobWasm } from '$lib/blob/simulate-move';
 	import { Button } from '$lib/components/shared/ui';
 	import { AppPage, InlineAlert, PageHeader } from '$lib/components/product';
 	import { HowItsBuilt } from '$lib/components/walkthrough';
@@ -189,6 +191,10 @@
 
 	onMount(() => {
 		hydrated = true;
+		// Ensure blob-core WASM is ready before pure-reduce optimism on move.
+		void ensureBlobWasm().catch(() => {
+			/* fail-closed pure until reload */
+		});
 		const testWindow = window as Window & {
 			__distributedBlobRefetch?: () => Promise<void>;
 		};

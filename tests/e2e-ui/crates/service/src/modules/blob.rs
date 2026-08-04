@@ -64,7 +64,7 @@ where
         >(blob_move::COMMAND)
         .field_name("blob_games_move")
         .roles(["user", "admin"].into_iter())
-        // Domain pure: blob_domain::simulate_move — client twin at $lib/blob/simulate-move.
+        // Domain pure: blob_core::simulate_move — client via blob-wasm ($lib/blob/simulate-move).
         .preview_reduce_known_record(
             CommandProjectionPureReduce::new(
                 "blob.simulate_move",

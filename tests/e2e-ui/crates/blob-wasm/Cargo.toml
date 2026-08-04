@@ -1,17 +1,19 @@
 [package]
-name = "blob-domain"
+name = "blob-wasm"
 version.workspace = true
 edition.workspace = true
 license.workspace = true
 publish.workspace = true
+description = "WASM exports of blob-core pure board rules for client auto-optimism"
+
+[lib]
+crate-type = ["cdylib", "rlib"]
 
 [dependencies]
 blob-core = { path = "../blob-core" }
-distributed = { workspace = true }
 serde = { workspace = true }
 serde_json = { workspace = true }
-thiserror = { workspace = true }
-rand = { workspace = true }
+wasm-bindgen = "0.2"
 
-[dev-dependencies]
-serde_json = { workspace = true }
+[package.metadata.wasm-pack.profile.release]
+wasm-opt = false
