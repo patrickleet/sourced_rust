@@ -606,7 +606,7 @@ mod client_surface_parity_tests {
                         "surface": {
                             "kind": "application",
                             "name": "public",
-                            "roles": ["anonymous"],
+                            "eligible_roles": ["anonymous"],
                             "schema_roles": ["anonymous"]
                         },
                         "schemaHash": manifest.schema_fingerprint
@@ -657,7 +657,7 @@ mod client_surface_parity_tests {
             .unwrap();
 
         let manifest = engine
-            .client_manifest_for_application("console", &["admin", "user"], &["admin", "user"])
+            .client_manifest_for_application("console", &["admin", "user"], &["user"])
             .expect("registered multi-role application manifest");
         assert_eq!(
             manifest.surface,
@@ -700,8 +700,8 @@ mod client_surface_parity_tests {
                             "surface": {
                                 "kind": "application",
                                 "name": "console",
-                            "roles": ["admin", "user"],
-                            "schema_roles": ["user"]
+                                "eligible_roles": ["admin", "user"],
+                                "schema_roles": ["user"]
                             },
                             "schemaHash": schema_hash
                         }
@@ -771,7 +771,7 @@ mod client_surface_parity_tests {
                             "surface": {
                                 "kind": "application",
                                 "name": "console",
-                                "roles": ["user"],
+                                "eligible_roles": ["user"],
                                 "schema_roles": ["user"]
                             },
                             "schemaHash": user_only_manifest.schema_fingerprint
@@ -825,7 +825,7 @@ mod client_surface_parity_tests {
                             "surface": {
                                 "kind": "application",
                                 "name": "console",
-                                "roles": roles,
+                                "eligible_roles": roles,
                                 "schema_roles": roles
                             },
                             "schemaHash": schema_hash

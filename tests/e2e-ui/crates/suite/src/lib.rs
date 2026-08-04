@@ -123,23 +123,27 @@ pub async fn wait_ready(base: &str, timeout: Duration) -> bool {
 }
 
 /// Default GraphQL helper: multi-role principals must name a surface.
-/// - `user` → e2e-ui (eligible admin+user, privilege user)
+/// - `user` → e2e-ui (eligible admin+user, schema privilege user)
 /// - `admin` → e2e-ui-admin (admin privilege)
 pub async fn graphql(base: &str, query: &str, user_id: &str, role: &str) -> Result<Value, String> {
-    let (application, surface_roles, schema_hash) = default_application_surface(role)?;
+    let (application, eligible_roles, schema_roles, schema_hash) =
+        default_application_surface(role)?;
     graphql_for_application(
         base,
         query,
         user_id,
         role,
         application,
-        &surface_roles,
+        &eligible_roles,
+        &schema_roles,
         &schema_hash,
     )
     .await
 }
 
-fn default_application_surface(role: &str) -> Result<(&'static str, Vec<&'static str>, String), String> {
+fn default_application_surface(
+    role: &str,
+) -> Result<(&'static str, Vec<&'static str>, Vec<&'static str>, String), String> {
     use e2e_service::{
         distributed_admin_client_surface, distributed_client_surface, DISTRIBUTED_ADMIN_CLIENT_SURFACE,
         DISTRIBUTED_CLIENT_SURFACE,
@@ -152,6 +156,7 @@ fn default_application_surface(role: &str) -> Result<(&'static str, Vec<&'static
             Ok((
                 DISTRIBUTED_ADMIN_CLIENT_SURFACE,
                 vec!["admin"],
+                vec!["admin"],
                 manifest.schema_fingerprint,
             ))
         }
@@ -162,6 +167,7 @@ fn default_application_surface(role: &str) -> Result<(&'static str, Vec<&'static
             Ok((
                 DISTRIBUTED_CLIENT_SURFACE,
                 vec!["admin", "user"],
+                vec!["user"],
                 manifest.schema_fingerprint,
             ))
         }
@@ -174,7 +180,8 @@ pub async fn graphql_for_application(
     user_id: &str,
     role: &str,
     application: &str,
-    roles: &[&str],
+    eligible_roles: &[&str],
+    schema_roles: &[&str],
     schema_hash: &str,
 ) -> Result<Value, String> {
     graphql_request(
@@ -187,7 +194,8 @@ pub async fn graphql_for_application(
                         "surface": {
                             "kind": "application",
                             "name": application,
-                            "roles": roles,
+                            "eligible_roles": eligible_roles,
+                            "schema_roles": schema_roles,
                         },
                         "schemaHash": schema_hash,
                     }
