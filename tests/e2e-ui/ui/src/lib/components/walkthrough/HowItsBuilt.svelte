@@ -14,6 +14,8 @@
 
 	let { demo, defaultOpen = false }: Props = $props();
 
+	// Intentionally seed once from the prop (deep-link); toggles use `open` only.
+	// svelte-ignore state_referenced_locally
 	let open = $state(defaultOpen);
 	let activeTab = $state(0);
 
@@ -51,7 +53,7 @@
 	<button type="button" class="hib-scrim" aria-label="Close how it’s built" onclick={closePanel}></button>
 {/if}
 
-<aside
+<div
 	id="hib-drawer-{demo.id}"
 	class="hib-drawer"
 	class:open
@@ -116,7 +118,7 @@
 		<span class="hib-foot-label">Distributed · e2e-ui</span>
 		<a class="hib-foot-link" href="/#demos" onclick={closePanel}>All demos</a>
 	</footer>
-</aside>
+</div>
 
 <style>
 	.hib-fab {

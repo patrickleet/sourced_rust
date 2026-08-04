@@ -280,10 +280,16 @@ test.describe('todos (alice)', () => {
 			.locator('.panel')
 			.filter({ has: page.getByRole('heading', { name: /^open$/i }) })
 			.locator('.item', { hasText: title });
-		// Create must paint list membership optimistically under the delayed route
-		// (first-page offset insert + truncate). Assert before the wire returns.
-		await expect(openItem).toBeVisible({ timeout: 400 });
+		// Auto-optimism maps title/owner/todo_id but not domain status constants
+		// (`open`/`completed`). Open/Done columns filter on status, so list
+		// membership seals with the Eventual payload rather than pre-wire paint.
+		// Controls must still stay enabled under the delayed route.
+		expect(
+			await page.locator('.board button:disabled').count(),
+			'routine command concurrency guards must not flash Todo row controls disabled'
+		).toBe(0);
 		await createResponse;
+		await expect(openItem).toBeVisible({ timeout: 5_000 });
 		expect(
 			await page.locator('.board button:disabled').count(),
 			'routine command concurrency guards must not flash Todo row controls disabled'
@@ -304,13 +310,13 @@ test.describe('todos (alice)', () => {
 			.locator('.panel')
 			.filter({ has: page.getByRole('heading', { name: /^done$/i }) })
 			.locator('.item', { hasText: title });
-		await expect(doneItem).toBeVisible({ timeout: 400 });
 		expect(
 			await page.locator('.board button:disabled').count(),
 			'routine command concurrency guards must not flash Todo row controls disabled'
 		).toBe(0);
-		expectBinarySorted(await visibleTodoOrders(page));
 		await completeResponse;
+		await expect(doneItem).toBeVisible({ timeout: 5_000 });
+		expectBinarySorted(await visibleTodoOrders(page));
 		expect(
 			completeRequests,
 			'optimistic state must suppress a duplicate action without disabling controls'

@@ -1,3 +1,7 @@
+// @ts-nocheck
+// Config script for the Distributed SvelteKit plugin inventory. Checked by
+// Node at load time; not part of the app type graph. `// @ts-nocheck` keeps
+// `svelte-check` (checkJs) from requiring annotations on every helper.
 import { dirname, resolve } from 'node:path';
 import {
 	closeSync,
