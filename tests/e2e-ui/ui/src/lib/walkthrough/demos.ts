@@ -3,10 +3,11 @@ import type { DemoWalkthrough } from './types';
 /**
  * Tab order is browser-first teaching order for every demo:
  * 1. Query / live subscription (+ ReadModel shape + read RBAC)
- * 2. Commands (optimistic cache vs Atomic) (+ write RBAC)
- * 3. Command handlers (repo → aggregate → commit)
- * 4. Domain model (plain Rust + macros)
- * 5. Domain events + projections
+ * 2. Commands (optimistic cache vs Atomic / pure reduce) (+ write RBAC)
+ * 3. Service module (e2e-service: MODULE_ID, routes(), compose into Service)
+ * 4. Command handlers (principal → repo → aggregate → commit)
+ * 5. Domain model (plain Rust + macros; blob pure core)
+ * 6. Domain events + projections
  *
  * Samples should be real, pasteable shapes from the fixture — not comment-only stubs.
  * Query tabs should include the read model definition (#[derive(ReadModel)] struct), not only
@@ -17,7 +18,8 @@ import type { DemoWalkthrough } from './types';
  *   auto-optimism previews until obligations complete (no response row).
  * - Atomic (Direct placement + Atomic command): command handler applies IR
  *   same-tx → wait and return the row; confirm before await settles.
- *   Atomic blob move uses thin input; the sealed response row updates the board.
+ * - Known-record pure (blob move): client runs domain pure (WASM) for paint;
+ *   Atomic seal remains server authority.
  */
 
 export const todosWalkthrough: DemoWalkthrough = {
@@ -105,7 +107,7 @@ await commands.todo.complete({ todo_id });`
 				},
 				{
 					file: 'modules/todo.rs · todos_create',
-					caption: 'Write RBAC on the inventory; emit set from domain transition; owner claim is auto-optimism.',
+					caption: 'Write RBAC + session guard; emit set from domain transition; owner claim is auto-optimism.',
 					code: `.command_transition::<
   domain_commands::Create,
   TodoCreateInput,
@@ -117,11 +119,11 @@ await commands.todo.complete({ todo_id });`
   input: TodoCreateInput;
   default input.todo_id = uuid_v7();
 })
-.handle(todo_create::handle)`
+.guarded(causal_has_user, todo_create::handle)`
 				},
 				{
 					file: 'modules/todo.rs · todos_force_archive',
-					caption: 'Elevated mutation: admin only; not on the user client tree.',
+					caption: 'Elevated mutation: admin role on surface + causal_is_admin guard; not on the user client tree.',
 					code: `.command_transition::<
   domain_commands::ForceArchive,
   TodoForceArchiveInput,
@@ -129,24 +131,65 @@ await commands.todo.complete({ todo_id });`
 >(todo_force_archive::COMMAND)
 .field_name("todos_force_archive")
 .roles(["admin"])
-.handle(todo_force_archive::handle)`
+.guarded(causal_is_admin, todo_force_archive::handle)`
+				}
+			]
+		},
+		{
+			id: 'service',
+			label: '3 · Service module',
+			lede: 'e2e-service is the application crate. The todo module is one bounded-context slice: MODULE_ID, Routes::for_aggregate, command mounts, and the modeled projector. Domain rules stay in todo-domain; GraphQL surfaces and runners live elsewhere.',
+			principle: 'Bounded contexts show up as modules on one Service.',
+			samples: [
+				{
+					file: 'modules/todo.rs · MODULE_ID + routes()',
+					caption: 'One module = Todo aggregate inventory + projector attach point.',
+					code: `pub const MODULE_ID: &str = "todo";
+
+pub fn routes<R, L, S>(
+  repo: R,
+  locks: L,
+  read_models: S,
+  todo_projector: SurfaceProjector,
+) -> TodoRoutes<R, L, S> {
+  Routes::for_aggregate::<R, L, Todo, S>(repo, locks, read_models)
+    .command_transition::</* Create */>(todo_create::COMMAND)
+    // … rename, complete, reopen, archive, force_archive, purge …
+    .modeled_projector(todo_projector)
+    .handle(handlers::events::project_todos::handle)
+}`
+				},
+				{
+					file: 'modules/compose.rs · build_service',
+					caption: 'compose lists modules; host/runner starts the binary.',
+					code: `let todos = todo::routes(repo.clone(), locks.clone(), read_models.clone(), projections.todo);
+let chat = chat::routes(/* … */);
+let blob = blob::routes(/* … */);
+
+Service::new()
+  .named("e2e-ui")
+  .without_http_command_routes()
+  .routes(todos)
+  .routes(chat)
+  .routes(blob)`
 				}
 			]
 		},
 		{
 			id: 'handlers',
-			label: '3 · Handlers',
-			lede: 'Command handlers use the repository pattern: get or create the aggregate, call a domain method, commit. Todos choose eventual consistency (Eventual + projector).',
+			label: '4 · Handlers',
+			lede: 'Command handlers use the repository pattern: bind principal (after the mount guard), get or create the aggregate, call a domain method, commit. Todos choose eventual consistency (Eventual + projector).',
 			principle: 'Commands change the world; tables are for reading.',
 			samples: [
 				{
 					file: 'handlers/commands/todo_create.rs',
-					caption: 'repo → create → domain → publish_events → causal',
+					caption: 'principal → create → domain → publish_events → eventual',
 					code: `pub async fn handle(
   ctx: &CausalCommandContext<'_, Todo>,
   input: TodoCreateInput,
 ) -> Result<PreparedCommand<Eventual<TodoCreatePayload>>, HandlerError> {
-  let owner = ctx.user_id()?.to_string();
+  // Session admission already ran on .guarded(causal_has_user, …).
+  let owner = principal(ctx)?;
   let repo = ctx.repo();
   let mut todo = repo.create();
   todo.create(&input.todo_id, &owner, &input.title)
@@ -162,7 +205,8 @@ await commands.todo.complete({ todo_id });`
 				},
 				{
 					file: 'handlers/commands/todo_complete.rs',
-					code: `let mut todo = repo
+					code: `let owner = principal(ctx)?;
+let mut todo = repo
   .get(&input.todo_id)
   .await?
   .ok_or_else(|| HandlerError::NotFound(input.todo_id.clone()))?;
@@ -177,7 +221,7 @@ repo.publish_events().commit(todo)?.eventual(TodoStatusPayload {
 		},
 		{
 			id: 'domain',
-			label: '4 · Domain',
+			label: '5 · Domain',
 			lede: 'The write model is a plain Rust aggregate — fields are the consistency boundary. Public methods enforce rules; private #[event] helpers record history. Unit-testable with no HTTP or SQL.',
 			principle: 'Start with the domain, not the database.',
 			samples: [
@@ -227,7 +271,7 @@ fn record_completed(&mut self) {
 		},
 		{
 			id: 'events',
-			label: '5 · Events',
+			label: '6 · Events',
 			lede: 'Domain methods emit events. Projections map those events onto syntax-only GraphQL mutations that become MutationProgram IR — upsert or delete read-model rows. The UI never dual-writes the todos table.',
 			principle: 'Know which side of the fence you are on.',
 			samples: [
@@ -386,7 +430,7 @@ if (receipt.projected !== undefined) {
 				},
 				{
 					file: 'modules/chat.rs · chat_messages_post',
-					caption: 'Write RBAC: user + admin only. Emit set from domain_commands::Post. Public client has zero commands.',
+					caption: 'Write RBAC + session guard. Emit set from domain_commands::Post. Public client has zero commands.',
 					code: `.command_transition::<
   domain_commands::Post,
   ChatPostInput,
@@ -394,7 +438,7 @@ if (receipt.projected !== undefined) {
 >(chat_post::COMMAND)
 .field_name("chat_messages_post")
 .roles(["user", "admin"])
-.handle(chat_post::handle)`
+.guarded(causal_has_user, chat_post::handle)`
 				},
 				{
 					file: 'generated/public/commands.ts',
@@ -405,9 +449,45 @@ export type GeneratedCommands = Readonly<Record<never, never>>;`
 			]
 		},
 		{
+			id: 'service',
+			label: '3 · Service module',
+			lede: 'The chat module in e2e-service mounts lobby commands and also hosts identity ingress (Zitadel Action + scrape) plus chat/auth projectors. One module file is the review surface for “how chat joins the Service.”',
+			principle: 'Bounded contexts show up as modules on one Service.',
+			samples: [
+				{
+					file: 'modules/chat.rs · routes()',
+					caption: 'ChatMessage commands + Zitadel extension commands + projectors.',
+					code: `pub const MODULE_ID: &str = "chat";
+
+pub fn routes<R, L, S>(...) -> ChatRoutes<R, L, S> {
+  Routes::for_aggregate::<R, L, ChatMessage, S>(repo, locks, read_models)
+    .command_transition::</* Post */>(chat_post::COMMAND)
+    .guarded(causal_has_user, chat_post::handle)
+    // Zitadel Action ingress + on-demand scrape (non-GraphQL).
+    .command(zitadel::COMMAND)
+    .guarded(zitadel::guard, zitadel::handle)
+    .modeled_projector(chat_projector)
+    .handle(project_chat_messages::handle)
+    .events(project_auth_user::EVENTS)
+    .guarded(project_auth_user::guard, project_auth_user::handle)
+}`
+				},
+				{
+					file: 'modules/compose.rs · MODULE_IDS',
+					caption: 'Inventory is explicit — todo, chat, blob, identity.',
+					code: `pub const MODULE_IDS: &[&str] = &[
+  todo::MODULE_ID,
+  chat::MODULE_ID,
+  blob::MODULE_ID,
+  "identity",
+];`
+				}
+			]
+		},
+		{
 			id: 'handlers',
-			label: '3 · Handlers',
-			lede: 'Handler creates the chat aggregate through the repository, applies the domain post, commits Eventual (projector path). Author is always the session principal.',
+			label: '4 · Handlers',
+			lede: 'Handler creates the chat aggregate through the repository, applies the domain post, commits Eventual (projector path). Author is the session principal after the mount guard.',
 			principle: 'Trust the signed-in person, not the request body.',
 			samples: [
 				{
@@ -416,7 +496,7 @@ export type GeneratedCommands = Readonly<Record<never, never>>;`
   ctx: &CausalCommandContext<'_, ChatMessage>,
   input: ChatPostInput,
 ) -> Result<PreparedCommand<Eventual<ChatPostPayload>>, HandlerError> {
-  let author = ctx.user_id()?.to_string();
+  let author = principal(ctx)?;
   let created_at = canonical_near_unix_millis(&input.created_at)?;
   let repo = ctx.repo();
 
@@ -451,7 +531,7 @@ export type GeneratedCommands = Readonly<Record<never, never>>;`
 		},
 		{
 			id: 'domain',
-			label: '4 · Domain',
+			label: '5 · Domain',
 			lede: 'Chat domain is a plain Rust aggregate — one message is one consistency boundary. Public methods enforce rules; private #[event] helpers record history. No GraphQL in the model.',
 			principle: 'Start with the domain, not the database.',
 			samples: [
@@ -528,7 +608,7 @@ fn record_posted(
 		},
 		{
 			id: 'events',
-			label: '5 · Events',
+			label: '6 · Events',
 			lede: 'Domain events drive the chat_messages projection via a named GraphQL mutation program. ChangeHub wakes @live subscribers when rows land.',
 			principle: 'Commands change the world; tables are for reading.',
 			samples: [
@@ -565,9 +645,9 @@ export const blobWalkthrough: DemoWalkthrough = {
 	id: 'blob',
 	href: '/blob',
 	title: 'Blob game',
-	kicker: 'Browser → Atomic · no lag',
+	kicker: 'Browser → pure optimism → Atomic seal',
 	summary:
-		'Still start in the browser: one @load query owns the board. Moves are Atomic — same save_blob_game mutation IR as eventual, applied in the command handler so the response row can update the replica before await resolves.',
+		'One @load query owns the board. Moves are Atomic with thin input. Known-row pure reduce runs blob-domain board rules in WASM so the cache can paint immediately; the handler still runs the same pure, stages the row, and the sealed response remains authority.',
 	tabs: [
 		{
 			id: 'query',
@@ -634,21 +714,24 @@ const games = $derived(
 		{
 			id: 'commands',
 			label: '2 · Commands',
-			lede: 'Moves are Atomic: send only game_id + direction. The handler runs domain rules, stages the row, and the sealed response updates the replica. No client twin of game logic.',
-			principle: 'The domain owns outcomes; the client does not reimplement them.',
+			lede: 'Moves are Atomic: send only game_id + direction. The service declares a pure reduce over the known BlobGames row so the client can paint the next board without inventing a second ruleset. Session admission is a mount guard; the sealed Atomic row remains authority.',
+			principle: 'One pure for board rules — server and client share the domain core.',
 			samples: [
 				{
 					file: 'routes/blob/[[gameId]]/+page.svelte',
-					caption: 'Thin input — board comes from the Atomic row.',
-					code: `await commands.blob.move({
-  game_id,
-  direction,
+					caption: 'Thin input; ensure WASM is warm for pure-reduce optimism.',
+					code: `onMount(() => {
+  void ensureBlobWasm();
+  /* … */
 });
-// replica updates when the sealed BlobGames row arrives`
+
+await commands.blob.move({ game_id, direction });
+// pure may patch map_json/score/… immediately from known row;
+// Atomic seal confirms or corrects`
 				},
 				{
 					file: 'modules/blob.rs · blob.move',
-					caption: 'Emit set from domain_commands::MoveDir; apply site is the handler (Atomic).',
+					caption: 'Atomic + pure reduce + session guard. No hand-written TS board twin.',
 					code: `.command_transition::<
   domain_commands::MoveDir,
   BlobMoveInput,
@@ -656,14 +739,73 @@ const games = $derived(
 >(blob_move::COMMAND)
 .field_name("blob_games_move")
 .roles(["user", "admin"])
-.handle(blob_move::handle)`
+.preview_reduce_known_record(
+  CommandProjectionPureReduce::new(
+    "blob.simulate_move",
+    "blob/simulate-move",
+    "simulateMove",
+    "BlobGames",
+  )
+  .key_input("game_id", ["game_id"])
+  .arg_input("direction", ["direction"])
+  .assign(["map_json", "score", "player_dead",
+           "current_level_completed", "status"]),
+)
+.guarded(causal_has_user, blob_move::handle)`
+				},
+				{
+					file: 'ui/src/lib/blob/simulate-move.ts',
+					caption: 'Thin WASM host — rules live in blob_domain::core.',
+					code: `export function simulateMove(record, args) {
+  if (!api) return null; // fail closed until ensureBlobWasm()
+  const json = api.blobSimulateMove(
+    record.map_json, Number(record.score), args.direction
+  );
+  return json ? Object.freeze(JSON.parse(json)) : null;
+}`
+				}
+			]
+		},
+		{
+			id: 'service',
+			label: '3 · Service module',
+			lede: 'The blob module in e2e-service is only Atomic command mounts for BlobGame — no projector loop for the board (direct placement seals in the handler). compose() still lists MODULE_ID next to todo and chat.',
+			principle: 'Bounded contexts show up as modules on one Service.',
+			samples: [
+				{
+					file: 'modules/blob.rs · MODULE_ID + routes()',
+					caption: 'start / move / start_level — all Atomic, all guarded.',
+					code: `pub const MODULE_ID: &str = "blob";
+
+pub fn routes<R, L, S>(...) -> BlobRoutes<R, L, S> {
+  Routes::for_aggregate::<R, L, BlobGame, S>(repo, locks, read_models)
+    .command_transition::</* StartWithMap */>(blob_start::COMMAND)
+    .guarded(causal_has_user, blob_start::handle)
+    .command_transition::</* MoveDir */>(blob_move::COMMAND)
+    .preview_reduce_known_record(/* blob.simulate_move */)
+    .guarded(causal_has_user, blob_move::handle)
+    .command_transition::</* StartLevel */>(blob_start_level::COMMAND)
+    .guarded(causal_has_user, blob_start_level::handle)
+}`
+				},
+				{
+					file: 'modules/compose.rs · blob routes',
+					caption: 'Same Service composition as todos/chat.',
+					code: `let blob = blob::routes(repo, locks, read_models, projections.blob);
+
+Service::new()
+  .named("e2e-ui")
+  .without_http_command_routes()
+  .routes(todos)
+  .routes(chat)
+  .routes(blob)`
 				}
 			]
 		},
 		{
 			id: 'handlers',
-			label: '3 · Handlers',
-			lede: 'Get aggregate, domain move, stage the mutation-derived row, commit Atomic — one transaction for aggregate, ledger, and query row. Because we are still in the command handler we can wait and return that row; an event handler cannot.',
+			label: '4 · Handlers',
+			lede: 'Get aggregate, domain move (which calls the same pure as WASM), stage the mutation-derived row, commit Atomic — one transaction for aggregate, ledger, and query row. Input parse stays here; session admission already ran on the guard.',
 			principle: 'Commands change the world; tables are for reading.',
 			samples: [
 				{
@@ -672,7 +814,7 @@ const games = $derived(
   ctx: &CausalCommandContext<'_, BlobGame>,
   input: BlobMoveInput,
 ) -> Result<PreparedCommand<Atomic<BlobGames>>, HandlerError> {
-  let owner = ctx.user_id()?.to_string();
+  let owner = principal(ctx)?;
   let dir = Direction::parse(&input.direction).ok_or_else(|| {
     HandlerError::Rejected(format!(
       "invalid direction \`{}\` (use up|down|left|right)",
@@ -700,68 +842,54 @@ const games = $derived(
 		},
 		{
 			id: 'domain',
-			label: '4 · Domain',
-			lede: 'The game is a plain Rust aggregate — score, map, and level live on the write model. Public methods enforce rules; private #[event] helpers record history.',
+			label: '5 · Domain',
+			lede: 'One blob-domain crate: core is pure board rules (WASM-eligible); models is the sourced aggregate (feature domain). move_dir calls core::simulate_move — the same function the client WASM exports.',
 			principle: 'Start with the domain, not the database.',
 			samples: [
 				{
-					file: 'blob-domain · BlobGame',
-					caption: 'Aggregate shape — the consistency boundary.',
-					code: `#[derive(Debug, Clone, Default, Serialize, Deserialize)]
-pub struct BlobGame {
-  pub entity: Entity,
-  pub game_id: String,
-  pub owner_id: String,
-  pub score: i64,
-  pub player_dead: bool,
-  /// 0 = no level yet; 1+ = active level index.
-  pub current_level: i64,
-  pub current_level_completed: bool,
-  /// Current level map only.
-  pub map: Vec<Vec<u8>>,
-}
-
-#[sourced(
-  entity,
-  events = "BlobGameEvent",
-  aggregate_type = "blob",
-  domain_state = BlobGameState,
-)]
-impl BlobGame { /* start, move_dir, … */ }`
+					file: 'blob-domain/src/core · simulate_move',
+					caption: 'Pure map + score + direction → next board. No Entity, no ownership.',
+					code: `pub fn simulate_move(
+  map: &[Vec<u8>],
+  score: i64,
+  direction: Direction,
+) -> Result<MovePreview, SimulateError> {
+  // step player, mark visited, hole/suicide/score, level complete…
+  Ok(MovePreview { map, score, player_dead, level_complete })
+}`
 				},
 				{
-					file: 'blob-domain · BlobGame::move_dir (event)',
-					caption: 'After rules and tile sim, the move is one domain event.',
-					code: `// … ensure_owner, bounds, tile simulation → score / dead / map …
-
-self.record_moved(
-  score,
-  player_dead,
-  level_complete,
-  next_map,
-  direction.as_str().to_string(),
-)?;
-
-#[event("blob.moved", version = 1, domain)]
-fn record_moved(
-  &mut self,
-  score: i64,
-  player_dead: bool,
-  current_level_completed: bool,
-  map: Vec<Vec<u8>>,
-  _direction: String,
-) {
-  self.score = score;
-  self.player_dead = player_dead;
-  self.current_level_completed = current_level_completed;
-  self.map = map;
+					file: 'blob-domain · BlobGame::move_dir',
+					caption: 'Aggregate wraps pure + ownership + domain event.',
+					code: `pub fn move_dir(&mut self, owner_id: &str, direction: Direction)
+  -> Result<(), BlobError>
+{
+  self.ensure_owner(owner_id)?;
+  if self.player_dead { return Err(BlobError::PlayerDead); }
+  let preview = simulate_move(&self.map, self.score, direction)
+    .map_err(map_simulate_err)?;
+  self.record_moved(
+    preview.score,
+    preview.player_dead,
+    preview.level_complete,
+    preview.map,
+    direction.as_str().to_string(),
+  )?;
+  Ok(())
 }`
+				},
+				{
+					file: 'blob-domain · features',
+					caption: 'Server uses domain; client pure uses wasm.',
+					code: `// Cargo.toml
+// default = ["domain"]  → aggregate + levels + distributed
+// wasm                 → blobSimulateMove export (make wasm)`
 				}
 			]
 		},
 		{
 			id: 'events',
-			label: '5 · Events',
+			label: '6 · Events',
 			lede: 'Domain events still exist for history. For blob, the same save_blob_game mutation program runs direct in the command handler (same commit as the event) — so the response can carry the row. Eventual placement would run that IR in an event handler instead, with no response channel to the waiting client.',
 			principle: 'Know which side of the fence you are on.',
 			samples: [
@@ -795,7 +923,7 @@ mutation SaveBlobGame {
 }`
 				},
 				{
-					file: 'service.rs · projection binding',
+					file: 'service · projection binding',
 					code: `let blob_binding = ProjectionBinding::materialize_direct(
   BLOB_GAMES.direct(),
   source(),
@@ -889,7 +1017,7 @@ pub struct Todos {
 				},
 				{
 					file: 'modules/todo.rs · todos_force_archive',
-					caption: 'Write RBAC: admin only; absent from user client inventory.',
+					caption: 'Write RBAC: admin only + causal_is_admin guard; absent from user client inventory.',
 					code: `.command_transition::<
   domain_commands::ForceArchive,
   TodoForceArchiveInput,
@@ -897,7 +1025,7 @@ pub struct Todos {
 >(todo_force_archive::COMMAND)
 .field_name("todos_force_archive")
 .roles(["admin"])
-.handle(todo_force_archive::handle)`
+.guarded(causal_is_admin, todo_force_archive::handle)`
 				},
 				{
 					file: 'routes/admin/+layout.server.ts',
@@ -913,9 +1041,39 @@ pub struct Todos {
 			]
 		},
 		{
+			id: 'service',
+			label: '3 · Service module',
+			lede: 'Admin is not a second service binary — it is a second GraphQL surface (e2e-ui-admin) over the same e2e-service. Force-archive is mounted once in modules/todo.rs; only the admin client inventory includes it.',
+			principle: 'Roles and surfaces are real; modules stay shared.',
+			samples: [
+				{
+					file: 'modules/todo.rs · force_archive mount',
+					caption: 'Same module that serves /todos — elevated field on the same Routes inventory.',
+					code: `.command_transition::<
+  domain_commands::ForceArchive,
+  /* … */,
+>(todo_force_archive::COMMAND)
+.field_name("todos_force_archive")
+.roles(["admin"])
+.guarded(causal_is_admin, todo_force_archive::handle)`
+				},
+				{
+					file: 'modules/graphql.rs · dual surfaces',
+					caption: 'Service crate opens user + admin + public application surfaces.',
+					code: `.client_application_surface_with_schema_roles(
+  "e2e-ui",
+  ["admin", "user"],
+  ["user"],
+)
+.client_application_surface("e2e-ui-admin", ["admin"])
+.client_application_surface("e2e-ui-public", ["anonymous"])`
+				}
+			]
+		},
+		{
 			id: 'handlers',
-			label: '3 · Handlers',
-			lede: 'Handler still uses repo.get → domain force_archive → Eventual commit. Authorization is role + surface, not a special HTTP path.',
+			label: '4 · Handlers',
+			lede: 'Handler still uses repo.get → domain force_archive → Eventual commit. Authorization is role + surface + mount guard, not a special HTTP path.',
 			principle: 'Trust the signed-in person, not the request body.',
 			samples: [
 				{
@@ -924,7 +1082,7 @@ pub struct Todos {
   ctx: &CausalCommandContext<'_, Todo>,
   input: TodoForceArchiveInput,
 ) -> Result<PreparedCommand<Eventual<TodoForceArchivePayload>>, HandlerError> {
-  let admin = ctx.user_id()?.to_string();
+  let admin = principal(ctx)?;
   let repo = ctx.repo();
   let mut todo = repo
     .get(&input.todo_id)
@@ -947,7 +1105,7 @@ pub struct Todos {
 		},
 		{
 			id: 'domain',
-			label: '4 · Domain',
+			label: '5 · Domain',
 			lede: 'Same Todo aggregate as /todos — elevated methods live on the domain type, not in the GraphQL layer. One write model, many surfaces.',
 			principle: 'Start with the domain, not the database.',
 			samples: [
@@ -996,7 +1154,7 @@ fn record_force_archived(&mut self) {
 		},
 		{
 			id: 'events',
-			label: '5 · Events',
+			label: '6 · Events',
 			lede: 'Force-archive emits TodoForceArchivedDomainEvent into the same todos projection path (and same save_todo mutation) as owner archive — every surface’s replica converges on one query model.',
 			principle: 'Register once, ship everywhere.',
 			samples: [
@@ -1166,7 +1324,7 @@ IdentityConfig::oidc_bearer(oidc)`
 			]
 		},
 		{
-			id: 'domain',
+			id: 'claims',
 			label: '4 · Claims',
 			lede: 'Groups from the IdP map to engine roles in the browser and again in claim mapping. No domain aggregate for “session” — identity is transport.',
 			principle: 'Simplest DX is the goal.',
@@ -1185,8 +1343,36 @@ IdentityConfig::oidc_bearer(oidc)`
 			]
 		},
 		{
+			id: 'service',
+			label: '5 · Service module',
+			lede: 'Identity is not a domain aggregate in e2e-service — it is service-crate wiring: OIDC/dev headers, claim maps, and the chat module’s Zitadel ingress that fills AuthUsers. MODULE_IDS still lists "identity" next to todo/chat/blob.',
+			principle: 'Transport identity, compose modules, keep domains pure.',
+			samples: [
+				{
+					file: 'modules/compose.rs · MODULE_IDS',
+					caption: 'Identity is an inventory slot; command mounts live on chat/todo/blob.',
+					code: `pub const MODULE_IDS: &[&str] = &[
+  todo::MODULE_ID,
+  chat::MODULE_ID,
+  blob::MODULE_ID,
+  "identity",
+];`
+				},
+				{
+					file: 'modules/chat.rs · Zitadel ingress',
+					caption: 'Service-crate extension commands (not GraphQL user mutations).',
+					code: `.command(handlers::ingestors::zitadel::COMMAND)
+.guarded(zitadel::guard, zitadel::handle)
+.command(handlers::ingestors::zitadel_scrape::COMMAND)
+.guarded(zitadel_scrape::guard, zitadel_scrape::handle)
+.events(project_auth_user::EVENTS)
+.guarded(project_auth_user::guard, project_auth_user::handle)`
+				}
+			]
+		},
+		{
 			id: 'events',
-			label: '5 · Directory',
+			label: '6 · Directory',
 			lede: 'People still appear as AuthUsers via Zitadel ingest/scrape domain events — joins for chat author and blob owner, not a second display-name source.',
 			principle: 'Know which side of the fence you are on.',
 			samples: [
