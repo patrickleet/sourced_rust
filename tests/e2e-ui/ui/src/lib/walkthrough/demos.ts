@@ -755,14 +755,13 @@ await commands.blob.move({ game_id, direction });
 				},
 				{
 					file: 'ui/src/lib/blob/simulate-move.ts',
-					caption: 'Thin WASM host — rules live in blob_domain::core.',
-					code: `export function simulateMove(record, args) {
-  if (!api) return null; // fail closed until ensureBlobWasm()
-  const json = api.blobSimulateMove(
-    record.map_json, Number(record.score), args.direction
-  );
-  return json ? Object.freeze(JSON.parse(json)) : null;
-}`
+					caption: 'Framework WASM host — validation + rules in domain pure.',
+					code: `const host = createWasmJsonPure({
+  load: () => import('./pkg/blob_wasm.js'),
+  exportName: 'blobSimulateMove', // (recordJson, argsJson) → assign JSON
+});
+export const ensureBlobWasm = host.ensureReady;
+export const simulateMove = host.pure;`
 				}
 			]
 		},

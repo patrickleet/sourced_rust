@@ -113,10 +113,14 @@ export type {
 	ReplicaPreparedEffectKey,
 	ReplicaReceiptVerification
 } from './commands.js';
+export { createWasmJsonPure } from './projection-delta/index.js';
 export type {
+	CreateWasmJsonPureOptions,
 	PreparedCommandProjection,
 	PreparedProjectionOperation,
-	ReplicaCommandProjection
+	ReplicaCommandProjection,
+	WasmJsonModule,
+	WasmJsonPureHost
 } from './projection-delta/index.js';
 export {
 	compareReplicaOrder,

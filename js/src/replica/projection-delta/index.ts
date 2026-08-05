@@ -12,6 +12,12 @@ export {
 	operationsFromProjectionDelta,
 	prepareCommandProjection
 } from './resolve.js';
+export { createWasmJsonPure } from './wasm-pure.js';
+export type {
+	CreateWasmJsonPureOptions,
+	WasmJsonModule,
+	WasmJsonPureHost
+} from './wasm-pure.js';
 export type {
 	AppliedProjectionDelta,
 	CommandProjectionMetadata,
