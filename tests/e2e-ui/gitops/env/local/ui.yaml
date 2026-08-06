@@ -4,7 +4,10 @@ metadata:
   name: e2e-ui-ui
 spec:
   source:
+    # Helm chart
     path: ../../../ui/.gitops/deploy
+    # SvelteKit app root (package.json with vite dev) — NOT the monorepo root.
+    deliveryPath: ../../../ui
     helm:
       values:
         local: true
