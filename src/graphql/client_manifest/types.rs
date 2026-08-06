@@ -854,8 +854,14 @@ pub struct CommandProjectionExtension {
 #[serde(deny_unknown_fields)]
 pub struct ClientCommandPureReduce {
     pub fn_name: String,
+    #[serde(default, skip_serializing_if = "String::is_empty")]
     pub client_module: String,
+    #[serde(default, skip_serializing_if = "String::is_empty")]
     pub client_export: String,
+    #[serde(default, skip_serializing_if = "String::is_empty")]
+    pub wasm_package: String,
+    #[serde(default, skip_serializing_if = "String::is_empty")]
+    pub wasm_export: String,
     pub model: String,
     pub key: Vec<ClientCommandPureArg>,
     pub args: Vec<ClientCommandPureArg>,

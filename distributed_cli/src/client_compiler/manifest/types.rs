@@ -1083,8 +1083,14 @@ pub(crate) struct ManifestCommandProjection {
 #[serde(deny_unknown_fields)]
 pub(crate) struct ManifestCommandPureReduce {
     pub(crate) fn_name: String,
+    #[serde(default, skip_serializing_if = "String::is_empty")]
     pub(crate) client_module: String,
+    #[serde(default, skip_serializing_if = "String::is_empty")]
     pub(crate) client_export: String,
+    #[serde(default, skip_serializing_if = "String::is_empty")]
+    pub(crate) wasm_package: String,
+    #[serde(default, skip_serializing_if = "String::is_empty")]
+    pub(crate) wasm_export: String,
     pub(crate) model: String,
     pub(crate) key: Vec<ManifestCommandPureArg>,
     pub(crate) args: Vec<ManifestCommandPureArg>,

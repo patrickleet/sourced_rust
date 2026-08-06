@@ -64,12 +64,12 @@ where
         >(blob_move::COMMAND)
         .field_name("blob_games_move")
         .roles(["user", "admin"].into_iter())
-        // Domain pure: blob_domain::core::simulate_move — client via WASM ($lib/blob/simulate-move).
+        // Domain pure: blob_domain::core — WASM package under $lib; gen-client hosts it.
         .preview_reduce_known_record(
-            CommandProjectionPureReduce::new(
+            CommandProjectionPureReduce::wasm(
                 "blob.simulate_move",
-                "blob/simulate-move",
-                "simulateMove",
+                "blob/pkg/blob_wasm",
+                "blobSimulateMove",
                 "BlobGames",
             )
             .key_input("game_id", ["game_id"])

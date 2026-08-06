@@ -46,7 +46,9 @@ pub(crate) fn render_project(
         path: "commands.ts".into(),
         contents: render_commands(manifest)?,
     });
-    if let Some(pures) = super::commands::render_pures(manifest)? {
+    let pures = super::commands::render_pures(manifest)?;
+    let has_pures = pures.is_some();
+    if let Some(pures) = pures {
         files.push(GeneratedClientFile {
             path: "pures.ts".into(),
             contents: pures,
@@ -66,7 +68,7 @@ pub(crate) fn render_project(
     });
     files.push(GeneratedClientFile {
         path: "index.ts".into(),
-        contents: render_index(&operations),
+        contents: render_index(&operations, has_pures),
     });
     files.push(GeneratedClientFile {
         path: "manifest.json".into(),
@@ -257,13 +259,16 @@ fn render_routes(
     ))
 }
 
-fn render_index(operations: &[CompiledOperation]) -> String {
+fn render_index(operations: &[CompiledOperation], has_pures: bool) -> String {
     let mut lines = vec![
         "/** GENERATED public entrypoint. */".to_string(),
         "export * from './commands.js';".into(),
         "export * from './protocol.js';".into(),
         "export * from './routes.js';".into(),
     ];
+    if has_pures {
+        lines.push("export * from './pures.js';".into());
+    }
     for operation in operations {
         let module = operation
             .module_path

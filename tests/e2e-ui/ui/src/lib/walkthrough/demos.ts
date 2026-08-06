@@ -721,7 +721,7 @@ const games = $derived(
 					file: 'routes/blob/[[gameId]]/+page.svelte',
 					caption: 'Thin input; ensure WASM is warm for pure-reduce optimism.',
 					code: `onMount(() => {
-  void ensureBlobWasm();
+  void ensurePureFunctionsReady();
   /* … */
 });
 
@@ -740,10 +740,10 @@ await commands.blob.move({ game_id, direction });
 .field_name("blob_games_move")
 .roles(["user", "admin"])
 .preview_reduce_known_record(
-  CommandProjectionPureReduce::new(
+  CommandProjectionPureReduce::wasm(
     "blob.simulate_move",
-    "blob/simulate-move",
-    "simulateMove",
+    "blob/pkg/blob_wasm",
+    "blobSimulateMove",
     "BlobGames",
   )
   .key_input("game_id", ["game_id"])
@@ -754,14 +754,18 @@ await commands.blob.move({ game_id, direction });
 .guarded(causal_has_user, blob_move::handle)`
 				},
 				{
-					file: 'ui/src/lib/blob/simulate-move.ts',
-					caption: 'Framework WASM host — validation + rules in domain pure.',
-					code: `const host = createWasmJsonPure({
-  load: () => import('./pkg/blob_wasm.js'),
-  exportName: 'blobSimulateMove', // (recordJson, argsJson) → assign JSON
+					file: 'generated/user/pures.ts',
+					caption: 'gen-client hosts WASM — no app TypeScript pure file.',
+					code: `const pureHost_0 = createWasmJsonPure({
+  load: () => import('../../blob/pkg/blob_wasm.js'),
+  exportName: 'blobSimulateMove',
 });
-export const ensureBlobWasm = host.ensureReady;
-export const simulateMove = host.pure;`
+export const PURE_FUNCTIONS = {
+  'blob.simulate_move': pureHost_0.pure,
+} as const;
+export async function ensurePureFunctionsReady() {
+  await pureHost_0.ensureReady();
+}`
 				}
 			]
 		},

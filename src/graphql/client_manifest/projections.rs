@@ -289,6 +289,8 @@ pub(super) fn command_projection_extension(
                 fn_name: reduce.fn_name.clone(),
                 client_module: reduce.client_module.clone(),
                 client_export: reduce.client_export.clone(),
+                wasm_package: reduce.wasm_package.clone(),
+                wasm_export: reduce.wasm_export.clone(),
                 model: reduce.model.clone(),
                 key: reduce
                     .key

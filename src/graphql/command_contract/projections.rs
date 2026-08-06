@@ -156,17 +156,23 @@ pub(crate) struct CommandProjectionEventPreview {
 
 /// Pure reducer over a known cache row for client auto-optimism.
 ///
-/// The server/domain owns the pure semantics (e.g. `blob_domain::simulate_move`);
-/// the client module/export is the shipped TypeScript twin invoked by the
-/// replica when applying `projection.pureReduces`.
+/// Domain owns pure semantics. Client delivery is either:
+/// - **WASM** ([`Self::wasm`]): gen-client emits a `createWasmJsonPure` host in
+///   `pures.ts` — no app TypeScript pure file required.
+/// - **Hand module** ([`Self::client_module`]): gen-client imports a named export
+///   from `$lib/<module>` (escape hatch).
 #[derive(Clone, Debug, PartialEq, Eq, Serialize)]
 pub struct CommandProjectionPureReduce {
     /// Stable pure id, e.g. `blob.simulate_move`.
     pub fn_name: String,
-    /// Path under app `$lib` without extension, e.g. `blob/simulate-move`.
+    /// Path under app `$lib` without extension for a hand-written pure (empty if WASM).
     pub client_module: String,
-    /// Named export in that module, e.g. `simulateMove`.
+    /// Named export in that hand module (empty if WASM).
     pub client_export: String,
+    /// wasm-pack package under `$lib` without extension, e.g. `blob/pkg/blob_wasm`.
+    pub wasm_package: String,
+    /// Named WASM export `(recordJson, argsJson) -> assignJson | undefined`.
+    pub wasm_export: String,
     /// Projection model id (e.g. `BlobGames`).
     pub model: String,
     /// Record key fields: `name` is the model field; `source` is input/default/preset.
@@ -185,7 +191,8 @@ pub struct CommandProjectionPureArg {
 }
 
 impl CommandProjectionPureReduce {
-    pub fn new(
+    /// Hand-written pure under `$lib/<module>` exporting `client_export`.
+    pub fn client_module(
         fn_name: impl Into<String>,
         client_module: impl Into<String>,
         client_export: impl Into<String>,
@@ -195,11 +202,44 @@ impl CommandProjectionPureReduce {
             fn_name: fn_name.into(),
             client_module: client_module.into(),
             client_export: client_export.into(),
+            wasm_package: String::new(),
+            wasm_export: String::new(),
             model: model.into(),
             key: Vec::new(),
             args: Vec::new(),
             assign: Vec::new(),
         }
+    }
+
+    /// Domain pure shipped as wasm-pack under `$lib/<package>`; gen-client hosts it.
+    pub fn wasm(
+        fn_name: impl Into<String>,
+        wasm_package: impl Into<String>,
+        wasm_export: impl Into<String>,
+        model: impl Into<String>,
+    ) -> Self {
+        Self {
+            fn_name: fn_name.into(),
+            client_module: String::new(),
+            client_export: String::new(),
+            wasm_package: wasm_package.into(),
+            wasm_export: wasm_export.into(),
+            model: model.into(),
+            key: Vec::new(),
+            args: Vec::new(),
+            assign: Vec::new(),
+        }
+    }
+
+    /// Deprecated alias for [`Self::client_module`].
+    #[deprecated(note = "use client_module() or wasm()")]
+    pub fn new(
+        fn_name: impl Into<String>,
+        client_module: impl Into<String>,
+        client_export: impl Into<String>,
+        model: impl Into<String>,
+    ) -> Self {
+        Self::client_module(fn_name, client_module, client_export, model)
     }
 
     #[must_use]
@@ -358,13 +398,36 @@ impl CommandProjectionEvents {
             }
         }
         for reduce in &mut self.pure_reduces {
-            if reduce.fn_name.trim().is_empty()
-                || reduce.client_module.trim().is_empty()
-                || reduce.client_export.trim().is_empty()
-                || reduce.model.trim().is_empty()
+            if reduce.fn_name.trim().is_empty() || reduce.model.trim().is_empty() {
+                return Err(format!(
+                    "typed command `{command}` pure reduce requires non-empty fn and model"
+                ));
+            }
+            let hand = !reduce.client_module.trim().is_empty()
+                || !reduce.client_export.trim().is_empty();
+            let wasm =
+                !reduce.wasm_package.trim().is_empty() || !reduce.wasm_export.trim().is_empty();
+            if hand == wasm {
+                return Err(format!(
+                    "typed command `{command}` pure reduce `{}` must declare either client_module+client_export or wasm_package+wasm_export (not both, not neither)",
+                    reduce.fn_name
+                ));
+            }
+            if hand
+                && (reduce.client_module.trim().is_empty()
+                    || reduce.client_export.trim().is_empty())
             {
                 return Err(format!(
-                    "typed command `{command}` pure reduce requires non-empty fn, client_module, client_export, and model"
+                    "typed command `{command}` pure reduce `{}` client module requires non-empty client_module and client_export",
+                    reduce.fn_name
+                ));
+            }
+            if wasm
+                && (reduce.wasm_package.trim().is_empty() || reduce.wasm_export.trim().is_empty())
+            {
+                return Err(format!(
+                    "typed command `{command}` pure reduce `{}` wasm package requires non-empty wasm_package and wasm_export",
+                    reduce.fn_name
                 ));
             }
             if reduce.key.is_empty() {
