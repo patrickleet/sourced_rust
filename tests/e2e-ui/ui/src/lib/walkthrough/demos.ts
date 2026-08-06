@@ -1,10 +1,10 @@
-import type { DemoWalkthrough } from './types';
+import type { DemoWalkthrough, WalkthroughSample } from './types';
 
 /**
  * Tab order is browser-first teaching order for every demo:
  * 1. Query / live subscription (+ ReadModel shape + read RBAC)
  * 2. Commands (optimistic cache vs Atomic / pure reduce) (+ write RBAC)
- * 3. Service module (e2e-service: MODULE_ID, routes(), compose into Service)
+ * 3. Service + host + runner (e2e-service modules/compose/host; e2e-runner bin)
  * 4. Command handlers (principal → repo → aggregate → commit)
  * 5. Domain model (plain Rust + macros; blob pure core)
  * 6. Domain events + projections
@@ -12,6 +12,12 @@ import type { DemoWalkthrough } from './types';
  * Samples should be real, pasteable shapes from the fixture — not comment-only stubs.
  * Query tabs should include the read model definition (#[derive(ReadModel)] struct), not only
  * permissions snippets or GraphQL selection.
+ *
+ * Service tab should always show:
+ * - this demo’s modules/*.rs slice (MODULE_ID + routes)
+ * - compose.build_service (how modules join one Service)
+ * - host.run_e2e_host (dialect, bus, workers, GraphQL serve)
+ * - runner main (thin env → host)
  *
  * Consistency teaching (same mutation IR; apply site differs):
  * - Eventual (placement + command): event handler applies IR async → client
@@ -21,6 +27,49 @@ import type { DemoWalkthrough } from './types';
  * - Known-record pure (blob move): client runs domain pure (WASM) for paint;
  *   Atomic seal remains server authority.
  */
+
+/** Shared host/runner samples — same process story on every demo’s Service tab. */
+const hostAndRunnerSamples: WalkthroughSample[] = [
+	{
+		file: 'e2e-service · host.rs · run_e2e_host',
+		caption: 'Service crate owns process bootstrap: DB dialect, bus, outbox/consumer workers, GraphQL + OIDC serve.',
+		code: `// host.rs — library API used by the runner binary
+pub async fn run_e2e_host(
+  database_url: &str,
+  options: HostOptions, // bind + IdentityConfig
+) -> Result<(), Box<dyn Error + Send + Sync>> {
+  // connect SQLite or Postgres, bootstrap tables, open bus
+  let service = build_service(repo, locks, read_models).with_bus(bus);
+  let gql = build_graphql_engine(&repo, &service, identity, Some(change_rx))?;
+  let service = Arc::new(service.try_with_graphql(gql)?);
+
+  spawn_outbox_publish_loop(/* … */);
+  spawn_service_consumer_loop(|| build_service(/* … */).with_bus(bus));
+  // optional Zitadel scrape loop
+
+  serve_with_oidc(service, identity, &options.bind).await
+}`
+	},
+	{
+		file: 'e2e-runner · main.rs',
+		caption: 'Runner is intentionally thin: env → HostOptions → run_e2e_host. No domain, no modules.',
+		code: `// crates/runner — bin e2e-ui
+#[tokio::main]
+async fn main() -> Result<(), Box<dyn Error + Send + Sync>> {
+  let database_url = env::var("DATABASE_URL")
+    .unwrap_or_else(|_| "sqlite:./e2e-ui.db?mode=rwc".into());
+  let bind = env::var("BIND").unwrap_or_else(|_| "127.0.0.1:8791".into());
+  run_e2e_host(
+    &database_url,
+    HostOptions {
+      bind,
+      identity: identity_from_env(), // OidcBearer or DevHeaders
+    },
+  )
+  .await
+}`
+	}
+];
 
 export const todosWalkthrough: DemoWalkthrough = {
 	id: 'todos',
@@ -137,23 +186,19 @@ await commands.todo.complete({ todo_id });`
 		},
 		{
 			id: 'service',
-			label: '3 · Service module',
-			lede: 'e2e-service is the application crate. The todo module is one bounded-context slice: MODULE_ID, Routes::for_aggregate, command mounts, and the modeled projector. Domain rules stay in todo-domain; GraphQL surfaces and runners live elsewhere.',
-			principle: 'Bounded contexts show up as modules on one Service.',
+			label: '3 · Service + host',
+			lede: 'e2e-service is the application crate: modules mount commands, compose builds one Service, host boots dialect/bus/workers/GraphQL. e2e-runner is a thin binary that only reads env and calls run_e2e_host. Domain stays in todo-domain.',
+			principle: 'Modules compose; host runs the process; runner stays thin.',
 			samples: [
 				{
 					file: 'modules/todo.rs · MODULE_ID + routes()',
-					caption: 'One module = Todo aggregate inventory + projector attach point.',
+					caption: 'This demo’s slice: Todo aggregate inventory + Eventual projector.',
 					code: `pub const MODULE_ID: &str = "todo";
 
-pub fn routes<R, L, S>(
-  repo: R,
-  locks: L,
-  read_models: S,
-  todo_projector: SurfaceProjector,
-) -> TodoRoutes<R, L, S> {
+pub fn routes<R, L, S>(...) -> TodoRoutes<R, L, S> {
   Routes::for_aggregate::<R, L, Todo, S>(repo, locks, read_models)
     .command_transition::</* Create */>(todo_create::COMMAND)
+    .guarded(causal_has_user, todo_create::handle)
     // … rename, complete, reopen, archive, force_archive, purge …
     .modeled_projector(todo_projector)
     .handle(handlers::events::project_todos::handle)
@@ -161,7 +206,7 @@ pub fn routes<R, L, S>(
 				},
 				{
 					file: 'modules/compose.rs · build_service',
-					caption: 'compose lists modules; host/runner starts the binary.',
+					caption: 'Review-visible composition: list modules, do not invent infrastructure.',
 					code: `let todos = todo::routes(repo.clone(), locks.clone(), read_models.clone(), projections.todo);
 let chat = chat::routes(/* … */);
 let blob = blob::routes(/* … */);
@@ -172,7 +217,15 @@ Service::new()
   .routes(todos)
   .routes(chat)
   .routes(blob)`
-				}
+				},
+				{
+					file: 'application.rs · inventory',
+					caption: 'Surface names + module inventory live at the service composition root.',
+					code: `pub const E2E_UI_APPLICATION: &str = "e2e-ui";
+pub const E2E_UI_MODULE_IDS: &[&str] = compose::MODULE_IDS;
+// todo | chat | blob | identity`
+				},
+				...hostAndRunnerSamples
 			]
 		},
 		{
@@ -450,13 +503,13 @@ export type GeneratedCommands = Readonly<Record<never, never>>;`
 		},
 		{
 			id: 'service',
-			label: '3 · Service module',
-			lede: 'The chat module in e2e-service mounts lobby commands and also hosts identity ingress (Zitadel Action + scrape) plus chat/auth projectors. One module file is the review surface for “how chat joins the Service.”',
-			principle: 'Bounded contexts show up as modules on one Service.',
+			label: '3 · Service + host',
+			lede: 'The chat module mounts lobby posts and identity ingress (Zitadel Action + scrape) plus chat/auth projectors. compose folds that Routes inventory into one Service; host boots the process; runner only wires env.',
+			principle: 'Modules compose; host runs the process; runner stays thin.',
 			samples: [
 				{
 					file: 'modules/chat.rs · routes()',
-					caption: 'ChatMessage commands + Zitadel extension commands + projectors.',
+					caption: 'This demo’s slice: ChatMessage commands + Zitadel extensions + projectors.',
 					code: `pub const MODULE_ID: &str = "chat";
 
 pub fn routes<R, L, S>(...) -> ChatRoutes<R, L, S> {
@@ -473,15 +526,20 @@ pub fn routes<R, L, S>(...) -> ChatRoutes<R, L, S> {
 }`
 				},
 				{
-					file: 'modules/compose.rs · MODULE_IDS',
+					file: 'modules/compose.rs · MODULE_IDS + build_service',
 					caption: 'Inventory is explicit — todo, chat, blob, identity.',
 					code: `pub const MODULE_IDS: &[&str] = &[
-  todo::MODULE_ID,
-  chat::MODULE_ID,
-  blob::MODULE_ID,
-  "identity",
-];`
-				}
+  todo::MODULE_ID, chat::MODULE_ID, blob::MODULE_ID, "identity",
+];
+
+Service::new()
+  .named("e2e-ui")
+  .without_http_command_routes()
+  .routes(todo::routes(/* … */))
+  .routes(chat::routes(/* … */))  // ← this module
+  .routes(blob::routes(/* … */))`
+				},
+				...hostAndRunnerSamples
 			]
 		},
 		{
@@ -647,7 +705,7 @@ export const blobWalkthrough: DemoWalkthrough = {
 	title: 'Blob game',
 	kicker: 'Browser → pure optimism → Atomic seal',
 	summary:
-		'One @load query owns the board. Moves are Atomic with thin input. Known-row pure reduce runs blob-domain board rules in WASM so the cache can paint immediately; the handler still runs the same pure, stages the row, and the sealed response remains authority.',
+		'One @load query owns the board. Moves are Atomic with thin input (game_id + direction). Because the next board is a pure function of the known row + direction, the service declares a pure reduce: the client runs blob-domain rules in WASM to paint immediately, then the handler runs the same pure, stages the row, and Atomic seals authority. No hand-written TypeScript rules; gen-client hosts the WASM pure.',
 	tabs: [
 		{
 			id: 'query',
@@ -713,25 +771,33 @@ const games = $derived(
 		},
 		{
 			id: 'commands',
-			label: '2 · Commands',
-			lede: 'Moves are Atomic: send only game_id + direction. The service declares a pure reduce over the known BlobGames row so the client can paint the next board without inventing a second ruleset. Session admission is a mount guard; the sealed Atomic row remains authority.',
-			principle: 'One pure for board rules — server and client share the domain core.',
+			label: '2 · Commands + pure',
+			lede: 'Why a pure? Auto-optimism from input alone cannot invent the next map — that needs the known board. A pure reduce is the contract for “given this cached row + direction, compute assign fields.” Benefits: one ruleset (domain core), no TS twin to drift, fail-closed paint (null → keep old board), and Atomic still seals truth. Costs: need the row in cache and WASM warm; wrong pure would thrash — so WASM is the same Rust pure the aggregate uses.',
+			principle: 'Predict from known truth with the same pure the server runs — never invent authority.',
 			samples: [
 				{
+					file: 'Why pure reduce (not only Atomic seal)',
+					caption: 'Input-only optimism cannot compute map_json. Known-row pure can.',
+					code: `// Without pure: UI waits for Atomic body → feels laggy / blank.
+// With pure:  known BlobGames row + direction → simulate_move → patch
+//             map_json, score, player_dead, status immediately.
+// On seal:    Atomic response overwrites with server row (same pure path).
+// On miss:    pure returns null → no invent (fail closed).`
+				},
+				{
 					file: 'routes/blob/[[gameId]]/+page.svelte',
-					caption: 'Thin input; ensure WASM is warm for pure-reduce optimism.',
+					caption: 'Thin input; warm generated pure hosts before first move.',
 					code: `onMount(() => {
-  void ensurePureFunctionsReady();
-  /* … */
+  void ensurePureFunctionsReady(); // generated/user/pures.ts
 });
 
 await commands.blob.move({ game_id, direction });
-// pure may patch map_json/score/… immediately from known row;
+// pure may patch map_json/score/… from known row;
 // Atomic seal confirms or corrects`
 				},
 				{
-					file: 'modules/blob.rs · blob.move',
-					caption: 'Atomic + pure reduce + session guard. No hand-written TS board twin.',
+					file: 'modules/blob.rs · declare the pure',
+					caption: 'Service contract: which pure, WASM package, keys/args/assign.',
 					code: `.command_transition::<
   domain_commands::MoveDir,
   BlobMoveInput,
@@ -741,9 +807,9 @@ await commands.blob.move({ game_id, direction });
 .roles(["user", "admin"])
 .preview_reduce_known_record(
   CommandProjectionPureReduce::wasm(
-    "blob.simulate_move",
-    "blob/pkg/blob_wasm",
-    "blobSimulateMove",
+    "blob.simulate_move",       // pure id → pureFunctions key
+    "blob/pkg/blob_wasm",       // $lib wasm-pack package
+    "blobSimulateMove",         // WASM export (recordJson, argsJson)
     "BlobGames",
   )
   .key_input("game_id", ["game_id"])
@@ -755,7 +821,7 @@ await commands.blob.move({ game_id, direction });
 				},
 				{
 					file: 'generated/user/pures.ts',
-					caption: 'gen-client hosts WASM — no app TypeScript pure file.',
+					caption: 'gen-client hosts WASM — no app TypeScript pure/sim file.',
 					code: `const pureHost_0 = createWasmJsonPure({
   load: () => import('../../blob/pkg/blob_wasm.js'),
   exportName: 'blobSimulateMove',
@@ -766,18 +832,29 @@ export const PURE_FUNCTIONS = {
 export async function ensurePureFunctionsReady() {
   await pureHost_0.ensureReady();
 }`
+				},
+				{
+					file: 'Runtime shape (framework)',
+					caption: 'Replica pure is always (record, args) → assign fields | null.',
+					code: `// createWasmJsonPure JSON-roundtrips to WASM:
+//   pure(record, args) {
+//     return JSON.parse(wasm.blobSimulateMove(
+//       JSON.stringify(record), JSON.stringify(args)
+//     )) ?? null;
+//   }
+// Validation (direction, map parse, edge) lives in the domain pure.`
 				}
 			]
 		},
 		{
 			id: 'service',
-			label: '3 · Service module',
-			lede: 'The blob module in e2e-service is only Atomic command mounts for BlobGame — no projector loop for the board (direct placement seals in the handler). compose() still lists MODULE_ID next to todo and chat.',
-			principle: 'Bounded contexts show up as modules on one Service.',
+			label: '3 · Service + host',
+			lede: 'The blob module only mounts Atomic BlobGame commands (direct seal in the handler — no async board projector). compose adds that Routes inventory to the same Service as todos/chat; host runs the process; runner is env-only.',
+			principle: 'Modules compose; host runs the process; runner stays thin.',
 			samples: [
 				{
 					file: 'modules/blob.rs · MODULE_ID + routes()',
-					caption: 'start / move / start_level — all Atomic, all guarded.',
+					caption: 'This demo’s slice: start / move / start_level — Atomic, guarded, pure on move.',
 					code: `pub const MODULE_ID: &str = "blob";
 
 pub fn routes<R, L, S>(...) -> BlobRoutes<R, L, S> {
@@ -785,7 +862,7 @@ pub fn routes<R, L, S>(...) -> BlobRoutes<R, L, S> {
     .command_transition::</* StartWithMap */>(blob_start::COMMAND)
     .guarded(causal_has_user, blob_start::handle)
     .command_transition::</* MoveDir */>(blob_move::COMMAND)
-    .preview_reduce_known_record(/* blob.simulate_move */)
+    .preview_reduce_known_record(/* wasm pure blob.simulate_move */)
     .guarded(causal_has_user, blob_move::handle)
     .command_transition::</* StartLevel */>(blob_start_level::COMMAND)
     .guarded(causal_has_user, blob_start_level::handle)
@@ -801,14 +878,15 @@ Service::new()
   .without_http_command_routes()
   .routes(todos)
   .routes(chat)
-  .routes(blob)`
-				}
+  .routes(blob)  // ← this module`
+				},
+				...hostAndRunnerSamples
 			]
 		},
 		{
 			id: 'handlers',
 			label: '4 · Handlers',
-			lede: 'Get aggregate, domain move (which calls the same pure as WASM), stage the mutation-derived row, commit Atomic — one transaction for aggregate, ledger, and query row. Input parse stays here; session admission already ran on the guard.',
+			lede: 'Get aggregate, domain move (same pure as WASM under the hood), stage the mutation-derived row, commit Atomic — one transaction for aggregate, ledger, and query row. Input parse stays here; session admission already ran on the guard. The pure does not replace this path — it only predicts the row for the UI.',
 			principle: 'Commands change the world; tables are for reading.',
 			samples: [
 				{
@@ -830,6 +908,7 @@ Service::new()
     .get(&input.game_id)
     .await?
     .ok_or_else(|| HandlerError::NotFound(input.game_id.clone()))?;
+  // move_dir → core::simulate_move (same pure as client WASM)
   game.move_dir(&owner, dir).map_err(rejected)?;
 
   let row = save_blob_game()
@@ -838,20 +917,20 @@ Service::new()
   repo.readmodel(row)
     .publish_events()
     .commit(game)?
-    .atomic()
+    .atomic()  // sealed row → replica authority
 }`
 				}
 			]
 		},
 		{
 			id: 'domain',
-			label: '5 · Domain',
-			lede: 'One blob-domain crate: core is pure board rules (WASM-eligible); models is the sourced aggregate (feature domain). move_dir calls core::simulate_move — the same function the client WASM exports.',
-			principle: 'Start with the domain, not the database.',
+			label: '5 · Domain + pure core',
+			lede: 'One blob-domain crate, two faces: core (pure board rules, WASM-eligible) and models (sourced aggregate, feature domain). The pure is intentionally free of ownership and Entity — those stay on the aggregate. Client and server share core so optimism cannot drift from seal.',
+			principle: 'Start with the domain, not the database — and share the pure, not a twin.',
 			samples: [
 				{
 					file: 'blob-domain/src/core · simulate_move',
-					caption: 'Pure map + score + direction → next board. No Entity, no ownership.',
+					caption: 'Pure map + score + direction → next board. No Entity, no ownership, no I/O.',
 					code: `pub fn simulate_move(
   map: &[Vec<u8>],
   score: i64,
@@ -882,11 +961,22 @@ Service::new()
 }`
 				},
 				{
-					file: 'blob-domain · features',
-					caption: 'Server uses domain; client pure uses wasm.',
+					file: 'blob-domain · wasm export',
+					caption: 'WASM adapter: record+args JSON in, assign JSON out (validation inside).',
+					code: `#[wasm_bindgen(js_name = blobSimulateMove)]
+pub fn blob_simulate_move(record_json: &str, args_json: &str)
+  -> Option<String>
+{
+  // parse map_json / score / direction → simulate_move → assign fields
+  // None = fail closed (illegal move or bad input)
+}`
+				},
+				{
+					file: 'blob-domain · features + make wasm',
+					caption: 'Server: default domain. Client pure: --features wasm.',
 					code: `// Cargo.toml
 // default = ["domain"]  → aggregate + levels + distributed
-// wasm                 → blobSimulateMove export (make wasm)`
+// wasm                 → blobSimulateMove (make wasm → $lib/blob/pkg)`
 				}
 			]
 		},
@@ -1045,13 +1135,13 @@ pub struct Todos {
 		},
 		{
 			id: 'service',
-			label: '3 · Service module',
-			lede: 'Admin is not a second service binary — it is a second GraphQL surface (e2e-ui-admin) over the same e2e-service. Force-archive is mounted once in modules/todo.rs; only the admin client inventory includes it.',
-			principle: 'Roles and surfaces are real; modules stay shared.',
+			label: '3 · Service + host',
+			lede: 'Admin is not a second binary — it is a second GraphQL surface (e2e-ui-admin) over the same e2e-service host/runner. Force-archive is mounted once in modules/todo.rs; only the admin client inventory includes it. Same compose, host, and runner as user demos.',
+			principle: 'Roles and surfaces are real; modules and host stay shared.',
 			samples: [
 				{
 					file: 'modules/todo.rs · force_archive mount',
-					caption: 'Same module that serves /todos — elevated field on the same Routes inventory.',
+					caption: 'Same todo module that serves /todos — elevated field on the same Routes inventory.',
 					code: `.command_transition::<
   domain_commands::ForceArchive,
   /* … */,
@@ -1070,7 +1160,15 @@ pub struct Todos {
 )
 .client_application_surface("e2e-ui-admin", ["admin"])
 .client_application_surface("e2e-ui-public", ["anonymous"])`
-				}
+				},
+				{
+					file: 'application.rs · surface constants',
+					caption: 'Stable surface names used by gen-client and host identity.',
+					code: `pub const DISTRIBUTED_CLIENT_SURFACE: &str = "e2e-ui";
+pub const DISTRIBUTED_ADMIN_CLIENT_SURFACE: &str = "e2e-ui-admin";
+pub const DISTRIBUTED_PUBLIC_CLIENT_SURFACE: &str = "e2e-ui-public";`
+				},
+				...hostAndRunnerSamples
 			]
 		},
 		{
@@ -1347,8 +1445,8 @@ IdentityConfig::oidc_bearer(oidc)`
 		},
 		{
 			id: 'service',
-			label: '5 · Service module',
-			lede: 'Identity is not a domain aggregate in e2e-service — it is service-crate wiring: OIDC/dev headers, claim maps, and the chat module’s Zitadel ingress that fills AuthUsers. MODULE_IDS still lists "identity" next to todo/chat/blob.',
+			label: '5 · Service + host',
+			lede: 'Identity is not a domain aggregate — it is service-crate wiring: OIDC/dev headers, claim maps, and the chat module’s Zitadel ingress that fills AuthUsers. The host boots that Service and starts scrape/outbox/consumer loops; the runner only supplies DATABASE_URL / BIND / OIDC env.',
 			principle: 'Transport identity, compose modules, keep domains pure.',
 			samples: [
 				{
@@ -1370,7 +1468,14 @@ IdentityConfig::oidc_bearer(oidc)`
 .guarded(zitadel_scrape::guard, zitadel_scrape::handle)
 .events(project_auth_user::EVENTS)
 .guarded(project_auth_user::guard, project_auth_user::handle)`
-				}
+				},
+				{
+					file: 'modules/graphql.rs · identity_from_env',
+					caption: 'Host picks OidcBearer vs DevHeaders from env — same binary either way.',
+					code: `// identity_from_env() → OIDC_ISSUER/AUDIENCE/JWKS or DevHeaders
+// serve_with_oidc(service, identity, bind)`
+				},
+				...hostAndRunnerSamples
 			]
 		},
 		{
