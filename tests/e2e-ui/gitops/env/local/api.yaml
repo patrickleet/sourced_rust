@@ -4,7 +4,10 @@ metadata:
   name: e2e-ui-api
 spec:
   source:
+    # Helm chart
     path: ../../../api/.gitops/deploy
+    # Cargo workspace root (Cargo.toml) — NOT the empty api/ chart dir.
+    deliveryPath: ../../..
     helm:
       values:
         local: true

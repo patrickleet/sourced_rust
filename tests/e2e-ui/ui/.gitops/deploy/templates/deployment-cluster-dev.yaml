@@ -27,13 +27,12 @@ spec:
             - /bin/bash
             - -lc
             - |
-              set -e
-              for i in $(seq 1 180); do
-                if [ -f {{ .Values.sourceDelivery.mountPath }}/.hops-synced ] || [ -f {{ .Values.sourceDelivery.mountPath }}/package.json ]; then
-                  break
-                fi
+              echo "waiting for source sync at {{ .Values.sourceDelivery.mountPath }}..."
+              while [ ! -f {{ .Values.sourceDelivery.mountPath }}/.hops-synced ] \
+                && [ ! -f {{ .Values.sourceDelivery.mountPath }}/package.json ]; do
                 sleep 1
               done
+              echo "source present; starting dev process"
               {{ index .Values.clusterDev.command 2 }}
           {{- else }}
           command:
