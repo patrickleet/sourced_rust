@@ -1,0 +1,32 @@
+# Local workbench values for e2e-ui UI.
+
+local: false
+appRuntime: package  # host | cluster-dev | package
+
+name: e2e-ui-ui
+image:
+  repository: ghcr.io/hops-ops/e2e-ui-ui
+  tag: latest
+  pullPolicy: IfNotPresent
+
+clusterDev:
+  image: node:22-bookworm
+  command:
+    - /bin/bash
+    - -lc
+    - npm install && npm run dev -- --host 0.0.0.0 --port 5180
+  workingDir: /workspace
+  sourcePath: /workspace
+
+service:
+  port: 5180
+  targetPort: 5180
+
+env:
+  HOST: "0.0.0.0"
+  PORT: "5180"
+
+sourceDelivery:
+  mode: none  # none | hostPath | sync
+  hostPath: ""
+  mountPath: /workspace

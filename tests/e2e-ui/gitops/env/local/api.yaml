@@ -1,0 +1,15 @@
+apiVersion: hops.local/v1alpha1
+kind: Application
+metadata:
+  name: e2e-ui-api
+spec:
+  source:
+    path: ../../../api/.gitops/deploy
+    helm:
+      values:
+        local: true
+        appRuntime: cluster-dev
+  destination:
+    namespace: hops-wt-default
+  syncPolicy:
+    prune: false

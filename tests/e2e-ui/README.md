@@ -4,6 +4,23 @@ A copyable Distributed service and SvelteKit UI demonstrating one modeled
 projection from aggregate transition to server read model, generated GraphQL
 client, optimistic replica update, and causal confirmation.
 
+## Option A — hops local workbench (preferred for cluster-shaped DX)
+
+One-time: `hops local start` (control plane). Then:
+
+```bash
+cd tests/e2e-ui
+hops local up ./gitops/env/local --name e2e
+hops local status
+hops local open
+# when done
+hops local down --name e2e
+```
+
+No volume/hostPath literacy required. Charts: `api/.gitops/deploy`, `ui/.gitops/deploy`. Env Applications: `gitops/env/local/`.
+
+## Option B — compose + host processes
+
 ```bash
 cd tests/e2e-ui
 make up

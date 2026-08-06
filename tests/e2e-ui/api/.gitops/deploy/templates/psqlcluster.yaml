@@ -1,0 +1,15 @@
+{{- if and .Values.database.enabled (or .Values.local (eq .Values.appRuntime "cluster-dev") (eq .Values.appRuntime "host")) }}
+# Local-capable PSQLCluster XR. Storage class defaults to values.database.storage.class
+# (local-path for k3s/dory; override for other provisioners).
+apiVersion: hops.ops.com.ai/v1alpha1
+kind: PSQLCluster
+metadata:
+  name: {{ .Values.database.name }}
+  labels:
+    {{- include "e2e-ui-api.labels" . | nindent 4 }}
+spec:
+  clusterName: {{ .Values.database.clusterName }}
+  storage:
+    size: {{ .Values.database.storage.size }}
+    class: {{ .Values.database.storage.class }}
+{{- end }}

@@ -1,0 +1,48 @@
+{{- if or (eq .Values.appRuntime "cluster-dev") (and .Values.local (eq .Values.appRuntime "cluster-dev")) }}
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: {{ include "e2e-ui-api.name" . }}
+  labels:
+    {{- include "e2e-ui-api.labels" . | nindent 4 }}
+    hops.ops.com.ai/runtime: cluster-dev
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app.kubernetes.io/name: {{ include "e2e-ui-api.name" . }}
+  template:
+    metadata:
+      labels:
+        app.kubernetes.io/name: {{ include "e2e-ui-api.name" . }}
+        hops.ops.com.ai/runtime: cluster-dev
+    spec:
+      containers:
+        - name: api
+          image: {{ .Values.clusterDev.image | quote }}
+          workingDir: {{ .Values.clusterDev.workingDir | quote }}
+          command:
+            {{- toYaml .Values.clusterDev.command | nindent 12 }}
+          ports:
+            - containerPort: {{ .Values.service.targetPort }}
+              name: http
+          env:
+            - name: BIND
+              value: {{ .Values.env.BIND | quote }}
+          volumeMounts:
+            - name: source
+              mountPath: {{ .Values.sourceDelivery.mountPath }}
+            - name: cargo-target
+              mountPath: {{ .Values.sourceDelivery.mountPath }}/target
+      volumes:
+        - name: source
+          {{- if eq .Values.sourceDelivery.mode "hostPath" }}
+          hostPath:
+            path: {{ .Values.sourceDelivery.hostPath | quote }}
+            type: Directory
+          {{- else }}
+          emptyDir: {}
+          {{- end }}
+        - name: cargo-target
+          emptyDir: {}
+{{- end }}
