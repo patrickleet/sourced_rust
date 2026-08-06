@@ -21,8 +21,24 @@ spec:
         - name: api
           image: {{ .Values.clusterDev.image | quote }}
           workingDir: {{ .Values.clusterDev.workingDir | quote }}
+          {{- if eq .Values.sourceDelivery.mode "sync" }}
+          # Wait for hops tar/mutagen sync to populate emptyDir before cargo run.
+          command:
+            - /bin/bash
+            - -lc
+            - |
+              set -e
+              for i in $(seq 1 180); do
+                if [ -f {{ .Values.sourceDelivery.mountPath }}/.hops-synced ] || [ -f {{ .Values.sourceDelivery.mountPath }}/Cargo.toml ]; then
+                  break
+                fi
+                sleep 1
+              done
+              {{ index .Values.clusterDev.command 2 }}
+          {{- else }}
           command:
             {{- toYaml .Values.clusterDev.command | nindent 12 }}
+          {{- end }}
           ports:
             - containerPort: {{ .Values.service.targetPort }}
               name: http
