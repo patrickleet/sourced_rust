@@ -1,0 +1,6 @@
+apiVersion: v2
+name: e2e-ui-ui
+description: Local workbench dogfood chart for e2e-ui SvelteKit UI
+type: application
+version: 0.1.0
+appVersion: "0.1.0"

@@ -1,0 +1,44 @@
+# Local workbench values for e2e-ui API.
+# Storage class for PSQLCluster: override per local CP (e.g. local-path, hostpath, psql).
+# Default "local-path" works with k3s (dory/colima) and kind with local-path-provisioner.
+
+local: false
+appRuntime: package  # host | cluster-dev | package
+
+name: e2e-ui-api
+image:
+  repository: ghcr.io/hops-ops/e2e-ui-api
+  tag: latest
+  pullPolicy: IfNotPresent
+
+# Generic runtime image for cluster-dev (no app package rebuild per edit).
+clusterDev:
+  image: rust:1.85-bookworm
+  command:
+    - /bin/bash
+    - -lc
+    - cargo run -p e2e-runner --bin e2e-ui
+  workingDir: /workspace
+  sourcePath: /workspace
+
+service:
+  port: 8791
+  targetPort: 8791
+
+env:
+  BIND: "0.0.0.0:8791"
+
+database:
+  enabled: true
+  name: e2e-ui-api-psql
+  clusterName: local
+  storage:
+    size: 2Gi
+    # Override for your local CP storage class if needed.
+    class: local-path
+
+# Source delivery (injected by hops local when hostPath/sync is selected).
+sourceDelivery:
+  mode: none  # none | hostPath | sync
+  hostPath: ""
+  mountPath: /workspace
