@@ -1,0 +1,11 @@
+# Example only — generate with:
+#   hops local aws --gitops ./gitops/cluster
+# Then commit providers/aws.yaml (not secrets).
+apiVersion: pkg.crossplane.io/v1
+kind: Provider
+metadata:
+  name: crossplane-contrib-provider-family-aws
+spec:
+  package: xpkg.crossplane.io/crossplane-contrib/provider-family-aws:v2.4.0
+  runtimeConfigRef:
+    name: aws

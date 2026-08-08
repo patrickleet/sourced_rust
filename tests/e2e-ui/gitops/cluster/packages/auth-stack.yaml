@@ -1,0 +1,11 @@
+# Crossplane Configuration for AuthStack (Zitadel + auth XRDs).
+# Prefer building/pushing from source into the local registry:
+#   hops config install <meta>/xrs/stacks/k8s/auth
+# Depends on: provider-helm, provider-kubernetes, (optional) provider-upjet-zitadel.
+apiVersion: pkg.crossplane.io/v1
+kind: Configuration
+metadata:
+  name: auth-stack
+spec:
+  package: ghcr.io/hops-ops/auth-stack:v1.6.0
+  # package: registry.crossplane-system.svc.cluster.local:5000/hops-ops/auth-stack:<tag>

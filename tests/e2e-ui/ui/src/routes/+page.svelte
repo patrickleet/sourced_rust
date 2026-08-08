@@ -198,7 +198,7 @@ query Todos @load {
 			<h1>
 				<strong>Distributed</strong> is a
 				<em>state-of-the-art</em> framework
-				for building distributed systems and realtime applications.
+				for building distributed systems, and realtime applications.
 			</h1>
 			<p class="wf-lede">
 				Not a partial toolkit. An end-to-end stack — domain, service, query edge, and live client —

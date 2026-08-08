@@ -1,4 +1,5 @@
 # Local workbench values for e2e-ui UI.
+# Secrets live in K8s Secrets (secretEnv / envFromSecrets) — not here.
 
 local: false
 appRuntime: package  # host | cluster-dev | package
@@ -9,22 +10,65 @@ image:
   tag: latest
   pullPolicy: IfNotPresent
 
+# Source tree is the *distributed* monorepo root (needs tests/e2e-ui/ui + js/).
+# Application deliveryPath points there; workingDir is the Svelte app.
 clusterDev:
   image: node:22-bookworm
+  # Use bash -c (not -lc) so container ENV/PATH stay intact.
   command:
     - /bin/bash
-    - -lc
-    - npm install && npm run dev -- --host 0.0.0.0 --port 5180
-  workingDir: /workspace
+    - -c
+    - |
+      set -e
+      cd /workspace/js && npm install && npm run build
+      cd /workspace/tests/e2e-ui/ui
+      npm install
+      # Skip dctl/cargo: generated clients are committed under src/lib/generated.
+      export DISTRIBUTED_SKIP_CLIENT_COMPILE=1
+      # In-cluster API service (not host localhost).
+      export E2E_API_ORIGIN="${E2E_API_ORIGIN:-http://e2e-ui-api:8791}"
+      export E2E_BASE_URL="$E2E_API_ORIGIN"
+      npm run dev -- --host 0.0.0.0 --port 5180
+  workingDir: /workspace/tests/e2e-ui/ui
   sourcePath: /workspace
 
 service:
   port: 5180
   targetPort: 5180
 
+# Non-secret env only (safe in git).
 env:
   HOST: "0.0.0.0"
   PORT: "5180"
+  DISTRIBUTED_SKIP_CLIENT_COMPILE: "1"
+  E2E_API_ORIGIN: "http://e2e-ui-api:8791"
+  E2E_BASE_URL: "http://e2e-ui-api:8791"
+  PUBLIC_E2E_API_ORIGIN: "http://e2e-ui-api:8791"
+  AUTH_URL: "http://e2e-ui-ui.hops-wt-dogfood.svc.cluster.local:5180"
+  AUTH_TRUST_HOST: "true"
+  AUTH_USE_SECURE_COOKIES: "false"
+  # AuthStack issuer (in-cluster ClusterIP Service — no ingress)
+  OIDC_ISSUER: "http://zitadel.auth.svc.cluster.local:8080"
+
+# Secret-backed env (keys must exist on Secret e2e-ui-oidc in the app namespace).
+# Residual — create live (not in git):
+#   kubectl -n hops-wt-dogfood create secret generic e2e-ui-oidc \
+#     --from-literal=AUTH_SECRET='…' \
+#     --from-literal=OIDC_CLIENT_ID='…' \
+#     --from-literal=OIDC_CLIENT_SECRET='…'
+secretEnv:
+  AUTH_SECRET:
+    secretName: e2e-ui-oidc
+    key: AUTH_SECRET
+  OIDC_CLIENT_ID:
+    secretName: e2e-ui-oidc
+    key: OIDC_CLIENT_ID
+  OIDC_CLIENT_SECRET:
+    secretName: e2e-ui-oidc
+    key: OIDC_CLIENT_SECRET
+
+# Optional: mount entire secrets as env (unused by default)
+envFromSecrets: []
 
 sourceDelivery:
   mode: none  # none | hostPath | sync
