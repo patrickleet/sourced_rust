@@ -22,18 +22,39 @@ spec:
           image: {{ .Values.clusterDev.image | quote }}
           workingDir: {{ .Values.clusterDev.workingDir | quote }}
           {{- if eq .Values.sourceDelivery.mode "sync" }}
-          # Wait for hops tar/mutagen sync to populate emptyDir before starting vite.
+          # Wait for tar/mutagen delivery, then run the same clusterDev command.
           command:
             - /bin/bash
-            - -lc
+            - -c
             - |
+              set -e
               echo "waiting for source sync at {{ .Values.sourceDelivery.mountPath }}..."
+              waited=0
               while [ ! -f {{ .Values.sourceDelivery.mountPath }}/.hops-synced ] \
-                && [ ! -f {{ .Values.sourceDelivery.mountPath }}/package.json ]; do
-                sleep 1
+                && [ ! -f {{ .Values.clusterDev.workingDir }}/package.json ]; do
+                sleep 2
+                waited=$((waited + 2))
+                if [ $((waited % 30)) -eq 0 ]; then
+                  echo "still waiting for hops source sync (${waited}s) — is tar watcher running?"
+                fi
+                if [ "$waited" -ge 600 ]; then
+                  echo "ERROR: source sync timeout after ${waited}s (no .hops-synced / package.json)"
+                  exit 1
+                fi
               done
               echo "source present; starting dev process"
-              {{ index .Values.clusterDev.command 2 }}
+              {{- /* Unwrap Values.clusterDev.command ["/bin/bash","-c","script"] */ -}}
+              {{- $cmd := .Values.clusterDev.command -}}
+              {{- if and (kindIs "slice" $cmd) (ge (len $cmd) 3) }}
+              {{ index $cmd 2 | nindent 14 }}
+              {{- else }}
+              cd /workspace/js && npm install && npm run build
+              cd {{ .Values.clusterDev.workingDir }}
+              npm install
+              export DISTRIBUTED_SKIP_CLIENT_COMPILE=1
+              export E2E_API_ORIGIN="${E2E_API_ORIGIN:-http://e2e-ui-api:8791}"
+              npm run dev -- --host 0.0.0.0 --port {{ .Values.service.targetPort }}
+              {{- end }}
           {{- else }}
           command:
             {{- toYaml .Values.clusterDev.command | nindent 12 }}
@@ -42,15 +63,33 @@ spec:
             - containerPort: {{ .Values.service.targetPort }}
               name: http
           env:
-            - name: HOST
-              value: {{ .Values.env.HOST | quote }}
-            - name: PORT
-              value: {{ .Values.env.PORT | quote }}
+            {{- range $k, $v := .Values.env }}
+            - name: {{ $k }}
+              value: {{ $v | quote }}
+            {{- end }}
+            {{- /* Secrets from K8s Secret objects — never plain values in gitops */ -}}
+            {{- range $k, $ref := .Values.secretEnv }}
+            - name: {{ $k }}
+              valueFrom:
+                secretKeyRef:
+                  name: {{ $ref.secretName | quote }}
+                  key: {{ $ref.key | quote }}
+            {{- end }}
+          {{- with .Values.envFromSecrets }}
+          envFrom:
+            {{- range . }}
+            - secretRef:
+                name: {{ . | quote }}
+            {{- end }}
+          {{- end }}
           volumeMounts:
             - name: source
               mountPath: {{ .Values.sourceDelivery.mountPath }}
             - name: node-modules
-              mountPath: {{ .Values.sourceDelivery.mountPath }}/node_modules
+              mountPath: {{ .Values.clusterDev.workingDir }}/node_modules
+            # Keep monorepo js deps across restarts within the same pod lifecycle.
+            - name: js-node-modules
+              mountPath: /workspace/js/node_modules
       volumes:
         - name: source
           {{- if eq .Values.sourceDelivery.mode "hostPath" }}
@@ -61,5 +100,7 @@ spec:
           emptyDir: {}
           {{- end }}
         - name: node-modules
+          emptyDir: {}
+        - name: js-node-modules
           emptyDir: {}
 {{- end }}

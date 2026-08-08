@@ -1,0 +1,13 @@
+# Secret `zitadel-credentials` is live-only (PAT from AuthStack / env).
+apiVersion: zitadel.m.crossplane.io/v1beta1
+kind: ProviderConfig
+metadata:
+  name: default
+  namespace: default
+spec:
+  credentials:
+    source: Secret
+    secretRef:
+      namespace: default
+      name: zitadel-credentials
+      key: credentials

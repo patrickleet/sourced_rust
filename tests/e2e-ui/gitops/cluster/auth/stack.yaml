@@ -1,0 +1,49 @@
+# Local AuthStack: Zitadel + embedded PSQLCluster (owned by this XR).
+#
+# No ingress/gateway for local first step — Service is ClusterIP only.
+# Issuer / ExternalDomain = in-cluster DNS (Option A):
+#   http://zitadel.auth.svc.cluster.local:8080
+#
+# Install packages first, then: hops local gitops cluster ./gitops/cluster
+apiVersion: hops.ops.com.ai/v1alpha1
+kind: AuthStack
+metadata:
+  # Helm release / Service name → zitadel.<namespace>.svc.cluster.local
+  name: zitadel
+  namespace: default
+spec:
+  clusterName: dory
+  helmProviderConfigRef:
+    name: default
+  kubernetesProviderConfigRef:
+    name: default
+
+  # Install namespace (was default "zitadel"; use "auth" so FQDN is zitadel.auth…)
+  namespace: auth
+
+  # In-cluster hostname only (no fake public DNS / ingress yet)
+  domain: zitadel.auth.svc.cluster.local
+  externalSecure: false
+
+  gateway:
+    enabled: false
+
+  externalSecrets:
+    enabled: false
+
+  firstInstance:
+    org: hops-ops
+    masterkey:
+      # Live Secret in install ns (auth) — not inline in gitops.
+      #   kubectl -n auth create secret generic zitadel-masterkey \
+      #     --from-literal=masterkey='hops-like-basketball-but-for-ops'
+      # Chart expects the key material under the secret name; see AuthStack XRD.
+      secretRef:
+        name: zitadel-masterkey
+
+  # Embedded PG lands in the same install namespace (auth).
+  database:
+    embedded:
+      storage:
+        size: 2Gi
+        class: psql

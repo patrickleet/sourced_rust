@@ -1,0 +1,34 @@
+# Project roles — scripts/up.sh roles user + admin
+apiVersion: project.zitadel.m.crossplane.io/v1alpha1
+kind: Role
+metadata:
+  name: e2e-ui-role-user
+  namespace: default
+  labels:
+    hops.ops.com.ai/app: e2e-ui
+spec:
+  forProvider:
+    roleKey: user
+    displayName: user
+    projectIdRef:
+      name: e2e-ui
+  providerConfigRef:
+    name: default
+    kind: ProviderConfig
+---
+apiVersion: project.zitadel.m.crossplane.io/v1alpha1
+kind: Role
+metadata:
+  name: e2e-ui-role-admin
+  namespace: default
+  labels:
+    hops.ops.com.ai/app: e2e-ui
+spec:
+  forProvider:
+    roleKey: admin
+    displayName: admin
+    projectIdRef:
+      name: e2e-ui
+  providerConfigRef:
+    name: default
+    kind: ProviderConfig

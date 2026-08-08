@@ -1,6 +1,5 @@
 # Local workbench values for e2e-ui API.
 # Storage class for PSQLCluster: override per local CP (e.g. local-path, hostpath, psql).
-# Default "local-path" works with k3s (dory/colima) and kind with local-path-provisioner.
 
 local: false
 appRuntime: package  # host | cluster-dev | package
@@ -11,14 +10,18 @@ image:
   tag: latest
   pullPolicy: IfNotPresent
 
-# Generic runtime image for cluster-dev (no app package rebuild per edit).
+# Source tree is the *distributed* monorepo root; API Cargo workspace is tests/e2e-ui.
 clusterDev:
-  image: rust:1.85-bookworm
+  image: rust:1.94-bookworm
+  # bash -c keeps Docker ENV (PATH includes /usr/local/cargo/bin). -lc can drop it.
   command:
     - /bin/bash
-    - -lc
-    - cargo run -p e2e-runner --bin e2e-ui
-  workingDir: /workspace
+    - -c
+    - |
+      set -e
+      cd /workspace/tests/e2e-ui
+      cargo run -p e2e-runner --bin e2e-ui
+  workingDir: /workspace/tests/e2e-ui
   sourcePath: /workspace
 
 service:
@@ -27,17 +30,19 @@ service:
 
 env:
   BIND: "0.0.0.0:8791"
+  # Offline-friendly default until PSQL platform pack is installed.
+  DATABASE_URL: "sqlite:/tmp/e2e-ui.db?mode=rwc"
 
 database:
-  enabled: true
+  # Dogfood local CP often lacks PSQLCluster CRD; disable by default for up path.
+  # Enable when PSQL pack is installed: --set database.enabled=true via Application values.
+  enabled: false
   name: e2e-ui-api-psql
   clusterName: local
   storage:
     size: 2Gi
-    # Override for your local CP storage class if needed.
     class: local-path
 
-# Source delivery (injected by hops local when hostPath/sync is selected).
 sourceDelivery:
   mode: none  # none | hostPath | sync
   hostPath: ""

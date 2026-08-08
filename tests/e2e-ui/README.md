@@ -10,14 +10,33 @@ One-time: `hops local start` (control plane). Then:
 
 ```bash
 cd tests/e2e-ui
-hops local up ./gitops/env/local --name e2e
+# apps (workbench)
+hops local up ./gitops/envs/local --name e2e
 hops local status
 hops local open
 # when done
 hops local down --name e2e
 ```
 
-No volume/hostPath literacy required. Charts: `api/.gitops/deploy`, `ui/.gitops/deploy`. Env Applications: `gitops/env/local/`.
+Optional **platform XRs** under `gitops/cluster/` (AuthStack + PSQLStack):
+
+```bash
+hops config install <meta>/xrs/stacks/k8s/psql
+hops config install <meta>/xrs/stacks/k8s/auth
+kubectl apply -f gitops/cluster/psql/stack.yaml
+kubectl apply -f gitops/cluster/auth/stack.yaml
+```
+
+Optional cloud providers (non-secret YAML only):
+
+```bash
+hops local aws --gitops ./gitops/cluster
+hops local github --gitops ./gitops/cluster
+```
+
+Charts: `api/.gitops/deploy`, `ui/.gitops/deploy`.  
+App Applications: `gitops/envs/local/` (legacy: `gitops/env/local/`).  
+Control plane: `gitops/cluster/` (`PSQLStack`, `AuthStack`, packages).
 
 ## Option B — compose + host processes
 
