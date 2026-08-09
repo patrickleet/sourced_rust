@@ -44,18 +44,25 @@ env:
   E2E_API_ORIGIN: "http://e2e-ui-api:8791"
   E2E_BASE_URL: "http://e2e-ui-api:8791"
   PUBLIC_E2E_API_ORIGIN: "http://e2e-ui-api:8791"
-  AUTH_URL: "http://e2e-ui-ui.hops-wt-dogfood.svc.cluster.local:5180"
+  # Overridden at render when hops injects namespace (hops-wt-*).
+  AUTH_URL: "http://e2e-ui-ui.hops-wt-default.svc.cluster.local:5180"
   AUTH_TRUST_HOST: "true"
   AUTH_USE_SECURE_COOKIES: "false"
-  # AuthStack issuer (in-cluster ClusterIP Service — no ingress)
-  OIDC_ISSUER: "http://zitadel.auth.svc.cluster.local:8080"
+  # AuthStack issuer (Helm default Service fullname)
+  OIDC_ISSUER: "http://zitadel-zitadel.auth.svc.cluster.local:8080"
+  # Project id residual after workspace identity Project Ready
+  OIDC_AUDIENCE: ""
+  ZITADEL_PROJECT_ID: ""
 
 # Secret-backed env (keys must exist on Secret e2e-ui-oidc in the app namespace).
 # Residual — create live (not in git):
 #   kubectl -n hops-wt-dogfood create secret generic e2e-ui-oidc \
 #     --from-literal=AUTH_SECRET='…' \
 #     --from-literal=OIDC_CLIENT_ID='…' \
-#     --from-literal=OIDC_CLIENT_SECRET='…'
+#     --from-literal=OIDC_CLIENT_SECRET='…' \
+#     --from-literal=ZITADEL_SERVICE_USER_TOKEN="$(kubectl -n auth get secret login-client -o jsonpath='{.data.pat}' | base64 -d)"
+# Also set instance Login V2 (once per AuthStack):
+#   PUT /v2/features/instance  {"loginV2":{"required":true,"baseUri":"http://e2e-ui-ui.hops-wt-dogfood.svc.cluster.local:5180"}}
 secretEnv:
   AUTH_SECRET:
     secretName: e2e-ui-oidc
@@ -66,9 +73,77 @@ secretEnv:
   OIDC_CLIENT_SECRET:
     secretName: e2e-ui-oidc
     key: OIDC_CLIENT_SECRET
+  # login-client PAT (IAM_LOGIN_CLIENT) for custom /login Session API + CreateCallback
+  ZITADEL_SERVICE_USER_TOKEN:
+    secretName: e2e-ui-oidc
+    key: ZITADEL_SERVICE_USER_TOKEN
 
 # Optional: mount entire secrets as env (unused by default)
 envFromSecrets: []
+
+# Zitadel identity on the UI chart (OIDC web client + Login V2 host).
+#
+# Scope:
+#   - Project + roles + demo humans — **cluster-shared** (one set for the CP)
+#   - OIDC web app — **per worktree** (redirect URIs + Login V2 baseUri)
+#
+# Enable from Application values when the env needs OIDC dogfood.
+identity:
+  enabled: false
+  # Residual after AuthStack Ready: GET …/management/v1/orgs/me
+  orgId: ""
+  # Worktree id for OIDC app names only (e2e-ui-<workspace>-web). Default:
+  # trimPrefix "hops-wt-" of injected namespace.
+  workspace: ""
+  # Cluster-shared Project MR name (roles + humans hang off this).
+  projectName: e2e-ui
+  # Cluster-shared demo humans (alice / bob / admin · Password1!)
+  demoUsers: true
+  # Namespace for worktree OIDC app MRs.
+  mrNamespace: default
+  # Namespace for shared Project / Role MRs (defaults to mrNamespace).
+  projectNamespace: default
+  # Namespace for shared HumanUser MRs (defaults to projectNamespace).
+  humansNamespace: default
+  # Optional overrides; defaults = this chart name + service.port
+  uiService: ""
+  uiPort: ""
+  # Optional full override of redirect base (Login V2 baseUri + callbacks)
+  uiBaseURL: ""
+  extraRedirectUris:
+    - http://127.0.0.1:5180/auth/callback/oidc
+    - http://localhost:5180/auth/callback/oidc
+    - http://127.0.0.1:18101/auth/callback/oidc
+    - http://localhost:18101/auth/callback/oidc
+  extraPostLogoutRedirectUris:
+    - http://127.0.0.1:5180/
+    - http://localhost:5180/
+    - http://127.0.0.1:18101/
+    - http://localhost:18101/
+  passwordSecret:
+    # Residual Secret keys: alice, bob, admin
+    # Cluster-shared default name (not per-worktree).
+    name: e2e-human-passwords
+  providerConfigRef:
+    name: default
+    # Prefer ClusterProviderConfig so shared + worktree MRs share credentials.
+    kind: ClusterProviderConfig
+
+# Materialize residual secrets from Vault (ClusterSecretStore "vault").
+# Enable after SecretStack CSS is Ready + hops secrets sync vault.
+externalSecrets:
+  enabled: false
+  refreshInterval: 1m
+  secretStoreRef:
+    name: vault
+    kind: ClusterSecretStore
+  oidc:
+    vaultPath: "" # default e2e-ui/<workspace>/oidc
+    targetName: e2e-ui-oidc
+  humanPasswords:
+    enabled: true
+    vaultPath: "" # default e2e-ui/<workspace>/human-passwords
+    targetName: "" # default e2e-human-passwords-<workspace>
 
 sourceDelivery:
   mode: none  # none | hostPath | sync

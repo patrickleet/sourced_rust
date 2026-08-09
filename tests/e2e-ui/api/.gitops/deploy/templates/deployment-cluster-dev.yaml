@@ -54,10 +54,17 @@ spec:
             - containerPort: {{ .Values.service.targetPort }}
               name: http
           env:
-            - name: BIND
-              value: {{ .Values.env.BIND | quote }}
-            - name: DATABASE_URL
-              value: {{ .Values.env.DATABASE_URL | default "sqlite:/tmp/e2e-ui.db?mode=rwc" | quote }}
+            {{- range $k, $v := .Values.env }}
+            - name: {{ $k }}
+              value: {{ $v | quote }}
+            {{- end }}
+            {{- range $k, $ref := .Values.secretEnv }}
+            - name: {{ $k }}
+              valueFrom:
+                secretKeyRef:
+                  name: {{ $ref.secretName | quote }}
+                  key: {{ $ref.key | quote }}
+            {{- end }}
             # Keep cargo on PATH even if something mangles the environment.
             - name: PATH
               value: "/usr/local/cargo/bin:/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin"

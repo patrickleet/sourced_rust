@@ -11,6 +11,20 @@ spec:
       values:
         local: true
         appRuntime: cluster-dev
+        # Identity: cluster Project+roles+humans; OIDC app is worktree-scoped.
+        # orgId residual after: GET …/management/v1/orgs/me
+        identity:
+          enabled: true
+          # hops-ops org on local AuthStack (GET …/management/v1/orgs/me)
+          orgId: "385408591454077587"
+          projectName: e2e-ui
+          projectNamespace: default
+          humansNamespace: default
+          mrNamespace: default
+          demoUsers: true
+          providerConfigRef:
+            name: default
+            kind: ClusterProviderConfig
   destination:
     namespace: hops-wt-default
   syncPolicy:

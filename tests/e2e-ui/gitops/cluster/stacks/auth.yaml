@@ -1,14 +1,15 @@
 # Local AuthStack: Zitadel + embedded PSQLCluster (owned by this XR).
 #
 # No ingress/gateway for local first step — Service is ClusterIP only.
-# Issuer / ExternalDomain = in-cluster DNS (Option A):
-#   http://zitadel.auth.svc.cluster.local:8080
+# Helm chart fullname is release+chart → Service **zitadel-zitadel** (default).
+# Issuer / ExternalDomain must match that FQDN (Option A):
+#   http://zitadel-zitadel.auth.svc.cluster.local:8080
+# (Later: chartValues.fullnameOverride: zitadel if we want a shorter name.)
 #
-# Install packages first, then: hops local gitops cluster ./gitops/cluster
+# Install configurations first, then: hops local gitops cluster ./gitops/cluster
 apiVersion: hops.ops.com.ai/v1alpha1
 kind: AuthStack
 metadata:
-  # Helm release / Service name → zitadel.<namespace>.svc.cluster.local
   name: zitadel
   namespace: default
 spec:
@@ -18,11 +19,11 @@ spec:
   kubernetesProviderConfigRef:
     name: default
 
-  # Install namespace (was default "zitadel"; use "auth" so FQDN is zitadel.auth…)
+  # Install namespace
   namespace: auth
 
-  # In-cluster hostname only (no fake public DNS / ingress yet)
-  domain: zitadel.auth.svc.cluster.local
+  # Must match Helm Service FQDN (default fullname = zitadel-zitadel)
+  domain: zitadel-zitadel.auth.svc.cluster.local
   externalSecure: false
 
   gateway:

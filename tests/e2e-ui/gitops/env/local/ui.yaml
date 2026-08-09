@@ -11,6 +11,11 @@ spec:
       values:
         local: true
         appRuntime: cluster-dev
+        # Worktree OIDC project/users/app (requires AuthStack + ProviderConfig).
+        # Set orgId residual after: GET …/management/v1/orgs/me
+        identity:
+          enabled: true
+          orgId: "" # residual — required for roles/humans
   destination:
     namespace: hops-wt-default
   syncPolicy:

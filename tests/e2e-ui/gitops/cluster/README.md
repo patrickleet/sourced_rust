@@ -11,7 +11,7 @@ Platform / CP resources for the **shared** local control plane:
 
 ```text
 <meta>/
-  gitops/cluster/           # ← this tree (AuthStack, PSQLStack, packages)
+  gitops/cluster/           # ← this tree (AuthStack, PSQLStack, configurations)
   gitops/envs/local/        # Application YAMLs → hops-wt-* namespaces
   clients/foo/.gitops/deploy/
   platform/api/.gitops/deploy/
@@ -19,12 +19,14 @@ Platform / CP resources for the **shared** local control plane:
 
 | Path | Contents |
 |------|----------|
-| `packages/` | Crossplane `Configuration` installs (psql-stack, auth-stack, secret-stack) |
-| `psql/stack.yaml` | **`PSQLStack` XR** — CNPG + SC `psql` (local-path) |
-| `auth/stack.yaml` | **`AuthStack` XR** — Zitadel + embedded Postgres |
-| `secrets/stack.yaml` | **`SecretStack` XR** — ESO + optional Vault (local backend) |
-| `providers/` | Optional cloud Provider installs (`hops local aws --gitops …`) |
+| `configurations/` | Crossplane `Configuration` installs (psql-stack, auth-stack, secret-stack) |
+| `stacks/psql.yaml` | **`PSQLStack` XR** — CNPG + SC `psql` (local-path) |
+| `stacks/auth.yaml` | **`AuthStack` XR** — Zitadel + embedded Postgres |
+| `secrets/` | **`SecretStack`** + vault-auth-delegator CRB (ESO + Vault; k8s auth via Helm postStart) |
+| `auth/` | Auth residuals (e.g. masterkey ExternalSecret), not the XR claim |
+| `providers/` | Provider installs + per-provider DRCs (`helm.yaml` / `helm-drc.yaml`, …) |
 | `providerconfigs/` | ProviderConfig shapes (`secretRef` only) |
+| `e2e-identity/` | **Moved** — worktree UI chart `identity.*` values (pointer README only) |
 
 ## Apply + watch (local gitops vibes)
 
@@ -45,7 +47,7 @@ hops local gitops worktree ./gitops/envs/local --name dogfood
 ```
 
 Crossplane reconciles XRs (`PSQLStack`, `AuthStack`, `SecretStack`, …) after each apply.
-Edit `auth/stack.yaml`, `psql/stack.yaml`, or `secrets/stack.yaml` → saved → applied → CP converges.
+Edit `stacks/auth.yaml`, `stacks/psql.yaml`, or `secrets/stack.yaml` → saved → applied → CP converges.
 
 **SecretStack (local):** install the Configuration from source first
 (`hops config install --path …/xrs/stacks/aws/secret`), then apply this cluster tree

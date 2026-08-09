@@ -2,39 +2,41 @@
 
 | File | Kind |
 |------|------|
-| `stack.yaml` | `AuthStack` XR — Zitadel + embedded `PSQLCluster` |
+| [`../stacks/auth.yaml`](../stacks/auth.yaml) | `AuthStack` XR — Zitadel + embedded `PSQLCluster` |
+| `external-secret-masterkey.yaml` | Optional ESO materialize of `zitadel-masterkey` from Vault |
 
 ## Local addressing (no ingress)
 
 | | Value |
 |--|--------|
-| Install namespace | **`auth`** (not `zitadel`) |
-| AuthStack / release name | **`zitadel`** |
-| Service FQDN | **`zitadel.auth.svc.cluster.local:8080`** |
-| OIDC issuer | `http://zitadel.auth.svc.cluster.local:8080` |
+| Install namespace | **`auth`** |
+| AuthStack XR name | **`zitadel`** |
+| Helm Service (default fullname) | **`zitadel-zitadel.auth.svc.cluster.local:8080`** |
+| OIDC issuer / `domain` | `http://zitadel-zitadel.auth.svc.cluster.local:8080` |
 | Gateway / ingress | disabled — ClusterIP only for now |
 
 ## Apply order
 
 ```bash
 hops local start --backend dory --gitops ./gitops/cluster
-# or after packages:
+# or after configurations:
 hops local gitops cluster ./gitops/cluster
 
 kubectl get authstack zitadel -n default
 kubectl get svc -n auth
-# expect: zitadel.auth.svc.cluster.local
+# expect: zitadel-zitadel (API) — not a separate short-name alias
 ```
 
-## e2e-ui identity
+## e2e-ui identity (worktree)
 
-See [`../e2e-identity/`](../e2e-identity/) for Project / humans / OIDC app / Grant XRs.
-ProviderConfig residual:
+App Project / humans / OIDC app render from the **UI** chart when
+`gitops/envs/local/ui.yaml` sets `identity.enabled: true` (not cluster gitops).
+
+ProviderConfig residual (cluster):
 
 ```bash
 hops local zitadel --source-context dory --source-namespace auth \
-  --domain zitadel.auth.svc.cluster.local --port 8080 --insecure \
-  --gitops ./gitops/cluster
+  --domain zitadel-zitadel.auth.svc.cluster.local --port 8080 --insecure
 ```
 
 ## Secrets

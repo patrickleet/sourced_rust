@@ -23,8 +23,8 @@ Optional **platform XRs** under `gitops/cluster/` (AuthStack + PSQLStack):
 ```bash
 hops config install <meta>/xrs/stacks/k8s/psql
 hops config install <meta>/xrs/stacks/k8s/auth
-kubectl apply -f gitops/cluster/psql/stack.yaml
-kubectl apply -f gitops/cluster/auth/stack.yaml
+kubectl apply -f gitops/cluster/stacks/psql.yaml
+kubectl apply -f gitops/cluster/stacks/auth.yaml
 ```
 
 Optional cloud providers (non-secret YAML only):
@@ -36,7 +36,7 @@ hops local github --gitops ./gitops/cluster
 
 Charts: `api/.gitops/deploy`, `ui/.gitops/deploy`.  
 App Applications: `gitops/envs/local/` (legacy: `gitops/env/local/`).  
-Control plane: `gitops/cluster/` (`PSQLStack`, `AuthStack`, packages).
+Control plane: `gitops/cluster/` (`stacks/`, `configurations/`, …).
 
 ## Option B — compose + host processes
 

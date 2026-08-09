@@ -32,6 +32,22 @@ env:
   BIND: "0.0.0.0:8791"
   # Offline-friendly default until PSQL platform pack is installed.
   DATABASE_URL: "sqlite:/tmp/e2e-ui.db?mode=rwc"
+  # OidcBearer — required so SSR Bearer tokens map engine roles (user/admin).
+  # Without this, API stays on DevHeaders and todos/blob/chat user surfaces are hidden.
+  OIDC_ISSUER: "http://zitadel-zitadel.auth.svc.cluster.local:8080"
+  # Project id (role assertion audience) — residual after identity Project Ready.
+  OIDC_AUDIENCE: ""
+  OIDC_JWKS_URI: "http://zitadel-zitadel.auth.svc.cluster.local:8080/oauth/v2/keys"
+
+# Residual secrets (same e2e-ui-oidc object as the UI chart, in app namespace).
+# OIDC app + humans live on the UI chart (identity.*); API only consumes tokens.
+secretEnv:
+  OIDC_CLIENT_ID:
+    secretName: e2e-ui-oidc
+    key: OIDC_CLIENT_ID
+  ZITADEL_SERVICE_USER_TOKEN:
+    secretName: e2e-ui-oidc
+    key: ZITADEL_SERVICE_USER_TOKEN
 
 database:
   # Dogfood local CP often lacks PSQLCluster CRD; disable by default for up path.

@@ -64,8 +64,14 @@ spec:
               name: http
           env:
             {{- range $k, $v := .Values.env }}
+            {{- /* AUTH_URL rewritten from injected workspace namespace when present */ -}}
+            {{- if and (eq $k "AUTH_URL") $.Values.namespace }}
+            - name: AUTH_URL
+              value: {{ printf "http://e2e-ui-ui.%s.svc.cluster.local:5180" $.Values.namespace | quote }}
+            {{- else }}
             - name: {{ $k }}
               value: {{ $v | quote }}
+            {{- end }}
             {{- end }}
             {{- /* Secrets from K8s Secret objects — never plain values in gitops */ -}}
             {{- range $k, $ref := .Values.secretEnv }}

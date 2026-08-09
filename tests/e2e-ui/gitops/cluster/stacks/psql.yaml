@@ -1,5 +1,5 @@
 # Platform layer: CNPG + Atlas + StorageClass named `psql`.
-# Install package first: `hops config install <path-to-psql-stack>` (or apply packages/psql-stack.yaml).
+# Install package first: `hops config install <path-to-psql-stack>` (or apply configurations/psql-stack.yaml).
 #
 # Dory/k3s uses rancher.io/local-path (default SC). Snapshot class off (no CSI snapshotter).
 apiVersion: hops.ops.com.ai/v1alpha1

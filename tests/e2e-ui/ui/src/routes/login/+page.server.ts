@@ -19,6 +19,8 @@ export const load: PageServerLoad = async (event) => {
 
 	return {
 		authRequest,
+		// Workspace-prefixed when identity.workspace is set (e.g. dogfood-alice).
+		// Local dogfood also seeds plain alice/bob/admin for the same password.
 		demoHint: 'Demo: alice / bob / admin · Password1!'
 	};
 };

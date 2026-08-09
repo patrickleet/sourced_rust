@@ -1,0 +1,46 @@
+{{- /*
+  Cluster-shared project roles (user / admin) on the shared e2e-ui Project.
+*/ -}}
+{{- if and .Values.identity.enabled .Values.identity.orgId }}
+{{- $project := include "e2e-ui-ui.clusterProjectName" . -}}
+{{- $ns := .Values.identity.projectNamespace | default .Values.identity.mrNamespace | default "default" -}}
+{{- $pc := .Values.identity.providerConfigRef.name | default "default" -}}
+{{- $pck := .Values.identity.providerConfigRef.kind | default "ProviderConfig" -}}
+apiVersion: project.zitadel.m.crossplane.io/v1alpha1
+kind: Role
+metadata:
+  name: e2e-role-user
+  namespace: {{ $ns }}
+  labels:
+    {{- include "e2e-ui-ui.identityClusterLabels" . | nindent 4 }}
+    hops.ops.com.ai/demo-role: user
+spec:
+  forProvider:
+    orgId: {{ .Values.identity.orgId | quote }}
+    roleKey: user
+    displayName: user
+    projectIdRef:
+      name: {{ $project }}
+  providerConfigRef:
+    name: {{ $pc | quote }}
+    kind: {{ $pck | quote }}
+---
+apiVersion: project.zitadel.m.crossplane.io/v1alpha1
+kind: Role
+metadata:
+  name: e2e-role-admin
+  namespace: {{ $ns }}
+  labels:
+    {{- include "e2e-ui-ui.identityClusterLabels" . | nindent 4 }}
+    hops.ops.com.ai/demo-role: admin
+spec:
+  forProvider:
+    orgId: {{ .Values.identity.orgId | quote }}
+    roleKey: admin
+    displayName: admin
+    projectIdRef:
+      name: {{ $project }}
+  providerConfigRef:
+    name: {{ $pc | quote }}
+    kind: {{ $pck | quote }}
+{{- end }}
