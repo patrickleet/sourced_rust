@@ -32,12 +32,14 @@ env:
   BIND: "0.0.0.0:8791"
   # Offline-friendly default until PSQL platform pack is installed.
   DATABASE_URL: "sqlite:/tmp/e2e-ui.db?mode=rwc"
-  # OidcBearer — required so SSR Bearer tokens map engine roles (user/admin).
-  # Without this, API stays on DevHeaders and todos/blob/chat user surfaces are hidden.
+  # OidcBearer — requires issuer **and** audience (project id). If either is empty
+  # the API falls back to DevHeaders and live user surfaces misbehave.
   OIDC_ISSUER: "http://zitadel-zitadel.auth.svc.cluster.local:8080"
-  # Project id (role assertion audience) — residual after identity Project Ready.
+  # Residual after Zitadel Project Ready (external-name / status.atProvider.id).
+  # Override from Application values (gitops/envs/local/api.yaml) for local dogfood.
   OIDC_AUDIENCE: ""
   OIDC_JWKS_URI: "http://zitadel-zitadel.auth.svc.cluster.local:8080/oauth/v2/keys"
+  ZITADEL_PROJECT_ID: ""
 
 # Residual secrets (same e2e-ui-oidc object as the UI chart, in app namespace).
 # OIDC app + humans live on the UI chart (identity.*); API only consumes tokens.

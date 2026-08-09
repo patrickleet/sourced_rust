@@ -5,14 +5,18 @@ metadata:
 spec:
   source:
     path: ../../../api/.gitops/deploy
-    # distributed monorepo root (Cargo workspace lives at tests/e2e-ui)
-    deliveryPath: ../../../../..
+    # Default delivery = git worktree root (shared across UI/API pods).
     helm:
       values:
         local: true
         appRuntime: cluster-dev
         database:
           enabled: false
+        # Residual after shared Zitadel Project Ready (project id for role assertion).
+        # Dogfood live: e2e-ui-dogfood project until cluster Project `e2e-ui` is recreated.
+        env:
+          OIDC_AUDIENCE: "385467744310526613"
+          ZITADEL_PROJECT_ID: "385467744310526613"
   destination:
     namespace: hops-wt-default
   syncPolicy:

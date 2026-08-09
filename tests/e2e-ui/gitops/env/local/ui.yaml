@@ -5,17 +5,32 @@ metadata:
 spec:
   source:
     path: ../../../ui/.gitops/deploy
-    # distributed monorepo root (ui needs tests/e2e-ui/ui + js/ for file: dep)
-    deliveryPath: ../../../../..
+    # Default delivery = git worktree root (shared across UI/API pods).
+    # Do not set deliveryPath unless you need a narrower override.
     helm:
       values:
         local: true
         appRuntime: cluster-dev
-        # Worktree OIDC project/users/app (requires AuthStack + ProviderConfig).
-        # Set orgId residual after: GET …/management/v1/orgs/me
+        # Residual: Zitadel project id for role scopes / API audience (must match
+        # Project Ready external-name). Dogfood live project until cluster e2e-ui
+        # Project is recreated on current AuthStack.
+        env:
+          OIDC_AUDIENCE: "385467744310526613"
+          ZITADEL_PROJECT_ID: "385467744310526613"
+        # Identity: cluster Project+roles+humans; OIDC app is worktree-scoped.
+        # orgId residual after: GET …/management/v1/orgs/me
         identity:
           enabled: true
-          orgId: "" # residual — required for roles/humans
+          # hops-ops org on local AuthStack (GET …/management/v1/orgs/me)
+          orgId: "385408591454077587"
+          projectName: e2e-ui
+          projectNamespace: default
+          humansNamespace: default
+          mrNamespace: default
+          demoUsers: true
+          providerConfigRef:
+            name: default
+            kind: ClusterProviderConfig
   destination:
     namespace: hops-wt-default
   syncPolicy:

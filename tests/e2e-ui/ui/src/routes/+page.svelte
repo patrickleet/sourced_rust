@@ -201,7 +201,7 @@ query Todos @load {
 				for building distributed systems, and realtime applications.
 			</h1>
 			<p class="wf-lede">
-				Not a partial toolkit. An end-to-end stack — domain, service, query edge, and live client —
+				Not a partial toolkit. An end-to-end cloud native stack — domain, service, query edge, live client, and even gitops —
 				so engineers who care about quality code can stay on the model and still ship polished, fast,
 				maintainable products.
 			</p>
