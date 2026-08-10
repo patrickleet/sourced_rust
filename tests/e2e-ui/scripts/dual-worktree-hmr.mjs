@@ -2,9 +2,9 @@
  * Dual-workspace HMR check for cluster-dev UIs.
  *
  * Expects both UIs already serving (suite shell brings them up). Opens each
- * FQDN, edits `HmrBeacon.svelte` in that worktree, force-syncs UI sources into
- * the live pod, and asserts the beacon text updates without a full main-frame
- * navigation (Vite component HMR).
+ * FQDN, edits `HmrBeacon.svelte` in that worktree, copies **only that file**
+ * into the live pod (full-tree tar causes Vite SSR reload / full navigation),
+ * and asserts the beacon updates with **zero** main-frame navigations.
  *
  * Usage:
  *   node scripts/dual-worktree-hmr.mjs \
@@ -28,7 +28,7 @@ const aliceUrl = arg('alice-url');
 const bobUrl = arg('bob-url');
 const aliceRoot = arg('alice-root');
 const bobRoot = arg('bob-root');
-const timeoutMs = Number(arg('timeout-ms', '180000'));
+const timeoutMs = Number(arg('timeout-ms', '120000'));
 const kubeconfig = process.env.KUBECONFIG || `${process.env.HOME}/.kube/dory-config`;
 
 if (!aliceUrl || !bobUrl || !aliceRoot || !bobRoot) {
@@ -36,32 +36,40 @@ if (!aliceUrl || !bobUrl || !aliceRoot || !bobRoot) {
   process.exit(2);
 }
 
-const beaconFile = (root) =>
-  resolve(root, 'ui/src/lib/components/HmrBeacon.svelte');
+const beaconRel = 'ui/src/lib/components/HmrBeacon.svelte';
+const remoteBeacon = '/workspace/tests/e2e-ui/ui/src/lib/components/HmrBeacon.svelte';
+
+const beaconFile = (root) => resolve(root, beaconRel);
 
 function setBeacon(root, marker) {
   const path = beaconFile(root);
   let src = readFileSync(path, 'utf8');
-  const re = /data-hmr-beacon>[^<]*<\/span>/;
+  // Match with or without existing data-hmr attribute.
+  const re =
+    /(<span class="wf-kicker" data-hmr-beacon)(?:\s+data-hmr="[^"]*")?>([^<]*)(<\/span>)/;
   if (!re.test(src)) {
     throw new Error(`no data-hmr-beacon span in ${path}`);
   }
-  src = src.replace(re, `data-hmr-beacon data-hmr="${marker}">${marker}</span>`);
+  src = src.replace(re, `$1 data-hmr="${marker}">${marker}$3`);
   writeFileSync(path, src);
   return path;
 }
 
-/**
- * One-shot tar of UI sources only into the pod.
- * Full monorepo tar restarts Vite and drops the HMR websocket.
- */
-function forceTarSync(namespace, worktreeRoot) {
+function kubectlBase() {
   const ctx = process.env.HOPS_KUBE_CONTEXT || '';
-  const get = spawnSync(
+  return [
     'kubectl',
+    ...(ctx ? ['--context', ctx] : []),
+    ...(kubeconfig ? ['--kubeconfig', kubeconfig] : []),
+  ];
+}
+
+function runningUiPod(namespace) {
+  const base = kubectlBase();
+  const get = spawnSync(
+    base[0],
     [
-      ...(ctx ? ['--context', ctx] : []),
-      ...(kubeconfig ? ['--kubeconfig', kubeconfig] : []),
+      ...base.slice(1),
       'get',
       'pod',
       '-n',
@@ -78,30 +86,61 @@ function forceTarSync(namespace, worktreeRoot) {
   if (!pod) {
     throw new Error(`no Running e2e-ui-ui pod in ${namespace}: ${get.stderr || get.status}`);
   }
-  const uiSrc = resolve(worktreeRoot, 'ui/src');
-  const remoteSrc = '/workspace/tests/e2e-ui/ui/src';
-  const kflags = [
-    ctx ? `--context ${JSON.stringify(ctx)}` : '',
-    kubeconfig ? `--kubeconfig ${JSON.stringify(kubeconfig)}` : '',
-  ]
-    .filter(Boolean)
-    .join(' ');
+  return pod;
+}
+
+/**
+ * Pause hops continuous full-tree tar watchers. Full monorepo re-tar after an
+ * edit rewrites many files and forces Vite SSR page reload (full navigation),
+ * which is not the HMR path under test.
+ */
+function pauseDeliveryWatchers() {
+  // Match the multi-app tar watch script body hops spawns (sync_one / needs_marker).
+  const out = spawnSync(
+    'bash',
+    [
+      '-c',
+      `pgrep -f 'sync_one\\(\\)|needs_marker\\(\\)' 2>/dev/null || true`,
+    ],
+    { encoding: 'utf8' }
+  );
+  const pids = (out.stdout || '')
+    .split(/\s+/)
+    .map((s) => s.trim())
+    .filter((s) => /^\d+$/.test(s));
+  for (const pid of pids) {
+    spawnSync('kill', [pid], { encoding: 'utf8' });
+    console.log(`paused delivery watcher pid=${pid}`);
+  }
+}
+
+/**
+ * Single-file delivery: host worktree beacon → pod path Vite watches.
+ * Avoid full-tree tar (causes SSR reload / full navigation).
+ */
+function forceBeaconSync(namespace, worktreeRoot) {
+  const pod = runningUiPod(namespace);
+  const hostPath = beaconFile(worktreeRoot);
+  const base = kubectlBase();
+  // kubectl cp does not support -c for all versions; use tar of one file.
   const script = `
 set -euo pipefail
 export COPYFILE_DISABLE=1
-tar cf - -C ${JSON.stringify(uiSrc)} . \
-  | kubectl ${kflags} exec -i -n ${namespace} ${pod} -c ui -- tar xf - -C ${remoteSrc}
-kubectl ${kflags} exec -n ${namespace} ${pod} -c ui -- \
-  touch ${remoteSrc}/lib/components/HmrBeacon.svelte
+tar cf - -C ${JSON.stringify(resolve(worktreeRoot, 'ui/src/lib/components'))} HmrBeacon.svelte \
+  | ${base.join(' ')} exec -i -n ${namespace} ${pod} -c ui -- \
+    tar xf - -C /workspace/tests/e2e-ui/ui/src/lib/components
+${base.join(' ')} exec -n ${namespace} ${pod} -c ui -- touch ${remoteBeacon}
 `;
   const tar = spawnSync('bash', ['-c', script], {
     encoding: 'utf8',
-    timeout: 60000,
+    timeout: 30000,
   });
   if (tar.status !== 0) {
-    throw new Error(`tar sync ${namespace}/${pod} failed: ${tar.stderr || tar.stdout || tar.status}`);
+    throw new Error(
+      `beacon sync ${namespace}/${pod} failed: ${tar.stderr || tar.stdout || tar.status}`
+    );
   }
-  console.log(`[${namespace}] force-synced ${uiSrc} → ${pod}:${remoteSrc}`);
+  console.log(`[${namespace}] single-file sync ${hostPath} → ${pod}:${remoteBeacon}`);
   return pod;
 }
 
@@ -113,54 +152,69 @@ async function assertHmrBeacon(page, url, root, namespace, marker) {
     }
   });
 
-  await page.goto(url, { waitUntil: 'domcontentloaded', timeout: timeoutMs });
-  await page.waitForSelector('[data-hmr-beacon], .wf-kicker', { timeout: timeoutMs });
+  await page.goto(url, { waitUntil: 'networkidle', timeout: timeoutMs });
+  await page.waitForSelector('[data-hmr-beacon]', { timeout: timeoutMs });
+  // Give Vite HMR websocket time to connect before we edit.
+  await page.waitForTimeout(1500);
   const baselineNav = navigations.length;
+
   const stamp = `HMR-${marker}-${Date.now()}`;
   const path = setBeacon(root, stamp);
   console.log(`[${marker}] wrote beacon ${stamp} → ${path}`);
-  forceTarSync(namespace, root);
+  forceBeaconSync(namespace, root);
 
   const deadline = Date.now() + timeoutMs;
   let seen = false;
   while (Date.now() < deadline) {
+    // Fail immediately if a full navigation already happened after the edit.
+    const extraSoFar = navigations.length - baselineNav;
+    if (extraSoFar > 0) {
+      throw new Error(
+        `[${marker}] full navigation during beacon update (extra=${extraSoFar}); HMR required (hmr-no-nav)`
+      );
+    }
     try {
+      // CSS may text-transform: uppercase the kicker; compare case-insensitively.
       seen = await page.evaluate((expected) => {
-        const el =
-          document.querySelector('[data-hmr-beacon]') ||
-          document.querySelector('.wf-kicker');
-        return !!(el && el.textContent && el.textContent.includes(expected));
+        const el = document.querySelector('[data-hmr-beacon]');
+        if (!el) return false;
+        const t = (el.textContent || el.innerText || '').toUpperCase();
+        return t.includes(String(expected).toUpperCase());
       }, stamp);
     } catch (e) {
-      // Vite SSR reload destroys the execution context; wait and retry.
       const msg = e && e.message ? e.message : String(e);
-      if (!/Execution context was destroyed|navigation/i.test(msg)) throw e;
-      await page.waitForLoadState('domcontentloaded', { timeout: 30000 }).catch(() => {});
-      seen = false;
+      // Context destroyed = navigation/reload — fail (do not swallow).
+      if (/Execution context was destroyed|navigation/i.test(msg)) {
+        throw new Error(
+          `[${marker}] page reloaded during HMR wait (context destroyed): ${msg}`
+        );
+      }
+      throw e;
     }
     if (seen) break;
-    forceTarSync(namespace, root);
-    await page.waitForTimeout(2000);
+    forceBeaconSync(namespace, root);
+    await page.waitForTimeout(1000);
   }
   if (!seen) {
     throw new Error(`[${marker}] beacon never showed stamp ${stamp} within ${timeoutMs}ms`);
   }
-  let after = '';
-  for (let i = 0; i < 10; i++) {
-    try {
-      after = await page.locator('[data-hmr-beacon], .wf-kicker').first().innerText();
-      break;
-    } catch {
-      await page.waitForTimeout(500);
-    }
-  }
+
+  const after = await page.locator('[data-hmr-beacon]').innerText();
   const extraNav = navigations.length - baselineNav;
-  // Vite/SvelteKit may SSR-reload for component updates; still automatic
-  // (no manual browser refresh). Fail only if the stamp never arrives.
-  const mode = extraNav === 0 ? 'hmr-no-nav' : `auto-reload(nav=${extraNav})`;
-  console.log(`[${marker}] OK beacon=${JSON.stringify(after)} (${mode})`);
+  if (extraNav > 0) {
+    throw new Error(
+      `[${marker}] full navigation during beacon update (extra=${extraNav}); text=${JSON.stringify(after)}`
+    );
+  }
+  if (!after.toUpperCase().includes(stamp.toUpperCase())) {
+    throw new Error(`[${marker}] beacon missing stamp: ${after}`);
+  }
+  console.log(`[${marker}] OK beacon=${JSON.stringify(after)} (hmr-no-nav)`);
   return stamp;
 }
+
+// Continuous full-tree delivery watchers fight single-file HMR (mass rewrite → SSR reload).
+pauseDeliveryWatchers();
 
 const browser = await chromium.launch({ headless: true });
 const context = await browser.newContext();
@@ -169,15 +223,16 @@ try {
   const bob = await context.newPage();
   const aliceStamp = await assertHmrBeacon(alice, aliceUrl, aliceRoot, 'alice', 'alice');
   const bobStamp = await assertHmrBeacon(bob, bobUrl, bobRoot, 'bob', 'bob');
-  // Isolation: each workspace only shows its own stamp
-  const aliceText = await alice.locator('[data-hmr-beacon], .wf-kicker').first().innerText();
-  const bobText = await bob.locator('[data-hmr-beacon], .wf-kicker').first().innerText();
-  if (aliceText.includes(bobStamp) || bobText.includes(aliceStamp)) {
+  const aliceText = await alice.locator('[data-hmr-beacon]').innerText();
+  const bobText = await bob.locator('[data-hmr-beacon]').innerText();
+  const aU = aliceText.toUpperCase();
+  const bU = bobText.toUpperCase();
+  if (aU.includes(bobStamp.toUpperCase()) || bU.includes(aliceStamp.toUpperCase())) {
     throw new Error(
       `workspace isolation broken: alice=${JSON.stringify(aliceText)} bob=${JSON.stringify(bobText)}`
     );
   }
-  console.log('dual-worktree-hmr: OK (delivery + isolation)');
+  console.log('dual-worktree-hmr: OK (hmr-no-nav + isolation)');
 } finally {
   await browser.close();
 }
