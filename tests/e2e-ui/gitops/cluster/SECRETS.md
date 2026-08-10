@@ -48,7 +48,7 @@ kubectl -n default create secret generic e2e-human-passwords \
 
 Demo login (every env): **alice / bob / admin · Password1!**
 
-## e2e-ui app (`ns: hops-wt-*`)
+## e2e-ui app (`ns: --name`)
 
 | Secret | Keys | Used by |
 |--------|------|---------|
@@ -57,7 +57,7 @@ Demo login (every env): **alice / bob / admin · Password1!**
 ```bash
 # OIDC client secret: regenerate via Management API _generate_client_secret
 # Login-client PAT: AuthStack residual secret auth/login-client key pat
-kubectl -n hops-wt-dogfood create secret generic e2e-ui-oidc \
+kubectl -n dogfood create secret generic e2e-ui-oidc \
   --from-literal=AUTH_SECRET='local-workbench-dogfood-auth-secret-not-for-prod' \
   --from-literal=OIDC_CLIENT_ID='…from Oidc app…' \
   --from-literal=OIDC_CLIENT_SECRET='…from Oidc app create…' \
@@ -68,8 +68,17 @@ Non-secret OIDC config (issuer, AUTH_URL) stays in `ui/.gitops/deploy/values.yam
 
 ### Login V2 (required for browser sign-in)
 
-Custom e2e-ui `/login` pages own Login V2 (Oidc `loginVersion.loginV2.baseUri`
-on the **worktree** OIDC app). Prefer app-level baseUri over instance-wide
+Gitops (UI chart when `identity.enabled`):
+
+1. **Oidc** app MR — redirects + `loginVersion.loginV2.baseUri` from release ns  
+2. **Features** MR (`instance.zitadel…/Features`) — instance `loginV2.required`
+   + `baseUri` so authorize redirects to this UI’s `/login`
+
+Both use `http://e2e-ui-ui.<workspace>.svc.cluster.local:5180`. Instance Features
+is global per AuthStack (last applied worktree wins). Do not hand-`PUT`
+`/v2/features/instance` — re-reconcile the UI chart instead.
+
+Prefer app-level baseUri over instance-wide
 defaults so multiple worktrees can coexist.
 
 ## SecretStack / ESO + Vault (`secrets/`)

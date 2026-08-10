@@ -12,7 +12,7 @@ Platform / CP resources for the **shared** local control plane:
 ```text
 <meta>/
   gitops/cluster/           # ← this tree (AuthStack, PSQLStack, configurations)
-  gitops/envs/local/        # Application YAMLs → hops-wt-* namespaces
+  gitops/envs/local/        # Application YAMLs → namespace = --name
   clients/foo/.gitops/deploy/
   platform/api/.gitops/deploy/
 ```

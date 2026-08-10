@@ -185,6 +185,13 @@ distributed scaffold my-service --query-api --read-models --store sqlite
 Emits typed causal handlers, a service-derived GraphQL engine, `src/query/`
 permissions, the `graphql` feature, and repository/token-key wiring.
 
+## Client / replica drift (dogfood)
+
+If unit tests pass but the live UI 500s with schema/surface errors: the API
+pod is still compiling or clients/`js/dist` are stale. Rebuild and wait —
+don't redesign roles. Bare `__typename` (role fingerprint) ≠ application
+surface clients.
+
 ## Reference
 
 - Framework docs: `README § GraphQL query service` in the Distributed repo

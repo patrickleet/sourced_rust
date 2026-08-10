@@ -31,7 +31,5 @@ spec:
           providerConfigRef:
             name: default
             kind: ClusterProviderConfig
-  destination:
-    namespace: hops-wt-default
   syncPolicy:
     prune: false

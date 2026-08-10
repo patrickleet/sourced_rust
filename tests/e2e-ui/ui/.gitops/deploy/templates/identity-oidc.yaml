@@ -7,7 +7,8 @@
 {{- $prefix := include "e2e-ui-ui.identityPrefix" . -}}
 {{- $project := include "e2e-ui-ui.clusterProjectName" . -}}
 {{- $uiBase := include "e2e-ui-ui.uiBaseURL" . -}}
-{{- $ns := .Values.identity.mrNamespace | default "default" -}}
+{{/* Worktree OIDC app lives with the UI release (namespace = hops --name). */}}
+{{- $ns := .Values.identity.mrNamespace | default (include "e2e-ui-ui.releaseNamespace" .) -}}
 apiVersion: application.zitadel.m.crossplane.io/v1alpha1
 kind: Oidc
 metadata:

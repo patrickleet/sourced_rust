@@ -17,7 +17,5 @@ spec:
         env:
           OIDC_AUDIENCE: "385467744310526613"
           ZITADEL_PROJECT_ID: "385467744310526613"
-  destination:
-    namespace: hops-wt-default
   syncPolicy:
     prune: false

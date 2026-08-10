@@ -10,21 +10,19 @@ app.kubernetes.io/managed-by: {{ .Release.Service }}
 
 {{/*
 Workspace id for multi-worktree OIDC apps (redirects / Login V2 baseUri).
-Prefers identity.workspace; else strips hops-wt- from injected namespace.
+Prefers identity.workspace; else release/workspace namespace (= hops --name).
 */}}
 {{- define "e2e-ui-ui.workspace" -}}
 {{- if .Values.identity.workspace -}}
 {{- .Values.identity.workspace -}}
-{{- else if .Values.namespace -}}
-{{- $ns := .Values.namespace -}}
-{{- if hasPrefix "hops-wt-" $ns -}}
-{{- trimPrefix "hops-wt-" $ns -}}
 {{- else -}}
-{{- $ns -}}
+{{- include "e2e-ui-ui.releaseNamespace" . -}}
 {{- end -}}
-{{- else -}}
-local
 {{- end -}}
+
+{{/* App namespace: hops injects values.namespace; helm --namespace is Release.Namespace. */}}
+{{- define "e2e-ui-ui.releaseNamespace" -}}
+{{- coalesce .Values.namespace .Release.Namespace "default" -}}
 {{- end -}}
 
 {{/* Worktree-scoped OIDC app name prefix: e2e-ui-<workspace> */}}
@@ -51,12 +49,15 @@ hops.ops.com.ai/app: e2e-ui
 hops.ops.com.ai/identity-scope: cluster
 {{- end -}}
 
-{{/* UI public base for OIDC redirects / Login V2 baseUri */}}
+{{/*
+UI public base for OIDC redirects + app Login V2 baseUri.
+Uses the release/workspace namespace so --name dogfood → e2e-ui-ui.dogfood.svc…
+*/}}
 {{- define "e2e-ui-ui.uiBaseURL" -}}
 {{- if .Values.identity.uiBaseURL -}}
 {{- .Values.identity.uiBaseURL | trimSuffix "/" -}}
 {{- else -}}
-{{- $ns := default "default" .Values.namespace -}}
+{{- $ns := include "e2e-ui-ui.releaseNamespace" . -}}
 {{- $svc := default (include "e2e-ui-ui.name" .) .Values.identity.uiService -}}
 {{- $port := default .Values.service.port .Values.identity.uiPort -}}
 {{- printf "http://%s.%s.svc.cluster.local:%v" $svc $ns $port -}}

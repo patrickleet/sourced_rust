@@ -1,0 +1,29 @@
+{{- /*
+  Instance Login V2 features (gitops).
+
+  Zitadel honors instance loginV2.baseUri when required=true. That is what
+  redirects authorize → custom e2e-ui /login (not stock zitadel-login).
+
+  baseUri tracks the UI release namespace (hops --name / helm --namespace).
+  Note: Features is instance-global in Zitadel — last applied worktree wins if
+  several UIs enable this on one AuthStack.
+*/ -}}
+{{- if and .Values.identity.enabled (ne .Values.identity.instanceLoginV2 false) }}
+{{- $uiBase := include "e2e-ui-ui.uiBaseURL" . -}}
+{{- $ns := include "e2e-ui-ui.releaseNamespace" . -}}
+apiVersion: instance.zitadel.m.crossplane.io/v1alpha1
+kind: Features
+metadata:
+  name: e2e-ui-login-v2
+  namespace: {{ $ns }}
+  labels:
+    {{- include "e2e-ui-ui.identityLabels" . | nindent 4 }}
+spec:
+  forProvider:
+    loginV2:
+      - required: true
+        baseUri: {{ $uiBase | quote }}
+  providerConfigRef:
+    name: {{ .Values.identity.providerConfigRef.name | default "default" | quote }}
+    kind: {{ .Values.identity.providerConfigRef.kind | default "ProviderConfig" | quote }}
+{{- end }}

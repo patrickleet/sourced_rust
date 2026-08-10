@@ -44,8 +44,8 @@ env:
   E2E_API_ORIGIN: "http://e2e-ui-api:8791"
   E2E_BASE_URL: "http://e2e-ui-api:8791"
   PUBLIC_E2E_API_ORIGIN: "http://e2e-ui-api:8791"
-  # Overridden at render when hops injects namespace (hops-wt-*).
-  AUTH_URL: "http://e2e-ui-ui.hops-wt-default.svc.cluster.local:5180"
+  # Overridden at render when hops injects namespace (= --name).
+  AUTH_URL: "http://e2e-ui-ui.default.svc.cluster.local:5180"
   AUTH_TRUST_HOST: "true"
   AUTH_USE_SECURE_COOKIES: "false"
   # AuthStack issuer (Helm default Service fullname)
@@ -55,14 +55,12 @@ env:
   ZITADEL_PROJECT_ID: ""
 
 # Secret-backed env (keys must exist on Secret e2e-ui-oidc in the app namespace).
-# Residual — create live (not in git):
-#   kubectl -n hops-wt-dogfood create secret generic e2e-ui-oidc \
+# Create live (or ExternalSecrets) — client id/secret from the worktree OIDC app:
+#   kubectl -n <workspace> create secret generic e2e-ui-oidc \
 #     --from-literal=AUTH_SECRET='…' \
 #     --from-literal=OIDC_CLIENT_ID='…' \
 #     --from-literal=OIDC_CLIENT_SECRET='…' \
 #     --from-literal=ZITADEL_SERVICE_USER_TOKEN="$(kubectl -n auth get secret login-client -o jsonpath='{.data.pat}' | base64 -d)"
-# Also set instance Login V2 (once per AuthStack):
-#   PUT /v2/features/instance  {"loginV2":{"required":true,"baseUri":"http://e2e-ui-ui.hops-wt-dogfood.svc.cluster.local:5180"}}
 secretEnv:
   AUTH_SECRET:
     secretName: e2e-ui-oidc
@@ -83,28 +81,33 @@ envFromSecrets: []
 
 # Zitadel identity on the UI chart (OIDC web client + Login V2 host).
 #
-# Scope:
-#   - Project + roles + demo humans — **cluster-shared** (one set for the CP)
-#   - OIDC web app — **per worktree** (redirect URIs + Login V2 baseUri)
+# Scope (all gitops when identity.enabled):
+#   - Project + roles + demo humans — cluster-shared (projectNamespace)
+#   - OIDC web app — per worktree (redirects + app loginV2.baseUri)
+#   - Instance Features loginV2 — points authorize → this UI's /login
+#     (instance-global in Zitadel; last applied worktree wins on one AuthStack)
 #
 # Enable from Application values when the env needs OIDC dogfood.
 identity:
   enabled: false
-  # Residual after AuthStack Ready: GET …/management/v1/orgs/me
+  # After AuthStack Ready: GET …/management/v1/orgs/me
   orgId: ""
   # Worktree id for OIDC app names only (e2e-ui-<workspace>-web). Default:
-  # trimPrefix "hops-wt-" of injected namespace.
+  # release namespace (= hops --name / helm --namespace).
   workspace: ""
   # Cluster-shared Project MR name (roles + humans hang off this).
   projectName: e2e-ui
   # Cluster-shared demo humans (alice / bob / admin · Password1!)
   demoUsers: true
-  # Namespace for worktree OIDC app MRs.
-  mrNamespace: default
+  # Namespace for worktree OIDC app MR. Empty → release namespace.
+  mrNamespace: ""
   # Namespace for shared Project / Role MRs (defaults to mrNamespace).
   projectNamespace: default
   # Namespace for shared HumanUser MRs (defaults to projectNamespace).
   humansNamespace: default
+  # Gitops Features MR: required Login V2 → uiBaseURL (this chart's /login).
+  # Set false only if something else owns instance Features.
+  instanceLoginV2: true
   # Optional overrides; defaults = this chart name + service.port
   uiService: ""
   uiPort: ""
