@@ -17,16 +17,20 @@ spec:
         env:
           OIDC_AUDIENCE: "385467744310526613"
           ZITADEL_PROJECT_ID: "385467744310526613"
-        # Identity: cluster Project+roles+humans; OIDC app is worktree-scoped.
-        # orgId residual after: GET …/management/v1/orgs/me
+        # Identity: shared Project/roles/humans in default; OIDC + Features in
+        # release namespace (hops --name). Login V2 baseUri from chart helpers.
+        # orgId after AuthStack Ready: GET …/management/v1/orgs/me
         identity:
           enabled: true
-          # hops-ops org on local AuthStack (GET …/management/v1/orgs/me)
           orgId: "385408591454077587"
           projectName: e2e-ui
           projectNamespace: default
           humansNamespace: default
-          mrNamespace: default
+          # OIDC MR → release namespace (empty = hops injects workspace ns)
+          mrNamespace: ""
+          # Primary dogfood owns instance Features (global). Second worktree
+          # should set instanceLoginV2: false (see dual-worktree suite).
+          instanceLoginV2: true
           demoUsers: true
           providerConfigRef:
             name: default

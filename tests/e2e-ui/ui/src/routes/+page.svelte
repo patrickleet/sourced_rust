@@ -5,6 +5,7 @@
 	import '$lib/styles/home.css';
 	import { page } from '$app/state';
 	import Footer from '$lib/components/shared/Footer.svelte';
+	import HmrBeacon from '$lib/components/HmrBeacon.svelte';
 	import { highlightCode } from '$lib/components/walkthrough/highlight';
 
 	const session = $derived(page.data.session);
@@ -194,7 +195,7 @@ query Todos @load {
 				</div>
 			{/if}
 
-			<span class="wf-kicker">End to end · Rust · TypeScript</span>
+			<HmrBeacon />
 			<h1>
 				<strong>Distributed</strong> is a
 				<em>state-of-the-art</em> framework

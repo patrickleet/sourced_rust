@@ -33,7 +33,9 @@ Demo login (every local env): **alice / bob / admin · Password1!**
 | `identity.demoUsers` | Cluster-shared alice / bob / admin |
 | `identity.projectNamespace` | Namespace for Project + Role MRs |
 | `identity.humansNamespace` | Namespace for HumanUser MRs |
-| `identity.mrNamespace` | Namespace for worktree OIDC app MRs |
+| `identity.mrNamespace` | OIDC app ns (empty = release / hops `--name`) |
+| `identity.instanceLoginV2` | Gitops instance Features (global; primary worktree only) |
+| `identity.seedLocalOidcSecret` | Seed `e2e-ui-oidc` when `local=true` so pods schedule |
 | `identity.uiBaseURL` | Optional; else `http://e2e-ui-ui.<namespace>.svc…:5180` |
 | `identity.passwordSecret.name` | Shared password secret (default `e2e-human-passwords`) |
 

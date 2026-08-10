@@ -55,7 +55,9 @@ env:
   ZITADEL_PROJECT_ID: ""
 
 # Secret-backed env (keys must exist on Secret e2e-ui-oidc in the app namespace).
-# Create live (or ExternalSecrets) — client id/secret from the worktree OIDC app:
+# Local cluster-dev: templates/local-oidc-secret.yaml seeds placeholders when
+# identity.seedLocalOidcSecret is not false (default). Production/dogfood login
+# should replace via ExternalSecrets or residual after OIDC Ready:
 #   kubectl -n <workspace> create secret generic e2e-ui-oidc \
 #     --from-literal=AUTH_SECRET='…' \
 #     --from-literal=OIDC_CLIENT_ID='…' \
@@ -108,6 +110,10 @@ identity:
   # Gitops Features MR: required Login V2 → uiBaseURL (this chart's /login).
   # Set false only if something else owns instance Features.
   instanceLoginV2: true
+  # When local=true, seed Secret e2e-ui-oidc so cluster-dev pods schedule
+  # (HMR / delivery). Login needs real OIDC client credentials later.
+  seedLocalOidcSecret: true
+  localOidcSeed: {}
   # Optional overrides; defaults = this chart name + service.port
   uiService: ""
   uiPort: ""

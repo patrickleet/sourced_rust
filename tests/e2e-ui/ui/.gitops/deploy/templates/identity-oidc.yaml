@@ -9,6 +9,7 @@
 {{- $uiBase := include "e2e-ui-ui.uiBaseURL" . -}}
 {{/* Worktree OIDC app lives with the UI release (namespace = hops --name). */}}
 {{- $ns := .Values.identity.mrNamespace | default (include "e2e-ui-ui.releaseNamespace" .) -}}
+{{- $projectNs := .Values.identity.projectNamespace | default "default" -}}
 apiVersion: application.zitadel.m.crossplane.io/v1alpha1
 kind: Oidc
 metadata:
@@ -21,6 +22,8 @@ spec:
     name: {{ printf "%s-web" $prefix | quote }}
     projectIdRef:
       name: {{ $project }}
+      # Shared Project MR lives in projectNamespace (cluster-shared).
+      namespace: {{ $projectNs | quote }}
     appType: OIDC_APP_TYPE_WEB
     authMethodType: OIDC_AUTH_METHOD_TYPE_BASIC
     responseTypes:
