@@ -56,7 +56,7 @@ test.describe('chat (alice)', () => {
 		const fullPageResponse = await expectOptimisticPaint(page, {
 			needle: 'chat_messages_post',
 			holdMs: 1_500,
-			assertWithinMs: 1_000,
+			assertWithinMs: 300,
 			act: async () => {
 				await page.locator('#chat-body').fill(fullPageBody);
 				await page.getByRole('button', { name: /send/i }).click();
@@ -150,7 +150,7 @@ test.describe('chat (alice)', () => {
 		await expectOptimisticPaint(page, {
 			needle: 'chat_messages_post',
 			holdMs: 1_500,
-			assertWithinMs: 1_000,
+			assertWithinMs: 300,
 			act: async () => {
 				await page.locator('#chat-body').fill(body);
 				await page.getByRole('button', { name: /send/i }).click();

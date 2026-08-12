@@ -14,7 +14,7 @@
       "user"
     ]
   },
-  "schema_fingerprint": "sha256:574091a8612a0285af3a9bf9e4746062bc3d657f16beae580c3b18cd02a400ee",
+  "schema_fingerprint": "sha256:fac0df1bf0bc761b8dbb44bcb619cb835ca50669da19c88cbf33e3402cf7eb22",
   "protocol_fingerprint": "sha256:00fb342f3acb4dc1c1716a43cc3001c748d5f6c500ff831690d820e9e43e2782",
   "scalar_codecs": {
     "BigInt": "json_number_precision_limited",
@@ -31,7 +31,6 @@
     "blob.move",
     "blob.start",
     "blob.start_level",
-    "chat.post",
     "todo.archive",
     "todo.complete",
     "todo.rename",

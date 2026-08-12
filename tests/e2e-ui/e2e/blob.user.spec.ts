@@ -74,50 +74,83 @@ test.describe('blob game (alice)', () => {
 			});
 		});
 
-		let releaseMove!: () => void;
-		const releaseMovePromise = new Promise<void>((resolve) => {
-			releaseMove = resolve;
+		let releaseFirstMove!: () => void;
+		const firstMoveRelease = new Promise<void>((resolve) => {
+			releaseFirstMove = resolve;
 		});
-		let moveReachedServer!: () => void;
-		const moveReachedServerPromise = new Promise<void>((resolve) => {
-			moveReachedServer = resolve;
+		let firstMoveBlocked!: () => void;
+		const firstMoveIsBlocked = new Promise<void>((resolve) => {
+			firstMoveBlocked = resolve;
+		});
+		let dispatchedMoves = 0;
+		const moveResponses: import('@playwright/test').Response[] = [];
+		page.on('response', (response) => {
+			if ((response.request().postData() ?? '').includes('blob_games_move')) {
+				moveResponses.push(response);
+			}
 		});
 		await page.route('**/graphql', async (route) => {
 			if (!(route.request().postData() ?? '').includes('blob_games_move')) {
 				await route.continue();
 				return;
 			}
+			dispatchedMoves += 1;
+			if (dispatchedMoves === 1) {
+				firstMoveBlocked();
+				// Hold before route.fetch: the server has not seen the first move,
+				// and the runtime must retain later local layers while serializing
+				// same-game transport behind it.
+				await firstMoveRelease;
+			}
 			const response = await route.fetch();
-			moveReachedServer();
-			await releaseMovePromise;
 			await route.fulfill({ response });
 		});
 
-		// Move right (pad or keyboard). Either score increments or stays at an
-		// edge/wall, but the cached board must remain mounted throughout.
-		const moveResponsePromise = page.waitForResponse(
-			(r) =>
-				r.url().includes('/graphql') &&
-				r.request().method() === 'POST' &&
-				(r.request().postData() ?? '').includes('blob_games_move'),
-			{ timeout: 20_000 }
-		);
+		// The first local pure moves right while its request is held before the
+		// server. A second legal move must stack immediately on that optimistic
+		// board even though its transport remains ordered behind the first.
 		await page.keyboard.press('ArrowRight');
-		await moveReachedServerPromise;
-		// Pure reduce (blob.simulate_move) paints the next board from the known
-		// cache row + direction before the held GraphQL response returns.
+		await firstMoveIsBlocked;
 		await expect(board.locator('.tile-player')).toHaveAttribute(
 			'aria-label',
 			'r0 c1',
 			{ timeout: 200 }
 		);
+		const rightClass =
+			(await page
+				.locator('.blob-board .cell[aria-label="r0 c2"]')
+				.getAttribute('class')) ?? '';
+		const secondMove = rightClass.includes('tile-hole')
+			? ({ key: 'ArrowDown', label: 'r1 c1' } as const)
+			: ({ key: 'ArrowRight', label: 'r0 c2' } as const);
+		await expect(
+			page.locator(`.blob-board .cell[aria-label="${secondMove.label}"]`)
+		).not.toHaveClass(/tile-hole/);
+		await page.keyboard.press(secondMove.key);
+		await expect(board.locator('.tile-player')).toHaveAttribute(
+			'aria-label',
+			secondMove.label,
+			{ timeout: 200 }
+		);
+		expect(
+			dispatchedMoves,
+			'later same-game transport must wait without blocking its optimistic layer'
+		).toBe(1);
 		await expect(page.getByTestId('blob-new-game')).toBeEnabled();
 		for (const button of await page.locator('.pad-btn').all()) {
 			await expect(button).toBeEnabled();
 		}
-		releaseMove();
-		const moveResp = await moveResponsePromise;
-		expect(moveResp.ok(), `blob_games_move HTTP ${moveResp.status()}`).toBeTruthy();
+		releaseFirstMove();
+		await expect
+			.poll(() => moveResponses.length, { timeout: 20_000 })
+			.toBe(2);
+		for (const response of moveResponses) {
+			expect(response.ok(), `blob_games_move HTTP ${response.status()}`).toBeTruthy();
+		}
+		await expect(board.locator('.tile-player')).toHaveAttribute(
+			'aria-label',
+			secondMove.label
+		);
 		await page.unrouteAll({ behavior: 'wait' });
 		await expect(board).toBeVisible();
 		await expect(page.locator('.inline-alert, .blob-empty')).toHaveCount(0);

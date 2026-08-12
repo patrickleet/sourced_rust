@@ -308,7 +308,7 @@ export const Operation_AdminAllTodos: ReplicaOperationArtifact<Operation_AdminAl
   ],
   "protocol": {
     "version": 1,
-    "schemaHash": "sha256:4a1d4641b7039b3310b12703d9e9b909ea41af09861dd9810709379cd08fcef7",
+    "schemaHash": "sha256:698b20914d68f575bd70961a9c73ecebe44b79ee862b46ccaaee92dae2e21170",
     "surface": {
       "kind": "application",
       "name": "e2e-ui-admin",
@@ -320,6 +320,11 @@ export const Operation_AdminAllTodos: ReplicaOperationArtifact<Operation_AdminAl
       ]
     },
     "operation": "sha256:3436d01402748d8c4f2f5d2ff5f1173fea89786c8e902de09a24bd03596eaf27",
-    "trustedPresets": []
+    "trustedPresets": [
+      {
+        "name": "x-user-id",
+        "codec": "string"
+      }
+    ]
   }
 };

@@ -21,7 +21,8 @@ use super::projection_obligations::{
 };
 use super::projection_proof::{canonical_json, CommandCommitProofError};
 use super::projections::{
-    CommandProjectionEvents, CommandProjectionPreview, CommandProjectionPureReduce,
+    CommandProjectionEvents, CommandProjectionPreview, CommandProjectionPreviewSource,
+    CommandProjectionPureReduce,
 };
 use crate::graphql::naming;
 use crate::graphql::types::{GraphqlInputType, GraphqlTypeDef};
@@ -692,6 +693,29 @@ impl<I, K: CommandOutcome> TypedCommand<I, K> {
     #[must_use]
     pub fn applies(mut self, mapping: CommandProjectionPreview) -> Self {
         self.contract.projections.add_preview(mapping);
+        self
+    }
+
+    /// Declare that one emitted state field is the authenticated user id.
+    ///
+    /// This supplies the missing trusted `x-user-id` provenance to automatic
+    /// event→mutation optimism when the projected model is not owner-filtered
+    /// (for example, a public-readable chat lobby). It does not authorize the
+    /// command or rewrite handler input: the mount must still require a user
+    /// and the handler must bind the same principal from its session.
+    #[must_use]
+    pub fn authenticated_user_field<E, S>(mut self, rust_field: &'static str) -> Self
+    where
+        E: crate::domain_event::DomainEventBodyContract<S>,
+        S: crate::DomainState + crate::projection::lower::ProjectionBodyMetadata,
+    {
+        let values = super::__command_projection_state_known_values::<E, S>(vec![(
+            rust_field,
+            CommandProjectionPreviewSource::trusted("x-user-id", "string"),
+        )]);
+        self.contract
+            .projections
+            .add_authenticated_user_field(rust_field, values);
         self
     }
 

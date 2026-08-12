@@ -1,7 +1,7 @@
 //! Chat + identity-ingestor module: room messages, Zitadel ingress, auth_user projector.
 
 use chat_domain::domain_commands;
-use chat_domain::ChatMessage;
+use chat_domain::{ChatMessage, ChatMessagePostedDomainEvent, ChatMessageState};
 use distributed::graphql::{Eventual, SurfaceProjector};
 use distributed::microsvc::{
     ConfigurableOutboxPublisher, HasOutboxStore, HasRepo, RepoReadModelDependencies, Routes,
@@ -48,6 +48,9 @@ where
         >(chat_post::COMMAND)
         .field_name("chat_messages_post")
         .roles(["user", "admin"].into_iter())
+        // Lobby rows are public-readable, so no owner row policy can supply
+        // this otherwise server-only transition value to automatic optimism.
+        .authenticated_user_field::<ChatMessagePostedDomainEvent, ChatMessageState>("author_id")
         .guarded(causal_has_user, chat_post::handle)
         // Zitadel Action ingress + on-demand scrape remain non-GraphQL
         // integration commands (explicit extension mounts).

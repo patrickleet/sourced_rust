@@ -70,6 +70,14 @@ export function needsHistoryFill(m: ChatLogMetrics): boolean {
 	return m.scrollHeight <= m.clientHeight + 1;
 }
 
+/** A complete newest window shorter than its limit proves there is no older page. */
+export function liveWindowProvesHistoryExhausted(
+	messageCount: number,
+	pageSize: number
+): boolean {
+	return messageCount < pageSize;
+}
+
 export type HistoryPageResult<T extends { message_id: string }> = Readonly<{
 	/** Ascending rows to prepend (already reversed from server desc). */
 	fresh: readonly T[];

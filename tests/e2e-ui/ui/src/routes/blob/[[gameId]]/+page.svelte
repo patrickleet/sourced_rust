@@ -20,8 +20,9 @@
 
 	let { data } = $props();
 	let actionError = $state<string | null>(null);
-	let commandPending = $state(false);
+	let pendingCommandCount = $state(0);
 	let hydrated = $state(false);
+	const commandPending = $derived(pendingCommandCount > 0);
 
 	const routeGameId = $derived(page.params.gameId ?? null);
 
@@ -92,7 +93,7 @@
 
 	async function startGame() {
 		if (commandPending) return;
-		commandPending = true;
+		pendingCommandCount += 1;
 		actionError = null;
 		const game_id = newGameId();
 		try {
@@ -102,7 +103,7 @@
 		} catch (e) {
 			actionError = e instanceof Error ? e.message : 'Start failed';
 		} finally {
-			commandPending = false;
+			pendingCommandCount = Math.max(0, pendingCommandCount - 1);
 		}
 	}
 
@@ -127,13 +128,13 @@
 	}
 
 	async function move(direction: Direction) {
-		if (!selected || playerDead || levelComplete || !hasBoard || commandPending) return;
+		if (!selected || playerDead || levelComplete || !hasBoard) return;
 		// Edge no-op: don't dispatch a predictably rejected command.
 		if (!canMove(direction)) {
 			actionError = null;
 			return;
 		}
-		commandPending = true;
+		pendingCommandCount += 1;
 		actionError = null;
 		try {
 			await commands.blob.move({
@@ -143,20 +144,20 @@
 		} catch (error) {
 			actionError = error instanceof Error ? error.message : 'Move failed';
 		} finally {
-			commandPending = false;
+			pendingCommandCount = Math.max(0, pendingCommandCount - 1);
 		}
 	}
 
 	async function nextLevel() {
 		if (!selected || playerDead || !levelComplete || commandPending) return;
-		commandPending = true;
+		pendingCommandCount += 1;
 		actionError = null;
 		try {
 			await commands.blob.start_level({ game_id: selected.game_id });
 		} catch (error) {
 			actionError = error instanceof Error ? error.message : 'Next level failed';
 		} finally {
-			commandPending = false;
+			pendingCommandCount = Math.max(0, pendingCommandCount - 1);
 		}
 	}
 
@@ -219,8 +220,9 @@
 			>
 				Board and history render from the same generated <code>BlobGames</code>
 				operation. Moves use the same client optimism path as todos/chat
-				(<code>.applies</code> from command input); the handler applies the
-				same mutation IR and seals the atomic row before await resolves.
+				(domain-owned <code>blob.simulate_move</code> pure + projection mapping);
+				the handler applies the same mutation IR and seals the atomic row before
+				await resolves.
 			</PageHeader>
 			<Button
 				type="button"

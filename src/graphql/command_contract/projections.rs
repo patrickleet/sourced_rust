@@ -330,13 +330,39 @@ impl CommandProjectionEvents {
             );
             return;
         }
-        self.inferred_values
-            .extend(values.selectors.iter().cloned().map(|selector| {
-                CommandProjectionEventPreview {
-                    selector,
-                    preview: values.clone(),
-                }
-            }));
+        let selector = values.selectors[0].clone();
+        if let Some(existing) = self
+            .inferred_values
+            .iter_mut()
+            .find(|candidate| candidate.selector == selector)
+        {
+            existing.preview.fields.extend(values.fields);
+            existing
+                .preview
+                .declaration_errors
+                .extend(values.declaration_errors);
+        } else {
+            self.inferred_values.push(CommandProjectionEventPreview {
+                selector,
+                preview: values,
+            });
+        }
+    }
+
+    pub(crate) fn add_authenticated_user_field(
+        &mut self,
+        rust_field: &str,
+        values: CommandProjectionPreview,
+    ) {
+        if values.fields.len() != 1 {
+            self.declaration_errors.push(
+                format!(
+                    "authenticated-user inference field `{rust_field}` is not one exact emitted-event body field"
+                ),
+            );
+            return;
+        }
+        self.add_inferred_values(values);
     }
 
     pub(crate) fn add_pure_reduce(&mut self, reduce: CommandProjectionPureReduce) {

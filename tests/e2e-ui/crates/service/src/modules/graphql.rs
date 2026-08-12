@@ -445,9 +445,14 @@ mod client_surface_tests {
             )),
             "chat message_id from input: {post_sources:?}"
         );
-        // ChatMessages has no owner-claim row policy (lobby is public-readable), so
-        // author_id is not auto-derived as TrustedPreset — remains Unknown until
-        // revalidation. That is intentional without a residual .applies map.
+        assert!(
+            post_sources.iter().any(|source| matches!(
+                source,
+                ClientProjectionPreviewSource::TrustedPreset { name, codec }
+                    if name == "x-user-id" && codec == "string"
+            )),
+            "chat author_id must bind the authenticated user without .applies: {post_sources:?}"
+        );
 
         let blob_move = manifest
             .commands

@@ -1,9 +1,9 @@
 /**
  * Browser proof that a command paints optimistically.
  *
- * Hold the GraphQL mutation response past the assert deadline. If the UI
- * updates before the held response is fulfilled, the paint came from the
- * client optimistic layer — not the wire.
+ * Hold the GraphQL mutation before it reaches the server. If the UI updates
+ * before dispatch is released, the paint came from the client optimistic
+ * layer — not a response or subscription frame.
  */
 import type { Page, Response } from '@playwright/test';
 import { expect } from '@playwright/test';
@@ -40,7 +40,7 @@ function mutationMatches(postData: string | null, needle: string): boolean {
 
 /**
  * Install a GraphQL route that continues non-matching requests and delays
- * matching mutation responses by holdMs. Returns a disposer.
+ * matching mutation dispatch by holdMs. Returns a disposer.
  */
 export async function holdGraphqlMutation(
 	page: Page,
@@ -52,8 +52,10 @@ export async function holdGraphqlMutation(
 			await route.continue();
 			return;
 		}
-		const response = await route.fetch();
+		// Hold before route.fetch so neither the command response nor a server
+		// projection/subscription can produce the state under assertion.
 		await new Promise((resolve) => setTimeout(resolve, holdMs));
+		const response = await route.fetch();
 		await route.fulfill({ response });
 	});
 	return async () => {
@@ -72,7 +74,7 @@ export type OptimisticPaintOptions = HoldMutationOptions & {
 
 /**
  * Run act under a held mutation and require assertOptimistic before the
- * response is fulfilled.
+ * command reaches the server.
  */
 export async function expectOptimisticPaint(
 	page: Page,
@@ -96,8 +98,7 @@ export async function expectOptimisticPaint(
 
 	try {
 		await options.act();
-		// Bound the optimistic assert so a late paint from the delayed response
-		// cannot satisfy the expectation.
+		// Bound the optimistic assert so a later server result cannot satisfy it.
 		await expect
 			.poll(async () => {
 				try {

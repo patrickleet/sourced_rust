@@ -15,6 +15,7 @@ const {
 	nearBottom,
 	nearTop,
 	needsHistoryFill,
+	liveWindowProvesHistoryExhausted,
 	mergeHistoryPage,
 	pinScrollBottom,
 	preserveScrollAfterPrepend,
@@ -71,6 +72,12 @@ test('no overflow is not nearTop (fill path uses needsHistoryFill instead)', () 
 		needsHistoryFill({ scrollTop: 0, scrollHeight: 800, clientHeight: 400 }),
 		false
 	);
+});
+
+test('a complete short live window proves there is no older page', () => {
+	assert.equal(liveWindowProvesHistoryExhausted(0, 25), true);
+	assert.equal(liveWindowProvesHistoryExhausted(24, 25), true);
+	assert.equal(liveWindowProvesHistoryExhausted(25, 25), false);
 });
 
 test('mergeHistoryPage reverses desc server pages and advances offset', () => {

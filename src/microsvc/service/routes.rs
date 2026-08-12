@@ -494,6 +494,26 @@ where
         self
     }
 
+    /// Declare that one emitted state field is the authenticated `x-user-id`.
+    ///
+    /// This is preview provenance only; command admission and handler-side
+    /// principal binding remain mandatory.
+    #[must_use]
+    pub fn authenticated_user_field<E, S>(mut self, rust_field: &'static str) -> Self
+    where
+        E: crate::domain_event::DomainEventBodyContract<S>,
+        S: crate::DomainState + crate::projection::lower::ProjectionBodyMetadata,
+    {
+        let values = crate::graphql::__command_projection_state_known_values::<E, S>(vec![(
+            rust_field,
+            crate::graphql::CommandProjectionPreviewSource::trusted("x-user-id", "string"),
+        )]);
+        self.contract
+            .projections
+            .add_authenticated_user_field(rust_field, values);
+        self
+    }
+
     /// Pure reducer over a known cache row for client auto-optimism.
     #[must_use]
     pub fn preview_reduce_known_record(
@@ -647,7 +667,8 @@ impl<D: Send + Sync + 'static> Routes<D> {
     /// [`typed_command`](Self::typed_command)`(command_transition::<S, I, K>(name))`
     /// so callers do not also declare `.emits` / `.emits_events`.
     ///
-    /// Chain `.field_name`, `.roles`, `.input_defaults`, then `.handle`.
+    /// Chain `.field_name`, `.roles`, optional provenance/default declarations,
+    /// then `.handle`.
     pub fn command_transition<S, I, K>(self, name: &'static str) -> TypedRouteBuilder<D, I, K>
     where
         S: CommandEventSet,
