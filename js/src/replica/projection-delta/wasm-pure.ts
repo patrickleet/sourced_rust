@@ -10,7 +10,7 @@ import type { ReplicaPureFunction } from './types.js';
 
 /** Minimal wasm-bindgen module shape used by {@link createWasmJsonPure}. */
 export type WasmJsonModule = {
-	default: (input?: unknown) => Promise<unknown>;
+	default: () => Promise<unknown>;
 	[exportName: string]: unknown;
 };
 

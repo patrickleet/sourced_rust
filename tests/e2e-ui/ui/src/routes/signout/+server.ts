@@ -1,6 +1,7 @@
 import { redirect } from '@sveltejs/kit';
 import type { RequestHandler } from './$types';
 import { env } from '$env/dynamic/private';
+import { deleteAuthCookies } from '$lib/server/auth-cookies';
 
 function envFirst(names: string[]) {
 	for (const name of names) {
@@ -37,12 +38,7 @@ export const GET: RequestHandler = async (event) => {
 	const session = await event.locals.auth();
 	const idToken = session?.idToken;
 
-	event.cookies.delete('authjs.session-token', { path: '/' });
-	event.cookies.delete('authjs.callback-url', { path: '/' });
-	event.cookies.delete('authjs.csrf-token', { path: '/' });
-	event.cookies.delete('__Secure-authjs.session-token', { path: '/' });
-	event.cookies.delete('__Secure-authjs.callback-url', { path: '/' });
-	event.cookies.delete('__Secure-authjs.csrf-token', { path: '/' });
+	deleteAuthCookies(event.cookies);
 
 	const logoutEndpoint = await endSessionEndpoint();
 	if (!logoutEndpoint) {
