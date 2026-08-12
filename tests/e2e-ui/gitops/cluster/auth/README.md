@@ -18,7 +18,8 @@
 ## Apply order
 
 ```bash
-hops local start --backend dory --gitops ./gitops/cluster
+hops local start --cluster-provider kind --docker-provider dory \
+  --cluster-name hops --gitops ./gitops/cluster
 # or after configurations:
 hops local gitops cluster ./gitops/cluster
 

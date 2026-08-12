@@ -207,6 +207,49 @@ mod tests {
     }
 
     #[test]
+    fn expand_sourced_transition_exports_unconditional_known_state_values() {
+        let attr = quote! {
+            entity,
+            aggregate_type = "todo",
+            domain_state = TodoState,
+        };
+        let item = quote! {
+            impl Todo {
+                pub fn complete(&mut self) {
+                    self.record_completed().unwrap();
+                }
+
+                #[event("todo.completed", version = 1, domain)]
+                fn record_completed(&mut self) {
+                    self.status = TodoStatus::Completed;
+                    self.assignee_id = None;
+                    if self.audit_enabled {
+                        self.audit_label = "conditional";
+                    }
+                }
+            }
+        };
+
+        let output = sourced::expand_sourced(attr, item).unwrap().to_string();
+
+        assert!(
+            output.contains("fn command_event_known_values"),
+            "got: {output}"
+        );
+        assert!(
+            output.contains("__command_projection_state_known_values"),
+            "got: {output}"
+        );
+        assert!(output.contains("\"status\""), "got: {output}");
+        assert!(output.contains("TodoStatus :: Completed"), "got: {output}");
+        assert!(output.contains("\"assignee_id\""), "got: {output}");
+        assert!(
+            !output.contains("\"audit_label\""),
+            "conditional assignments are not safe preview facts: {output}"
+        );
+    }
+
+    #[test]
     fn expand_sourced_identity_mode_generates_independent_public_descriptor() {
         let attr = quote! {
             entity,

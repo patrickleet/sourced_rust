@@ -55,7 +55,11 @@ pub(crate) fn build_graphql_engine_with_graphiql(
             ["user"],
         )
         .client_application_surface(DISTRIBUTED_ADMIN_CLIENT_SURFACE, ["admin"], ["admin"])
-        .client_application_surface(DISTRIBUTED_PUBLIC_CLIENT_SURFACE, ["anonymous"], ["anonymous"])
+        .client_application_surface(
+            DISTRIBUTED_PUBLIC_CLIENT_SURFACE,
+            ["anonymous"],
+            ["anonymous"],
+        )
         .model::<Todos>(Todos::permissions())
         .model::<ChatMessages>(ChatMessages::permissions())
         .model::<BlobGames>(BlobGames::permissions())
@@ -110,25 +114,16 @@ fn pool_free_client_surface_contract(
         .map(|role| (*role).to_string())
         .collect::<Vec<_>>();
     let grants = e2e_readmodels::application_grants();
-    let selected = surface_for_application_contract(
-        &full,
-        application,
-        &eligible,
-        &schema,
-        &grants,
-    )
-    .expect("e2e-ui application Surface should select");
+    let selected =
+        surface_for_application_contract(&full, application, &eligible, &schema, &grants)
+            .expect("e2e-ui application Surface should select");
     DistributedClientSurfaceExport::from_selected("e2e-ui", selected)
         .expect("e2e-ui application Surface should export")
 }
 
 /// Pool-free normal application export consumed by `distributed client-manifest`.
 pub fn distributed_client_surface() -> DistributedClientSurfaceExport {
-    pool_free_client_surface_contract(
-        DISTRIBUTED_CLIENT_SURFACE,
-        &["admin", "user"],
-        &["user"],
-    )
+    pool_free_client_surface_contract(DISTRIBUTED_CLIENT_SURFACE, &["admin", "user"], &["user"])
 }
 
 pub fn distributed_admin_client_surface() -> DistributedClientSurfaceExport {
@@ -216,9 +211,7 @@ pub fn oidc_bearer_config(
 #[cfg(test)]
 mod client_surface_tests {
     use super::*;
-    use crate::application::{
-        DISTRIBUTED_CLIENT_SURFACE, DISTRIBUTED_PUBLIC_CLIENT_SURFACE,
-    };
+    use crate::application::{DISTRIBUTED_CLIENT_SURFACE, DISTRIBUTED_PUBLIC_CLIENT_SURFACE};
     use crate::modules::compose::build_service;
     use distributed::InMemoryRepository;
 
@@ -268,7 +261,7 @@ mod client_surface_tests {
 
     #[test]
     fn todo_commands_auto_derive_optimism_without_applies() {
-        use distributed::graphql::ClientProjectionPreviewSource;
+        use distributed::graphql::{ClientProjectionPreviewSource, ClientProjectionValue};
 
         let manifest = distributed_client_surface().manifest().unwrap();
         let create = manifest
@@ -312,6 +305,21 @@ mod client_surface_tests {
             )),
             "create owner_id must map from row-policy claim: {sources:?}"
         );
+        assert!(
+            sources.iter().any(|source| matches!(
+                source,
+                ClientProjectionPreviewSource::Constant {
+                    value: ClientProjectionValue::String(value),
+                } if value == "open"
+            )),
+            "create status must come from the sourced transition: {sources:?}"
+        );
+        assert!(
+            sources
+                .iter()
+                .any(|source| matches!(source, ClientProjectionPreviewSource::Null)),
+            "create assignee_id must come from the sourced transition: {sources:?}"
+        );
 
         // Sparse update commands only need the known input slots.
         let rename = manifest
@@ -343,6 +351,36 @@ mod client_surface_tests {
             )),
             "rename todo_id must map from input without .applies: {rename_sources:?}"
         );
+
+        for (mutation_field, expected_status) in [
+            ("todos_complete", "completed"),
+            ("todos_reopen", "open"),
+            ("todos_archive", "archived"),
+        ] {
+            let command = manifest
+                .commands
+                .iter()
+                .find(|command| command.mutation_field == mutation_field)
+                .unwrap_or_else(|| panic!("{mutation_field} command"));
+            let status_sources: Vec<_> = command
+                .extensions
+                .projection
+                .as_ref()
+                .unwrap_or_else(|| panic!("{mutation_field} projection"))
+                .preview_occurrences
+                .iter()
+                .flat_map(|occurrence| occurrence.values.iter().map(|value| &value.source))
+                .collect();
+            assert!(
+                status_sources.iter().any(|source| matches!(
+                    source,
+                    ClientProjectionPreviewSource::Constant {
+                        value: ClientProjectionValue::String(value),
+                    } if value == expected_status
+                )),
+                "{mutation_field} status must come from the sourced transition: {status_sources:?}"
+            );
+        }
 
         let purge = manifest
             .commands
@@ -520,9 +558,14 @@ mod client_surface_tests {
             distributed::PostgresLockManager::new(pool),
             repository.clone(),
         );
-        let engine =
-            crate::modules::graphql::build_graphql_engine_with_graphiql(&repository, &service, dev_identity(), None, true)
-                .expect("engine");
+        let engine = crate::modules::graphql::build_graphql_engine_with_graphiql(
+            &repository,
+            &service,
+            dev_identity(),
+            None,
+            true,
+        )
+        .expect("engine");
         let runtime = engine
             .client_manifest_for_application(
                 DISTRIBUTED_CLIENT_SURFACE,
@@ -611,11 +654,20 @@ mod client_surface_tests {
             crate::modules::graphql::ClientSurfaceLocks::default(),
             repository.clone(),
         );
-        let engine =
-            crate::modules::graphql::build_graphql_engine_with_graphiql(&repository, &service, dev_identity(), None, false)
-                .expect("engine");
+        let engine = crate::modules::graphql::build_graphql_engine_with_graphiql(
+            &repository,
+            &service,
+            dev_identity(),
+            None,
+            false,
+        )
+        .expect("engine");
         let runtime = engine
-            .client_manifest_for_application(DISTRIBUTED_PUBLIC_CLIENT_SURFACE, &["anonymous"], &["anonymous"])
+            .client_manifest_for_application(
+                DISTRIBUTED_PUBLIC_CLIENT_SURFACE,
+                &["anonymous"],
+                &["anonymous"],
+            )
             .expect("public surface registered");
         assert_eq!(generated.schema_fingerprint, runtime.schema_fingerprint);
 
@@ -647,7 +699,9 @@ mod client_surface_tests {
         );
         let data = response.data.into_json().expect("json data");
         assert!(
-            data.get("chat_messages").and_then(|v| v.as_array()).is_some(),
+            data.get("chat_messages")
+                .and_then(|v| v.as_array())
+                .is_some(),
             "expected chat_messages array: {data}"
         );
         let envelope = response

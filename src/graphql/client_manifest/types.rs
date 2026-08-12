@@ -836,12 +836,11 @@ pub struct CommandProjectionExtension {
     pub version: u32,
     pub event_set: Vec<ClientProjectionEventRef>,
     pub program_arms: Vec<CommandProjectionArmRef>,
-    /// Ordered, non-authoritative optimistic occurrences explicitly declared
-    /// by the command author. `event_set` and `program_arms` describe allowed
-    /// actual topology only and never imply an optimistic occurrence.
+    /// Ordered, non-authoritative optimistic occurrences derived by composing
+    /// command-known event values with the role-visible projection arms.
     ///
-    /// The client applies these in ordinal order as one overlay. The actual
-    /// ordered command delta reconciles and replaces that overlay.
+    /// The client applies these in ordinal order as one overlay. Eventual
+    /// projection deltas or atomic returned records reconcile that overlay.
     pub preview_occurrences: Vec<CommandProjectionPreviewOccurrence>,
     /// Pure reducers over known cache rows (client auto-optimism).
     #[serde(default, skip_serializing_if = "Vec::is_empty")]

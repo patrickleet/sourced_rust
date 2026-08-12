@@ -769,8 +769,8 @@ fn command_fingerprints_canonicalize_nested_json_object_keys() {
             reverse_binding.structural_fingerprint.as_str(),
         ),
         (
-            "sha256:db980e553f62b65ee01600c23c0331e97b5083f5e9f3b65498cb4cde344a0204",
-            "sha256:ba291c9b13aafb68a135b5b8112e3e2ebf1fa1e23819eb210219c60b186c265f",
+            "sha256:316da00fdf3cfb8ebc2ffdc2b01ef2c39c2a424c06384cc3206984d37f050799",
+            "sha256:f12034f9fbb4390014593a372303ad4389397916ee66fca6288f8ccba3be9dce",
         )
     );
 }

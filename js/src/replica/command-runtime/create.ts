@@ -1379,8 +1379,9 @@ export function createReplicaCommandRuntime<
 		/*
 		 * Ship contract: Atomic seals from the atomic GraphQL row +
 		 * direct `records` (confirmDirectProjection). Eventual applies
-		 * projection-delta when present. Same portable IR for `.applies`
-		 * previews either way — different response proof by design.
+		 * projection-delta when present. Both strategies start from the same
+		 * compiler-derived event→mutation preview — different response proof by
+		 * design.
 		 */
 		let actualRequiresRevalidation = false;
 		if (prepared.consistency !== 'atomic') {

@@ -4,38 +4,28 @@ A copyable Distributed service and SvelteKit UI demonstrating one modeled
 projection from aggregate transition to server read model, generated GraphQL
 client, optimistic replica update, and causal confirmation.
 
-## Option A — hops local workbench (preferred for cluster-shaped DX)
+## Option A — local cluster + workspace GitOps
 
-One-time: `hops local start` (control plane). Then:
+One-time: start the kind control plane on Dory's Docker engine. Then run the
+two GitOps processes in separate terminals:
 
 ```bash
 cd tests/e2e-ui
-# apps (workbench)
-hops local up ./gitops/envs/local --name e2e
-hops local status
-hops local open
-# when done
-hops local down --name e2e
+hops local gitops cluster ./gitops/cluster \
+  --cluster-provider kind --docker-provider dory \
+  --cluster-name hops --context kind-hops
+
+hops local gitops worktree ./gitops/envs/local --name e2e \
+  --cluster-provider kind --docker-provider dory \
+  --cluster-name hops --context kind-hops
 ```
 
-Optional **platform XRs** under `gitops/cluster/` (AuthStack + PSQLStack):
+Both commands watch by default; use `--once` for CI or a single diagnostic
+reconcile. Platform XRs and application workloads must be changed in their
+respective GitOps trees, not applied over the watcher with `kubectl`.
 
-```bash
-hops config install <meta>/xrs/stacks/k8s/psql
-hops config install <meta>/xrs/stacks/k8s/auth
-kubectl apply -f gitops/cluster/stacks/psql.yaml
-kubectl apply -f gitops/cluster/stacks/auth.yaml
-```
-
-Optional cloud providers (non-secret YAML only):
-
-```bash
-hops local aws --gitops ./gitops/cluster
-hops local github --gitops ./gitops/cluster
-```
-
-Charts: `api/.gitops/deploy`, `ui/.gitops/deploy`.  
-App Applications: `gitops/envs/local/` (legacy: `gitops/env/local/`).  
+Charts: `api/.gitops/deploy`, `ui/.gitops/deploy`.
+App Applications: `gitops/envs/local/`.
 Control plane: `gitops/cluster/` (`stacks/`, `configurations/`, …).
 
 ## Option B — compose + host processes

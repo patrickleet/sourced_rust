@@ -13,6 +13,11 @@ spec:
       app.kubernetes.io/name: {{ include "e2e-ui-api.name" . }}
   template:
     metadata:
+      annotations:
+        hops.ops.com.ai/source-generation: {{ .Values.clusterDev.sourceGeneration | default 0 | quote }}
+        {{- if .Values.identity.enabled }}
+        hops.ops.com.ai/oidc-generation: {{ .Values.identity.oidcGeneration | default 0 | quote }}
+        {{- end }}
       labels:
         app.kubernetes.io/name: {{ include "e2e-ui-api.name" . }}
         hops.ops.com.ai/runtime: cluster-dev
@@ -54,9 +59,12 @@ spec:
             - containerPort: {{ .Values.service.targetPort }}
               name: http
           env:
+            {{- include "e2e-ui-api.oidcClientEnv" . | nindent 12 }}
             {{- range $k, $v := .Values.env }}
+            {{- if and $v (ne $v "") }}
             - name: {{ $k }}
               value: {{ $v | quote }}
+            {{- end }}
             {{- end }}
             {{- range $k, $ref := .Values.secretEnv }}
             - name: {{ $k }}

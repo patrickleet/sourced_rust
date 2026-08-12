@@ -12,7 +12,7 @@ Related pain today: `tests/e2e-ui/crates/service/src/service.rs` (~projection ca
 
 | Plane | Contents | Changes when… |
 |--------|----------|----------------|
-| **Logical** | Domains, command defs (`.emits` / `.applies`), projections, client surfaces | Product features |
+| **Logical** | Domains, command transitions, projections, client surfaces | Product features |
 | **Runtime** | Event store, read models, locks, bus, outbox/consumer, GraphQL/HTTP, identity | Deploy cut & dialect |
 
 Microservices re-cut **logical mounts** and **process role**.  
@@ -27,7 +27,7 @@ Dialect (SQLite ↔ Postgres) re-cuts **runtime only**.
 
 Framework must **reject** Atomic command mounts on projector-only or query-only processes.
 
-Client optimism is always the same path (`.applies` → optimistic layer → seal). Eventual vs Atomic only changes **where the server applies IR** and **how the client proves the seal**.
+Client optimism is always the same path (transition event → role-visible mutation IR → optimistic layer → seal). Eventual vs Atomic only changes **where the server applies IR** and **how the client proves the seal**.
 
 ---
 
@@ -38,7 +38,7 @@ Client optimism is always the same path (`.applies` → optimistic layer → sea
 ```text
 domains/        aggregates + events
 projections/    descriptors + mutation IR
-commands/       CommandDef (emits, applies, handler) — not bound to one process
+commands/       command transition + handler — not bound to one process
 readmodels/     schemas + grants
 ```
 
@@ -63,17 +63,21 @@ Product intent lives next to the handler; `service`/app only **registers**:
 ```rust
 // handlers/todo_complete.rs (sketch)
 pub fn def() -> CommandDef {
-    command::<TodoCompleteInput, Eventual<TodoStatusPayload>>(COMMAND)
+    command_transition::<
+        domain_commands::Complete,
+        TodoCompleteInput,
+        Eventual<TodoStatusPayload>,
+    >(COMMAND)
         .field_name("todos_complete") // or derive from COMMAND
         .roles(["user", "admin"])     // or route-group default
-        .emits(events![TodoCompletedDomainEvent])
-        .applies(state_preview! { /* optimism contract */ })
         .handle(handle)
 }
 ```
 
-Do **not** auto-invent `state_preview` — that is the optimism contract and stays explicit.  
-Do hide: topology digests, partition codec version, source binding, catalog activation ceremony.
+The generated transition supplies its event set and statically known recorder
+values. The projection owns the event→mutation mapping; unknown values stay
+unknown and force revalidation. Do hide: topology digests, partition codec
+version, source binding, catalog activation ceremony.
 
 ### SystemSlice (microservices re-cut)
 
@@ -179,13 +183,14 @@ Rough size: **~100–150 lines of product wiring** for logical app + a tiny depl
 ## Implementation order
 
 1. **Projection mount / inventory** — hide catalog, topology digests, activation.  
-2. **CommandDef + `.register()`** — co-locate emits/applies/handler with command modules.  
+2. **CommandDef + `.register()`** — co-locate transitions/handlers with command modules.
 3. **Runtime::{sqlite, postgres, in_memory}** — pair repo + locks + bus.  
 4. **ProcessRole** — Full / CommandWriter / EventualProjector / QueryApi spawn policy.  
 5. **Atomic mount checks** — fail closed if Atomic is mounted without write path.  
 6. **Collapse e2e-ui `service.rs` + `runner`** onto the new APIs (no dual/legacy surface).
 
-No back-compat shims: one name per concept (e.g. `.applies` only, not `.preview`).
+No second application-owned optimism map: projection mutation IR is the source
+of cache effects.
 
 ---
 
@@ -202,6 +207,6 @@ No back-compat shims: one name per concept (e.g. `.applies` only, not `.preview`
 
 ## Non-goals
 
-- Hiding `.emits` / `.applies` (optimism contract stays visible).  
+- Hiding the transition or projection that defines optimistic behavior.
 - Pretending remote Atomic projectors exist.  
 - Second “simple” API that still requires the full catalog dance in user code.

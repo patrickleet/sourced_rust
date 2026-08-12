@@ -2471,6 +2471,16 @@ test('commands fail before optimism when no authoritative scope is available', a
 	runtime.dispose();
 });
 
+test('Atomic direct path normalizes a new record with its generated model identity', async () => {
+	const { replica, runtime } = await directProjectionRuntime();
+	assert.deepEqual(replica.record('todo-1').fields, {
+		__typename: Todo.id,
+		id: 'todo-1',
+		title: 'canonical'
+	});
+	runtime.dispose();
+});
+
 for (const scenario of ['older-row', 'newer-row', 'newer-tombstone']) {
 	test(`Atomic direct path fences ${scenario}`, async () => {
 		const { replica, runtime } = await directProjectionRuntime();

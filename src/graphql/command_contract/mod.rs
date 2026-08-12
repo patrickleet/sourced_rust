@@ -47,18 +47,18 @@ pub use outcomes::{
     Atomic, CommandConsistency, CommandOutcome, Eventual, PrepareCommandError, PreparedCommand,
     Succeeded,
 };
+#[cfg(test)]
+pub(crate) use projection_obligations::InputDefaultGenerator;
 pub(crate) use projection_obligations::{
     validate_projection_confirmation_count, CommandInputDefault, CommandProjectionConfirmation,
 };
-#[cfg(test)]
-pub(crate) use projection_obligations::InputDefaultGenerator;
 pub(crate) use projections::CommandProjectionEvents;
 pub use projections::{
     __command_projection_event_descriptor, __command_projection_event_preview,
     __command_projection_events, __command_projection_preview_constant,
-    __command_projection_state_preview, CommandEventSet, CommandProjectionEventSet,
-    CommandProjectionPreview, CommandProjectionPreviewSource, CommandProjectionPureArg,
-    CommandProjectionPureReduce,
+    __command_projection_state_known_values, __command_projection_state_preview, CommandEventSet,
+    CommandProjectionEventSet, CommandProjectionPreview, CommandProjectionPreviewSource,
+    CommandProjectionPureArg, CommandProjectionPureReduce,
 };
 // Re-exported for unit tests that resolve obligations through this module path.
 #[cfg_attr(not(test), allow(unused_imports))]

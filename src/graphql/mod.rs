@@ -37,12 +37,12 @@ pub use command_contract::{
 pub use command_contract::{
     __command_projection_event_descriptor, __command_projection_event_preview,
     __command_projection_events, __command_projection_preview_constant,
-    __command_projection_state_preview, command_transition, typed_command, Atomic,
-    CommandConsistency, CommandEventSet, CommandOutcome, CommandProjectionEventSet,
-    CommandProjectionPreview, CommandProjectionPreviewSource, CommandProjectionPureArg,
-    CommandProjectionPureReduce, CompiledDirectProjectionTarget, CompiledInputDefaults, Eventual,
-    PrepareCommandError, PreparedCommand, Succeeded, TypedCommand, TypedEffectExpression,
-    TypedEffectKey, TypedEffectRelationship,
+    __command_projection_state_known_values, __command_projection_state_preview,
+    command_transition, typed_command, Atomic, CommandConsistency, CommandEventSet, CommandOutcome,
+    CommandProjectionEventSet, CommandProjectionPreview, CommandProjectionPreviewSource,
+    CommandProjectionPureArg, CommandProjectionPureReduce, CompiledDirectProjectionTarget,
+    CompiledInputDefaults, Eventual, PrepareCommandError, PreparedCommand, Succeeded, TypedCommand,
+    TypedEffectExpression, TypedEffectKey, TypedEffectRelationship,
 };
 pub use naming::{
     aggregate_field, by_pk_field, comparison_op_fields, include_postgres_json_comparison_ops,

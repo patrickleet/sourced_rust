@@ -30,20 +30,26 @@ Platform / CP resources for the **shared** local control plane:
 
 ## Apply + watch (local gitops vibes)
 
-`hops local start --gitops PATH` is bootstrap then **`hops local gitops cluster
-PATH`** (apply + watch). Start stays in the foreground until Ctrl+C. Day-to-day
-without re-bootstrap: `hops local gitops cluster` alone. Use `--once` for a
-single reconcile (CI/scripts).
+This fixture pins the auth stack's content-derived local dev image because its
+Grant reference support is newer than the published package. Build and push
+that package once before the cluster watcher. Re-run the source install and
+update `configurations/auth-stack.yaml` when the auth package content changes.
 
 ```bash
-# Bootstrap + cluster apply/watch (Ctrl+C to stop)
-hops local start --backend dory --gitops ./gitops/cluster
+# One-time package build/push for the pin in configurations/auth-stack.yaml
+hops config install --path <meta>/xrs/stacks/k8s/auth \
+  --cluster-provider kind --docker-provider dory \
+  --cluster-name hops --context kind-hops
 
-# Cluster-only if CP already up
-# hops local gitops cluster ./gitops/cluster
+# Terminal 1: shared control-plane tree (apply + watch)
+hops local gitops cluster ./gitops/cluster \
+  --cluster-provider kind --docker-provider dory \
+  --cluster-name hops --context kind-hops
 
-# Per-worktree apps (other terminal)
-hops local gitops worktree ./gitops/envs/local --name dogfood
+# Terminal 2: per-workspace Applications + charts (apply + watch)
+hops local gitops worktree ./gitops/envs/local --name alice \
+  --cluster-provider kind --docker-provider dory \
+  --cluster-name hops --context kind-hops
 ```
 
 Crossplane reconciles XRs (`PSQLStack`, `AuthStack`, `SecretStack`, …) after each apply.
@@ -62,7 +68,7 @@ so `secrets/stack.yaml` is not stuck Unpacking.
 
 ```bash
 # Apps after AuthStack is Ready — watches by default
-hops local gitops worktree ./gitops/envs/local --name dogfood
+hops local gitops worktree ./gitops/envs/local --name alice
 ```
 
 ## Secrets

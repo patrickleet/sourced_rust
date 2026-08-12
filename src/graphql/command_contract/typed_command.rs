@@ -661,27 +661,31 @@ impl<I, K: CommandOutcome> TypedCommand<I, K> {
     /// Declare outward domain events from a type-level [`super::CommandEventSet`].
     ///
     /// Equivalent to [`.emits`](Self::emits)`(events![...])` for the same
-    /// domain-event contracts, without a second hand-written event list when
-    /// the domain already owns the transition (event marker or generated
-    /// `domain_commands` witness).
+    /// domain-event contracts. A generated `domain_commands` witness also
+    /// contributes recorder values the compiler can prove; role-visible
+    /// projection arms decide their optimistic cache consequences.
     #[must_use]
     pub fn emits_events<S: super::CommandEventSet>(mut self) -> Self {
         self.contract
             .projections
             .add_event_set(S::command_event_set());
+        for values in S::command_event_known_values() {
+            self.contract.projections.add_inferred_values(values);
+        }
         self
     }
 
-    /// Declare known mutation-input fields for client cache application.
+    /// Override known mutation-input fields for client cache application.
     ///
     /// Maps command-known values (and unknowns) onto the emitted domain-event
     /// body shape that projections bind into mutation IR. The client
     /// applies that mutation to the cache only; the server applies the same
     /// mutation for real (eventual projector or handler-owned projected row).
     ///
-    /// Prefer this over thinking of the declaration as "predicting an event
-    /// body" — the domain model defines events; this is known input for the
-    /// event→mutation binding used by optimism.
+    /// Generated domain transitions normally supply these values automatically.
+    /// This lower-level escape hatch exists for event producers the compiler
+    /// cannot inspect; it is not required for ordinary `command_transition`
+    /// registration.
     ///
     /// Service registration rejects a mapping whose exact event selector is
     /// not also present through [`Self::emits`].

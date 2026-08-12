@@ -14,6 +14,9 @@ image:
 # Application deliveryPath points there; workingDir is the Svelte app.
 clusterDev:
   image: node:22-bookworm
+  # Bump in the local Application after rebuilding shared JS framework output.
+  # This restarts the Vite process through the watched GitOps deployment.
+  sourceGeneration: 0
   # Use bash -c (not -lc) so container ENV/PATH stay intact.
   command:
     - /bin/bash
@@ -50,23 +53,19 @@ env:
   AUTH_USE_SECURE_COOKIES: "false"
   # AuthStack issuer (Helm default Service fullname)
   OIDC_ISSUER: "http://zitadel-zitadel.auth.svc.cluster.local:8080"
-  # Project id residual after workspace identity Project Ready
+  # Optional project id for role-claim scopes. Prefer empty in git — use
+  # Project status.atProvider.id only if you must pin audience (not in MR git).
   OIDC_AUDIENCE: ""
   ZITADEL_PROJECT_ID: ""
 
-# Secret-backed env (keys must exist on Secret e2e-ui-oidc in the app namespace).
-# Local cluster-dev: templates/local-oidc-secret.yaml seeds placeholders when
-# identity.seedLocalOidcSecret is not false (default). Production/dogfood login
-# should replace via ExternalSecrets or residual after OIDC Ready:
-#   kubectl -n <workspace> create secret generic e2e-ui-oidc \
-#     --from-literal=AUTH_SECRET='…' \
-#     --from-literal=OIDC_CLIENT_ID='…' \
-#     --from-literal=OIDC_CLIENT_SECRET='…' \
-#     --from-literal=ZITADEL_SERVICE_USER_TOKEN="$(kubectl -n auth get secret login-client -o jsonpath='{.data.pat}' | base64 -d)"
+# Secret-backed env (never live client ids in git).
+# - OIDC_CLIENT_* → Oidc writeConnectionSecretToRef (attribute.client_id/secret)
+# - AUTH_SECRET / login PAT → residual e2e-ui-oidc (see SECRETS.md)
 secretEnv:
   AUTH_SECRET:
     secretName: e2e-ui-oidc
     key: AUTH_SECRET
+  # Overridden to Oidc connection secret when identity.enabled.
   OIDC_CLIENT_ID:
     secretName: e2e-ui-oidc
     key: OIDC_CLIENT_ID
@@ -92,32 +91,25 @@ envFromSecrets: []
 # Enable from Application values when the env needs OIDC dogfood.
 identity:
   enabled: false
-  # After AuthStack Ready: GET …/management/v1/orgs/me
-  orgId: ""
-  # Worktree id for OIDC app names only (e2e-ui-<workspace>-web). Default:
-  # release namespace (= hops --name / helm --namespace).
+  # Worktree id for OIDC app name (e2e-ui-<workspace>-web). Default: release ns.
   workspace: ""
-  # Cluster-shared Project MR name (roles + humans hang off this).
+  # Bump to rotate provider-generated client credentials. Requires Application
+  # syncPolicy.prune=true so the previous OIDC MR is removed by GitOps inventory.
+  oidcGeneration: 0
+  # Shared Project MR name — Roles/Oidc use projectIdRef, not live UUIDs.
   projectName: e2e-ui
-  # Cluster-shared demo humans (alice / bob / admin · Password1!)
-  demoUsers: true
-  # Namespace for worktree OIDC app MR. Empty → release namespace.
-  mrNamespace: ""
-  # Namespace for shared Project / Role MRs (defaults to mrNamespace).
   projectNamespace: default
-  # Namespace for shared HumanUser MRs (defaults to projectNamespace).
   humansNamespace: default
-  # Gitops Features MR: required Login V2 → uiBaseURL (this chart's /login).
-  # Set false only if something else owns instance Features.
+  demoUsers: true
   instanceLoginV2: true
-  # When local=true, seed Secret e2e-ui-oidc so cluster-dev pods schedule
-  # (HMR / delivery). Login needs real OIDC client credentials later.
-  seedLocalOidcSecret: true
+  # Intentionally disabled: the chart cannot know the AuthStack login-client PAT,
+  # and must not overwrite the residual Secret on every GitOps reconcile.
+  seedLocalOidcSecret: false
   localOidcSeed: {}
-  # Optional overrides; defaults = this chart name + service.port
+  seedLocalHumanPasswords: true
+  localHumanPasswords: {}
   uiService: ""
   uiPort: ""
-  # Optional full override of redirect base (Login V2 baseUri + callbacks)
   uiBaseURL: ""
   extraRedirectUris:
     - http://127.0.0.1:5180/auth/callback/oidc
@@ -130,12 +122,9 @@ identity:
     - http://127.0.0.1:18101/
     - http://localhost:18101/
   passwordSecret:
-    # Residual Secret keys: alice, bob, admin
-    # Cluster-shared default name (not per-worktree).
     name: e2e-human-passwords
   providerConfigRef:
     name: default
-    # Prefer ClusterProviderConfig so shared + worktree MRs share credentials.
     kind: ClusterProviderConfig
 
 # Materialize residual secrets from Vault (ClusterSecretStore "vault").

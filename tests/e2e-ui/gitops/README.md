@@ -5,18 +5,18 @@ gitops/
   cluster/          # fixture CP tree (real meta repos: put this at meta root)
   envs/
     local/          # app Applications → worktree namespaces
-  env/local/        # deprecated alias of envs/local
 ```
 
 ```bash
-# Bootstrap + cluster gitops apply/watch (stays in foreground = gitops cluster)
-hops local start --backend dory --gitops ./gitops/cluster
+# Terminal 1: cluster apply/watch
+hops local gitops cluster ./gitops/cluster \
+  --cluster-provider kind --docker-provider dory \
+  --cluster-name hops --context kind-hops
 
-# Or cluster watch alone if CP already started
-# hops local gitops cluster ./gitops/cluster
-
-# Per-worktree apps (watches by default) — separate terminal
-hops local gitops worktree ./gitops/envs/local --name dogfood
+# Terminal 2: per-workspace apps apply/watch
+hops local gitops worktree ./gitops/envs/local --name alice \
+  --cluster-provider kind --docker-provider dory \
+  --cluster-name hops --context kind-hops
 
 # One-shot (CI / scripts): add --once
 # hops local gitops cluster ./gitops/cluster --once

@@ -170,14 +170,52 @@ pub(super) fn command_projection_extension(
             if program_arms.iter().all(|arm| arm.event != preview_event) {
                 continue;
             }
+            let inferred = command
+                .projections
+                .inferred_values
+                .iter()
+                .find(|values| values.selector == *selector);
             let mut values = slot_origins
                 .iter()
                 .filter(|origin| origin.event == *selector)
-                .map(|origin| CommandProjectionPreviewValue {
-                    slot: origin.slot.clone(),
-                    source: auto_preview_source(origin, command, &claim_presets),
+                .map(|origin| {
+                    let inferred_source = inferred
+                        .and_then(|values| {
+                            values.preview.fields.iter().find(|field| {
+                                let target = match field.envelope {
+                                    Some(envelope) => SlotTarget::Envelope { field: envelope },
+                                    None => SlotTarget::BodyPath {
+                                        path: field.body_path.clone(),
+                                    },
+                                };
+                                target == origin.target
+                            })
+                        })
+                        .map(|field| {
+                            client_preview_source(
+                                &field.source,
+                                matches!(origin.target, SlotTarget::BodyPath { .. }),
+                                match origin.target {
+                                    SlotTarget::Envelope { field } => Some(field),
+                                    SlotTarget::BodyPath { .. } => None,
+                                },
+                                field.body_type,
+                                field.body_rust_type,
+                                field.body_nullable,
+                                field.body_always_present,
+                                &origin.value_type,
+                                command,
+                            )
+                        })
+                        .transpose()?;
+                    Ok(CommandProjectionPreviewValue {
+                        slot: origin.slot.clone(),
+                        source: inferred_source.unwrap_or_else(|| {
+                            auto_preview_source(origin, command, &claim_presets)
+                        }),
+                    })
                 })
-                .collect::<Vec<_>>();
+                .collect::<Result<Vec<_>, ClientManifestError>>()?;
             values.sort_by(|left, right| left.slot.cmp(&right.slot));
             values.dedup_by(|left, right| left.slot == right.slot);
             let ordinal = u32::try_from(preview_occurrences.len()).map_err(|_| {
@@ -263,16 +301,14 @@ pub(super) fn command_projection_extension(
         .pure_reduces
         .iter()
         .map(|reduce| {
-            use crate::graphql::command_contract::CommandProjectionPreviewSource as ServerSource;
             use crate::graphql::client_manifest::ClientProjectionPreviewSource as ClientSource;
+            use crate::graphql::command_contract::CommandProjectionPreviewSource as ServerSource;
             let map_source = |source: &ServerSource| -> Result<ClientSource, ClientManifestError> {
                 Ok(match source {
-                    ServerSource::InputPath { path } => ClientSource::Input {
-                        path: path.clone(),
-                    },
-                    ServerSource::GeneratedDefaultPath { path } => ClientSource::GeneratedDefault {
-                        path: path.clone(),
-                    },
+                    ServerSource::InputPath { path } => ClientSource::Input { path: path.clone() },
+                    ServerSource::GeneratedDefaultPath { path } => {
+                        ClientSource::GeneratedDefault { path: path.clone() }
+                    }
                     ServerSource::TrustedPreset { name, codec } => ClientSource::TrustedPreset {
                         name: name.clone(),
                         codec: codec.clone(),
@@ -331,9 +367,7 @@ pub(super) fn command_projection_extension(
 ///
 /// Keyed by the model field / body-path leaf name so automatic optimism can
 /// fill owner-like slots without a third mapping API.
-fn surface_row_policy_claim_presets(
-    surface: &Surface,
-) -> BTreeMap<String, (String, String)> {
+fn surface_row_policy_claim_presets(surface: &Surface) -> BTreeMap<String, (String, String)> {
     let mut presets = BTreeMap::new();
     for model in surface.models.values() {
         let SurfaceRowPolicy::Predicate(expression) = &model.row_policy else {
@@ -408,8 +442,7 @@ fn insert_row_policy_claim_preset(
     // resolve when they describe the same column.
     let mut keys = BTreeSet::from([column.to_owned()]);
     if let Some(schema_column) = model.schema.columns.iter().find(|candidate| {
-        !candidate.skipped
-            && (candidate.field_name == column || candidate.column_name == column)
+        !candidate.skipped && (candidate.field_name == column || candidate.column_name == column)
     }) {
         keys.insert(schema_column.field_name.clone());
         keys.insert(schema_column.column_name.clone());
@@ -441,8 +474,7 @@ fn resolve_row_policy_column_codec(
         return super::scalar_codec(&field.scalar);
     }
     let schema_column = model.schema.columns.iter().find(|candidate| {
-        !candidate.skipped
-            && (candidate.field_name == column || candidate.column_name == column)
+        !candidate.skipped && (candidate.field_name == column || candidate.column_name == column)
     })?;
     if let Some(field) = model
         .columns
@@ -474,7 +506,11 @@ fn auto_preview_source(
             field: ProjectionEnvelopeField::AggregateId,
         } => {
             if let Some(path) = auto_aggregate_id_path(command, &origin.value_type) {
-                if command.input_defaults.iter().any(|default| default.path == path) {
+                if command
+                    .input_defaults
+                    .iter()
+                    .any(|default| default.path == path)
+                {
                     ClientProjectionPreviewSource::GeneratedDefault { path }
                 } else {
                     ClientProjectionPreviewSource::Input { path }
@@ -485,21 +521,17 @@ fn auto_preview_source(
         }
         SlotTarget::Envelope { .. } => ClientProjectionPreviewSource::Unknown,
         SlotTarget::BodyPath { path } => {
-            if command_input_field(&command.input, path).is_some_and(|field| {
-                input_field_compatible(field, &origin.value_type, None, None)
-            }) {
+            if command_input_field(&command.input, path)
+                .is_some_and(|field| input_field_compatible(field, &origin.value_type, None, None))
+            {
                 if command
                     .input_defaults
                     .iter()
                     .any(|default| default.path == *path)
                 {
-                    return ClientProjectionPreviewSource::GeneratedDefault {
-                        path: path.clone(),
-                    };
+                    return ClientProjectionPreviewSource::GeneratedDefault { path: path.clone() };
                 }
-                return ClientProjectionPreviewSource::Input {
-                    path: path.clone(),
-                };
+                return ClientProjectionPreviewSource::Input { path: path.clone() };
             }
             if let Some(leaf) = path.last() {
                 if let Some((name, codec)) = claim_presets.get(leaf) {
@@ -531,9 +563,7 @@ fn auto_aggregate_id_path(
         if field.list || !input_field_compatible(field, expected, None, None) {
             continue;
         }
-        let id_like = field.type_name == "ID"
-            || field.name == "id"
-            || field.name.ends_with("_id");
+        let id_like = field.type_name == "ID" || field.name == "id" || field.name.ends_with("_id");
         if !id_like {
             continue;
         }
@@ -1496,6 +1526,48 @@ mod tests {
         }
     }
 
+    fn selected_value_patch_program(
+        name: &str,
+        selector: crate::ProjectionEventSelector,
+    ) -> SurfaceSelectedProjectionProgram {
+        SurfaceSelectedProjectionProgram {
+            name: name.into(),
+            version: 1,
+            ir_version: crate::projection::PROJECTION_PROGRAM_IR_VERSION,
+            operation_semantics_version: crate::projection::PROJECTION_OPERATION_SEMANTICS_VERSION,
+            partition: ProjectionPartition::Unit,
+            arms: vec![SurfaceProjectionArm {
+                arm_id: format!("{name}-arm"),
+                selector,
+                operations: vec![SurfaceProjectionOperation {
+                    operation_id: format!("{name}-patch"),
+                    staging_ordinal: 0,
+                    kind: ProjectionMutationKind::Patch,
+                    model: "TodoView".into(),
+                    storage: "todos".into(),
+                    key: vec![ProjectionKeyField::try_new(
+                        0,
+                        "todo_id",
+                        ProjectionExpression::constant(ProjectionValue::string("todo-1")),
+                    )
+                    .unwrap()],
+                    fields: vec![crate::projection::ProjectionField::try_new(
+                        0,
+                        "title",
+                        crate::projection::ProjectionAssignment::Set(
+                            ProjectionExpression::body_path(ProjectionValueType::String, ["value"])
+                                .unwrap(),
+                        ),
+                    )
+                    .unwrap()],
+                    relationship_effects: Vec::new(),
+                    invalidations: Vec::new(),
+                    force_revalidate: false,
+                }],
+            }],
+        }
+    }
+
     fn typed_body_preview(source: CommandProjectionPreviewSource) -> CommandProjectionPreview {
         let mut preview = CommandProjectionPreview::new()
             .events(crate::events![PreviewA])
@@ -1576,9 +1648,10 @@ mod tests {
         assert!(projection
             .preview_occurrences
             .iter()
-            .all(|occurrence| occurrence.values.iter().all(|value| {
-                matches!(value.source, ClientProjectionPreviewSource::Unknown)
-            })));
+            .all(|occurrence| occurrence
+                .values
+                .iter()
+                .all(|value| { matches!(value.source, ClientProjectionPreviewSource::Unknown) })));
     }
 
     #[test]
@@ -1704,7 +1777,11 @@ mod tests {
             ClientProjectionExpression::Slot { slot, .. } => slot.clone(),
             other => panic!("expected key slot, got {other:?}"),
         };
-        let owner_slot = match &arm.operations[0].fields.iter().find(|f| f.name == "owner_fk") {
+        let owner_slot = match &arm.operations[0]
+            .fields
+            .iter()
+            .find(|f| f.name == "owner_fk")
+        {
             Some(field) => match &field.assignment {
                 ClientProjectionAssignment::Set {
                     expression: ClientProjectionExpression::Slot { slot, .. },
@@ -1740,6 +1817,54 @@ mod tests {
             sources.get(&title_slot),
             Some(ClientProjectionPreviewSource::Input { path }) if path == &["title"]
         ));
+    }
+
+    #[test]
+    fn inferred_transition_values_feed_eventual_and_atomic_projection_strategies() {
+        for (seed, placement, consistency) in [
+            (
+                31,
+                ProjectionPlacement::Eventual,
+                CommandConsistency::Eventual,
+            ),
+            (32, ProjectionPlacement::Direct, CommandConsistency::Atomic),
+        ] {
+            let selector = typed_selector::<PreviewA>();
+            let surface = surface_with_modeled([modeled(
+                seed,
+                placement,
+                Some(selected_value_patch_program(
+                    "inferred-transition-value",
+                    selector,
+                )),
+            )]);
+            let mut command = command("String");
+            command.consistency = consistency;
+            command.projections.add_event_set(crate::events![PreviewA]);
+            command.projections.add_inferred_values(
+                crate::graphql::__command_projection_event_preview::<PreviewA, PreviewA>(vec![(
+                    "value",
+                    CommandProjectionPreviewSource::constant(ProjectionValue::string(
+                        "transition-value",
+                    )),
+                )]),
+            );
+
+            let projection = command_projection_extension(&command, &surface, &[])
+                .unwrap()
+                .expect("projection strategy");
+            assert!(command.projections.previews.is_empty());
+            assert_eq!(projection.preview_occurrences.len(), 1);
+            assert!(projection.preview_occurrences[0]
+                .values
+                .iter()
+                .any(|value| matches!(
+                    &value.source,
+                    ClientProjectionPreviewSource::Constant {
+                        value: ClientProjectionValue::String(value),
+                    } if value == "transition-value"
+                )));
+        }
     }
 
     #[test]

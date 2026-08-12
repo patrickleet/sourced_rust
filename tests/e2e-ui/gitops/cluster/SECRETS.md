@@ -15,7 +15,7 @@ later ESO/SOPS). Config only **references** names/keys.
 ProviderConfig for MRs (after PAT exists):
 
 ```bash
-hops local zitadel --source-context dory --source-namespace auth \
+hops local zitadel --context kind-hops --source-context kind-hops --source-namespace auth \
   --domain zitadel-zitadel.auth.svc.cluster.local --port 8080 --insecure
 # creates default/zitadel-credentials + ProviderConfig secretRef
 ```
@@ -36,33 +36,46 @@ Renders from **`ui/.gitops/deploy`** when `identity.enabled: true`
 
 | Secret | Purpose |
 |--------|---------|
-| `e2e-human-passwords` | Keys `alice`, `bob`, `admin` (cluster-shared) |
-| `zitadel-credentials` | Provider PC / ClusterProviderConfig (`hops local zitadel`) |
+| `e2e-human-passwords` | Keys `alice`, `bob`, `admin` (cluster-shared; local chart seeds when `local: true`) |
+| `zitadel-credentials` | ProviderConfig / ClusterProviderConfig (`hops local zitadel`) |
+| Oidc connection Secret | Oidc MR `writeConnectionSecretToRef` → `attribute.client_id` / `attribute.client_secret` (UI mounts these) |
+| `e2e-ui-oidc` | `AUTH_SECRET` (+ optional `ZITADEL_SERVICE_USER_TOKEN` from AuthStack `auth/login-client`) |
 
 ```bash
+# Humans (if not using chart local seed):
 kubectl -n default create secret generic e2e-human-passwords \
   --from-literal=alice=Password1! \
   --from-literal=bob=Password1! \
   --from-literal=admin=Password1!
+
+# Login V2 service user (after AuthStack Ready):
+kubectl -n <workspace> create secret generic e2e-ui-oidc \
+  --from-literal=AUTH_SECRET='local-workbench-dev-auth-secret-not-for-prod' \
+  --from-literal=ZITADEL_SERVICE_USER_TOKEN="$(kubectl -n auth get secret login-client -o jsonpath='{.data.pat}' | base64 -d)" \
+  --dry-run=client -o yaml | kubectl apply -f -
+# OIDC_CLIENT_ID/SECRET: do not hand-copy — Deployment reads Oidc connection Secret.
 ```
 
 Demo login (every env): **alice / bob / admin · Password1!**
 
+Do **not** commit live `orgId`, Project external ids, or OIDC client ids into Application values. MRs use `projectIdRef` and ProviderConfig org default.
 ## e2e-ui app (`ns: --name`)
 
 | Secret | Keys | Used by |
 |--------|------|---------|
-| `e2e-ui-oidc` | `AUTH_SECRET`, `OIDC_CLIENT_ID`, `OIDC_CLIENT_SECRET`, `ZITADEL_SERVICE_USER_TOKEN` | UI chart `secretEnv` → `secretKeyRef` |
+| `e2e-ui-oidc` | `AUTH_SECRET`, `ZITADEL_SERVICE_USER_TOKEN` | UI session/login residuals |
+| `e2e-ui-<workspace>-oidc-conn` | `attribute.client_id`, `attribute.client_secret` | Oidc MR connection secret; UI client env |
 
 ```bash
-# OIDC client secret: regenerate via Management API _generate_client_secret
 # Login-client PAT: AuthStack residual secret auth/login-client key pat
 kubectl -n dogfood create secret generic e2e-ui-oidc \
   --from-literal=AUTH_SECRET='local-workbench-dogfood-auth-secret-not-for-prod' \
-  --from-literal=OIDC_CLIENT_ID='…from Oidc app…' \
-  --from-literal=OIDC_CLIENT_SECRET='…from Oidc app create…' \
   --from-literal=ZITADEL_SERVICE_USER_TOKEN="$(kubectl -n auth get secret login-client -o jsonpath='{.data.pat}' | base64 -d)"
 ```
+
+Do not copy OIDC client IDs or secrets into this Secret. The Oidc managed
+resource writes them to `e2e-ui-<workspace>-oidc-conn`, and the Deployment
+references `attribute.client_id` / `attribute.client_secret` there.
 
 Non-secret OIDC config (issuer, AUTH_URL) stays in `ui/.gitops/deploy/values.yaml`.
 

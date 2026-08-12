@@ -5,17 +5,22 @@ metadata:
 spec:
   source:
     path: ../../../api/.gitops/deploy
-    # Default delivery = git worktree root (shared across UI/API pods).
     helm:
       values:
         local: true
         appRuntime: cluster-dev
+        clusterDev:
+          sourceGeneration: 1
         database:
           enabled: false
-        # Residual after shared Zitadel Project Ready (project id for role assertion).
-        # Dogfood live: e2e-ui-dogfood project until cluster Project `e2e-ui` is recreated.
-        env:
-          OIDC_AUDIENCE: "385467744310526613"
-          ZITADEL_PROJECT_ID: "385467744310526613"
+        # No live project/client UUIDs. The API chart derives the matching
+        # workspace Secret and reads the generated client id as its audience.
+        identity:
+          enabled: true
+          oidcGeneration: 1
+        secretEnv:
+          ZITADEL_SERVICE_USER_TOKEN:
+            secretName: e2e-ui-oidc
+            key: ZITADEL_SERVICE_USER_TOKEN
   syncPolicy:
-    prune: false
+    prune: true

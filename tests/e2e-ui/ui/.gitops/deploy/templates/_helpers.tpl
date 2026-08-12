@@ -30,6 +30,20 @@ Prefers identity.workspace; else release/workspace namespace (= hops --name).
 {{- printf "e2e-ui-%s" (include "e2e-ui-ui.workspace" .) | trunc 63 | trimSuffix "-" -}}
 {{- end -}}
 
+{{/*
+OIDC MR name. Bump identity.oidcGeneration to rotate provider-generated client
+credentials. Worktree GitOps prune deletes the previous generation by inventory.
+*/}}
+{{- define "e2e-ui-ui.oidcResourceName" -}}
+{{- $prefix := include "e2e-ui-ui.identityPrefix" . -}}
+{{- $generation := int (.Values.identity.oidcGeneration | default 0) -}}
+{{- if gt $generation 0 -}}
+{{- printf "%s-web-g%d" $prefix $generation | trunc 63 | trimSuffix "-" -}}
+{{- else -}}
+{{- printf "%s-web" $prefix | trunc 63 | trimSuffix "-" -}}
+{{- end -}}
+{{- end -}}
+
 {{/* Cluster-shared Zitadel Project MR name (one per control plane). */}}
 {{- define "e2e-ui-ui.clusterProjectName" -}}
 {{- default "e2e-ui" .Values.identity.projectName -}}
@@ -61,5 +75,20 @@ Uses the release/workspace namespace so --name dogfood → e2e-ui-ui.dogfood.svc
 {{- $svc := default (include "e2e-ui-ui.name" .) .Values.identity.uiService -}}
 {{- $port := default .Values.service.port .Values.identity.uiPort -}}
 {{- printf "http://%s.%s.svc.cluster.local:%v" $svc $ns $port -}}
+{{- end -}}
+{{- end -}}
+
+{{/*
+Crossplane connection secret written by the worktree Oidc MR
+(writeConnectionSecretToRef). Holds attribute.client_id / attribute.client_secret
+— never commit live client credentials to git.
+*/}}
+{{- define "e2e-ui-ui.oidcConnectionSecretName" -}}
+{{- $prefix := include "e2e-ui-ui.identityPrefix" . -}}
+{{- $generation := int (.Values.identity.oidcGeneration | default 0) -}}
+{{- if gt $generation 0 -}}
+{{- printf "%s-oidc-conn-g%d" $prefix $generation | trunc 63 | trimSuffix "-" -}}
+{{- else -}}
+{{- printf "%s-oidc-conn" $prefix | trunc 63 | trimSuffix "-" -}}
 {{- end -}}
 {{- end -}}

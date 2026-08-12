@@ -13,6 +13,11 @@ spec:
       app.kubernetes.io/name: {{ include "e2e-ui-ui.name" . }}
   template:
     metadata:
+      annotations:
+        hops.ops.com.ai/source-generation: {{ .Values.clusterDev.sourceGeneration | default 0 | quote }}
+        {{- if .Values.identity.enabled }}
+        hops.ops.com.ai/oidc-generation: {{ .Values.identity.oidcGeneration | default 0 | quote }}
+        {{- end }}
       labels:
         app.kubernetes.io/name: {{ include "e2e-ui-ui.name" . }}
         hops.ops.com.ai/runtime: cluster-dev
@@ -64,22 +69,30 @@ spec:
               name: http
           env:
             {{- range $k, $v := .Values.env }}
-            {{- /* AUTH_URL rewritten from injected workspace namespace when present */ -}}
             {{- if and (eq $k "AUTH_URL") $.Values.namespace }}
             - name: AUTH_URL
               value: {{ printf "http://e2e-ui-ui.%s.svc.cluster.local:5180" $.Values.namespace | quote }}
-            {{- else }}
+            {{- else if and $v (ne $v "") }}
             - name: {{ $k }}
               value: {{ $v | quote }}
             {{- end }}
             {{- end }}
-            {{- /* Secrets from K8s Secret objects — never plain values in gitops */ -}}
+            {{- /* Client creds from Oidc writeConnectionSecretToRef (attribute.*) */ -}}
+            {{- $oidcConn := include "e2e-ui-ui.oidcConnectionSecretName" . -}}
             {{- range $k, $ref := .Values.secretEnv }}
+            {{- if and $.Values.identity.enabled (or (eq $k "OIDC_CLIENT_ID") (eq $k "OIDC_CLIENT_SECRET")) }}
+            - name: {{ $k }}
+              valueFrom:
+                secretKeyRef:
+                  name: {{ $oidcConn | quote }}
+                  key: {{ if eq $k "OIDC_CLIENT_ID" }}attribute.client_id{{ else }}attribute.client_secret{{ end }}
+            {{- else }}
             - name: {{ $k }}
               valueFrom:
                 secretKeyRef:
                   name: {{ $ref.secretName | quote }}
                   key: {{ $ref.key | quote }}
+            {{- end }}
             {{- end }}
           {{- with .Values.envFromSecrets }}
           envFrom:

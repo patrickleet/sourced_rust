@@ -6,7 +6,7 @@
 #   http://zitadel-zitadel.auth.svc.cluster.local:8080
 # (Later: chartValues.fullnameOverride: zitadel if we want a shorter name.)
 #
-# Install configurations first, then: hops local gitops cluster ./gitops/cluster
+# Shared cluster GitOps owns this XR after Configuration bootstrap.
 apiVersion: hops.ops.com.ai/v1alpha1
 kind: AuthStack
 metadata:

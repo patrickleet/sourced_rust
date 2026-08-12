@@ -29,9 +29,9 @@
 		return `/blob/${encodeURIComponent(gameId)}`;
 	}
 
-	function navigateToGame(gameId: string, replace = false) {
+	async function navigateToGame(gameId: string, replace = false) {
 		if (routeGameId === gameId) return;
-		void goto(gamePath(gameId), { replaceState: replace, noScroll: true, keepFocus: true });
+		await goto(gamePath(gameId), { replaceState: replace, noScroll: true, keepFocus: true });
 	}
 
 	const query = BlobGames.use();
@@ -98,7 +98,7 @@
 		try {
 			const receipt = await commands.blob.start({ game_id });
 			// Atomic response row is already in the replica before resolve.
-			navigateToGame(receipt.result.game_id, true);
+			await navigateToGame(receipt.result.game_id, true);
 		} catch (e) {
 			actionError = e instanceof Error ? e.message : 'Start failed';
 		} finally {
@@ -163,7 +163,7 @@
 	function selectGame(id: string) {
 		if (id === routeGameId) return;
 		actionError = null;
-		navigateToGame(id);
+		void navigateToGame(id);
 	}
 
 	function onKey(e: KeyboardEvent) {

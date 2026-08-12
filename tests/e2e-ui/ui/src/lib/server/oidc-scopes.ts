@@ -40,10 +40,13 @@ export function oidcScopes(): string {
 
 	for (const s of DEFAULT_OIDC_SCOPES.split(/\s+/)) parts.add(s);
 
+	// Generic role scopes always — works without hardcoding Project id in gitops.
+	// When OIDC_AUDIENCE / ZITADEL_PROJECT_ID is set (live Project id), also request
+	// project-scoped audience + roles claims.
+	parts.add('urn:zitadel:iam:org:project:roles');
+	parts.add('urn:zitadel:iam:org:projects:roles');
 	if (aud) {
 		parts.add(`urn:zitadel:iam:org:project:id:${aud}:aud`);
-		parts.add('urn:zitadel:iam:org:project:roles');
-		parts.add('urn:zitadel:iam:org:projects:roles');
 		parts.add(`urn:zitadel:iam:org:project:id:${aud}:roles`);
 	}
 

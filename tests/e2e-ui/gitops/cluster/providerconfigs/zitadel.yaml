@@ -10,3 +10,17 @@ spec:
       namespace: default
       name: zitadel-credentials
       key: credentials
+---
+# Namespaced identity MRs (project/humans) and worktree Oidc/Features use
+# ClusterProviderConfig so all namespaces share one credential secret.
+apiVersion: zitadel.m.crossplane.io/v1beta1
+kind: ClusterProviderConfig
+metadata:
+  name: default
+spec:
+  credentials:
+    source: Secret
+    secretRef:
+      namespace: default
+      name: zitadel-credentials
+      key: credentials

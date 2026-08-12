@@ -146,6 +146,53 @@ test.describe('blob game (alice)', () => {
 		).toBeGreaterThan(0);
 	});
 
+	test('new game replaces a selected game without a page reload', async ({ page }) => {
+		await page.goto('/blob');
+		await expect(page.locator('[data-blob-hydrated="1"]')).toBeVisible({
+			timeout: 15_000
+		});
+		await expect(page.getByTestId('blob-start-game')).toBeEnabled({ timeout: 10_000 });
+
+		const startResponse = page.waitForResponse(
+			(response) =>
+				(response.request().postData() ?? '').includes('blob_games_start'),
+			{ timeout: 20_000 }
+		);
+		await page.getByTestId('blob-start-game').click();
+		expect((await startResponse).ok()).toBeTruthy();
+		await expect(page.locator('.blob-board')).toBeVisible({ timeout: 15_000 });
+		const firstGameUrl = page.url();
+
+		const continuityToken = `blob-new-game-${Date.now()}`;
+		await page.evaluate((token) => {
+			Object.assign(globalThis, { __distributedBlobNewGameToken: token });
+		}, continuityToken);
+		const newGameResponse = page.waitForResponse(
+			(response) =>
+				(response.request().postData() ?? '').includes('blob_games_start'),
+			{ timeout: 20_000 }
+		);
+		await page.getByTestId('blob-new-game').click();
+		expect((await newGameResponse).ok()).toBeTruthy();
+
+		await expect(page).not.toHaveURL(firstGameUrl);
+		await expect(page.locator('.blob-board .tile-player')).toHaveAttribute(
+			'aria-label',
+			'r0 c0',
+			{ timeout: 1_000 }
+		);
+		await expect(page.locator('.blob-empty')).toHaveCount(0);
+		expect(
+			await page.evaluate(
+				() =>
+					(globalThis as typeof globalThis & {
+						__distributedBlobNewGameToken?: string;
+					}).__distributedBlobNewGameToken
+			),
+			'New game must preserve the current document while changing routes'
+		).toBe(continuityToken);
+	});
+
 	test('a revalidation started before an atomic move cannot roll it back with later evidence', async ({ page }) => {
 		await page.goto('/blob');
 		await expect(page.locator('[data-blob-hydrated="1"]')).toBeVisible({ timeout: 15_000 });
@@ -165,6 +212,7 @@ test.describe('blob game (alice)', () => {
 			'aria-label',
 			'r0 c0'
 		);
+		await expect(page).toHaveURL(/\/blob\/[^/]+$/);
 		const gameId = decodeURIComponent(new URL(page.url()).pathname.split('/').at(-1)!);
 
 		let releaseHeldQuery!: () => void;

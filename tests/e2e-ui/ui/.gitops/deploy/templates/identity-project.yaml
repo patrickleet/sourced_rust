@@ -14,10 +14,12 @@ metadata:
   namespace: {{ $ns }}
   labels:
     {{- include "e2e-ui-ui.identityClusterLabels" . | nindent 4 }}
+    auth.hops.ops.com.ai/reference-name: {{ $name }}
 spec:
   forProvider:
     name: {{ $name | quote }}
     projectRoleAssertion: true
+    # Reject authentication unless a GitOps-owned Grant assigns a project role.
     projectRoleCheck: true
     hasProjectCheck: true
   providerConfigRef:

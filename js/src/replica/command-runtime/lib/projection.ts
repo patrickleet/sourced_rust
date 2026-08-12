@@ -72,12 +72,19 @@ export function confirmDirectProjection<TInput, TOutput>(
 		id: direct.model,
 		identityFields: direct.identityFields
 	});
-	const fields = cloneOutputJson(
+	const outputFields = cloneOutputJson(
 		output,
 		'projected.output',
 		new Set(),
 		0
 	) as Readonly<Record<string, ReplicaValue>>;
+	const fields = Object.freeze({
+		...outputFields,
+		// Query normalization always supplies the generated model identity. Atomic
+		// command rows must be canonicalized the same way or a new record remains
+		// incomplete until a later query/reload contributes `__typename`.
+		__typename: direct.model
+	}) as Readonly<Record<string, ReplicaValue>>;
 	const confirmProtocolProjection = replica[replicaCommandDirectProjection];
 	if (confirmProtocolProjection !== undefined) {
 		confirmProtocolProjection.call(replica, prepared.commandId, {

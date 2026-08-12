@@ -1,7 +1,8 @@
 {{- /*
   Cluster-shared project roles (user / admin) on the shared e2e-ui Project.
+  orgId omitted — defaults to ProviderConfig credential org (see humans template).
 */ -}}
-{{- if and .Values.identity.enabled .Values.identity.orgId }}
+{{- if .Values.identity.enabled }}
 {{- $project := include "e2e-ui-ui.clusterProjectName" . -}}
 {{- $ns := .Values.identity.projectNamespace | default .Values.identity.mrNamespace | default "default" -}}
 {{- $pc := .Values.identity.providerConfigRef.name | default "default" -}}
@@ -16,7 +17,9 @@ metadata:
     hops.ops.com.ai/demo-role: user
 spec:
   forProvider:
+    {{- if .Values.identity.orgId }}
     orgId: {{ .Values.identity.orgId | quote }}
+    {{- end }}
     roleKey: user
     displayName: user
     projectIdRef:
@@ -35,7 +38,9 @@ metadata:
     hops.ops.com.ai/demo-role: admin
 spec:
   forProvider:
+    {{- if .Values.identity.orgId }}
     orgId: {{ .Values.identity.orgId | quote }}
+    {{- end }}
     roleKey: admin
     displayName: admin
     projectIdRef:

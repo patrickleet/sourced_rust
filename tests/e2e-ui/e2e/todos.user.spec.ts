@@ -253,13 +253,14 @@ test.describe('todos (alice)', () => {
 			if (
 				!body.includes('todos_create') &&
 				!body.includes('todos_complete') &&
-				!body.includes('todos_reopen')
+				!body.includes('todos_reopen') &&
+				!body.includes('todos_archive')
 			) {
 				await route.continue();
 				return;
 			}
 			const response = await route.fetch();
-			await new Promise((resolve) => setTimeout(resolve, 700));
+			await new Promise((resolve) => setTimeout(resolve, 1_500));
 			await route.fulfill({ response });
 		});
 		let completeRequests = 0;
@@ -280,16 +281,16 @@ test.describe('todos (alice)', () => {
 			.locator('.panel')
 			.filter({ has: page.getByRole('heading', { name: /^open$/i }) })
 			.locator('.item', { hasText: title });
-		// Auto-optimism maps title/owner/todo_id but not domain status constants
-		// (`open`/`completed`). Open/Done columns filter on status, so list
-		// membership seals with the Eventual payload rather than pre-wire paint.
-		// Controls must still stay enabled under the delayed route.
+		// The sourced transition supplies `status = Open`; the Todo projection
+		// turns that event value into the upsert that must paint before the held
+		// Eventual response.
+		await expect(openItem).toBeVisible({ timeout: 1_000 });
 		expect(
 			await page.locator('.board button:disabled').count(),
 			'routine command concurrency guards must not flash Todo row controls disabled'
 		).toBe(0);
 		await createResponse;
-		await expect(openItem).toBeVisible({ timeout: 5_000 });
+		await expect(openItem).toBeVisible();
 		expect(
 			await page.locator('.board button:disabled').count(),
 			'routine command concurrency guards must not flash Todo row controls disabled'
@@ -302,19 +303,20 @@ test.describe('todos (alice)', () => {
 			(response) =>
 				(response.request().postData() ?? '').includes('todos_complete')
 		);
-		// Single click: without status constants in auto-optimism, the row stays
-		// `open` until Eventual seals, so a double-click is not client-suppressed.
 		await openItem.getByRole('button', { name: /^done$/i }).click();
 		const doneItem = page
 			.locator('.panel')
 			.filter({ has: page.getByRole('heading', { name: /^done$/i }) })
 			.locator('.item', { hasText: title });
+		// The projection maps the transition's `Completed` constant to a loaded-row
+		// patch, so filtered membership changes before the wire is released.
+		await expect(doneItem).toBeVisible({ timeout: 1_000 });
 		expect(
 			await page.locator('.board button:disabled').count(),
 			'routine command concurrency guards must not flash Todo row controls disabled'
 		).toBe(0);
 		await completeResponse;
-		await expect(doneItem).toBeVisible({ timeout: 5_000 });
+		await expect(doneItem).toBeVisible();
 		expectBinarySorted(await visibleTodoOrders(page));
 		expect(completeRequests, 'complete must reach the server once').toBe(1);
 		await expect(doneItem).toBeVisible();
@@ -339,14 +341,13 @@ test.describe('todos (alice)', () => {
 			.locator('.panel')
 			.filter({ has: page.getByRole('heading', { name: /^open$/i }) })
 			.locator('.item', { hasText: title });
-		// Status-column membership seals with Eventual (no status constant in
-		// auto-optimism). Controls stay enabled under the delayed route.
+		await expect(reopenedItem).toBeVisible({ timeout: 1_000 });
 		expect(
 			await page.locator('.board button:disabled').count(),
 			'routine command concurrency guards must not flash Todo row controls disabled'
 		).toBe(0);
 		await reopenResponse;
-		await expect(reopenedItem).toBeVisible({ timeout: 5_000 });
+		await expect(reopenedItem).toBeVisible();
 		await page.waitForTimeout(750);
 		const reopenOrderFrames = await stopTodoOrderTrace(page);
 		expect(
@@ -367,6 +368,7 @@ test.describe('todos (alice)', () => {
 			(response.request().postData() ?? '').includes('todos_complete')
 		);
 		await reopenedItem.getByRole('button', { name: /^done$/i }).click();
+		await expect(doneItem).toBeVisible({ timeout: 1_000 });
 		await authoritativeCompleteResponse;
 		await page.waitForTimeout(750);
 		const authoritativeCompleteFrames = await stopTodoOrderTrace(page);
@@ -386,6 +388,7 @@ test.describe('todos (alice)', () => {
 			(response.request().postData() ?? '').includes('todos_reopen')
 		);
 		await doneItem.getByRole('button', { name: /^reopen$/i }).click();
+		await expect(reopenedItem).toBeVisible({ timeout: 1_000 });
 		await authoritativeReopenResponse;
 		await page.waitForTimeout(750);
 		const authoritativeReopenFrames = await stopTodoOrderTrace(page);
@@ -401,6 +404,19 @@ test.describe('todos (alice)', () => {
 		).toBe(true);
 		await expect(reopenedItem).toBeVisible();
 		expectBinarySorted(await visibleTodoOrders(page));
+
+		const archiveResponse = page.waitForResponse((response) =>
+			(response.request().postData() ?? '').includes('todos_archive')
+		);
+		await reopenedItem.getByRole('button', { name: /^archive$/i }).click();
+		const archivedItem = page.locator('.archive .item', { hasText: title });
+		await expect(archivedItem).toBeAttached({ timeout: 1_000 });
+		await page.locator('details.archive').evaluate((details) => {
+			(details as HTMLDetailsElement).open = true;
+		});
+		await expect(archivedItem).toBeVisible({ timeout: 1_000 });
+		await archiveResponse;
+		await expect(archivedItem).toBeVisible();
 		await page.unrouteAll({ behavior: 'wait' });
 	});
 });

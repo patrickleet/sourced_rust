@@ -1,11 +1,13 @@
 # Crossplane Configuration for AuthStack (Zitadel + auth XRDs).
-# Prefer building/pushing from source into the local registry:
-#   hops config install <meta>/xrs/stacks/k8s/auth
+# This fixture exercises Grant references that are newer than the published
+# package. Build/push this content-derived dev tag before starting cluster
+# GitOps (see ../README.md). The watched pin then matches the source install
+# instead of replacing it with an older package.
 # Depends on: provider-helm, provider-kubernetes, (optional) provider-upjet-zitadel.
 apiVersion: pkg.crossplane.io/v1
 kind: Configuration
 metadata:
   name: auth-stack
 spec:
-  package: ghcr.io/hops-ops/auth-stack:v1.6.0
-  # package: registry.crossplane-system.svc.cluster.local:5000/hops-ops/auth-stack:<tag>
+  package: registry.crossplane-system.svc.cluster.local:5000/hops-ops/auth-stack:dev-15db94d94e7b
+  packagePullPolicy: Always

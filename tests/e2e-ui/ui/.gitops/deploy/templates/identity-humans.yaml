@@ -5,7 +5,12 @@
   so every env uses the same credentials. Project + roles are also cluster-
   shared; only the OIDC web app is worktree-scoped.
 */ -}}
-{{- if and .Values.identity.enabled .Values.identity.orgId .Values.identity.demoUsers }}
+{{- /*
+  orgId intentionally omitted: provider-upjet-zitadel defaults to the
+  organization of the ProviderConfig credentials (AuthStack firstInstance org).
+  Never hardcode live org ids in Application values — they change every AuthStack.
+*/ -}}
+{{- if and .Values.identity.enabled .Values.identity.demoUsers }}
 {{- $ns := .Values.identity.humansNamespace | default .Values.identity.projectNamespace | default .Values.identity.mrNamespace | default "default" -}}
 {{- $pc := .Values.identity.providerConfigRef.name | default "default" -}}
 {{- $pck := .Values.identity.providerConfigRef.kind | default "ProviderConfig" -}}
@@ -24,9 +29,12 @@ metadata:
     hops.ops.com.ai/app: e2e-ui
     hops.ops.com.ai/identity-scope: cluster
     hops.ops.com.ai/demo-user: {{ $user | quote }}
+    auth.hops.ops.com.ai/reference-name: {{ printf "e2e-%s" $user }}
 spec:
   forProvider:
+    {{- if $.Values.identity.orgId }}
     orgId: {{ $.Values.identity.orgId | quote }}
+    {{- end }}
     userName: {{ $user | quote }}
     firstName: {{ $user | quote }}
     lastName: E2E

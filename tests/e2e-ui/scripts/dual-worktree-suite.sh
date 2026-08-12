@@ -16,12 +16,16 @@ ROOT="$(cd "$(dirname "$0")/.." && pwd)"
 DIST_ROOT="$(cd "$ROOT/../.." && pwd)"
 SCRATCH="${DUAL_SCRATCH:-${SCRATCH_DIR:-$(pwd)/.dual-worktree-scratch}}"
 HOPS="${HOPS:-hops}"
-KUBECONFIG="${KUBECONFIG:-${HOME}/.kube/dory-config}"
+KUBECONFIG="${KUBECONFIG:-${HOME}/.kube/config}"
 export KUBECONFIG
 
 ALICE_NAME="${ALICE_NAME:-alice}"
 BOB_NAME="${BOB_NAME:-bob}"
-SKIP_UP="${SKIP_UP:-0}"
+SKIP_GITOPS="${SKIP_GITOPS:-0}"
+CLUSTER_PROVIDER="${CLUSTER_PROVIDER:-kind}"
+DOCKER_PROVIDER="${DOCKER_PROVIDER:-dory}"
+CLUSTER_NAME="${CLUSTER_NAME:-hops}"
+CONTEXT="${CONTEXT:-kind-hops}"
 
 log() { printf '%s\n' "$*"; }
 die() { printf 'FAIL: %s\n' "$*" >&2; exit 1; }
@@ -117,23 +121,24 @@ wait_http() {
   die "timeout waiting for $label at $url (last=$code)"
 }
 
-if [[ "$SKIP_UP" != "1" ]]; then
+if [[ "$SKIP_GITOPS" != "1" ]]; then
   if ! kubectl get ns >/dev/null 2>&1; then
     die "kubectl cannot talk to a cluster (set KUBECONFIG); dual gitops requires local CP"
   fi
-  log "bringing up workspace $ALICE_NAME from $ALICE_E2E"
-  (cd "$ALICE_E2E" && "$HOPS" local up ./gitops/envs/local --name "$ALICE_NAME" --once --no-cluster) \
-    | tee "$SCRATCH/up-alice.log" || die "hops local up alice failed — see $SCRATCH/up-alice.log"
-  log "bringing up workspace $BOB_NAME from $BOB_E2E"
-  (cd "$BOB_E2E" && "$HOPS" local up ./gitops/envs/local --name "$BOB_NAME" --once --no-cluster) \
-    | tee "$SCRATCH/up-bob.log" || die "hops local up bob failed — see $SCRATCH/up-bob.log"
-
-  # Re-run once pods exist so delivery attaches
-  sleep 5
-  (cd "$ALICE_E2E" && "$HOPS" local up ./gitops/envs/local --name "$ALICE_NAME" --once --no-cluster) \
-    | tee -a "$SCRATCH/up-alice.log" || true
-  (cd "$BOB_E2E" && "$HOPS" local up ./gitops/envs/local --name "$BOB_NAME" --once --no-cluster) \
-    | tee -a "$SCRATCH/up-bob.log" || true
+  log "reconciling workspace $ALICE_NAME from $ALICE_E2E"
+  (cd "$ALICE_E2E" && "$HOPS" local gitops worktree ./gitops/envs/local \
+    --name "$ALICE_NAME" --cluster-provider "$CLUSTER_PROVIDER" \
+    --docker-provider "$DOCKER_PROVIDER" --cluster-name "$CLUSTER_NAME" \
+    --context "$CONTEXT" --once) \
+    | tee "$SCRATCH/gitops-alice.log" \
+    || die "workspace gitops alice failed — see $SCRATCH/gitops-alice.log"
+  log "reconciling workspace $BOB_NAME from $BOB_E2E"
+  (cd "$BOB_E2E" && "$HOPS" local gitops worktree ./gitops/envs/local \
+    --name "$BOB_NAME" --cluster-provider "$CLUSTER_PROVIDER" \
+    --docker-provider "$DOCKER_PROVIDER" --cluster-name "$CLUSTER_NAME" \
+    --context "$CONTEXT" --once) \
+    | tee "$SCRATCH/gitops-bob.log" \
+    || die "workspace gitops bob failed — see $SCRATCH/gitops-bob.log"
 fi
 
 wait_http "$ALICE_URL" alice 120

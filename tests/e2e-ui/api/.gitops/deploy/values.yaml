@@ -13,6 +13,9 @@ image:
 # Source tree is the *distributed* monorepo root; API Cargo workspace is tests/e2e-ui.
 clusterDev:
   image: rust:1.94-bookworm
+  # Bump in the local Application after host-mounted Rust/framework changes.
+  # This stays declarative while restarting the one-shot cargo process.
+  sourceGeneration: 0
   # bash -c keeps Docker ENV (PATH includes /usr/local/cargo/bin). -lc can drop it.
   command:
     - /bin/bash
@@ -23,6 +26,13 @@ clusterDev:
       cargo run -p e2e-runner --bin e2e-ui
   workingDir: /workspace/tests/e2e-ui
   sourcePath: /workspace
+
+# The API validates Zitadel access tokens against the generated OIDC client.
+# Keep this generation aligned with the UI chart's identity.oidcGeneration.
+identity:
+  enabled: false
+  oidcGeneration: 0
+  connectionSecretName: ""
 
 service:
   port: 8791
@@ -44,9 +54,6 @@ env:
 # Residual secrets (same e2e-ui-oidc object as the UI chart, in app namespace).
 # OIDC app + humans live on the UI chart (identity.*); API only consumes tokens.
 secretEnv:
-  OIDC_CLIENT_ID:
-    secretName: e2e-ui-oidc
-    key: OIDC_CLIENT_ID
   ZITADEL_SERVICE_USER_TOKEN:
     secretName: e2e-ui-oidc
     key: ZITADEL_SERVICE_USER_TOKEN
