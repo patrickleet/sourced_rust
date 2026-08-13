@@ -1,0 +1,109 @@
+{
+  "id": "sha256:8cd0dd25a9328638e46aa285dc34bbc36be7738616a81bfa26e973ad41ab2878",
+  "document": "query RustRuntimeBridge($id: ID!, $tenantId: ID!) {\n  todo(id: $id, tenantId: $tenantId) {\n    id\n    title\n    _distributed_tenantId: tenantId\n    _distributed_typename: __typename\n  }\n}\n",
+  "source": {
+    "path": "src/routes/runtime-bridge/+page.graphql",
+    "line": 2,
+    "column": 3
+  },
+  "variableCodec": {
+    "version": 1,
+    "limits": {
+      "maxDepth": 8,
+      "maxBoolWidth": 256,
+      "maxInList": 1000
+    },
+    "variables": {
+      "id": {
+        "kind": "scalar",
+        "scalar": "ID",
+        "codec": "string",
+        "nullable": false
+      },
+      "tenantId": {
+        "kind": "scalar",
+        "scalar": "ID",
+        "codec": "string",
+        "nullable": false
+      }
+    },
+    "inputs": {}
+  },
+  "roots": [
+    {
+      "responseKey": "todo",
+      "field": "todo",
+      "cardinality": "one",
+      "nullable": true,
+      "arguments": {
+        "id": {
+          "kind": "variable",
+          "name": "id"
+        },
+        "tenantId": {
+          "kind": "variable",
+          "name": "tenantId"
+        }
+      },
+      "dependencies": [
+        "todo_rows"
+      ],
+      "coverage": {
+        "kind": "complete"
+      },
+      "selection": {
+        "typename": "todo",
+        "storage": {
+          "kind": "normalized",
+          "model": "Todo",
+          "identityFields": [
+            "tenantId",
+            "id"
+          ]
+        },
+        "members": [
+          {
+            "kind": "scalar",
+            "responseKey": "id",
+            "field": "id",
+            "codec": "string",
+            "nullable": false
+          },
+          {
+            "kind": "scalar",
+            "responseKey": "title",
+            "field": "title",
+            "codec": "string",
+            "nullable": true
+          },
+          {
+            "kind": "scalar",
+            "responseKey": "_distributed_tenantId",
+            "field": "tenantId",
+            "codec": "string",
+            "nullable": false,
+            "expose": false
+          },
+          {
+            "kind": "scalar",
+            "responseKey": "_distributed_typename",
+            "field": "__typename",
+            "codec": "string",
+            "nullable": false,
+            "expose": false
+          }
+        ]
+      }
+    }
+  ],
+  "protocol": {
+    "version": 1,
+    "schemaHash": "sha256:787216f76fd2c62f867b9d9553710c888f325c6cc5598c4681fb34c1a655e3be",
+    "surface": {
+      "kind": "role",
+      "name": "user"
+    },
+    "operation": "sha256:8cd0dd25a9328638e46aa285dc34bbc36be7738616a81bfa26e973ad41ab2878",
+    "trustedPresets": []
+  }
+}

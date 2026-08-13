@@ -46,6 +46,7 @@ pub struct TransportError {
     kind: TransportErrorKind,
     message: String,
     source: Option<Box<dyn Error + Send + Sync>>,
+    retain_and_stop: bool,
 }
 
 impl TransportError {
@@ -55,6 +56,7 @@ impl TransportError {
             kind: TransportErrorKind::Retryable,
             message: message.into(),
             source: None,
+            retain_and_stop: false,
         }
     }
 
@@ -64,6 +66,7 @@ impl TransportError {
             kind: TransportErrorKind::Permanent,
             message: message.into(),
             source: None,
+            retain_and_stop: false,
         }
     }
 
@@ -73,6 +76,7 @@ impl TransportError {
             kind,
             message: message.into(),
             source: None,
+            retain_and_stop: false,
         }
     }
 
@@ -80,6 +84,17 @@ impl TransportError {
     pub fn with_source(mut self, source: impl Error + Send + Sync + 'static) -> Self {
         self.source = Some(Box::new(source));
         self
+    }
+
+    /// Mark a durably recorded terminal delivery that must remain at its exact
+    /// source position while the consumer stops for operator repair.
+    pub(crate) fn retain_and_stop(mut self) -> Self {
+        self.retain_and_stop = true;
+        self
+    }
+
+    pub(crate) fn should_retain_and_stop(&self) -> bool {
+        self.retain_and_stop
     }
 
     /// The retry classification of this error.

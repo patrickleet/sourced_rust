@@ -18,7 +18,8 @@ use crate::bus::{Bus, BusConsumer, RunOptions, TransportError};
 
 /// Default lease for an immediate after-commit outbox publish. Short by design:
 /// it only needs to cover commit → publish, so a crash before the publish
-/// completes hands the row back to the polling worker quickly.
+/// completes hands the row back to a separately operated polling worker
+/// quickly.
 pub const DEFAULT_PUBLISH_LEASE: Duration = Duration::from_secs(5);
 
 /// Default publish-failure ceiling before an outbox row is permanently failed.
@@ -30,11 +31,17 @@ impl Service {
     /// Two effects, both composing with the rest of the builder:
     /// - installs an outbox publisher on the repository, so
     ///   `repo.outbox(msg).commit(agg)` claims the row in the commit transaction
-    ///   and publishes it immediately after commit through this bus (the polling
-    ///   worker stays the crash/retry backstop);
+    ///   and publishes it immediately after commit through this bus (a polling
+    ///   worker may be operated as the crash/retry backstop);
     /// - captures how to consume, so [`run`](Self::run) listens for the
     ///   registered command names (competing) and subscribes to the event names
     ///   (fan-out).
+    ///
+    /// `with_bus` and [`run`](Self::run) do not start an [`OutboxDispatcher`]
+    /// polling loop. Deploy one separately (in this process or another) when
+    /// durable recovery after a commit-to-publish process crash is required.
+    ///
+    /// [`OutboxDispatcher`]: crate::outbox_worker::OutboxDispatcher
     pub fn with_bus<B>(mut self, bus: B) -> Self
     where
         B: Bus + BusConsumer + 'static,
@@ -74,6 +81,9 @@ impl Service {
                 "Service::run requires a bus; call `with_bus` first",
             ));
         };
+        self.bootstrap_projectors()
+            .await
+            .map_err(TransportError::from)?;
         runner(Arc::new(self), options).await
     }
 }

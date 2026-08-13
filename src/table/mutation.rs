@@ -5,7 +5,9 @@ use std::cmp::Ordering;
 
 use serde::Serialize;
 
-use super::{RowKey, RowValue, RowValues, TableSchema, TableStoreError};
+use super::{
+    RelationshipDef, RelationshipKind, RowKey, RowValue, RowValues, TableSchema, TableStoreError,
+};
 
 /// Expected optimistic version carried by a staged table write.
 #[derive(Clone, Debug, Default, PartialEq, Eq)]
@@ -360,6 +362,67 @@ pub(crate) fn column_name_for(schema: &TableSchema, field_or_column: &str) -> Op
         .map(|column| column.column_name.clone())
 }
 
+/// Resolve the target and root columns used by one `has_many` relationship.
+///
+/// An explicit foreign-key reference on the target column is authoritative.
+/// Falling back to the root's sole primary-key column preserves the legacy
+/// shorthand only when the target schema does not declare that reference.
+pub(crate) fn has_many_join_columns(
+    root_schema: &TableSchema,
+    relationship: &RelationshipDef,
+    target_schema: &TableSchema,
+) -> Result<(String, String), TableStoreError> {
+    if !matches!(relationship.kind, RelationshipKind::HasMany) {
+        return Err(TableStoreError::Metadata(format!(
+            "relationship `{}` must be has_many to delegate a target foreign key",
+            relationship.field_name
+        )));
+    }
+    let foreign_key = relationship.foreign_key.as_deref().ok_or_else(|| {
+        TableStoreError::Metadata(format!(
+            "relationship `{}` must declare a foreign key",
+            relationship.field_name
+        ))
+    })?;
+    let target_column = column_name_for(target_schema, foreign_key).ok_or_else(|| {
+        TableStoreError::Metadata(format!(
+            "relationship `{}` foreign key `{foreign_key}` is not a target column",
+            relationship.field_name
+        ))
+    })?;
+    let target = target_schema
+        .columns
+        .iter()
+        .find(|column| column.column_name == target_column)
+        .expect("column_name_for returned a registered target column");
+    let root_column = match target.foreign_key.as_ref() {
+        Some(reference) if reference.table == root_schema.table_name => {
+            column_name_for(root_schema, &reference.column).ok_or_else(|| {
+                TableStoreError::Metadata(format!(
+                    "relationship `{}` targets missing root column `{}`",
+                    relationship.field_name, reference.column
+                ))
+            })?
+        }
+        Some(reference) => {
+            return Err(TableStoreError::Metadata(format!(
+                "relationship `{}` target column `{target_column}` references table `{}`, not root table `{}`",
+                relationship.field_name, reference.table, root_schema.table_name
+            )));
+        }
+        None => {
+            let [primary_key] = root_schema.primary_key.columns.as_slice() else {
+                return Err(TableStoreError::Metadata(format!(
+                    "relationship `{}` needs a target-column foreign-key reference because root model `{}` has a composite key",
+                    relationship.field_name, root_schema.model_name
+                )));
+            };
+            primary_key.clone()
+        }
+    };
+    Ok((target_column, root_column))
+}
+
 pub(crate) fn key_fingerprint(key: &RowKey) -> String {
     let mut fingerprint = String::new();
     for (column, value) in key.iter() {
@@ -395,6 +458,9 @@ fn value_fingerprint(value: &RowValue) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::table::{
+        ColumnType, ForeignKey, PrimaryKey, RelationshipKind, TableColumn, TableKind,
+    };
 
     #[test]
     fn key_fingerprint_distinguishes_delimiter_collisions() {
@@ -416,5 +482,93 @@ mod tests {
         let string = RowKey::new([("id", RowValue::String("1".into()))]);
 
         assert_ne!(key_fingerprint(&integer), key_fingerprint(&string));
+    }
+
+    fn colliding_has_many_schemas() -> (TableSchema, TableSchema, RelationshipDef) {
+        let root = TableSchema {
+            model_name: "Parent".into(),
+            table_name: "parents".into(),
+            columns: vec![
+                TableColumn {
+                    primary_key: true,
+                    ..TableColumn::new("id", "id", ColumnType::Text)
+                },
+                TableColumn::new("parent_id", "parent_id", ColumnType::Text),
+            ],
+            primary_key: PrimaryKey::new(["id"]),
+            version_column: None,
+            foreign_keys: Vec::new(),
+            indexes: Vec::new(),
+            relationships: Vec::new(),
+            kind: TableKind::ReadModel,
+        };
+        let target = TableSchema {
+            model_name: "Child".into(),
+            table_name: "children".into(),
+            columns: vec![
+                TableColumn {
+                    primary_key: true,
+                    ..TableColumn::new("id", "id", ColumnType::Text)
+                },
+                TableColumn {
+                    foreign_key: Some(ForeignKey::new("parents", "id")),
+                    ..TableColumn::new("parent_id", "parent_id", ColumnType::Text)
+                },
+            ],
+            primary_key: PrimaryKey::new(["id"]),
+            version_column: None,
+            foreign_keys: Vec::new(),
+            indexes: Vec::new(),
+            relationships: Vec::new(),
+            kind: TableKind::ReadModel,
+        };
+        let relationship = RelationshipDef {
+            field_name: "children".into(),
+            kind: RelationshipKind::HasMany,
+            target_model: "Child".into(),
+            foreign_key: Some("parent_id".into()),
+            through: None,
+            target_foreign_key: None,
+        };
+        (root, target, relationship)
+    }
+
+    #[test]
+    fn has_many_join_uses_the_target_foreign_key_reference_over_a_name_collision() {
+        let (root, target, relationship) = colliding_has_many_schemas();
+        assert_eq!(
+            has_many_join_columns(&root, &relationship, &target).unwrap(),
+            ("parent_id".into(), "id".into())
+        );
+    }
+
+    #[test]
+    fn has_many_join_rejects_other_relationship_kinds() {
+        let (root, target, mut relationship) = colliding_has_many_schemas();
+        relationship.kind = RelationshipKind::BelongsTo;
+
+        let error = has_many_join_columns(&root, &relationship, &target).unwrap_err();
+
+        assert!(
+            matches!(error, TableStoreError::Metadata(message) if message.contains("must be has_many"))
+        );
+    }
+
+    #[test]
+    fn has_many_join_rejects_ambiguous_composite_root_fallback() {
+        let (mut root, mut target, relationship) = colliding_has_many_schemas();
+        root.primary_key = PrimaryKey::new(["id", "parent_id"]);
+        target
+            .columns
+            .iter_mut()
+            .find(|column| column.column_name == "parent_id")
+            .expect("target foreign-key column")
+            .foreign_key = None;
+
+        let error = has_many_join_columns(&root, &relationship, &target).unwrap_err();
+
+        assert!(
+            matches!(error, TableStoreError::Metadata(message) if message.contains("composite key"))
+        );
     }
 }

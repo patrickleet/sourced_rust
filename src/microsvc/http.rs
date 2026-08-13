@@ -46,12 +46,37 @@ use super::session::Session;
 use super::MAX_HTTP_BODY_BYTES;
 
 /// Build an axum `Router` that dispatches commands via the given service.
+///
+/// By default mounts `POST /{command}`. Call [`Service::without_http_command_routes`]
+/// for GraphQL-only surfaces (health + GraphQL; no per-command HTTP).
 pub fn router(service: Arc<Service>) -> Router {
-    let router = Router::new()
-        .route("/health", get(health_handler))
-        .route("/{command}", axum::routing::post(command_handler));
+    let mut router = Router::new().route("/health", get(health_handler));
+    if service.http_command_routes_enabled() {
+        router = router.route("/{command}", axum::routing::post(command_handler));
+    }
     #[cfg(feature = "metrics")]
-    let router = router.route("/metrics", get(metrics_handler));
+    {
+        router = router.route("/metrics", get(metrics_handler));
+    }
+
+    // GraphQL must be registered before the body-limit layer so the limit wraps it.
+    // POST /graphql: queries/mutations. GET /graphql: GraphiQL.
+    // GET /graphql/ws: WebSocket subscriptions (graphql-ws protocol).
+    #[cfg(feature = "graphql")]
+    {
+        if service.graphql_engine().is_some() {
+            router = router
+                .route(
+                    "/graphql",
+                    axum::routing::post(crate::graphql::http::microsvc_graphql_handler)
+                        .get(crate::graphql::http::microsvc_graphql_get),
+                )
+                .route(
+                    "/graphql/ws",
+                    axum::routing::get(crate::graphql::http::microsvc_graphql_ws),
+                );
+        }
+    }
 
     router
         // Pin the body limit explicitly rather than relying on axum's default;
@@ -70,7 +95,19 @@ pub async fn serve(service: Arc<Service>, addr: &str) -> Result<(), std::io::Err
 /// `GET /health` — returns `{ "ok": true, "commands": [...] }`.
 async fn health_handler(State(service): State<Arc<Service>>) -> impl IntoResponse {
     let commands: Vec<&str> = service.command_names();
-    Json(json!({ "ok": true, "commands": commands }))
+    #[cfg(feature = "graphql")]
+    let body = {
+        let mut v = json!({ "ok": true, "commands": commands });
+        if service.graphql_engine().is_some() {
+            v.as_object_mut()
+                .unwrap()
+                .insert("graphql".into(), json!(true));
+        }
+        v
+    };
+    #[cfg(not(feature = "graphql"))]
+    let body = json!({ "ok": true, "commands": commands });
+    Json(body)
 }
 
 /// `GET /metrics` — returns Prometheus text metrics.
@@ -110,7 +147,13 @@ fn status_for_error(error: &HandlerError) -> StatusCode {
         HandlerError::DecodeFailed(_) | HandlerError::GuardRejected(_) => StatusCode::BAD_REQUEST,
         HandlerError::Rejected(_) => StatusCode::UNPROCESSABLE_ENTITY,
         HandlerError::Unauthorized(_) => StatusCode::UNAUTHORIZED,
-        HandlerError::Repository(_) | HandlerError::Other(_) => StatusCode::INTERNAL_SERVER_ERROR,
+        HandlerError::Repository(_)
+        | HandlerError::Projection(_)
+        | HandlerError::UnqualifiedProjectionDelivery(_)
+        | HandlerError::ProjectionRepairPending { .. }
+        | HandlerError::ProjectionTerminalRecorded { .. }
+        | HandlerError::ProjectionDeliveryHalted { .. }
+        | HandlerError::Other(_) => StatusCode::INTERNAL_SERVER_ERROR,
     }
 }
 
@@ -118,12 +161,12 @@ fn status_for_error(error: &HandlerError) -> StatusCode {
 ///
 /// **Trust boundary (security-critical):** every request header is copied
 /// verbatim into the [`Session`] — including identity claims (e.g. the
-/// convenience keys `x-user-id` / `x-role`). The framework does NOT
+/// convenience keys `x-user-id` / `x-roles`). The framework does NOT
 /// authenticate. A trusted proxy in front of this service MUST strip any
 /// client-supplied identity headers and inject only authenticated ones.
 /// Without that proxy, any client can set those headers and assume any
 /// identity/role. See the [`Session`] docs.
-fn session_from_headers(headers: &HeaderMap) -> Session {
+pub(crate) fn session_from_headers(headers: &HeaderMap) -> Session {
     let mut vars = std::collections::HashMap::new();
     for (name, value) in headers.iter() {
         if let Ok(v) = value.to_str() {

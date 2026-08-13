@@ -19,15 +19,21 @@
 
 mod atlas;
 mod cli;
+mod client_compiler;
 mod generate;
 mod manifest_harness;
 mod skills;
 
 pub use atlas::{render_atlas_schema, AtlasDatabaseUrl, AtlasSchemaSpec};
 pub use cli::{
-    run, AgentHarness, Bus, DescribeArgs, Framework, GitopsPromote, ManifestFormat, Metrics,
-    ScaffoldArgs, SchemaArgs, SchemaDialect, SchemaFormat, ServiceArgs, ServiceCommands,
-    SkillsArgs, SkillsCommands, SkillsInitArgs, Store, Transport,
+    run, AgentHarness, Bus, ClientArgs, ClientManifestArgs, DescribeArgs, Framework, GitopsPromote,
+    ManifestFormat, Metrics, ScaffoldArgs, SchemaArgs, SchemaDialect, SchemaFormat, ServiceArgs,
+    ServiceCommands, SkillsArgs, SkillsCommands, SkillsInitArgs, Store, Transport,
+};
+pub use client_compiler::{
+    compile_client, ClientCompileError, ClientCompileInput, ClientDocument, ClientRouteDiscovery,
+    ClientRouteRegistration, ClientSourceLocation, ClientSurfaceSelector, GeneratedClientFile,
+    GeneratedClientProject, GeneratedOperationSummary, GeneratedRoutePlan,
 };
 pub use generate::{generate_service_scaffold, package_name};
 pub use skills::{embedded_skills, generate_skills, EmbeddedFile, EmbeddedSkill, SkillsInitSpec};
@@ -53,6 +59,8 @@ pub struct ServiceScaffoldSpec {
     pub models: Vec<String>,
     /// Generate placeholder read-model modules and register them in the manifest.
     pub read_models: bool,
+    /// Generate `src/query/` GraphQL exposure skeleton + `graphql` feature wiring.
+    pub query_api: bool,
     /// Enable Distributed's optional tracing span feature and GitOps OTLP env metadata.
     pub tracing: bool,
     /// Command handler message names (raw; empty → a default command is derived).

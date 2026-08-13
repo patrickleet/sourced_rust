@@ -122,4 +122,4 @@ dctl schema --format atlas --name orders --db-secret orders-db \
 
 Full flag table: `distributed_cli/README.md` in the Distributed repo
 (https://crates.io/crates/distributed_cli). Event-store internals:
-`docs/postgres-event-store.md`; read-model metadata: `docs/read-models.md`.
+`README (Postgres repository section) and migrations/`; read-model metadata: `README § Read Models`.

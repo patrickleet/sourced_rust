@@ -1,0 +1,66 @@
+{
+  "consistency": "eventual",
+  "document": "mutation Client_todos_complete($commandId: ID!, $input: CompleteTodoInput!) { todos_complete(commandId: $commandId, input: $input) { todo_id } }",
+  "input": {
+    "definition": {
+      "fields": [
+        {
+          "codec": "string",
+          "itemNullable": false,
+          "list": false,
+          "name": "todo_id",
+          "nullable": false,
+          "typeName": "String"
+        }
+      ],
+      "name": "CompleteTodoInput"
+    },
+    "kind": "object"
+  },
+  "mutationField": "todos_complete",
+  "name": "todo.complete",
+  "operationHash": "sha256:bb3a777dd32f7d40cccc173fafdbc7464f5dc50a3d17587909689a880fb0205a",
+  "output": {
+    "definition": {
+      "fields": [
+        {
+          "codec": "string",
+          "itemNullable": false,
+          "list": false,
+          "name": "todo_id",
+          "nullable": false,
+          "typeName": "String"
+        }
+      ],
+      "name": "CompleteTodoPayload"
+    },
+    "kind": "object"
+  },
+  "protocol": {
+    "operation": "sha256:bb3a777dd32f7d40cccc173fafdbc7464f5dc50a3d17587909689a880fb0205a",
+    "protocolHash": "sha256:00fb342f3acb4dc1c1716a43cc3001c748d5f6c500ff831690d820e9e43e2782",
+    "schemaHash": "sha256:2a4fd759519caaa13088228accd4fad4df3a0bc1bd19d1a9be323ad58cab29c1",
+    "surface": {
+      "kind": "role",
+      "name": "admin"
+    },
+    "trustedPresets": [],
+    "version": 1
+  },
+  "revalidation": {
+    "dependencies": [
+      "memberships",
+      "todos",
+      "users"
+    ],
+    "models": [
+      "MembershipView",
+      "TodoView",
+      "UserView"
+    ],
+    "relationships": [],
+    "required": true,
+    "version": 1
+  },
+  "version": 2
+}

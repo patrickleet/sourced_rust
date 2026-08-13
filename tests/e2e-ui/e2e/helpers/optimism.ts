@@ -1,0 +1,128 @@
+/**
+ * Browser proof that a command paints optimistically.
+ *
+ * Hold the GraphQL mutation response past the assert deadline. If the UI
+ * updates before the held response is fulfilled, the paint came from the
+ * client optimistic layer — not the wire.
+ */
+import type { Page, Response } from '@playwright/test';
+import { expect } from '@playwright/test';
+
+export type MutationNeedle =
+	| 'chat_messages_post'
+	| 'todos_create'
+	| 'todos_complete'
+	| 'todos_reopen'
+	| 'todos_archive'
+	| 'todos_rename'
+	| 'blob_games_start'
+	| 'blob_games_move'
+	| 'blob_games_start_level';
+
+export type HoldMutationOptions = {
+	/** Substring matched against the GraphQL POST body. */
+	readonly needle: MutationNeedle | string;
+	/** How long to hold the fulfilled mutation response (ms). */
+	readonly holdMs?: number;
+	/**
+	 * Max wait for the optimistic paint. Must be strictly less than holdMs so
+	 * the assert cannot pass from the delayed wire response.
+	 */
+	readonly assertWithinMs?: number;
+};
+
+const DEFAULT_HOLD_MS = 1_500;
+const DEFAULT_ASSERT_MS = 1_000;
+
+function mutationMatches(postData: string | null, needle: string): boolean {
+	return (postData ?? '').includes(needle);
+}
+
+/**
+ * Install a GraphQL route that continues non-matching requests and delays
+ * matching mutation responses by holdMs. Returns a disposer.
+ */
+export async function holdGraphqlMutation(
+	page: Page,
+	needle: string,
+	holdMs: number = DEFAULT_HOLD_MS
+): Promise<() => Promise<void>> {
+	await page.route('**/graphql', async (route) => {
+		if (!mutationMatches(route.request().postData(), needle)) {
+			await route.continue();
+			return;
+		}
+		const response = await route.fetch();
+		await new Promise((resolve) => setTimeout(resolve, holdMs));
+		await route.fulfill({ response });
+	});
+	return async () => {
+		await page.unrouteAll({ behavior: 'wait' });
+	};
+}
+
+export type OptimisticPaintOptions = HoldMutationOptions & {
+	/** Trigger the command (click/send/etc). */
+	readonly act: () => Promise<void>;
+	/** Assert the optimistic UI state (use short timeout internally or via assertWithinMs). */
+	readonly assertOptimistic: () => Promise<void>;
+	/** Optional assert after the held response arrives. */
+	readonly assertConverged?: () => Promise<void>;
+};
+
+/**
+ * Run act under a held mutation and require assertOptimistic before the
+ * response is fulfilled.
+ */
+export async function expectOptimisticPaint(
+	page: Page,
+	options: OptimisticPaintOptions
+): Promise<Response> {
+	const holdMs = options.holdMs ?? DEFAULT_HOLD_MS;
+	const assertWithinMs = options.assertWithinMs ?? DEFAULT_ASSERT_MS;
+	if (assertWithinMs >= holdMs) {
+		throw new Error(
+			`assertWithinMs (${assertWithinMs}) must be < holdMs (${holdMs}) to prove paint-before-wire`
+		);
+	}
+
+	const dispose = await holdGraphqlMutation(page, options.needle, holdMs);
+	const pending = page.waitForResponse(
+		(response) =>
+			response.url().includes('/graphql') &&
+			mutationMatches(response.request().postData(), options.needle),
+		{ timeout: holdMs + 20_000 }
+	);
+
+	try {
+		await options.act();
+		// Bound the optimistic assert so a late paint from the delayed response
+		// cannot satisfy the expectation.
+		await expect
+			.poll(async () => {
+				try {
+					await options.assertOptimistic();
+					return true;
+				} catch {
+					return false;
+				}
+			}, { timeout: assertWithinMs, intervals: [50, 100, 150, 200] })
+			.toBe(true);
+
+		const response = await pending;
+		if (options.assertConverged !== undefined) {
+			await options.assertConverged();
+		}
+		return response;
+	} finally {
+		await dispose();
+	}
+}
+
+/** Convenience: expect a locator visible within the optimism window. */
+export async function expectVisibleSoon(
+	locator: { waitFor: (opts: { state: 'visible'; timeout: number }) => Promise<unknown> },
+	timeoutMs: number
+): Promise<void> {
+	await locator.waitFor({ state: 'visible', timeout: timeoutMs });
+}

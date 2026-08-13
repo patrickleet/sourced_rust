@@ -1,0 +1,100 @@
+# e2e-ui full stack: app Postgres + Zitadel (OIDC + Login V2 UI).
+# Zitadel API + self-hosted Login V2 (Session / User v2) + Caddy edge.
+# Auth.js still uses OIDC (/oauth/v2/*); authorize lands on /ui/v2/login/login.
+#
+#   cd tests/e2e-ui && make up
+#
+# Ports:
+#   5433  app Postgres (event store, read models, bus)
+#   18080 Zitadel via proxy (OIDC + Login V2 /ui/v2/login + console)
+services:
+  app-db:
+    image: docker.io/library/postgres:16-alpine
+    environment:
+      POSTGRES_USER: e2e
+      POSTGRES_PASSWORD: e2e
+      POSTGRES_DB: e2e_ui
+    ports:
+      - "5433:5432"
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U e2e -d e2e_ui"]
+      interval: 3s
+      timeout: 5s
+      retries: 20
+      start_period: 5s
+    networks: [e2e]
+
+  zitadel-db:
+    image: docker.io/library/postgres:16-alpine
+    environment:
+      POSTGRES_USER: postgres
+      POSTGRES_PASSWORD: postgres
+      POSTGRES_DB: zitadel
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U postgres"]
+      interval: 5s
+      timeout: 5s
+      retries: 15
+      start_period: 10s
+    networks: [e2e]
+
+  zitadel:
+    image: ghcr.io/zitadel/zitadel:v4.6.1
+    user: "0:0"
+    command: >-
+      start-from-init
+      --masterkey "MasterkeyNeedsToHave32Characters"
+      --tlsMode disabled
+      --config /init/zitadel.yaml
+      --steps /init/steps.yaml
+    depends_on:
+      zitadel-db:
+        condition: service_healthy
+    # No host ports — browsers hit zitadel-proxy (same as the-website).
+    volumes:
+      - ./zitadel-init:/init:ro
+      - ./machinekey:/machinekey
+    networks: [e2e]
+
+  # Self-hosted Login V2 (Next.js). Session API + User/Auth v2 against Zitadel.
+  # Official image bakes basePath=/ui/v2/login (pages: …/login, …/register, …).
+  # PAT written by scripts/up.sh after Zitadel boots.
+  zitadel-login:
+    image: ghcr.io/zitadel/login:v3.0.1
+    restart: unless-stopped
+    environment:
+      ZITADEL_API_URL: http://zitadel-proxy:8080
+      # Must match the baked Next.js basePath in ghcr.io/zitadel/login.
+      NEXT_PUBLIC_BASE_PATH: /ui/v2/login
+      CUSTOM_REQUEST_HEADERS: "Host:localhost:18080,X-Forwarded-Proto:http,X-Forwarded-Host:localhost:18080"
+    command:
+      - /bin/sh
+      - -c
+      - |
+        set -e
+        if [ ! -s /login-client/pat ]; then
+          echo "Waiting for PAT at /login-client/pat — run make up / scripts/up.sh" >&2
+          exit 1
+        fi
+        export ZITADEL_SERVICE_USER_TOKEN="$$(cat /login-client/pat)"
+        exec node apps/login/server.js
+    depends_on:
+      zitadel:
+        condition: service_started
+    volumes:
+      - ./login-client:/login-client:ro
+    networks: [e2e]
+
+  zitadel-proxy:
+    image: caddy:2-alpine
+    ports:
+      - "18080:8080"
+    volumes:
+      - ./Caddyfile:/etc/caddy/Caddyfile:ro
+    depends_on:
+      - zitadel
+      - zitadel-login
+    networks: [e2e]
+
+networks:
+  e2e:

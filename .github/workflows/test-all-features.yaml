@@ -25,6 +25,7 @@ jobs:
       - uses: dtolnay/rust-toolchain@29eef336d9b2848a0b548edc03f92a220660cdb8
         with:
           toolchain: stable
+          components: rust-src
       # --all-features compiles rdkafka; librdkafka's bundled cmake build needs
       # curl/curl.h (the runner has libcurl's runtime but not its headers).
       - name: Install librdkafka build dependencies

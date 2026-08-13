@@ -18,6 +18,13 @@ shapes. If you find yourself hand-writing service plumbing, routing, broker
 topology, or deploy YAML, stop — the framework or CLI almost certainly
 generates it, and hand-rolled copies drift.
 
+**Composition direction (logical app vs runtime vs process role):** see
+[docs/application-composition.md](../../../docs/application-composition.md).
+Same packages re-cut as monolith or microservices; Eventual projectors may
+live in another process; Atomic seals stay collocated with the command
+handler (CAP). Persistence, locks, bus, and transports pair as one runtime
+plane — not open-coded per dialect in `main`.
+
 **Always reach for the highest-level API first.** The macros and one-call
 conveniences are the recommended surface, not sugar:
 
@@ -97,6 +104,14 @@ its impl block turns `#[event("...")]` methods into recorded events and
 generates the typed event enum + `Aggregate` impl.
 
 ```rust
+#[derive(Clone, Serialize, DomainState)]
+#[domain_state(version = 1)]
+struct TodoState {
+    id: String,
+    task: String,
+    completed: bool,
+}
+
 #[derive(Default, Snapshot)]
 struct Todo {
     entity: Entity,
@@ -104,15 +119,25 @@ struct Todo {
     completed: bool,
 }
 
-#[sourced(entity, aggregate_type = "todo")]
+impl From<&Todo> for TodoState {
+    fn from(todo: &Todo) -> Self {
+        Self {
+            id: todo.entity.id().to_string(),
+            task: todo.task.clone(),
+            completed: todo.completed,
+        }
+    }
+}
+
+#[sourced(entity, aggregate_type = "todo", domain_state = TodoState)]
 impl Todo {
-    #[event("initialized")]
+    #[event("todo.initialized", version = 1, domain)]
     fn initialize(&mut self, id: String, task: String) {
         self.entity.set_id(&id);
         self.task = task;
     }
 
-    #[event("completed", when = !self.completed)]
+    #[event("todo.completed", version = 1, when = !self.completed, domain)]
     fn complete(&mut self) {
         self.completed = true;
     }
@@ -135,6 +160,23 @@ Rules that prevent real bugs:
 
 ## Command handlers
 
+For a browser-facing GraphQL service, use the typed causal command path instead
+of exposing a raw `Context`/`serde_json::Value` handler as the mutation contract:
+
+- declare `.typed_command(typed_command::<Input, Succeeded<Payload> | Eventual<Payload> | Atomic<Model>>(...))`
+  on the executable route;
+- implement the handler with `CausalCommandContext` and return a
+  `PreparedCommand<_>` so the framework owns commit, ledger, outbox, and
+  projection atomicity;
+- bind that exact `Service` through `GraphqlEngineBuilder::service`, configure
+  public OIDC, and call `.without_http_command_routes()` so browser writes use
+  only the GraphQL command proxy;
+- generate the strictly typed client with `dctl client`.
+
+Use the `distributed-graphql` skill for the complete route, consistency,
+authorization, and client-generation contract. The raw handler form below
+remains valid for intentional non-GraphQL transports.
+
 One module per handler, exporting `COMMAND` (or `EVENT`/`EVENTS`), a `guard`,
 and an async `handle`:
 
@@ -149,8 +191,7 @@ pub async fn handle(ctx: &Context<'_, Repo>) -> Result<Value, HandlerError> {
     let input = ctx.input::<CreateTodo>()?;
     let mut todo = Todo::default();
     todo.initialize(input.id.clone(), input.task)?;
-    let message = OutboxMessage::domain_event("todo.initialized", &todo)?;
-    ctx.repo().outbox(message).commit(&mut todo).await?;
+    ctx.repo().publish_events().commit(&mut todo).await?;
     Ok(json!({ "id": input.id }))
 }
 ```
@@ -172,16 +213,17 @@ service.with_bus(bus).run(RunOptions::idempotent()).await?;
 ## Publication is explicit (outbox)
 
 An `EventRecord` is write-side replay history, **not** automatically a domain
-event other services see. To publish a fact, create an `OutboxMessage` and
-commit it with the aggregate — one transaction, durable delivery:
+event other services see. A domain-marked transition captures its separate
+canonical outward occurrence. Publish that occurrence and the aggregate in one
+transaction:
 
 ```rust
-let message = OutboxMessage::domain_event("todo.initialized", &todo)?;
-repo.outbox(message).commit(&mut todo).await?;
+repo.publish_events().commit(&mut todo).await?;
 ```
 
 With a bus attached (`service.with_bus(bus)`), commit publishes immediately;
-without one, rows stay pending for an `OutboxDispatcher` worker. Use
+without one, rows stay pending for an `OutboxDispatcher` worker. Snapshots are
+private hydration caches and are never published implicitly. Use
 `OutboxMessage::encode_for_entity(id, name, &payload, &entity)` for custom
 payloads and automatic correlation/causation metadata propagation.
 
@@ -228,11 +270,44 @@ Gotchas:
   replica of one deployment. `namespace(..)` scopes broker topology per
   app/environment. Names are validated: portable IDs only (`A-Za-z0-9_-`,
   `.` also allowed in namespaces, max 128 bytes).
-- `microsvc` does **not** authenticate. Deploy behind a trusted proxy that
-  strips client-supplied identity headers and injects authenticated claims
-  (`Session` is an opaque map; `x-user-id` / `x-role` are convenience keys only).
+- Generic `microsvc` command routes do **not** authenticate themselves. Protect
+  intentional non-GraphQL routes at a trusted edge. Public GraphQL scaffolds
+  instead wire `OidcBearer` validation and disable generic command POST routes;
+  never trust client-supplied identity headers.
 - `connect_and_migrate` applies migrations; plain `connect` does not create
   tables.
+
+## Multi-crate single-service layout (and later microservices)
+
+Copy the **e2e-ui** fixture under `tests/e2e-ui/` (README; see `tests/e2e-ui/README.md`):
+
+```text
+crates/
+  todo-domain/     # personal todos (owner-scoped)
+  chat-domain/     # lobby chat (shared room)
+  readmodels/      # projections + distributed_manifest
+  service/         # thin command handlers + event projectors + GraphQL
+  runner/          # store + bus + bind
+  suite/           # HTTP/GraphQL behavioral cases
+ui/                # SvelteKit: todos + chat with GraphQL subscriptions
+```
+
+Rules the fixture demonstrates:
+
+- **Domain unit tests first** (`cargo test -p todo-domain`) — no repository
+- **Owner from session**, never from untrusted create body
+- **One mutation IR, two apply sites:** Eventual projectors (event handlers)
+  write todos/chat; Blob stages the same IR in the command handler and seals
+  `Atomic` so the response can carry the row (impossible on an event handler)
+- GraphQL row filter: `owner_id = claim(x-user-id)` for role `user`
+- **Typed GraphQL commands** (`Eventual` / `Atomic`) via the OIDC command
+  proxy; generic direct command POST routes are disabled
+- **Generated client**: `dctl client` produces the typed replica/query/command
+  artifacts consumed by the SvelteKit app
+- **Subscriptions**: wire `SqliteRepository::read_model_changes()` into
+  `GraphqlEngineBuilder::change_stream`; clients use WebSocket `/graphql/ws`
+
+Run the full app: `cd tests/e2e-ui && make`. Suite: `make test`.
 
 ## Manifest entrypoint
 
@@ -251,7 +326,7 @@ Keep it updated when adding read models or tables; see the
 ## References
 
 - Framework guide: the `distributed` crate README (https://crates.io/crates/distributed)
-- Read models: `docs/read-models.md`; transports: `docs/transports.md`;
-  repositories: `docs/repositories.md` in the Distributed repo
+- Read models: `README § Read Models`; transports: `README § Event Bus / transports`;
+  repositories: `README § Repositories` in the Distributed repo
 - CI/GitOps scaffolding: the `distributed-ci` skill
 - Schema and manifest tooling: the `distributed-schema` skill

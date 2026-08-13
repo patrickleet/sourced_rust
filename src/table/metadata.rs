@@ -157,6 +157,29 @@ pub struct RelationshipDef {
     pub target_model: String,
     pub foreign_key: Option<String>,
     pub through: Option<String>,
+    /// Join-table column referencing the TARGET row (many-to-many).
+    ///
+    /// When `None`, resolvers infer the unique join column whose column-level FK
+    /// targets the target model's table, excluding the source-side `foreign_key`.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub target_foreign_key: Option<String>,
+}
+
+/// Discriminator for tables owned by the framework vs read-model projections.
+///
+/// Operational tables (outbox, inbox, …) are never exposed on the GraphQL query
+/// surface; `from_manifest` / `graphql_sdl` consume only `ReadModel` entries.
+#[derive(Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
+pub enum TableKind {
+    #[default]
+    ReadModel,
+    Operational,
+}
+
+impl TableKind {
+    pub fn is_read_model(&self) -> bool {
+        matches!(self, Self::ReadModel)
+    }
 }
 
 /// Schema metadata for one relational table.
@@ -170,9 +193,25 @@ pub struct TableSchema {
     pub foreign_keys: Vec<ForeignKey>,
     pub indexes: Vec<TableIndex>,
     pub relationships: Vec<RelationshipDef>,
+    /// Defaults to [`TableKind::ReadModel`]; skipped when serializing the default
+    /// so existing describe-JSON artifacts stay byte-identical on upgrade.
+    #[serde(default, skip_serializing_if = "TableKind::is_read_model")]
+    pub kind: TableKind,
 }
 
 impl TableSchema {
+    /// Compare the physical row contract while ignoring query-only relationships.
+    ///
+    /// Relationship metadata can be composed at a deployment boundary without
+    /// changing the model/table identity that projection bindings pin.
+    pub fn has_same_storage_contract(&self, other: &Self) -> bool {
+        let mut left = self.clone();
+        let mut right = other.clone();
+        left.relationships.clear();
+        right.relationships.clear();
+        left == right
+    }
+
     pub fn validate(&self) -> Result<(), TableStoreError> {
         if self.table_name.is_empty() {
             return Err(TableStoreError::Metadata(
@@ -198,6 +237,12 @@ impl TableSchema {
                 return Err(TableStoreError::Metadata(format!(
                     "model `{}` field `{}` has unsupported field shape `{}`",
                     self.model_name, column.field_name, type_name
+                )));
+            }
+            if column.primary_key && column.nullable {
+                return Err(TableStoreError::Metadata(format!(
+                    "model `{}` primary-key column `{}` must be non-null",
+                    self.model_name, column.column_name
                 )));
             }
             if let Some(foreign_key) = &column.foreign_key {
@@ -231,6 +276,17 @@ impl TableSchema {
             if !columns.contains(column.as_str()) {
                 return Err(TableStoreError::Metadata(format!(
                     "model `{}` primary key references missing column `{}`",
+                    self.model_name, column
+                )));
+            }
+            if self
+                .columns
+                .iter()
+                .find(|candidate| candidate.column_name == *column)
+                .is_some_and(|candidate| candidate.nullable)
+            {
+                return Err(TableStoreError::Metadata(format!(
+                    "model `{}` primary-key column `{}` must be non-null",
                     self.model_name, column
                 )));
             }
@@ -316,6 +372,36 @@ impl RowValue {
         let value =
             serde_json::to_value(value).map_err(|err| TableStoreError::Serde(err.to_string()))?;
         Ok(Self::from_json_value(value))
+    }
+
+    /// Serialize a `#[readmodel(text)]` value without allowing structured JSON
+    /// to enter a SQL text column. This is public only for derive output.
+    #[doc(hidden)]
+    pub fn from_text_serde<T: Serialize + ?Sized>(
+        value: &T,
+        nullable: bool,
+        column: &str,
+    ) -> Result<Self, TableStoreError> {
+        match serde_json::to_value(value)
+            .map_err(|error| TableStoreError::Serde(error.to_string()))?
+        {
+            serde_json::Value::String(value) => Ok(Self::String(value)),
+            serde_json::Value::Null if nullable => Ok(Self::Null),
+            serde_json::Value::Null => Err(TableStoreError::Metadata(format!(
+                "#[readmodel(text)] column `{column}` is non-null but its value serialized as null"
+            ))),
+            value => Err(TableStoreError::Metadata(format!(
+                "#[readmodel(text)] column `{column}` must serialize as a JSON string{}; got {}",
+                if nullable { " or null" } else { "" },
+                match value {
+                    serde_json::Value::Bool(_) => "boolean",
+                    serde_json::Value::Number(_) => "number",
+                    serde_json::Value::Array(_) => "array",
+                    serde_json::Value::Object(_) => "object",
+                    serde_json::Value::String(_) | serde_json::Value::Null => unreachable!(),
+                }
+            ))),
+        }
     }
 
     pub fn into_json(self) -> serde_json::Value {
@@ -443,6 +529,52 @@ mod tests {
             foreign_keys: vec![ForeignKey::new("players", "player_id")],
             indexes: vec![TableIndex::new(["player_id"])],
             relationships: Vec::new(),
+            kind: TableKind::ReadModel,
+        }
+    }
+
+    #[test]
+    fn table_kind_deserializes_missing_as_read_model() {
+        let json = r#"{
+            "model_name": "PlayerWeapon",
+            "table_name": "player_weapons",
+            "columns": [],
+            "primary_key": { "columns": [] },
+            "version_column": null,
+            "foreign_keys": [],
+            "indexes": [],
+            "relationships": []
+        }"#;
+        let schema: TableSchema = serde_json::from_str(json).unwrap();
+        assert_eq!(schema.kind, TableKind::ReadModel);
+        assert!(schema.target_foreign_key_absent());
+    }
+
+    #[test]
+    fn table_kind_read_model_skipped_from_json() {
+        let schema = valid_schema();
+        let value = serde_json::to_value(&schema).unwrap();
+        assert!(value.get("kind").is_none());
+    }
+
+    #[test]
+    fn relationship_target_foreign_key_defaults_absent() {
+        let json = r#"{
+            "field_name": "tags",
+            "kind": "ManyToMany",
+            "target_model": "Tag",
+            "foreign_key": "post_id",
+            "through": "post_tags"
+        }"#;
+        let rel: RelationshipDef = serde_json::from_str(json).unwrap();
+        assert_eq!(rel.target_foreign_key, None);
+    }
+
+    impl TableSchema {
+        fn target_foreign_key_absent(&self) -> bool {
+            self.relationships
+                .iter()
+                .all(|r| r.target_foreign_key.is_none())
         }
     }
 
@@ -451,6 +583,37 @@ mod tests {
         let schema = valid_schema();
 
         schema.validate().unwrap();
+    }
+
+    #[test]
+    fn storage_contract_comparison_ignores_only_query_relationships() {
+        let schema = valid_schema();
+        let mut with_relationship = schema.clone();
+        with_relationship.relationships.push(RelationshipDef {
+            field_name: "player".into(),
+            kind: RelationshipKind::BelongsTo,
+            target_model: "Player".into(),
+            foreign_key: Some("player_id".into()),
+            through: None,
+            target_foreign_key: None,
+        });
+        assert!(schema.has_same_storage_contract(&with_relationship));
+
+        let mut different_table = with_relationship.clone();
+        different_table.table_name = "other_player_weapons".into();
+        assert!(!schema.has_same_storage_contract(&different_table));
+
+        let mut different_type = with_relationship.clone();
+        different_type.columns[0].column_type = ColumnType::Integer;
+        assert!(!schema.has_same_storage_contract(&different_type));
+
+        let mut different_key = with_relationship.clone();
+        different_key.primary_key = PrimaryKey::new(["player_id"]);
+        assert!(!schema.has_same_storage_contract(&different_key));
+
+        let mut different_shape = with_relationship;
+        different_shape.columns[0].column_name = "renamed_player_id".into();
+        assert!(!schema.has_same_storage_contract(&different_shape));
     }
 
     #[test]
@@ -490,6 +653,7 @@ mod tests {
             target_model: "PlayerWeapon".into(),
             foreign_key: None,
             through: None,
+            target_foreign_key: None,
         });
 
         let err = schema.validate().unwrap_err();
@@ -535,5 +699,37 @@ mod tests {
             row.get_serde::<serde_json::Value>("payload").unwrap(),
             serde_json::json!({"wins": [1, 2]})
         );
+    }
+
+    #[test]
+    fn text_serde_accepts_only_string_shaped_values_and_nullable_null() {
+        #[derive(Serialize)]
+        enum UnitStatus {
+            Open,
+        }
+        #[derive(Serialize)]
+        enum StructuredStatus {
+            Reason { message: String },
+        }
+
+        assert_eq!(
+            RowValue::from_text_serde(&UnitStatus::Open, false, "status").unwrap(),
+            RowValue::String("Open".into())
+        );
+        assert_eq!(
+            RowValue::from_text_serde(&Option::<UnitStatus>::None, true, "status").unwrap(),
+            RowValue::Null
+        );
+        let error = RowValue::from_text_serde(
+            &StructuredStatus::Reason {
+                message: "why".into(),
+            },
+            false,
+            "status",
+        )
+        .unwrap_err();
+        assert!(error
+            .to_string()
+            .contains("must serialize as a JSON string; got object"));
     }
 }

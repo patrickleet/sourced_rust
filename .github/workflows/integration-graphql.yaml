@@ -1,0 +1,163 @@
+name: GraphQL Identity / OIDC Integration Tests
+
+# Reusable workflow: wired from on-pr-quality and on-push-main.
+#
+# - identity-always-on: mock JWKS F1–F10 (no IdP)
+# - oidc-zitadel-e2e: live Zitadel compose + JWT-bearer mint
+# - oidc-keycloak-e2e: live Keycloak compose + client_credentials
+# - oidc-authentik-e2e: live Authentik compose + client_credentials
+#
+# Local parity:
+#   ./scripts/oidc-{zitadel,keycloak,authentik}-up.sh
+#   set -a && source graphql-oidc[-keycloak|-authentik].env && set +a
+#   cargo test --test graphql_oidc_<provider> --features graphql,sqlite,metrics
+on:
+  workflow_call:
+
+jobs:
+  identity-always-on:
+    name: GraphQL Identity
+    runs-on: ubuntu-latest
+    env:
+      CARGO_TERM_COLOR: always
+      # Explicitly clear live gates so matrix cannot accidentally run live paths
+      ZITADEL_E2E: ""
+      KEYCLOAK_E2E: ""
+      AUTHENTIK_E2E: ""
+    steps:
+      - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5
+        with:
+          persist-credentials: false
+      - uses: dtolnay/rust-toolchain@29eef336d9b2848a0b548edc03f92a220660cdb8
+        with:
+          toolchain: stable
+      - uses: Swatinem/rust-cache@v2
+        with:
+          shared-key: graphql-identity
+      - name: Always-on identity suite (no IdP)
+        run: |
+          cargo test --test graphql_identity --features graphql,sqlite,metrics --verbose
+
+  oidc-zitadel-e2e:
+    name: GraphQL OIDC Zitadel e2e (live)
+    runs-on: ubuntu-latest
+    env:
+      CARGO_TERM_COLOR: always
+      ZITADEL_HOST: http://localhost:8080
+    steps:
+      - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5
+        with:
+          persist-credentials: false
+      - uses: dtolnay/rust-toolchain@29eef336d9b2848a0b548edc03f92a220660cdb8
+        with:
+          toolchain: stable
+      - uses: Swatinem/rust-cache@v2
+        with:
+          shared-key: graphql-oidc-zitadel
+      - name: Install bootstrap tools
+        run: sudo apt-get update && sudo apt-get install -y jq openssl curl
+      - name: Start Zitadel + bootstrap (docker compose)
+        run: |
+          chmod +x scripts/oidc-zitadel-up.sh scripts/ci-bootstrap-graphql-oidc.sh
+          ./scripts/oidc-zitadel-up.sh
+      - name: Run live Zitadel e2e suite
+        run: |
+          set -a
+          # shellcheck disable=SC1091
+          source graphql-oidc.env
+          set +a
+          test -n "${ZITADEL_E2E:-}"
+          test -n "${OIDC_ISSUER:-}"
+          test -n "${GRAPHQL_E2E_CUSTOMER_KEY:-}"
+          echo "ZITADEL_E2E=$ZITADEL_E2E OIDC_ISSUER=$OIDC_ISSUER"
+          cargo test --test graphql_oidc_zitadel --features graphql,sqlite,metrics --verbose -- --nocapture
+      - name: Dump Zitadel logs on failure
+        if: failure()
+        run: |
+          docker compose -f tests/graphql_oidc_zitadel/docker-compose.yml ps -a || true
+          docker compose -f tests/graphql_oidc_zitadel/docker-compose.yml logs --tail=200 || true
+          ls -la tests/graphql_oidc_zitadel/machinekey || true
+      - name: Tear down
+        if: always()
+        run: docker compose -f tests/graphql_oidc_zitadel/docker-compose.yml down -v || true
+
+  oidc-keycloak-e2e:
+    name: GraphQL OIDC Keycloak e2e (live)
+    runs-on: ubuntu-latest
+    env:
+      CARGO_TERM_COLOR: always
+    steps:
+      - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5
+        with:
+          persist-credentials: false
+      - uses: dtolnay/rust-toolchain@29eef336d9b2848a0b548edc03f92a220660cdb8
+        with:
+          toolchain: stable
+      - uses: Swatinem/rust-cache@v2
+        with:
+          shared-key: graphql-oidc-keycloak
+      - name: Install tools
+        run: sudo apt-get update && sudo apt-get install -y curl python3
+      - name: Start Keycloak + bootstrap
+        run: |
+          chmod +x scripts/oidc-keycloak-up.sh
+          ./scripts/oidc-keycloak-up.sh
+      - name: Run live Keycloak e2e suite
+        run: |
+          set -a
+          # shellcheck disable=SC1091
+          source graphql-oidc-keycloak.env
+          set +a
+          test -n "${KEYCLOAK_E2E:-}"
+          test -n "${OIDC_ISSUER:-}"
+          echo "KEYCLOAK_E2E=$KEYCLOAK_E2E OIDC_ISSUER=$OIDC_ISSUER OIDC_AUDIENCE=$OIDC_AUDIENCE"
+          cargo test --test graphql_oidc_keycloak --features graphql,sqlite,metrics --verbose -- --nocapture
+      - name: Dump Keycloak logs on failure
+        if: failure()
+        run: |
+          docker compose -f tests/graphql_oidc_keycloak/docker-compose.yml ps -a || true
+          docker compose -f tests/graphql_oidc_keycloak/docker-compose.yml logs --tail=200 || true
+      - name: Tear down
+        if: always()
+        run: docker compose -f tests/graphql_oidc_keycloak/docker-compose.yml down -v || true
+
+  oidc-authentik-e2e:
+    name: GraphQL OIDC Authentik e2e (live)
+    runs-on: ubuntu-latest
+    env:
+      CARGO_TERM_COLOR: always
+    steps:
+      - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5
+        with:
+          persist-credentials: false
+      - uses: dtolnay/rust-toolchain@29eef336d9b2848a0b548edc03f92a220660cdb8
+        with:
+          toolchain: stable
+      - uses: Swatinem/rust-cache@v2
+        with:
+          shared-key: graphql-oidc-authentik
+      - name: Install tools
+        run: sudo apt-get update && sudo apt-get install -y curl python3
+      - name: Start Authentik + bootstrap
+        run: |
+          chmod +x scripts/oidc-authentik-up.sh
+          ./scripts/oidc-authentik-up.sh
+      - name: Run live Authentik e2e suite
+        run: |
+          set -a
+          # shellcheck disable=SC1091
+          source graphql-oidc-authentik.env
+          set +a
+          test -n "${AUTHENTIK_E2E:-}"
+          test -n "${OIDC_ISSUER:-}"
+          test -n "${OIDC_JWKS_URI:-}"
+          echo "AUTHENTIK_E2E=$AUTHENTIK_E2E OIDC_ISSUER=$OIDC_ISSUER"
+          cargo test --test graphql_oidc_authentik --features graphql,sqlite,metrics --verbose -- --nocapture
+      - name: Dump Authentik logs on failure
+        if: failure()
+        run: |
+          docker compose -f tests/graphql_oidc_authentik/docker-compose.yml ps -a || true
+          docker compose -f tests/graphql_oidc_authentik/docker-compose.yml logs --tail=200 || true
+      - name: Tear down
+        if: always()
+        run: docker compose -f tests/graphql_oidc_authentik/docker-compose.yml down -v || true

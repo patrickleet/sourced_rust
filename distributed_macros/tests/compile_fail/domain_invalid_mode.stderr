@@ -1,0 +1,5 @@
+error: invalid domain mode; expected `state`, `event`, `deleted`, or `with(OutputType, adapter_path)`
+ --> tests/compile_fail/domain_invalid_mode.rs:9:40
+  |
+9 |     #[event("todo.completed", domain = snapshot)]
+  |                                        ^^^^^^^^

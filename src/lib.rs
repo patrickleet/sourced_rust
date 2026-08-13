@@ -1,27 +1,40 @@
 #![allow(clippy::module_inception)]
 #![doc = include_str!("../README.md")]
+// Projection + GraphQL client surfaces always compile (dctl / shared types), but many
+// call sites live behind optional features. Without those features rustc reports
+// false "never used" warnings for the protocol store helpers. CI builds with features.
+#![cfg_attr(
+    not(any(feature = "graphql", feature = "sqlite", feature = "postgres", test)),
+    allow(dead_code)
+)]
 
 // Allow proc-macros to reference this crate by name even when used internally
 extern crate self as distributed;
 
 pub mod aggregate;
 pub mod bus;
+pub mod domain_event;
 pub mod entity;
 pub mod repository;
 
+pub(crate) mod command_ledger;
 mod commit_builder;
 #[cfg(feature = "emitter")]
 pub mod emitter;
+pub mod graphql;
 mod in_memory_repo;
 pub mod lock;
 pub mod manifest;
 #[cfg(feature = "metrics")]
 pub mod metrics;
 pub mod microsvc;
+pub mod mutation;
 pub mod outbox;
 pub mod outbox_worker;
 #[cfg(feature = "postgres")]
 pub mod postgres_repo;
+pub mod projection;
+pub mod projection_protocol;
 pub mod queued_repo;
 pub mod read_model;
 pub mod snapshot;
@@ -39,6 +52,234 @@ pub use entity::{
     EventRecord, EventRecordError, EventUpcaster, PayloadCodec, UpcastError, BITCODE_PAYLOAD_CODEC,
     BITCODE_PAYLOAD_CODEC_VERSION,
 };
+
+// Domain events: typed outward contracts distinct from replay events/snapshots.
+pub use domain_event::{
+    DomainDeletion, DomainDeletionError, DomainEvent, DomainEventBodyDescriptor,
+    DomainEventBodyKind, DomainEventCaptureError, DomainEventCaptureOutcome,
+    DomainEventCapturePoison, DomainEventCommitGuardError, DomainEventDescriptor,
+    DomainEventEnvelope, DomainEventOccurrence, DomainState, DomainStateDescriptor,
+    DOMAIN_EVENT_BODY_CODEC, DOMAIN_EVENT_BODY_CODEC_VERSION, DOMAIN_EVENT_OCCURRENCE_VERSION,
+    MAX_DOMAIN_EVENT_BODY_BYTES, MAX_DOMAIN_EVENT_OCCURRENCE_WIRE_BYTES,
+};
+
+// Logical projection contracts. Physical read-model lowering deliberately lives
+// behind adapters and is not part of this semantic surface.
+pub use projection::{
+    ProjectionArm, ProjectionAssignment, ProjectionEnvelopeField, ProjectionEventSelector,
+    ProjectionEventSet, ProjectionExpression, ProjectionField, ProjectionInvalidation,
+    ProjectionKeyField, ProjectionMutationKind, ProjectionMutationProvenance,
+    ProjectionObjectValueField, ProjectionOccurrenceProvenance, ProjectionOperation,
+    ProjectionPartition, ProjectionPlanTemplate, ProjectionProgram, ProjectionProgramError,
+    ProjectionProgramId, ProjectionProgramLimits, ProjectionRelationship,
+    ProjectionRelationshipEffect, ProjectionRelationshipEffectKind, ProjectionScalarTransform,
+    ProjectionTarget, ProjectionValue, ProjectionValueRef, ProjectionValueType,
+    ResolvedProjectionKey, ResolvedProjectionMutation, ResolvedProjectionMutationScope,
+    ResolvedProjectionPartition, ResolvedProjectionPartitionRef, ResolvedProjectionPlan,
+    ResolvedProjectionRelationshipEffect, ResolvedProjectionValue, MAX_PROJECTION_EXPRESSION_DEPTH,
+    MAX_PROJECTION_OPERATIONS_PER_OCCURRENCE, MAX_PROJECTION_PATH_SEGMENTS,
+};
+
+// Event-independent mutation IR, event→mutation projections, and interpreters.
+pub use mutation::{
+    bind_delete_to_envelope_id, bind_event_apply_mutation, bind_event_to_mutation,
+    bind_state_body_to_mutation, bind_state_events_to_mutation, body_bindings_for_model,
+    body_field_binding, compile_projection, compose_event_preview, delete_by_pk_program_for_model,
+    descriptor_from_factories, envelope_binding, inventory_single_model, lower_mutation_cache,
+    lower_single_model, portable_binding, resolve_mutation_program, state_upsert_program_for_model,
+    Mutation, MutationAssignment, MutationCacheEffect, MutationCacheProgram,
+    MutationCacheVisibility, MutationConflictTarget, MutationEventBinding, MutationExpression,
+    MutationField, MutationFieldCapability, MutationHandlerCatalog, MutationHandlerPlacement,
+    MutationHandlerRegistration, MutationInputBinding, MutationKeyCapability, MutationKeyField,
+    MutationKind, MutationOperation, MutationProgram, MutationProgramError, MutationProgramId,
+    MutationProgramLimits, MutationReturning, MutationServerInterpreter, ProjectionHandler,
+    ProjectionInputSource, ReadModelMutationCapabilities, ResolvedMutationValue,
+    MAX_MUTATION_OPERATIONS, MUTATION_OPERATION_SEMANTICS_VERSION, MUTATION_PROGRAM_IR_VERSION,
+};
+
+/// Spec-shaped authoring: **mutations** + **event-first projections**.
+///
+/// One or more `on { events, mutation, input }` arms. `input` declares how the
+/// occurrence fills mutation inputs (`body` = event body object root;
+/// `aggregate_id` = envelope id for delete-by-pk).
+///
+/// ```ignore
+/// projection! {
+///     pub const TODOS: ProjectionDescriptor<EventualOnly> = {
+///         name: "project_todos",
+///         version: 1,
+///         epoch: "e2e-ui-todos-v2",
+///         model: Todos,
+///         on {
+///             events: [
+///                 TodoCreatedDomainEvent,
+///                 TodoCompletedDomainEvent,
+///             ],
+///             mutation: save_todo,
+///             input: { todo: body },
+///         },
+///         on {
+///             events: [TodoPurgedDomainEvent],
+///             mutation: delete_todo,
+///             input: { todo_id: aggregate_id },
+///         },
+///     };
+/// }
+/// ```
+///
+/// A `program:` arm remains as an escape hatch for custom partition / multi-binding
+/// factories. Prefer the event-first form when partition is unit.
+#[macro_export]
+macro_rules! projection {
+    // Event-first: one or more `on { events, mutation, input }` arms.
+    (
+        $vis:vis const $id:ident : $desc_ty:ty = {
+            name: $name:literal,
+            version: $version:expr,
+            epoch: $epoch:literal,
+            model: $model:ty,
+            $(
+                on {
+                    events: [ $($event_ty:ty),+ $(,)? ],
+                    mutation: $mutation:path,
+                    input: { $input_key:ident : $input_src:ident },
+                    $(,)?
+                }
+            ),+ $(,)?
+        } $(;)?
+    ) => {
+        $vis const $id: $desc_ty = {
+            fn __handlers() -> ::core::result::Result<
+                $crate::ProjectionProgram,
+                $crate::ProjectionProgramError,
+            > {
+                use $crate::domain_event::DomainEventContract;
+                let mut handlers = ::std::vec::Vec::new();
+                $(
+                    {
+                        let mutation = $mutation().program().clone();
+                        let input_source = $crate::__projection_input_source!($input_src);
+                        $(
+                            handlers.push(
+                                $crate::bind_event_apply_mutation::<$model>(
+                                    &<$event_ty>::descriptor(),
+                                    mutation.clone(),
+                                    ::core::stringify!($input_key),
+                                    input_source,
+                                )
+                                .map_err(|e| $crate::ProjectionProgramError::InvalidOperation {
+                                    operation: ::std::string::String::from($name),
+                                    reason: e.to_string(),
+                                })?,
+                            );
+                        )+
+                    }
+                )+
+                $crate::compile_projection(
+                    $name,
+                    $version,
+                    $crate::ProjectionPartition::Unit,
+                    handlers,
+                )
+            }
+            fn __resolve(
+                occurrence: &$crate::DomainEventOccurrence,
+            ) -> ::core::result::Result<
+                $crate::ResolvedProjectionPlan,
+                $crate::ProjectionProgramError,
+            > {
+                $crate::resolve_mutation_program(&__handlers()?, occurrence)
+            }
+            fn __lower(
+                plan: &$crate::ResolvedProjectionPlan,
+            ) -> ::core::result::Result<
+                $crate::projection::lower::LoweredProjectionPlan,
+                $crate::projection::lower::ProjectionLoweringError,
+            > {
+                $crate::lower_single_model::<$model>(plan)
+            }
+            fn __inventory() -> ::core::result::Result<
+                $crate::projection::lower::ProjectionOutputInventory,
+                $crate::projection::lower::ProjectionLoweringError,
+            > {
+                $crate::inventory_single_model::<$model>()
+            }
+            $crate::descriptor_from_factories(
+                $name,
+                $version,
+                $epoch,
+                __handlers,
+                __resolve,
+                __lower,
+                __inventory,
+            )
+        };
+    };
+
+    // Escape hatch: custom program factory (partition / multi-binding / etc.).
+    // Prefer the event-first arms above when partition is unit.
+    (
+        $vis:vis const $id:ident : $desc_ty:ty = {
+            name: $name:literal,
+            version: $version:expr,
+            epoch: $epoch:literal,
+            model: $model:ty,
+            program: $program:path $(,)?
+        } $(;)?
+    ) => {
+        $vis const $id: $desc_ty = {
+            fn __program() -> ::core::result::Result<
+                $crate::ProjectionProgram,
+                $crate::ProjectionProgramError,
+            > {
+                $program()
+            }
+            fn __resolve(
+                occurrence: &$crate::DomainEventOccurrence,
+            ) -> ::core::result::Result<
+                $crate::ResolvedProjectionPlan,
+                $crate::ProjectionProgramError,
+            > {
+                $crate::resolve_mutation_program(&__program()?, occurrence)
+            }
+            fn __lower(
+                plan: &$crate::ResolvedProjectionPlan,
+            ) -> ::core::result::Result<
+                $crate::projection::lower::LoweredProjectionPlan,
+                $crate::projection::lower::ProjectionLoweringError,
+            > {
+                $crate::lower_single_model::<$model>(plan)
+            }
+            fn __inventory() -> ::core::result::Result<
+                $crate::projection::lower::ProjectionOutputInventory,
+                $crate::projection::lower::ProjectionLoweringError,
+            > {
+                $crate::inventory_single_model::<$model>()
+            }
+            $crate::descriptor_from_factories(
+                $name,
+                $version,
+                $epoch,
+                __program,
+                __resolve,
+                __lower,
+                __inventory,
+            )
+        };
+    };
+}
+
+/// Map `input: { key: body | aggregate_id }` keywords for [`projection!`].
+#[macro_export]
+#[doc(hidden)]
+macro_rules! __projection_input_source {
+    (body) => {
+        $crate::ProjectionInputSource::Body
+    };
+    (aggregate_id) => {
+        $crate::ProjectionInputSource::AggregateId
+    };
+}
 
 pub type SourcedResult<T = ()> = std::result::Result<T, EventRecordError>;
 
@@ -104,12 +345,13 @@ pub use queued_repo::{
 //
 // Only the quick-start surface is re-exported at the crate root: the traits
 // user models implement (incl. `RelationalReadModelIncludes`, which the
-// `ReadModel` derive expands to), the in-memory default store, the
-// workspace/plan entry points, and the version marker. Load-graph, query, and
-// row-include plumbing stays reachable under `distributed::read_model::*`.
+// `ReadModel` derive expands to), the in-memory default store, workspace
+// entry points, and the version marker. Physical write-plan builders are
+// low-level adapter detail under `distributed::read_model::*` (not projector
+// authoring). Load-graph, query, and row-include plumbing stays there too.
 pub use read_model::{
-    InMemoryReadModelStore, ReadModel, ReadModelWorkspaceExt, ReadModelWritePlanBuilder,
-    RelationalReadModel, RelationalReadModelIncludes, Versioned,
+    InMemoryReadModelStore, ReadModel, ReadModelChange, ReadModelWorkspaceExt, RelationalReadModel,
+    RelationalReadModelIncludes, Versioned,
 };
 
 // Neutral table/row primitives: the canonical schema, row, mutation, write-plan,
@@ -121,10 +363,10 @@ pub use table::{
     ColumnType, DeleteTableRowMutation, ExpectedVersion, ForeignKey, PatchMode,
     PatchTableRowMutation, PrimaryKey, RelationshipDef, RelationshipKind, RowKey, RowPatch,
     RowValue, RowValues, RowWriteMode, TableAdapterCapabilities, TableColumn, TableCommitOutcome,
-    TableIndex, TableMigrationArtifact, TableModel, TableMutation, TableRowMutation, TableSchema,
-    TableSchemaAdapter, TableSchemaAdapterCapabilities, TableSchemaBootstrap, TableSchemaIssue,
-    TableSchemaIssueKind, TableSchemaRegistry, TableSchemaRegistryExt, TableSchemaVerification,
-    TableStoreError, TableWritePlan, DEFAULT_TABLE_VERSION_COLUMN,
+    TableIndex, TableKind, TableMigrationArtifact, TableModel, TableMutation, TableRowMutation,
+    TableSchema, TableSchemaAdapter, TableSchemaAdapterCapabilities, TableSchemaBootstrap,
+    TableSchemaIssue, TableSchemaIssueKind, TableSchemaRegistry, TableSchemaRegistryExt,
+    TableSchemaVerification, TableStoreError, TableWritePlan, DEFAULT_TABLE_VERSION_COLUMN,
 };
 
 pub use manifest::{
@@ -148,8 +390,30 @@ pub use snapshot::{hydrate_from_snapshot, InMemorySnapshotStore, SnapshotRecord,
 #[cfg(feature = "emitter")]
 pub use event_emitter_rs::EventEmitter;
 
-// Re-export proc macros
-pub use distributed_macros::{aggregate, digest, sourced, ReadModel, Snapshot};
+/// Register read models + permissions on a GraphQL engine builder.
+///
+/// ```ignore
+/// let builder = graphql_models!(builder, orders, players);
+/// // expands to builder.model::<orders::Model>(orders::permissions())...
+/// ```
+#[macro_export]
+macro_rules! graphql_models {
+    ($builder:expr, $($m:ident),+ $(,)?) => {
+        $builder $( .model::<$m::Model>($m::permissions()) )+
+    };
+}
+
+// Session convenience re-exports used by GraphQL permission filters.
+pub use microsvc::{ROLE_KEY, USER_ID_KEY};
+
+// Re-export proc macros. The old event-owning projection proc-macro and
+// separately authored `command_effects!` / `command_confirmations!` are gone.
+// Use `mutation!` / `mutation_file!` + declarative `projection!` (event→mutation
+// mount); commands predict events via `.emits`/`.preview`.
+pub use distributed_macros::{
+    aggregate, command_input_defaults, digest, mutation, mutation_file, sourced, DomainEvent,
+    DomainState, GraphqlInput, GraphqlOutput, ReadModel, Snapshot,
+};
 
 // Re-export enqueue macro (requires "emitter" feature)
 #[cfg(feature = "emitter")]

@@ -1,0 +1,427 @@
+<script lang="ts">
+	/**
+	 * Todos — generated operation state + generated causal commands.
+	 *
+	 * There is no app cache adapter or manual optimistic recipe here. The
+	 * compiler artifact tells the replica how command facts affect this query.
+	 */
+	import { Todos, useCommands } from '$distributed';
+	import { Button } from '$lib/components/shared/ui';
+	import {
+		AppPage,
+		InlineAlert,
+		PageHeader,
+		Panel,
+		StatRow
+	} from '$lib/components/product';
+	import { HowItsBuilt } from '$lib/components/walkthrough';
+	import { todosWalkthrough } from '$lib/walkthrough';
+	import { sessionDisplayName } from '$lib/session';
+
+	let { data } = $props();
+
+	let title = $state('');
+	let actionError = $state<string | null>(null);
+
+	const who = $derived(sessionDisplayName(data.session));
+
+	const query = Todos.use();
+	const commands = useCommands();
+
+	const todos = $derived($query.complete ? $query.data.todos : []);
+	const open = $derived(todos.filter((todo) => todo.status === 'open'));
+	const done = $derived(todos.filter((todo) => todo.status === 'completed'));
+	const archived = $derived(todos.filter((todo) => todo.status === 'archived'));
+
+	async function onCreate(e: Event) {
+		e.preventDefault();
+		const text = title.trim();
+		if (!text) return;
+
+		actionError = null;
+		title = '';
+		try {
+			await commands.todo.create({ title: text });
+		} catch (error) {
+			actionError = error instanceof Error ? error.message : 'create failed';
+		}
+	}
+
+	async function onComplete(todo_id: string) {
+		const target = todos.find((todo) => todo.todo_id === todo_id);
+		if (!target || target.status !== 'open') return;
+
+		actionError = null;
+		try {
+			await commands.todo.complete({ todo_id });
+		} catch (error) {
+			actionError = error instanceof Error ? error.message : 'complete failed';
+		}
+	}
+
+	async function onReopen(todo_id: string) {
+		const target = todos.find((todo) => todo.todo_id === todo_id);
+		if (!target || target.status !== 'completed') return;
+
+		actionError = null;
+		try {
+			await commands.todo.reopen({ todo_id });
+		} catch (error) {
+			actionError = error instanceof Error ? error.message : 'reopen failed';
+		}
+	}
+
+	async function onArchive(todo_id: string) {
+		const target = todos.find((todo) => todo.todo_id === todo_id);
+		if (!target || target.status === 'archived') return;
+
+		actionError = null;
+		try {
+			await commands.todo.archive({ todo_id });
+		} catch (error) {
+			actionError = error instanceof Error ? error.message : 'archive failed';
+		}
+	}
+</script>
+
+<AppPage>
+	<PageHeader kicker="Personal · owner-scoped" title="Todos">
+		Tasks for <strong>{who}</strong>. One generated <code>@load</code> operation feeds SSR,
+		navigation, and cache reads; typed commands update that same state optimistically and
+		retire it when projection catches up.
+	</PageHeader>
+
+	{#if data.gqlError}
+		<InlineAlert label="SSR GraphQL">{data.gqlError}</InlineAlert>
+	{/if}
+	{#if actionError}
+		<InlineAlert label="Mutation">{actionError}</InlineAlert>
+	{/if}
+
+	<form class="composer" onsubmit={onCreate}>
+		<label class="sr" for="todo-title">New task</label>
+		<input
+			id="todo-title"
+			class="input"
+			name="title"
+			placeholder="Capture something that needs doing…"
+			required
+			autocomplete="off"
+			bind:value={title}
+		/>
+		<Button type="submit" variant="ink" disabled={!title.trim()}>
+			<span>Add</span>
+			<svg width="16" height="16" viewBox="0 0 24 24" fill="none" aria-hidden="true">
+				<path
+					d="M12 5v14M5 12h14"
+					stroke="currentColor"
+					stroke-width="2.5"
+					stroke-linecap="round"
+				/>
+			</svg>
+		</Button>
+	</form>
+
+	<StatRow
+		stats={[
+			{ value: open.length, label: 'open' },
+			{ value: done.length, label: 'done' },
+			{ value: archived.length, label: 'archived' }
+		]}
+	/>
+
+	<div class="board">
+		<Panel title="Open" count={open.length}>
+			{#if open.length === 0}
+				<p class="empty">Nothing open — write one above.</p>
+			{:else}
+				<ul class="list">
+					{#each open as t, i (t.todo_id)}
+						<li class="item" style="--i: {i}" data-todo-id={t.todo_id}>
+							<div class="item-main">
+								<button
+									class="check"
+									type="button"
+									title="Mark done"
+									aria-label="Mark done: {t.title}"
+									onclick={() => onComplete(t.todo_id)}
+								></button>
+								<span class="item-title">{t.title}</span>
+							</div>
+							<div class="item-actions">
+								<Button
+									variant="ghost"
+									size="sm"
+									type="button"
+									title="Mark done"
+									onclick={() => onComplete(t.todo_id)}>Done</Button
+								>
+								<Button
+									variant="quiet"
+									size="sm"
+									type="button"
+									title="Archive"
+									onclick={() => onArchive(t.todo_id)}>Archive</Button
+								>
+							</div>
+						</li>
+					{/each}
+				</ul>
+			{/if}
+		</Panel>
+
+		<Panel title="Done" count={done.length} muted>
+			{#if done.length === 0}
+				<p class="empty">Completed tasks land here.</p>
+			{:else}
+				<ul class="list">
+					{#each done as t, i (t.todo_id)}
+						<li class="item item-done" style="--i: {i}" data-todo-id={t.todo_id}>
+							<div class="item-main">
+								<button
+									class="check check-on"
+									type="button"
+									title="Reopen"
+									aria-label="Reopen: {t.title}"
+									onclick={() => onReopen(t.todo_id)}
+								>
+									<svg width="12" height="12" viewBox="0 0 24 24" fill="none" aria-hidden="true">
+										<path
+											d="M5 12l5 5L20 7"
+											stroke="currentColor"
+											stroke-width="3"
+											stroke-linecap="round"
+											stroke-linejoin="round"
+										/>
+									</svg>
+								</button>
+								<span class="item-title">{t.title}</span>
+							</div>
+							<div class="item-actions">
+								<Button
+									variant="ghost"
+									size="sm"
+									type="button"
+									title="Reopen"
+									onclick={() => onReopen(t.todo_id)}>Reopen</Button
+								>
+								<Button
+									variant="quiet"
+									size="sm"
+									type="button"
+									onclick={() => onArchive(t.todo_id)}>Archive</Button
+								>
+							</div>
+						</li>
+					{/each}
+				</ul>
+			{/if}
+		</Panel>
+	</div>
+
+	{#if archived.length}
+		<details class="archive">
+			<summary>Archived ({archived.length})</summary>
+			<ul class="list list-compact">
+				{#each archived as t (t.todo_id)}
+					<li class="item item-archived" data-todo-id={t.todo_id}>
+						<span class="item-title">{t.title}</span>
+						<span class="badge">archived</span>
+					</li>
+				{/each}
+			</ul>
+		</details>
+	{/if}
+</AppPage>
+
+<HowItsBuilt demo={todosWalkthrough} />
+
+<style>
+	/* Route-local: composer + task list interaction (not shared chrome) */
+	.composer {
+		display: flex;
+		gap: 0.65rem;
+		flex-wrap: wrap;
+		padding: 0.65rem 0.75rem;
+		margin-bottom: 1.25rem;
+		background: var(--wf-bg-elevated, #fff);
+		border: 1px solid var(--wf-line, #e2e0d9);
+		border-radius: var(--df-radius-lg, 10px);
+		box-shadow: var(--df-shadow-sm, 0 1px 2px rgba(28, 28, 26, 0.04));
+	}
+
+	.input {
+		flex: 1;
+		min-width: 12rem;
+		border: none;
+		background: transparent;
+		padding: 0.55rem 0.65rem;
+		font: inherit;
+		font-size: 1rem;
+		color: var(--wf-ink, #1c1c1a);
+		outline: none;
+	}
+
+	.input::placeholder {
+		color: var(--wf-ink-muted, #8a8a82);
+	}
+
+	.board {
+		display: grid;
+		gap: 1rem;
+	}
+
+	@media (min-width: 768px) {
+		.board {
+			grid-template-columns: 1fr 1fr;
+			align-items: start;
+		}
+	}
+
+	.empty {
+		margin: 0.5rem 0 0.75rem;
+		font-size: 0.9rem;
+		color: var(--wf-ink-soft, #5c5c56);
+	}
+
+	.list {
+		list-style: none;
+		margin: 0;
+		padding: 0;
+		display: flex;
+		flex-direction: column;
+		gap: 0.15rem;
+	}
+
+	.item {
+		display: flex;
+		flex-wrap: wrap;
+		align-items: center;
+		justify-content: space-between;
+		gap: 0.5rem 0.75rem;
+		padding: 0.5rem 0.3rem;
+		border-radius: var(--wf-radius, 6px);
+		transition: background 0.12s ease;
+	}
+
+	.item:hover {
+		background: rgba(28, 28, 26, 0.04);
+	}
+
+	.item-main {
+		display: flex;
+		align-items: flex-start;
+		gap: 0.6rem;
+		flex: 1;
+		min-width: 0;
+	}
+
+	.check {
+		flex-shrink: 0;
+		display: grid;
+		place-items: center;
+		width: 1.15rem;
+		height: 1.15rem;
+		margin-top: 0.1rem;
+		padding: 0;
+		border-radius: 4px;
+		border: 1.5px solid var(--wf-line-strong, #cdcabe);
+		background: var(--wf-bg-elevated, #fff);
+		color: inherit;
+		cursor: pointer;
+		appearance: none;
+		transition:
+			border-color 0.12s ease,
+			background 0.12s ease;
+	}
+
+	.check:hover:not(:disabled) {
+		border-color: var(--wf-accent, #3d5a80);
+		background: var(--wf-accent-soft, rgba(61, 90, 128, 0.08));
+	}
+
+	.check-on {
+		border-color: var(--wf-success, #2f6f4e);
+		background: rgba(47, 111, 78, 0.1);
+		color: var(--wf-success, #2f6f4e);
+	}
+
+	.check-on:hover:not(:disabled) {
+		border-color: var(--wf-ink-soft, #5c5c56);
+		background: rgba(28, 28, 26, 0.06);
+		color: var(--wf-ink-soft, #5c5c56);
+	}
+
+	.item-title {
+		font-size: 0.95rem;
+		font-weight: 450;
+		line-height: 1.4;
+		word-break: break-word;
+	}
+
+	.item-done .item-title {
+		text-decoration: line-through;
+		text-decoration-thickness: 1px;
+		color: var(--wf-ink-soft, #5c5c56);
+	}
+
+	.item-actions {
+		display: flex;
+		gap: 0.2rem;
+		flex-shrink: 0;
+	}
+
+	.archive {
+		margin-top: 1.25rem;
+		padding: 0.75rem 0.95rem;
+		border-radius: var(--df-radius-lg, 10px);
+		border: 1px solid var(--wf-line, #e2e0d9);
+		background: var(--wf-bg-elevated, #fff);
+	}
+
+	.archive summary {
+		cursor: pointer;
+		font-weight: 600;
+		font-size: 0.8rem;
+		letter-spacing: 0.03em;
+		text-transform: uppercase;
+		color: var(--wf-ink-soft, #5c5c56);
+		list-style: none;
+	}
+
+	.archive summary::-webkit-details-marker {
+		display: none;
+	}
+
+	.list-compact {
+		margin-top: 0.65rem;
+	}
+
+	.item-archived {
+		opacity: 0.7;
+		justify-content: flex-start;
+		gap: 0.75rem;
+	}
+
+	.badge {
+		font-size: 0.65rem;
+		font-weight: 600;
+		letter-spacing: 0.05em;
+		text-transform: uppercase;
+		padding: 0.12rem 0.4rem;
+		border-radius: 999px;
+		background: rgba(28, 28, 26, 0.06);
+		color: var(--wf-ink-soft, #5c5c56);
+	}
+
+	.sr {
+		position: absolute;
+		width: 1px;
+		height: 1px;
+		padding: 0;
+		margin: -1px;
+		overflow: hidden;
+		clip: rect(0, 0, 0, 0);
+		border: 0;
+	}
+</style>

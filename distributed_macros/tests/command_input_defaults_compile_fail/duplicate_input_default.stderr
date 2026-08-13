@@ -1,0 +1,5 @@
+error: duplicate generated input default `id`
+  --> tests/command_input_defaults_compile_fail/duplicate_input_default.rs:12:23
+   |
+12 |         default input.id = ulid();
+   |                       ^^

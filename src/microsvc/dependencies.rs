@@ -1,7 +1,11 @@
 //! Typed dependency wrappers for microsvc handlers.
 
-use crate::aggregate::AggregateRepository;
+use crate::aggregate::{Aggregate, AggregateRepository};
+use crate::command_ledger::{
+    CausalGetStream, CausalRepositoryIdentity, CausalTransactionalCommit, CommandLedgerStore,
+};
 use crate::outbox::OutboxPublisherConfig;
+use crate::projection_protocol::ProjectionProtocolStore;
 use crate::repository::{ReadModelWritePlanStore, RelationalReadModelQueryStore, Repository};
 
 /// Dependency capability for services that expose an aggregate repository.
@@ -11,11 +15,90 @@ pub trait HasRepo {
     fn repo(&self) -> &Self::Repo;
 }
 
+/// Sealed repository capability required by typed causal routes.
+///
+/// The framework implements this for its causal-capable repository adapters;
+/// applications never need to name or implement it.
+#[doc(hidden)]
+#[allow(private_bounds)]
+pub trait CausalRepositoryBackend:
+    CausalGetStream
+    + CommandLedgerStore
+    + CausalTransactionalCommit
+    + CausalRepositoryIdentity
+    + ProjectionProtocolStore
+    + Send
+    + Sync
+    + 'static
+{
+}
+
+impl<T> CausalRepositoryBackend for T where
+    T: CausalGetStream
+        + CommandLedgerStore
+        + CausalTransactionalCommit
+        + CausalRepositoryIdentity
+        + ProjectionProtocolStore
+        + Send
+        + Sync
+        + 'static
+{
+}
+
+/// Compile-time extraction of the one aggregate repository owned by a typed
+/// causal route bundle.
+///
+/// This is public only because it appears in the bounds of the public route
+/// builder; the framework supplies the implementations. Application handlers
+/// never receive the dependency value or the underlying backend through the
+/// causal command context.
+#[doc(hidden)]
+pub trait CausalRouteDependencies {
+    type Backend: CausalRepositoryBackend;
+    type Aggregate: Aggregate;
+
+    #[doc(hidden)]
+    fn __causal_aggregate_repository(&self)
+        -> &AggregateRepository<Self::Backend, Self::Aggregate>;
+}
+
 /// Dependency capability for services that expose a read-model store.
 pub trait HasReadModelStore {
     type ReadModelStore;
 
     fn read_model_store(&self) -> &Self::ReadModelStore;
+}
+
+/// Sealed storage capability required by framework-owned causal projector
+/// routes. Applications select one of the framework repository adapters; they
+/// never receive this commit capability in a projector handler.
+#[doc(hidden)]
+#[allow(private_bounds)]
+pub trait CausalProjectionStore: ProjectionProtocolStore + Clone + Send + Sync + 'static {}
+
+impl<T> CausalProjectionStore for T where T: ProjectionProtocolStore + Clone + Send + Sync + 'static {}
+
+/// Compile-time extraction of the read-model/projection store owned by a route
+/// bundle. Public only because it appears in the causal-projector builder's
+/// inferred bounds.
+#[doc(hidden)]
+pub trait CausalProjectionRouteDependencies {
+    type Store: CausalProjectionStore;
+
+    #[doc(hidden)]
+    fn __causal_projection_store(&self) -> &Self::Store;
+}
+
+impl<D> CausalProjectionRouteDependencies for D
+where
+    D: HasReadModelStore,
+    D::ReadModelStore: CausalProjectionStore,
+{
+    type Store = D::ReadModelStore;
+
+    fn __causal_projection_store(&self) -> &Self::Store {
+        self.read_model_store()
+    }
 }
 
 /// Dependency capability for repositories whose outbox commits can publish
@@ -130,6 +213,19 @@ impl<R, A> HasRepo for AggregateRepository<R, A> {
     }
 }
 
+impl<R, A> CausalRouteDependencies for AggregateRepository<R, A>
+where
+    R: CausalRepositoryBackend,
+    A: Aggregate,
+{
+    type Backend = R;
+    type Aggregate = A;
+
+    fn __causal_aggregate_repository(&self) -> &AggregateRepository<R, A> {
+        self
+    }
+}
+
 impl<S> HasReadModelStore for S
 where
     S: ReadModelWritePlanStore + RelationalReadModelQueryStore,
@@ -157,6 +253,19 @@ impl<R> HasRepo for RepoDependencies<R> {
     type Repo = R;
 
     fn repo(&self) -> &Self::Repo {
+        &self.repo
+    }
+}
+
+impl<R, A> CausalRouteDependencies for RepoDependencies<AggregateRepository<R, A>>
+where
+    R: CausalRepositoryBackend,
+    A: Aggregate,
+{
+    type Backend = R;
+    type Aggregate = A;
+
+    fn __causal_aggregate_repository(&self) -> &AggregateRepository<R, A> {
         &self.repo
     }
 }
@@ -202,6 +311,19 @@ impl<R, S> HasRepo for RepoReadModelDependencies<R, S> {
     type Repo = R;
 
     fn repo(&self) -> &Self::Repo {
+        &self.repo
+    }
+}
+
+impl<R, A, S> CausalRouteDependencies for RepoReadModelDependencies<AggregateRepository<R, A>, S>
+where
+    R: CausalRepositoryBackend,
+    A: Aggregate,
+{
+    type Backend = R;
+    type Aggregate = A;
+
+    fn __causal_aggregate_repository(&self) -> &AggregateRepository<R, A> {
         &self.repo
     }
 }

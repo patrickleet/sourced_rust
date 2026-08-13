@@ -4,7 +4,7 @@
     reason = "async trait impls return impl Future + Send to preserve public Send bounds"
 )]
 
-use std::collections::{BTreeMap, HashMap};
+use std::collections::{BTreeMap, HashMap, HashSet};
 use std::future::Future;
 use std::sync::{Arc, RwLock};
 
@@ -13,7 +13,9 @@ use super::{
     RelationalReadModel, Versioned,
 };
 use crate::repository::{ReadModelWritePlanStore, RelationalReadModelQueryStore};
-use crate::table::{column_name_for, key_fingerprint, validate_key, validate_row_values};
+use crate::table::{
+    column_name_for, has_many_join_columns, key_fingerprint, validate_key, validate_row_values,
+};
 use crate::table::{
     ExpectedVersion, PatchMode, RelationshipDef, RelationshipKind, RowKey, RowValue, RowValues,
     RowWriteMode, TableAdapterCapabilities, TableCommitOutcome, TableMutation, TableSchema,
@@ -142,7 +144,7 @@ pub(crate) fn apply_read_model_write_plan(
     Ok(TableCommitOutcome::applied())
 }
 
-fn relational_storage_key(table_name: &str, key: &RowKey) -> String {
+pub(crate) fn relational_storage_key(table_name: &str, key: &RowKey) -> String {
     format!("{}:{}", table_name, key_fingerprint(key))
 }
 
@@ -235,6 +237,7 @@ fn concurrency_conflict(
 pub struct InMemoryReadModelStore {
     pub(crate) relational_rows: Arc<RwLock<HashMap<String, StoredRow>>>,
     schema_registry: Arc<RwLock<TableSchemaRegistry>>,
+    causal_tables: Arc<RwLock<HashSet<String>>>,
 }
 
 impl Default for InMemoryReadModelStore {
@@ -246,9 +249,14 @@ impl Default for InMemoryReadModelStore {
 impl InMemoryReadModelStore {
     /// Create a new empty read model store.
     pub fn new() -> Self {
+        Self::with_causal_table_marker(Arc::new(RwLock::new(HashSet::new())))
+    }
+
+    pub(crate) fn with_causal_table_marker(causal_tables: Arc<RwLock<HashSet<String>>>) -> Self {
         Self {
             relational_rows: Arc::new(RwLock::new(HashMap::new())),
             schema_registry: Arc::new(RwLock::new(TableSchemaRegistry::new())),
+            causal_tables,
         }
     }
 
@@ -290,6 +298,19 @@ impl ReadModelWritePlanStore for InMemoryReadModelStore {
                 .relational_rows
                 .write()
                 .map_err(|_| TableStoreError::Storage("lock poisoned".into()))?;
+            let causal_tables = self.causal_tables.read().map_err(|_| {
+                TableStoreError::Storage("causal table marker lock poisoned".into())
+            })?;
+            if let Some(table) = plan
+                .mutations
+                .iter()
+                .map(TableMutation::table_name)
+                .find(|table| causal_tables.contains(*table))
+            {
+                return Err(TableStoreError::CausalWriteRequired {
+                    table: table.to_string(),
+                });
+            }
 
             let mut staged_rows = relational_rows.clone();
             let outcome = apply_read_model_write_plan(plan, &mut staged_rows)?;
@@ -450,26 +471,8 @@ fn load_has_many_rows(
     root_row: &RowValues,
     spec: &IncludeSpec,
 ) -> Result<Vec<Versioned<RowValues>>, TableStoreError> {
-    let foreign_key = spec.relationship.foreign_key.as_deref().ok_or_else(|| {
-        TableStoreError::Metadata(format!(
-            "relationship `{}` must declare a foreign key",
-            spec.relationship.field_name
-        ))
-    })?;
-    let target_column = column_name_for(&spec.target_schema, foreign_key).ok_or_else(|| {
-        TableStoreError::Metadata(format!(
-            "relationship `{}` foreign key `{}` is not a target column",
-            spec.relationship.field_name, foreign_key
-        ))
-    })?;
-    let root_column = column_name_for(root_schema, foreign_key)
-        .or_else(|| root_schema.primary_key.columns.first().cloned())
-        .ok_or_else(|| {
-            TableStoreError::Metadata(format!(
-                "relationship `{}` has no root key column",
-                spec.relationship.field_name
-            ))
-        })?;
+    let (target_column, root_column) =
+        has_many_join_columns(root_schema, &spec.relationship, &spec.target_schema)?;
     let root_value = root_row.get(&root_column).ok_or_else(|| {
         TableStoreError::Metadata(format!(
             "read model `{}` root row is missing relationship key `{}`",
@@ -579,6 +582,7 @@ mod tests {
                 foreign_keys: Vec::new(),
                 indexes: Vec::new(),
                 relationships: Vec::new(),
+                kind: crate::TableKind::ReadModel,
             });
         &SCHEMA
     }

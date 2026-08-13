@@ -1,0 +1,58 @@
+{
+  "canonical_body": "{\"status\":\"completed\",\"todo_id\":\"todo-1\"}",
+  "canonical_occurrence_fingerprint": "sha256:68398b3f5b7a64544532ddcf8ed2206bf943570196112b1d74dccac6bbd9dfc5",
+  "boundary_vectors": {
+    "body": {
+      "at_bytes": 1048576,
+      "at_result": "accepted",
+      "over_bytes": 1048577,
+      "over_result": "body_too_large"
+    },
+    "message_name": {
+      "at_bytes": 256,
+      "at_result": "accepted",
+      "over_bytes": 257,
+      "over_result": "event_name_too_long"
+    },
+    "stable_id": {
+      "at_bytes": 512,
+      "at_result": "accepted",
+      "over_bytes": 513,
+      "over_result": "aggregate_id_too_long"
+    }
+  },
+  "limits": {
+    "body_bytes": 1048576,
+    "message_name_bytes": 256,
+    "occurrence_wire_bytes": 2097152,
+    "stable_id_bytes": 512
+  },
+  "occurrence": {
+    "aggregate_id": "todo-1",
+    "aggregate_sequence": 7,
+    "aggregate_type": "todo",
+    "body": "eyJzdGF0dXMiOiJjb21wbGV0ZWQiLCJ0b2RvX2lkIjoidG9kby0xIn0=",
+    "descriptor": {
+      "body": {
+        "codec": "distributed-json",
+        "codec_version": 1,
+        "fingerprint": "sha256:1111111111111111111111111111111111111111111111111111111111111111",
+        "kind": "state",
+        "schema": "todo-state-v3",
+        "type_name": "TodoState",
+        "version": 3
+      },
+      "name": "todo.completed",
+      "version": 1
+    },
+    "id": "de1:sha256:970060f12bdbe93c59a08d1496929257ae26ad8aeb85d1ef759d5b6a7ccfc842",
+    "metadata": {
+      "causation_id": "cmd-7",
+      "correlation_id": "request-4",
+      "traceparent": "00-4bf92f3577b34da6a3ce929d0e0e4736-00f067aa0ba902b7-01"
+    },
+    "occurred_at_unix_ms": 1700000000123,
+    "occurrence_version": 1,
+    "publication_ordinal": 0
+  }
+}

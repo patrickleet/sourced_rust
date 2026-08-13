@@ -17,6 +17,20 @@ pub enum TableStoreError {
     Serde(String),
     /// Storage-level error.
     Storage(String),
+    /// Backend storage failure with its retry classification preserved.
+    ///
+    /// SQL adapters use this instead of flattening a driver error into
+    /// [`Storage`](Self::Storage), because projector runners must distinguish a
+    /// transient busy/deadlock/connection failure from a deterministic fault
+    /// before deciding whether terminal failure evidence may be recorded.
+    BackendStorage {
+        operation: String,
+        retryable: bool,
+        message: String,
+    },
+    /// A raw/legacy write targeted a table registered to the causal projection
+    /// protocol and therefore cannot mint the required revision evidence.
+    CausalWriteRequired { table: String },
     /// Row not found.
     NotFound { collection: String, id: String },
     /// Lock error.
@@ -40,6 +54,21 @@ impl fmt::Display for TableStoreError {
             ),
             TableStoreError::Serde(msg) => write!(f, "table store serialization error: {}", msg),
             TableStoreError::Storage(msg) => write!(f, "table storage error: {}", msg),
+            TableStoreError::BackendStorage {
+                operation,
+                retryable,
+                message,
+            } => {
+                let class = if *retryable { "retryable" } else { "permanent" };
+                write!(
+                    f,
+                    "table backend storage error ({class}) during {operation}: {message}"
+                )
+            }
+            TableStoreError::CausalWriteRequired { table } => write!(
+                f,
+                "table `{table}` is causal-owned and requires the projection commit path"
+            ),
             TableStoreError::NotFound { collection, id } => {
                 write!(f, "table row not found: {}:{}", collection, id)
             }

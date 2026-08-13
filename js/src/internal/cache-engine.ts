@@ -1,0 +1,40 @@
+/** Private cache engine; implementation lives in ./cache-engine/. */
+export {
+	CacheRevisionConflictError,
+	OptimisticLayerNotFoundError,
+	cacheIndexKey,
+	createCacheEngine
+} from './cache-engine/index.js';
+export type {
+	BaseCacheWriter,
+	BaseRecordClock,
+	CacheEngine,
+	CacheEngineOptions,
+	CacheEngineSnapshot,
+	CacheIndex,
+	CacheIndexCoverage,
+	CacheIndexMetadata,
+	CacheListener,
+	CachePresence,
+	CacheReader,
+	CacheSelector,
+	CacheValue,
+	DerivedIndexMutation,
+	DerivedIndexReconciler,
+	IndexKey,
+	IndexWrite,
+	OptimisticCacheWriter,
+	OptimisticIndexWrite,
+	OptimisticLayerContext,
+	OptimisticLayerReplacement,
+	OptimisticLayerState,
+	OptimisticLayerView,
+	OptimisticRecordWrite,
+	RecordKey,
+	RecordLink,
+	RecordWrite,
+	Revision,
+	SparseRecord,
+	SparseRecordMeta,
+	WatchOptions
+} from './cache-engine/index.js';

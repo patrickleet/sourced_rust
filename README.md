@@ -1,29 +1,99 @@
 # Distributed
 
-Distributed is a CQRS and event-sourcing framework for Rust applications that want simple domain models, replayable aggregate history, durable publication, and pluggable infrastructure.
+**Event-sourced Rust backends. Deny-by-default GraphQL with first-class OIDC.
+A causal TypeScript replica for real apps.** One platform from aggregate tests
+to SvelteKit SSR.
 
-It keeps your domain model as a plain struct (Plain Old Rust Struct, or PORS), inspired by POCO/POJO, while giving you append-only aggregate event records, replay, snapshots, read models, an outbox, a multi-transport service bus, and a small async command-handler framework.
+Plain domain structs on the write side. Relational read models on the query
+side. The GraphQL edge validates Bearer tokens (JWKS) and maps claims into
+session roles/RLS — not a bolted-on middleware afterthought. The browser talks
+**one protocol** — GraphQL queries, live subscriptions, and typed command
+mutations — through `@hops-ops/distributed`.
 
-The core idea is explicit boundaries: aggregate event records are the write-side source of truth, read models serve queries, and published domain or integration messages are created deliberately through the outbox.
+---
 
-It is built with stateless vertical and horizontal scaling in cloud-native environments in mind. You can start with a single in-memory service and split it later into partitioned services backed by Postgres and a real broker — without rewriting the domain model.
+## See it run
+
+### e2e-ui — read the code (`tests/e2e-ui`)
+
+A copyable multi-crate product: pure domains, GraphQL-only edge, Zitadel OIDC,
+SvelteKit SSR, generated clients, live WS. Full runbook + deeper map:
+**[`tests/e2e-ui/README.md`](tests/e2e-ui/README.md)**.
+
+```bash
+cd tests/e2e-ui && make up && set -a && source e2e-ui.env && set +a && make run
+# UI :5180 · API :8791/graphql · login alice / Password1!
+```
+
+What makes it feel like a real app is not a second framework — it is a short
+stack of deliberate files. Start here:
+
+| File | Why it is nice |
+|---|---|
+| [`ui/src/routes/todos/+page.graphql`](tests/e2e-ui/ui/src/routes/todos/+page.graphql) | Co-located read. `@load` → SSR seed; no hand-written load function for the list. |
+| [`ui/src/routes/todos/+page.svelte`](tests/e2e-ui/ui/src/routes/todos/+page.svelte) | `Todos.use()` + `useCommands()` — page never invents a cache or optimistic recipe. |
+| [`ui/src/routes/chat/+page.graphql`](tests/e2e-ui/ui/src/routes/chat/+page.graphql) | Same document does SSR **and** live: `@load @live`. No second subscription file. |
+| [`ui/src/routes/blob/[[gameId]]/+page.svelte`](tests/e2e-ui/ui/src/routes/blob/[[gameId]]/+page.svelte) | Arrow keys → `commands.blob.move`; board from `BlobGames.use()` — projected payload hits the replica before the call resolves. |
+| [`ui/src/routes/+layout.server.ts`](tests/e2e-ui/ui/src/routes/+layout.server.ts) | One root loader, generated route registry, session → engine role. No loading flash for declared ops. |
+| [`ui/src/routes/+layout.svelte`](tests/e2e-ui/ui/src/routes/+layout.svelte) | `provideDistributed` + SSR hydration into the causal replica. |
+| [`ui/src/routes/admin/+layout.server.ts`](tests/e2e-ui/ui/src/routes/admin/+layout.server.ts) | Elevated surface is a **second** generated client + role gate — not smuggled into the user bundle. |
+| [`crates/service/src/service.rs`](tests/e2e-ui/crates/service/src/service.rs) | Inventory, RLS (`owner_id = claim(x-user-id)`), dual client surfaces (`e2e-ui` / `e2e-ui-admin`), OIDC claim map. |
+| [`crates/service/src/handlers/commands/blob_move.rs`](tests/e2e-ui/crates/service/src/handlers/commands/blob_move.rs) | `PreparedCommand<Atomic<BlobGameView>>` — map/score written with the event, not dual-written later. |
+| [`crates/todo-domain/src/models/todo.rs`](tests/e2e-ui/crates/todo-domain/src/models/todo.rs) | Plain aggregate: `create` / `ensure_owner` / `@sourced` events — no GraphQL in the domain. |
+| [`crates/readmodels/src/models/blob_game_view.rs`](tests/e2e-ui/crates/readmodels/src/models/blob_game_view.rs) | `#[table]` + `belongs_to` owner join — GraphQL shape from the read model. |
+| [`ui/src/auth.ts`](tests/e2e-ui/ui/src/auth.ts) | Real Auth.js + Zitadel scopes/groups → engine roles. |
+
+```text
+  SvelteKit  ──GraphQL HTTP/WS──►  Rust edge (GraphqlEngine + microsvc)
+       │                                │
+       │  @hops-ops/distributed         ├── mutations → aggregates
+       │  causal replica + commands     ├── Atomic rows (blob) with events
+       │  dctl-generated ops            └── projector rows (todos, chat)
+```
+
+JS package deep-dive: [`js/README.md`](js/README.md).
+
+### GraphiQL playground (engine only)
+
+```bash
+cargo run --example graphiql --features "graphql,sqlite"
+# → http://127.0.0.1:4000/graphql
+```
+
+### First-class OIDC (Zitadel, Keycloak, Authentik)
+
+GraphQL identity is **built into the engine** (`OidcBearer`: JWKS, iss/aud/exp,
+claim → role/session). Live against three local IdPs — not mocks only:
+
+| Provider | Compose + bootstrap | Live test | Gate |
+|---|---|---|---|
+| **[Zitadel](tests/graphql_oidc_zitadel/)** (reference) | `./scripts/oidc-zitadel-up.sh` | `cargo test --test graphql_oidc_zitadel --features graphql,sqlite` | `ZITADEL_E2E=1` |
+| **[Keycloak](tests/graphql_oidc_keycloak/)** | `./scripts/oidc-keycloak-up.sh` | `cargo test --test graphql_oidc_keycloak --features graphql,sqlite` | `KEYCLOAK_E2E=1` |
+| **[Authentik](tests/graphql_oidc_authentik/)** | `./scripts/oidc-authentik-up.sh` | `cargo test --test graphql_oidc_authentik --features graphql,sqlite` | `AUTHENTIK_E2E=1` |
+
+Shared **E1–E8** in [`tests/graphql_oidc_common/`](tests/graphql_oidc_common/).
+Gated binaries skip cleanly when unset. Offline: `cargo test --test graphql_identity --features graphql,sqlite`.
+
+e2e-ui boots **Zitadel** for the browser path; the three stacks prove the same
+`OidcBearer` edge is not vendor-locked.
+
+---
 
 ## At a Glance
 
 | Capability | What it gives you |
 |---|---|
-| Plain Rust aggregates | Domain state stays in ordinary structs with explicit command methods. |
-| Model-first TDD | Specify the aggregate API in fast, exhaustive unit tests before writing handlers or choosing infrastructure. |
-| Event-sourced persistence | Append-only `EventRecord`s, replay, optimistic commit, and pluggable async repositories. |
-| Typed macros | `#[sourced]`, `#[digest]`, and `aggregate!()` remove boilerplate while keeping replay explicit. |
-| Snapshots | `#[derive(Snapshot)]` and a snapshot cache speed up hydration for long streams. |
-| Outbox | Durable publication records committed atomically with aggregates. |
-| Read models | Query-optimized relational projections, committed atomically or updated eventually. |
-| Service bus facade | `send`/`listen` (point-to-point) and `publish`/`subscribe` (fan-out) over a swappable transport. |
-| Transports | In-memory, SQLite, Postgres, NATS JetStream, RabbitMQ, Kafka, and Knative/CloudEvents — one constructor line apart. |
-| Microservice framework | Convention-based async handlers exposed over HTTP, gRPC, the bus, or direct dispatch. |
-| Service CLI | `dctl` scaffolds service crates, describes manifests, and renders SQL or Atlas schema artifacts. |
-| Pluggable infrastructure | Traits for storage, messaging, read models, snapshots, outbox publishing, and locking. |
+| **Full-stack path** | Rust domains → GraphQL edge → `@hops-ops/distributed` → SvelteKit/React |
+| **First-class OIDC** | Built-in `OidcBearer` (JWKS, claims → roles); live e2e for **Zitadel, Keycloak, Authentik** |
+| Plain Rust aggregates | Domain state in ordinary structs with explicit command methods |
+| Model-first TDD | Exhaustive unit tests before handlers or infrastructure |
+| Event-sourced persistence | Append-only records, replay, optimistic commit, pluggable async repos |
+| Outbox + multi-transport bus | Durable publish; swap in-memory / SQL / NATS / RabbitMQ / Kafka / Knative |
+| Read models | Relational projections — atomic with the command **or** eventual from projectors |
+| GraphQL query service | Filters, order, pagination, relationships, RBAC, live subs, causal mutations |
+| npm JS client | Artifacts, HTTP/WS transport, **causal replica**, diagnostics, SvelteKit/React |
+| microsvc | One handler inventory on HTTP, gRPC, bus, GraphQL, or direct dispatch |
+| `dctl` | Scaffold, SQL/Atlas/SDL, **client-manifest / client** codegen |
 
 ## Use as a Dependency
 
@@ -117,9 +187,10 @@ you are working on the macro crate itself. The `distributed_cli` crate installs
 the `dctl` tooling and is not needed as a runtime dependency unless you are
 embedding the CLI in another command such as `hops service`.
 
-## Quick Start
+## Quick Start (library)
 
-Five steps: specify the model API in tests, implement the model, add a thin
+Want the product demo first? Use [See it run](#see-it-run) above. This section is
+the minimal **in-crate** path: specify the model API in tests, implement the model, add a thin
 command handler, serve it, then swap in production persistence and transports
 without changing the proven domain behavior.
 
@@ -201,8 +272,17 @@ its command methods into recorded, replayable events; `#[derive(Snapshot)]` adds
 hydration cache for long streams.
 
 ```rust,ignore
-use serde::Deserialize;
-use distributed::{sourced, Entity, Snapshot};
+use serde::{Deserialize, Serialize};
+use distributed::{sourced, DomainState, Entity, Snapshot};
+
+#[derive(Clone, Serialize, DomainState)]
+#[domain_state(version = 1)]
+struct TodoState {
+    id: String,
+    user_id: String,
+    task: String,
+    completed: bool,
+}
 
 #[derive(Default, Snapshot)]
 struct Todo {
@@ -212,16 +292,27 @@ struct Todo {
     completed: bool,
 }
 
-#[sourced(entity, aggregate_type = "todo")]
+impl From<&Todo> for TodoState {
+    fn from(todo: &Todo) -> Self {
+        Self {
+            id: todo.entity.id().to_string(),
+            user_id: todo.user_id.clone(),
+            task: todo.task.clone(),
+            completed: todo.completed,
+        }
+    }
+}
+
+#[sourced(entity, aggregate_type = "todo", domain_state = TodoState)]
 impl Todo {
-    #[event("initialized")]
+    #[event("todo.initialized", version = 1, domain)]
     fn initialize(&mut self, id: String, user_id: String, task: String) {
         self.entity.set_id(&id);
         self.user_id = user_id;
         self.task = task;
     }
 
-    #[event("completed", when = !self.completed)]
+    #[event("todo.completed", version = 1, when = !self.completed, domain)]
     fn complete(&mut self) {
         self.completed = true;
     }
@@ -249,7 +340,6 @@ events — optionally alongside a durable outbox message in the same transaction
 // handlers/todo_create.rs
 use serde_json::{json, Value};
 use distributed::microsvc::{Context, HandlerError};
-use distributed::OutboxMessage;
 
 use super::Repo; // an AggregateRepository<_, Todo> alias
 
@@ -265,11 +355,9 @@ pub async fn handle(ctx: &Context<'_, Repo>) -> Result<Value, HandlerError> {
     let mut todo = Todo::default();
     todo.initialize(input.id.clone(), input.user_id, input.task)?;
 
-    // Record a fact for other services. The outbox row commits atomically with
-    // the aggregate's events. Once a bus is attached (step 4) this `commit`
-    // publishes the row immediately; with no bus it stays pending for a worker.
-    let message = OutboxMessage::domain_event("todo.initialized", &todo)?;
-    ctx.repo().outbox(message).commit(&mut todo).await?;
+    // Publish the canonical TodoState occurrence captured by the domain-marked
+    // transition. History + occurrence + outbox commit atomically.
+    ctx.repo().publish_events().commit(&mut todo).await?;
 
     Ok(json!({ "id": input.id }))
 }
@@ -387,6 +475,14 @@ Distributed is inspired by the original [sourced](https://github.com/mateodelnor
 - Keep storage and messaging pluggable and testable behind async traits.
 - Make the transport a wiring choice, not a handler change.
 - Add optional queue-based locking for serialized workflows.
+- Expose a deny-by-default GraphQL edge over relational read models (not ad-hoc
+  handler SQL).
+- Ship **first-class OIDC** on that edge (`OidcBearer` + claim mapping), with
+  optional trusted-proxy modes — not “bring your own JWT middleware.”
+- Keep browser apps on one protocol: typed GraphQL queries, live subscriptions,
+  and causal command mutations with a normalized client replica.
+- Prefer generated client artifacts and explicit projection contracts over
+  hand-written fetch/cache glue.
 
 ## Feature Flags
 
@@ -399,6 +495,7 @@ network servers.
 | `emitter` | No | In-process event emission and `#[enqueue]`. |
 | `http` | No | Axum HTTP transport for `microsvc` + the Knative/CloudEvents ingress router. |
 | `grpc` | No | Tonic gRPC transport for `microsvc`. |
+| `graphql` | No | GraphQL query service over read models (pulls in `http` + WebSocket). Pair with `sqlite` and/or `postgres` for a dialect. |
 | `postgres` | No | `PostgresRepository` and the Postgres outbox/transport (`PostgresBus`). |
 | `sqlite` | No | `SqliteRepository` async SQL adapter and local durable transport (`SqliteBus`). |
 | `nats` | No | `NatsBus` (NATS JetStream source/publisher). |
@@ -423,8 +520,9 @@ network servers.
 - **OutboxMessage**: A durable publication work item for a domain event, integration event, command, or generic transport message. Supports optional `destination` for point-to-point routing and metadata propagation.
 - **OutboxDispatcher**: Drains durable outbox rows and publishes them to a transport, sharing one claim → publish → complete path.
 - **ReadModel**: Query-optimized relational projection state for UI/API reads. Read models may be updated atomically with a command or eventually from published messages.
+- **GraphqlEngine**: Deny-by-default GraphQL surface over registered read-model tables: role-scoped columns/row filters, optional command mutations, live subscriptions via `ChangeHub`, and identity modes (`OidcBearer`, `TrustedProxy`, `Hybrid`, `DevHeaders`).
 - **Bus / BusConsumer**: The service bus facade — `send`/`publish` (produce) and `listen`/`subscribe` (consume), implemented by a per-transport `*Bus` type.
-- **microsvc::Service**: Convention-based async command/event handler framework with pluggable transports (HTTP, gRPC, bus, direct dispatch).
+- **microsvc::Service**: Convention-based async command/event handler framework with pluggable transports (HTTP, gRPC, bus, GraphQL mutations, direct dispatch).
 
 ## Terminology And CQRS Boundaries
 
@@ -887,30 +985,49 @@ SQLite is the no-extra-process local durable path: one SQLite database can back
 repositories, read models, the outbox, locks, and `SqliteBus` for tests, demos,
 and small single-node deployments. Postgres is the low-ops starter for production:
 a single Postgres cluster can back repositories, read models, the outbox, **and**
-the durable transport (`PostgresBus`). See
-[`docs/repositories.md`](docs/repositories.md) for the full guide.
+the durable transport (`PostgresBus`).
+
+### Repository traits (async-only)
+
+Streams are keyed by full **stream identity** `(aggregate_type, aggregate_id)`,
+not bare IDs. Prefer an explicit durable `aggregate_type` in production
+(`impl_aggregate!(..., aggregate_type = "...")` or the sourced/aggregate macros).
+
+| Trait | Role |
+| --- | --- |
+| `GetStream` | Load one or more event streams by identity |
+| `TransactionalCommit` | Commit `CommitBatch` (streams, read-model write plans, snapshots) in one backend transaction |
+| `ReadModelWritePlanStore` / `RelationalReadModelQueryStore` | Relational projection write + PK load surfaces for adapters |
+| `SnapshotStore` | Rebuildable snapshot cache by stream identity |
+| `OutboxStore` | Claim/update durable outbox rows (workers; not aggregate rehydration) |
+
+`InMemoryRepository` (plus in-memory read-model/snapshot stores) is the behavioral
+reference for conformance tests — not a production I/O adapter. SQL adapters
+implement the same traits with `sqlx`.
 
 ## Outbox Pattern
 
-Each outbox message is a durable delivery row committed alongside your domain entity. Aggregate event records are write-side replay history; they become domain events, integration events, commands, or transport messages only when application code creates an `OutboxMessage` for that purpose.
+Each outbox message is a durable delivery row committed alongside your domain
+entity. Aggregate event records are write-side replay history. A
+domain-marked transition captures a separate canonical outward occurrence,
+which is published only when the unit of work selects `publish_events()`.
 
 ```rust,ignore
-use distributed::OutboxMessage;
-
 let mut todo = Todo::default();
 todo.entity.set_correlation_id("req-abc");
 todo.initialize("todo-1".into(), "user-1".into(), "Buy milk".into())?;
 
-// Derives id, snapshot payload, and metadata from the aggregate automatically
-let message = OutboxMessage::domain_event("todo.initialized", &todo)?;
-
-// Commit both in one repository transaction
-repo.outbox(message).commit(&mut todo).await?;
+// Commit replay history + the typed TodoState occurrence + outbox atomically.
+// Snapshots remain a private hydration cache and are never published implicitly.
+repo.publish_events().commit(&mut todo).await?;
 ```
 
-For custom payloads or IDs, use `encode_for_entity`:
+For an explicitly authored outward DTO, use `publish(event)`. For low-level
+integration envelopes or custom IDs, use `encode_for_entity`:
 
 ```rust,ignore
+use distributed::OutboxMessage;
+
 let message = OutboxMessage::encode_for_entity(
     format!("{}:init", todo.entity.id()),
     "todo.initialized",
@@ -1054,10 +1171,34 @@ bus.listen(
 Retryable failures (e.g. transient `NotFound`) are nacked for redelivery; the runner
 never silently acks a handler error.
 
-See [`docs/transports.md`](docs/transports.md) for the full transport
-layer, the two confirmation thresholds (producer publish vs consumer ack), and the
-low-level `MessageSource` / `MessagePublisher` / `run_source` boundary the
-facade is built on.
+### Transport boundaries (producer vs consumer)
+
+`microsvc` owns registration, guards, typed decoding, and dispatch. **Transport
+adapters** own receive/ack/retry/publish and topic mapping. Shared vocabulary lives
+in `bus` (no concrete broker dependency).
+
+| Type | Purpose |
+| --- | --- |
+| `TransportError` / `TransportErrorKind` | Retryable vs permanent — drives redelivery vs failure policy |
+| `FailurePolicy` / `FailureAction` | Permanent failure: `Retry`, `DeadLetter`, `Park`, `LogAndAck`, `Stop` |
+| `RunOptions` / `ConsumerDeliveryMode` | Idempotent dispatch by default; optional inbox hook |
+| `TransportCapabilities` | Per-transport durability, confirms, retry ownership, ack kind |
+| `MessageSource` + `run_source` | Pull loop: dispatch then settle only after the handler finishes |
+| `MessagePublisher` + `OutboxDispatcher` | Publish threshold for outbox completion; claim → publish → complete |
+
+**Two confirmation thresholds** (do not collapse them):
+
+1. **Producer publish** — when an outbox row may be marked published (SQL commit,
+   broker confirm/ack, Knative 2xx, in-memory accept). Unknown outcomes stay retryable.
+2. **Consumer ack** — only after the handler (and optional inbox receipt) committed.
+   Never silently ack a handler error.
+
+```rust,ignore
+use distributed::bus::{run_source, RunOptions};
+
+// Low-level receive loop (facade buses wrap this)
+run_source(service, source, RunOptions::idempotent()).await?;
+```
 
 ## Microservice Framework (`microsvc`)
 
@@ -1130,8 +1271,6 @@ For larger services, organize handlers into separate files. Each handler module 
 use serde::Deserialize;
 use serde_json::{json, Value};
 use distributed::microsvc::{Context, HandlerError};
-use distributed::OutboxMessage;
-
 use super::Repo;
 use crate::models::counter::Counter;
 
@@ -1154,8 +1293,8 @@ pub async fn handle(ctx: &Context<'_, Repo>) -> Result<Value, HandlerError> {
     let mut counter = Counter::default();
     counter.create(input.id.clone())?;
 
-    let message = OutboxMessage::domain_event("counter.initialized", &counter)?;
-    ctx.repo().outbox(message).commit(&mut counter).await?;
+    // `counter.initialized` is domain-marked on the aggregate.
+    ctx.repo().publish_events().commit(&mut counter).await?;
 
     Ok(json!({ "id": input.id }))
 }
@@ -1205,8 +1344,8 @@ curl -X POST http://localhost:3000/counter.initialize \
 curl http://localhost:3000/health
 ```
 
-`x-user-id` / `x-role` are convenience keys for `Session::user_id()` /
-`Session::role()` only — not a required protocol. Your gateway can inject any
+`x-user-id` / `x-roles` are convenience keys for `Session::user_id()` /
+`Session::roles()` only — not a required protocol. Your gateway can inject any
 claim names; handlers read them with `session.get("…")` or map claims to the
 convenience keys at the edge.
 
@@ -1267,7 +1406,7 @@ string map built from whatever the transport provides — HTTP request headers,
 gRPC metadata, and (for gRPC) the request payload's `session_variables`.
 Identity claims are trusted at face value by handlers. Claim **names** are
 deployment convention, not a fixed protocol (`Session::user_id` /
-`Session::role` only look up the convenience keys `x-user-id` / `x-role`).
+`Session::roles` only look up the convenience keys `x-user-id` / `x-roles`).
 
 You **must** deploy `microsvc` behind a **trusted proxy / API gateway**
 (JWT middleware, authenticating ingress, a query-layer action such as Hasura,
@@ -1364,7 +1503,298 @@ let loaded = repo
     .await?;
 ```
 
-See [`docs/read-models.md`](docs/read-models.md) for the full guide, including relational metadata, schema bootstrap, relationship includes, distributed idempotency, and non-goals.
+### Relational metadata, includes, and schema
+
+- **Derive:** `#[derive(ReadModel)]` + `#[table("...")]` (or `#[readmodel(table = "...")]`)
+  emit `RelationalReadModel` metadata, row conversion, PKs, indexes, FKs, and an
+  adapter-owned version column. Use `#[id]`, `#[index]` / `#[unique]`,
+  `#[readmodel(jsonb)]`, and relationship attributes (`has_many` / `belongs_to` /
+  `many_to_many` + `foreign_key` / `through`).
+- **Writes:** `ReadModelWritePlan` / workspace `upsert` + `commit` (same transaction
+  as events when staged on `CommitBatch`).
+- **Internal loads:** PK-anchored includes —
+  `store.workspace().load(...).include(...).one()` (one-level, opt-in).
+- **Schema lifecycle:** `ReadModelSchemaRegistry` + adapter for migration artifacts
+  and startup verification; `dctl schema` / `distributed_manifest()` for SQL.
+- **Non-goals:** public query APIs belong on the GraphQL layer below (not the ORM
+  include loader); do not write projections outside the projection path.
+
+## GraphQL query service
+
+Auto-generated GraphQL over relational read models — Hasura-style filtering,
+ordering, pagination, relationships, role-based column allowlists and row
+filters, live subscriptions after write-plan commits, and typed command
+mutations derived from the executable `Service` (including `Atomic<T>` and
+`Eventual<T>` + projector paths).
+
+This is the public query/command edge for full-stack apps. The companion
+TypeScript package [`@hops-ops/distributed`](js/) (see
+[`js/README.md`](js/README.md)) supplies transport, a normalized causal replica,
+command runtime, diagnostics, and SvelteKit/React adapters. End-to-end template:
+[`tests/e2e-ui/`](tests/e2e-ui/). Scaffold with `dctl scaffold … --query-api`.
+Example playground: `cargo run --example graphiql --features "graphql,sqlite"`.
+
+### Enable
+
+```toml
+# Query engine + SQLite dialect (local / tests)
+distributed = { version = "0.1", features = ["graphql", "sqlite"] }
+
+# Production-shaped: GraphQL + Postgres repository/bus
+distributed = { version = "0.1", features = ["graphql", "postgres"] }
+```
+
+`graphql` implies `http` (Axum router, including `/graphql/ws`). SDL helpers under
+`distributed::graphql::{naming,sdl}` compile without the feature so
+`dctl schema --format graphql` works in tooling crates.
+
+### Scope
+
+| In | Out |
+|---|---|
+| `SELECT`-only query surface from `TableSchema` / read models | Table mutations / write-to-projection via GraphQL |
+| Role column allowlists + row filters (`claim(...)`) | Full IdP product UI (login pages live in your app / Auth.js) |
+| **First-class OIDC Bearer validation** (JWKS, iss/aud/exp, claim → session) | Assuming raw HTTP microsvc routes authenticate without a proxy or GraphQL edge |
+| SQLite + Postgres dialects | Cross-service federation / remote schemas |
+| Typed causal command mutations (`Service` → GraphQL) | Raw JSON GraphQL command registries |
+| Live list subscriptions via commit-path invalidation | Querying outbox / event-store operational tables |
+
+### Mount on a service
+
+```rust,ignore
+use distributed::graphql::{
+    claim, col, read, typed_command, Eventual, GraphqlEngine,
+};
+use distributed::microsvc::{Routes, Service};
+
+let routes = Routes::new()
+    .with_repo(repository.clone().aggregate::<Todo>())
+    .typed_command(
+        typed_command::<CreateTodoInput, Eventual<TodoStatusPayload>>("todo.create")
+            .field_name("todos_create")
+            .roles(["user", "admin"])
+            .emits(distributed::events![TodoCreatedDomainEvent])
+            .applies(/* state_preview! binding for optimism */),
+    )
+    .handle(create_todo)
+    .typed_command(
+        typed_command::<ForceArchiveInput, Eventual<TodoStatusPayload>>("todo.force_archive")
+            .field_name("todos_force_archive")
+            .roles(["admin"])
+            .emits(distributed::events![TodoArchivedDomainEvent]),
+    )
+    .handle(force_archive);
+
+let service = Service::new()
+    .named("todos")
+    .routes(routes)
+    // Optional: keep commands on GraphQL/bus/direct dispatch only.
+    .without_http_command_routes();
+
+let engine = GraphqlEngine::from_manifest(&manifest, &repository)?
+    // This exact executable inventory is the only mutation source.
+    .service(&service)
+    // Stable nonzero deployment secret shared by replicas of this endpoint.
+    .protocol_token_key(protocol_token_key)
+    .roles(&["user", "admin", "anonymous"])
+    .permission::<TodoView>(
+        "user",
+        read()
+            .all_columns()
+            .rows(col("owner_id").eq(claim("x-user-id"))),
+    )
+    .permission::<TodoView>("admin", read().all_columns())
+    .graphiql(true) // local only — see GraphiQL section
+    .build()?;
+
+let service = service.try_with_graphql(engine)?;
+
+// POST /graphql           — queries + command mutations
+// GET  /graphql           — GraphiQL when enabled
+// GET  /graphql/ws        — subscriptions (graphql-transport-ws / graphql-ws)
+```
+
+### Permissions (deny by default)
+
+Three axes — **grant** a role, **columns** they may see, **rows** they may access.
+Unmentioned models/roles fail closed (that is the deny). There is no separate
+`.deny()` list: omit the role, narrow columns, or tighten `.rows(...)`.
+
+```rust,ignore
+use distributed::graphql::{read, col, claim, ModelPermissions};
+
+ModelPermissions::new()
+    .grant(
+        "user",
+        read()
+            .all_columns()
+            .rows(col("owner_id").eq(claim("x-user-id"))),
+    )
+    .grant("admin", read().all_columns()) // all rows
+    .grant("anonymous", read().columns(["id", "status"]));
+```
+
+Row predicates can bind session claims (`claim("x-user-id")`, …) so multi-tenant
+RLS lives in the engine, not ad-hoc handler SQL.
+
+### Identity (first-class OIDC)
+
+Auth is a **built-in GraphQL concern**, not a separate product you wire after the
+fact. The engine validates tokens, maps claims into a `microsvc::Session`, and
+feeds the same claim map into RLS (`claim("x-user-id")`, roles, …). Modes live
+under [`src/graphql/identity/`](src/graphql/identity/):
+
+| Mode | When to use |
+|---|---|
+| **`OidcBearer`** | **Default for public edges:** JWT access tokens (`Authorization: Bearer …`), JWKS (incl. discovery), iss/aud/exp/nbf, alg allowlist (no `alg=none`), claim → engine roles. Configure with `OIDC_ISSUER` / `OIDC_AUDIENCE` (and related). |
+| **`TrustedProxy`** | Mesh/gateway already authenticated; inject trusted headers, strip client spoofing. |
+| **`Hybrid`** | Bearer when present, else trusted proxy headers. |
+| **`DevHeaders`** | Local only: ambient `x-user-id` / `x-roles`. **Never** on a public edge. |
+
+Scaffolds prefer **`OidcBearer`** whenever OIDC env is set — not DevHeaders.
+
+**Provider-portable by design.** Live compose + bootstrap + e2e binaries ship for:
+
+- **Zitadel** — `tests/graphql_oidc_zitadel` + `scripts/oidc-zitadel-up.sh` (JWT-bearer mint; also powers e2e-ui login)
+- **Keycloak** — `tests/graphql_oidc_keycloak` + `scripts/oidc-keycloak-up.sh` (client_credentials + realm roles)
+- **Authentik** — `tests/graphql_oidc_authentik` + `scripts/oidc-authentik-up.sh` (client_credentials + groups)
+
+Shared assertions (E1–E8): discovery/JWKS, happy path, role isolation, multi-audience / `azp`, expired and forged tokens, etc. Generic OIDC also works for SaaS IdPs (e.g. Okta) without a dedicated compose stack.
+
+**WebSocket subscriptions:** browsers cannot set `Authorization` on the upgrade.
+Clients send the access token in `connection_init` (`authorization` /
+`accessToken` / nested headers). Do not put long-lived tokens in query strings
+for production. e2e-ui chat demonstrates the OIDC path.
+
+> **Note:** Raw microsvc HTTP/gRPC routes still treat `Session` as opaque unless
+> you terminate auth at a proxy **or** put the public API on GraphQL
+> (`OidcBearer`). The GraphQL edge is where first-class token validation lives.
+
+### Command mutations vs HTTP commands
+
+Command fields on the GraphQL schema are an RPC facade: same guards, same
+handlers, same outbox/projector path as other transports. Prefer a
+**GraphQL-only public API** for browser apps (`.without_http_command_routes()`)
+so the edge is one protocol. Handler guards should require a session user
+(and role where needed); never trust client-supplied owner fields over the
+session principal.
+
+### Live subscriptions
+
+After projectors commit read-model rows, a `ChangeHub` invalidates matching
+subscriptions so clients receive updated lists without polling. Wire projectors
+to the same pool the engine uses; the e2e-ui chat subscription is the reference.
+
+### GraphiQL
+
+```bash
+cargo run --example graphiql --features "graphql,sqlite"
+# open http://127.0.0.1:4000/graphql  (override with GRAPHIQL_ADDR)
+```
+
+GraphiQL is a **developer** tool. Default headers in the playground trust
+`x-roles` / `x-user-id` (DevHeaders-style). For real services:
+
+- Prefer **`graphiql(false)`** or env policy (`GRAPHIQL=0`, production
+  `RUST_ENV` / `graphiql_enabled_from_env`) so production never ships the IDE.
+- Treat GraphiQL + DevHeaders as local-only; pair public scaffolds with
+  `OidcBearer`.
+
+### Client surfaces, generated artifacts, and CI
+
+```bash
+# Optional human-readable GraphQL SDL artifact
+dctl schema --format graphql --out schema.graphql
+git diff --exit-code schema.graphql   # drift gate
+```
+
+The Rust `Service` inventory and GraphQL `Surface` IR are the source of truth
+for schema, authorization, commands, optimistic effects, and client artifacts.
+`dctl client-manifest` exports one role or named application surface, and
+`dctl client` compiles that manifest with co-located `.graphql` operations into
+typed query/live/command modules. Common and elevated applications use separate
+manifest entrypoints, document sets, generated directories, virtual modules,
+and request-local replicas; an admin superset is never bundled into the common
+client.
+
+In `tests/e2e-ui`:
+
+```bash
+make gen-client    # Rust Service + ui/distributed.config.js → user/admin clients
+make check-client  # byte/file-set drift gate; never rewrites
+```
+
+See [`js/README.md`](js/README.md) for the package API and
+[`tests/e2e-ui/README.md`](tests/e2e-ui/README.md) for the complete integration
+flow.
+
+### Full-stack template (`tests/e2e-ui`)
+
+Copyable product shape (not a toy workshop): multi-crate domains, GraphQL-only
+edge, real OIDC, SSR, live subscriptions, and a teaching **Blob** aggregate that
+uses `Atomic<BlobGames>` (direct placement: same mutation IR as
+eventual, applied in the command handler so the response can carry the row —
+no async blob event handler).
+
+| Piece | Role |
+|---|---|
+| Domain crates | Pure aggregates: todos, chat, blob |
+| Read models | Eventual projector rows (todos/chat) *and* handler-owned `Atomic` rows (blob) — one mutation IR, different apply site |
+| GraphQL edge | Owner RLS, admin surfaces, joins to `auth_users`, chat live sub, blob commands |
+| Identity | Zitadel + Auth.js (PKCE), optional Zitadel user-scrape → `auth_users` |
+| SvelteKit | `$distributed` / `$distributed/admin`, SSR from co-located `+page.graphql`, hydration, generated live ops + optimistic commands |
+| Suite | GraphQL-only edge, IDOR, OIDC isolation, Playwright (incl. projected-move races) |
+
+```bash
+cd tests/e2e-ui
+make up && set -a && source e2e-ui.env && set +a && make run
+# UI http://127.0.0.1:5180  ·  API GraphQL http://127.0.0.1:8791/graphql
+# /todos  /chat  /blob  /admin  /login
+make test         # domain + behavioral + JS-backed UI build/typecheck/tests
+make check-client # generated user/admin clients are current
+```
+
+### TypeScript client (`js/` → `@hops-ops/distributed`)
+
+| Export | Purpose |
+|---|---|
+| `@hops-ops/distributed` | Typed documents, HTTP GraphQL client, identity helpers |
+| `…/replica` | Normalized causal replica, command runtime, projected fences |
+| `…/sveltekit` | Vite virtual modules, SSR load/hydrate, app shells |
+| `…/react` | Optional React hooks adapter |
+| `…/diagnostics` | Client diagnostics helpers |
+
+Generate app clients from the Rust surface:
+
+```bash
+dctl client-manifest …   # export role/app surface IR
+dctl client …            # compile co-located .graphql → typed modules
+```
+
+See [`js/README.md`](js/README.md) for package API and packaging.
+
+### Tests in this repo
+
+| Suite | Focus |
+|---|---|
+| `tests/graphql_*` | Engine, HTTP, SDL, dialects, harden (authz/DoS/inject), causal transport |
+| `tests/graphql_identity` | Always-on OIDC/JWT matrix (mock JWKS; no Docker) |
+| `tests/graphql_oidc_{zitadel,keycloak,authentik}` | **Live** multi-IdP e2e (compose + real JWKS; gated) |
+| `tests/typed_commands` | Eventual / Atomic / Succeeded command registration |
+| `tests/e2e-ui` | Multi-crate product template + SvelteKit + Zitadel UI login + Playwright |
+| `js/tests` | Replica, command runtime, adapters |
+| `examples/graphiql.rs` | Seeded local playground |
+
+```bash
+cargo test --test graphql_engine --features "graphql,sqlite"
+cargo test --test graphql_identity --features "graphql,sqlite"
+cargo test --test graphql_harden --features "graphql,sqlite"
+cd js && npm run quality
+# Live IdPs (optional):
+#   ./scripts/oidc-zitadel-up.sh && set -a && source graphql-oidc.env && set +a
+#   cargo test --test graphql_oidc_zitadel --features graphql,sqlite
+# Full UI matrix: cd tests/e2e-ui && make test
+```
 
 ## Snapshots
 
@@ -1564,8 +1994,15 @@ endpoint and, when paired with `--gitops`, emits Prometheus Operator
 `ServiceMonitor` and `PrometheusRule` templates for HTTP services. The generated
 values keep those CRDs disabled until an environment explicitly enables them.
 Bus-only and worker services can expose the same registry on a side port with
-`distributed::metrics::serve_http`. See [`docs/metrics.md`](docs/metrics.md) for
-metric names, label rules, and GitOps details.
+`distributed::metrics::serve_http("0.0.0.0:9100", Some("orders-worker")).await?`,
+or compose `distributed::metrics::http_router_for_service("orders-worker")` into
+an existing Axum app. Scrape `GET /metrics` (Prometheus text). Keep `/metrics` on
+a **private** listener — unauthenticated by design.
+
+**Label policy (closed set):** `service`, `message_kind`, `message`, `status`,
+`transport`, `outcome`, `failure_class`, `action`, plus GraphQL `root_field` when
+applicable. Do **not** label metrics with `user_id`, `tenant_id`, free-form paths,
+or raw command input (unknown commands bucket as `message=unknown`).
 
 `describe`/`schema` compile your crate and call its `distributed_manifest()`
 entrypoint (override with `--entrypoint`), which registers the [read
@@ -1602,6 +2039,7 @@ src/
   commit_builder/ # Transactional batches for aggregates, outbox, and read models
   emitter/        # In-process event emitter helpers (feature = "emitter")
   entity/         # Entity, event records, metadata, upcasting codecs
+  graphql/        # Query service: engine, permissions, identity, SDL, HTTP/WS (feature = "graphql")
   in_memory_repo/   # In-memory repository (implements every async trait)
   lock/           # Lock + lock manager traits, in-memory locks
   microsvc/       # Command/event handler framework: service, context, session
@@ -1616,12 +2054,8 @@ src/
   lib.rs          # Public exports
 distributed_macros/
   src/            # Proc macros: sourced, digest, aggregate, enqueue, ReadModel, Snapshot
-docs/
-  repositories.md
-  transports.md
-  read-models.md
-  postgres-event-store.md
-  research-and-roadmap.md
+js/               # @hops-ops/distributed JS/TS client, command runtime, and SvelteKit adapter
+tests/e2e-ui/     # Full-stack CQRS + GraphQL + SvelteKit template (nested workspace)
 migrations/       # Explicit SQLite and Postgres migrations
 compose.yaml      # Local postgres / rabbitmq / kafka / nats for integration tests
 ```
@@ -1676,19 +2110,27 @@ CI also publishes `lcov.info` as a workflow artifact and attempts an optional Co
 
 ## Examples
 
-- `tests/sourced/` — `#[sourced]` macro with typed event enum, `TryFrom`, and aggregate hydration
-- `tests/sourced_upcasting/` — `#[sourced]` with upcasters (v1→v2→v3 chains)
-- `tests/sourced_enqueue/` — `#[sourced(entity, enqueue)]` integrated choreography (`--features emitter`)
-- `tests/sourced_snapshot/` — `#[derive(Snapshot)]` with custom ID keys, `serde(skip)` exclusion, and custom entity fields
-- `tests/snapshots/` — snapshot creation, loading, and partial replay
-- `tests/upcasting/` — event versioning with v1→v2→v3 upcasters, chaining, and snapshot integration
-- `tests/read_models/` — relational read-model projections and atomic commits
-- `tests/distributed_read_model/` — multi-service projection over the bus + persistence matrix
-- `tests/microsvc/` — async handlers, dispatch, session, convention, HTTP, gRPC, and bus transports
-- `tests/sagas/` — saga orchestration and choreography with the outbox pattern
-- `tests/sqlite_repository/`, `tests/postgres_repository/` — durable SQL adapters
-- `tests/transport_conformance/`, `tests/{nats,rabbitmq,kafka,postgres,sqlite}_transport/`, `tests/knative_cloudevents/` — transport adapters and the shared conformance harness
+**Start here (product demos):** [See it run](#see-it-run) — e2e-ui (`tests/e2e-ui`),
+Blob game, live chat, GraphiQL.
+
+| Path | What it showcases |
+|---|---|
+| [`tests/e2e-ui/`](tests/e2e-ui/) | Full-stack CQRS + GraphQL + OIDC + SvelteKit (todos, chat, blob) |
+| [`js/`](js/) | `@hops-ops/distributed` — transport, causal replica, SvelteKit/React |
+| [`examples/graphiql.rs`](examples/graphiql.rs) | Seeded GraphQL playground (`--features "graphql,sqlite"`) |
+| `tests/graphql_*` | Engine, HTTP/WS, harden, identity, multi-IdP OIDC |
+| `tests/typed_commands/` | Eventual / `Atomic` / `Succeeded` command registration |
+| `tests/microsvc/` | Handlers on HTTP, gRPC, bus, session |
+| `tests/read_models/`, `tests/distributed_read_model/` | Atomic vs eventual projections |
+| `tests/sourced*` / `tests/snapshots/` / `tests/upcasting/` | Macros, snapshots, event versioning |
+| `tests/sagas/` | Orchestration + choreography with the outbox |
+| `tests/*_transport/`, `tests/knative_cloudevents/` | Broker adapters + conformance |
 
 ## License
 
-MIT. See `LICENSE`.
+## License
+
+The Rust workspace metadata declares its crates as MIT licensed, but this
+repository does not currently contain a top-level license file. The npm package
+therefore remains `UNLICENSED` until maintainers explicitly choose and add its
+license.

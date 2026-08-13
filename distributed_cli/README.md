@@ -102,6 +102,62 @@ compile the target crate, they need the local `distributed` crate to be
 resolvable — found automatically from the workspace, or pass `--distributed-path`
 / set `DISTRIBUTED_PATH`.
 
+## `dctl client-manifest` — authorized client surface
+
+```bash
+dctl client-manifest > target/distributed-client.json
+```
+
+Compiles the service's `distributed_client_surface` export into the versioned,
+role/application-selected manifest used by the operation compiler. The export
+already contains one concrete role or named application surface; it is not an
+admin catalog that downstream tools filter themselves.
+
+## `dctl client` — typed query, live, and command artifacts
+
+```bash
+dctl client \
+  --manifest target/distributed-client.json \
+  --role user \
+  --documents 'src/**/*.graphql' \
+  --out src/generated/distributed
+
+# CI: parse, validate, and compare without writing
+dctl client \
+  --manifest target/distributed-client.json \
+  --role user \
+  --documents 'src/**/*.graphql' \
+  --out src/generated/distributed \
+  --check
+```
+
+The requested `--role` or `--surface` must exactly match the manifest's
+authorized identity. Generation validates the GraphQL documents, injects only
+authorized wire-only identity metadata, derives an exact live companion for
+`@live`, and emits framework-neutral TypeScript replica artifacts alongside the
+manifest-owned command and protocol operations. Operation IDs hash the exact
+full document sent over GraphQL; they do not imply an APQ/persisted-operation
+registry.
+
+Each operation artifact also contains the closed variable/input codec compiled
+from that selected surface. The runtime applies GraphQL singleton-list coercion,
+canonical scalar encoding, unknown-field rejection, and deterministic deep
+freezing before variables can identify a cache entry or reach the network.
+Manifest v7 and variable codec v2 carry the selected service's exact
+`max_depth`, `max_bool_width`, and `max_in_list` contract. Static literal and
+mixed-variable filters are rejected during generation when their known shape
+exceeds those limits; runtime variables carry per-use `filterBaseDepth` and
+`maxItems` constraints. Reused variables receive the most restrictive
+intersection across every root, relationship selection, and aggregate use.
+The current query surface supports complete and offset-window roots; cursor
+artifacts are not certified and therefore fail closed to revalidation.
+
+`@load` is discovered automatically for `src/routes/**/+page.graphql`. A
+co-located document with a different filename can use the explicit fallback
+`--route OperationName=/route`. Unsupported or unprovable selections fail at
+build time with their source location; the compiler does not emit a partial
+normalization plan.
+
 ## `dctl describe` — manifest as JSON
 
 ```bash

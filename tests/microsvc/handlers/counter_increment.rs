@@ -1,11 +1,10 @@
 //! Handler: counter.increment
 
 use distributed::microsvc::{Context, HandlerError};
-use distributed::OutboxMessage;
 use serde::Deserialize;
 use serde_json::{json, Value};
 
-use super::Repo;
+use super::{counter_state_message, Repo};
 use crate::models::counter::Counter;
 
 pub const COMMAND: &str = "counter.increment";
@@ -31,7 +30,7 @@ pub async fn handle(ctx: &Context<'_, Repo>) -> Result<Value, HandlerError> {
 
     counter.increment(input.amount)?;
 
-    let message = OutboxMessage::domain_event("counter.incremented", &counter)?;
+    let message = counter_state_message(&counter, "counter.incremented")?;
 
     ctx.repo().outbox(message).commit(&mut counter).await?;
 

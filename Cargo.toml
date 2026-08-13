@@ -1,5 +1,6 @@
 [workspace]
 members = ["distributed_macros", "distributed_cli"]
+exclude = ["tests/e2e-ui"]
 resolver = "2"
 
 [workspace.package]
@@ -26,48 +27,63 @@ categories = ["data-structures", "database"]
 [lib]
 path = "src/lib.rs"
 
+[[example]]
+name = "graphiql"
+path = "examples/graphiql.rs"
+required-features = ["graphql", "sqlite"]
+
 [features]
 default = []
 emitter = ["dep:event-emitter-rs"]
 metrics = []
 http = ["dep:axum", "dep:reqwest", "dep:tokio"]
 grpc = ["dep:tonic", "dep:tonic-prost", "dep:prost", "dep:tokio"]
-postgres = ["dep:sqlx", "dep:tokio", "sqlx/postgres", "sqlx/migrate", "sqlx/runtime-tokio"]
-sqlite = ["dep:sqlx", "dep:tokio", "sqlx/migrate", "sqlx/runtime-tokio", "sqlx/sqlite"]
+postgres = ["dep:sqlx", "dep:tokio", "sqlx/postgres", "sqlx/migrate", "sqlx/runtime-tokio", "sqlx/json"]
+sqlite = ["dep:sqlx", "dep:tokio", "sqlx/migrate", "sqlx/runtime-tokio", "sqlx/sqlite", "sqlx/json"]
 nats = ["dep:async-nats", "dep:futures", "dep:tokio"]
 rabbitmq = ["dep:lapin", "dep:futures", "dep:tokio"]
 kafka = ["dep:rdkafka", "dep:tokio"]
 otel = ["dep:opentelemetry", "dep:opentelemetry_sdk", "dep:tracing", "dep:tracing-opentelemetry"]
+graphql = ["dep:async-graphql", "dep:async-graphql-axum", "dep:hmac", "dep:jsonwebtoken", "http", "axum?/ws"]
 
 [dependencies]
 async-nats = { version = "0.49", optional = true }
+async-graphql = { version = "7", optional = true }
+async-graphql-axum = { version = "7", optional = true }
 axum = { version = "0.8", optional = true }
 base64 = "0.22.1"
 futures = { version = "0.3", optional = true }
 lapin = { version = "4", optional = true }
 rdkafka = { version = "0.39", features = ["cmake-build", "tokio"], optional = true }
-reqwest = { version = "0.13", default-features = false, optional = true }
+reqwest = { version = "0.13", default-features = false, features = ["rustls"], optional = true }
+jsonwebtoken = { version = "9", optional = true }
 bitcode = { version = "0.6.9", features = ["serde"] }
 event-emitter-rs = { version = "0.1.4", optional = true }
 futures-util = { version = "0.3", default-features = false, features = ["alloc"] }
+hmac = { version = "0.12", optional = true }
 opentelemetry = { version = "0.32", default-features = false, features = ["trace"], optional = true }
 opentelemetry_sdk = { version = "0.32", default-features = false, features = ["trace"], optional = true }
 serde = { version = "1.0.210", features = ["derive"] }
 serde_json = "1.0.128"
+sha2 = "0.10"
 distributed_macros = { workspace = true }
 sqlx = { version = "0.9", default-features = false, optional = true }
 tonic = { version = "0.14", default-features = false, features = ["router", "transport", "codegen"], optional = true }
 tonic-prost = { version = "0.14", optional = true }
 prost = { version = "0.14", optional = true }
-tokio = { version = "1", features = ["rt-multi-thread", "net", "macros", "time"], optional = true }
+tokio = { version = "1", features = ["rt-multi-thread", "net", "macros", "time", "sync"], optional = true }
 tracing = { version = "0.1", optional = true }
 tracing-opentelemetry = { version = "0.33", default-features = false, optional = true }
+uuid = { version = "1", features = ["v7"] }
 
 [build-dependencies]
 tonic-build = { version = "0.14", default-features = false, features = ["transport"] }
 
 [dev-dependencies]
 axum = "0.8"
+distributed_cli = { path = "distributed_cli" }
+tower = { version = "0.5", features = ["util"] }
+http-body-util = "0.1"
 # OTLP export e2e (tests/otel_export): a real SDK pipeline pointed at a
 # collector container, exercising the `otel` feature the way a service binary
 # would. Keep versions in lockstep with the optional `otel` feature deps.
@@ -77,6 +93,9 @@ proptest = "1"
 prost = "0.14"
 reqwest = { version = "0.13", features = ["json"] }
 serde_json = "1.0"
-tokio = { version = "1", features = ["full"] }
+tokio = { version = "1", features = ["full", "test-util"] }
 tokio-stream = "0.1"
+tokio-tungstenite = "0.29"
 tonic = { version = "0.14", default-features = false, features = ["router", "transport", "codegen"] }
+rsa = "0.9"
+rand = "0.8"

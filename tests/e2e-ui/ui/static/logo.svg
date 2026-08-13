@@ -1,0 +1,77 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 200 240" fill="none">
+  <defs>
+    <style>
+      .navy { fill: #1a2744; }
+      .orange { fill: #e69a2d; }
+      .white { fill: #ffffff; }
+      .navy-stroke { stroke: #1a2744; fill: none; stroke-width: 4; stroke-linecap: round; stroke-linejoin: round; }
+      .orange-stroke { stroke: #e69a2d; fill: none; stroke-width: 4; stroke-linecap: round; }
+    </style>
+  </defs>
+
+  <!-- Motion lines (speed streaks) -->
+  <g class="navy">
+    <polygon points="45,95 20,115 23,120 50,98"/>
+    <polygon points="38,105 8,130 12,136 43,109"/>
+    <polygon points="33,117 0,147 5,153 38,121"/>
+    <polygon points="30,130 5,158 10,163 35,134"/>
+  </g>
+
+  <!-- Shoe sole outline -->
+  <path class="navy" d="M40,130 Q60,145 90,148 Q130,150 160,130 Q175,118 170,105 Q165,95 145,95 L50,105 Q35,110 40,130 Z"/>
+
+  <!-- Shoe body (white fill) -->
+  <path class="white" d="M55,100 Q70,75 95,60 Q115,50 135,55 Q155,62 165,80 Q170,95 160,105 L145,95 Q140,85 125,80 Q105,75 85,85 Q70,92 60,105 Z"/>
+
+  <!-- Shoe body outline -->
+  <path class="navy-stroke" d="M55,100 Q70,75 95,60 Q115,50 135,55 Q155,62 165,80 Q170,95 160,105"/>
+
+  <!-- Midsole stripe -->
+  <path class="navy" d="M48,115 Q75,125 110,125 Q145,125 165,115 L162,108 Q140,118 110,118 Q80,118 52,108 Z"/>
+
+  <!-- Orange accent on shoe side -->
+  <path class="orange" d="M75,85 Q90,78 110,80 Q125,82 135,90 L130,95 Q120,88 105,86 Q90,85 78,90 Z"/>
+
+  <!-- Tongue -->
+  <path class="white" d="M120,55 Q125,40 135,30 Q140,25 145,28 Q150,32 148,42 Q145,55 140,65 Z"/>
+  <path class="navy-stroke" d="M120,55 Q125,40 135,30 Q140,25 145,28 Q150,32 148,42 Q145,55 140,65"/>
+
+  <!-- Tongue detail lines -->
+  <path stroke="#1a2744" fill="none" stroke-width="2" d="M128,40 Q133,38 137,40"/>
+  <path stroke="#1a2744" fill="none" stroke-width="2" d="M126,48 Q132,45 138,48"/>
+
+  <!-- Collar/ankle area -->
+  <path class="navy-stroke" d="M135,55 Q150,50 160,60 Q168,70 165,80"/>
+
+  <!-- Laces - curvy lines -->
+  <g stroke="#1a2744" fill="none" stroke-width="3" stroke-linecap="round">
+    <path d="M105,62 Q115,58 125,62"/>
+    <path d="M100,70 Q112,65 122,70"/>
+    <path d="M95,78 Q108,72 118,78"/>
+  </g>
+
+  <!-- Lace loops at top -->
+  <g stroke="#1a2744" fill="none" stroke-width="2.5" stroke-linecap="round">
+    <path d="M130,58 Q138,52 145,58 Q148,62 145,68"/>
+    <path d="M148,42 Q155,38 160,45 Q162,52 158,58"/>
+  </g>
+
+  <!-- Heel counter -->
+  <path class="orange" d="M160,85 Q165,92 163,102 L158,100 Q160,92 157,87 Z"/>
+
+  <!-- "hops" text -->
+  <g class="navy">
+    <!-- h -->
+    <path d="M32,175 L32,210 L38,210 L38,195 Q38,188 45,188 L50,188 L50,210 L56,210 L56,182 Q56,175 48,175 L45,175 Q38,175 38,182 L38,175 Z"/>
+    <!-- o -->
+    <path d="M62,182 Q62,175 72,175 L78,175 Q88,175 88,182 L88,203 Q88,210 78,210 L72,210 Q62,210 62,203 Z M68,183 L68,202 Q68,205 72,205 L78,205 Q82,205 82,202 L82,183 Q82,180 78,180 L72,180 Q68,180 68,183 Z"/>
+    <!-- p -->
+    <path d="M94,175 L94,225 L100,225 L100,210 L108,210 Q118,210 118,203 L118,182 Q118,175 108,175 Z M100,180 L106,180 Q112,180 112,183 L112,202 Q112,205 106,205 L100,205 Z"/>
+    <!-- s -->
+    <path d="M124,175 L124,180 L140,180 Q144,180 144,183 L144,188 Q144,191 140,191 L130,191 Q124,191 124,198 L124,203 Q124,210 130,210 L148,210 L148,205 L132,205 Q128,205 128,202 L128,198 Q128,195 132,195 L142,195 Q148,195 148,188 L148,183 Q148,175 140,175 Z"/>
+  </g>
+
+  <!-- Orange swoosh under text -->
+  <path class="orange-stroke" stroke-width="5" d="M28,218 Q80,225 140,215 Q160,212 168,215"/>
+
+</svg>

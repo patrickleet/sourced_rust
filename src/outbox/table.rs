@@ -3,7 +3,7 @@ use std::time::{SystemTime, UNIX_EPOCH};
 use crate::outbox::{OutboxMessage, OutboxMessageStatus};
 use crate::table::{
     ColumnType, ExpectedVersion, PrimaryKey, RowKey, RowValue, RowValues, RowWriteMode,
-    TableColumn, TableIndex, TableModel, TableMutation, TableRowMutation, TableSchema,
+    TableColumn, TableIndex, TableKind, TableModel, TableMutation, TableRowMutation, TableSchema,
     TableStoreError, TableWritePlan,
 };
 
@@ -57,6 +57,7 @@ pub fn outbox_message_schema() -> &'static TableSchema {
             named_index("outbox_messages_destination_idx", ["destination", "status"]),
         ],
         relationships: Vec::new(),
+        kind: TableKind::Operational,
     });
     &SCHEMA
 }

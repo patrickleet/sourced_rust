@@ -34,11 +34,28 @@ use crate::table::{
 };
 
 static SQLITE_MIGRATOR: LazyLock<Migrator> = LazyLock::new(|| {
-    embedded_migrator(&[(
-        1,
-        "initial",
-        include_str!("../../migrations/sqlite/0001_initial.sql"),
-    )])
+    embedded_migrator(&[
+        (
+            1,
+            "initial",
+            include_str!("../../migrations/sqlite/0001_initial.sql"),
+        ),
+        (
+            2,
+            "command ledger",
+            include_str!("../../migrations/sqlite/0002_command_ledger.sql"),
+        ),
+        (
+            3,
+            "projection protocol",
+            include_str!("../../migrations/sqlite/0003_projection_protocol.sql"),
+        ),
+        (
+            4,
+            "command ledger atomic state",
+            include_str!("../../migrations/sqlite/0004_command_ledger_atomic_state.sql"),
+        ),
+    ])
 });
 const SQLITE_BACKEND: &str = "sqlite";
 const SIGNED_INTEGER_STORAGE: &str = "signed integer storage";
@@ -60,6 +77,11 @@ impl crate::sqlx_repo::repo::SqlxRepoBackend for Sqlite {
     // recovery re-reads stream versions in the same transaction.
     const CONFLICT_REREAD_IN_TX: bool = true;
     const NOW: &'static str = "CURRENT_TIMESTAMP";
+    const COMMAND_LEDGER_SELECT: &'static str = "command_name, command_contract_hash, \
+         input_hash, state, causation_id, attempt_token, attempt_number, lease_expires_at, \
+         outcome, created_at, updated_at, completed_at, retention_expires_at, compacted_at";
+    const COMMAND_LEDGER_LOCK_SUFFIX: &'static str = "";
+    const COMMAND_LEDGER_COMPACTION_LOCK_SUFFIX: &'static str = "";
     const EVENT_SELECT: &'static str = "event_name, event_version, payload, payload_codec, \
          payload_codec_version, metadata, sequence, recorded_at";
     const SNAPSHOT_SELECT: &'static str = "aggregate_type, aggregate_id, version, \
@@ -121,17 +143,45 @@ impl crate::sqlx_repo::repo::SqlxRepoBackend for Sqlite {
         builder.push_bind(epoch_secs);
     }
 
+    fn push_command_ledger_now(builder: &mut QueryBuilder<Sqlite>) {
+        builder.push("unixepoch('now','subsec')");
+    }
+
+    fn push_command_ledger_now_epoch(builder: &mut QueryBuilder<Sqlite>) {
+        builder.push("unixepoch('now','subsec')");
+    }
+
+    fn push_command_ledger_deadline(builder: &mut QueryBuilder<Sqlite>, duration: Duration) {
+        builder.push("(unixepoch('now','subsec') + ");
+        builder.push_bind(duration.as_secs_f64());
+        builder.push(")");
+    }
+
+    fn push_command_ledger_deadline_is_live(builder: &mut QueryBuilder<Sqlite>, deadline: &String) {
+        builder.push("CAST(");
+        builder.push_bind(deadline.as_str());
+        builder.push(" AS REAL) > unixepoch('now','subsec')");
+    }
+
+    fn push_command_ledger_json(builder: &mut QueryBuilder<Sqlite>, json: &str) {
+        builder.push_bind(json);
+    }
+
     fn decode_timestamp(
         row: &SqliteRow,
         column: &'static str,
     ) -> Result<SystemTime, RepositoryError> {
-        system_time_from_storage(
-            row.try_get::<String, _>(column)
-                .map_err(|err| {
-                    repository_storage_error(&format!("decode {column} timestamp row"), err)
-                })?
-                .as_str(),
-        )
+        match row.try_get::<String, _>(column) {
+            Ok(value) => system_time_from_storage(&value),
+            Err(string_err) => {
+                let value = row.try_get::<f64, _>(column).map_err(|float_err| {
+                    RepositoryError::Model(format!(
+                        "decode {column} timestamp row failed as sqlite text ({string_err}) and real ({float_err})"
+                    ))
+                })?;
+                system_time_from_epoch_secs(value)
+            }
+        }
     }
 
     fn decode_optional_timestamp(

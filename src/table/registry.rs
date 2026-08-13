@@ -4,7 +4,7 @@ use std::collections::{BTreeMap, BTreeSet};
 
 use crate::read_model::RelationalReadModel;
 
-use super::{RelationshipKind, TableSchema, TableStoreError};
+use super::{RelationshipDef, RelationshipKind, TableSchema, TableStoreError};
 
 /// Registry of table schemas an adapter should manage.
 #[derive(Clone, Debug, Default, PartialEq, Eq)]
@@ -178,22 +178,41 @@ impl TableSchemaRegistry {
                     }
                 }
                 RelationshipKind::ManyToMany => {
-                    if let Some(through) = relationship.through.as_deref() {
-                        let through_schema = self.schema_for_table(through).ok_or_else(|| {
-                            TableStoreError::Metadata(format!(
-                                "model `{}` relationship `{}` references unavailable join table `{}`",
-                                schema.model_name, relationship.field_name, through
-                            ))
-                        })?;
-                        if !schema_has_column_or_field(through_schema, foreign_key) {
-                            return Err(TableStoreError::Metadata(format!(
-                                "model `{}` relationship `{}` foreign key `{}` is not a column on join table `{}`",
-                                schema.model_name,
-                                relationship.field_name,
-                                foreign_key,
-                                through
-                            )));
-                        }
+                    let through = relationship.through.as_deref().ok_or_else(|| {
+                        TableStoreError::Metadata(format!(
+                            "model `{}` relationship `{}` many-to-many must declare `through`",
+                            schema.model_name, relationship.field_name
+                        ))
+                    })?;
+                    let through_schema = self.schema_for_table(through).ok_or_else(|| {
+                        TableStoreError::Metadata(format!(
+                            "model `{}` relationship `{}` references unavailable join table `{}`",
+                            schema.model_name, relationship.field_name, through
+                        ))
+                    })?;
+                    if !schema_has_column_or_field(through_schema, foreign_key) {
+                        return Err(TableStoreError::Metadata(format!(
+                            "model `{}` relationship `{}` foreign key `{}` is not a column on join table `{}`",
+                            schema.model_name,
+                            relationship.field_name,
+                            foreign_key,
+                            through
+                        )));
+                    }
+                    let target_fk = resolve_m2m_target_foreign_key(
+                        schema,
+                        relationship,
+                        through_schema,
+                        target_schema,
+                    )?;
+                    if !schema_has_column_or_field(through_schema, &target_fk) {
+                        return Err(TableStoreError::Metadata(format!(
+                            "model `{}` relationship `{}` target_foreign_key `{}` is not a column on join table `{}`",
+                            schema.model_name,
+                            relationship.field_name,
+                            target_fk,
+                            through
+                        )));
                     }
                 }
             }
@@ -245,6 +264,63 @@ fn schema_has_column_or_field(schema: &TableSchema, name: &str) -> bool {
         .columns
         .iter()
         .any(|column| column.column_name == name || column.field_name == name)
+}
+
+/// Resolve the join-table column that references the target model for m2m.
+///
+/// When `target_foreign_key` is set, validates non-empty and returns it.
+/// Otherwise infers the unique join column whose FK targets the target table,
+/// excluding the source-side `foreign_key` column from candidacy.
+pub fn resolve_m2m_target_foreign_key(
+    source: &TableSchema,
+    relationship: &RelationshipDef,
+    through_schema: &TableSchema,
+    target_schema: &TableSchema,
+) -> Result<String, TableStoreError> {
+    if let Some(explicit) = relationship.target_foreign_key.as_deref() {
+        if explicit.is_empty() {
+            return Err(TableStoreError::Metadata(format!(
+                "model `{}` relationship `{}` target_foreign_key must not be empty",
+                source.model_name, relationship.field_name
+            )));
+        }
+        return Ok(explicit.to_string());
+    }
+
+    let source_fk = relationship.foreign_key.as_deref().unwrap_or_default();
+    let candidates: Vec<&str> = through_schema
+        .columns
+        .iter()
+        .filter(|column| {
+            column.column_name != source_fk
+                && column.field_name != source_fk
+                && column
+                    .foreign_key
+                    .as_ref()
+                    .is_some_and(|fk| fk.table == target_schema.table_name)
+        })
+        .map(|column| column.column_name.as_str())
+        .collect();
+
+    match candidates.as_slice() {
+        [only] => Ok((*only).to_string()),
+        [] => Err(TableStoreError::Metadata(format!(
+            "model `{}` relationship `{}` cannot infer target_foreign_key on join table `{}` \
+             (no remaining column FK targets `{}`); declare `target_foreign_key` explicitly",
+            source.model_name,
+            relationship.field_name,
+            through_schema.table_name,
+            target_schema.table_name
+        ))),
+        many => Err(TableStoreError::Metadata(format!(
+            "model `{}` relationship `{}` cannot infer target_foreign_key on join table `{}` \
+             (ambiguous candidates: {}); declare `target_foreign_key` explicitly",
+            source.model_name,
+            relationship.field_name,
+            through_schema.table_name,
+            many.join(", ")
+        ))),
+    }
 }
 
 /// Schema lifecycle operations an adapter can support.

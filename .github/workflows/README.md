@@ -11,10 +11,12 @@ existing unbounded-tech quality provider plus the integration/* jobs below —
 |----------|-----------------|----------|
 | [`quality.yaml`](./quality.yaml) | yes | **Consumers:** fmt → clippy → build → test + coverage (sticky PR comment) |
 | [`test-all-features.yaml`](./test-all-features.yaml) | yes | **This repo:** workspace `--all-features` |
-| [`integration-*.yaml`](./) | yes | **This repo:** broker / DB / CLI / observability |
+| [`integration-*.yaml`](./) | yes | **This repo:** broker / DB / CLI / observability / GraphQL identity+OIDC |
+| [`integration-e2e-ui.yaml`](./integration-e2e-ui.yaml) | yes | **This repo:** `tests/e2e-ui` offline suite + Playwright browser e2e |
+| [`integration-js.yaml`](./integration-js.yaml) | yes | **This repo:** install, typecheck, test, build, and packed-consumer smoke test for `js/` |
 | [`on-pr-quality.yaml`](./on-pr-quality.yaml) | entry | **This repo** PR gate (not the consumer quality contract) |
 | [`on-push-main-version-and-tag.yaml`](./on-push-main-version-and-tag.yaml) | entry | **This repo** main → **vnext** tag |
-| [`on-v-tag-publish.yaml`](./on-v-tag-publish.yaml) | entry | **This repo** crates.io + `dctl` binary release |
+| [`on-v-tag-publish.yaml`](./on-v-tag-publish.yaml) | entry | **This repo** crates.io + npm + `dctl` binary release |
 
 **Version tagging (anywhere):** `unbounded-tech/workflow-vnext-tag`  
 **GitHub Release only (domain crates):** `unbounded-tech/workflow-simple-release`
@@ -90,12 +92,46 @@ jobs:
 
 **Pinning:** prefer a released tag once cut (`@vX.Y.Z` or git SHA). During development of quality, `@feat/shared-workflows` is fine.
 
+## npm release setup
+
+Version tags publish the package under [`js/`](../../js/) to npm as
+`@hops-ops/distributed`. The tag must have the exact form `vX.Y.Z`; the workflow
+uses `X.Y.Z` for both `js/package.json` and `js/package-lock.json`, runs the same
+package quality gate used on pull requests, and publishes with npm provenance.
+
+Configure an npm **Trusted Publisher** for `@hops-ops/distributed` with these
+exact GitHub Actions coordinates:
+
+- Organization or user: `hops-ops`
+- Repository: `distributed`
+- Workflow filename: `on-v-tag-publish.yaml`
+- Environment: `npm`
+- Allowed action: `npm publish`
+
+Trusted Publisher configuration is available only after the npm package exists.
+One-time bootstrap (already completed for this repo):
+
+1. Publish a throwaway non-release version such as `0.0.0` for
+   `@hops-ops/distributed` on the public npm registry.
+2. Configure the npm Trusted Publisher using the exact coordinates above
+   (`npm trust github @hops-ops/distributed --file on-v-tag-publish.yaml
+   --repo hops-ops/distributed --env npm --allow-publish`).
+3. Create the GitHub `npm` deployment environment (optional protection rules:
+   tag pattern `v*`, required reviewers).
+
+Release preflight validates the tag form and that `@hops-ops/distributed`
+exists on the public registry before any npm or crates.io write starts. Tagged
+npm releases authenticate through GitHub Actions OIDC. The workflow
+intentionally has job-scoped `id-token: write`, uses npm 11.5.1 or newer, and
+does **not** require or accept a long-lived `NPM_TOKEN` repository secret.
+
 ## Why this monorepo doesn’t call `quality.yaml`
 
 The framework workspace needs a different gate: default-features tests via
 unbounded quality (or similar), plus **all-features**, Postgres/NATS/Kafka/…
-integrations, and CLI/observability jobs. Consumer domain crates are single
-packages (or small libs) and only need the reusable quality contract.
+integrations, CLI/observability, and GraphQL identity/OIDC jobs. Consumer
+domain crates are single packages (or small libs) and only need the reusable
+quality contract.
 
 ## Out of scope (for now)
 

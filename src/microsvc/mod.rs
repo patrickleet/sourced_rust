@@ -55,25 +55,45 @@
 //! }
 //! ```
 
+mod causal;
 mod context;
 mod dependencies;
 mod error;
 mod message_router;
+mod projector;
 mod runtime;
 mod service;
 mod session;
 
 pub use crate::bus::{Message, MessageKind, PayloadDecodeError, SubscriptionPlan};
+pub use causal::AggregateCheckout;
 pub use context::Context;
 pub use dependencies::{
-    ConfigurableOutboxPublisher, HasOutboxStore, HasReadModelStore, HasRepo,
-    ReadModelStoreDependencies, RepoDependencies, RepoReadModelDependencies,
+    CausalProjectionRouteDependencies, CausalProjectionStore, CausalRepositoryBackend,
+    CausalRouteDependencies, ConfigurableOutboxPublisher, HasOutboxStore, HasReadModelStore,
+    HasRepo, ReadModelStoreDependencies, RepoDependencies, RepoReadModelDependencies,
 };
 pub use error::HandlerError;
+pub use projector::{
+    CausalProjectorContext, CausalProjectorRouteBuilder, LoadedProjection, ProjectionRepairHandle,
+    ProjectionRepairHandleParseError,
+};
+#[cfg(feature = "graphql")]
+pub use projector::{ModeledProjection, ModeledProjectorRouteBuilder};
 pub use runtime::{DEFAULT_MAX_PUBLISH_ATTEMPTS, DEFAULT_PUBLISH_LEASE};
+#[cfg(all(feature = "graphql", test))]
+pub(crate) use service::CausalCommandProjectionEvidence;
+#[cfg(feature = "graphql")]
+pub use service::GraphqlServiceBindError;
 pub use service::{
-    CommandRequest, CommandResponse, DeliveryKind, HandlerNames, HandlerSpec, RouteBuilder, Routes,
-    Service,
+    direct_read_model, CausalCommandContext, CausalCommitBuilder, CausalRepository, CommandRequest,
+    CommandResponse, DeliveryKind, DirectReadModelProjection, HandlerNames, HandlerSpec,
+    PreparedCausalCommit, PreparedCommandHandler, RouteBuilder, Routes, Service, TypedRouteBuilder,
+};
+#[cfg(feature = "graphql")]
+pub(crate) use service::{
+    CausalCommandProjectionObligation, CausalCommandPublicState, CausalCommandPublicStatus,
+    CausalCommandReceiptSource, CausalProjectionEvidenceState,
 };
 pub use session::{Session, ROLE_KEY, USER_ID_KEY};
 
@@ -91,6 +111,10 @@ pub const MAX_HTTP_BODY_BYTES: usize = 1024 * 1024;
 // HTTP transport (requires "http" feature)
 #[cfg(feature = "http")]
 mod http;
+#[cfg(feature = "http")]
+// session_from_headers remains available for microsvc HTTP command path.
+#[allow(unused_imports)]
+pub(crate) use http::session_from_headers;
 #[cfg(feature = "http")]
 pub use http::{router, serve};
 

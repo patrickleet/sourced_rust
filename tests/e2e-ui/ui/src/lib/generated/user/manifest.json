@@ -1,0 +1,79 @@
+{
+  "compiler_manifest_version": 1,
+  "distributed_manifest_version": 2,
+  "protocol_version": 1,
+  "service_id": "e2e-ui",
+  "surface": {
+    "kind": "application",
+    "name": "e2e-ui",
+    "roles": [
+      "admin",
+      "user"
+    ]
+  },
+  "schema_fingerprint": "sha256:081dd7d6d000e5add4aead3b9254442c5e89c076a6543c9550611d3dd6280642",
+  "protocol_fingerprint": "sha256:00fb342f3acb4dc1c1716a43cc3001c748d5f6c500ff831690d820e9e43e2782",
+  "scalar_codecs": {
+    "BigInt": "json_number_precision_limited",
+    "Boolean": "boolean",
+    "Bytea": "base64",
+    "Float": "float64",
+    "ID": "string",
+    "Int": "int32",
+    "JSON": "json",
+    "String": "string",
+    "Timestamptz": "string_unvalidated_timestamp"
+  },
+  "commands_requiring_revalidation": [
+    "blob.start",
+    "blob.start_level",
+    "todo.archive",
+    "todo.complete",
+    "todo.rename",
+    "todo.reopen"
+  ],
+  "operations": [
+    {
+      "name": "BlobGames",
+      "source_path": "src/routes/blob/[[gameId]]/+page.graphql",
+      "module_path": "operations/blob-games.ts",
+      "export_name": "Operation_BlobGames",
+      "operation_hash": "sha256:a4fa7bd07cd0202f399c6d82a9ee79e67586c5a65ee3a4098b2d84e8ef6ed4fa"
+    },
+    {
+      "name": "ChatMessages",
+      "source_path": "src/routes/chat/+page.graphql",
+      "module_path": "operations/chat-messages.ts",
+      "export_name": "Operation_ChatMessages",
+      "operation_hash": "sha256:16e82d9939a08f205efef9238393f8e4582da0e58d15ace6470d7831c0798603",
+      "live_operation_hash": "sha256:1679906f6ce4c8de83deb937cccce20561447e4f74e410d3a83d1aecebd6bd00"
+    },
+    {
+      "name": "Todos",
+      "source_path": "src/routes/todos/+page.graphql",
+      "module_path": "operations/todos.ts",
+      "export_name": "Operation_Todos",
+      "operation_hash": "sha256:df906cbf75f2d5c11256c816a3a3726f34689e5d1a57f198484396c8c3803030"
+    }
+  ],
+  "routes": [
+    {
+      "operation": "BlobGames",
+      "route": "/blob/[[gameId]]",
+      "source_path": "src/routes/blob/[[gameId]]/+page.graphql",
+      "discovery": "convention"
+    },
+    {
+      "operation": "ChatMessages",
+      "route": "/chat",
+      "source_path": "src/routes/chat/+page.graphql",
+      "discovery": "convention"
+    },
+    {
+      "operation": "Todos",
+      "route": "/todos",
+      "source_path": "src/routes/todos/+page.graphql",
+      "discovery": "convention"
+    }
+  ]
+}

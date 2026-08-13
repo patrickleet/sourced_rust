@@ -1,0 +1,11 @@
+[package]
+name = "e2e-readmodels"
+version.workspace = true
+edition.workspace = true
+publish = false
+description = "Query models, relationships, and read authorization"
+
+[dependencies]
+distributed = { workspace = true }
+serde = { workspace = true }
+serde_json = { workspace = true }

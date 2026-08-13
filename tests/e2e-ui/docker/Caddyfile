@@ -1,0 +1,20 @@
+# Host port 18080 (ExternalPort). Self-hosted Login V2 is on the same edge as
+# OIDC: authorize → /ui/v2/login/login?authRequest=V2_…  Auth.js keeps using
+# /oauth/v2/* on this host. (Official login image bakes basePath=/ui/v2/login.)
+:8080 {
+	# Login V2 Next.js (Session + User/Auth v2). Pages: /login, /register,
+	# /password, … under this base path.
+	handle /ui/v2/login* {
+		reverse_proxy zitadel-login:3000
+	}
+
+	# Console, management/auth APIs, OIDC, .well-known, /idps/callback, etc.
+	# Pin Host to ExternalDomain so internal callers hit the same instance
+	# the browser hits (Host=localhost:18080).
+	handle {
+		reverse_proxy zitadel:8080 {
+			header_up Host localhost:18080
+			header_up X-Forwarded-Host localhost:18080
+		}
+	}
+}

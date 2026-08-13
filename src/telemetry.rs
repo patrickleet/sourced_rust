@@ -3,6 +3,7 @@
 //! The constants in this module are framework-owned labels, label values, and
 //! span names. They intentionally avoid request ids, trace ids, payload fields,
 //! aggregate ids, user ids, and other high-cardinality data.
+#![allow(clippy::items_after_test_module)]
 
 use crate::bus::FailureAction;
 
@@ -25,6 +26,9 @@ pub(crate) mod metric_names {
     pub(crate) const OUTBOX_PENDING_MESSAGES: &str = "distributed_outbox_pending_messages";
     pub(crate) const OUTBOX_OLDEST_PENDING_AGE_SECONDS: &str =
         "distributed_outbox_oldest_pending_age_seconds";
+    pub(crate) const GRAPHQL_REQUEST_TOTAL: &str = "distributed_graphql_request_total";
+    pub(crate) const GRAPHQL_REQUEST_DURATION_SECONDS: &str =
+        "distributed_graphql_request_duration_seconds";
 }
 
 #[cfg(feature = "metrics")]
@@ -110,6 +114,8 @@ pub(crate) mod privacy_policy {
         super::metric_labels::FAILURE_CLASS,
         super::metric_labels::ACTION,
         super::metric_labels::LE,
+        // GraphQL query engine (specs/query-service-graphql).
+        "root_field",
     ];
 
     pub(crate) const FORBIDDEN_METRIC_LABELS: &[&str] = &[
@@ -149,7 +155,12 @@ pub(crate) fn handler_error_status(error: &HandlerError) -> &'static str {
         HandlerError::Rejected(_) => dispatch_status::REJECTED,
         HandlerError::NotFound(_) => dispatch_status::NOT_FOUND,
         HandlerError::Unauthorized(_) => dispatch_status::UNAUTHORIZED,
-        HandlerError::Repository(_) => dispatch_status::REPOSITORY_ERROR,
+        HandlerError::Repository(_)
+        | HandlerError::Projection(_)
+        | HandlerError::UnqualifiedProjectionDelivery(_)
+        | HandlerError::ProjectionRepairPending { .. }
+        | HandlerError::ProjectionTerminalRecorded { .. }
+        | HandlerError::ProjectionDeliveryHalted { .. } => dispatch_status::REPOSITORY_ERROR,
         HandlerError::GuardRejected(_) => dispatch_status::GUARD_REJECTED,
         HandlerError::Other(_) => dispatch_status::OTHER_ERROR,
     }

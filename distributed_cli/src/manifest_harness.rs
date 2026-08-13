@@ -1,8 +1,8 @@
-//! The manifest harness: `describe`/`schema` compile a tiny generated crate
-//! that depends on the target service, calls its `distributed_manifest()`
-//! entrypoint, and prints the manifest JSON or rendered SQL. This module owns
-//! that codegen and the nested `cargo` invocations; the `cli` module maps
-//! command flags onto [`HarnessOptions`]/[`HarnessMode`].
+//! The manifest harness: `describe`/`schema`/`client-manifest` compile a tiny
+//! generated crate that depends on the target service and calls its portable
+//! export entrypoint. This module owns that codegen and the nested `cargo`
+//! invocations; the `cli` module maps flags onto
+//! [`HarnessOptions`]/[`HarnessMode`].
 
 use serde::Deserialize;
 use std::error::Error;
@@ -28,6 +28,8 @@ pub(crate) struct HarnessOptions {
 pub(crate) enum HarnessMode {
     DescribeJson,
     SchemaSql(SchemaDialect),
+    SchemaGraphql,
+    ClientManifest,
 }
 
 impl HarnessMode {
@@ -36,6 +38,17 @@ impl HarnessMode {
             HarnessMode::DescribeJson => "describe-json",
             HarnessMode::SchemaSql(SchemaDialect::Postgres) => "schema-postgres",
             HarnessMode::SchemaSql(SchemaDialect::Sqlite) => "schema-sqlite",
+            HarnessMode::SchemaGraphql => "schema-graphql",
+            HarnessMode::ClientManifest => "client-manifest",
+        }
+    }
+
+    fn default_entrypoint(self) -> &'static str {
+        match self {
+            HarnessMode::ClientManifest => "distributed_client_surface",
+            HarnessMode::DescribeJson | HarnessMode::SchemaSql(_) | HarnessMode::SchemaGraphql => {
+                "distributed_manifest"
+            }
         }
     }
 }
@@ -54,10 +67,17 @@ pub(crate) fn run_manifest_harness(
         .entrypoint
         .clone()
         .map(|entrypoint| qualify_entrypoint(&crate_ident, &entrypoint))
-        .unwrap_or_else(|| Ok(format!("{crate_ident}::distributed_manifest")))?;
+        .unwrap_or_else(|| Ok(format!("{crate_ident}::{}", mode.default_entrypoint())))?;
     validate_rust_path(&entrypoint)?;
 
-    let harness_root = package.directory.join("target/dctl-manifest-harness");
+    // Keep the standalone harness beside workspace packages, never underneath
+    // one. A harness nested below a package that uses `workspace = true`
+    // dependencies becomes that package's nearest workspace ancestor and Cargo
+    // resolves its inherited dependencies against the generated harness.
+    let harness_root = package
+        .target_directory
+        .join("dctl-manifest-harness")
+        .join(&package.name);
     let harness_dir = harness_root.join(mode.cache_key());
     fs::create_dir_all(harness_dir.join("src"))?;
     fs::write(
@@ -166,6 +186,28 @@ fn harness_main_rs(entrypoint: &str, mode: HarnessMode) -> String {
 "#
             )
         }
+        HarnessMode::SchemaGraphql => format!(
+            r#"fn main() {{
+    let manifest = {entrypoint}();
+    let envelope = distributed::DistributedManifestEnvelope::new(manifest);
+    let sdl = envelope
+        .project
+        .graphql_sdl()
+        .expect("manifest GraphQL SDL should render");
+    print!("{{}}", sdl);
+}}
+"#
+        ),
+        HarnessMode::ClientManifest => format!(
+            r#"fn main() {{
+    let export: distributed::graphql::DistributedClientSurfaceExport = {entrypoint}();
+    let manifest = export
+        .manifest()
+        .expect("client Surface should compile into a manifest");
+    println!("{{}}", serde_json::to_string_pretty(&manifest).expect("client manifest should serialize"));
+}}
+"#
+        ),
     }
 }
 
@@ -191,6 +233,7 @@ fn resolve_target_manifest_path(
 struct CargoPackage {
     name: String,
     directory: PathBuf,
+    target_directory: PathBuf,
 }
 
 fn cargo_package(
@@ -213,6 +256,7 @@ fn cargo_package(
     }
 
     let metadata: CargoMetadata = serde_json::from_slice(&output.stdout)?;
+    let target_directory = PathBuf::from(&metadata.target_directory);
     let selected = if let Some(package_name) = package_name {
         metadata
             .packages
@@ -244,12 +288,14 @@ fn cargo_package(
     Ok(CargoPackage {
         name: selected.name,
         directory,
+        target_directory,
     })
 }
 
 #[derive(Debug, Deserialize)]
 struct CargoMetadata {
     packages: Vec<CargoMetadataPackage>,
+    target_directory: String,
 }
 
 #[derive(Debug, Deserialize)]
@@ -329,5 +375,22 @@ mod tests {
             !main_rs.contains("distributed::TableSqlDialect"),
             "main.rs: {main_rs}"
         );
+    }
+
+    #[test]
+    fn client_harness_uses_the_shared_surface_export_compiler() {
+        assert_eq!(
+            HarnessMode::ClientManifest.default_entrypoint(),
+            "distributed_client_surface"
+        );
+        let main_rs = harness_main_rs(
+            "orders_service::distributed_client_surface",
+            HarnessMode::ClientManifest,
+        );
+        assert!(main_rs.contains(
+            "let export: distributed::graphql::DistributedClientSurfaceExport = orders_service::distributed_client_surface();"
+        ));
+        assert!(main_rs.contains(".manifest()"));
+        assert!(!main_rs.contains("build_surface"));
     }
 }

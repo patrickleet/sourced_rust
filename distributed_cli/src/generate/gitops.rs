@@ -136,6 +136,21 @@ impl Scaffold {
         )
     }
 
+    /// Helm env for GraphQL query API: injects `DATABASE_URL` from chart values
+    /// when `--query-api` was set (build_with_graphql reads this at runtime).
+    fn query_api_env_yaml(&self) -> String {
+        if !self.query_api {
+            return String::new();
+        }
+
+        r#"            {{ if and .Values.queryApi.enabled .Values.queryApi.databaseUrl }}
+            - name: DATABASE_URL
+              value: {{ .Values.queryApi.databaseUrl | quote }}
+            {{ end }}
+"#
+        .to_string()
+    }
+
     fn knative_broker_names(&self) -> Vec<String> {
         let mut brokers = BTreeSet::new();
         for model in &self.models {
@@ -223,6 +238,14 @@ prometheusRule:
             ""
         };
         let tracing_enabled = self.tracing;
+        let query_api_values = if self.query_api {
+            r#"queryApi:
+  enabled: true
+  databaseUrl: ""
+"#
+        } else {
+            ""
+        };
         format!(
             r#"image:
   repository: {image_repository}
@@ -233,8 +256,7 @@ observability:
   tracing:
     enabled: {tracing_enabled}
     otlpEndpoint: ""
-{bus}{metrics}
-"#,
+{bus}{metrics}{query_api_values}"#,
             image_repository = self.image_repository(),
         )
     }
@@ -243,6 +265,7 @@ observability:
         let name = k8s_name(&self.names.package_name);
         let bus_env = self.bus_env_yaml();
         let tracing_env = self.tracing_env_yaml();
+        let query_api_env = self.query_api_env_yaml();
         format!(
             r#"apiVersion: apps/v1
 kind: Deployment
@@ -272,8 +295,7 @@ spec:
           env:
             - name: BIND_ADDR
               value: 0.0.0.0:3000
-{bus_env}{tracing_env}
-"#,
+{bus_env}{tracing_env}{query_api_env}"#,
         )
     }
 
@@ -372,6 +394,7 @@ spec:
         let name = k8s_name(&self.names.package_name);
         let bus_env = self.bus_env_yaml();
         let tracing_env = self.tracing_env_yaml();
+        let query_api_env = self.query_api_env_yaml();
         format!(
             r#"apiVersion: serving.knative.dev/v1
 kind: Service
@@ -398,8 +421,7 @@ spec:
           env:
             - name: BIND_ADDR
               value: 0.0.0.0:3000
-{bus_env}{tracing_env}
-"#,
+{bus_env}{tracing_env}{query_api_env}"#,
         )
     }
 

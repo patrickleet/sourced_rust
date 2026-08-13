@@ -33,11 +33,28 @@ use crate::table::{
 };
 
 static POSTGRES_MIGRATOR: LazyLock<Migrator> = LazyLock::new(|| {
-    embedded_migrator(&[(
-        1,
-        "initial",
-        include_str!("../../migrations/postgres/0001_initial.sql"),
-    )])
+    embedded_migrator(&[
+        (
+            1,
+            "initial",
+            include_str!("../../migrations/postgres/0001_initial.sql"),
+        ),
+        (
+            2,
+            "command ledger",
+            include_str!("../../migrations/postgres/0002_command_ledger.sql"),
+        ),
+        (
+            3,
+            "projection protocol",
+            include_str!("../../migrations/postgres/0003_projection_protocol.sql"),
+        ),
+        (
+            4,
+            "command ledger atomic state",
+            include_str!("../../migrations/postgres/0004_command_ledger_atomic_state.sql"),
+        ),
+    ])
 });
 const POSTGRES_BACKEND: &str = "postgres";
 const BIGINT_STORAGE: &str = "bigint storage";
@@ -61,6 +78,17 @@ impl crate::sqlx_repo::repo::SqlxRepoBackend for Postgres {
     // must re-read stream versions over the pool (a separate connection).
     const CONFLICT_REREAD_IN_TX: bool = false;
     const NOW: &'static str = "now()";
+    const COMMAND_LEDGER_SELECT: &'static str = "command_name, command_contract_hash, \
+         input_hash, state, causation_id, attempt_token, attempt_number, \
+         EXTRACT(EPOCH FROM lease_expires_at)::double precision AS lease_expires_at, \
+         outcome::text AS outcome, \
+         EXTRACT(EPOCH FROM created_at)::double precision AS created_at, \
+         EXTRACT(EPOCH FROM updated_at)::double precision AS updated_at, \
+         EXTRACT(EPOCH FROM completed_at)::double precision AS completed_at, \
+         EXTRACT(EPOCH FROM retention_expires_at)::double precision AS retention_expires_at, \
+         EXTRACT(EPOCH FROM compacted_at)::double precision AS compacted_at";
+    const COMMAND_LEDGER_LOCK_SUFFIX: &'static str = " FOR UPDATE";
+    const COMMAND_LEDGER_COMPACTION_LOCK_SUFFIX: &'static str = " FOR UPDATE SKIP LOCKED";
     const EVENT_SELECT: &'static str = "event_name, \
          event_version, \
          payload, \
@@ -146,6 +174,31 @@ impl crate::sqlx_repo::repo::SqlxRepoBackend for Postgres {
         builder.push(" to_timestamp(");
         builder.push_bind(epoch_secs);
         builder.push(")");
+    }
+
+    fn push_command_ledger_now(builder: &mut QueryBuilder<Postgres>) {
+        builder.push("clock_timestamp()");
+    }
+
+    fn push_command_ledger_now_epoch(builder: &mut QueryBuilder<Postgres>) {
+        builder.push("EXTRACT(EPOCH FROM clock_timestamp())::double precision");
+    }
+
+    fn push_command_ledger_deadline(builder: &mut QueryBuilder<Postgres>, duration: Duration) {
+        builder.push("(clock_timestamp() + make_interval(secs => ");
+        builder.push_bind(duration.as_secs_f64());
+        builder.push("))");
+    }
+
+    fn push_command_ledger_deadline_is_live(builder: &mut QueryBuilder<Postgres>, deadline: &f64) {
+        builder.push("to_timestamp(");
+        builder.push_bind(*deadline);
+        builder.push(") > clock_timestamp()");
+    }
+
+    fn push_command_ledger_json(builder: &mut QueryBuilder<Postgres>, json: &str) {
+        builder.push_bind(json);
+        builder.push("::jsonb");
     }
 
     fn decode_timestamp(
@@ -432,6 +485,35 @@ impl crate::sqlx_repo::read_model::SqlxReadModelBackend for Postgres {
                 )));
             }
         })
+    }
+
+    #[allow(clippy::manual_async_fn)]
+    fn push_change_notify<'e, E>(
+        executor: E,
+        tables: &std::collections::BTreeSet<String>,
+    ) -> impl std::future::Future<Output = Result<(), ReadModelError>> + Send
+    where
+        E: sqlx::Executor<'e, Database = Postgres> + Send,
+    {
+        async move {
+            if tables.is_empty() {
+                return Ok(());
+            }
+            let payload = serde_json::to_string(&tables.iter().collect::<Vec<_>>())
+                .map_err(|err| ReadModelError::Serde(err.to_string()))?;
+            sqlx::query("SELECT pg_notify('distributed_read_model_changes', $1)")
+                .bind(payload)
+                .execute(executor)
+                .await
+                .map_err(|err| {
+                    crate::sqlx_repo::read_model_storage_error(
+                        "postgres",
+                        "pg_notify read model changes",
+                        err,
+                    )
+                })?;
+            Ok(())
+        }
     }
 }
 

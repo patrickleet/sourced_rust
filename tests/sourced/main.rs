@@ -1,4 +1,5 @@
 mod aggregate;
+mod domain_events;
 
 use aggregate::{Todo, TodoEvent};
 use distributed::{

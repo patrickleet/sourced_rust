@@ -1,0 +1,24 @@
+{
+  "extends": "./tsconfig.json",
+  "compilerOptions": {
+    "baseUrl": ".",
+    "declaration": false,
+    "module": "ESNext",
+    "moduleResolution": "Bundler",
+    "noUnusedLocals": true,
+    "noUnusedParameters": true,
+    "noEmit": true,
+    "outDir": "./dist-type-tests",
+    "paths": {
+      "@hops-ops/distributed/replica": ["./src/replica/index.ts"],
+      "@hops-ops/distributed/react": ["./src/react/index.ts"],
+      "@hops-ops/distributed/sveltekit": ["./src/sveltekit/index.ts"],
+      "@hops-ops/distributed/sveltekit/vite": ["./src/sveltekit/vite.ts"]
+    },
+    "rootDir": ".."
+  },
+  "include": [
+    "../distributed_cli/tests/fixtures/generated-*.ts",
+    "type-tests/**/*.ts"
+  ]
+}

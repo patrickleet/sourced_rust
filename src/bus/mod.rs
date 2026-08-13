@@ -101,6 +101,7 @@ mod message_name;
 mod nats;
 #[cfg(feature = "nats")]
 mod nats_bus;
+mod ordered_delivery;
 #[cfg(feature = "postgres")]
 mod postgres_bus;
 mod publisher;
@@ -148,6 +149,7 @@ pub use in_memory_bus::{InMemoryBus, InMemoryReceived};
 pub(crate) use message::{message_from_wire, strip_address_prefix};
 pub use message::{Message, MessageKind, PayloadDecodeError, SubscriptionPlan};
 pub use message_name::{validate_message_name, MessageNameError, MAX_MESSAGE_NAME_LEN};
+pub use ordered_delivery::OrderedDelivery;
 #[cfg(feature = "postgres")]
 pub use postgres_bus::{LogReceived, PostgresBus, QueueReceived};
 pub use publisher::MessagePublisher;

@@ -214,10 +214,7 @@ async fn grpc_payload_session_variables_apply_when_metadata_absent() {
     let mut client = start_server(service).await;
 
     let mut payload_vars = std::collections::HashMap::new();
-    payload_vars.insert(
-        "x-user-id".to_string(),
-        "user-from-payload".to_string(),
-    );
+    payload_vars.insert("x-user-id".to_string(), "user-from-payload".to_string());
 
     let resp = client
         .dispatch(GrpcRequest {

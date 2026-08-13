@@ -1,11 +1,12 @@
 use std::time::Duration;
 
+use distributed::read_model::ReadModelWritePlanBuilder;
 use distributed::{
     sourced, Aggregate, AggregateBuilder, ClaimOutboxMessages, CommitBatch, Entity, GetStream,
     InMemoryRepository, InMemorySnapshotStore, OutboxMessage, OutboxStore, ReadModel,
-    ReadModelWritePlanBuilder, RelationalReadModel, RelationalReadModelQueryStore, RepositoryError,
-    RowKey, RowValue, SnapshotRecord, SnapshotStore, Snapshottable, StreamIdentity, StreamWrite,
-    TransactionalCommit, Versioned,
+    RelationalReadModel, RelationalReadModelQueryStore, RepositoryError, RowKey, RowValue,
+    SnapshotRecord, SnapshotStore, Snapshottable, StreamIdentity, StreamWrite, TransactionalCommit,
+    Versioned,
 };
 use serde::{Deserialize, Serialize};
 

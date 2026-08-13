@@ -1,0 +1,15 @@
+[package]
+name = "e2e-projections"
+version.workspace = true
+edition.workspace = true
+publish = false
+description = "Domain-event to read-model projection programs"
+
+[dependencies]
+distributed = { workspace = true }
+e2e-readmodels = { path = "../readmodels" }
+todo-domain = { path = "../todo-domain" }
+chat-domain = { path = "../chat-domain" }
+blob-domain = { path = "../blob-domain" }
+serde = { workspace = true }
+serde_json = { workspace = true }

@@ -1,0 +1,29 @@
+[package]
+name = "e2e-suite"
+version.workspace = true
+edition.workspace = true
+publish = false
+description = "HTTP/GraphQL behavioral suite for e2e-ui"
+
+[[test]]
+name = "behavioral"
+path = "tests/behavioral.rs"
+
+[dependencies]
+distributed = { workspace = true }
+e2e-service = { path = "../service" }
+e2e-readmodels = { path = "../readmodels" }
+todo-domain = { path = "../todo-domain" }
+tokio = { workspace = true }
+serde_json = { workspace = true }
+reqwest = { workspace = true }
+sqlx = { workspace = true }
+uuid = { workspace = true }
+jsonwebtoken = { workspace = true }
+
+[dev-dependencies]
+distributed = { workspace = true }
+e2e-service = { path = "../service" }
+tokio = { workspace = true }
+serde_json = { workspace = true }
+reqwest = { workspace = true }

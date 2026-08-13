@@ -211,7 +211,11 @@ impl<'a, S> ReadModelWorkspace<'a, S> {
         self.writes.into_write_plan()
     }
 
-    pub(super) fn track_graph<M>(
+    /// Seed the ordinary graph-diff engine from a framework-coherent snapshot.
+    ///
+    /// This is crate-private so causal projector wrappers can reuse the exact
+    /// sync semantics without exposing the store-bound commit terminal.
+    pub(crate) fn track_graph<M>(
         &mut self,
         root: Versioned<RowValues>,
         includes: BTreeMap<String, ReadModelIncludeRows>,

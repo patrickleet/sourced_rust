@@ -50,6 +50,7 @@ pub(crate) struct Scaffold {
     pub(crate) bus: Option<BusTarget>,
     pub(crate) metrics: Option<MetricsTarget>,
     pub(crate) include_read_models: bool,
+    pub(crate) query_api: bool,
     pub(crate) tracing: bool,
     pub(crate) gitops: bool,
     pub(crate) gitops_promote: Option<GitopsPromoteTarget>,
@@ -66,6 +67,13 @@ impl Scaffold {
     fn from_spec(spec: ServiceScaffoldSpec) -> Result<Self, ScaffoldError> {
         let names = ScaffoldNames::new(&spec.name)?;
         let models = model_scaffolds(&spec.models)?;
+        // GraphQL execution is SQL-backed. Keep the public pure generator aligned
+        // with the CLI, which promotes its in-memory default to SQLite.
+        let store = if spec.query_api && spec.store == StoreTarget::InMemory {
+            StoreTarget::Sqlite
+        } else {
+            spec.store
+        };
         let read_models = if spec.read_models {
             if models.is_empty() {
                 vec![ModelScaffold::new(&names.package_name)?]
@@ -91,10 +99,11 @@ impl Scaffold {
             names,
             distributed_dependency_path: spec.distributed_dependency_path,
             transport: spec.transport,
-            store: spec.store,
+            store,
             bus: spec.bus,
             metrics: spec.metrics,
             include_read_models: spec.read_models,
+            query_api: spec.query_api,
             tracing: spec.tracing,
             gitops: spec.gitops,
             gitops_promote: spec.gitops_promote,
@@ -117,7 +126,7 @@ impl Scaffold {
         files.push(file("src/main.rs", self.main_rs()));
         files.push(file("src/manifest.rs", self.manifest_rs()));
         files.push(file("src/service.rs", self.service_rs()));
-        if !self.models.is_empty() {
+        if !self.models.is_empty() || (self.query_api && !self.commands.is_empty()) {
             files.push(file("src/models/mod.rs", self.models_mod_rs()));
             for model in &self.models {
                 files.push(file(
@@ -138,6 +147,16 @@ impl Scaffold {
                 &format!("src/handlers/{}.rs", event.module_ident),
                 self.event_handler_rs(event),
             ));
+        }
+        if self.query_api {
+            files.push(file("src/query/mod.rs", self.query_mod_rs()));
+            files.push(file("src/query/roles.rs", self.query_roles_rs()));
+            for model in &self.read_models {
+                files.push(file(
+                    &format!("src/query/{}.rs", model.module_ident),
+                    self.query_model_rs(model),
+                ));
+            }
         }
         if self.include_read_models {
             files.push(file("src/read_models/mod.rs", self.read_models_mod_rs()));
@@ -185,6 +204,7 @@ mod tests {
             metrics: None,
             models: Vec::new(),
             read_models: false,
+            query_api: false,
             tracing: false,
             commands: Vec::new(),
             events: Vec::new(),
@@ -425,6 +445,140 @@ mod tests {
         assert!(!values.contains("metrics:"), "values.yaml: {values}");
         assert!(!values.contains("serviceMonitor:"), "values.yaml: {values}");
         assert!(!values.contains("prometheusRule:"), "values.yaml: {values}");
+    }
+
+    #[test]
+    fn query_api_emits_query_modules_and_graphql_feature() {
+        let mut s = spec("orders");
+        s.query_api = true;
+        s.read_models = true;
+        s.store = StoreTarget::Sqlite;
+        s.models = vec!["Order".into()];
+        s.gitops = true;
+        let project = generate_service_scaffold(s).unwrap();
+        let paths = paths(&project);
+        assert!(paths.contains(&"src/query/mod.rs"));
+        assert!(paths.contains(&"src/query/roles.rs"));
+        assert!(!paths.contains(&"src/query/commands.rs"));
+        assert!(
+            paths.iter().any(|p| p.starts_with("src/query/")
+                && *p != "src/query/mod.rs"
+                && *p != "src/query/roles.rs"),
+            "expected per-model query module: {paths:?}"
+        );
+        let cargo = contents(&project, "Cargo.toml");
+        assert!(
+            cargo.contains("graphql"),
+            "Cargo.toml must enable graphql feature: {cargo}"
+        );
+        let service = contents(&project, "src/service.rs");
+        assert!(
+            service.contains("build_with_graphql") && service.contains("try_with_graphql"),
+            "service must wire GraphQL: {service}"
+        );
+        assert!(
+            service.contains(".without_http_command_routes()"),
+            "GraphQL scaffold must not also expose unauthenticated direct command POST routes: {service}"
+        );
+        assert!(
+            service.contains("pub type ServiceRepo = SqliteRepository;"),
+            "query-api service must use the SQL repository type: {service}"
+        );
+        assert!(
+            service.contains("let repo = ServiceRepo::connect_and_migrate(&database_url).await?;"),
+            "build_with_graphql must open the persistent repository: {service}"
+        );
+        assert!(
+            service.contains("crate::query::build_engine(&repo, &service"),
+            "build_with_graphql must bind the exact executable service and preserve the repository's GraphQL storage identity: {service}"
+        );
+        assert!(
+            service.contains("AggregateRepository::<_, crate::models::Order>::new(repo.clone())")
+                && service.contains(".typed_command(handlers::"),
+            "build_with_graphql routes must register typed causal commands over the persistent repository: {service}"
+        );
+        assert!(
+            !service.contains("Routes::new().with_dependencies(InMemoryRepository::new())"),
+            "build_with_graphql must not route commands to an in-memory repository: {service}"
+        );
+        let command_handler = project
+            .files
+            .iter()
+            .find(|file| {
+                file.path.starts_with("src/handlers/")
+                    && file.path != "src/handlers/mod.rs"
+                    && file.contents.contains("CausalCommandContext")
+            })
+            .expect("query-api scaffold must emit a typed causal command handler");
+        assert!(
+            command_handler
+                .contents
+                .contains("ctx.commit(aggregate)?.succeeded(")
+                && !command_handler.contents.contains("ctx.stage("),
+            "generated typed handlers must use the public fluent commit API: {}",
+            command_handler.contents
+        );
+        let main = contents(&project, "src/main.rs");
+        assert!(
+            main.contains("build_with_graphql"),
+            "main must call build_with_graphql: {main}"
+        );
+        let query_mod = contents(&project, "src/query/mod.rs");
+        assert!(
+            query_mod.contains(
+                "use distributed::graphql::{GraphqlBuildError, GraphqlEngine, GraphqlPoolSource};"
+            )
+                && query_mod.contains("source: impl Into<GraphqlPoolSource>")
+                && query_mod.contains("service: &Service")
+                && query_mod.contains(".service(service)")
+                && query_mod.contains(".protocol_token_key(protocol_token_key)")
+                && query_mod.contains(".graphiql(")
+                && query_mod.contains("graphiql_enabled_from_env")
+                && query_mod.contains(".identity(")
+                && query_mod.contains("public_oidc_identity_from_env"),
+            "query build_engine must accept a causal pool source and wire GraphiQL + OIDC identity defaults: {query_mod}"
+        );
+        // D6: generated public scaffold must wire library OidcBearer helper (not DevHeaders).
+        assert!(
+            query_mod.contains("public_oidc_identity_from_env()")
+                && !query_mod.contains("IdentityConfig::dev_headers"),
+            "public scaffold must call public_oidc_identity_from_env, not DevHeaders: {query_mod}"
+        );
+
+        // GitOps chart injects DATABASE_URL for query API (mirrors tracing OTEL env).
+        let values = contents(&project, ".gitops/deploy/values.yaml");
+        assert!(
+            values.contains("queryApi:") && values.contains("databaseUrl:"),
+            "values.yaml must declare queryApi.databaseUrl: {values}"
+        );
+        assert!(values.contains("enabled: true"));
+        let deployment = contents(&project, ".gitops/deploy/templates/deployment.yaml");
+        assert!(
+            deployment.contains("DATABASE_URL"),
+            "deployment must inject DATABASE_URL: {deployment}"
+        );
+        assert!(
+            deployment.contains(".Values.queryApi.databaseUrl"),
+            "deployment must bind DATABASE_URL from values: {deployment}"
+        );
+        assert!(deployment.contains("if and .Values.queryApi.enabled .Values.queryApi.databaseUrl"));
+    }
+
+    #[test]
+    fn public_query_api_scaffold_promotes_in_memory_store_to_sqlite() {
+        let mut s = spec("orders");
+        s.query_api = true;
+        s.store = StoreTarget::InMemory;
+        let project = generate_service_scaffold(s).unwrap();
+        let cargo = contents(&project, "Cargo.toml");
+        let service = contents(&project, "src/service.rs");
+
+        assert!(cargo.contains("\"sqlite\""), "Cargo.toml: {cargo}");
+        assert!(
+            service.contains("pub type ServiceRepo = SqliteRepository;"),
+            "query-api scaffold must use its enabled SQL repository: {service}"
+        );
+        assert!(!service.contains("pub type ServiceRepo = InMemoryRepository;"));
     }
 
     #[test]

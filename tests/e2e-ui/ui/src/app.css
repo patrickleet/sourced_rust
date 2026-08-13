@@ -1,0 +1,136 @@
+/* ==========================================================================
+   e2e-ui — Neutral wireframe
+   Soft paper ground, graphite ink, quiet blue accent. Calm type for product vision.
+   ========================================================================== */
+
+@import url('https://fonts.googleapis.com/css2?family=IBM+Plex+Mono:wght@400;500&family=Inter:wght@400;500;600&family=Newsreader:opsz,wght@6..72,400;6..72,500&display=swap');
+
+@custom-media --tablet-up (width >= 768px);
+@custom-media --desktop-up (width >= 1024px);
+
+:root {
+	/* Wireframe palette */
+	--wf-bg: #f6f5f2;
+	--wf-bg-elevated: #ffffff;
+	--wf-ink: #1c1c1a;
+	--wf-ink-soft: #5c5c56;
+	--wf-ink-muted: #8a8a82;
+	--wf-line: #e2e0d9;
+	--wf-line-strong: #cdcabe;
+	--wf-accent: #3d5a80;
+	--wf-accent-soft: rgba(61, 90, 128, 0.08);
+	--wf-code-bg: #1c1c1a;
+	--wf-code-fg: #e8e6e0;
+	--wf-code-muted: #8a9088;
+	--wf-code-kw: #9ec5e8;
+	--wf-danger: #b33a3a;
+	--wf-success: #2f6f4e;
+
+	--wf-sans: 'Inter', system-ui, -apple-system, 'Segoe UI', sans-serif;
+	--wf-serif: 'Newsreader', 'Iowan Old Style', Georgia, serif;
+	--wf-mono: 'IBM Plex Mono', ui-monospace, 'SF Mono', Menlo, monospace;
+
+	--wf-max: 68rem;
+	--wf-gutter: clamp(1.5rem, 5vw, 3rem);
+	--wf-section-y: clamp(4.5rem, 10vw, 7.5rem);
+	--wf-radius: 6px;
+	--ease: cubic-bezier(0.22, 1, 0.36, 1);
+
+	/* Fixture page compat (todos/chat light surfaces) */
+	--df-ink: var(--wf-ink);
+	--df-ink-soft: var(--wf-ink-soft);
+	--df-ink-muted: var(--wf-ink-muted);
+	--df-surface: var(--wf-bg);
+	--df-surface-raised: var(--wf-bg-elevated);
+	--df-surface-dark: var(--wf-ink);
+	--df-surface-code: var(--wf-code-bg);
+	--df-border: var(--wf-line);
+	--df-border-strong: var(--wf-line-strong);
+	--df-accent: var(--wf-accent);
+	--df-accent-bright: #5a7a9e;
+	--df-accent-dim: var(--wf-accent-soft);
+	--df-danger: var(--wf-danger);
+	--df-success: var(--wf-success);
+	--df-font: var(--wf-sans);
+	--df-mono: var(--wf-mono);
+	--df-max: var(--wf-max);
+	--df-radius: var(--wf-radius);
+	--df-radius-lg: 10px;
+	--df-shadow-sm: 0 1px 2px rgba(28, 28, 26, 0.04);
+	--df-shadow-md: 0 8px 24px rgba(28, 28, 26, 0.06);
+	--df-shadow-lg: 0 16px 40px rgba(28, 28, 26, 0.08);
+
+	--hops-navy: var(--wf-ink);
+	--hops-navy-deep: #111110;
+	--hops-navy-light: #2a2a28;
+	--hops-orange: var(--wf-accent);
+	--hops-orange-light: #5a7a9e;
+	--hops-orange-dark: #2c4563;
+	--hops-bg-light: var(--wf-bg);
+	--hops-bg-cream: #f0efe9;
+	--hops-bg-white: var(--wf-bg-elevated);
+	--hops-text-primary: var(--wf-ink);
+	--hops-text-secondary: var(--wf-ink-soft);
+	--hops-text-muted: var(--wf-ink-muted);
+	--hops-text-inverse: #f6f5f2;
+	--hops-success: var(--wf-success);
+	--hops-warning: #9a7420;
+	--hops-danger: var(--wf-danger);
+	--hops-border: var(--wf-line);
+	--hops-border-strong: var(--wf-line-strong);
+	--font-display: var(--wf-sans);
+	--font-body: var(--wf-sans);
+	--font-mono: var(--wf-mono);
+	--shadow-sm: var(--df-shadow-sm);
+	--shadow-md: var(--df-shadow-md);
+	--shadow-lg: var(--df-shadow-lg);
+	--shadow-orange: 0 8px 24px rgba(61, 90, 128, 0.12);
+	--container-max: var(--wf-max);
+	--section-padding: var(--wf-section-y);
+	--ease-out-expo: var(--ease);
+}
+
+*,
+*::before,
+*::after {
+	box-sizing: border-box;
+}
+
+html {
+	scroll-behavior: smooth;
+}
+
+body {
+	margin: 0;
+	min-height: 100vh;
+	font-family: var(--wf-sans);
+	font-size: 1rem;
+	line-height: 1.6;
+	color: var(--wf-ink);
+	background: var(--wf-bg);
+	-webkit-font-smoothing: antialiased;
+}
+
+/* No global transparent overlay — solid page ground only.
+   Hero may use a local soft grid (see .wf-hero). */
+
+a {
+	color: var(--wf-accent);
+}
+
+code,
+pre {
+	font-family: var(--wf-mono);
+}
+
+main {
+	position: relative;
+	z-index: 1;
+	min-height: 100vh;
+}
+
+/* Chrome / home / product page skins live in:
+   - $lib/styles/chrome.css (root layout)
+   - $lib/styles/home.css (home route only)
+   - $lib/components/product/* (scoped)
+*/

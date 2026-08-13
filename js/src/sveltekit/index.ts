@@ -1,0 +1,38 @@
+export { authFromPageData, type PageGraphqlData } from './auth.js';
+export {
+	defineDistributedSvelteKitOperation,
+	provideDistributedSvelteKitClient,
+	useDistributedSvelteKitClient,
+	useDistributedSvelteKitCommands
+} from './context.js';
+export {
+	bindSveltekitOperation,
+	createPageDataSessionSource,
+	createDistributedSvelteKit,
+	sessionSourceFromPageData,
+	type CreateDistributedSvelteKitOptions,
+	type DistributedSvelteKitClient,
+	type SveltekitBoundOperation,
+	type SveltekitCommandRuntimeFactory,
+	type SveltekitCommandRuntimeFactoryOptions,
+	type SveltekitCommandRuntimeLike,
+	type SveltekitDistributedPageData,
+	type SveltekitPageDataSessionSource,
+	type SveltekitPageDataSource,
+	type SveltekitQuerySnapshot,
+	type SveltekitQueryStore,
+	type SveltekitReplicaAuthority,
+	type SveltekitReplicaHydration,
+	type SveltekitSessionSource,
+	type UseSveltekitOperationOptions
+} from './replica.js';
+export {
+	createDistributedSvelteKitServer,
+	registerDistributedRoute,
+	type CreateDistributedSvelteKitServerOptions,
+	type DistributedRouteOperation,
+	type DistributedRoutePlan,
+	type DistributedRouteVariables,
+	type DistributedSvelteKitServer,
+	type SveltekitServerLoadEventLike
+} from './server-replica.js';

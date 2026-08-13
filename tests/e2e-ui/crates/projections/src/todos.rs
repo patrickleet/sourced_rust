@@ -1,0 +1,140 @@
+//! Todo: mutations + projections.
+
+use distributed::mutation_file;
+use distributed::projection::lower::{EventualOnly, ProjectionDescriptor};
+use distributed::Mutation;
+use e2e_readmodels::Todos;
+use todo_domain::{
+    TodoArchivedDomainEvent, TodoCompletedDomainEvent, TodoCreatedDomainEvent,
+    TodoForceArchivedDomainEvent, TodoPurgedDomainEvent, TodoReassignedDomainEvent,
+    TodoRenamedDomainEvent, TodoReopenedDomainEvent,
+};
+
+/// Mutation: complete-row upsert for Todo state transfer.
+///
+/// Authored as GraphQL-looking syntax-only IR (not a public GraphQL field):
+/// `src/mutations/save_todo.mutation.graphql`.
+pub fn save_todo() -> Mutation<()> {
+    mutation_file!("src/mutations/save_todo.mutation.graphql")
+}
+
+/// Mutation: delete Todo by primary key (purge).
+///
+/// Authored as GraphQL-looking syntax-only IR (not a public GraphQL field):
+/// `src/mutations/delete_todo.mutation.graphql`.
+pub fn delete_todo() -> Mutation<()> {
+    mutation_file!("src/mutations/delete_todo.mutation.graphql")
+}
+
+// Lifecycle state events → [`save_todo`]; purge → [`delete_todo`].
+// Macro is `projection!` (crate root); `distributed::projection` is the module.
+distributed::projection! {
+    pub const TODOS: ProjectionDescriptor<EventualOnly> = {
+        name: "project_todos",
+        version: 1,
+        epoch: "e2e-ui-todos-v2",
+        model: Todos,
+        on {
+            events: [
+                TodoCreatedDomainEvent,
+                TodoRenamedDomainEvent,
+                TodoCompletedDomainEvent,
+                TodoReopenedDomainEvent,
+                TodoReassignedDomainEvent,
+                TodoArchivedDomainEvent,
+                TodoForceArchivedDomainEvent,
+            ],
+            mutation: save_todo,
+            input: { todo: body },
+        },
+        on {
+            events: [TodoPurgedDomainEvent],
+            mutation: delete_todo,
+            input: { todo_id: aggregate_id },
+        },
+    };
+}
+
+#[cfg(test)]
+mod tests {
+    use distributed::domain_event::DomainEventContract;
+    use distributed::projection::placement::ProjectionExecutionClass;
+    use distributed::{DomainEventBodyKind, MutationKind, RelationalReadModel, RowValue, TableMutation};
+
+    use super::*;
+    use todo_domain::{Todo, TodoPurgedDomainEvent};
+
+    #[test]
+    fn todo_handlers_apply_save_and_delete_mutations() {
+        let program = TODOS.program().unwrap();
+        assert_eq!(program.arms().len(), 8);
+        assert_eq!(save_todo().program().operations()[0].kind(), MutationKind::Upsert);
+        assert_eq!(delete_todo().program().operations()[0].kind(), MutationKind::Delete);
+    }
+
+    #[test]
+    fn complete_lowers_to_full_row_upsert() {
+        let mut todo = Todo::default();
+        todo.create("todo-1", "alice", "Read").unwrap();
+        todo.reassign("alice", "bob").unwrap();
+        todo.complete("alice").unwrap();
+        let occurrence = todo.entity.pending_domain_events().last().unwrap();
+        let lowered = TODOS.server_executor().unwrap().plan(occurrence).unwrap();
+        let TableMutation::UpsertRow(row) = &lowered.write_plan.mutations[0] else {
+            panic!("expected upsert");
+        };
+        assert_eq!(row.values.get("status"), Some(&RowValue::String("completed".into())));
+        assert_eq!(Todos::schema().table_name, "todos");
+        assert_eq!(
+            TODOS.eventual().execution_class(),
+            ProjectionExecutionClass::Causal
+        );
+    }
+
+    #[test]
+    fn purge_lowers_to_delete() {
+        let mut todo = Todo::default();
+        todo.create("todo-1", "alice", "Read").unwrap();
+        todo.purge("alice").unwrap();
+        let occurrence = todo.entity.pending_domain_events().last().unwrap();
+        assert_eq!(occurrence.descriptor().body.kind, DomainEventBodyKind::Deletion);
+        assert_eq!(occurrence.descriptor(), &TodoPurgedDomainEvent::descriptor());
+        let lowered = TODOS.server_executor().unwrap().plan(occurrence).unwrap();
+        let TableMutation::DeleteRow(delete) = &lowered.write_plan.mutations[0] else {
+            panic!("expected delete");
+        };
+        assert_eq!(delete.key.get("todo_id"), Some(&RowValue::String("todo-1".into())));
+    }
+
+    #[test]
+    fn mutations_are_event_free() {
+        let json = serde_json::to_value(save_todo().program()).unwrap().to_string();
+        assert!(!json.contains("event_name"));
+    }
+
+    #[test]
+    fn graphql_file_matches_inline_graphql_looking_form() {
+        use distributed::mutation;
+        let from_file = save_todo().program().canonical_bytes().unwrap();
+        let inline = mutation! {
+            mutation SaveTodo {
+                upsert_Todos(object: $input.todo)
+            }
+        };
+        assert_eq!(
+            from_file,
+            inline.program().canonical_bytes().unwrap(),
+            "mutation_file! and inline GraphQL-looking mutation! must share IR"
+        );
+        let classic = mutation! {
+            name: "save_todo";
+            version: 1;
+            upsert Todos from input.todo;
+        };
+        assert_eq!(
+            from_file,
+            classic.program().canonical_bytes().unwrap(),
+            "GraphQL-looking and classic sugar must share IR"
+        );
+    }
+}
