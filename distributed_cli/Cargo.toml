@@ -17,7 +17,7 @@ path = "src/main.rs"
 [dependencies]
 async-graphql-parser = "7"
 async-graphql-value = "7"
-base64 = "0.22.1"
+base64 = "0.23.0"
 clap = { version = "4", features = ["derive"] }
 glob = "0.3"
 serde = { version = "1", features = ["derive"] }
