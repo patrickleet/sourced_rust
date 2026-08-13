@@ -54,7 +54,7 @@ async-trait = "0.1"
 async-graphql = { version = "7", optional = true }
 async-graphql-axum = { version = "7", optional = true }
 axum = { version = "0.8", optional = true }
-base64 = "0.22.1"
+base64 = "0.23.0"
 futures = { version = "0.3", optional = true }
 lapin = { version = "4", optional = true }
 rdkafka = { version = "0.39", features = ["cmake-build", "tokio"], optional = true }
