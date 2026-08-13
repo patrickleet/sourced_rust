@@ -235,8 +235,8 @@ impl GraphqlEngineBuilder {
     }
     /// Set the stable service identity used by generated client manifests.
     ///
-    /// [`GraphqlEngine::from_manifest`] supplies this automatically from the
-    /// project manifest. This setter is intended for manually assembled
+    /// [`GraphqlEngine::from_schema_catalog`] supplies this automatically from the
+    /// read-model schema catalog. This setter is intended for manually assembled
     /// engines, which otherwise cannot export a client manifest safely.
     pub fn service_id(mut self, service_id: impl Into<String>) -> Self {
         let service_id = service_id.into();
@@ -305,21 +305,17 @@ impl GraphqlEngineBuilder {
     }
 
     /// Register one exact named application surface for generated clients.
-    ///
-    /// `roles` is both the **eligible** principal set (who may open the
-    /// contract) and the **schema privilege** set (grant intersection for the
-    /// portable client schema). Prefer
-    /// [`Self::client_application_surface_with_schema_roles`] when elevated
-    /// principals must open a lower-privilege portable contract.
+    /// Both role sets are required: eligible principals may open the surface,
+    /// while schema roles determine its portable privilege intersection.
     ///
     /// The server still authorizes every request as its verified concrete role.
     pub fn client_application_surface(
         self,
         application: impl Into<String>,
-        roles: impl IntoIterator<Item = impl Into<String>>,
+        eligible_roles: impl IntoIterator<Item = impl Into<String>>,
+        schema_roles: impl IntoIterator<Item = impl Into<String>>,
     ) -> Self {
-        let roles = roles.into_iter().map(Into::into).collect::<Vec<String>>();
-        self.client_application_surface_with_schema_roles(application, roles.clone(), roles)
+        self.client_application_surface_with_schema_roles(application, eligible_roles, schema_roles)
     }
 
     /// Register an application surface with distinct eligible and schema roles.
@@ -345,10 +341,18 @@ impl GraphqlEngineBuilder {
             .into_iter()
             .map(Into::into)
             .collect::<Vec<String>>();
+        let eligible_roles_were_unique = {
+            let mut sorted = eligible_roles.clone();
+            sorted.sort();
+            sorted.windows(2).all(|roles| roles[0] != roles[1])
+        };
+        let schema_roles_were_unique = {
+            let mut sorted = schema_roles.clone();
+            sorted.sort();
+            sorted.windows(2).all(|roles| roles[0] != roles[1])
+        };
         eligible_roles.sort();
-        eligible_roles.dedup();
         schema_roles.sort();
-        schema_roles.dedup();
         if application.is_empty()
             || application.len() > 128
             || application.trim() != application
@@ -372,9 +376,21 @@ impl GraphqlEngineBuilder {
             ));
             return self;
         }
+        if !eligible_roles_were_unique {
+            self.pending_errors.push(format!(
+                "GraphQL client application `{application}` eligible roles must be unique"
+            ));
+            return self;
+        }
         if schema_roles.is_empty() || schema_roles.iter().any(invalid_role) {
             self.pending_errors.push(format!(
                 "GraphQL client application `{application}` must declare one or more bounded non-empty schema roles"
+            ));
+            return self;
+        }
+        if !schema_roles_were_unique {
+            self.pending_errors.push(format!(
+                "GraphQL client application `{application}` schema roles must be unique"
             ));
             return self;
         }
@@ -536,7 +552,7 @@ impl GraphqlEngineBuilder {
         }
         if self.protocol_token_key.is_some() && self.service_id.is_none() {
             return Err(GraphqlBuildError(
-                "GraphQL protocol tokens require a stable service ID; construct the engine with GraphqlEngine::from_manifest or GraphqlEngineBuilder::service_id"
+                "GraphQL protocol tokens require a stable service ID; construct the engine with GraphqlEngine::from_schema_catalog or GraphqlEngineBuilder::service_id"
                     .into(),
             ));
         }
@@ -902,7 +918,7 @@ impl GraphqlEngineBuilder {
                 protocol_applications.insert(
                     application.clone(),
                     ProtocolApplicationInfo {
-                        roles: registration.eligible_roles.clone(),
+                        eligible_roles: registration.eligible_roles.clone(),
                         schema_roles: registration.schema_roles.clone(),
                         privilege_key,
                         surface: ProtocolSurfaceInfo {

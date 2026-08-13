@@ -20,7 +20,10 @@ use super::projection_obligations::{
     CommandInputDefault, CommandProjectionConfirmation, ProjectionObligationResolutionError,
 };
 use super::projection_proof::{canonical_json, CommandCommitProofError};
-use super::projections::{CommandProjectionEvents, CommandProjectionPreview};
+use super::projections::{
+    CommandProjectionEvents, CommandProjectionPreview, CommandProjectionPreviewSource,
+    CommandProjectionPureReduce,
+};
 use crate::graphql::naming;
 use crate::graphql::types::{GraphqlInputType, GraphqlTypeDef};
 use crate::microsvc::Session;
@@ -600,6 +603,25 @@ where
     }
 }
 
+/// Begin a typed command whose outward emit set is owned by a domain transition.
+///
+/// `S` is typically a `#[sourced]` `domain_commands::*` witness (for example
+/// `domain_commands::Create`) or a domain-event marker. The emit set is filled
+/// automatically — callers do not also call [`.emits`](TypedCommand::emits) /
+/// [`.emits_events`](TypedCommand::emits_events) unless they intentionally
+/// extend the set.
+///
+/// Prefer this over [`typed_command`] plus a hand-written event list when the
+/// domain already defines the transition.
+pub fn command_transition<S, I, K>(name: &'static str) -> TypedCommand<I, K>
+where
+    S: super::CommandEventSet,
+    I: GraphqlInputType + DeserializeOwned + Send + 'static,
+    K: CommandOutcome,
+{
+    typed_command::<I, K>(name).emits_events::<S>()
+}
+
 impl<I, K: CommandOutcome> TypedCommand<I, K> {
     pub fn field_name(mut self, field_name: impl Into<String>) -> Self {
         self.contract.field_name = field_name.into();
@@ -628,28 +650,83 @@ impl<I, K: CommandOutcome> TypedCommand<I, K> {
     ///
     /// This declaration is intentionally independent of projector ownership:
     /// one occurrence can fan out to zero, one, or many modeled programs.
+    ///
+    /// Prefer [`Self::emits_events`] when the set is a domain event marker or a
+    /// `#[sourced]` `domain_commands::*` transition witness.
     #[must_use]
     pub fn emits(mut self, events: super::CommandProjectionEventSet) -> Self {
         self.contract.projections.add_event_set(events);
         self
     }
 
-    /// Declare known mutation-input fields for client cache application.
+    /// Declare outward domain events from a type-level [`super::CommandEventSet`].
+    ///
+    /// Equivalent to [`.emits`](Self::emits)`(events![...])` for the same
+    /// domain-event contracts. A generated `domain_commands` witness also
+    /// contributes recorder values the compiler can prove; role-visible
+    /// projection arms decide their optimistic cache consequences.
+    #[must_use]
+    pub fn emits_events<S: super::CommandEventSet>(mut self) -> Self {
+        self.contract
+            .projections
+            .add_event_set(S::command_event_set());
+        for values in S::command_event_known_values() {
+            self.contract.projections.add_inferred_values(values);
+        }
+        self
+    }
+
+    /// Override known mutation-input fields for client cache application.
     ///
     /// Maps command-known values (and unknowns) onto the emitted domain-event
     /// body shape that projections bind into mutation IR. The client
     /// applies that mutation to the cache only; the server applies the same
     /// mutation for real (eventual projector or handler-owned projected row).
     ///
-    /// Prefer this over thinking of the declaration as "predicting an event
-    /// body" — the domain model defines events; this is known input for the
-    /// event→mutation binding used by optimism.
+    /// Generated domain transitions normally supply these values automatically.
+    /// This lower-level escape hatch exists for event producers the compiler
+    /// cannot inspect; it is not required for ordinary `command_transition`
+    /// registration.
     ///
     /// Service registration rejects a mapping whose exact event selector is
     /// not also present through [`Self::emits`].
     #[must_use]
     pub fn applies(mut self, mapping: CommandProjectionPreview) -> Self {
         self.contract.projections.add_preview(mapping);
+        self
+    }
+
+    /// Declare that one emitted state field is the authenticated user id.
+    ///
+    /// This supplies the missing trusted `x-user-id` provenance to automatic
+    /// event→mutation optimism when the projected model is not owner-filtered
+    /// (for example, a public-readable chat lobby). It does not authorize the
+    /// command or rewrite handler input: the mount must still require a user
+    /// and the handler must bind the same principal from its session.
+    #[must_use]
+    pub fn authenticated_user_field<E, S>(mut self, rust_field: &'static str) -> Self
+    where
+        E: crate::domain_event::DomainEventBodyContract<S>,
+        S: crate::DomainState + crate::projection::lower::ProjectionBodyMetadata,
+    {
+        let values = super::__command_projection_state_known_values::<E, S>(vec![(
+            rust_field,
+            CommandProjectionPreviewSource::trusted("x-user-id", "string"),
+        )]);
+        self.contract
+            .projections
+            .add_authenticated_user_field(rust_field, values);
+        self
+    }
+
+    /// Declare a pure reducer over a known cache row for client auto-optimism.
+    ///
+    /// The pure function is domain-owned (e.g. `blob_domain::simulate_move`);
+    /// `client_module` / `client_export` name the TypeScript twin shipped with
+    /// the generated client and registered as `pureFunctions[fn_name]`.
+    #[must_use]
+    pub fn preview_reduce_known_record(mut self, reduce: CommandProjectionPureReduce) -> Self {
+        self.contract.projections.add_pure_reduce(reduce);
         self
     }
 

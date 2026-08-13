@@ -57,6 +57,7 @@
 
 mod causal;
 mod context;
+mod descriptor;
 mod dependencies;
 mod error;
 mod message_router;
@@ -64,6 +65,18 @@ mod projector;
 mod runtime;
 mod service;
 mod session;
+// Worker loops need a Tokio runtime (spawn/sleep); only compile when a feature
+// that enables the optional `tokio` dep is active (default feature set does not).
+#[cfg(any(
+    feature = "http",
+    feature = "grpc",
+    feature = "postgres",
+    feature = "sqlite",
+    feature = "nats",
+    feature = "rabbitmq",
+    feature = "kafka",
+))]
+mod workers;
 
 pub use crate::bus::{Message, MessageKind, PayloadDecodeError, SubscriptionPlan};
 pub use causal::AggregateCheckout;
@@ -74,6 +87,11 @@ pub use dependencies::{
     HasRepo, ReadModelStoreDependencies, RepoDependencies, RepoReadModelDependencies,
 };
 pub use error::HandlerError;
+pub use descriptor::{
+    MessageEndpointDescriptor, MetricsEndpointDescriptor, ServiceDescriptor,
+    ServiceObservabilityDescriptor, TraceExportMode, TracePropagationMode, TracingDescriptor,
+    TransportDescriptor,
+};
 pub use projector::{
     CausalProjectorContext, CausalProjectorRouteBuilder, LoadedProjection, ProjectionRepairHandle,
     ProjectionRepairHandleParseError,
@@ -85,6 +103,16 @@ pub use runtime::{DEFAULT_MAX_PUBLISH_ATTEMPTS, DEFAULT_PUBLISH_LEASE};
 pub(crate) use service::CausalCommandProjectionEvidence;
 #[cfg(feature = "graphql")]
 pub use service::GraphqlServiceBindError;
+#[cfg(any(
+    feature = "http",
+    feature = "grpc",
+    feature = "postgres",
+    feature = "sqlite",
+    feature = "nats",
+    feature = "rabbitmq",
+    feature = "kafka",
+))]
+pub use workers::{spawn_outbox_publish_loop, spawn_service_consumer_loop};
 pub use service::{
     direct_read_model, CausalCommandContext, CausalCommitBuilder, CausalRepository, CommandRequest,
     CommandResponse, DeliveryKind, DirectReadModelProjection, HandlerNames, HandlerSpec,
@@ -93,7 +121,8 @@ pub use service::{
 #[cfg(feature = "graphql")]
 pub(crate) use service::{
     CausalCommandProjectionObligation, CausalCommandPublicState, CausalCommandPublicStatus,
-    CausalCommandReceiptSource, CausalProjectionEvidenceState,
+    CausalCommandReceiptSource, CausalDispatchError, CausalDispatchResult,
+    CausalProjectionEvidenceState,
 };
 pub use session::{Session, ROLE_KEY, USER_ID_KEY};
 

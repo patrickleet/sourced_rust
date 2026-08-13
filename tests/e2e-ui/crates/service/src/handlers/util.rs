@@ -1,8 +1,15 @@
 //! Shared handler helpers.
+//!
+//! **Admission vs domain**
+//! - [`session_has_user`] / [`session_is_admin`] / [`causal_has_user`] /
+//!   [`causal_is_admin`] — command **guards** (session admission only).
+//! - Handler bodies bind the principal and call the domain; they do not re-check
+//!   “am I logged in?” when a guard already did.
+//! - Domain owns entity invariants (empty title, ownership, board rules).
 
 use distributed::bus::Message;
-use distributed::microsvc::{HandlerError, Session};
-use distributed::{BitcodePayloadCodec, PayloadCodec};
+use distributed::microsvc::{CausalCommandContext, HandlerError, Session};
+use distributed::{Aggregate, BitcodePayloadCodec, PayloadCodec};
 use serde::de::DeserializeOwned;
 
 /// Decode event payload as JSON (tests) or bitcode (outbox → bus).
@@ -48,6 +55,30 @@ pub fn session_has_user(session: &Session) -> bool {
 /// Engine role set contains `admin` (`x-roles` / OIDC claim map). For `guard`.
 pub fn session_is_admin(session: &Session) -> bool {
     session.has_role("admin")
+}
+
+/// Typed causal guard: non-empty session user id.
+pub fn causal_has_user<A>(ctx: &CausalCommandContext<'_, A>) -> bool
+where
+    A: Aggregate + Send + Sync + 'static,
+{
+    session_has_user(ctx.session())
+}
+
+/// Typed causal guard: session user present and carries `admin`.
+pub fn causal_is_admin<A>(ctx: &CausalCommandContext<'_, A>) -> bool
+where
+    A: Aggregate + Send + Sync + 'static,
+{
+    session_has_user(ctx.session()) && session_is_admin(ctx.session())
+}
+
+/// Principal after a user-session guard (for domain `owner_id` / author args).
+pub fn principal<A>(ctx: &CausalCommandContext<'_, A>) -> Result<String, HandlerError>
+where
+    A: Aggregate + Send + Sync + 'static,
+{
+    ctx.user_id().map(str::to_string)
 }
 
 /// Require engine role `admin` (handler-path Result form).
@@ -107,5 +138,14 @@ mod tests {
         assert!(require_user(&s).is_err());
         s.set(USER_ID_KEY, "bob");
         assert_eq!(require_user(&s).unwrap(), "bob");
+    }
+
+    #[test]
+    fn session_is_admin_requires_user_for_causal_admin_guard_semantics() {
+        // Admin role without a user id is not a usable principal for force_archive.
+        let mut s = Session::new();
+        s.set(ROLE_KEY, "admin");
+        assert!(session_is_admin(&s));
+        assert!(!session_has_user(&s));
     }
 }

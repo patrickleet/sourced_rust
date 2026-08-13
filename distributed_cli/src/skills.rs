@@ -43,7 +43,7 @@ pub struct EmbeddedSkill {
 static SKILLS: [EmbeddedSkill; 4] = [
     EmbeddedSkill {
         name: "distributed-usage",
-        description: "Build Distributed CQRS/event-sourced Rust services where you mostly write models and handlers while the framework and dctl generate persistence, transports, manifests, and deploy wiring. Use model-first TDD to specify plain aggregate behavior with fast unit tests before implementing models and thin handlers. Use when designing, testing, writing, or modifying a Distributed service or domain model.",
+        description: "Build Distributed CQRS/event-sourced Rust services where you mostly write models and handlers while the framework and distributed generate persistence, transports, manifests, and deploy wiring. Use model-first TDD to specify plain aggregate behavior with fast unit tests before implementing models and thin handlers. Use when designing, testing, writing, or modifying a Distributed service or domain model.",
         files: &[EmbeddedFile {
             relative_path: "SKILL.md",
             contents: include_str!("../skills/distributed-usage/SKILL.md"),
@@ -51,7 +51,7 @@ static SKILLS: [EmbeddedSkill; 4] = [
     },
     EmbeddedSkill {
         name: "distributed-ci",
-        description: "Set up CI, release workflows, and GitOps promotion for a Distributed service with dctl scaffold flags (--github, --gitops, --gitops-promote). Use when configuring pipelines, previews, releases, or deploy automation.",
+        description: "Set up CI, release workflows, and GitOps promotion for a Distributed service with distributed scaffold flags (--github, --gitops, --gitops-promote). Use when configuring pipelines, previews, releases, or deploy automation.",
         files: &[EmbeddedFile {
             relative_path: "SKILL.md",
             contents: include_str!("../skills/distributed-ci/SKILL.md"),
@@ -59,7 +59,7 @@ static SKILLS: [EmbeddedSkill; 4] = [
     },
     EmbeddedSkill {
         name: "distributed-schema",
-        description: "Inspect a Distributed service manifest and render schema artifacts - dctl describe (manifest JSON), dctl schema (migration SQL or an Atlas Operator resource), and the distributed_manifest() envelope contract. Use when working on read-model schemas, migrations, or schema automation.",
+        description: "Inspect a Distributed read-model catalog and render schema artifacts - distributed describe (application JSON), distributed schema (migration SQL or an Atlas Operator resource), and the explicit application/read-model artifact contract. Use when working on read-model schemas, migrations, or schema automation.",
         files: &[EmbeddedFile {
             relative_path: "SKILL.md",
             contents: include_str!("../skills/distributed-schema/SKILL.md"),
@@ -87,7 +87,7 @@ pub fn embedded_skills() -> &'static [EmbeddedSkill] {
 pub const AGENTS_MD_FILE: &str = "AGENTS.md";
 
 const AGENTS_MD_BEGIN: &str =
-    "<!-- distributed:skills:begin (managed by dctl skills init; do not edit inside) -->";
+    "<!-- distributed:skills:begin (managed by distributed skills init; do not edit inside) -->";
 const AGENTS_MD_END: &str = "<!-- distributed:skills:end -->";
 
 /// What to generate. The pure input to [`generate_skills`]. All paths in the

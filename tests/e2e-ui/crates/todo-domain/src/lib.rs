@@ -9,8 +9,8 @@
 pub mod models;
 
 pub use models::{
-    Todo, TodoArchivedDomainEvent, TodoCompletedDomainEvent, TodoCreatedDomainEvent,
-    TodoDomainIdentity, TodoError, TodoForceArchivedDomainEvent, TodoPurgedDomainEvent,
-    TodoReassignedDomainEvent, TodoRenamedDomainEvent, TodoReopenedDomainEvent, TodoState,
-    TodoStatus,
+    domain_commands, Todo, TodoArchivedDomainEvent, TodoCompletedDomainEvent,
+    TodoCreatedDomainEvent, TodoDomainIdentity, TodoError, TodoForceArchivedDomainEvent,
+    TodoPurgedDomainEvent, TodoReassignedDomainEvent, TodoRenamedDomainEvent,
+    TodoReopenedDomainEvent, TodoState, TodoStatus,
 };

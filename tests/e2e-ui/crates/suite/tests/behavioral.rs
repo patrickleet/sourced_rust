@@ -163,6 +163,7 @@ async fn t1a_application_surface_returns_actual_todo_upsert_and_causal_obligatio
         "user",
         DISTRIBUTED_CLIENT_SURFACE,
         &["admin", "user"],
+        &["user"],
         &manifest.schema_fingerprint,
     )
     .await
@@ -514,17 +515,18 @@ async fn t5_unauthenticated_rejected() {
           }}
         }}"#
     );
-    // DevHeaders with no identity → mutation fails (require_user).
+    // DevHeaders with no identity → command guard rejects (causal_has_user).
     let (status, body) = graphql_raw(&base, &doc).await.expect(cases::UNAUTH);
-    // Prefer GraphQL errors over HTTP 401 depending on identity mode.
+    // GuardRejected is client-facing (often GraphQL errors / 400); Unauthorized
+    // remains 401 when identity is checked elsewhere.
     let has_err = body
         .get("errors")
         .and_then(|e| e.as_array())
         .map(|a| !a.is_empty())
         .unwrap_or(false);
     assert!(
-        status == 401 || has_err,
-        "{}: expected 401 or GraphQL errors, got HTTP {status} {body}",
+        status == 401 || status == 400 || has_err,
+        "{}: expected 401/400 or GraphQL errors, got HTTP {status} {body}",
         cases::UNAUTH
     );
     eprintln!("{} ok", cases::UNAUTH);

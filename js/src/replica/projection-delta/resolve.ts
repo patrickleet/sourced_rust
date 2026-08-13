@@ -26,9 +26,12 @@ export function prepareCommandProjection(
 		const preview = contract.preview.operations.map(({ mutation }) =>
 			resolvePreviewMutation(mutation, input, presets)
 		);
+		const pure = (contract.pureReduces ?? []).map((reduce) =>
+			resolvePureReduce(reduce, input, presets)
+		);
 		return Object.freeze({
 			contract,
-			preview: Object.freeze(preview),
+			preview: Object.freeze([...preview, ...pure]),
 			revalidate: contract.preview.recoveries.length !== 0
 		});
 	} catch {
@@ -40,6 +43,27 @@ export function prepareCommandProjection(
 			revalidate: true
 		});
 	}
+}
+
+function resolvePureReduce(
+	reduce: NonNullable<ReplicaCommandProjection['pureReduces']>[number],
+	input: unknown,
+	presets: ReadonlyMap<string, DistributedTrustedPreset>
+): PreparedProjectionOperation {
+	const args: Record<string, ReplicaValue> = Object.create(null) as Record<
+		string,
+		ReplicaValue
+	>;
+	for (const { name, value } of reduce.args) {
+		args[name] = requireValue(resolvePreviewValue(value, input, presets));
+	}
+	return Object.freeze({
+		kind: 'reduce_known_record' as const,
+		fn: reduce.fn,
+		scope: previewScope(reduce.scope, input, presets),
+		args: Object.freeze(args),
+		assign: Object.freeze([...reduce.assign])
+	});
 }
 
 export function operationsFromProjectionDelta(

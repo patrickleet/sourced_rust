@@ -17,20 +17,20 @@ fn fixture_manifest() -> PathBuf {
     Path::new(env!("CARGO_MANIFEST_DIR")).join("tests/fixtures/orders-service/Cargo.toml")
 }
 
-/// Run `dctl <args...>` against the fixture, returning stdout. Always passes
+/// Run `distributed <args...>` against the fixture, returning stdout. Always passes
 /// `--manifest-path` and `--distributed-path` so resolution is deterministic.
-fn dctl(args: &[&str]) -> String {
+fn distributed(args: &[&str]) -> String {
     let root = distributed_root();
     let manifest = fixture_manifest();
-    let output = Command::new(env!("CARGO_BIN_EXE_dctl"))
+    let output = Command::new(env!("CARGO_BIN_EXE_distributed"))
         .args(args)
         .args(["--manifest-path", manifest.to_str().unwrap()])
         .args(["--distributed-path", root.to_str().unwrap()])
         .output()
-        .expect("dctl should run");
+        .expect("distributed should run");
     assert!(
         output.status.success(),
-        "dctl {args:?} failed:\n{}",
+        "distributed {args:?} failed:\n{}",
         String::from_utf8_lossy(&output.stderr)
     );
     String::from_utf8_lossy(&output.stdout).into_owned()
@@ -39,7 +39,7 @@ fn dctl(args: &[&str]) -> String {
 #[test]
 #[ignore = "compiles the fixture via the manifest harness; run in the integration job"]
 fn describe_emits_manifest_json() {
-    let json = dctl(&["describe"]);
+    let json = distributed(&["describe"]);
     assert!(json.contains("\"schema_version\""), "json: {json}");
     assert!(json.contains("\"orders\""), "json: {json}");
 }
@@ -47,7 +47,7 @@ fn describe_emits_manifest_json() {
 #[test]
 #[ignore = "compiles the fixture via the manifest harness; run in the integration job"]
 fn client_manifest_uses_service_surface_export() {
-    let json = dctl(&["client-manifest"]);
+    let json = distributed(&["client-manifest"]);
     let manifest: serde_json::Value = serde_json::from_str(&json).unwrap();
     assert_eq!(manifest["manifest_version"], 2);
     assert_eq!(manifest["protocol_version"], 1);
@@ -104,7 +104,7 @@ fn client_manifest_uses_service_surface_export() {
 #[test]
 #[ignore = "compiles the fixture via the manifest harness; run in the integration job"]
 fn emitted_client_manifest_is_accepted_by_client_compiler() {
-    let json = dctl(&["client-manifest"]);
+    let json = distributed(&["client-manifest"]);
     let manifest: serde_json::Value = serde_json::from_str(&json).unwrap();
     let project = distributed_cli::compile_client(distributed_cli::ClientCompileInput::new(
         manifest,
@@ -124,7 +124,7 @@ fn emitted_client_manifest_is_accepted_by_client_compiler() {
 #[test]
 #[ignore = "compiles the fixture via the manifest harness; run in the integration job"]
 fn schema_renders_postgres_sql() {
-    let sql = dctl(&["schema", "--dialect", "postgres"]);
+    let sql = distributed(&["schema", "--dialect", "postgres"]);
     assert!(sql.contains("CREATE TABLE"), "sql: {sql}");
     assert!(sql.contains("orders"), "sql: {sql}");
 }
@@ -132,7 +132,7 @@ fn schema_renders_postgres_sql() {
 #[test]
 #[ignore = "compiles the fixture via the manifest harness; run in the integration job"]
 fn schema_renders_sqlite_sql() {
-    let sql = dctl(&["schema", "--dialect", "sqlite"]);
+    let sql = distributed(&["schema", "--dialect", "sqlite"]);
     assert!(sql.contains("CREATE TABLE"), "sql: {sql}");
     assert!(sql.contains("orders"), "sql: {sql}");
     // SQLite renders upper-case storage classes; postgres uses lower-case
@@ -143,7 +143,7 @@ fn schema_renders_sqlite_sql() {
 #[test]
 #[ignore = "compiles the fixture via the manifest harness; run in the integration job"]
 fn schema_renders_atlas_resource() {
-    let yaml = dctl(&[
+    let yaml = distributed(&[
         "schema",
         "--format",
         "atlas",

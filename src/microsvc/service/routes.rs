@@ -21,6 +21,7 @@ use super::handlers::{
     ProjectorBootstrapFuture,
 };
 use crate::aggregate::Aggregate;
+use crate::application::{CommandMount, CommandMountRegistrar, CommandSpec};
 use crate::bus::{Bus, Message, MessageKind, MessagePublisher, OrderedDelivery, TransportError};
 #[cfg(feature = "graphql")]
 use crate::command_ledger::{
@@ -31,12 +32,16 @@ use crate::command_ledger::{
 };
 #[cfg(feature = "graphql")]
 use crate::graphql::command_contract::CommandConsistency;
-use crate::graphql::command_contract::{CommandOutcome, TypedCommandContract};
+use crate::graphql::command_contract::{
+    CommandEventSet, CommandOutcome, CompiledInputDefaults, TypedCommandContract,
+};
 #[cfg(feature = "graphql")]
 use crate::graphql::command_input::canonicalize_command_input;
 #[cfg(feature = "graphql")]
 use crate::graphql::identity::VerifiedPrincipal;
-use crate::graphql::{SurfaceProjector, TypedCommand};
+use crate::graphql::{
+    command_transition, GraphqlInputType, SurfaceProjector, TypedCommand,
+};
 #[cfg(feature = "graphql")]
 use crate::microsvc::causal::CausalWorkspace;
 use crate::microsvc::context::Context;
@@ -433,6 +438,7 @@ pub struct TypedRouteBuilder<D, I, K: CommandOutcome> {
     routes: Routes<D>,
     route_name: &'static str,
     contract: TypedCommandContract,
+    mount: Option<CommandMount>,
     _types: std::marker::PhantomData<fn(I) -> K>,
 }
 
@@ -459,6 +465,75 @@ impl<D: Send + Sync + 'static> RouteBuilder<D> {
 
 impl<D, I, K> TypedRouteBuilder<D, I, K>
 where
+    K: CommandOutcome,
+{
+    /// Override the GraphQL mutation field name (defaults from the command id).
+    #[must_use]
+    pub fn field_name(mut self, field_name: impl Into<String>) -> Self {
+        self.contract.field_name = field_name.into();
+        self
+    }
+
+    /// Restrict the command to these surface roles.
+    #[must_use]
+    pub fn roles(mut self, roles: impl IntoIterator<Item = impl Into<String>>) -> Self {
+        self.contract.roles = roles.into_iter().map(Into::into).collect();
+        self.contract.roles.sort();
+        self.contract.roles.dedup();
+        self
+    }
+
+    /// Declare values generated once into the canonical command input before
+    /// dispatch.
+    #[must_use]
+    pub fn input_defaults(mut self, defaults: CompiledInputDefaults<I>) -> Self {
+        self.contract.input_defaults = defaults.0;
+        self.contract
+            .input_defaults
+            .sort_by(|left, right| left.path.cmp(&right.path));
+        self
+    }
+
+    /// Declare that one emitted state field is the authenticated `x-user-id`.
+    ///
+    /// This is preview provenance only; command admission and handler-side
+    /// principal binding remain mandatory.
+    #[must_use]
+    pub fn authenticated_user_field<E, S>(mut self, rust_field: &'static str) -> Self
+    where
+        E: crate::domain_event::DomainEventBodyContract<S>,
+        S: crate::DomainState + crate::projection::lower::ProjectionBodyMetadata,
+    {
+        let values = crate::graphql::__command_projection_state_known_values::<E, S>(vec![(
+            rust_field,
+            crate::graphql::CommandProjectionPreviewSource::trusted("x-user-id", "string"),
+        )]);
+        self.contract
+            .projections
+            .add_authenticated_user_field(rust_field, values);
+        self
+    }
+
+    /// Pure reducer over a known cache row for client auto-optimism.
+    #[must_use]
+    pub fn preview_reduce_known_record(
+        mut self,
+        reduce: crate::graphql::CommandProjectionPureReduce,
+    ) -> Self {
+        self.contract.projections.add_pure_reduce(reduce);
+        self
+    }
+
+    /// Attach the mount produced by the same command declaration. The route
+    /// adapter checks its identity before registration.
+    pub fn mount(mut self, mount: CommandMount) -> Self {
+        self.mount = Some(mount);
+        self
+    }
+}
+
+impl<D, I, K> TypedRouteBuilder<D, I, K>
+where
     D: CausalRouteDependencies + Send + Sync + 'static,
     D::Aggregate: Aggregate + Send + Sync + 'static,
     I: serde::de::DeserializeOwned + Send + 'static,
@@ -472,6 +547,7 @@ where
         self.routes.register_typed_handler(
             self.route_name,
             self.contract,
+            self.mount,
             None,
             boxed_prepared_handler(handler),
         )
@@ -487,6 +563,7 @@ where
         self.routes.register_typed_handler(
             self.route_name,
             self.contract,
+            self.mount,
             Some(guard),
             boxed_prepared_handler(handler),
         )
@@ -501,6 +578,7 @@ pub struct Routes<D> {
     pub(super) dependencies: D,
     handlers: HashMap<MessageKind, HashMap<String, RegisteredHandler<D>>>,
     handler_specs: Vec<HandlerSpec>,
+    command_mounts: Vec<CommandMount>,
     projectors: Vec<Arc<dyn ErasedProjectorHandler<D>>>,
     modeled_local_services: BTreeSet<String>,
     outbox_configurator: Option<OutboxConfigurator<D>>,
@@ -513,6 +591,7 @@ impl<D: Send + Sync + 'static> Routes<D> {
             dependencies,
             handlers: HashMap::new(),
             handler_specs: Vec::new(),
+            command_mounts: Vec::new(),
             projectors: Vec::new(),
             modeled_local_services: BTreeSet::new(),
             outbox_configurator: None,
@@ -531,6 +610,7 @@ impl<D: Send + Sync + 'static> Routes<D> {
         assert!(
             self.handlers.is_empty()
                 && self.handler_specs.is_empty()
+                && self.command_mounts.is_empty()
                 && self.projectors.is_empty()
                 && self.modeled_local_services.is_empty(),
             "Routes::{builder} must be called before registering handlers"
@@ -575,8 +655,44 @@ impl<D: Send + Sync + 'static> Routes<D> {
             routes: self,
             route_name,
             contract,
+            mount: None,
             _types: std::marker::PhantomData,
         }
+    }
+
+    /// Register a typed command whose outward emit set comes from a domain
+    /// transition witness (`domain_commands::*` or a domain-event marker).
+    ///
+    /// Equivalent to
+    /// [`typed_command`](Self::typed_command)`(command_transition::<S, I, K>(name))`
+    /// so callers do not also declare `.emits` / `.emits_events`.
+    ///
+    /// Chain `.field_name`, `.roles`, optional provenance/default declarations,
+    /// then `.handle`.
+    pub fn command_transition<S, I, K>(self, name: &'static str) -> TypedRouteBuilder<D, I, K>
+    where
+        S: CommandEventSet,
+        I: GraphqlInputType + serde::de::DeserializeOwned + Send + 'static,
+        K: CommandOutcome,
+    {
+        self.typed_command(command_transition::<S, I, K>(name))
+    }
+
+    /// Compile the registered typed declarations into portable command specs.
+    pub fn command_specs(&self) -> crate::application::ApplicationResult<Vec<CommandSpec>> {
+        let mut specs = self
+            .typed_contracts()
+            .into_iter()
+            .map(CommandSpec::from_contract)
+            .collect::<crate::application::ApplicationResult<Vec<_>>>()?;
+        specs.sort_by(|left, right| left.id.cmp(&right.id));
+        Ok(specs)
+    }
+
+    /// Executable mounts created when typed handlers are registered. These
+    /// mounts are never part of a serialized application manifest.
+    pub fn command_mounts(&self) -> &[CommandMount] {
+        &self.command_mounts
     }
 
     /// Register one typed, ordered causal projector using the exact
@@ -751,6 +867,7 @@ impl<D: Send + Sync + 'static> Routes<D> {
         mut self,
         route_name: &'static str,
         contract: TypedCommandContract,
+        declared_mount: Option<CommandMount>,
         guard: Option<Arc<CausalGuardFn<D::Aggregate>>>,
         handle: Arc<PreparedHandlerFn<D::Aggregate, I, K>>,
     ) -> Self
@@ -771,12 +888,30 @@ impl<D: Send + Sync + 'static> Routes<D> {
             MessageKind::Command,
             route_name,
         );
+        let spec = CommandSpec::from_contract(&contract)
+            .unwrap_or_else(|error| panic!("typed command contract cannot compile: {error}"));
+        let mount = declared_mount.unwrap_or_else(|| {
+            CommandMount::from_typed_route(spec.clone(), route_name)
+        });
+        assert_eq!(
+            mount.spec().id,
+            spec.id,
+            "typed command mount and route declaration ids must match"
+        );
+        assert_eq!(
+            mount.spec().fingerprint,
+            spec.fingerprint,
+            "typed command mount and route declaration fingerprints must match"
+        );
         by_name.insert(
             route_name.to_string(),
             RegisteredHandler::Causal(Box::new(
                 RegisteredCausalHandler::<D::Aggregate, I, K>::new(contract, guard, handle),
             )),
         );
+        mount
+            .register_with(&mut self)
+            .unwrap_or_else(|error| panic!("typed command mount registration failed: {error}"));
         self.handler_specs.push(HandlerSpec::command(route_name));
         self
     }
@@ -907,6 +1042,59 @@ impl<D: Send + Sync + 'static> Routes<D> {
         }
 
         handle(&ctx).await
+    }
+}
+
+impl<D: Send + Sync + 'static> CommandMountRegistrar for Routes<D> {
+    fn register_command_mount(
+        &mut self,
+        mount: CommandMount,
+    ) -> Result<(), crate::microsvc::HandlerError> {
+        let Some(handlers) = self.handlers.get(&MessageKind::Command) else {
+            return Err(crate::microsvc::HandlerError::UnknownCommand(
+                mount.spec().id.clone(),
+            ));
+        };
+        if !handlers.contains_key(&mount.spec().id) {
+            return Err(crate::microsvc::HandlerError::UnknownCommand(
+                mount.spec().id.clone(),
+            ));
+        }
+        if mount.typed_route_name() != Some(mount.spec().id.as_str()) {
+            return Err(crate::microsvc::HandlerError::Rejected(format!(
+                "command mount `{}` is not the generated typed-route registration for its declaration",
+                mount.spec().id
+            )));
+        }
+        let expected = self
+            .typed_contracts()
+            .into_iter()
+            .find(|contract| contract.name == mount.spec().id)
+            .and_then(|contract| CommandSpec::from_contract(contract).ok())
+            .ok_or_else(|| {
+                crate::microsvc::HandlerError::Rejected(format!(
+                    "command mount `{}` is not backed by a typed causal declaration",
+                    mount.spec().id
+                ))
+            })?;
+        if expected.fingerprint != mount.spec().fingerprint {
+            return Err(crate::microsvc::HandlerError::Rejected(format!(
+                "command mount `{}` has a stale declaration fingerprint",
+                mount.spec().id
+            )));
+        }
+        if self
+            .command_mounts
+            .iter()
+            .any(|registered| registered.spec().id == mount.spec().id)
+        {
+            return Err(crate::microsvc::HandlerError::Rejected(format!(
+                "command mount `{}` is registered more than once",
+                mount.spec().id
+            )));
+        }
+        self.command_mounts.push(mount);
+        Ok(())
     }
 }
 

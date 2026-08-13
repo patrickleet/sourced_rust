@@ -37,11 +37,12 @@ pub use command_contract::{
 pub use command_contract::{
     __command_projection_event_descriptor, __command_projection_event_preview,
     __command_projection_events, __command_projection_preview_constant,
-    __command_projection_state_preview, typed_command, Atomic, CommandConsistency,
+    __command_projection_state_known_values, __command_projection_state_preview,
+    command_transition, typed_command, Atomic, CommandConsistency, CommandEventSet, CommandOutcome,
     CommandProjectionEventSet, CommandProjectionPreview, CommandProjectionPreviewSource,
-    CompiledDirectProjectionTarget, CompiledInputDefaults, Eventual, PrepareCommandError,
-    PreparedCommand, Succeeded, TypedCommand, TypedEffectExpression, TypedEffectKey,
-    TypedEffectRelationship,
+    CommandProjectionPureArg, CommandProjectionPureReduce, CompiledDirectProjectionTarget,
+    CompiledInputDefaults, Eventual, PrepareCommandError, PreparedCommand, Succeeded, TypedCommand,
+    TypedEffectExpression, TypedEffectKey, TypedEffectRelationship,
 };
 pub use naming::{
     aggregate_field, by_pk_field, comparison_op_fields, include_postgres_json_comparison_ops,
@@ -96,7 +97,9 @@ pub use engine::{
     GraphqlEngineBuilder, GraphqlPool, GraphqlPoolSource,
 };
 #[cfg(feature = "graphql")]
-pub use http::{graphiql_page, graphql_router, graphql_router_with_service};
+pub use http::{
+    graphiql_page, graphql_router, graphql_router_with_dispatcher, graphql_router_with_service,
+};
 #[cfg(feature = "graphql")]
 pub use identity::{
     extract_bearer, map_claims_to_session, public_oidc_identity_from_env,

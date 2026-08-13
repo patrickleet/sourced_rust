@@ -618,6 +618,7 @@ fn application_wire_surface_uses_authenticated_role_policy_for_actual_rows() {
         &surface,
         "delta-app",
         &["delta-admin".into(), "delta-user".into()],
+        &["delta-admin".into(), "delta-user".into()],
         &grants_by_role,
     )
     .unwrap();

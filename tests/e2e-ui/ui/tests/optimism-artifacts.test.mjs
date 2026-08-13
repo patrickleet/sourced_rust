@@ -57,25 +57,29 @@ const DEMO_COMMANDS = Object.freeze([
 		name: 'todo.create',
 		mutationField: 'todos_create',
 		consistency: 'eventual',
-		demo: 'todos'
+		demo: 'todos',
+		previewValues: { assignee_id: null, status: 'open' }
 	},
 	{
 		name: 'todo.complete',
 		mutationField: 'todos_complete',
 		consistency: 'eventual',
-		demo: 'todos'
+		demo: 'todos',
+		previewValues: { status: 'completed' }
 	},
 	{
 		name: 'todo.reopen',
 		mutationField: 'todos_reopen',
 		consistency: 'eventual',
-		demo: 'todos'
+		demo: 'todos',
+		previewValues: { status: 'open' }
 	},
 	{
 		name: 'todo.archive',
 		mutationField: 'todos_archive',
 		consistency: 'eventual',
-		demo: 'todos'
+		demo: 'todos',
+		previewValues: { status: 'archived' }
 	},
 	{
 		name: 'todo.rename',
@@ -99,16 +103,8 @@ const DEMO_COMMANDS = Object.freeze([
 		name: 'blob.move',
 		mutationField: 'blob_games_move',
 		consistency: 'atomic',
-		demo: 'blob',
-		// Board fields must be input-backed for paint-before-wire.
-		previewFields: [
-			'map_json',
-			'score',
-			'player_dead',
-			'status',
-			'current_level',
-			'current_level_completed'
-		]
+		demo: 'blob'
+		// Thin input (game_id + direction); board seals via Atomic response.
 	},
 	{
 		name: 'blob.start_level',
@@ -149,6 +145,22 @@ test('demo commands export preview IR for client optimism', () => {
 						previewJson.includes(`"field": "${field}"`),
 					`${expected.name} preview must include field ${field}`
 				);
+			}
+		}
+
+		for (const [field, expectedValue] of Object.entries(
+			expected.previewValues ?? {}
+		)) {
+			const assignment = previewOps
+				.flatMap(({ mutation }) => mutation.fields ?? mutation.set ?? [])
+				.find((candidate) => candidate.field === field);
+			assert.ok(assignment, `${expected.name} preview must assign ${field}`);
+			if (expectedValue === null) {
+				assert.equal(assignment.value.kind, 'null');
+			} else {
+				assert.equal(assignment.value.kind, 'constant');
+				assert.equal(assignment.value.value.type, 'string');
+				assert.equal(assignment.value.value.value, expectedValue);
 			}
 		}
 

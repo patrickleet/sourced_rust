@@ -7,7 +7,7 @@ use e2e_projections::save_blob_game;
 use e2e_readmodels::BlobGames;
 use serde::Deserialize;
 
-use crate::handlers::util::rejected;
+use crate::handlers::util::{principal, rejected};
 
 pub const COMMAND: &str = "blob.start_level";
 
@@ -20,7 +20,7 @@ pub async fn handle(
     ctx: &CausalCommandContext<'_, BlobGame>,
     input: BlobStartLevelInput,
 ) -> Result<PreparedCommand<Atomic<BlobGames>>, HandlerError> {
-    let owner = ctx.user_id()?.to_string();
+    let owner = principal(ctx)?;
     let repo = ctx.repo();
     let mut game = repo
         .get(&input.game_id)

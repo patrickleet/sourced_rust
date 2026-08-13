@@ -86,7 +86,7 @@ impl ClientManifest {
             return Err(ClientCompileError::manifest(
                 "client.manifest.protocol_fingerprint",
                 format!(
-                    "client compiler protocol contract is `{PROTOCOL_FINGERPRINT}`, received `{}`; regenerate the manifest and use a matching dctl version",
+                    "client compiler protocol contract is `{PROTOCOL_FINGERPRINT}`, received `{}`; regenerate the manifest and use a matching distributed version",
                     wire.protocol_fingerprint
                 ),
             ));

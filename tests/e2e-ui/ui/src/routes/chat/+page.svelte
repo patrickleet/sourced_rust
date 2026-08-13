@@ -18,6 +18,7 @@
 	import { ChatMessages as PublicChatMessages } from '$distributed/public';
 	import {
 		CHAT_PAGE_SIZE,
+		liveWindowProvesHistoryExhausted,
 		mergeHistoryPage,
 		nearBottom,
 		nearTop,
@@ -52,6 +53,8 @@
 	let history = $state<ChatMsg[]>([]);
 	let historyOffset = $state(PAGE_SIZE);
 	let hasMoreHistory = $state(true);
+	/** Newest live row when a complete history probe proved exhaustion. */
+	let historyExhaustedAtNewestId = $state<string | null>(null);
 	let loadingHistory = $state(false);
 	/** Auto-pin to bottom only while the user is already near the end. */
 	let stickToBottom = $state(true);
@@ -75,6 +78,7 @@
 			: [];
 		return [...pageMessages].reverse();
 	});
+	const liveNewestMessageId = $derived(livePage.at(-1)?.message_id ?? null);
 
 	/** History (older) + live (newest), de-duped by message_id. */
 	const messages = $derived.by(() => {
@@ -111,6 +115,7 @@
 			offset += PAGE_SIZE;
 			if (page.length < PAGE_SIZE) {
 				hasMoreHistory = false;
+				historyExhaustedAtNewestId = liveNewestMessageId;
 				break;
 			}
 		}
@@ -145,6 +150,27 @@
 		// Depend on message list + element bind so pin / fill run after DOM.
 		messages;
 		logEl;
+		/*
+		 * A complete short newest window already proves exhaustion; do not start
+		 * an offset request merely because a small lobby does not fill the panel.
+		 * If a full live window later advances, one of its previous rows became
+		 * history, so reopen the cursor for a new probe.
+		 */
+		if (
+			$lobby.complete &&
+			liveWindowProvesHistoryExhausted(livePage.length, PAGE_SIZE)
+		) {
+			hasMoreHistory = false;
+			historyExhaustedAtNewestId = liveNewestMessageId;
+		} else if (
+			$lobby.complete &&
+			!hasMoreHistory &&
+			historyExhaustedAtNewestId !== null &&
+			liveNewestMessageId !== historyExhaustedAtNewestId
+		) {
+			hasMoreHistory = true;
+			historyExhaustedAtNewestId = null;
+		}
 		if (stickToBottom) void scrollBottom();
 		// First page may not fill the panel — pull history until scrollable.
 		// Wait for the live window to be complete so an empty history page is
@@ -253,13 +279,10 @@
 					...livePage.map((m) => m.message_id)
 				]);
 				const merged = mergeHistoryPage(page, known, offset, PAGE_SIZE);
-				// Empty complete page while the live window is not yet full: the
-				// offset may simply be past currently projected rows. Keep the
-				// cursor open so a later scroll can retry after lag clears.
-				if (page.length === 0 && livePage.length < PAGE_SIZE) {
-					return;
-				}
 				hasMoreHistory = merged.hasMore;
+				historyExhaustedAtNewestId = merged.hasMore
+					? null
+					: liveNewestMessageId;
 				historyOffset = merged.nextOffset;
 				if (merged.fresh.length === 0) return;
 				history = [...merged.fresh, ...history];

@@ -2,4 +2,6 @@
 
 pub mod models;
 
-pub use models::{ChatError, ChatMessage, ChatMessagePostedDomainEvent, ChatMessageState};
+pub use models::{
+    domain_commands, ChatError, ChatMessage, ChatMessagePostedDomainEvent, ChatMessageState,
+};

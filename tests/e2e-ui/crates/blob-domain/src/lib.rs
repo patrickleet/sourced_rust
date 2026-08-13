@@ -1,15 +1,28 @@
-//! BlobGame aggregate — grid trail game (remake of ig-blob-game-model-service).
+//! Blob game domain — one crate, three faces:
 //!
-//! Tile ints match JS `constants.ts` (player=9, hole=0, unvisited=1, visited=2,
-//! dead_by_suicide=3, dead_by_hole=4). Read models update only from emitted facts.
+//! - [`core`] — pure board rules (always available; WASM-eligible)
+//! - [`models`] / [`levels`] — aggregate host (`feature = "domain"`, default)
+//! - [`wasm`] — `blobSimulateMove` for the client (`feature = "wasm"`)
+//!
+//! Tile ints match the client board helpers (player=9, hole=0, unvisited=1, …).
 
+pub mod core;
+
+#[cfg(feature = "domain")]
 pub mod levels;
+#[cfg(feature = "domain")]
 pub mod models;
 
+#[cfg(feature = "wasm")]
+pub mod wasm;
+
+pub use core::{simulate_move, tile, Direction, MovePreview, SimulateError};
+
+#[cfg(feature = "domain")]
 pub use levels::{demo_map, generate_level, generate_level_with, is_hamiltonian_passable};
-pub use models::tile;
+#[cfg(feature = "domain")]
 pub use models::{
-    simulate_move, test_map_no_holes, test_map_with_hole, BlobError, BlobGame, BlobGameState,
+    domain_commands, test_map_no_holes, test_map_with_hole, BlobError, BlobGame, BlobGameState,
     BlobInitializedDomainEvent, BlobLevelStartedDomainEvent, BlobMovedDomainEvent,
-    BlobStartedDomainEvent, Direction, MovePreview,
+    BlobStartedDomainEvent,
 };

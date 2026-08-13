@@ -16,6 +16,41 @@ impl Routes<()> {
         Self::from_dependencies(())
     }
 
+    /// Framework helper: wire an aggregate repository + read-model store without
+    /// application code naming `QueuedRepository` / `RepoReadModelDependencies`.
+    ///
+    /// Product modules should start here, then register `typed_command` mounts.
+    pub fn for_aggregate<R, L, A, S>(
+        repo: R,
+        locks: L,
+        read_models: S,
+    ) -> Routes<
+        RepoReadModelDependencies<
+            crate::AggregateRepository<crate::QueuedRepository<R, L>, A>,
+            S,
+        >,
+    >
+    where
+        R: crate::GetStream + crate::TransactionalCommit + Clone + Send + Sync + 'static,
+        L: crate::LockManager + Clone + 'static,
+        A: crate::Aggregate + Send + Sync + 'static,
+        S: HasReadModelStore + Send + Sync + 'static,
+        crate::QueuedRepository<R, L>: Clone
+            + crate::AggregateBuilder
+            + HasOutboxStore
+            + crate::TransactionalCommit
+            + Send
+            + Sync
+            + 'static,
+        crate::AggregateRepository<crate::QueuedRepository<R, L>, A>:
+            HasRepo + HasOutboxStore + ConfigurableOutboxPublisher + Send + Sync + 'static,
+    {
+        use crate::{AggregateBuilder, Queueable};
+        Routes::new()
+            .with_repo(repo.queued_with(locks).aggregate::<A>())
+            .with_read_model_store(read_models)
+    }
+
     /// Use any custom dependency value for this route bundle.
     pub fn with_dependencies<D>(self, dependencies: D) -> Routes<D>
     where

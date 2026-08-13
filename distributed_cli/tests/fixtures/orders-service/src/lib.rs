@@ -1,5 +1,5 @@
-//! Minimal Distributed service fixture for `dctl` manifest-harness integration
-//! tests: one read model (→ an `orders` table) registered in the project manifest.
+//! Minimal Distributed service fixture for `distributed` manifest-harness integration
+//! tests: one read model (→ an `orders` table) registered in the read-model catalog.
 
 use std::any::TypeId;
 
@@ -10,8 +10,8 @@ use distributed::graphql::{
 };
 use distributed::microsvc::{CausalCommandContext, HandlerError, Routes, Service};
 use distributed::{
-    Aggregate, AggregateRepository, DistributedProjectManifest, Entity, EventRecord,
-    InMemoryRepository, ReadModel,
+    Aggregate, AggregateRepository, Application, ApplicationManifest, Entity, EventRecord,
+    InMemoryRepository, ReadModel, ReadModelCatalog, SurfaceSpec,
 };
 use serde::{Deserialize, Serialize};
 
@@ -102,16 +102,34 @@ async fn project_order(
     ))
 }
 
-/// The entrypoint `dctl describe`/`dctl schema` call by default
-/// (`<crate>::distributed_manifest`).
-pub fn distributed_manifest() -> DistributedProjectManifest {
-    DistributedProjectManifest::new("orders").read_model::<OrderView>()
+/// The entrypoint `distributed schema` calls by default
+/// (`<crate>::read_model_catalog`). This is the physical read-model catalog,
+/// not the logical application manifest.
+pub fn read_model_catalog() -> ReadModelCatalog {
+    ReadModelCatalog::new("orders").read_model::<OrderView>()
 }
 
-/// Pool-free client export used by `dctl client-manifest`. Both the CLI harness
+/// The logical application artifact is built from the same non-executable
+/// Surface contract as the client export; physical catalog SQL remains a
+/// separate read-model utility.
+pub fn application_manifest() -> ApplicationManifest {
+    let catalog = read_model_catalog();
+    let surface = build_surface(&catalog.tables, &SurfaceOptions::sqlite())
+        .expect("fixture Surface should build");
+    let surface = SurfaceSpec::from_surface("orders", &surface)
+        .expect("fixture Surface contract should compile");
+    Application::new("orders")
+        .surface(surface)
+        .build()
+        .expect("fixture application manifest should compile")
+        .manifest()
+        .clone()
+}
+
+/// Pool-free client export used by `distributed client-manifest`. Both the CLI harness
 /// and a runtime engine finish through `DistributedClientSurfaceExport::manifest`.
 pub fn distributed_client_surface() -> DistributedClientSurfaceExport {
-    let project = distributed_manifest();
+    let catalog = read_model_catalog();
     let service = Service::new().named("orders").routes(
         Routes::new()
             .with_repo(AggregateRepository::<_, FixtureAggregate>::new(
@@ -124,7 +142,7 @@ pub fn distributed_client_surface() -> DistributedClientSurfaceExport {
             )
             .handle(project_order),
     );
-    let full = build_surface(&project.tables, &SurfaceOptions::sqlite())
+    let full = build_surface(&catalog.tables, &SurfaceOptions::sqlite())
         .expect("fixture Surface should build")
         .with_service(&service)
         .expect("fixture typed service should bind")
@@ -139,6 +157,6 @@ pub fn distributed_client_surface() -> DistributedClientSurfaceExport {
     )]);
     let user =
         surface_for_role(&full, "user", &grants).expect("fixture role policy should be valid");
-    DistributedClientSurfaceExport::from_project(&project, user)
+    DistributedClientSurfaceExport::from_selected("orders", user)
         .expect("fixture Surface should be role-selected")
 }

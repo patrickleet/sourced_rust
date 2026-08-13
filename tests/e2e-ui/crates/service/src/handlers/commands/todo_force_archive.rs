@@ -9,7 +9,7 @@ use distributed::microsvc::{CausalCommandContext, HandlerError};
 use serde::{Deserialize, Serialize};
 use todo_domain::{Todo, TodoState};
 
-use crate::handlers::util::rejected;
+use crate::handlers::util::{principal, rejected};
 
 pub const COMMAND: &str = "todo.force_archive";
 
@@ -31,7 +31,7 @@ pub async fn handle(
     ctx: &CausalCommandContext<'_, Todo>,
     input: TodoForceArchiveInput,
 ) -> Result<PreparedCommand<Eventual<TodoForceArchivePayload>>, HandlerError> {
-    let admin = ctx.user_id()?.to_string();
+    let admin = principal(ctx)?;
     let repo = ctx.repo();
     let mut todo = repo
         .get(&input.todo_id)

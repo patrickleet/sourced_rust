@@ -948,7 +948,7 @@ async fn resolve_command(
     let Some(service) = service else {
         return Err(client_error(
             "INTERNAL",
-            "command dispatcher not configured (use graphql_router_with_service)",
+            "command dispatcher not configured (use graphql_router_with_dispatcher or graphql_router_with_service)",
         ));
     };
 
@@ -1041,7 +1041,7 @@ async fn resolve_command_status(
     let service = ctx.data_opt::<Arc<Service>>().ok_or_else(|| {
         client_error(
             "INTERNAL",
-            "command dispatcher not configured (use graphql_router_with_service)",
+            "command dispatcher not configured (use graphql_router_with_dispatcher or graphql_router_with_service)",
         )
     })?;
     let command_id = ctx

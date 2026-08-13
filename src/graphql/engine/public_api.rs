@@ -5,8 +5,8 @@ impl GraphqlEngine {
         GraphqlEngineBuilder::new(pool.into())
     }
 
-    pub fn from_manifest(
-        m: &DistributedProjectManifest,
+    pub fn from_schema_catalog(
+        m: &ReadModelCatalog,
         pool: impl Into<GraphqlPoolSource>,
     ) -> Result<GraphqlEngineBuilder, GraphqlBuildError> {
         let mut builder = Self::builder(pool).service_id(m.name.clone());
@@ -49,7 +49,7 @@ impl GraphqlEngine {
         self.inner.role_surfaces.get(role).cloned()
     }
 
-    /// Stable service identity retained from [`DistributedProjectManifest::name`].
+    /// Stable service identity retained from [`ReadModelCatalog::name`].
     ///
     /// Engines built manually return `None` unless the builder opted in with
     /// [`GraphqlEngineBuilder::service_id`].
@@ -107,7 +107,8 @@ impl GraphqlEngine {
     pub fn client_surface_for_application(
         &self,
         application: &str,
-        roles: &[&str],
+        eligible_roles: &[&str],
+        schema_roles: &[&str],
     ) -> Result<DistributedClientSurfaceExport, ClientManifestError> {
         let service_id = self.client_export_service_id()?;
         let surface = self
@@ -120,14 +121,19 @@ impl GraphqlEngine {
                     "application surface `{application}` is not registered"
                 ))
             })?;
-        let mut requested_roles = roles
+        let mut requested_eligible_roles = eligible_roles
             .iter()
             .map(|role| (*role).to_string())
             .collect::<Vec<_>>();
-        requested_roles.sort();
-        requested_roles.dedup();
+        let mut requested_schema_roles = schema_roles
+            .iter()
+            .map(|role| (*role).to_string())
+            .collect::<Vec<_>>();
+        requested_eligible_roles.sort();
+        requested_schema_roles.sort();
         let SurfaceSelection::Application {
-            roles: registered_roles,
+            eligible_roles: registered_roles,
+            schema_roles: registered_schema_roles,
             ..
         } = &surface.selection
         else {
@@ -135,11 +141,15 @@ impl GraphqlEngine {
                 "registered application surface `{application}` has invalid identity"
             )));
         };
-        if requested_roles != *registered_roles {
+        if requested_eligible_roles != *registered_roles
+            || requested_schema_roles != *registered_schema_roles
+        {
             return Err(ClientManifestError(format!(
-                "application surface `{application}` is registered for roles [{}], not [{}]",
+                "application surface `{application}` is registered for eligible roles [{}] and schema roles [{}], not eligible [{}] and schema [{}]",
                 registered_roles.join(", "),
-                requested_roles.join(", ")
+                registered_schema_roles.join(", "),
+                requested_eligible_roles.join(", "),
+                requested_schema_roles.join(", ")
             )));
         }
         DistributedClientSurfaceExport::from_selected_with_execution(
@@ -157,16 +167,17 @@ impl GraphqlEngine {
     pub fn client_manifest_for_application(
         &self,
         application: &str,
-        roles: &[&str],
+        eligible_roles: &[&str],
+        schema_roles: &[&str],
     ) -> Result<DistributedClientManifest, ClientManifestError> {
-        self.client_surface_for_application(application, roles)?
+        self.client_surface_for_application(application, eligible_roles, schema_roles)?
             .manifest()
     }
 
     fn client_export_service_id(&self) -> Result<String, ClientManifestError> {
         self.inner.service_id.clone().ok_or_else(|| {
             ClientManifestError(
-                "client export requires a service ID; construct the engine with GraphqlEngine::from_manifest or GraphqlEngineBuilder::service_id"
+                "client export requires a service ID; construct the engine with GraphqlEngine::from_schema_catalog or GraphqlEngineBuilder::service_id"
                     .into(),
             )
         })

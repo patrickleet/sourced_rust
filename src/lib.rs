@@ -11,7 +11,17 @@
 // Allow proc-macros to reference this crate by name even when used internally
 extern crate self as distributed;
 
+/// Macro implementation support. External packages may rename the
+/// distributed dependency and re-export it under the generated path; the
+/// generated code must not require a direct serde dependency of its own.
+#[doc(hidden)]
+pub mod __private {
+    pub use serde;
+}
+
 pub mod aggregate;
+pub mod application;
+pub mod command_dispatch;
 pub mod bus;
 pub mod domain_event;
 pub mod entity;
@@ -24,7 +34,6 @@ pub mod emitter;
 pub mod graphql;
 mod in_memory_repo;
 pub mod lock;
-pub mod manifest;
 #[cfg(feature = "metrics")]
 pub mod metrics;
 pub mod microsvc;
@@ -53,6 +62,21 @@ pub use entity::{
     BITCODE_PAYLOAD_CODEC_VERSION,
 };
 
+// Placement-independent application composition. The module path remains the
+// canonical namespace; these common contract types are also convenient at the
+// crate root for contract-only packages.
+pub use application::{
+    Application, ApplicationError, ApplicationManifest, CommandMount, CommandMountHandler,
+    CommandMountRegistrar, CommandSpec, ContractCompiler, DeploymentPlan, LogicalId, Module,
+    ModuleManifest, MountSelector, ProcessIntent, ProcessPreset, ProjectionSpec, SurfaceSpec,
+    APPLICATION_MANIFEST_SCHEMA_VERSION, DEPLOYMENT_PLAN_SCHEMA_VERSION,
+};
+pub use command_dispatch::{
+    CommandDispatchEnvelope, CommandDispatchError, CommandDispatchReceipt, CommandDispatcher,
+    LocalCommandDispatcher, RemoteCommandDispatcher, RemoteDispatchConfig, RemoteTrustMode,
+    SharedCommandDispatcher, APPROVED_REMOTE_DISPATCH_PROFILE, COMMAND_DISPATCH_ENVELOPE_VERSION,
+};
+
 // Domain events: typed outward contracts distinct from replay events/snapshots.
 pub use domain_event::{
     DomainDeletion, DomainDeletionError, DomainEvent, DomainEventBodyDescriptor,
@@ -65,7 +89,7 @@ pub use domain_event::{
 
 // Logical projection contracts. Physical read-model lowering deliberately lives
 // behind adapters and is not part of this semantic surface.
-pub use projection::{
+pub use projection::{LocalProjectionMounts, LocalProjectionMountsBuilder, 
     ProjectionArm, ProjectionAssignment, ProjectionEnvelopeField, ProjectionEventSelector,
     ProjectionEventSet, ProjectionExpression, ProjectionField, ProjectionInvalidation,
     ProjectionKeyField, ProjectionMutationKind, ProjectionMutationProvenance,
@@ -366,13 +390,8 @@ pub use table::{
     TableIndex, TableKind, TableMigrationArtifact, TableModel, TableMutation, TableRowMutation,
     TableSchema, TableSchemaAdapter, TableSchemaAdapterCapabilities, TableSchemaBootstrap,
     TableSchemaIssue, TableSchemaIssueKind, TableSchemaRegistry, TableSchemaRegistryExt,
-    TableSchemaVerification, TableStoreError, TableWritePlan, DEFAULT_TABLE_VERSION_COLUMN,
-};
-
-pub use manifest::{
-    DistributedManifestEnvelope, DistributedProjectManifest, MessageEndpointManifest,
-    MetricsEndpointManifest, ServiceManifest, ServiceObservabilityManifest, TraceExportMode,
-    TracePropagationMode, TracingManifest, TransportManifest, DISTRIBUTED_MANIFEST_SCHEMA_VERSION,
+    ReadModelCatalog, TableSchemaVerification, TableStoreError, TableWritePlan,
+    DEFAULT_TABLE_VERSION_COLUMN,
 };
 pub use trace_context::{
     is_valid_traceparent, TraceContext, CAUSATION_ID, CORRELATION_ID, TRACEPARENT, TRACESTATE,
@@ -404,15 +423,20 @@ macro_rules! graphql_models {
 }
 
 // Session convenience re-exports used by GraphQL permission filters.
-pub use microsvc::{ROLE_KEY, USER_ID_KEY};
+pub use microsvc::{
+    MessageEndpointDescriptor, MetricsEndpointDescriptor, ROLE_KEY, ServiceDescriptor,
+    ServiceObservabilityDescriptor, TraceExportMode, TracePropagationMode, TracingDescriptor,
+    TransportDescriptor, USER_ID_KEY,
+};
 
 // Re-export proc macros. The old event-owning projection proc-macro and
 // separately authored `command_effects!` / `command_confirmations!` are gone.
 // Use `mutation!` / `mutation_file!` + declarative `projection!` (event→mutation
 // mount); commands predict events via `.emits`/`.preview`.
 pub use distributed_macros::{
-    aggregate, command_input_defaults, digest, mutation, mutation_file, sourced, DomainEvent,
-    DomainState, GraphqlInput, GraphqlOutput, ReadModel, Snapshot,
+    aggregate, application, command, command_input_defaults, digest, module, mutation,
+    mutation_file, sourced, DomainEvent, DomainState, GraphqlInput, GraphqlOutput, ReadModel,
+    Snapshot,
 };
 
 // Re-export enqueue macro (requires "emitter" feature)

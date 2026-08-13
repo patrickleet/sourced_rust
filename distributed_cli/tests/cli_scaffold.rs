@@ -1,4 +1,4 @@
-//! Integration tests for `dctl scaffold`: drive the real binary and assert the
+//! Integration tests for `distributed scaffold`: drive the real binary and assert the
 //! generated project tree. Pure generation + filesystem, so these are fast and
 //! need no nested compilation — `cli_scaffold_compile.rs` owns the (ignored)
 //! end-to-end compile checks.
@@ -15,7 +15,7 @@ fn distributed_root() -> PathBuf {
         .to_path_buf()
 }
 
-/// Run `dctl scaffold orders --path <tmp>/<dir_name> <extra_args...>` against a
+/// Run `distributed scaffold orders --path <tmp>/<dir_name> <extra_args...>` against a
 /// fresh directory, returning the raw process output and the output directory.
 fn run_scaffold(dir_name: &str, extra_args: &[&str]) -> (Output, PathBuf) {
     let out_dir = Path::new(env!("CARGO_TARGET_TMPDIR")).join(dir_name);
@@ -24,10 +24,10 @@ fn run_scaffold(dir_name: &str, extra_args: &[&str]) -> (Output, PathBuf) {
     (output, out_dir)
 }
 
-/// Run `dctl scaffold orders --path <out_dir> <extra_args...>` without touching
+/// Run `distributed scaffold orders --path <out_dir> <extra_args...>` without touching
 /// the directory first (error-path tests pre-populate it).
 fn scaffold_into(out_dir: &Path, extra_args: &[&str]) -> Output {
-    Command::new(env!("CARGO_BIN_EXE_dctl"))
+    Command::new(env!("CARGO_BIN_EXE_distributed"))
         .args([
             "scaffold",
             "orders",
@@ -38,7 +38,7 @@ fn scaffold_into(out_dir: &Path, extra_args: &[&str]) -> Output {
         ])
         .args(extra_args)
         .output()
-        .expect("dctl should run")
+        .expect("distributed should run")
 }
 
 /// Scaffold and assert success, returning the output directory.
@@ -46,7 +46,7 @@ fn scaffold(dir_name: &str, extra_args: &[&str]) -> PathBuf {
     let (output, out_dir) = run_scaffold(dir_name, extra_args);
     assert!(
         output.status.success(),
-        "dctl scaffold {extra_args:?} failed:\n{}",
+        "distributed scaffold {extra_args:?} failed:\n{}",
         String::from_utf8_lossy(&output.stderr)
     );
     out_dir
@@ -242,10 +242,10 @@ fn scaffold_refuses_a_non_empty_directory() {
 #[test]
 fn describe_reports_a_missing_manifest() {
     let missing = Path::new(env!("CARGO_TARGET_TMPDIR")).join("no-such-dir/Cargo.toml");
-    let output = Command::new(env!("CARGO_BIN_EXE_dctl"))
+    let output = Command::new(env!("CARGO_BIN_EXE_distributed"))
         .args(["describe", "--manifest-path", missing.to_str().unwrap()])
         .output()
-        .expect("dctl should run");
+        .expect("distributed should run");
     assert!(!output.status.success(), "describe should fail");
     let stderr = String::from_utf8_lossy(&output.stderr);
     assert!(

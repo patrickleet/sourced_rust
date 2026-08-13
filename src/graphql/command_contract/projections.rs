@@ -154,11 +154,140 @@ pub(crate) struct CommandProjectionEventPreview {
     pub preview: CommandProjectionPreview,
 }
 
+/// Pure reducer over a known cache row for client auto-optimism.
+///
+/// Domain owns pure semantics. Client delivery is either:
+/// - **WASM** ([`Self::wasm`]): gen-client emits a `createWasmJsonPure` host in
+///   `pures.ts` — no app TypeScript pure file required.
+/// - **Hand module** ([`Self::client_module`]): gen-client imports a named export
+///   from `$lib/<module>` (escape hatch).
+#[derive(Clone, Debug, PartialEq, Eq, Serialize)]
+pub struct CommandProjectionPureReduce {
+    /// Stable pure id, e.g. `blob.simulate_move`.
+    pub fn_name: String,
+    /// Path under app `$lib` without extension for a hand-written pure (empty if WASM).
+    pub client_module: String,
+    /// Named export in that hand module (empty if WASM).
+    pub client_export: String,
+    /// wasm-pack package under `$lib` without extension, e.g. `blob/pkg/blob_wasm`.
+    pub wasm_package: String,
+    /// Named WASM export `(recordJson, argsJson) -> assignJson | undefined`.
+    pub wasm_export: String,
+    /// Projection model id (e.g. `BlobGames`).
+    pub model: String,
+    /// Record key fields: `name` is the model field; `source` is input/default/preset.
+    pub key: Vec<CommandProjectionPureArg>,
+    /// Pure function arguments (resolved like preview values).
+    pub args: Vec<CommandProjectionPureArg>,
+    /// Fields taken from the pure result and patched onto the known row.
+    pub assign: Vec<String>,
+}
+
+/// One named pure-reduce binding (key field or pure arg).
+#[derive(Clone, Debug, PartialEq, Eq, Serialize)]
+pub struct CommandProjectionPureArg {
+    pub name: String,
+    pub source: CommandProjectionPreviewSource,
+}
+
+impl CommandProjectionPureReduce {
+    /// Hand-written pure under `$lib/<module>` exporting `client_export`.
+    pub fn client_module(
+        fn_name: impl Into<String>,
+        client_module: impl Into<String>,
+        client_export: impl Into<String>,
+        model: impl Into<String>,
+    ) -> Self {
+        Self {
+            fn_name: fn_name.into(),
+            client_module: client_module.into(),
+            client_export: client_export.into(),
+            wasm_package: String::new(),
+            wasm_export: String::new(),
+            model: model.into(),
+            key: Vec::new(),
+            args: Vec::new(),
+            assign: Vec::new(),
+        }
+    }
+
+    /// Domain pure shipped as wasm-pack under `$lib/<package>`; gen-client hosts it.
+    pub fn wasm(
+        fn_name: impl Into<String>,
+        wasm_package: impl Into<String>,
+        wasm_export: impl Into<String>,
+        model: impl Into<String>,
+    ) -> Self {
+        Self {
+            fn_name: fn_name.into(),
+            client_module: String::new(),
+            client_export: String::new(),
+            wasm_package: wasm_package.into(),
+            wasm_export: wasm_export.into(),
+            model: model.into(),
+            key: Vec::new(),
+            args: Vec::new(),
+            assign: Vec::new(),
+        }
+    }
+
+    /// Deprecated alias for [`Self::client_module`].
+    #[deprecated(note = "use client_module() or wasm()")]
+    pub fn new(
+        fn_name: impl Into<String>,
+        client_module: impl Into<String>,
+        client_export: impl Into<String>,
+        model: impl Into<String>,
+    ) -> Self {
+        Self::client_module(fn_name, client_module, client_export, model)
+    }
+
+    #[must_use]
+    pub fn key_input(
+        mut self,
+        field: impl Into<String>,
+        path: impl IntoIterator<Item = impl Into<String>>,
+    ) -> Self {
+        self.key.push(CommandProjectionPureArg {
+            name: field.into(),
+            source: CommandProjectionPreviewSource::input(path),
+        });
+        self
+    }
+
+    #[must_use]
+    pub fn arg_input(
+        mut self,
+        name: impl Into<String>,
+        path: impl IntoIterator<Item = impl Into<String>>,
+    ) -> Self {
+        self.args.push(CommandProjectionPureArg {
+            name: name.into(),
+            source: CommandProjectionPreviewSource::input(path),
+        });
+        self
+    }
+
+    #[must_use]
+    pub fn assign(mut self, fields: impl IntoIterator<Item = impl Into<String>>) -> Self {
+        self.assign.extend(fields.into_iter().map(Into::into));
+        self.assign.sort();
+        self.assign.dedup();
+        self
+    }
+}
+
 /// Exact outward events a command may emit, independent of any projector.
 #[derive(Clone, Debug, Default, PartialEq, Eq, Serialize)]
 pub(crate) struct CommandProjectionEvents {
     pub selectors: Vec<ProjectionEventSelector>,
     pub previews: Vec<CommandProjectionEventPreview>,
+    /// Values proved by a generated domain transition. Projector arms decide
+    /// whether these event values have any client-visible consequence.
+    #[serde(skip)]
+    pub inferred_values: Vec<CommandProjectionEventPreview>,
+    /// Pure reducers over known cache rows (client auto-optimism).
+    pub pure_reduces: Vec<CommandProjectionPureReduce>,
     pub declaration_errors: Vec<String>,
 }
 
@@ -192,6 +321,54 @@ impl CommandProjectionEvents {
             }));
     }
 
+    pub(crate) fn add_inferred_values(&mut self, values: CommandProjectionPreview) {
+        self.declaration_errors
+            .extend(values.declaration_errors.clone());
+        if values.selectors.len() != 1 {
+            self.declaration_errors.push(
+                "inferred transition values must bind exactly one emitted event variant".to_owned(),
+            );
+            return;
+        }
+        let selector = values.selectors[0].clone();
+        if let Some(existing) = self
+            .inferred_values
+            .iter_mut()
+            .find(|candidate| candidate.selector == selector)
+        {
+            existing.preview.fields.extend(values.fields);
+            existing
+                .preview
+                .declaration_errors
+                .extend(values.declaration_errors);
+        } else {
+            self.inferred_values.push(CommandProjectionEventPreview {
+                selector,
+                preview: values,
+            });
+        }
+    }
+
+    pub(crate) fn add_authenticated_user_field(
+        &mut self,
+        rust_field: &str,
+        values: CommandProjectionPreview,
+    ) {
+        if values.fields.len() != 1 {
+            self.declaration_errors.push(
+                format!(
+                    "authenticated-user inference field `{rust_field}` is not one exact emitted-event body field"
+                ),
+            );
+            return;
+        }
+        self.add_inferred_values(values);
+    }
+
+    pub(crate) fn add_pure_reduce(&mut self, reduce: CommandProjectionPureReduce) {
+        self.pure_reduces.push(reduce);
+    }
+
     pub(crate) fn canonicalize_and_validate(&mut self, command: &str) -> Result<(), String> {
         if let Some(error) = self.declaration_errors.first() {
             return Err(format!(
@@ -221,54 +398,161 @@ impl CommandProjectionEvents {
         // the allowed event set. Preserve their declaration order so generated
         // clients can apply them deterministically until the authoritative
         // ordered command delta replaces the optimistic overlay.
-        for preview in &mut self.previews {
-            if self
-                .selectors
-                .binary_search_by(|selector| selector.canonical_cmp(&preview.selector))
-                .is_err()
-            {
+        canonicalize_preview_declarations(command, &self.selectors, &mut self.previews, false)?;
+        canonicalize_preview_declarations(
+            command,
+            &self.selectors,
+            &mut self.inferred_values,
+            true,
+        )?;
+        for reduce in &mut self.pure_reduces {
+            if reduce.fn_name.trim().is_empty() || reduce.model.trim().is_empty() {
                 return Err(format!(
-                    "typed command `{command}` declares preview provenance outside its exact emitted event set"
+                    "typed command `{command}` pure reduce requires non-empty fn and model"
                 ));
             }
-            preview.preview.fields.sort_by_key(preview_field_key);
-            for pair in preview.preview.fields.windows(2) {
-                if preview_field_key(&pair[0]) == preview_field_key(&pair[1]) {
-                    return Err(format!(
-                        "typed command `{command}` repeats preview provenance for one event value"
-                    ));
-                }
+            let hand =
+                !reduce.client_module.trim().is_empty() || !reduce.client_export.trim().is_empty();
+            let wasm =
+                !reduce.wasm_package.trim().is_empty() || !reduce.wasm_export.trim().is_empty();
+            if hand == wasm {
+                return Err(format!(
+                    "typed command `{command}` pure reduce `{}` must declare either client_module+client_export or wasm_package+wasm_export (not both, not neither)",
+                    reduce.fn_name
+                ));
             }
-            for field in &preview.preview.fields {
-                if field.envelope.is_none() {
-                    validate_path(command, "emitted body", &field.body_path)?;
-                }
-                match &field.source {
+            if hand
+                && (reduce.client_module.trim().is_empty()
+                    || reduce.client_export.trim().is_empty())
+            {
+                return Err(format!(
+                    "typed command `{command}` pure reduce `{}` client module requires non-empty client_module and client_export",
+                    reduce.fn_name
+                ));
+            }
+            if wasm
+                && (reduce.wasm_package.trim().is_empty() || reduce.wasm_export.trim().is_empty())
+            {
+                return Err(format!(
+                    "typed command `{command}` pure reduce `{}` wasm package requires non-empty wasm_package and wasm_export",
+                    reduce.fn_name
+                ));
+            }
+            if reduce.key.is_empty() {
+                return Err(format!(
+                    "typed command `{command}` pure reduce `{}` requires at least one key field",
+                    reduce.fn_name
+                ));
+            }
+            if reduce.assign.is_empty() {
+                return Err(format!(
+                    "typed command `{command}` pure reduce `{}` requires at least one assign field",
+                    reduce.fn_name
+                ));
+            }
+            reduce.key.sort_by(|a, b| a.name.cmp(&b.name));
+            reduce.args.sort_by(|a, b| a.name.cmp(&b.name));
+            reduce.assign.sort();
+            reduce.assign.dedup();
+            for arg in reduce.key.iter().chain(reduce.args.iter()) {
+                match &arg.source {
                     CommandProjectionPreviewSource::InputPath { path }
                     | CommandProjectionPreviewSource::GeneratedDefaultPath { path } => {
-                        validate_path(command, "preview input", path)?;
+                        validate_path(command, "pure reduce", path)?;
                     }
                     CommandProjectionPreviewSource::TrustedPreset { name, codec } => {
                         if name.trim().is_empty() || codec.trim().is_empty() {
                             return Err(format!(
-                                "typed command `{command}` preview trusted preset name and codec must not be empty"
+                                "typed command `{command}` pure reduce trusted preset name and codec must not be empty"
                             ));
                         }
                     }
-                    CommandProjectionPreviewSource::ServerOnly => {
+                    other => {
                         return Err(format!(
-                            "typed command `{command}` cannot expose server-only preview provenance"
+                            "typed command `{command}` pure reduce `{}` arg `{}` uses unsupported source {other:?}",
+                            reduce.fn_name, arg.name
                         ));
                     }
-                    CommandProjectionPreviewSource::Constant { .. }
-                    | CommandProjectionPreviewSource::Null
-                    | CommandProjectionPreviewSource::Absent
-                    | CommandProjectionPreviewSource::Unknown => {}
                 }
             }
         }
+        self.pure_reduces
+            .sort_by(|left, right| left.fn_name.cmp(&right.fn_name));
+        if self
+            .pure_reduces
+            .windows(2)
+            .any(|pair| pair[0].fn_name == pair[1].fn_name)
+        {
+            return Err(format!(
+                "typed command `{command}` repeats pure reduce fn name"
+            ));
+        }
         Ok(())
     }
+}
+
+fn canonicalize_preview_declarations(
+    command: &str,
+    selectors: &[ProjectionEventSelector],
+    previews: &mut [CommandProjectionEventPreview],
+    inferred: bool,
+) -> Result<(), String> {
+    for preview in previews {
+        if selectors
+            .binary_search_by(|selector| selector.canonical_cmp(&preview.selector))
+            .is_err()
+        {
+            let source = if inferred {
+                "infers transition values"
+            } else {
+                "declares preview provenance"
+            };
+            return Err(format!(
+                "typed command `{command}` {source} outside its exact emitted event set"
+            ));
+        }
+        preview.preview.fields.sort_by_key(preview_field_key);
+        for pair in preview.preview.fields.windows(2) {
+            if preview_field_key(&pair[0]) == preview_field_key(&pair[1]) {
+                let source = if inferred {
+                    "inferred transition value"
+                } else {
+                    "preview provenance"
+                };
+                return Err(format!(
+                    "typed command `{command}` repeats {source} for one event value"
+                ));
+            }
+        }
+        for field in &preview.preview.fields {
+            if field.envelope.is_none() {
+                validate_path(command, "emitted body", &field.body_path)?;
+            }
+            match &field.source {
+                CommandProjectionPreviewSource::InputPath { path }
+                | CommandProjectionPreviewSource::GeneratedDefaultPath { path } => {
+                    validate_path(command, "preview input", path)?;
+                }
+                CommandProjectionPreviewSource::TrustedPreset { name, codec } => {
+                    if name.trim().is_empty() || codec.trim().is_empty() {
+                        return Err(format!(
+                            "typed command `{command}` preview trusted preset name and codec must not be empty"
+                        ));
+                    }
+                }
+                CommandProjectionPreviewSource::ServerOnly => {
+                    return Err(format!(
+                        "typed command `{command}` cannot expose server-only preview provenance"
+                    ));
+                }
+                CommandProjectionPreviewSource::Constant { .. }
+                | CommandProjectionPreviewSource::Null
+                | CommandProjectionPreviewSource::Absent
+                | CommandProjectionPreviewSource::Unknown => {}
+            }
+        }
+    }
+    Ok(())
 }
 
 /// Sealed exact event-set value produced by [`events!`](crate::events).
@@ -346,6 +630,53 @@ where
     structured_preview::<S>(__command_projection_events([descriptor]), fields)
 }
 
+/// Build compiler-inferred state values from a sourced transition.
+///
+/// Unlike the application-authored preview helper, aggregate fields absent
+/// from the outward `DomainState` are ignored. This lets the sourced macro
+/// inspect recorder assignments without coupling private aggregate storage to
+/// the public event schema.
+#[doc(hidden)]
+pub fn __command_projection_state_known_values<E, S>(
+    fields: Vec<(&'static str, CommandProjectionPreviewSource)>,
+) -> CommandProjectionPreview
+where
+    E: DomainEventBodyContract<S>,
+    S: DomainState + ProjectionBodyMetadata,
+{
+    let descriptor = __command_projection_event_descriptor::<E>().and_then(|descriptor| {
+        let expected = DomainEventDescriptor::state::<S>(E::EVENT_NAME, E::EVENT_VERSION);
+        if descriptor != expected || descriptor.body.kind != DomainEventBodyKind::State {
+            return Err(format!(
+                "inferred transition event contract `{}` does not exactly describe `{}` state",
+                E::EVENT_NAME,
+                std::any::type_name::<S>()
+            ));
+        }
+        Ok(descriptor)
+    });
+    let mut values =
+        CommandProjectionPreview::new().events(__command_projection_events([descriptor]));
+    for (rust_name, source) in fields {
+        let Some(field) = S::PROJECTION_FIELDS
+            .iter()
+            .find(|field| field.rust_name == rust_name && field.present)
+        else {
+            continue;
+        };
+        values.fields.push(CommandProjectionPreviewField {
+            body_path: vec![field.wire_name.to_owned()],
+            envelope: None,
+            body_type: Some(field.portable_type),
+            body_rust_type: Some(field.rust_type),
+            body_nullable: Some(field.nullable),
+            body_always_present: Some(field.always_present),
+            source,
+        });
+    }
+    values
+}
+
 /// Build a structured sparse-event preview from generated body metadata.
 #[doc(hidden)]
 pub fn __command_projection_event_preview<E, B>(
@@ -407,6 +738,57 @@ pub fn __command_projection_preview_constant(
         Err(_) => CommandProjectionPreviewSource::Unknown,
     }
 }
+
+/// Type-level source of a command's outward domain-event set.
+///
+/// Implemented for:
+/// - every [`DomainEventContract`] marker (for example `TodoCreatedDomainEvent`)
+/// - tuples of those markers
+/// - `#[sourced]`-generated `domain_commands::*` transition witnesses (public
+///   aggregate methods that call domain-marked `#[event]` recorders)
+///
+/// Prefer [`crate::graphql::TypedCommand::emits_events`] with these types over
+/// hand-maintaining a parallel event list when the domain already owns the
+/// transition.
+pub trait CommandEventSet {
+    /// Build the sealed event-set value used by command registration.
+    fn command_event_set() -> CommandProjectionEventSet;
+
+    /// Return values proved by a generated domain transition.
+    ///
+    /// Ordinary event markers have none. `#[sourced]` transition witnesses
+    /// override this with portable unconditional recorder values; projection
+    /// arms remain the sole definition of their cache consequences.
+    fn command_event_known_values() -> Vec<CommandProjectionPreview> {
+        Vec::new()
+    }
+}
+
+impl<E: DomainEventContract> CommandEventSet for E {
+    fn command_event_set() -> CommandProjectionEventSet {
+        __command_projection_events([__command_projection_event_descriptor::<E>()])
+    }
+}
+
+macro_rules! impl_command_event_set_tuple {
+    ($($E:ident),+) => {
+        impl<$($E: DomainEventContract),+> CommandEventSet for ($($E,)+) {
+            fn command_event_set() -> CommandProjectionEventSet {
+                __command_projection_events([
+                    $(__command_projection_event_descriptor::<$E>()),+
+                ])
+            }
+        }
+    };
+}
+
+impl_command_event_set_tuple!(E1, E2);
+impl_command_event_set_tuple!(E1, E2, E3);
+impl_command_event_set_tuple!(E1, E2, E3, E4);
+impl_command_event_set_tuple!(E1, E2, E3, E4, E5);
+impl_command_event_set_tuple!(E1, E2, E3, E4, E5, E6);
+impl_command_event_set_tuple!(E1, E2, E3, E4, E5, E6, E7);
+impl_command_event_set_tuple!(E1, E2, E3, E4, E5, E6, E7, E8);
 
 /// Declare an exact, type-checked outward domain-event set.
 #[macro_export]

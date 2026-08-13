@@ -1,24 +1,24 @@
-# distributed_cli (`dctl`)
+# distributed_cli (`distributed`)
 
-Service tooling for [Distributed](https://crates.io/crates/distributed): a `dctl`
+Service tooling for [Distributed](https://crates.io/crates/distributed): a `distributed`
 binary — and a library — that scaffolds service crates, inspects a service's
-project manifest, and renders schema artifacts (SQL or an Atlas Operator
-resource).
+logical ApplicationManifest, and renders physical read-model schema artifacts
+(SQL or an Atlas Operator resource).
 
 ```bash
-cargo install distributed_cli   # installs the `dctl` binary
+cargo install distributed_cli   # installs the `distributed` binary
 ```
 
 It is also a library, so another CLI can mount its commands instead of
 reimplementing them. `hops`, for example, exposes the same surface under
 `hops service` by depending on this crate and dispatching with
-`distributed_cli::run`. **Everything below documented as `dctl <cmd>` is also
+`distributed_cli::run`. **Everything below documented as `distributed <cmd>` is also
 available as `hops service <cmd>`.**
 
-## `dctl scaffold <name>` — generate a service crate
+## `distributed scaffold <name>` — generate a service crate
 
 ```bash
-dctl scaffold orders --store postgres --transport http --gitops
+distributed scaffold orders --store postgres --transport http --gitops
 ```
 
 Writes a ready-to-build Distributed service under `./<name>` (override with
@@ -26,7 +26,7 @@ Writes a ready-to-build Distributed service under `./<name>` (override with
 <http|knative>`, `--model <name>` (repeatable), `--read-models`, `--command` /
 `--event` (repeatable), `--bus <rabbitmq|kafka|psql|nats>`, `--gitops`,
 `--metrics prometheus`, `--tracing` / `--otel`, `--gitops-promote <argo|flux>`,
-`--github OWNER/REPO`, `--force`. See `dctl scaffold --help` for the full list.
+`--github OWNER/REPO`, `--force`. See `distributed scaffold --help` for the full list.
 
 When used with `--gitops`, `--metrics prometheus` emits Prometheus Operator
 `ServiceMonitor` and `PrometheusRule` templates for HTTP services. The
@@ -38,11 +38,11 @@ emit `monitoring.coreos.com` resources.
 OTLP tracing setup in the generated `main.rs`, and renders OTLP environment
 values in the Helm chart without hard-coding an endpoint.
 
-## `dctl skills init` — extract agent skills into a project
+## `distributed skills init` — extract agent skills into a project
 
 ```bash
-dctl skills init                    # writes ./.distributed/skills/ and wires harnesses
-dctl skills list                    # names + descriptions of the embedded skills
+distributed skills init                    # writes ./.distributed/skills/ and wires harnesses
+distributed skills list                    # names + descriptions of the embedded skills
 ```
 
 Materializes the **agent skills** embedded in the binary — markdown guidance
@@ -74,14 +74,15 @@ directories are never touched. After a CLI upgrade, re-run with `--force` to
 refresh existing skill files to the binary's embedded content; without
 `--force`, differing files are treated as local edits and skipped.
 
-## The project manifest entrypoint
+## The artifact entrypoints
 
-`describe` and `schema` work by compiling your service crate and calling an
-exported manifest function — by default `<crate>::distributed_manifest`. Add one
-to your service that registers its read models / tables and services:
+`describe` compiles your service crate and calls the explicit logical
+application-manifest entrypoint — by default `<crate>::application_manifest`.
+`schema` calls the separate physical read-model catalog entrypoint — by default
+`<crate>::read_model_catalog`. Keep those owners separate:
 
 ```rust
-use distributed::{DistributedProjectManifest, ReadModel};
+use distributed::{ReadModelCatalog, ReadModel};
 use serde::{Deserialize, Serialize};
 
 #[derive(Clone, Debug, Default, PartialEq, Serialize, Deserialize, ReadModel)]
@@ -92,8 +93,8 @@ pub struct OrderView {
     pub status: String,
 }
 
-pub fn distributed_manifest() -> DistributedProjectManifest {
-    DistributedProjectManifest::new("orders").read_model::<OrderView>()
+pub fn read_model_catalog() -> ReadModelCatalog {
+    ReadModelCatalog::new("orders").read_model::<OrderView>()
 }
 ```
 
@@ -102,10 +103,10 @@ compile the target crate, they need the local `distributed` crate to be
 resolvable — found automatically from the workspace, or pass `--distributed-path`
 / set `DISTRIBUTED_PATH`.
 
-## `dctl client-manifest` — authorized client surface
+## `distributed client-manifest` — authorized client surface
 
 ```bash
-dctl client-manifest > target/distributed-client.json
+distributed client-manifest > target/distributed-client.json
 ```
 
 Compiles the service's `distributed_client_surface` export into the versioned,
@@ -113,17 +114,17 @@ role/application-selected manifest used by the operation compiler. The export
 already contains one concrete role or named application surface; it is not an
 admin catalog that downstream tools filter themselves.
 
-## `dctl client` — typed query, live, and command artifacts
+## `distributed client` — typed query, live, and command artifacts
 
 ```bash
-dctl client \
+distributed client \
   --manifest target/distributed-client.json \
   --role user \
   --documents 'src/**/*.graphql' \
   --out src/generated/distributed
 
 # CI: parse, validate, and compare without writing
-dctl client \
+distributed client \
   --manifest target/distributed-client.json \
   --role user \
   --documents 'src/**/*.graphql' \
@@ -158,17 +159,17 @@ co-located document with a different filename can use the explicit fallback
 build time with their source location; the compiler does not emit a partial
 normalization plan.
 
-## `dctl describe` — manifest as JSON
+## `distributed describe` — manifest as JSON
 
 ```bash
-dctl describe                       # current directory
-dctl describe --manifest-path path/to/Cargo.toml --package orders-service
+distributed describe                       # current directory
+distributed describe --manifest-path path/to/Cargo.toml --package orders-service
 ```
 
 Prints the versioned manifest envelope (schemas, services, transports) as JSON —
 a stable contract for other tooling.
 
-## `dctl schema` — schema artifacts
+## `distributed schema` — schema artifacts
 
 Renders the **desired-state** schema for the manifest's read models and
 operational tables. Output goes to stdout by default (or `--out <file>`).
@@ -176,7 +177,7 @@ operational tables. Output goes to stdout by default (or `--out <file>`).
 ### SQL (default)
 
 ```bash
-dctl schema --dialect postgres      # or --dialect sqlite
+distributed schema --dialect postgres      # or --dialect sqlite
 ```
 
 ### Atlas Operator resource (`--format atlas`)
@@ -185,12 +186,12 @@ Wraps the desired-state SQL into an `AtlasSchema` (`db.atlasgo.io/v1alpha1`) for
 the [ariga atlas-operator](https://github.com/ariga/atlas-operator), so the
 operator diffs the live database against it and applies the migration in-cluster.
 
-The resource is written to **stdout** — `dctl` deliberately does not pick a
+The resource is written to **stdout** — `distributed` deliberately does not pick a
 location for it. Redirect it wherever you keep schema manifests: a file in the
 service repo, or a separate GitOps/schema repo.
 
 ```bash
-dctl schema --format atlas \
+distributed schema --format atlas \
   --name orders \
   --namespace data \
   --db-secret orders-db \

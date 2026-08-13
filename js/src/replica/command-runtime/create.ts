@@ -49,6 +49,7 @@ import {
 	replicaCommandAuthority,
 	replicaCommandProjectionDelta,
 	replicaCommandProjectedLifecycle,
+	replicaCommandReadRecord,
 	replicaResultObservation
 } from './symbols.js';
 import type {
@@ -1157,10 +1158,18 @@ export function createReplicaCommandRuntime<
 			);
 		}
 		try {
+			const pureHost = {
+				readRecord: replica[replicaCommandReadRecord]?.bind(replica),
+				pureFunctions: options.pureFunctions
+			};
 			(replica as SemanticReplica).createOptimisticLayer(
 				prepared.commandId,
 				(writer) =>
-					applyOptimisticEffects(writer, prepared.optimistic.operations),
+					applyOptimisticEffects(
+						writer,
+						prepared.optimistic.operations,
+						pureHost
+					),
 				semanticChanges
 			);
 		} catch (error) {
@@ -1370,8 +1379,9 @@ export function createReplicaCommandRuntime<
 		/*
 		 * Ship contract: Atomic seals from the atomic GraphQL row +
 		 * direct `records` (confirmDirectProjection). Eventual applies
-		 * projection-delta when present. Same portable IR for `.applies`
-		 * previews either way — different response proof by design.
+		 * projection-delta when present. Both strategies start from the same
+		 * compiler-derived event→mutation preview — different response proof by
+		 * design.
 		 */
 		let actualRequiresRevalidation = false;
 		if (prepared.consistency !== 'atomic') {

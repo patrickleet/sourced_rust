@@ -25,7 +25,7 @@ second GraphQL command registry.
 
 ### Add a model exposure
 
-1. Ensure the read model is in `distributed_manifest()`.
+1. Ensure the read model is in `read_model_catalog()`.
 2. Add `src/query/<table>.rs`:
 
 ```rust
@@ -119,20 +119,21 @@ Declare each GraphQL mutation on the executable route:
 ```rust
 let routes = Routes::new()
     .with_repo(repository.aggregate::<Order>())
-    .typed_command(
-        typed_command::<CreateOrderInput, Eventual<CreateOrderPayload>>("order.create")
-            .roles(["user"])
-            .emits(distributed::events![OrderCreatedDomainEvent])
-            .applies(/* state_preview! for client optimism */),
-    )
+    .command_transition::<
+        domain_commands::Create,
+        CreateOrderInput,
+        Eventual<CreateOrderPayload>,
+    >("order.create")
+    .roles(["user"])
     .handle(create_order);
 ```
 
 Handlers accept `CausalCommandContext`, stage aggregate/outbox work on that
 context, and return `PreparedCommand<Succeeded<_>>`, `PreparedCommand<Eventual<_>>`,
 or `PreparedCommand<Atomic<M>>`. Never commit outside the framework-owned
-causal boundary. Projector obligations derive from `.emits` + portable/modeled
-handlers (`mutation!`), not separately authored command confirmations/effects.
+causal boundary. Projector obligations derive from the transition event set +
+portable/modeled handlers (`mutation!`), not separately authored command
+confirmations/effects.
 
 ### Command consistency modes (ship contract)
 
@@ -141,8 +142,8 @@ handlers (`mutation!`), not separately authored command confirmations/effects.
 | Contract | Meaning | Mutation response | Client seal |
 |----------|---------|-------------------|-------------|
 | `Succeeded<T>` | Tx succeeded; no projection promise | Payload only | Revalidate / live |
-| `Eventual<T>` | Events committed; Eventual projectors apply later | Payload + **projection-delta** + `expects` | `.applies` → wait obligations |
-| `Atomic<M>` | Exact row in **same** command tx | **Typed row `M`** + direct **`records[]`** (no eventual modeled metadata, empty `expects`) | `.applies` optional; **`confirmDirectProjection(row, records)`** before await settles |
+| `Eventual<T>` | Events committed; Eventual projectors apply later | Payload + **projection-delta** + `expects` | Automatic event→mutation preview, then wait obligations |
+| `Atomic<M>` | Exact row in **same** command tx | **Typed row `M`** + direct **`records[]`** (no eventual modeled metadata, empty `expects`) | Same automatic preview; **`confirmDirectProjection(row, records)`** before await settles |
 
 Handler for Atomic — this *is* returning atomic read-model updates:
 
@@ -156,10 +157,12 @@ Rules:
 1. Use `Atomic<M>` only when the exact row is staged in-handler
    (`readmodel(row).…commit()?.atomic()`). Server will not attach causal
    projection-delta metadata to same-tx commands (by design).
-2. Use `Eventual<T>` with `.emits` + `.applies(state_preview! { … })` so eventual
-   projectors and client previews share one IR.
-3. Direct may export portable programs for `.applies` (`is_preview_eligible`);
-   that is not `is_causally_eligible` (Eventual-only obligations).
+2. Use `command_transition::<domain_commands::Transition, _, _>` so the generated
+   transition supplies the exact event set and values the compiler can prove.
+   The role-visible projector arm is the only event→mutation mapping.
+3. Direct and Eventual placements may both export that portable preview program
+   (`is_preview_eligible`); only Eventual creates causal wait obligations
+   (`is_causally_eligible`).
 4. Do not board-sim Atomic UI — the returned row is authoritative.
 5. Otherwise `Succeeded<T>`; never invent a projected row.
 
@@ -170,7 +173,7 @@ client manifests).
 ## SDL artifact (CI gate)
 
 ```bash
-dctl schema --format graphql --out schema.graphql
+distributed schema --format graphql --out schema.graphql
 git diff --exit-code schema.graphql
 ```
 
@@ -179,11 +182,18 @@ git diff --exit-code schema.graphql
 ## Scaffold
 
 ```bash
-dctl scaffold my-service --query-api --read-models --store sqlite
+distributed scaffold my-service --query-api --read-models --store sqlite
 ```
 
 Emits typed causal handlers, a service-derived GraphQL engine, `src/query/`
 permissions, the `graphql` feature, and repository/token-key wiring.
+
+## Client / replica drift (dogfood)
+
+If unit tests pass but the live UI 500s with schema/surface errors: the API
+pod is still compiling or clients/`js/dist` are stale. Rebuild and wait —
+don't redesign roles. Bare `__typename` (role fingerprint) ≠ application
+surface clients.
 
 ## Reference
 

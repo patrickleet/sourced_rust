@@ -1,0 +1,95 @@
+{{- if or (eq .Values.appRuntime "cluster-dev") (and .Values.local (eq .Values.appRuntime "cluster-dev")) }}
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: {{ include "e2e-ui-api.name" . }}
+  labels:
+    {{- include "e2e-ui-api.labels" . | nindent 4 }}
+    hops.ops.com.ai/runtime: cluster-dev
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app.kubernetes.io/name: {{ include "e2e-ui-api.name" . }}
+  template:
+    metadata:
+      annotations:
+        hops.ops.com.ai/source-generation: {{ .Values.clusterDev.sourceGeneration | default 0 | quote }}
+        {{- if .Values.identity.enabled }}
+        hops.ops.com.ai/oidc-generation: {{ .Values.identity.oidcGeneration | default 0 | quote }}
+        {{- end }}
+      labels:
+        app.kubernetes.io/name: {{ include "e2e-ui-api.name" . }}
+        hops.ops.com.ai/runtime: cluster-dev
+    spec:
+      containers:
+        - name: api
+          image: {{ .Values.clusterDev.image | quote }}
+          workingDir: {{ .Values.clusterDev.workingDir | quote }}
+          {{- if eq .Values.sourceDelivery.mode "sync" }}
+          command:
+            - /bin/bash
+            - -c
+            - |
+              set -e
+              echo "waiting for source sync at {{ .Values.sourceDelivery.mountPath }}..."
+              waited=0
+              while [ ! -f {{ .Values.sourceDelivery.mountPath }}/.hops-synced ] \
+                && [ ! -f {{ .Values.clusterDev.workingDir }}/Cargo.toml ]; do
+                sleep 2
+                waited=$((waited + 2))
+                if [ $((waited % 30)) -eq 0 ]; then
+                  echo "still waiting for hops source sync (${waited}s) — is tar watcher running?"
+                fi
+                if [ "$waited" -ge 600 ]; then
+                  echo "ERROR: source sync timeout after ${waited}s (no .hops-synced / Cargo.toml)"
+                  exit 1
+                fi
+              done
+              echo "source present; starting dev process"
+              command -v cargo
+              rustc --version
+              cd {{ .Values.clusterDev.workingDir }}
+              cargo run -p e2e-runner --bin e2e-ui
+          {{- else }}
+          command:
+            {{- toYaml .Values.clusterDev.command | nindent 12 }}
+          {{- end }}
+          ports:
+            - containerPort: {{ .Values.service.targetPort }}
+              name: http
+          env:
+            {{- include "e2e-ui-api.oidcClientEnv" . | nindent 12 }}
+            {{- range $k, $v := .Values.env }}
+            {{- if and $v (ne $v "") }}
+            - name: {{ $k }}
+              value: {{ $v | quote }}
+            {{- end }}
+            {{- end }}
+            {{- range $k, $ref := .Values.secretEnv }}
+            - name: {{ $k }}
+              valueFrom:
+                secretKeyRef:
+                  name: {{ $ref.secretName | quote }}
+                  key: {{ $ref.key | quote }}
+            {{- end }}
+            # Keep cargo on PATH even if something mangles the environment.
+            - name: PATH
+              value: "/usr/local/cargo/bin:/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin"
+          volumeMounts:
+            - name: source
+              mountPath: {{ .Values.sourceDelivery.mountPath }}
+            - name: cargo-target
+              mountPath: {{ .Values.clusterDev.workingDir }}/target
+      volumes:
+        - name: source
+          {{- if eq .Values.sourceDelivery.mode "hostPath" }}
+          hostPath:
+            path: {{ .Values.sourceDelivery.hostPath | quote }}
+            type: Directory
+          {{- else }}
+          emptyDir: {}
+          {{- end }}
+        - name: cargo-target
+          emptyDir: {}
+{{- end }}

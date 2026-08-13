@@ -6,8 +6,8 @@
 #   make test-browser # Playwright UI e2e (needs make up + make run)
 
 .PHONY: all up down run run-api stop test ci-offline test-domain test-suite \
-	test-browser test-browser-install js-install js-build ui-install ui-build ui-check ui-test \
-	gen-client check-client check clean help
+	test-browser test-browser-install js-install js-build wasm ui-install ui-build ui-check ui-test \
+	gen-client check-client contracts-check check clean help
 
 # Defaults only — do NOT `include e2e-ui.env` (shell-quoted dotenv breaks Make).
 # Recipes `source` the env file so values stay clean.
@@ -118,7 +118,7 @@ ci-offline: ui-install
 	echo "OK — generated drift + offline Rust/UI suites"
 
 test-domain:
-	cargo test -p todo-domain -p chat-domain $(CARGO_TEST_FLAGS)
+	cargo test -p todo-domain -p chat-domain -p blob-domain $(CARGO_TEST_FLAGS)
 
 test-suite:
 	cargo test -p e2e-suite --test behavioral $(CARGO_TEST_FLAGS)
@@ -140,7 +140,15 @@ js-install:
 js-build: js-install
 	cd $(JS_DIR) && $(NPM) run build
 
-ui-install: js-build
+## blob-domain pure core → ui/src/lib/blob/pkg (wasm-pack; requires wasm32-unknown-unknown).
+wasm:
+	@command -v wasm-pack >/dev/null || { echo "wasm-pack required: cargo install wasm-pack"; exit 1; }
+	@rustup target list --installed | grep -q wasm32-unknown-unknown || rustup target add wasm32-unknown-unknown
+	@out="$(CURDIR)/ui/src/lib/blob/pkg"; \
+	  wasm-pack build crates/blob-domain --target web --out-dir "$$out" --out-name blob_wasm \
+	    -- --no-default-features --features wasm
+
+ui-install: js-build wasm
 	cd ui && $(NPM) install
 
 ui-build: ui-install
@@ -157,19 +165,27 @@ ui-test: ui-install
 gen-client: ui-install
 	cd ui && $(NPM) run client:generate
 
-## Byte/file-set drift check through dctl --check; never repairs generated files.
+## Byte/file-set drift check through distributed --check; never repairs generated files.
 check-client: ui-install
 	cd ui && $(NPM) run client:check
 
+## Aggregate read-only contract check (repo root catalog when present).
+contracts-check:
+	@if [ -f ../../contracts/catalog.json ] || [ -f contracts/catalog.json ]; then \
+	  $(MAKE) -C ../.. contracts-check; \
+	else \
+	  echo "contracts-check: no catalog yet; skipping aggregate gate"; \
+	fi
+
 check: check-client
 	cargo check --workspace
-	cargo test -p todo-domain -p chat-domain --no-run
+	cargo test -p todo-domain -p chat-domain -p blob-domain --no-run
 	cargo test -p e2e-suite --test behavioral --no-run
 
 clean: stop
 	cargo clean
 	rm -f .make-runner.log e2e-ui.db
-	rm -rf ui/node_modules ui/build ui/.svelte-kit
+	rm -rf ui/node_modules ui/build ui/.svelte-kit ui/src/lib/blob/pkg
 
 help:
 	@echo "e2e-ui"
@@ -177,6 +193,7 @@ help:
 	@echo "  make run        API + UI (source e2e-ui.env when present)"
 	@echo "  make test       offline suite + UI structural"
 	@echo "  make ci-offline CI drift + offline suites with safe pipeline overlap"
+	@echo "  make wasm            blob-domain core → ui/src/lib/blob/pkg (wasm-pack)"
 	@echo "  make gen-client      typed Service → generated user/admin clients"
 	@echo "  make check-client    verify generated artifacts byte-for-byte"
 	@echo "  make down       docker compose down"

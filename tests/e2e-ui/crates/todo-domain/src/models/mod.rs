@@ -6,9 +6,10 @@ mod todo_state;
 mod todo_status;
 
 pub use todo::{
-    Todo, TodoArchivedDomainEvent, TodoCompletedDomainEvent, TodoCreatedDomainEvent,
-    TodoDomainIdentity, TodoForceArchivedDomainEvent, TodoPurgedDomainEvent,
-    TodoReassignedDomainEvent, TodoRenamedDomainEvent, TodoReopenedDomainEvent,
+    domain_commands, Todo, TodoArchivedDomainEvent, TodoCompletedDomainEvent,
+    TodoCreatedDomainEvent, TodoDomainIdentity, TodoForceArchivedDomainEvent,
+    TodoPurgedDomainEvent, TodoReassignedDomainEvent, TodoRenamedDomainEvent,
+    TodoReopenedDomainEvent,
 };
 pub use todo_error::TodoError;
 pub use todo_state::TodoState;

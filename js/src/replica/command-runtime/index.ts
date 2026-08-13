@@ -3,6 +3,7 @@ export {
 	replicaCommandDirectProjection,
 	replicaCommandProjectionDelta,
 	replicaCommandProjectedLifecycle,
+	replicaCommandReadRecord,
 	replicaResultObservation
 } from './symbols.js';
 export type {

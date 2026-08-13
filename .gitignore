@@ -51,3 +51,6 @@ tests/workshop-service/ui/build/
 tests/workshop-service/ui/.svelte-kit/
 tests/workshop-service/**/target/
 tests/workshop-service/*.db
+
+# fixture crate build artifacts
+tests/fixtures/**/target/

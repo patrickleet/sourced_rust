@@ -1,7 +1,7 @@
 name: distributed_cli Integration Tests
 
 # Reusable workflow: referenced via `uses: ./.github/workflows/integration-distributed-cli.yaml`.
-# Runs the `dctl` integration tests, including the `#[ignore]`d manifest-harness
+# Runs the `distributed` integration tests, including the `#[ignore]`d manifest-harness
 # e2e tests (describe/schema) that compile a fixture service via nested cargo.
 on:
   workflow_call:

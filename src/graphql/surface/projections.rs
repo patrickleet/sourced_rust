@@ -15,7 +15,7 @@ use super::types::{SurfaceProjectionOwner, SurfaceProjectionOwnerKind};
 use super::{SurfaceModel, SurfaceRelationshipKeys};
 
 /// One role-safe selected operation from an authoritative projection program.
-#[derive(Clone, Debug, PartialEq, Eq)]
+#[derive(Clone, Debug, PartialEq, Eq, serde::Serialize)]
 pub(crate) struct SurfaceProjectionOperation {
     pub operation_id: String,
     pub staging_ordinal: u32,
@@ -31,7 +31,7 @@ pub(crate) struct SurfaceProjectionOperation {
 
 /// One exact selected event arm. Its selector is server-only; client export
 /// receives only a digest-derived event reference.
-#[derive(Clone, Debug, PartialEq, Eq)]
+#[derive(Clone, Debug, PartialEq, Eq, serde::Serialize)]
 pub(crate) struct SurfaceProjectionArm {
     pub arm_id: String,
     pub selector: crate::ProjectionEventSelector,
@@ -39,7 +39,7 @@ pub(crate) struct SurfaceProjectionArm {
 }
 
 /// Role-safe program inventory retained after Surface selection.
-#[derive(Clone, Debug, PartialEq, Eq)]
+#[derive(Clone, Debug, PartialEq, Eq, serde::Serialize)]
 pub(crate) struct SurfaceSelectedProjectionProgram {
     pub name: String,
     pub version: u64,
@@ -112,6 +112,48 @@ impl std::fmt::Debug for SurfaceModeledProjection {
 }
 
 impl SurfaceModeledProjection {
+    /// Return the complete portable behavior contract for this selected
+    /// registration. Executor routes, server executor closures, and physical
+    /// topology are intentionally excluded; the program IR and binding
+    /// compatibility fields remain canonical identity material.
+    pub(crate) fn canonical_contract_value(&self) -> Result<serde_json::Value, String> {
+        let program = if let Some(raw_program) = &self.raw_program {
+            serde_json::to_value(raw_program).map_err(|error| error.to_string())?
+        } else if let Some(selected) = &self.selected {
+            serde_json::to_value(selected).map_err(|error| error.to_string())?
+        } else {
+            return Err("modeled projection has no canonical program material".to_owned());
+        };
+        let binding = self.raw_binding.as_ref().map(|binding| {
+            serde_json::json!({
+                "identity_version": binding.identity_version(),
+                "program_ir_version": binding.program_ir_version(),
+                "operation_semantics_version": binding.operation_semantics_version(),
+                "program_id": binding.program_id().to_string(),
+                "events": binding.events(),
+                "source": binding.source(),
+                "owner": binding.owner(),
+                "placement": binding.placement(),
+                "execution_class": binding.execution_class(),
+                "partition": binding.partition(),
+                "outputs": binding.outputs(),
+                "relationships": binding.relationships(),
+            })
+        });
+        Ok(serde_json::json!({
+            "program_id": self.program_id.to_string(),
+            "binding_id": self.binding_id.to_string(),
+            "owner": self.owner,
+            "placement": self.placement,
+            "execution_class": self.execution_class,
+            "state": self.state,
+            "epoch": self.epoch.as_str(),
+            "output_models": self.output_models,
+            "program": program,
+            "binding": binding,
+        }))
+    }
+
     #[cfg(test)]
     pub(crate) fn selected_for_client_manifest_test(
         program_id: ProjectionProgramId,

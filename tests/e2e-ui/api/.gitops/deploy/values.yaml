@@ -1,0 +1,74 @@
+# Local workbench values for e2e-ui API.
+# Storage class for PSQLCluster: override per local CP (e.g. local-path, hostpath, psql).
+
+local: false
+appRuntime: package  # host | cluster-dev | package
+
+name: e2e-ui-api
+image:
+  repository: ghcr.io/hops-ops/e2e-ui-api
+  tag: latest
+  pullPolicy: IfNotPresent
+
+# Source tree is the *distributed* monorepo root; API Cargo workspace is tests/e2e-ui.
+clusterDev:
+  image: rust:1.94-bookworm
+  # Bump in the local Application after host-mounted Rust/framework changes.
+  # This stays declarative while restarting the one-shot cargo process.
+  sourceGeneration: 0
+  # bash -c keeps Docker ENV (PATH includes /usr/local/cargo/bin). -lc can drop it.
+  command:
+    - /bin/bash
+    - -c
+    - |
+      set -e
+      cd /workspace/tests/e2e-ui
+      cargo run -p e2e-runner --bin e2e-ui
+  workingDir: /workspace/tests/e2e-ui
+  sourcePath: /workspace
+
+# The API validates Zitadel access tokens against the generated OIDC client.
+# Keep this generation aligned with the UI chart's identity.oidcGeneration.
+identity:
+  enabled: false
+  oidcGeneration: 0
+  connectionSecretName: ""
+
+service:
+  port: 8791
+  targetPort: 8791
+
+env:
+  BIND: "0.0.0.0:8791"
+  # Offline-friendly default until PSQL platform pack is installed.
+  DATABASE_URL: "sqlite:/tmp/e2e-ui.db?mode=rwc"
+  # OidcBearer — requires issuer **and** audience (project id). If either is empty
+  # the API falls back to DevHeaders and live user surfaces misbehave.
+  OIDC_ISSUER: "http://zitadel-zitadel.auth.svc.cluster.local:8080"
+  # Residual after Zitadel Project Ready (external-name / status.atProvider.id).
+  # Override from Application values (gitops/envs/local/api.yaml) for local dogfood.
+  OIDC_AUDIENCE: ""
+  OIDC_JWKS_URI: "http://zitadel-zitadel.auth.svc.cluster.local:8080/oauth/v2/keys"
+  ZITADEL_PROJECT_ID: ""
+
+# Residual secrets (same e2e-ui-oidc object as the UI chart, in app namespace).
+# OIDC app + humans live on the UI chart (identity.*); API only consumes tokens.
+secretEnv:
+  ZITADEL_SERVICE_USER_TOKEN:
+    secretName: e2e-ui-oidc
+    key: ZITADEL_SERVICE_USER_TOKEN
+
+database:
+  # Dogfood local CP often lacks PSQLCluster CRD; disable by default for up path.
+  # Enable when PSQL pack is installed: --set database.enabled=true via Application values.
+  enabled: false
+  name: e2e-ui-api-psql
+  clusterName: local
+  storage:
+    size: 2Gi
+    class: local-path
+
+sourceDelivery:
+  mode: none  # none | hostPath | sync
+  hostPath: ""
+  mountPath: /workspace

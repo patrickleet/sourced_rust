@@ -130,8 +130,8 @@ mod client_surface_parity_tests {
         let pool = sqlx::sqlite::SqlitePoolOptions::new()
             .connect_lazy("sqlite::memory:")
             .unwrap();
-        let project = DistributedProjectManifest::new("orders-service").table_schema(orders());
-        GraphqlEngine::from_manifest(&project, pool)
+        let project = ReadModelCatalog::new("orders-service").table_schema(orders());
+        GraphqlEngine::from_schema_catalog(&project, pool)
             .unwrap()
             .roles(&["user"])
             .grant_all("user")
@@ -146,8 +146,8 @@ mod client_surface_parity_tests {
         let pool = sqlx::sqlite::SqlitePoolOptions::new()
             .connect_lazy("sqlite::memory:")
             .unwrap();
-        let project = DistributedProjectManifest::new("orders-service").table_schema(orders());
-        let mut builder = GraphqlEngine::from_manifest(&project, pool)
+        let project = ReadModelCatalog::new("orders-service").table_schema(orders());
+        let mut builder = GraphqlEngine::from_schema_catalog(&project, pool)
             .unwrap()
             .roles(&["user"])
             .grant_all("user");
@@ -206,8 +206,8 @@ mod client_surface_parity_tests {
         let pool = sqlx::sqlite::SqlitePoolOptions::new()
             .connect_lazy("sqlite::memory:")
             .unwrap();
-        let project = DistributedProjectManifest::new("orders-service").table_schema(orders());
-        let engine = GraphqlEngine::from_manifest(&project, pool)
+        let project = ReadModelCatalog::new("orders-service").table_schema(orders());
+        let engine = GraphqlEngine::from_schema_catalog(&project, pool)
             .unwrap()
             .roles(&["user"])
             .grant_all("user")
@@ -231,12 +231,12 @@ mod client_surface_parity_tests {
             let pool = sqlx::sqlite::SqlitePoolOptions::new()
                 .connect_lazy("sqlite::memory:")
                 .unwrap();
-            let project = DistributedProjectManifest::new("orders-service").table_schema(orders());
-            GraphqlEngine::from_manifest(&project, pool)
+            let project = ReadModelCatalog::new("orders-service").table_schema(orders());
+            GraphqlEngine::from_schema_catalog(&project, pool)
                 .unwrap()
                 .roles(&["user"])
                 .grant_all("user")
-                .client_application_surface("console", ["user"])
+                .client_application_surface("console", ["user"], ["user"])
                 .protocol_token_key([7; 32])
                 .graphiql(graphiql)
                 .build()
@@ -245,10 +245,10 @@ mod client_surface_parity_tests {
         let without_graphiql = build(false);
         let with_graphiql = build(true);
         let generated = without_graphiql
-            .client_manifest_for_application("console", &["user"])
+            .client_manifest_for_application("console", &["user"], &["user"])
             .unwrap();
         let runtime = with_graphiql
-            .client_manifest_for_application("console", &["user"])
+            .client_manifest_for_application("console", &["user"], &["user"])
             .unwrap();
 
         assert_eq!(generated, runtime);
@@ -560,8 +560,8 @@ mod client_surface_parity_tests {
         let pool = sqlx::sqlite::SqlitePoolOptions::new()
             .connect_lazy("sqlite::memory:")
             .unwrap();
-        let project = DistributedProjectManifest::new("orders-service").table_schema(orders());
-        let engine = GraphqlEngine::from_manifest(&project, pool)
+        let project = ReadModelCatalog::new("orders-service").table_schema(orders());
+        let engine = GraphqlEngine::from_schema_catalog(&project, pool)
             .unwrap()
             .roles(&["admin", "user"])
             .grant_all("admin")
@@ -585,18 +585,18 @@ mod client_surface_parity_tests {
         let pool = sqlx::sqlite::SqlitePoolOptions::new()
             .connect_lazy("sqlite::memory:")
             .unwrap();
-        let project = DistributedProjectManifest::new("orders-service").table_schema(orders());
-        let engine = GraphqlEngine::from_manifest(&project, pool)
+        let project = ReadModelCatalog::new("orders-service").table_schema(orders());
+        let engine = GraphqlEngine::from_schema_catalog(&project, pool)
             .unwrap()
             .roles(&["anonymous", "user"])
             .grant_all("anonymous")
             .grant_all("user")
-            .client_application_surface("public", ["anonymous"])
+            .client_application_surface("public", ["anonymous"], ["anonymous"])
             .protocol_token_key([7; 32])
             .build()
             .unwrap();
         let manifest = engine
-            .client_manifest_for_application("public", &["anonymous"])
+            .client_manifest_for_application("public", &["anonymous"], &["anonymous"])
             .unwrap();
         let request: Request = serde_json::from_value(serde_json::json!({
             "query": "{ __typename }",
@@ -606,7 +606,8 @@ mod client_surface_parity_tests {
                         "surface": {
                             "kind": "application",
                             "name": "public",
-                            "roles": ["anonymous"]
+                            "eligible_roles": ["anonymous"],
+                            "schema_roles": ["anonymous"]
                         },
                         "schemaHash": manifest.schema_fingerprint
                     }
@@ -635,8 +636,8 @@ mod client_surface_parity_tests {
         let pool = sqlx::sqlite::SqlitePoolOptions::new()
             .connect_lazy("sqlite::memory:")
             .unwrap();
-        let project = DistributedProjectManifest::new("orders-service").table_schema(orders());
-        let mut builder = GraphqlEngine::from_manifest(&project, pool)
+        let project = ReadModelCatalog::new("orders-service").table_schema(orders());
+        let mut builder = GraphqlEngine::from_schema_catalog(&project, pool)
             .unwrap()
             .roles(&["admin", "user"])
             .grant_all("admin")
@@ -656,11 +657,15 @@ mod client_surface_parity_tests {
             .unwrap();
 
         let manifest = engine
-            .client_manifest_for_application("console", &["admin", "user"])
+            .client_manifest_for_application("console", &["admin", "user"], &["user"])
             .expect("registered multi-role application manifest");
         assert_eq!(
             manifest.surface,
-            crate::graphql::ClientSurfaceIdentity::application("console", ["admin", "user"])
+            crate::graphql::ClientSurfaceIdentity::application_with_schema_roles(
+                "console",
+                ["admin", "user"],
+                ["user"],
+            )
         );
         // Wire roles are eligible; schema privilege is user-only so x-user-id
         // remains a trusted preset (portable owner-style policy).
@@ -695,7 +700,8 @@ mod client_surface_parity_tests {
                             "surface": {
                                 "kind": "application",
                                 "name": "console",
-                                "roles": ["admin", "user"]
+                                "eligible_roles": ["admin", "user"],
+                                "schema_roles": ["user"]
                             },
                             "schemaHash": schema_hash
                         }
@@ -743,18 +749,18 @@ mod client_surface_parity_tests {
         let pool2 = sqlx::sqlite::SqlitePoolOptions::new()
             .connect_lazy("sqlite::memory:")
             .unwrap();
-        let project2 = DistributedProjectManifest::new("orders-service").table_schema(orders());
-        let user_only = GraphqlEngine::from_manifest(&project2, pool2)
+        let project2 = ReadModelCatalog::new("orders-service").table_schema(orders());
+        let user_only = GraphqlEngine::from_schema_catalog(&project2, pool2)
             .unwrap()
             .roles(&["admin", "user"])
             .grant_all("admin")
             .grant_all("user")
-            .client_application_surface("console", ["user"])
+            .client_application_surface("console", ["user"], ["user"])
             .protocol_token_key([7; 32])
             .build()
             .unwrap();
         let user_only_manifest = user_only
-            .client_manifest_for_application("console", &["user"])
+            .client_manifest_for_application("console", &["user"], &["user"])
             .unwrap();
         let user_only_request = || -> Request {
             serde_json::from_value(serde_json::json!({
@@ -765,7 +771,8 @@ mod client_surface_parity_tests {
                             "surface": {
                                 "kind": "application",
                                 "name": "console",
-                                "roles": ["user"]
+                                "eligible_roles": ["user"],
+                                "schema_roles": ["user"]
                             },
                             "schemaHash": user_only_manifest.schema_fingerprint
                         }
@@ -792,21 +799,21 @@ mod client_surface_parity_tests {
         let pool = sqlx::sqlite::SqlitePoolOptions::new()
             .connect_lazy("sqlite::memory:")
             .unwrap();
-        let project = DistributedProjectManifest::new("orders-service").table_schema(orders());
-        let engine = GraphqlEngine::from_manifest(&project, pool)
+        let project = ReadModelCatalog::new("orders-service").table_schema(orders());
+        let engine = GraphqlEngine::from_schema_catalog(&project, pool)
             .unwrap()
             .roles(&["admin", "user"])
             .grant_all("admin")
             .grant_all("user")
-            .client_application_surface("console", ["admin", "user"])
+            .client_application_surface("console", ["admin", "user"], ["admin", "user"])
             .protocol_token_key([7; 32])
             .build()
             .unwrap();
         let manifest = engine
-            .client_manifest_for_application("console", &["user", "admin"])
+            .client_manifest_for_application("console", &["user", "admin"], &["user", "admin"])
             .expect("registered application manifest");
         assert!(engine
-            .client_manifest_for_application("console", &["user"])
+            .client_manifest_for_application("console", &["user"], &["user"])
             .is_err());
 
         let request = |schema_hash: &str, roles: serde_json::Value| -> Request {
@@ -818,7 +825,8 @@ mod client_surface_parity_tests {
                             "surface": {
                                 "kind": "application",
                                 "name": "console",
-                                "roles": roles
+                                "eligible_roles": roles,
+                                "schema_roles": roles
                             },
                             "schemaHash": schema_hash
                         }
@@ -1062,8 +1070,8 @@ mod client_surface_parity_tests {
         let pool = sqlx::sqlite::SqlitePoolOptions::new()
             .connect_lazy("sqlite::memory:")
             .unwrap();
-        let project = DistributedProjectManifest::new("orders-service").table_schema(orders());
-        let raw = GraphqlEngine::from_manifest(&project, pool)
+        let project = ReadModelCatalog::new("orders-service").table_schema(orders());
+        let raw = GraphqlEngine::from_schema_catalog(&project, pool)
             .unwrap()
             .roles(&["user"])
             .grant_all("user")
@@ -1105,7 +1113,7 @@ mod client_surface_parity_tests {
         let pool = sqlx::sqlite::SqlitePoolOptions::new()
             .connect_lazy("sqlite::memory:")
             .unwrap();
-        let project = DistributedProjectManifest::new("orders-service").table_schema(orders());
+        let project = ReadModelCatalog::new("orders-service").table_schema(orders());
         let commands = TypedCommandInventory::from_contracts(&[test_command::<
             ChangeOrderInput,
             ChangeOrderPayload,
@@ -1115,7 +1123,7 @@ mod client_surface_parity_tests {
             &["user"],
         )])
         .unwrap();
-        let mut builder = GraphqlEngine::from_manifest(&project, pool)
+        let mut builder = GraphqlEngine::from_schema_catalog(&project, pool)
             .unwrap()
             .roles(&["user"])
             .grant_all("user")
@@ -1261,8 +1269,8 @@ mod client_surface_parity_tests {
         let pool = sqlx::sqlite::SqlitePoolOptions::new()
             .connect_lazy("sqlite::memory:")
             .unwrap();
-        let project = DistributedProjectManifest::new("orders-service").table_schema(orders());
-        let engine = GraphqlEngine::from_manifest(&project, pool)
+        let project = ReadModelCatalog::new("orders-service").table_schema(orders());
+        let engine = GraphqlEngine::from_schema_catalog(&project, pool)
             .unwrap()
             .roles(&["empty"])
             .build()
@@ -1289,8 +1297,8 @@ mod client_surface_parity_tests {
         let pool = sqlx::postgres::PgPoolOptions::new()
             .connect_lazy("postgres://postgres:postgres@localhost/distributed_test")
             .unwrap();
-        let project = DistributedProjectManifest::new("orders-service").table_schema(orders());
-        let engine = GraphqlEngine::from_manifest(&project, pool)
+        let project = ReadModelCatalog::new("orders-service").table_schema(orders());
+        let engine = GraphqlEngine::from_schema_catalog(&project, pool)
             .unwrap()
             .roles(&["user"])
             .grant_all("user")
@@ -1451,8 +1459,8 @@ mod client_surface_parity_tests {
         }
     }
 
-    fn matrix_project() -> DistributedProjectManifest {
-        DistributedProjectManifest::new("acceptance-service")
+    fn matrix_project() -> ReadModelCatalog {
+        ReadModelCatalog::new("acceptance-service")
             .table_schema(orders())
             .table_schema(customers())
     }
@@ -1505,7 +1513,7 @@ mod client_surface_parity_tests {
 
     fn matrix_engine(pool: GraphqlPool) -> GraphqlEngine {
         let project = matrix_project();
-        let mut builder = GraphqlEngine::from_manifest(&project, pool)
+        let mut builder = GraphqlEngine::from_schema_catalog(&project, pool)
             .unwrap()
             .roles(&["restricted", "admin"])
             .default_limit(11)
@@ -1567,7 +1575,7 @@ mod client_surface_parity_tests {
             other => panic!("unexpected matrix role `{other}`"),
         };
         let selected = surface_for_role(&full, role, &grants).unwrap();
-        DistributedClientSurfaceExport::from_project(&project, selected)
+        DistributedClientSurfaceExport::from_selected(project.name.clone(), selected)
             .unwrap()
             .manifest()
             .unwrap()
@@ -1803,7 +1811,7 @@ mod client_surface_parity_tests {
         assert_eq!(response.errors.len(), 1, "{response:?}");
         assert_eq!(
             response.errors[0].message,
-            "command dispatcher not configured (use graphql_router_with_service)"
+            "command dispatcher not configured (use graphql_router_with_dispatcher or graphql_router_with_service)"
         );
     }
 
@@ -1953,8 +1961,8 @@ mod client_surface_parity_tests {
         .await
         .unwrap();
         let project =
-            DistributedProjectManifest::new("composite-service").table_schema(composite_records());
-        let engine = GraphqlEngine::from_manifest(&project, pool.clone())
+            ReadModelCatalog::new("composite-service").table_schema(composite_records());
+        let engine = GraphqlEngine::from_schema_catalog(&project, pool.clone())
             .unwrap()
             .roles(&["admin"])
             .grant_all("admin")
@@ -2169,10 +2177,10 @@ mod client_surface_parity_tests {
         .await
         .unwrap();
 
-        let project = DistributedProjectManifest::new("relationship-policy-service")
+        let project = ReadModelCatalog::new("relationship-policy-service")
             .table_schema(policy_parents())
             .table_schema(policy_children());
-        let mut builder = GraphqlEngine::from_manifest(&project, pool)
+        let mut builder = GraphqlEngine::from_schema_catalog(&project, pool)
             .unwrap()
             .roles(&["restricted"]);
         insert_permission(
@@ -2256,10 +2264,10 @@ mod client_surface_parity_tests {
             let pool = sqlx::sqlite::SqlitePoolOptions::new()
                 .connect_lazy("sqlite::memory:")
                 .unwrap();
-            let project = DistributedProjectManifest::new("composite-service")
+            let project = ReadModelCatalog::new("composite-service")
                 .table_schema(composite)
                 .table_schema(simple);
-            let error = GraphqlEngine::from_manifest(&project, pool)
+            let error = GraphqlEngine::from_schema_catalog(&project, pool)
                 .unwrap()
                 .roles(&["admin"])
                 .grant_all("admin")
@@ -2303,8 +2311,8 @@ mod client_surface_parity_tests {
                     .connect_lazy("sqlite::memory:")
                     .unwrap();
                 let project =
-                    DistributedProjectManifest::new("metrics-service").table_schema(metrics());
-                let mut builder = GraphqlEngine::from_manifest(&project, pool)
+                    ReadModelCatalog::new("metrics-service").table_schema(metrics());
+                let mut builder = GraphqlEngine::from_schema_catalog(&project, pool)
                     .unwrap()
                     .roles(&["restricted"]);
                 insert_permission(
@@ -2324,8 +2332,8 @@ mod client_surface_parity_tests {
         let pool = sqlx::sqlite::SqlitePoolOptions::new()
             .connect_lazy("sqlite::memory:")
             .unwrap();
-        let project = DistributedProjectManifest::new("metrics-service").table_schema(metrics());
-        let mut builder = GraphqlEngine::from_manifest(&project, pool)
+        let project = ReadModelCatalog::new("metrics-service").table_schema(metrics());
+        let mut builder = GraphqlEngine::from_schema_catalog(&project, pool)
             .unwrap()
             .roles(&["restricted"]);
         insert_permission(
@@ -2379,8 +2387,8 @@ mod client_surface_parity_tests {
                 .connect_lazy("sqlite::memory:")
                 .unwrap();
             let project =
-                DistributedProjectManifest::new("metrics-service").table_schema(metrics());
-            let mut builder = GraphqlEngine::from_manifest(&project, pool)
+                ReadModelCatalog::new("metrics-service").table_schema(metrics());
+            let mut builder = GraphqlEngine::from_schema_catalog(&project, pool)
                 .unwrap()
                 .roles(&["restricted"]);
             insert_permission(

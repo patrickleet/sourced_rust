@@ -3,14 +3,17 @@ use quote::{format_ident, quote};
 use syn::{parse::Parser, Expr, Ident, ItemFn, LitStr, Token};
 
 use crate::shared::{
-    ensure_sourced_result_signature, extract_params_with_types, wrap_result_body_with_guard,
+    ensure_sourced_result_signature, extract_params_with_types, framework_path,
+    wrap_result_body_with_guard,
 };
 
 pub(crate) fn expand_enqueue(attr: TokenStream2, item: TokenStream2) -> syn::Result<TokenStream2> {
     let args = parse_enqueue_args.parse2(attr)?;
     let mut func = syn::parse2::<ItemFn>(item)?;
 
-    let signature_synthesized = ensure_sourced_result_signature(&mut func.sig, "enqueue")?;
+    let framework = framework_path()?;
+    let signature_synthesized =
+        ensure_sourced_result_signature(&mut func.sig, "enqueue", &framework)?;
 
     let emitter_field = &args.emitter_field;
     let event_name = &args.event_name;

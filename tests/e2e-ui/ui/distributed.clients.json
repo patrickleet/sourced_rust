@@ -1,0 +1,29 @@
+{
+  "schema_version": 1,
+  "clients": [
+    {
+      "module": "$distributed",
+      "surface": "e2e-ui",
+      "documents": [
+        "src/routes/blob/*/+page.graphql",
+        "src/routes/chat/+page.graphql",
+        "src/routes/todos/+page.graphql"
+      ],
+      "output": "src/lib/generated/user"
+    },
+    {
+      "module": "$distributed/admin",
+      "surface": "e2e-ui-admin",
+      "documents": ["src/routes/admin/+page.graphql"],
+      "output": "src/lib/generated/admin",
+      "manifest_entrypoint": "e2e_service::distributed_admin_client_surface"
+    },
+    {
+      "module": "$distributed/public",
+      "surface": "e2e-ui-public",
+      "documents": ["src/routes/chat/+page.graphql"],
+      "output": "src/lib/generated/public",
+      "manifest_entrypoint": "e2e_service::distributed_public_client_surface"
+    }
+  ]
+}

@@ -36,7 +36,6 @@ use super::surface::{
     SurfaceCommand, SurfaceCommandShape, SurfaceRelationshipKeys, SurfaceRowPolicy,
     SurfaceSelection, SurfaceTypeDef,
 };
-use crate::manifest::DistributedProjectManifest;
 use crate::table::RelationshipKind;
 
 use build::client_manifest_from_surface_with_execution;
@@ -75,8 +74,9 @@ pub use types::{
     ClientRootKind, ClientRootOperation, ClientRowPolicy, ClientTrustedPresetDescriptor,
     ClientTypeDef, ClientTypeField, CommandConfirmationsExtension, CommandConsistencyExtension,
     CommandDirectProjectionExtension, CommandEffectsExtension, CommandInputDefaultsExtension,
-    CommandProjectionArmRef, CommandProjectionExtension, CommandProjectionPreviewOccurrence,
-    CommandProjectionPreviewValue, DistributedClientManifest, ModelNormalization,
+    ClientCommandPureArg, ClientCommandPureReduce, CommandProjectionArmRef,
+    CommandProjectionExtension, CommandProjectionPreviewOccurrence, CommandProjectionPreviewValue,
+    DistributedClientManifest, ModelNormalization,
     RelationshipKeyMapping, ScalarCodec,
 };
 pub(crate) use validation::trusted_preset_descriptors;

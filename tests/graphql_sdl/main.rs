@@ -219,11 +219,11 @@ fn collision_errors() {
 
 #[test]
 fn manifest_graphql_sdl_method() {
-    let manifest = distributed::DistributedProjectManifest::new("demo")
+    let manifest = distributed::ReadModelCatalog::new("demo")
         .table_schema(players())
         .table_schema(weapons())
         .table_schema(operational_outbox());
-    let sdl = manifest.graphql_sdl().expect("sdl");
+    let sdl = graphql_sdl_for_tables(&manifest.tables).expect("sdl");
     assert!(sdl.contains("PlayerView"));
     assert!(!sdl.contains("OutboxMessage"));
 }

@@ -37,7 +37,7 @@ impl DistributedClientSurfaceExport {
 
     /// Safe, low-boilerplate export path: authorization identity is derived
     /// from the selected Surface and cannot be caller-asserted.
-    pub(crate) fn from_selected(
+    pub fn from_selected(
         service_id: impl Into<String>,
         surface: impl Into<Arc<Surface>>,
     ) -> Result<Self, ClientManifestError> {
@@ -59,49 +59,64 @@ impl DistributedClientSurfaceExport {
                 ));
             }
             SurfaceSelection::Role { name } => ClientSurfaceIdentity::role(name),
-            SurfaceSelection::Application { name, roles } => {
-                ClientSurfaceIdentity::application(name, roles.clone())
+            SurfaceSelection::Application {
+                name,
+                eligible_roles,
+                schema_roles,
+            } => {
+                ClientSurfaceIdentity::application_with_schema_roles(
+                    name,
+                    eligible_roles.clone(),
+                    schema_roles.clone(),
+                )
             }
         };
         validate_service_provenance(&service_id, &surface)?;
         Ok(Self::new(service_id, identity, surface, execution))
     }
 
-    /// Build a portable export whose service identity comes from the same
-    /// project manifest that supplied its table inventory.
-    pub fn from_project(
-        project: &DistributedProjectManifest,
+    /// Build a selected client contract without executable service provenance.
+    ///
+    /// This is the contract-only compiler boundary. It accepts the same
+    /// already-selected Surface IR as the runtime export but never constructs
+    /// a repository, lock manager, Service, or handler mount.
+    pub fn from_contract(
+        service_id: impl Into<String>,
         surface: impl Into<Arc<Surface>>,
     ) -> Result<Self, ClientManifestError> {
         let surface = surface.into();
-        for model in surface.models.values() {
-            let Some(original) = project.tables.iter().find(|schema| {
-                schema.model_name == model.model_name && schema.table_name == model.table_name
-            }) else {
-                return Err(ClientManifestError(format!(
-                    "selected Surface model `{}` does not match the supplied project manifest inventory",
-                    model.model_name
-                )));
-            };
-            let mut selected_schema = model.schema.clone();
-            for column in &mut selected_schema.columns {
-                if let Some(original_column) = original
-                    .columns
-                    .iter()
-                    .find(|candidate| candidate.column_name == column.column_name)
-                {
-                    column.skipped = original_column.skipped;
-                }
+        let service_id = service_id.into();
+        let identity = match &surface.selection {
+            SurfaceSelection::Catalog => {
+                return Err(ClientManifestError(
+                    "client exports require an explicitly role- or application-selected Surface"
+                        .into(),
+                ));
             }
-            selected_schema.relationships = original.relationships.clone();
-            if &selected_schema != original {
-                return Err(ClientManifestError(format!(
-                    "selected Surface model `{}` does not match the supplied project manifest inventory",
-                    model.model_name
-                )));
+            SurfaceSelection::Role { name } => ClientSurfaceIdentity::role(name),
+            SurfaceSelection::Application {
+                name,
+                eligible_roles,
+                schema_roles,
+            } => {
+                ClientSurfaceIdentity::application_with_schema_roles(
+                    name,
+                    eligible_roles.clone(),
+                    schema_roles.clone(),
+                )
             }
+        };
+        if surface.service_binding.is_some() {
+            return Err(ClientManifestError(
+                "contract-only client export cannot carry executable Service provenance".into(),
+            ));
         }
-        Self::from_selected(project.name.clone(), surface)
+        Ok(Self::new(
+            service_id,
+            identity,
+            surface,
+            ClientExecutionLimits::default(),
+        ))
     }
 
     pub fn manifest(&self) -> Result<DistributedClientManifest, ClientManifestError> {

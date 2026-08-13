@@ -836,14 +836,43 @@ pub struct CommandProjectionExtension {
     pub version: u32,
     pub event_set: Vec<ClientProjectionEventRef>,
     pub program_arms: Vec<CommandProjectionArmRef>,
-    /// Ordered, non-authoritative optimistic occurrences explicitly declared
-    /// by the command author. `event_set` and `program_arms` describe allowed
-    /// actual topology only and never imply an optimistic occurrence.
+    /// Ordered, non-authoritative optimistic occurrences derived by composing
+    /// command-known event values with the role-visible projection arms.
     ///
-    /// The client applies these in ordinal order as one overlay. The actual
-    /// ordered command delta reconciles and replaces that overlay.
+    /// The client applies these in ordinal order as one overlay. Eventual
+    /// projection deltas or atomic returned records reconcile that overlay.
     pub preview_occurrences: Vec<CommandProjectionPreviewOccurrence>,
+    /// Pure reducers over known cache rows (client auto-optimism).
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub pure_reduces: Vec<ClientCommandPureReduce>,
     pub fallback: ClientProjectionFallback,
+}
+
+/// Pure reduce declaration on the client manifest (server-exported).
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct ClientCommandPureReduce {
+    pub fn_name: String,
+    #[serde(default, skip_serializing_if = "String::is_empty")]
+    pub client_module: String,
+    #[serde(default, skip_serializing_if = "String::is_empty")]
+    pub client_export: String,
+    #[serde(default, skip_serializing_if = "String::is_empty")]
+    pub wasm_package: String,
+    #[serde(default, skip_serializing_if = "String::is_empty")]
+    pub wasm_export: String,
+    pub model: String,
+    pub key: Vec<ClientCommandPureArg>,
+    pub args: Vec<ClientCommandPureArg>,
+    pub assign: Vec<String>,
+}
+
+/// Pure reduce key/arg with preview-style source.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct ClientCommandPureArg {
+    pub name: String,
+    pub source: ClientProjectionPreviewSource,
 }
 
 impl<'de> Deserialize<'de> for CommandProjectionExtension {
@@ -859,6 +888,8 @@ impl<'de> Deserialize<'de> for CommandProjectionExtension {
             event_set: Vec<ClientProjectionEventRef>,
             program_arms: Vec<CommandProjectionArmRef>,
             preview_occurrences: Vec<CommandProjectionPreviewOccurrence>,
+            #[serde(default)]
+            pure_reduces: Vec<ClientCommandPureReduce>,
             fallback: ClientProjectionFallback,
         }
 
@@ -919,6 +950,7 @@ impl<'de> Deserialize<'de> for CommandProjectionExtension {
             event_set: wire.event_set,
             program_arms: wire.program_arms,
             preview_occurrences: wire.preview_occurrences,
+            pure_reduces: wire.pure_reduces,
             fallback: wire.fallback,
         })
     }

@@ -28,11 +28,15 @@ jobs:
       - uses: dtolnay/rust-toolchain@29eef336d9b2848a0b548edc03f92a220660cdb8
         with:
           toolchain: stable
+          targets: wasm32-unknown-unknown
 
       - uses: Swatinem/rust-cache@v2
         with:
           workspaces: tests/e2e-ui -> target
           shared-key: e2e-ui-offline
+
+      - name: Install wasm-pack
+        run: cargo install wasm-pack --locked || cargo install wasm-pack
 
       - uses: actions/setup-node@v4
         with:
@@ -62,11 +66,15 @@ jobs:
       - uses: dtolnay/rust-toolchain@29eef336d9b2848a0b548edc03f92a220660cdb8
         with:
           toolchain: stable
+          targets: wasm32-unknown-unknown
 
       - uses: Swatinem/rust-cache@v2
         with:
           workspaces: tests/e2e-ui -> target
           shared-key: e2e-ui-browser
+
+      - name: Install wasm-pack
+        run: cargo install wasm-pack --locked || cargo install wasm-pack
 
       - uses: actions/setup-node@v4
         with:

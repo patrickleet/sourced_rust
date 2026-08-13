@@ -386,14 +386,14 @@ export function validateCommandProjectionArtifact(
 			'version',
 			'deltaWireVersion',
 			'projectionProgramVersion',
-				'operationSemanticsVersion',
-				'projections',
-				'eventSet',
-				'capabilities',
-				'preview',
+			'operationSemanticsVersion',
+			'projections',
+			'eventSet',
+			'capabilities',
+			'preview',
 			'fallback'
 		],
-		[],
+		['pureReduces'],
 		path
 	);
 	if (
@@ -677,6 +677,12 @@ export function validateCommandProjectionArtifact(
 				invalid(`${path}.preview.recoveries`);
 			}
 		}
+			const pureReduces = parsePureReduces(
+				projection.pureReduces,
+				occurrences.length,
+				projections.length,
+				`${path}.pureReduces`
+			);
 			const parsed = Object.freeze({
 			version: 2 as const,
 			deltaWireVersion: 1 as const,
@@ -694,6 +700,7 @@ export function validateCommandProjectionArtifact(
 			operations: Object.freeze(operations),
 			recoveries: Object.freeze(recoveries)
 		}),
+			...(pureReduces.length === 0 ? {} : { pureReduces }),
 			fallback: 'revalidate' as const
 			});
 			if (encoder.encode(JSON.stringify(parsed)).byteLength > MAX_BODY_BYTES) {
@@ -701,6 +708,86 @@ export function validateCommandProjectionArtifact(
 			}
 			return parsed;
 	}
+
+function parsePureReduces(
+	value: unknown,
+	occurrenceCount: number,
+	projectionCount: number,
+	path: string
+): readonly import('./types.js').ProjectionPreviewPureReduce[] {
+	if (value === undefined) return Object.freeze([]);
+	return Object.freeze(
+		boundedArray(value, path).map((item, index) => {
+			const itemPath = `${path}[${index}]`;
+			const reduce = exactRecord(
+				item,
+				[
+					'fn',
+					'scope',
+					'args',
+					'assign',
+					'occurrence_ordinal',
+					'projection_refs'
+				],
+				['clientModule', 'clientExport'],
+				itemPath
+			);
+			const fn = reduce.fn;
+			if (typeof fn !== 'string' || fn.length === 0 || fn.length > 128) {
+				invalid(`${itemPath}.fn`);
+			}
+			const occurrenceOrdinal = boundedOrdinal(
+				reduce.occurrence_ordinal,
+				`${itemPath}.occurrence_ordinal`
+			);
+			if (occurrenceOrdinal >= occurrenceCount) invalid(itemPath);
+			const assign = boundedArray(reduce.assign, `${itemPath}.assign`).map(
+				(field, fieldIndex) => {
+					if (typeof field !== 'string' || field.length === 0) {
+						invalid(`${itemPath}.assign[${fieldIndex}]`);
+					}
+					return field as string;
+				}
+			);
+			if (assign.length === 0) invalid(`${itemPath}.assign`);
+			const args = boundedArray(reduce.args, `${itemPath}.args`).map(
+				(arg, argIndex) => {
+					const argPath = `${itemPath}.args[${argIndex}]`;
+					const entry = exactRecord(arg, ['name', 'value'], [], argPath);
+					if (typeof entry.name !== 'string' || entry.name.length === 0) {
+						invalid(`${argPath}.name`);
+					}
+					return Object.freeze({
+						name: entry.name as string,
+						value: parsePreviewValue(entry.value, `${argPath}.value`, 0)
+					});
+				}
+			);
+			const clientModule =
+				typeof reduce.clientModule === 'string'
+					? (reduce.clientModule as string)
+					: undefined;
+			const clientExport =
+				typeof reduce.clientExport === 'string'
+					? (reduce.clientExport as string)
+					: undefined;
+			return Object.freeze({
+				fn: fn as string,
+				...(clientModule === undefined ? {} : { clientModule }),
+				...(clientExport === undefined ? {} : { clientExport }),
+				scope: parsePreviewScope(reduce.scope, `${itemPath}.scope`),
+				args: Object.freeze(args),
+				assign: Object.freeze(assign),
+				occurrence_ordinal: occurrenceOrdinal,
+				projection_refs: projectionRefs(
+					reduce.projection_refs,
+					projectionCount,
+					`${itemPath}.projection_refs`
+				)
+			});
+		})
+	);
+}
 
 export function validateProjectionMetadataAuthority(
 	metadata: CommandProjectionMetadata,
@@ -723,8 +810,12 @@ export function validateProjectionMetadataAuthority(
 		(identity.surface.kind === 'application' &&
 			(authority.surface.kind !== 'application' ||
 				compareStringArrays(
-					identity.surface.roles,
-					authority.surface.roles
+					identity.surface.eligible_roles,
+					authority.surface.eligible_roles
+				) !== 0 ||
+				compareStringArrays(
+					identity.surface.schema_roles,
+					authority.surface.schema_roles
 				) !== 0)) ||
 		identity.schema_fingerprint !== authority.schemaHash ||
 		identity.protocol_fingerprint !== authority.protocolHash ||
@@ -802,23 +893,39 @@ function parseSurface(value: unknown, path: string): ProjectionDeltaSurface {
 	if (value.kind === 'application') {
 		const application = exactRecord(
 			value,
-			['kind', 'name', 'roles'],
+			['kind', 'name', 'eligible_roles', 'schema_roles'],
 			[],
 			path
 		);
-		const roles = boundedArray(application.roles, `${path}.roles`).map(
-			(role, index) => identityString(role, `${path}.roles[${index}]`)
+		const eligibleRoles = boundedArray(
+			application.eligible_roles,
+			`${path}.eligible_roles`
+		).map(
+			(role, index) =>
+				identityString(role, `${path}.eligible_roles[${index}]`)
 		);
-		if (roles.length === 0) invalid(`${path}.roles`);
+		const schemaRoles = boundedArray(
+			application.schema_roles,
+			`${path}.schema_roles`
+		).map((role, index) =>
+			identityString(role, `${path}.schema_roles[${index}]`)
+		);
+		if (eligibleRoles.length === 0) invalid(`${path}.eligible_roles`);
+		if (schemaRoles.length === 0) invalid(`${path}.schema_roles`);
 		assertStrictOrder(
-			roles,
+			eligibleRoles,
 			compareUtf8,
-			`${path}.roles`
+			`${path}.eligible_roles`
 		);
+		assertStrictOrder(schemaRoles, compareUtf8, `${path}.schema_roles`);
+		if (schemaRoles.some((role) => !eligibleRoles.includes(role))) {
+			invalid(`${path}.schema_roles`);
+		}
 		return Object.freeze({
 			kind: 'application' as const,
 			name: identityString(application.name, `${path}.name`),
-			roles: Object.freeze(roles)
+			eligible_roles: Object.freeze(eligibleRoles),
+			schema_roles: Object.freeze(schemaRoles)
 		});
 	}
 	invalid(`${path}.kind`);

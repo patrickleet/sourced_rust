@@ -84,6 +84,19 @@ struct TodoState {
     status: String,
 }
 
+enum TodoStateChanged {}
+
+impl crate::domain_event::DomainEventContract for TodoStateChanged {
+    const EVENT_NAME: &'static str = "todo.state-changed";
+    const EVENT_VERSION: u64 = 1;
+
+    fn descriptor() -> crate::DomainEventDescriptor {
+        crate::DomainEventDescriptor::state::<TodoState>(Self::EVENT_NAME, Self::EVENT_VERSION)
+    }
+}
+
+impl crate::domain_event::DomainEventBodyContract<TodoState> for TodoStateChanged {}
+
 enum DishonestEventContract {}
 
 impl crate::domain_event::DomainEventContract for DishonestEventContract {
@@ -201,6 +214,83 @@ fn command_events_are_exact_values_independent_of_projector_declarations() {
         contract.projections.selectors[0].event_name(),
         "todo.completed"
     );
+}
+
+#[test]
+fn command_transition_fills_emits_from_domain_event_set() {
+    let from_transition =
+        super::command_transition::<TodoCompleted, Input, Succeeded<Payload>>("todo.complete")
+            .into_contract();
+    let from_emits = typed_command::<Input, Succeeded<Payload>>("todo.complete")
+        .emits(crate::events![TodoCompleted])
+        .into_contract();
+    assert_eq!(
+        from_transition.projections.selectors,
+        from_emits.projections.selectors
+    );
+    assert_eq!(
+        from_transition.projections.selectors[0].event_name(),
+        "todo.completed"
+    );
+}
+
+#[test]
+fn authenticated_user_field_reuses_generated_event_schema_metadata() {
+    let contract = super::command_transition::<TodoStateChanged, Input, Succeeded<Payload>>(
+        "todo.complete",
+    )
+    .authenticated_user_field::<TodoStateChanged, TodoState>("status")
+    .into_contract();
+    let field = contract.projections.inferred_values[0]
+        .preview
+        .fields
+        .iter()
+        .find(|field| field.body_path == ["status"])
+        .expect("generated transition field must remain present");
+
+    assert_eq!(
+        field.source,
+        CommandProjectionPreviewSource::trusted("x-user-id", "string")
+    );
+    assert_eq!(
+        field.body_type,
+        Some(crate::projection::lower::ProjectionPortableType::String)
+    );
+    assert_eq!(field.body_nullable, Some(false));
+    assert_eq!(field.body_always_present, Some(true));
+}
+
+#[test]
+fn authenticated_user_field_merges_with_known_values_and_rejects_unknown_fields() {
+    let mut projections = CommandProjectionEvents::default();
+    projections.add_event_set(crate::events![TodoStateChanged]);
+    projections.add_inferred_values(__command_projection_state_known_values::<
+        TodoStateChanged,
+        TodoState,
+    >(vec![(
+        "todo_id",
+        CommandProjectionPreviewSource::constant(crate::ProjectionValue::string("todo-1")),
+    )]));
+    projections.add_authenticated_user_field(
+        "status",
+        __command_projection_state_known_values::<TodoStateChanged, TodoState>(vec![(
+            "status",
+            CommandProjectionPreviewSource::trusted("x-user-id", "string"),
+        )]),
+    );
+    projections
+        .canonicalize_and_validate("todo.complete")
+        .expect("distinct inferred fields for one event must merge");
+    assert_eq!(projections.inferred_values.len(), 1);
+    assert_eq!(projections.inferred_values[0].preview.fields.len(), 2);
+
+    let invalid = super::command_transition::<TodoStateChanged, Input, Succeeded<Payload>>(
+        "todo.invalid-principal-field",
+    )
+    .authenticated_user_field::<TodoStateChanged, TodoState>("missing")
+    .into_contract();
+    let error = TypedServiceCommandBinding::from_contracts("todos", &[invalid]).unwrap_err();
+    assert!(error.contains("is not one exact emitted-event body field"));
 }
 
 #[test]
@@ -751,8 +841,8 @@ fn command_fingerprints_canonicalize_nested_json_object_keys() {
             reverse_binding.structural_fingerprint.as_str(),
         ),
         (
-            "sha256:db980e553f62b65ee01600c23c0331e97b5083f5e9f3b65498cb4cde344a0204",
-            "sha256:ba291c9b13aafb68a135b5b8112e3e2ebf1fa1e23819eb210219c60b186c265f",
+            "sha256:316da00fdf3cfb8ebc2ffdc2b01ef2c39c2a424c06384cc3206984d37f050799",
+            "sha256:f12034f9fbb4390014593a372303ad4389397916ee66fca6288f8ccba3be9dce",
         )
     );
 }

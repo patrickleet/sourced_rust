@@ -574,7 +574,7 @@ fn surface_arguments_sdl(arguments: &[super::surface::SurfaceArgument]) -> Strin
     format!("({arguments})")
 }
 
-/// Filter operational tables and render SDL for a project manifest's tables.
+/// Filter operational tables and render SDL for a read-model schema catalog.
 pub fn graphql_sdl_from_schemas(
     schemas: impl IntoIterator<Item = TableSchema>,
 ) -> Result<String, String> {

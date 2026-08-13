@@ -45,15 +45,43 @@ pub(crate) fn canonicalize_surface(
         ManifestSurface::Role { name } => {
             validate_nonempty(name, "manifest.surface.name")?;
         }
-        ManifestSurface::Application { name, roles } => {
+        ManifestSurface::Application {
+            name,
+            eligible_roles,
+            schema_roles,
+        } => {
             validate_nonempty(name, "manifest.surface.name")?;
-            if roles.is_empty() {
+            if eligible_roles.is_empty() {
                 return Err(ClientCompileError::manifest(
-                    "client.manifest.surface_roles",
+                    "client.manifest.surface_eligible_roles",
                     format!("application surface `{name}` must declare at least one role"),
                 ));
             }
-            canonicalize_string_set(roles, &format!("application surface `{name}` role"))?;
+            canonicalize_string_set(
+                eligible_roles,
+                &format!("application surface `{name}` eligible role"),
+            )?;
+            if schema_roles.is_empty() {
+                return Err(ClientCompileError::manifest(
+                    "client.manifest.surface_schema_roles",
+                    format!("application surface `{name}` must declare at least one schema role"),
+                ));
+            }
+            canonicalize_string_set(
+                schema_roles,
+                &format!("application surface `{name}` schema role"),
+            )?;
+            if schema_roles
+                .iter()
+                .any(|role| !eligible_roles.iter().any(|eligible| eligible == role))
+            {
+                return Err(ClientCompileError::manifest(
+                    "client.manifest.surface_schema_roles",
+                    format!(
+                        "application surface `{name}` schema roles must be a subset of eligible roles"
+                    ),
+                ));
+            }
         }
     }
     Ok(())
@@ -120,14 +148,26 @@ pub(crate) fn validate_surface(
         (
             ManifestSurface::Application {
                 name: actual,
-                roles,
+                eligible_roles,
+                schema_roles,
             },
-            ClientSurfaceSelector::Application { name: expected },
+            ClientSurfaceSelector::Application {
+                name: expected,
+                eligible_roles: expected_eligible_roles,
+                schema_roles: expected_schema_roles,
+            },
         ) => {
             !expected.trim().is_empty()
                 && actual == expected
-                && !roles.is_empty()
-                && roles.iter().all(|role| !role.trim().is_empty())
+                && eligible_roles == expected_eligible_roles
+                && schema_roles == expected_schema_roles
+                && !eligible_roles.is_empty()
+                && eligible_roles.iter().all(|role| !role.trim().is_empty())
+                && !schema_roles.is_empty()
+                && schema_roles.iter().all(|role| !role.trim().is_empty())
+                && schema_roles
+                    .iter()
+                    .all(|role| eligible_roles.iter().any(|eligible| eligible == role))
         }
         _ => false,
     };
@@ -140,7 +180,15 @@ pub(crate) fn validate_surface(
     };
     let expected_label = match expected {
         ClientSurfaceSelector::Role { name } => format!("role `{name}`"),
-        ClientSurfaceSelector::Application { name } => format!("application `{name}`"),
+        ClientSurfaceSelector::Application {
+            name,
+            eligible_roles,
+            schema_roles,
+        } => format!(
+            "application `{name}` (eligible roles [{}], schema roles [{}])",
+            eligible_roles.join(", "),
+            schema_roles.join(", ")
+        ),
     };
     Err(ClientCompileError::manifest(
         "client.manifest.surface_mismatch",
@@ -197,7 +245,7 @@ pub(crate) fn validate_execution_limits(
         return Err(ClientCompileError::manifest(
             "client.manifest.complexity_version",
             format!(
-                "unsupported query complexity contract version {}; dctl requires version 1",
+                "unsupported query complexity contract version {}; distributed requires version 1",
                 execution.complexity.version
             ),
         ));

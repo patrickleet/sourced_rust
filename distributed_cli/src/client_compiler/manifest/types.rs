@@ -55,7 +55,11 @@ pub(crate) struct ManifestComplexityWeights {
 #[serde(tag = "kind", rename_all = "snake_case", deny_unknown_fields)]
 pub(crate) enum ManifestSurface {
     Role { name: String },
-    Application { name: String, roles: Vec<String> },
+    Application {
+        name: String,
+        eligible_roles: Vec<String>,
+        schema_roles: Vec<String>,
+    },
 }
 
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
@@ -1070,7 +1074,34 @@ pub(crate) struct ManifestCommandProjection {
     pub(crate) event_set: Vec<ManifestProjectionEventRef>,
     pub(crate) program_arms: Vec<ManifestCommandProjectionArmRef>,
     pub(crate) preview_occurrences: Vec<ManifestCommandProjectionPreviewOccurrence>,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub(crate) pure_reduces: Vec<ManifestCommandPureReduce>,
     pub(crate) fallback: ManifestProjectionFallback,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub(crate) struct ManifestCommandPureReduce {
+    pub(crate) fn_name: String,
+    #[serde(default, skip_serializing_if = "String::is_empty")]
+    pub(crate) client_module: String,
+    #[serde(default, skip_serializing_if = "String::is_empty")]
+    pub(crate) client_export: String,
+    #[serde(default, skip_serializing_if = "String::is_empty")]
+    pub(crate) wasm_package: String,
+    #[serde(default, skip_serializing_if = "String::is_empty")]
+    pub(crate) wasm_export: String,
+    pub(crate) model: String,
+    pub(crate) key: Vec<ManifestCommandPureArg>,
+    pub(crate) args: Vec<ManifestCommandPureArg>,
+    pub(crate) assign: Vec<String>,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub(crate) struct ManifestCommandPureArg {
+    pub(crate) name: String,
+    pub(crate) source: ManifestProjectionPreviewSource,
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]

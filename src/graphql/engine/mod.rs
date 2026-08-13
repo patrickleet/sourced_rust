@@ -12,7 +12,7 @@ use futures_util::StreamExt;
 use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
 
-use crate::manifest::DistributedProjectManifest;
+use crate::table::ReadModelCatalog;
 use crate::microsvc::{Service, Session, ROLE_KEY, USER_ID_KEY};
 use crate::read_model::{ReadModelChange, RelationalReadModelIncludes};
 use crate::table::{

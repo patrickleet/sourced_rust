@@ -18,7 +18,7 @@ use distributed::microsvc::{
     CausalProjectorContext, HandlerError, Routes, Service, Session, ROLE_KEY,
 };
 use distributed::projection_protocol::ProjectionChangeRetention;
-use distributed::{DistributedProjectManifest, PostgresRepository, ReadModel};
+use distributed::{ReadModelCatalog, PostgresRepository, ReadModel};
 use futures_util::{stream::BoxStream, StreamExt};
 use serde::{Deserialize, Serialize};
 use serde_json::{json, Value};
@@ -174,7 +174,7 @@ async fn postgres_emits_exact_revisions_and_accepts_an_exact_live_resume() {
     let repository = schema.repository().await.with_projection_change_retention(
         ProjectionChangeRetention::new(2).expect("positive retention"),
     );
-    let manifest = DistributedProjectManifest::new(SERVICE_ID).read_model::<PostgresProtocolView>();
+    let manifest = ReadModelCatalog::new(SERVICE_ID).read_model::<PostgresProtocolView>();
     repository
         .bootstrap_table_schema_for_dev(
             &manifest

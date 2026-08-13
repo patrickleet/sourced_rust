@@ -74,50 +74,83 @@ test.describe('blob game (alice)', () => {
 			});
 		});
 
-		let releaseMove!: () => void;
-		const releaseMovePromise = new Promise<void>((resolve) => {
-			releaseMove = resolve;
+		let releaseFirstMove!: () => void;
+		const firstMoveRelease = new Promise<void>((resolve) => {
+			releaseFirstMove = resolve;
 		});
-		let moveReachedServer!: () => void;
-		const moveReachedServerPromise = new Promise<void>((resolve) => {
-			moveReachedServer = resolve;
+		let firstMoveBlocked!: () => void;
+		const firstMoveIsBlocked = new Promise<void>((resolve) => {
+			firstMoveBlocked = resolve;
+		});
+		let dispatchedMoves = 0;
+		const moveResponses: import('@playwright/test').Response[] = [];
+		page.on('response', (response) => {
+			if ((response.request().postData() ?? '').includes('blob_games_move')) {
+				moveResponses.push(response);
+			}
 		});
 		await page.route('**/graphql', async (route) => {
 			if (!(route.request().postData() ?? '').includes('blob_games_move')) {
 				await route.continue();
 				return;
 			}
+			dispatchedMoves += 1;
+			if (dispatchedMoves === 1) {
+				firstMoveBlocked();
+				// Hold before route.fetch: the server has not seen the first move,
+				// and the runtime must retain later local layers while serializing
+				// same-game transport behind it.
+				await firstMoveRelease;
+			}
 			const response = await route.fetch();
-			moveReachedServer();
-			await releaseMovePromise;
 			await route.fulfill({ response });
 		});
 
-		// Move right (pad or keyboard). Either score increments or stays at an
-		// edge/wall, but the cached board must remain mounted throughout.
-		const moveResponsePromise = page.waitForResponse(
-			(r) =>
-				r.url().includes('/graphql') &&
-				r.request().method() === 'POST' &&
-				(r.request().postData() ?? '').includes('blob_games_move'),
-			{ timeout: 20_000 }
-		);
+		// The first local pure moves right while its request is held before the
+		// server. A second legal move must stack immediately on that optimistic
+		// board even though its transport remains ordered behind the first.
 		await page.keyboard.press('ArrowRight');
-		await moveReachedServerPromise;
-		// The generated Atomic preview must paint before the held GraphQL
-		// response is allowed back to the browser.
+		await firstMoveIsBlocked;
 		await expect(board.locator('.tile-player')).toHaveAttribute(
 			'aria-label',
 			'r0 c1',
 			{ timeout: 200 }
 		);
+		const rightClass =
+			(await page
+				.locator('.blob-board .cell[aria-label="r0 c2"]')
+				.getAttribute('class')) ?? '';
+		const secondMove = rightClass.includes('tile-hole')
+			? ({ key: 'ArrowDown', label: 'r1 c1' } as const)
+			: ({ key: 'ArrowRight', label: 'r0 c2' } as const);
+		await expect(
+			page.locator(`.blob-board .cell[aria-label="${secondMove.label}"]`)
+		).not.toHaveClass(/tile-hole/);
+		await page.keyboard.press(secondMove.key);
+		await expect(board.locator('.tile-player')).toHaveAttribute(
+			'aria-label',
+			secondMove.label,
+			{ timeout: 200 }
+		);
+		expect(
+			dispatchedMoves,
+			'later same-game transport must wait without blocking its optimistic layer'
+		).toBe(1);
 		await expect(page.getByTestId('blob-new-game')).toBeEnabled();
 		for (const button of await page.locator('.pad-btn').all()) {
 			await expect(button).toBeEnabled();
 		}
-		releaseMove();
-		const moveResp = await moveResponsePromise;
-		expect(moveResp.ok(), `blob_games_move HTTP ${moveResp.status()}`).toBeTruthy();
+		releaseFirstMove();
+		await expect
+			.poll(() => moveResponses.length, { timeout: 20_000 })
+			.toBe(2);
+		for (const response of moveResponses) {
+			expect(response.ok(), `blob_games_move HTTP ${response.status()}`).toBeTruthy();
+		}
+		await expect(board.locator('.tile-player')).toHaveAttribute(
+			'aria-label',
+			secondMove.label
+		);
 		await page.unrouteAll({ behavior: 'wait' });
 		await expect(board).toBeVisible();
 		await expect(page.locator('.inline-alert, .blob-empty')).toHaveCount(0);
@@ -146,6 +179,53 @@ test.describe('blob game (alice)', () => {
 		).toBeGreaterThan(0);
 	});
 
+	test('new game replaces a selected game without a page reload', async ({ page }) => {
+		await page.goto('/blob');
+		await expect(page.locator('[data-blob-hydrated="1"]')).toBeVisible({
+			timeout: 15_000
+		});
+		await expect(page.getByTestId('blob-start-game')).toBeEnabled({ timeout: 10_000 });
+
+		const startResponse = page.waitForResponse(
+			(response) =>
+				(response.request().postData() ?? '').includes('blob_games_start'),
+			{ timeout: 20_000 }
+		);
+		await page.getByTestId('blob-start-game').click();
+		expect((await startResponse).ok()).toBeTruthy();
+		await expect(page.locator('.blob-board')).toBeVisible({ timeout: 15_000 });
+		const firstGameUrl = page.url();
+
+		const continuityToken = `blob-new-game-${Date.now()}`;
+		await page.evaluate((token) => {
+			Object.assign(globalThis, { __distributedBlobNewGameToken: token });
+		}, continuityToken);
+		const newGameResponse = page.waitForResponse(
+			(response) =>
+				(response.request().postData() ?? '').includes('blob_games_start'),
+			{ timeout: 20_000 }
+		);
+		await page.getByTestId('blob-new-game').click();
+		expect((await newGameResponse).ok()).toBeTruthy();
+
+		await expect(page).not.toHaveURL(firstGameUrl);
+		await expect(page.locator('.blob-board .tile-player')).toHaveAttribute(
+			'aria-label',
+			'r0 c0',
+			{ timeout: 1_000 }
+		);
+		await expect(page.locator('.blob-empty')).toHaveCount(0);
+		expect(
+			await page.evaluate(
+				() =>
+					(globalThis as typeof globalThis & {
+						__distributedBlobNewGameToken?: string;
+					}).__distributedBlobNewGameToken
+			),
+			'New game must preserve the current document while changing routes'
+		).toBe(continuityToken);
+	});
+
 	test('a revalidation started before an atomic move cannot roll it back with later evidence', async ({ page }) => {
 		await page.goto('/blob');
 		await expect(page.locator('[data-blob-hydrated="1"]')).toBeVisible({ timeout: 15_000 });
@@ -165,6 +245,7 @@ test.describe('blob game (alice)', () => {
 			'aria-label',
 			'r0 c0'
 		);
+		await expect(page).toHaveURL(/\/blob\/[^/]+$/);
 		const gameId = decodeURIComponent(new URL(page.url()).pathname.split('/').at(-1)!);
 
 		let releaseHeldQuery!: () => void;

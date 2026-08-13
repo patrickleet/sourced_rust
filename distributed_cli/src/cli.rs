@@ -1,11 +1,11 @@
-//! The `dctl` command surface: clap types plus the [`run`] dispatcher. Generation
-//! lives in the crate's `generate`/`atlas` modules and the `describe`/`schema`
-//! harness in `manifest_harness`; this module maps flags onto those types and
-//! owns the scaffold's filesystem / process side effects (writing files,
-//! running `gh`).
+//! The `distributed` command surface: clap types plus the [`run_distributed`]
+//! dispatcher. Generation lives in the crate's `generate`/`atlas` modules and
+//! the `describe`/`schema` harness in `manifest_harness`; this module maps
+//! flags onto those types and owns filesystem / process side effects.
 //!
-//! `hops` mounts [`ServiceArgs`] under `hops service` and dispatches with [`run`],
-//! re-exporting the commands rather than reimplementing them.
+//! Host CLIs (for example `hops`) may mount [`ServiceArgs`] under a nested
+//! service command and dispatch with [`run`], re-exporting rather than
+//! reimplementing service-related commands.
 
 use clap::{ArgGroup, Args, Subcommand, ValueEnum};
 use std::collections::{BTreeMap, BTreeSet};
@@ -19,6 +19,10 @@ use crate::client_compiler::{
     compile_client, ClientCompileInput, ClientDocument, ClientRouteRegistration,
     ClientSurfaceSelector, GeneratedClientFile, GeneratedClientProject,
 };
+use crate::contracts::{
+    contracts_accept, contracts_check, unknown_scope_diagnostic, ContractAcceptScope,
+    ContractCatalog,
+};
 use crate::manifest_harness::{run_manifest_harness, HarnessMode, HarnessOptions};
 use crate::skills::{embedded_skills, generate_skills, SkillsInitSpec, AGENTS_MD_FILE};
 use crate::{
@@ -30,6 +34,33 @@ use crate::{
 const DISTRIBUTED_MANIFEST_SCHEMA_VERSION: u64 = 1;
 const DISTRIBUTED_CLIENT_MANIFEST_VERSION: u64 = 2;
 
+/// Top-level standalone CLI arguments for the `distributed` binary.
+#[derive(Args, Debug)]
+pub struct DistributedArgs {
+    #[command(subcommand)]
+    pub command: DistributedCommands,
+}
+
+#[derive(Subcommand, Debug)]
+pub enum DistributedCommands {
+    /// Aggregate contract lifecycle check and accept
+    Contracts(ContractsArgs),
+    /// Scaffold a new Distributed microservice crate
+    #[command(alias = "create")]
+    Scaffold(ScaffoldArgs),
+    /// Print a service's explicit ApplicationManifest as JSON
+    Describe(DescribeArgs),
+    /// Compile role/application-scoped GraphQL operations into client artifacts
+    Client(ClientArgs),
+    /// Compile the service's authorized client Surface manifest as JSON
+    ClientManifest(ClientManifestArgs),
+    /// Render schema artifacts (SQL or an Atlas Operator resource) from a read-model catalog
+    Schema(SchemaArgs),
+    /// Extract the embedded Distributed agent skills into a project
+    Skills(SkillsArgs),
+}
+
+/// Library adapter for embedding service-related commands under another CLI.
 #[derive(Args, Debug)]
 pub struct ServiceArgs {
     #[command(subcommand)]
@@ -41,16 +72,65 @@ pub enum ServiceCommands {
     /// Scaffold a new Distributed microservice crate
     #[command(alias = "create")]
     Scaffold(ScaffoldArgs),
-    /// Print a service's Distributed project manifest as JSON
+    /// Print a service's explicit ApplicationManifest as JSON
     Describe(DescribeArgs),
     /// Compile role/application-scoped GraphQL operations into client artifacts
     Client(ClientArgs),
     /// Compile the service's authorized client Surface manifest as JSON
     ClientManifest(ClientManifestArgs),
-    /// Render schema artifacts (SQL or an Atlas Operator resource) from a manifest
+    /// Render schema artifacts (SQL or an Atlas Operator resource) from a read-model catalog
     Schema(SchemaArgs),
     /// Extract the embedded Distributed agent skills into a project
     Skills(SkillsArgs),
+}
+
+#[derive(Args, Debug)]
+pub struct ContractsArgs {
+    #[command(subcommand)]
+    pub command: ContractsCommands,
+}
+
+#[derive(Subcommand, Debug)]
+pub enum ContractsCommands {
+    /// Read-only aggregate contract check (never writes tracked files)
+    Check(ContractsCheckArgs),
+    /// Exact-scope accept with staging, atomic replace, and rollback
+    Accept(ContractsAcceptArgs),
+}
+
+#[derive(Args, Debug)]
+pub struct ContractsCheckArgs {
+    /// Catalog root directory
+    #[arg(long, default_value = ".")]
+    pub root: PathBuf,
+    /// Path to the contract catalog JSON (relative to root or absolute)
+    #[arg(long, default_value = "contracts/catalog.json")]
+    pub catalog: PathBuf,
+    /// Output format
+    #[arg(long, value_enum, default_value = "human")]
+    pub output: ContractsOutput,
+}
+
+#[derive(Args, Debug)]
+pub struct ContractsAcceptArgs {
+    /// Catalog root directory
+    #[arg(long, default_value = ".")]
+    pub root: PathBuf,
+    /// Exact accept scope (no broad wildcards)
+    #[arg(long)]
+    pub scope: String,
+    /// Staged payload file: JSON object mapping portable relative paths to UTF-8 contents
+    #[arg(long)]
+    pub staged: PathBuf,
+    /// Output format
+    #[arg(long, value_enum, default_value = "human")]
+    pub output: ContractsOutput,
+}
+
+#[derive(Clone, Copy, Debug, ValueEnum)]
+pub enum ContractsOutput {
+    Human,
+    Json,
 }
 
 #[derive(Args, Debug)]
@@ -130,7 +210,7 @@ pub struct ScaffoldArgs {
     /// Model aggregate to scaffold. May be repeated.
     #[arg(long)]
     pub model: Vec<String>,
-    /// Generate placeholder read-model modules and register them in distributed_manifest().
+    /// Generate placeholder read-model modules and register them in read_model_catalog().
     #[arg(long)]
     pub read_models: bool,
     /// Generate src/query/ GraphQL skeleton, enable the graphql feature, and wire with_graphql.
@@ -201,7 +281,7 @@ pub struct DescribeArgs {
     /// Disable default features on the target service dependency.
     #[arg(long)]
     pub no_default_features: bool,
-    /// Manifest function to call. Defaults to <crate>::distributed_manifest.
+    /// Application manifest function to call. Defaults to <crate>::application_manifest.
     #[arg(long)]
     pub entrypoint: Option<String>,
     /// Output format.
@@ -255,6 +335,12 @@ pub struct ClientArgs {
     /// Verify that the manifest is selected for this named application surface.
     #[arg(long)]
     pub surface: Option<String>,
+    /// Explicit eligible application roles (repeat for each role).
+    #[arg(long, value_name = "ROLE", requires = "surface")]
+    pub eligible_role: Vec<String>,
+    /// Explicit schema application roles (repeat for each role).
+    #[arg(long, value_name = "ROLE", requires = "surface")]
+    pub schema_role: Vec<String>,
     /// GraphQL document glob. Repeat for multiple source roots.
     #[arg(long, required = true, value_name = "GLOB")]
     pub documents: Vec<String>,
@@ -286,7 +372,7 @@ pub struct SchemaArgs {
     /// Disable default features on the target service dependency.
     #[arg(long)]
     pub no_default_features: bool,
-    /// Manifest function to call. Defaults to <crate>::distributed_manifest.
+    /// Read-model catalog function to call. Defaults to <crate>::read_model_catalog.
     #[arg(long)]
     pub entrypoint: Option<String>,
     /// SQL dialect to render.
@@ -430,8 +516,24 @@ impl From<GitopsPromote> for GitopsPromoteTarget {
     }
 }
 
-/// Dispatch a parsed service command. The `dctl` binary and any host CLI (e.g.
-/// `hops service`) both call this.
+/// Dispatch the standalone `distributed` binary command tree.
+pub fn run_distributed(args: &DistributedArgs) -> Result<(), Box<dyn Error>> {
+    match &args.command {
+        DistributedCommands::Contracts(contracts) => run_contracts(contracts),
+        DistributedCommands::Scaffold(scaffold) => run_scaffold(scaffold),
+        DistributedCommands::Describe(describe) => run_describe(describe),
+        DistributedCommands::Client(client) => run_client(client),
+        DistributedCommands::ClientManifest(client) => run_client_manifest(client),
+        DistributedCommands::Schema(schema) => run_schema(schema),
+        DistributedCommands::Skills(skills) => match &skills.command {
+            SkillsCommands::Init(init) => run_skills_init(init),
+            SkillsCommands::List => run_skills_list(),
+        },
+    }
+}
+
+/// Dispatch a parsed service command. Host CLIs (for example `hops service`)
+/// call this without mounting the aggregate contracts surface.
 pub fn run(args: &ServiceArgs) -> Result<(), Box<dyn Error>> {
     match &args.command {
         ServiceCommands::Scaffold(scaffold) => run_scaffold(scaffold),
@@ -443,6 +545,86 @@ pub fn run(args: &ServiceArgs) -> Result<(), Box<dyn Error>> {
             SkillsCommands::Init(init) => run_skills_init(init),
             SkillsCommands::List => run_skills_list(),
         },
+    }
+}
+
+fn run_contracts(args: &ContractsArgs) -> Result<(), Box<dyn Error>> {
+    match &args.command {
+        ContractsCommands::Check(check) => run_contracts_check(check),
+        ContractsCommands::Accept(accept) => run_contracts_accept(accept),
+    }
+}
+
+fn run_contracts_check(args: &ContractsCheckArgs) -> Result<(), Box<dyn Error>> {
+    let root = absolute_path(&args.root)?;
+    let catalog_path = if args.catalog.is_absolute() {
+        args.catalog.clone()
+    } else {
+        root.join(&args.catalog)
+    };
+    let catalog = ContractCatalog::from_path(&catalog_path)?;
+    let report = contracts_check(&catalog, &root, std::iter::empty());
+    match args.output {
+        ContractsOutput::Human => {
+            if report.human.is_empty() {
+                println!("contracts check: ok");
+            } else {
+                println!("{}", report.human);
+            }
+        }
+        ContractsOutput::Json => {
+            println!("{}", serde_json::to_string_pretty(&report.result)?);
+        }
+    }
+    if report.ok {
+        Ok(())
+    } else {
+        Err("contracts check failed".into())
+    }
+}
+
+fn run_contracts_accept(args: &ContractsAcceptArgs) -> Result<(), Box<dyn Error>> {
+    let Some(scope) = ContractAcceptScope::parse(&args.scope) else {
+        let diagnostic = unknown_scope_diagnostic(&args.scope);
+        return Err(diagnostic.human().into());
+    };
+    let root = absolute_path(&args.root)?;
+    let staged_source = fs::read_to_string(&args.staged)?;
+    let staged_json: serde_json::Value = serde_json::from_str(&staged_source)?;
+    let object = staged_json
+        .as_object()
+        .ok_or("staged payload must be a JSON object of path -> string contents")?;
+    let mut staged = BTreeMap::new();
+    for (path, value) in object {
+        let contents = value
+            .as_str()
+            .ok_or_else(|| format!("staged path `{path}` must map to a UTF-8 string"))?;
+        staged.insert(path.clone(), contents.as_bytes().to_vec());
+    }
+    let report = contracts_accept(&root, scope, &staged)?;
+    match args.output {
+        ContractsOutput::Human => {
+            if report.noop {
+                println!("contracts accept: no-op ({})", report.scope);
+            } else {
+                println!(
+                    "contracts accept: updated {} path(s) for scope {}",
+                    report.changed_paths.len(),
+                    report.scope
+                );
+                for path in &report.changed_paths {
+                    println!("  {path}");
+                }
+            }
+        }
+        ContractsOutput::Json => {
+            println!("{}", serde_json::to_string_pretty(&report)?);
+        }
+    }
+    if report.ok {
+        Ok(())
+    } else {
+        Err("contracts accept failed".into())
     }
 }
 
@@ -796,7 +978,23 @@ fn run_client(args: &ClientArgs) -> Result<(), Box<dyn Error>> {
         })?;
     let selector = match (&args.role, &args.surface) {
         (Some(role), None) => ClientSurfaceSelector::role(role.clone()),
-        (None, Some(surface)) => ClientSurfaceSelector::application(surface.clone()),
+        (None, Some(surface)) => {
+            // Prefer explicit CLI roles when both lists are provided; otherwise
+            // take eligible/schema roles from the application surface in the
+            // manifest (one source of truth — no dual inventory config).
+            let (eligible_roles, schema_roles) =
+                if !args.eligible_role.is_empty() && !args.schema_role.is_empty() {
+                    (args.eligible_role.clone(), args.schema_role.clone())
+                } else if !args.eligible_role.is_empty() || !args.schema_role.is_empty() {
+                    return Err(
+                        "pass both --eligible-role and --schema-role, or neither (to use the manifest surface)"
+                            .into(),
+                    );
+                } else {
+                    application_roles_from_manifest(&manifest, surface)?
+                };
+            ClientSurfaceSelector::application(surface.clone(), eligible_roles, schema_roles)
+        }
         _ => {
             return Err("pass exactly one of --role <name> or --surface <application-name>".into());
         }
@@ -841,6 +1039,55 @@ fn read_utf8_bounded(path: &Path, limit: usize, label: &str) -> Result<String, B
     }
     String::from_utf8(bytes)
         .map_err(|error| format!("{label} {} is not UTF-8: {error}", path.display()).into())
+}
+
+/// Read application eligible/schema roles from the client manifest surface.
+///
+/// Application surfaces already declare these on the exported manifest; the
+/// client compiler should not require them again on the CLI when `--surface`
+/// is used.
+///
+/// Kind/name mismatches deliberately return empty role lists so
+/// `compile_client` can emit the shared `client.manifest.surface_mismatch`
+/// diagnostic (one validation path for CLI and library callers).
+fn application_roles_from_manifest(
+    manifest: &serde_json::Value,
+    surface_name: &str,
+) -> Result<(Vec<String>, Vec<String>), Box<dyn Error>> {
+    let Some(surface) = manifest.get("surface") else {
+        return Ok((Vec::new(), Vec::new()));
+    };
+    let kind = surface
+        .get("kind")
+        .and_then(|value| value.as_str())
+        .unwrap_or("");
+    let name = surface
+        .get("name")
+        .and_then(|value| value.as_str())
+        .unwrap_or("");
+    if kind != "application" || name != surface_name {
+        return Ok((Vec::new(), Vec::new()));
+    }
+    let roles = |field: &str| -> Result<Vec<String>, Box<dyn Error>> {
+        let values = surface
+            .get(field)
+            .and_then(|value| value.as_array())
+            .ok_or_else(|| format!("client manifest surface is missing non-empty `{field}`"))?;
+        let roles = values
+            .iter()
+            .map(|value| {
+                value
+                    .as_str()
+                    .map(str::to_owned)
+                    .ok_or_else(|| format!("client manifest surface `{field}` must be strings"))
+            })
+            .collect::<Result<Vec<_>, _>>()?;
+        if roles.is_empty() {
+            return Err(format!("client manifest surface `{field}` must not be empty").into());
+        }
+        Ok(roles)
+    };
+    Ok((roles("eligible_roles")?, roles("schema_roles")?))
 }
 
 fn collect_client_documents(patterns: &[String]) -> Result<Vec<ClientDocument>, Box<dyn Error>> {
@@ -1187,7 +1434,7 @@ fn stale_generated_client_files(
             MAX_GENERATED_CLIENT_ARTIFACT_BYTES,
             "stale generated client artifact",
         )?;
-        if !contents.starts_with("/** GENERATED by dctl client. Do not edit. */") {
+        if !contents.starts_with("/** GENERATED by distributed client. Do not edit. */") {
             return Err(format!(
                 "refusing to remove {} because its compiler ownership marker is missing",
                 path.display()
@@ -1251,7 +1498,7 @@ fn check_client_project(
     }
     drift.sort();
     Err(format!(
-        "generated Distributed client artifacts are stale:\n  {}\nrun `dctl client` without --check to regenerate",
+        "generated Distributed client artifacts are stale:\n  {}\nrun `distributed client` without --check to regenerate",
         drift.join("\n  ")
     )
     .into())
@@ -1366,7 +1613,7 @@ fn run_schema(args: &SchemaArgs) -> Result<(), Box<dyn Error>> {
         let msg = err.to_string();
         if msg.contains("graphql_sdl") || msg.contains("no method named `graphql_sdl`") {
             format!(
-                "target service's distributed version predates graphql schema support — upgrade distributed to a version that provides DistributedProjectManifest::graphql_sdl(): {msg}"
+                "target service's distributed version predates read-model GraphQL schema support — upgrade distributed to a version that provides graphql_sdl_for_tables(): {msg}"
             ).into()
         } else {
             err
@@ -1583,8 +1830,24 @@ fn validate_manifest_json(envelope: &serde_json::Value) -> Result<(), Box<dyn Er
         )
         .into());
     }
-    if envelope.get("project").is_none() {
-        return Err("manifest JSON is missing project".into());
+    // `describe` emits ApplicationManifest JSON (logical composition artifact),
+    // not the retired DistributedManifestEnvelope { project: ... } shape.
+    if envelope
+        .get("name")
+        .and_then(serde_json::Value::as_str)
+        .map(str::is_empty)
+        .unwrap_or(true)
+    {
+        return Err("application manifest JSON is missing non-empty string name".into());
+    }
+    for field in ["modules", "commands", "events", "projections", "models", "surfaces"] {
+        if envelope
+            .get(field)
+            .and_then(serde_json::Value::as_array)
+            .is_none()
+        {
+            return Err(format!("application manifest JSON is missing array {field}").into());
+        }
     }
     Ok(())
 }

@@ -1,0 +1,149 @@
+# Local workbench values for e2e-ui UI.
+# Secrets live in K8s Secrets (secretEnv / envFromSecrets) — not here.
+
+local: false
+appRuntime: package  # host | cluster-dev | package
+
+name: e2e-ui-ui
+image:
+  repository: ghcr.io/hops-ops/e2e-ui-ui
+  tag: latest
+  pullPolicy: IfNotPresent
+
+# Source tree is the *distributed* monorepo root (needs tests/e2e-ui/ui + js/).
+# Application deliveryPath points there; workingDir is the Svelte app.
+clusterDev:
+  image: node:22-bookworm
+  # Bump in the local Application after rebuilding shared JS framework output.
+  # This restarts the Vite process through the watched GitOps deployment.
+  sourceGeneration: 0
+  # Use bash -c (not -lc) so container ENV/PATH stay intact.
+  command:
+    - /bin/bash
+    - -c
+    - |
+      set -e
+      cd /workspace/js && npm install && npm run build
+      cd /workspace/tests/e2e-ui/ui
+      npm install
+      # Skip dctl/cargo: generated clients are committed under src/lib/generated.
+      export DISTRIBUTED_SKIP_CLIENT_COMPILE=1
+      # In-cluster API service (not host localhost).
+      export E2E_API_ORIGIN="${E2E_API_ORIGIN:-http://e2e-ui-api:8791}"
+      export E2E_BASE_URL="$E2E_API_ORIGIN"
+      npm run dev -- --host 0.0.0.0 --port 5180
+  workingDir: /workspace/tests/e2e-ui/ui
+  sourcePath: /workspace
+
+service:
+  port: 5180
+  targetPort: 5180
+
+# Non-secret env only (safe in git).
+env:
+  HOST: "0.0.0.0"
+  PORT: "5180"
+  DISTRIBUTED_SKIP_CLIENT_COMPILE: "1"
+  E2E_API_ORIGIN: "http://e2e-ui-api:8791"
+  E2E_BASE_URL: "http://e2e-ui-api:8791"
+  PUBLIC_E2E_API_ORIGIN: "http://e2e-ui-api:8791"
+  # Overridden at render when hops injects namespace (= --name).
+  AUTH_URL: "http://e2e-ui-ui.default.svc.cluster.local:5180"
+  AUTH_TRUST_HOST: "true"
+  AUTH_USE_SECURE_COOKIES: "false"
+  # AuthStack issuer (Helm default Service fullname)
+  OIDC_ISSUER: "http://zitadel-zitadel.auth.svc.cluster.local:8080"
+  # Optional project id for role-claim scopes. Prefer empty in git — use
+  # Project status.atProvider.id only if you must pin audience (not in MR git).
+  OIDC_AUDIENCE: ""
+  ZITADEL_PROJECT_ID: ""
+
+# Secret-backed env (never live client ids in git).
+# - OIDC_CLIENT_* → Oidc writeConnectionSecretToRef (attribute.client_id/secret)
+# - AUTH_SECRET / login PAT → residual e2e-ui-oidc (see SECRETS.md)
+secretEnv:
+  AUTH_SECRET:
+    secretName: e2e-ui-oidc
+    key: AUTH_SECRET
+  # Overridden to Oidc connection secret when identity.enabled.
+  OIDC_CLIENT_ID:
+    secretName: e2e-ui-oidc
+    key: OIDC_CLIENT_ID
+  OIDC_CLIENT_SECRET:
+    secretName: e2e-ui-oidc
+    key: OIDC_CLIENT_SECRET
+  # login-client PAT (IAM_LOGIN_CLIENT) for custom /login Session API + CreateCallback
+  ZITADEL_SERVICE_USER_TOKEN:
+    secretName: e2e-ui-oidc
+    key: ZITADEL_SERVICE_USER_TOKEN
+
+# Optional: mount entire secrets as env (unused by default)
+envFromSecrets: []
+
+# Zitadel identity on the UI chart (OIDC web client + Login V2 host).
+#
+# Scope (all gitops when identity.enabled):
+#   - Project + roles + demo humans — cluster-shared (projectNamespace)
+#   - OIDC web app — per worktree (redirects + app loginV2.baseUri)
+#   - Instance Features loginV2 — points authorize → this UI's /login
+#     (instance-global in Zitadel; last applied worktree wins on one AuthStack)
+#
+# Enable from Application values when the env needs OIDC dogfood.
+identity:
+  enabled: false
+  # Worktree id for OIDC app name (e2e-ui-<workspace>-web). Default: release ns.
+  workspace: ""
+  # Bump to rotate provider-generated client credentials. Requires Application
+  # syncPolicy.prune=true so the previous OIDC MR is removed by GitOps inventory.
+  oidcGeneration: 0
+  # Shared Project MR name — Roles/Oidc use projectIdRef, not live UUIDs.
+  projectName: e2e-ui
+  projectNamespace: default
+  humansNamespace: default
+  demoUsers: true
+  instanceLoginV2: true
+  # Intentionally disabled: the chart cannot know the AuthStack login-client PAT,
+  # and must not overwrite the residual Secret on every GitOps reconcile.
+  seedLocalOidcSecret: false
+  localOidcSeed: {}
+  seedLocalHumanPasswords: true
+  localHumanPasswords: {}
+  uiService: ""
+  uiPort: ""
+  uiBaseURL: ""
+  extraRedirectUris:
+    - http://127.0.0.1:5180/auth/callback/oidc
+    - http://localhost:5180/auth/callback/oidc
+    - http://127.0.0.1:18101/auth/callback/oidc
+    - http://localhost:18101/auth/callback/oidc
+  extraPostLogoutRedirectUris:
+    - http://127.0.0.1:5180/
+    - http://localhost:5180/
+    - http://127.0.0.1:18101/
+    - http://localhost:18101/
+  passwordSecret:
+    name: e2e-human-passwords
+  providerConfigRef:
+    name: default
+    kind: ClusterProviderConfig
+
+# Materialize residual secrets from Vault (ClusterSecretStore "vault").
+# Enable after SecretStack CSS is Ready + hops secrets sync vault.
+externalSecrets:
+  enabled: false
+  refreshInterval: 1m
+  secretStoreRef:
+    name: vault
+    kind: ClusterSecretStore
+  oidc:
+    vaultPath: "" # default e2e-ui/<workspace>/oidc
+    targetName: e2e-ui-oidc
+  humanPasswords:
+    enabled: true
+    vaultPath: "" # default e2e-ui/<workspace>/human-passwords
+    targetName: "" # default e2e-human-passwords-<workspace>
+
+sourceDelivery:
+  mode: none  # none | hostPath | sync
+  hostPath: ""
+  mountPath: /workspace

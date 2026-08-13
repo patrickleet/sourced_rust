@@ -97,19 +97,23 @@ impl RenameRule {
 }
 
 pub fn expand_graphql_input(input: DeriveInput) -> syn::Result<TokenStream> {
+    let framework = crate::shared::framework_path()?;
     expand(
         input,
-        quote! { distributed::graphql::GraphqlInputType },
-        quote! { distributed::graphql::GraphqlInputType },
+        quote! { #framework::graphql::GraphqlInputType },
+        quote! { #framework::graphql::GraphqlInputType },
+        framework,
         SerdeDirection::Deserialize,
     )
 }
 
 pub fn expand_graphql_output(input: DeriveInput) -> syn::Result<TokenStream> {
+    let framework = crate::shared::framework_path()?;
     expand(
         input,
-        quote! { distributed::graphql::GraphqlOutputType },
-        quote! { distributed::graphql::GraphqlOutputType },
+        quote! { #framework::graphql::GraphqlOutputType },
+        quote! { #framework::graphql::GraphqlOutputType },
+        framework,
         SerdeDirection::Serialize,
     )
 }
@@ -118,6 +122,7 @@ fn expand(
     input: DeriveInput,
     trait_path: TokenStream,
     nested_trait: TokenStream,
+    framework: TokenStream,
     serde_direction: SerdeDirection,
 ) -> syn::Result<TokenStream> {
     let name = &input.ident;
@@ -159,17 +164,17 @@ fn expand(
         let (type_name, nullable, list, item_nullable, nested) =
             map_type(&field.ty, field, &nested_trait)?;
         let effect_path_kind = if !list && nested.is_some() {
-            quote! { distributed::graphql::EffectInputObjectKind }
+            quote! { #framework::graphql::EffectInputObjectKind }
         } else {
-            quote! { distributed::graphql::EffectInputTerminalKind }
+            quote! { #framework::graphql::EffectInputTerminalKind }
         };
-        let effect_wire = effect_input_wire_tokens(&type_name, list, nested.is_some());
+        let effect_wire = effect_input_wire_tokens(&framework, &type_name, list, nested.is_some());
         let nested_tokens = match nested {
             Some(tokens) => quote! { Some(::std::boxed::Box::new(#tokens)) },
             None => quote! { None },
         };
         field_tokens.push(quote! {
-            distributed::graphql::GraphqlTypeField {
+            #framework::graphql::GraphqlTypeField {
                 name: #field_name_str.to_string(),
                 type_name: #type_name.to_string(),
                 nullable: #nullable,
@@ -184,16 +189,16 @@ fn expand(
             let nested_ty = effect_nested_type(field_ty);
             let non_null_ty = effect_non_null_type(field_ty);
             let nullability = if extract_path_arg(field_ty, "Option").is_some() {
-                quote! { distributed::graphql::EffectNullable }
+                quote! { #framework::graphql::EffectNullable }
             } else {
-                quote! { distributed::graphql::EffectRequired }
+                quote! { #framework::graphql::EffectRequired }
             };
             effect_input_markers.push(quote! {
                 #[doc(hidden)]
                 #[allow(non_camel_case_types)]
                 #visibility struct #marker;
 
-                impl distributed::graphql::EffectInputFieldMarker for #marker {
+                impl #framework::graphql::EffectInputFieldMarker for #marker {
                     type Input = #name;
                     type Value = #field_ty;
                     type NonNullValue = #non_null_ty;
@@ -212,8 +217,8 @@ fn expand(
     let type_name_str = name.to_string();
     Ok(quote! {
         impl #trait_path for #name {
-            fn graphql_type() -> distributed::graphql::GraphqlTypeDef {
-                distributed::graphql::GraphqlTypeDef::new(
+            fn graphql_type() -> #framework::graphql::GraphqlTypeDef {
+                #framework::graphql::GraphqlTypeDef::new(
                     #type_name_str,
                     vec![#(#field_tokens),*],
                 ).with_type_id(::std::any::TypeId::of::<#name>())
@@ -224,22 +229,27 @@ fn expand(
     })
 }
 
-fn effect_input_wire_tokens(type_name: &str, list: bool, nested: bool) -> proc_macro2::TokenStream {
+fn effect_input_wire_tokens(
+    framework: &TokenStream,
+    type_name: &str,
+    list: bool,
+    nested: bool,
+) -> proc_macro2::TokenStream {
     if list {
-        return quote! { distributed::graphql::EffectWireList };
+        return quote! { #framework::graphql::EffectWireList };
     }
     if nested {
-        return quote! { distributed::graphql::EffectWireObject };
+        return quote! { #framework::graphql::EffectWireObject };
     }
     match type_name {
-        "String" | "ID" => quote! { distributed::graphql::EffectWireString },
-        "Boolean" => quote! { distributed::graphql::EffectWireBoolean },
-        "BigInt" | "Int" => quote! { distributed::graphql::EffectWireBigInt },
-        "Float" => quote! { distributed::graphql::EffectWireFloat },
-        "JSON" => quote! { distributed::graphql::EffectWireJson },
-        "Bytea" => quote! { distributed::graphql::EffectWireBytea },
-        "Timestamptz" => quote! { distributed::graphql::EffectWireTimestamp },
-        _ => quote! { distributed::graphql::EffectWireUnsupported },
+        "String" | "ID" => quote! { #framework::graphql::EffectWireString },
+        "Boolean" => quote! { #framework::graphql::EffectWireBoolean },
+        "BigInt" | "Int" => quote! { #framework::graphql::EffectWireBigInt },
+        "Float" => quote! { #framework::graphql::EffectWireFloat },
+        "JSON" => quote! { #framework::graphql::EffectWireJson },
+        "Bytea" => quote! { #framework::graphql::EffectWireBytea },
+        "Timestamptz" => quote! { #framework::graphql::EffectWireTimestamp },
+        _ => quote! { #framework::graphql::EffectWireUnsupported },
     }
 }
 

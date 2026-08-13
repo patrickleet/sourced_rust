@@ -4,21 +4,15 @@
 	 *
 	 * - URL (`/blob` | `/blob/{gameId}`) selects which game is active.
 	 * - Board and history derive from `BlobGames.use()`.
-	 * - Commands are Atomic (same client optimism path as Eventual): `.applies`
-	 *   paints from command input; the handler applies the same mutation IR and
-	 *   the response row seals before await resolves.
+	 * - Commands are Atomic: thin input (`game_id` + `direction`). Known-row pure
+	 *   optimism runs `blob.simulate_move` via blob-domain WASM; Atomic seal is
+	 *   still server authority.
 	 */
 	import { onMount } from 'svelte';
 	import { goto } from '$app/navigation';
 	import { page } from '$app/state';
-	import { BlobGames, useCommands } from '$distributed';
-	import {
-		parseBoard,
-		simulateMove,
-		SimulateMoveError,
-		TILE,
-		type Direction
-	} from '$lib/blob/simulate-move';
+	import { BlobGames, ensurePureFunctionsReady, useCommands } from '$distributed';
+	import { parseBoard, TILE, type Direction } from '$lib/blob/board';
 	import { Button } from '$lib/components/shared/ui';
 	import { AppPage, InlineAlert, PageHeader } from '$lib/components/product';
 	import { HowItsBuilt } from '$lib/components/walkthrough';
@@ -26,8 +20,9 @@
 
 	let { data } = $props();
 	let actionError = $state<string | null>(null);
-	let commandPending = $state(false);
+	let pendingCommandCount = $state(0);
 	let hydrated = $state(false);
+	const commandPending = $derived(pendingCommandCount > 0);
 
 	const routeGameId = $derived(page.params.gameId ?? null);
 
@@ -35,9 +30,9 @@
 		return `/blob/${encodeURIComponent(gameId)}`;
 	}
 
-	function navigateToGame(gameId: string, replace = false) {
+	async function navigateToGame(gameId: string, replace = false) {
 		if (routeGameId === gameId) return;
-		void goto(gamePath(gameId), { replaceState: replace, noScroll: true, keepFocus: true });
+		await goto(gamePath(gameId), { replaceState: replace, noScroll: true, keepFocus: true });
 	}
 
 	const query = BlobGames.use();
@@ -98,17 +93,17 @@
 
 	async function startGame() {
 		if (commandPending) return;
-		commandPending = true;
+		pendingCommandCount += 1;
 		actionError = null;
 		const game_id = newGameId();
 		try {
 			const receipt = await commands.blob.start({ game_id });
 			// Atomic response row is already in the replica before resolve.
-			navigateToGame(receipt.result.game_id, true);
+			await navigateToGame(receipt.result.game_id, true);
 		} catch (e) {
 			actionError = e instanceof Error ? e.message : 'Start failed';
 		} finally {
-			commandPending = false;
+			pendingCommandCount = Math.max(0, pendingCommandCount - 1);
 		}
 	}
 
@@ -133,61 +128,43 @@
 	}
 
 	async function move(direction: Direction) {
-		if (!selected || playerDead || levelComplete || !hasBoard || commandPending) return;
+		if (!selected || playerDead || levelComplete || !hasBoard) return;
 		// Edge no-op: don't dispatch a predictably rejected command.
 		if (!canMove(direction)) {
 			actionError = null;
 			return;
 		}
-		let preview;
-		try {
-			// Pure domain twin → command input (same pattern as chat body /
-			// created_at). `.applies` maps these into the optimistic layer.
-			preview = simulateMove(board, score, direction);
-		} catch (error) {
-			if (error instanceof SimulateMoveError) {
-				actionError = null;
-				return;
-			}
-			throw error;
-		}
-		commandPending = true;
+		pendingCommandCount += 1;
 		actionError = null;
 		try {
 			await commands.blob.move({
 				game_id: selected.game_id,
-				direction,
-				map_json: preview.map_json,
-				score: preview.score,
-				player_dead: preview.player_dead,
-				current_level: currentLevel,
-				current_level_completed: preview.level_complete,
-				status: preview.status
+				direction
 			});
 		} catch (error) {
 			actionError = error instanceof Error ? error.message : 'Move failed';
 		} finally {
-			commandPending = false;
+			pendingCommandCount = Math.max(0, pendingCommandCount - 1);
 		}
 	}
 
 	async function nextLevel() {
 		if (!selected || playerDead || !levelComplete || commandPending) return;
-		commandPending = true;
+		pendingCommandCount += 1;
 		actionError = null;
 		try {
 			await commands.blob.start_level({ game_id: selected.game_id });
 		} catch (error) {
 			actionError = error instanceof Error ? error.message : 'Next level failed';
 		} finally {
-			commandPending = false;
+			pendingCommandCount = Math.max(0, pendingCommandCount - 1);
 		}
 	}
 
 	function selectGame(id: string) {
 		if (id === routeGameId) return;
 		actionError = null;
-		navigateToGame(id);
+		void navigateToGame(id);
 	}
 
 	function onKey(e: KeyboardEvent) {
@@ -214,6 +191,10 @@
 
 	onMount(() => {
 		hydrated = true;
+		// Warm generated WASM pure hosts (blob.simulate_move) before pure-reduce optimism.
+		void ensurePureFunctionsReady().catch(() => {
+			/* fail-closed pure until reload */
+		});
 		const testWindow = window as Window & {
 			__distributedBlobRefetch?: () => Promise<void>;
 		};
@@ -239,8 +220,9 @@
 			>
 				Board and history render from the same generated <code>BlobGames</code>
 				operation. Moves use the same client optimism path as todos/chat
-				(<code>.applies</code> from command input); the handler applies the
-				same mutation IR and seals the atomic row before await resolves.
+				(domain-owned <code>blob.simulate_move</code> pure + projection mapping);
+				the handler applies the same mutation IR and seals the atomic row before
+				await resolves.
 			</PageHeader>
 			<Button
 				type="button"
