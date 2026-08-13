@@ -49,7 +49,7 @@ otel = ["dep:opentelemetry", "dep:opentelemetry_sdk", "dep:tracing", "dep:tracin
 graphql = ["dep:async-graphql", "dep:async-graphql-axum", "dep:hmac", "dep:jsonwebtoken", "http", "axum?/ws"]
 
 [dependencies]
-async-nats = { version = "0.49", optional = true }
+async-nats = { version = "0.50", optional = true }
 async-trait = "0.1"
 async-graphql = { version = "7", optional = true }
 async-graphql-axum = { version = "7", optional = true }
