@@ -252,7 +252,7 @@ mod tests {
         let plan = compile_deployment_plan(
             "local",
             &manifest,
-            [ProcessIntent::with_preset("full", &manifest, ProcessPreset::Writer).unwrap()],
+            [ProcessIntent::with_preset("full", &manifest, ProcessPreset::Commands).unwrap()],
         )
         .unwrap();
         let err = match RuntimeHost::bind(&plan, "full", CapabilityProviders::default(), None) {
@@ -289,7 +289,7 @@ mod tests {
         let plan = compile_deployment_plan(
             "local",
             &manifest,
-            [ProcessIntent::with_preset("full", &manifest, ProcessPreset::Writer).unwrap()],
+            [ProcessIntent::with_preset("full", &manifest, ProcessPreset::Commands).unwrap()],
         )
         .unwrap();
         let mut providers = CapabilityProviders::default();

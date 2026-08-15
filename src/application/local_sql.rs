@@ -389,7 +389,7 @@ mod tests {
         compile_deployment_plan(
             "local",
             &manifest,
-            [ProcessIntent::with_preset("full", &manifest, ProcessPreset::Writer).unwrap()],
+            [ProcessIntent::with_preset("full", &manifest, ProcessPreset::Commands).unwrap()],
         )
         .unwrap()
     }

@@ -115,11 +115,11 @@ pub fn compile_deployment_plan(
     let name = LogicalId::try_new("deployment plan", name)?.into_string();
     let mut processes = processes.into_iter().collect::<Vec<_>>();
     if processes.is_empty() {
-        // Zero-config default: one full local process.
+        // Zero-config default: one process with every mount.
         processes.push(ProcessIntent::with_preset(
             "full",
             manifest,
-            ProcessPreset::Full,
+            ProcessPreset::All,
         )?);
     }
     if processes.len() > MAX_PLAN_PROCESSES {

@@ -92,7 +92,7 @@ pub fn e2e_local_plan() -> (ApplicationManifest, DeploymentPlan) {
     let plan = compile_deployment_plan(
         "local",
         &manifest,
-        [ProcessIntent::with_preset("full", &manifest, ProcessPreset::Full)
+        [ProcessIntent::with_preset("full", &manifest, ProcessPreset::All)
             .expect("e2e-ui full process intent")],
     )
     .expect("e2e-ui local deployment plan");

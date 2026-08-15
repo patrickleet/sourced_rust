@@ -53,7 +53,7 @@ fn sample_pair() -> (distributed::ApplicationManifest, distributed::DeploymentPl
         "split",
         &manifest,
         [
-            ProcessIntent::with_preset("writer", &manifest, ProcessPreset::Writer).unwrap(),
+            ProcessIntent::with_preset("commands", &manifest, ProcessPreset::Commands).unwrap(),
             ProcessIntent::with_preset("projector", &manifest, ProcessPreset::Projector).unwrap(),
         ],
     )
@@ -135,7 +135,7 @@ fn deployment_validate_and_render_use_one_pair() {
     let from_xr = distributed::inventory_from_rendered(&xr).unwrap();
     assert_eq!(from_k8s, from_knative);
     assert_eq!(from_k8s, from_xr);
-    assert!(from_k8s.processes.contains(&"writer".to_string()));
+    assert!(from_k8s.processes.contains(&"commands".to_string()));
     assert!(from_k8s.mounts.iter().any(|mount| mount.contains("todo.create")));
     assert!(!xr.contains("Projector {"));
     assert!(xr.contains("kind: DistributedApplication"));

@@ -103,7 +103,7 @@ fn full_preset_lowers_to_ordinary_mounts_and_is_byte_deterministic() {
     let plan = compile_deployment_plan(
         "local-full",
         &manifest,
-        [ProcessIntent::with_preset("full", &manifest, ProcessPreset::Full).unwrap()],
+        [ProcessIntent::with_preset("full", &manifest, ProcessPreset::All).unwrap()],
     )
     .expect("full plan");
     assert_eq!(plan.processes.len(), 1);
@@ -125,7 +125,7 @@ fn full_preset_lowers_to_ordinary_mounts_and_is_byte_deterministic() {
     let second = compile_deployment_plan(
         "local-full",
         &manifest,
-        [ProcessIntent::with_preset("full", &manifest, ProcessPreset::Full).unwrap()],
+        [ProcessIntent::with_preset("full", &manifest, ProcessPreset::All).unwrap()],
     )
     .unwrap()
     .encode()
@@ -142,9 +142,9 @@ fn full_preset_lowers_to_ordinary_mounts_and_is_byte_deterministic() {
 #[test]
 fn presets_and_mixed_selection_share_one_mount_algebra() {
     let manifest = plan_manifest();
-    let writer = ProcessPreset::Writer.expand(&manifest).unwrap();
+    let commands = ProcessPreset::Commands.expand(&manifest).unwrap();
     let projector = ProcessPreset::Projector.expand(&manifest).unwrap();
-    assert!(writer
+    assert!(commands
         .iter()
         .all(|m| matches!(m, MountSelector::Command { .. })));
     assert!(projector
@@ -248,7 +248,7 @@ fn unknown_mount_and_duplicate_process_fail_closed() {
         "dup",
         &manifest,
         [
-            ProcessIntent::with_preset("same", &manifest, ProcessPreset::Writer).unwrap(),
+            ProcessIntent::with_preset("same", &manifest, ProcessPreset::Commands).unwrap(),
             ProcessIntent::with_preset("same", &manifest, ProcessPreset::Projector).unwrap(),
         ],
     );
@@ -261,7 +261,7 @@ fn capability_closure_is_explained_and_schema_has_one_owner() {
     let plan = compile_deployment_plan(
         "caps",
         &manifest,
-        [ProcessIntent::with_preset("full", &manifest, ProcessPreset::Full).unwrap()],
+        [ProcessIntent::with_preset("full", &manifest, ProcessPreset::All).unwrap()],
     )
     .unwrap();
     assert!(plan.schema_lifecycle.required);
@@ -281,7 +281,7 @@ fn stale_manifest_predecessor_is_retained_exactly() {
     let plan = compile_deployment_plan(
         "pred",
         &manifest,
-        [ProcessIntent::with_preset("full", &manifest, ProcessPreset::Full).unwrap()],
+        [ProcessIntent::with_preset("full", &manifest, ProcessPreset::All).unwrap()],
     )
     .unwrap();
     assert_eq!(

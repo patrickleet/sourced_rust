@@ -422,7 +422,7 @@ mod tests {
             "split",
             &manifest,
             [
-                ProcessIntent::with_preset("writer", &manifest, ProcessPreset::Writer).unwrap(),
+                ProcessIntent::with_preset("commands", &manifest, ProcessPreset::Commands).unwrap(),
                 ProcessIntent::with_preset("projector", &manifest, ProcessPreset::Projector)
                     .unwrap(),
             ],
@@ -465,17 +465,17 @@ mod tests {
             providers = providers.with(requirement.capability);
         }
         let dispatcher = Arc::new(Stub) as crate::command_dispatch::SharedCommandDispatcher;
-        let writer = RuntimeHost::bind(
+        let commands = RuntimeHost::bind(
             &plan,
-            "writer",
+            "commands",
             providers.clone(),
             Some(Arc::clone(&dispatcher)),
         )
         .unwrap();
         let projector = RuntimeHost::bind(&plan, "projector", providers, Some(dispatcher)).unwrap();
-        assert_eq!(writer.process_id(), "writer");
+        assert_eq!(commands.process_id(), "commands");
         assert_eq!(projector.process_id(), "projector");
-        let from_hosts = crate::application::inventory_from_hosts(&resolved, &[&writer, &projector]);
+        let from_hosts = crate::application::inventory_from_hosts(&resolved, &[&commands, &projector]);
         assert_eq!(from_hosts, expected, "local realization inventory");
 
         let k8s = render_resolved(&resolved, RenderTarget::Kubernetes).unwrap();
@@ -492,7 +492,7 @@ mod tests {
         assert!(xr[0].contents.contains("kind: DistributedApplication"));
         assert!(xr[0].contents.contains("kind: command") || xr[0].contents.contains("kind: projector"));
         assert!(!xr[0].contents.contains("Projector {"));
-        assert!(from_k8s.processes.contains(&"writer".to_string()));
+        assert!(from_k8s.processes.contains(&"commands".to_string()));
         assert!(from_k8s.processes.contains(&"projector".to_string()));
         assert!(from_k8s.mounts.iter().any(|mount| mount.contains("todo.create")));
     }

@@ -68,14 +68,14 @@ impl MountSelector {
     }
 }
 
-/// Named convenience presets that lower to ordinary mounts.
+/// Convenience selectors that expand to ordinary mounts.
 #[derive(Clone, Copy, Debug, Deserialize, Eq, PartialEq, Serialize)]
 #[serde(rename_all = "snake_case")]
 pub enum ProcessPreset {
     /// Every command, projector, surface, and extension in the manifest.
-    Full,
-    /// Every command mount (writers only).
-    Writer,
+    All,
+    /// Every command mount.
+    Commands,
     /// Every projection mount.
     Projector,
     /// Every query/live surface.
@@ -86,7 +86,7 @@ impl ProcessPreset {
     /// Expand a preset into explicit mounts against one application manifest.
     pub fn expand(self, manifest: &ApplicationManifest) -> ApplicationResult<Vec<MountSelector>> {
         let mut mounts = match self {
-            Self::Full => {
+            Self::All => {
                 let mut mounts = Vec::new();
                 for command in &manifest.commands {
                     mounts.push(MountSelector::command(command.id.clone())?);
@@ -102,7 +102,7 @@ impl ProcessPreset {
                 }
                 mounts
             }
-            Self::Writer => manifest
+            Self::Commands => manifest
                 .commands
                 .iter()
                 .map(|command| MountSelector::command(command.id.clone()))
