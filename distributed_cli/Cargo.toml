@@ -15,6 +15,7 @@ name = "distributed"
 path = "src/main.rs"
 
 [dependencies]
+distributed = { path = "..", default-features = false }
 async-graphql-parser = "7"
 async-graphql-value = "7"
 base64 = "0.22.1"

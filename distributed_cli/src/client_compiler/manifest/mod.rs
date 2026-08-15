@@ -15,10 +15,23 @@ pub(crate) use projectors::*;
 pub(crate) use roots::*;
 pub(crate) use util::{validate_hash, validate_nonempty};
 
-const MANIFEST_VERSION: u64 = 2;
-const PROTOCOL_VERSION: u64 = 1;
-const PROTOCOL_FINGERPRINT: &str =
-    "sha256:00fb342f3acb4dc1c1716a43cc3001c748d5f6c500ff831690d820e9e43e2782";
+const MANIFEST_VERSION: u64 =
+    distributed::graphql::DISTRIBUTED_CLIENT_MANIFEST_VERSION as u64;
+const PROTOCOL_VERSION: u64 =
+    distributed::graphql::DISTRIBUTED_CLIENT_PROTOCOL_VERSION as u64;
+
+pub(crate) fn protocol_fingerprint() -> Result<String, ClientCompileError> {
+    distributed::graphql::protocol_fingerprint().map_err(|error| {
+        ClientCompileError::manifest(
+            "client.manifest.protocol_fingerprint",
+            error.to_string(),
+        )
+    })
+}
+
+pub(crate) fn expected_manifest_version() -> u64 {
+    MANIFEST_VERSION
+}
 
 pub(crate) const CLIENT_PROJECTION_PROGRAM_VERSION: u32 = 2;
 pub(crate) const CLIENT_PROJECTION_BINDING_VERSION: u32 = 1;

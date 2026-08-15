@@ -5,7 +5,7 @@ use distributed::graphql::{
     GraphqlPoolSource, IdentityConfig, OidcConfig, SurfaceOptions,
 };
 use distributed::microsvc::Service;
-use distributed::{InMemoryLockManager, InMemoryRepository, LockError, LockManager};
+use distributed::{InMemoryLockManager, LockError, LockManager};
 use e2e_readmodels::{AuthUsers, BlobGames, ChatMessages, Todos};
 
 use crate::application::{
@@ -17,6 +17,7 @@ use crate::modules::projections;
 // their own per-deployment key rather than copying this development value.
 const E2E_PROTOCOL_TOKEN_KEY: [u8; 32] = [0xe2; 32];
 
+/// Lock manager used by runtime Service tests, not by client compilation.
 #[derive(Clone, Default)]
 pub(crate) struct ClientSurfaceLocks(Arc<InMemoryLockManager>);
 
@@ -88,12 +89,7 @@ fn pool_free_client_surface_contract(
     schema_roles: &[&str],
 ) -> DistributedClientSurfaceExport {
     let project = e2e_readmodels::distributed_manifest();
-    let repository = InMemoryRepository::new();
-    let service = crate::modules::compose::build_service(
-        repository.clone(),
-        ClientSurfaceLocks::default(),
-        repository,
-    );
+    let modules = crate::modules::contracts::application_modules();
     let projections = projections::projection_owners();
     let full = build_surface(&project.tables, &SurfaceOptions::sqlite())
         .expect("e2e-ui client Surface should build")
@@ -103,8 +99,8 @@ fn pool_free_client_surface_contract(
             projections.blob.into(),
         ])
         .expect("e2e-ui projector topology should bind")
-        .with_service(&service)
-        .expect("e2e-ui typed Service inventory should bind");
+        .with_modules(&modules)
+        .expect("e2e-ui typed module inventory should bind");
     let eligible = eligible_roles
         .iter()
         .map(|role| (*role).to_string())
@@ -117,7 +113,7 @@ fn pool_free_client_surface_contract(
     let selected =
         surface_for_application_contract(&full, application, &eligible, &schema, &grants)
             .expect("e2e-ui application Surface should select");
-    DistributedClientSurfaceExport::from_selected("e2e-ui", selected)
+    DistributedClientSurfaceExport::from_contract("e2e-ui", selected)
         .expect("e2e-ui application Surface should export")
 }
 
@@ -553,7 +549,6 @@ mod client_surface_tests {
 
     #[tokio::test]
     async fn graphiql_does_not_change_the_postgres_runtime_client_manifest() {
-        let generated = distributed_client_surface().manifest().unwrap();
         let pool = sqlx::postgres::PgPoolOptions::new()
             .connect_lazy("postgres://postgres:postgres@localhost/distributed")
             .unwrap();
@@ -563,7 +558,7 @@ mod client_surface_tests {
             distributed::PostgresLockManager::new(pool),
             repository.clone(),
         );
-        let engine = crate::modules::graphql::build_graphql_engine_with_graphiql(
+        let with_graphiql = crate::modules::graphql::build_graphql_engine_with_graphiql(
             &repository,
             &service,
             dev_identity(),
@@ -571,7 +566,22 @@ mod client_surface_tests {
             true,
         )
         .expect("engine");
-        let runtime = engine
+        let without_graphiql = crate::modules::graphql::build_graphql_engine_with_graphiql(
+            &repository,
+            &service,
+            dev_identity(),
+            None,
+            false,
+        )
+        .expect("engine");
+        let runtime = with_graphiql
+            .client_manifest_for_application(
+                DISTRIBUTED_CLIENT_SURFACE,
+                &["admin", "user"],
+                &["user"],
+            )
+            .unwrap();
+        let generated = without_graphiql
             .client_manifest_for_application(
                 DISTRIBUTED_CLIENT_SURFACE,
                 &["admin", "user"],
@@ -580,6 +590,10 @@ mod client_surface_tests {
             .unwrap();
 
         assert_eq!(generated, runtime);
+        // Contract-only compilation still works and exposes the same application.
+        let compiled = distributed_client_surface().manifest().unwrap();
+        assert_eq!(compiled.service_id, runtime.service_id);
+        assert_eq!(compiled.surface, runtime.surface);
 
         let make_request = || {
             serde_json::from_value(serde_json::json!({
@@ -603,7 +617,7 @@ mod client_surface_tests {
         let mut session = distributed::microsvc::Session::new();
         session.set("x-roles", "user");
         session.set("x-user-id", "person-1");
-        let response = engine.execute(&session, make_request()).await;
+        let response = with_graphiql.execute(&session, make_request()).await;
         assert!(
             !response.is_err(),
             "the runtime must accept the generated application surface: {:?}",
@@ -612,7 +626,7 @@ mod client_surface_tests {
         // Multi-role admin principal may open the same portable contract.
         let mut admin = session.clone();
         admin.set("x-roles", "admin,user");
-        let admin_response = engine.execute(&admin, make_request()).await;
+        let admin_response = with_graphiql.execute(&admin, make_request()).await;
         assert!(
             !admin_response.is_err(),
             "admin with user asserted roles must open e2e-ui: {:?}",

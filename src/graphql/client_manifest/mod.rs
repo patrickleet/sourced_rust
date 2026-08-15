@@ -2,7 +2,7 @@
 //! [`Surface`](super::surface::Surface).
 //!
 //! This module is intentionally pool-free. Runtime schema construction, engine
-//! export, and `dctl` all hand the same Surface to
+//! export, and `distributed` all hand the same Surface to
 //! [`DistributedClientSurfaceExport::manifest`]; no consumer re-walks a table,
 //! command, permission, relationship, or projector registry.
 
@@ -83,6 +83,7 @@ pub(crate) use validation::trusted_preset_descriptors;
 
 pub const DISTRIBUTED_CLIENT_MANIFEST_VERSION: u32 = 2;
 pub const DISTRIBUTED_CLIENT_PROTOCOL_VERSION: u32 = 1;
+pub use codec::protocol_fingerprint;
 // Protocol v1 is the first public wire family. The independent fingerprint below
 // changes when its generated command/scope contract changes, including trusted-preset descriptor slots.
 const DISTRIBUTED_CLIENT_PROTOCOL_MANIFEST_EPOCH: u32 = 2;

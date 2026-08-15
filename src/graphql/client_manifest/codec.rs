@@ -245,7 +245,9 @@ pub(super) fn scalar_codec(scalar: &str) -> Option<&'static str> {
     }
 }
 
-pub(super) fn protocol_fingerprint() -> Result<String, ClientManifestError> {
+/// Canonical protocol fingerprint. The CLI must consume this function rather
+/// than copying a hash or recomputing a second protocol material inventory.
+pub fn protocol_fingerprint() -> Result<String, ClientManifestError> {
     #[derive(Serialize)]
     struct ProtocolMaterial {
         manifest_version: u32,
@@ -288,7 +290,7 @@ pub(super) fn hash_json(value: &impl Serialize) -> Result<String, ClientManifest
 ///
 /// `serde_json::Value` object order otherwise depends on whether another crate
 /// enabled serde_json's `preserve_order` feature in the final Cargo graph.
-/// Client-manifest bytes must be identical in the server harness and dctl.
+/// Client-manifest bytes must be identical in the server harness and distributed.
 pub(super) fn canonical_json_value(value: serde_json::Value) -> serde_json::Value {
     match value {
         serde_json::Value::Array(values) => {

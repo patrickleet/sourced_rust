@@ -21,6 +21,14 @@ use serde_json::Value as JsonValue;
 
 use graphql::{compile_document, CompiledOperation};
 use manifest::ClientManifest;
+
+pub(crate) fn expected_protocol_fingerprint() -> Result<String, ClientCompileError> {
+    manifest::protocol_fingerprint()
+}
+
+pub(crate) fn expected_manifest_version() -> u64 {
+    manifest::expected_manifest_version()
+}
 use render::render_project;
 
 /// Complete input to one deterministic client compilation.

@@ -6,6 +6,7 @@
 pub mod blob;
 pub mod chat;
 pub mod compose;
+pub mod contracts;
 pub mod graphql;
 pub mod projections;
 pub mod todo;

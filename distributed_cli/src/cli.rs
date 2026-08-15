@@ -31,8 +31,10 @@ use crate::{
     MetricsTarget, PostCreateAction, ServiceScaffoldSpec, ServiceTransport, StoreTarget,
 };
 
-const DISTRIBUTED_MANIFEST_SCHEMA_VERSION: u64 = 1;
-const DISTRIBUTED_CLIENT_MANIFEST_VERSION: u64 = 2;
+const DISTRIBUTED_MANIFEST_SCHEMA_VERSION: u64 =
+    distributed::APPLICATION_MANIFEST_SCHEMA_VERSION as u64;
+const DISTRIBUTED_CLIENT_MANIFEST_VERSION: u64 =
+    distributed::graphql::DISTRIBUTED_CLIENT_MANIFEST_VERSION as u64;
 
 /// Top-level standalone CLI arguments for the `distributed` binary.
 #[derive(Args, Debug)]
@@ -58,6 +60,8 @@ pub enum DistributedCommands {
     Schema(SchemaArgs),
     /// Extract the embedded Distributed agent skills into a project
     Skills(SkillsArgs),
+    /// Validate and render a resolved deployment from one manifest + plan
+    Deployment(DeploymentArgs),
 }
 
 /// Library adapter for embedding service-related commands under another CLI.
@@ -131,6 +135,40 @@ pub struct ContractsAcceptArgs {
 pub enum ContractsOutput {
     Human,
     Json,
+}
+
+#[derive(Args, Debug)]
+pub struct DeploymentArgs {
+    #[command(subcommand)]
+    pub command: DeploymentCommands,
+}
+
+#[derive(Subcommand, Debug)]
+pub enum DeploymentCommands {
+    /// Validate that one manifest + plan resolve
+    Validate(DeploymentValidateArgs),
+    /// Render kubernetes, knative, or hops-xr from the same pair
+    Render(DeploymentRenderArgs),
+}
+
+#[derive(Args, Debug)]
+pub struct DeploymentValidateArgs {
+    #[arg(long)]
+    pub manifest: PathBuf,
+    #[arg(long)]
+    pub plan: PathBuf,
+}
+
+#[derive(Args, Debug)]
+pub struct DeploymentRenderArgs {
+    #[arg(long)]
+    pub manifest: PathBuf,
+    #[arg(long)]
+    pub plan: PathBuf,
+    #[arg(long)]
+    pub target: String,
+    #[arg(long, default_value = "dist")]
+    pub out: PathBuf,
 }
 
 #[derive(Args, Debug)]
@@ -516,6 +554,44 @@ impl From<GitopsPromote> for GitopsPromoteTarget {
     }
 }
 
+fn run_deployment(args: &DeploymentArgs) -> Result<(), Box<dyn Error>> {
+    match &args.command {
+        DeploymentCommands::Validate(validate) => {
+            let resolved = load_resolved(&validate.manifest, &validate.plan)?;
+            println!(
+                "deployment validate: ok application={} plan={} digest={}",
+                resolved.application, resolved.plan, resolved.inventory_digest
+            );
+            Ok(())
+        }
+        DeploymentCommands::Render(render) => {
+            let resolved = load_resolved(&render.manifest, &render.plan)?;
+            let target = distributed::RenderTarget::parse(&render.target)?;
+            let files = distributed::render_resolved(&resolved, target)?;
+            fs::create_dir_all(&render.out)?;
+            for file in files {
+                let path = render.out.join(&file.path);
+                if let Some(parent) = path.parent() {
+                    fs::create_dir_all(parent)?;
+                }
+                fs::write(&path, file.contents.as_bytes())?;
+                println!("{}", path.display());
+            }
+            Ok(())
+        }
+    }
+}
+
+fn load_resolved(
+    manifest_path: &Path,
+    plan_path: &Path,
+) -> Result<distributed::ResolvedDeployment, Box<dyn Error>> {
+    let manifest: distributed::ApplicationManifest =
+        serde_json::from_str(&fs::read_to_string(manifest_path)?)?;
+    let plan: distributed::DeploymentPlan = serde_json::from_str(&fs::read_to_string(plan_path)?)?;
+    Ok(distributed::resolve_deployment(&manifest, &plan)?)
+}
+
 /// Dispatch the standalone `distributed` binary command tree.
 pub fn run_distributed(args: &DistributedArgs) -> Result<(), Box<dyn Error>> {
     match &args.command {
@@ -529,6 +605,7 @@ pub fn run_distributed(args: &DistributedArgs) -> Result<(), Box<dyn Error>> {
             SkillsCommands::Init(init) => run_skills_init(init),
             SkillsCommands::List => run_skills_list(),
         },
+        DistributedCommands::Deployment(deployment) => run_deployment(deployment),
     }
 }
 

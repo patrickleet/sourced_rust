@@ -1,7 +1,7 @@
 //! Auto-generated read-only GraphQL over relational read models.
 //!
 //! `naming` and `sdl` always compile (zero deps beyond the rest of the crate)
-//! so `dctl schema --format graphql` works without enabling the `graphql`
+//! so `distributed schema --format graphql` works without enabling the `graphql`
 //! feature. Execution, the dynamic schema, and the axum router sit behind
 //! `feature = "graphql"`.
 
@@ -13,7 +13,7 @@ pub mod sdl;
 pub mod surface;
 
 // These modules are structural GraphQL metadata and deliberately remain
-// pool/server independent. `dctl` and the runtime engine must compile the same
+// pool/server independent. `distributed` and the runtime engine must compile the same
 // surface without pulling in async-graphql or a database adapter.
 mod commands;
 mod complexity_contract;

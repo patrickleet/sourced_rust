@@ -15,6 +15,8 @@ mod module;
 mod mount;
 mod plan;
 mod registration;
+mod render;
+mod resolve;
 mod runtime_host;
 mod topology;
 
@@ -48,6 +50,12 @@ pub use plan::{
     DEPLOYMENT_PLAN_SCHEMA_VERSION, MAX_DEPLOYMENT_PLAN_BYTES,
 };
 pub use registration::{Application, ApplicationBuilder, ContractCompiler};
+pub use render::{
+    normalize_resolved, render_resolved, NormalizedInventory, RenderTarget, RenderedFile,
+};
+pub use resolve::{
+    resolve_deployment, ResolvedDeployment, ResolvedProcess, RESOLVED_DEPLOYMENT_SCHEMA_VERSION,
+};
 pub use runtime_host::{bind_single_process, CapabilityProviders, RuntimeHost};
 pub use topology::TopologyIntent;
 

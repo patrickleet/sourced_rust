@@ -1087,7 +1087,7 @@ pub struct Todos {
 }`
 				},
 				{
-					file: 'service.rs · dual surfaces',
+					file: 'modules/ · dual surfaces',
 					code: `.client_application_surface_with_schema_roles(
   "e2e-ui",
   ["admin", "user"], // eligible
@@ -1366,7 +1366,7 @@ const client = provideDistributed({
 });`
 				},
 				{
-					file: 'service.rs · oidc_bearer_config',
+					file: 'modules/ · oidc_bearer_config',
 					caption: 'OIDC claim map → allowlisted engine roles on the session.',
 					code: `oidc.claim_map.engine_roles = vec![
   "user".into(),

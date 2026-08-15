@@ -1,6 +1,6 @@
 #![allow(clippy::module_inception)]
 #![doc = include_str!("../README.md")]
-// Projection + GraphQL client surfaces always compile (dctl / shared types), but many
+// Projection + GraphQL client surfaces always compile (distributed / shared types), but many
 // call sites live behind optional features. Without those features rustc reports
 // false "never used" warnings for the protocol store helpers. CI builds with features.
 #![cfg_attr(
@@ -66,10 +66,12 @@ pub use entity::{
 // canonical namespace; these common contract types are also convenient at the
 // crate root for contract-only packages.
 pub use application::{
-    Application, ApplicationError, ApplicationManifest, CommandMount, CommandMountHandler,
-    CommandMountRegistrar, CommandSpec, ContractCompiler, DeploymentPlan, LogicalId, Module,
-    ModuleManifest, MountSelector, ProcessIntent, ProcessPreset, ProjectionSpec, SurfaceSpec,
-    APPLICATION_MANIFEST_SCHEMA_VERSION, DEPLOYMENT_PLAN_SCHEMA_VERSION,
+    normalize_resolved, render_resolved, resolve_deployment, Application, ApplicationError,
+    ApplicationManifest, CommandMount, CommandMountHandler, CommandMountRegistrar, CommandSpec,
+    ContractCompiler, DeploymentPlan, LogicalId, Module, ModuleManifest, MountSelector,
+    NormalizedInventory, ProcessIntent, ProcessPreset, ProjectionSpec, RenderTarget, RenderedFile,
+    ResolvedDeployment, SurfaceSpec, APPLICATION_MANIFEST_SCHEMA_VERSION,
+    DEPLOYMENT_PLAN_SCHEMA_VERSION, RESOLVED_DEPLOYMENT_SCHEMA_VERSION,
 };
 pub use command_dispatch::{
     CommandDispatchEnvelope, CommandDispatchError, CommandDispatchReceipt, CommandDispatcher,

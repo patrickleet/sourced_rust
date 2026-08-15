@@ -1616,3 +1616,15 @@ fn unavailable_merge_base_is_reported_not_verified() {
     assert!(result.human().contains("history evidence unavailable"));
     assert!(result.human().contains("merge_base_available=false"));
 }
+
+#[test]
+fn cli_protocol_identity_is_the_library_function() {
+    let library = distributed::graphql::protocol_fingerprint().expect("library fingerprint");
+    let compiler = crate::client_compiler::expected_protocol_fingerprint()
+        .expect("compiler uses the same library function");
+    assert_eq!(library, compiler);
+    assert_eq!(
+        u64::from(distributed::graphql::DISTRIBUTED_CLIENT_MANIFEST_VERSION),
+        crate::client_compiler::expected_manifest_version()
+    );
+}

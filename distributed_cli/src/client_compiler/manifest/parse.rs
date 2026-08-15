@@ -82,11 +82,12 @@ impl ClientManifest {
         validate_hash(&wire.schema_fingerprint, "manifest.schema_fingerprint")?;
         validate_hash(&wire.protocol_fingerprint, "manifest.protocol_fingerprint")?;
         validate_execution_limits(&wire.execution)?;
-        if wire.protocol_fingerprint != PROTOCOL_FINGERPRINT {
+        let expected_protocol = protocol_fingerprint()?;
+        if wire.protocol_fingerprint != expected_protocol {
             return Err(ClientCompileError::manifest(
                 "client.manifest.protocol_fingerprint",
                 format!(
-                    "client compiler protocol contract is `{PROTOCOL_FINGERPRINT}`, received `{}`; regenerate the manifest and use a matching distributed version",
+                    "client compiler protocol contract is `{expected_protocol}`, received `{}`; regenerate the manifest and use a matching distributed version",
                     wire.protocol_fingerprint
                 ),
             ));

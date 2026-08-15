@@ -1,4 +1,4 @@
-//! Dep-free SDL text renderer for `dctl schema --format graphql`.
+//! Dep-free SDL text renderer for `distributed schema --format graphql`.
 //!
 //! Renders the dialect-independent core query surface from `&[TableSchema]`.
 //! Artifact scope grows with the crate version (aggregates in phase 3,
