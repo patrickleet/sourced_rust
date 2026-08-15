@@ -31,13 +31,13 @@ echo "OK: README + skill present and teach query layout"
 # 2) Build distributed
 cd "$ROOT"
 cargo build -p distributed_cli --quiet
-DCTL="$ROOT/target/debug/distributed"
-test -x "$DCTL"
+DISTRIBUTED="$ROOT/target/debug/distributed"
+test -x "$DISTRIBUTED"
 
 # 3) Scaffold --query-api (as skill documents)
 DEMO="$SCRATCH/skill-dry-run-service"
 rm -rf "$DEMO"
-"$DCTL" scaffold skill-dry-run \
+"$DISTRIBUTED" scaffold skill-dry-run \
   --path "$DEMO" \
   --query-api \
   --store sqlite \

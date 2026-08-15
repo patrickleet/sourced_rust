@@ -362,7 +362,7 @@ pub fn surface_for_role(
 /// Composite identities are valid for isolated roots. Relationship compilation
 /// still uses a single-column join contract, so reject the topology only when
 /// both ends are reachable on this selected authorization surface. Keeping the
-/// check here makes runtime role schemas and pool-free/dctl exports fail at the
+/// check here makes runtime role schemas and pool-free CLI exports fail at the
 /// same boundary without rejecting unrelated hidden catalog metadata.
 pub(in crate::graphql::surface) fn validate_selected_composite_relationships(
     models: &BTreeMap<String, SurfaceModel>,

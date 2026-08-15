@@ -1,6 +1,6 @@
 #![allow(clippy::module_inception)]
 #![doc = include_str!("../README.md")]
-// Projection + GraphQL client surfaces always compile (dctl / shared types), but many
+// Projection + GraphQL client surfaces always compile (shared types), but many
 // call sites live behind optional features. Without those features rustc reports
 // false "never used" warnings for the protocol store helpers. CI builds with features.
 #![cfg_attr(

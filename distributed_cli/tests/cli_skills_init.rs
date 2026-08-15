@@ -21,7 +21,7 @@ fn project_dir(name: &str) -> PathBuf {
 }
 
 /// Run `distributed skills <args...>` with the given project directory as cwd.
-fn dctl_skills(cwd: &Path, args: &[&str]) -> Output {
+fn distributed_skills(cwd: &Path, args: &[&str]) -> Output {
     Command::new(env!("CARGO_BIN_EXE_distributed"))
         .arg("skills")
         .args(args)
@@ -31,7 +31,7 @@ fn dctl_skills(cwd: &Path, args: &[&str]) -> Output {
 }
 
 fn init_ok(cwd: &Path, args: &[&str]) -> (String, String) {
-    let output = dctl_skills(cwd, args);
+    let output = distributed_skills(cwd, args);
     assert!(
         output.status.success(),
         "distributed skills {args:?} failed:\n{}",
@@ -272,7 +272,7 @@ fn target_path_that_is_a_file_is_a_clear_error() {
     let dir = project_dir("skills-path-is-file");
     fs::write(dir.join(".distributed"), "not a directory").unwrap();
 
-    let output = dctl_skills(&dir, &["init"]);
+    let output = distributed_skills(&dir, &["init"]);
     assert!(!output.status.success(), "init should fail");
     let stderr = String::from_utf8_lossy(&output.stderr);
     assert!(stderr.contains("not a directory"), "stderr: {stderr}");
@@ -281,7 +281,7 @@ fn target_path_that_is_a_file_is_a_clear_error() {
 #[test]
 fn list_prints_every_skill_with_its_description() {
     let dir = project_dir("skills-list");
-    let output = dctl_skills(&dir, &["list"]);
+    let output = distributed_skills(&dir, &["list"]);
     assert!(output.status.success());
     let stdout = String::from_utf8_lossy(&output.stdout);
     for skill in SKILL_NAMES {
