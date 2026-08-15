@@ -311,7 +311,7 @@ fn write_document(project: &Path, relative: &str, source: &str) {
     fs::write(path, source).expect("write GraphQL document");
 }
 
-fn dctl_client(project: &Path, args: &[&str]) -> Output {
+fn distributed_client(project: &Path, args: &[&str]) -> Output {
     Command::new(env!("CARGO_BIN_EXE_distributed"))
         .arg("client")
         .args(args)
@@ -332,7 +332,7 @@ fn generate(project: &Path, documents: &str, extra: &[&str]) -> Output {
         "generated",
     ];
     args.extend_from_slice(extra);
-    dctl_client(project, &args)
+    distributed_client(project, &args)
 }
 
 fn assert_success(output: &Output, context: &str) {
@@ -526,7 +526,7 @@ fn selected_role_manifest_rejects_role_name_and_application_kind_mismatches() {
     let project = project_dir("client-surface-mismatch");
     write_document(&project, "queries/todos.graphql", TODOS_QUERY);
 
-    let wrong_role = dctl_client(
+    let wrong_role = distributed_client(
         &project,
         &[
             "--manifest",
@@ -545,7 +545,7 @@ fn selected_role_manifest_rejects_role_name_and_application_kind_mismatches() {
         "role-name mismatch",
     );
 
-    let wrong_kind = dctl_client(
+    let wrong_kind = distributed_client(
         &project,
         &[
             "--manifest",

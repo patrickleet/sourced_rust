@@ -19,7 +19,7 @@ import {
 	generateDistributedSvelteKit
 } from '../dist/sveltekit/vite.js';
 
-const fakeDctlSource = String.raw`
+const fakeDistributedSource = String.raw`
 import {
   appendFileSync,
   existsSync,
@@ -80,7 +80,7 @@ async function fixture(t) {
 	const root = await mkdtemp(join(tmpdir(), 'distributed-vite-test-'));
 	const script = join(root, 'fake-distributed.mjs');
 	const log = join(root, 'commands.log');
-	await writeFile(script, fakeDctlSource, 'utf8');
+	await writeFile(script, fakeDistributedSource, 'utf8');
 	await writeFile(log, '', 'utf8');
 	await mkdir(join(root, 'src/routes/todos'), { recursive: true });
 	await mkdir(join(root, 'src/routes/admin'), { recursive: true });

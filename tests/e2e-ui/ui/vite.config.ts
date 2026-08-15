@@ -12,7 +12,7 @@ import { distributedViteOptions } from './distributed.config.js';
 
 const api = process.env.E2E_API_ORIGIN || process.env.E2E_BASE_URL || 'http://127.0.0.1:8791';
 
-// Cluster-dev node images often lack cargo/dctl. Prefer committed generated
+// Cluster-dev node images often lack cargo/the distributed CLI. Prefer committed generated
 // clients when present so vite can start without a Rust toolchain.
 const generatedReady = distributedViteOptions.clients.every((client: { out: string }) =>
 	existsSync(resolve(distributedViteOptions.cwd, client.out, 'sveltekit.ts'))

@@ -26,7 +26,7 @@ clusterDev:
       cd /workspace/js && npm install && npm run build
       cd /workspace/tests/e2e-ui/ui
       npm install
-      # Skip dctl/cargo: generated clients are committed under src/lib/generated.
+      # Skip the distributed CLI/cargo: generated clients are committed under src/lib/generated.
       export DISTRIBUTED_SKIP_CLIENT_COMPILE=1
       # In-cluster API service (not host localhost).
       export E2E_API_ORIGIN="${E2E_API_ORIGIN:-http://e2e-ui-api:8791}"

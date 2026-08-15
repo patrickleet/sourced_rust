@@ -2,7 +2,7 @@
 //! [`Surface`](super::surface::Surface).
 //!
 //! This module is intentionally pool-free. Runtime schema construction, engine
-//! export, and `dctl` all hand the same Surface to
+//! export, and the `distributed` CLI all hand the same Surface to
 //! [`DistributedClientSurfaceExport::manifest`]; no consumer re-walks a table,
 //! command, permission, relationship, or projector registry.
 

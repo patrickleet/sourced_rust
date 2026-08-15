@@ -288,7 +288,8 @@ pub(super) fn hash_json(value: &impl Serialize) -> Result<String, ClientManifest
 ///
 /// `serde_json::Value` object order otherwise depends on whether another crate
 /// enabled serde_json's `preserve_order` feature in the final Cargo graph.
-/// Client-manifest bytes must be identical in the server harness and dctl.
+/// Client-manifest bytes must be identical in the server harness and the
+/// distributed CLI.
 pub(super) fn canonical_json_value(value: serde_json::Value) -> serde_json::Value {
     match value {
         serde_json::Value::Array(values) => {

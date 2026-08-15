@@ -4,7 +4,7 @@
 //! SDL emission and (over time) runtime schema construction consume this IR so
 //! dialect-honest comparison ops, roots, and column grants cannot diverge.
 //!
-//! Core types compile without the `graphql` feature so `dctl schema --format graphql`
+//! Core types compile without the `graphql` feature so `distributed schema --format graphql`
 //! can share the same IR path.
 
 use std::collections::{BTreeMap, BTreeSet};
