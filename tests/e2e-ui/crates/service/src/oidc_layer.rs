@@ -15,8 +15,10 @@ use axum::http::{header, HeaderMap, Method, Request, Response, StatusCode};
 use axum::response::IntoResponse;
 use axum::routing::post;
 use axum::Json;
+use distributed::command_dispatch::SharedCommandDispatcher;
 use distributed::graphql::{
-    AuthError, IdentityConfig, IdentityMode, IdentityResolver, DEFAULT_IDENTITY_STRIP_HEADERS,
+    graphql_router_with_dispatcher, AuthError, GraphqlEngine, IdentityConfig, IdentityMode,
+    IdentityResolver, DEFAULT_IDENTITY_STRIP_HEADERS,
 };
 use distributed::microsvc::{HandlerError, Service, Session};
 use futures_util::future::BoxFuture;
@@ -165,7 +167,7 @@ fn status_for_error(error: &HandlerError) -> StatusCode {
 }
 
 /// Dispatch a named HTTP command (Zitadel ingress/scrape only).
-async fn dispatch_named(
+pub(crate) async fn dispatch_named(
     service: Arc<Service>,
     headers: HeaderMap,
     input: Value,
@@ -217,6 +219,53 @@ pub async fn serve_with_oidc(
         )
         .layer(OidcIdentityLayer::new(identity));
 
+    let listener = tokio::net::TcpListener::bind(addr).await?;
+    axum::serve(listener, app).await
+}
+
+/// Serve GraphQL through [`CommandDispatcher`] plus Zitadel HTTP ingress.
+///
+/// The GraphQL router never unwraps `Service`; mutations call
+/// `CommandDispatcher::dispatch`. Zitadel Action ingress stays on named HTTP
+/// command routes because browsers/actions cannot use the GraphQL dispatcher.
+pub async fn serve_with_dispatcher(
+    service: Arc<Service>,
+    dispatcher: SharedCommandDispatcher,
+    engine: Arc<GraphqlEngine>,
+    identity: IdentityConfig,
+    addr: &str,
+) -> Result<(), std::io::Error> {
+    let ingress = service.clone();
+    let scrape = service.clone();
+    let app = graphql_router_with_dispatcher(engine, dispatcher)
+        .route("/health", axum::routing::get(|| async { axum::Json(json!({ "ok": true })) }))
+        .route(
+            "/zitadel.ingress.v1",
+            post(move |headers: HeaderMap, Json(input): Json<Value>| {
+                let svc = ingress.clone();
+                async move { dispatch_named(svc, headers, input, "zitadel.ingress.v1").await }
+            }),
+        )
+        .route(
+            "/zitadel.scrape.v1",
+            post(move |headers: HeaderMap, Json(input): Json<Value>| {
+                let svc = scrape.clone();
+                async move { dispatch_named(svc, headers, input, "zitadel.scrape.v1").await }
+            }),
+        )
+        .layer(OidcIdentityLayer::new(identity));
+
+    let listener = tokio::net::TcpListener::bind(addr).await?;
+    axum::serve(listener, app).await
+}
+
+/// Apply the e2e OIDC identity layer and listen.
+pub async fn serve_router_with_oidc(
+    router: axum::Router,
+    identity: IdentityConfig,
+    addr: &str,
+) -> Result<(), std::io::Error> {
+    let app = router.layer(OidcIdentityLayer::new(identity));
     let listener = tokio::net::TcpListener::bind(addr).await?;
     axum::serve(listener, app).await
 }

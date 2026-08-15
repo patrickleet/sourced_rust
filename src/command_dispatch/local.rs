@@ -33,3 +33,37 @@ impl CommandDispatcher for LocalCommandDispatcher {
         "local"
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::command_dispatch::CommandDispatchReceipt;
+    use crate::microsvc::{Routes, Service};
+    use serde_json::json;
+    use std::collections::HashMap;
+
+    #[tokio::test]
+    async fn local_dispatch_matches_in_process_result_and_receipt() {
+        let service = Arc::new(
+            Service::new().named("receipt-eq").routes(
+                Routes::new().command("ping").handle(
+                    |_ctx: &crate::microsvc::Context<()>| async move { Ok(json!({ "pong": true })) },
+                ),
+            ),
+        );
+        let dispatcher = LocalCommandDispatcher::new(Arc::clone(&service));
+        let request = CommandRequest {
+            command: "ping".into(),
+            input: json!({}),
+            session_variables: HashMap::new(),
+        };
+        let in_process = service.dispatch_request(&request).await;
+        let via_dispatcher = dispatcher.dispatch(&request).await.expect("dispatch");
+        assert_eq!(via_dispatcher.status, in_process.status);
+        assert_eq!(via_dispatcher.body, in_process.body);
+        assert_eq!(
+            CommandDispatchReceipt::from_response("ping", &via_dispatcher),
+            CommandDispatchReceipt::from_response("ping", &in_process)
+        );
+    }
+}

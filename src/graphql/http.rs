@@ -14,6 +14,7 @@ use axum::routing::post;
 use axum::Router;
 use futures_util::stream::BoxStream;
 
+use crate::command_dispatch::SharedCommandDispatcher;
 use crate::microsvc::{Service, Session, MAX_HTTP_BODY_BYTES, USER_ID_KEY};
 
 use super::engine::GraphqlEngine;
@@ -63,6 +64,7 @@ pub struct GraphqlSessionExecutor {
     session: Session,
     principal: Option<VerifiedPrincipal>,
     service: Option<Arc<Service>>,
+    dispatcher: Option<SharedCommandDispatcher>,
 }
 
 impl GraphqlSessionExecutor {
@@ -72,6 +74,7 @@ impl GraphqlSessionExecutor {
             session,
             principal: None,
             service: None,
+            dispatcher: None,
         }
     }
 
@@ -80,12 +83,14 @@ impl GraphqlSessionExecutor {
         session: Session,
         principal: Option<VerifiedPrincipal>,
         service: Option<Arc<Service>>,
+        dispatcher: Option<SharedCommandDispatcher>,
     ) -> Self {
         Self {
             engine,
             session,
             principal,
             service,
+            dispatcher,
         }
     }
 }
@@ -101,6 +106,7 @@ impl Executor for GraphqlSessionExecutor {
                     request,
                     self.principal.clone(),
                     self.service.as_ref().map(Arc::clone),
+                    self.dispatcher.as_ref().map(Arc::clone),
                 ),
             )
             .await
@@ -133,16 +139,21 @@ impl Executor for GraphqlSessionExecutor {
             }
         };
         let service = self.service.as_ref().map(Arc::clone);
+        let dispatcher = self.dispatcher.as_ref().map(Arc::clone);
         if operation_type == OperationType::Subscription {
-            return self
-                .engine
-                .execute_stream(&session, request_with_context(request, principal, service));
+            return self.engine.execute_stream(
+                &session,
+                request_with_context(request, principal, service, dispatcher),
+            );
         }
 
         let engine = Arc::clone(&self.engine);
         Box::pin(futures_util::stream::once(async move {
             engine
-                .execute(&session, request_with_context(request, principal, service))
+                .execute(
+                    &session,
+                    request_with_context(request, principal, service, dispatcher),
+                )
                 .await
         }))
     }
@@ -179,10 +190,15 @@ fn request_with_context(
     request: Request,
     principal: Option<VerifiedPrincipal>,
     service: Option<Arc<Service>>,
+    dispatcher: Option<SharedCommandDispatcher>,
 ) -> Request {
     let request = request_with_principal(request, principal);
-    match service {
+    let request = match service {
         Some(service) => request.data(service),
+        None => request,
+    };
+    match dispatcher {
+        Some(dispatcher) => request.data(dispatcher),
         None => request,
     }
 }
@@ -218,6 +234,7 @@ pub fn graphql_router_with_service(engine: Arc<GraphqlEngine>, service: Arc<Serv
     let state = GraphqlHttpState {
         engine,
         service: Some(service),
+        dispatcher: None,
     };
     let mut router = Router::new().route(
         "/graphql",
@@ -233,23 +250,42 @@ pub fn graphql_router_with_service(engine: Arc<GraphqlEngine>, service: Arc<Serv
     router.with_state(state)
 }
 
-/// GraphQL router whose command mutations dispatch through a local
-/// [`crate::command_dispatch::LocalCommandDispatcher`].
+/// GraphQL router whose command mutations dispatch through
+/// [`crate::command_dispatch::CommandDispatcher`].
 ///
 /// Schema/client compilation never requires this handle. Only mutation/status
-/// execution does. The local adapter remains the sole production causal
-/// executor until remote causal receipts land fully behind the same trait.
+/// execution does. The handler injects the trait object and calls
+/// [`crate::command_dispatch::CommandDispatcher::dispatch`]; it does not unwrap
+/// a concrete `Service`.
 pub fn graphql_router_with_dispatcher(
     engine: Arc<GraphqlEngine>,
-    dispatcher: Arc<crate::command_dispatch::LocalCommandDispatcher>,
+    dispatcher: SharedCommandDispatcher,
 ) -> Router {
-    graphql_router_with_service(engine, Arc::clone(dispatcher.service()))
+    let graphiql = engine.graphiql_enabled();
+    let state = GraphqlHttpState {
+        engine,
+        service: None,
+        dispatcher: Some(dispatcher),
+    };
+    let mut router = Router::new().route(
+        "/graphql",
+        post(graphql_handler_with_service).get(move || async move {
+            if graphiql {
+                graphiql_page().into_response()
+            } else {
+                axum::http::StatusCode::METHOD_NOT_ALLOWED.into_response()
+            }
+        }),
+    );
+    router = router.layer(DefaultBodyLimit::max(MAX_HTTP_BODY_BYTES));
+    router.with_state(state)
 }
 
 #[derive(Clone)]
 struct GraphqlHttpState {
     engine: Arc<GraphqlEngine>,
     service: Option<Arc<Service>>,
+    dispatcher: Option<SharedCommandDispatcher>,
 }
 
 fn unauthorized_response() -> Response {
@@ -303,6 +339,9 @@ async fn graphql_handler_with_service(
     let mut request = request_with_principal(req.into_inner(), principal);
     if let Some(service) = &state.service {
         request = request.data(Arc::clone(service));
+    }
+    if let Some(dispatcher) = &state.dispatcher {
+        request = request.data(Arc::clone(dispatcher));
     }
     let response = state.engine.execute(&session, request).await;
     GraphQLResponse::from(response).into_response()
@@ -395,6 +434,7 @@ pub async fn microsvc_graphql_ws(
         upgrade_session.clone(),
         upgrade_principal,
         Some(Arc::clone(&service)),
+        None,
     );
     let engine_for_init = Arc::clone(&engine);
     upgrade
@@ -632,6 +672,7 @@ mod connection_init_tests {
             Request::new("{ __typename }"),
             None,
             Some(Arc::clone(&service)),
+            None,
         );
         let stored = request
             .data

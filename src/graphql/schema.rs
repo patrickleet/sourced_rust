@@ -938,19 +938,23 @@ async fn resolve_command(
     ctx: &async_graphql::dynamic::ResolverContext<'_>,
     command_name: &str,
 ) -> Result<Option<Value>, async_graphql::Error> {
-    use crate::microsvc::Service;
+    use crate::command_dispatch::{
+        CommandDispatchReceipt, SharedCommandDispatcher,
+    };
+    use crate::microsvc::{CommandRequest, Service};
 
     let session = ctx
         .data_opt::<Session>()
         .cloned()
         .unwrap_or_else(Session::new);
-    let service = ctx.data_opt::<Arc<Service>>();
-    let Some(service) = service else {
+    let dispatcher = ctx.data_opt::<SharedCommandDispatcher>().cloned();
+    let service = ctx.data_opt::<Arc<Service>>().cloned();
+    if dispatcher.is_none() && service.is_none() {
         return Err(client_error(
             "INTERNAL",
             "command dispatcher not configured (use graphql_router_with_dispatcher or graphql_router_with_service)",
         ));
-    };
+    }
 
     let input = ctx
         .args
@@ -960,6 +964,38 @@ async fn resolve_command(
         .map_err(|e| client_error("BAD_REQUEST", format!("invalid command input: {e:?}")))?
         .unwrap_or(serde_json::json!({}));
 
+    if let Some(dispatcher) = dispatcher {
+        let request = CommandRequest {
+            command: command_name.to_string(),
+            input,
+            session_variables: session.variables().clone(),
+        };
+        let response = dispatcher.dispatch(&request).await.map_err(|error| {
+            client_error_with_status("INTERNAL", 500, error.to_string())
+        })?;
+        if let Some(protocol) = ctx.data_opt::<ProtocolResponseAccumulator>() {
+            let _ = protocol.claim_dispatch();
+        }
+        let _receipt = CommandDispatchReceipt::from_response(command_name, &response);
+        if !(200..300).contains(&response.status) {
+            let message = response
+                .body
+                .get("error")
+                .and_then(|value| value.as_str())
+                .unwrap_or("command dispatch failed")
+                .to_string();
+            return Err(client_error_with_status(
+                "HANDLER",
+                response.status,
+                message,
+            ));
+        }
+        return Value::from_json(response.body)
+            .map(Some)
+            .map_err(|e| client_error("INTERNAL", format!("response encode: {e}")));
+    }
+
+    let service = service.expect("service present when dispatcher is not");
     let protocol = ctx
         .data_opt::<ProtocolResponseAccumulator>()
         .cloned()
@@ -1285,6 +1321,53 @@ mod causal_command_schema_tests {
                     "s": "unknown"
                 }
             })
+        );
+    }
+
+    #[tokio::test]
+    async fn mutation_dispatches_through_command_dispatcher() {
+        use crate::command_dispatch::{
+            CommandDispatchError, CommandDispatcher, SharedCommandDispatcher,
+        };
+        use crate::microsvc::{CommandRequest, CommandResponse};
+        use async_trait::async_trait;
+
+        struct Recording;
+        #[async_trait]
+        impl CommandDispatcher for Recording {
+            async fn dispatch(
+                &self,
+                request: &CommandRequest,
+            ) -> Result<CommandResponse, CommandDispatchError> {
+                Ok(CommandResponse {
+                    status: 200,
+                    body: serde_json::json!({
+                        "id": "todo-1",
+                        "via": request.command,
+                    }),
+                })
+            }
+            fn kind(&self) -> &'static str {
+                "recording"
+            }
+        }
+
+        let schema = build_role_schema(&command_surface(), 32, 1_000, false).unwrap();
+        let dispatcher: SharedCommandDispatcher = Arc::new(Recording);
+        let request = async_graphql::Request::new(
+            "mutation { todo_complete(commandId: \"c1\", input: { id: \"todo-1\" }) { id } }",
+        )
+        .data(dispatcher)
+        .data(VerifiedPrincipal::test_oidc(
+            "https://issuer.example/",
+            "dispatch-test-subject",
+            &["dispatch-test-audience"],
+        ));
+        let response = schema.execute(request).await;
+        assert!(response.errors.is_empty(), "{response:?}");
+        assert_eq!(
+            response.data.into_json().unwrap(),
+            serde_json::json!({ "todo_complete": { "id": "todo-1" } })
         );
     }
 }

@@ -18,6 +18,12 @@ mod registration;
 mod render;
 mod resolve;
 mod runtime_host;
+#[cfg(all(
+    feature = "graphql",
+    feature = "http",
+    any(feature = "sqlite", feature = "postgres")
+))]
+mod local_sql;
 mod topology;
 
 pub use capability::{
@@ -51,12 +57,23 @@ pub use plan::{
 };
 pub use registration::{Application, ApplicationBuilder, ContractCompiler};
 pub use render::{
-    normalize_resolved, render_resolved, NormalizedInventory, RenderTarget, RenderedFile,
+    inventory_from_rendered, normalize_resolved, render_resolved, NormalizedInventory, RenderTarget,
+    RenderedFile,
 };
 pub use resolve::{
     resolve_deployment, ResolvedDeployment, ResolvedProcess, RESOLVED_DEPLOYMENT_SCHEMA_VERSION,
 };
-pub use runtime_host::{bind_single_process, CapabilityProviders, RuntimeHost};
+pub use runtime_host::{
+    bind_single_process, inventory_from_hosts, CapabilityProviders, RuntimeHost,
+};
+#[cfg(all(
+    feature = "graphql",
+    feature = "http",
+    any(feature = "sqlite", feature = "postgres")
+))]
+pub use local_sql::{
+    LocalSqlApplication, LocalSqlHandles, LocalSqlOptions, RealizedRuntimeHost,
+};
 pub use topology::TopologyIntent;
 
 /// Compile-time duplicate check emitted by the module macro for generated

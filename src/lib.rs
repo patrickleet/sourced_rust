@@ -66,12 +66,21 @@ pub use entity::{
 // canonical namespace; these common contract types are also convenient at the
 // crate root for contract-only packages.
 pub use application::{
-    normalize_resolved, render_resolved, resolve_deployment, Application, ApplicationError,
+    inventory_from_hosts, inventory_from_rendered, normalize_resolved, render_resolved,
+    resolve_deployment, Application, ApplicationError,
     ApplicationManifest, CommandMount, CommandMountHandler, CommandMountRegistrar, CommandSpec,
     ContractCompiler, DeploymentPlan, LogicalId, Module, ModuleManifest, MountSelector,
     NormalizedInventory, ProcessIntent, ProcessPreset, ProjectionSpec, RenderTarget, RenderedFile,
     ResolvedDeployment, SurfaceSpec, APPLICATION_MANIFEST_SCHEMA_VERSION,
     DEPLOYMENT_PLAN_SCHEMA_VERSION, RESOLVED_DEPLOYMENT_SCHEMA_VERSION,
+};
+#[cfg(all(
+    feature = "graphql",
+    feature = "http",
+    any(feature = "sqlite", feature = "postgres")
+))]
+pub use application::{
+    LocalSqlApplication, LocalSqlHandles, LocalSqlOptions, RealizedRuntimeHost,
 };
 pub use command_dispatch::{
     CommandDispatchEnvelope, CommandDispatchError, CommandDispatchReceipt, CommandDispatcher,

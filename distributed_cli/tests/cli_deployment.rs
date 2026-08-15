@@ -126,4 +126,17 @@ fn deployment_validate_and_render_use_one_pair() {
             String::from_utf8_lossy(&render.stdout)
         );
     }
+
+    let k8s = fs::read_to_string(root.join("kubernetes/deploy/kubernetes.yaml")).unwrap();
+    let knative = fs::read_to_string(root.join("knative/deploy/knative.yaml")).unwrap();
+    let xr = fs::read_to_string(root.join("hops-xr/deploy/distributed-application.yaml")).unwrap();
+    let from_k8s = distributed::inventory_from_rendered(&k8s).unwrap();
+    let from_knative = distributed::inventory_from_rendered(&knative).unwrap();
+    let from_xr = distributed::inventory_from_rendered(&xr).unwrap();
+    assert_eq!(from_k8s, from_knative);
+    assert_eq!(from_k8s, from_xr);
+    assert!(from_k8s.processes.contains(&"writer".to_string()));
+    assert!(from_k8s.mounts.iter().any(|mount| mount.contains("todo.create")));
+    assert!(!xr.contains("Projector {"));
+    assert!(xr.contains("kind: DistributedApplication"));
 }

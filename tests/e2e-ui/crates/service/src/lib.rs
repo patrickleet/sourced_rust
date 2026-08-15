@@ -19,8 +19,8 @@ pub mod modules;
 mod oidc_layer;
 
 pub use application::{
-    DISTRIBUTED_ADMIN_CLIENT_SURFACE, DISTRIBUTED_CLIENT_SURFACE, DISTRIBUTED_PUBLIC_CLIENT_SURFACE,
-    E2E_UI_APPLICATION, E2E_UI_MODULE_IDS,
+    e2e_application, e2e_local_plan, DISTRIBUTED_ADMIN_CLIENT_SURFACE, DISTRIBUTED_CLIENT_SURFACE,
+    DISTRIBUTED_PUBLIC_CLIENT_SURFACE, E2E_UI_APPLICATION, E2E_UI_MODULE_IDS,
 };
 pub use e2e_readmodels::distributed_manifest;
 pub use handlers::ingestors::zitadel::{
@@ -32,4 +32,4 @@ pub use modules::graphql::{
     build_graphql_engine, dev_identity, distributed_admin_client_surface, distributed_client_surface,
     distributed_public_client_surface, identity_from_env, oidc_bearer_config,
 };
-pub use oidc_layer::serve_with_oidc;
+pub use oidc_layer::{serve_with_dispatcher, serve_with_oidc};

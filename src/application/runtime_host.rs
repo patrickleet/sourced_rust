@@ -1,13 +1,16 @@
-//! Framework runtime host skeleton (task 12).
+//! Framework runtime host.
 //!
-//! Realizes one process entry from a validated [`DeploymentPlan`] by requiring
-//! the explained capability set and an explicit [`CommandDispatcher`]. Full
-//! adapter bootstrap (stores, workers, supervision) continues to grow here;
-//! application code must not hand-pair dialect runners.
+//! [`RuntimeHost::bind`] fails closed unless the explained capability set and
+//! an explicit [`CommandDispatcher`] are present. Local SQL realization
+//! (`realize_local`) starts the matching store/bus/workers and only advertises
+//! capabilities that those adapters actually provide.
 
 use super::capability::Capability;
 use super::error::{ApplicationError, ApplicationResult};
 use super::plan::{DeploymentPlan, ProcessPlan};
+use super::render::NormalizedInventory;
+use super::resolve::ResolvedDeployment;
+use super::topology::TopologyIntent;
 use crate::command_dispatch::SharedCommandDispatcher;
 use std::collections::BTreeSet;
 
@@ -93,6 +96,87 @@ impl RuntimeHost {
 
     pub fn dispatcher(&self) -> Option<&SharedCommandDispatcher> {
         self.dispatcher.as_ref()
+    }
+
+    /// Inventory contributed by this bound process (mounts, routes, subscriptions).
+    pub fn process_inventory_parts(&self) -> (Vec<String>, Vec<String>, Vec<String>, Vec<String>) {
+        let mut mounts = Vec::new();
+        let mut routes = Vec::new();
+        let mut subscriptions = Vec::new();
+        for mount in &self.process.mounts {
+            mounts.push(format!("{}:{}", self.process.id, mount.id()));
+        }
+        for intent in &self.process.topology {
+            match intent {
+                TopologyIntent::CommandRoute { command_id, .. } => {
+                    routes.push(format!("{}:{}", self.process.id, command_id));
+                }
+                TopologyIntent::ProjectionSubscription { projection_id, .. } => {
+                    subscriptions.push(format!("{}:{}", self.process.id, projection_id));
+                }
+                TopologyIntent::SurfaceEndpoint { surface_id, .. } => {
+                    routes.push(format!("{}:surface:{}", self.process.id, surface_id));
+                }
+                TopologyIntent::ExtensionHook { extension_id, .. } => {
+                    routes.push(format!("{}:extension:{}", self.process.id, extension_id));
+                }
+            }
+        }
+        let mut capabilities = self
+            .process
+            .capabilities
+            .iter()
+            .map(|requirement| requirement.capability.as_str().to_string())
+            .collect::<Vec<_>>();
+        mounts.sort();
+        routes.sort();
+        subscriptions.sort();
+        capabilities.sort();
+        capabilities.dedup();
+        (mounts, routes, subscriptions, capabilities)
+    }
+}
+
+/// Merge bound hosts for one resolved pair into the shared inventory shape.
+///
+/// Local realization is the set of successfully bound processes. The digest
+/// and application/plan identity come from the same resolved pair the
+/// renderers consume.
+pub fn inventory_from_hosts(
+    resolved: &ResolvedDeployment,
+    hosts: &[&RuntimeHost],
+) -> NormalizedInventory {
+    let mut processes = hosts
+        .iter()
+        .map(|host| host.process.id.clone())
+        .collect::<Vec<_>>();
+    processes.sort();
+    let mut mounts = Vec::new();
+    let mut routes = Vec::new();
+    let mut subscriptions = Vec::new();
+    let mut capabilities = Vec::new();
+    for host in hosts {
+        let (host_mounts, host_routes, host_subscriptions, host_capabilities) =
+            host.process_inventory_parts();
+        mounts.extend(host_mounts);
+        routes.extend(host_routes);
+        subscriptions.extend(host_subscriptions);
+        capabilities.extend(host_capabilities);
+    }
+    mounts.sort();
+    routes.sort();
+    subscriptions.sort();
+    capabilities.sort();
+    capabilities.dedup();
+    NormalizedInventory {
+        application: resolved.application.clone(),
+        plan: resolved.plan.clone(),
+        processes,
+        mounts,
+        routes,
+        subscriptions,
+        capabilities,
+        digest: resolved.inventory_digest.clone(),
     }
 }
 
