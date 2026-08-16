@@ -436,6 +436,11 @@ impl ProjectionOutput {
         &self.model
     }
 
+    /// Primary `ReadModelId` for this output (schema model name).
+    pub fn read_model_id(&self) -> &str {
+        self.schema.model_name.as_str()
+    }
+
     /// Return the physical storage identity.
     pub fn storage(&self) -> &str {
         &self.storage
@@ -1018,6 +1023,13 @@ impl ProjectionBinding {
     /// Return sorted output schema pins.
     pub fn outputs(&self) -> &[ProjectionOutput] {
         &self.outputs
+    }
+
+    /// Primary read-model identity this binding writes.
+    ///
+    /// Independent of projector owner and physical placement.
+    pub fn primary_read_model_id(&self) -> Option<&str> {
+        self.outputs.first().map(|output| output.read_model_id())
     }
 
     /// Return sorted relationship pins.

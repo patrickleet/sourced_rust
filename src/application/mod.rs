@@ -15,6 +15,7 @@ mod module;
 mod mount;
 mod plan;
 mod registration;
+mod runtime;
 mod runtime_host;
 mod topology;
 
@@ -22,8 +23,9 @@ pub use capability::{
     Capability, CapabilityReason, CapabilityRequirement, SchemaLifecycleRequirement,
 };
 pub use command::{
-    CommandDefinition, CommandMount, CommandMountFuture, CommandMountHandler, CommandMountRegistrar,
-    CommandSpec, CommandTypeField, CommandTypeSpec, EventSpec, TypeSpec,
+    admit_command_session, command_roles_require_principal, CommandDefinition, CommandMount,
+    CommandMountFuture, CommandMountHandler, CommandMountRegistrar, CommandSpec, CommandTypeField,
+    CommandTypeSpec, EventSpec, TypeSpec,
 };
 pub(crate) use command::{
     CommandMountExecution, CommandMountExecutionError, CommandMountExecutionFuture,
@@ -48,6 +50,7 @@ pub use plan::{
     DEPLOYMENT_PLAN_SCHEMA_VERSION, MAX_DEPLOYMENT_PLAN_BYTES,
 };
 pub use registration::{Application, ApplicationBuilder, ContractCompiler};
+pub use runtime::{Runtime, RuntimeDialect};
 pub use runtime_host::{bind_single_process, CapabilityProviders, RuntimeHost};
 pub use topology::TopologyIntent;
 

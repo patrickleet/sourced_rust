@@ -1,5 +1,8 @@
 //! One-screen host bootstrap for the e2e-ui application.
 //!
+//! This playground is a single backend process plus the SvelteKit UI. Do not
+//! add extra e2e-ui process topologies here.
+//!
 //! Dialect selection and identity remain here. Outbox/consumer loops use
 //! framework worker helpers.
 

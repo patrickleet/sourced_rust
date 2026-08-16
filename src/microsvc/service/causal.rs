@@ -342,6 +342,13 @@ pub(super) fn ensure_causal_grant(
 ) -> Result<(), CausalDispatchError> {
     // Identity is a set (`x-roles`). Allow when any asserted role is granted
     // the command — not a priority-picked primary role.
+    if crate::application::command_roles_require_principal(&contract.roles)
+        && session.user_id().map(str::trim).unwrap_or("").is_empty()
+    {
+        return Err(CausalDispatchError::Handler(crate::microsvc::HandlerError::Unauthorized(
+            "missing authenticated principal".into(),
+        )));
+    }
     if contract.roles.is_empty() {
         return Ok(());
     }

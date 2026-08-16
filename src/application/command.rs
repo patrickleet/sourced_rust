@@ -102,6 +102,37 @@ pub struct CommandSpec {
     pub fingerprint: String,
 }
 
+/// Session admission implied by command roles (no extra login guard).
+pub fn command_roles_require_principal(roles: &[String]) -> bool {
+    !roles.is_empty() && roles.iter().all(|role| role != "anonymous")
+}
+
+/// Admit a command from roles + optional user id + asserted session roles.
+pub fn admit_command_session(
+    roles: &[String],
+    user_id: Option<&str>,
+    session_roles: &[String],
+) -> Result<(), &'static str> {
+    if command_roles_require_principal(roles)
+        && user_id.map(str::is_empty).unwrap_or(true)
+    {
+        return Err("unauthenticated");
+    }
+    if roles.is_empty() {
+        return Ok(());
+    }
+    if session_roles
+        .iter()
+        .any(|role| roles.iter().any(|allowed| allowed == role))
+    {
+        return Ok(());
+    }
+    if roles.iter().any(|role| role == "anonymous") && session_roles.is_empty() {
+        return Ok(());
+    }
+    Err("forbidden")
+}
+
 /// One review-visible declaration containing its portable spec and, when the
 /// runtime feature is present, the derived executable mount. Keeping these
 /// values together prevents parallel `commands`/`mounts` inventories.
@@ -211,6 +242,11 @@ fn validate_mount_spec(spec: &CommandSpec, mount: &CommandMount) -> ApplicationR
 }
 
 impl CommandSpec {
+    /// Roles that are not `anonymous` require a non-empty session user.
+    pub fn requires_authenticated_principal(&self) -> bool {
+        command_roles_require_principal(&self.roles)
+    }
+
     /// Construct a command spec from already-portable pieces.
     pub fn try_new(
         id: impl Into<String>,

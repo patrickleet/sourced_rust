@@ -20,7 +20,11 @@ pub(super) fn expand_relational_read_model(
     field_attrs: &[FieldAttrs],
     id_field: Option<&syn::Ident>,
 ) -> syn::Result<proc_macro2::TokenStream> {
-    let model_name = name.to_string();
+    let rust_name = name.to_string();
+    let model_name = struct_attrs
+        .name
+        .clone()
+        .unwrap_or_else(|| rust_name.clone());
     let table_name = struct_attrs
         .table
         .clone()

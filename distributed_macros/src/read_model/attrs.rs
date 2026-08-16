@@ -7,6 +7,7 @@ use super::types::{
 
 #[derive(Default)]
 pub(super) struct StructAttrs {
+    pub(super) name: Option<String>,
     pub(super) collection: Option<String>,
     pub(super) table: Option<String>,
     pub(super) primary_key: Vec<String>,
@@ -52,7 +53,9 @@ impl StructAttrs {
             }
 
             attr.parse_nested_meta(|meta| {
-                if meta.path.is_ident("collection") {
+                if meta.path.is_ident("name") {
+                    attrs.name = Some(meta.value()?.parse::<LitStr>()?.value());
+                } else if meta.path.is_ident("collection") {
                     attrs.collection = Some(meta.value()?.parse::<LitStr>()?.value());
                 } else if meta.path.is_ident("table") {
                     attrs.table = Some(meta.value()?.parse::<LitStr>()?.value());

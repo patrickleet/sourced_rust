@@ -762,6 +762,29 @@ impl Module {
         &self.definitions
     }
 
+    /// Full module: commands and projectors together.
+    pub fn module(&self) -> Self {
+        self.clone()
+    }
+
+    /// Command half of the same module (no projection mounts).
+    pub fn commands_only(&self) -> ApplicationResult<Self> {
+        Module::new(self.id())
+            .command_definitions(self.definitions.clone())
+            .models(self.manifest.models.clone())
+            .required_capabilities(self.manifest.required_capabilities.clone())
+            .build()
+    }
+
+    /// Projector half of the same module (no command mounts).
+    pub fn projectors_only(&self) -> ApplicationResult<Self> {
+        Module::new(self.id())
+            .projections(self.manifest.projections.clone())
+            .models(self.manifest.models.clone())
+            .required_capabilities(self.manifest.required_capabilities.clone())
+            .build()
+    }
+
     /// Return the exact typed command inventory retained by generated command
     /// definitions. A manually assembled `CommandSpec` has no typed source
     /// contract and therefore cannot be used to bind commands to a Surface.

@@ -1,12 +1,12 @@
 //! Command: `todo.complete` — owner-only (aggregate enforces).
 
 use distributed::graphql::{Eventual, PreparedCommand};
-use distributed::microsvc::{CausalCommandContext, HandlerError};
+use distributed::microsvc::{invoke_transition, require_loaded, CausalCommandContext, HandlerError};
 use serde::Deserialize;
 use todo_domain::{Todo, TodoState};
 
 use crate::handlers::commands::payloads::TodoStatusPayload;
-use crate::handlers::util::{principal, rejected};
+use crate::handlers::util::principal;
 
 pub const COMMAND: &str = "todo.complete";
 
@@ -21,11 +21,8 @@ pub async fn handle(
 ) -> Result<PreparedCommand<Eventual<TodoStatusPayload>>, HandlerError> {
     let owner = principal(ctx)?;
     let repo = ctx.repo();
-    let mut todo = repo
-        .get(&input.todo_id)
-        .await?
-        .ok_or_else(|| HandlerError::NotFound(input.todo_id.clone()))?;
-    todo.complete(&owner).map_err(rejected)?;
+    let mut todo = require_loaded(repo.get(&input.todo_id).await?, input.todo_id.clone())?;
+    invoke_transition(&mut todo, |todo| todo.complete(&owner))?;
 
     let state = TodoState::from(&*todo);
     repo.publish_events()
