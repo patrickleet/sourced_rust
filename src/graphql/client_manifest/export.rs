@@ -192,13 +192,28 @@ pub fn prune_client_manifest(
             .iter()
             .any(|model| kept.contains(model))
     });
-    manifest.projection_programs.retain(|program| {
-        program.arms.iter().any(|arm| {
-            arm.operations
-                .iter()
-                .any(|operation| kept.contains(&operation.model))
-        })
-    });
+    for program in &mut manifest.projection_programs {
+        for arm in &mut program.arms {
+            arm.operations.retain(|operation| kept.contains(&operation.model));
+            for operation in &mut arm.operations {
+                operation.relationships.retain(|rel| {
+                    kept.contains(&rel.source_model) && kept.contains(&rel.target_model)
+                });
+                operation.invalidations.retain(|invalidation| match invalidation {
+                    ClientProjectionInvalidation::Model { model } => kept.contains(model),
+                    ClientProjectionInvalidation::Relationship {
+                        source_model,
+                        target_model,
+                        ..
+                    } => kept.contains(source_model) && kept.contains(target_model),
+                });
+            }
+        }
+        program.arms.retain(|arm| !arm.operations.is_empty());
+    }
+    manifest
+        .projection_programs
+        .retain(|program| !program.arms.is_empty());
     let kept_programs: BTreeSet<_> = manifest
         .projection_programs
         .iter()
@@ -207,6 +222,52 @@ pub fn prune_client_manifest(
     manifest
         .projection_bindings
         .retain(|binding| kept_programs.contains(&binding.program_id));
+    for command in &mut manifest.commands {
+        if let Some(direct) = &command.extensions.direct_projection {
+            if !kept.contains(&direct.model) {
+                command.extensions.direct_projection = None;
+            }
+        }
+        let Some(projection) = command.extensions.projection.as_mut() else {
+            continue;
+        };
+        projection
+            .pure_reduces
+            .retain(|reduce| kept.contains(&reduce.model));
+        projection.program_arms.retain(|arm| {
+            kept_programs.contains(&arm.program_id)
+                && manifest.projection_programs.iter().any(|program| {
+                    program.program_id == arm.program_id
+                        && program.arms.iter().any(|program_arm| {
+                            program_arm.event == arm.event
+                                && program_arm.arm == arm.arm
+                                && program_arm
+                                    .operations
+                                    .iter()
+                                    .any(|operation| kept.contains(&operation.model))
+                        })
+                })
+        });
+        projection.event_set = projection
+            .program_arms
+            .iter()
+            .map(|arm| arm.event.clone())
+            .collect::<BTreeSet<_>>()
+            .into_iter()
+            .collect();
+        projection
+            .preview_occurrences
+            .retain(|occurrence| projection.event_set.contains(&occurrence.event));
+        for (index, occurrence) in projection.preview_occurrences.iter_mut().enumerate() {
+            occurrence.ordinal = u32::try_from(index).unwrap_or(u32::MAX);
+        }
+        if projection.program_arms.is_empty()
+            && projection.preview_occurrences.is_empty()
+            && projection.pure_reduces.is_empty()
+        {
+            command.extensions.projection = None;
+        }
+    }
     Ok(manifest)
 }
 

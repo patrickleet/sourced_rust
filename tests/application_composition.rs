@@ -8,8 +8,14 @@ use distributed::application::{
 };
 use distributed::graphql::{
     build_surface, col, prune_client_manifest, surface_for_application_contract, surface_for_role,
-    typed_command, ClientSurfaceIdentity, CommandConsistency, DistributedClientSurfaceExport,
-    RoleGrant, Succeeded, Surface, SurfaceOptions,
+    typed_command, ClientCommandPureReduce, ClientProjectionArm, ClientProjectionEventRef,
+    ClientProjectionFallback, ClientProjectionMutationKind, ClientProjectionOperation,
+    ClientProjectionPartition, ClientProjectionProgram, ClientSurfaceIdentity, CommandConsistency,
+    CommandProjectionArmRef, CommandProjectionExtension, CommandProjectionPreviewOccurrence,
+    DistributedClientSurfaceExport, RoleGrant, Succeeded, Surface, SurfaceOptions,
+};
+use distributed::projection::{
+    PROJECTION_OPERATION_SEMANTICS_VERSION, PROJECTION_PROGRAM_IR_VERSION,
 };
 use distributed::{ApplicationManifest, GraphqlInput, GraphqlOutput, ReadModel, RelationalReadModel};
 use serde::{Deserialize, Serialize};
@@ -640,6 +646,191 @@ fn contract_export_prunes_unselected_read_models() {
         .models
         .iter()
         .any(|model| model.typename == "TodoView"));
+}
+
+#[test]
+fn prune_drops_unselected_command_optimism_and_causal_slots() {
+    let tables = [TodoView::schema().clone(), ChatView::schema().clone()];
+    let full = build_surface(&tables, &SurfaceOptions::sqlite()).unwrap();
+    let grants = BTreeMap::from([(
+        "user".to_string(),
+        BTreeMap::from([
+            ("TodoView".to_string(), RoleGrant::all_columns()),
+            ("ChatView".to_string(), RoleGrant::all_columns()),
+        ]),
+    )]);
+    let catalog = full.with_module(&command_module()).unwrap();
+    let selected = surface_for_application_contract(
+        &catalog,
+        "web",
+        &["user".into()],
+        &["user".into()],
+        &grants,
+    )
+    .unwrap();
+    let export = DistributedClientSurfaceExport::from_contract("todo-app", selected).unwrap();
+    let mut manifest = export.manifest().unwrap();
+    attach_todo_and_chat_command_optimism(&mut manifest);
+
+    let before = serde_json::to_string(&manifest).unwrap();
+    assert!(before.contains("ChatView"), "setup must include ChatView optimism");
+    assert!(before.contains("TodoView"));
+
+    let todos_only = prune_client_manifest(manifest, ["TodoView"]).unwrap();
+    let after = serde_json::to_string(&todos_only).unwrap();
+    assert!(
+        !after.contains("ChatView"),
+        "pruned manifest leaked ChatView: {after}"
+    );
+    assert!(todos_only
+        .models
+        .iter()
+        .any(|model| model.typename == "TodoView"));
+    for program in &todos_only.projection_programs {
+        for arm in &program.arms {
+            assert!(
+                arm.operations
+                    .iter()
+                    .all(|operation| operation.model == "TodoView"),
+                "unselected-model operations must be gone"
+            );
+        }
+    }
+    for command in &todos_only.commands {
+        if let Some(projection) = &command.extensions.projection {
+            assert!(projection
+                .pure_reduces
+                .iter()
+                .all(|reduce| reduce.model == "TodoView"));
+            assert!(projection
+                .program_arms
+                .iter()
+                .all(|arm| arm.program_id == "project_todos"));
+            assert!(projection
+                .preview_occurrences
+                .iter()
+                .all(|occurrence| occurrence.event.name == "todo.completed"));
+            for (index, occurrence) in projection.preview_occurrences.iter().enumerate() {
+                assert_eq!(occurrence.ordinal as usize, index);
+            }
+        }
+    }
+}
+
+fn attach_todo_and_chat_command_optimism(manifest: &mut distributed::graphql::DistributedClientManifest) {
+    let todo_event = ClientProjectionEventRef {
+        id: "todo.completed".into(),
+        name: "todo.completed".into(),
+        version: 1,
+    };
+    let chat_event = ClientProjectionEventRef {
+        id: "chat.posted".into(),
+        name: "chat.posted".into(),
+        version: 1,
+    };
+    manifest.projection_programs.push(ClientProjectionProgram {
+        version: 2,
+        program_id: "project_todos".into(),
+        name: "project_todos".into(),
+        program_version: 1,
+        ir_version: PROJECTION_PROGRAM_IR_VERSION,
+        operation_semantics_version: PROJECTION_OPERATION_SEMANTICS_VERSION,
+        arms: vec![ClientProjectionArm {
+            arm: "complete".into(),
+            event: todo_event.clone(),
+            partition: ClientProjectionPartition::Unit,
+            operations: vec![ClientProjectionOperation {
+                operation: "upsert_todo".into(),
+                ordinal: 0,
+                kind: ClientProjectionMutationKind::Upsert,
+                model: "TodoView".into(),
+                key: Vec::new(),
+                fields: Vec::new(),
+                relationships: Vec::new(),
+                invalidations: Vec::new(),
+            }],
+        }],
+    });
+    manifest.projection_programs.push(ClientProjectionProgram {
+        version: 2,
+        program_id: "project_chat".into(),
+        name: "project_chat".into(),
+        program_version: 1,
+        ir_version: PROJECTION_PROGRAM_IR_VERSION,
+        operation_semantics_version: PROJECTION_OPERATION_SEMANTICS_VERSION,
+        arms: vec![ClientProjectionArm {
+            arm: "post".into(),
+            event: chat_event.clone(),
+            partition: ClientProjectionPartition::Unit,
+            operations: vec![ClientProjectionOperation {
+                operation: "upsert_chat".into(),
+                ordinal: 0,
+                kind: ClientProjectionMutationKind::Upsert,
+                model: "ChatView".into(),
+                key: Vec::new(),
+                fields: Vec::new(),
+                relationships: Vec::new(),
+                invalidations: Vec::new(),
+            }],
+        }],
+    });
+    let command = manifest
+        .commands
+        .first_mut()
+        .expect("module commands should compile onto the surface");
+    command.extensions.projection = Some(CommandProjectionExtension {
+        version: 2,
+        event_set: vec![chat_event.clone(), todo_event.clone()],
+        program_arms: vec![
+            CommandProjectionArmRef {
+                event: chat_event.clone(),
+                program_id: "project_chat".into(),
+                arm: "post".into(),
+            },
+            CommandProjectionArmRef {
+                event: todo_event.clone(),
+                program_id: "project_todos".into(),
+                arm: "complete".into(),
+            },
+        ],
+        preview_occurrences: vec![
+            CommandProjectionPreviewOccurrence {
+                ordinal: 0,
+                event: chat_event,
+                values: Vec::new(),
+            },
+            CommandProjectionPreviewOccurrence {
+                ordinal: 1,
+                event: todo_event,
+                values: Vec::new(),
+            },
+        ],
+        pure_reduces: vec![
+            ClientCommandPureReduce {
+                fn_name: "todo.status".into(),
+                client_module: "pures".into(),
+                client_export: "todoStatus".into(),
+                wasm_package: String::new(),
+                wasm_export: String::new(),
+                model: "TodoView".into(),
+                key: Vec::new(),
+                args: Vec::new(),
+                assign: Vec::new(),
+            },
+            ClientCommandPureReduce {
+                fn_name: "chat.echo".into(),
+                client_module: "pures".into(),
+                client_export: "chatEcho".into(),
+                wasm_package: String::new(),
+                wasm_export: String::new(),
+                model: "ChatView".into(),
+                key: Vec::new(),
+                args: Vec::new(),
+                assign: Vec::new(),
+            },
+        ],
+        fallback: ClientProjectionFallback::Revalidate,
+    });
 }
 
 #[test]

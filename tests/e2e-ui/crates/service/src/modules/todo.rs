@@ -8,7 +8,7 @@ use distributed::{
     command_input_defaults, AggregateBuilder, AggregateRepository, QueuedRepository,
 };
 use todo_domain::domain_commands;
-use todo_domain::Todo;
+use todo_domain::{Todo, TodoState};
 
 use crate::bounds::{EventStore, Locks, ReadStore};
 use crate::handlers;
@@ -73,7 +73,15 @@ where
         >(todo_complete::COMMAND)
         .field_name("todos_complete")
         .roles(["user", "admin"].into_iter())
-        .guarded(causal_has_user, todo_complete::handle)
+        .load_by(|input: &todo_complete::TodoCompleteInput| input.todo_id.clone())
+        .invoke(|todo, _input, owner| todo.complete(owner))
+        .eventual(|todo| {
+            let state = TodoState::from(&**todo);
+            payloads::TodoStatusPayload {
+                todo_id: state.todo_id,
+                status: state.status,
+            }
+        })
         .command_transition::<
             domain_commands::Reopen,
             todo_reopen::TodoReopenInput,

@@ -117,7 +117,7 @@ pub use service::{
     direct_read_model, invoke_transition, require_loaded, CausalCommandContext, CausalCommitBuilder,
     CausalRepository, CommandRequest, CommandResponse, DeliveryKind, DirectReadModelProjection,
     HandlerNames, HandlerSpec, PreparedCausalCommit, PreparedCommandHandler, RouteBuilder, Routes,
-    Service, TypedRouteBuilder,
+    Service, ThinCommandBuilder, ThinCommandInvoked, ThinCommandLoaded, TypedRouteBuilder,
 };
 #[cfg(feature = "graphql")]
 pub(crate) use service::{

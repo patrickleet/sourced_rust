@@ -568,6 +568,291 @@ where
             boxed_prepared_handler(handler),
         )
     }
+
+    /// Load the aggregate by an id taken from the command input.
+    ///
+    /// Chain [`.invoke`](ThinCommandBuilder::invoke) then
+    /// [`.eventual`](ThinCommandBuilder::eventual). Application code does not
+    /// write a [`CausalCommandContext`] body.
+    pub fn load_by<F>(self, id: F) -> ThinCommandBuilder<D, I, K, ThinCommandLoaded>
+    where
+        F: Fn(&I) -> String + Send + Sync + 'static,
+    {
+        ThinCommandBuilder {
+            inner: self,
+            load_id: Some(std::sync::Arc::new(id)),
+            create: false,
+            transition: None,
+            _phase: std::marker::PhantomData,
+        }
+    }
+
+    /// Create a new aggregate, then invoke a domain method and commit.
+    pub fn create(self) -> ThinCommandBuilder<D, I, K, ThinCommandLoaded> {
+        ThinCommandBuilder {
+            inner: self,
+            load_id: None,
+            create: true,
+            transition: None,
+            _phase: std::marker::PhantomData,
+        }
+    }
+}
+
+/// Marker: id source chosen (`load_by` or `create`).
+pub struct ThinCommandLoaded;
+
+/// Marker: domain transition registered.
+pub struct ThinCommandInvoked;
+
+/// Load/create + domain invoke + commit. The framework owns the handler body.
+pub struct ThinCommandBuilder<D, I, K: CommandOutcome, Phase>
+where
+    D: CausalRouteDependencies,
+{
+    inner: TypedRouteBuilder<D, I, K>,
+    load_id: Option<std::sync::Arc<dyn Fn(&I) -> String + Send + Sync>>,
+    create: bool,
+    transition: Option<
+        std::sync::Arc<
+            dyn Fn(
+                    &mut crate::microsvc::AggregateCheckout<D::Aggregate>,
+                    &I,
+                    &str,
+                ) -> Result<(), String>
+                + Send
+                + Sync,
+        >,
+    >,
+    _phase: std::marker::PhantomData<Phase>,
+}
+
+impl<D, I, K> ThinCommandBuilder<D, I, K, ThinCommandLoaded>
+where
+    D: CausalRouteDependencies + Send + Sync + 'static,
+    D::Aggregate: Aggregate + Send + Sync + 'static,
+    I: serde::de::DeserializeOwned + Send + Sync + 'static,
+    K: CommandOutcome,
+{
+    /// Apply a domain method. The third argument is the session principal
+    /// when `.roles` require one.
+    pub fn invoke<T, E>(
+        mut self,
+        transition: T,
+    ) -> ThinCommandBuilder<D, I, K, ThinCommandInvoked>
+    where
+        T: Fn(
+                &mut crate::microsvc::AggregateCheckout<D::Aggregate>,
+                &I,
+                &str,
+            ) -> Result<(), E>
+            + Send
+            + Sync
+            + 'static,
+        E: std::fmt::Display,
+    {
+        self.transition = Some(std::sync::Arc::new(move |aggregate, input, owner| {
+            transition(aggregate, input, owner).map_err(|error| error.to_string())
+        }));
+        ThinCommandBuilder {
+            inner: self.inner,
+            load_id: self.load_id,
+            create: self.create,
+            transition: self.transition,
+            _phase: std::marker::PhantomData,
+        }
+    }
+}
+
+impl<D, I, T> ThinCommandBuilder<D, I, crate::graphql::Eventual<T>, ThinCommandInvoked>
+where
+    D: CausalRouteDependencies + Send + Sync + 'static,
+    D::Aggregate: Aggregate + Send + Sync + 'static,
+    I: serde::de::DeserializeOwned + Send + Sync + 'static,
+    T: crate::graphql::GraphqlOutputType + serde::Serialize + Send + Sync + 'static,
+{
+    /// Publish captured events, commit, and return an Eventual payload.
+    ///
+    /// This registers the command. Application code supplies only the payload
+    /// mapping — not a handler-context body.
+    pub fn eventual<F>(self, payload: F) -> Routes<D>
+    where
+        F: Fn(&crate::microsvc::AggregateCheckout<D::Aggregate>) -> T + Send + Sync + 'static,
+    {
+        let load_id = self.load_id;
+        let create = self.create;
+        let transition = self
+            .transition
+            .expect("invoke must be chained before eventual");
+        let payload = std::sync::Arc::new(payload);
+        let roles = self.inner.contract.roles.clone();
+        self.inner.handle(ThinEventualHandler {
+            load_id,
+            create,
+            transition,
+            payload,
+            roles,
+        })
+    }
+}
+
+impl<D, I, T> ThinCommandBuilder<D, I, crate::graphql::Succeeded<T>, ThinCommandInvoked>
+where
+    D: CausalRouteDependencies + Send + Sync + 'static,
+    D::Aggregate: Aggregate + Send + Sync + 'static,
+    I: serde::de::DeserializeOwned + Send + Sync + 'static,
+    T: crate::graphql::GraphqlOutputType + serde::Serialize + Send + Sync + 'static,
+{
+    /// Commit and return a Succeeded payload. Used when the command is not Eventual.
+    pub fn succeeded<F>(self, payload: F) -> Routes<D>
+    where
+        F: Fn(&crate::microsvc::AggregateCheckout<D::Aggregate>) -> T + Send + Sync + 'static,
+    {
+        let load_id = self.load_id;
+        let create = self.create;
+        let transition = self
+            .transition
+            .expect("invoke must be chained before succeeded");
+        let payload = std::sync::Arc::new(payload);
+        let roles = self.inner.contract.roles.clone();
+        self.inner.handle(ThinSucceededHandler {
+            load_id,
+            create,
+            transition,
+            payload,
+            roles,
+        })
+    }
+}
+
+struct ThinEventualHandler<A, I, T>
+where
+    A: Aggregate,
+{
+    load_id: Option<std::sync::Arc<dyn Fn(&I) -> String + Send + Sync>>,
+    create: bool,
+    transition: std::sync::Arc<
+        dyn Fn(&mut crate::microsvc::AggregateCheckout<A>, &I, &str) -> Result<(), String>
+            + Send
+            + Sync,
+    >,
+    payload: std::sync::Arc<dyn Fn(&crate::microsvc::AggregateCheckout<A>) -> T + Send + Sync>,
+    roles: Vec<String>,
+}
+
+impl<'a, A, I, T> PreparedCommandHandler<'a, A, I, crate::graphql::Eventual<T>>
+    for ThinEventualHandler<A, I, T>
+where
+    A: Aggregate + Send + Sync + 'static,
+    I: serde::de::DeserializeOwned + Send + Sync + 'static,
+    T: crate::graphql::GraphqlOutputType + serde::Serialize + Send + Sync + 'static,
+{
+    type Future = Pin<
+        Box<
+            dyn Future<
+                    Output = Result<
+                        crate::graphql::PreparedCommand<crate::graphql::Eventual<T>>,
+                        HandlerError,
+                    >,
+                > + Send
+                + 'a,
+        >,
+    >;
+
+    fn call(
+        &self,
+        ctx: &'a CausalCommandContext<'a, A>,
+        input: I,
+    ) -> Self::Future {
+        let load_id = self.load_id.clone();
+        let create = self.create;
+        let transition = self.transition.clone();
+        let payload = self.payload.clone();
+        let roles = self.roles.clone();
+        Box::pin(async move {
+            let owner = if crate::application::command_roles_require_principal(&roles) {
+                ctx.user_id()?.to_string()
+            } else {
+                String::new()
+            };
+            let mut checkout = if create {
+                ctx.create()
+            } else {
+                let id = load_id.as_ref().expect("load_by")(&input);
+                super::require_loaded(ctx.get(&id).await?, id)?
+            };
+            super::invoke_transition(&mut checkout, |checkout| {
+                transition(checkout, &input, &owner)
+            })?;
+            let body = payload(&checkout);
+            ctx.publish_events().commit(checkout)?.eventual(body)
+        })
+    }
+}
+
+struct ThinSucceededHandler<A, I, T>
+where
+    A: Aggregate,
+{
+    load_id: Option<std::sync::Arc<dyn Fn(&I) -> String + Send + Sync>>,
+    create: bool,
+    transition: std::sync::Arc<
+        dyn Fn(&mut crate::microsvc::AggregateCheckout<A>, &I, &str) -> Result<(), String>
+            + Send
+            + Sync,
+    >,
+    payload: std::sync::Arc<dyn Fn(&crate::microsvc::AggregateCheckout<A>) -> T + Send + Sync>,
+    roles: Vec<String>,
+}
+
+impl<'a, A, I, T> PreparedCommandHandler<'a, A, I, crate::graphql::Succeeded<T>>
+    for ThinSucceededHandler<A, I, T>
+where
+    A: Aggregate + Send + Sync + 'static,
+    I: serde::de::DeserializeOwned + Send + Sync + 'static,
+    T: crate::graphql::GraphqlOutputType + serde::Serialize + Send + Sync + 'static,
+{
+    type Future = Pin<
+        Box<
+            dyn Future<
+                    Output = Result<
+                        crate::graphql::PreparedCommand<crate::graphql::Succeeded<T>>,
+                        HandlerError,
+                    >,
+                > + Send
+                + 'a,
+        >,
+    >;
+
+    fn call(
+        &self,
+        ctx: &'a CausalCommandContext<'a, A>,
+        input: I,
+    ) -> Self::Future {
+        let load_id = self.load_id.clone();
+        let create = self.create;
+        let transition = self.transition.clone();
+        let payload = self.payload.clone();
+        let roles = self.roles.clone();
+        Box::pin(async move {
+            let owner = if crate::application::command_roles_require_principal(&roles) {
+                ctx.user_id()?.to_string()
+            } else {
+                String::new()
+            };
+            let mut checkout = if create {
+                ctx.create()
+            } else {
+                let id = load_id.as_ref().expect("load_by")(&input);
+                super::require_loaded(ctx.get(&id).await?, id)?
+            };
+            super::invoke_transition(&mut checkout, |checkout| {
+                transition(checkout, &input, &owner)
+            })?;
+            let body = payload(&checkout);
+            ctx.commit(checkout)?.succeeded(body)
+        })
+    }
 }
 
 /// A typed bundle of command/event handlers and the dependency value they use.
