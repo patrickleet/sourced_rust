@@ -4,10 +4,10 @@ import type { DemoWalkthrough, WalkthroughSample } from './types';
  * Tab order is browser-first teaching order for every demo:
  * 1. Query / live subscription (+ ReadModel shape + read RBAC)
  * 2. Commands (optimistic cache vs Atomic / pure reduce) (+ write RBAC)
- * 3. Service + host + runner (e2e-service modules/compose/host; e2e-runner bin)
- * 4. Command handlers (principal → repo → aggregate → commit)
- * 5. Domain model (plain Rust + macros; blob pure core)
- * 6. Domain events + projections
+ * 3. Command handlers (principal → repo → aggregate → commit)
+ * 4. Domain model (plain Rust + macros; blob pure core)
+ * 5. Domain events + projections
+ * 6. Service + host + runner (e2e-service modules/compose/host; e2e-runner bin)
  *
  * Samples should be real, pasteable shapes from the fixture — not comment-only stubs.
  * Query tabs should include the read model definition (#[derive(ReadModel)] struct), not only
@@ -79,7 +79,7 @@ export const todosWalkthrough: DemoWalkthrough = {
 	summary:
 		'Start on the page: one @load query feeds the replica. Commands are Eventual: auto-optimism paints a safe preview from input + domain transition; the event handler applies the same mutation IR later, so the client cannot wait for a response row — only obligations.',
 	tabs: [
-		{
+{
 			id: 'query',
 			label: '1 · Query',
 			lede: 'The browser reads through a co-located GraphQL document over a declared read model. @load seeds SSR; the generated operation binds the same document to the replica. Shape and row filters live on the model — not ad-hoc WHERE in the UI.',
@@ -140,7 +140,7 @@ const todos = $derived($query.complete ? $query.data.todos : []);`
 				}
 			]
 		},
-		{
+{
 			id: 'commands',
 			label: '2 · Commands',
 			lede: 'Writes go through generated commands. Todos are Eventual: the client applies a safe optimistic preview into the replica cache that feeds the UI, then confirms when the projection obligation completes.',
@@ -184,53 +184,9 @@ await commands.todo.complete({ todo_id });`
 				}
 			]
 		},
-		{
-			id: 'service',
-			label: '3 · Service + host',
-			lede: 'e2e-service is the application crate: modules mount commands, compose builds one Service, host boots dialect/bus/workers/GraphQL. e2e-runner is a thin binary that only reads env and calls run_e2e_host. Domain stays in todo-domain.',
-			principle: 'Modules compose; host runs the process; runner stays thin.',
-			samples: [
-				{
-					file: 'modules/todo.rs · MODULE_ID + routes()',
-					caption: 'This demo’s slice: Todo aggregate inventory + Eventual projector.',
-					code: `pub const MODULE_ID: &str = "todo";
-
-pub fn routes<R, L, S>(...) -> TodoRoutes<R, L, S> {
-  Routes::for_aggregate::<R, L, Todo, S>(repo, locks, read_models)
-    .command_transition::</* Create */>(todo_create::COMMAND)
-    .guarded(causal_has_user, todo_create::handle)
-    // … rename, complete, reopen, archive, force_archive, purge …
-    .modeled_projector(todo_projector)
-    .handle(handlers::events::project_todos::handle)
-}`
-				},
-				{
-					file: 'modules/compose.rs · build_service',
-					caption: 'Review-visible composition: list modules, do not invent infrastructure.',
-					code: `let todos = todo::routes(repo.clone(), locks.clone(), read_models.clone(), projections.todo);
-let chat = chat::routes(/* … */);
-let blob = blob::routes(/* … */);
-
-Service::new()
-  .named("e2e-ui")
-  .without_http_command_routes()
-  .routes(todos)
-  .routes(chat)
-  .routes(blob)`
-				},
-				{
-					file: 'application.rs · inventory',
-					caption: 'Surface names + module inventory live at the service composition root.',
-					code: `pub const E2E_UI_APPLICATION: &str = "e2e-ui";
-pub const E2E_UI_MODULE_IDS: &[&str] = compose::MODULE_IDS;
-// todo | chat | blob | identity`
-				},
-				...hostAndRunnerSamples
-			]
-		},
-		{
+{
 			id: 'handlers',
-			label: '4 · Handlers',
+			label: '3 · Handlers',
 			lede: 'Command handlers use the repository pattern: bind principal (after the mount guard), get or create the aggregate, call a domain method, commit. Todos choose eventual consistency (Eventual + projector).',
 			principle: 'Commands change the world; tables are for reading.',
 			samples: [
@@ -272,9 +228,9 @@ repo.publish_events().commit(todo)?.eventual(TodoStatusPayload {
 				}
 			]
 		},
-		{
+{
 			id: 'domain',
-			label: '5 · Domain',
+			label: '4 · Domain',
 			lede: 'The write model is a plain Rust aggregate — fields are the consistency boundary. Public methods enforce rules; private #[event] helpers record history. Unit-testable with no HTTP or SQL.',
 			principle: 'Start with the domain, not the database.',
 			samples: [
@@ -322,9 +278,9 @@ fn record_completed(&mut self) {
 				}
 			]
 		},
-		{
+{
 			id: 'events',
-			label: '6 · Events',
+			label: '5 · Events',
 			lede: 'Domain methods emit events. Projections map those events onto syntax-only GraphQL mutations that become MutationProgram IR — upsert or delete read-model rows. The UI never dual-writes the todos table.',
 			principle: 'Know which side of the fence you are on.',
 			samples: [
@@ -347,12 +303,12 @@ fn record_completed(&mut self) {
         TodoArchivedDomainEvent,
         TodoForceArchivedDomainEvent,
       ],
-      mutation: save_todo,
+      mutation: SaveTodo,
       input: { todo: body },
     },
     on {
       events: [TodoPurgedDomainEvent],
-      mutation: delete_todo,
+      mutation: DeleteTodo,
       input: { todo_id: aggregate_id },
     },
   };
@@ -384,6 +340,50 @@ mutation DeleteTodo {
 }`
 				}
 			]
+		},
+{
+			id: 'service',
+			label: '6 · Service + host',
+			lede: 'e2e-service is the application crate: modules mount commands, compose builds one Service, host boots dialect/bus/workers/GraphQL. e2e-runner is a thin binary that only reads env and calls run_e2e_host. Domain stays in todo-domain.',
+			principle: 'Modules compose; host runs the process; runner stays thin.',
+			samples: [
+				{
+					file: 'modules/todo.rs · MODULE_ID + routes()',
+					caption: 'This demo’s slice: Todo aggregate inventory + Eventual projector.',
+					code: `pub const MODULE_ID: &str = "todo";
+
+pub fn routes<R, L, S>(...) -> TodoRoutes<R, L, S> {
+  Routes::for_aggregate::<R, L, Todo, S>(repo, locks, read_models)
+    .command_transition::</* Create */>(todo_create::COMMAND)
+    .guarded(causal_has_user, todo_create::handle)
+    // … rename, complete, reopen, archive, force_archive, purge …
+    .modeled_projector(todo_projector)
+    .handle(handlers::events::project_todos::handle)
+}`
+				},
+				{
+					file: 'modules/compose.rs · build_service',
+					caption: 'Review-visible composition: list modules, do not invent infrastructure.',
+					code: `let todos = todo::routes(repo.clone(), locks.clone(), read_models.clone(), projections.todo);
+let chat = chat::routes(/* … */);
+let blob = blob::routes(/* … */);
+
+Service::new()
+  .named("e2e-ui")
+  .without_http_command_routes()
+  .routes(todos)
+  .routes(chat)
+  .routes(blob)`
+				},
+				{
+					file: 'application.rs · inventory',
+					caption: 'Surface names + module inventory live at the service composition root.',
+					code: `pub const E2E_UI_APPLICATION: &str = "e2e-ui";
+pub const E2E_UI_MODULE_IDS: &[&str] = compose::MODULE_IDS;
+// todo | chat | blob | identity`
+				},
+				...hostAndRunnerSamples
+			]
 		}
 	]
 };
@@ -396,7 +396,7 @@ export const chatWalkthrough: DemoWalkthrough = {
 	summary:
 		'Start with the document: @load seeds HTML and @live continues the same query over WebSocket. Posts are optimistic Eventual commands into the shared replica. Guests read via e2e-ui-public.',
 	tabs: [
-		{
+{
 			id: 'query',
 			label: '1 · Query / live',
 			lede: 'One GraphQL operation is both the SSR seed and the live subscription over a declared ChatMessages read model. Read RBAC allows user, admin, and anonymous (guests open e2e-ui-public).',
@@ -461,7 +461,7 @@ const livePage = $derived.by(() => {
 				}
 			]
 		},
-		{
+{
 			id: 'commands',
 			label: '2 · Commands',
 			lede: 'Post is a generated command for signed-in surfaces only. The client replica cache applies a modeled optimistic message; Eventual confirmation follows the projector.',
@@ -501,50 +501,9 @@ export type GeneratedCommands = Readonly<Record<never, never>>;`
 				}
 			]
 		},
-		{
-			id: 'service',
-			label: '3 · Service + host',
-			lede: 'The chat module mounts lobby posts and identity ingress (Zitadel Action + scrape) plus chat/auth projectors. compose folds that Routes inventory into one Service; host boots the process; runner only wires env.',
-			principle: 'Modules compose; host runs the process; runner stays thin.',
-			samples: [
-				{
-					file: 'modules/chat.rs · routes()',
-					caption: 'This demo’s slice: ChatMessage commands + Zitadel extensions + projectors.',
-					code: `pub const MODULE_ID: &str = "chat";
-
-pub fn routes<R, L, S>(...) -> ChatRoutes<R, L, S> {
-  Routes::for_aggregate::<R, L, ChatMessage, S>(repo, locks, read_models)
-    .command_transition::</* Post */>(chat_post::COMMAND)
-    .guarded(causal_has_user, chat_post::handle)
-    // Zitadel Action ingress + on-demand scrape (non-GraphQL).
-    .command(zitadel::COMMAND)
-    .guarded(zitadel::guard, zitadel::handle)
-    .modeled_projector(chat_projector)
-    .handle(project_chat_messages::handle)
-    .events(project_auth_user::EVENTS)
-    .guarded(project_auth_user::guard, project_auth_user::handle)
-}`
-				},
-				{
-					file: 'modules/compose.rs · MODULE_IDS + build_service',
-					caption: 'Inventory is explicit — todo, chat, blob, identity.',
-					code: `pub const MODULE_IDS: &[&str] = &[
-  todo::MODULE_ID, chat::MODULE_ID, blob::MODULE_ID, "identity",
-];
-
-Service::new()
-  .named("e2e-ui")
-  .without_http_command_routes()
-  .routes(todo::routes(/* … */))
-  .routes(chat::routes(/* … */))  // ← this module
-  .routes(blob::routes(/* … */))`
-				},
-				...hostAndRunnerSamples
-			]
-		},
-		{
+{
 			id: 'handlers',
-			label: '4 · Handlers',
+			label: '3 · Handlers',
 			lede: 'Handler creates the chat aggregate through the repository, applies the domain post, commits Eventual (projector path). Author is the session principal after the mount guard.',
 			principle: 'Trust the signed-in person, not the request body.',
 			samples: [
@@ -587,9 +546,9 @@ Service::new()
 				}
 			]
 		},
-		{
+{
 			id: 'domain',
-			label: '5 · Domain',
+			label: '4 · Domain',
 			lede: 'Chat domain is a plain Rust aggregate — one message is one consistency boundary. Public methods enforce rules; private #[event] helpers record history. No GraphQL in the model.',
 			principle: 'Start with the domain, not the database.',
 			samples: [
@@ -664,9 +623,9 @@ fn record_posted(
 				}
 			]
 		},
-		{
+{
 			id: 'events',
-			label: '6 · Events',
+			label: '5 · Events',
 			lede: 'Domain events drive the chat_messages projection via a named GraphQL mutation program. ChangeHub wakes @live subscribers when rows land.',
 			principle: 'Commands change the world; tables are for reading.',
 			samples: [
@@ -680,7 +639,7 @@ fn record_posted(
     model: ChatMessages,
     on {
       events: [ChatMessagePostedDomainEvent],
-      mutation: save_chat_message,
+      mutation: SaveChatMessage,
       input: { message: body },
     },
   };
@@ -695,6 +654,47 @@ mutation SaveChatMessage {
 }`
 				}
 			]
+		},
+{
+			id: 'service',
+			label: '6 · Service + host',
+			lede: 'The chat module mounts lobby posts and identity ingress (Zitadel Action + scrape) plus chat/auth projectors. compose folds that Routes inventory into one Service; host boots the process; runner only wires env.',
+			principle: 'Modules compose; host runs the process; runner stays thin.',
+			samples: [
+				{
+					file: 'modules/chat.rs · routes()',
+					caption: 'This demo’s slice: ChatMessage commands + Zitadel extensions + projectors.',
+					code: `pub const MODULE_ID: &str = "chat";
+
+pub fn routes<R, L, S>(...) -> ChatRoutes<R, L, S> {
+  Routes::for_aggregate::<R, L, ChatMessage, S>(repo, locks, read_models)
+    .command_transition::</* Post */>(chat_post::COMMAND)
+    .guarded(causal_has_user, chat_post::handle)
+    // Zitadel Action ingress + on-demand scrape (non-GraphQL).
+    .command(zitadel::COMMAND)
+    .guarded(zitadel::guard, zitadel::handle)
+    .modeled_projector(chat_projector)
+    .handle(project_chat_messages::handle)
+    .events(project_auth_user::EVENTS)
+    .guarded(project_auth_user::guard, project_auth_user::handle)
+}`
+				},
+				{
+					file: 'modules/compose.rs · MODULE_IDS + build_service',
+					caption: 'Inventory is explicit — todo, chat, blob, identity.',
+					code: `pub const MODULE_IDS: &[&str] = &[
+  todo::MODULE_ID, chat::MODULE_ID, blob::MODULE_ID, "identity",
+];
+
+Service::new()
+  .named("e2e-ui")
+  .without_http_command_routes()
+  .routes(todo::routes(/* … */))
+  .routes(chat::routes(/* … */))  // ← this module
+  .routes(blob::routes(/* … */))`
+				},
+				...hostAndRunnerSamples
+			]
 		}
 	]
 };
@@ -707,7 +707,7 @@ export const blobWalkthrough: DemoWalkthrough = {
 	summary:
 		'One @load query owns the board. Moves are Atomic with thin input (game_id + direction). Because the next board is a pure function of the known row + direction, the service declares a pure reduce: the client runs blob-domain rules in WASM to paint immediately, then the handler runs the same pure, stages the row, and Atomic seals authority. No hand-written TypeScript rules; gen-client hosts the WASM pure.',
 	tabs: [
-		{
+{
 			id: 'query',
 			label: '1 · Query',
 			lede: 'One operation lists games (and map JSON) from the BlobGames read model. URL selects which game is active; the board derives from the replica. Row RBAC scopes lists to the owner (unless admin).',
@@ -769,7 +769,7 @@ const games = $derived(
 				}
 			]
 		},
-		{
+{
 			id: 'commands',
 			label: '2 · Commands + pure',
 			lede: 'Why a pure? Auto-optimism from input alone cannot invent the next map — that needs the known board. A pure reduce is the contract for “given this cached row + direction, compute assign fields.” Benefits: one ruleset (domain core), no TS twin to drift, fail-closed paint (null → keep old board), and Atomic still seals truth. Costs: need the row in cache and WASM warm; wrong pure would thrash — so WASM is the same Rust pure the aggregate uses.',
@@ -846,46 +846,9 @@ export async function ensurePureFunctionsReady() {
 				}
 			]
 		},
-		{
-			id: 'service',
-			label: '3 · Service + host',
-			lede: 'The blob module only mounts Atomic BlobGame commands (direct seal in the handler — no async board projector). compose adds that Routes inventory to the same Service as todos/chat; host runs the process; runner is env-only.',
-			principle: 'Modules compose; host runs the process; runner stays thin.',
-			samples: [
-				{
-					file: 'modules/blob.rs · MODULE_ID + routes()',
-					caption: 'This demo’s slice: start / move / start_level — Atomic, guarded, pure on move.',
-					code: `pub const MODULE_ID: &str = "blob";
-
-pub fn routes<R, L, S>(...) -> BlobRoutes<R, L, S> {
-  Routes::for_aggregate::<R, L, BlobGame, S>(repo, locks, read_models)
-    .command_transition::</* StartWithMap */>(blob_start::COMMAND)
-    .guarded(causal_has_user, blob_start::handle)
-    .command_transition::</* MoveDir */>(blob_move::COMMAND)
-    .preview_reduce_known_record(/* wasm pure blob.simulate_move */)
-    .guarded(causal_has_user, blob_move::handle)
-    .command_transition::</* StartLevel */>(blob_start_level::COMMAND)
-    .guarded(causal_has_user, blob_start_level::handle)
-}`
-				},
-				{
-					file: 'modules/compose.rs · blob routes',
-					caption: 'Same Service composition as todos/chat.',
-					code: `let blob = blob::routes(repo, locks, read_models, projections.blob);
-
-Service::new()
-  .named("e2e-ui")
-  .without_http_command_routes()
-  .routes(todos)
-  .routes(chat)
-  .routes(blob)  // ← this module`
-				},
-				...hostAndRunnerSamples
-			]
-		},
-		{
+{
 			id: 'handlers',
-			label: '4 · Handlers',
+			label: '3 · Handlers',
 			lede: 'Get aggregate, domain move (same pure as WASM under the hood), stage the mutation-derived row, commit Atomic — one transaction for aggregate, ledger, and query row. Input parse stays here; session admission already ran on the guard. The pure does not replace this path — it only predicts the row for the UI.',
 			principle: 'Commands change the world; tables are for reading.',
 			samples: [
@@ -911,7 +874,7 @@ Service::new()
   // move_dir → core::simulate_move (same pure as client WASM)
   game.move_dir(&owner, dir).map_err(rejected)?;
 
-  let row = save_blob_game()
+  let row = SaveBlobGame()
     .from_state(&BlobGameState::from(&*game))
     .map_err(|error| HandlerError::Other(Box::new(error)))?;
   repo.readmodel(row)
@@ -922,9 +885,9 @@ Service::new()
 				}
 			]
 		},
-		{
+{
 			id: 'domain',
-			label: '5 · Domain + pure core',
+			label: '4 · Domain + pure core',
 			lede: 'One blob-domain crate, two faces: core (pure board rules, WASM-eligible) and models (sourced aggregate, feature domain). The pure is intentionally free of ownership and Entity — those stay on the aggregate. Client and server share core so optimism cannot drift from seal.',
 			principle: 'Start with the domain, not the database — and share the pure, not a twin.',
 			samples: [
@@ -980,10 +943,10 @@ pub fn blob_simulate_move(record_json: &str, args_json: &str)
 				}
 			]
 		},
-		{
+{
 			id: 'events',
-			label: '6 · Events',
-			lede: 'Domain events still exist for history. For blob, the same save_blob_game mutation program runs direct in the command handler (same commit as the event) — so the response can carry the row. Eventual placement would run that IR in an event handler instead, with no response channel to the waiting client.',
+			label: '5 · Events',
+			lede: 'Domain events still exist for history. For blob, the same SaveBlobGame mutation program runs direct in the command handler (same commit as the event) — so the response can carry the row. Eventual placement would run that IR in an event handler instead, with no response channel to the waiting client.',
 			principle: 'Know which side of the fence you are on.',
 			samples: [
 				{
@@ -1001,7 +964,7 @@ pub fn blob_simulate_move(record_json: &str, args_json: &str)
         BlobStartedDomainEvent,
         BlobMovedDomainEvent,
       ],
-      mutation: save_blob_game,
+      mutation: SaveBlobGame,
       input: { game: body },
     },
   };
@@ -1028,6 +991,43 @@ mutation SaveBlobGame {
 // Handler stages the row via readmodel(row).commit()?.atomic()`
 				}
 			]
+		},
+{
+			id: 'service',
+			label: '6 · Service + host',
+			lede: 'The blob module only mounts Atomic BlobGame commands (direct seal in the handler — no async board projector). compose adds that Routes inventory to the same Service as todos/chat; host runs the process; runner is env-only.',
+			principle: 'Modules compose; host runs the process; runner stays thin.',
+			samples: [
+				{
+					file: 'modules/blob.rs · MODULE_ID + routes()',
+					caption: 'This demo’s slice: start / move / start_level — Atomic, guarded, pure on move.',
+					code: `pub const MODULE_ID: &str = "blob";
+
+pub fn routes<R, L, S>(...) -> BlobRoutes<R, L, S> {
+  Routes::for_aggregate::<R, L, BlobGame, S>(repo, locks, read_models)
+    .command_transition::</* StartWithMap */>(blob_start::COMMAND)
+    .guarded(causal_has_user, blob_start::handle)
+    .command_transition::</* MoveDir */>(blob_move::COMMAND)
+    .preview_reduce_known_record(/* wasm pure blob.simulate_move */)
+    .guarded(causal_has_user, blob_move::handle)
+    .command_transition::</* StartLevel */>(blob_start_level::COMMAND)
+    .guarded(causal_has_user, blob_start_level::handle)
+}`
+				},
+				{
+					file: 'modules/compose.rs · blob routes',
+					caption: 'Same Service composition as todos/chat.',
+					code: `let blob = blob::routes(repo, locks, read_models, projections.blob);
+
+Service::new()
+  .named("e2e-ui")
+  .without_http_command_routes()
+  .routes(todos)
+  .routes(chat)
+  .routes(blob)  // ← this module`
+				},
+				...hostAndRunnerSamples
+			]
 		}
 	]
 };
@@ -1040,7 +1040,7 @@ export const adminWalkthrough: DemoWalkthrough = {
 	summary:
 		'Start with the elevated query on e2e-ui-admin. Force-archive is an Eventual command on that surface only — still optimistic cache on the admin replica, still repo → aggregate → commit on the server.',
 	tabs: [
-		{
+{
 			id: 'query',
 			label: '1 · Query',
 			lede: 'Admin list is a different generated client and route registry over the same Todos read model. Same GraphQL engine, different surface privilege — admin grant sees every owner’s todos.',
@@ -1098,7 +1098,7 @@ pub struct Todos {
 				}
 			]
 		},
-		{
+{
 			id: 'commands',
 			label: '2 · Commands',
 			lede: 'Elevated mutations only exist on the admin command tree. They still update the admin replica cache that feeds this page’s UI.',
@@ -1133,47 +1133,9 @@ pub struct Todos {
 				}
 			]
 		},
-		{
-			id: 'service',
-			label: '3 · Service + host',
-			lede: 'Admin is not a second binary — it is a second GraphQL surface (e2e-ui-admin) over the same e2e-service host/runner. Force-archive is mounted once in modules/todo.rs; only the admin client inventory includes it. Same compose, host, and runner as user demos.',
-			principle: 'Roles and surfaces are real; modules and host stay shared.',
-			samples: [
-				{
-					file: 'modules/todo.rs · force_archive mount',
-					caption: 'Same todo module that serves /todos — elevated field on the same Routes inventory.',
-					code: `.command_transition::<
-  domain_commands::ForceArchive,
-  /* … */,
->(todo_force_archive::COMMAND)
-.field_name("todos_force_archive")
-.roles(["admin"])
-.guarded(causal_is_admin, todo_force_archive::handle)`
-				},
-				{
-					file: 'modules/graphql.rs · dual surfaces',
-					caption: 'Service crate opens user + admin + public application surfaces.',
-					code: `.client_application_surface_with_schema_roles(
-  "e2e-ui",
-  ["admin", "user"],
-  ["user"],
-)
-.client_application_surface("e2e-ui-admin", ["admin"])
-.client_application_surface("e2e-ui-public", ["anonymous"])`
-				},
-				{
-					file: 'application.rs · surface constants',
-					caption: 'Stable surface names used by gen-client and host identity.',
-					code: `pub const DISTRIBUTED_CLIENT_SURFACE: &str = "e2e-ui";
-pub const DISTRIBUTED_ADMIN_CLIENT_SURFACE: &str = "e2e-ui-admin";
-pub const DISTRIBUTED_PUBLIC_CLIENT_SURFACE: &str = "e2e-ui-public";`
-				},
-				...hostAndRunnerSamples
-			]
-		},
-		{
+{
 			id: 'handlers',
-			label: '4 · Handlers',
+			label: '3 · Handlers',
 			lede: 'Handler still uses repo.get → domain force_archive → Eventual commit. Authorization is role + surface + mount guard, not a special HTTP path.',
 			principle: 'Trust the signed-in person, not the request body.',
 			samples: [
@@ -1204,9 +1166,9 @@ pub const DISTRIBUTED_PUBLIC_CLIENT_SURFACE: &str = "e2e-ui-public";`
 				}
 			]
 		},
-		{
+{
 			id: 'domain',
-			label: '5 · Domain',
+			label: '4 · Domain',
 			lede: 'Same Todo aggregate as /todos — elevated methods live on the domain type, not in the GraphQL layer. One write model, many surfaces.',
 			principle: 'Start with the domain, not the database.',
 			samples: [
@@ -1253,10 +1215,10 @@ fn record_force_archived(&mut self) {
 				}
 			]
 		},
-		{
+{
 			id: 'events',
-			label: '6 · Events',
-			lede: 'Force-archive emits TodoForceArchivedDomainEvent into the same todos projection path (and same save_todo mutation) as owner archive — every surface’s replica converges on one query model.',
+			label: '5 · Events',
+			lede: 'Force-archive emits TodoForceArchivedDomainEvent into the same todos projection path (and same SaveTodo mutation) as owner archive — every surface’s replica converges on one query model.',
 			principle: 'Register once, ship everywhere.',
 			samples: [
 				{
@@ -1274,12 +1236,12 @@ fn record_force_archived(&mut self) {
         TodoArchivedDomainEvent,
         TodoForceArchivedDomainEvent, // admin path
       ],
-      mutation: save_todo,
+      mutation: SaveTodo,
       input: { todo: body },
     },
     on {
       events: [TodoPurgedDomainEvent],
-      mutation: delete_todo,
+      mutation: DeleteTodo,
       input: { todo_id: aggregate_id },
     },
   };
@@ -1301,6 +1263,44 @@ mutation DeleteTodo {
   delete_Todos_by_pk(todo_id: $input.todo_id)
 }`
 				}
+			]
+		},
+{
+			id: 'service',
+			label: '6 · Service + host',
+			lede: 'Admin is not a second binary — it is a second GraphQL surface (e2e-ui-admin) over the same e2e-service host/runner. Force-archive is mounted once in modules/todo.rs; only the admin client inventory includes it. Same compose, host, and runner as user demos.',
+			principle: 'Roles and surfaces are real; modules and host stay shared.',
+			samples: [
+				{
+					file: 'modules/todo.rs · force_archive mount',
+					caption: 'Same todo module that serves /todos — elevated field on the same Routes inventory.',
+					code: `.command_transition::<
+  domain_commands::ForceArchive,
+  /* … */,
+>(todo_force_archive::COMMAND)
+.field_name("todos_force_archive")
+.roles(["admin"])
+.guarded(causal_is_admin, todo_force_archive::handle)`
+				},
+				{
+					file: 'modules/graphql.rs · dual surfaces',
+					caption: 'Service crate opens user + admin + public application surfaces.',
+					code: `.client_application_surface_with_schema_roles(
+  "e2e-ui",
+  ["admin", "user"],
+  ["user"],
+)
+.client_application_surface("e2e-ui-admin", ["admin"])
+.client_application_surface("e2e-ui-public", ["anonymous"])`
+				},
+				{
+					file: 'application.rs · surface constants',
+					caption: 'Stable surface names used by gen-client and host identity.',
+					code: `pub const DISTRIBUTED_CLIENT_SURFACE: &str = "e2e-ui";
+pub const DISTRIBUTED_ADMIN_CLIENT_SURFACE: &str = "e2e-ui-admin";
+pub const DISTRIBUTED_PUBLIC_CLIENT_SURFACE: &str = "e2e-ui-public";`
+				},
+				...hostAndRunnerSamples
 			]
 		}
 	]

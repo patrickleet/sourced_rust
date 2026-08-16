@@ -211,7 +211,9 @@ fn parse_graphql_token_document(input: ParseStream<'_>) -> Result<MutationDeclar
             "GraphQL-looking mutation body requires at least one operation",
         ));
     }
-    let name = LitStr::new(&pascal_to_snake(&name_ident.to_string()), name_ident.span());
+    // Keep the GraphQL operation name as the program identity so projection
+    // bindings (`mutation: SaveTodo`) match `mutation SaveTodo { … }`.
+    let name = LitStr::new(&name_ident.to_string(), name_ident.span());
     let version_lit = version.map(|v| LitInt::new(&v.to_string(), name_ident.span()));
     Ok(MutationDeclaration {
         name: Some(name),
@@ -244,25 +246,6 @@ fn parse_graphql_document(source: &str, span: proc_macro2::Span) -> Result<Mutat
             format!("failed to parse mutation.graphql document: {error}"),
         )
     })
-}
-
-fn pascal_to_snake(name: &str) -> String {
-    let mut out = String::new();
-    for (index, ch) in name.chars().enumerate() {
-        if ch.is_uppercase() {
-            if index > 0 {
-                out.push('_');
-            }
-            out.extend(ch.to_lowercase());
-        } else {
-            out.push(ch);
-        }
-    }
-    if out.is_empty() {
-        "mutation".into()
-    } else {
-        out
-    }
 }
 
 /// `upsert_Todos(object: $input.todo)` / `delete_Todos_by_pk(todo_id: $input.todo_id)`.

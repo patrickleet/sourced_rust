@@ -3,7 +3,7 @@
 use blob_domain::{BlobGame, BlobGameState};
 use distributed::graphql::{PreparedCommand, Atomic};
 use distributed::microsvc::{CausalCommandContext, HandlerError};
-use e2e_projections::save_blob_game;
+use e2e_projections::SaveBlobGame;
 use e2e_readmodels::BlobGames;
 use serde::Deserialize;
 
@@ -29,7 +29,7 @@ pub async fn handle(
     // Fresh passable layout each level (like original generateLevel)
     game.start_next_generated_level(&owner).map_err(rejected)?;
 
-    let row = save_blob_game()
+    let row = SaveBlobGame()
         .from_state(&BlobGameState::from(&*game))
         .map_err(|error| HandlerError::Other(Box::new(error)))?;
     repo.readmodel(row)

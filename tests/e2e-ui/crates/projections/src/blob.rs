@@ -11,13 +11,13 @@ use e2e_readmodels::BlobGames;
 
 /// Mutation: upsert one BlobGames row from `input.game`.
 ///
-/// Authored as GraphQL-looking syntax-only IR (not a public GraphQL field):
-/// `src/mutations/save_blob_game.mutation.graphql`.
-pub fn save_blob_game() -> Mutation<()> {
+/// The constructor name matches the document operation: `mutation SaveBlobGame`.
+#[allow(non_snake_case)]
+pub fn SaveBlobGame() -> Mutation<()> {
     mutation_file!("src/mutations/save_blob_game.mutation.graphql")
 }
 
-// When these domain events fire, apply [`save_blob_game`] (body → `input.game`).
+// When these domain events fire, apply [`SaveBlobGame`] (body → `input.game`).
 // Event-first: on { events, mutation, input } — same shape as todos/chat.
 // Command path stages the row via `Mutation::from_state` +
 // `readmodel(row).commit()?.atomic()`.
@@ -35,7 +35,7 @@ distributed::projection! {
                 BlobStartedDomainEvent,
                 BlobMovedDomainEvent,
             ],
-            mutation: save_blob_game,
+            mutation: SaveBlobGame,
             input: { game: body },
         },
     };
@@ -348,7 +348,7 @@ mod tests {
                 && arm.operations()[0].kind() == ProjectionMutationKind::Upsert
         }));
         assert_eq!(
-            save_blob_game().program().clone().operations()[0].kind(),
+            SaveBlobGame().program().clone().operations()[0].kind(),
             MutationKind::Upsert
         );
     }
@@ -358,7 +358,7 @@ mod tests {
         let mut game = BlobGame::default();
         game.start_with_demo("g1", "alice").unwrap();
         let state = BlobGameState::from(&game);
-        let row: BlobGames = save_blob_game()
+        let row: BlobGames = SaveBlobGame()
             .from_state(&state)
             .expect("mutation from_state builds the projected row");
         assert_eq!(row.game_id, "g1");
@@ -369,7 +369,8 @@ mod tests {
 
     #[test]
     fn save_blob_game_mutation_is_single_row_event_free_upsert() {
-        let program = save_blob_game().program().clone();
+        let program = SaveBlobGame().program().clone();
+        assert_eq!(program.name(), "SaveBlobGame");
         assert_eq!(program.operations().len(), 1);
         assert_eq!(program.operations()[0].kind(), MutationKind::Upsert);
         assert_eq!(program.operations()[0].target().model(), "BlobGames");

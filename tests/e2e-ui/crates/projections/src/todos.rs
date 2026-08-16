@@ -12,21 +12,22 @@ use todo_domain::{
 
 /// Mutation: complete-row upsert for Todo state transfer.
 ///
-/// Authored as GraphQL-looking syntax-only IR (not a public GraphQL field):
-/// `src/mutations/save_todo.mutation.graphql`.
-pub fn save_todo() -> Mutation<()> {
+/// Authored as GraphQL-looking syntax-only IR (not a public GraphQL field).
+/// The constructor name matches the document operation: `mutation SaveTodo`.
+#[allow(non_snake_case)]
+pub fn SaveTodo() -> Mutation<()> {
     mutation_file!("src/mutations/save_todo.mutation.graphql")
 }
 
 /// Mutation: delete Todo by primary key (purge).
 ///
-/// Authored as GraphQL-looking syntax-only IR (not a public GraphQL field):
-/// `src/mutations/delete_todo.mutation.graphql`.
-pub fn delete_todo() -> Mutation<()> {
+/// The constructor name matches the document operation: `mutation DeleteTodo`.
+#[allow(non_snake_case)]
+pub fn DeleteTodo() -> Mutation<()> {
     mutation_file!("src/mutations/delete_todo.mutation.graphql")
 }
 
-// Lifecycle state events → [`save_todo`]; purge → [`delete_todo`].
+// Lifecycle state events → [`SaveTodo`]; purge → [`DeleteTodo`].
 // Macro is `projection!` (crate root); `distributed::projection` is the module.
 distributed::projection! {
     pub const TODOS: ProjectionDescriptor<EventualOnly> = {
@@ -44,12 +45,12 @@ distributed::projection! {
                 TodoArchivedDomainEvent,
                 TodoForceArchivedDomainEvent,
             ],
-            mutation: save_todo,
+            mutation: SaveTodo,
             input: { todo: body },
         },
         on {
             events: [TodoPurgedDomainEvent],
-            mutation: delete_todo,
+            mutation: DeleteTodo,
             input: { todo_id: aggregate_id },
         },
     };
@@ -68,8 +69,8 @@ mod tests {
     fn todo_handlers_apply_save_and_delete_mutations() {
         let program = TODOS.program().unwrap();
         assert_eq!(program.arms().len(), 8);
-        assert_eq!(save_todo().program().operations()[0].kind(), MutationKind::Upsert);
-        assert_eq!(delete_todo().program().operations()[0].kind(), MutationKind::Delete);
+        assert_eq!(SaveTodo().program().operations()[0].kind(), MutationKind::Upsert);
+        assert_eq!(DeleteTodo().program().operations()[0].kind(), MutationKind::Delete);
     }
 
     #[test]
@@ -108,14 +109,16 @@ mod tests {
 
     #[test]
     fn mutations_are_event_free() {
-        let json = serde_json::to_value(save_todo().program()).unwrap().to_string();
+        let json = serde_json::to_value(SaveTodo().program()).unwrap().to_string();
         assert!(!json.contains("event_name"));
     }
 
     #[test]
     fn graphql_file_matches_inline_graphql_looking_form() {
         use distributed::mutation;
-        let from_file = save_todo().program().canonical_bytes().unwrap();
+        assert_eq!(SaveTodo().program().name(), "SaveTodo");
+        assert_eq!(DeleteTodo().program().name(), "DeleteTodo");
+        let from_file = SaveTodo().program().canonical_bytes().unwrap();
         let inline = mutation! {
             mutation SaveTodo {
                 upsert_Todos(object: $input.todo)
@@ -127,7 +130,7 @@ mod tests {
             "mutation_file! and inline GraphQL-looking mutation! must share IR"
         );
         let classic = mutation! {
-            name: "save_todo";
+            name: "SaveTodo";
             version: 1;
             upsert Todos from input.todo;
         };

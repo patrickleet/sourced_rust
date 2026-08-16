@@ -101,12 +101,12 @@ projection! {
                 TodoArchivedDomainEvent,
                 // …
             ],
-            mutation: save_todo,
+            mutation: SaveTodo,
             input: { todo: body },
         },
         on {
             events: [TodoPurgedDomainEvent],
-            mutation: delete_todo,
+            mutation: DeleteTodo,
             input: { todo_id: aggregate_id },
         },
     };

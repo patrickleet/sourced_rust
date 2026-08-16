@@ -143,7 +143,7 @@ pub fn command_input_defaults(input: TokenStream) -> TokenStream {
 ///
 /// ```ignore
 /// mutation! {
-///     name: "save_todo";
+///     name: "SaveTodo";
 ///     version: 1;
 ///     upsert Todos from input.todo;
 /// }
@@ -160,7 +160,7 @@ pub fn mutation(input: TokenStream) -> TokenStream {
 /// Not a public GraphQL schema field.
 ///
 /// ```ignore
-/// pub fn save_todo() -> Mutation<()> {
+/// pub fn SaveTodo() -> Mutation<()> {
 ///     mutation_file!("src/mutations/save_todo.mutation.graphql")
 /// }
 /// ```

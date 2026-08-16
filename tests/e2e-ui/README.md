@@ -65,10 +65,10 @@ fn record_completed(&mut self) {
 // 1) Mutation (event-free, GraphQL-looking syntax-only — not a public GQL field)
 // src/mutations/save_todo.mutation.graphql:
 //   mutation SaveTodo { upsert_Todos(object: $input.todo) }
-pub fn save_todo() -> Mutation<()> {
+pub fn SaveTodo() -> Mutation<()> {
     mutation_file!("src/mutations/save_todo.mutation.graphql")
 }
-pub fn delete_todo() -> Mutation<()> {
+pub fn DeleteTodo() -> Mutation<()> {
     mutation_file!("src/mutations/delete_todo.mutation.graphql")
 }
 
@@ -84,12 +84,12 @@ projection! {
                 TodoCreatedDomainEvent,
                 TodoCompletedDomainEvent, /* … */
             ],
-            mutation: save_todo,
+            mutation: SaveTodo,
             input: { todo: body },
         },
         on {
             events: [TodoPurgedDomainEvent],
-            mutation: delete_todo,
+            mutation: DeleteTodo,
             input: { todo_id: aggregate_id },
         },
     };
@@ -147,7 +147,7 @@ let mut game = repo
     .ok_or_else(|| HandlerError::NotFound(input.game_id.clone()))?;
 game.move_dir(&owner, direction).map_err(rejected)?;
 
-let row = save_blob_game()
+let row = SaveBlobGame()
     .from_state(&BlobGameState::from(&*game))?;
 repo.readmodel(row)
     .publish_events()
@@ -162,8 +162,8 @@ relationship work remain eventual.
 
 ### Ship contract: same IR, two response proofs (agents)
 
-There is **one** portable mutation program (e.g. `save_blob_game` /
-`save_todo`). Placement chooses *where* it runs. The **command response**
+There is **one** portable mutation program (e.g. `SaveBlobGame` /
+`SaveTodo`). Placement chooses *where* it runs. The **command response**
 differs on purpose — do **not** collapse them into “always send a causal delta.”
 
 | Contract | Apply site | Mutation response (ship) | Client seal |
@@ -174,7 +174,7 @@ differs on purpose — do **not** collapse them into “always send a causal del
 Handler for Atomic — this *is* returning atomic read-model updates:
 
 ```rust
-let row = save_blob_game().from_state(&BlobGameState::from(&*game))?;
+let row = SaveBlobGame().from_state(&BlobGameState::from(&*game))?;
 repo.readmodel(row).publish_events().commit(game)?.projected()
 // GraphQL returns BlobGames; extensions.records from same-tx evidence.
 ```

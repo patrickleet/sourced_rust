@@ -7,7 +7,7 @@
 use blob_domain::{BlobGame, BlobGameState, Direction};
 use distributed::graphql::{Atomic, PreparedCommand};
 use distributed::microsvc::{CausalCommandContext, HandlerError};
-use e2e_projections::save_blob_game;
+use e2e_projections::SaveBlobGame;
 use e2e_readmodels::BlobGames;
 use serde::Deserialize;
 
@@ -40,7 +40,7 @@ pub async fn handle(
         .ok_or_else(|| HandlerError::NotFound(input.game_id.clone()))?;
     game.move_dir(&owner, dir).map_err(rejected)?;
 
-    let row = save_blob_game()
+    let row = SaveBlobGame()
         .from_state(&BlobGameState::from(&*game))
         .map_err(|error| HandlerError::Other(Box::new(error)))?;
     repo.readmodel(row)

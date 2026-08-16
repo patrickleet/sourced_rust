@@ -68,7 +68,7 @@
 			<h2 id="hib-title-{demo.id}" class="hib-title">How it’s built</h2>
 			<p class="hib-summary">{demo.summary}</p>
 			<p class="hib-path" aria-hidden="true">
-				Browser query → commands → service / host / runner → handlers → domain → events
+				Browser query → commands → handlers → domain → events → service / host / runner
 			</p>
 		</div>
 		<button type="button" class="hib-close" onclick={closePanel} aria-label="Close">
