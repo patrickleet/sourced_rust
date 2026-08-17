@@ -163,7 +163,7 @@ pub use ordered_delivery::OrderedDelivery;
 pub use postgres_bus::{LogReceived, PostgresBus, QueueReceived};
 pub use publisher::MessagePublisher;
 pub use router::MessageRouter;
-pub use run_options::{ConsumerDeliveryMode, InboxHook, NoInbox, RunOptions};
+pub use run_options::{ConsumerDeliveryMode, IdlePolicy, InboxHook, NoInbox, RunOptions};
 pub use runner::run_source;
 pub use source::{MessageSource, ReceivedMessage};
 #[cfg(feature = "sqlite")]

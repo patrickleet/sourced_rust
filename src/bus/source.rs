@@ -37,6 +37,19 @@ pub trait MessageSource: Send {
     fn recv(
         &mut self,
     ) -> impl Future<Output = Result<Option<Self::Received>, TransportError>> + Send + '_;
+
+    /// Park until `recv` might return work. Used only when
+    /// [`IdlePolicy::Wait`](super::IdlePolicy::Wait) is set.
+    ///
+    /// The default sleeps a short interval so an adapter that cannot wait
+    /// does not busy-spin. Adapters with a wakeup (notify, LISTEN, broker
+    /// long-poll) should override this.
+    fn wait(&mut self) -> impl Future<Output = Result<(), TransportError>> + Send + '_ {
+        async {
+            tokio::time::sleep(std::time::Duration::from_millis(25)).await;
+            Ok(())
+        }
+    }
 }
 
 /// A message received from a transport, plus the means to settle it.

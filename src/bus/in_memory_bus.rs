@@ -13,6 +13,8 @@
 use std::collections::{HashMap, VecDeque};
 use std::sync::{Arc, Mutex};
 
+use tokio::sync::Notify;
+
 use super::source::{MessageSource, ReceivedMessage};
 use super::{run_source, Bus, BusConsumer, MessageRouter, RunOptions, TransportError};
 use super::{Message, OrderedDelivery};
@@ -35,6 +37,7 @@ pub struct InMemoryBus {
     queues: Queues,
     topics: Topics,
     source_epoch: ProjectionEpoch,
+    wake: Arc<Notify>,
 }
 
 impl Default for InMemoryBus {
@@ -44,6 +47,7 @@ impl Default for InMemoryBus {
             topics: Topics::default(),
             source_epoch: ProjectionEpoch::new(format!("instance-{}", uuid::Uuid::now_v7()))
                 .expect("an in-memory bus UUID is a valid projection source epoch"),
+            wake: Arc::new(Notify::new()),
         }
     }
 }
@@ -60,6 +64,7 @@ impl InMemoryBus {
             .entry(message.name().to_string())
             .or_default()
             .push_back(message);
+        self.wake.notify_waiters();
         Ok(())
     }
 
@@ -79,6 +84,7 @@ impl InMemoryBus {
             .entry(message.name().to_string())
             .or_default()
             .push(message);
+        self.wake.notify_waiters();
         Ok(())
     }
 
@@ -138,6 +144,7 @@ impl BusConsumer for InMemoryBus {
         let source = QueueSource {
             queues: self.queues.clone(),
             names,
+            wake: Arc::clone(&self.wake),
         };
         run_source(router, source, options).await
     }
@@ -153,6 +160,7 @@ impl BusConsumer for InMemoryBus {
             names,
             cursors: TopicCursors::default(),
             source_epoch: self.source_epoch.clone(),
+            wake: Arc::clone(&self.wake),
         };
         run_source(router, source, options).await
     }
@@ -162,6 +170,7 @@ impl BusConsumer for InMemoryBus {
 struct QueueSource {
     queues: Queues,
     names: Vec<String>,
+    wake: Arc<Notify>,
 }
 
 impl MessageSource for QueueSource {
@@ -184,6 +193,11 @@ impl MessageSource for QueueSource {
         }
         Ok(None)
     }
+
+    async fn wait(&mut self) -> Result<(), TransportError> {
+        self.wake.notified().await;
+        Ok(())
+    }
 }
 
 /// Fan-out source over the named retained logs: each `TopicSource` has its own
@@ -193,6 +207,7 @@ struct TopicSource {
     names: Vec<String>,
     cursors: TopicCursors,
     source_epoch: ProjectionEpoch,
+    wake: Arc<Notify>,
 }
 
 impl MessageSource for TopicSource {
@@ -237,6 +252,11 @@ impl MessageSource for TopicSource {
             }
         }
         Ok(None)
+    }
+
+    async fn wait(&mut self) -> Result<(), TransportError> {
+        self.wake.notified().await;
+        Ok(())
     }
 }
 
@@ -375,10 +395,12 @@ mod tests {
         let mut a = QueueSource {
             queues: bus.queues.clone(),
             names: vec!["work".to_string()],
+            wake: Arc::clone(&bus.wake),
         };
         let mut b = QueueSource {
             queues: bus.queues.clone(),
             names: vec!["work".to_string()],
+            wake: Arc::clone(&bus.wake),
         };
         let mut got = Vec::new();
         // Alternate; each pop removes the message (competing).
@@ -437,6 +459,7 @@ mod tests {
             names: vec!["evt".into()],
             cursors: TopicCursors::default(),
             source_epoch: bus.source_epoch.clone(),
+            wake: Arc::clone(&bus.wake),
         };
 
         let first = block_on(source.recv()).unwrap().unwrap();
@@ -482,6 +505,7 @@ mod tests {
             names: vec!["evt".into()],
             cursors: TopicCursors::default(),
             source_epoch: bus.source_epoch.clone(),
+            wake: Arc::clone(&bus.wake),
         };
         let received = block_on(source.recv()).unwrap().unwrap();
         assert_eq!(received.message().id(), Some("e0"));

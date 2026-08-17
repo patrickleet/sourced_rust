@@ -41,7 +41,11 @@
 //! [`MessageSource`]: super::MessageSource
 //! [`run_source`]: super::run_source
 
+use std::sync::Arc;
+
+use sqlx::postgres::PgListener;
 use sqlx::{PgConnection, PgPool, Row};
+use tokio::sync::Mutex;
 
 use super::sql_bus_common::{
     db_err as sql_db_err, message_from_row, metadata_json, validate_log_retry, ClaimedRow,
@@ -132,7 +136,10 @@ impl PostgresBus {
     /// `bus_queue` by message name, so command replicas compete by listening to the
     /// same registered command names.
     pub fn new(pool: PgPool) -> Self {
-        SqlBus::from_dialect(PostgresBusDialect { pool })
+        SqlBus::from_dialect(PostgresBusDialect {
+            pool,
+            listener: Arc::new(Mutex::new(None)),
+        })
     }
 
     /// Build a bus with an explicit group for direct/low-level use.
@@ -145,6 +152,7 @@ impl PostgresBus {
 #[derive(Clone)]
 pub struct PostgresBusDialect {
     pool: PgPool,
+    listener: Arc<Mutex<Option<PgListener>>>,
 }
 
 impl PostgresBusDialect {
@@ -382,7 +390,12 @@ impl SqlBusDialect for PostgresBusDialect {
             "enqueue",
             message,
         )
-        .await
+        .await?;
+        sqlx::query("SELECT pg_notify('distributed_bus_queue', '')")
+            .execute(&self.pool)
+            .await
+            .map_err(|err| db_err("notify queue", err))?;
+        Ok(())
     }
 
     async fn insert_log(
@@ -582,6 +595,44 @@ impl SqlBusDialect for PostgresBusDialect {
                 })
             })
             .collect()
+    }
+
+    async fn has_claimable(&self, names: &[String]) -> Result<bool, TransportError> {
+        let row = sqlx::query(
+            "SELECT 1 FROM bus_queue \
+             WHERE (name = ANY($1) OR name IS NULL) AND available_at <= now() \
+                   AND (locked_until IS NULL OR locked_until <= now()) \
+             LIMIT 1",
+        )
+        .bind(names)
+        .fetch_optional(&self.pool)
+        .await
+        .map_err(|err| db_err("peek claimable", err))?;
+        Ok(row.is_some())
+    }
+
+    async fn listen_wakeup(&self) -> Result<(), TransportError> {
+        let mut listener = {
+            let mut slot = self.listener.lock().await;
+            match slot.take() {
+                Some(existing) => existing,
+                None => {
+                    let mut created = PgListener::connect_with(&self.pool)
+                        .await
+                        .map_err(|err| db_err("connect notify listener", err))?;
+                    created
+                        .listen("distributed_bus_queue")
+                        .await
+                        .map_err(|err| db_err("listen distributed_bus_queue", err))?;
+                    created
+                }
+            }
+        };
+        let received = listener.recv().await;
+        *self.listener.lock().await = Some(listener);
+        received
+            .map(|_| ())
+            .map_err(|err| db_err("recv queue notify", err))
     }
 
     async fn log_read(

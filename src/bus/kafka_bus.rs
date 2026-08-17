@@ -18,10 +18,14 @@
 //!
 //! Requires the `kafka` feature. Integration-tested in `tests/kafka_transport`.
 
+use std::collections::HashMap;
 use std::future::{Future, IntoFuture};
 use std::pin::Pin;
 use std::sync::Arc;
 use std::time::Duration;
+
+use rdkafka::consumer::StreamConsumer;
+use tokio::sync::Mutex;
 
 use super::kafka::{KafkaPublisher, KafkaSource};
 use super::{
@@ -39,6 +43,8 @@ pub struct KafkaBus {
     publisher: Arc<KafkaPublisher>,
     topology: BusTopologyConfig,
     fetch_timeout: Duration,
+    fetch_max: usize,
+    consumers: Arc<Mutex<HashMap<String, Arc<StreamConsumer>>>>,
 }
 
 /// Awaitable builder returned by [`KafkaBus::connect`].
@@ -77,6 +83,8 @@ impl KafkaBusConnect {
             publisher: Arc::new(publisher),
             topology,
             fetch_timeout: self.fetch_timeout,
+            fetch_max: 32,
+            consumers: Arc::new(Mutex::new(HashMap::new())),
         })
     }
 }
@@ -176,9 +184,21 @@ impl KafkaBus {
             .resolve_consumer_group(router.as_ref(), "kafka")?;
         let group_id = format!("{namespace}.{group}.{suffix}");
         let topic_refs: Vec<&str> = topics.iter().map(String::as_str).collect();
-        let source = KafkaSource::connect(&self.brokers, &group_id, &topic_refs)
-            .await?
+        let consumer = {
+            let mut cache = self.consumers.lock().await;
+            if let Some(existing) = cache.get(&group_id) {
+                Arc::clone(existing)
+            } else {
+                let created = KafkaSource::connect(&self.brokers, &group_id, &topic_refs)
+                    .await?
+                    .consumer;
+                cache.insert(group_id, Arc::clone(&created));
+                created
+            }
+        };
+        let source = KafkaSource::new(consumer)
             .with_fetch_timeout(self.fetch_timeout)
+            .with_fetch_max(self.fetch_max)
             .with_strip_prefix(prefix);
         run_source(router, source, options).await
     }
@@ -248,6 +268,8 @@ mod tests {
             publisher: Arc::new(KafkaPublisher::new(producer)),
             topology: BusTopologyConfig::default(),
             fetch_timeout: Duration::from_millis(1),
+            fetch_max: 32,
+            consumers: Arc::new(Mutex::new(HashMap::new())),
         }
     }
 

@@ -49,7 +49,7 @@ where
 
 async fn commit_sqlx_batch<'a, DB>(
     repository: &'a SqlxRepository<DB>,
-    batch: CommitBatch<'a>,
+    batch: &mut CommitBatch<'a>,
     mut completion: Option<CommandCompletion>,
     direct_projection: Option<SameTransactionProjectionBatch>,
 ) -> Result<(), CommandLedgerError>
@@ -127,11 +127,11 @@ where
     insert_outbox_messages_in_tx(&mut tx, &batch.outbox_messages).await?;
 
     let mut changed_tables = std::collections::BTreeSet::new();
-    for plan in batch.read_model_plans {
+    for plan in &batch.read_model_plans {
         for mutation in &plan.mutations {
             changed_tables.insert(mutation.table_name().to_string());
         }
-        apply_read_model_write_plan_in_tx(&mut tx, plan)
+        apply_read_model_write_plan_in_tx(&mut tx, plan.clone())
             .await
             .map_err(RepositoryError::from)?;
     }
@@ -154,10 +154,10 @@ where
         changed_tables.insert(PROJECTION_CHANGE_NOTIFY_TABLE.to_string());
     }
 
-    for write in batch.snapshots {
+    for write in &batch.snapshots {
         match write {
             SnapshotWrite::Save { identity, record } => {
-                save_snapshot_in_tx(&mut tx, &identity, record).await?;
+                save_snapshot_in_tx(&mut tx, identity, record.clone()).await?;
             }
         }
     }
@@ -187,7 +187,7 @@ where
             tables: changed_tables,
         });
     }
-    for stream in batch.streams {
+    for stream in &mut batch.streams {
         stream.entity.mark_committed();
     }
     Ok(())
@@ -211,16 +211,30 @@ where
 {
     fn commit_batch<'a>(
         &'a self,
-        batch: CommitBatch<'a>,
+        mut batch: CommitBatch<'a>,
     ) -> impl Future<Output = Result<(), RepositoryError>> + Send + 'a {
         async move {
-            match commit_sqlx_batch(self, batch, None, None).await {
-                Ok(()) => Ok(()),
-                Err(CommandLedgerError::Storage(error)) => Err(error),
-                Err(error) => Err(RepositoryError::Model(format!(
-                    "unexpected command ledger error in ordinary commit: {error}"
-                ))),
+            let mut delay = std::time::Duration::from_millis(5);
+            for attempt in 0..8 {
+                match commit_sqlx_batch(self, &mut batch, None, None).await {
+                    Ok(()) => return Ok(()),
+                    Err(CommandLedgerError::Storage(error))
+                        if error.is_retryable() && attempt + 1 < 8 =>
+                    {
+                        tokio::time::sleep(delay).await;
+                        delay = (delay * 2).min(std::time::Duration::from_millis(80));
+                    }
+                    Err(CommandLedgerError::Storage(error)) => return Err(error),
+                    Err(error) => {
+                        return Err(RepositoryError::Model(format!(
+                            "unexpected command ledger error in ordinary commit: {error}"
+                        )));
+                    }
+                }
             }
+            Err(RepositoryError::Model(
+                "exhausted retryable storage retries in ordinary commit".into(),
+            ))
         }
     }
 }
@@ -243,14 +257,17 @@ where
 {
     fn commit_causal_batch<'a>(
         &'a self,
-        batch: CausalCommitBatch<'a>,
+        mut batch: CausalCommitBatch<'a>,
     ) -> impl Future<Output = Result<(), CommandLedgerError>> + Send + 'a {
-        commit_sqlx_batch(
-            self,
-            batch.domain,
-            Some(batch.completion),
-            batch.direct_projection,
-        )
+        async move {
+            commit_sqlx_batch(
+                self,
+                &mut batch.domain,
+                Some(batch.completion),
+                batch.direct_projection,
+            )
+            .await
+        }
     }
 }
 
