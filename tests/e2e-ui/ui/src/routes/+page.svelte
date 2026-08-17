@@ -89,18 +89,19 @@ impl Todos {
     }
 }`;
 
-	const codeProjection = `// Event → mutation mapping (server projector + client optimism)
-projection! {
+	const codeProjection = `// Abbreviated from todos.rs — event → mutation
+distributed::projection! {
     pub const TODOS: ProjectionDescriptor<EventualOnly> = {
         name: "project_todos",
         version: 1,
+        epoch: "e2e-ui-todos-v2",
         model: Todos,
         on {
             events: [
                 TodoCreatedDomainEvent,
                 TodoCompletedDomainEvent,
                 TodoArchivedDomainEvent,
-                // …
+                // … rename, reopen, reassign, force-archive
             ],
             mutation: SaveTodo,
             input: { todo: body },
@@ -192,16 +193,17 @@ query Todos @load {
   todos { todo_id title status }
 }`;
 
-	const codeService = `// Same domain + module crates. This Service lists what this process runs.
+	const codeService = `// compose.rs (trimmed). Each routes(...) takes repo, locks,
+// read models, and the projection owner for that module.
 pub const MODULE_IDS: &[&str] = &[
   todo::MODULE_ID, chat::MODULE_ID, blob::MODULE_ID, "identity",
 ];
 
 Service::new()
   .named("e2e-ui")
-  .routes(todo::routes(/* commands + Eventual projector */))
-  .routes(chat::routes(/* … */))
-  .routes(blob::routes(/* Atomic — stays with commands */))
+  .routes(todo::routes(repo.clone(), locks.clone(), read_models.clone(), projections.todo))
+  .routes(chat::routes(repo.clone(), locks.clone(), read_models.clone(), projections.chat))
+  .routes(blob::routes(repo, locks, read_models, projections.blob))
 
 // Another crate can list the same modules, or only Eventual projectors.
 // You write that Service. You do not flip a Runtime::role flag.`;

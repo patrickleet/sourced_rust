@@ -124,12 +124,14 @@ open todos” is a question about a list. Commands load aggregates; queries
 hit a SQL-shaped read model. You avoid forcing both into “update a row,”
 so domain code stays about rules and screens stay about presentation.
 
-```rust,ignore
+```ts
 // Commands → aggregates (accept / reject business rules)
 commands.todo.create({ title })
 commands.todo.archive({ todo_id })
+```
 
-// Queries → SQL-shaped read models (never write tables)
+```graphql
+# Queries → SQL-shaped read models (never write tables)
 query Todos @load {
   todos {
     todo_id
@@ -261,17 +263,19 @@ not a public client field. Field names are snake_case table names
 [`tests/e2e-ui/crates/projections/src/todos.rs`](tests/e2e-ui/crates/projections/src/todos.rs)
 
 ```rust,ignore
-// Event → mutation mapping (server projector + client optimism)
-projection! {
+// Abbreviated from todos.rs — event → mutation (server projector + client optimism)
+distributed::projection! {
     pub const TODOS: ProjectionDescriptor<EventualOnly> = {
         name: "project_todos",
         version: 1,
+        epoch: "e2e-ui-todos-v2",
         model: Todos,
         on {
             events: [
                 TodoCreatedDomainEvent,
                 TodoCompletedDomainEvent,
                 TodoArchivedDomainEvent,
+                // … rename, reopen, reassign, force-archive
             ],
             mutation: SaveTodo,
             input: { todo: body },
@@ -332,16 +336,17 @@ split. Topology is explicit composition — not a hidden matrix.
 [`tests/e2e-ui/crates/service/src/modules/compose.rs`](tests/e2e-ui/crates/service/src/modules/compose.rs)
 
 ```rust,ignore
-// Same domain + module crates. This Service lists what this process runs.
+// compose.rs (trimmed). Each routes(...) takes repo, locks, read models,
+// and the projection owner for that module.
 pub const MODULE_IDS: &[&str] = &[
     todo::MODULE_ID, chat::MODULE_ID, blob::MODULE_ID, "identity",
 ];
 
 Service::new()
     .named("e2e-ui")
-    .routes(todo::routes(/* commands + Eventual projector */))
-    .routes(chat::routes(/* … */))
-    .routes(blob::routes(/* Atomic — stays with commands */))
+    .routes(todo::routes(repo.clone(), locks.clone(), read_models.clone(), projections.todo))
+    .routes(chat::routes(repo.clone(), locks.clone(), read_models.clone(), projections.chat))
+    .routes(blob::routes(repo, locks, read_models, projections.blob))
 
 // Another crate can list the same modules, or only Eventual projectors.
 // You write that Service. You do not flip a Runtime::role flag.
