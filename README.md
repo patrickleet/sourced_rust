@@ -1,57 +1,490 @@
 # Distributed
 
-**Event-sourced Rust backends. Deny-by-default GraphQL with first-class OIDC.
-A causal TypeScript replica for real apps.** One platform from aggregate tests
-to SvelteKit SSR.
+**Distributed** is a state-of-the-art framework for building distributed
+systems and realtime applications.
 
-Plain domain structs on the write side. Relational read models on the query
-side. The GraphQL edge validates Bearer tokens (JWKS) and maps claims into
-session roles/RLS — not a bolted-on middleware afterthought. The browser talks
-**one protocol** — GraphQL queries, live subscriptions, and typed command
-mutations — through `@hops-ops/distributed`.
+An end-to-end cloud native stack — domain, service, query edge, live client,
+and even GitOps — so engineers who care about quality code can stay on the
+model and still ship polished, fast, maintainable products.
+
+It is also a toolkit of distributed-systems tools. You do not need the whole
+path. Event-source aggregates and stop there. Use the service bus alone.
+Take GraphQL reads without the replica. Adopt what you need.
+
+Rust · TypeScript · CQRS / ES · SvelteKit
+
+The living playground is [`tests/e2e-ui`](tests/e2e-ui): real apps (chat,
+todos, blob, admin) with a **How it is built** panel on every screen. This
+README is the same story, in the repo.
+
+- [The bar](#the-bar) — what “state of the art” means here
+- [Backstory](#backstory) — why the full path is one system, and the pieces still stand alone
+- [How it delivers](#how-it-delivers) — the unidirectional loop, with real code
+- [See it run](#see-it-run) — playground, GraphiQL, live OIDC
+- [Use as a dependency](#use-as-a-dependency) — workspace layout and features
+- [Reference](#feature-flags) — macros, repos, bus, GraphQL, CLI
+
+---
+
+## The bar
+
+You never get perfect consistency, always-available writes, and partition
+tolerance at once (**CAP**). Products that stay up accept **eventual
+consistency** on reads — with clear rules about what the user can trust now.
+The bar for the full product is not a glue job of excellent parts. It is
+one path from domain event to optimistic row. You can still take one part
+and ignore the rest.
+
+**Event-driven backend.** Command in, domain event out, projections update
+reads. The UI does not patch tables. **CQRS** keeps aggregates for rules and
+read models for screens. **Event sourcing** records what happened as history
+you can unit-test. Identity is OIDC and RBAC on the same claims — not a
+one-off check per endpoint.
+
+**Compiler-owned frontend.** You write Rust models, commands, and
+projections. The **GraphQL schema**, filters, typed operations, and command
+stubs are **generated** from those definitions — no resolvers, no
+hand-written query API. Pages only select fields. Writes stay **commands**.
+
+**Replica cache + one effect.** A client **replica** is a cache of the
+authorized slice. Auto-optimism applies the **projection mutation** to that
+cache — the same program the server projector runs against SQL. When the
+next row needs a known-record calculation, ship the domain **pure as WASM**;
+the generated client hosts it.
+
+**Same blocks, few or many processes.** Domain, modules, and projections are
+packages — not a deploy shape. A **service crate** lists the modules this
+process runs. Today the playground is one host. Later you write another
+`Service` from the same modules. Eventual projectors can move; Atomic seals
+stay with commands. The same Rust pures can compile to WASM for the replica.
+
+**Distributed** is that path when you want the whole product — one system
+so generation can keep the DX simple. The same crates stay usable as tools:
+aggregates, bus, outbox, locks, GraphQL, replica. Feature flags keep unused
+pieces out of the binary.
+
+---
+
+## Backstory
+
+Built by someone who has lived the glue. Patrick Lee Scott is a multi-time
+CTO and long-time consultant on microservices and DevOps. He has maintained
+**sourced** and **servicebus** in the Node ecosystem for nearly a decade,
+and has been a student of domain-driven design since before CQRS/ES was the
+usual name for the write path.
+
+Early on the pieces were wired together. **Matt Walters** authored Node
+`sourced` and `servicebus`, which inspired parts of what this library does.
+Later, Knative Eventing replaced much of hand-rolled service-bus plumbing.
+For reads, Hasura-style SQL (joins, RBAC, generated query APIs) worked. It
+was still a kit of parts.
+
+Distributed started in late 2024 as AI became usable for real systems work —
+and as models got good enough that building the dream framework (everything
+in one coherent place) stopped being a multi-year solo fantasy. The
+playground is that system: domain through live UI, with the DX we always
+wanted.
+
+---
+
+## How it delivers
+
+Write the domain once, compose it into one `Service` or several, then
+generate the client. Each stage below uses real code from
+[`tests/e2e-ui`](tests/e2e-ui).
+
+```text
+                    query · command · live
+Client ──────────────────────────────────► GraphQL gateway
+                                              │
+     ┌── commands → aggregate → domain event → projection → read model ──┐
+     │                                                                   │
+     └──────────────────────────── one way ──────────────────────────────┘
+```
+
+### 01 · Unidirectional
+
+Changes go one way. There is order.
+
+Front-end developers know this from Redux: dispatch in, state updates on a
+defined path, UI reads the result. Distributed is that idea for the **whole
+system**.
+
+Client → **command** → **aggregate** state change → **domain event** →
+**projection** → **read model** → client. No dual-write from the UI. CAP
+and eventual consistency sit on the read side; optimistic UI is how the
+front end meets that honestly.
+
+### 02 · CQRS
+
+Decisions and views are different models.
+
+In the business, “complete this todo” is a decision with rules. “Show my
+open todos” is a question about a list. Commands load aggregates; queries
+hit a SQL-shaped read model. You avoid forcing both into “update a row,”
+so domain code stays about rules and screens stay about presentation.
+
+```ts
+// Commands → aggregates (accept / reject business rules)
+commands.todo.create({ title })
+commands.todo.archive({ todo_id })
+```
+
+```graphql
+# Queries → SQL-shaped read models (never write tables)
+query Todos @load {
+  todos {
+    todo_id
+    title
+    status
+  }
+}
+```
+
+### 03 · Event-sourced aggregates
+
+Business rules as plain types — with history.
+
+Express the business as ordinary Rust structs and methods: who may do what,
+what state is allowed next. Under the hood that’s event sourcing —
+repository, append-only events, optional upcasters — so you get a timeline
+and easy unit tests without putting rules in SQL or HTTP.
+
+[`tests/e2e-ui/crates/todo-domain/src/models/todo.rs`](tests/e2e-ui/crates/todo-domain/src/models/todo.rs)
+
+```rust,ignore
+#[sourced(
+    entity,
+    events = "TodoEvent",
+    aggregate_type = "todo",
+    domain_state = TodoState,
+)]
+impl Todo {
+    pub fn create(
+        &mut self,
+        todo_id: impl Into<String>,
+        owner_id: impl Into<String>,
+        title: impl Into<String>,
+    ) -> Result<(), TodoError> {
+        // …validate…
+        self.record_created(todo_id, owner_id, title)?;
+        Ok(())
+    }
+
+    #[event("todo.created", version = 1, domain)]
+    fn record_created(&mut self, todo_id: String, owner_id: String, title: String) {
+        self.entity.set_id(&todo_id);
+        self.todo_id = todo_id;
+        self.owner_id = owner_id;
+        self.title = title;
+        self.status = TodoStatus::Open;
+    }
+}
+```
+
+### 04 · SQL read models + RBAC
+
+What the user is allowed to see.
+
+Screens need tables: lists, filters, joins. Read models are that query
+shape, with row/column permissions next to the model — “owner sees only
+their todos,” “admin sees all.” Queries and commands share the same idea
+of who the actor is.
+
+[`tests/e2e-ui/crates/readmodels/src/models/todos.rs`](tests/e2e-ui/crates/readmodels/src/models/todos.rs)
+
+```rust,ignore
+#[derive(Clone, Debug, ReadModel)]
+#[readmodel(primary_key = ["todo_id"])]
+pub struct Todos {
+    #[readmodel(id)]
+    pub todo_id: String,
+    pub owner_id: String,
+    pub title: String,
+    pub status: String,
+}
+
+impl Todos {
+    pub fn permissions() -> ModelPermissions<Self> {
+        ModelPermissions::new()
+            .grant(
+                "user",
+                read()
+                    .all_columns()
+                    .rows(col("owner_id").eq(claim("x-user-id"))),
+            )
+            .grant("admin", read().all_columns())
+    }
+}
+```
+
+### 05 · Inferred query API
+
+Rust models generate GraphQL.
+
+The read model, permissions, and command contracts in Rust are the source.
+Distributed **generates** the GraphQL schema — filters, order, pagination,
+joins, RBAC, and command mutations. You do not write resolvers or a REST
+endpoint per screen.
+
+The page file only selects fields against that generated schema. Commands
+stay domain verbs on the write side. The typed TypeScript client is
+generated from the same inventory.
+
+[`tests/e2e-ui/ui/src/routes/todos/+page.graphql`](tests/e2e-ui/ui/src/routes/todos/+page.graphql)
+
+```graphql
+# Page declares the shape it needs — no hand-written query API
+query Todos @load {
+  todos(order_by: [{ status: asc }, { todo_id: asc }]) {
+    todo_id
+    owner_id
+    title
+    status
+  }
+}
+```
+
+### 06 · Projections
+
+One mutation. Two runtimes.
+
+After a command succeeds, events describe what happened. A projection
+names the **effect**: on these events, run this mutation program
+(`upsert_todos`, `delete_todos_by_pk`). That program is the update — not
+a second cache language on the page.
+
+The same mutation runs in two places: the **server projector** writes the
+SQL read model; the **client replica** applies it to the cache for
+auto-optimism. The mutation file looks like GraphQL but is **internal IR**,
+not a public client field. Field names are snake_case table names
+(`upsert_todos`). Pages still send domain commands.
+
+[`tests/e2e-ui/crates/projections/src/todos.rs`](tests/e2e-ui/crates/projections/src/todos.rs)
+
+```rust,ignore
+// Abbreviated from todos.rs — event → mutation (server projector + client optimism)
+distributed::projection! {
+    pub const TODOS: ProjectionDescriptor<EventualOnly> = {
+        name: "project_todos",
+        version: 1,
+        epoch: "e2e-ui-todos-v2",
+        model: Todos,
+        on {
+            events: [
+                TodoCreatedDomainEvent,
+                TodoCompletedDomainEvent,
+                TodoArchivedDomainEvent,
+                // … rename, reopen, reassign, force-archive
+            ],
+            mutation: SaveTodo,
+            input: { todo: body },
+        },
+        on {
+            events: [TodoPurgedDomainEvent],
+            mutation: DeleteTodo,
+            input: { todo_id: aggregate_id },
+        },
+    };
+}
+```
+
+```graphql
+# Syntax-only IR → MutationProgram (not a public GraphQL field).
+# Same program applies to the SQL read model and the browser replica.
+mutation SaveTodo {
+  upsert_todos(object: $input.todo)
+}
+```
+
+Handlers stay thin: load the aggregate, call a proven domain method,
+commit events.
+
+```rust,ignore
+pub async fn handle(
+    ctx: &CausalCommandContext<'_, Todo>,
+    input: TodoArchiveInput,
+) -> Result<PreparedCommand<Eventual<TodoArchivePayload>>, HandlerError> {
+    let owner = ctx.user_id()?.to_string();
+    let mut todo = ctx.repo()
+        .get(&input.todo_id).await?
+        .ok_or_else(|| HandlerError::NotFound(input.todo_id.clone()))?;
+    todo.archive(&owner).map_err(rejected)?;
+
+    let state = TodoState::from(&*todo);
+    ctx.repo().publish_events().commit(todo)?.eventual(TodoArchivePayload {
+        todo_id: state.todo_id,
+        status: state.status,
+    })
+}
+```
+
+### 07 · Service crates
+
+Compose the process. Keep the domain still.
+
+A module mounts one bounded context — commands, guards, projectors. A
+**service crate** lists those modules. That list *is* the process: the
+playground is one `Service`, one host, one runner that only reads env and
+calls `run`. You do not set a runtime role flag.
+
+The same packages can back a different `Service` later: all modules in one
+binary, or commands here and Eventual projectors there. **Atomic** work
+(blob’s board seal) stays with the command process. **Eventual** work can
+split. Topology is explicit composition — not a hidden matrix.
+
+[`tests/e2e-ui/crates/service/src/modules/compose.rs`](tests/e2e-ui/crates/service/src/modules/compose.rs)
+
+```rust,ignore
+// compose.rs (trimmed). Each routes(...) takes repo, locks, read models,
+// and the projection owner for that module.
+pub const MODULE_IDS: &[&str] = &[
+    todo::MODULE_ID, chat::MODULE_ID, blob::MODULE_ID, "identity",
+];
+
+Service::new()
+    .named("e2e-ui")
+    .routes(todo::routes(repo.clone(), locks.clone(), read_models.clone(), projections.todo))
+    .routes(chat::routes(repo.clone(), locks.clone(), read_models.clone(), projections.chat))
+    .routes(blob::routes(repo, locks, read_models, projections.blob))
+
+// Another crate can list the same modules, or only Eventual projectors.
+// You write that Service. You do not flip a Runtime::role flag.
+```
+
+HTTP `POST /{command}` is **off by default**. Browser writes use the
+GraphQL command proxy. Call `.with_http_command_routes()` only for an
+intentional non-GraphQL ingress.
+
+### 08 · Browser replica
+
+Auto-optimism is a cache update.
+
+The generated client is a **replica cache** of the authorized read-model
+slice, plus typed commands. The page reads `query.use()` and calls
+`commands.todo…`. It does not patch arrays or write `setState` recipes.
+
+When a command fires, the replica applies the **same projection mutation**
+to the cache immediately. The server later writes SQL with that program;
+live/causal confirmation reconciles. Most rows are input + defaults +
+claims. When the next row needs the known record (blob’s next board),
+ship the domain **pure function as WASM**. Gen-client hosts it. Do not
+write a TypeScript twin.
+
+[`tests/e2e-ui/ui/src/routes/todos/+page.svelte`](tests/e2e-ui/ui/src/routes/todos/+page.svelte)
+· [`tests/e2e-ui/crates/service/src/modules/blob.rs`](tests/e2e-ui/crates/service/src/modules/blob.rs)
+
+```ts
+// Generated operation + typed commands — no cache recipes in the page
+import { Todos, useCommands } from '$distributed';
+
+const query = Todos.use();
+const commands = useCommands();
+const todos = $derived($query.complete ? $query.data.todos : []);
+
+await commands.todo.create({ title: text });
+await commands.todo.complete({ todo_id });
+// Replica applies SaveTodo (upsert_todos) to the cache. Page does not.
+```
+
+```rust,ignore
+// Advanced optimism: same domain pure, shipped as WASM
+.preview_reduce_known_record(CommandProjectionPureReduce::wasm(
+    "blob.simulate_move",
+    "blob/pkg/blob_wasm",   // wasm-pack under $lib
+    "blobSimulateMove",     // (recordJson, argsJson) → assignJson
+    "BlobGames",
+))
+
+// Generated client hosts the module. No TypeScript board rules.
+```
+
+JS package deep-dive: [`js/README.md`](js/README.md).
+
+### 09 · SvelteKit
+
+SSR first, then live — one query.
+
+`@load` and `@live` use the same GraphQL operation for server render,
+rehydrate, and a push change feed. Users get a fast first paint and rooms
+that stay current without a second subscription document or polling.
+
+[`tests/e2e-ui/ui/src/routes/chat/+page.graphql`](tests/e2e-ui/ui/src/routes/chat/+page.graphql)
+
+```graphql
+# Same query powers SSR (@load) and live change feed (@live)
+query ChatMessages($limit: Int!, $offset: Int!) @load @live {
+  chat_messages(
+    where: { room_id: { _eq: "lobby" } }
+    limit: $limit
+    offset: $offset
+    order_by: [{ created_at: desc }]
+  ) {
+    message_id
+    body
+    author { display_name }
+  }
+}
+```
+
+### 10 · OIDC
+
+Who the user is — in the model and the UI.
+
+Real products need real identity. OIDC is first-class (Zitadel in the
+playground; Keycloak and Authentik in tests). Sessions and JWTs become
+claims the domain already uses for ownership and roles — the same claims
+that scope the client replica.
+
+- **Claims → RBAC.** Row filters and command handlers share claims like
+  `x-user-id` and roles.
+- **Surfaces.** User, admin, and public clients stay separate so elevated
+  power does not leak.
 
 ---
 
 ## See it run
 
-### e2e-ui — read the code (`tests/e2e-ui`)
+### e2e-ui playground (`tests/e2e-ui`)
 
-A copyable multi-crate product: pure domains, GraphQL-only edge, Zitadel OIDC,
-SvelteKit SSR, generated clients, live WS. Full runbook + deeper map:
+A copyable multi-crate product: pure domains, GraphQL-only edge, Zitadel
+OIDC, SvelteKit SSR, generated clients, live WS. Full runbook:
 **[`tests/e2e-ui/README.md`](tests/e2e-ui/README.md)**.
 
 ```bash
-cd tests/e2e-ui && make up && set -a && source e2e-ui.env && set +a && make run
-# UI :5180 · API :8791/graphql · login alice / Password1!
+cd tests/e2e-ui
+make up                    # Postgres + Zitadel → e2e-ui.env
+source e2e-ui.env && make run
+# UI  http://localhost:5180
+# API http://127.0.0.1:8791
 ```
 
-What makes it feel like a real app is not a second framework — it is a short
-stack of deliberate files. Start here:
+Demo logins after `make up`: `alice` / `bob` / `admin` · `Password1!`.
+
+Small apps, full patterns. Each screen has **How it is built**: query,
+then command, then handler, then domain, then events, then service and
+host.
+
+| Demo | Tag | What it shows |
+|---|---|---|
+| [`/chat`](tests/e2e-ui/ui/src/routes/chat) | Live + anonymous | Shared room with SSR, live updates, guest reads |
+| [`/todos`](tests/e2e-ui/ui/src/routes/todos) | Eventual | Ownership rules, optimistic commands, projector fill |
+| [`/blob`](tests/e2e-ui/ui/src/routes/blob) | Atomic + WASM | Atomic board in the response. Same domain pure runs as WASM in the replica |
+| [`/admin`](tests/e2e-ui/ui/src/routes/admin) | Surface | Elevated surface — separate client, more power |
+| [`/session`](tests/e2e-ui/ui/src/routes/session) | OIDC | Who you are: tokens, groups, roles |
+
+Start here in the code:
 
 | File | Why it is nice |
 |---|---|
 | [`ui/src/routes/todos/+page.graphql`](tests/e2e-ui/ui/src/routes/todos/+page.graphql) | Co-located read. `@load` → SSR seed; no hand-written load function for the list. |
 | [`ui/src/routes/todos/+page.svelte`](tests/e2e-ui/ui/src/routes/todos/+page.svelte) | `Todos.use()` + `useCommands()` — page never invents a cache or optimistic recipe. |
-| [`ui/src/routes/chat/+page.graphql`](tests/e2e-ui/ui/src/routes/chat/+page.graphql) | Same document does SSR **and** live: `@load @live`. No second subscription file. |
-| [`ui/src/routes/blob/[[gameId]]/+page.svelte`](tests/e2e-ui/ui/src/routes/blob/[[gameId]]/+page.svelte) | Arrow keys → `commands.blob.move`; board from `BlobGames.use()` — projected payload hits the replica before the call resolves. |
-| [`ui/src/routes/+layout.server.ts`](tests/e2e-ui/ui/src/routes/+layout.server.ts) | One root loader, generated route registry, session → engine role. No loading flash for declared ops. |
-| [`ui/src/routes/+layout.svelte`](tests/e2e-ui/ui/src/routes/+layout.svelte) | `provideDistributed` + SSR hydration into the causal replica. |
-| [`ui/src/routes/admin/+layout.server.ts`](tests/e2e-ui/ui/src/routes/admin/+layout.server.ts) | Elevated surface is a **second** generated client + role gate — not smuggled into the user bundle. |
-| [`crates/service/src/service.rs`](tests/e2e-ui/crates/service/src/service.rs) | Inventory, RLS (`owner_id = claim(x-user-id)`), dual client surfaces (`e2e-ui` / `e2e-ui-admin`), OIDC claim map. |
-| [`crates/service/src/handlers/commands/blob_move.rs`](tests/e2e-ui/crates/service/src/handlers/commands/blob_move.rs) | `PreparedCommand<Atomic<BlobGameView>>` — map/score written with the event, not dual-written later. |
-| [`crates/todo-domain/src/models/todo.rs`](tests/e2e-ui/crates/todo-domain/src/models/todo.rs) | Plain aggregate: `create` / `ensure_owner` / `@sourced` events — no GraphQL in the domain. |
-| [`crates/readmodels/src/models/blob_game_view.rs`](tests/e2e-ui/crates/readmodels/src/models/blob_game_view.rs) | `#[table]` + `belongs_to` owner join — GraphQL shape from the read model. |
-| [`ui/src/auth.ts`](tests/e2e-ui/ui/src/auth.ts) | Real Auth.js + Zitadel scopes/groups → engine roles. |
-
-```text
-  SvelteKit  ──GraphQL HTTP/WS──►  Rust edge (GraphqlEngine + microsvc)
-       │                                │
-       │  @hops-ops/distributed         ├── mutations → aggregates
-       │  causal replica + commands     ├── Atomic rows (blob) with events
-       │  distributed-generated ops            └── projector rows (todos, chat)
-```
-
-JS package deep-dive: [`js/README.md`](js/README.md).
+| [`ui/src/routes/chat/+page.graphql`](tests/e2e-ui/ui/src/routes/chat/+page.graphql) | Same document does SSR **and** live: `@load @live`. |
+| [`ui/src/routes/blob/[[gameId]]/+page.svelte`](tests/e2e-ui/ui/src/routes/blob/[[gameId]]/+page.svelte) | Arrow keys → `commands.blob.move`; board from `BlobGames.use()`. |
+| [`crates/service/src/modules/compose.rs`](tests/e2e-ui/crates/service/src/modules/compose.rs) | One `Service` lists modules. No `Runtime::role`. |
+| [`crates/service/src/handlers/commands/blob_move.rs`](tests/e2e-ui/crates/service/src/handlers/commands/blob_move.rs) | `PreparedCommand<Atomic<BlobGameView>>` — map/score written with the event. |
+| [`crates/todo-domain/src/models/todo.rs`](tests/e2e-ui/crates/todo-domain/src/models/todo.rs) | Plain aggregate — no GraphQL in the domain. |
+| [`ui/src/auth.ts`](tests/e2e-ui/ui/src/auth.ts) | Auth.js + Zitadel scopes/groups → engine roles. |
 
 ### GraphiQL playground (engine only)
 
@@ -62,7 +495,7 @@ cargo run --example graphiql --features "graphql,sqlite"
 
 ### First-class OIDC (Zitadel, Keycloak, Authentik)
 
-GraphQL identity is **built into the engine** (`OidcBearer`: JWKS, iss/aud/exp,
+GraphQL identity is built into the engine (`OidcBearer`: JWKS, iss/aud/exp,
 claim → role/session). Live against three local IdPs — not mocks only:
 
 | Provider | Compose + bootstrap | Live test | Gate |
@@ -72,70 +505,52 @@ claim → role/session). Live against three local IdPs — not mocks only:
 | **[Authentik](tests/graphql_oidc_authentik/)** | `./scripts/oidc-authentik-up.sh` | `cargo test --test graphql_oidc_authentik --features graphql,sqlite` | `AUTHENTIK_E2E=1` |
 
 Shared **E1–E8** in [`tests/graphql_oidc_common/`](tests/graphql_oidc_common/).
-Gated binaries skip cleanly when unset. Offline: `cargo test --test graphql_identity --features graphql,sqlite`.
+Gated binaries skip cleanly when unset. Offline:
+`cargo test --test graphql_identity --features graphql,sqlite`.
 
-e2e-ui boots **Zitadel** for the browser path; the three stacks prove the same
-`OidcBearer` edge is not vendor-locked.
+e2e-ui boots **Zitadel** for the browser path; the three stacks prove the
+same `OidcBearer` edge is not vendor-locked.
 
 ---
 
-## At a Glance
+## Use as a dependency
 
-| Capability | What it gives you |
-|---|---|
-| **Full-stack path** | Rust domains → GraphQL edge → `@hops-ops/distributed` → SvelteKit/React |
-| **First-class OIDC** | Built-in `OidcBearer` (JWKS, claims → roles); live e2e for **Zitadel, Keycloak, Authentik** |
-| Plain Rust aggregates | Domain state in ordinary structs with explicit command methods |
-| Model-first TDD | Exhaustive unit tests before handlers or infrastructure |
-| Event-sourced persistence | Append-only records, replay, optimistic commit, pluggable async repos |
-| Outbox + multi-transport bus | Durable publish; swap in-memory / SQL / NATS / RabbitMQ / Kafka / Knative |
-| Read models | Relational projections — atomic with the command **or** eventual from projectors |
-| GraphQL query service | Filters, order, pagination, relationships, RBAC, live subs, causal mutations |
-| npm JS client | Artifacts, HTTP/WS transport, **causal replica**, diagnostics, SvelteKit/React |
-| microsvc | One handler inventory on HTTP, gRPC, bus, GraphQL, or direct dispatch |
-| `distributed` | Scaffold, SQL/Atlas/SDL, **client-manifest / client** codegen |
+Adopt the whole path, or one crate feature. `#[sourced]` aggregates, the
+bus, GraphQL, and the replica are independent. This playground uses all of
+them. Your crate does not have to.
 
-## Use as a Dependency
-
-The recommended shape is one shared crate per bounded context, plus one or more
-service crates that use those types. Put aggregate models, event payload types,
-command input DTOs, read models, and manifest registration helpers in the shared
-crate. Then import that crate from the command/aggregate service, projection
-service, API service, tests, or any other crate that needs the same domain types.
+Copy the **e2e-ui** layout when you want the full product: domain crates
+stay feature-light; a **service crate** lists which modules this process
+runs.
 
 ```text
 crates/
-  ordering/              # shared bounded-context types
-  ordering-api/          # command/aggregate service
-  ordering-projections/  # projection/read-model service
+  todo-domain/     # personal todos (owner-scoped)
+  chat-domain/     # lobby chat (shared room)
+  readmodels/      # projections + read_model_catalog
+  service/         # thin command handlers + event projectors + GraphQL
+  runner/          # store + bus + bind
 ```
 
-The aggregate service imports the aggregate types and command DTOs; projection
-services import the event/read-model DTOs and `ReadModel` types; API or test
-crates can use the same shared types without redefining them.
-
-The shared bounded-context crate usually depends on `distributed` with the empty
-default feature set. It needs macros and traits, not HTTP servers, SQL adapters,
-or broker clients:
+The shared bounded-context crate depends on `distributed` with the empty
+default feature set. It needs macros and traits, not HTTP servers, SQL
+adapters, or broker clients:
 
 ```toml
-# crates/ordering/Cargo.toml
+# crates/todo-domain/Cargo.toml
 [dependencies]
 distributed = "0.1"
 serde = { version = "1", features = ["derive"] }
 ```
 
-Executable service crates depend on the bounded-context crate and enable the
+Executable service crates depend on the domain crates and enable the
 runtime features they need:
 
 ```toml
-# crates/ordering-api/Cargo.toml
+# crates/service/Cargo.toml
 [dependencies]
-ordering = { path = "../ordering" }
-distributed = { version = "0.1", features = ["postgres", "http", "nats"] }
-serde = { version = "1", features = ["derive"] }
-serde_json = "1"
-tokio = { version = "1", features = ["macros", "rt-multi-thread"] }
+todo-domain = { path = "../todo-domain" }
+distributed = { version = "0.1", features = ["postgres", "graphql", "sqlite"] }
 ```
 
 For local development against a checkout of this repository, use a path
@@ -146,344 +561,21 @@ dependency instead:
 distributed = { path = "../distributed" }
 ```
 
-In a multi-crate workspace, put the dependency in the workspace root and inherit
-it from member crates. Keep the root dependency feature-light, then enable
-service-specific features only in the service crates:
-
-```toml
-# workspace Cargo.toml
-[workspace.dependencies]
-distributed = "0.1"
-ordering = { path = "crates/ordering" }
-
-# crates/ordering/Cargo.toml
-[dependencies]
-distributed.workspace = true
-
-# crates/ordering-api/Cargo.toml
-[dependencies]
-ordering.workspace = true
-distributed = { workspace = true, features = ["postgres", "http", "nats"] }
-```
-
-Enable persistence, transports, and servers with crate features:
-
-```toml
-[dependencies]
-# HTTP service endpoints
-distributed = { version = "0.1", features = ["http"] }
-
-# Durable SQL repository + SQL-backed bus
-distributed = { version = "0.1", features = ["postgres"] }
-
-# Service using Postgres plus NATS JetStream transport
-distributed = { version = "0.1", features = ["postgres", "nats"] }
-```
-
-Most application crates should depend on `distributed` only. The proc macros
-(`#[sourced]`, `#[digest]`, `#[derive(ReadModel)]`, `#[derive(Snapshot)]`) are
-re-exported from `distributed`; do not add `distributed_macros` directly unless
-you are working on the macro crate itself. The `distributed_cli` crate installs
-the `distributed` tooling and is not needed as a runtime dependency unless you are
-embedding the CLI in another command such as `hops service`.
-
-## Quick Start (library)
-
-Want the product demo first? Use [See it run](#see-it-run) above. This section is
-the minimal **in-crate** path: specify the model API in tests, implement the model, add a thin
-command handler, serve it, then swap in production persistence and transports
-without changing the proven domain behavior.
-
-### 1. Specify the model behavior in tests
-
-Start with the API you want the domain model to expose. These are ordinary,
-synchronous Rust unit tests: instantiate the plain model and call its command
-methods directly. There is no Tokio runtime, repository, handler `Context`, bus,
-database, or mock to set up.
-
-Write the test before the model behavior exists, see it fail, and then implement
-only enough behavior to make it pass. Assert the complete observable contract:
-the result, resulting state, and the typed events recorded by the command.
-
-```rust,ignore
-#[cfg(test)]
-mod tests {
-    use super::*;
-
-    fn initialized_todo() -> Todo {
-        let mut todo = Todo::default();
-        todo.initialize(
-            "todo-1".into(),
-            "user-1".into(),
-            "Buy milk".into(),
-        )
-        .unwrap();
-        todo
-    }
-
-    #[test]
-    fn completing_a_todo_changes_state_and_records_the_fact() {
-        let mut todo = initialized_todo();
-
-        todo.complete().unwrap();
-
-        assert!(todo.snapshot().completed);
-        assert_eq!(todo.entity.version(), 2);
-        assert_eq!(
-            TodoEvent::try_from(&todo.entity.events()[1]).unwrap(),
-            TodoEvent::Completed,
-        );
-    }
-
-    #[test]
-    fn completing_an_already_completed_todo_is_a_no_op() {
-        let mut todo = initialized_todo();
-        todo.complete().unwrap();
-        let before = todo.snapshot();
-        let version = todo.entity.version();
-        let event_count = todo.entity.events().len();
-
-        todo.complete().unwrap();
-
-        assert_eq!(todo.snapshot(), before);
-        assert_eq!(todo.entity.version(), version);
-        assert_eq!(todo.entity.events().len(), event_count);
-    }
-}
-```
-
-Repeat this red-green-refactor loop for every valid transition, invariant,
-guard/no-op, validation failure, repeated command, and boundary case. The small,
-infrastructure-free surface makes 100% model coverage a practical target before
-service or handler work begins. Coverage proves that code ran, however; the
-meaningful state, result, and event assertions are what prove the domain contract.
-Run `cargo llvm-cov --lib --summary-only` in the bounded-context crate to measure
-that model-only feedback loop.
-
-The `when = ...` guard used below deliberately returns `Ok(())` without changing
-state or recording an event. If the desired API should reject the command instead,
-write that contract first (`Err`, unchanged state, and no new event), validate in
-the public command method, and only then call a private recorded event applier.
-
-### 2. Implement the model
-
-A domain model is a plain Rust struct with an embedded `Entity`. `#[sourced]` turns
-its command methods into recorded, replayable events; `#[derive(Snapshot)]` adds a
-hydration cache for long streams.
-
-```rust,ignore
-use serde::{Deserialize, Serialize};
-use distributed::{sourced, DomainState, Entity, Snapshot};
-
-#[derive(Clone, Serialize, DomainState)]
-#[domain_state(version = 1)]
-struct TodoState {
-    id: String,
-    user_id: String,
-    task: String,
-    completed: bool,
-}
-
-#[derive(Default, Snapshot)]
-struct Todo {
-    entity: Entity,
-    user_id: String,
-    task: String,
-    completed: bool,
-}
-
-impl From<&Todo> for TodoState {
-    fn from(todo: &Todo) -> Self {
-        Self {
-            id: todo.entity.id().to_string(),
-            user_id: todo.user_id.clone(),
-            task: todo.task.clone(),
-            completed: todo.completed,
-        }
-    }
-}
-
-#[sourced(entity, aggregate_type = "todo", domain_state = TodoState)]
-impl Todo {
-    #[event("todo.initialized", version = 1, domain)]
-    fn initialize(&mut self, id: String, user_id: String, task: String) {
-        self.entity.set_id(&id);
-        self.user_id = user_id;
-        self.task = task;
-    }
-
-    #[event("todo.completed", version = 1, when = !self.completed, domain)]
-    fn complete(&mut self) {
-        self.completed = true;
-    }
-}
-
-// The command input your handler decodes
-#[derive(Deserialize)]
-struct CreateTodo {
-    id: String,
-    user_id: String,
-    task: String,
-}
-
-// #[sourced] generates: TodoEvent enum, TryFrom<&EventRecord>, impl Aggregate
-// #[derive(Snapshot)] generates: TodoSnapshot, fn snapshot(), impl Snapshottable
-```
-
-### 3. Write a command handler
-
-Each handler is a module exporting a `COMMAND` name, a `guard`, and an **async**
-`handle`. It loads/creates the aggregate, runs a command, and commits the resulting
-events — optionally alongside a durable outbox message in the same transaction.
-
-```rust,ignore
-// handlers/todo_create.rs
-use serde_json::{json, Value};
-use distributed::microsvc::{Context, HandlerError};
-
-use super::Repo; // an AggregateRepository<_, Todo> alias
-
-pub const COMMAND: &str = "todo.initialize";
-
-pub fn guard(ctx: &Context<Repo>) -> bool {
-    ctx.has_fields(&["id", "user_id", "task"])
-}
-
-pub async fn handle(ctx: &Context<'_, Repo>) -> Result<Value, HandlerError> {
-    let input = ctx.input::<CreateTodo>()?;
-
-    let mut todo = Todo::default();
-    todo.initialize(input.id.clone(), input.user_id, input.task)?;
-
-    // Publish the canonical TodoState occurrence captured by the domain-marked
-    // transition. History + occurrence + outbox commit atomically.
-    ctx.repo().publish_events().commit(&mut todo).await?;
-
-    Ok(json!({ "id": input.id }))
-}
-```
-
-### 4. Serve it
-
-Build typed route bundles with `Routes::new()`, register handler modules with
-`routes!`, then collect those bundles into a deployment-level `Service`. Expose
-the exact same service over direct dispatch, HTTP, gRPC, or the bus. Handlers
-are written once and are transport-agnostic.
-
-```rust,ignore
-use std::sync::Arc;
-use distributed::microsvc::{self, Routes, Service, Session};
-use distributed::bus::{InMemoryBus, RunOptions};
-use distributed::{AggregateBuilder, InMemoryRepository, Queueable};
-use serde_json::json;
-
-#[tokio::main]
-async fn main() -> Result<(), Box<dyn std::error::Error>> {
-    let routes = distributed::routes!(
-        Routes::new().with_repo(
-            InMemoryRepository::new().queued().aggregate::<Todo>()
-        ),
-        command handlers::todo_create,
-        command handlers::todo_complete,
-    );
-    let service = Service::new().routes(routes);
-
-    // Attach a bus and run. `with_bus` closes the loop from step 3: that
-    // `outbox(..).commit(..)` now publishes on commit, and `run` consumes the
-    // registered commands (and events). Same handlers, one line of wiring.
-    service
-        .with_bus(InMemoryBus::new())
-        .run(RunOptions::idempotent())
-        .await?;
-
-    // Alternatives that share the same handlers:
-    //   service.dispatch("todo.initialize", json!({ "id": "todo-1", .. }), Session::new()).await?; // in-process
-    //   microsvc::serve(Arc::new(service), "0.0.0.0:3000").await?;     // HTTP (feature = "http")
-    //   microsvc::serve_grpc(Arc::new(service), "[::1]:50051").await?; // gRPC (feature = "grpc")
-
-    Ok(())
-}
-```
-
-### 5. Swap persistence and transports
-
-Everything above is in-memory. Moving to production is a **constructor change**, not
-a handler change — every infrastructure concern is an async trait with an in-memory
-default you replace with a durable adapter.
-
-```rust,ignore
-// Persistence: InMemoryRepository → durable SQL (features "postgres" / "sqlite")
-let repo = distributed::PostgresRepository::connect_and_migrate(database_url).await?;
-let routes = distributed::routes!(
-    Routes::new().with_repo(repo.queued().aggregate::<Todo>()),
-    command handlers::todo_create,
-    command handlers::todo_complete,
-);
-let service = Service::new().named("todo-api").routes(routes);
-
-// Transport: InMemoryBus → a real broker. The handlers and the
-// `with_bus(..).run(..)` wiring are unchanged; only this constructor line differs.
-let namespace = "todos-prod"; // broker namespace/prefix for this app/environment
-//   let bus = NatsBus::connect("nats://localhost:4222").namespace(namespace).await?;
-//   let bus = PostgresBus::new(pool);
-//   let bus = SqliteBus::new(pool);
-//   let bus = RabbitBus::connect("amqp://localhost:5672/%2f").namespace(namespace).await?;
-//   let bus = KafkaBus::connect("localhost:9092").namespace(namespace).await?;
-service.with_bus(bus).run(RunOptions::idempotent()).await?;
-```
-
-`group` and `namespace` are broker topology names, not the command/event names
-your service handles. `routes!` gives each route bundle its command/event names;
-`Service::routes(..)` aggregates them, and `with_bus(bus).run(..)` reads those
-names through `subscription_plan()` and passes them to the transport.
-
-- `Service::named("todo-api")` supplies the default durable consumer `group`.
-  Use the same service name for every replica of one deployment. For direct
-  `bus.listen(..)` / `bus.subscribe(..)` consumers that are not a `Service`, set
-  the group with `bus.group("todo-projections")`.
-- `namespace` scopes streams, subjects, topics, queues, or exchanges on a shared
-  broker. `PostgresBus` and `SqliteBus` do not take `namespace` because the
-  database/schema/file behind `pool` already scopes their bus tables.
-- Topology names are validated before broker use. Keep groups/service names to
-  portable deployment IDs (`A-Z`, `a-z`, `0-9`, `_`, `-`); namespaces may also
-  use `.`. Blank names, whitespace, control characters, path separators, broker
-  wildcards, and names longer than 128 bytes are rejected.
-
-| Concern | In-memory default | Swap in for production |
-|---|---|---|
-| Storage | `InMemoryRepository` | `PostgresRepository`, `SqliteRepository` |
-| Messaging | `InMemoryBus` | `NatsBus`, `PostgresBus`, `SqliteBus`, `RabbitBus`, `KafkaBus`, `KnativeBus` |
-| Locking | `InMemoryLockManager` | `PostgresLockManager`, `SqliteLockManager` (durable leases), any `LockManager` (Redis, …) |
-
-The rest of this README is the reference guide for each of these pieces.
-
-## Example Conventions
-
-Examples use production-style error propagation. Event methods generated by `#[sourced]` and `#[digest]`, repository calls, and outbox constructors are fallible, so snippets that call them assume a surrounding `async` function that returns a `Result` and use `?` / `.await?`.
-
-Complete runnable examples live under [`tests/`](tests/). Short snippets focus on the API surface and may omit surrounding imports or application-specific types when those are not the point of the example.
-
-## Project Inspiration
-
-Distributed is inspired by the original [sourced](https://github.com/mateodelnorte/sourced) Node.js project by Matt Walters and his accompanying [servicebus](https://github.com/mateodelnorte/servicebus) library for distributed messaging. Patrick Lee Scott, a contributor and maintainer of the original JavaScript/TypeScript versions, brought these concepts to Rust and refactored them for the Rust ecosystem. The bus facade (`send`/`listen` + `publish`/`subscribe`, with per-transport `*Bus` types) mirrors the `servicebus` / `rabbitbus` / `kafkabus` / `knativebus` family.
-
-## Design Goals
-
-- Keep domain objects simple and explicit (Plain Old Rust Structs).
-- Make aggregate event records the source of truth for model state.
-- Make replay predictable and safe.
-- Keep storage and messaging pluggable and testable behind async traits.
-- Make the transport a wiring choice, not a handler change.
-- Add optional queue-based locking for serialized workflows.
-- Expose a deny-by-default GraphQL edge over relational read models (not ad-hoc
-  handler SQL).
-- Ship **first-class OIDC** on that edge (`OidcBearer` + claim mapping), with
-  optional trusted-proxy modes — not “bring your own JWT middleware.”
-- Keep browser apps on one protocol: typed GraphQL queries, live subscriptions,
-  and causal command mutations with a normalized client replica.
-- Prefer generated client artifacts and explicit projection contracts over
-  hand-written fetch/cache glue.
-
+In a multi-crate workspace, put the dependency in the workspace root and
+inherit it from member crates. Keep the root dependency feature-light, then
+enable service-specific features only in the service crates.
+
+Most application crates should depend on `distributed` only. The proc
+macros (`#[sourced]`, `#[digest]`, `#[derive(ReadModel)]`,
+`#[derive(Snapshot)]`) are re-exported from `distributed`; do not add
+`distributed_macros` directly unless you are working on the macro crate
+itself. The `distributed_cli` crate installs the `distributed` tooling
+and is not needed as a runtime dependency unless you are embedding the
+CLI in another command such as `hops service`.
+
+The rest of this README is the API reference for each piece.
+
+---
 ## Feature Flags
 
 The in-memory repository and the service bus facade are part of the core crate and
@@ -2126,8 +2218,6 @@ Blob game, live chat, GraphiQL.
 | `tests/sourced*` / `tests/snapshots/` / `tests/upcasting/` | Macros, snapshots, event versioning |
 | `tests/sagas/` | Orchestration + choreography with the outbox |
 | `tests/*_transport/`, `tests/knative_cloudevents/` | Broker adapters + conformance |
-
-## License
 
 ## License
 

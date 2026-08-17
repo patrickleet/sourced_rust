@@ -32,7 +32,7 @@
 	const demos = [
 		{ href: '/chat', title: 'Lobby chat', tag: 'Live + anonymous', blurb: 'A shared room with SSR, live updates, and guest reads.' },
 		{ href: '/todos', title: 'Todos', tag: 'Eventual', blurb: 'Ownership rules, optimistic commands, projector fill.' },
-		{ href: '/blob', tag: 'Atomic', title: 'Blob game', blurb: 'Game moves with an atomic board in the response.' },
+		{ href: '/blob', tag: 'Atomic + WASM', title: 'Blob game', blurb: 'Atomic board in the response. Same domain pure runs as WASM in the replica.' },
 		{ href: '/admin', title: 'Admin', tag: 'Surface', blurb: 'Elevated surface — separate client, more power.' },
 		{ href: '/session', title: 'Session', tag: 'OIDC', blurb: 'Who you are to the app: tokens, groups, roles.' }
 	];
@@ -89,18 +89,19 @@ impl Todos {
     }
 }`;
 
-	const codeProjection = `// Event → mutation mapping (server projector + client optimism)
-projection! {
+	const codeProjection = `// Abbreviated from todos.rs — event → mutation
+distributed::projection! {
     pub const TODOS: ProjectionDescriptor<EventualOnly> = {
         name: "project_todos",
         version: 1,
+        epoch: "e2e-ui-todos-v2",
         model: Todos,
         on {
             events: [
                 TodoCreatedDomainEvent,
                 TodoCompletedDomainEvent,
                 TodoArchivedDomainEvent,
-                // …
+                // … rename, reopen, reassign, force-archive
             ],
             mutation: SaveTodo,
             input: { todo: body },
@@ -156,7 +157,18 @@ const commands = useCommands();
 const todos = $derived($query.complete ? $query.data.todos : []);
 
 await commands.todo.create({ title: text });
-await commands.todo.complete({ todo_id });`;
+await commands.todo.complete({ todo_id });
+// Replica applies SaveTodo (upsert_todos) to the cache. Page does not.`;
+
+	const codeWasm = `// Advanced optimism: same domain pure, shipped as WASM
+.preview_reduce_known_record(CommandProjectionPureReduce::wasm(
+    "blob.simulate_move",
+    "blob/pkg/blob_wasm",   // wasm-pack under $lib
+    "blobSimulateMove",     // (recordJson, argsJson) → assignJson
+    "BlobGames",
+))
+
+// Generated client hosts the module. No TypeScript board rules.`;
 
 	const codeLive = `# Same query powers SSR (@load) and live change feed (@live)
 query ChatMessages($limit: Int!, $offset: Int!) @load @live {
@@ -181,16 +193,17 @@ query Todos @load {
   todos { todo_id title status }
 }`;
 
-	const codeService = `// Same domain + module crates. This Service lists what this process runs.
+	const codeService = `// compose.rs (trimmed). Each routes(...) takes repo, locks,
+// read models, and the projection owner for that module.
 pub const MODULE_IDS: &[&str] = &[
   todo::MODULE_ID, chat::MODULE_ID, blob::MODULE_ID, "identity",
 ];
 
 Service::new()
   .named("e2e-ui")
-  .routes(todo::routes(/* commands + Eventual projector */))
-  .routes(chat::routes(/* … */))
-  .routes(blob::routes(/* Atomic — stays with commands */))
+  .routes(todo::routes(repo.clone(), locks.clone(), read_models.clone(), projections.todo))
+  .routes(chat::routes(repo.clone(), locks.clone(), read_models.clone(), projections.chat))
+  .routes(blob::routes(repo, locks, read_models, projections.blob))
 
 // Another crate can list the same modules, or only Eventual projectors.
 // You write that Service. You do not flip a Runtime::role flag.`;
@@ -217,9 +230,14 @@ Service::new()
 				for building distributed systems, and realtime applications.
 			</h1>
 			<p class="wf-lede">
-				Not a partial toolkit. An end-to-end cloud native stack — domain, service, query edge, live client, and even gitops —
+				An end-to-end cloud native stack — domain, service, query edge, live client, and even gitops —
 				so engineers who care about quality code can stay on the model and still ship polished, fast,
 				maintainable products.
+			</p>
+			<p class="wf-lede">
+				It is also a toolkit of distributed-systems tools. You do not need the whole path.
+				Event-source aggregates and stop there. Use the service bus alone. Take GraphQL reads
+				without the replica. Adopt what you need.
 			</p>
 
 			<ul class="wf-hero-stack" aria-label="Stack">
@@ -274,8 +292,9 @@ Service::new()
 				<p>
 					You never get perfect consistency, always-available writes, and partition tolerance at once
 					(<strong>CAP</strong>). Products that stay up accept <strong>eventual consistency</strong>
-					on reads — with clear rules about what the user can trust now. The bar is not a kit of
-					excellent parts. It is one path from domain event to optimistic row.
+					on reads — with clear rules about what the user can trust now. The bar for the full
+					product is not a glue job of excellent parts. It is one path from domain event to
+					optimistic row. You can still take one part and ignore the rest.
 				</p>
 			</div>
 
@@ -292,18 +311,19 @@ Service::new()
 				<div class="dist-teach-block">
 					<h3>Compiler-owned frontend</h3>
 					<p>
-						SSR, the same query rehydrated, then a live feed. GraphQL selects fields; writes stay
-						<strong>commands</strong>. A <strong>replica</strong> holds the authorized slice. Optimism
-						uses the same mutation program as the projector — not a <code>setState</code> recipe per
-						page.
+						You write Rust models, commands, and projections. The <strong>GraphQL schema</strong>,
+						filters, typed operations, and command stubs are <strong>generated</strong> from those
+						definitions — no resolvers, no hand-written query API. Pages only select fields.
+						Writes stay <strong>commands</strong>.
 					</p>
 				</div>
 				<div class="dist-teach-block">
-					<h3>Why Rust</h3>
+					<h3>Replica cache + one effect</h3>
 					<p>
-						Memory safety without GC pauses, concurrency the type system can check, and macros so
-						the domain API stays short. The same definitions compile into the client. Substrate, not
-						fashion.
+						A client <strong>replica</strong> is a cache of the authorized slice. Auto-optimism
+						applies the <strong>projection mutation</strong> to that cache — the same program the
+						server projector runs against SQL. When the next row needs a known-record calculation,
+						ship the domain <strong>pure as WASM</strong>; the generated client hosts it.
 					</p>
 				</div>
 				<div class="dist-teach-block">
@@ -312,12 +332,15 @@ Service::new()
 						Domain, modules, and projections are packages — not a deploy shape. A
 						<strong>service crate</strong> lists the modules this process runs. Today this playground
 						is one host. Later you write another Service from the same modules. Eventual projectors
-						can move; Atomic seals stay with commands.
+						can move; Atomic seals stay with commands. The same Rust pures can compile to WASM for
+						the replica.
 					</p>
 				</div>
 			</div>
 			<p class="dist-teach-foot">
-				<strong>Distributed</strong> is that path — one system so generation can keep the DX simple.
+				<strong>Distributed</strong> is that path when you want the whole product — one system so
+				generation can keep the DX simple. The same crates stay usable as tools: aggregates,
+				bus, outbox, locks, GraphQL, replica. Feature flags keep unused pieces out of the binary.
 			</p>
 			<div class="wf-actions dist-vehicle-actions">
 				<a class="wf-btn wf-btn-primary" href="#author">How this project got here</a>
@@ -576,11 +599,16 @@ Service::new()
 			<article class="wf-story-step">
 				<div class="wf-story-copy">
 					<span class="wf-label">05 · Inferred query API</span>
-					<h2 class="wf-step-title">Page needs → typed client</h2>
+					<h2 class="wf-step-title">Rust models generate GraphQL</h2>
 					<p class="wf-why">
-						Once the read model is defined, GraphQL is how the UI selects fields — transport for
-						queries, not the heart of the product. You declare what a page needs; you don’t maintain
-						a REST endpoint per screen. Commands stay domain verbs on the write side.
+						The read model, permissions, and command contracts in Rust are the source. Distributed
+						<strong>generates</strong> the GraphQL schema — filters, order, pagination, joins,
+						RBAC, and command mutations. You do not write resolvers or a REST endpoint per screen.
+					</p>
+					<p class="wf-why">
+						The page file only selects fields against that generated schema. Commands stay domain
+						verbs on the write side. The typed TypeScript client is generated from the same
+						inventory.
 					</p>
 					<span class="wf-sample-path">tests/e2e-ui/ui/src/routes/todos/+page.graphql</span>
 				</div>
@@ -602,16 +630,18 @@ Service::new()
 			<article class="wf-story-step">
 				<div class="wf-story-copy">
 					<span class="wf-label">06 · Projections</span>
-					<h2 class="wf-step-title">When the domain changes, views catch up</h2>
+					<h2 class="wf-step-title">One mutation. Two runtimes.</h2>
 					<p class="wf-why">
-						Next step in the unidirectional cycle: after a command succeeds, events describe what
-						happened. Projections turn those facts into read-model updates — and the same mapping
-						drives optimistic UI in the browser. You declare “on these events, update the view like
-						this” once; you don’t dual-write tables from the page or invent a second cache language.
+						After a command succeeds, events describe what happened. A projection names the
+						<strong>effect</strong>: on these events, run this mutation program
+						(<code>upsert_todos</code>, <code>delete_todos_by_pk</code>). That program is the
+						update — not a second cache language on the page.
 					</p>
 					<p class="wf-why">
-						The mutation file looks like GraphQL but is internal IR for that update program, not a
-						public client mutation API. Pages still send domain commands.
+						The same mutation runs in two places: the <strong>server projector</strong> writes the
+						SQL read model; the <strong>client replica</strong> applies it to the cache for
+						auto-optimism. The mutation file looks like GraphQL but is internal IR, not a public
+						client field. Pages still send domain commands.
 					</p>
 					<span class="wf-sample-path"
 						>tests/e2e-ui/crates/projections/src/todos.rs · mutations/save_todo.mutation.graphql</span
@@ -682,15 +712,23 @@ Service::new()
 			<article class="wf-story-step">
 				<div class="wf-story-copy">
 					<span class="wf-label">08 · Browser replica</span>
-					<h2 class="wf-step-title">The cycle closes at the client</h2>
+					<h2 class="wf-step-title">Auto-optimism is a cache update</h2>
 					<p class="wf-why">
-						Generated TypeScript carries your inventory into a client replica and typed commands.
-						The page reads <code>query.use()</code> and calls <code>commands.todo…</code> — same
-						business verbs as the server. Optimism applies the projection mapping on the way around
-						the loop, so the UI stays aligned with the model instead of a one-off cache recipe per
-						screen.
+						The generated client is a <strong>replica cache</strong> of the authorized read-model
+						slice, plus typed commands. The page reads <code>query.use()</code> and calls
+						<code>commands.todo…</code>. It does not patch arrays or write
+						<code>setState</code> recipes.
 					</p>
-					<span class="wf-sample-path">tests/e2e-ui/ui/src/routes/todos/+page.svelte</span>
+					<p class="wf-why">
+						When a command fires, the replica applies the <strong>same projection mutation</strong>
+						to the cache immediately. The server later writes SQL with that program; live/causal
+						confirmation reconciles. Most rows are input + defaults + claims. When the next row
+						needs the known record (blob’s next board), ship the domain <strong>pure function as
+						WASM</strong>. Gen-client hosts it. Do not write a TypeScript twin.
+					</p>
+					<span class="wf-sample-path"
+						>tests/e2e-ui/ui/src/routes/todos/+page.svelte · crates/service/src/modules/blob.rs</span
+					>
 				</div>
 				<div class="wf-code-stack">
 					<div class="wf-code">
@@ -699,6 +737,13 @@ Service::new()
 							<em>ui</em>
 						</div>
 						<pre><code>{@html highlightCode(codeUi)}</code></pre>
+					</div>
+					<div class="wf-code">
+						<div class="wf-code-bar">
+							<span>blob.rs</span>
+							<em>wasm pure</em>
+						</div>
+						<pre><code>{@html highlightCode(codeWasm)}</code></pre>
 					</div>
 				</div>
 			</article>
@@ -816,8 +861,9 @@ source e2e-ui.env && make run
 				<h2>Model the domain. Leave the rest to the stack.</h2>
 				<p>
 					Pick a demo close to your problem — todos for ownership and rules, chat for live rooms —
-					and reuse the shapes. The vehicle is one framework, built to scale; you stay on the parts
-					that create customer value. Fleet hosting (<strong>ops.com.ai</strong>) is on the roadmap.
+					and reuse the shapes. The vehicle is one framework when you want the full path. It is
+					also a toolkit: start with aggregates, or the bus, and leave the rest. Fleet hosting
+					(<strong>ops.com.ai</strong>) is on the roadmap.
 				</p>
 			</div>
 			<div class="wf-actions">
