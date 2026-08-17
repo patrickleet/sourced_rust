@@ -30,6 +30,7 @@
 mod causal;
 mod defaults;
 mod handlers;
+mod invoke;
 mod helpers;
 mod request;
 mod routes;
@@ -51,10 +52,12 @@ pub use handlers::{
     direct_read_model, CausalCommandContext, CausalCommitBuilder, CausalRepository,
     DirectReadModelProjection, PreparedCausalCommit, PreparedCommandHandler,
 };
+pub use invoke::{invoke_transition, require_loaded};
 pub use request::{CommandRequest, CommandResponse};
 pub(crate) use routes::DynBusPublisher;
 pub use routes::{
-    DeliveryKind, HandlerNames, HandlerSpec, RouteBuilder, Routes, TypedRouteBuilder,
+    DeliveryKind, HandlerNames, HandlerSpec, RouteBuilder, Routes, ThinCommandBuilder,
+    ThinCommandInvoked, ThinCommandLoaded, TypedRouteBuilder,
 };
 pub use runtime::Service;
 

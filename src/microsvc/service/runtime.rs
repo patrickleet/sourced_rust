@@ -51,8 +51,8 @@ pub struct Service {
     causal_command_policy: CausalCommandPolicy,
     runner: Option<ServiceRunner>,
     registered_command_mounts: Vec<CommandMount>,
-    /// When false, HTTP does not mount `POST /{command}` (GraphQL / health only).
-    /// Commands remain dispatchable via GraphQL mutations and in-process `dispatch`.
+    /// When true, HTTP mounts `POST /{command}`. Off by default — GraphQL,
+    /// health, and in-process `dispatch` stay available without this.
     http_command_routes: bool,
     #[cfg(feature = "graphql")]
     graphql: Option<std::sync::Arc<crate::graphql::GraphqlEngine>>,
@@ -69,18 +69,18 @@ impl Service {
             causal_command_policy: CausalCommandPolicy::default(),
             runner: None,
             registered_command_mounts: Vec::new(),
-            http_command_routes: true,
+            http_command_routes: false,
             #[cfg(feature = "graphql")]
             graphql: None,
         }
     }
 
-    /// Disable `POST /{command}` HTTP routes.
+    /// Mount `POST /{command}` HTTP routes.
     ///
-    /// Use when the public surface is GraphQL-only (command mutations + queries).
-    /// Handlers stay registered for GraphQL dispatch and bus consumers.
-    pub fn without_http_command_routes(mut self) -> Self {
-        self.http_command_routes = false;
+    /// Off by default. Call this only when a process should accept raw command
+    /// POSTs (ingress, tests). GraphQL mutations and bus consumers do not need it.
+    pub fn with_http_command_routes(mut self) -> Self {
+        self.http_command_routes = true;
         self
     }
 

@@ -1,5 +1,5 @@
 # Syntax-only read-model mutation → MutationProgram IR.
 # Not a public GraphQL schema field.
 mutation SaveTodo {
-  upsert_Todos(object: $input.todo)
+  upsert_todos(object: $input.todo)
 }

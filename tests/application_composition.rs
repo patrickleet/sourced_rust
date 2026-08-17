@@ -2,12 +2,20 @@ use std::collections::BTreeMap;
 use std::sync::Arc;
 
 use distributed::application::{
-    Application, ApplicationExtension, CommandDefinition, CommandMount, CommandSpec,
-    CommandTypeField, CommandTypeSpec, ContractCompiler, Module, ProjectionSpec, SurfaceSpec,
+    admit_command_session, command_roles_require_principal, Application, ApplicationExtension,
+    CommandDefinition, CommandMount, CommandSpec, CommandTypeField, CommandTypeSpec,
+    ContractCompiler, Module, ProjectionSpec, Runtime, RuntimeDialect, SurfaceSpec,
 };
 use distributed::graphql::{
-    build_surface, col, surface_for_application_contract, surface_for_role, typed_command,
-    ClientSurfaceIdentity, CommandConsistency, RoleGrant, Succeeded, Surface, SurfaceOptions,
+    build_surface, col, prune_client_manifest, surface_for_application_contract, surface_for_role,
+    typed_command, ClientCommandPureReduce, ClientProjectionArm, ClientProjectionEventRef,
+    ClientProjectionFallback, ClientProjectionMutationKind, ClientProjectionOperation,
+    ClientProjectionPartition, ClientProjectionProgram, ClientSurfaceIdentity, CommandConsistency,
+    CommandProjectionArmRef, CommandProjectionExtension, CommandProjectionPreviewOccurrence,
+    DistributedClientSurfaceExport, RoleGrant, Succeeded, Surface, SurfaceOptions,
+};
+use distributed::projection::{
+    PROJECTION_OPERATION_SEMANTICS_VERSION, PROJECTION_PROGRAM_IR_VERSION,
 };
 use distributed::{ApplicationManifest, GraphqlInput, GraphqlOutput, ReadModel, RelationalReadModel};
 use serde::{Deserialize, Serialize};
@@ -19,6 +27,14 @@ struct TodoView {
     todo_id: String,
     title: String,
     status: String,
+}
+
+#[derive(Clone, Debug, Default, Deserialize, ReadModel, Serialize)]
+#[table("chat_messages")]
+struct ChatView {
+    #[id("message_id")]
+    message_id: String,
+    body: String,
 }
 
 #[allow(dead_code)]
@@ -513,6 +529,383 @@ fn nested_fingerprints_and_projection_references_are_fail_closed() {
     let error = Application::try_new("projection-owner", [module], [])
         .expect_err("missing projection dependencies must fail closed");
     assert!(error.to_string().contains("missing"));
+}
+
+#[test]
+fn module_commands_only_keeps_command_identity() {
+    let projection = ProjectionSpec::try_new("project_todos", ["todo.created"], ["TodoView"]).unwrap();
+    let module = Module::new("todo")
+        .command_definitions([definition("todo.create")])
+        .projection(projection)
+        .build()
+        .unwrap();
+    let commands = module.commands_only().unwrap();
+    let projectors = module.projectors_only().unwrap();
+    assert_eq!(module.commands()[0].id, commands.commands()[0].id);
+    assert!(projectors.commands().is_empty());
+    assert!(commands.manifest().projections.is_empty());
+    assert!(!module.manifest().projections.is_empty());
+    assert_eq!(module.module().id(), "todo");
+}
+
+#[test]
+fn runtime_from_url_selects_dialect_and_workers() {
+    let module = Module::new("todo")
+        .command_definitions([definition("todo.create")])
+        .build()
+        .unwrap();
+    let sqlite = Runtime::from_database_url("sqlite:./app.db")
+        .unwrap()
+        .mount(module.clone());
+    assert_eq!(sqlite.dialect(), RuntimeDialect::Sqlite);
+    assert!(sqlite.starts_outbox());
+    assert!(!sqlite.starts_projector_consumer());
+    let postgres = Runtime::from_database_url("postgres://localhost/app").unwrap();
+    assert_eq!(postgres.dialect(), RuntimeDialect::Postgres);
+}
+
+#[test]
+fn runtime_rejects_atomic_without_seal() {
+    let mut command = command("blob.move");
+    command.consistency = CommandConsistency::Atomic;
+    command.fingerprint = distributed::application::sha256_fingerprint(
+        &command.canonical_bytes().expect("command bytes"),
+    );
+    let module = Module::new("blob")
+        .command_definitions([CommandDefinition::contract(command)])
+        .build()
+        .unwrap();
+    let runtime = Runtime::from_database_url("sqlite::memory:")
+        .unwrap()
+        .mount(module);
+    let error = runtime.validate().expect_err("atomic without seal");
+    assert!(error.to_string().contains("Atomic"));
+}
+
+#[test]
+fn runtime_rejects_atomic_with_unrelated_direct_projection() {
+    let mut command = command("blob.move");
+    command.consistency = CommandConsistency::Atomic;
+    command.projected_model = Some("BlobGames".into());
+    command.fingerprint = distributed::application::sha256_fingerprint(
+        &command.canonical_bytes().expect("command bytes"),
+    );
+    let blob = Module::new("blob")
+        .command_definitions([CommandDefinition::contract(command)])
+        .build()
+        .unwrap();
+    let projection = ProjectionSpec::try_new("project_todos", ["todo.created"], ["TodoView"])
+        .unwrap()
+        .with_direct(true)
+        .unwrap();
+    let todos = Module::new("todo").projection(projection).build().unwrap();
+    let error = Runtime::from_database_url("sqlite::memory:")
+        .unwrap()
+        .mount(blob)
+        .mount(todos)
+        .validate()
+        .expect_err("unrelated seal must not satisfy Atomic");
+    assert!(
+        error.to_string().contains("Atomic") || error.to_string().contains("direct"),
+        "{error}"
+    );
+}
+
+#[test]
+fn runtime_from_database_url_rejects_unsupported_schemes() {
+    let error = Runtime::from_database_url("mysql://localhost/app")
+        .expect_err("unsupported scheme");
+    assert!(error.to_string().contains("unsupported"), "{error}");
+}
+
+#[test]
+fn runtime_route_for_prefers_longest_wildcard() {
+    let runtime = Runtime::from_database_url("sqlite::memory:")
+        .unwrap()
+        .dispatch_route("todo.*", "http://todo")
+        .dispatch_route("todo.admin.*", "http://todo-admin");
+    assert_eq!(
+        runtime.route_for("todo.admin.delete"),
+        Some("http://todo-admin")
+    );
+    assert_eq!(runtime.route_for("todo.create"), Some("http://todo"));
+}
+
+#[test]
+fn runtime_rejects_direct_seal_without_atomic_commands() {
+    let projection = ProjectionSpec::try_new("project_blob", ["blob.moved"], ["BlobGames"])
+        .unwrap()
+        .with_direct(true)
+        .unwrap();
+    let module = Module::new("blob").projection(projection).build().unwrap();
+    let runtime = Runtime::from_database_url("sqlite::memory:")
+        .unwrap()
+        .mount(module);
+    let error = runtime.validate().expect_err("seal without commands");
+    assert!(error.to_string().contains("direct projection"));
+}
+
+#[test]
+fn roles_are_admission_without_a_second_guard() {
+    let roles = vec!["user".into(), "admin".into()];
+    assert!(command_roles_require_principal(&roles));
+    assert_eq!(
+        admit_command_session(&roles, None, &["user"]).unwrap_err(),
+        "unauthenticated"
+    );
+    assert!(admit_command_session(&roles, Some("alice"), &["user"]).is_ok());
+    assert!(admit_command_session(&["anonymous".into()], None, &[]).is_ok());
+    assert_eq!(
+        admit_command_session(&roles, Some("   "), &["user"]).unwrap_err(),
+        "unauthenticated"
+    );
+}
+
+#[test]
+fn contract_export_prunes_unselected_read_models() {
+    let tables = [TodoView::schema().clone(), ChatView::schema().clone()];
+    let full = build_surface(&tables, &SurfaceOptions::sqlite()).unwrap();
+    let grants = BTreeMap::from([(
+        "user".to_string(),
+        BTreeMap::from([
+            ("TodoView".to_string(), RoleGrant::all_columns()),
+            ("ChatView".to_string(), RoleGrant::all_columns()),
+        ]),
+    )]);
+    let selected = surface_for_application_contract(
+        &full,
+        "web",
+        &["user".into()],
+        &["user".into()],
+        &grants,
+    )
+    .unwrap();
+    let export = DistributedClientSurfaceExport::from_contract("todo-app", selected).unwrap();
+    let todos_only = prune_client_manifest(export.manifest().unwrap(), ["TodoView"]).unwrap();
+    assert!(todos_only
+        .models
+        .iter()
+        .any(|model| model.typename == "TodoView"));
+    assert!(!todos_only
+        .models
+        .iter()
+        .any(|model| model.typename == "ChatView"));
+    let chat_only = prune_client_manifest(export.manifest().unwrap(), ["ChatView"]).unwrap();
+    assert!(chat_only
+        .models
+        .iter()
+        .any(|model| model.typename == "ChatView"));
+    assert!(!chat_only
+        .models
+        .iter()
+        .any(|model| model.typename == "TodoView"));
+}
+
+#[test]
+fn prune_drops_unselected_command_optimism_and_causal_slots() {
+    let tables = [TodoView::schema().clone(), ChatView::schema().clone()];
+    let full = build_surface(&tables, &SurfaceOptions::sqlite()).unwrap();
+    let grants = BTreeMap::from([(
+        "user".to_string(),
+        BTreeMap::from([
+            ("TodoView".to_string(), RoleGrant::all_columns()),
+            ("ChatView".to_string(), RoleGrant::all_columns()),
+        ]),
+    )]);
+    let catalog = full.with_module(&command_module()).unwrap();
+    let selected = surface_for_application_contract(
+        &catalog,
+        "web",
+        &["user".into()],
+        &["user".into()],
+        &grants,
+    )
+    .unwrap();
+    let export = DistributedClientSurfaceExport::from_contract("todo-app", selected).unwrap();
+    let mut manifest = export.manifest().unwrap();
+    attach_todo_and_chat_command_optimism(&mut manifest);
+
+    let before = serde_json::to_string(&manifest).unwrap();
+    assert!(before.contains("ChatView"), "setup must include ChatView optimism");
+    assert!(before.contains("TodoView"));
+
+    let todos_only = prune_client_manifest(manifest, ["TodoView"]).unwrap();
+    let after = serde_json::to_string(&todos_only).unwrap();
+    assert!(
+        !after.contains("ChatView"),
+        "pruned manifest leaked ChatView: {after}"
+    );
+    assert!(todos_only
+        .models
+        .iter()
+        .any(|model| model.typename == "TodoView"));
+    for program in &todos_only.projection_programs {
+        for arm in &program.arms {
+            assert!(
+                arm.operations
+                    .iter()
+                    .all(|operation| operation.model == "TodoView"),
+                "unselected-model operations must be gone"
+            );
+        }
+    }
+    for command in &todos_only.commands {
+        if let Some(projection) = &command.extensions.projection {
+            assert!(projection
+                .pure_reduces
+                .iter()
+                .all(|reduce| reduce.model == "TodoView"));
+            assert!(projection
+                .program_arms
+                .iter()
+                .all(|arm| arm.program_id == "project_todos"));
+            assert!(projection
+                .preview_occurrences
+                .iter()
+                .all(|occurrence| occurrence.event.name == "todo.completed"));
+            for (index, occurrence) in projection.preview_occurrences.iter().enumerate() {
+                assert_eq!(occurrence.ordinal as usize, index);
+            }
+        }
+    }
+}
+
+fn attach_todo_and_chat_command_optimism(manifest: &mut distributed::graphql::DistributedClientManifest) {
+    let todo_event = ClientProjectionEventRef {
+        id: "todo.completed".into(),
+        name: "todo.completed".into(),
+        version: 1,
+    };
+    let chat_event = ClientProjectionEventRef {
+        id: "chat.posted".into(),
+        name: "chat.posted".into(),
+        version: 1,
+    };
+    manifest.projectors.push(distributed::graphql::ClientProjector {
+        version: 1,
+        name: "project_mixed".into(),
+        facts: vec!["todo.completed".into(), "chat.posted".into()],
+        models: vec!["TodoView".into(), "ChatView".into()],
+        dependencies: Vec::new(),
+        causal_confirmation: false,
+    });
+    manifest.projection_programs.push(ClientProjectionProgram {
+        version: 2,
+        program_id: "project_todos".into(),
+        name: "project_todos".into(),
+        program_version: 1,
+        ir_version: PROJECTION_PROGRAM_IR_VERSION,
+        operation_semantics_version: PROJECTION_OPERATION_SEMANTICS_VERSION,
+        arms: vec![ClientProjectionArm {
+            arm: "complete".into(),
+            event: todo_event.clone(),
+            partition: ClientProjectionPartition::Unit,
+            operations: vec![ClientProjectionOperation {
+                operation: "upsert_todo".into(),
+                ordinal: 0,
+                kind: ClientProjectionMutationKind::Upsert,
+                model: "TodoView".into(),
+                key: Vec::new(),
+                fields: Vec::new(),
+                relationships: Vec::new(),
+                invalidations: Vec::new(),
+            }],
+        }],
+    });
+    manifest.projection_programs.push(ClientProjectionProgram {
+        version: 2,
+        program_id: "project_chat".into(),
+        name: "project_chat".into(),
+        program_version: 1,
+        ir_version: PROJECTION_PROGRAM_IR_VERSION,
+        operation_semantics_version: PROJECTION_OPERATION_SEMANTICS_VERSION,
+        arms: vec![ClientProjectionArm {
+            arm: "post".into(),
+            event: chat_event.clone(),
+            partition: ClientProjectionPartition::Unit,
+            operations: vec![ClientProjectionOperation {
+                operation: "upsert_chat".into(),
+                ordinal: 0,
+                kind: ClientProjectionMutationKind::Upsert,
+                model: "ChatView".into(),
+                key: Vec::new(),
+                fields: Vec::new(),
+                relationships: Vec::new(),
+                invalidations: Vec::new(),
+            }],
+        }],
+    });
+    let command = manifest
+        .commands
+        .first_mut()
+        .expect("module commands should compile onto the surface");
+    command.extensions.projection = Some(CommandProjectionExtension {
+        version: 2,
+        event_set: vec![chat_event.clone(), todo_event.clone()],
+        program_arms: vec![
+            CommandProjectionArmRef {
+                event: chat_event.clone(),
+                program_id: "project_chat".into(),
+                arm: "post".into(),
+            },
+            CommandProjectionArmRef {
+                event: todo_event.clone(),
+                program_id: "project_todos".into(),
+                arm: "complete".into(),
+            },
+        ],
+        preview_occurrences: vec![
+            CommandProjectionPreviewOccurrence {
+                ordinal: 0,
+                event: chat_event,
+                values: Vec::new(),
+            },
+            CommandProjectionPreviewOccurrence {
+                ordinal: 1,
+                event: todo_event,
+                values: Vec::new(),
+            },
+        ],
+        pure_reduces: vec![
+            ClientCommandPureReduce {
+                fn_name: "todo.status".into(),
+                client_module: "pures".into(),
+                client_export: "todoStatus".into(),
+                wasm_package: String::new(),
+                wasm_export: String::new(),
+                model: "TodoView".into(),
+                key: Vec::new(),
+                args: Vec::new(),
+                assign: Vec::new(),
+            },
+            ClientCommandPureReduce {
+                fn_name: "chat.echo".into(),
+                client_module: "pures".into(),
+                client_export: "chatEcho".into(),
+                wasm_package: String::new(),
+                wasm_export: String::new(),
+                model: "ChatView".into(),
+                key: Vec::new(),
+                args: Vec::new(),
+                assign: Vec::new(),
+            },
+        ],
+        fallback: ClientProjectionFallback::Revalidate,
+    });
+}
+
+#[test]
+fn explicit_dispatch_route_map() {
+    let runtime = Runtime::from_database_url("sqlite::memory:")
+        .unwrap()
+        .graphql()
+        .dispatch_route("todo.*", "http://commands");
+    assert_eq!(
+        runtime.route_for("todo.create"),
+        Some("http://commands")
+    );
+    assert!(runtime.starts_graphql());
+    assert!(!runtime.starts_outbox());
 }
 
 #[test]

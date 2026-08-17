@@ -114,9 +114,10 @@ pub use service::GraphqlServiceBindError;
 ))]
 pub use workers::{spawn_outbox_publish_loop, spawn_service_consumer_loop};
 pub use service::{
-    direct_read_model, CausalCommandContext, CausalCommitBuilder, CausalRepository, CommandRequest,
-    CommandResponse, DeliveryKind, DirectReadModelProjection, HandlerNames, HandlerSpec,
-    PreparedCausalCommit, PreparedCommandHandler, RouteBuilder, Routes, Service, TypedRouteBuilder,
+    direct_read_model, invoke_transition, require_loaded, CausalCommandContext, CausalCommitBuilder,
+    CausalRepository, CommandRequest, CommandResponse, DeliveryKind, DirectReadModelProjection,
+    HandlerNames, HandlerSpec, PreparedCausalCommit, PreparedCommandHandler, RouteBuilder, Routes,
+    Service, ThinCommandBuilder, ThinCommandInvoked, ThinCommandLoaded, TypedRouteBuilder,
 };
 #[cfg(feature = "graphql")]
 pub(crate) use service::{

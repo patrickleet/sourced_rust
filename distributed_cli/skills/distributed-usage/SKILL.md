@@ -169,8 +169,9 @@ of exposing a raw `Context`/`serde_json::Value` handler as the mutation contract
   `PreparedCommand<_>` so the framework owns commit, ledger, outbox, and
   projection atomicity;
 - bind that exact `Service` through `GraphqlEngineBuilder::service`, configure
-  public OIDC, and call `.without_http_command_routes()` so browser writes use
-  only the GraphQL command proxy;
+  public OIDC. HTTP command routes stay off; browser writes use
+  only the GraphQL command proxy. Call `.with_http_command_routes()` only for
+  an intentional non-GraphQL ingress;
 - generate the strictly typed client with `distributed client`.
 
 Use the `distributed-graphql` skill for the complete route, consistency,
@@ -206,7 +207,10 @@ let routes = distributed::routes!(
     command handlers::todo_create,
     command handlers::todo_complete,
 );
-let service = Service::new().named("todo-api").routes(routes);
+let service = Service::new()
+    .named("todo-api")
+    .with_http_command_routes() // required for POST /{command}; GraphQL stays off by default
+    .routes(routes);
 service.with_bus(bus).run(RunOptions::idempotent()).await?;
 ```
 
@@ -272,7 +276,7 @@ Gotchas:
   `.` also allowed in namespaces, max 128 bytes).
 - Generic `microsvc` command routes do **not** authenticate themselves. Protect
   intentional non-GraphQL routes at a trusted edge. Public GraphQL scaffolds
-  instead wire `OidcBearer` validation and disable generic command POST routes;
+  instead wire `OidcBearer` validation; generic command POST routes stay off;
   never trust client-supplied identity headers.
 - `connect_and_migrate` applies migrations; plain `connect` does not create
   tables.

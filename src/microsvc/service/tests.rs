@@ -764,6 +764,7 @@ fn causal_test_input(id: &str, label: &str) -> Value {
 fn session_with_role(role: &str) -> Session {
     let mut session = Session::new();
     session.set(crate::microsvc::ROLE_KEY, role);
+    session.set(crate::microsvc::USER_ID_KEY, "causal-test-user");
     session
 }
 
@@ -1127,6 +1128,72 @@ async fn typed_direct_dispatch_fails_before_invoking_guard_or_handler() {
     assert!(error.to_string().contains("verified GraphQL bearer"));
     assert!(!TYPED_GUARD_INVOKED.load(Ordering::SeqCst));
     assert!(!TYPED_HANDLER_INVOKED.load(Ordering::SeqCst));
+}
+
+#[cfg(feature = "graphql")]
+#[tokio::test]
+async fn thin_complete_registers_without_a_handler_context_body() {
+    let repository = InMemoryRepository::new();
+    let routes = Routes::new()
+        .with_repo(repository.aggregate::<CausalDispatcherAggregate>())
+        .typed_command(
+            typed_command::<CausalTestInput, crate::graphql::Succeeded<TypedOutput>>("todo.create")
+                .roles(["user"]),
+        )
+        .create()
+        .invoke(|aggregate, input, _owner| {
+            aggregate.record(input.id.clone())?;
+            Ok::<_, crate::EventRecordError>(())
+        })
+        .succeeded(|aggregate| TypedOutput {
+            id: aggregate.entity().id().to_string(),
+        })
+        .typed_command(
+            typed_command::<CausalTestInput, crate::graphql::Succeeded<TypedOutput>>(
+                "todo.complete",
+            )
+            .roles(["user"]),
+        )
+        .load_by(|input: &CausalTestInput| input.id.clone())
+        .invoke(|aggregate, input, _owner| {
+            aggregate.record(input.id.clone())?;
+            Ok::<_, crate::EventRecordError>(())
+        })
+        .succeeded(|aggregate| TypedOutput {
+            id: aggregate.entity().id().to_string(),
+        });
+    let specs = routes.command_specs().expect("thin commands compile");
+    assert!(specs.iter().any(|spec| spec.id == "todo.complete"));
+    assert!(specs.iter().any(|spec| spec.id == "todo.create"));
+
+    let service = Service::new().named("thin-complete").routes(routes);
+    let mut session = session_with_role("user");
+    session.set(crate::microsvc::USER_ID_KEY, "alice");
+    let principal = causal_test_principal();
+
+    let created = service
+        .dispatch_causal(
+            "todo.create",
+            &causal_test_command_id(),
+            causal_test_input("todo-1", "new"),
+            session.clone(),
+            principal.clone(),
+        )
+        .await
+        .expect("thin create should commit");
+    assert_eq!(created, json!({ "id": "todo-1" }));
+
+    let completed = service
+        .dispatch_causal(
+            "todo.complete",
+            &causal_test_command_id(),
+            causal_test_input("todo-1", "done"),
+            session,
+            principal,
+        )
+        .await
+        .expect("thin complete should load, invoke, and commit");
+    assert_eq!(completed, json!({ "id": "todo-1" }));
 }
 
 #[cfg(all(feature = "graphql", feature = "application-runtime"))]

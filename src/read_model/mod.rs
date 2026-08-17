@@ -60,6 +60,16 @@ pub trait RelationalReadModel: Clone + Send + Sync + Sized {
     /// time; the derive macro backs this with a `LazyLock` so staging mutations
     /// never rebuilds or clones schema metadata.
     fn schema() -> &'static TableSchema;
+
+    /// Stable declared read-model identity.
+    ///
+    /// This is `#[readmodel(name = "...")]` when present, otherwise the Rust
+    /// type name stored on [`TableSchema::model_name`]. It is not the SQL
+    /// table, process owner, or GraphQL field.
+    fn read_model_id() -> &'static str {
+        Self::schema().model_name.as_str()
+    }
+
     fn primary_key(&self) -> Result<RowKey, TableStoreError>;
     fn to_row(&self) -> Result<RowValues, TableStoreError>;
     fn from_row(row: RowValues) -> Result<Self, TableStoreError>;

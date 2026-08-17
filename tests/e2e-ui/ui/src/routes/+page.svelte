@@ -14,17 +14,18 @@
 
 	const toc = [
 		{ href: '#claim', label: 'The claim' },
-		{ href: '#sota-backend', label: 'SOTA backend' },
-		{ href: '#sota-rust', label: 'Why Rust' },
-		{ href: '#sota-frontend', label: 'SOTA frontend' },
-		{ href: '#sota-together', label: 'One vehicle' },
+		{ href: '#sota', label: 'The bar' },
 		{ href: '#author', label: 'Backstory' },
 		{ href: '#flow', label: 'How' },
 		{ href: '#cqrs', label: 'CQRS' },
 		{ href: '#aggregates', label: 'Aggregates' },
 		{ href: '#read-models', label: 'Read models' },
+		{ href: '#query-api', label: 'Query API' },
 		{ href: '#projections', label: 'Projections' },
+		{ href: '#service', label: 'Service crates' },
 		{ href: '#replica', label: 'Replica' },
+		{ href: '#sveltekit', label: 'SvelteKit' },
+		{ href: '#oidc', label: 'OIDC' },
 		{ href: '#try', label: 'Playground' }
 	];
 
@@ -101,12 +102,12 @@ projection! {
                 TodoArchivedDomainEvent,
                 // …
             ],
-            mutation: save_todo,
+            mutation: SaveTodo,
             input: { todo: body },
         },
         on {
             events: [TodoPurgedDomainEvent],
-            mutation: delete_todo,
+            mutation: DeleteTodo,
             input: { todo_id: aggregate_id },
         },
     };
@@ -116,7 +117,7 @@ projection! {
 # Same program applies to the SQL read model and the browser replica.
 # Clients never call this — they send domain commands.
 mutation SaveTodo {
-  upsert_Todos(object: $input.todo)
+  upsert_todos(object: $input.todo)
 }`;
 
 	const codeCommand = `// Handler: load aggregate → domain method → commit events
@@ -180,6 +181,20 @@ query Todos @load {
   todos { todo_id title status }
 }`;
 
+	const codeService = `// Same domain + module crates. This Service lists what this process runs.
+pub const MODULE_IDS: &[&str] = &[
+  todo::MODULE_ID, chat::MODULE_ID, blob::MODULE_ID, "identity",
+];
+
+Service::new()
+  .named("e2e-ui")
+  .routes(todo::routes(/* commands + Eventual projector */))
+  .routes(chat::routes(/* … */))
+  .routes(blob::routes(/* Atomic — stays with commands */))
+
+// Another crate can list the same modules, or only Eventual projectors.
+// You write that Service. You do not flip a Runtime::role flag.`;
+
 </script>
 
 <div class="wf-home dist-home">
@@ -242,11 +257,7 @@ query Todos @load {
 				“State of the art” is a strong claim… Here’s how we define it.
 			</p>
 			<div class="dist-claim-links">
-				<a href="#sota-backend">Backend</a>
-				<span aria-hidden="true">·</span>
-				<a href="#sota-rust">Rust</a>
-				<span aria-hidden="true">·</span>
-				<a href="#sota-frontend">Front end</a>
+				<a href="#sota">The bar</a>
 				<span aria-hidden="true">·</span>
 				<a href="#author">Backstory</a>
 				<span aria-hidden="true">·</span>
@@ -255,224 +266,59 @@ query Todos @load {
 		</div>
 	</section>
 
-	<section class="wf-band wf-band-dark" id="sota-backend">
+	<section class="wf-band wf-band-dark" id="sota">
 		<div class="wf-band-inner">
 			<div class="wf-section-head wf-section-head-wide">
-				<span class="wf-label">State of the art · Backend</span>
-				<h2>Event-driven systems with room to scale</h2>
+				<span class="wf-label">State of the art</span>
+				<h2>One path from command to live UI</h2>
 				<p>
-					You never get perfect consistency, always-available writes, and surviving network partitions
-					all at once — that is the <strong>CAP theorem</strong>. Under partition you must sacrifice
-					one: usually consistency or availability. Most products that stay up choose availability
-					and accept <strong>eventual consistency</strong> on the read side — with clear rules about
-					what the user can trust immediately.
+					You never get perfect consistency, always-available writes, and partition tolerance at once
+					(<strong>CAP</strong>). Products that stay up accept <strong>eventual consistency</strong>
+					on reads — with clear rules about what the user can trust now. The bar is not a kit of
+					excellent parts. It is one path from domain event to optimistic row.
 				</p>
 			</div>
 
 			<div class="dist-teach">
 				<div class="dist-teach-block">
-					<h3>Unidirectional flow and event-driven architecture</h3>
+					<h3>Event-driven backend</h3>
 					<p>
-						These go hand in hand: <strong>events drive the flow</strong>. Changes move in one
-						direction, with order — command in, domain event out, projections update reads. The UI
-						does not patch database tables; it asks the system to do something, the system records
-						facts, and views update from those facts. Front-end developers already know a cousin of
-						this from Redux-style stores: dispatch → reduce → select. State-of-the-art backends
-						apply the same discipline <strong>across services</strong>, not only inside one SPA —
-						with events as the spine that keeps order honest.
-					</p>
-					<p>
-						Contrast the “microservices” setup you have probably seen: a web of services calling
-						each other over HTTP whenever convenient — A calls B, B calls C, C calls A under load,
-						timeouts cascade, and nobody can explain the order of effects. That is not a
-						distributed system; it is distributed chaos. Event-driven, unidirectional design
-						replaces request spaghetti with a path you can reason about.
+						Command in, domain event out, projections update reads. The UI does not patch tables.
+						<strong>CQRS</strong> keeps aggregates for rules and read models for screens.
+						<strong>Event sourcing</strong> records what happened as history you can unit-test.
+						Identity is OIDC and RBAC on the same claims — not a one-off check per endpoint.
 					</p>
 				</div>
 				<div class="dist-teach-block">
-					<h3>CQRS and event sourcing</h3>
+					<h3>Compiler-owned frontend</h3>
 					<p>
-						<strong>Command query responsibility segregation</strong> separates the model that is
-						best for enforcing business rules from the model that is best for answering screens.
-						Commands load <strong>aggregates</strong> (transactional consistency boundaries).
-						Queries hit a <strong>read model</strong> optimized for lists, joins, and filters.
-						<strong>Event sourcing</strong> means the write side records what happened as an
-						append-only history — plain structs / POJOs and methods you can unit-test — instead of
-						only the latest row overwrite.
+						SSR, the same query rehydrated, then a live feed. GraphQL selects fields; writes stay
+						<strong>commands</strong>. A <strong>replica</strong> holds the authorized slice. Optimism
+						uses the same mutation program as the projector — not a <code>setState</code> recipe per
+						page.
 					</p>
 				</div>
 				<div class="dist-teach-block">
-					<h3>Domain events and projections</h3>
+					<h3>Why Rust</h3>
 					<p>
-						When an aggregate accepts a command, it emits <strong>domain events</strong>: immutable
-						facts about the change. <strong>Projections</strong> subscribe to those facts and update
-						SQL (or other) read models. That is how you keep “what the business decided” separate
-						from “what the UI needs to list,” without dual-writing from the client.
+						Memory safety without GC pauses, concurrency the type system can check, and macros so
+						the domain API stays short. The same definitions compile into the client. Substrate, not
+						fashion.
 					</p>
 				</div>
 				<div class="dist-teach-block">
-					<h3>Identity and authorization</h3>
+					<h3>Same blocks, few or many processes</h3>
 					<p>
-						Real products need real identity: <strong>OIDC</strong>, sessions, and
-						<strong>JWTs</strong> that carry claims. Authorization belongs next to the data —
-						<strong>RBAC</strong> on rows and columns of the read model, and the same actor claims
-						on commands — not a one-off middleware story per endpoint.
+						Domain, modules, and projections are packages — not a deploy shape. A
+						<strong>service crate</strong> lists the modules this process runs. Today this playground
+						is one host. Later you write another Service from the same modules. Eventual projectors
+						can move; Atomic seals stay with commands.
 					</p>
 				</div>
 			</div>
 			<p class="dist-teach-foot">
-				That is the backend half of the bar: event-driven, unidirectional, CQRS/ES, projections, honest
-				consistency tradeoffs, and identity that the model can use. The runtime for that half has to
-				earn its place for reasons beyond “it’s fast.”
+				<strong>Distributed</strong> is that path — one system so generation can keep the DX simple.
 			</p>
-		</div>
-	</section>
-
-	<section class="wf-band wf-band-light" id="sota-rust">
-		<div class="wf-band-inner">
-			<div class="wf-section-head wf-section-head-wide">
-				<span class="wf-label">Why Rust</span>
-				<h2>Performance and safety without giving up a clean domain API</h2>
-				<p>
-					State-of-the-art distributed backends need predictable performance under concurrency, hard
-					edges around memory and data races, and a type system that catches mistakes before they
-					ship. Rust was built for that class of problem — systems work without the usual crash
-					surface of unmanaged languages, and without the GC pauses that make latency SLOs harder.
-				</p>
-			</div>
-
-			<div class="dist-teach">
-				<div class="dist-teach-block">
-					<h3>Memory safety without a garbage collector</h3>
-					<p>
-						Ownership and borrowing enforce “who can touch this data” at compile time. You get
-						C-class control of layout and lifetime, with whole categories of use-after-free and
-						data-race bugs ruled out before the binary runs. For services that process events and
-						commands all day, that is not academic — it is fewer production landmines and more
-						stable latency under load.
-					</p>
-				</div>
-				<div class="dist-teach-block">
-					<h3>Fearless concurrency</h3>
-					<p>
-						Async runtimes (Tokio and friends), channels, and the type system’s
-						<code>Send</code> / <code>Sync</code> bounds make concurrent work explicit. You can
-						share infrastructure across cores without pretending shared mutable state is fine by
-						default. That matches how real backends actually run: many in-flight commands, many
-						projections, many connections.
-					</p>
-				</div>
-				<div class="dist-teach-block">
-					<h3>A type system that encodes the domain</h3>
-					<p>
-						Result types, enums, and strong typing make invalid states harder to represent. Domain
-						errors can be first-class; “this command was rejected” is not a random string thrown
-						from a helper three layers down. When your product is business rules, the language
-						should make those rules hard to mis-wire.
-					</p>
-				</div>
-				<div class="dist-teach-block">
-					<h3>Zero-cost abstractions — and macros as DX</h3>
-					<p>
-						Rust’s ethos is: high-level tools that compile down to efficient machine code. Macros
-						and derives are how frameworks give you a simple authoring surface without a heavy
-						runtime reflection tax. You write something that reads like the domain; the compiler
-						emits the boilerplate for events, serialization, and wiring — so “record this domain
-						event” or “on these events, update the read model” can stay short at the call site while
-						the machinery still owns fingerprints, history, and lowerings.
-					</p>
-					<p>
-						The same idea scales past one language: domain definitions can drive the client too —
-						typed commands, replica metadata, how events map to cache updates — so front-end DX is
-						generated alignment, not a second hand-written stack. Compilers (and codegen) are the
-						framework, end to end.
-					</p>
-				</div>
-			</div>
-			<p class="dist-teach-foot">
-				So yes — Rust, for this class of work. Not as a fashion statement: as a substrate that lets a
-				CQRS/ES stack be both strict and pleasant to author, and a credible source of truth for the
-				client.
-			</p>
-		</div>
-	</section>
-
-	<section class="wf-band wf-band-dark" id="sota-frontend">
-		<div class="wf-band-inner">
-			<div class="wf-section-head wf-section-head-wide">
-				<span class="wf-label">State of the art · Front end</span>
-				<h2>Compilers are the new frameworks</h2>
-				<p>
-					Modern client stacks win when they <em>compile away</em> glue: routing, data loading, type
-					safety, and update paths. A state-of-the-art app path is not “fetch in
-					<code>onMount</code> and hope.” It is server-rendered HTML, a rehydrated client that shares
-					the same data contract, live updates without polling, and <strong>optimistic UI</strong>
-					that stays honest with an eventually consistent backend.
-				</p>
-			</div>
-
-			<div class="dist-teach">
-				<div class="dist-teach-block">
-					<h3>SvelteKit and the compiler mindset</h3>
-					<p>
-						Svelte and SvelteKit push work into the compiler and into load/live primitives so
-						application code stays about the product. The same spirit applies to a full-stack
-						system: generate the client from the server’s truth instead of hand-maintaining a second
-						API and cache story.
-					</p>
-				</div>
-				<div class="dist-teach-block">
-					<h3>GraphQL as selection, not the product</h3>
-					<p>
-						<strong>GraphQL</strong> shines when the read model is already well defined: the page
-						declares the fields it needs. You avoid a REST endpoint per screen. Writes still go
-						through domain <strong>commands</strong> — not table CRUD exposed as “mutations” for the
-						browser to call.
-					</p>
-				</div>
-				<div class="dist-teach-block">
-					<h3>Replica cache and optimistic updates</h3>
-					<p>
-						A <strong>client replica</strong> holds the authorized slice of the read model the UI
-						cares about. When the user fires a command, state-of-the-art UX applies the expected
-						result immediately (optimistic update), then converges when the projection lands. That
-						only works cleanly if the same definitions that update the server read model also drive
-						the client — not a one-off <code>setState</code> recipe per page.
-					</p>
-				</div>
-				<div class="dist-teach-block">
-					<h3>SSR, rehydration, and live</h3>
-					<p>
-						First paint from the server, same query rehydrated on the client, then a live feed for
-						rooms and dashboards. One operation for seed, hydrate, and subscription beats
-						maintaining a separate GraphQL query and WebSocket document that always drift apart.
-					</p>
-				</div>
-			</div>
-			<p class="dist-teach-foot">
-				That is the frontend half of the bar: compiler-owned glue, selection APIs, a replica aligned
-				with the domain, optimistic UI, and real-time without polling theater.
-			</p>
-		</div>
-	</section>
-
-	<section class="wf-band wf-band-light" id="sota-together">
-		<div class="wf-band-inner">
-			<div class="wf-section-head wf-section-head-wide">
-				<span class="wf-label">The bar, whole</span>
-				<h2>Two halves used to be two shopping lists</h2>
-				<p>
-					Brokers, projectors, Hasura-class query layers, a UI framework, OIDC, custom optimistic
-					cache code — each can be excellent alone. The tax is integration: versions, auth boundaries,
-					and two stories for “what a command does to the UI.” State of the art is not collecting
-					best-in-class parts; it is one path from domain event to optimistic row that teams do not
-					reinvent every time.
-				</p>
-				<p>
-					<strong>Distributed</strong> is built to be that path — one coherent system so code
-					generation can keep the developer experience simple. How we got here, then how it delivers.
-				</p>
-			</div>
 			<div class="wf-actions dist-vehicle-actions">
 				<a class="wf-btn wf-btn-primary" href="#author">How this project got here</a>
 				<a class="wf-btn wf-btn-ghost" href="#flow">How it delivers</a>
@@ -522,8 +368,9 @@ query Todos @load {
 				<span class="wf-label">How Distributed provides it</span>
 				<h2>One unidirectional loop — end to end</h2>
 				<p>
-					That’s the bar. Here’s the magic path that closes it: codegen across the stack, one ordered
-					cycle, each section below a stage with real code from this playground.
+					That’s the bar. Here’s the path that closes it: write the domain once, compose it into
+					one Service or several, then generate the client. Each section below is a stage with real
+					code from this playground.
 				</p>
 			</div>
 			<article class="wf-story-step dist-flow-step">
@@ -797,11 +644,44 @@ query Todos @load {
 		</div>
 	</section>
 
-	<section class="wf-band wf-band-light" id="replica">
+	<section class="wf-band wf-band-light" id="service">
 		<div class="wf-band-inner">
 			<article class="wf-story-step">
 				<div class="wf-story-copy">
-					<span class="wf-label">07 · Browser replica</span>
+					<span class="wf-label">07 · Service crates</span>
+					<h2 class="wf-step-title">Compose the process. Keep the domain still.</h2>
+					<p class="wf-why">
+						A module mounts one bounded context — commands, guards, projectors. A
+						<strong>service crate</strong> lists those modules. That list <em>is</em> the process:
+						this playground is one Service, one host, one runner that only reads env and calls
+						<code>run</code>. You do not set a runtime role flag.
+					</p>
+					<p class="wf-why">
+						The same packages can back a different Service later: all modules in one binary, or
+						commands here and Eventual projectors there. <strong>Atomic</strong> work (blob’s board
+						seal) stays with the command process. <strong>Eventual</strong> work can split. Topology
+						is explicit composition — not a hidden matrix.
+					</p>
+					<span class="wf-sample-path">tests/e2e-ui/crates/service/src/modules/compose.rs</span>
+				</div>
+				<div class="wf-code-stack">
+					<div class="wf-code">
+						<div class="wf-code-bar">
+							<span>compose.rs</span>
+							<em>service</em>
+						</div>
+						<pre><code>{@html highlightCode(codeService)}</code></pre>
+					</div>
+				</div>
+			</article>
+		</div>
+	</section>
+
+	<section class="wf-band wf-band-dark" id="replica">
+		<div class="wf-band-inner">
+			<article class="wf-story-step">
+				<div class="wf-story-copy">
+					<span class="wf-label">08 · Browser replica</span>
 					<h2 class="wf-step-title">The cycle closes at the client</h2>
 					<p class="wf-why">
 						Generated TypeScript carries your inventory into a client replica and typed commands.
@@ -825,11 +705,11 @@ query Todos @load {
 		</div>
 	</section>
 
-	<section class="wf-band wf-band-dark" id="sveltekit">
+	<section class="wf-band wf-band-light" id="sveltekit">
 		<div class="wf-band-inner">
 			<article class="wf-story-step">
 				<div class="wf-story-copy">
-					<span class="wf-label">08 · SvelteKit</span>
+					<span class="wf-label">09 · SvelteKit</span>
 					<h2 class="wf-step-title">SSR first, then live — one query</h2>
 					<p class="wf-why">
 						<code>@load</code> and <code>@live</code> use the same GraphQL operation for server
@@ -851,11 +731,11 @@ query Todos @load {
 		</div>
 	</section>
 
-	<section class="wf-band wf-band-light" id="oidc">
+	<section class="wf-band wf-band-dark" id="oidc">
 		<div class="wf-band-inner">
 			<article class="wf-story-step">
 				<div class="wf-story-copy">
-					<span class="wf-label">09 · OIDC</span>
+					<span class="wf-label">10 · OIDC</span>
 					<h2 class="wf-step-title">Who the user is — in the model and the UI</h2>
 					<p class="wf-why">
 						Real products need real identity. OIDC is first-class (Zitadel here; Keycloak and
@@ -892,7 +772,7 @@ query Todos @load {
 				<h2>Small apps, full patterns</h2>
 				<p>
 					Real features under <code>tests/e2e-ui</code> — chat, todos, a game, admin. Each has
-					<strong>How it’s built</strong>: from the page down to domain and events.
+					<strong>How it is built</strong>: query, then command, then handler, then domain, then events, then service and host.
 				</p>
 			</div>
 			<div class="dist-demo-grid">

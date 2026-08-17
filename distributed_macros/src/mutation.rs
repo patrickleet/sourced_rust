@@ -6,7 +6,7 @@
 //! ```ignore
 //! mutation! {
 //!     mutation SaveTodo {
-//!         upsert_Todos(object: $input.todo)
+//!         upsert_todos(object: $input.todo)
 //!     }
 //! }
 //! ```
@@ -105,7 +105,7 @@ enum MutationOpSyntax {
 
 impl Parse for MutationDeclaration {
     fn parse(input: ParseStream<'_>) -> Result<Self> {
-        // GraphQL-looking form: `mutation Name { upsert_Model(...) }`
+        // GraphQL-looking form: `mutation Name { upsert_todos(...) }`
         if input.peek(Ident) {
             let keyword: Ident = input.fork().parse()?;
             if keyword == "mutation" {
@@ -211,7 +211,9 @@ fn parse_graphql_token_document(input: ParseStream<'_>) -> Result<MutationDeclar
             "GraphQL-looking mutation body requires at least one operation",
         ));
     }
-    let name = LitStr::new(&pascal_to_snake(&name_ident.to_string()), name_ident.span());
+    // Keep the GraphQL operation name as the program identity so projection
+    // bindings (`mutation: SaveTodo`) match `mutation SaveTodo { … }`.
+    let name = LitStr::new(&name_ident.to_string(), name_ident.span());
     let version_lit = version.map(|v| LitInt::new(&v.to_string(), name_ident.span()));
     Ok(MutationDeclaration {
         name: Some(name),
@@ -246,26 +248,8 @@ fn parse_graphql_document(source: &str, span: proc_macro2::Span) -> Result<Mutat
     })
 }
 
-fn pascal_to_snake(name: &str) -> String {
-    let mut out = String::new();
-    for (index, ch) in name.chars().enumerate() {
-        if ch.is_uppercase() {
-            if index > 0 {
-                out.push('_');
-            }
-            out.extend(ch.to_lowercase());
-        } else {
-            out.push(ch);
-        }
-    }
-    if out.is_empty() {
-        "mutation".into()
-    } else {
-        out
-    }
-}
-
-/// `upsert_Todos(object: $input.todo)` / `delete_Todos_by_pk(todo_id: $input.todo_id)`.
+/// `upsert_todos(object: $input.todo)` / `delete_todos_by_pk(todo_id: $input.todo_id)`.
+/// The suffix is the read-model table name (snake_case), same as the query field.
 fn parse_graphql_field_operation(input: ParseStream<'_>) -> Result<MutationOpSyntax> {
     let field: Ident = input.parse()?;
     let field_name = field.to_string();
@@ -314,8 +298,8 @@ fn parse_graphql_field_operation(input: ParseStream<'_>) -> Result<MutationOpSyn
         field.span(),
         format!(
             "unsupported GraphQL-looking mutation field `{field_name}`; \
-             expected upsert_Model, insert_Model[_one], delete_Model_by_pk, \
-             or update_Model_by_pk"
+             expected upsert_todos, insert_todos[_one], delete_todos_by_pk, \
+             or update_todos_by_pk (snake_case table name, same as the query field)"
         ),
     ))
 }
@@ -327,8 +311,38 @@ fn model_path_from_name(name: &str, span: proc_macro2::Span) -> Result<Path> {
             "model name missing from mutation field",
         ));
     }
-    let ident = Ident::new(name, span);
-    Ok(Path::from(ident))
+    if name.starts_with('_') || name.ends_with('_') || name.contains("__") {
+        return Err(syn::Error::new(
+            span,
+            format!(
+                "`{name}` is not a valid read-model name \
+                 (expected a snake_case table name or PascalCase model suffix)"
+            ),
+        ));
+    }
+    let pascal = snake_to_pascal(name);
+    syn::parse_str::<Ident>(&pascal)
+        .map(Path::from)
+        .map_err(|_| {
+            syn::Error::new(
+                span,
+                format!("`{name}` is not a valid read-model name (expected snake_case table name)"),
+            )
+        })
+}
+
+/// `chat_messages` → `ChatMessages`. A PascalCase suffix stays PascalCase.
+fn snake_to_pascal(name: &str) -> String {
+    name.split('_')
+        .filter(|part| !part.is_empty())
+        .map(|part| {
+            let mut chars = part.chars();
+            match chars.next() {
+                Some(first) => first.to_uppercase().collect::<String>() + chars.as_str(),
+                None => String::new(),
+            }
+        })
+        .collect()
 }
 
 fn parse_graphql_object_arg(input: ParseStream<'_>) -> Result<Vec<Ident>> {
@@ -902,5 +916,34 @@ fn expand_operation(index: u32, operation: &MutationOpSyntax) -> Result<TokenStr
                 }
             })
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::snake_to_pascal;
+
+    #[test]
+    fn snake_table_names_become_rust_type_names() {
+        assert_eq!(snake_to_pascal("todos"), "Todos");
+        assert_eq!(snake_to_pascal("chat_messages"), "ChatMessages");
+        assert_eq!(snake_to_pascal("blob_games"), "BlobGames");
+        assert_eq!(snake_to_pascal("auth_users"), "AuthUsers");
+    }
+
+    #[test]
+    fn pascal_suffixes_stay_pascal() {
+        assert_eq!(snake_to_pascal("Todos"), "Todos");
+        assert_eq!(snake_to_pascal("ChatMessages"), "ChatMessages");
+    }
+
+    #[test]
+    fn malformed_underscore_segments_are_rejected() {
+        use proc_macro2::Span;
+        assert!(super::model_path_from_name("todos_", Span::call_site()).is_err());
+        assert!(super::model_path_from_name("_todos", Span::call_site()).is_err());
+        assert!(super::model_path_from_name("chat__messages", Span::call_site()).is_err());
+        assert!(super::model_path_from_name("chat_messages", Span::call_site()).is_ok());
+        assert!(super::model_path_from_name("ChatMessages", Span::call_site()).is_ok());
     }
 }

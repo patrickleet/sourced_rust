@@ -52,12 +52,11 @@ where
     );
     let blob = blob::routes(repo, locks, read_models, projections.blob);
 
-    // GraphQL-only public write surface (POST /todo.* must 404 — suite T0 / oidc_pg).
+    // GraphQL-only public write surface. POST /todo.* stays 404 (suite T0).
     // Zitadel Action ingress still needs HTTP: those commands are registered in
-    // the chat module and re-mounted in `serve_with_oidc` when wildcards are off.
+    // the chat module and re-mounted in `serve_with_oidc`.
     Service::new()
         .named("e2e-ui")
-        .without_http_command_routes()
         .routes(todos)
         .routes(chat)
         .routes(blob)

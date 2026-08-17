@@ -4,7 +4,7 @@
 //!
 //! - [`application`] — surface names and module inventory
 //! - [`modules`] — todo / chat / blob mounts + compose + GraphQL
-//! - [`host`] — one-screen process bootstrap (`run_e2e_host`)
+//! - [`host`] — one-screen process bootstrap (`run`)
 //! - [`handlers`] — command/event bodies (domain-adjacent, not infrastructure)
 //!
 //! Domain crates stay pure aggregates; read models live in `e2e-readmodels`;
@@ -26,7 +26,7 @@ pub use e2e_readmodels::distributed_manifest;
 pub use handlers::ingestors::zitadel::{
     scrape_users_to_outbox, spawn_scrape_loop, ScrapeReport, ZitadelScrapeConfig,
 };
-pub use host::{run_e2e_host, HostOptions};
+pub use host::{run, HostOptions};
 pub use modules::compose::build_service;
 pub use modules::graphql::{
     build_graphql_engine, dev_identity, distributed_admin_client_surface, distributed_client_surface,

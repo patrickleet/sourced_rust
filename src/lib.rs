@@ -66,8 +66,9 @@ pub use entity::{
 // canonical namespace; these common contract types are also convenient at the
 // crate root for contract-only packages.
 pub use application::{
-    Application, ApplicationError, ApplicationManifest, CommandMount, CommandMountHandler,
-    CommandMountRegistrar, CommandSpec, ContractCompiler, DeploymentPlan, LogicalId, Module,
+    admit_command_session, command_roles_require_principal, Application, ApplicationError,
+    ApplicationManifest, CommandMount, CommandMountHandler, CommandMountRegistrar, CommandSpec,
+    ContractCompiler, DeploymentPlan, LogicalId, Module, Runtime, RuntimeDialect,
     ModuleManifest, MountSelector, ProcessIntent, ProcessPreset, ProjectionSpec, SurfaceSpec,
     APPLICATION_MANIFEST_SCHEMA_VERSION, DEPLOYMENT_PLAN_SCHEMA_VERSION,
 };
@@ -139,12 +140,12 @@ pub use mutation::{
 ///                 TodoCreatedDomainEvent,
 ///                 TodoCompletedDomainEvent,
 ///             ],
-///             mutation: save_todo,
+///             mutation: SaveTodo,
 ///             input: { todo: body },
 ///         },
 ///         on {
 ///             events: [TodoPurgedDomainEvent],
-///             mutation: delete_todo,
+///             mutation: DeleteTodo,
 ///             input: { todo_id: aggregate_id },
 ///         },
 ///     };

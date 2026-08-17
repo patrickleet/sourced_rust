@@ -52,7 +52,7 @@ use validation::validate_surface_structure;
 #[cfg_attr(not(test), allow(unused_imports))]
 pub(crate) use build::client_manifest_from_surface;
 pub use error::ClientManifestError;
-pub use export::DistributedClientSurfaceExport;
+pub use export::{prune_client_manifest, DistributedClientSurfaceExport};
 pub use identity::ClientSurfaceIdentity;
 pub use limits::{ClientComplexityWeights, ClientExecutionLimits};
 pub use types::{

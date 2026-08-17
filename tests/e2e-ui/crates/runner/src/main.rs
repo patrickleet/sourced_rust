@@ -9,14 +9,14 @@
 
 use std::env;
 
-use e2e_service::{identity_from_env, run_e2e_host, HostOptions};
+use e2e_service::{identity_from_env, run, HostOptions};
 
 #[tokio::main]
 async fn main() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
     let database_url =
         env::var("DATABASE_URL").unwrap_or_else(|_| "sqlite:./e2e-ui.db?mode=rwc".into());
     let bind = env::var("BIND").unwrap_or_else(|_| "127.0.0.1:8791".into());
-    run_e2e_host(
+    run(
         &database_url,
         HostOptions {
             bind,

@@ -14,9 +14,9 @@ use e2e_readmodels::ChatMessages;
 
 /// Mutation: complete-row upsert for chat messages.
 ///
-/// Authored as GraphQL-looking syntax-only IR (not a public GraphQL field):
-/// `src/mutations/save_chat_message.mutation.graphql`.
-pub fn save_chat_message() -> Mutation<()> {
+/// The constructor name matches the document operation: `mutation SaveChatMessage`.
+#[allow(non_snake_case)]
+pub fn SaveChatMessage() -> Mutation<()> {
     mutation_file!("src/mutations/save_chat_message.mutation.graphql")
 }
 
@@ -30,7 +30,7 @@ distributed::projection! {
         model: ChatMessages,
         on {
             events: [ChatMessagePostedDomainEvent],
-            mutation: save_chat_message,
+            mutation: SaveChatMessage,
             input: { message: body },
         },
     };
@@ -59,7 +59,7 @@ mod tests {
         };
         assert_eq!(row.values.get("body"), Some(&RowValue::String("hello".into())));
         assert_eq!(
-            save_chat_message().program().operations()[0].kind(),
+            SaveChatMessage().program().operations()[0].kind(),
             MutationKind::Upsert
         );
         assert_eq!(ChatMessages::schema().table_name, "chat_messages");
@@ -67,7 +67,8 @@ mod tests {
 
     #[test]
     fn mutation_is_event_free() {
-        let json = serde_json::to_value(save_chat_message().program())
+        assert_eq!(SaveChatMessage().program().name(), "SaveChatMessage");
+        let json = serde_json::to_value(SaveChatMessage().program())
             .unwrap()
             .to_string();
         assert!(!json.contains("event_name"));

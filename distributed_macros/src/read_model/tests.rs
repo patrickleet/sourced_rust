@@ -35,6 +35,28 @@ fn expand_read_model_accepts_explicit_id_attribute() {
 }
 
 #[test]
+fn expand_read_model_accepts_declared_name() {
+    let input: DeriveInput = syn::parse_quote! {
+        #[readmodel(name = "operational.todos", table = "operational_todos")]
+        struct OperationalTodos {
+            #[readmodel(id)]
+            todo_id: String,
+        }
+    };
+
+    let expanded = expand_read_model(input).unwrap().to_string();
+    assert!(
+        expanded.contains("operational.todos") || expanded.contains("operational . todos"),
+        "{expanded}"
+    );
+    assert!(!expanded.contains("model_name : \"OperationalTodos\""));
+    assert!(
+        expanded.contains("operational_todos"),
+        "default table must come from the Rust type, not the declared name: {expanded}"
+    );
+}
+
+#[test]
 fn expand_read_model_accepts_direct_collection_attribute() {
     let input: DeriveInput = syn::parse_quote! {
         #[collection("counter_views")]

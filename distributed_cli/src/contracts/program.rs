@@ -64,6 +64,9 @@ pub struct ClientProgramDescriptor {
     pub surfaces: Vec<ClientProgramSurface>,
     pub artifacts: Vec<ClientProgramArtifact>,
     pub assets: Vec<ClientProgramAsset>,
+    /// Selected read-model identities (`RMV-REQ-004`). Empty means unspecified.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub read_models: Vec<String>,
     /// Immediate application-manifest predecessor identity.
     pub application_manifest: ArtifactIdentity,
     /// Immediate deployment-plan predecessor identity.
@@ -89,6 +92,7 @@ impl ClientProgramDescriptor {
             surfaces: Vec::new(),
             artifacts: Vec::new(),
             assets: Vec::new(),
+            read_models: Vec::new(),
             application_manifest: None,
             deployment_plan: None,
         }
@@ -137,9 +141,17 @@ impl ClientProgramDescriptor {
         if self.deployment_plan.kind != ContractArtifactKind::DeploymentPlan {
             return Err("deployment_plan predecessor kind mismatch".into());
         }
-        let expected_contract = contract_set_id(&self.surfaces, &self.artifacts);
+        let mut canonical_models = self.read_models.clone();
+        canonical_models.sort();
+        canonical_models.dedup();
+        if canonical_models != self.read_models {
+            return Err("read_models must be sorted and unique".into());
+        }
+        let expected_contract = contract_set_id(&self.surfaces, &self.artifacts, &self.read_models);
         if self.contract_set_id != expected_contract {
-            return Err("contract_set_id is stale relative to surfaces/artifacts".into());
+            return Err(
+                "contract_set_id is stale relative to surfaces/artifacts/read_models".into(),
+            );
         }
         let expected_program = program_id(
             self.version,
@@ -176,6 +188,7 @@ pub struct ClientProgramDescriptorBuilder {
     surfaces: Vec<ClientProgramSurface>,
     artifacts: Vec<ClientProgramArtifact>,
     assets: Vec<ClientProgramAsset>,
+    read_models: Vec<String>,
     application_manifest: Option<ArtifactIdentity>,
     deployment_plan: Option<ArtifactIdentity>,
 }
@@ -206,6 +219,13 @@ impl ClientProgramDescriptorBuilder {
         self
     }
 
+    pub fn read_models(mut self, models: impl IntoIterator<Item = impl Into<String>>) -> Self {
+        self.read_models = models.into_iter().map(Into::into).collect();
+        self.read_models.sort();
+        self.read_models.dedup();
+        self
+    }
+
     /// Hash every regular file under `root` into portable assets.
     pub fn assets_from_dir(mut self, root: &Path) -> Result<Self, String> {
         let mut assets = collect_assets(root)?;
@@ -224,7 +244,7 @@ impl ClientProgramDescriptorBuilder {
         let deployment_plan = self.deployment_plan.ok_or_else(|| {
             "client program requires deployment_plan predecessor identity".to_string()
         })?;
-        let contract_set_id = contract_set_id(&self.surfaces, &self.artifacts);
+        let contract_set_id = contract_set_id(&self.surfaces, &self.artifacts, &self.read_models);
         let program_id = program_id(
             CLIENT_PROGRAM_DESCRIPTOR_VERSION,
             CLIENT_PROGRAM_POLICY_VERSION,
@@ -240,6 +260,7 @@ impl ClientProgramDescriptorBuilder {
             surfaces: self.surfaces,
             artifacts: self.artifacts,
             assets: self.assets,
+            read_models: self.read_models,
             application_manifest,
             deployment_plan,
         };
@@ -251,8 +272,15 @@ impl ClientProgramDescriptorBuilder {
 fn contract_set_id(
     surfaces: &[ClientProgramSurface],
     artifacts: &[ClientProgramArtifact],
+    read_models: &[String],
 ) -> String {
     let mut material = BTreeMap::new();
+    if !read_models.is_empty() {
+        material.insert(
+            "read_models".into(),
+            serde_json::to_string(read_models).unwrap_or_default(),
+        );
+    }
     for surface in surfaces {
         material.insert(
             format!("surface:{}", surface.name),
@@ -455,6 +483,49 @@ mod tests {
             first.classify_against(&surface_changed).unwrap(),
             ProgramCompatibility::IncompatibleRequiredUpdate
         );
+        let _ = fs::remove_dir_all(root);
+    }
+
+    #[test]
+    fn sibling_program_identity_stays_stable_when_another_read_model_list_changes() {
+        let root = temp_dir();
+        fs::write(root.join("app.js"), b"console.log(1)").unwrap();
+        let web = base_builder(&root)
+            .read_models(["operational.todos", "shared.chat"])
+            .build()
+            .unwrap();
+        let mobile = base_builder(&root)
+            .read_models(["mobile.todos", "shared.chat"])
+            .build()
+            .unwrap();
+        let web_again = base_builder(&root)
+            .read_models(["operational.todos", "shared.chat"])
+            .build()
+            .unwrap();
+        assert_eq!(web.program_id, web_again.program_id);
+        assert_ne!(web.program_id, mobile.program_id);
+        assert_ne!(web.contract_set_id, mobile.contract_set_id);
+        let _ = fs::remove_dir_all(root);
+    }
+
+    #[test]
+    fn validate_rejects_unsorted_or_duplicate_read_models() {
+        let root = temp_dir();
+        fs::write(root.join("app.js"), b"console.log(1)").unwrap();
+        let mut descriptor = base_builder(&root)
+            .read_models(["shared.chat", "operational.todos"])
+            .build()
+            .unwrap();
+        descriptor.read_models = vec!["shared.chat".into(), "operational.todos".into()];
+        assert!(descriptor
+            .validate()
+            .unwrap_err()
+            .contains("read_models must be sorted"));
+        descriptor.read_models = vec!["operational.todos".into(), "operational.todos".into()];
+        assert!(descriptor
+            .validate()
+            .unwrap_err()
+            .contains("read_models must be sorted"));
         let _ = fs::remove_dir_all(root);
     }
 }

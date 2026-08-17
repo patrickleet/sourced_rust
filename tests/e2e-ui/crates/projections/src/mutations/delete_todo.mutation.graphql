@@ -1,5 +1,5 @@
 # Syntax-only read-model mutation → MutationProgram IR.
 # Not a public GraphQL schema field.
 mutation DeleteTodo {
-  delete_Todos_by_pk(todo_id: $input.todo_id)
+  delete_todos_by_pk(todo_id: $input.todo_id)
 }

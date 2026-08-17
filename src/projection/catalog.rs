@@ -4,7 +4,7 @@
 //! executor is reachable. [`ActiveProjectionBindings`] is the separate
 //! service-construction view used for liveness and causal eligibility.
 
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, BTreeSet};
 use std::fmt;
 
 use serde::{Deserialize, Serialize};
@@ -204,6 +204,7 @@ impl ActiveProjectionBindings {
         for activation in &activations {
             validate_activation(catalog, activation)?;
         }
+        validate_primary_binding_uniqueness(catalog, &activations)?;
         validate_authoritative_writers(catalog, &activations)?;
         if let Some((previous_catalog, previous_bindings)) = previous {
             validate_epoch_takeover(
@@ -448,6 +449,17 @@ pub enum ProjectionCatalogError {
         /// Affected binding.
         binding: ProjectionBindingId,
     },
+    /// Two activations share the same event, primary read model, owner, and epoch.
+    DuplicatePrimaryBinding {
+        /// Semantic event name.
+        event: String,
+        /// Declared read-model identity.
+        read_model_id: String,
+        /// Projector owner.
+        owner: String,
+        /// Shared epoch.
+        epoch: String,
+    },
     /// Two live bindings can authoritatively write one logical scope.
     AuthoritativeWriterConflict {
         /// Logical output model.
@@ -528,6 +540,15 @@ impl fmt::Display for ProjectionCatalogError {
                 formatter,
                 "direct projection binding `{binding}` must execute through a local route"
             ),
+            Self::DuplicatePrimaryBinding {
+                event,
+                read_model_id,
+                owner,
+                epoch,
+            } => write!(
+                formatter,
+                "duplicate primary binding for event `{event}` read model `{read_model_id}` owner `{owner}` epoch `{epoch}`"
+            ),
             Self::AuthoritativeWriterConflict {
                 model,
                 first,
@@ -593,6 +614,54 @@ fn validate_activation(
         return Err(ProjectionCatalogError::RemoteDirectBinding {
             binding: activation.binding_id,
         });
+    }
+    Ok(())
+}
+
+fn validate_primary_binding_uniqueness(
+    catalog: &ProjectionCatalog,
+    activations: &[ProjectionBindingActivation],
+) -> Result<(), ProjectionCatalogError> {
+    let mut seen = BTreeSet::<(String, u64, String, String, String)>::new();
+    for activation in activations {
+        let binding = catalog.binding(activation.binding_id).ok_or(
+            ProjectionCatalogError::UnknownBinding {
+                binding: activation.binding_id,
+            },
+        )?;
+        let read_model_ids = if let Some(primary) = binding.primary_read_model_id() {
+            vec![primary]
+        } else {
+            binding
+                .outputs()
+                .iter()
+                .map(|output| output.read_model_id())
+                .collect()
+        };
+        if read_model_ids.is_empty() {
+            continue;
+        }
+        let owner = binding.owner().name().to_string();
+        let epoch = activation.epoch.as_str().to_string();
+        for read_model_id in read_model_ids {
+            for event in binding.events() {
+                let key = (
+                    event.name().to_string(),
+                    event.version(),
+                    read_model_id.to_string(),
+                    owner.clone(),
+                    epoch.clone(),
+                );
+                if !seen.insert(key.clone()) {
+                    return Err(ProjectionCatalogError::DuplicatePrimaryBinding {
+                        event: key.0,
+                        read_model_id: key.2,
+                        owner: key.3,
+                        epoch: key.4,
+                    });
+                }
+            }
+        }
     }
     Ok(())
 }
@@ -1433,6 +1502,104 @@ mod tests {
             error,
             ProjectionCatalogError::AuthoritativeWriterConflict { .. }
         ));
+    }
+
+    #[test]
+    fn one_event_feeds_two_named_read_models() {
+        let operational = program_with_target_and_partition(
+            "project_operational_todos",
+            FINGERPRINT_A,
+            "operational.todos",
+            "operational_todos",
+            ProjectionPartition::Unit,
+        );
+        let analytics = program_with_target_and_partition(
+            "project_todo_throughput",
+            FINGERPRINT_A,
+            "analytics.todos",
+            "todo_throughput",
+            ProjectionPartition::Unit,
+        );
+        let first = ProjectionBinding::from_eventual_program(
+            &operational,
+            ProjectionSourceBinding::try_new("todo-domain", "ordered-domain-events", 1).unwrap(),
+            ProjectionOwner::try_new("ops-writer").unwrap(),
+            ProjectionExecutionClass::Causal,
+            "distributed-projection-partition",
+            PROJECTION_PARTITION_CODEC_VERSION,
+            vec![ProjectionOutput::try_new(
+                "operational.todos",
+                "operational_todos",
+                model_schema("operational.todos", "operational_todos"),
+            )
+            .unwrap()],
+            Vec::new(),
+            None,
+        )
+        .unwrap();
+        let second = ProjectionBinding::from_eventual_program(
+            &analytics,
+            ProjectionSourceBinding::try_new("todo-domain", "ordered-domain-events", 1).unwrap(),
+            ProjectionOwner::try_new("analytics-writer").unwrap(),
+            ProjectionExecutionClass::Causal,
+            "distributed-projection-partition",
+            PROJECTION_PARTITION_CODEC_VERSION,
+            vec![ProjectionOutput::try_new(
+                "analytics.todos",
+                "todo_throughput",
+                model_schema("analytics.todos", "todo_throughput"),
+            )
+            .unwrap()],
+            Vec::new(),
+            None,
+        )
+        .unwrap();
+        assert_eq!(first.primary_read_model_id(), Some("operational.todos"));
+        assert_eq!(second.primary_read_model_id(), Some("analytics.todos"));
+        assert_eq!(
+            first.primary_read_model_id(),
+            Some(first.outputs()[0].read_model_id())
+        );
+        let moved = ProjectionBinding::from_eventual_program(
+            &operational,
+            ProjectionSourceBinding::try_new("todo-domain", "ordered-domain-events", 1).unwrap(),
+            ProjectionOwner::try_new("other-process").unwrap(),
+            ProjectionExecutionClass::Causal,
+            "distributed-projection-partition",
+            PROJECTION_PARTITION_CODEC_VERSION,
+            vec![ProjectionOutput::try_new(
+                "operational.todos",
+                "operational_todos",
+                model_schema("operational.todos", "operational_todos"),
+            )
+            .unwrap()],
+            Vec::new(),
+            None,
+        )
+        .unwrap();
+        assert_eq!(moved.primary_read_model_id(), first.primary_read_model_id());
+        assert_ne!(moved.owner().name(), first.owner().name());
+
+        let catalog = ProjectionCatalog::try_new(vec![first.clone(), second.clone()]).unwrap();
+        catalog
+            .activate(
+                vec![
+                    activation(
+                        &first,
+                        "ops-v1",
+                        ProjectionBindingState::Active,
+                        Some(ProjectionExecutorRoute::local("ops").unwrap()),
+                    ),
+                    activation(
+                        &second,
+                        "analytics-v1",
+                        ProjectionBindingState::Active,
+                        Some(ProjectionExecutorRoute::local("analytics").unwrap()),
+                    ),
+                ],
+                None,
+            )
+            .unwrap();
     }
 
     #[test]

@@ -4,7 +4,8 @@
 //!
 //! ## Routes
 //!
-//! - `POST /{command}` — dispatch a command. Body = JSON input, request headers → Session.
+//! - `POST /{command}` — dispatch a command when [`Service::with_http_command_routes`]
+//!   is set. Body = JSON input, request headers → Session.
 //! - `GET /health` — health check returning `{ "ok": true, "commands": [...] }`.
 //! - `GET /metrics` — Prometheus text metrics (requires the `metrics` feature);
 //!   unauthenticated by design and intended for private scrape networks only.
@@ -16,12 +17,14 @@
 //! use distributed::{microsvc, InMemoryRepository};
 //!
 //! let service = Arc::new(
-//!     microsvc::Service::new().routes(
-//!         microsvc::Routes::new()
-//!             .with_repo(InMemoryRepository::new().queued().aggregate::<Counter>())
-//!             .command("counter.create")
-//!             .handle(|ctx| { /* ... */ })
-//!     )
+//!     microsvc::Service::new()
+//!         .with_http_command_routes()
+//!         .routes(
+//!             microsvc::Routes::new()
+//!                 .with_repo(InMemoryRepository::new().queued().aggregate::<Counter>())
+//!                 .command("counter.create")
+//!                 .handle(|ctx| { /* ... */ })
+//!         )
 //! );
 //!
 //! // Get the router to compose with other axum routes
@@ -47,8 +50,8 @@ use super::MAX_HTTP_BODY_BYTES;
 
 /// Build an axum `Router` that dispatches commands via the given service.
 ///
-/// By default mounts `POST /{command}`. Call [`Service::without_http_command_routes`]
-/// for GraphQL-only surfaces (health + GraphQL; no per-command HTTP).
+/// Does not mount `POST /{command}` unless [`Service::with_http_command_routes`]
+/// was called. Health, metrics, and GraphQL stay available either way.
 pub fn router(service: Arc<Service>) -> Router {
     let mut router = Router::new().route("/health", get(health_handler));
     if service.http_command_routes_enabled() {

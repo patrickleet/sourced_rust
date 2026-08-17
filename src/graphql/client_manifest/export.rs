@@ -143,6 +143,131 @@ impl DistributedClientSurfaceExport {
     pub fn manifest_json_pretty(&self) -> Result<String, ClientManifestError> {
         Ok(serde_json::to_string_pretty(&self.manifest()?)?)
     }
+
+    /// Restrict a compiled manifest to an explicit read-model allow-list.
+    pub fn manifest_for_read_models(
+        &self,
+        read_models: impl IntoIterator<Item = impl Into<String>>,
+    ) -> Result<DistributedClientManifest, ClientManifestError> {
+        prune_client_manifest(self.manifest()?, read_models)
+    }
+}
+
+/// Keep only selected read models and their projection/command graph.
+pub fn prune_client_manifest(
+    mut manifest: DistributedClientManifest,
+    read_models: impl IntoIterator<Item = impl Into<String>>,
+) -> Result<DistributedClientManifest, ClientManifestError> {
+    let allowed: BTreeSet<String> = read_models.into_iter().map(Into::into).collect();
+    if allowed.is_empty() {
+        return Err(ClientManifestError(
+            "read_models allow-list must not be empty".into(),
+        ));
+    }
+    for id in &allowed {
+        if !manifest
+            .models
+            .iter()
+            .any(|model| model.id == *id || model.typename == *id)
+        {
+            return Err(ClientManifestError(format!(
+                "read model `{id}` is not visible on this surface"
+            )));
+        }
+    }
+    manifest.models.retain(|model| {
+        allowed.contains(&model.id) || allowed.contains(&model.typename)
+    });
+    let kept: BTreeSet<String> = manifest
+        .models
+        .iter()
+        .flat_map(|model| [model.id.clone(), model.typename.clone()])
+        .collect();
+    manifest
+        .roots
+        .retain(|root| kept.contains(&root.model));
+    for projector in &mut manifest.projectors {
+        projector.models.retain(|model| kept.contains(model));
+    }
+    manifest
+        .projectors
+        .retain(|projector| !projector.models.is_empty());
+    for program in &mut manifest.projection_programs {
+        for arm in &mut program.arms {
+            arm.operations.retain(|operation| kept.contains(&operation.model));
+            for operation in &mut arm.operations {
+                operation.relationships.retain(|rel| {
+                    kept.contains(&rel.source_model) && kept.contains(&rel.target_model)
+                });
+                operation.invalidations.retain(|invalidation| match invalidation {
+                    ClientProjectionInvalidation::Model { model } => kept.contains(model),
+                    ClientProjectionInvalidation::Relationship {
+                        source_model,
+                        target_model,
+                        ..
+                    } => kept.contains(source_model) && kept.contains(target_model),
+                });
+            }
+        }
+        program.arms.retain(|arm| !arm.operations.is_empty());
+    }
+    manifest
+        .projection_programs
+        .retain(|program| !program.arms.is_empty());
+    let kept_programs: BTreeSet<_> = manifest
+        .projection_programs
+        .iter()
+        .map(|program| program.program_id.clone())
+        .collect();
+    manifest
+        .projection_bindings
+        .retain(|binding| kept_programs.contains(&binding.program_id));
+    for command in &mut manifest.commands {
+        if let Some(direct) = &command.extensions.direct_projection {
+            if !kept.contains(&direct.model) {
+                command.extensions.direct_projection = None;
+            }
+        }
+        let Some(projection) = command.extensions.projection.as_mut() else {
+            continue;
+        };
+        projection
+            .pure_reduces
+            .retain(|reduce| kept.contains(&reduce.model));
+        projection.program_arms.retain(|arm| {
+            manifest.projection_programs.iter().any(|program| {
+                program.program_id == arm.program_id
+                    && program.arms.iter().any(|program_arm| {
+                        program_arm.event == arm.event
+                            && program_arm.arm == arm.arm
+                            && program_arm
+                                .operations
+                                .iter()
+                                .any(|operation| kept.contains(&operation.model))
+                    })
+            })
+        });
+        projection.event_set = projection
+            .program_arms
+            .iter()
+            .map(|arm| arm.event.clone())
+            .collect::<BTreeSet<_>>()
+            .into_iter()
+            .collect();
+        projection
+            .preview_occurrences
+            .retain(|occurrence| projection.event_set.contains(&occurrence.event));
+        for (index, occurrence) in projection.preview_occurrences.iter_mut().enumerate() {
+            occurrence.ordinal = u32::try_from(index).unwrap_or(u32::MAX);
+        }
+        if projection.program_arms.is_empty()
+            && projection.preview_occurrences.is_empty()
+            && projection.pure_reduces.is_empty()
+        {
+            command.extensions.projection = None;
+        }
+    }
+    Ok(manifest)
 }
 
 fn validate_service_provenance(

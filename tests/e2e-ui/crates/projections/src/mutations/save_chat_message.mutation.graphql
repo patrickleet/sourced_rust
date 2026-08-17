@@ -1,5 +1,5 @@
 # Syntax-only read-model mutation → MutationProgram IR.
 # Not a public GraphQL schema field.
 mutation SaveChatMessage {
-  upsert_ChatMessages(object: $input.message)
+  upsert_chat_messages(object: $input.message)
 }

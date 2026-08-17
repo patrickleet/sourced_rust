@@ -147,7 +147,7 @@ Outbox dispatcher and eventual consumer are **role-selected**, not copy-pasted p
 | HTTP command routes | Optional / ingress only (e.g. Zitadel) |
 | OIDC / identity | API-facing processes |
 
-Primary write path for apps remains GraphQL commands (as e2e-ui already prefers with `without_http_command_routes`).
+Primary write path for apps remains GraphQL commands. HTTP command routes stay off unless a process calls `with_http_command_routes`.
 
 ---
 
