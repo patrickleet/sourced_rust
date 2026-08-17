@@ -114,7 +114,7 @@ pub fn admit_command_session(
     session_roles: &[String],
 ) -> Result<(), &'static str> {
     if command_roles_require_principal(roles)
-        && user_id.map(str::is_empty).unwrap_or(true)
+        && user_id.map(str::trim).unwrap_or("").is_empty()
     {
         return Err("unauthenticated");
     }

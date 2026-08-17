@@ -4,7 +4,7 @@
 //! executor is reachable. [`ActiveProjectionBindings`] is the separate
 //! service-construction view used for liveness and causal eligibility.
 
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, BTreeSet};
 use std::fmt;
 
 use serde::{Deserialize, Serialize};
@@ -622,32 +622,44 @@ fn validate_primary_binding_uniqueness(
     catalog: &ProjectionCatalog,
     activations: &[ProjectionBindingActivation],
 ) -> Result<(), ProjectionCatalogError> {
-    let mut seen = BTreeMap::<(String, String, String, String), ()>::new();
+    let mut seen = BTreeSet::<(String, u64, String, String, String)>::new();
     for activation in activations {
         let binding = catalog.binding(activation.binding_id).ok_or(
             ProjectionCatalogError::UnknownBinding {
                 binding: activation.binding_id,
             },
         )?;
-        let Some(read_model_id) = binding.primary_read_model_id() else {
-            continue;
+        let read_model_ids = if let Some(primary) = binding.primary_read_model_id() {
+            vec![primary]
+        } else {
+            binding
+                .outputs()
+                .iter()
+                .map(|output| output.read_model_id())
+                .collect()
         };
+        if read_model_ids.is_empty() {
+            continue;
+        }
         let owner = binding.owner().name().to_string();
         let epoch = activation.epoch.as_str().to_string();
-        for event in binding.events() {
-            let key = (
-                event.name().to_string(),
-                read_model_id.to_string(),
-                owner.clone(),
-                epoch.clone(),
-            );
-            if seen.insert(key.clone(), ()).is_some() {
-                return Err(ProjectionCatalogError::DuplicatePrimaryBinding {
-                    event: key.0,
-                    read_model_id: key.1,
-                    owner: key.2,
-                    epoch: key.3,
-                });
+        for read_model_id in read_model_ids {
+            for event in binding.events() {
+                let key = (
+                    event.name().to_string(),
+                    event.version(),
+                    read_model_id.to_string(),
+                    owner.clone(),
+                    epoch.clone(),
+                );
+                if !seen.insert(key.clone()) {
+                    return Err(ProjectionCatalogError::DuplicatePrimaryBinding {
+                        event: key.0,
+                        read_model_id: key.2,
+                        owner: key.3,
+                        epoch: key.4,
+                    });
+                }
             }
         }
     }

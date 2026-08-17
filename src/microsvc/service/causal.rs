@@ -340,26 +340,21 @@ pub(super) fn ensure_causal_grant(
     contract: &TypedCommandContract,
     session: &Session,
 ) -> Result<(), CausalDispatchError> {
-    // Identity is a set (`x-roles`). Allow when any asserted role is granted
-    // the command — not a priority-picked primary role.
-    if crate::application::command_roles_require_principal(&contract.roles)
-        && session.user_id().map(str::trim).unwrap_or("").is_empty()
-    {
-        return Err(CausalDispatchError::Handler(crate::microsvc::HandlerError::Unauthorized(
-            "missing authenticated principal".into(),
-        )));
+    // Identity is a set (`x-roles`). One admission law for GraphQL and
+    // composition: allow when any asserted role is granted the command.
+    match crate::application::admit_command_session(
+        &contract.roles,
+        session.user_id(),
+        &session.roles(),
+    ) {
+        Ok(()) => Ok(()),
+        Err("unauthenticated") => Err(CausalDispatchError::Handler(
+            crate::microsvc::HandlerError::Unauthorized(
+                "missing authenticated principal".into(),
+            ),
+        )),
+        Err(_) => Err(CausalDispatchError::Forbidden),
     }
-    if contract.roles.is_empty() {
-        return Ok(());
-    }
-    let asserted = session.roles();
-    if asserted
-        .iter()
-        .any(|role| contract.roles.iter().any(|allowed| allowed == *role))
-    {
-        return Ok(());
-    }
-    Err(CausalDispatchError::Forbidden)
 }
 
 #[cfg(feature = "graphql")]

@@ -186,12 +186,12 @@ pub fn prune_client_manifest(
     manifest
         .roots
         .retain(|root| kept.contains(&root.model));
-    manifest.projectors.retain(|projector| {
-        projector
-            .models
-            .iter()
-            .any(|model| kept.contains(model))
-    });
+    for projector in &mut manifest.projectors {
+        projector.models.retain(|model| kept.contains(model));
+    }
+    manifest
+        .projectors
+        .retain(|projector| !projector.models.is_empty());
     for program in &mut manifest.projection_programs {
         for arm in &mut program.arms {
             arm.operations.retain(|operation| kept.contains(&operation.model));
@@ -235,18 +235,17 @@ pub fn prune_client_manifest(
             .pure_reduces
             .retain(|reduce| kept.contains(&reduce.model));
         projection.program_arms.retain(|arm| {
-            kept_programs.contains(&arm.program_id)
-                && manifest.projection_programs.iter().any(|program| {
-                    program.program_id == arm.program_id
-                        && program.arms.iter().any(|program_arm| {
-                            program_arm.event == arm.event
-                                && program_arm.arm == arm.arm
-                                && program_arm
-                                    .operations
-                                    .iter()
-                                    .any(|operation| kept.contains(&operation.model))
-                        })
-                })
+            manifest.projection_programs.iter().any(|program| {
+                program.program_id == arm.program_id
+                    && program.arms.iter().any(|program_arm| {
+                        program_arm.event == arm.event
+                            && program_arm.arm == arm.arm
+                            && program_arm
+                                .operations
+                                .iter()
+                                .any(|operation| kept.contains(&operation.model))
+                    })
+            })
         });
         projection.event_set = projection
             .program_arms

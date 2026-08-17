@@ -583,6 +583,55 @@ fn runtime_rejects_atomic_without_seal() {
 }
 
 #[test]
+fn runtime_rejects_atomic_with_unrelated_direct_projection() {
+    let mut command = command("blob.move");
+    command.consistency = CommandConsistency::Atomic;
+    command.projected_model = Some("BlobGames".into());
+    command.fingerprint = distributed::application::sha256_fingerprint(
+        &command.canonical_bytes().expect("command bytes"),
+    );
+    let blob = Module::new("blob")
+        .command_definitions([CommandDefinition::contract(command)])
+        .build()
+        .unwrap();
+    let projection = ProjectionSpec::try_new("project_todos", ["todo.created"], ["TodoView"])
+        .unwrap()
+        .with_direct(true)
+        .unwrap();
+    let todos = Module::new("todo").projection(projection).build().unwrap();
+    let error = Runtime::from_database_url("sqlite::memory:")
+        .unwrap()
+        .mount(blob)
+        .mount(todos)
+        .validate()
+        .expect_err("unrelated seal must not satisfy Atomic");
+    assert!(
+        error.to_string().contains("Atomic") || error.to_string().contains("direct"),
+        "{error}"
+    );
+}
+
+#[test]
+fn runtime_from_database_url_rejects_unsupported_schemes() {
+    let error = Runtime::from_database_url("mysql://localhost/app")
+        .expect_err("unsupported scheme");
+    assert!(error.to_string().contains("unsupported"), "{error}");
+}
+
+#[test]
+fn runtime_route_for_prefers_longest_wildcard() {
+    let runtime = Runtime::from_database_url("sqlite::memory:")
+        .unwrap()
+        .dispatch_route("todo.*", "http://todo")
+        .dispatch_route("todo.admin.*", "http://todo-admin");
+    assert_eq!(
+        runtime.route_for("todo.admin.delete"),
+        Some("http://todo-admin")
+    );
+    assert_eq!(runtime.route_for("todo.create"), Some("http://todo"));
+}
+
+#[test]
 fn runtime_rejects_direct_seal_without_atomic_commands() {
     let projection = ProjectionSpec::try_new("project_blob", ["blob.moved"], ["BlobGames"])
         .unwrap()
@@ -606,6 +655,10 @@ fn roles_are_admission_without_a_second_guard() {
     );
     assert!(admit_command_session(&roles, Some("alice"), &["user".into()]).is_ok());
     assert!(admit_command_session(&["anonymous".into()], None, &[]).is_ok());
+    assert_eq!(
+        admit_command_session(&roles, Some("   "), &["user".into()]).unwrap_err(),
+        "unauthenticated"
+    );
 }
 
 #[test]
@@ -728,6 +781,14 @@ fn attach_todo_and_chat_command_optimism(manifest: &mut distributed::graphql::Di
         name: "chat.posted".into(),
         version: 1,
     };
+    manifest.projectors.push(distributed::graphql::ClientProjector {
+        version: 1,
+        name: "project_mixed".into(),
+        facts: vec!["todo.completed".into(), "chat.posted".into()],
+        models: vec!["TodoView".into(), "ChatView".into()],
+        dependencies: Vec::new(),
+        causal_confirmation: false,
+    });
     manifest.projection_programs.push(ClientProjectionProgram {
         version: 2,
         program_id: "project_todos".into(),

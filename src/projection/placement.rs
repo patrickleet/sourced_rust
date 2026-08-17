@@ -1027,9 +1027,14 @@ impl ProjectionBinding {
 
     /// Primary read-model identity this binding writes.
     ///
-    /// Independent of projector owner and physical placement.
+    /// Independent of projector owner and physical placement. Fan-out
+    /// bindings (more than one output) have no single primary.
     pub fn primary_read_model_id(&self) -> Option<&str> {
-        self.outputs.first().map(|output| output.read_model_id())
+        if self.outputs.len() == 1 {
+            self.outputs.first().map(|output| output.read_model_id())
+        } else {
+            None
+        }
     }
 
     /// Return sorted relationship pins.

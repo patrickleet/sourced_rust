@@ -29,7 +29,7 @@ pub(super) fn expand_relational_read_model(
         .table
         .clone()
         .or_else(|| struct_attrs.collection.clone())
-        .unwrap_or_else(|| default_storage_name(&model_name));
+        .unwrap_or_else(|| default_storage_name(&rust_name));
 
     let primary_key_fields =
         relational_primary_key_fields(struct_attrs, fields, field_attrs, id_field);

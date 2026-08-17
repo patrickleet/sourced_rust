@@ -30,7 +30,7 @@ impl Runtime {
         Self::from_database_url(url)
     }
 
-    /// Select dialect from an explicit URL (`postgres://`, `sqlite:`, else memory).
+    /// Select dialect from an explicit URL (`postgres://`, `sqlite:`, or memory).
     pub fn from_database_url(url: impl Into<String>) -> ApplicationResult<Self> {
         let database_url = url.into();
         let dialect = if database_url.starts_with("postgres://")
@@ -42,7 +42,9 @@ impl Runtime {
         } else if database_url.is_empty() || database_url == "memory" {
             RuntimeDialect::Memory
         } else {
-            RuntimeDialect::Sqlite
+            return Err(ApplicationError::InvalidSpec(format!(
+                "unsupported DATABASE_URL scheme `{database_url}`"
+            )));
         };
         Ok(Self {
             dialect: Some(dialect),
@@ -108,31 +110,43 @@ impl Runtime {
 
     /// Fail closed when Atomic commands and direct seals are split.
     pub fn validate(&self) -> ApplicationResult<()> {
-        let mut atomic_commands = Vec::new();
-        let mut direct_projections = Vec::new();
         for module in &self.mounts {
-            for command in module.commands() {
-                if command.consistency == CommandConsistency::Atomic {
-                    atomic_commands.push((module.id().to_string(), command.id.clone()));
+            let atomic_commands = module
+                .commands()
+                .iter()
+                .filter(|command| command.consistency == CommandConsistency::Atomic)
+                .collect::<Vec<_>>();
+            let direct_projections = module
+                .manifest()
+                .projections
+                .iter()
+                .filter(|projection| projection.direct)
+                .collect::<Vec<_>>();
+            if !atomic_commands.is_empty() && direct_projections.is_empty() {
+                return Err(ApplicationError::InvalidSpec(format!(
+                    "Atomic command `{}` mounted without its direct-projection seal",
+                    atomic_commands[0].id
+                )));
+            }
+            if !direct_projections.is_empty() && atomic_commands.is_empty() {
+                return Err(ApplicationError::InvalidSpec(format!(
+                    "direct projection `{}` mounted without its Atomic commands",
+                    direct_projections[0].id
+                )));
+            }
+            for command in atomic_commands {
+                if let Some(model) = command.projected_model.as_deref() {
+                    let sealed = direct_projections
+                        .iter()
+                        .any(|projection| projection.models.iter().any(|name| name == model));
+                    if !sealed {
+                        return Err(ApplicationError::InvalidSpec(format!(
+                            "Atomic command `{}` has no matching direct projection for `{model}`",
+                            command.id
+                        )));
+                    }
                 }
             }
-            for projection in &module.manifest().projections {
-                if projection.direct {
-                    direct_projections.push((module.id().to_string(), projection.id.clone()));
-                }
-            }
-        }
-        if !atomic_commands.is_empty() && direct_projections.is_empty() {
-            return Err(ApplicationError::InvalidSpec(format!(
-                "Atomic command `{}` mounted without its direct-projection seal",
-                atomic_commands[0].1
-            )));
-        }
-        if !direct_projections.is_empty() && atomic_commands.is_empty() {
-            return Err(ApplicationError::InvalidSpec(format!(
-                "direct projection `{}` mounted without its Atomic commands",
-                direct_projections[0].1
-            )));
         }
         Ok(())
     }
@@ -143,9 +157,10 @@ impl Runtime {
         }
         self.dispatch_routes
             .iter()
-            .find(|(prefix, _)| {
+            .filter(|(prefix, _)| {
                 prefix.ends_with(".*") && command_id.starts_with(&prefix[..prefix.len() - 1])
             })
+            .max_by_key(|(prefix, _)| prefix.len())
             .map(|(_, target)| target.as_str())
     }
 }

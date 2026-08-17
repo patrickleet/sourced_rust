@@ -50,6 +50,10 @@ fn expand_read_model_accepts_declared_name() {
         "{expanded}"
     );
     assert!(!expanded.contains("model_name : \"OperationalTodos\""));
+    assert!(
+        expanded.contains("operational_todos"),
+        "default table must come from the Rust type, not the declared name: {expanded}"
+    );
 }
 
 #[test]

@@ -141,9 +141,17 @@ impl ClientProgramDescriptor {
         if self.deployment_plan.kind != ContractArtifactKind::DeploymentPlan {
             return Err("deployment_plan predecessor kind mismatch".into());
         }
+        let mut canonical_models = self.read_models.clone();
+        canonical_models.sort();
+        canonical_models.dedup();
+        if canonical_models != self.read_models {
+            return Err("read_models must be sorted and unique".into());
+        }
         let expected_contract = contract_set_id(&self.surfaces, &self.artifacts, &self.read_models);
         if self.contract_set_id != expected_contract {
-            return Err("contract_set_id is stale relative to surfaces/artifacts".into());
+            return Err(
+                "contract_set_id is stale relative to surfaces/artifacts/read_models".into(),
+            );
         }
         let expected_program = program_id(
             self.version,
@@ -268,7 +276,10 @@ fn contract_set_id(
 ) -> String {
     let mut material = BTreeMap::new();
     if !read_models.is_empty() {
-        material.insert("read_models".into(), read_models.join(","));
+        material.insert(
+            "read_models".into(),
+            serde_json::to_string(read_models).unwrap_or_default(),
+        );
     }
     for surface in surfaces {
         material.insert(
@@ -494,6 +505,27 @@ mod tests {
         assert_eq!(web.program_id, web_again.program_id);
         assert_ne!(web.program_id, mobile.program_id);
         assert_ne!(web.contract_set_id, mobile.contract_set_id);
+        let _ = fs::remove_dir_all(root);
+    }
+
+    #[test]
+    fn validate_rejects_unsorted_or_duplicate_read_models() {
+        let root = temp_dir();
+        fs::write(root.join("app.js"), b"console.log(1)").unwrap();
+        let mut descriptor = base_builder(&root)
+            .read_models(["shared.chat", "operational.todos"])
+            .build()
+            .unwrap();
+        descriptor.read_models = vec!["shared.chat".into(), "operational.todos".into()];
+        assert!(descriptor
+            .validate()
+            .unwrap_err()
+            .contains("read_models must be sorted"));
+        descriptor.read_models = vec!["operational.todos".into(), "operational.todos".into()];
+        assert!(descriptor
+            .validate()
+            .unwrap_err()
+            .contains("read_models must be sorted"));
         let _ = fs::remove_dir_all(root);
     }
 }
