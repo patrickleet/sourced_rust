@@ -122,7 +122,13 @@ commands.todo.create({ title })
 commands.todo.archive({ todo_id })
 
 // Queries → SQL-shaped read models (never write tables)
-// query Todos @load { todos { todo_id title status } }
+query Todos @load {
+  todos {
+    todo_id
+    title
+    status
+  }
+}
 ```
 
 ### 03 · Event-sourced aggregates
