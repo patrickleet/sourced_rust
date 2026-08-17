@@ -111,7 +111,7 @@ pub fn command_roles_require_principal(roles: &[String]) -> bool {
 pub fn admit_command_session(
     roles: &[String],
     user_id: Option<&str>,
-    session_roles: &[String],
+    session_roles: &[&str],
 ) -> Result<(), &'static str> {
     if command_roles_require_principal(roles)
         && user_id.map(str::trim).unwrap_or("").is_empty()
@@ -123,7 +123,7 @@ pub fn admit_command_session(
     }
     if session_roles
         .iter()
-        .any(|role| roles.iter().any(|allowed| allowed == role))
+        .any(|role| roles.iter().any(|allowed| allowed == *role))
     {
         return Ok(());
     }

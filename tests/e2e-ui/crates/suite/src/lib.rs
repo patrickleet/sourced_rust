@@ -419,10 +419,9 @@ pub async fn assert_http_commands_disabled(base: &str) -> Result<(), String> {
         .await
         .map_err(|e| e.to_string())?;
     let status = resp.status().as_u16();
-    // No route → 404 (or 405 if something else matches).
-    if status != 404 && status != 405 {
+    if status != 404 {
         return Err(format!(
-            "expected HTTP command route disabled (404/405), got {status}"
+            "expected unmounted POST /todo.create to return 404, got {status}"
         ));
     }
     Ok(())

@@ -20,9 +20,12 @@
 		{ href: '#cqrs', label: 'CQRS' },
 		{ href: '#aggregates', label: 'Aggregates' },
 		{ href: '#read-models', label: 'Read models' },
+		{ href: '#query-api', label: 'Query API' },
 		{ href: '#projections', label: 'Projections' },
 		{ href: '#service', label: 'Service crates' },
 		{ href: '#replica', label: 'Replica' },
+		{ href: '#sveltekit', label: 'SvelteKit' },
+		{ href: '#oidc', label: 'OIDC' },
 		{ href: '#try', label: 'Playground' }
 	];
 

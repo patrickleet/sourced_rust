@@ -311,6 +311,15 @@ fn model_path_from_name(name: &str, span: proc_macro2::Span) -> Result<Path> {
             "model name missing from mutation field",
         ));
     }
+    if name.starts_with('_') || name.ends_with('_') || name.contains("__") {
+        return Err(syn::Error::new(
+            span,
+            format!(
+                "`{name}` is not a valid read-model name \
+                 (expected a snake_case table name or PascalCase model suffix)"
+            ),
+        ));
+    }
     let pascal = snake_to_pascal(name);
     syn::parse_str::<Ident>(&pascal)
         .map(Path::from)
@@ -926,5 +935,15 @@ mod tests {
     fn pascal_suffixes_stay_pascal() {
         assert_eq!(snake_to_pascal("Todos"), "Todos");
         assert_eq!(snake_to_pascal("ChatMessages"), "ChatMessages");
+    }
+
+    #[test]
+    fn malformed_underscore_segments_are_rejected() {
+        use proc_macro2::Span;
+        assert!(super::model_path_from_name("todos_", Span::call_site()).is_err());
+        assert!(super::model_path_from_name("_todos", Span::call_site()).is_err());
+        assert!(super::model_path_from_name("chat__messages", Span::call_site()).is_err());
+        assert!(super::model_path_from_name("chat_messages", Span::call_site()).is_ok());
+        assert!(super::model_path_from_name("ChatMessages", Span::call_site()).is_ok());
     }
 }

@@ -650,13 +650,13 @@ fn roles_are_admission_without_a_second_guard() {
     let roles = vec!["user".into(), "admin".into()];
     assert!(command_roles_require_principal(&roles));
     assert_eq!(
-        admit_command_session(&roles, None, &["user".into()]).unwrap_err(),
+        admit_command_session(&roles, None, &["user"]).unwrap_err(),
         "unauthenticated"
     );
-    assert!(admit_command_session(&roles, Some("alice"), &["user".into()]).is_ok());
+    assert!(admit_command_session(&roles, Some("alice"), &["user"]).is_ok());
     assert!(admit_command_session(&["anonymous".into()], None, &[]).is_ok());
     assert_eq!(
-        admit_command_session(&roles, Some("   "), &["user".into()]).unwrap_err(),
+        admit_command_session(&roles, Some("   "), &["user"]).unwrap_err(),
         "unauthenticated"
     );
 }

@@ -207,7 +207,10 @@ let routes = distributed::routes!(
     command handlers::todo_create,
     command handlers::todo_complete,
 );
-let service = Service::new().named("todo-api").routes(routes);
+let service = Service::new()
+    .named("todo-api")
+    .with_http_command_routes() // required for POST /{command}; GraphQL stays off by default
+    .routes(routes);
 service.with_bus(bus).run(RunOptions::idempotent()).await?;
 ```
 
