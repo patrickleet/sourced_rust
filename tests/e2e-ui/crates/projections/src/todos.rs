@@ -121,7 +121,7 @@ mod tests {
         let from_file = SaveTodo().program().canonical_bytes().unwrap();
         let inline = mutation! {
             mutation SaveTodo {
-                upsert_Todos(object: $input.todo)
+                upsert_todos(object: $input.todo)
             }
         };
         assert_eq!(

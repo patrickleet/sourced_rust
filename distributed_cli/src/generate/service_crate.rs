@@ -408,8 +408,7 @@ pub fn build(repo: ServiceRepo) -> Arc<Service> {{
 
 fn build_service(repo: ServiceRepo) -> Service {{
     let service = Service::new()
-        .named({service_name})
-        .without_http_command_routes();
+        .named({service_name});
 {typed_route_attachments}{event_route_attachment}    service
 }}
 
@@ -454,7 +453,7 @@ pub fn build(repo: ServiceRepo) -> Arc<Service> {{
     let routes = distributed::routes!(
         Routes::new().with_dependencies(repo),
 {registrations}    );
-    Arc::new(Service::new().named({service_name}).routes(routes))
+    Arc::new(Service::new().named({service_name}){http_command_opt_in}.routes(routes))
 }}
 
 pub fn descriptor() -> ServiceDescriptor {{
@@ -464,6 +463,10 @@ pub fn descriptor() -> ServiceDescriptor {{
 "#,
             service_name = rust_string(&self.names.package_name),
             transport = rust_string(transport),
+            http_command_opt_in = match self.transport {
+                ServiceTransport::Http => ".with_http_command_routes()",
+                ServiceTransport::Knative => "",
+            },
         )
     }
 

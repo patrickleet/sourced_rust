@@ -187,7 +187,7 @@ async fn dispatch_named(
 
 /// Serve with OIDC identity injection on all routes (commands + GraphQL).
 ///
-/// App writes are GraphQL-only (`Service::without_http_command_routes`). Zitadel
+/// App writes are GraphQL-only (HTTP command routes stay off). Zitadel
 /// Action ingress still needs HTTP, so those two command names are mounted
 /// explicitly — `POST /todo.create` stays 404 (suite T0).
 ///

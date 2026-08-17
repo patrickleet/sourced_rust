@@ -1,7 +1,7 @@
 <script lang="ts">
 	/**
-	 * Right-hand slide-out: tabbed walkthrough of how a demo is built.
-	 * Distributed lens — domain → command → projection → client — not a generic code dump.
+	 * Right-hand panel: tabbed walkthrough of how a demo is built.
+	 * Teaching order: query, command, handler, domain, events, service and host.
 	 */
 	import type { DemoWalkthrough } from '$lib/walkthrough';
 	import { highlightCode } from './highlight';
@@ -44,13 +44,13 @@
 <button type="button" class="hib-fab" onclick={openPanel} aria-expanded={open} aria-controls="hib-drawer-{demo.id}">
 	<span class="hib-fab-mark" aria-hidden="true">{'{ }'}</span>
 	<span class="hib-fab-text">
-		<span class="hib-fab-kicker">How it’s built</span>
+		<span class="hib-fab-kicker">How it is built</span>
 		<span class="hib-fab-title">{demo.title}</span>
 	</span>
 </button>
 
 {#if open}
-	<button type="button" class="hib-scrim" aria-label="Close how it’s built" onclick={closePanel}></button>
+	<button type="button" class="hib-scrim" aria-label="Close how it is built" onclick={closePanel}></button>
 {/if}
 
 <div
@@ -65,10 +65,10 @@
 	<header class="hib-head">
 		<div class="hib-head-text">
 			<span class="hib-kicker">{demo.kicker}</span>
-			<h2 id="hib-title-{demo.id}" class="hib-title">How it’s built</h2>
+			<h2 id="hib-title-{demo.id}" class="hib-title">How it is built</h2>
 			<p class="hib-summary">{demo.summary}</p>
 			<p class="hib-path" aria-hidden="true">
-				Browser query → commands → handlers → domain → events → service / host / runner
+				Query, then command, then handler, then domain, then events, then service and host
 			</p>
 		</div>
 		<button type="button" class="hib-close" onclick={closePanel} aria-label="Close">
@@ -94,10 +94,16 @@
 
 	{#if tab}
 		<div class="hib-body" role="tabpanel">
-			<p class="hib-lede">{tab.lede}</p>
+			<div class="hib-lede">
+				{#each tab.lede.split(/(?<=\.)\s+/).filter(Boolean) as sentence}
+					<p>{sentence}</p>
+				{/each}
+			</div>
 			<blockquote class="hib-principle">
 				<span class="hib-principle-label">Principle</span>
-				{tab.principle}
+				{#each tab.principle.split(/(?<=\.)\s+/).filter(Boolean) as sentence}
+					<p>{sentence}</p>
+				{/each}
 			</blockquote>
 
 			{#each tab.samples as sample}
@@ -213,8 +219,8 @@
 		top: 0;
 		right: 0;
 		bottom: 0;
-		/* Wide teaching surface — room for code without feeling cramped */
-		width: min(46rem, 100vw);
+		/* Half the viewport so service/host code can sit beside the app */
+		width: 50vw;
 		max-width: 100vw;
 		display: flex;
 		flex-direction: column;
@@ -381,6 +387,14 @@
 		color: rgba(244, 242, 236, 0.88);
 	}
 
+	.hib-lede p {
+		margin: 0 0 0.4rem;
+	}
+
+	.hib-lede p:last-child {
+		margin-bottom: 0;
+	}
+
 	.hib-principle {
 		margin: 0 0 1.35rem;
 		padding: 0.85rem 1rem;
@@ -392,6 +406,14 @@
 		font-style: italic;
 		line-height: 1.4;
 		color: #dce8f4;
+	}
+
+	.hib-principle p {
+		margin: 0 0 0.35rem;
+	}
+
+	.hib-principle p:last-child {
+		margin-bottom: 0;
 	}
 
 	.hib-principle-label {
@@ -518,6 +540,10 @@
 	}
 
 	@media (max-width: 480px) {
+		.hib-drawer {
+			width: 100vw;
+		}
+
 		.hib-fab-title {
 			max-width: 7rem;
 			overflow: hidden;

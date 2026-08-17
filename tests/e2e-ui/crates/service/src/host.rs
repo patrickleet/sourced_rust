@@ -31,7 +31,7 @@ pub struct HostOptions {
 }
 
 /// Start the e2e-ui full-local process for SQLite or Postgres from `DATABASE_URL`.
-pub async fn run_e2e_host(
+pub async fn run(
     database_url: &str,
     options: HostOptions,
 ) -> Result<(), Box<dyn std::error::Error + Send + Sync>> {

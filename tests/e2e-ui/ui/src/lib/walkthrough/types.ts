@@ -13,9 +13,9 @@ export type WalkthroughTab = {
 	/** Short tab label */
 	id: string;
 	label: string;
-	/** What this layer is for (1–2 sentences) */
+	/** What this layer does, what you write, and what you must not do. ASD-STE100. */
 	lede: string;
-	/** Distributed principle this tab exercises */
+	/** One teaching rule for this layer. ASD-STE100. */
 	principle: string;
 	samples: WalkthroughSample[];
 };
@@ -28,9 +28,9 @@ export type DemoWalkthrough = {
 	href: string;
 	/** Panel title */
 	title: string;
-	/** One-line kicker */
+	/** Short sequence of layers for this demo */
 	kicker: string;
-	/** Opening blurb */
+	/** Opening facts for a developer or agent. ASD-STE100. */
 	summary: string;
 	tabs: WalkthroughTab[];
 };

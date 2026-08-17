@@ -1587,9 +1587,7 @@ let routes = Routes::new()
 
 let service = Service::new()
     .named("todos")
-    .routes(routes)
-    // Optional: keep commands on GraphQL/bus/direct dispatch only.
-    .without_http_command_routes();
+    .routes(routes);
 
 let engine = GraphqlEngine::from_schema_catalog(&manifest, &repository)?
     // This exact executable inventory is the only mutation source.
@@ -1674,7 +1672,7 @@ for production. e2e-ui chat demonstrates the OIDC path.
 
 Command fields on the GraphQL schema are an RPC facade: same guards, same
 handlers, same outbox/projector path as other transports. Prefer a
-**GraphQL-only public API** for browser apps (`.without_http_command_routes()`)
+**GraphQL-only public API** for browser apps (HTTP command routes stay off unless you call `.with_http_command_routes()`)
 so the edge is one protocol. Handler guards should require a session user
 (and role where needed); never trust client-supplied owner fields over the
 session principal.

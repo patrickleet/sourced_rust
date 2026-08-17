@@ -261,6 +261,10 @@ mod tests {
             service.contains("Routes::new().with_dependencies(repo)"),
             "service.rs should build a typed route bundle:\n{service}"
         );
+        assert!(
+            service.contains(".with_http_command_routes()"),
+            "HTTP scaffold must opt in to POST /{{command}} routes:\n{service}"
+        );
         // `Service` is no longer generic and `register_handlers!` no longer exists.
         assert!(!service.contains("Service<"));
         assert!(!service.contains("register_handlers!"));
@@ -477,8 +481,8 @@ mod tests {
             "service must wire GraphQL: {service}"
         );
         assert!(
-            service.contains(".without_http_command_routes()"),
-            "GraphQL scaffold must not also expose unauthenticated direct command POST routes: {service}"
+            !service.contains(".with_http_command_routes()"),
+            "GraphQL scaffold must not expose unauthenticated direct command POST routes: {service}"
         );
         assert!(
             service.contains("pub type ServiceRepo = SqliteRepository;"),

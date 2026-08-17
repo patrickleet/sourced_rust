@@ -134,7 +134,7 @@ pub fn command_input_defaults(input: TokenStream) -> TokenStream {
 /// ```ignore
 /// mutation! {
 ///     mutation SaveTodo {
-///         upsert_Todos(object: $input.todo)
+///         upsert_todos(object: $input.todo)
 ///     }
 /// }
 /// ```

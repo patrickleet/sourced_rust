@@ -46,8 +46,10 @@ pub use command_contract::{
 };
 pub use naming::{
     aggregate_field, by_pk_field, comparison_op_fields, include_postgres_json_comparison_ops,
-    is_valid_graphql_name, object_type_name, root_list_field, scalar_type_name,
-    PORTABLE_COMPARISON_OPS, POSTGRES_JSON_COMPARISON_OPS, STRING_COMPARISON_OPS,
+    is_valid_graphql_name, mutation_delete_by_pk_field, mutation_insert_one_field,
+    mutation_update_by_pk_field, mutation_upsert_field, object_type_name, root_list_field,
+    scalar_type_name, PORTABLE_COMPARISON_OPS, POSTGRES_JSON_COMPARISON_OPS,
+    STRING_COMPARISON_OPS,
 };
 pub use sdl::{
     graphql_sdl_for_role, graphql_sdl_for_tables, graphql_sdl_for_tables_with_options,

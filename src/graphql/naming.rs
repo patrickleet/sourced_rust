@@ -30,6 +30,26 @@ pub fn by_pk_field(schema: &TableSchema) -> String {
     format!("{}_by_pk", schema.table_name)
 }
 
+/// Syntax-only mutation IR field. Same snake_case table name as [`root_list_field`].
+pub fn mutation_upsert_field(schema: &TableSchema) -> String {
+    format!("upsert_{}", schema.table_name)
+}
+
+/// Syntax-only mutation IR delete. Same table name as [`root_list_field`].
+pub fn mutation_delete_by_pk_field(schema: &TableSchema) -> String {
+    format!("delete_{}_by_pk", schema.table_name)
+}
+
+/// Syntax-only mutation IR insert-one. Same table name as [`root_list_field`].
+pub fn mutation_insert_one_field(schema: &TableSchema) -> String {
+    format!("insert_{}_one", schema.table_name)
+}
+
+/// Syntax-only mutation IR update. Same table name as [`root_list_field`].
+pub fn mutation_update_by_pk_field(schema: &TableSchema) -> String {
+    format!("update_{}_by_pk", schema.table_name)
+}
+
 pub fn aggregate_field(schema: &TableSchema) -> String {
     format!("{}_aggregate", schema.table_name)
 }
@@ -188,6 +208,35 @@ pub fn order_by_enum_values() -> &'static [&'static str] {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn mutation_ir_fields_use_snake_case_table_names() {
+        let schema = TableSchema {
+            model_name: "ChatMessages".into(),
+            table_name: "chat_messages".into(),
+            columns: Vec::new(),
+            primary_key: crate::table::PrimaryKey::new(["message_id"]),
+            version_column: None,
+            foreign_keys: Vec::new(),
+            indexes: Vec::new(),
+            relationships: Vec::new(),
+            kind: crate::table::TableKind::ReadModel,
+        };
+        assert_eq!(root_list_field(&schema), "chat_messages");
+        assert_eq!(mutation_upsert_field(&schema), "upsert_chat_messages");
+        assert_eq!(
+            mutation_delete_by_pk_field(&schema),
+            "delete_chat_messages_by_pk"
+        );
+        assert_eq!(
+            mutation_insert_one_field(&schema),
+            "insert_chat_messages_one"
+        );
+        assert_eq!(
+            mutation_update_by_pk_field(&schema),
+            "update_chat_messages_by_pk"
+        );
+    }
 
     #[test]
     fn validates_graphql_names() {

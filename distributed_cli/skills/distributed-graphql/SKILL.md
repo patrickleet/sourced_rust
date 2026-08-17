@@ -55,9 +55,7 @@ a role sees nothing until granted via `.model(...)` / `.grant_all(role)` /
 ## Wire the service
 
 ```rust
-let service = build_service(repository.clone())
-    // Browser writes go through the OIDC-protected GraphQL command proxy only.
-    .without_http_command_routes();
+let service = build_service(repository.clone());
 let engine = query::build_engine(
     &repository,
     &service,
@@ -68,10 +66,9 @@ let service = service.try_with_graphql(engine)?;
 // GET  /graphql  — GraphiQL IDE when `.graphiql(true)`
 ```
 
-`without_http_command_routes()` disables only the generic `POST /{command}`
-transport on this GraphQL-facing service. Non-GraphQL services may keep those
-direct command routes when that transport is intentional and independently
-authenticated.
+`POST /{command}` stays off unless you call `with_http_command_routes()`.
+Call that only for an intentional, independently authenticated ingress.
+GraphQL mutations do not need it.
 
 Build the executable `Service` first and pass that exact instance to
 `GraphqlEngineBuilder::service`. For `Atomic<M>`, pass the repository handle

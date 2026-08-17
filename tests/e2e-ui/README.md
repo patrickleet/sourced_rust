@@ -64,7 +64,7 @@ fn record_completed(&mut self) {
 
 // 1) Mutation (event-free, GraphQL-looking syntax-only — not a public GQL field)
 // src/mutations/save_todo.mutation.graphql:
-//   mutation SaveTodo { upsert_Todos(object: $input.todo) }
+//   mutation SaveTodo { upsert_todos(object: $input.todo) }
 pub fn SaveTodo() -> Mutation<()> {
     mutation_file!("src/mutations/save_todo.mutation.graphql")
 }
