@@ -3,10 +3,13 @@
 **Distributed** is a state-of-the-art framework for building distributed
 systems and realtime applications.
 
-Not a partial toolkit. An end-to-end cloud native stack — domain, service,
-query edge, live client, and even GitOps — so engineers who care about quality
-code can stay on the model and still ship polished, fast, maintainable
-products.
+An end-to-end cloud native stack — domain, service, query edge, live client,
+and even GitOps — so engineers who care about quality code can stay on the
+model and still ship polished, fast, maintainable products.
+
+It is also a toolkit of distributed-systems tools. You do not need the whole
+path. Event-source aggregates and stop there. Use the service bus alone.
+Take GraphQL reads without the replica. Adopt what you need.
 
 Rust · TypeScript · CQRS / ES · SvelteKit
 
@@ -15,7 +18,7 @@ todos, blob, admin) with a **How it is built** panel on every screen. This
 README is the same story, in the repo.
 
 - [The bar](#the-bar) — what “state of the art” means here
-- [Backstory](#backstory) — why this is one system, not a kit of parts
+- [Backstory](#backstory) — why the full path is one system, and the pieces still stand alone
 - [How it delivers](#how-it-delivers) — the unidirectional loop, with real code
 - [See it run](#see-it-run) — playground, GraphiQL, live OIDC
 - [Use as a dependency](#use-as-a-dependency) — workspace layout and features
@@ -28,8 +31,9 @@ README is the same story, in the repo.
 You never get perfect consistency, always-available writes, and partition
 tolerance at once (**CAP**). Products that stay up accept **eventual
 consistency** on reads — with clear rules about what the user can trust now.
-The bar is not a kit of excellent parts. It is one path from domain event to
-optimistic row.
+The bar for the full product is not a glue job of excellent parts. It is
+one path from domain event to optimistic row. You can still take one part
+and ignore the rest.
 
 **Event-driven backend.** Command in, domain event out, projections update
 reads. The UI does not patch tables. **CQRS** keeps aggregates for rules and
@@ -54,8 +58,10 @@ process runs. Today the playground is one host. Later you write another
 `Service` from the same modules. Eventual projectors can move; Atomic seals
 stay with commands. The same Rust pures can compile to WASM for the replica.
 
-**Distributed** is that path — one system so generation can keep the DX
-simple.
+**Distributed** is that path when you want the whole product — one system
+so generation can keep the DX simple. The same crates stay usable as tools:
+aggregates, bus, outbox, locks, GraphQL, replica. Feature flags keep unused
+pieces out of the binary.
 
 ---
 
@@ -504,8 +510,13 @@ same `OidcBearer` edge is not vendor-locked.
 
 ## Use as a dependency
 
-Copy the **e2e-ui** layout: domain crates stay feature-light; a **service
-crate** lists which modules this process runs.
+Adopt the whole path, or one crate feature. `#[sourced]` aggregates, the
+bus, GraphQL, and the replica are independent. This playground uses all of
+them. Your crate does not have to.
+
+Copy the **e2e-ui** layout when you want the full product: domain crates
+stay feature-light; a **service crate** lists which modules this process
+runs.
 
 ```text
 crates/

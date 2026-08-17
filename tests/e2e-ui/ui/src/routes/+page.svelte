@@ -228,9 +228,14 @@ Service::new()
 				for building distributed systems, and realtime applications.
 			</h1>
 			<p class="wf-lede">
-				Not a partial toolkit. An end-to-end cloud native stack — domain, service, query edge, live client, and even gitops —
+				An end-to-end cloud native stack — domain, service, query edge, live client, and even gitops —
 				so engineers who care about quality code can stay on the model and still ship polished, fast,
 				maintainable products.
+			</p>
+			<p class="wf-lede">
+				It is also a toolkit of distributed-systems tools. You do not need the whole path.
+				Event-source aggregates and stop there. Use the service bus alone. Take GraphQL reads
+				without the replica. Adopt what you need.
 			</p>
 
 			<ul class="wf-hero-stack" aria-label="Stack">
@@ -285,8 +290,9 @@ Service::new()
 				<p>
 					You never get perfect consistency, always-available writes, and partition tolerance at once
 					(<strong>CAP</strong>). Products that stay up accept <strong>eventual consistency</strong>
-					on reads — with clear rules about what the user can trust now. The bar is not a kit of
-					excellent parts. It is one path from domain event to optimistic row.
+					on reads — with clear rules about what the user can trust now. The bar for the full
+					product is not a glue job of excellent parts. It is one path from domain event to
+					optimistic row. You can still take one part and ignore the rest.
 				</p>
 			</div>
 
@@ -330,7 +336,9 @@ Service::new()
 				</div>
 			</div>
 			<p class="dist-teach-foot">
-				<strong>Distributed</strong> is that path — one system so generation can keep the DX simple.
+				<strong>Distributed</strong> is that path when you want the whole product — one system so
+				generation can keep the DX simple. The same crates stay usable as tools: aggregates,
+				bus, outbox, locks, GraphQL, replica. Feature flags keep unused pieces out of the binary.
 			</p>
 			<div class="wf-actions dist-vehicle-actions">
 				<a class="wf-btn wf-btn-primary" href="#author">How this project got here</a>
@@ -851,8 +859,9 @@ source e2e-ui.env && make run
 				<h2>Model the domain. Leave the rest to the stack.</h2>
 				<p>
 					Pick a demo close to your problem — todos for ownership and rules, chat for live rooms —
-					and reuse the shapes. The vehicle is one framework, built to scale; you stay on the parts
-					that create customer value. Fleet hosting (<strong>ops.com.ai</strong>) is on the roadmap.
+					and reuse the shapes. The vehicle is one framework when you want the full path. It is
+					also a toolkit: start with aggregates, or the bus, and leave the rest. Fleet hosting
+					(<strong>ops.com.ai</strong>) is on the roadmap.
 				</p>
 			</div>
 			<div class="wf-actions">
