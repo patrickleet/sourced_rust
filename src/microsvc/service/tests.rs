@@ -764,6 +764,7 @@ fn causal_test_input(id: &str, label: &str) -> Value {
 fn session_with_role(role: &str) -> Session {
     let mut session = Session::new();
     session.set(crate::microsvc::ROLE_KEY, role);
+    session.set(crate::microsvc::USER_ID_KEY, "causal-test-user");
     session
 }
 
