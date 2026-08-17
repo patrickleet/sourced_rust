@@ -37,20 +37,22 @@ read models for screens. **Event sourcing** records what happened as history
 you can unit-test. Identity is OIDC and RBAC on the same claims — not a
 one-off check per endpoint.
 
-**Compiler-owned frontend.** SSR, the same query rehydrated, then a live
-feed. GraphQL selects fields; writes stay **commands**. A **replica** holds
-the authorized slice. Optimism uses the same mutation program as the
-projector — not a `setState` recipe per page.
+**Compiler-owned frontend.** You write Rust models, commands, and
+projections. The **GraphQL schema**, filters, typed operations, and command
+stubs are **generated** from those definitions — no resolvers, no
+hand-written query API. Pages only select fields. Writes stay **commands**.
 
-**Why Rust.** Memory safety without GC pauses, concurrency the type system
-can check, and macros so the domain API stays short. The same definitions
-compile into the client. Substrate, not fashion.
+**Replica cache + one effect.** A client **replica** is a cache of the
+authorized slice. Auto-optimism applies the **projection mutation** to that
+cache — the same program the server projector runs against SQL. When the
+next row needs a known-record calculation, ship the domain **pure as WASM**;
+the generated client hosts it.
 
 **Same blocks, few or many processes.** Domain, modules, and projections are
 packages — not a deploy shape. A **service crate** lists the modules this
 process runs. Today the playground is one host. Later you write another
 `Service` from the same modules. Eventual projectors can move; Atomic seals
-stay with commands.
+stay with commands. The same Rust pures can compile to WASM for the replica.
 
 **Distributed** is that path — one system so generation can keep the DX
 simple.
@@ -210,12 +212,16 @@ impl Todos {
 
 ### 05 · Inferred query API
 
-Page needs → typed client.
+Rust models generate GraphQL.
 
-Once the read model is defined, GraphQL is how the UI selects fields —
-transport for queries, not the heart of the product. You declare what a
-page needs; you don’t maintain a REST endpoint per screen. Commands stay
-domain verbs on the write side.
+The read model, permissions, and command contracts in Rust are the source.
+Distributed **generates** the GraphQL schema — filters, order, pagination,
+joins, RBAC, and command mutations. You do not write resolvers or a REST
+endpoint per screen.
+
+The page file only selects fields against that generated schema. Commands
+stay domain verbs on the write side. The typed TypeScript client is
+generated from the same inventory.
 
 [`tests/e2e-ui/ui/src/routes/todos/+page.graphql`](tests/e2e-ui/ui/src/routes/todos/+page.graphql)
 
@@ -233,16 +239,18 @@ query Todos @load {
 
 ### 06 · Projections
 
-When the domain changes, views catch up.
+One mutation. Two runtimes.
 
-After a command succeeds, events describe what happened. Projections turn
-those facts into read-model updates — and the same mapping drives
-optimistic UI in the browser. You declare “on these events, update the
-view like this” once; you don’t dual-write tables from the page.
+After a command succeeds, events describe what happened. A projection
+names the **effect**: on these events, run this mutation program
+(`upsert_todos`, `delete_todos_by_pk`). That program is the update — not
+a second cache language on the page.
 
-The mutation file looks like GraphQL but is **internal IR** for that
-update program, not a public client mutation API. Field names are
-snake_case table names (`upsert_todos`). Pages still send domain commands.
+The same mutation runs in two places: the **server projector** writes the
+SQL read model; the **client replica** applies it to the cache for
+auto-optimism. The mutation file looks like GraphQL but is **internal IR**,
+not a public client field. Field names are snake_case table names
+(`upsert_todos`). Pages still send domain commands.
 
 [`tests/e2e-ui/crates/projections/src/todos.rs`](tests/e2e-ui/crates/projections/src/todos.rs)
 
@@ -339,15 +347,21 @@ intentional non-GraphQL ingress.
 
 ### 08 · Browser replica
 
-The cycle closes at the client.
+Auto-optimism is a cache update.
 
-Generated TypeScript carries your inventory into a client replica and typed
-commands. The page reads `query.use()` and calls `commands.todo…` — same
-business verbs as the server. Optimism applies the projection mapping on
-the way around the loop, so the UI stays aligned with the model instead of
-a one-off cache recipe per screen.
+The generated client is a **replica cache** of the authorized read-model
+slice, plus typed commands. The page reads `query.use()` and calls
+`commands.todo…`. It does not patch arrays or write `setState` recipes.
+
+When a command fires, the replica applies the **same projection mutation**
+to the cache immediately. The server later writes SQL with that program;
+live/causal confirmation reconciles. Most rows are input + defaults +
+claims. When the next row needs the known record (blob’s next board),
+ship the domain **pure function as WASM**. Gen-client hosts it. Do not
+write a TypeScript twin.
 
 [`tests/e2e-ui/ui/src/routes/todos/+page.svelte`](tests/e2e-ui/ui/src/routes/todos/+page.svelte)
+· [`tests/e2e-ui/crates/service/src/modules/blob.rs`](tests/e2e-ui/crates/service/src/modules/blob.rs)
 
 ```ts
 // Generated operation + typed commands — no cache recipes in the page
@@ -359,6 +373,19 @@ const todos = $derived($query.complete ? $query.data.todos : []);
 
 await commands.todo.create({ title: text });
 await commands.todo.complete({ todo_id });
+// Replica applies SaveTodo (upsert_todos) to the cache. Page does not.
+```
+
+```rust,ignore
+// Advanced optimism: same domain pure, shipped as WASM
+.preview_reduce_known_record(CommandProjectionPureReduce::wasm(
+    "blob.simulate_move",
+    "blob/pkg/blob_wasm",   // wasm-pack under $lib
+    "blobSimulateMove",     // (recordJson, argsJson) → assignJson
+    "BlobGames",
+))
+
+// Generated client hosts the module. No TypeScript board rules.
 ```
 
 JS package deep-dive: [`js/README.md`](js/README.md).
@@ -431,7 +458,7 @@ host.
 |---|---|---|
 | [`/chat`](tests/e2e-ui/ui/src/routes/chat) | Live + anonymous | Shared room with SSR, live updates, guest reads |
 | [`/todos`](tests/e2e-ui/ui/src/routes/todos) | Eventual | Ownership rules, optimistic commands, projector fill |
-| [`/blob`](tests/e2e-ui/ui/src/routes/blob) | Atomic | Game moves with an atomic board in the response |
+| [`/blob`](tests/e2e-ui/ui/src/routes/blob) | Atomic + WASM | Atomic board in the response. Same domain pure runs as WASM in the replica |
 | [`/admin`](tests/e2e-ui/ui/src/routes/admin) | Surface | Elevated surface — separate client, more power |
 | [`/session`](tests/e2e-ui/ui/src/routes/session) | OIDC | Who you are: tokens, groups, roles |
 
