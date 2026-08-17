@@ -7,9 +7,14 @@ use std::time::Duration;
 
 use crate::bus::{Bus, RunOptions};
 use crate::microsvc::Service;
-use crate::outbox_worker::{BusPublisher, OutboxDispatcher, OutboxStore};
+use crate::outbox_worker::{
+    drain_worker_id, BusPublisher, OutboxDispatcher, OutboxDrainRunner, OutboxStore,
+};
 
-/// Spawn the standard outbox publish loop for a bus-backed store.
+/// Spawn the standard outbox drain loop for a bus-backed store.
+///
+/// Fire-and-forget: the task lives until the process exits. Prefer
+/// [`OutboxDrainRunner`] when the caller needs to stop the loop.
 pub fn spawn_outbox_publish_loop<S, B>(
     store: S,
     bus: Arc<B>,
@@ -20,27 +25,19 @@ pub fn spawn_outbox_publish_loop<S, B>(
     S: OutboxStore + 'static,
     B: Bus + Send + Sync + 'static,
 {
-    let service_name = service_name.into();
-    tokio::spawn(async move {
-        let dispatcher = OutboxDispatcher::new(
-            store,
-            BusPublisher::new(bus),
-            format!("outbox:{}", std::process::id()),
-            lease,
-            max_attempts,
-        )
-        .with_service(service_name);
-        loop {
-            match dispatcher.dispatch_batch(32).await {
-                Ok(o) if o.published > 0 || o.claimed > 0 => {}
-                Ok(_) => tokio::time::sleep(Duration::from_millis(25)).await,
-                Err(e) => {
-                    eprintln!("outbox: {e}");
-                    tokio::time::sleep(Duration::from_millis(100)).await;
-                }
-            }
-        }
-    });
+    let dispatcher = OutboxDispatcher::new(
+        store,
+        BusPublisher::new(bus),
+        drain_worker_id(),
+        lease,
+        max_attempts,
+    )
+    .with_service(service_name);
+    let _handle = OutboxDrainRunner::new(dispatcher)
+        .with_batch_size(32)
+        .with_poll_interval(Duration::from_millis(25))
+        .with_error_backoff(Duration::from_millis(100))
+        .spawn();
 }
 
 /// Spawn a service consumer loop that re-runs the bus handler continuously.
