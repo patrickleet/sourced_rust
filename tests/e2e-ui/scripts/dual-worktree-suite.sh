@@ -1,8 +1,8 @@
 #!/usr/bin/env bash
-# Local dual-workspace suite: two git worktrees, hops gitops for each, HMR title check.
+# Local dual-Environment suite: two Git worktrees in one Cluster, plus HMR.
 #
 # Prerequisites:
-#   - local CP with hops (dory/colima/kind) and kubectl context
+#   - e2e-ui Cluster controller already running
 #   - AuthStack optional for identity; HMR does not require login
 #   - hops binary on PATH or HOPS=path
 #   - helm, git, node, npm
@@ -22,10 +22,8 @@ export KUBECONFIG
 ALICE_NAME="${ALICE_NAME:-alice}"
 BOB_NAME="${BOB_NAME:-bob}"
 SKIP_GITOPS="${SKIP_GITOPS:-0}"
-CLUSTER_PROVIDER="${CLUSTER_PROVIDER:-kind}"
-DOCKER_PROVIDER="${DOCKER_PROVIDER:-dory}"
-CLUSTER_NAME="${CLUSTER_NAME:-hops}"
-CONTEXT="${CONTEXT:-kind-hops}"
+REGISTERED_ALICE=0
+REGISTERED_BOB=0
 
 log() { printf '%s\n' "$*"; }
 die() { printf 'FAIL: %s\n' "$*" >&2; exit 1; }
@@ -62,6 +60,12 @@ BRANCH_ALICE="suite/dual-${ALICE_NAME}-$$"
 BRANCH_BOB="suite/dual-${BOB_NAME}-$$"
 
 cleanup_worktrees() {
+  if [[ "$REGISTERED_ALICE" == "1" ]] && command -v "$HOPS" >/dev/null 2>&1; then
+    "$HOPS" local gitops environment --name "$ALICE_NAME" --down >/dev/null 2>&1 || true
+  fi
+  if [[ "$REGISTERED_BOB" == "1" ]] && command -v "$HOPS" >/dev/null 2>&1; then
+    "$HOPS" local gitops environment --name "$BOB_NAME" --down >/dev/null 2>&1 || true
+  fi
   git -C "$DIST_ROOT" worktree remove --force "$ALICE_WT" 2>/dev/null || true
   git -C "$DIST_ROOT" worktree remove --force "$BOB_WT" 2>/dev/null || true
   git -C "$DIST_ROOT" branch -D "$BRANCH_ALICE" "$BRANCH_BOB" 2>/dev/null || true
@@ -85,15 +89,15 @@ overlay_e2e "$ALICE_WT"
 overlay_e2e "$BOB_WT"
 
 # Bob: do not own instance Features
-BOB_UI_APP="$BOB_WT/tests/e2e-ui/gitops/envs/local/ui.yaml"
-if [[ -f "$BOB_UI_APP" ]]; then
-  if rg -q 'instanceLoginV2:' "$BOB_UI_APP"; then
-    sed -i.bak 's/instanceLoginV2: true/instanceLoginV2: false/' "$BOB_UI_APP" || true
+BOB_ENVIRONMENT="$BOB_WT/tests/e2e-ui/.gitops/local/environment.yaml"
+if [[ -f "$BOB_ENVIRONMENT" ]]; then
+  if rg -q 'instanceLoginV2:' "$BOB_ENVIRONMENT"; then
+    sed -i.bak 's/instanceLoginV2: true/instanceLoginV2: false/' "$BOB_ENVIRONMENT" || true
   else
-    # inject under identity:
+    # Inject into the explicit test-users deploy values.
     python3 - <<PY
 from pathlib import Path
-p = Path("$BOB_UI_APP")
+p = Path("$BOB_ENVIRONMENT")
 t = p.read_text()
 if "instanceLoginV2" not in t:
     t = t.replace("demoUsers: true", "instanceLoginV2: false\n          demoUsers: true")
@@ -123,22 +127,20 @@ wait_http() {
 
 if [[ "$SKIP_GITOPS" != "1" ]]; then
   if ! kubectl get ns >/dev/null 2>&1; then
-    die "kubectl cannot talk to a cluster (set KUBECONFIG); dual gitops requires local CP"
+    die "kubectl cannot talk to the e2e-ui Cluster (start: hops local gitops cluster ./.gitops/local/cluster.yaml)"
   fi
-  log "reconciling workspace $ALICE_NAME from $ALICE_E2E"
-  (cd "$ALICE_E2E" && "$HOPS" local gitops worktree ./gitops/envs/local \
-    --name "$ALICE_NAME" --cluster-provider "$CLUSTER_PROVIDER" \
-    --docker-provider "$DOCKER_PROVIDER" --cluster-name "$CLUSTER_NAME" \
-    --context "$CONTEXT" --once) \
+  log "registering Environment $ALICE_NAME from $ALICE_E2E"
+  (cd "$ALICE_E2E" && "$HOPS" local gitops environment ./.gitops/local/environment.yaml \
+    --name "$ALICE_NAME") \
     | tee "$SCRATCH/gitops-alice.log" \
-    || die "workspace gitops alice failed — see $SCRATCH/gitops-alice.log"
-  log "reconciling workspace $BOB_NAME from $BOB_E2E"
-  (cd "$BOB_E2E" && "$HOPS" local gitops worktree ./gitops/envs/local \
-    --name "$BOB_NAME" --cluster-provider "$CLUSTER_PROVIDER" \
-    --docker-provider "$DOCKER_PROVIDER" --cluster-name "$CLUSTER_NAME" \
-    --context "$CONTEXT" --once) \
+    || die "Environment registration for alice failed — see $SCRATCH/gitops-alice.log"
+  REGISTERED_ALICE=1
+  log "registering Environment $BOB_NAME from $BOB_E2E"
+  (cd "$BOB_E2E" && "$HOPS" local gitops environment ./.gitops/local/environment.yaml \
+    --name "$BOB_NAME") \
     | tee "$SCRATCH/gitops-bob.log" \
-    || die "workspace gitops bob failed — see $SCRATCH/gitops-bob.log"
+    || die "Environment registration for bob failed — see $SCRATCH/gitops-bob.log"
+  REGISTERED_BOB=1
 fi
 
 wait_http "$ALICE_URL" alice 120

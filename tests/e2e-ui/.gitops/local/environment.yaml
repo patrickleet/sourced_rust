@@ -1,0 +1,41 @@
+apiVersion: hops.local/v1alpha1
+kind: Environment
+metadata:
+  name: local
+spec:
+  clusterRef:
+    name: e2e-ui
+  # Paths resolve from the Cluster mount root (the Distributed checkout).
+  # The resolved runtime Environment name defaults its namespace.
+  root: tests/e2e-ui
+  values:
+    local: true
+    preview: false
+  deploys:
+    # A deploy path names an application root. Its chart defaults to
+    # .gitops/local; no promotion chart participates in local reconciliation.
+    - path: api
+      values:
+        identity:
+          enabled: true
+          oidcGeneration: 1
+    - path: ui
+      values:
+        identity:
+          enabled: true
+          oidcGeneration: 1
+    # Test identities are an explicit, independently rendered deploy.
+    - path: ui
+      chart: .gitops/test-users
+      values:
+        identity:
+          enabled: true
+          oidcGeneration: 1
+          projectName: e2e-ui
+          projectNamespace: default
+          humansNamespace: default
+          instanceLoginV2: true
+          demoUsers: true
+          providerConfigRef:
+            name: default
+            kind: ClusterProviderConfig

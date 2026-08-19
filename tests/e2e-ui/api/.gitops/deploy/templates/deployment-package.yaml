@@ -1,5 +1,6 @@
-{{- /* Package Deployment: production/CI image posture. Omitted for local/cluster-dev. */ -}}
-{{- if and (not .Values.local) (ne .Values.appRuntime "cluster-dev") (ne .Values.appRuntime "host") }}
+{{- if .Values.local }}
+{{- fail "api/.gitops/deploy is cloud-only; use api/.gitops/local for local=true" }}
+{{- end }}
 apiVersion: apps/v1
 kind: Deployment
 metadata:
@@ -28,4 +29,3 @@ spec:
           env:
             - name: BIND
               value: {{ .Values.env.BIND | quote }}
-{{- end }}

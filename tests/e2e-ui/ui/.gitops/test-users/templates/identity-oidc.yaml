@@ -1,0 +1,61 @@
+{{- /* Test-user chart ownership.
+  Worktree OIDC web app.
+
+  - projectIdRef → shared Project MR (by name + labels), no live UUID in git
+  - writeConnectionSecretToRef → attribute.client_id / attribute.client_secret
+  - orgId omitted → ProviderConfig PAT org
+*/ -}}
+{{- if .Values.identity.enabled }}
+{{- $prefix := include "e2e-ui-ui.identityPrefix" . -}}
+{{- $project := include "e2e-ui-ui.clusterProjectName" . -}}
+{{- $uiBase := include "e2e-ui-ui.uiBaseURL" . -}}
+{{- $ns := .Values.identity.mrNamespace | default (include "e2e-ui-ui.releaseNamespace" .) -}}
+{{- $projectNs := .Values.identity.projectNamespace | default "default" -}}
+{{- $conn := include "e2e-ui-ui.oidcConnectionSecretName" . -}}
+{{- $oidcName := include "e2e-ui-ui.oidcResourceName" . -}}
+apiVersion: application.zitadel.m.crossplane.io/v1alpha1
+kind: Oidc
+metadata:
+  name: {{ $oidcName }}
+  namespace: {{ $ns }}
+  labels:
+    {{- include "e2e-ui-ui.identityLabels" . | nindent 4 }}
+spec:
+  forProvider:
+    name: {{ $oidcName | quote }}
+    projectIdRef:
+      name: {{ $project }}
+      namespace: {{ $projectNs | quote }}
+    appType: OIDC_APP_TYPE_WEB
+    authMethodType: OIDC_AUTH_METHOD_TYPE_BASIC
+    responseTypes:
+      - OIDC_RESPONSE_TYPE_CODE
+    grantTypes:
+      - OIDC_GRANT_TYPE_AUTHORIZATION_CODE
+      - OIDC_GRANT_TYPE_REFRESH_TOKEN
+    accessTokenType: OIDC_TOKEN_TYPE_JWT
+    accessTokenRoleAssertion: true
+    idTokenRoleAssertion: true
+    idTokenUserinfoAssertion: true
+    devMode: true
+    version: OIDC_VERSION_1_0
+    redirectUris:
+      - {{ printf "%s/auth/callback/oidc" $uiBase | quote }}
+      - {{ printf "%s/auth/callback" $uiBase | quote }}
+      {{- range .Values.identity.extraRedirectUris }}
+      - {{ . | quote }}
+      {{- end }}
+    postLogoutRedirectUris:
+      - {{ printf "%s/" $uiBase | quote }}
+      {{- range .Values.identity.extraPostLogoutRedirectUris }}
+      - {{ . | quote }}
+      {{- end }}
+    loginVersion:
+      - loginV2:
+          - baseUri: {{ $uiBase | quote }}
+  writeConnectionSecretToRef:
+    name: {{ $conn | quote }}
+  providerConfigRef:
+    name: {{ .Values.identity.providerConfigRef.name | default "default" | quote }}
+    kind: {{ .Values.identity.providerConfigRef.kind | default "ProviderConfig" | quote }}
+{{- end }}

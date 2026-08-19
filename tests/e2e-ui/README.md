@@ -4,29 +4,40 @@ A copyable Distributed service and SvelteKit UI demonstrating one modeled
 projection from aggregate transition to server read model, generated GraphQL
 client, optimistic replica update, and causal confirmation.
 
-## Option A — local cluster + workspace GitOps
+## Option A — Local Workbench Cluster + Environments
 
-One-time: start the kind control plane on Dory's Docker engine. Then run the
-two GitOps processes in separate terminals:
+The committed Cluster definition starts or reuses the kind control plane on
+Dory and owns the single watcher. Start it in one terminal, then register this
+checkout as an Environment from another:
 
 ```bash
 cd tests/e2e-ui
-hops local gitops cluster ./gitops/cluster \
-  --cluster-provider kind --docker-provider dory \
-  --cluster-name hops --context kind-hops
+# Terminal 1
+hops local gitops cluster ./.gitops/local/cluster.yaml
 
-hops local gitops worktree ./gitops/envs/local --name e2e \
-  --cluster-provider kind --docker-provider dory \
-  --cluster-name hops --context kind-hops
+# Terminal 2
+hops local gitops environment ./.gitops/local/environment.yaml --name e2e
 ```
 
-Both commands watch by default; use `--once` for CI or a single diagnostic
-reconcile. Platform XRs and application workloads must be changed in their
-respective GitOps trees, not applied over the watcher with `kubectl`.
+The Cluster controller watches shared manifests, registered Environment
+definitions, resolved charts, and delivered source. Platform XRs and workloads
+must be changed in their respective GitOps trees, not applied over the
+controller with `kubectl`.
 
-Charts: `api/.gitops/deploy`, `ui/.gitops/deploy`.
-App Applications: `gitops/envs/local/`.
-Control plane: `gitops/cluster/` (`stacks/`, `configurations/`, …).
+Local charts: `api/.gitops/local`, `ui/.gitops/local`.
+Cloud charts: `api/.gitops/deploy`, `ui/.gitops/deploy`.
+Optional charts: `.gitops/promote` and `ui/.gitops/test-users`.
+Definitions and shared control plane: `.gitops/local/`.
+
+To run another Git worktree in the same Cluster, enter that checkout and give
+the reusable Environment definition a distinct runtime name:
+
+```bash
+hops local gitops environment ./.gitops/local/environment.yaml --name feature-auth
+```
+
+Remove only that Environment with
+`hops local gitops environment --name feature-auth --down`.
 
 ## Option B — compose + host processes
 

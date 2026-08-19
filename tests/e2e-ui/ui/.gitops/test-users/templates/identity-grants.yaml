@@ -1,0 +1,45 @@
+{{- /* Test-user chart ownership.
+  Cluster-shared role assignments for the demo humans.
+
+  Grant XRs resolve HumanUser + Project IDs from status.atProvider, keeping
+  live Zitadel UUIDs out of Git. All three resources must share a namespace
+  because Crossplane ExtraResources name lookups are namespace-local.
+*/ -}}
+{{- if and .Values.identity.enabled .Values.identity.demoUsers }}
+{{- $project := include "e2e-ui-ui.clusterProjectName" . -}}
+{{- $projectNs := .Values.identity.projectNamespace | default .Values.identity.mrNamespace | default "default" -}}
+{{- $humansNs := .Values.identity.humansNamespace | default $projectNs -}}
+{{- if ne $projectNs $humansNs -}}
+{{- fail "identity grants require identity.projectNamespace and identity.humansNamespace to match" -}}
+{{- end -}}
+{{- $pc := .Values.identity.providerConfigRef.name | default "default" -}}
+{{- $pck := .Values.identity.providerConfigRef.kind | default "ProviderConfig" -}}
+{{- $grants := list
+  (dict "user" "alice" "roles" (list "user"))
+  (dict "user" "bob" "roles" (list "user"))
+  (dict "user" "admin" "roles" (list "user" "admin"))
+-}}
+{{- range $grant := $grants }}
+---
+apiVersion: auth.hops.ops.com.ai/v1alpha1
+kind: Grant
+metadata:
+  name: {{ printf "e2e-%s-e2e-ui" $grant.user }}
+  namespace: {{ $projectNs }}
+  labels:
+    app.kubernetes.io/name: e2e-ui
+    app.kubernetes.io/component: identity
+    hops.ops.com.ai/app: e2e-ui
+    hops.ops.com.ai/identity-scope: cluster
+    hops.ops.com.ai/demo-user: {{ $grant.user | quote }}
+spec:
+  userIdRef:
+    name: {{ printf "e2e-%s" $grant.user }}
+  projectIdRef:
+    name: {{ $project }}
+  roles: {{ $grant.roles | toJson }}
+  providerConfigRef:
+    name: {{ $pc | quote }}
+    kind: {{ $pck | quote }}
+{{- end }}
+{{- end }}

@@ -1,4 +1,6 @@
-{{- if and (not .Values.local) (ne .Values.appRuntime "cluster-dev") (ne .Values.appRuntime "host") }}
+{{- if .Values.local }}
+{{- fail "ui/.gitops/deploy is cloud-only; use ui/.gitops/local for local=true" }}
+{{- end }}
 apiVersion: apps/v1
 kind: Deployment
 metadata:
@@ -24,4 +26,3 @@ spec:
           ports:
             - containerPort: {{ .Values.service.targetPort }}
               name: http
-{{- end }}

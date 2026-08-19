@@ -1,0 +1,12 @@
+# One shared local database cluster. Environment charts may create databases or
+# preview branches, but do not create another PSQLCluster by default.
+apiVersion: hops.ops.com.ai/v1alpha1
+kind: PSQLCluster
+metadata:
+  name: e2e-ui
+  namespace: default
+spec:
+  clusterName: e2e-ui
+  storage:
+    size: 2Gi
+    class: psql

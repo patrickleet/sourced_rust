@@ -1,0 +1,6 @@
+apiVersion: v2
+name: e2e-ui-api-promote
+description: Optional cloud promotion action for the e2e-ui API
+type: application
+version: 0.1.0
+appVersion: "0.1.0"

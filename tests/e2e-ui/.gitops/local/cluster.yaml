@@ -1,0 +1,14 @@
+apiVersion: hops.local/v1alpha1
+kind: Cluster
+metadata:
+  name: e2e-ui
+spec:
+  clusterProvider: kind
+  dockerProvider: dory
+  # The definition is tests/e2e-ui/.gitops/local/cluster.yaml; ../../../..
+  # is the Distributed checkout root. Local charts mount that shared source tree.
+  mountRoot: ../../../..
+  manifests:
+    path: tests/e2e-ui/.gitops/local/cluster
+  secretSync:
+    path: tests/e2e-ui/secrets/vault
