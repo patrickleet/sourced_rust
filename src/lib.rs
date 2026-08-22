@@ -354,6 +354,17 @@ pub use outbox_worker::{
     BusOutboxPublishHook, BusPublisher, ClaimOutboxMessages, OutboxClaimRef, OutboxDispatchOutcome,
     OutboxDispatcher, OutboxPublishFailureAction, OutboxSource, OutboxStore, ReceivedOutboxMessage,
 };
+#[cfg(any(
+    feature = "http",
+    feature = "grpc",
+    feature = "postgres",
+    feature = "sqlite",
+    feature = "nats",
+    feature = "rabbitmq",
+    feature = "kafka",
+    test,
+))]
+pub use outbox_worker::{drain_worker_id, OutboxDrainHandle, OutboxDrainRunner};
 
 pub use queued_repo::{
     // WithOpts + unlock traits for the queued repository variant.

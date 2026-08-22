@@ -37,11 +37,10 @@ impl Service {
     ///   registered command names (competing) and subscribes to the event names
     ///   (fan-out).
     ///
-    /// `with_bus` and [`run`](Self::run) do not start an [`OutboxDispatcher`]
-    /// polling loop. Deploy one separately (in this process or another) when
-    /// durable recovery after a commit-to-publish process crash is required.
-    ///
-    /// [`OutboxDispatcher`]: crate::outbox_worker::OutboxDispatcher
+    /// `with_bus` and [`run`](Self::run) do not start the drain loop. Spawn
+    /// [`crate::OutboxDrainRunner`] (or `microsvc::spawn_outbox_publish_loop`)
+    /// next to `run` when durable recovery after a commit-to-publish crash is
+    /// required.
     pub fn with_bus<B>(mut self, bus: B) -> Self
     where
         B: Bus + BusConsumer + 'static,
@@ -85,6 +84,33 @@ impl Service {
             .await
             .map_err(TransportError::from)?;
         runner(Arc::new(self), options).await
+    }
+
+    /// Build a drain runner over `store` that publishes through `publisher`.
+    ///
+    /// Worker id is `drain:<pid>` so claims never collide with the immediate
+    /// hook's `microsvc-immediate:<pid>`. Spawn it next to [`run`](Self::run);
+    /// this does not start a task.
+    #[cfg(any(
+        feature = "http",
+        feature = "grpc",
+        feature = "postgres",
+        feature = "sqlite",
+        feature = "nats",
+        feature = "rabbitmq",
+        feature = "kafka",
+        test,
+    ))]
+    pub fn outbox_drain<S, P>(
+        store: S,
+        publisher: P,
+        max_attempts: u32,
+    ) -> crate::OutboxDrainRunner<S, P>
+    where
+        S: crate::OutboxStore,
+        P: crate::bus::MessagePublisher,
+    {
+        crate::OutboxDrainRunner::for_store(store, publisher, max_attempts)
     }
 }
 
@@ -142,7 +168,7 @@ mod tests {
     use crate::outbox_worker::OutboxStore;
     use crate::{
         sourced, AggregateBuilder, AggregateRepository, Entity, InMemoryRepository, OutboxMessage,
-        OutboxMessageStatus, Queueable, QueuedRepository, Snapshot,
+        OutboxMessageStatus, Queueable, QueuedRepository, Snapshot, TransactionalCommit,
     };
 
     #[derive(Default)]
@@ -322,6 +348,43 @@ mod tests {
             1,
             "run() should consume the command and publish its outbox row"
         );
+    }
+
+    #[tokio::test]
+    async fn outbox_drain_sugar_publishes_rows_the_hook_never_saw() {
+        let repo = InMemoryRepository::new();
+        let store = repo.outbox_store();
+        let mut batch = crate::CommitBatch::empty();
+        batch
+            .outbox_messages
+            .push(OutboxMessage::create("evt-left", "dummy.touched", b"{}".to_vec()).unwrap());
+        repo.commit_batch(batch).await.unwrap();
+
+        let handle = Service::outbox_drain(
+            store,
+            crate::BusPublisher::new(std::sync::Arc::new(InMemoryBus::new())),
+            5,
+        )
+        .with_poll_interval(std::time::Duration::from_millis(5))
+        .spawn();
+        tokio::time::timeout(std::time::Duration::from_secs(1), async {
+            loop {
+                if repo
+                    .outbox_store()
+                    .messages_by_status(OutboxMessageStatus::Published, 8)
+                    .await
+                    .unwrap()
+                    .len()
+                    == 1
+                {
+                    break;
+                }
+                tokio::time::sleep(std::time::Duration::from_millis(5)).await;
+            }
+        })
+        .await
+        .expect("Service::outbox_drain should publish leftover rows");
+        handle.stop().await.unwrap();
     }
 
     #[derive(Default, Snapshot)]
