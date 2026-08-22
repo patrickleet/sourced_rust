@@ -49,6 +49,25 @@ async fn service() -> Repo {
         .aggregate::<Counter>()
 }
 
+async fn wait_until_published(store: &impl OutboxStore, count: usize) {
+    tokio::time::timeout(std::time::Duration::from_secs(1), async {
+        loop {
+            if store
+                .messages_by_status(OutboxMessageStatus::Published, usize::MAX)
+                .await
+                .unwrap()
+                .len()
+                >= count
+            {
+                break;
+            }
+            tokio::task::yield_now().await;
+        }
+    })
+    .await
+    .expect("immediate publish should settle outbox rows");
+}
+
 #[tokio::test]
 async fn commit_publishes_immediately_over_sqlite() {
     let repo = service().await;
@@ -62,13 +81,14 @@ async fn commit_publishes_immediately_over_sqlite() {
         )
         .with_bus(InMemoryBus::new());
 
-    // The handler claims the outbox row in the SQL transaction, then publishes
-    // it immediately through the attached bus.
+    // Handler claims the row in the SQL transaction; command completion returns
+    // at durable commit, and immediate publish settles on a spawned task.
     service
         .dispatch("counter.touch", json!({}), Session::new())
         .await
         .unwrap();
 
+    wait_until_published(&store, 1).await;
     let published = store
         .messages_by_status(OutboxMessageStatus::Published, usize::MAX)
         .await
@@ -100,6 +120,7 @@ async fn run_consumes_command_and_publishes_over_sqlite() {
     bus.send("counter.touch", b"{}".to_vec()).await.unwrap();
     service.run(RunOptions::idempotent()).await.unwrap();
 
+    wait_until_published(&store, 1).await;
     let published = store
         .messages_by_status(OutboxMessageStatus::Published, usize::MAX)
         .await
