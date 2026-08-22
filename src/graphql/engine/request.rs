@@ -240,7 +240,7 @@ impl GraphqlEngine {
                 .map_err(|_| ())?,
             )
             .map_err(|_| ())?;
-            let issued_at_unix_ms = std::time::SystemTime::now()
+            let issued_at_unix_ms = crate::time::now()
                 .duration_since(std::time::UNIX_EPOCH)
                 .map_err(|_| ())?
                 .as_millis()

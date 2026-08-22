@@ -796,7 +796,7 @@ fn map_jwt_error(e: jsonwebtoken::errors::Error) -> ValidationError {
 /// Current unix time for tests that craft exp manually.
 #[allow(dead_code)]
 pub fn now_unix() -> u64 {
-    SystemTime::now()
+    crate::time::now()
         .duration_since(UNIX_EPOCH)
         .map(|d| d.as_secs())
         .unwrap_or(0)

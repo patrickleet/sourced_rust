@@ -54,7 +54,7 @@ impl Default for Entity {
             replaying: false,
             snapshot_version: 0,
             committed_version: 0,
-            timestamp: SystemTime::now(),
+            timestamp: crate::time::now(),
             metadata: HashMap::new(),
             pending_domain_events: Vec::new(),
             domain_event_poison: None,
@@ -462,7 +462,7 @@ impl Entity {
     fn push_new_event(&mut self, record: EventRecord) {
         self.events.push(record);
         self.version = self.prefix_version + self.events.len() as u64;
-        self.timestamp = SystemTime::now();
+        self.timestamp = crate::time::now();
     }
 
     pub fn load_from_history(&mut self, history: Vec<EventRecord>) {

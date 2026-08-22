@@ -54,3 +54,5 @@ tests/workshop-service/*.db
 
 # fixture crate build artifacts
 tests/fixtures/**/target/
+tests/celld/worker/target/
+tests/celld/worker/build/
