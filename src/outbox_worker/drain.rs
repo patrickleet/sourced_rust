@@ -1,18 +1,19 @@
 //! Cancellable background drain over [`OutboxDispatcher::dispatch_batch`].
 //!
-//! Immediate after-commit publish stays the fast path. This loop is the
-//! safety net: it only claims rows that are still pending (released after a
-//! publish failure, or never claimed because the process crashed after
-//! commit). It does not resurrect the old in-memory `OutboxWorker`.
+//! After-commit publish is a hint onto this same loop (`dispatch_ids`), not a
+//! spawn per command. Polling `dispatch_batch` is the crash/overflow net for
+//! pending rows. It does not resurrect the old in-memory `OutboxWorker`.
 
 use std::future::Future;
+use std::sync::Arc;
 use std::time::Duration;
 
+use tokio::sync::{mpsc, Notify};
 use tokio::task::JoinHandle;
 
 use crate::bus::{MessagePublisher, TransportError};
 
-use super::{OutboxDispatchOutcome, OutboxDispatcher, OutboxStore};
+use super::{OutboxDispatcher, OutboxStore};
 
 /// Default time between empty drain passes.
 pub const DEFAULT_DRAIN_POLL_INTERVAL: Duration = Duration::from_secs(1);
@@ -38,6 +39,45 @@ pub fn drain_worker_id() -> String {
     format!("drain:{}", std::process::id())
 }
 
+/// How many commit-id batches the after-commit mailbox will hold before
+/// overflowing to a wake + `dispatch_batch` of pending rows.
+pub const DEFAULT_OUTBOX_HINT_CAPACITY: usize = 256;
+
+/// Bounded after-commit mailbox: `try_send` ids, or `notify_one` on overflow
+/// so the same worker claims pending rows instead of spawning a task.
+#[derive(Clone)]
+pub struct OutboxPublishMailbox {
+    tx: mpsc::Sender<Vec<String>>,
+    wake: Arc<Notify>,
+}
+
+impl OutboxPublishMailbox {
+    /// Create a mailbox, the worker's hint receiver, and the shared wake.
+    pub fn channel(capacity: usize) -> (Self, mpsc::Receiver<Vec<String>>, Arc<Notify>) {
+        let (tx, rx) = mpsc::channel(capacity.max(1));
+        let wake = Arc::new(Notify::new());
+        (
+            Self {
+                tx,
+                wake: Arc::clone(&wake),
+            },
+            rx,
+            wake,
+        )
+    }
+
+    /// Enqueue ids for `dispatch_ids`. If the channel is full or closed, wake
+    /// the worker so `dispatch_batch` can claim the pending rows. Never waits.
+    pub fn try_submit(&self, ids: Vec<String>) {
+        if ids.is_empty() {
+            return;
+        }
+        if self.tx.try_send(ids).is_err() {
+            self.wake.notify_one();
+        }
+    }
+}
+
 /// Repeatedly [`OutboxDispatcher::dispatch_batch`] until cancelled.
 pub struct OutboxDrainRunner<S, P> {
     dispatcher: OutboxDispatcher<S, P>,
@@ -45,6 +85,8 @@ pub struct OutboxDrainRunner<S, P> {
     poll_interval: Duration,
     error_backoff: Duration,
     max_error_backoff: Duration,
+    hint_rx: Option<mpsc::Receiver<Vec<String>>>,
+    wake: Option<Arc<Notify>>,
 }
 
 impl<S, P> OutboxDrainRunner<S, P>
@@ -61,6 +103,8 @@ where
             poll_interval: DEFAULT_DRAIN_POLL_INTERVAL,
             error_backoff: DEFAULT_DRAIN_ERROR_BACKOFF,
             max_error_backoff: DEFAULT_DRAIN_MAX_ERROR_BACKOFF,
+            hint_rx: None,
+            wake: None,
         }
     }
 
@@ -95,6 +139,13 @@ where
         self
     }
 
+    /// Receive after-commit id hints and overflow wakes on this loop.
+    pub fn with_hints(mut self, hint_rx: mpsc::Receiver<Vec<String>>, wake: Arc<Notify>) -> Self {
+        self.hint_rx = Some(hint_rx);
+        self.wake = Some(wake);
+        self
+    }
+
     /// The dispatcher this runner drives.
     pub fn dispatcher(&self) -> &OutboxDispatcher<S, P> {
         &self.dispatcher
@@ -102,37 +153,47 @@ where
 
     /// Drain until `shutdown` resolves. Store errors back off; they do not
     /// terminate the loop. Empty passes sleep `poll_interval`. A full batch
-    /// is followed immediately by another pass.
+    /// is followed immediately by another pass. After-commit hints run
+    /// `dispatch_ids` on this same worker.
     pub async fn run(self, shutdown: impl Future<Output = ()>) -> Result<(), TransportError> {
         tokio::pin!(shutdown);
         let mut backoff = self.error_backoff;
+        let mut hint_rx = self.hint_rx;
+        let wake = self.wake;
+        let mut sleep_for = Duration::ZERO;
         loop {
-            let pass = async {
-                match self.dispatcher.dispatch_batch(self.batch_size).await {
-                    Ok(outcome) => Pass::Drained(outcome),
-                    Err(error) => Pass::StoreError(error),
-                }
-            };
             tokio::select! {
                 _ = &mut shutdown => return Ok(()),
-                result = pass => match result {
-                    Pass::Drained(outcome) => {
-                        backoff = self.error_backoff;
-                        if outcome.claimed < self.batch_size {
-                            tokio::select! {
-                                _ = &mut shutdown => return Ok(()),
-                                _ = tokio::time::sleep(self.poll_interval) => {}
+                hint = next_hint(&mut hint_rx) => {
+                    if let Some(ids) = hint {
+                        let ids = coalesce_hints(&mut hint_rx, ids, self.batch_size);
+                        match self.dispatcher.dispatch_ids(&ids).await {
+                            Ok(_) => backoff = self.error_backoff,
+                            Err(error) => {
+                                eprintln!("outbox drain: {error}");
+                                backoff = backoff.saturating_mul(2).min(self.max_error_backoff);
+                                sleep_for = backoff;
                             }
                         }
                     }
-                    Pass::StoreError(error) => {
-                        eprintln!("outbox drain: {error}");
-                        tokio::select! {
-                            _ = &mut shutdown => return Ok(()),
-                            _ = tokio::time::sleep(backoff) => {}
-                        }
-                        backoff = backoff.saturating_mul(2).min(self.max_error_backoff);
-                    }
+                    continue;
+                }
+                _ = wake_notified(&wake) => {}
+                _ = tokio::time::sleep(sleep_for) => {}
+            }
+            match self.dispatcher.dispatch_batch(self.batch_size).await {
+                Ok(outcome) => {
+                    backoff = self.error_backoff;
+                    sleep_for = if outcome.claimed >= self.batch_size {
+                        Duration::ZERO
+                    } else {
+                        self.poll_interval
+                    };
+                }
+                Err(error) => {
+                    eprintln!("outbox drain: {error}");
+                    sleep_for = backoff;
+                    backoff = backoff.saturating_mul(2).min(self.max_error_backoff);
                 }
             }
         }
@@ -150,9 +211,41 @@ where
     }
 }
 
-enum Pass {
-    Drained(OutboxDispatchOutcome),
-    StoreError(TransportError),
+async fn next_hint(hint_rx: &mut Option<mpsc::Receiver<Vec<String>>>) -> Option<Vec<String>> {
+    loop {
+        match hint_rx.as_mut() {
+            None => std::future::pending::<()>().await,
+            Some(rx) => match rx.recv().await {
+                Some(ids) => return Some(ids),
+                None => {
+                    *hint_rx = None;
+                }
+            },
+        }
+    }
+}
+
+fn coalesce_hints(
+    hint_rx: &mut Option<mpsc::Receiver<Vec<String>>>,
+    mut ids: Vec<String>,
+    limit: usize,
+) -> Vec<String> {
+    if let Some(rx) = hint_rx.as_mut() {
+        while ids.len() < limit {
+            match rx.try_recv() {
+                Ok(more) => ids.extend(more),
+                Err(_) => break,
+            }
+        }
+    }
+    ids
+}
+
+async fn wake_notified(wake: &Option<Arc<Notify>>) {
+    match wake {
+        Some(wake) => wake.notified().await,
+        None => std::future::pending().await,
+    }
 }
 
 /// Handle for a spawned [`OutboxDrainRunner`]. Abort-only on [`stop`]; drop
@@ -344,6 +437,73 @@ mod tests {
             started.elapsed() < Duration::from_millis(500),
             "stop should abort the idle sleep"
         );
+    }
+
+    #[tokio::test]
+    async fn hint_publishes_without_waiting_for_poll_interval() {
+        let repo = InMemoryRepository::new();
+        let id = store_message(&repo, outbox("evt-hint"));
+        let publisher = RecordingPublisher::new();
+        let (mailbox, rx, wake) = OutboxPublishMailbox::channel(8);
+        let handle = OutboxDrainRunner::new(OutboxDispatcher::new(
+            repo.outbox_store(),
+            publisher.clone(),
+            "immediate:test",
+            Duration::from_secs(30),
+            3,
+        ))
+        .with_poll_interval(Duration::from_secs(30))
+        .with_hints(rx, wake)
+        .spawn();
+
+        mailbox.try_submit(vec![id]);
+        tokio::time::timeout(Duration::from_secs(1), async {
+            loop {
+                if publisher.ids() == ["evt-hint"] {
+                    break;
+                }
+                tokio::time::sleep(Duration::from_millis(5)).await;
+            }
+        })
+        .await
+        .expect("hint should publish without waiting for the 30s poll");
+        handle.stop().await.unwrap();
+        assert!(repo.outbox_store().pending(8).await.unwrap().is_empty());
+    }
+
+    #[tokio::test]
+    async fn overflow_wake_publishes_pending_rows() {
+        let repo = InMemoryRepository::new();
+        store_message(&repo, outbox("evt-a"));
+        store_message(&repo, outbox("evt-b"));
+        let publisher = RecordingPublisher::new();
+        let (mailbox, rx, wake) = OutboxPublishMailbox::channel(1);
+        mailbox.try_submit(vec!["evt-a".to_string()]);
+        mailbox.try_submit(vec!["evt-b".to_string()]);
+        let handle = OutboxDrainRunner::new(OutboxDispatcher::new(
+            repo.outbox_store(),
+            publisher.clone(),
+            "immediate:test",
+            Duration::from_secs(30),
+            3,
+        ))
+        .with_poll_interval(Duration::from_secs(30))
+        .with_hints(rx, wake)
+        .spawn();
+
+        tokio::time::timeout(Duration::from_secs(1), async {
+            loop {
+                let mut ids = publisher.ids();
+                ids.sort();
+                if ids == ["evt-a", "evt-b"] {
+                    break;
+                }
+                tokio::time::sleep(Duration::from_millis(5)).await;
+            }
+        })
+        .await
+        .expect("overflow wake should drain the pending row the mailbox could not hold");
+        handle.stop().await.unwrap();
     }
 
     struct FlakyClaimStore {

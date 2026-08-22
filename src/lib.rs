@@ -364,7 +364,10 @@ pub use outbox_worker::{
     feature = "kafka",
     test,
 ))]
-pub use outbox_worker::{drain_worker_id, OutboxDrainHandle, OutboxDrainRunner};
+pub use outbox_worker::{
+    drain_worker_id, OutboxDrainHandle, OutboxDrainRunner, OutboxPublishMailbox,
+    DEFAULT_OUTBOX_HINT_CAPACITY,
+};
 
 pub use queued_repo::{
     // WithOpts + unlock traits for the queued repository variant.

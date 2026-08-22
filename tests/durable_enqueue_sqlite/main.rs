@@ -81,8 +81,8 @@ async fn commit_publishes_immediately_over_sqlite() {
         )
         .with_bus(InMemoryBus::new());
 
-    // Handler claims the row in the SQL transaction; command completion returns
-    // at durable commit, and immediate publish settles on a spawned task.
+    // Command completion returns at durable commit; the bounded worker
+    // claims the pending row and publishes it.
     service
         .dispatch("counter.touch", json!({}), Session::new())
         .await

@@ -12,16 +12,12 @@ use crate::repository::{
 };
 use crate::table::TableWritePlan;
 
-/// Publishes already-committed, claimed outbox rows and settles their claims.
+/// Publishes already-committed outbox rows and settles their claims.
 ///
-/// Implemented by the outbox → bus bridge and installed on an
-/// [`AggregateRepository`] (by `Service::with_bus`) so that
-/// `repo.outbox(msg).commit(agg)` publishes immediately — no separate call. The
-/// hook owns the publisher and the outbox store; it is given the claimed
-/// messages the commit just wrote (in insertion order), publishes them, and
-/// completes each claim (or releases it for the polling worker on failure). It
-/// is object-safe so the repository can hold it without naming the
-/// transport/store types.
+/// Implemented by the outbox → bus bridge. `Service::with_bus` prefers a
+/// bounded worker mailbox over this hook; the hook is the fallback when no
+/// mailbox is installed. It is object-safe so the repository can hold it
+/// without naming the transport/store types.
 pub trait OutboxPublishHook: Send + Sync {
     /// Publish committed, claimed outbox rows and settle their claims. Publish
     /// failures are absorbed (the rows stay retryable for the worker); only a
@@ -37,21 +33,32 @@ pub struct OutboxPublisherConfig {
     pub(crate) hook: Arc<dyn OutboxPublishHook>,
     pub(crate) worker_id: String,
     pub(crate) lease: Duration,
+    /// Bounded worker mailbox. When set, commit `try_send`s ids and returns;
+    /// the worker claims and publishes. When unset, the hook is the fallback
+    /// (tests, no-runtime builds).
+    pub(crate) schedule: Option<Arc<dyn Fn(Vec<String>) + Send + Sync>>,
 }
 
 /// Detach immediate publish from command completion.
 ///
-/// When a Tokio runtime is current, the hook runs on a spawned task so
-/// `commit` can return as soon as the transaction is durable. Without a
-/// current runtime the hook still runs inline so publish is not dropped —
-/// `tokio::spawn` would panic after the durable commit.
+/// Prefer `config.schedule`: enqueue ids onto the bounded worker and return.
+/// Without a mailbox, the hook runs on a spawned task when a Tokio runtime is
+/// current, or inline when it is not, so publish is not dropped.
 pub(crate) async fn start_immediate_publish(
-    hook: Arc<dyn OutboxPublishHook>,
-    claimed: Vec<OutboxMessage>,
+    config: &OutboxPublisherConfig,
+    ids: Vec<String>,
+    fallback_rows: Vec<OutboxMessage>,
 ) {
-    if claimed.is_empty() {
+    if let Some(schedule) = &config.schedule {
+        if !ids.is_empty() {
+            schedule(ids);
+        }
         return;
     }
+    if fallback_rows.is_empty() {
+        return;
+    }
+    let hook = Arc::clone(&config.hook);
     #[cfg(any(
         feature = "http",
         feature = "grpc",
@@ -65,11 +72,11 @@ pub(crate) async fn start_immediate_publish(
     {
         if let Ok(handle) = tokio::runtime::Handle::try_current() {
             let _ = handle.spawn(async move {
-                let _ = hook.publish_claimed(claimed).await;
+                let _ = hook.publish_claimed(fallback_rows).await;
             });
             return;
         }
-        let _ = hook.publish_claimed(claimed).await;
+        let _ = hook.publish_claimed(fallback_rows).await;
     }
     #[cfg(not(any(
         feature = "http",
@@ -82,13 +89,13 @@ pub(crate) async fn start_immediate_publish(
         test,
     )))]
     {
-        let _ = hook.publish_claimed(claimed).await;
+        let _ = hook.publish_claimed(fallback_rows).await;
     }
 }
 
 impl OutboxPublisherConfig {
-    /// Build the config from a publish hook, the worker id used to scope the
-    /// in-transaction claim, and the publish lease.
+    /// Build the config from a publish hook, the worker id used to scope
+    /// claims, and the publish lease.
     pub fn new(
         hook: Arc<dyn OutboxPublishHook>,
         worker_id: impl Into<String>,
@@ -98,7 +105,14 @@ impl OutboxPublisherConfig {
             hook,
             worker_id: worker_id.into(),
             lease,
+            schedule: None,
         }
+    }
+
+    /// Install a non-blocking after-commit scheduler (bounded worker mailbox).
+    pub fn with_schedule(mut self, schedule: Arc<dyn Fn(Vec<String>) + Send + Sync>) -> Self {
+        self.schedule = Some(schedule);
+        self
     }
 }
 
@@ -207,14 +221,13 @@ where
     /// Commit the aggregate together with the staged outbox rows, read-model
     /// writes, and a snapshot (when due) in one transaction. Command completion
     /// is this commit. When the repository has a bus (`Service::with_bus`),
-    /// claimed outbox rows are published concurrently after commit and do not
-    /// delay the returned receipt.
+    /// pending outbox ids are handed to a bounded worker after commit and do
+    /// not delay the returned receipt.
     ///
-    /// With a bus configured, each outbox row is **claimed in this same
-    /// transaction** (born `InFlight` under a short lease). Immediate publish
-    /// is best-effort: a crash before or during that task hands the row back
-    /// to the drain worker at lease expiry, and a publish failure leaves it
-    /// retryable. Without a bus, rows are committed `pending` for the worker.
+    /// Rows stay **pending**. The worker claims them via `dispatch_ids` (or
+    /// `dispatch_batch` on overflow/poll). A crash before publish leaves them
+    /// pending for the drain loop. A publish failure leaves them retryable.
+    /// Without a bus, rows stay pending for a separately operated worker.
     ///
     /// Returns a [`CommitReceipt`] carrying the inserted outbox message ids.
     pub async fn commit(mut self, aggregate: &mut A) -> Result<CommitReceipt, RepositoryError> {
@@ -236,16 +249,15 @@ where
             .map(|message| message.id().to_string())
             .collect();
 
-        // When a bus is configured, claim the rows in this transaction so they
-        // can be published immediately after commit; otherwise leave them
-        // `pending`.
         let publisher = self.repo.outbox_publisher();
-        let mut claimed = Vec::new();
+        let mut fallback_rows = Vec::new();
         if let Some(config) = publisher {
-            let now = SystemTime::now();
-            for message in &mut self.outbox_messages {
-                message.claim_at(&config.worker_id, config.lease, now)?;
-                claimed.push(message.clone());
+            if config.schedule.is_none() {
+                let now = SystemTime::now();
+                for message in &mut self.outbox_messages {
+                    message.claim_at(&config.worker_id, config.lease, now)?;
+                }
+                fallback_rows = self.outbox_messages.clone();
             }
         }
 
@@ -270,11 +282,10 @@ where
             .mark_domain_events_committed()
             .map_err(domain_event_guard_repository_error)?;
 
-        // Best-effort immediate publish. Command completion is this commit;
-        // publish must not delay the caller. A failure leaves the claimed rows
-        // for the drain worker and never fails the already-committed command.
+        // Best-effort after-commit publish. Command completion is this commit;
+        // publish must not delay the caller.
         if let Some(config) = publisher {
-            start_immediate_publish(Arc::clone(&config.hook), claimed).await;
+            start_immediate_publish(config, outbox_message_ids.clone(), fallback_rows).await;
         }
 
         Ok(CommitReceipt { outbox_message_ids })

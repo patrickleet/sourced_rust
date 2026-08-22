@@ -30,17 +30,16 @@ impl Service {
     ///
     /// Two effects, both composing with the rest of the builder:
     /// - installs an outbox publisher on the repository, so
-    ///   `repo.outbox(msg).commit(agg)` claims the row in the commit transaction
-    ///   and publishes it immediately after commit through this bus (a polling
-    ///   worker may be operated as the crash/retry backstop);
+    ///   `repo.outbox(msg).commit(agg)` writes pending rows and enqueues their
+    ///   ids on a bounded worker after commit (overflow wakes `dispatch_batch`);
     /// - captures how to consume, so [`run`](Self::run) listens for the
     ///   registered command names (competing) and subscribes to the event names
     ///   (fan-out).
     ///
-    /// `with_bus` and [`run`](Self::run) do not start the drain loop. Spawn
-    /// [`crate::OutboxDrainRunner`] (or `microsvc::spawn_outbox_publish_loop`)
-    /// next to `run` when durable recovery after a commit-to-publish crash is
-    /// required.
+    /// The worker also polls pending rows, so a crash between commit and
+    /// publish is recovered in-process. Spawn a separate
+    /// [`crate::OutboxDrainRunner`] next to `run` only when you want an extra
+    /// competing drainer.
     pub fn with_bus<B>(mut self, bus: B) -> Self
     where
         B: Bus + BusConsumer + 'static,
@@ -325,8 +324,8 @@ mod tests {
             )
             .with_bus(InMemoryBus::new());
 
-        // The handler runs `outbox().commit()`: claim-in-transaction, then
-        // immediate publish through the attached bus.
+        // The handler runs `outbox().commit()`: pending row, then the
+        // bounded worker publishes through the attached bus.
         service
             .dispatch("dummy.touch", json!({}), Session::new())
             .await
