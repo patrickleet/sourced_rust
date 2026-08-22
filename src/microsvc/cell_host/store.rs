@@ -26,16 +26,37 @@ use crate::projection_protocol::{
     ProjectorTopologyId, TrustedProjectionInput,
 };
 use crate::repository::{
-    CommitBatch, RepositoryError, SnapshotWrite, StreamIdentity, TransactionalCommit,
+    CommitBatch, GetStream, RepositoryError, SnapshotWrite, StreamIdentity, TransactionalCommit,
 };
 use crate::{InMemoryOutboxStore, InMemoryRepository};
 
+#[derive(Clone)]
+enum CellOwnership {
+    /// One stream identity (Todo, BlobGame). Foreign streams are rejected.
+    Exclusive(StreamIdentity),
+    /// Parent game cell: map/player/bomb/explosion/saga streams share this
+    /// cell's private SQLite. There is no API to commit across two cells.
+    Parent { name: StreamIdentity },
+}
+
 /// Private SQLite stand-in for one cell instance (`{aggregate_type}:{shard}`).
 ///
-/// Loads and commits are rejected for any stream that is not this cell's shard.
+/// Exclusive cells reject any stream that is not this cell's shard. Parent
+/// cells (`for_parent_shard`) hold sibling streams of one game and commit
+/// them in one [`CommitBatch`].
+///
+/// ```compile_fail
+/// fn two_cell_transaction_does_not_exist(
+///     left: &distributed::cell_host::CellStreamStore,
+///     right: &distributed::cell_host::CellStreamStore,
+///     batch: distributed::CommitBatch<'_>,
+/// ) {
+///     let _ = left.commit_across(right, batch);
+/// }
+/// ```
 #[derive(Clone)]
 pub struct CellStreamStore {
-    identity: StreamIdentity,
+    ownership: CellOwnership,
     inner: InMemoryRepository,
 }
 
@@ -43,12 +64,28 @@ impl CellStreamStore {
     /// Bind a store to one exact stream identity.
     pub fn for_identity(identity: StreamIdentity) -> Self {
         Self {
-            identity,
+            ownership: CellOwnership::Exclusive(identity),
             inner: InMemoryRepository::new(),
         }
     }
 
-    /// Named cell constructor used by [`super::AggregateCell`].
+    /// Parent-shard cell: `"{parent_type}:{parent_id}"` (bomberman `game:{id}`).
+    ///
+    /// Child streams of any aggregate type live in this cell's SQLite. A
+    /// transaction across two parent cells does not exist.
+    pub fn for_parent_shard(
+        parent_type: impl Into<String>,
+        parent_id: impl Into<String>,
+    ) -> Result<Self, RepositoryError> {
+        Ok(Self {
+            ownership: CellOwnership::Parent {
+                name: StreamIdentity::new(parent_type, parent_id)?,
+            },
+            inner: InMemoryRepository::new(),
+        })
+    }
+
+    /// Named exclusive-cell constructor used by [`super::AggregateCell`].
     pub fn new(
         aggregate_type: impl Into<String>,
         shard_id: impl Into<String>,
@@ -61,22 +98,29 @@ impl CellStreamStore {
 
     /// Cell instance name (`type:id`).
     pub fn instance_name(&self) -> String {
-        self.identity.to_string()
+        match &self.ownership {
+            CellOwnership::Exclusive(identity) | CellOwnership::Parent { name: identity } => {
+                identity.to_string()
+            }
+        }
     }
 
-    /// Stream this cell owns.
-    pub fn identity(&self) -> &StreamIdentity {
-        &self.identity
+    /// Stream this exclusive cell owns. Parent cells have no single stream.
+    pub fn identity(&self) -> Option<&StreamIdentity> {
+        match &self.ownership {
+            CellOwnership::Exclusive(identity) => Some(identity),
+            CellOwnership::Parent { .. } => None,
+        }
     }
 
     fn ensure_identity(&self, identity: &StreamIdentity) -> Result<(), RepositoryError> {
-        if identity != &self.identity {
-            return Err(RepositoryError::Model(format!(
-                "cell `{}` cannot access stream `{identity}`",
-                self.identity
-            )));
+        match &self.ownership {
+            CellOwnership::Parent { .. } => Ok(()),
+            CellOwnership::Exclusive(owned) if identity == owned => Ok(()),
+            CellOwnership::Exclusive(owned) => Err(RepositoryError::Model(format!(
+                "cell `{owned}` cannot access stream `{identity}`"
+            ))),
         }
-        Ok(())
     }
 
     fn ensure_batch(&self, batch: &CommitBatch<'_>) -> Result<(), RepositoryError> {
@@ -100,6 +144,18 @@ impl CausalGetStream for CellStreamStore {
         async move {
             self.ensure_identity(identity)?;
             CausalGetStream::get_causal_stream(&self.inner, identity).await
+        }
+    }
+}
+
+impl GetStream for CellStreamStore {
+    fn get_stream<'a>(
+        &'a self,
+        identity: &'a StreamIdentity,
+    ) -> impl Future<Output = Result<Option<Entity>, RepositoryError>> + Send + 'a {
+        async move {
+            self.ensure_identity(identity)?;
+            GetStream::get_stream(&self.inner, identity).await
         }
     }
 }

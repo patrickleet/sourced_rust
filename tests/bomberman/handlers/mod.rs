@@ -12,4 +12,4 @@ pub use join_game::join_game;
 pub use move_player::move_player;
 pub use place_bomb::place_bomb;
 pub(crate) use shared::get_aggregate;
-pub use tick::tick;
+pub use tick::{tick, tick_cell_name, tick_shard};

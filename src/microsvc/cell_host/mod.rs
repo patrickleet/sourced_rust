@@ -12,7 +12,7 @@
 mod cell;
 mod store;
 
-pub use cell::{instance_name, AggregateCell, CellNamespace};
+pub use cell::{instance_name, parent_cell_name, AggregateCell, CellNamespace};
 pub use store::CellStreamStore;
 
 #[cfg(test)]
