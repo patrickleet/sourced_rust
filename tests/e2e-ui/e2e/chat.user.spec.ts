@@ -25,21 +25,28 @@ test.describe('chat (alice)', () => {
 	});
 
 	test('scroll-up / load-earlier fetches the next history page', async ({ page }) => {
+		test.setTimeout(180_000);
 		await page.goto('/chat');
 		await expect(page.getByRole('heading', { name: /lobby/i })).toBeVisible({
 			timeout: 20_000
 		});
 
+		const send = page.getByRole('button', { name: /send/i });
 		// Seed more than one page so offset history is meaningful (page size 25).
+		// Wait for Send to re-enable after Eventual `projected` — a click while
+		// busy is ignored and the 90s test timeout then fires on locator.click.
 		const stamp = Date.now();
 		const total = 30;
 		for (let i = 0; i < total; i += 1) {
 			const body = `history seed ${stamp} #${String(i).padStart(2, '0')}`;
 			await page.locator('#chat-body').fill(body);
-			await page.getByRole('button', { name: /send/i }).click();
+			await send.click();
 			await expect(page.locator('.ch-msg', { hasText: body })).toBeVisible({
 				timeout: 15_000
 			});
+			// Eventual `projected` holds `busy`; the next fill would enable
+			// Send while click is still ignored.
+			await expect(send).toBeEnabled({ timeout: 30_000 });
 		}
 
 		const log = page.locator('.ch-log');

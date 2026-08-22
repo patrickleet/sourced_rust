@@ -162,7 +162,11 @@ where
         let wake = self.wake;
         let mut sleep_for = Duration::ZERO;
         loop {
+            // Hints must beat sleep(0) / poll. Unbiased select can run
+            // dispatch_batch on scrape backlog while a command's Eventual
+            // `projected` waits for its id still sitting in the mailbox.
             tokio::select! {
+                biased;
                 _ = &mut shutdown => return Ok(()),
                 hint = next_hint(&mut hint_rx) => {
                     if let Some(ids) = hint {
