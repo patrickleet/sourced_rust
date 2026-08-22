@@ -228,6 +228,21 @@ async fn cell_dispatches_complete_with_the_same_portable_command_as_soa() {
         .expect("complete");
     assert_eq!(completed["id"], "item-1");
     assert_eq!(completed["done"], true);
+
+    let exported = cell.durable_events().expect("export");
+    assert!(!exported.is_empty());
+    let restored = AggregateCell::<CellItem>::new("item-1")
+        .unwrap()
+        .mount(Create)
+        .mount(Complete);
+    restored.restore_durable_events(exported).expect("restore");
+    let loaded = restored
+        .load()
+        .await
+        .expect("load restored")
+        .expect("durable");
+    assert_eq!(loaded.title, "ship");
+    assert!(loaded.done);
 }
 
 #[tokio::test]

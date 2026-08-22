@@ -11,7 +11,7 @@ use crate::command_ledger::{
     CausalStorageIdentity, CausalTransactionalCommit, CommandLedgerError, CommandLedgerKey,
     CommandLedgerStore, CommandLookup, CommandLookupScope, CommandReservation, ReservationOutcome,
 };
-use crate::entity::Entity;
+use crate::entity::{Entity, EventRecord};
 use crate::microsvc::HasOutboxStore;
 use crate::projection_protocol::{
     ProjectionChangeCursor, ProjectionChangeRead, ProjectionCheckpoint, ProjectionCommitBatch,
@@ -29,6 +29,7 @@ use crate::repository::{
     CommitBatch, GetStream, RepositoryError, SnapshotWrite, StreamIdentity, TransactionalCommit,
 };
 use crate::{InMemoryOutboxStore, InMemoryRepository};
+use serde::{Deserialize, Serialize};
 
 #[derive(Clone)]
 enum CellOwnership {
@@ -54,6 +55,14 @@ enum CellOwnership {
 ///     let _ = left.commit_across(right, batch);
 /// }
 /// ```
+
+/// One stream's event records for Durable Object SQLite persistence.
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+pub struct DurableCellEvents {
+    pub stream: String,
+    pub events: Vec<EventRecord>,
+}
+
 #[derive(Clone)]
 pub struct CellStreamStore {
     ownership: CellOwnership,
@@ -121,6 +130,29 @@ impl CellStreamStore {
                 "cell `{owned}` cannot access stream `{identity}`"
             ))),
         }
+    }
+
+    /// Event log for Durable Object SQLite. Memory remains the working copy.
+    pub fn durable_events(&self) -> Result<Vec<DurableCellEvents>, RepositoryError> {
+        Ok(self
+            .inner
+            .clone_events()?
+            .into_iter()
+            .map(|(stream, events)| DurableCellEvents { stream, events })
+            .collect())
+    }
+
+    /// Replace the working event log from Durable Object SQLite.
+    pub fn restore_durable_events(
+        &self,
+        events: Vec<DurableCellEvents>,
+    ) -> Result<(), RepositoryError> {
+        self.inner.replace_events(
+            events
+                .into_iter()
+                .map(|row| (row.stream, row.events))
+                .collect(),
+        )
     }
 
     fn ensure_batch(&self, batch: &CommitBatch<'_>) -> Result<(), RepositoryError> {

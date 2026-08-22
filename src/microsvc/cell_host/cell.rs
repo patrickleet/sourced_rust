@@ -5,7 +5,7 @@ use std::collections::HashMap;
 
 use serde_json::Value;
 
-use super::store::CellStreamStore;
+use super::store::{CellStreamStore, DurableCellEvents};
 use crate::aggregate::{Aggregate, AggregateRepository};
 use crate::microsvc::error::HandlerError;
 use crate::microsvc::service::{PortableCommand, Routes};
@@ -110,6 +110,19 @@ where
     /// method (`PCH-REQ-005`).
     pub async fn load(&self) -> Result<Option<A>, RepositoryError> {
         self.routes.repo().get(self.shard.aggregate_id()).await
+    }
+
+    /// Event log for Durable Object SQLite persistence.
+    pub fn durable_events(&self) -> Result<Vec<DurableCellEvents>, RepositoryError> {
+        self.routes.repo().repo().durable_events()
+    }
+
+    /// Restore the working event log from Durable Object SQLite.
+    pub fn restore_durable_events(
+        &self,
+        events: Vec<DurableCellEvents>,
+    ) -> Result<(), RepositoryError> {
+        self.routes.repo().repo().restore_durable_events(events)
     }
 }
 

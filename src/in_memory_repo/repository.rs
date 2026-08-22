@@ -136,6 +136,27 @@ impl InMemoryRepository {
         &self.snapshot_store
     }
 
+    /// Clone the event log for Durable Object SQLite persistence.
+    pub fn clone_events(&self) -> Result<HashMap<String, Vec<EventRecord>>, RepositoryError> {
+        Ok(self
+            .event_store
+            .read()
+            .map_err(|_| RepositoryError::LockPoisoned("event log read"))?
+            .clone())
+    }
+
+    /// Replace the event log from Durable Object SQLite restore.
+    pub fn replace_events(
+        &self,
+        events: HashMap<String, Vec<EventRecord>>,
+    ) -> Result<(), RepositoryError> {
+        *self
+            .event_store
+            .write()
+            .map_err(|_| RepositoryError::LockPoisoned("event log write"))? = events;
+        Ok(())
+    }
+
     /// Whether a consumer inbox receipt for `(consumer, message_id)` is recorded.
     pub fn inbox_contains(&self, consumer: &str, message_id: &str) -> bool {
         self.inbox_store
