@@ -56,8 +56,8 @@ pub use invoke::{invoke_transition, require_loaded};
 pub use request::{CommandRequest, CommandResponse};
 pub(crate) use routes::DynBusPublisher;
 pub use routes::{
-    DeliveryKind, HandlerNames, HandlerSpec, RouteBuilder, Routes, ThinCommandBuilder,
-    ThinCommandInvoked, ThinCommandLoaded, TypedRouteBuilder,
+    DeliveryKind, HandlerNames, HandlerSpec, PortableCommand, RouteBuilder, Routes,
+    ThinCommandBuilder, ThinCommandInvoked, ThinCommandLoaded, TypedRouteBuilder,
 };
 pub use runtime::Service;
 

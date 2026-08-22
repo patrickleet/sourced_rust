@@ -101,14 +101,7 @@ framework auto-derive client cache previews from input + defaults + claims
 (not a separate hand-built mapping):
 
 ```rust
-.command_transition::<
-    domain_commands::Complete,
-    TodoCompleteInput,
-    Eventual<TodoStatusPayload>,
->("todo.complete")
-.field_name("todos_complete")
-.roles(["user", "admin"])
-.handle(todo_complete::handle)
+.mount(todo_domain::commands::complete())
 ```
 
 The compiler specializes `TODOS` into safe client operations: apply the same

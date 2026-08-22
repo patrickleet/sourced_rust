@@ -158,31 +158,16 @@ await commands.todo.complete({ todo_id });`
 				},
 				{
 					file: 'modules/todo.rs · todos_create',
-					caption: 'This mount sets the write roles and the session guard. The domain transition sets the emit fields. The owner claim is the auto-optimism key.',
-					code: `.command_transition::<
-  domain_commands::Create,
-  TodoCreateInput,
-  Eventual<TodoCreatePayload>,
->(todo_create::COMMAND)
-.field_name("todos_create")
-.roles(["user", "admin"])
-.input_defaults(command_input_defaults! {
-  input: TodoCreateInput;
-  default input.todo_id = uuid_v7();
-})
-.guarded(causal_has_user, todo_create::handle)`
+					caption: 'The service mounts a domain-owned command. Roles and the create handler live in todo-domain.',
+					code: `Routes::for_aggregate::<R, L, Todo, S>(repo, locks, read_models)
+  .mount(todo_domain::commands::create())
+  .mount(todo_domain::commands::complete())
+  .mount(todo_domain::commands::force_archive())`
 				},
 				{
 					file: 'modules/todo.rs · todos_force_archive',
 					caption: 'This command is for the admin role only. The user client tree does not include this field.',
-					code: `.command_transition::<
-  domain_commands::ForceArchive,
-  TodoForceArchiveInput,
-  Eventual<TodoForceArchivePayload>,
->(todo_force_archive::COMMAND)
-.field_name("todos_force_archive")
-.roles(["admin"])
-.guarded(causal_is_admin, todo_force_archive::handle)`
+					code: `.mount(todo_domain::commands::force_archive())`
 				}
 			]
 		},
@@ -193,7 +178,7 @@ await commands.todo.complete({ todo_id });`
 			principle: 'A command changes the write model. A table is only for reads.',
 			samples: [
 				{
-					file: 'handlers/commands/todo_create.rs',
+					file: 'todo-domain/src/commands.rs · handle_create',
 					caption: 'Get the principal. Create the aggregate. Call the domain. Publish events. Commit Eventual.',
 					code: `pub async fn handle(
   ctx: &CausalCommandContext<'_, Todo>,
@@ -215,7 +200,7 @@ await commands.todo.complete({ todo_id });`
 }`
 				},
 				{
-					file: 'handlers/commands/todo_complete.rs',
+					file: 'todo-domain/src/commands.rs · complete',
 					caption: 'Load the aggregate by id. Then call `complete`. Then commit Eventual.',
 					code: `let owner = principal(ctx)?;
 let mut todo = repo
@@ -358,9 +343,9 @@ mutation DeleteTodo {
 
 pub fn routes<R, L, S>(...) -> TodoRoutes<R, L, S> {
   Routes::for_aggregate::<R, L, Todo, S>(repo, locks, read_models)
-    .command_transition::</* Create */>(todo_create::COMMAND)
-    .guarded(causal_has_user, todo_create::handle)
-    // … rename, complete, reopen, archive, force_archive, purge …
+    .mount(todo_domain::commands::create())
+    .mount(todo_domain::commands::complete())
+    // … rename, reopen, archive, force_archive, purge …
     .modeled_projector(todo_projector)
     .handle(handlers::events::project_todos::handle)
 }`
@@ -1152,7 +1137,7 @@ pub struct Todos {
 			principle: 'Use the signed-in principal. Do not trust the request body for identity.',
 			samples: [
 				{
-					file: 'handlers/commands/todo_force_archive.rs',
+					file: 'todo-domain/src/commands.rs · handle_force_archive',
 					caption: 'Get the admin principal. Load the todo. Call the domain. Commit Eventual.',
 					code: `pub async fn handle(
   ctx: &CausalCommandContext<'_, Todo>,
