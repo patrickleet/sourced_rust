@@ -1009,6 +1009,16 @@ impl CommandLedgerStore for AmbiguousCommitRepository {
 }
 
 #[cfg(feature = "graphql")]
+impl crate::repository::TransactionalCommit for AmbiguousCommitRepository {
+    fn commit_batch<'a>(
+        &'a self,
+        batch: crate::repository::CommitBatch<'a>,
+    ) -> impl Future<Output = Result<(), crate::RepositoryError>> + Send + 'a {
+        crate::repository::TransactionalCommit::commit_batch(&self.inner, batch)
+    }
+}
+
+#[cfg(feature = "graphql")]
 impl CausalTransactionalCommit for AmbiguousCommitRepository {
     async fn commit_causal_batch<'a>(
         &'a self,

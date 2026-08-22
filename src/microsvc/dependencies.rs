@@ -6,7 +6,9 @@ use crate::command_ledger::{
 };
 use crate::outbox::OutboxPublisherConfig;
 use crate::projection_protocol::ProjectionProtocolStore;
-use crate::repository::{ReadModelWritePlanStore, RelationalReadModelQueryStore, Repository};
+use crate::repository::{
+    ReadModelWritePlanStore, RelationalReadModelQueryStore, Repository, TransactionalCommit,
+};
 
 /// Dependency capability for services that expose an aggregate repository.
 pub trait HasRepo {
@@ -27,6 +29,7 @@ pub trait CausalRepositoryBackend:
     + CausalTransactionalCommit
     + CausalRepositoryIdentity
     + ProjectionProtocolStore
+    + TransactionalCommit
     + Send
     + Sync
     + 'static
@@ -39,6 +42,7 @@ impl<T> CausalRepositoryBackend for T where
         + CausalTransactionalCommit
         + CausalRepositoryIdentity
         + ProjectionProtocolStore
+        + TransactionalCommit
         + Send
         + Sync
         + 'static

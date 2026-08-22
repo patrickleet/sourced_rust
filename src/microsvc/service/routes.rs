@@ -40,7 +40,6 @@ use crate::graphql::command_input::canonicalize_command_input;
 #[cfg(feature = "graphql")]
 use crate::graphql::identity::VerifiedPrincipal;
 use crate::graphql::{command_transition, GraphqlInputType, SurfaceProjector, TypedCommand};
-#[cfg(feature = "graphql")]
 use crate::microsvc::causal::CausalWorkspace;
 use crate::microsvc::context::Context;
 use crate::microsvc::dependencies::{
@@ -75,6 +74,7 @@ use crate::outbox_worker::{
 use crate::projection_protocol::ProjectionProtocolStore;
 #[cfg(feature = "graphql")]
 use crate::projection_protocol::{CompiledProjectionTopology, ProjectorTopologyId};
+use crate::repository::{StreamIdentity, TransactionalCommit};
 use serde_json::Value;
 
 /// How a handler expects the transport to deliver matching messages.
@@ -233,6 +233,15 @@ pub(super) trait ErasedCausalHandler<D>: Send + Sync {
         session: &'a Session,
         protocol: Option<crate::graphql::protocol::ProtocolResponseAccumulator>,
     ) -> CausalStatusFuture<'a>;
+
+    /// Run the same typed `handle` inside one cell, without GraphQL receipts.
+    fn invoke_cell<'a>(
+        &'a self,
+        dependencies: &'a D,
+        input: Value,
+        session: Session,
+        shard: &'a StreamIdentity,
+    ) -> Pin<Box<dyn Future<Output = Result<Value, HandlerError>> + Send + 'a>>;
 }
 
 struct RegisteredCausalHandler<A, I, K>
@@ -241,9 +250,7 @@ where
     K: CommandOutcome,
 {
     contract: TypedCommandContract,
-    #[cfg_attr(not(feature = "graphql"), allow(dead_code))]
     guard: Option<Arc<CausalGuardFn<A>>>,
-    #[cfg_attr(not(feature = "graphql"), allow(dead_code))]
     handle: Arc<PreparedHandlerFn<A, I, K>>,
     /// Retryable, fail-closed bootstrap for the bound projector's complete
     /// model/table ownership inventory. `get_or_try_init` leaves the cell empty
@@ -991,6 +998,37 @@ impl<D: Send + Sync + 'static> Routes<D> {
         command.install(self)
     }
 
+    /// Dispatch a typed causal command inside one cell (no GraphQL envelope).
+    pub(in crate::microsvc) async fn dispatch_cell_command(
+        &self,
+        command: &str,
+        input: Value,
+        session: Session,
+        shard: &StreamIdentity,
+    ) -> Result<Value, HandlerError> {
+        let handler = self
+            .handlers
+            .get(&MessageKind::Command)
+            .and_then(|handlers| handlers.get(command));
+        match handler {
+            Some(RegisteredHandler::Causal(handler)) => {
+                handler
+                    .invoke_cell(&self.dependencies, input, session, shard)
+                    .await
+            }
+            Some(_) | None => Err(HandlerError::UnknownCommand(command.to_string())),
+        }
+    }
+
+    pub(in crate::microsvc) fn is_command_only(&self) -> bool {
+        self.projectors.is_empty()
+            && self.modeled_local_services.is_empty()
+            && self
+                .handler_specs
+                .iter()
+                .all(|spec| spec.kind == MessageKind::Command)
+    }
+
     /// Register a typed command declaration and its executable handler as one
     /// inventory entry.
     pub fn typed_command<I, K>(self, command: TypedCommand<I, K>) -> TypedRouteBuilder<D, I, K>
@@ -1448,6 +1486,7 @@ impl<D: Send + Sync + 'static> CommandMountRegistrar for Routes<D> {
 impl<D, A, I, K> ErasedCausalHandler<D> for RegisteredCausalHandler<A, I, K>
 where
     D: CausalRouteDependencies<Aggregate = A> + Send + Sync + 'static,
+    D::Backend: TransactionalCommit,
     A: Aggregate + Send + Sync + 'static,
     I: serde::de::DeserializeOwned + Send + 'static,
     K: CommandOutcome,
@@ -1940,6 +1979,59 @@ where
                 protocol.as_ref(),
             )
             .await
+        })
+    }
+
+    fn invoke_cell<'a>(
+        &'a self,
+        dependencies: &'a D,
+        input: Value,
+        session: Session,
+        shard: &'a StreamIdentity,
+    ) -> Pin<Box<dyn Future<Output = Result<Value, HandlerError>> + Send + 'a>> {
+        Box::pin(async move {
+            let payload = serde_json::to_vec(&input)
+                .map_err(|error| HandlerError::DecodeFailed(error.to_string()))?;
+            let typed: I = serde_json::from_value(input)
+                .map_err(|error| HandlerError::DecodeFailed(error.to_string()))?;
+            let message = Message::new(self.contract.name.clone(), MessageKind::Command, payload);
+            let aggregate_repository = dependencies.__causal_aggregate_repository();
+            let workspace = CausalWorkspace::new(aggregate_repository);
+            let context = CausalCommandContext::new(&message, &session, &workspace);
+            if self.guard.as_ref().is_some_and(|guard| !guard(&context)) {
+                return Err(HandlerError::GuardRejected(self.contract.name.clone()));
+            }
+            let mut prepared = (self.handle)(&context, typed).await?;
+            let mut parts = workspace
+                .into_parts()
+                .map_err(super::handlers::workspace_handler_error)?;
+            let causation = uuid::Uuid::now_v7().hyphenated().to_string();
+            parts
+                .prepare_domain_publications(&causation)
+                .map_err(super::handlers::workspace_handler_error)?;
+            parts
+                .validate_prepared(&self.contract, &mut prepared)
+                .map_err(|error| HandlerError::Rejected(error.to_string()))?;
+            {
+                let batch = parts
+                    .prepare_commit_batch()
+                    .map_err(super::handlers::workspace_handler_error)?;
+                for stream in &batch.streams {
+                    if stream.identity != *shard {
+                        return Err(HandlerError::Rejected(format!(
+                            "cell `{shard}` cannot commit stream `{}`",
+                            stream.identity
+                        )));
+                    }
+                }
+                TransactionalCommit::commit_batch(aggregate_repository.repo(), batch)
+                    .await
+                    .map_err(HandlerError::from)?;
+            }
+            parts
+                .mark_committed_state()
+                .map_err(super::handlers::workspace_handler_error)?;
+            Ok(prepared.serialized_payload().clone())
         })
     }
 }
