@@ -56,6 +56,7 @@
 //! ```
 
 mod causal;
+pub mod cell_host;
 mod context;
 mod descriptor;
 mod dependencies;

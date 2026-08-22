@@ -37,6 +37,8 @@ pub mod lock;
 #[cfg(feature = "metrics")]
 pub mod metrics;
 pub mod microsvc;
+/// Celld Durable Object host adapter (not a sqlx dialect; no `celld` feature).
+pub use microsvc::cell_host;
 pub mod mutation;
 pub mod outbox;
 pub mod outbox_worker;

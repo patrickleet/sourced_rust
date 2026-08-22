@@ -599,4 +599,47 @@ mod tests {
             .expect("todo.complete");
         assert_eq!(complete_spec.field_name, "todos_complete");
     }
+
+    #[tokio::test]
+    async fn cell_host_dispatches_complete_with_the_same_handle_as_soa() {
+        use distributed::cell_host::AggregateCell;
+        use distributed::microsvc::{Session, USER_ID_KEY};
+
+        let cell = AggregateCell::<Todo>::new("todo-1")
+            .expect("cell identity")
+            .mount(create())
+            .mount(complete());
+        assert_eq!(cell.instance_name(), "todo:todo-1");
+        assert!(cell.is_command_only());
+        assert!(cell
+            .command_names()
+            .iter()
+            .any(|name| name == "todo.complete"));
+
+        let mut session = Session::new();
+        session.set(USER_ID_KEY, "owner-1");
+        session.set("x-roles", "user");
+
+        cell.dispatch(
+            "todo.create",
+            serde_json::json!({
+                "todo_id": "todo-1",
+                "title": "cell complete",
+            }),
+            session.clone(),
+        )
+        .await
+        .expect("todo.create on cell");
+
+        let completed = cell
+            .dispatch(
+                "todo.complete",
+                serde_json::json!({ "todo_id": "todo-1" }),
+                session,
+            )
+            .await
+            .expect("todo.complete on cell");
+        assert_eq!(completed["todo_id"], "todo-1");
+        assert_eq!(completed["status"], "completed");
+    }
 }
