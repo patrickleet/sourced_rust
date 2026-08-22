@@ -12,7 +12,7 @@ crate-type = ["cdylib", "rlib"]
 [features]
 default = ["domain"]
 # Aggregate + levels + distributed host (server / tests).
-domain = ["dep:distributed", "dep:thiserror", "dep:rand"]
+domain = ["dep:distributed", "dep:thiserror", "dep:rand", "dep:e2e-readmodels"]
 # Client pure export (wasm-pack / wasm32).
 wasm = ["dep:wasm-bindgen"]
 
@@ -22,6 +22,7 @@ serde_json = { workspace = true }
 distributed = { workspace = true, optional = true }
 thiserror = { workspace = true, optional = true }
 rand = { workspace = true, optional = true }
+e2e-readmodels = { path = "../readmodels", optional = true }
 wasm-bindgen = { version = "0.2", optional = true }
 
 [dev-dependencies]

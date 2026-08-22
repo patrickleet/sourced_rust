@@ -472,15 +472,8 @@ if (receipt.projected !== undefined) {
 				},
 				{
 					file: 'modules/chat.rs · chat_messages_post',
-					caption: 'Write roles and a session guard are on the mount. The public client has no commands.',
-					code: `.command_transition::<
-  domain_commands::Post,
-  ChatPostInput,
-  Eventual<ChatPostPayload>,
->(chat_post::COMMAND)
-.field_name("chat_messages_post")
-.roles(["user", "admin"])
-.guarded(causal_has_user, chat_post::handle)`
+					caption: 'Write roles and a session guard are on the domain-owned mount. The public client has no commands.',
+					code: `.mount(chat_domain::commands::post())`
 				},
 				{
 					file: 'generated/public/commands.ts',
@@ -497,7 +490,7 @@ export type GeneratedCommands = Readonly<Record<never, never>>;`
 			principle: 'Use the signed-in principal. Do not trust the author field in the request body.',
 			samples: [
 				{
-					file: 'handlers/commands/chat_post.rs',
+					file: 'chat-domain/src/commands.rs · handle_post',
 					caption: 'Get the principal. Reject a duplicate id. Create the aggregate. Call `post`. Commit Eventual.',
 					code: `pub async fn handle(
   ctx: &CausalCommandContext<'_, ChatMessage>,
@@ -659,8 +652,7 @@ mutation SaveChatMessage {
 
 pub fn routes<R, L, S>(...) -> ChatRoutes<R, L, S> {
   Routes::for_aggregate::<R, L, ChatMessage, S>(repo, locks, read_models)
-    .command_transition::</* Post */>(chat_post::COMMAND)
-    .guarded(causal_has_user, chat_post::handle)
+    .mount(chat_domain::commands::post())
     // Zitadel Action ingress + on-demand scrape (non-GraphQL).
     .command(zitadel::COMMAND)
     .guarded(zitadel::guard, zitadel::handle)
@@ -788,28 +780,10 @@ await commands.blob.move({ game_id, direction });
 // Atomic seal confirms or corrects`
 				},
 				{
-					file: 'modules/blob.rs · declare the pure',
-					caption: 'This contract names the pure function, the WASM package, the keys, the args, and the assign fields.',
-					code: `.command_transition::<
-  domain_commands::MoveDir,
-  BlobMoveInput,
-  Atomic<BlobGames>,
->(blob_move::COMMAND)
-.field_name("blob_games_move")
-.roles(["user", "admin"])
-.preview_reduce_known_record(
-  CommandProjectionPureReduce::wasm(
-    "blob.simulate_move",       // pure id → pureFunctions key
-    "blob/pkg/blob_wasm",       // $lib wasm-pack package
-    "blobSimulateMove",         // WASM export (recordJson, argsJson)
-    "BlobGames",
-  )
-  .key_input("game_id", ["game_id"])
-  .arg_input("direction", ["direction"])
-  .assign(["map_json", "score", "player_dead",
-           "current_level_completed", "status"]),
-)
-.guarded(causal_has_user, blob_move::handle)`
+					file: 'blob-domain/src/commands.rs · move_dir',
+					caption: 'The domain mount names the pure function, the WASM package, the keys, the args, and the assign fields.',
+					code: `.mount(blob_domain::commands::move_dir())
+// preview: blob.simulate_move → blobSimulateMove WASM`
 				},
 				{
 					file: 'generated/user/pures.ts',
@@ -845,7 +819,7 @@ export async function ensurePureFunctionsReady() {
 			principle: 'A command changes the write model. A table is only for reads.',
 			samples: [
 				{
-					file: 'handlers/commands/blob_move.rs',
+					file: 'blob-domain/src/commands.rs · handle_move',
 					caption: 'Load the game. Call `move_dir`. Stage `SaveBlobGame`. Commit Atomic. The Atomic row is replica authority.',
 					code: `pub async fn handle(
   ctx: &CausalCommandContext<'_, BlobGame>,
@@ -1000,13 +974,9 @@ mutation SaveBlobGame {
 
 pub fn routes<R, L, S>(...) -> BlobRoutes<R, L, S> {
   Routes::for_aggregate::<R, L, BlobGame, S>(repo, locks, read_models)
-    .command_transition::</* StartWithMap */>(blob_start::COMMAND)
-    .guarded(causal_has_user, blob_start::handle)
-    .command_transition::</* MoveDir */>(blob_move::COMMAND)
-    .preview_reduce_known_record(/* wasm pure blob.simulate_move */)
-    .guarded(causal_has_user, blob_move::handle)
-    .command_transition::</* StartLevel */>(blob_start_level::COMMAND)
-    .guarded(causal_has_user, blob_start_level::handle)
+    .mount(blob_domain::commands::start())
+    .mount(blob_domain::commands::move_dir())
+    .mount(blob_domain::commands::start_level())
 }`
 				},
 				{

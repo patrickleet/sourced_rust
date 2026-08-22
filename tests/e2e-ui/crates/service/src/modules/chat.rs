@@ -1,8 +1,7 @@
 //! Chat + identity-ingestor module: room messages, Zitadel ingress, auth_user projector.
 
-use chat_domain::domain_commands;
-use chat_domain::{ChatMessage, ChatMessagePostedDomainEvent, ChatMessageState};
-use distributed::graphql::{Eventual, SurfaceProjector};
+use chat_domain::ChatMessage;
+use distributed::graphql::SurfaceProjector;
 use distributed::microsvc::{
     ConfigurableOutboxPublisher, HasOutboxStore, HasRepo, RepoReadModelDependencies, Routes,
 };
@@ -10,8 +9,6 @@ use distributed::{AggregateBuilder, AggregateRepository, QueuedRepository};
 
 use crate::bounds::{EventStore, Locks, ReadStore};
 use crate::handlers;
-use crate::handlers::commands::chat_post;
-use crate::handlers::util::causal_has_user;
 
 /// Logical module id for composition inventories.
 pub const MODULE_ID: &str = "chat";
@@ -41,17 +38,7 @@ where
         HasRepo + HasOutboxStore + ConfigurableOutboxPublisher + Send + Sync + 'static,
 {
     Routes::for_aggregate::<R, L, ChatMessage, S>(repo, locks, read_models)
-        .command_transition::<
-            domain_commands::Post,
-            chat_post::ChatPostInput,
-            Eventual<chat_post::ChatPostPayload>,
-        >(chat_post::COMMAND)
-        .field_name("chat_messages_post")
-        .roles(["user", "admin"].into_iter())
-        // Lobby rows are public-readable, so no owner row policy can supply
-        // this otherwise server-only transition value to automatic optimism.
-        .authenticated_user_field::<ChatMessagePostedDomainEvent, ChatMessageState>("author_id")
-        .guarded(causal_has_user, chat_post::handle)
+        .mount(chat_domain::commands::post())
         // Zitadel Action ingress + on-demand scrape remain non-GraphQL
         // integration commands (explicit extension mounts).
         .command(handlers::ingestors::zitadel::COMMAND)
