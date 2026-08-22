@@ -7,8 +7,8 @@ Azurite (no AWS or Cloudflare account).
 The Worker is a workers-rs Durable Object class around
 `distributed::cell_host::AggregateCell<Todo>`. Shard rule is still
 `idFromName(todo_id)` (`PCH-DEC-004`). GraphQL and projectors are not
-cell methods. Cell stream storage is still the in-memory
-`CellStreamStore` stand-in (SQL-backed cell storage is follow-up).
+cell methods. The event log is stored in the Durable Object SQLite
+table `cell_events` (replicated by celld via LTX).
 
 Azurite is celld's documented local development store. It is **not** a
 production fleet bucket.
@@ -43,6 +43,10 @@ before `docker compose up` and use that port in `CELLD_URL`. If host port 8080 i
 
 Without `CELLD_URL`, `cargo test --test celld` only checks the worker
 fixture and skips the live HTTP round-trip.
+
+Durability: PUT writes `cell_events`, then GET restores that table into
+the working copy. After `docker compose … restart celld`, GET of an
+existing id should still return the todo.
 
 Tear down: `docker compose -f tests/celld/docker-compose.yml down -v`.
 

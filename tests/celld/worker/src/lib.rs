@@ -3,30 +3,47 @@
 //! HTTP is a thin adapter over domain create/complete + stream load.
 //! GraphQL and projectors are not methods on this class (`PCH-REQ-005`).
 
-use distributed::cell_host::AggregateCell;
+use distributed::cell_host::{AggregateCell, DurableCellEvents};
 use distributed::microsvc::{HandlerError, Session, ROLE_KEY, USER_ID_KEY};
+use distributed::EventRecord;
 use serde::Deserialize;
 use serde_json::{json, Value};
 use todo_domain::{complete, create, Todo, TodoState};
 use worker::*;
 
+const EVENTS_DDL: &str = "CREATE TABLE IF NOT EXISTS cell_events (
+  stream TEXT NOT NULL,
+  seq INTEGER NOT NULL,
+  body TEXT NOT NULL,
+  PRIMARY KEY (stream, seq)
+)";
+
 #[durable_object]
 pub struct TodoCell {
     cell: AggregateCell<Todo>,
+    sql: SqlStorage,
 }
 
 impl DurableObject for TodoCell {
     fn new(state: State, _env: Env) -> Self {
         console_error_panic_hook::set_once();
+        let sql = state.storage().sql();
+        sql.exec(EVENTS_DDL, None).expect("create cell_events");
         let shard = state.id().name().unwrap_or_else(|| "todo".to_string());
         let cell = AggregateCell::<Todo>::new(shard)
             .expect("todo cell identity")
             .mount(create())
             .mount(complete());
-        Self { cell }
+        if let Ok(events) = load_events(&sql) {
+            let _ = cell.restore_durable_events(events);
+        }
+        Self { cell, sql }
     }
 
     async fn fetch(&self, mut req: Request) -> Result<Response> {
+        if let Err(error) = restore_working_copy(&self.sql, &self.cell) {
+            return json_status(json!({ "error": error }), 500);
+        }
         let url = req.url()?;
         let parts: Vec<String> = url
             .path()
@@ -41,8 +58,8 @@ impl DurableObject for TodoCell {
 
         match (req.method(), parts.get(2).map(String::as_str)) {
             (Method::Get, None) => get_todo(&self.cell, &id).await,
-            (Method::Put, None) => create_todo(&self.cell, &id, &mut req).await,
-            (Method::Post, Some("complete")) => complete_todo(&self.cell, &id).await,
+            (Method::Put, None) => create_todo(&self.sql, &self.cell, &id, &mut req).await,
+            (Method::Post, Some("complete")) => complete_todo(&self.sql, &self.cell, &id).await,
             _ => json_status(json!({ "error": "not found" }), 404),
         }
     }
@@ -88,7 +105,12 @@ async fn get_todo(cell: &AggregateCell<Todo>, id: &str) -> Result<Response> {
     }
 }
 
-async fn create_todo(cell: &AggregateCell<Todo>, id: &str, req: &mut Request) -> Result<Response> {
+async fn create_todo(
+    sql: &SqlStorage,
+    cell: &AggregateCell<Todo>,
+    id: &str,
+    req: &mut Request,
+) -> Result<Response> {
     let body = req
         .json::<CreateBody>()
         .await
@@ -106,7 +128,10 @@ async fn create_todo(cell: &AggregateCell<Todo>, id: &str, req: &mut Request) ->
         )
         .await
     {
-        Ok(payload) => json_status(http_from_command(id, &payload, title), 201),
+        Ok(payload) => {
+            persist_working_copy(sql, cell)?;
+            json_status(http_from_command(id, &payload, title), 201)
+        }
         Err(HandlerError::Rejected(message)) if message.contains("already exists") => {
             json_status(json!({ "error": "already exists", "id": id }), 409)
         }
@@ -114,12 +139,13 @@ async fn create_todo(cell: &AggregateCell<Todo>, id: &str, req: &mut Request) ->
     }
 }
 
-async fn complete_todo(cell: &AggregateCell<Todo>, id: &str) -> Result<Response> {
+async fn complete_todo(sql: &SqlStorage, cell: &AggregateCell<Todo>, id: &str) -> Result<Response> {
     match cell
         .dispatch("todo.complete", json!({ "todo_id": id }), local_session())
         .await
     {
         Ok(payload) => {
+            persist_working_copy(sql, cell)?;
             let title = cell
                 .load()
                 .await
@@ -172,4 +198,65 @@ fn map_handler_error(error: HandlerError) -> Result<Response> {
 
 fn json_status(body: Value, status: u16) -> Result<Response> {
     Ok(Response::from_json(&body)?.with_status(status))
+}
+
+#[derive(Deserialize)]
+struct EventRow {
+    stream: String,
+    #[allow(dead_code)]
+    seq: i64,
+    body: String,
+}
+
+fn restore_working_copy(
+    sql: &SqlStorage,
+    cell: &AggregateCell<Todo>,
+) -> std::result::Result<(), String> {
+    let events = load_events(sql).map_err(|error| error.to_string())?;
+    cell.restore_durable_events(events)
+        .map_err(|error| error.to_string())
+}
+
+fn persist_working_copy(sql: &SqlStorage, cell: &AggregateCell<Todo>) -> Result<()> {
+    let events = cell
+        .durable_events()
+        .map_err(|error| Error::RustError(error.to_string()))?;
+    sql.exec("DELETE FROM cell_events", None)?;
+    for stream in events {
+        for event in stream.events {
+            let body = serde_json::to_string(&event)
+                .map_err(|error| Error::RustError(error.to_string()))?;
+            sql.exec(
+                "INSERT INTO cell_events (stream, seq, body) VALUES (?, ?, ?)",
+                Some(vec![
+                    stream.stream.clone().into(),
+                    SqlStorageValue::Integer(event.sequence as i64),
+                    body.into(),
+                ]),
+            )?;
+        }
+    }
+    Ok(())
+}
+
+fn load_events(sql: &SqlStorage) -> Result<Vec<DurableCellEvents>> {
+    let rows: Vec<EventRow> = sql
+        .exec(
+            "SELECT stream, seq, body FROM cell_events ORDER BY stream, seq",
+            None,
+        )?
+        .to_array()?;
+    let mut grouped: Vec<DurableCellEvents> = Vec::new();
+    for row in rows {
+        let event: EventRecord =
+            serde_json::from_str(&row.body).map_err(|error| Error::RustError(error.to_string()))?;
+        match grouped.last_mut() {
+            Some(stream) if stream.stream == row.stream => stream.events.push(event),
+            _ => grouped.push(DurableCellEvents {
+                stream: row.stream,
+                events: vec![event],
+            }),
+        }
+    }
+    Ok(grouped)
 }
