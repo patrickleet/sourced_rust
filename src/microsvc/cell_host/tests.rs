@@ -1,11 +1,13 @@
-use super::{instance_name, AggregateCell, CellNamespace, CellStreamStore};
+use super::{instance_name, parent_cell_name, AggregateCell, CellNamespace, CellStreamStore};
 use crate::aggregate::{Aggregate, AggregateRepository};
 use crate::entity::Entity;
 use crate::graphql::{typed_command, PreparedCommand, Succeeded};
 use crate::microsvc::service::{CausalCommandContext, PortableCommand, Routes};
 use crate::microsvc::session::{Session, USER_ID_KEY};
 use crate::microsvc::HandlerError;
-use crate::repository::{RepositoryError, TransactionalCommit};
+use crate::repository::{
+    CommitBatch, GetStream, RepositoryError, StreamIdentity, StreamWrite, TransactionalCommit,
+};
 use crate::sourced;
 use serde::{Deserialize, Serialize};
 use serde_json::json;
@@ -266,6 +268,72 @@ async fn namespace_get_by_name_addresses_type_and_shard() {
         .expect("named cell");
     assert_eq!(cell.shard_id(), "item-7");
     assert!(namespace.get_by_name("CellItem:missing").is_none());
+}
+
+#[tokio::test]
+async fn parent_cell_commits_sibling_streams_in_one_batch() {
+    let store = CellStreamStore::for_parent_shard("game", "game-1").expect("parent shard");
+    assert_eq!(store.instance_name(), "game:game-1");
+    assert_eq!(parent_cell_name("game", "game-1"), "game:game-1");
+    assert_ne!(parent_cell_name("game", "game-1"), "player:player-1");
+
+    let mut map = Entity::with_id("game-1");
+    map.digest_empty("initialized").unwrap();
+    let mut player = Entity::with_id("player:1");
+    player.digest_empty("joined").unwrap();
+    let mut bomb = Entity::with_id("bomb:1");
+    bomb.digest_empty("placed").unwrap();
+
+    let map_id = StreamIdentity::new("GameMap", "game-1").unwrap();
+    let player_id = StreamIdentity::new("Player", "player:1").unwrap();
+    let bomb_id = StreamIdentity::new("Bomb", "bomb:1").unwrap();
+    let batch = CommitBatch::new(vec![
+        StreamWrite::new(map_id.clone(), &mut map),
+        StreamWrite::new(player_id.clone(), &mut player),
+        StreamWrite::new(bomb_id.clone(), &mut bomb),
+    ]);
+    TransactionalCommit::commit_batch(&store, batch)
+        .await
+        .expect("sibling streams commit on one parent cell");
+
+    assert!(GetStream::get_stream(&store, &map_id)
+        .await
+        .unwrap()
+        .is_some());
+    assert!(GetStream::get_stream(&store, &player_id)
+        .await
+        .unwrap()
+        .is_some());
+    assert!(GetStream::get_stream(&store, &bomb_id)
+        .await
+        .unwrap()
+        .is_some());
+}
+
+#[tokio::test]
+async fn parent_cells_are_isolated_and_have_no_cross_cell_commit() {
+    let game_1 = CellStreamStore::for_parent_shard("game", "g1").unwrap();
+    let game_2 = CellStreamStore::for_parent_shard("game", "g2").unwrap();
+
+    let mut player = Entity::with_id("player:1");
+    player.digest_empty("joined").unwrap();
+    let player_id = StreamIdentity::new("Player", "player:1").unwrap();
+    let batch = CommitBatch::new(vec![StreamWrite::new(player_id.clone(), &mut player)]);
+    TransactionalCommit::commit_batch(&game_1, batch)
+        .await
+        .unwrap();
+
+    assert!(GetStream::get_stream(&game_1, &player_id)
+        .await
+        .unwrap()
+        .is_some());
+    assert!(
+        GetStream::get_stream(&game_2, &player_id)
+            .await
+            .unwrap()
+            .is_none(),
+        "a second game cell cannot see sibling streams of the first"
+    );
 }
 
 #[test]

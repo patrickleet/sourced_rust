@@ -166,3 +166,11 @@ where
 pub fn instance_name<A: Aggregate>(shard_id: &str) -> String {
     format!("{}:{shard_id}", A::aggregate_type())
 }
+
+/// Parent-shard cell name (`game:{game_id}` for bomberman tick).
+///
+/// Child streams (player, bomb, explosion, map, saga) live inside this cell.
+/// There is no two-cell transaction API (`PCH-REQ-006`).
+pub fn parent_cell_name(parent_type: &str, parent_id: &str) -> String {
+    format!("{parent_type}:{parent_id}")
+}

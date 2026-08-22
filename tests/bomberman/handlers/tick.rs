@@ -16,6 +16,20 @@ use crate::domain::tick_saga::{Detonation, TickSaga};
 use crate::domain::types::{Direction, Tile};
 use crate::error::GameError;
 
+/// Parent shard for a cell host (`PCH-REQ-006` / `PCH-AC-005.1`).
+///
+/// Tick (and every other game command) addresses **one game cell**, not a
+/// player or bomb cell. Child streams — map, players, bombs, explosions,
+/// saga — live inside that cell's SQLite and commit in one [`CommitBatch`].
+pub fn tick_shard(game_id: &str) -> String {
+    game_id.to_string()
+}
+
+/// Cell instance name: `game:{game_id}`.
+pub fn tick_cell_name(game_id: &str) -> String {
+    format!("game:{game_id}")
+}
+
 #[derive(Default)]
 struct DamageReport {
     blocks_destroyed: Vec<(i32, i32)>,
@@ -212,6 +226,8 @@ where
     }
 
     // Stage every touched aggregate stream under its own type's stream identity.
+    // These siblings belong to one parent shard (`tick_shard` / `tick_cell_name`);
+    // a cell host writes them to one store. They are not per-player/bomb cells.
     let mut streams: Vec<StreamWrite<'_>> = Vec::new();
     let map_identity = StreamIdentity::new(GameMap::aggregate_type(), map.entity.id())
         .map_err(GameError::Repository)?;

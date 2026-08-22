@@ -245,7 +245,7 @@ where
 #[cfg(test)]
 mod tests {
     use super::*;
-    use distributed::{AggregateBuilder, InMemoryRepository};
+    use distributed::{Aggregate, AggregateBuilder, InMemoryRepository};
     use std::path::Path;
 
     #[test]
@@ -263,6 +263,25 @@ mod tests {
         assert_eq!(Start::shard(&start), "g1");
         assert_eq!(Move::shard(&mv), "g1");
         assert_eq!(StartLevel::shard(&level), "g1");
+    }
+
+    #[test]
+    fn blob_cell_is_parent_game_shard() {
+        use distributed::cell_host::instance_name;
+        let mv = BlobMoveInput {
+            game_id: "g1".into(),
+            direction: "up".into(),
+        };
+        let shard = Move::shard(&mv);
+        assert_eq!(
+            instance_name::<BlobGame>(&shard),
+            format!("{}:{}", BlobGame::aggregate_type(), shard)
+        );
+        assert_eq!(
+            instance_name::<BlobGame>(&shard),
+            "blob:g1",
+            "cell host addresses BlobGame as (aggregate_type, game_id)"
+        );
     }
 
     #[test]
