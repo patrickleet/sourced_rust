@@ -41,10 +41,10 @@ pub struct OutboxPublisherConfig {
 
 /// Detach immediate publish from command completion.
 ///
-/// When a tokio runtime is linked, the hook runs on a spawned task so
-/// `commit` can return as soon as the transaction is durable. Without tokio
-/// (default crate, no bus features) the hook still runs inline so publish is
-/// not dropped on the floor.
+/// When a Tokio runtime is current, the hook runs on a spawned task so
+/// `commit` can return as soon as the transaction is durable. Without a
+/// current runtime the hook still runs inline so publish is not dropped —
+/// `tokio::spawn` would panic after the durable commit.
 pub(crate) async fn start_immediate_publish(
     hook: Arc<dyn OutboxPublishHook>,
     claimed: Vec<OutboxMessage>,
@@ -63,9 +63,13 @@ pub(crate) async fn start_immediate_publish(
         test,
     ))]
     {
-        tokio::spawn(async move {
-            let _ = hook.publish_claimed(claimed).await;
-        });
+        if let Ok(handle) = tokio::runtime::Handle::try_current() {
+            let _ = handle.spawn(async move {
+                let _ = hook.publish_claimed(claimed).await;
+            });
+            return;
+        }
+        let _ = hook.publish_claimed(claimed).await;
     }
     #[cfg(not(any(
         feature = "http",
@@ -458,7 +462,7 @@ mod tests {
         tokio::time::timeout(Duration::from_secs(1), started)
             .await
             .expect("immediate publish should start");
-        hook.gate.notify_waiters();
+        hook.gate.notify_one();
         tokio::time::timeout(Duration::from_secs(1), async {
             loop {
                 if *hook.finished.lock().unwrap() {
