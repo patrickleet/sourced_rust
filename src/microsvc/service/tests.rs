@@ -1217,8 +1217,7 @@ async fn generated_mount_registers_and_executes_original_handler_through_causal_
         input: json!({"id": "generated-1", "label": "mounted"}),
         session_variables: HashMap::new(),
     };
-    let result = service
-        .registered_command_mounts()[0]
+    let result = service.registered_command_mounts()[0]
         .invoke_with(
             &service,
             &request,
@@ -1229,8 +1228,8 @@ async fn generated_mount_registers_and_executes_original_handler_through_causal_
             },
         )
         .await;
-    let crate::application::CommandMountExecutionResult::Causal(result) = result
-        .expect("authenticated causal mount dispatch should commit")
+    let crate::application::CommandMountExecutionResult::Causal(result) =
+        result.expect("authenticated causal mount dispatch should commit")
     else {
         panic!("typed mount must use the causal execution result");
     };
@@ -2006,6 +2005,25 @@ async fn causal_dispatch_uses_the_configured_immediate_outbox_publisher() {
         .expect("causal dispatch should commit before immediate publication");
 
     let outbox = repository.outbox_store();
+    tokio::time::timeout(std::time::Duration::from_secs(1), async {
+        loop {
+            if !outbox.pending(usize::MAX).await.unwrap().is_empty() {
+                tokio::task::yield_now().await;
+                continue;
+            }
+            if !outbox
+                .messages_by_status(crate::outbox::OutboxMessageStatus::Published, usize::MAX)
+                .await
+                .unwrap()
+                .is_empty()
+            {
+                break;
+            }
+            tokio::task::yield_now().await;
+        }
+    })
+    .await
+    .expect("immediate publish should settle the causal outbox row");
     assert!(outbox.pending(usize::MAX).await.unwrap().is_empty());
     let published = outbox
         .messages_by_status(crate::outbox::OutboxMessageStatus::Published, usize::MAX)

@@ -39,6 +39,49 @@ pub struct OutboxPublisherConfig {
     pub(crate) lease: Duration,
 }
 
+/// Detach immediate publish from command completion.
+///
+/// When a tokio runtime is linked, the hook runs on a spawned task so
+/// `commit` can return as soon as the transaction is durable. Without tokio
+/// (default crate, no bus features) the hook still runs inline so publish is
+/// not dropped on the floor.
+pub(crate) async fn start_immediate_publish(
+    hook: Arc<dyn OutboxPublishHook>,
+    claimed: Vec<OutboxMessage>,
+) {
+    if claimed.is_empty() {
+        return;
+    }
+    #[cfg(any(
+        feature = "http",
+        feature = "grpc",
+        feature = "postgres",
+        feature = "sqlite",
+        feature = "nats",
+        feature = "rabbitmq",
+        feature = "kafka",
+        test,
+    ))]
+    {
+        tokio::spawn(async move {
+            let _ = hook.publish_claimed(claimed).await;
+        });
+    }
+    #[cfg(not(any(
+        feature = "http",
+        feature = "grpc",
+        feature = "postgres",
+        feature = "sqlite",
+        feature = "nats",
+        feature = "rabbitmq",
+        feature = "kafka",
+        test,
+    )))]
+    {
+        let _ = hook.publish_claimed(claimed).await;
+    }
+}
+
 impl OutboxPublisherConfig {
     /// Build the config from a publish hook, the worker id used to scope the
     /// in-transaction claim, and the publish lease.
@@ -158,17 +201,16 @@ where
     A: Aggregate + Send,
 {
     /// Commit the aggregate together with the staged outbox rows, read-model
-    /// writes, and a snapshot (when due) in one transaction — and, when the
-    /// repository has a bus configured (via `Service::with_bus`), publish the
-    /// outbox rows immediately.
+    /// writes, and a snapshot (when due) in one transaction. Command completion
+    /// is this commit. When the repository has a bus (`Service::with_bus`),
+    /// claimed outbox rows are published concurrently after commit and do not
+    /// delay the returned receipt.
     ///
     /// With a bus configured, each outbox row is **claimed in this same
-    /// transaction** (born `InFlight` under a short lease) and published right
-    /// after commit, so publication needs no separate claim and cannot race the
-    /// polling worker; a crash before publish hands the row back to an
-    /// independently running worker at lease expiry, and a publish failure
-    /// leaves it retryable. Without a bus, rows are committed `pending` for the
-    /// worker to publish.
+    /// transaction** (born `InFlight` under a short lease). Immediate publish
+    /// is best-effort: a crash before or during that task hands the row back
+    /// to the drain worker at lease expiry, and a publish failure leaves it
+    /// retryable. Without a bus, rows are committed `pending` for the worker.
     ///
     /// Returns a [`CommitReceipt`] carrying the inserted outbox message ids.
     pub async fn commit(mut self, aggregate: &mut A) -> Result<CommitReceipt, RepositoryError> {
@@ -224,11 +266,11 @@ where
             .mark_domain_events_committed()
             .map_err(domain_event_guard_repository_error)?;
 
-        // Best-effort immediate publish. A failure leaves the claimed rows for
-        // an independently running polling worker and never fails the
-        // already-committed command.
+        // Best-effort immediate publish. Command completion is this commit;
+        // publish must not delay the caller. A failure leaves the claimed rows
+        // for the drain worker and never fails the already-committed command.
         if let Some(config) = publisher {
-            let _ = config.hook.publish_claimed(claimed).await;
+            start_immediate_publish(Arc::clone(&config.hook), claimed).await;
         }
 
         Ok(CommitReceipt { outbox_message_ids })
@@ -364,6 +406,69 @@ mod tests {
                 Err(RepositoryError::Model("outbox write failed".into()))
             }
         }
+    }
+
+    struct HoldingHook {
+        started: tokio::sync::Notify,
+        gate: tokio::sync::Notify,
+        finished: Mutex<bool>,
+    }
+
+    impl OutboxPublishHook for HoldingHook {
+        fn publish_claimed<'a>(
+            &'a self,
+            claimed: Vec<OutboxMessage>,
+        ) -> Pin<Box<dyn Future<Output = Result<(), RepositoryError>> + Send + 'a>> {
+            Box::pin(async move {
+                let _ = claimed;
+                self.started.notify_waiters();
+                self.gate.notified().await;
+                *self.finished.lock().unwrap() = true;
+                Ok(())
+            })
+        }
+    }
+
+    #[tokio::test]
+    async fn immediate_publish_does_not_delay_commit() {
+        let hook = Arc::new(HoldingHook {
+            started: tokio::sync::Notify::new(),
+            gate: tokio::sync::Notify::new(),
+            finished: Mutex::new(false),
+        });
+        let mut repo = InMemoryRepository::new().aggregate::<Dummy>();
+        repo.set_outbox_publisher(OutboxPublisherConfig::new(
+            Arc::clone(&hook) as Arc<dyn OutboxPublishHook>,
+            "immediate:test",
+            Duration::from_secs(5),
+        ));
+
+        let mut aggregate = Dummy::default();
+        aggregate.touch().unwrap();
+        let event = OutboxMessage::create("msg-hold", "DummyTouched", b"{}".to_vec()).unwrap();
+
+        let started = hook.started.notified();
+        let receipt = repo.outbox(event).commit(&mut aggregate).await.unwrap();
+        assert_eq!(receipt.outbox_message_ids(), ["msg-hold".to_string()]);
+        assert!(
+            !*hook.finished.lock().unwrap(),
+            "commit must return before the holding publish hook finishes"
+        );
+
+        tokio::time::timeout(Duration::from_secs(1), started)
+            .await
+            .expect("immediate publish should start");
+        hook.gate.notify_waiters();
+        tokio::time::timeout(Duration::from_secs(1), async {
+            loop {
+                if *hook.finished.lock().unwrap() {
+                    break;
+                }
+                tokio::task::yield_now().await;
+            }
+        })
+        .await
+        .expect("immediate publish should finish after the gate opens");
     }
 
     #[tokio::test]

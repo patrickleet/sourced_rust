@@ -166,6 +166,25 @@ mod tests {
     use crate::bus::{Bus, InMemoryBus, RunOptions};
     use crate::microsvc::{Context, HandlerError, Routes, Service, Session};
     use crate::outbox_worker::OutboxStore;
+
+    async fn wait_until_published(store: &impl OutboxStore, count: usize) {
+        tokio::time::timeout(std::time::Duration::from_secs(1), async {
+            loop {
+                if store
+                    .messages_by_status(OutboxMessageStatus::Published, usize::MAX)
+                    .await
+                    .unwrap()
+                    .len()
+                    >= count
+                {
+                    break;
+                }
+                tokio::task::yield_now().await;
+            }
+        })
+        .await
+        .expect("immediate publish should settle outbox rows");
+    }
     use crate::{
         sourced, AggregateBuilder, AggregateRepository, Entity, InMemoryRepository, OutboxMessage,
         OutboxMessageStatus, Queueable, QueuedRepository, Snapshot, TransactionalCommit,
@@ -230,6 +249,9 @@ mod tests {
             .dispatch("dummy.touch.b", json!({}), Session::new())
             .await
             .unwrap();
+
+        wait_until_published(&store_a, 1).await;
+        wait_until_published(&store_b, 1).await;
 
         let published_a = store_a
             .messages_by_status(OutboxMessageStatus::Published, usize::MAX)
@@ -310,6 +332,7 @@ mod tests {
             .await
             .unwrap();
 
+        wait_until_published(&store, 1).await;
         let published = store
             .messages_by_status(OutboxMessageStatus::Published, usize::MAX)
             .await
@@ -338,6 +361,7 @@ mod tests {
         // `run` returns once the queue is empty (InMemoryBus yields `None`).
         bus.send("dummy.touch", b"{}".to_vec()).await.unwrap();
         service.run(RunOptions::idempotent()).await.unwrap();
+        wait_until_published(&store, 1).await;
 
         let published = store
             .messages_by_status(OutboxMessageStatus::Published, usize::MAX)
@@ -433,6 +457,7 @@ mod tests {
             .dispatch("snap.touch", json!({}), Session::new())
             .await
             .unwrap();
+        wait_until_published(&store, 1).await;
 
         let published = store
             .messages_by_status(OutboxMessageStatus::Published, usize::MAX)

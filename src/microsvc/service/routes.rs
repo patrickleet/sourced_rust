@@ -1780,7 +1780,11 @@ where
                         ))
                     })?;
                     if let Some(config) = publisher {
-                        let _ = config.hook.publish_claimed(claimed).await;
+                        crate::outbox::start_immediate_publish(
+                            std::sync::Arc::clone(&config.hook),
+                            claimed,
+                        )
+                        .await;
                     }
                     let (_committed, serialized) = prepared.finalize_after_commit();
                     let result = load_committed_dispatch_result(
