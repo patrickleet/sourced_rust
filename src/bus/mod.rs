@@ -120,6 +120,7 @@ mod sql_bus_common;
 mod sqlite_bus;
 mod stable_id;
 mod topology;
+mod wake;
 
 #[cfg(feature = "kafka")]
 pub use kafka::{KafkaPublisher, KafkaReceived, KafkaSource};

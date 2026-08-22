@@ -13,9 +13,8 @@
 use std::collections::{HashMap, VecDeque};
 use std::sync::{Arc, Mutex};
 
-use tokio::sync::Notify;
-
 use super::source::{MessageSource, ReceivedMessage};
+use super::wake::Notify;
 use super::{run_source, Bus, BusConsumer, MessageRouter, RunOptions, TransportError};
 use super::{Message, OrderedDelivery};
 use crate::projection_protocol::{ProjectionEpoch, ProjectionSource};

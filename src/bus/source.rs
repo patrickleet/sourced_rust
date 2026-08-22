@@ -46,7 +46,42 @@ pub trait MessageSource: Send {
     /// long-poll) should override this.
     fn wait(&mut self) -> impl Future<Output = Result<(), TransportError>> + Send + '_ {
         async {
-            tokio::time::sleep(std::time::Duration::from_millis(25)).await;
+            #[cfg(any(
+                feature = "http",
+                feature = "grpc",
+                feature = "postgres",
+                feature = "sqlite",
+                feature = "nats",
+                feature = "rabbitmq",
+                feature = "kafka",
+            ))]
+            {
+                tokio::time::sleep(std::time::Duration::from_millis(25)).await;
+            }
+            #[cfg(not(any(
+                feature = "http",
+                feature = "grpc",
+                feature = "postgres",
+                feature = "sqlite",
+                feature = "nats",
+                feature = "rabbitmq",
+                feature = "kafka",
+            )))]
+            {
+                // No timer in the default crate. Yield once so Wait does not
+                // busy-spin a tight poll loop.
+                let mut yielded = false;
+                std::future::poll_fn(|cx| {
+                    if yielded {
+                        std::task::Poll::Ready(())
+                    } else {
+                        yielded = true;
+                        cx.waker().wake_by_ref();
+                        std::task::Poll::Pending
+                    }
+                })
+                .await;
+            }
             Ok(())
         }
     }
