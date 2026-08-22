@@ -42,14 +42,30 @@ fn compose_file_does_not_use_minio() {
         "/tests/celld/docker-compose.yml"
     ))
     .expect("compose");
-    assert!(compose.contains("ghcr.io/denoland/celld"));
+    let dockerfile = std::fs::read_to_string(concat!(
+        env!("CARGO_MANIFEST_DIR"),
+        "/tests/celld/Dockerfile"
+    ))
+    .expect("dockerfile");
+    assert!(dockerfile.contains("ghcr.io/denoland/celld"));
+    assert!(dockerfile.contains("socat"));
+    assert!(compose.contains("mcr.microsoft.com/azure-storage/azurite"));
+    assert!(compose.contains("az://celld"));
+    assert!(compose.contains("AZURE_STORAGE_USE_EMULATOR"));
+    assert!(
+        !compose
+            .lines()
+            .any(|line| line.trim_start().starts_with("network_mode")),
+        "Docker Desktop extra_hosts cannot combine with network_mode"
+    );
     assert!(
         !compose
             .lines()
             .any(|line| line.trim_start().starts_with("image:") && line.contains("minio")),
         "do not run MinIO as the celld bucket"
     );
-    assert!(compose.contains("18080:8080"));
+    assert!(compose.contains("CELLD_HTTP_PORT:-18080"));
+    assert!(compose.contains(":8080"));
 }
 
 #[tokio::test]
@@ -123,9 +139,11 @@ fn unique_todo() -> String {
 async fn wait_healthy(client: &reqwest::Client, base: &str) {
     let deadline = std::time::Instant::now() + Duration::from_secs(30);
     loop {
-        if let Ok(response) = client.get(format!("{base}/health")).send().await {
-            if response.status().is_success() {
-                return;
+        for path in ["/health", "/__celld/health", "/"] {
+            if let Ok(response) = client.get(format!("{base}{path}")).send().await {
+                if response.status().is_success() {
+                    return;
+                }
             }
         }
         if std::time::Instant::now() > deadline {

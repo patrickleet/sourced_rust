@@ -1,46 +1,82 @@
-# One celld node for tests/celld.
+# Local celld + Azurite. No AWS or Cloudflare account.
 #
-# Requires a *qualified* object store (S3, R2, Tigris, GCS, Azure). MinIO
-# community, DO Spaces, B2, and Hetzner do not implement the conditional
-# writes celld uses for fencing — do not point CELLD_BUCKET at them.
+# celld's Azure emulator client always talks to 127.0.0.1:10000. Docker
+# Desktop / Dory inject extra_hosts (host.docker.internal), which cannot
+# combine with network_mode: service:azurite. The celld image therefore
+# forwards 127.0.0.1:10000 -> azurite:10000 via socat (see Dockerfile).
 #
-#   export CELLD_BUCKET=s3://your-bucket
-#   export AWS_ACCESS_KEY_ID=...
-#   export AWS_SECRET_ACCESS_KEY=...
-#   # R2 / Tigris:
-#   export CELLD_ENDPOINT=https://ACCOUNT.r2.cloudflarestorage.com
-#   export CELLD_REGION=auto
+# Host ports:
+#   18080 → Worker HTTP (override with CELLD_HTTP_PORT if busy)
+#   10000 → Azurite (for `celld deploy` / `celld diagnose` on the host)
+# Do not publish 8081 (peer/internal).
 #
-#   docker compose -f tests/celld/docker-compose.yml up -d --wait
-#   celld deploy tests/celld/worker --bucket "$CELLD_BUCKET" \
-#     ${CELLD_ENDPOINT:+--endpoint "$CELLD_ENDPOINT"} \
-#     ${CELLD_REGION:+--region "$CELLD_REGION"}
-#   CELLD_URL=http://127.0.0.1:18080 cargo test --test celld
+# Azurite is a development store — not a production celld fleet.
 #
-# Port 8081 is peer/internal. Do not publish it.
+#   docker compose -f tests/celld/docker-compose.yml up -d --build azurite
+#   export AZURE_STORAGE_USE_EMULATOR=true
+#   export AZURE_STORAGE_ACCOUNT_NAME=devstoreaccount1
+#   export AZURE_STORAGE_ACCOUNT_KEY='Eby8vdM02xNOcqFlqUwJPLlmEtlCDXJ1OUzFT50uSRZ6IFsuFq2UVErCz4I6tq/K1SZFPTOtr/KBHBeksoGMGw=='
+#   celld deploy tests/celld/worker --bucket az://celld
+#   docker compose -f tests/celld/docker-compose.yml up -d celld
+#   CELLD_URL=http://127.0.0.1:${CELLD_HTTP_PORT:-18080} cargo test --test celld
 
 services:
-  celld:
-    image: ghcr.io/denoland/celld
-    restart: always
-    hostname: celld
+  azurite:
+    image: mcr.microsoft.com/azure-storage/azurite
+    command:
+      - azurite-blob
+      - --blobHost
+      - 0.0.0.0
+      - --blobPort
+      - "10000"
+      - --skipApiVersionCheck
+      - --loose
     ports:
-      - "18080:8080"
-    expose:
-      - "8081"
+      - "10000:10000"
+    volumes:
+      - azurite-data:/data
+
+  azurite-init:
+    image: mcr.microsoft.com/azure-cli
+    depends_on:
+      - azurite
     environment:
-      AWS_ACCESS_KEY_ID: ${AWS_ACCESS_KEY_ID:-}
-      AWS_SECRET_ACCESS_KEY: ${AWS_SECRET_ACCESS_KEY:-}
-      AWS_SESSION_TOKEN: ${AWS_SESSION_TOKEN:-}
+      AZURE_STORAGE_CONNECTION_STRING: >-
+        DefaultEndpointsProtocol=http;AccountName=devstoreaccount1;AccountKey=Eby8vdM02xNOcqFlqUwJPLlmEtlCDXJ1OUzFT50uSRZ6IFsuFq2UVErCz4I6tq/K1SZFPTOtr/KBHBeksoGMGw==;BlobEndpoint=http://azurite:10000/devstoreaccount1;
+    volumes:
+      - ./init-container.sh:/init-container.sh:ro
+    entrypoint: ["/bin/sh", "/init-container.sh"]
+
+  celld:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    restart: always
+    init: true
+    ports:
+      - "${CELLD_HTTP_PORT:-18080}:8080"
+    depends_on:
+      azurite-init:
+        condition: service_completed_successfully
+    environment:
+      AZURE_STORAGE_USE_EMULATOR: "true"
+      AZURE_STORAGE_ACCOUNT_NAME: devstoreaccount1
+      AZURE_STORAGE_ACCOUNT_KEY: Eby8vdM02xNOcqFlqUwJPLlmEtlCDXJ1OUzFT50uSRZ6IFsuFq2UVErCz4I6tq/K1SZFPTOtr/KBHBeksoGMGw==
+      CELLD_BUCKET: az://celld
       CELLD_WATCH: /var/lib/celld/state
-      CELLD_BUCKET: ${CELLD_BUCKET:?set CELLD_BUCKET to a qualified s3:// gs:// or az:// URL}
-      CELLD_ENDPOINT: ${CELLD_ENDPOINT:-}
-      CELLD_REGION: ${CELLD_REGION:-}
-      CELLD_ADVERTISE: celld:8081
+      CELLD_ADVERTISE: 127.0.0.1:8081
     volumes:
       - celld-state:/var/lib/celld
       - ./entrypoint.sh:/entrypoint.sh:ro
+      - ./worker:/worker:ro
     entrypoint: ["/bin/sh", "/entrypoint.sh"]
+    healthcheck:
+      test: ["CMD-SHELL", "bash -c 'echo >/dev/tcp/127.0.0.1/8080'"]
+      interval: 2s
+      timeout: 2s
+      retries: 30
+      start_period: 5s
 
 volumes:
+  azurite-data:
   celld-state:
