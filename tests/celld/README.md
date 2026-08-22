@@ -4,8 +4,11 @@ First live celld host for portable command hosts: one `TodoCell` Durable
 Object per todo id, private SQLite, Docker Compose for the daemon **and**
 Azurite (no AWS or Cloudflare account).
 
-This is **not** workers-rs packaging of `distributed::cell_host::AggregateCell`.
-The Worker is a thin JS class with the same shard rule (`idFromName(todo_id)`).
+The Worker is a workers-rs Durable Object class around
+`distributed::cell_host::AggregateCell<Todo>`. Shard rule is still
+`idFromName(todo_id)` (`PCH-DEC-004`). GraphQL and projectors are not
+cell methods. Cell stream storage is still the in-memory
+`CellStreamStore` stand-in (SQL-backed cell storage is follow-up).
 
 Azurite is celld's documented local development store. It is **not** a
 production fleet bucket.
@@ -14,6 +17,7 @@ production fleet bucket.
 
 - Docker
 - `celld` CLI + `esbuild` on `PATH` (`curl -fsSL https://celld.dev/install.sh | sh`)
+- `worker-build` (`cargo install worker-build`) and the `wasm32-unknown-unknown` target
 
 ## Run
 
@@ -26,6 +30,7 @@ export AZURE_STORAGE_ACCOUNT_NAME=devstoreaccount1
 export AZURE_STORAGE_ACCOUNT_KEY='Eby8vdM02xNOcqFlqUwJPLlmEtlCDXJ1OUzFT50uSRZ6IFsuFq2UVErCz4I6tq/K1SZFPTOtr/KBHBeksoGMGw=='
 
 celld diagnose --bucket az://celld --listen 127.0.0.1:18090 --internal-listen 127.0.0.1:18091
+(cd tests/celld/worker && worker-build --release)
 celld deploy tests/celld/worker --bucket az://celld
 docker compose -f tests/celld/docker-compose.yml up -d celld
 CELLD_URL=http://127.0.0.1:18080 cargo test --test celld

@@ -44,7 +44,7 @@ impl SnapshotRecord {
             payload_codec_version: BITCODE_PAYLOAD_CODEC_VERSION,
             payload,
             metadata: HashMap::new(),
-            recorded_at: SystemTime::now(),
+            recorded_at: crate::time::now(),
         }
     }
 

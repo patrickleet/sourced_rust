@@ -6,7 +6,6 @@
 use std::collections::{HashMap, HashSet};
 use std::future::Future;
 use std::sync::{Arc, RwLock};
-use std::time::SystemTime;
 
 use super::projection_protocol::{
     reject_causal_owned_plans, stage_same_transaction_projection, InMemoryProjectionProtocolState,
@@ -287,7 +286,7 @@ impl InMemoryRepository {
                 .ok_or_else(|| CommandLedgerError::AttemptFenced {
                     command_id: completion.attempt().key().command_id().to_string(),
                 })?;
-            record.validate_live_attempt(&completion.attempt_fence(), SystemTime::now())?;
+            record.validate_live_attempt(&completion.attempt_fence(), crate::time::now())?;
         }
 
         // Events: optimistic-concurrency check (reads only; appends cannot
@@ -386,7 +385,7 @@ impl InMemoryRepository {
                         command_id: completion.attempt().key().command_id().to_string(),
                     })?;
                 let mut staged = record.clone();
-                staged.complete(completion, SystemTime::now())?;
+                staged.complete(completion, crate::time::now())?;
                 Ok::<_, CommandLedgerError>(staged)
             })
             .transpose()?;
@@ -480,7 +479,7 @@ impl CommandLedgerStore for InMemoryRepository {
         reservation: CommandReservation,
     ) -> impl Future<Output = Result<ReservationOutcome, CommandLedgerError>> + Send + '_ {
         async move {
-            let now = SystemTime::now();
+            let now = crate::time::now();
             let mut ledger = self
                 .command_ledger
                 .write()
@@ -517,7 +516,7 @@ impl CommandLedgerStore for InMemoryRepository {
         scope: CommandLookupScope<'a>,
     ) -> impl Future<Output = Result<CommandLookup, CommandLedgerError>> + Send + 'a {
         async move {
-            let now = SystemTime::now();
+            let now = crate::time::now();
             let mut ledger = self
                 .command_ledger
                 .write()
@@ -552,7 +551,7 @@ impl CommandLedgerStore for InMemoryRepository {
                     .ok_or_else(|| CommandLedgerError::AttemptFenced {
                         command_id: attempt.key().command_id().to_string(),
                     })?;
-            record.mark_retryable_unknown(&attempt, SystemTime::now())
+            record.mark_retryable_unknown(&attempt, crate::time::now())
         }
     }
 
@@ -564,7 +563,7 @@ impl CommandLedgerStore for InMemoryRepository {
             if limit == 0 {
                 return Ok(0);
             }
-            let now = SystemTime::now();
+            let now = crate::time::now();
             let mut ledger = self
                 .command_ledger
                 .write()

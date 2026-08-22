@@ -1,5 +1,4 @@
 use std::future::Future;
-use std::time::SystemTime;
 
 use crate::in_memory_repo::InMemoryOutboxStore;
 use crate::outbox::{OutboxMessage, OutboxMessageStatus};
@@ -93,7 +92,7 @@ impl OutboxStore for InMemoryOutboxStore {
                 return Ok(Vec::new());
             }
 
-            let now = SystemTime::now();
+            let now = crate::time::now();
             let ids = claim_order_ids(storage.values());
             let mut claimed = Vec::new();
             for id in ids {
@@ -130,7 +129,7 @@ impl OutboxStore for InMemoryOutboxStore {
     ) -> impl Future<Output = Result<(), RepositoryError>> + Send + 'a {
         async move {
             self.update_outbox_message(&claim.message_id, |message| {
-                ensure_active_claim(message, Some(claim), SystemTime::now())?;
+                ensure_active_claim(message, Some(claim), crate::time::now())?;
                 message.complete()?;
                 Ok(())
             })
@@ -154,7 +153,7 @@ impl OutboxStore for InMemoryOutboxStore {
                 .storage
                 .write()
                 .map_err(|_| RepositoryError::LockPoisoned("outbox write"))?;
-            let now = SystemTime::now();
+            let now = crate::time::now();
             for claim in claims {
                 let message = storage.get_mut(&claim.message_id).ok_or_else(|| {
                     RepositoryError::NotFound {
@@ -175,7 +174,7 @@ impl OutboxStore for InMemoryOutboxStore {
     ) -> impl Future<Output = Result<(), RepositoryError>> + Send + 'a {
         async move {
             self.update_outbox_message(&claim.message_id, |message| {
-                ensure_active_claim(message, Some(claim), SystemTime::now())?;
+                ensure_active_claim(message, Some(claim), crate::time::now())?;
                 message.release(error.to_string())?;
                 Ok(())
             })
@@ -189,7 +188,7 @@ impl OutboxStore for InMemoryOutboxStore {
     ) -> impl Future<Output = Result<(), RepositoryError>> + Send + 'a {
         async move {
             self.update_outbox_message(&claim.message_id, |message| {
-                ensure_active_claim(message, Some(claim), SystemTime::now())?;
+                ensure_active_claim(message, Some(claim), crate::time::now())?;
                 message.fail(error.to_string())?;
                 Ok(())
             })

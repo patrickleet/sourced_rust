@@ -159,7 +159,7 @@ impl ProtocolProjectionRequestSeed {
             replay_retention,
             occurrences,
             sealed_events,
-            SystemTime::now(),
+            crate::time::now(),
         )
     }
 
@@ -497,7 +497,7 @@ impl ProtocolProjectionRequestSeed {
         causation_id: &str,
         metadata: &CommandProjectionMetadataV1,
     ) -> Result<(), ProjectionRuntimeAuthorityError> {
-        let now_unix_ms = unix_time_ms(SystemTime::now())?;
+        let now_unix_ms = unix_time_ms(crate::time::now())?;
         metadata
             .validate_not_expired(now_unix_ms)
             .map_err(|error| match error {
@@ -549,7 +549,7 @@ impl ProtocolProjectionRequestSeed {
             );
         }
         self.validate_command_projection_inventory(command_name, metadata)?;
-        let now_unix_ms = unix_time_ms(SystemTime::now())?;
+        let now_unix_ms = unix_time_ms(crate::time::now())?;
         metadata
             .validate_not_expired(now_unix_ms)
             .map_err(|error| match error {
@@ -732,7 +732,7 @@ impl ProtocolProjectionRequestSeed {
         // zero-occurrence receipt. It must still declare modeled selectors,
         // even though lifecycle-only or scope-drift work is revalidation-only.
         self.empty_command_disposition(command_name)?;
-        let now_unix_ms = unix_time_ms(SystemTime::now())?;
+        let now_unix_ms = unix_time_ms(crate::time::now())?;
         metadata
             .validate_not_expired(now_unix_ms)
             .map_err(|error| match error {

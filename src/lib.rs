@@ -19,6 +19,8 @@ pub mod __private {
     pub use serde;
 }
 
+mod time;
+
 pub mod aggregate;
 pub mod application;
 pub mod command_dispatch;

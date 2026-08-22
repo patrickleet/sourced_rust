@@ -309,7 +309,7 @@ pub(crate) async fn record_backlog_gauges<S: OutboxStore>(store: &S, service: Op
     if let Ok(stats) = store.backlog_stats().await {
         let oldest_pending_age = stats
             .oldest_created_at
-            .and_then(|created_at| SystemTime::now().duration_since(created_at).ok());
+            .and_then(|created_at| crate::time::now().duration_since(created_at).ok());
         crate::metrics::set_outbox_backlog(service, stats.pending, oldest_pending_age);
     }
 }

@@ -17,10 +17,10 @@ fn worker_dir() -> &'static Path {
 
 #[test]
 fn worker_declares_sqlite_todo_cell() {
-    let wrangler = std::fs::read_to_string(worker_dir().join("wrangler.jsonc"))
-        .expect("wrangler.jsonc");
+    let wrangler =
+        std::fs::read_to_string(worker_dir().join("wrangler.jsonc")).expect("wrangler.jsonc");
     let spec: Value = serde_json::from_str(&wrangler).expect("wrangler json");
-    assert_eq!(spec["main"], "index.js");
+    assert_eq!(spec["main"], "build/worker/shim.mjs");
     let bindings = spec["durable_objects"]["bindings"].as_array().unwrap();
     assert_eq!(bindings[0]["name"], "TODO");
     assert_eq!(bindings[0]["class_name"], "TodoCell");
@@ -29,10 +29,12 @@ fn worker_declares_sqlite_todo_cell() {
         .unwrap();
     assert_eq!(classes[0], "TodoCell");
 
-    let source = std::fs::read_to_string(worker_dir().join("index.js")).expect("index.js");
-    assert!(source.contains("export class TodoCell"));
-    assert!(source.contains("idFromName"));
-    assert!(source.contains("CREATE TABLE IF NOT EXISTS todo"));
+    let source = std::fs::read_to_string(worker_dir().join("src/lib.rs")).expect("lib.rs");
+    assert!(source.contains("pub struct TodoCell"));
+    assert!(source.contains("AggregateCell::<Todo>"));
+    assert!(source.contains("id_from_name"));
+    assert!(source.contains("mount(create())"));
+    assert!(source.contains("mount(complete())"));
 }
 
 #[test]

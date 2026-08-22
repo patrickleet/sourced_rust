@@ -215,6 +215,8 @@ async fn cell_dispatches_complete_with_the_same_portable_command_as_soa() {
         .await
         .expect("create");
     assert_eq!(created["id"], "item-1");
+    let loaded = cell.load().await.expect("load");
+    assert_eq!(loaded.expect("resident").title, "ship");
 
     let completed = cell
         .dispatch(

@@ -1,7 +1,7 @@
 use std::future::Future;
 use std::pin::Pin;
 use std::sync::Arc;
-use std::time::{Duration, SystemTime};
+use std::time::Duration;
 
 use crate::aggregate::{Aggregate, AggregateRepository};
 use crate::domain_event::{DomainEvent, DomainEventCaptureError, DomainEventCommitGuardError};
@@ -253,7 +253,7 @@ where
         let mut fallback_rows = Vec::new();
         if let Some(config) = publisher {
             if config.schedule.is_none() {
-                let now = SystemTime::now();
+                let now = crate::time::now();
                 for message in &mut self.outbox_messages {
                     message.claim_at(&config.worker_id, config.lease, now)?;
                 }

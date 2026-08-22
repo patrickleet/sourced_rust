@@ -103,6 +103,14 @@ where
             .dispatch_cell_command(command, input, session, &self.shard)
             .await
     }
+
+    /// Load this cell's aggregate from the private stream store.
+    ///
+    /// HTTP GET on the cell host is a stream load, not a GraphQL/projector
+    /// method (`PCH-REQ-005`).
+    pub async fn load(&self) -> Result<Option<A>, RepositoryError> {
+        self.routes.repo().get(self.shard.aggregate_id()).await
+    }
 }
 
 /// Worker-side namespace: `getByName(format!("{}:{}", type, shard))`.

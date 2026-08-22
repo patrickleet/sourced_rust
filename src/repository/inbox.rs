@@ -45,7 +45,7 @@ impl InboxReceipt {
         Self {
             consumer: consumer.into(),
             message_id: message_id.into(),
-            processed_at: SystemTime::now(),
+            processed_at: crate::time::now(),
         }
     }
 

@@ -1820,7 +1820,7 @@ where
             let mut fallback_rows = Vec::new();
             let mut outbox_ids = Vec::new();
             if let Some(config) = publisher {
-                let claim_now = config.schedule.is_none().then(SystemTime::now);
+                let claim_now = config.schedule.is_none().then(crate::time::now);
                 let mut claim_error = None;
                 for message in &mut batch.outbox_messages {
                     message.overwrite_causation_id(attempt.causation_id().as_str());

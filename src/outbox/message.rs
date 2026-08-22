@@ -381,7 +381,7 @@ impl OutboxMessage {
     }
 
     fn is_claimable(&self) -> bool {
-        self.is_claimable_at(SystemTime::now())
+        self.is_claimable_at(crate::time::now())
     }
 
     // Commands
@@ -431,7 +431,7 @@ impl OutboxMessage {
         self.destination = destination;
         self.metadata = metadata;
         self.status = OutboxMessageStatus::Pending;
-        self.created_at = SystemTime::now();
+        self.created_at = crate::time::now();
         self.attempts = 0;
         self.last_error = None;
         self.worker_id = None;
@@ -481,7 +481,7 @@ impl OutboxMessage {
 
     /// Claim with a Duration (convenience method that computes the deadline)
     pub fn claim_for(&mut self, worker_id: impl Into<String>, lease: Duration) -> SourcedResult {
-        self.claim_at(worker_id, lease, SystemTime::now())
+        self.claim_at(worker_id, lease, crate::time::now())
     }
 
     /// Claim with an explicit clock value. This is useful for deterministic
@@ -685,8 +685,8 @@ mod tests {
             .claim_at("worker-1", Duration::from_secs(1), SystemTime::UNIX_EPOCH)
             .unwrap();
 
-        assert!(message.has_expired_lease_at(SystemTime::now()));
-        assert!(message.is_claimable_at(SystemTime::now()));
+        assert!(message.has_expired_lease_at(crate::time::now()));
+        assert!(message.is_claimable_at(crate::time::now()));
 
         message
             .claim_for("worker-2", Duration::from_secs(60))

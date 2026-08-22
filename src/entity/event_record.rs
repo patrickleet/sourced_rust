@@ -157,7 +157,7 @@ impl EventRecord {
             payload,
             event_version: 1,
             sequence,
-            timestamp: SystemTime::now(),
+            timestamp: crate::time::now(),
             metadata: HashMap::new(),
         }
     }
@@ -176,7 +176,7 @@ impl EventRecord {
             payload,
             event_version: version,
             sequence,
-            timestamp: SystemTime::now(),
+            timestamp: crate::time::now(),
             metadata: HashMap::new(),
         }
     }
@@ -195,7 +195,7 @@ impl EventRecord {
             payload,
             event_version: 1,
             sequence,
-            timestamp: SystemTime::now(),
+            timestamp: crate::time::now(),
             metadata,
         }
     }
