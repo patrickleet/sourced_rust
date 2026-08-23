@@ -49,7 +49,8 @@ make up-celld-nats
 make test-celld-nats
 ```
 
-Override ports if busy: `CELLD_HTTP_PORT=18880 NATS_PORT=14222 make up-celld-nats`.
+Override ports if busy: `CELLD_HTTP_PORT=18880 NATS_PORT=14223 make up-celld-nats`.
+If `14222` is already taken by a leftover `docker run` NATS, `make down-celld-nats` removes that container too.
 
 Manual equivalent (same as the Make recipes):
 

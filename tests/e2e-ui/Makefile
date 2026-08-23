@@ -122,7 +122,16 @@ up-celld-nats:
 	command -v worker-build >/dev/null || { echo "worker-build required: cargo install worker-build"; exit 1; }; \
 	echo "optional profile — not make run"; \
 	echo "NATS: $(PROFILE_COMPOSE)"; \
-	docker compose -f $(PROFILE_COMPOSE) up -d; \
+	if docker compose -f $(PROFILE_COMPOSE) ps --status running --services 2>/dev/null | grep -qx nats; then \
+		echo "NATS compose already running on $(NATS_URL)"; \
+	elif nc -z 127.0.0.1 $(NATS_PORT) 2>/dev/null; then \
+		echo "port $(NATS_PORT) is already in use (not this compose project)."; \
+		echo "stop the other listener, or: NATS_PORT=14223 make up-celld-nats"; \
+		docker ps --format 'table {{.Names}}\t{{.Ports}}' | grep -E '14222|nats' || true; \
+		exit 1; \
+	else \
+		docker compose -f $(PROFILE_COMPOSE) up -d; \
+	fi; \
 	echo "celld + Azurite: $(CELLD_COMPOSE)"; \
 	docker compose -f $(CELLD_COMPOSE) up -d azurite; \
 	docker compose -f $(CELLD_COMPOSE) up --exit-code-from azurite-init azurite-init; \
@@ -153,6 +162,7 @@ up-celld-nats:
 
 down-celld-nats:
 	docker compose -f $(PROFILE_COMPOSE) down
+	-@docker rm -f e2e-ui-celld-nats-optional >/dev/null 2>&1 || true
 	@echo "NATS profile stopped. celld/Azurite untouched (make down-celld). playground untouched (make down)."
 
 down-celld:
