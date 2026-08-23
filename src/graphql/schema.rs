@@ -736,11 +736,9 @@ async fn resolve_root(
     let plan = compile::compile_query(&inner, &session, &role, model, kind, &selection)
         .map_err(|e| client_error("BAD_REQUEST", sanitize_compile_error(&e)))?;
     let value = match plan {
-        QueryPlan::CellByKey { model, pk } => {
-            execute_cell_by_key(&inner, &model, &pk, &selection)
-                .await
-                .map_err(|e| client_error("BAD_REQUEST", sanitize_compile_error(&e)))?
-        }
+        QueryPlan::CellByKey { model, pk } => execute_cell_by_key(&inner, &model, &pk, &selection)
+            .await
+            .map_err(|e| client_error("BAD_REQUEST", sanitize_compile_error(&e)))?,
         QueryPlan::Sql(plan) => {
             if let Some(protocol) = ctx.data_opt::<ProtocolResponseAccumulator>().cloned() {
                 let role_surface = inner.role_surfaces.get(&role).cloned().ok_or_else(|| {
@@ -1116,6 +1114,7 @@ mod causal_command_schema_tests {
     use std::sync::Arc;
 
     use super::*;
+    use crate::command_dispatch::{LocalCommandHost, SharedCommandHost};
     use crate::graphql::command_contract::{CommandConsistency, CommandEffects};
     use crate::graphql::protocol::{
         DistributedEnvelopeV1, ProtocolResponseAccumulator, ProtocolTokenCodec,
@@ -1310,7 +1309,9 @@ mod causal_command_schema_tests {
             "{{ {COMMAND_STATUS_ROOT_FIELD}(commandId: \"{}\") {{ s: state }} }}",
             uuid::Uuid::now_v7()
         ))
-        .data(Arc::new(Service::new().named("status-test")))
+        .data(Arc::new(LocalCommandHost::new(Arc::new(
+            Service::new().named("status-test"),
+        ))) as SharedCommandHost)
         .data(VerifiedPrincipal::test_oidc(
             "https://issuer.example/",
             "status-test-subject",
