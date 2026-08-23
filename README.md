@@ -11,11 +11,18 @@ It is also a toolkit of distributed-systems tools. You do not need the whole
 path. Event-source aggregates and stop there. Use the service bus alone.
 Take GraphQL reads without the replica. Adopt what you need.
 
-Rust · TypeScript · CQRS / ES · SvelteKit
+Distributed lets you define domain logic cleanly, then compose those pieces
+like blocks into one service or many — whatever suits your size. Change
+transports and sharding later as you grow.
+
+Rust · TypeScript · CQRS / ES · SvelteKit · celld · Kafka · NATS · RabbitMQ ·
+PSQL · SQLite · OIDC · Keycloak · Authentik
 
 The living playground is [`tests/e2e-ui`](tests/e2e-ui): real apps (chat,
-todos, blob, admin) with a **How it is built** panel on every screen. This
-README is the same story, in the repo.
+todos, blob, admin) with a **How it is built** panel on every screen. Default
+is one process. The same UI can wait-dispatch Todo create/complete to celld
+from [`tests/e2e-celld`](tests/e2e-celld). This README is the same story, in
+the repo.
 
 - [The bar](#the-bar) — what “state of the art” means here
 - [Backstory](#backstory) — why the full path is one system, and the pieces still stand alone
@@ -54,9 +61,13 @@ the generated client hosts it.
 
 **Same blocks, few or many processes.** Domain, modules, and projections are
 packages — not a deploy shape. A **service crate** lists the modules this
-process runs. Today the playground is one host. Later you write another
-`Service` from the same modules. Eventual projectors can move; Atomic seals
-stay with commands. The same Rust pures can compile to WASM for the replica.
+process runs. Todo commands are `portable_command!` declarations in
+`todo-domain`. Today the playground is one host. [`tests/e2e-celld`](tests/e2e-celld)
+mounts the same declarations and wait-dispatches create/complete to a cell
+(one private SQLite per todo). GraphQL and Eventual projectors stay off the
+cell. Later you write another `Service` from the same modules. Eventual
+projectors can move; Atomic seals stay with commands. The same Rust pures
+can compile to WASM for the replica.
 
 **Distributed** is that path when you want the whole product — one system
 so generation can keep the DX simple. The same crates stay usable as tools:
@@ -297,25 +308,23 @@ mutation SaveTodo {
 }
 ```
 
-Handlers stay thin: load the aggregate, call a proven domain method,
-commit events.
+Handlers stay thin: most Todo commands are `portable_command!` — shard,
+invoke one domain method, commit Eventual. `todo.create` keeps a `handle:`
+escape hatch when the body needs extra checks.
 
 ```rust,ignore
-pub async fn handle(
-    ctx: &CausalCommandContext<'_, Todo>,
-    input: TodoArchiveInput,
-) -> Result<PreparedCommand<Eventual<TodoArchivePayload>>, HandlerError> {
-    let owner = ctx.user_id()?.to_string();
-    let mut todo = ctx.repo()
-        .get(&input.todo_id).await?
-        .ok_or_else(|| HandlerError::NotFound(input.todo_id.clone()))?;
-    todo.archive(&owner).map_err(rejected)?;
-
-    let state = TodoState::from(&*todo);
-    ctx.repo().publish_events().commit(todo)?.eventual(TodoArchivePayload {
-        todo_id: state.todo_id,
-        status: state.status,
-    })
+portable_command! {
+    name: "todo.complete",
+    transition: domain_commands::Complete,
+    aggregate: Todo,
+    input: TodoCompleteInput,
+    outcome: Eventual<TodoStatusPayload>,
+    shard: |input| input.todo_id.clone(),
+    load: required,
+    roles: ["user", "admin"],
+    field: "todos_complete",
+    invoke: |todo, _input, principal| todo.complete(principal),
+    payload: |todo| TodoStatusPayload::from_todo(&**todo),
 }
 ```
 
@@ -327,6 +336,12 @@ A module mounts one bounded context — commands, guards, projectors. A
 **service crate** lists those modules. That list *is* the process: the
 playground is one `Service`, one host, one runner that only reads env and
 calls `run`. You do not set a runtime role flag.
+
+Todo commands are `portable_command!` declarations in `todo-domain`. This
+playground mounts them on a local Service. The sibling example
+[`tests/e2e-celld`](tests/e2e-celld) mounts the same declarations and
+wait-dispatches create and complete to a **cell** (one private SQLite per
+todo id). GraphQL and Eventual projectors stay off the cell.
 
 The same packages can back a different `Service` later: all modules in one
 binary, or commands here and Eventual projectors there. **Atomic** work
@@ -452,23 +467,30 @@ OIDC, SvelteKit SSR, generated clients, live WS. Full runbook:
 **[`tests/e2e-ui/README.md`](tests/e2e-ui/README.md)**.
 
 ```bash
+# Default: one process (SQLite or Postgres + bus)
 cd tests/e2e-ui
 make up                    # Postgres + Zitadel → e2e-ui.env
 source e2e-ui.env && make run
 # UI  http://localhost:5180
 # API http://127.0.0.1:8791
+
+# Optional: same UI, Todo create/complete on celld
+cd tests/e2e-ui && make up && make up-celld-nats
+cd ../e2e-celld && make run
 ```
 
 Demo logins after `make up`: `alice` / `bob` / `admin` · `Password1!`.
+Full celld runbook: **[`tests/e2e-celld/README.md`](tests/e2e-celld/README.md)**.
 
 Small apps, full patterns. Each screen has **How it is built**: query,
 then command, then handler, then domain, then events, then service and
-host.
+host. Todos also run against celld from [`tests/e2e-celld`](tests/e2e-celld)
+with the same domain crate.
 
 | Demo | Tag | What it shows |
 |---|---|---|
 | [`/chat`](tests/e2e-ui/ui/src/routes/chat) | Live + anonymous | Shared room with SSR, live updates, guest reads |
-| [`/todos`](tests/e2e-ui/ui/src/routes/todos) | Eventual | Ownership rules, optimistic commands, projector fill |
+| [`/todos`](tests/e2e-ui/ui/src/routes/todos) | Eventual · celld | Ownership rules, optimistic commands, projector fill. Same declarations on a Service or a cell |
 | [`/blob`](tests/e2e-ui/ui/src/routes/blob) | Atomic + WASM | Atomic board in the response. Same domain pure runs as WASM in the replica |
 | [`/admin`](tests/e2e-ui/ui/src/routes/admin) | Surface | Elevated surface — separate client, more power |
 | [`/session`](tests/e2e-ui/ui/src/routes/session) | OIDC | Who you are: tokens, groups, roles |
@@ -1842,6 +1864,9 @@ make up && set -a && source e2e-ui.env && set +a && make run
 # /todos  /chat  /blob  /admin  /login
 make test         # domain + behavioral + JS-backed UI build/typecheck/tests
 make check-client # generated user/admin clients are current
+
+# Same UI against celld (Todo create/complete wait-dispatch to a cell)
+make up-celld-nats && cd ../e2e-celld && make run
 ```
 
 ### TypeScript client (`js/` → `@hops-ops/distributed`)
@@ -2204,11 +2229,12 @@ CI also publishes `lcov.info` as a workflow artifact and attempts an optional Co
 ## Examples
 
 **Start here (product demos):** [See it run](#see-it-run) — e2e-ui (`tests/e2e-ui`),
-Blob game, live chat, GraphiQL.
+e2e-celld (`tests/e2e-celld`), Blob game, live chat, GraphiQL.
 
 | Path | What it showcases |
 |---|---|
 | [`tests/e2e-ui/`](tests/e2e-ui/) | Full-stack CQRS + GraphQL + OIDC + SvelteKit (todos, chat, blob) |
+| [`tests/e2e-celld/`](tests/e2e-celld/) | Same UI; Todo create/complete wait-dispatch to celld |
 | [`js/`](js/) | `@hops-ops/distributed` — transport, causal replica, SvelteKit/React |
 | [`examples/graphiql.rs`](examples/graphiql.rs) | Seeded GraphQL playground (`--features "graphql,sqlite"`) |
 | `tests/graphql_*` | Engine, HTTP/WS, harden, identity, multi-IdP OIDC |

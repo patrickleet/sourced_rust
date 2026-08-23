@@ -7,8 +7,10 @@
 	import Footer from '$lib/components/shared/Footer.svelte';
 	import HmrBeacon from '$lib/components/HmrBeacon.svelte';
 	import { highlightCode } from '$lib/components/walkthrough/highlight';
+	import { env } from '$env/dynamic/public';
 
 	const session = $derived(page.data.session);
+	const celldProfile = $derived(env.PUBLIC_E2E_PROFILE === 'celld-nats');
 	const signedIn = $derived(!!session?.user);
 	const authConfigError = $derived(page.url.searchParams.get('error') === 'Configuration');
 
@@ -31,7 +33,7 @@
 
 	const demos = [
 		{ href: '/chat', title: 'Lobby chat', tag: 'Live + anonymous', blurb: 'A shared room with SSR, live updates, and guest reads.' },
-		{ href: '/todos', title: 'Todos', tag: 'Eventual', blurb: 'Ownership rules, optimistic commands, projector fill.' },
+		{ href: '/todos', title: 'Todos', tag: 'Eventual · celld', blurb: 'Ownership rules, optimistic commands, projector fill. Same declarations on a Service or a cell.' },
 		{ href: '/blob', tag: 'Atomic + WASM', title: 'Blob game', blurb: 'Atomic board in the response. Same domain pure runs as WASM in the replica.' },
 		{ href: '/admin', title: 'Admin', tag: 'Surface', blurb: 'Elevated surface — separate client, more power.' },
 		{ href: '/session', title: 'Session', tag: 'OIDC', blurb: 'Who you are to the app: tokens, groups, roles.' }
@@ -239,12 +241,26 @@ Service::new()
 				Event-source aggregates and stop there. Use the service bus alone. Take GraphQL reads
 				without the replica. Adopt what you need.
 			</p>
+			<p class="wf-lede">
+				Distributed lets you define domain logic cleanly, then compose those pieces like
+				blocks into one service or many — whatever suits your size. Change transports and
+				sharding later as you grow.
+			</p>
 
 			<ul class="wf-hero-stack" aria-label="Stack">
 				<li>Rust</li>
 				<li>TypeScript</li>
 				<li>CQRS / ES</li>
 				<li>SvelteKit</li>
+				<li>celld</li>
+				<li>Kafka</li>
+				<li>NATS</li>
+				<li>RabbitMQ</li>
+				<li>PSQL</li>
+				<li>SQLite</li>
+				<li>OIDC</li>
+				<li>Keycloak</li>
+				<li>Authentik</li>
 			</ul>
 
 			<div class="wf-actions">
@@ -258,7 +274,14 @@ Service::new()
 			</div>
 
 			<p class="dist-hero-note">
-				This site is the living playground — real apps under <code>tests/e2e-ui</code>.
+				{#if celldProfile}
+					This session is <code>tests/e2e-celld</code>. Todo create and complete wait-dispatch to a
+					cell (one SQLite shard per todo). Chat, Blob, GraphQL, and projectors stay in this process.
+				{:else}
+					This site is the living playground. Default is one process under
+					<code>tests/e2e-ui</code>. The same UI can wait-dispatch Todo commands to celld from
+					<code>tests/e2e-celld</code>.
+				{/if}
 			</p>
 
 			<nav class="wf-toc" aria-label="On this page">
@@ -687,6 +710,13 @@ Service::new()
 						<code>run</code>. You do not set a runtime role flag.
 					</p>
 					<p class="wf-why">
+						Todo commands are <code>portable_command!</code> declarations in
+						<code>todo-domain</code>. This playground mounts them on a local Service. The sibling
+						example <code>tests/e2e-celld</code> mounts the same declarations and wait-dispatches
+						create and complete to a <strong>cell</strong> (one private SQLite per todo id). GraphQL
+						and Eventual projectors stay off the cell.
+					</p>
+					<p class="wf-why">
 						The same packages can back a different Service later: all modules in one binary, or
 						commands here and Eventual projectors there. <strong>Atomic</strong> work (blob’s board
 						seal) stays with the command process. <strong>Eventual</strong> work can split. Topology
@@ -818,6 +848,7 @@ Service::new()
 				<p>
 					Real features under <code>tests/e2e-ui</code> — chat, todos, a game, admin. Each has
 					<strong>How it is built</strong>: query, then command, then handler, then domain, then events, then service and host.
+					Todos also run against celld from <code>tests/e2e-celld</code> with the same domain crate.
 				</p>
 			</div>
 			<div class="dist-demo-grid">
@@ -841,9 +872,14 @@ Service::new()
 				<p>From the repository:</p>
 			</div>
 			<div class="dist-run-code">
-				<pre><code>{`cd tests/e2e-ui
+				<pre><code>{`# Default: one process (SQLite or Postgres + bus)
+cd tests/e2e-ui
 make up                    # Postgres + Zitadel → e2e-ui.env
 source e2e-ui.env && make run
+
+# Optional: same UI, Todo create/complete on celld
+cd tests/e2e-ui && make up && make up-celld-nats
+cd ../e2e-celld && make run
 # UI  http://localhost:5180
 # API http://127.0.0.1:8791`}</code></pre>
 			</div>
