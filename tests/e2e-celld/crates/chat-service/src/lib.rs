@@ -1,11 +1,7 @@
-//! Chat + Zitadel identity-ingestor service crate (in-process).
+//! Chat service crate: lobby messages (in-process; not a cell).
 
 mod bounds;
-mod deps;
-pub mod handlers;
+mod handlers;
 mod routes;
 
-pub use handlers::ingestors::zitadel::{
-    scrape_users_to_outbox, spawn_scrape_loop, ScrapeReport, ZitadelScrapeConfig,
-};
 pub use routes::{routes, MODULE_ID};

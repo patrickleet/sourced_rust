@@ -1,8 +1,7 @@
 //! GraphQL process for the celld example (sibling of e2e-ui, not `make run`).
 //!
-//! Todo create/complete wait-dispatch to celld. Chat and Blob stay in-process
-//! via [`e2e_celld_chat`] and [`e2e_celld_blob`]. Domain crates are the e2e-ui
-//! ones.
+//! Todo create/complete wait-dispatch to celld. Chat, Blob, and identity stay
+//! in-process via their service crates. Domain crates are the e2e-ui ones.
 
 mod application;
 mod bounds;
@@ -14,7 +13,7 @@ pub use application::{
     DISTRIBUTED_ADMIN_CLIENT_SURFACE, DISTRIBUTED_CLIENT_SURFACE, DISTRIBUTED_PUBLIC_CLIENT_SURFACE,
     E2E_UI_APPLICATION, E2E_UI_MODULE_IDS,
 };
-pub use e2e_celld_chat::{
+pub use e2e_celld_identity::{
     scrape_users_to_outbox, spawn_scrape_loop, ScrapeReport, ZitadelScrapeConfig,
 };
 pub use e2e_readmodels::distributed_manifest;
