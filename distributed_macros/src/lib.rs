@@ -2,6 +2,7 @@ mod aggregate;
 mod application;
 mod command;
 mod command_input_defaults;
+mod portable_command;
 mod digest;
 mod domain_event;
 mod domain_state;
@@ -23,6 +24,18 @@ use syn::DeriveInput;
 #[proc_macro_attribute]
 pub fn command(attr: TokenStream, item: TokenStream) -> TokenStream {
     command::expand(attr.into(), item.into())
+        .unwrap_or_else(|error| error.to_compile_error())
+        .into()
+}
+
+/// Domain-owned portable command mount (`PCH-DEC-001`).
+///
+/// Spec sketches used `command!`; that name is the handler attribute
+/// [`command`]. This is the function-like form for shard + invoke + Eventual
+/// (or a `handle:` escape hatch).
+#[proc_macro]
+pub fn portable_command(input: TokenStream) -> TokenStream {
+    portable_command::expand(input.into())
         .unwrap_or_else(|error| error.to_compile_error())
         .into()
 }
