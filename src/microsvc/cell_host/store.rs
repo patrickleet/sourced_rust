@@ -5,6 +5,9 @@
 //! **not** a `celld` dialect.
 
 use std::future::Future;
+use std::sync::{Arc, Mutex};
+
+use serde_json::Value;
 
 use crate::command_ledger::{
     AttemptFence, CausalCommitBatch, CausalGetStream, CausalRepositoryIdentity,
@@ -82,6 +85,7 @@ pub struct DurableCellSnapshot {
 pub struct CellStreamStore {
     ownership: CellOwnership,
     inner: InMemoryRepository,
+    sealed_row: Arc<Mutex<Option<Value>>>,
 }
 
 impl CellStreamStore {
@@ -90,6 +94,7 @@ impl CellStreamStore {
         Self {
             ownership: CellOwnership::Exclusive(identity),
             inner: InMemoryRepository::new(),
+            sealed_row: Arc::new(Mutex::new(None)),
         }
     }
 
@@ -106,6 +111,7 @@ impl CellStreamStore {
                 name: StreamIdentity::new(parent_type, parent_id)?,
             },
             inner: InMemoryRepository::new(),
+            sealed_row: Arc::new(Mutex::new(None)),
         })
     }
 
@@ -145,6 +151,24 @@ impl CellStreamStore {
                 "cell `{owned}` cannot access stream `{identity}`"
             ))),
         }
+    }
+
+    /// Sealed read-model row for GET on this cell instance.
+    pub fn sealed_row(&self) -> Result<Option<Value>, RepositoryError> {
+        self.sealed_row
+            .lock()
+            .map(|guard| guard.clone())
+            .map_err(|_| RepositoryError::Model("cell sealed row lock poisoned".into()))
+    }
+
+    /// Replace the sealed read-model row (Atomic board / Todo view).
+    pub fn replace_sealed_row(&self, row: Value) -> Result<(), RepositoryError> {
+        let mut guard = self
+            .sealed_row
+            .lock()
+            .map_err(|_| RepositoryError::Model("cell sealed row lock poisoned".into()))?;
+        *guard = Some(row);
+        Ok(())
     }
 
     /// Event log for Durable Object SQLite. Memory remains the working copy.

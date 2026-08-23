@@ -236,6 +236,11 @@ async fn cell_dispatches_complete_with_the_same_portable_command_as_soa() {
         .expect("snapshot after complete");
     assert_eq!(snap.version, 2);
 
+    let sealed = json!({ "id": "item-1", "title": "ship", "done": true });
+    cell.replace_sealed_row(sealed.clone())
+        .expect("seal row after complete");
+    assert_eq!(cell.sealed_row().expect("read seal"), Some(sealed.clone()));
+
     let exported = cell.durable_events().expect("export");
     let snapshots = cell.durable_snapshots().expect("export snapshots");
     assert!(!exported.is_empty());
@@ -250,6 +255,10 @@ async fn cell_dispatches_complete_with_the_same_portable_command_as_soa() {
     restored
         .restore_durable_snapshots(snapshots)
         .expect("restore snapshots");
+    restored
+        .replace_sealed_row(sealed.clone())
+        .expect("restore sealed row");
+    assert_eq!(restored.sealed_row().expect("restored seal"), Some(sealed));
     let loaded = restored
         .load()
         .await
