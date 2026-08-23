@@ -71,9 +71,7 @@ impl CommandHost for LocalCommandHost {
             }
             None => {
                 self.service
-                    .dispatch_causal_with_receipt(
-                        command, command_id, input, session, principal,
-                    )
+                    .dispatch_causal_with_receipt(command, command_id, input, session, principal)
                     .await
             }
         }
@@ -89,9 +87,7 @@ impl CommandHost for LocalCommandHost {
         match protocol {
             Some(protocol) => {
                 self.service
-                    .causal_command_status_with_protocol(
-                        command_id, session, principal, protocol,
-                    )
+                    .causal_command_status_with_protocol(command_id, session, principal, protocol)
                     .await
             }
             None => {
@@ -129,13 +125,13 @@ impl CommandHost for HttpCommandHost {
         _principal: VerifiedPrincipal,
         _protocol: Option<ProtocolResponseAccumulator>,
     ) -> Result<CausalDispatchResult, CausalDispatchError> {
-        let mut request = self
-            .client
-            .post(format!("{}/{command}", self.base))
-            .json(&serde_json::json!({
-                "commandId": command_id,
-                "input": input,
-            }));
+        let mut request =
+            self.client
+                .post(format!("{}/{command}", self.base))
+                .json(&serde_json::json!({
+                    "commandId": command_id,
+                    "input": input,
+                }));
         if let Some(user) = session.user_id() {
             request = request.header(USER_ID_KEY, user);
         }
@@ -146,9 +142,10 @@ impl CommandHost for HttpCommandHost {
             CausalDispatchError::Internal(format!("wait-path HTTP failed: {err}"))
         })?;
         let status = response.status().as_u16();
-        let body: Value = response.json().await.map_err(|err| {
-            CausalDispatchError::Internal(format!("wait-path HTTP body: {err}"))
-        })?;
+        let body: Value = response
+            .json()
+            .await
+            .map_err(|err| CausalDispatchError::Internal(format!("wait-path HTTP body: {err}")))?;
         if status >= 400 {
             let message = body
                 .get("error")
@@ -172,5 +169,36 @@ impl CommandHost for HttpCommandHost {
         _protocol: Option<ProtocolResponseAccumulator>,
     ) -> Result<CausalCommandPublicStatus, CausalDispatchError> {
         Ok(CausalCommandPublicStatus::unknown(command_id))
+    }
+}
+
+/// Local dispatcher is a causal [`CommandHost`]. GraphQL must use this
+/// trait object, not [`LocalCommandDispatcher::service`].
+#[async_trait]
+impl CommandHost for super::LocalCommandDispatcher {
+    async fn invoke(
+        &self,
+        command: &str,
+        command_id: &str,
+        input: Value,
+        session: Session,
+        principal: VerifiedPrincipal,
+        protocol: Option<ProtocolResponseAccumulator>,
+    ) -> Result<CausalDispatchResult, CausalDispatchError> {
+        LocalCommandHost::new(Arc::clone(self.service()))
+            .invoke(command, command_id, input, session, principal, protocol)
+            .await
+    }
+
+    async fn status(
+        &self,
+        command_id: &str,
+        session: &Session,
+        principal: VerifiedPrincipal,
+        protocol: Option<ProtocolResponseAccumulator>,
+    ) -> Result<CausalCommandPublicStatus, CausalDispatchError> {
+        LocalCommandHost::new(Arc::clone(self.service()))
+            .status(command_id, session, principal, protocol)
+            .await
     }
 }
