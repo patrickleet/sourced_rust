@@ -1,7 +1,8 @@
 //! One-screen host bootstrap for the e2e-ui application.
 //!
 //! This playground is a single backend process plus the SvelteKit UI. Do not
-//! add extra e2e-ui process topologies here.
+//! add extra e2e-ui process topologies here. Optional celld+NATS is
+//! `tests/e2e-ui/celld-nats-profile/` (`DCS-DEC-001`).
 //!
 //! Dialect selection and identity remain here. Outbox/consumer loops use
 //! framework worker helpers.
@@ -13,9 +14,7 @@ use distributed::bus::{PostgresBus, SqliteBus};
 use distributed::command_dispatch::LocalCommandDispatcher;
 use distributed::graphql::IdentityConfig;
 use distributed::microsvc::{spawn_outbox_publish_loop, spawn_service_consumer_loop};
-use distributed::{
-    PostgresLockManager, PostgresRepository, SqliteLockManager, SqliteRepository,
-};
+use distributed::{PostgresLockManager, PostgresRepository, SqliteLockManager, SqliteRepository};
 
 use crate::{
     build_graphql_engine, build_service, distributed_manifest, serve_with_oidc, spawn_scrape_loop,

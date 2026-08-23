@@ -41,6 +41,9 @@ The UI is at `http://localhost:5180`; GraphQL is at
 `http://127.0.0.1:8791/graphql`. Demo users are `alice`, `bob`, and `admin`
 with password `Password1!`.
 
+This is the **default one-process playground**. An optional celld+NATS
+profile of the same UI lives in `celld-nats-profile/` and is not `make run`.
+
 ## The developer experience
 
 The page code stays ordinary:
