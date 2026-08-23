@@ -56,6 +56,106 @@ pub struct SelectionNode {
 
 type RecordEvidenceProjection = (Vec<(String, String)>, Option<QueryEvidenceRecordPlan>);
 
+/// Compiled GraphQL read: SQL scan or cell GET-by-pk.
+#[derive(Clone, Debug)]
+pub enum QueryPlan {
+    Sql(SqlPlan),
+    CellByKey {
+        model: String,
+        pk: BTreeMap<String, String>,
+    },
+}
+
+/// Compile a root field against the model's [`crate::graphql::ReadStore`].
+pub fn compile_query(
+    inner: &EngineInner,
+    session: &Session,
+    role: &str,
+    model_name: &str,
+    kind: RootKind,
+    selection: &SelectionNode,
+) -> Result<QueryPlan, String> {
+    let store = inner
+        .read_stores
+        .get(model_name)
+        .copied()
+        .unwrap_or(crate::graphql::read_store::ReadStoreKind::SqlScan);
+    match store {
+        crate::graphql::read_store::ReadStoreKind::SqlScan => Ok(QueryPlan::Sql(compile_root(
+            inner, session, role, model_name, kind, selection,
+        )?)),
+        crate::graphql::read_store::ReadStoreKind::CellByKey => {
+            compile_cell_by_key(inner, model_name, kind, selection)
+        }
+    }
+}
+
+fn compile_cell_by_key(
+    inner: &EngineInner,
+    model_name: &str,
+    kind: RootKind,
+    selection: &SelectionNode,
+) -> Result<QueryPlan, String> {
+    let entry = inner
+        .catalog
+        .get(model_name)
+        .ok_or_else(|| format!("unknown model `{model_name}`"))?;
+    match kind {
+        RootKind::List => {
+            return Err(
+                "cell-by-key store does not support list queries (would fan out to N cells); declare a SQL index read model"
+                    .into(),
+            );
+        }
+        RootKind::Aggregate => {
+            return Err(
+                "cell-by-key store does not support aggregate queries; declare a SQL index read model"
+                    .into(),
+            );
+        }
+        RootKind::ByPk => {}
+    }
+    if selection.args.contains_key("where") {
+        return Err("cell-by-key store does not support filter".into());
+    }
+    if selection.args.contains_key("order_by") {
+        return Err("cell-by-key store does not support sort".into());
+    }
+    for child in &selection.children {
+        let is_join = entry.schema.relationships.iter().any(|rel| {
+            rel.field_name == child.field_name
+                || child.field_name == format!("{}_aggregate", rel.field_name)
+        });
+        if is_join {
+            return Err(
+                "cell-by-key store does not support SQL joins; declare a SQL index read model"
+                    .into(),
+            );
+        }
+    }
+    let mut pk = BTreeMap::new();
+    for column in &entry.schema.primary_key.columns {
+        let value = selection
+            .args
+            .get(column)
+            .ok_or_else(|| format!("missing primary key argument `{column}`"))?;
+        let key = match value {
+            Value::String(s) => s.clone(),
+            Value::Number(n) => n.to_string(),
+            other => {
+                return Err(format!(
+                    "cell-by-key primary key `{column}` must be a scalar, got {other:?}"
+                ));
+            }
+        };
+        pk.insert(column.clone(), key);
+    }
+    Ok(QueryPlan::CellByKey {
+        model: model_name.to_string(),
+        pk,
+    })
+}
+
 /// Compile a root field selection into one SQL statement.
 pub fn compile_root(
     inner: &EngineInner,

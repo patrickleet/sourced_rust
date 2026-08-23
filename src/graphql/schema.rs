@@ -9,7 +9,7 @@ use async_graphql::dynamic::{
 };
 use async_graphql::Value;
 
-use super::compile::{self, RootKind};
+use super::compile::{self, QueryPlan, RootKind};
 use super::engine::{EngineInner, ExecutionAuthority};
 use super::identity::VerifiedPrincipal;
 use super::naming::{
@@ -677,6 +677,31 @@ fn passthrough_key(
     Ok(lookup_key(value, key))
 }
 
+async fn execute_cell_by_key(
+    inner: &EngineInner,
+    model: &str,
+    pk: &BTreeMap<String, String>,
+    selection: &compile::SelectionNode,
+) -> Result<Value, String> {
+    let getter = inner
+        .cell_getters
+        .get(model)
+        .ok_or_else(|| format!("cell-by-key getter not configured for `{model}`"))?;
+    let Some(row) = getter.get_sealed_row(pk).await? else {
+        return Ok(Value::Null);
+    };
+    let mut out = serde_json::Map::new();
+    for child in &selection.children {
+        if child.field_name == "__typename" {
+            continue;
+        }
+        if let Some(value) = row.get(&child.field_name) {
+            out.insert(child.response_key.clone(), value.clone());
+        }
+    }
+    Value::from_json(serde_json::Value::Object(out)).map_err(|error| error.to_string())
+}
+
 fn lookup_key(value: &Value, key: &str) -> Option<Value> {
     match value {
         Value::Object(map) => {
@@ -708,29 +733,38 @@ async fn resolve_root(
     let role = privilege_role_for_request(authority, &session, &inner.anonymous_role);
 
     let selection = compile::selection_from_field(ctx.field());
-    let plan = compile::compile_root(&inner, &session, &role, model, kind, &selection)
+    let plan = compile::compile_query(&inner, &session, &role, model, kind, &selection)
         .map_err(|e| client_error("BAD_REQUEST", sanitize_compile_error(&e)))?;
-    let value = if let Some(protocol) = ctx.data_opt::<ProtocolResponseAccumulator>().cloned() {
-        let role_surface = inner.role_surfaces.get(&role).cloned().ok_or_else(|| {
-            client_error("INTERNAL", "authorized GraphQL role surface is unavailable")
-        })?;
-        let executed = super::query_protocol::execute_query_with_protocol(
-            &inner,
-            role_surface,
-            protocol.clone(),
-            &plan,
-            None,
-        )
-        .await
-        .map_err(|e| client_error_for_execute_err(&e))?;
-        protocol
-            .record_query_metadata(executed.snapshot, None)
-            .map_err(|_| client_error("INTERNAL", "query evidence encoding failed"))?;
-        executed.value
-    } else {
-        super::engine::execute_plan(&inner, &plan)
-            .await
-            .map_err(|e| client_error_for_execute_err(&e))?
+    let value = match plan {
+        QueryPlan::CellByKey { model, pk } => {
+            execute_cell_by_key(&inner, &model, &pk, &selection)
+                .await
+                .map_err(|e| client_error("BAD_REQUEST", sanitize_compile_error(&e)))?
+        }
+        QueryPlan::Sql(plan) => {
+            if let Some(protocol) = ctx.data_opt::<ProtocolResponseAccumulator>().cloned() {
+                let role_surface = inner.role_surfaces.get(&role).cloned().ok_or_else(|| {
+                    client_error("INTERNAL", "authorized GraphQL role surface is unavailable")
+                })?;
+                let executed = super::query_protocol::execute_query_with_protocol(
+                    &inner,
+                    role_surface,
+                    protocol.clone(),
+                    &plan,
+                    None,
+                )
+                .await
+                .map_err(|e| client_error_for_execute_err(&e))?;
+                protocol
+                    .record_query_metadata(executed.snapshot, None)
+                    .map_err(|_| client_error("INTERNAL", "query evidence encoding failed"))?;
+                executed.value
+            } else {
+                super::engine::execute_plan(&inner, &plan)
+                    .await
+                    .map_err(|e| client_error_for_execute_err(&e))?
+            }
+        }
     };
     // `None` (not `Some(Null)`) so nullable by_pk roots do not try to resolve
     // non-null child fields on a null parent.
@@ -806,6 +840,8 @@ fn sanitize_compile_error(e: &str) -> String {
         || e.contains("ambiguous order_by")
     {
         "invalid filter".into()
+    } else if e.contains("cell-by-key") {
+        "unsupported on cell store".into()
     } else {
         "bad request".into()
     }
@@ -930,6 +966,12 @@ mod execute_err_mapping_tests {
         assert_eq!(
             sanitize_compile_error("SELECT * FROM secret"),
             "bad request"
+        );
+        assert_eq!(
+            sanitize_compile_error(
+                "cell-by-key store does not support list queries (would fan out to N cells); declare a SQL index read model"
+            ),
+            "unsupported on cell store"
         );
     }
 }

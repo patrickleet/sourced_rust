@@ -100,8 +100,19 @@ pub(crate) async fn live_query_stream(
     selection: SelectionNode,
     protocol: Option<ProtocolResponseAccumulator>,
 ) -> Result<LiveQueryStream, String> {
-    let plan: SqlPlan =
-        compile::compile_root(&inner, &session, &role, &model, RootKind::List, &selection)?;
+    let plan: SqlPlan = match compile::compile_query(
+        &inner,
+        &session,
+        &role,
+        &model,
+        RootKind::List,
+        &selection,
+    )? {
+        compile::QueryPlan::Sql(plan) => plan,
+        compile::QueryPlan::CellByKey { .. } => {
+            return Err("cell-by-key store does not support @live".into());
+        }
+    };
     let footprint = footprint_from_tables(&plan.tables_touched);
     let mut change_rx = inner.change_hub.subscribe();
     let (tx, rx) = mpsc::channel::<LiveItem>(8);
