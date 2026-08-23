@@ -59,9 +59,15 @@ pub struct OidcIdentityService<S> {
 fn skip_oidc_gate(method: &Method, path: &str) -> bool {
     // Public probes + GraphiQL HTML + WS upgrade (auth on connection_init).
     // Zitadel Action ingress uses shared-secret authenticity (not OIDC bearer).
+    // Cell alarm drain is process-local (celld → GraphQL bus), not a user route.
     matches!(
         path,
-        "/health" | "/metrics" | "/graphql/ws" | "/zitadel.ingress.v1" | "/zitadel.scrape.v1"
+        "/health"
+            | "/metrics"
+            | "/graphql/ws"
+            | "/zitadel.ingress.v1"
+            | "/zitadel.scrape.v1"
+            | "/internal/outbox/drain"
     ) || (path == "/graphql" && *method == Method::GET)
 }
 
@@ -225,12 +231,17 @@ pub async fn serve_with_oidc(
     axum::serve(listener, app).await
 }
 
+/// Cell alarm POSTs pending outbox here; GraphQL publishes via MessagePublisher.
+pub type InternalOutboxDrain =
+    Arc<dyn Fn(Value) -> BoxFuture<'static, ()> + Send + Sync>;
+
 /// GraphQL wait-dispatches through an explicit [`SharedCommandHost`].
 pub async fn serve_with_oidc_and_host(
     service: Arc<Service>,
     host: SharedCommandHost,
     identity: IdentityConfig,
     addr: &str,
+    outbox_drain: Option<InternalOutboxDrain>,
 ) -> Result<(), std::io::Error> {
     let engine = service
         .graphql_engine()
@@ -248,7 +259,7 @@ pub async fn serve_with_oidc_and_host(
         "graphql": true,
         "commands": commands,
     });
-    let app = Router::new()
+    let mut app = Router::new()
         .route(
             "/health",
             get(move || {
@@ -270,8 +281,20 @@ pub async fn serve_with_oidc_and_host(
                 let svc = scrape.clone();
                 async move { dispatch_named(svc, headers, input, "zitadel.scrape.v1").await }
             }),
-        )
-        .layer(OidcIdentityLayer::new(identity));
+        );
+    if let Some(drain) = outbox_drain {
+        app = app.route(
+            "/internal/outbox/drain",
+            post(move |Json(body): Json<Value>| {
+                let drain = Arc::clone(&drain);
+                async move {
+                    drain(body).await;
+                    Json(json!({ "ok": true }))
+                }
+            }),
+        );
+    }
+    let app = app.layer(OidcIdentityLayer::new(identity));
 
     let listener = tokio::net::TcpListener::bind(addr).await?;
     axum::serve(listener, app).await
@@ -290,6 +313,7 @@ mod tests {
         // Zitadel Action ingress + scrape use shared secret, not OIDC bearer.
         assert!(skip_oidc_gate(&Method::POST, "/zitadel.ingress.v1"));
         assert!(skip_oidc_gate(&Method::POST, "/zitadel.scrape.v1"));
+        assert!(skip_oidc_gate(&Method::POST, "/internal/outbox/drain"));
         // Other HTTP command routes still require OIDC under OidcBearer.
         assert!(!skip_oidc_gate(&Method::POST, "/todo.create"));
         assert!(!skip_oidc_gate(&Method::POST, "/graphql"));

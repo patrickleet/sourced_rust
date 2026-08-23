@@ -157,6 +157,30 @@ impl InMemoryRepository {
         Ok(())
     }
 
+    /// Clone outbox rows for Durable Object SQLite persistence.
+    pub fn clone_outbox(&self) -> Result<Vec<OutboxMessage>, RepositoryError> {
+        Ok(self
+            .outbox_store
+            .read()
+            .map_err(|_| RepositoryError::LockPoisoned("outbox read"))?
+            .values()
+            .cloned()
+            .collect())
+    }
+
+    /// Replace outbox rows from Durable Object SQLite restore.
+    pub fn replace_outbox(&self, messages: Vec<OutboxMessage>) -> Result<(), RepositoryError> {
+        let mut map = HashMap::new();
+        for message in messages {
+            map.insert(message.id.clone(), message);
+        }
+        *self
+            .outbox_store
+            .write()
+            .map_err(|_| RepositoryError::LockPoisoned("outbox write"))? = map;
+        Ok(())
+    }
+
     /// Clone snapshot cache records for Durable Object SQLite persistence.
     pub fn clone_snapshots(&self) -> Result<HashMap<String, SnapshotRecord>, RepositoryError> {
         Ok(self

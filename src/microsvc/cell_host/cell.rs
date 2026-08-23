@@ -126,6 +126,19 @@ where
         self.routes.repo().repo().restore_durable_events(events)
     }
 
+    /// Outbox rows committed with the aggregate (same cell SQLite).
+    pub fn durable_outbox(&self) -> Result<Vec<crate::OutboxMessage>, RepositoryError> {
+        self.routes.repo().repo().durable_outbox()
+    }
+
+    /// Restore outbox rows from Durable Object SQLite.
+    pub fn restore_durable_outbox(
+        &self,
+        messages: Vec<crate::OutboxMessage>,
+    ) -> Result<(), RepositoryError> {
+        self.routes.repo().repo().restore_durable_outbox(messages)
+    }
+
     /// Snapshot cache for Durable Object SQLite.
     pub fn durable_snapshots(&self) -> Result<Vec<DurableCellSnapshot>, RepositoryError> {
         self.routes.repo().repo().durable_snapshots()

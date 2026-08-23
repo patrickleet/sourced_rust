@@ -2,6 +2,7 @@
 //!
 //! Env:
 //! - `CELLD_URL` — required
+//! - `NATS_URL` — required (JetStream; Eventual projectors subscribe here)
 //! - `DATABASE_URL` — `sqlite:…` (default) or `postgres://…`
 //! - `BIND` (default `127.0.0.1:8791`)
 //! - `OIDC_*` → OidcBearer; else DevHeaders
@@ -18,13 +19,17 @@ async fn main() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
     let celld_url = env::var("CELLD_URL").map_err(|_| {
         "CELLD_URL is required. Start infra: make -C tests/e2e-ui up-celld-nats"
     })?;
-    eprintln!("e2e-celld CELLD_URL={celld_url}");
+    let nats_url = env::var("NATS_URL").map_err(|_| {
+        "NATS_URL is required. Start infra: make -C tests/e2e-ui up-celld-nats"
+    })?;
+    eprintln!("e2e-celld CELLD_URL={celld_url} NATS_URL={nats_url}");
     run(
         &database_url,
         HostOptions {
             bind,
             identity: identity_from_env(),
             celld_url,
+            nats_url,
         },
     )
     .await

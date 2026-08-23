@@ -112,19 +112,31 @@ pub async fn handle_post(
 
 /// Accept a client timestamp only when it is canonical unix milliseconds
 /// within five minutes of server time.
+///
+/// `wasm32-unknown-unknown` has no `SystemTime::now` (cell hosts). There the
+/// value must still be canonical digits; the GraphQL wait-path already
+/// accepted it on the native host.
 pub fn canonical_near_unix_millis(value: &str) -> Result<String, HandlerError> {
-    use std::time::{SystemTime, UNIX_EPOCH};
-    let now = SystemTime::now()
-        .duration_since(UNIX_EPOCH)
-        .unwrap_or_default()
-        .as_millis();
     let millis = value
         .parse::<u128>()
         .map_err(|_| rejected("created_at must be canonical unix milliseconds"))?;
-    if millis.to_string() != value || millis.abs_diff(now) > 300_000 {
+    if millis.to_string() != value {
         return Err(rejected(
             "created_at must be canonical unix milliseconds within five minutes of server time",
         ));
+    }
+    #[cfg(not(all(target_arch = "wasm32", target_os = "unknown")))]
+    {
+        use std::time::{SystemTime, UNIX_EPOCH};
+        let now = SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .unwrap_or_default()
+            .as_millis();
+        if millis.abs_diff(now) > 300_000 {
+            return Err(rejected(
+                "created_at must be canonical unix milliseconds within five minutes of server time",
+            ));
+        }
     }
     Ok(value.to_string())
 }

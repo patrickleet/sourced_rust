@@ -18,8 +18,10 @@ use async_nats::jetstream::stream::Config as StreamConfig;
 use async_nats::jetstream::{self, AckKind};
 use futures::StreamExt;
 
+use crate::projection_protocol::{ProjectionEpoch, ProjectionSource};
+
 use super::source::{MessageSource, ReceivedMessage};
-use super::{message_from_wire, strip_address_prefix, Message};
+use super::{message_from_wire, strip_address_prefix, Message, OrderedDelivery};
 use super::{retryable, MessagePublisher, TransportError};
 
 /// Header carrying the stable message id (and JetStream dedup key).
@@ -210,6 +212,7 @@ impl MessageSource for NatsJetStreamSource {
 pub struct NatsReceived {
     raw: jetstream::Message,
     message: Message,
+    ordered: Option<OrderedDelivery>,
 }
 
 impl NatsReceived {
@@ -234,7 +237,12 @@ impl NatsReceived {
             MESSAGE_KIND_HEADER,
             headers,
         );
-        Self { raw, message }
+        let ordered = jetstream_ordered(&raw);
+        Self {
+            raw,
+            message,
+            ordered,
+        }
     }
 
     async fn settle(self, kind: AckKind) -> Result<(), TransportError> {
@@ -253,9 +261,20 @@ impl NatsReceived {
     }
 }
 
+fn jetstream_ordered(raw: &jetstream::Message) -> Option<OrderedDelivery> {
+    let info = raw.info().ok()?;
+    let source = ProjectionSource::new("nats.jetstream", info.stream.as_bytes()).ok()?;
+    let epoch = ProjectionEpoch::new(format!("nats.{}", info.stream)).ok()?;
+    OrderedDelivery::new(source, epoch, info.stream_sequence, false).ok()
+}
+
 impl ReceivedMessage for NatsReceived {
     fn message(&self) -> &Message {
         &self.message
+    }
+
+    fn ordered_delivery(&self) -> Option<&OrderedDelivery> {
+        self.ordered.as_ref()
     }
 
     async fn ack(self) -> Result<(), TransportError> {

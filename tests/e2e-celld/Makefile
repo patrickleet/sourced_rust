@@ -5,7 +5,7 @@
 
 .PHONY: run stop help wasm
 
-BIND         ?= 127.0.0.1:8791
+BIND         ?= 0.0.0.0:8791
 API_PORT     ?= 8791
 UI_PORT      ?= 5180
 UI_HOST      ?= localhost
@@ -14,6 +14,8 @@ ENV_FILE     ?= ../e2e-ui/e2e-ui.env
 UI_DIR       ?= ../e2e-ui/ui
 CELLD_HTTP_PORT ?= 18080
 CELLD_URL    ?= http://127.0.0.1:$(CELLD_HTTP_PORT)
+NATS_PORT    ?= 14222
+NATS_URL     ?= nats://127.0.0.1:$(NATS_PORT)
 NPM          ?= npm
 
 wasm:
@@ -39,19 +41,26 @@ run: wasm
 	  fi; \
 	fi; \
 	export CELLD_URL="$$_celld"; \
+	_nats="$(NATS_URL)"; \
+	if ! nc -z 127.0.0.1 $(NATS_PORT) 2>/dev/null; then \
+	  echo "NATS not reachable at $$_nats — start: make -C ../e2e-ui up-celld-nats"; \
+	  exit 1; \
+	fi; \
+	export NATS_URL="$$_nats"; \
 	export PUBLIC_E2E_PROFILE="celld-nats"; \
-	_bind="$${BIND:-127.0.0.1:8791}"; \
+	_bind="$${BIND:-0.0.0.0:8791}"; \
 	_api_port="$${_bind##*:}"; \
-	_base="$${E2E_API_ORIGIN:-http://$${_bind}}"; \
+	_base="$${E2E_API_ORIGIN:-http://127.0.0.1:$${_api_port}}"; \
 	_ui_port="$(UI_PORT)"; \
 	_ui_host="$(UI_HOST)"; \
 	_ui="$${E2E_UI_ORIGIN:-http://$${_ui_host}:$${_ui_port}}"; \
 	export AUTH_URL="$${_ui}"; \
 	export AUTH_USE_SECURE_COOKIES="false"; \
+	export BIND="0.0.0.0:$${_api_port}"; \
 	lsof -ti:$${_api_port} 2>/dev/null | xargs kill -9 2>/dev/null || true; \
 	lsof -ti:$${_ui_port} 2>/dev/null | xargs kill -9 2>/dev/null || true; \
 	rm -f .make-runner.pid .make-ui.pid .make-runner.log; \
-	echo "starting e2e-celld API on $$_base (CELLD_URL=$$CELLD_URL) …"; \
+	echo "starting e2e-celld API on $$_base (CELLD_URL=$$CELLD_URL NATS_URL=$$NATS_URL) …"; \
 	cargo run -p e2e-celld-runner --bin e2e-celld > .make-runner.log 2>&1 & \
 	echo $$! > .make-runner.pid; \
 	ok=0; \
@@ -81,6 +90,7 @@ run: wasm
 	echo "  UI     $$_ui   (celld badge in the navbar)"; \
 	echo "  API    $$_base"; \
 	echo "  CELLD  $$CELLD_URL"; \
+	echo "  NATS   $$NATS_URL"; \
 	echo "  GraphiQL $$_base/graphql"; \
 	echo "  this is tests/e2e-celld — not tests/e2e-ui make run"; \
 	echo "  Ctrl-C stops both"; \
@@ -97,6 +107,6 @@ stop:
 
 help:
 	@echo "e2e-celld (new example — not tests/e2e-ui)"
-	@echo "  make run   GraphQL host + e2e-ui Svelte app (Todo create/complete → celld)"
+	@echo "  make run   GraphQL host + e2e-ui Svelte app (Todo + chat.post → celld; @live stays here)"
 	@echo "  make stop  stop API + UI"
 	@echo "  infra:     make -C ../e2e-ui up-celld-nats"

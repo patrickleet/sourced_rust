@@ -1,4 +1,5 @@
-//! Live celld host: one Todo Durable Object per id.
+//! Live celld host: one Todo Durable Object per todo id, one Chat cell per
+//! message id.
 //!
 //! Fixture checks always run. The HTTP round-trip runs only when `CELLD_URL`
 //! is set (operator started compose + `celld deploy`). See `tests/celld/README.md`.
@@ -16,7 +17,7 @@ fn worker_dir() -> &'static Path {
 }
 
 #[test]
-fn worker_declares_sqlite_todo_cell() {
+fn worker_declares_sqlite_todo_and_chat_cells() {
     let wrangler =
         std::fs::read_to_string(worker_dir().join("wrangler.jsonc")).expect("wrangler.jsonc");
     let spec: Value = serde_json::from_str(&wrangler).expect("wrangler json");
@@ -24,26 +25,44 @@ fn worker_declares_sqlite_todo_cell() {
     let bindings = spec["durable_objects"]["bindings"].as_array().unwrap();
     assert_eq!(bindings[0]["name"], "TODO");
     assert_eq!(bindings[0]["class_name"], "TodoCell");
-    let classes = spec["migrations"][0]["new_sqlite_classes"]
+    assert_eq!(bindings[1]["name"], "CHAT");
+    assert_eq!(bindings[1]["class_name"], "ChatCell");
+    let v1 = spec["migrations"][0]["new_sqlite_classes"]
         .as_array()
         .unwrap();
-    assert_eq!(classes[0], "TodoCell");
+    assert_eq!(v1[0], "TodoCell");
+    let v2 = spec["migrations"][1]["new_sqlite_classes"]
+        .as_array()
+        .unwrap();
+    assert_eq!(v2[0], "ChatCell");
+    assert_eq!(
+        spec["vars"]["OUTBOX_DRAIN_URL"],
+        "http://host.docker.internal:8791/internal/outbox/drain"
+    );
 
     let source = std::fs::read_to_string(worker_dir().join("src/lib.rs")).expect("lib.rs");
     assert!(source.contains("pub struct TodoCell"));
+    assert!(source.contains("pub struct ChatCell"));
     assert!(source.contains("AggregateCell::<Todo>"));
+    assert!(source.contains("AggregateCell::<ChatMessage>"));
     assert!(source.contains("id_from_name"));
     assert!(source.contains("mount(create())"));
     assert!(source.contains("mount(complete())"));
+    assert!(source.contains("mount(post())"));
     assert!(source.contains("CREATE TABLE IF NOT EXISTS cell_events"));
     assert!(source.contains("CREATE TABLE IF NOT EXISTS cell_snapshots"));
     assert!(source.contains("CREATE TABLE IF NOT EXISTS cell_sealed"));
     assert!(source.contains("todo.create"));
     assert!(source.contains("todo.complete"));
+    assert!(source.contains("chat.post"));
+    assert!(source.contains("outbox.complete"));
+    assert!(source.contains("outbox.drain"));
+    assert!(source.contains("CREATE TABLE IF NOT EXISTS cell_outbox"));
     assert!(source.contains("sealed_row"));
     assert!(source.contains("new_with_snapshots"));
     assert!(source.contains("restore_durable_events"));
     assert!(source.contains("restore_durable_snapshots"));
+    assert!(source.contains("restore_chat_copy"));
 }
 
 #[test]
@@ -77,6 +96,7 @@ fn compose_file_does_not_use_minio() {
     );
     assert!(compose.contains("CELLD_HTTP_PORT:-18080"));
     assert!(compose.contains(":8080"));
+    assert!(compose.contains("host.docker.internal:host-gateway"));
 }
 
 #[tokio::test]
@@ -97,6 +117,8 @@ async fn live_todo_cell_create_complete_and_isolate() {
 
     let created = client
         .post(format!("{base}/todo/{a}/todo.create"))
+        .header("x-user-id", "alice")
+        .header("x-roles", "user")
         .json(&serde_json::json!({
             "commandId": "0190a000-0000-7000-8000-000000000201",
             "input": { "title": "ship celld" }
@@ -115,6 +137,8 @@ async fn live_todo_cell_create_complete_and_isolate() {
 
     let completed = client
         .post(format!("{base}/todo/{a}/todo.complete"))
+        .header("x-user-id", "alice")
+        .header("x-roles", "user")
         .json(&serde_json::json!({
             "commandId": "0190a000-0000-7000-8000-000000000202",
             "input": {}
@@ -154,12 +178,120 @@ async fn live_todo_cell_create_complete_and_isolate() {
     assert_eq!(other.status(), 404, "second name must be a different cell");
 }
 
+#[tokio::test]
+async fn live_chat_cell_post_and_isolate() {
+    let Some(base) = env_support::broker_env("CELLD_URL", "celld live Chat cell") else {
+        return;
+    };
+    let base = base.trim_end_matches('/').to_string();
+    let client = reqwest::Client::builder()
+        .timeout(Duration::from_secs(10))
+        .build()
+        .expect("client");
+
+    wait_healthy(&client, &base).await;
+
+    let a = unique_chat();
+    let b = unique_chat();
+    let created_at = unix_millis();
+
+    let posted = client
+        .post(format!("{base}/chat/{a}/chat.post"))
+        .header("x-user-id", "alice")
+        .json(&serde_json::json!({
+            "commandId": "0190a000-0000-7000-8000-000000000301",
+            "input": {
+                "message_id": a,
+                "room_id": "lobby",
+                "body": "hello from a cell",
+                "created_at": created_at,
+            }
+        }))
+        .send()
+        .await
+        .expect("post");
+    assert_eq!(posted.status(), 201, "{}", posted.text().await.unwrap());
+    let posted: Value = posted.json().await.unwrap();
+    assert_eq!(posted["payload"]["message_id"], a);
+    assert_eq!(posted["payload"]["body"], "hello from a cell");
+    assert_eq!(posted["payload"]["author_id"], "alice");
+    assert_eq!(
+        posted["receipt"]["commandId"],
+        "0190a000-0000-7000-8000-000000000301"
+    );
+
+    let got: Value = client
+        .get(format!("{base}/chat/{a}"))
+        .send()
+        .await
+        .expect("get")
+        .json()
+        .await
+        .unwrap();
+    assert_eq!(got["body"], "hello from a cell");
+    assert_eq!(got["author_id"], "alice");
+    assert_eq!(got["room_id"], "lobby");
+
+    let pending = posted["outbox"].as_array().cloned().unwrap_or_default();
+    if !pending.is_empty() {
+        let ids: Vec<Value> = pending.iter().filter_map(|row| row.get("id").cloned()).collect();
+        let complete = client
+            .post(format!("{base}/chat/{a}/outbox.complete"))
+            .json(&serde_json::json!({ "ids": ids }))
+            .send()
+            .await
+            .expect("outbox.complete");
+        assert_eq!(
+            complete.status(),
+            200,
+            "{}",
+            complete.text().await.unwrap()
+        );
+        let drained: Value = client
+            .post(format!("{base}/chat/{a}/outbox.drain"))
+            .json(&serde_json::json!({
+                "commandId": "drain",
+                "input": {}
+            }))
+            .send()
+            .await
+            .expect("outbox.drain")
+            .json()
+            .await
+            .unwrap();
+        assert_eq!(drained["outbox"].as_array().map(Vec::len).unwrap_or(0), 0);
+    }
+
+    let other = client
+        .get(format!("{base}/chat/{b}"))
+        .send()
+        .await
+        .expect("missing cell");
+    assert_eq!(other.status(), 404, "second name must be a different cell");
+}
+
 fn unique_todo() -> String {
     let nanos = std::time::SystemTime::now()
         .duration_since(std::time::UNIX_EPOCH)
         .expect("clock")
         .as_nanos();
     format!("todo-{nanos}")
+}
+
+fn unique_chat() -> String {
+    let nanos = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .expect("clock")
+        .as_nanos();
+    format!("chat-{nanos}")
+}
+
+fn unix_millis() -> String {
+    std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .expect("clock")
+        .as_millis()
+        .to_string()
 }
 
 async fn wait_healthy(client: &reqwest::Client, base: &str) {
