@@ -266,6 +266,9 @@ pub(crate) struct EngineInner {
     pub(crate) identity_validator: Option<OidcValidator>,
     pub(crate) protocol: Option<ProtocolRuntime>,
     pub(crate) query_protocol: QueryProtocolRuntime,
+    pub(crate) read_stores: BTreeMap<String, crate::graphql::read_store::ReadStoreKind>,
+    pub(crate) cell_getters:
+        BTreeMap<String, std::sync::Arc<dyn crate::graphql::read_store::CellByKeyGetter>>,
 }
 
 pub struct GraphqlEngine {
@@ -311,4 +314,5 @@ pub struct GraphqlEngineBuilder {
     pub(crate) change_rx: Option<tokio::sync::broadcast::Receiver<ReadModelChange>>,
     pub(crate) pending_errors: Vec<String>,
     pub(crate) identity: IdentityConfig,
+    pub(crate) read_stores: BTreeMap<String, crate::graphql::read_store::ReadStore>,
 }
