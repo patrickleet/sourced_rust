@@ -39,6 +39,8 @@ fn optional_profile_is_named_and_not_the_playground() {
             .expect("profile README");
     assert!(readme.contains("optional"), "{readme}");
     assert!(readme.contains("make run"), "{readme}");
+    assert!(readme.contains("make up-celld-nats"), "{readme}");
+    assert!(readme.contains("make test-celld-nats"), "{readme}");
     assert!(readme.contains("CELLD_URL"), "{readme}");
     assert!(readme.contains("NATS_URL"), "{readme}");
     assert!(

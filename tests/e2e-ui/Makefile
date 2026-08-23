@@ -4,10 +4,13 @@
 #   make run         # API + UI (uses e2e-ui.env if present)
 #   make test         # offline unit/suite/UI structural
 #   make test-browser # Playwright UI e2e (needs make up + make run)
+#   make up-celld-nats / test-celld-nats / down-celld-nats
+#                    # optional celld+NATS profile (not make run)
 
 .PHONY: all up down run run-api stop test ci-offline test-domain test-suite \
 	test-browser test-browser-install js-install js-build wasm ui-install ui-build ui-check ui-test \
-	gen-client check-client contracts-check check clean help
+	gen-client check-client contracts-check check clean help \
+	up-celld-nats down-celld-nats down-celld test-celld-nats
 
 # Defaults only — do NOT `include e2e-ui.env` (shell-quoted dotenv breaks Make).
 # Recipes `source` the env file so values stay clean.
@@ -24,6 +27,19 @@ JS_DIR       ?= ../../js
 CARGO_TEST_FLAGS ?= -- --nocapture
 
 DATABASE_URL ?= sqlite:./e2e-ui.db?mode=rwc
+
+# Optional celld+NATS profile (same UI, not the one-process playground).
+REPO_ROOT        := $(abspath ../..)
+CELLD_COMPOSE    := ../celld/docker-compose.yml
+PROFILE_COMPOSE  := celld-nats-profile/docker-compose.yml
+CELLD_HTTP_PORT  ?= 18080
+NATS_PORT        ?= 14222
+CELLD_URL        ?= http://127.0.0.1:$(CELLD_HTTP_PORT)
+NATS_URL         ?= nats://127.0.0.1:$(NATS_PORT)
+# Public Azurite emulator account (already in tests/celld compose). Not a secret.
+AZURE_STORAGE_USE_EMULATOR    ?= true
+AZURE_STORAGE_ACCOUNT_NAME    ?= devstoreaccount1
+AZURE_STORAGE_ACCOUNT_KEY     ?= Eby8vdM02xNOcqFlqUwJPLlmEtlCDXJ1OUzFT50uSRZ6IFsuFq2UVErCz4I6tq/K1SZFPTOtr/KBHBeksoGMGw==
 
 all: run
 
@@ -96,6 +112,58 @@ stop:
 	@lsof -ti:$(UI_PORT) 2>/dev/null | xargs kill -9 2>/dev/null || true
 	@rm -f .make-runner.pid .make-ui.pid
 	@echo stopped
+
+## Optional celld + NATS profile of the same UI. Does NOT replace make run.
+## Brings up tests/celld (Azurite + celld) and celld-nats-profile (NATS only).
+up-celld-nats:
+	@set -e; \
+	command -v docker >/dev/null || { echo "docker required"; exit 1; }; \
+	command -v celld >/dev/null || { echo "celld CLI required: curl -fsSL https://celld.dev/install.sh | sh"; exit 1; }; \
+	command -v worker-build >/dev/null || { echo "worker-build required: cargo install worker-build"; exit 1; }; \
+	echo "optional profile — not make run"; \
+	echo "NATS: $(PROFILE_COMPOSE)"; \
+	docker compose -f $(PROFILE_COMPOSE) up -d; \
+	echo "celld + Azurite: $(CELLD_COMPOSE)"; \
+	docker compose -f $(CELLD_COMPOSE) up -d azurite; \
+	docker compose -f $(CELLD_COMPOSE) up --exit-code-from azurite-init azurite-init; \
+	export AZURE_STORAGE_USE_EMULATOR="$(AZURE_STORAGE_USE_EMULATOR)"; \
+	export AZURE_STORAGE_ACCOUNT_NAME="$(AZURE_STORAGE_ACCOUNT_NAME)"; \
+	export AZURE_STORAGE_ACCOUNT_KEY="$(AZURE_STORAGE_ACCOUNT_KEY)"; \
+	echo "building Todo cell worker…"; \
+	( cd ../celld/worker && worker-build --release ); \
+	echo "deploying worker to az://celld…"; \
+	( cd $(REPO_ROOT) && celld deploy tests/celld/worker --bucket az://celld ); \
+	docker compose -f $(CELLD_COMPOSE) up -d celld; \
+	docker compose -f $(CELLD_COMPOSE) restart celld; \
+	ok=0; \
+	for i in $$(seq 1 40); do \
+		code=$$(curl -s -o /dev/null -w '%{http_code}' "$(CELLD_URL)/health" 2>/dev/null || echo 000); \
+		if [ "$$code" = "200" ]; then ok=1; break; fi; \
+		sleep 0.5; \
+	done; \
+	if [ "$$ok" != "1" ]; then echo "celld not healthy at $(CELLD_URL)/health"; exit 1; fi; \
+	echo ""; \
+	echo "  CELLD_URL $(CELLD_URL)"; \
+	echo "  NATS_URL  $(NATS_URL)"; \
+	echo "  smoke:    make test-celld-nats"; \
+	echo "  stop:     make down-celld-nats   (NATS only)"; \
+	echo "            make down-celld        (Azurite + celld)"; \
+	echo "  playground remains: make run"; \
+	echo ""
+
+down-celld-nats:
+	docker compose -f $(PROFILE_COMPOSE) down
+	@echo "NATS profile stopped. celld/Azurite untouched (make down-celld). playground untouched (make down)."
+
+down-celld:
+	docker compose -f $(CELLD_COMPOSE) down
+	@echo "celld + Azurite stopped. NATS: make down-celld-nats. playground: make down."
+
+test-celld-nats:
+	@echo "optional profile smoke — default make test / make run unchanged"
+	cd $(REPO_ROOT) && \
+	  CELLD_URL="$(CELLD_URL)" NATS_URL="$(NATS_URL)" \
+	  cargo test --test e2e_ui_celld_nats_profile --features graphql,http,sqlite -- --nocapture
 
 test: test-domain test-suite ui-install ui-build ui-check ui-test
 	@echo "OK — offline domain + suite + UI build + typecheck + structural tests"
@@ -196,5 +264,9 @@ help:
 	@echo "  make wasm            blob-domain core → ui/src/lib/blob/pkg (wasm-pack)"
 	@echo "  make gen-client      typed Service → generated user/admin clients"
 	@echo "  make check-client    verify generated artifacts byte-for-byte"
-	@echo "  make down       docker compose down"
+	@echo "  make down       playground docker compose down (not celld/NATS)"
+	@echo "  make up-celld-nats    optional celld+NATS profile (not make run)"
+	@echo "  make test-celld-nats  cargo test --test e2e_ui_celld_nats_profile"
+	@echo "  make down-celld-nats  stop NATS profile only"
+	@echo "  make down-celld       stop tests/celld Azurite + celld"
 	@echo "  GRAPHIQL=0      disable GraphiQL when running the API"

@@ -57,8 +57,8 @@ return the todo.
 Tear down: `docker compose -f tests/celld/docker-compose.yml down -v`.
 
 Optional e2e-ui split (same Svelte app, not the default playground):
-`tests/e2e-ui/celld-nats-profile/`. GraphQL wait-path → this cell HTTP;
-NATS for Eventual events; SQL lists stay SQL.
+`cd tests/e2e-ui && make up-celld-nats` then `make test-celld-nats`.
+GraphQL wait-path → this cell HTTP; NATS for Eventual events; SQL lists stay SQL.
 
 ## Ports
 
