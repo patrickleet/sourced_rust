@@ -169,6 +169,34 @@ impl CommandService for GrpcHandler {
         // [`build_session`] and the `Session` trust-boundary docs.
         let session = build_session(&metadata, req.session_variables);
 
+        #[cfg(feature = "graphql")]
+        if let Some((command_id, wait_input)) = super::wait_path::parse_wait_path_body(&input) {
+            return match super::wait_path::dispatch_wait_path(
+                self.service.as_ref(),
+                &req.command,
+                &command_id,
+                wait_input,
+                session,
+            )
+            .await
+            {
+                Ok(result) => Ok(Response::new(GrpcResponse {
+                    status: 200,
+                    body: super::wait_path::wait_path_response(&result).to_string(),
+                })),
+                Err(e) => {
+                    let status = e.status_code();
+                    if status >= 500 {
+                        eprintln!("microsvc command `{}` failed: {e}", req.command);
+                    }
+                    Ok(Response::new(GrpcResponse {
+                        status: status as u32,
+                        body: json!({ "error": e.client_message() }).to_string(),
+                    }))
+                }
+            };
+        }
+
         match self.service.dispatch(&req.command, input, session).await {
             Ok(value) => Ok(Response::new(GrpcResponse {
                 status: 200,
