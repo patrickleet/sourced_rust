@@ -108,7 +108,7 @@ pub use identity::{
     public_oidc_identity_from_env_vars, resolve_session, resolve_session_sync,
     strip_identity_headers, AuthError, ClaimMapConfig, IdentityConfig, IdentityMode,
     IdentityResolver, OidcConfig, OidcValidator, TrustedProxyConfig, ValidationError,
-    DEFAULT_IDENTITY_STRIP_HEADERS, UNSET_OIDC_AUDIENCE, UNSET_OIDC_ISSUER,
+    VerifiedPrincipal, DEFAULT_IDENTITY_STRIP_HEADERS, UNSET_OIDC_AUDIENCE, UNSET_OIDC_ISSUER,
 };
 #[cfg(feature = "graphql")]
 pub use subscribe::ChangeHub;

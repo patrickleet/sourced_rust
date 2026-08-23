@@ -34,7 +34,7 @@ use crate::repository::CommitBatch;
 /// mutation edge without exposing repository details.
 #[derive(Debug)]
 #[cfg(feature = "graphql")]
-pub(crate) enum CausalDispatchError {
+pub enum CausalDispatchError {
     BadRequest(String),
     Forbidden,
     CommandIdReuse,
@@ -51,7 +51,7 @@ pub(crate) enum CausalDispatchError {
 
 #[cfg(feature = "graphql")]
 impl CausalDispatchError {
-    pub(crate) fn code(&self) -> &'static str {
+    pub fn code(&self) -> &'static str {
         match self {
             Self::BadRequest(_) => "BAD_REQUEST",
             Self::Forbidden => "FORBIDDEN",
@@ -71,7 +71,7 @@ impl CausalDispatchError {
         }
     }
 
-    pub(crate) fn status_code(&self) -> u16 {
+    pub fn status_code(&self) -> u16 {
         match self {
             Self::BadRequest(_) => 400,
             Self::Forbidden => 403,
@@ -83,7 +83,7 @@ impl CausalDispatchError {
         }
     }
 
-    pub(crate) fn client_message(&self) -> String {
+    pub fn client_message(&self) -> String {
         match self {
             Self::BadRequest(message) => message.clone(),
             Self::Rejected { message, .. } => message.clone(),
@@ -214,9 +214,32 @@ impl CausalCommandReceiptSource {
 /// Successful typed causal dispatch plus its exact durable receipt source.
 #[cfg(feature = "graphql")]
 #[derive(Clone, Debug, PartialEq)]
-pub(crate) struct CausalDispatchResult {
+pub struct CausalDispatchResult {
     pub(crate) payload: Value,
     pub(crate) receipt: CausalCommandReceiptSource,
+}
+
+#[cfg(feature = "graphql")]
+impl CausalDispatchResult {
+    /// Handler payload returned to the wait-path caller.
+    pub fn payload(&self) -> &Value {
+        &self.payload
+    }
+
+    /// Client-supplied durable command id.
+    pub fn command_id(&self) -> &str {
+        &self.receipt.command_id
+    }
+
+    /// Ledger causation id assigned on accept.
+    pub fn causation_id(&self) -> &str {
+        &self.receipt.causation_id
+    }
+
+    /// Stable ledger state name (`succeeded`, `atomic`, …).
+    pub fn state(&self) -> &'static str {
+        self.receipt.state.as_str()
+    }
 }
 
 /// Stable public command-status vocabulary.

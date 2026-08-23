@@ -8,7 +8,7 @@ mod oidc;
 mod resolve;
 
 pub use claims::{map_claims_to_session, ClaimMapConfig};
-pub(crate) use oidc::VerifiedPrincipal;
+pub use oidc::VerifiedPrincipal;
 pub use oidc::{OidcConfig, OidcValidator, ValidationError};
 pub use resolve::{
     extract_bearer, public_oidc_identity_from_env, public_oidc_identity_from_env_vars,

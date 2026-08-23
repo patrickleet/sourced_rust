@@ -591,8 +591,7 @@ impl Service {
     /// Execute one authenticated typed causal route through its durable ledger
     /// and framework-owned staged commit boundary.
     #[cfg(feature = "graphql")]
-    #[allow(dead_code)]
-    pub(crate) async fn dispatch_causal(
+    pub async fn dispatch_causal(
         &self,
         command: &str,
         command_id: &str,
@@ -608,7 +607,7 @@ impl Service {
     /// Execute one authenticated typed causal route and retain the exact
     /// durable replay material needed to construct a causal receipt.
     #[cfg(feature = "graphql")]
-    pub(crate) async fn dispatch_causal_with_receipt(
+    pub async fn dispatch_causal_with_receipt(
         &self,
         command: &str,
         command_id: &str,
