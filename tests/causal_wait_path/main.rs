@@ -4,6 +4,8 @@
 use std::sync::Arc;
 
 use distributed::bus::{Bus, BusConsumer, InMemoryBus, TransportError};
+use distributed::command_dispatch::{CommandHost, HttpCommandHost};
+use distributed::graphql::VerifiedPrincipal;
 use distributed::graphql::{
     typed_command, GraphqlInputType, GraphqlOutputType, GraphqlTypeDef, GraphqlTypeField, Succeeded,
 };
@@ -181,6 +183,31 @@ async fn http_wait_path_ignores_spoofed_body_roles() {
         .await
         .unwrap();
     assert_eq!(resp.status(), 403, "{}", resp.text().await.unwrap());
+}
+
+#[tokio::test]
+async fn graphql_only_http_host_wait_dispatches_to_writer() {
+    let base = start_http(wait_service()).await;
+    let host = HttpCommandHost::new(base);
+    let mut session = distributed::microsvc::Session::new();
+    session.set(USER_ID_KEY, "alice");
+    session.set(ROLE_KEY, "user");
+    let principal = VerifiedPrincipal::from_trusted_transport("alice");
+    let command_id = "0190a000-0000-7000-8000-000000000105";
+    let result = host
+        .invoke(
+            "todo.create",
+            command_id,
+            json!({ "id": "todo-gql-host" }),
+            session,
+            principal,
+            None,
+        )
+        .await
+        .expect("GraphQL-only host should wait-dispatch over HTTP");
+    assert_eq!(result.payload(), &json!({ "id": "todo-gql-host" }));
+    assert_eq!(result.command_id(), command_id);
+    assert_eq!(result.state(), "succeeded");
 }
 
 #[tokio::test]

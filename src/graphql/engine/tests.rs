@@ -1811,7 +1811,7 @@ mod client_surface_parity_tests {
         assert_eq!(response.errors.len(), 1, "{response:?}");
         assert_eq!(
             response.errors[0].message,
-            "command dispatcher not configured (use graphql_router_with_dispatcher or graphql_router_with_service)"
+            "command host not configured (use graphql_router_with_host or graphql_router_with_service)"
         );
     }
 

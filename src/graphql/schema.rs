@@ -938,17 +938,17 @@ async fn resolve_command(
     ctx: &async_graphql::dynamic::ResolverContext<'_>,
     command_name: &str,
 ) -> Result<Option<Value>, async_graphql::Error> {
-    use crate::microsvc::Service;
+    use crate::command_dispatch::SharedCommandHost;
 
     let session = ctx
         .data_opt::<Session>()
         .cloned()
         .unwrap_or_else(Session::new);
-    let service = ctx.data_opt::<Arc<Service>>();
-    let Some(service) = service else {
+    let host = ctx.data_opt::<SharedCommandHost>();
+    let Some(host) = host else {
         return Err(client_error(
             "INTERNAL",
-            "command dispatcher not configured (use graphql_router_with_dispatcher or graphql_router_with_service)",
+            "command host not configured (use graphql_router_with_host or graphql_router_with_service)",
         ));
     };
 
@@ -988,14 +988,14 @@ async fn resolve_command(
                 "durable commands require a verified OIDC bearer",
             )
         })?;
-    let result = service
-        .dispatch_causal_with_receipt_and_protocol(
+    let result = host
+        .invoke(
             command_name,
             &command_id,
             input,
             session,
             principal,
-            protocol.clone(),
+            Some(protocol.clone()),
         )
         .await
         .map_err(|error| {
@@ -1012,7 +1012,7 @@ async fn resolve_command(
 async fn resolve_command_status(
     ctx: &async_graphql::dynamic::ResolverContext<'_>,
 ) -> Result<Option<Value>, async_graphql::Error> {
-    use crate::microsvc::Service;
+    use crate::command_dispatch::SharedCommandHost;
     use async_graphql::indexmap::IndexMap;
 
     let session = ctx
@@ -1038,10 +1038,10 @@ async fn resolve_command_status(
                 "causal command protocol is not configured for this endpoint",
             )
         })?;
-    let service = ctx.data_opt::<Arc<Service>>().ok_or_else(|| {
+    let host = ctx.data_opt::<SharedCommandHost>().ok_or_else(|| {
         client_error(
             "INTERNAL",
-            "command dispatcher not configured (use graphql_router_with_dispatcher or graphql_router_with_service)",
+            "command host not configured (use graphql_router_with_host or graphql_router_with_service)",
         )
     })?;
     let command_id = ctx
@@ -1051,8 +1051,8 @@ async fn resolve_command_status(
         .deserialize::<String>()
         .map_err(|_| client_error("BAD_REQUEST", "invalid commandId"))?;
 
-    let status = service
-        .causal_command_status_with_protocol(&command_id, &session, principal, protocol.clone())
+    let status = host
+        .status(&command_id, &session, principal, Some(protocol.clone()))
         .await
         .map_err(|error| {
             client_error_with_status(error.code(), error.status_code(), error.client_message())

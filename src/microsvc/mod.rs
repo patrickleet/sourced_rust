@@ -122,11 +122,11 @@ pub use service::{
     TypedRouteBuilder,
 };
 #[cfg(feature = "graphql")]
-pub use service::{CausalDispatchError, CausalDispatchResult};
+pub use service::{CausalCommandPublicStatus, CausalDispatchError, CausalDispatchResult};
 #[cfg(feature = "graphql")]
 pub(crate) use service::{
-    CausalCommandProjectionObligation, CausalCommandPublicState, CausalCommandPublicStatus,
-    CausalCommandReceiptSource, CausalProjectionEvidenceState,
+    CausalCommandProjectionObligation, CausalCommandPublicState, CausalCommandReceiptSource,
+    CausalProjectionEvidenceState,
 };
 #[cfg(feature = "graphql")]
 pub(crate) mod wait_path;

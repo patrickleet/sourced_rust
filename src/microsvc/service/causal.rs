@@ -240,6 +240,50 @@ impl CausalDispatchResult {
     pub fn state(&self) -> &'static str {
         self.receipt.state.as_str()
     }
+
+    /// Rebuild a receipt from the HTTP/gRPC wait-path JSON envelope.
+    pub(crate) fn from_wait_path_wire(body: Value) -> Result<Self, CausalDispatchError> {
+        let payload = body
+            .get("payload")
+            .cloned()
+            .unwrap_or(Value::Null);
+        let receipt = body.get("receipt").ok_or_else(|| {
+            CausalDispatchError::Internal("wait-path response missing receipt".into())
+        })?;
+        let command_id = receipt
+            .get("commandId")
+            .and_then(Value::as_str)
+            .ok_or_else(|| {
+                CausalDispatchError::Internal("wait-path receipt missing commandId".into())
+            })?
+            .to_string();
+        let causation_id = receipt
+            .get("causationId")
+            .and_then(Value::as_str)
+            .unwrap_or("")
+            .to_string();
+        let state = receipt
+            .get("state")
+            .and_then(Value::as_str)
+            .unwrap_or("succeeded");
+        let state = crate::command_ledger::CommandLedgerState::parse(state).map_err(|err| {
+            CausalDispatchError::Internal(format!("wait-path receipt state: {err}"))
+        })?;
+        Ok(Self {
+            payload,
+            receipt: CausalCommandReceiptSource {
+                command_id,
+                command_name: String::new(),
+                causation_id,
+                consistency: crate::graphql::CommandConsistency::Succeeded,
+                state,
+                outcome: Value::Null,
+                obligations: Vec::new(),
+                projection_metadata: None,
+                direct_projection: None,
+            },
+        })
+    }
 }
 
 /// Stable public command-status vocabulary.
@@ -301,7 +345,7 @@ pub(crate) struct CausalCommandProjectionEvidence {
 /// codec. This type is not serializable and contains no raw failure material.
 #[cfg(feature = "graphql")]
 #[derive(Clone, Debug, PartialEq)]
-pub(crate) struct CausalCommandPublicStatus {
+pub struct CausalCommandPublicStatus {
     pub(crate) state: CausalCommandPublicState,
     pub(crate) command_id: String,
     /// Trusted durable command identity for complete terminal receipts.
@@ -320,7 +364,7 @@ pub(crate) struct CausalCommandPublicStatus {
 
 #[cfg(feature = "graphql")]
 impl CausalCommandPublicStatus {
-    pub(super) fn unknown(command_id: impl Into<String>) -> Self {
+    pub(crate) fn unknown(command_id: impl Into<String>) -> Self {
         Self {
             state: CausalCommandPublicState::Unknown,
             command_id: command_id.into(),

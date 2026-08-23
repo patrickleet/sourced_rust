@@ -86,7 +86,7 @@ pub mod http;
 #[cfg(feature = "graphql")]
 pub mod identity;
 #[cfg(feature = "graphql")]
-pub(crate) mod protocol;
+pub mod protocol;
 #[cfg(feature = "graphql")]
 pub(crate) mod query_protocol;
 #[cfg(feature = "graphql")]
@@ -100,7 +100,8 @@ pub use engine::{
 };
 #[cfg(feature = "graphql")]
 pub use http::{
-    graphiql_page, graphql_router, graphql_router_with_dispatcher, graphql_router_with_service,
+    graphiql_page, graphql_router, graphql_router_with_dispatcher, graphql_router_with_host,
+    graphql_router_with_service,
 };
 #[cfg(feature = "graphql")]
 pub use identity::{
