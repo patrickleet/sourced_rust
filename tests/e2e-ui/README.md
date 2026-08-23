@@ -42,7 +42,8 @@ The UI is at `http://localhost:5180`; GraphQL is at
 with password `Password1!`.
 
 This is the **default one-process playground**. An optional celld+NATS
-profile of the same UI lives in `celld-nats-profile/` and is not `make run`.
+profile of the same UI is `make up-celld-nats` / `make test-celld-nats`
+(`celld-nats-profile/`); it is not `make run`.
 
 ## The developer experience
 

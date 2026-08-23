@@ -12,6 +12,16 @@ make up    # Postgres + Zitadel
 make run   # one backend + UI
 ```
 
+Optional profile:
+
+```sh
+cd tests/e2e-ui
+make up-celld-nats     # Azurite + celld + NATS (not make run)
+make test-celld-nats   # GraphQL wait-path smoke + SQL list
+make down-celld-nats   # NATS only
+make down-celld        # Azurite + celld
+```
+
 `tests/e2e-ui/crates/service/src/host.rs` stays a single backend process.
 Do not add this topology there.
 
@@ -32,6 +42,16 @@ GraphQL, `@live`, and Eventual projectors are **not** cell class methods
 
 Azurite + celld already live under `tests/celld/docker-compose.yml`. NATS
 is extra and named so it cannot be confused with `tests/e2e-ui/docker`.
+
+```sh
+cd tests/e2e-ui
+make up-celld-nats
+make test-celld-nats
+```
+
+Override ports if busy: `CELLD_HTTP_PORT=18880 NATS_PORT=14222 make up-celld-nats`.
+
+Manual equivalent (same as the Make recipes):
 
 ```sh
 # 1) celld + Azurite (no MinIO)
