@@ -488,6 +488,9 @@ pub(super) fn configure_outbox_for<D>(
 /// Command declarations live next to the aggregate. SOA and later cell hosts
 /// call [`Routes::mount`] with the same value; the declaration must not name
 /// sqlx, celld, or `QueuedRepository`.
+///
+/// Prefer [`crate::portable_command!`] (`PCH-DEC-001`) for shard + invoke +
+/// Eventual. The fluent builder on [`Routes`] remains the expansion target.
 pub trait PortableCommand<D> {
     /// Register this command on `routes` and return the bundle.
     fn install(self, routes: Routes<D>) -> Routes<D>;

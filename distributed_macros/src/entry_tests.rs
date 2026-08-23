@@ -494,4 +494,43 @@ mod tests {
         );
         assert!(out.contains("replay_event"), "got: {out}");
     }
+
+    #[test]
+    fn expand_portable_command_emits_thin_mount() {
+        let input = quote! {
+            name: "todo.complete",
+            transition: domain_commands::Complete,
+            aggregate: Todo,
+            input: TodoCompleteInput,
+            outcome: Eventual<TodoStatusPayload>,
+            shard: |input| input.todo_id.clone(),
+            load: required,
+            roles: ["user", "admin"],
+            field: "todos_complete",
+            invoke: |todo, _input, principal| todo.complete(principal),
+            payload: |todo| TodoStatusPayload::from_todo(&**todo),
+        };
+        let out = crate::portable_command::expand(input)
+            .expect("expand")
+            .to_string();
+        assert!(out.contains("struct Complete"), "{out}");
+        assert!(out.contains("fn complete"), "{out}");
+        assert!(out.contains("todo . complete"), "{out}");
+        assert!(out.contains("load_by"), "{out}");
+        assert!(out.contains("eventual"), "{out}");
+        assert!(out.contains("PortableCommand"), "{out}");
+    }
+
+    #[test]
+    fn expand_portable_command_rejects_unknown_key() {
+        let input = quote! {
+            name: "todo.complete",
+            nope: 1,
+        };
+        let err = crate::portable_command::expand(input).expect_err("unknown key");
+        assert!(
+            err.to_string().contains("unknown portable_command key `nope`"),
+            "got: {err}"
+        );
+    }
 }
