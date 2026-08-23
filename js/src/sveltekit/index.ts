@@ -28,6 +28,7 @@ export {
 } from './replica.js';
 export {
 	createDistributedSvelteKitServer,
+	matchDistributedRoute,
 	registerDistributedRoute,
 	type CreateDistributedSvelteKitServerOptions,
 	type DistributedRouteOperation,

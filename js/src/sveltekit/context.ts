@@ -96,6 +96,11 @@ export function defineDistributedSvelteKitOperation<
 			return useDistributedSvelteKitClient<unknown>()
 				.operation(artifact)
 				.read(variables);
+		},
+		prefetch(variables: TVariables): Promise<void> {
+			return useDistributedSvelteKitClient<unknown>()
+				.operation(artifact)
+				.prefetch(variables);
 		}
 	});
 }

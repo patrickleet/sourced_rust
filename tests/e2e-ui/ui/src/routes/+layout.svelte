@@ -6,9 +6,11 @@
 	import type { Snippet } from 'svelte';
 	import {
 		createPageDataSessionSource,
+		matchDistributedRoute,
 		type SveltekitReplicaHydration
 	} from '@hops-ops/distributed/sveltekit';
-	import { provideDistributed } from '$distributed';
+	import { DISTRIBUTED_ROUTE_OPERATIONS, provideDistributed } from '$distributed';
+	import { CHAT_PAGE_SIZE } from '$lib/chat/lobby-log';
 
 	import AuthRefresh from '$lib/components/shared/AuthRefresh.svelte';
 	import Navbar from '$lib/components/shared/header/Navbar.svelte';
@@ -60,6 +62,30 @@
 	onDestroy(() => {
 		if (hydrationTimer !== undefined) clearTimeout(hydrationTimer);
 		client.destroy();
+	});
+
+	$effect(() => {
+		if (!browser) return;
+		const onEnter = (event: PointerEvent) => {
+			const node = event.target;
+			if (!(node instanceof Element)) return;
+			const link = node.closest('a[href]');
+			if (!(link instanceof HTMLAnchorElement)) return;
+			if (link.target && link.target !== '_self') return;
+			if (link.origin !== window.location.origin) return;
+			const signedIn = !!data.session?.user;
+			for (const { plan, artifact } of DISTRIBUTED_ROUTE_OPERATIONS) {
+				if (!matchDistributedRoute(plan.route, link.pathname)) continue;
+				if (!signedIn && plan.operation !== 'ChatMessages') continue;
+				const variables =
+					plan.operation === 'ChatMessages'
+						? { limit: CHAT_PAGE_SIZE, offset: 0 }
+						: {};
+				void client.prefetch(artifact, variables);
+			}
+		};
+		document.addEventListener('pointerenter', onEnter, true);
+		return () => document.removeEventListener('pointerenter', onEnter, true);
 	});
 </script>
 
