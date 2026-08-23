@@ -33,7 +33,15 @@ ensure-watch:
 run: wasm $(if $(filter 1,$(WATCH) $(WATCH_WORKER)),ensure-watch)
 	@set -e; \
 	if [ -f $(ENV_FILE) ]; then set -a; . ./$(ENV_FILE); set +a; fi; \
-	export DATABASE_URL="$${E2E_CELLD_DATABASE_URL:-sqlite:./e2e-celld.db?mode=rwc}"; \
+	if [ -n "$${E2E_CELLD_DATABASE_URL:-}" ]; then export DATABASE_URL="$$E2E_CELLD_DATABASE_URL"; fi; \
+	case "$${DATABASE_URL:-}" in \
+	  postgres://*|postgresql://*) ;; \
+	  *) \
+	    echo "e2e-celld requires Postgres DATABASE_URL — start: make -C ../e2e-ui up"; \
+	    echo "or: E2E_CELLD_DATABASE_URL=postgres://… make run"; \
+	    exit 1; \
+	    ;; \
+	esac; \
 	if [ -n "$${OIDC_ISSUER:-}" ] && ! curl -sf "$${OIDC_JWKS_URI:-$$OIDC_ISSUER/oauth/v2/keys}" >/dev/null 2>&1; then \
 	  echo "OIDC issuer not reachable ($$OIDC_ISSUER) — DevHeaders until: make -C ../e2e-ui up"; \
 	  unset OIDC_ISSUER OIDC_AUDIENCE OIDC_JWKS_URI; \
@@ -69,7 +77,7 @@ run: wasm $(if $(filter 1,$(WATCH) $(WATCH_WORKER)),ensure-watch)
 	lsof -ti:$${_api_port} 2>/dev/null | xargs kill -9 2>/dev/null || true; \
 	lsof -ti:$${_ui_port} 2>/dev/null | xargs kill -9 2>/dev/null || true; \
 	rm -f .make-runner.pid .make-ui.pid .make-worker.pid .make-runner.log; \
-	echo "starting e2e-celld API on $$_base (CELLD_URL=$$CELLD_URL NATS_URL=$$NATS_URL) …"; \
+	echo "starting e2e-celld API on $$_base (DATABASE_URL=$$DATABASE_URL CELLD_URL=$$CELLD_URL NATS_URL=$$NATS_URL) …"; \
 	if [ "$(WATCH)" = "1" ]; then \
 	  echo "API cargo-watch on (WATCH=0 to disable) …"; \
 	  cargo watch -d 1 \
@@ -161,4 +169,5 @@ help:
 	@echo "  WATCH=0    one-shot cargo run (no GraphQL reload)"
 	@echo "  WATCH_WORKER=0  skip worker-build + celld deploy watch"
 	@echo "  make stop  stop API + UI + worker watch"
-	@echo "  infra:     make -C ../e2e-ui up-celld-nats"
+	@echo "  infra:     make -C ../e2e-ui up && make -C ../e2e-ui up-celld-nats"
+	@echo "  Postgres read models from e2e-ui.env DATABASE_URL (not sqlite)"
