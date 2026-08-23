@@ -15,7 +15,7 @@ use distributed::graphql::IdentityConfig;
 use distributed::microsvc::{
     spawn_outbox_publish_loop, spawn_service_consumer_loop, Service,
 };
-use distributed::{PostgresLockManager, PostgresRepository, SqliteLockManager, SqliteRepository};
+use distributed::{PostgresLockManager, PostgresRepository};
 
 use crate::http::serve;
 use crate::{
@@ -41,66 +41,10 @@ pub async fn run(
         "e2e-celld graphql application=`{}` bind={} CELLD_URL={} NATS_URL={}",
         E2E_UI_APPLICATION, options.bind, celld_url, options.nats_url
     );
-    if database_url.starts_with("postgres://") || database_url.starts_with("postgresql://") {
-        run_postgres(database_url, options, celld_url).await
-    } else {
-        run_sqlite(database_url, options, celld_url).await
+    if !(database_url.starts_with("postgres://") || database_url.starts_with("postgresql://")) {
+        return Err("e2e-celld requires Postgres DATABASE_URL (make -C tests/e2e-ui up)".into());
     }
-}
-
-async fn run_sqlite(
-    database_url: &str,
-    options: HostOptions,
-    celld_url: String,
-) -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
-    let repo = SqliteRepository::connect_and_migrate(database_url).await?;
-    let registry = distributed_manifest()
-        .table_registry()
-        .map_err(|e| format!("manifest: {e}"))?;
-    repo.bootstrap_table_schema_for_dev(&registry).await?;
-    let locks = SqliteLockManager::new(repo.pool().clone());
-    let nats = connect_nats(&options.nats_url).await?;
-
-    let change_rx = repo.read_model_changes();
-    let service = build_service(repo.clone(), locks.clone(), repo.clone()).with_bus(nats.clone());
-    let gql = build_graphql_engine(&repo, &service, options.identity.clone(), Some(change_rx))?;
-    let service = Arc::new(service.try_with_graphql(gql)?);
-    let publisher = BusPublisher::new(Arc::new(nats.clone()));
-    let host: SharedCommandHost = Arc::new(celld_command_host(
-        celld_url.clone(),
-        Arc::clone(&service),
-        publisher.clone(),
-    ));
-
-    spawn_outbox_publish_loop(
-        repo.outbox_store(),
-        Arc::new(nats.clone()),
-        "e2e-celld",
-        Duration::from_secs(30),
-        5,
-    );
-    {
-        let repo = repo.clone();
-        let locks = locks.clone();
-        let nats = nats.clone();
-        spawn_service_consumer_loop(move || {
-            build_service(repo.clone(), locks.clone(), repo.clone()).with_bus(nats.clone())
-        });
-    }
-    spawn_zitadel_scrape(repo.clone());
-
-    eprintln!(
-        "e2e-celld (sqlite) listening on http://{} — cell wait-path; bus drain; @live stays here",
-        options.bind
-    );
-    serve(
-        service,
-        host,
-        &options.bind,
-        Some(outbox_alarm_handler(publisher, celld_url)),
-    )
-    .await?;
-    Ok(())
+    run_postgres(database_url, options, celld_url).await
 }
 
 async fn run_postgres(

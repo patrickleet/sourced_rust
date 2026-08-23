@@ -25,12 +25,16 @@ same process. GraphQL and projectors are not cell class methods.
 
 ```sh
 cd tests/e2e-ui
-make up                 # Zitadel + Postgres for the Svelte login (optional)
+make up                 # Zitadel + Postgres (read models + login)
 make up-celld-nats      # Azurite + celld + NATS
 
 cd ../e2e-celld
 make run                # GraphQL :8791 + UI :5180 (watches sources)
 ```
+
+Eventual projectors and `@live` use **Postgres** from `e2e-ui.env`
+(`DATABASE_URL`). There is no SQLite read-model path. Cells still keep
+private SQLite per Durable Object. Override with `E2E_CELLD_DATABASE_URL`.
 
 `make run` reloads on its own:
 
