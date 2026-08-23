@@ -4,6 +4,14 @@ A copyable Distributed service and SvelteKit UI demonstrating one modeled
 projection from aggregate transition to server read model, generated GraphQL
 client, optimistic replica update, and causal confirmation.
 
+Rust · TypeScript · CQRS / ES · SvelteKit · celld · Kafka · NATS · RabbitMQ ·
+PSQL · SQLite · OIDC · Keycloak · Authentik
+
+Default is **one process** (`make run`). The same UI can wait-dispatch Todo
+create/complete to celld from [`../e2e-celld`](../e2e-celld). Todo commands
+are `portable_command!` declarations in `todo-domain`; hosts only `.mount`
+them.
+
 ## Option A — local cluster + workspace GitOps
 
 One-time: start the kind control plane on Dory's Docker engine. Then run the
@@ -41,10 +49,17 @@ The UI is at `http://localhost:5180`; GraphQL is at
 `http://127.0.0.1:8791/graphql`. Demo users are `alice`, `bob`, and `admin`
 with password `Password1!`.
 
-This is the **default one-process playground**. An optional celld+NATS
-profile is `make up-celld-nats` / `make test-celld-nats`
-(`celld-nats-profile/`); it is not `make run`. The GraphQL+UI host that
-wait-dispatches Todo to celld is the sibling example `tests/e2e-celld`.
+This is the **default one-process playground**. Optional celld:
+
+```bash
+cd tests/e2e-ui && make up && make up-celld-nats
+cd ../e2e-celld && make run
+```
+
+`make up-celld-nats` / `make test-celld-nats` (`celld-nats-profile/`) start
+Azurite + celld + NATS. They are not `make run`. GraphQL wait-dispatches
+Todo create/complete to a cell (one SQLite shard per todo). Chat, Blob,
+GraphQL, and projectors stay in the GraphQL process.
 
 ## The developer experience
 

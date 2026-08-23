@@ -79,7 +79,7 @@ export const todosWalkthrough: DemoWalkthrough = {
 	title: 'Todos',
 	kicker: 'Query, then command, then domain, then projection',
 	summary:
-		'This page loads one GraphQL query into the client replica. Todo commands are Eventual. The client shows a safe preview from the command input and the domain transition. The event handler applies the same mutation program later. The client waits for projection obligations. The client does not wait for a response row.',
+		'This page loads one GraphQL query into the client replica. Todo commands are Eventual. The client shows a safe preview from the command input and the domain transition. The event handler applies the same mutation program later. The client waits for projection obligations. The client does not wait for a response row. The same portable_command! declarations mount on a local Service (tests/e2e-ui) or wait-dispatch create and complete to a cell (tests/e2e-celld).',
 	tabs: [
 {
 			id: 'query',
@@ -145,7 +145,7 @@ const todos = $derived($query.complete ? $query.data.todos : []);`
 {
 			id: 'commands',
 			label: '2 · Commands',
-			lede: 'The UI writes through generated commands. Todo commands are Eventual. The client writes a safe preview into the replica. The UI updates from that replica. The preview becomes confirmed when the projection obligation completes.',
+			lede: 'The UI writes through generated commands. Todo commands are Eventual. The client writes a safe preview into the replica. The UI updates from that replica. The preview becomes confirmed when the projection obligation completes. Domain crates declare the commands. Hosts only mount them.',
 			principle: 'Let the service declare how the UI updates after a command.',
 			samples: [
 				{
@@ -157,62 +157,74 @@ await commands.todo.create({ title: text });
 await commands.todo.complete({ todo_id });`
 				},
 				{
-					file: 'modules/todo.rs · todos_create',
-					caption: 'The service mounts a domain-owned command. Roles and the create handler live in todo-domain.',
+					file: 'todo-domain/src/commands.rs · complete',
+					caption: 'A thin portable command is shard + invoke + Eventual. The host does not write a handler body.',
+					code: `portable_command! {
+  name: "todo.complete",
+  transition: domain_commands::Complete,
+  aggregate: Todo,
+  input: TodoCompleteInput,
+  outcome: Eventual<TodoStatusPayload>,
+  shard: |input| input.todo_id.clone(),
+  load: required,
+  roles: ["user", "admin"],
+  field: "todos_complete",
+  invoke: |todo, _input, principal| todo.complete(principal),
+  payload: |todo| TodoStatusPayload::from_todo(&**todo),
+}`
+				},
+				{
+					file: 'modules/todo.rs · mount',
+					caption: 'The service (or cell) mounts the same domain values. Roles and handlers live in todo-domain.',
 					code: `Routes::for_aggregate::<R, L, Todo, S>(repo, locks, read_models)
   .mount(todo_domain::commands::create())
   .mount(todo_domain::commands::complete())
   .mount(todo_domain::commands::force_archive())`
-				},
-				{
-					file: 'modules/todo.rs · todos_force_archive',
-					caption: 'This command is for the admin role only. The user client tree does not include this field.',
-					code: `.mount(todo_domain::commands::force_archive())`
 				}
 			]
 		},
 {
 			id: 'handlers',
 			label: '3 · Handlers',
-			lede: 'A command handler binds the principal after the mount guard. Then it gets or creates the aggregate. Then it calls one domain method. Then it commits. Todos use Eventual. The projector writes the read-model row after the commit.',
+			lede: 'Most Todo commands are thin: load or create, invoke one domain method, commit Eventual. The framework writes that handler. `todo.create` and `todo.force_archive` still use a handle function when the body needs extra checks or payload fields. Either way, ctx.repo() is the capability. The host is SQLite, Postgres, or a cell.',
 			principle: 'A command changes the write model. A table is only for reads.',
 			samples: [
 				{
+					file: 'todo-domain/src/commands.rs · complete (thin)',
+					caption: 'No CausalCommandContext body. The mount loads by shard, invokes the domain, and commits Eventual.',
+					code: `portable_command! {
+  name: "todo.complete",
+  // …
+  load: required,
+  invoke: |todo, _input, principal| todo.complete(principal),
+  payload: |todo| TodoStatusPayload::from_todo(&**todo),
+}`
+				},
+				{
 					file: 'todo-domain/src/commands.rs · handle_create',
-					caption: 'Get the principal. Create the aggregate. Call the domain. Publish events. Commit Eventual.',
-					code: `pub async fn handle(
+					caption: 'Escape hatch: get the principal, create the aggregate, call the domain, commit Eventual.',
+					code: `portable_command! {
+  name: "todo.create",
+  // …
+  guard: authenticated_user,
+  handle: handle_create,
+  defaults: command_input_defaults! {
+    input: TodoCreateInput;
+    default input.todo_id = uuid_v7();
+  },
+}
+
+pub async fn handle_create(
   ctx: &CausalCommandContext<'_, Todo>,
   input: TodoCreateInput,
 ) -> Result<PreparedCommand<Eventual<TodoCreatePayload>>, HandlerError> {
-  // Session admission already ran on .guarded(causal_has_user, …).
   let owner = principal(ctx)?;
   let repo = ctx.repo();
   let mut todo = repo.create();
   todo.create(&input.todo_id, &owner, &input.title)
     .map_err(rejected)?;
-  let state = TodoState::from(&*todo);
-  repo.publish_events().commit(todo)?.eventual(TodoCreatePayload {
-    todo_id: state.todo_id,
-    owner_id: state.owner_id,
-    title: state.title,
-    status: state.status,
-  })
+  repo.publish_events().commit(todo)?.eventual(/* payload */)
 }`
-				},
-				{
-					file: 'todo-domain/src/commands.rs · complete',
-					caption: 'Load the aggregate by id. Then call `complete`. Then commit Eventual.',
-					code: `let owner = principal(ctx)?;
-let mut todo = repo
-  .get(&input.todo_id)
-  .await?
-  .ok_or_else(|| HandlerError::NotFound(input.todo_id.clone()))?;
-todo.complete(&owner).map_err(rejected)?;
-let state = TodoState::from(&*todo);
-repo.publish_events().commit(todo)?.eventual(TodoStatusPayload {
-  todo_id: state.todo_id,
-  status: state.status,
-})`
 				}
 			]
 		},
@@ -333,12 +345,12 @@ mutation DeleteTodo {
 {
 			id: 'service',
 			label: '6 · Service + host',
-			lede: 'The `e2e-service` crate is the application. Modules mount commands. `build_service` composes one Service. The host starts the database, the bus, the workers, and GraphQL. The `e2e-runner` binary reads the environment and calls `run`. The domain stays in `todo-domain`.',
+			lede: 'The domain crate is the same on both hosts. `tests/e2e-ui` is one process: SQLite or Postgres, a bus, GraphQL, and Eventual projectors. `tests/e2e-celld` is the same UI and GraphQL process, but Todo create and complete wait-dispatch to a cell (one private SQLite per todo id). GraphQL, `@live`, and projectors are not cell methods. Chat and Blob stay in-process on the GraphQL host.',
 			principle: 'Compose modules into one Service. Let the host start the process. Keep the runner small.',
 			samples: [
 				{
 					file: 'modules/todo.rs · MODULE_ID + routes()',
-					caption: 'This module lists the Todo commands and the Eventual projector.',
+					caption: 'This module lists the Todo commands and the Eventual projector. Both hosts call the same mounts.',
 					code: `pub const MODULE_ID: &str = "todo";
 
 pub fn routes<R, L, S>(...) -> TodoRoutes<R, L, S> {
@@ -370,7 +382,29 @@ Service::new()
 pub const E2E_UI_MODULE_IDS: &[&str] = compose::MODULE_IDS;
 // todo | chat | blob | identity`
 				},
-				...hostAndRunnerSamples
+				...hostAndRunnerSamples,
+				{
+					file: 'e2e-celld · CelldTodoCommandHost',
+					caption: 'The celld example GraphQL process wait-dispatches todo.create and todo.complete to POST {CELLD_URL}/todo/{id}/{command}. Other commands stay local. SQL lists dual-write after the cell wait-path so the page can render.',
+					code: `// tests/e2e-celld — not make run
+impl CommandHost for CelldTodoCommandHost {
+  async fn invoke(&self, command, command_id, input, …) {
+    if command == "todo.create" || command == "todo.complete" {
+      let id = input["todo_id"];
+      HttpCommandHost::new(format!("{celld}/todo/{id}"))
+        .invoke(command, command_id, input, …)
+        .await?;
+      // then local dual-write so Eventual SQL lists fill
+    }
+    self.local.invoke(command, command_id, input, …).await
+  }
+}
+
+// cell class (tests/celld/worker): command HTTP + sealed GET only
+POST /todo/:id/todo.create   { commandId, input }
+POST /todo/:id/todo.complete
+GET  /todo/:id               // sealed row`
+				}
 			]
 		}
 	]
