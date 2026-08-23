@@ -1,7 +1,8 @@
 //! Todo Durable Object class backed by `AggregateCell<Todo>`.
 //!
-//! HTTP is a thin adapter over domain create/complete + stream load.
-//! GraphQL and projectors are not methods on this class (`PCH-REQ-005`).
+//! HTTP is command-named wait-path (`POST /{command}` with
+//! `{ commandId, input }`) plus GET of the sealed row. GraphQL and
+//! projectors are not methods on this class (`PCH-REQ-005`).
 
 use distributed::cell_host::{AggregateCell, DurableCellEvents, DurableCellSnapshot};
 use distributed::microsvc::{HandlerError, Session, ROLE_KEY, USER_ID_KEY};
@@ -23,6 +24,11 @@ const SNAPSHOTS_DDL: &str = "CREATE TABLE IF NOT EXISTS cell_snapshots (
   body TEXT NOT NULL
 )";
 
+const SEALED_DDL: &str = "CREATE TABLE IF NOT EXISTS cell_sealed (
+  id TEXT PRIMARY KEY,
+  body TEXT NOT NULL
+)";
+
 #[durable_object]
 pub struct TodoCell {
     cell: AggregateCell<Todo>,
@@ -36,6 +42,7 @@ impl DurableObject for TodoCell {
         sql.exec(EVENTS_DDL, None).expect("create cell_events");
         sql.exec(SNAPSHOTS_DDL, None)
             .expect("create cell_snapshots");
+        sql.exec(SEALED_DDL, None).expect("create cell_sealed");
         let shard = state.id().name().unwrap_or_else(|| "todo".to_string());
         let cell = AggregateCell::<Todo>::new_with_snapshots(shard, 1)
             .expect("todo cell identity")
@@ -68,8 +75,12 @@ impl DurableObject for TodoCell {
 
         match (req.method(), parts.get(2).map(String::as_str)) {
             (Method::Get, None) => get_todo(&self.cell, &id).await,
-            (Method::Put, None) => create_todo(&self.sql, &self.cell, &id, &mut req).await,
-            (Method::Post, Some("complete")) => complete_todo(&self.sql, &self.cell, &id).await,
+            (Method::Post, Some("todo.create")) => {
+                create_todo(&self.sql, &self.cell, &id, &mut req).await
+            }
+            (Method::Post, Some("todo.complete")) => {
+                complete_todo(&self.sql, &self.cell, &id, &mut req).await
+            }
             _ => json_status(json!({ "error": "not found" }), 404),
         }
     }
@@ -86,18 +97,13 @@ async fn main(req: Request, env: Env, _ctx: Context) -> Result<Response> {
     let parts: Vec<&str> = path.split('/').filter(|part| !part.is_empty()).collect();
     if parts.first() != Some(&"todo") || parts.get(1).is_none() {
         return Response::error(
-            "todo cell. PUT/GET /todo/:id  POST /todo/:id/complete\n",
+            "todo cell. GET /todo/:id (sealed row)  POST /todo/:id/todo.create|{commandId,input}  POST /todo/:id/todo.complete\n",
             404,
         );
     }
     let namespace = env.durable_object("TODO")?;
     let stub = namespace.id_from_name(parts[1])?.get_stub()?;
     stub.fetch_with_request(req).await
-}
-
-#[derive(Deserialize)]
-struct CreateBody {
-    title: Option<String>,
 }
 
 fn local_session() -> Session {
@@ -108,10 +114,37 @@ fn local_session() -> Session {
 }
 
 async fn get_todo(cell: &AggregateCell<Todo>, id: &str) -> Result<Response> {
+    if let Ok(Some(row)) = cell.sealed_row() {
+        return json_status(row, 200);
+    }
     match cell.load().await {
         Ok(Some(todo)) => json_status(http_todo(&TodoState::from(&todo)), 200),
         Ok(None) => json_status(json!({ "error": "not found", "id": id }), 404),
         Err(error) => json_status(json!({ "error": error.to_string() }), 500),
+    }
+}
+
+fn wait_path_parts(body: &Value) -> (Option<String>, Value) {
+    let command_id = body
+        .get("commandId")
+        .and_then(Value::as_str)
+        .map(str::trim)
+        .filter(|value| !value.is_empty())
+        .map(str::to_string);
+    let input = body.get("input").cloned().unwrap_or_else(|| body.clone());
+    (command_id, input)
+}
+
+fn wait_path_ok(payload: Value, command_id: Option<String>, status: u16) -> Result<Response> {
+    match command_id {
+        Some(command_id) => json_status(
+            json!({
+                "payload": payload,
+                "receipt": { "commandId": command_id, "state": "succeeded" }
+            }),
+            status,
+        ),
+        None => json_status(payload, status),
     }
 }
 
@@ -121,12 +154,13 @@ async fn create_todo(
     id: &str,
     req: &mut Request,
 ) -> Result<Response> {
-    let body = req
-        .json::<CreateBody>()
-        .await
-        .unwrap_or(CreateBody { title: None });
-    let title = body.title.unwrap_or_default();
-    let title = title.trim();
+    let body = req.json::<Value>().await.unwrap_or(json!({}));
+    let (command_id, input) = wait_path_parts(&body);
+    let title = input
+        .get("title")
+        .and_then(Value::as_str)
+        .unwrap_or("")
+        .trim();
     if title.is_empty() {
         return json_status(json!({ "error": "title required" }), 400);
     }
@@ -139,8 +173,9 @@ async fn create_todo(
         .await
     {
         Ok(payload) => {
+            seal_from_load(cell).await;
             persist_working_copy(sql, cell)?;
-            json_status(http_from_command(id, &payload, title), 201)
+            wait_path_ok(http_from_command(id, &payload, title), command_id, 201)
         }
         Err(HandlerError::Rejected(message)) if message.contains("already exists") => {
             json_status(json!({ "error": "already exists", "id": id }), 409)
@@ -149,12 +184,20 @@ async fn create_todo(
     }
 }
 
-async fn complete_todo(sql: &SqlStorage, cell: &AggregateCell<Todo>, id: &str) -> Result<Response> {
+async fn complete_todo(
+    sql: &SqlStorage,
+    cell: &AggregateCell<Todo>,
+    id: &str,
+    req: &mut Request,
+) -> Result<Response> {
+    let body = req.json::<Value>().await.unwrap_or(json!({}));
+    let (command_id, _input) = wait_path_parts(&body);
     match cell
         .dispatch("todo.complete", json!({ "todo_id": id }), local_session())
         .await
     {
         Ok(payload) => {
+            seal_from_load(cell).await;
             persist_working_copy(sql, cell)?;
             let title = cell
                 .load()
@@ -163,7 +206,7 @@ async fn complete_todo(sql: &SqlStorage, cell: &AggregateCell<Todo>, id: &str) -
                 .flatten()
                 .map(|todo| TodoState::from(&todo).title)
                 .unwrap_or_default();
-            json_status(http_from_command(id, &payload, &title), 200)
+            wait_path_ok(http_from_command(id, &payload, &title), command_id, 200)
         }
         Err(HandlerError::NotFound(_)) => {
             json_status(json!({ "error": "not found", "id": id }), 404)
@@ -227,7 +270,18 @@ fn restore_working_copy(
         .map_err(|error| error.to_string())?;
     let snapshots = load_snapshots(sql).map_err(|error| error.to_string())?;
     cell.restore_durable_snapshots(snapshots)
-        .map_err(|error| error.to_string())
+        .map_err(|error| error.to_string())?;
+    if let Some(row) = load_sealed(sql).map_err(|error| error.to_string())? {
+        cell.replace_sealed_row(row)
+            .map_err(|error| error.to_string())?;
+    }
+    Ok(())
+}
+
+async fn seal_from_load(cell: &AggregateCell<Todo>) {
+    if let Ok(Some(todo)) = cell.load().await {
+        let _ = cell.replace_sealed_row(http_todo(&TodoState::from(&todo)));
+    }
 }
 
 fn persist_working_copy(sql: &SqlStorage, cell: &AggregateCell<Todo>) -> Result<()> {
@@ -261,7 +315,35 @@ fn persist_working_copy(sql: &SqlStorage, cell: &AggregateCell<Todo>) -> Result<
             Some(vec![snapshot.stream.into(), body.into()]),
         )?;
     }
+    sql.exec("DELETE FROM cell_sealed", None)?;
+    if let Ok(Some(row)) = cell.sealed_row() {
+        let body =
+            serde_json::to_string(&row).map_err(|error| Error::RustError(error.to_string()))?;
+        sql.exec(
+            "INSERT INTO cell_sealed (id, body) VALUES (?, ?)",
+            Some(vec!["row".into(), body.into()]),
+        )?;
+    }
     Ok(())
+}
+
+fn load_sealed(sql: &SqlStorage) -> Result<Option<Value>> {
+    let rows: Vec<SealedRow> = sql
+        .exec("SELECT id, body FROM cell_sealed", None)?
+        .to_array()?;
+    rows.into_iter()
+        .next()
+        .map(|row| {
+            serde_json::from_str(&row.body).map_err(|error| Error::RustError(error.to_string()))
+        })
+        .transpose()
+}
+
+#[derive(Deserialize)]
+struct SealedRow {
+    #[allow(dead_code)]
+    id: String,
+    body: String,
 }
 
 fn load_events(sql: &SqlStorage) -> Result<Vec<DurableCellEvents>> {

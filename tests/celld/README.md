@@ -8,8 +8,10 @@ The Worker is a workers-rs Durable Object class around
 `distributed::cell_host::AggregateCell<Todo>`. Shard rule is still
 `idFromName(todo_id)` (`PCH-DEC-004`). GraphQL and projectors are not
 cell methods. The event log is stored in Durable Object SQLite table `cell_events`.
-Repository snapshot cache records go in `cell_snapshots`. Both are
-replicated by celld via LTX. The Todo cell uses `new_with_snapshots(1)`
+Repository snapshot cache records go in `cell_snapshots`. The sealed
+read-model row for GET lives in `cell_sealed`. All three are replicated
+by celld via LTX. GET on a cell instance queues behind in-flight POST on
+that same isolate (one writer); different todo ids are concurrent. The Todo cell uses `new_with_snapshots(1)`
 so load is snapshot + event tail, not a full replay of history.
 
 Azurite is celld's documented local development store. It is **not** a
@@ -46,9 +48,11 @@ before `docker compose up` and use that port in `CELLD_URL`. If host port 8080 i
 Without `CELLD_URL`, `cargo test --test celld` only checks the worker
 fixture and skips the live HTTP round-trip.
 
-Durability: PUT writes `cell_events`, then GET restores that table into
-the working copy. After `docker compose … restart celld`, GET of an
-existing id should still return the todo.
+Durability: `POST /todo/:id/todo.create` (wait-path `{ commandId, input }`)
+writes `cell_events`, `cell_snapshots`, and `cell_sealed`. GET restores
+those tables into the working copy and returns the sealed row. After
+`docker compose … restart celld`, GET of an existing id should still
+return the todo.
 
 Tear down: `docker compose -f tests/celld/docker-compose.yml down -v`.
 

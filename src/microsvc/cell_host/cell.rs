@@ -146,6 +146,16 @@ where
     pub async fn cached_snapshot(&self) -> Result<Option<SnapshotRecord>, RepositoryError> {
         SnapshotStore::get_snapshot(self.routes.repo().repo(), &self.shard).await
     }
+
+    /// Sealed read-model JSON for GET on this instance.
+    pub fn sealed_row(&self) -> Result<Option<Value>, RepositoryError> {
+        self.routes.repo().repo().sealed_row()
+    }
+
+    /// Persist the sealed read-model row next to events/snapshots.
+    pub fn replace_sealed_row(&self, row: Value) -> Result<(), RepositoryError> {
+        self.routes.repo().repo().replace_sealed_row(row)
+    }
 }
 
 impl<A> AggregateCell<A>

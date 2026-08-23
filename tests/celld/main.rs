@@ -37,6 +37,10 @@ fn worker_declares_sqlite_todo_cell() {
     assert!(source.contains("mount(complete())"));
     assert!(source.contains("CREATE TABLE IF NOT EXISTS cell_events"));
     assert!(source.contains("CREATE TABLE IF NOT EXISTS cell_snapshots"));
+    assert!(source.contains("CREATE TABLE IF NOT EXISTS cell_sealed"));
+    assert!(source.contains("todo.create"));
+    assert!(source.contains("todo.complete"));
+    assert!(source.contains("sealed_row"));
     assert!(source.contains("new_with_snapshots"));
     assert!(source.contains("restore_durable_events"));
     assert!(source.contains("restore_durable_snapshots"));
@@ -92,18 +96,29 @@ async fn live_todo_cell_create_complete_and_isolate() {
     let b = unique_todo();
 
     let created = client
-        .put(format!("{base}/todo/{a}"))
-        .json(&serde_json::json!({ "title": "ship celld" }))
+        .post(format!("{base}/todo/{a}/todo.create"))
+        .json(&serde_json::json!({
+            "commandId": "0190a000-0000-7000-8000-000000000201",
+            "input": { "title": "ship celld" }
+        }))
         .send()
         .await
         .expect("create");
     assert_eq!(created.status(), 201, "{}", created.text().await.unwrap());
     let created: Value = created.json().await.unwrap();
-    assert_eq!(created["id"], a);
-    assert_eq!(created["status"], "open");
+    assert_eq!(created["payload"]["id"], a);
+    assert_eq!(created["payload"]["status"], "open");
+    assert_eq!(
+        created["receipt"]["commandId"],
+        "0190a000-0000-7000-8000-000000000201"
+    );
 
     let completed = client
-        .post(format!("{base}/todo/{a}/complete"))
+        .post(format!("{base}/todo/{a}/todo.complete"))
+        .json(&serde_json::json!({
+            "commandId": "0190a000-0000-7000-8000-000000000202",
+            "input": {}
+        }))
         .send()
         .await
         .expect("complete");
@@ -114,7 +129,11 @@ async fn live_todo_cell_create_complete_and_isolate() {
         completed.text().await.unwrap()
     );
     let completed: Value = completed.json().await.unwrap();
-    assert_eq!(completed["status"], "completed");
+    assert_eq!(completed["payload"]["status"], "completed");
+    assert_eq!(
+        completed["receipt"]["commandId"],
+        "0190a000-0000-7000-8000-000000000202"
+    );
 
     let got: Value = client
         .get(format!("{base}/todo/{a}"))
