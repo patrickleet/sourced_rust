@@ -58,6 +58,13 @@ before `docker compose up` and use that port in `CELLD_URL`. If host port 8080 i
 Without `CELLD_URL`, `cargo test --test celld` only checks the worker
 fixture and skips the live HTTP round-trip.
 
+CI (`integration-celld.yaml`) brings the stack up and runs:
+
+```sh
+make -C tests/e2e-ui up-celld-nats
+make -C tests/e2e-ui test-celld   # --test celld + e2e_ui_celld_nats_profile
+```
+
 Durability: `POST /todo/:id/todo.create` (wait-path `{ commandId, input }`)
 writes `cell_events`, `cell_snapshots`, `cell_sealed`, and `cell_outbox`
 in the same Durable Object fetch (one SQLite transaction). Chat posts

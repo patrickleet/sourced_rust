@@ -23,6 +23,12 @@ alarms POST `/internal/outbox/drain`). Eventual projectors here fill SQL so
 on the engine); Zitadel Actions and outbox drain are internal HTTP on the
 same process. GraphQL and projectors are not cell class methods.
 
+Workspace tests (no live celld):
+
+```sh
+make test               # cargo test --workspace (CI)
+```
+
 ```sh
 cd tests/e2e-ui
 make up                 # Zitadel + Postgres (read models + login)
