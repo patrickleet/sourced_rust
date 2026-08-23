@@ -42,7 +42,15 @@ docker compose -f tests/celld/docker-compose.yml up -d celld
 CELLD_URL=http://127.0.0.1:18080 cargo test --test celld
 ```
 
-Nodes load a deployment at startup, so deploy before the celld container starts (or restart it after deploy). `celld diagnose` should report `ok bucket conditional write`. A host-side peer probe to `:8081` is expected to fail: that listener is not published.
+Nodes load a deployment at startup, so deploy before the celld container starts (or restart it after deploy). `CELLD_WATCH` is the node's local SQLite/replication working directory — it does **not** watch Worker source. For source reload while iterating:
+
+```sh
+make -C tests/celld watch    # cargo-watch: worker-build --dev + deploy + restart
+# or, with the GraphQL playground:
+cd tests/e2e-celld && make run    # also watches GraphQL (WATCH_WORKER=0 to skip wasm)
+```
+
+`celld diagnose` should report `ok bucket conditional write`. A host-side peer probe to `:8081` is expected to fail: that listener is not published.
 
 If host port 18080 is already taken, set `CELLD_HTTP_PORT` (for example `18880`)
 before `docker compose up` and use that port in `CELLD_URL`. If host port 8080 is taken, pass `--listen` / `--internal-listen` to `celld diagnose` as above.

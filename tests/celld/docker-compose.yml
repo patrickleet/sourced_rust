@@ -65,6 +65,7 @@ services:
       AZURE_STORAGE_ACCOUNT_NAME: devstoreaccount1
       AZURE_STORAGE_ACCOUNT_KEY: Eby8vdM02xNOcqFlqUwJPLlmEtlCDXJ1OUzFT50uSRZ6IFsuFq2UVErCz4I6tq/K1SZFPTOtr/KBHBeksoGMGw==
       CELLD_BUCKET: az://celld
+      # SQLite/replication working directory on the node — not Worker source HMR.
       CELLD_WATCH: /var/lib/celld/state
       CELLD_ADVERTISE: 127.0.0.1:8081
     volumes:

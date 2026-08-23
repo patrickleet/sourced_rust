@@ -71,7 +71,7 @@ where
     let identity = identity::routes(repo, locks, read_models);
 
     // GraphQL-only public write surface. POST /todo.* stays 404 (suite T0).
-    // Zitadel Action ingress is the identity crate, re-mounted in `serve_with_oidc`.
+    // Zitadel Action ingress is the identity crate, re-mounted in `http::serve`.
     Service::new()
         .named("e2e-ui")
         .routes(todos)

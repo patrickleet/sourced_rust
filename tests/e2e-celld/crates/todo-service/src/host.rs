@@ -1,146 +1,27 @@
-//! Wait-path host: celld for create/complete. Cell outbox drains through [`MessagePublisher`].
+//! Todo cell wait-path: shard + GraphQL payload. Outbox drain lives in
+//! [`distributed::cell_host`].
 
-use std::collections::{HashMap, HashSet};
-use std::sync::{Arc, Mutex};
-
-use async_trait::async_trait;
-use distributed::bus::MessagePublisher;
-use distributed::command_dispatch::{CommandHost, HttpCommandHost, LocalCommandHost};
-use distributed::graphql::protocol::ProtocolResponseAccumulator;
-use distributed::graphql::VerifiedPrincipal;
-use distributed::microsvc::{
-    CausalCommandPublicStatus, CausalDispatchError, CausalDispatchResult, Service, Session,
-};
+use distributed::cell_host::CelldRoute;
+use distributed::microsvc::Session;
 use serde_json::{json, Value};
 
-const CELLD_TODO_COMMANDS: &[&str] = &["todo.create", "todo.complete"];
-
-/// Routes `todo.create` / `todo.complete` to `{CELLD_URL}/todo/{id}/{command}`.
-/// Other commands stay on the local [`Service`]. Cell outbox publishes through
-/// the process [`MessagePublisher`] (not a second SQL outbox).
-pub struct CelldTodoCommandHost<P> {
-    celld_url: String,
-    http: HttpCommandHost,
-    publisher: P,
-    local: LocalCommandHost,
-    pending: Arc<Mutex<HashSet<String>>>,
-    completed: Arc<Mutex<HashMap<String, CausalCommandPublicStatus>>>,
+/// `POST {CELLD_URL}/todo/{todo_id}/{todo.create|todo.complete}`.
+pub fn celld_route() -> CelldRoute {
+    CelldRoute::new(
+        &["todo.create", "todo.complete"],
+        "todo",
+        todo_shard,
+        graphql_todo_payload,
+    )
 }
 
-impl<P> CelldTodoCommandHost<P>
-where
-    P: MessagePublisher + Clone + Send + Sync + 'static,
-{
-    pub fn new(
-        celld_url: impl Into<String>,
-        service: Arc<Service>,
-        publisher: P,
-    ) -> Self {
-        let celld_url = celld_url.into().trim_end_matches('/').to_string();
-        let http = HttpCommandHost::new(&celld_url);
-        let pending = Arc::new(Mutex::new(HashSet::new()));
-        http.spawn_outbox_drain_loop("todo", publisher.clone(), Arc::clone(&pending));
-        Self {
-            http,
-            celld_url,
-            publisher,
-            local: LocalCommandHost::new(service),
-            pending,
-            completed: Arc::new(Mutex::new(HashMap::new())),
-        }
-    }
-}
-
-#[async_trait]
-impl<P> CommandHost for CelldTodoCommandHost<P>
-where
-    P: MessagePublisher + Clone + Send + Sync + 'static,
-{
-    async fn invoke(
-        &self,
-        command: &str,
-        command_id: &str,
-        input: Value,
-        session: Session,
-        principal: VerifiedPrincipal,
-        protocol: Option<ProtocolResponseAccumulator>,
-    ) -> Result<CausalDispatchResult, CausalDispatchError> {
-        if !CELLD_TODO_COMMANDS.contains(&command) {
-            return self
-                .local
-                .invoke(command, command_id, input, session, principal, protocol)
-                .await;
-        }
-        let todo_id = input
-            .get("todo_id")
-            .and_then(Value::as_str)
-            .map(str::trim)
-            .filter(|value| !value.is_empty())
-            .ok_or_else(|| {
-                CausalDispatchError::BadRequest("todo_id required for celld wait-path".into())
-            })?;
-        let http = self
-            .http
-            .retarget(format!("{}/todo/{todo_id}", self.celld_url));
-        let (status, body) = http
-            .post_wait_path(command, command_id, input.clone(), &session)
-            .await?;
-        let outbox = CausalDispatchResult::outbox_from_wait_path(&body);
-        if !outbox.is_empty() {
-            if let Ok(mut guard) = self.pending.lock() {
-                guard.insert(todo_id.to_string());
-            }
-        }
-        http.drain_cell_outbox(&self.publisher, &outbox).await;
-        let _ = principal;
-        if status >= 400 {
-            let message = body
-                .get("error")
-                .and_then(Value::as_str)
-                .unwrap_or("wait-path rejected")
-                .to_string();
-            return Err(CausalDispatchError::Rejected {
-                code: "REJECTED",
-                status,
-                message,
-            });
-        }
-        let remote = CausalDispatchResult::from_wait_path_wire(body).map_err(|error| {
-            CausalDispatchError::Internal(format!("wait-path decode: {error:?}"))
-        })?;
-        let payload = graphql_todo_payload(command, &input, remote.payload(), &session);
-        let mut remote = remote.with_payload(payload);
-        if let Some(protocol) = protocol {
-            remote = self
-                .local
-                .service()
-                .seal_wait_path_dispatch(command, &protocol, remote)?;
-            if let Ok(mut guard) = self.completed.lock() {
-                guard.insert(command_id.to_string(), remote.public_status());
-            }
-        }
-        Ok(remote)
-    }
-
-    async fn status(
-        &self,
-        command_id: &str,
-        session: &Session,
-        principal: VerifiedPrincipal,
-        protocol: Option<ProtocolResponseAccumulator>,
-    ) -> Result<CausalCommandPublicStatus, CausalDispatchError> {
-        if let Some(status) = self
-            .completed
-            .lock()
-            .ok()
-            .and_then(|guard| guard.get(command_id).cloned())
-        {
-            return Ok(status);
-        }
-        self.local
-            .status(command_id, session, principal, protocol)
-            .await
-    }
+fn todo_shard(input: &Value) -> Option<String> {
+    input
+        .get("todo_id")
+        .and_then(Value::as_str)
+        .map(str::trim)
+        .filter(|value| !value.is_empty())
+        .map(str::to_string)
 }
 
 fn graphql_todo_payload(command: &str, input: &Value, remote: &Value, session: &Session) -> Value {

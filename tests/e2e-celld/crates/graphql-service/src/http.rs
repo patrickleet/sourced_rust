@@ -1,0 +1,128 @@
+//! Process HTTP: GraphQL is the user edge (engine `OidcBearer`).
+//!
+//! Zitadel Action ingress/scrape and cell outbox drain are internal — shared
+//! secret or process-local, not a user Bearer. User writes stay on `/graphql`.
+
+use std::collections::HashMap;
+use std::sync::Arc;
+
+use axum::http::{HeaderMap, StatusCode};
+use axum::response::IntoResponse;
+use axum::routing::{get, post};
+use axum::{Json, Router};
+use distributed::cell_host::CELL_OUTBOX_DRAIN_PATH;
+use distributed::command_dispatch::SharedCommandHost;
+use distributed::graphql::graphql_router_with_host;
+use distributed::microsvc::{HandlerError, Service, Session};
+use futures_util::future::BoxFuture;
+use serde_json::{json, Value};
+
+fn session_from_headers(headers: &HeaderMap) -> Session {
+    let mut vars = HashMap::new();
+    for (name, value) in headers.iter() {
+        if let Ok(v) = value.to_str() {
+            vars.insert(name.as_str().to_string(), v.to_string());
+        }
+    }
+    Session::from_map(vars)
+}
+
+fn status_for_error(error: &HandlerError) -> StatusCode {
+    match error {
+        HandlerError::UnknownCommand(_) | HandlerError::NotFound(_) => StatusCode::NOT_FOUND,
+        HandlerError::DecodeFailed(_) | HandlerError::GuardRejected(_) => StatusCode::BAD_REQUEST,
+        HandlerError::Rejected(_) => StatusCode::UNPROCESSABLE_ENTITY,
+        HandlerError::Unauthorized(_) => StatusCode::UNAUTHORIZED,
+        HandlerError::Repository(_) | HandlerError::Other(_) => StatusCode::INTERNAL_SERVER_ERROR,
+        _ => StatusCode::INTERNAL_SERVER_ERROR,
+    }
+}
+
+async fn dispatch_named(
+    service: Arc<Service>,
+    headers: HeaderMap,
+    input: Value,
+    command: &'static str,
+) -> impl IntoResponse {
+    let session = session_from_headers(&headers);
+    match service.dispatch(command, input, session).await {
+        Ok(value) => (StatusCode::OK, Json(value)).into_response(),
+        Err(err) => {
+            let status = status_for_error(&err);
+            if status.is_server_error() {
+                eprintln!("microsvc command `{command}` failed: {err}");
+            }
+            let body = json!({ "error": err.client_facing_message() });
+            (status, Json(body)).into_response()
+        }
+    }
+}
+
+/// Cell alarm POSTs pending outbox here; GraphQL publishes via MessagePublisher.
+pub type InternalOutboxDrain = Arc<dyn Fn(Value) -> BoxFuture<'static, ()> + Send + Sync>;
+
+/// GraphQL wait-dispatches through an explicit [`SharedCommandHost`].
+///
+/// Identity is the engine's (`OidcBearer` on `POST /graphql` / WS `connection_init`).
+/// HTTP command routes stay off — `POST /todo.create` is 404.
+pub async fn serve(
+    service: Arc<Service>,
+    host: SharedCommandHost,
+    addr: &str,
+    outbox_drain: Option<InternalOutboxDrain>,
+) -> Result<(), std::io::Error> {
+    let engine = service
+        .graphql_engine()
+        .ok_or_else(|| std::io::Error::other("serve requires GraphQL"))?;
+    let ingress = service.clone();
+    let scrape = service.clone();
+    let commands: Vec<String> = service
+        .command_names()
+        .into_iter()
+        .map(str::to_string)
+        .collect();
+    let health_body = json!({
+        "ok": true,
+        "profile": "celld",
+        "graphql": true,
+        "commands": commands,
+    });
+    let mut app = Router::new()
+        .route(
+            "/health",
+            get(move || {
+                let body = health_body.clone();
+                async move { Json(body) }
+            }),
+        )
+        .merge(graphql_router_with_host(engine, host))
+        .route(
+            "/zitadel.ingress.v1",
+            post(move |headers: HeaderMap, Json(input): Json<Value>| {
+                let svc = ingress.clone();
+                async move { dispatch_named(svc, headers, input, "zitadel.ingress.v1").await }
+            }),
+        )
+        .route(
+            "/zitadel.scrape.v1",
+            post(move |headers: HeaderMap, Json(input): Json<Value>| {
+                let svc = scrape.clone();
+                async move { dispatch_named(svc, headers, input, "zitadel.scrape.v1").await }
+            }),
+        );
+    if let Some(drain) = outbox_drain {
+        app = app.route(
+            CELL_OUTBOX_DRAIN_PATH,
+            post(move |Json(body): Json<Value>| {
+                let drain = Arc::clone(&drain);
+                async move {
+                    drain(body).await;
+                    Json(json!({ "ok": true }))
+                }
+            }),
+        );
+    }
+
+    let listener = tokio::net::TcpListener::bind(addr).await?;
+    axum::serve(listener, app).await
+}

@@ -1,7 +1,7 @@
 # e2e-ui template — run from this directory.
 #
 #   make up          # Docker: Postgres + Zitadel + bootstrap env
-#   make run         # API + UI (uses e2e-ui.env if present)
+#   make run         # API + UI (cargo-watch GraphQL, Vite HMR; WATCH=0 to disable)
 #   make test         # offline unit/suite/UI structural
 #   make test-browser # Playwright UI e2e (needs make up + make run)
 #   make up-celld-nats / test-celld-nats / down-celld-nats
@@ -9,7 +9,7 @@
 
 .PHONY: all up down run run-api stop test ci-offline test-domain test-suite \
 	test-browser test-browser-install js-install js-build wasm ui-install ui-build ui-check ui-test \
-	gen-client check-client contracts-check check clean help \
+	gen-client check-client contracts-check check clean help ensure-watch \
 	up-celld-nats down-celld-nats down-celld test-celld-nats
 
 # Defaults only — do NOT `include e2e-ui.env` (shell-quoted dotenv breaks Make).
@@ -25,6 +25,7 @@ ENV_FILE     ?= e2e-ui.env
 NPM          ?= npm
 JS_DIR       ?= ../../js
 CARGO_TEST_FLAGS ?= -- --nocapture
+WATCH        ?= 1
 
 DATABASE_URL ?= sqlite:./e2e-ui.db?mode=rwc
 
@@ -51,8 +52,11 @@ up:
 down:
 	docker compose -f docker/docker-compose.yml down
 
+ensure-watch:
+	@command -v cargo-watch >/dev/null || { echo "installing cargo-watch…"; cargo install cargo-watch; }
+
 ## API + UI (loads e2e-ui.env when present)
-run: ui-install
+run: ui-install $(if $(filter 1,$(WATCH)),ensure-watch)
 	@set -e; \
 	if [ -f $(ENV_FILE) ]; then set -a; . ./$(ENV_FILE); set +a; fi; \
 	_bind="$${BIND:-127.0.0.1:8791}"; \
@@ -67,7 +71,17 @@ run: ui-install
 	lsof -ti:$${_ui_port} 2>/dev/null | xargs kill -9 2>/dev/null || true; \
 	rm -f .make-runner.pid .make-ui.pid .make-runner.log; \
 	echo "starting API ($${DATABASE_URL:-sqlite}) on $$_base …"; \
-	cargo run -p e2e-runner --bin e2e-ui > .make-runner.log 2>&1 & \
+	if [ "$(WATCH)" = "1" ]; then \
+	  echo "API cargo-watch on (WATCH=0 to disable) …"; \
+	  cargo watch -d 1 \
+	    -i target -i '*.db' -i '.make-*' \
+	    -w crates -w Cargo.toml \
+	    -w ../../src -w ../../Cargo.toml \
+	    -x "run -p e2e-runner --bin e2e-ui" \
+	    > .make-runner.log 2>&1 & \
+	else \
+	  cargo run -p e2e-runner --bin e2e-ui > .make-runner.log 2>&1 & \
+	fi; \
 	echo $$! > .make-runner.pid; \
 	ok=0; \
 	for i in $$(seq 1 80); do \
@@ -84,12 +98,21 @@ run: ui-install
 	cd ui && $(NPM) run dev -- --host $$_ui_host --port $$_ui_port & \
 	echo $$! > ../.make-ui.pid; \
 	cd ..; \
+	stop_pidfile() { \
+		[ -f "$$1" ] || return 0; \
+		_pid=$$(cat "$$1"); \
+		for _child in $$(pgrep -P "$$_pid" 2>/dev/null); do \
+		  pkill -P "$$_child" 2>/dev/null || true; \
+		  kill "$$_child" 2>/dev/null || true; \
+		done; \
+		kill "$$_pid" 2>/dev/null || true; \
+		rm -f "$$1"; \
+	}; \
 	cleanup() { \
-		[ -f .make-ui.pid ] && kill $$(cat .make-ui.pid) 2>/dev/null || true; \
-		[ -f .make-runner.pid ] && kill $$(cat .make-runner.pid) 2>/dev/null || true; \
+		stop_pidfile .make-ui.pid; \
+		stop_pidfile .make-runner.pid; \
 		lsof -ti:$${_api_port} 2>/dev/null | xargs kill -9 2>/dev/null || true; \
 		lsof -ti:$${_ui_port} 2>/dev/null | xargs kill -9 2>/dev/null || true; \
-		rm -f .make-runner.pid .make-ui.pid; \
 	}; \
 	trap cleanup EXIT INT TERM; \
 	echo ""; \
@@ -97,6 +120,7 @@ run: ui-install
 	echo "  API    $$_base"; \
 	echo "  GraphiQL $$_base/graphql"; \
 	echo "  WS     $$_base/graphql/ws"; \
+	echo "  watch: GraphQL cargo-watch, Vite HMR (WATCH=0 to disable)"; \
 	echo "  Ctrl-C stops both"; \
 	echo ""; \
 	wait $$(cat .make-ui.pid) 2>/dev/null || wait
@@ -106,12 +130,21 @@ run-api:
 	cargo run -p e2e-runner
 
 stop:
-	@if [ -f .make-ui.pid ]; then kill $$(cat .make-ui.pid) 2>/dev/null || true; fi
-	@if [ -f .make-runner.pid ]; then kill $$(cat .make-runner.pid) 2>/dev/null || true; fi
-	@lsof -ti:$(API_PORT) 2>/dev/null | xargs kill -9 2>/dev/null || true
-	@lsof -ti:$(UI_PORT) 2>/dev/null | xargs kill -9 2>/dev/null || true
-	@rm -f .make-runner.pid .make-ui.pid
-	@echo stopped
+	@stop_pidfile() { \
+		[ -f "$$1" ] || return 0; \
+		_pid=$$(cat "$$1"); \
+		for _child in $$(pgrep -P "$$_pid" 2>/dev/null); do \
+		  pkill -P "$$_child" 2>/dev/null || true; \
+		  kill "$$_child" 2>/dev/null || true; \
+		done; \
+		kill "$$_pid" 2>/dev/null || true; \
+		rm -f "$$1"; \
+	}; \
+	stop_pidfile .make-ui.pid; \
+	stop_pidfile .make-runner.pid; \
+	lsof -ti:$(API_PORT) 2>/dev/null | xargs kill -9 2>/dev/null || true; \
+	lsof -ti:$(UI_PORT) 2>/dev/null | xargs kill -9 2>/dev/null || true; \
+	echo stopped
 
 ## Optional celld + NATS profile of the same UI. Does NOT replace make run.
 ## Brings up tests/celld (Azurite + celld) and celld-nats-profile (NATS only).
@@ -268,7 +301,7 @@ clean: stop
 help:
 	@echo "e2e-ui"
 	@echo "  make up         Postgres + Zitadel + OIDC bootstrap → e2e-ui.env"
-	@echo "  make run        API + UI (source e2e-ui.env when present)"
+	@echo "  make run        API + UI (cargo-watch GraphQL, Vite HMR; WATCH=0 one-shot)"
 	@echo "  make test       offline suite + UI structural"
 	@echo "  make ci-offline CI drift + offline suites with safe pipeline overlap"
 	@echo "  make wasm            blob-domain core → ui/src/lib/blob/pkg (wasm-pack)"
@@ -276,6 +309,7 @@ help:
 	@echo "  make check-client    verify generated artifacts byte-for-byte"
 	@echo "  make down       playground docker compose down (not celld/NATS)"
 	@echo "  make up-celld-nats    optional celld+NATS profile (not make run)"
+	@echo "  make -C ../celld watch  worker source reload after up-celld-nats"
 	@echo "  make test-celld-nats  cargo test --test e2e_ui_celld_nats_profile"
 	@echo "  make down-celld-nats  stop NATS profile only"
 	@echo "  make down-celld       stop tests/celld Azurite + celld"

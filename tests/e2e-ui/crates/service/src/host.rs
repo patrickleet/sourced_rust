@@ -17,7 +17,7 @@ use distributed::microsvc::{spawn_outbox_publish_loop, spawn_service_consumer_lo
 use distributed::{PostgresLockManager, PostgresRepository, SqliteLockManager, SqliteRepository};
 
 use crate::{
-    build_graphql_engine, build_service, distributed_manifest, serve_with_oidc, spawn_scrape_loop,
+    build_graphql_engine, build_service, distributed_manifest, serve, spawn_scrape_loop,
     ZitadelScrapeConfig, E2E_UI_APPLICATION,
 };
 
@@ -83,7 +83,7 @@ async fn run_sqlite(
     spawn_zitadel_scrape(repo.clone());
 
     eprintln!("e2e-ui (sqlite) listening on http://{}", options.bind);
-    serve_with_oidc(service, options.identity, &options.bind).await?;
+    serve(service, &options.bind).await?;
     Ok(())
 }
 
@@ -125,7 +125,7 @@ async fn run_postgres(
     spawn_zitadel_scrape(repo.clone());
 
     eprintln!("e2e-ui (postgres) listening on http://{}", options.bind);
-    serve_with_oidc(service, options.identity, &options.bind).await?;
+    serve(service, &options.bind).await?;
     Ok(())
 }
 
