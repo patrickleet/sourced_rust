@@ -6,8 +6,8 @@
 mod application;
 mod bounds;
 mod host;
+mod http;
 pub mod modules;
-mod oidc_layer;
 
 pub use application::{
     DISTRIBUTED_ADMIN_CLIENT_SURFACE, DISTRIBUTED_CLIENT_SURFACE, DISTRIBUTED_PUBLIC_CLIENT_SURFACE,

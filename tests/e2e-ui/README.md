@@ -48,7 +48,8 @@ make run
 
 The UI is at `http://localhost:5180`; GraphQL is at
 `http://127.0.0.1:8791/graphql`. Demo users are `alice`, `bob`, and `admin`
-with password `Password1!`.
+with password `Password1!`. `make run` uses `cargo-watch` on the GraphQL
+host (Vite already HMR's the UI). `WATCH=0 make run` is a one-shot `cargo run`.
 
 This is the **default one-process playground**. Optional celld:
 

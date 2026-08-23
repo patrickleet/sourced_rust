@@ -2,18 +2,14 @@
 
 use async_trait::async_trait;
 use serde_json::Value;
-use std::collections::HashSet;
-use std::sync::{Arc, Mutex};
-use std::time::Duration;
+use std::sync::Arc;
 
-use crate::bus::{Message, MessagePublisher};
 use crate::graphql::identity::VerifiedPrincipal;
 use crate::graphql::protocol::ProtocolResponseAccumulator;
 use crate::microsvc::{
     CausalCommandPublicStatus, CausalDispatchError, CausalDispatchResult, Service, Session,
     ROLE_KEY, USER_ID_KEY,
 };
-use crate::OutboxMessage;
 
 /// Wait-path command host. GraphQL mutations call this instead of `Service`.
 #[async_trait]
@@ -127,6 +123,31 @@ impl HttpCommandHost {
         }
     }
 
+    pub fn base(&self) -> &str {
+        &self.base
+    }
+
+    /// POST `{base}/{path}` with a JSON body (cell `outbox.complete`, alarms).
+    pub async fn post_json(
+        &self,
+        path: &str,
+        body: Value,
+    ) -> Result<(u16, Value), CausalDispatchError> {
+        let response = self
+            .client
+            .post(format!("{}/{path}", self.base))
+            .json(&body)
+            .send()
+            .await
+            .map_err(|err| CausalDispatchError::Internal(format!("cell HTTP failed: {err}")))?;
+        let status = response.status().as_u16();
+        let body: Value = response
+            .json()
+            .await
+            .map_err(|err| CausalDispatchError::Internal(format!("cell HTTP body: {err}")))?;
+        Ok((status, body))
+    }
+
     /// POST `{base}/{command}` and return status + JSON, including 4xx with
     /// cell `outbox` for drain retries.
     pub async fn post_wait_path(
@@ -158,111 +179,6 @@ impl HttpCommandHost {
             .await
             .map_err(|err| CausalDispatchError::Internal(format!("wait-path HTTP body: {err}")))?;
         Ok((status, body))
-    }
-
-    /// SOA `outbox.complete`: mark cell SQLite rows Published after
-    /// [`MessagePublisher::publish`] returns `Ok`. Fire-and-forget — do not
-    /// await this before returning the mutation.
-    pub fn complete_outbox_later(&self, ids: impl IntoIterator<Item = impl Into<String>>) {
-        let ids: Vec<String> = ids.into_iter().map(Into::into).collect();
-        if ids.is_empty() {
-            return;
-        }
-        let client = self.client.clone();
-        let url = format!("{}/outbox.complete", self.base);
-        tokio::spawn(async move {
-            let _ = client
-                .post(&url)
-                .json(&serde_json::json!({ "ids": ids }))
-                .send()
-                .await;
-        });
-    }
-
-    /// Publish pending cell outbox through the process bus. On `Ok`, spawn
-    /// `outbox.complete` and return — the mutation must not wait on the DO
-    /// update. Publish `Err` retries in-process; the cell SQLite is still the
-    /// durable row (no second SQL).
-    pub async fn drain_cell_outbox<P>(&self, publisher: &P, rows: &[OutboxMessage])
-    where
-        P: MessagePublisher + Clone + Send + Sync + 'static,
-    {
-        let mut published = Vec::new();
-        for row in rows {
-            if publisher
-                .publish(Message::from(row.clone()))
-                .await
-                .is_ok()
-            {
-                published.push(row.id.clone());
-                continue;
-            }
-            let publisher = publisher.clone();
-            let complete = self.clone();
-            let row = row.clone();
-            tokio::spawn(async move {
-                for backoff_ms in [50_u64, 100, 200, 400, 800, 1600, 3200] {
-                    tokio::time::sleep(Duration::from_millis(backoff_ms)).await;
-                    if publisher.publish(Message::from(row.clone())).await.is_ok() {
-                        complete.complete_outbox_later(std::iter::once(row.id.clone()));
-                        return;
-                    }
-                }
-                eprintln!(
-                    "cell outbox: bus publish still failing for {}; cell SQLite still has the row",
-                    row.id
-                );
-            });
-        }
-        self.complete_outbox_later(published);
-    }
-
-    /// Extra drainer (SOA `spawn_outbox_publish_loop` analogue): every 5s,
-    /// `POST {base}/{kind}/{id}/outbox.drain` for cells this process has seen
-    /// and re-publish still-Pending rows.
-    pub fn spawn_outbox_drain_loop<P>(
-        &self,
-        kind: &'static str,
-        publisher: P,
-        pending: Arc<Mutex<HashSet<String>>>,
-    ) where
-        P: MessagePublisher + Clone + Send + Sync + 'static,
-    {
-        let http = self.clone();
-        let celld_url = self.base.clone();
-        tokio::spawn(async move {
-            let mut ticker = tokio::time::interval(Duration::from_secs(5));
-            ticker.tick().await;
-            loop {
-                ticker.tick().await;
-                let ids: Vec<String> = match pending.lock() {
-                    Ok(guard) => guard.iter().cloned().collect(),
-                    Err(_) => continue,
-                };
-                for id in ids {
-                    let shard = http.retarget(format!("{celld_url}/{kind}/{id}"));
-                    let Ok((_, body)) = shard
-                        .post_wait_path(
-                            "outbox.drain",
-                            "drain",
-                            serde_json::json!({}),
-                            &Session::new(),
-                        )
-                        .await
-                    else {
-                        continue;
-                    };
-                    let rows = CausalDispatchResult::outbox_from_wait_path(&body);
-                    if rows.is_empty() {
-                        if let Ok(mut guard) = pending.lock() {
-                            guard.remove(&id);
-                        }
-                        continue;
-                    }
-                    shard.drain_cell_outbox(&publisher, &rows).await;
-                }
-            }
-        });
     }
 }
 

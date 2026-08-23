@@ -2,8 +2,12 @@
 #
 #   make -C tests/e2e-ui up-celld-nats   # Azurite + celld + NATS
 #   make run                             # this GraphQL host + the e2e-ui Svelte app
+#
+# make run watches Rust (cargo-watch) and the cell worker; Vite HMR covers
+# the UI. WATCH=0 / WATCH_WORKER=0 disable those loops. CELLD_WATCH in
+# compose is the node's SQLite dir, not a source watcher.
 
-.PHONY: run stop help wasm
+.PHONY: run stop help wasm ensure-watch
 
 BIND         ?= 0.0.0.0:8791
 API_PORT     ?= 8791
@@ -17,11 +21,16 @@ CELLD_URL    ?= http://127.0.0.1:$(CELLD_HTTP_PORT)
 NATS_PORT    ?= 14222
 NATS_URL     ?= nats://127.0.0.1:$(NATS_PORT)
 NPM          ?= npm
+WATCH        ?= 1
+WATCH_WORKER ?= 1
 
 wasm:
 	$(MAKE) -C ../e2e-ui wasm
 
-run: wasm
+ensure-watch:
+	@command -v cargo-watch >/dev/null || { echo "installing cargo-watch…"; cargo install cargo-watch; }
+
+run: wasm $(if $(filter 1,$(WATCH) $(WATCH_WORKER)),ensure-watch)
 	@set -e; \
 	if [ -f $(ENV_FILE) ]; then set -a; . ./$(ENV_FILE); set +a; fi; \
 	export DATABASE_URL="$${E2E_CELLD_DATABASE_URL:-sqlite:./e2e-celld.db?mode=rwc}"; \
@@ -59,10 +68,30 @@ run: wasm
 	export BIND="0.0.0.0:$${_api_port}"; \
 	lsof -ti:$${_api_port} 2>/dev/null | xargs kill -9 2>/dev/null || true; \
 	lsof -ti:$${_ui_port} 2>/dev/null | xargs kill -9 2>/dev/null || true; \
-	rm -f .make-runner.pid .make-ui.pid .make-runner.log; \
+	rm -f .make-runner.pid .make-ui.pid .make-worker.pid .make-runner.log; \
 	echo "starting e2e-celld API on $$_base (CELLD_URL=$$CELLD_URL NATS_URL=$$NATS_URL) …"; \
-	cargo run -p e2e-celld-runner --bin e2e-celld > .make-runner.log 2>&1 & \
+	if [ "$(WATCH)" = "1" ]; then \
+	  echo "API cargo-watch on (WATCH=0 to disable) …"; \
+	  cargo watch -d 1 \
+	    -i target -i '*.db' -i '.make-*' \
+	    -w crates -w Cargo.toml \
+	    -w ../../src -w ../../Cargo.toml \
+	    -w ../e2e-ui/crates/todo-domain \
+	    -w ../e2e-ui/crates/chat-domain \
+	    -w ../e2e-ui/crates/blob-domain \
+	    -w ../e2e-ui/crates/readmodels \
+	    -w ../e2e-ui/crates/projections \
+	    -x "run -p e2e-celld-runner --bin e2e-celld" \
+	    > .make-runner.log 2>&1 & \
+	else \
+	  cargo run -p e2e-celld-runner --bin e2e-celld > .make-runner.log 2>&1 & \
+	fi; \
 	echo $$! > .make-runner.pid; \
+	if [ "$(WATCH_WORKER)" = "1" ]; then \
+	  echo "worker cargo-watch on (WATCH_WORKER=0 to disable) …"; \
+	  $(MAKE) -C ../celld watch > .make-worker.log 2>&1 & \
+	  echo $$! > .make-worker.pid; \
+	fi; \
 	ok=0; \
 	for i in $$(seq 1 240); do \
 		code=$$(curl -s -o /dev/null -w '%{http_code}' -X POST "$${_base}/graphql" \
@@ -78,12 +107,22 @@ run: wasm
 	cd $(UI_DIR) && PUBLIC_E2E_PROFILE=celld-nats E2E_API_ORIGIN="$$_base" $(NPM) run dev -- --host $$_ui_host --port $$_ui_port & \
 	echo $$! > $(CURDIR)/.make-ui.pid; \
 	cd $(CURDIR); \
+	stop_pidfile() { \
+		[ -f "$$1" ] || return 0; \
+		_pid=$$(cat "$$1"); \
+		for _child in $$(pgrep -P "$$_pid" 2>/dev/null); do \
+		  pkill -P "$$_child" 2>/dev/null || true; \
+		  kill "$$_child" 2>/dev/null || true; \
+		done; \
+		kill "$$_pid" 2>/dev/null || true; \
+		rm -f "$$1"; \
+	}; \
 	cleanup() { \
-		[ -f .make-ui.pid ] && kill $$(cat .make-ui.pid) 2>/dev/null || true; \
-		[ -f .make-runner.pid ] && kill $$(cat .make-runner.pid) 2>/dev/null || true; \
+		stop_pidfile .make-ui.pid; \
+		stop_pidfile .make-runner.pid; \
+		stop_pidfile .make-worker.pid; \
 		lsof -ti:$${_api_port} 2>/dev/null | xargs kill -9 2>/dev/null || true; \
 		lsof -ti:$${_ui_port} 2>/dev/null | xargs kill -9 2>/dev/null || true; \
-		rm -f .make-runner.pid .make-ui.pid; \
 	}; \
 	trap cleanup EXIT INT TERM; \
 	echo ""; \
@@ -93,20 +132,33 @@ run: wasm
 	echo "  NATS   $$NATS_URL"; \
 	echo "  GraphiQL $$_base/graphql"; \
 	echo "  this is tests/e2e-celld — not tests/e2e-ui make run"; \
-	echo "  Ctrl-C stops both"; \
+	echo "  watch: GraphQL cargo-watch, worker rebuild+deploy, Vite HMR"; \
+	echo "  Ctrl-C stops API + UI + worker watch"; \
 	echo ""; \
 	wait $$(cat .make-ui.pid) 2>/dev/null || wait
 
 stop:
-	@if [ -f .make-ui.pid ]; then kill $$(cat .make-ui.pid) 2>/dev/null || true; fi
-	@if [ -f .make-runner.pid ]; then kill $$(cat .make-runner.pid) 2>/dev/null || true; fi
-	@lsof -ti:$(API_PORT) 2>/dev/null | xargs kill -9 2>/dev/null || true
-	@lsof -ti:$(UI_PORT) 2>/dev/null | xargs kill -9 2>/dev/null || true
-	@rm -f .make-runner.pid .make-ui.pid
-	@echo stopped
+	@stop_pidfile() { \
+		[ -f "$$1" ] || return 0; \
+		_pid=$$(cat "$$1"); \
+		for _child in $$(pgrep -P "$$_pid" 2>/dev/null); do \
+		  pkill -P "$$_child" 2>/dev/null || true; \
+		  kill "$$_child" 2>/dev/null || true; \
+		done; \
+		kill "$$_pid" 2>/dev/null || true; \
+		rm -f "$$1"; \
+	}; \
+	stop_pidfile .make-ui.pid; \
+	stop_pidfile .make-runner.pid; \
+	stop_pidfile .make-worker.pid; \
+	lsof -ti:$(API_PORT) 2>/dev/null | xargs kill -9 2>/dev/null || true; \
+	lsof -ti:$(UI_PORT) 2>/dev/null | xargs kill -9 2>/dev/null || true; \
+	echo stopped
 
 help:
 	@echo "e2e-celld (new example — not tests/e2e-ui)"
-	@echo "  make run   GraphQL host + e2e-ui Svelte app (Todo + chat.post → celld; @live stays here)"
-	@echo "  make stop  stop API + UI"
+	@echo "  make run   GraphQL + UI (cargo-watch API, worker reload, Vite HMR)"
+	@echo "  WATCH=0    one-shot cargo run (no GraphQL reload)"
+	@echo "  WATCH_WORKER=0  skip worker-build + celld deploy watch"
+	@echo "  make stop  stop API + UI + worker watch"
 	@echo "  infra:     make -C ../e2e-ui up-celld-nats"
