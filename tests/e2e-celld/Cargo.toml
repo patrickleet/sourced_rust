@@ -6,6 +6,7 @@ members = [
     "crates/todo-service",
     "crates/chat-service",
     "crates/blob-service",
+    "crates/identity-service",
     "crates/graphql-service",
     "crates/runner",
 ]

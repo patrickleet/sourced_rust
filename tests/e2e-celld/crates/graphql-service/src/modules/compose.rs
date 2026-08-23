@@ -6,18 +6,25 @@ use distributed::microsvc::{
     ConfigurableOutboxPublisher, HasOutboxStore, HasRepo, Service,
 };
 use distributed::{AggregateBuilder, AggregateRepository, QueuedRepository};
+use e2e_celld_identity::Identity;
 use todo_domain::Todo;
 
 use crate::bounds::{EventStore, Locks, ReadStore};
 use crate::modules::projections;
 use e2e_celld_blob as blob;
 use e2e_celld_chat as chat;
+use e2e_celld_identity as identity;
 use e2e_celld_todo as todo;
 
 /// Explicit module inventory for the celld example (same ids as e2e-ui so the UI client matches).
-pub const MODULE_IDS: &[&str] = &[todo::MODULE_ID, chat::MODULE_ID, blob::MODULE_ID, "identity"];
+pub const MODULE_IDS: &[&str] = &[
+    todo::MODULE_ID,
+    chat::MODULE_ID,
+    blob::MODULE_ID,
+    identity::MODULE_ID,
+];
 
-/// Compose todo + chat (+ identity ingestors) + blob modules into one Service.
+/// Compose todo + chat + blob + identity into one Service.
 ///
 /// This is the review-visible application wiring: list modules, do not invent
 /// infrastructure. Dialect runners and workers live in `host`.
@@ -39,6 +46,8 @@ where
         HasRepo + HasOutboxStore + ConfigurableOutboxPublisher + Send + Sync + 'static,
     AggregateRepository<QueuedRepository<R, L>, BlobGame>:
         HasRepo + HasOutboxStore + ConfigurableOutboxPublisher + Send + Sync + 'static,
+    AggregateRepository<QueuedRepository<R, L>, Identity>:
+        HasRepo + HasOutboxStore + ConfigurableOutboxPublisher + Send + Sync + 'static,
 {
     let projections = projections::projection_owners();
     let todos = todo::routes(
@@ -53,14 +62,20 @@ where
         read_models.clone(),
         projections.chat,
     );
-    let blob = blob::routes(repo, locks, read_models, projections.blob);
+    let blob = blob::routes(
+        repo.clone(),
+        locks.clone(),
+        read_models.clone(),
+        projections.blob,
+    );
+    let identity = identity::routes(repo, locks, read_models);
 
     // GraphQL-only public write surface. POST /todo.* stays 404 (suite T0).
-    // Zitadel Action ingress still needs HTTP: those commands are registered in
-    // the chat module and re-mounted in `serve_with_oidc`.
+    // Zitadel Action ingress is the identity crate, re-mounted in `serve_with_oidc`.
     Service::new()
         .named("e2e-ui")
         .routes(todos)
         .routes(chat)
         .routes(blob)
+        .routes(identity)
 }

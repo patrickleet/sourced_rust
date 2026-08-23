@@ -23,3 +23,4 @@ e2e-projections = { path = "../../../e2e-ui/crates/projections" }
 e2e-celld-todo = { path = "../todo-service" }
 e2e-celld-chat = { path = "../chat-service" }
 e2e-celld-blob = { path = "../blob-service" }
+e2e-celld-identity = { path = "../identity-service" }

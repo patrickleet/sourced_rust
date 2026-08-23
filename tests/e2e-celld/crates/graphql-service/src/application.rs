@@ -7,6 +7,7 @@
 use crate::modules::compose;
 use e2e_celld_blob as blob;
 use e2e_celld_chat as chat;
+use e2e_celld_identity as identity;
 use e2e_celld_todo as todo;
 
 /// Stable normal-application surface shared by user and admin sessions.
@@ -26,7 +27,7 @@ pub const E2E_UI_MODULE_IDS: &[&str] = compose::MODULE_IDS;
 #[allow(dead_code)]
 pub const MODULE_DECLARATIONS: &[(&str, &str)] = &[
     (todo::MODULE_ID, "todo commands + projector"),
-    (chat::MODULE_ID, "chat commands + Zitadel extension + projectors"),
+    (chat::MODULE_ID, "chat commands + projector"),
     (blob::MODULE_ID, "blob Atomic commands"),
-    ("identity", "AuthUsers projection via chat module ingestors"),
+    (identity::MODULE_ID, "Zitadel ingress + AuthUsers projector"),
 ];
