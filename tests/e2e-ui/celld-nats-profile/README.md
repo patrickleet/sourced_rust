@@ -20,10 +20,14 @@ make up-celld-nats     # Azurite + celld + NATS (not make run)
 make test-celld-nats   # GraphQL wait-path smoke + SQL list
 make down-celld-nats   # NATS only
 make down-celld        # Azurite + celld
+
+cd ../e2e-celld
+make run               # new GraphQL service crates + the Svelte UI
 ```
 
 `tests/e2e-ui/crates/service/src/host.rs` stays a single backend process.
-Do not add this topology there.
+The playground UI against celld is the sibling example `tests/e2e-celld/`
+(new service crates; same domain crates). Do not add that topology here.
 
 ## What this profile is
 

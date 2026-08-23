@@ -1,5 +1,6 @@
 <script lang="ts">
 	import { page } from '$app/state';
+	import { env } from '$env/dynamic/public';
 	import Auth from '$lib/components/shared/header/Auth.svelte';
 	import AccountMenu from '$lib/components/shared/menus/AccountMenu.svelte';
 	import { engineRoleFromGroups, isAdminEngineRole } from '$lib/roles';
@@ -19,6 +20,7 @@
 			)
 	);
 	const currentPath = $derived(page.url.pathname);
+	const celldProfile = $derived(env.PUBLIC_E2E_PROFILE === 'celld-nats');
 
 	const isActive = (path: string) => {
 		if (path === '/') return currentPath === '/';
@@ -50,6 +52,11 @@
 			<a href="/" class="brand-link">
 				<span class="brand-mark" aria-hidden="true">df</span>
 				distributed
+				{#if celldProfile}
+					<span class="profile-badge" title="Todo create/complete wait-dispatch to celld"
+						>celld</span
+					>
+				{/if}
 			</a>
 		</div>
 
