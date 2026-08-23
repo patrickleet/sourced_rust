@@ -3,7 +3,8 @@ import test from 'node:test';
 
 import {
 	createDistributedSvelteKit,
-	createDistributedSvelteKitServer
+	createDistributedSvelteKitServer,
+	matchDistributedRoute
 } from '../dist/sveltekit/index.js';
 import {
 	REACT_FIXTURE_SCHEMA,
@@ -164,6 +165,32 @@ test('static @load SSR is request-isolated and hydration avoids a duplicate firs
 	unsubscribe();
 	assert.equal(SsrWebSocket.instances[0].closed, true);
 	client.destroy();
+});
+
+test('client-side data requests skip GraphQL so navigation stays SPA', async () => {
+	const harness = serverHarness();
+	const document = await harness.server.load(harness.event('alice'));
+	assert.equal(harness.calls.length, 1);
+	assert.ok(document.distributed);
+
+	const dataNav = await harness.server.load({
+		...harness.event('alice'),
+		isDataRequest: true
+	});
+	assert.equal(harness.calls.length, 1, 'SPA data request must not seed a new replica');
+	assert.equal(dataNav.distributed, undefined);
+	assert.equal(dataNav.gqlError, null);
+	assert.equal(dataNav.accessToken, 'alice');
+});
+
+test('matchDistributedRoute covers optional and required segments', () => {
+	assert.equal(matchDistributedRoute('/todos', '/todos'), true);
+	assert.equal(matchDistributedRoute('/todos', '/todos/'), true);
+	assert.equal(matchDistributedRoute('/todos', '/chat'), false);
+	assert.equal(matchDistributedRoute('/blob/[[gameId]]', '/blob'), true);
+	assert.equal(matchDistributedRoute('/blob/[[gameId]]', '/blob/abc'), true);
+	assert.equal(matchDistributedRoute('/blob/[[gameId]]', '/blob/abc/extra'), false);
+	assert.equal(matchDistributedRoute('/chat', '/chat'), true);
 });
 
 test('replica state never self-authorizes hydration scope', async () => {

@@ -10,6 +10,7 @@ import {
 	createDistributedReplica,
 	replicaRecordKey
 } from '../dist/replica/index.js';
+import { replicaCommandProjectionDelta } from '../dist/replica/command-runtime.js';
 import {
 	COMMAND_CONSISTENCY,
 	COMMAND_STATE,
@@ -613,6 +614,118 @@ test('authoritative revalidation succeeds against confirmed data while a server-
 		{ id: 'todo-2', title: 'atomic' }
 	]);
 	watch.destroy();
+});
+
+test('comparable live snapshot cannot drop an Eventual list row after confirmation', () => {
+	const replica = createDistributedReplica();
+	write(replica, {
+		position: '1',
+		rows: [{ id: 'todo-1', title: 'first' }]
+	});
+	assert.deepEqual(replica.read(Todos, {}).data.todos, [
+		{ id: 'todo-1', title: 'first' }
+	]);
+
+	replica.createOptimisticLayer('cmd-eventual-post', (writer) => {
+		writer.writeRecord(Todo, 'todo-2', {
+			fields: { id: 'todo-2', title: 'posted' }
+		});
+		writer.writeIndex(
+			{
+				field: 'todos',
+				arguments: {},
+				dependencies: ['todos'],
+				complete: true
+			},
+			[
+				replicaRecordKey(Todo, 'todo-1'),
+				replicaRecordKey(Todo, 'todo-2')
+			]
+		);
+	});
+	replica[replicaCommandProjectionDelta](
+		'cmd-eventual-post',
+		(writer) => {
+			writer.writeRecord(Todo, 'todo-2', {
+				fields: { id: 'todo-2', title: 'posted' }
+			});
+			writer.writeIndex(
+				{
+					field: 'todos',
+					arguments: {},
+					dependencies: ['todos'],
+					complete: true
+				},
+				[
+					replicaRecordKey(Todo, 'todo-1'),
+					replicaRecordKey(Todo, 'todo-2')
+				]
+			);
+		},
+		[]
+	);
+	assert.deepEqual(replica.read(Todos, {}).data.todos, [
+		{ id: 'todo-1', title: 'first' },
+		{ id: 'todo-2', title: 'posted' }
+	]);
+
+	write(
+		replica,
+		{
+			position: '2',
+			operation: Todos.live.id,
+			rows: [{ id: 'todo-1', title: 'first' }],
+			live: { supported: true }
+		},
+		'live'
+	);
+	replica.confirmOptimisticLayer('cmd-eventual-post', () => undefined);
+
+	assert.equal(replica.read(Todos, {}).complete, true);
+	assert.deepEqual(
+		replica.read(Todos, {}).data.todos,
+		[
+			{ id: 'todo-1', title: 'first' },
+			{ id: 'todo-2', title: 'posted' }
+		],
+		'SQL @live that has not projected the confirmed Eventual row must not shrink the list'
+	);
+
+	write(
+		replica,
+		{
+			position: '3',
+			operation: Todos.live.id,
+			rows: [
+				{ id: 'todo-1', title: 'first' },
+				{ id: 'todo-2', title: 'posted' }
+			],
+			live: { supported: true },
+			records: [
+				{
+					path: ['todos', '0'],
+					model: 'TodoView',
+					scopeToken: 'record:todo-1',
+					incarnation: '1',
+					revision: '3',
+					tombstone: false
+				},
+				{
+					path: ['todos', '1'],
+					model: 'TodoView',
+					scopeToken: 'record:todo-2',
+					incarnation: '1',
+					revision: '3',
+					tombstone: false
+				}
+			]
+		},
+		'live'
+	);
+	assert.deepEqual(replica.read(Todos, {}).data.todos, [
+		{ id: 'todo-1', title: 'first' },
+		{ id: 'todo-2', title: 'posted' }
+	]);
 });
 
 test('shared non-comparable membership follows request-start order across operations', async () => {

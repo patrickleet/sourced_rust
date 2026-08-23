@@ -80,6 +80,7 @@ import type {
 	ReplicaOperationArtifact,
 	ReplicaOptimisticWriter,
 	ReplicaRecordInspection,
+	ReplicaRecordPatch,
 	ReplicaRevalidationPlan,
 	ReplicaRevision,
 	ReplicaResultEnvelope,
@@ -133,6 +134,7 @@ import {
 import { diagnosticReceiptCounts } from './optimistic.js';
 import {
 	assertWriteSource,
+	baseWriter,
 	indexKeyFromTarget,
 	indexMaintenanceSnapshot,
 	indexSemanticLayer,
@@ -209,6 +211,13 @@ export class DistributedReplicaImpl implements DistributedReplicaApi {
 	readonly #recordClocks = new Map<string, RecordProtocolClock>();
 	readonly #recordKeysByScope = new Map<DistributedOpaqueString, string>();
 	readonly #projectedRecordFences = new Map<string, ProjectedRecordFence>();
+	/**
+	 * Record keys inserted by Eventual projection-delta (and Atomic fences).
+	 * A later complete query/live index that omits them is behind command
+	 * confirmation and must not shrink the visible list.
+	 */
+	readonly #membershipFences = new Map<string, string>();
+	readonly #deferredMembershipConfirms = new Set<string>();
 	readonly #anonymousRecordClocks = new Map<
 		DistributedOpaqueString,
 		AnonymousRecordProtocolClock
@@ -356,6 +365,12 @@ export class DistributedReplicaImpl implements DistributedReplicaApi {
 			},
 			get projectedRecordFences() {
 				return self.#projectedRecordFences;
+			},
+			get membershipFences() {
+				return self.#membershipFences;
+			},
+			get deferredMembershipConfirms() {
+				return self.#deferredMembershipConfirms;
 			},
 			get anonymousRecordClocks() {
 				return self.#anonymousRecordClocks;
@@ -715,6 +730,7 @@ export class DistributedReplicaImpl implements DistributedReplicaApi {
 					projectionGeneration: this.#projectionGeneration
 				})
 			);
+			this.#membershipFences.set(recordKey, commandId);
 		}
 	}
 
@@ -726,7 +742,7 @@ export class DistributedReplicaImpl implements DistributedReplicaApi {
 		return replaceReplicaOptimisticLayerOn(
 			this.#optimisticHost(),
 			commandId,
-			update,
+			(writer) => update(this.#capturingOptimisticWriter(commandId, writer)),
 			semanticChanges
 		);
 	}
@@ -1267,6 +1283,7 @@ export class DistributedReplicaImpl implements DistributedReplicaApi {
 					);
 				}
 				consumedRecordPaths.add(encodedPath);
+				this.#membershipFences.delete(recordKey);
 				const projectedFence =
 					this.#projectedRecordFences.get(recordKey);
 				const projectedDisposition =
@@ -1337,8 +1354,9 @@ export class DistributedReplicaImpl implements DistributedReplicaApi {
 		let summary: ReturnType<typeof normalizeReplicaResult>;
 		try {
 			const update = (writer: BaseCacheWriter) => {
+				const guarded = this.#guardIndexWriter(writer);
 				this.#applyTombstoneEvidence(
-					writer,
+					guarded,
 					recordEvidence.tombstones,
 					operationState,
 					pendingRecordClocks,
@@ -1349,7 +1367,7 @@ export class DistributedReplicaImpl implements DistributedReplicaApi {
 					pendingProjectedRecordFenceClears
 				);
 				const normalized = normalizeReplicaResult(
-					writer,
+					guarded,
 					artifact,
 					stableVariables,
 					envelope,
@@ -1363,7 +1381,7 @@ export class DistributedReplicaImpl implements DistributedReplicaApi {
 					}
 				}
 				this.#applyPathlessEvidence(
-					writer,
+					guarded,
 					recordEvidence.pathless,
 					recordEvidence.byPath,
 					consumedRecordPaths,
@@ -1481,6 +1499,7 @@ export class DistributedReplicaImpl implements DistributedReplicaApi {
 			this.#protocolGeneration = nextProtocolGeneration;
 		this.#resumeLiveWatches();
 		this.#emitState(key, false);
+		this.#flushDeferredMembershipConfirms();
 		if (this.#diagnostics !== undefined) {
 			const cache = this.#engine.extract();
 			this.#diagnosticEvent(
@@ -1567,14 +1586,112 @@ export class DistributedReplicaImpl implements DistributedReplicaApi {
 		id: string,
 		update: (writer: ReplicaBaseWriter) => T
 	): T {
+		if (this.#commandHasMembershipFence(id)) {
+			this.#deferredMembershipConfirms.add(id);
+			return this.#engine.batch((writer) => update(baseWriter(writer)));
+		}
 		return confirmOptimisticLayerOn(this.#optimisticHost(), id, update);
 	}
 
 	rejectOptimisticLayer(id: string): boolean {
+		this.#clearMembershipFencesForCommand(id);
+		this.#deferredMembershipConfirms.delete(id);
 		return rejectOptimisticLayerOn(this.#optimisticHost(), id);
 	}
 
-		tombstoneRecord(
+	#capturingOptimisticWriter(
+		commandId: string,
+		writer: ReplicaOptimisticWriter
+	): ReplicaOptimisticWriter {
+		return {
+			writeRecord: (
+				model: ReplicaModelArtifact,
+				identity: ReplicaIdentity,
+				patch: ReplicaRecordPatch
+			) => {
+				this.#membershipFences.set(
+					replicaRecordKey(model, identity),
+					commandId
+				);
+				writer.writeRecord(model, identity, patch);
+			},
+			tombstoneRecord: (model, identity) => {
+				this.#membershipFences.delete(replicaRecordKey(model, identity));
+				writer.tombstoneRecord(model, identity);
+			},
+			writeIndex: (target, records) => writer.writeIndex(target, records),
+			deleteIndex: (target) => writer.deleteIndex(target)
+		};
+	}
+
+	#commandHasMembershipFence(commandId: string): boolean {
+		for (const owner of this.#membershipFences.values()) {
+			if (owner === commandId) return true;
+		}
+		return false;
+	}
+
+	#clearMembershipFencesForCommand(commandId: string): void {
+		for (const [recordKey, owner] of this.#membershipFences) {
+			if (owner === commandId) this.#membershipFences.delete(recordKey);
+		}
+	}
+
+	#guardIndexWriter(writer: BaseCacheWriter): BaseCacheWriter {
+		return {
+			recordClock: (key) => writer.recordClock(key),
+			writeRecord: (write) => writer.writeRecord(write),
+			tombstoneRecord: (key, revision, incarnation) =>
+				writer.tombstoneRecord(key, revision, incarnation),
+			discardRecord: (key) => writer.discardRecord(key),
+			writeIndex: (write) => {
+				if (
+					write.complete === true &&
+					this.#membershipFences.size > 0
+				) {
+					const visible =
+						this.#engine.read(
+							(reader) => reader.index(write.key)?.records
+						) ?? [];
+					for (const recordKey of this.#membershipFences.keys()) {
+						if (
+							visible.includes(recordKey) &&
+							!write.records.includes(recordKey)
+						) {
+							return false;
+						}
+					}
+				}
+				const wrote = writer.writeIndex(write);
+				if (wrote) {
+					for (const recordKey of write.records) {
+						this.#membershipFences.delete(recordKey);
+					}
+				}
+				return wrote;
+			},
+			markIndexStale: (key, reason, revision) =>
+				writer.markIndexStale(key, reason, revision),
+			deleteIndex: (key, revision) => writer.deleteIndex(key, revision)
+		};
+	}
+
+	#flushDeferredMembershipConfirms(): void {
+		for (const commandId of [...this.#deferredMembershipConfirms]) {
+			if (this.#commandHasMembershipFence(commandId)) continue;
+			this.#deferredMembershipConfirms.delete(commandId);
+			if (this.#engine.optimisticLayerState(commandId) === undefined) {
+				continue;
+			}
+			confirmOptimisticLayerOn(
+				this.#optimisticHost(),
+				commandId,
+				() => undefined
+			);
+		}
+	}
+
+	tombstoneRecord(
 		model: ReplicaModelArtifact,
 		identity: ReplicaIdentity,
 		revision: ReplicaRevision

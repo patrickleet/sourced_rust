@@ -31,6 +31,12 @@ export type SveltekitServerLoadEventLike<TLocals = unknown> = Readonly<{
 	route?: Readonly<{ id?: string | null }>;
 	url?: URL;
 	fetch?: FetchLike;
+	/**
+	 * SvelteKit client-side navigation and hover preload (`__data.json`).
+	 * Document SSR is `false`/`undefined`; those navigations must not wait on
+	 * a fresh GraphQL replica — the browser replica already owns the cache.
+	 */
+	isDataRequest?: boolean;
 }>;
 
 export type DistributedRouteVariables<
@@ -87,6 +93,12 @@ export function createDistributedSvelteKitServer<
 				accessToken,
 				engineRole
 			};
+			if (event.isDataRequest === true) {
+				return {
+					...pageData,
+					gqlError: null
+				};
+			}
 			const auth =
 				options.getAuth?.(pageData, event) ?? authFromPageData(pageData);
 			const routeId = routeIdentity(event);
@@ -217,6 +229,49 @@ function hydrationTransfer(
 			scope: state.scope
 		})
 	});
+}
+
+/**
+ * Match a SvelteKit route id (`/blob/[[gameId]]`) to a browser pathname.
+ */
+export function matchDistributedRoute(
+	routeId: string,
+	pathname: string
+): boolean {
+	const route = normalizeRoute(routeId);
+	const path = normalizePathname(pathname);
+	if (route === path) return true;
+	const routeParts = route.split('/').filter(Boolean);
+	const pathParts = path.split('/').filter(Boolean);
+	let i = 0;
+	let j = 0;
+	while (i < routeParts.length) {
+		const part = routeParts[i]!;
+		if (part.startsWith('[...') && part.endsWith(']')) {
+			return true;
+		}
+		if (part.startsWith('[[') && part.endsWith(']]')) {
+			if (j < pathParts.length) j += 1;
+			i += 1;
+			continue;
+		}
+		if (part.startsWith('[') && part.endsWith(']')) {
+			if (j >= pathParts.length) return false;
+			i += 1;
+			j += 1;
+			continue;
+		}
+		if (j >= pathParts.length || pathParts[j] !== part) return false;
+		i += 1;
+		j += 1;
+	}
+	return j === pathParts.length;
+}
+
+function normalizePathname(pathname: string): string {
+	if (typeof pathname !== 'string' || pathname.length === 0) return '/';
+	const trimmed = pathname.replace(/\/+$/, '');
+	return trimmed.length === 0 ? '/' : trimmed.startsWith('/') ? trimmed : `/${trimmed}`;
 }
 
 function validateRoutes(
