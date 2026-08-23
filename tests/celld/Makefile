@@ -7,10 +7,12 @@
 # a source watcher. Nodes load a deployment at startup, so deploy is not
 # enough — this target restarts the celld container after each deploy.
 
-.PHONY: reload watch ensure-watch help
+.PHONY: reload watch ensure-watch test help
 
 REPO_ROOT := $(abspath ../..)
 COMPOSE   ?= docker-compose.yml
+CELLD_HTTP_PORT ?= 18080
+CELLD_URL ?= http://127.0.0.1:$(CELLD_HTTP_PORT)
 # Public Azurite emulator account (already in compose). Not a secret.
 AZURE_STORAGE_USE_EMULATOR    ?= true
 AZURE_STORAGE_ACCOUNT_NAME    ?= devstoreaccount1
@@ -31,6 +33,9 @@ reload:
 	docker compose -f $(COMPOSE) restart celld
 	@echo "celld restarted with new worker (nodes load a deployment at startup)"
 
+test:
+	cd $(REPO_ROOT) && CELLD_URL="$(CELLD_URL)" cargo test --test celld -- --nocapture
+
 watch: ensure-watch
 	@echo "watching worker + cell_host + todo/chat domain (first change triggers reload)"
 	cd worker && cargo watch \
@@ -49,3 +54,4 @@ help:
 	@echo "celld worker"
 	@echo "  make reload  worker-build --dev + celld deploy + restart celld"
 	@echo "  make watch   cargo-watch reload (postpone until first change)"
+	@echo "  make test    cargo test --test celld (live HTTP when CELLD_URL is up)"

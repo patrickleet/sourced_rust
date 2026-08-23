@@ -75,3 +75,6 @@ jobs:
   js-client:
     needs: [contracts]
     uses: ./.github/workflows/integration-js.yaml
+
+  celld:
+    uses: ./.github/workflows/integration-celld.yaml

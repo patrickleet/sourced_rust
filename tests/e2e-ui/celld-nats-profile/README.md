@@ -17,7 +17,8 @@ Optional profile:
 ```sh
 cd tests/e2e-ui
 make up-celld-nats     # Azurite + celld + NATS (not make run)
-make test-celld-nats   # GraphQL wait-path smoke + SQL list
+make test-celld        # live --test celld + GraphQL wait-path smoke (CI)
+make test-celld-nats   # GraphQL wait-path smoke + SQL list only
 make down-celld-nats   # NATS only
 make down-celld        # Azurite + celld
 

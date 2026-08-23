@@ -4,13 +4,13 @@
 #   make run         # API + UI (cargo-watch GraphQL, Vite HMR; WATCH=0 to disable)
 #   make test         # offline unit/suite/UI structural
 #   make test-browser # Playwright UI e2e (needs make up + make run)
-#   make up-celld-nats / test-celld-nats / down-celld-nats
-#                    # optional celld+NATS profile (not make run)
+#   make up-celld-nats / test-celld / down-celld-nats
+#                    # optional celld+NATS profile (not make run; CI live path)
 
 .PHONY: all up down run run-api stop test ci-offline test-domain test-suite \
 	test-browser test-browser-install js-install js-build wasm ui-install ui-build ui-check ui-test \
 	gen-client check-client contracts-check check clean help ensure-watch \
-	up-celld-nats down-celld-nats down-celld test-celld-nats
+	up-celld-nats down-celld-nats down-celld test-celld test-celld-http test-celld-nats
 
 # Defaults only — do NOT `include e2e-ui.env` (shell-quoted dotenv breaks Make).
 # Recipes `source` the env file so values stay clean.
@@ -202,6 +202,15 @@ down-celld:
 	docker compose -f $(CELLD_COMPOSE) down
 	@echo "celld + Azurite stopped. NATS: make down-celld-nats. playground: make down."
 
+## Live celld tests (needs make up-celld-nats). Fixture-only checks still run
+## in root `cargo test` without CELLD_URL; these set CELLD_URL so HTTP runs.
+test-celld: test-celld-http test-celld-nats
+
+test-celld-http:
+	cd $(REPO_ROOT) && \
+	  CELLD_URL="$(CELLD_URL)" \
+	  cargo test --test celld -- --nocapture
+
 test-celld-nats:
 	@echo "optional profile smoke — default make test / make run unchanged"
 	cd $(REPO_ROOT) && \
@@ -310,6 +319,7 @@ help:
 	@echo "  make down       playground docker compose down (not celld/NATS)"
 	@echo "  make up-celld-nats    optional celld+NATS profile (not make run)"
 	@echo "  make -C ../celld watch  worker source reload after up-celld-nats"
+	@echo "  make test-celld      live --test celld + e2e_ui_celld_nats_profile (CI)"
 	@echo "  make test-celld-nats  cargo test --test e2e_ui_celld_nats_profile"
 	@echo "  make down-celld-nats  stop NATS profile only"
 	@echo "  make down-celld       stop tests/celld Azurite + celld"

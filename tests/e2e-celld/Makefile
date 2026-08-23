@@ -7,7 +7,7 @@
 # the UI. WATCH=0 / WATCH_WORKER=0 disable those loops. CELLD_WATCH in
 # compose is the node's SQLite dir, not a source watcher.
 
-.PHONY: run stop help wasm ensure-watch
+.PHONY: run stop test help wasm ensure-watch
 
 BIND         ?= 0.0.0.0:8791
 API_PORT     ?= 8791
@@ -145,6 +145,9 @@ run: wasm $(if $(filter 1,$(WATCH) $(WATCH_WORKER)),ensure-watch)
 	echo ""; \
 	wait $$(cat .make-ui.pid) 2>/dev/null || wait
 
+test:
+	cargo test --workspace -- --nocapture
+
 stop:
 	@stop_pidfile() { \
 		[ -f "$$1" ] || return 0; \
@@ -165,6 +168,7 @@ stop:
 
 help:
 	@echo "e2e-celld (new example — not tests/e2e-ui)"
+	@echo "  make test  cargo test --workspace (CI)"
 	@echo "  make run   GraphQL + UI (cargo-watch API, worker reload, Vite HMR)"
 	@echo "  WATCH=0    one-shot cargo run (no GraphQL reload)"
 	@echo "  WATCH_WORKER=0  skip worker-build + celld deploy watch"
