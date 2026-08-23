@@ -32,7 +32,7 @@
 	];
 
 	const demos = [
-		{ href: '/chat', title: 'Lobby chat', tag: 'Live + anonymous', blurb: 'A shared room with SSR, live updates, and guest reads.' },
+		{ href: '/chat', title: 'Lobby chat', tag: 'Live + anonymous', blurb: 'A shared room with SSR, live updates, and guest reads. Same post on a Service or a cell — @live stays on GraphQL.' },
 		{ href: '/todos', title: 'Todos', tag: 'Eventual · celld', blurb: 'Ownership rules, optimistic commands, projector fill. Same declarations on a Service or a cell.' },
 		{ href: '/blob', tag: 'Atomic + WASM', title: 'Blob game', blurb: 'Atomic board in the response. Same domain pure runs as WASM in the replica.' },
 		{ href: '/admin', title: 'Admin', tag: 'Surface', blurb: 'Elevated surface — separate client, more power.' },
@@ -275,12 +275,13 @@ Service::new()
 
 			<p class="dist-hero-note">
 				{#if celldProfile}
-					This session is <code>tests/e2e-celld</code>. Todo create and complete wait-dispatch to a
-					cell (one SQLite shard per todo). Chat, Blob, GraphQL, and projectors stay in this process.
+					This session is <code>tests/e2e-celld</code>. Todo create/complete and lobby posts
+					wait-dispatch to a cell. GraphQL <code>@live</code> and Eventual projectors stay in this
+					process — that is the chat demo.
 				{:else}
 					This site is the living playground. Default is one process under
-					<code>tests/e2e-ui</code>. The same UI can wait-dispatch Todo commands to celld from
-					<code>tests/e2e-celld</code>.
+					<code>tests/e2e-ui</code>. The same UI can wait-dispatch Todo and Chat commands to celld
+					from <code>tests/e2e-celld</code>.
 				{/if}
 			</p>
 
@@ -713,8 +714,9 @@ Service::new()
 						Todo commands are <code>portable_command!</code> declarations in
 						<code>todo-domain</code>. This playground mounts them on a local Service. The sibling
 						example <code>tests/e2e-celld</code> mounts the same declarations and wait-dispatches
-						create and complete to a <strong>cell</strong> (one private SQLite per todo id). GraphQL
-						and Eventual projectors stay off the cell.
+						create, complete, and <code>chat.post</code> to a <strong>cell</strong> (one private
+						SQLite per todo or message). GraphQL <code>@live</code> and Eventual projectors stay off
+						the cell.
 					</p>
 					<p class="wf-why">
 						The same packages can back a different Service later: all modules in one binary, or
@@ -848,7 +850,8 @@ Service::new()
 				<p>
 					Real features under <code>tests/e2e-ui</code> — chat, todos, a game, admin. Each has
 					<strong>How it is built</strong>: query, then command, then handler, then domain, then events, then service and host.
-					Todos also run against celld from <code>tests/e2e-celld</code> with the same domain crate.
+					Todos and Chat also run against celld from <code>tests/e2e-celld</code> with the same
+					domain crates. Chat is the small cell that still proves <code>@live</code>.
 				</p>
 			</div>
 			<div class="dist-demo-grid">
@@ -877,7 +880,7 @@ cd tests/e2e-ui
 make up                    # Postgres + Zitadel → e2e-ui.env
 source e2e-ui.env && make run
 
-# Optional: same UI, Todo create/complete on celld
+# Optional: same UI, Todo + chat.post on celld (@live stays on GraphQL)
 cd tests/e2e-ui && make up && make up-celld-nats
 cd ../e2e-celld && make run
 # UI  http://localhost:5180

@@ -20,9 +20,10 @@ PSQL · SQLite · OIDC · Keycloak · Authentik
 
 The living playground is [`tests/e2e-ui`](tests/e2e-ui): real apps (chat,
 todos, blob, admin) with a **How it is built** panel on every screen. Default
-is one process. The same UI can wait-dispatch Todo create/complete to celld
-from [`tests/e2e-celld`](tests/e2e-celld). This README is the same story, in
-the repo.
+is one process. The same UI can wait-dispatch Todo create/complete and
+`chat.post` to celld from [`tests/e2e-celld`](tests/e2e-celld). Chat is a
+small cell so GraphQL `@live` still working is the demo. This README is the
+same story, in the repo.
 
 - [The bar](#the-bar) — what “state of the art” means here
 - [Backstory](#backstory) — why the full path is one system, and the pieces still stand alone
@@ -63,9 +64,10 @@ the generated client hosts it.
 packages — not a deploy shape. A **service crate** lists the modules this
 process runs. Todo commands are `portable_command!` declarations in
 `todo-domain`. Today the playground is one host. [`tests/e2e-celld`](tests/e2e-celld)
-mounts the same declarations and wait-dispatches create/complete to a cell
-(one private SQLite per todo). GraphQL and Eventual projectors stay off the
-cell. Later you write another `Service` from the same modules. Eventual
+mounts the same declarations and wait-dispatches create/complete and
+`chat.post` to a cell (one private SQLite per todo or message). GraphQL
+`@live` and Eventual projectors stay off the cell. Later you write another
+`Service` from the same modules. Eventual
 projectors can move; Atomic seals stay with commands. The same Rust pures
 can compile to WASM for the replica.
 
@@ -340,8 +342,9 @@ calls `run`. You do not set a runtime role flag.
 Todo commands are `portable_command!` declarations in `todo-domain`. This
 playground mounts them on a local Service. The sibling example
 [`tests/e2e-celld`](tests/e2e-celld) mounts the same declarations and
-wait-dispatches create and complete to a **cell** (one private SQLite per
-todo id). GraphQL and Eventual projectors stay off the cell.
+wait-dispatches create, complete, and `chat.post` to a **cell** (one private
+SQLite per todo or message). GraphQL `@live` and Eventual projectors stay
+off the cell.
 
 The same packages can back a different `Service` later: all modules in one
 binary, or commands here and Eventual projectors there. **Atomic** work
@@ -1865,7 +1868,7 @@ make up && set -a && source e2e-ui.env && set +a && make run
 make test         # domain + behavioral + JS-backed UI build/typecheck/tests
 make check-client # generated user/admin clients are current
 
-# Same UI against celld (Todo create/complete wait-dispatch to a cell)
+# Same UI against celld (Todo + chat.post wait-dispatch; @live stays on GraphQL)
 make up-celld-nats && cd ../e2e-celld && make run
 ```
 
@@ -2234,7 +2237,7 @@ e2e-celld (`tests/e2e-celld`), Blob game, live chat, GraphiQL.
 | Path | What it showcases |
 |---|---|
 | [`tests/e2e-ui/`](tests/e2e-ui/) | Full-stack CQRS + GraphQL + OIDC + SvelteKit (todos, chat, blob) |
-| [`tests/e2e-celld/`](tests/e2e-celld/) | Same UI; Todo create/complete wait-dispatch to celld |
+| [`tests/e2e-celld/`](tests/e2e-celld/) | Same UI; Todo + `chat.post` wait-dispatch to celld; `@live` stays on GraphQL |
 | [`js/`](js/) | `@hops-ops/distributed` — transport, causal replica, SvelteKit/React |
 | [`examples/graphiql.rs`](examples/graphiql.rs) | Seeded GraphQL playground (`--features "graphql,sqlite"`) |
 | `tests/graphql_*` | Engine, HTTP/WS, harden, identity, multi-IdP OIDC |

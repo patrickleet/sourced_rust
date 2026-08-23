@@ -1,13 +1,15 @@
-# celld live Todo cell
+# celld live Todo and Chat cells
 
 First live celld host for portable command hosts: one `TodoCell` Durable
-Object per todo id, private SQLite, Docker Compose for the daemon **and**
-Azurite (no AWS or Cloudflare account).
+Object per todo id, one `ChatCell` per message id, private SQLite, Docker
+Compose for the daemon **and** Azurite (no AWS or Cloudflare account).
 
-The Worker is a workers-rs Durable Object class around
-`distributed::cell_host::AggregateCell<Todo>`. Shard rule is still
-`idFromName(todo_id)` (`PCH-DEC-004`). GraphQL and projectors are not
-cell methods. The event log is stored in Durable Object SQLite table `cell_events`.
+The Worker is workers-rs Durable Object classes around
+`distributed::cell_host::AggregateCell<Todo>` and
+`AggregateCell<ChatMessage>`. Shard rule is still
+`idFromName(todo_id)` / `idFromName(message_id)` (`PCH-DEC-004`). GraphQL
+and projectors are not cell methods — Chat `@live` stays on the GraphQL
+host. The event log is stored in Durable Object SQLite table `cell_events`.
 Repository snapshot cache records go in `cell_snapshots`. The sealed
 read-model row for GET lives in `cell_sealed`. All three are replicated
 by celld via LTX. GET on a cell instance queues behind in-flight POST on
@@ -49,10 +51,19 @@ Without `CELLD_URL`, `cargo test --test celld` only checks the worker
 fixture and skips the live HTTP round-trip.
 
 Durability: `POST /todo/:id/todo.create` (wait-path `{ commandId, input }`)
-writes `cell_events`, `cell_snapshots`, and `cell_sealed`. GET restores
-those tables into the working copy and returns the sealed row. After
-`docker compose … restart celld`, GET of an existing id should still
-return the todo.
+writes `cell_events`, `cell_snapshots`, `cell_sealed`, and `cell_outbox`
+in the same Durable Object fetch (one SQLite transaction). Chat posts
+`POST /chat/:id/chat.post` the same wait-path (events + sealed + outbox;
+Chat does not snapshot). GET restores those tables into the working copy
+and returns the sealed row. After `docker compose … restart celld`, GET of
+an existing id should still return the row.
+
+Outbox drain: wait-path JSON includes still-`pending` rows. After the
+GraphQL process's `MessagePublisher` returns Ok it POSTs
+`/…/outbox.complete` with those ids (fire-and-forget — not on the mutation
+critical path). `POST /…/outbox.drain` re-lists pending rows. If
+`OUTBOX_DRAIN_URL` is set, a Durable Object alarm every
+`OUTBOX_DRAIN_INTERVAL_MS` offers pending rows to that URL.
 
 Tear down: `docker compose -f tests/celld/docker-compose.yml down -v`.
 

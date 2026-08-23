@@ -1,7 +1,8 @@
-//! Wait-path host: celld for create/complete. Cell outbox drains through [`MessagePublisher`].
+//! Wait-path host: celld for `chat.post`. Cell outbox drains through [`MessagePublisher`].
 
 use std::collections::{HashMap, HashSet};
 use std::sync::{Arc, Mutex};
+use std::time::Instant;
 
 use async_trait::async_trait;
 use distributed::bus::MessagePublisher;
@@ -13,12 +14,14 @@ use distributed::microsvc::{
 };
 use serde_json::{json, Value};
 
-const CELLD_TODO_COMMANDS: &[&str] = &["todo.create", "todo.complete"];
-
-/// Routes `todo.create` / `todo.complete` to `{CELLD_URL}/todo/{id}/{command}`.
-/// Other commands stay on the local [`Service`]. Cell outbox publishes through
-/// the process [`MessagePublisher`] (not a second SQL outbox).
-pub struct CelldTodoCommandHost<P> {
+/// Routes `chat.post` to `{CELLD_URL}/chat/{message_id}/chat.post`.
+///
+/// The cell commits events + outbox in one SQLite. This host publishes those
+/// rows through the process [`MessagePublisher`] (NATS/Kafka/Rabbit — not a
+/// second SQL outbox). After `publish` Ok, `outbox.complete` is spawned and
+/// the mutation returns without waiting on the DO. A 5s drain loop re-reads
+/// still-Pending rows via `outbox.drain`.
+pub struct CelldChatCommandHost<P> {
     celld_url: String,
     http: HttpCommandHost,
     publisher: P,
@@ -27,7 +30,7 @@ pub struct CelldTodoCommandHost<P> {
     completed: Arc<Mutex<HashMap<String, CausalCommandPublicStatus>>>,
 }
 
-impl<P> CelldTodoCommandHost<P>
+impl<P> CelldChatCommandHost<P>
 where
     P: MessagePublisher + Clone + Send + Sync + 'static,
 {
@@ -39,7 +42,7 @@ where
         let celld_url = celld_url.into().trim_end_matches('/').to_string();
         let http = HttpCommandHost::new(&celld_url);
         let pending = Arc::new(Mutex::new(HashSet::new()));
-        http.spawn_outbox_drain_loop("todo", publisher.clone(), Arc::clone(&pending));
+        http.spawn_outbox_drain_loop("chat", publisher.clone(), Arc::clone(&pending));
         Self {
             http,
             celld_url,
@@ -52,7 +55,7 @@ where
 }
 
 #[async_trait]
-impl<P> CommandHost for CelldTodoCommandHost<P>
+impl<P> CommandHost for CelldChatCommandHost<P>
 where
     P: MessagePublisher + Clone + Send + Sync + 'static,
 {
@@ -65,34 +68,39 @@ where
         principal: VerifiedPrincipal,
         protocol: Option<ProtocolResponseAccumulator>,
     ) -> Result<CausalDispatchResult, CausalDispatchError> {
-        if !CELLD_TODO_COMMANDS.contains(&command) {
+        if command != "chat.post" {
             return self
                 .local
                 .invoke(command, command_id, input, session, principal, protocol)
                 .await;
         }
-        let todo_id = input
-            .get("todo_id")
+        let message_id = input
+            .get("message_id")
             .and_then(Value::as_str)
             .map(str::trim)
             .filter(|value| !value.is_empty())
             .ok_or_else(|| {
-                CausalDispatchError::BadRequest("todo_id required for celld wait-path".into())
+                CausalDispatchError::BadRequest("message_id required for celld wait-path".into())
             })?;
+        let started = Instant::now();
         let http = self
             .http
-            .retarget(format!("{}/todo/{todo_id}", self.celld_url));
+            .retarget(format!("{}/chat/{message_id}", self.celld_url));
         let (status, body) = http
             .post_wait_path(command, command_id, input.clone(), &session)
             .await?;
+        let cell_ms = started.elapsed().as_millis();
         let outbox = CausalDispatchResult::outbox_from_wait_path(&body);
         if !outbox.is_empty() {
             if let Ok(mut guard) = self.pending.lock() {
-                guard.insert(todo_id.to_string());
+                guard.insert(message_id.to_string());
             }
         }
         http.drain_cell_outbox(&self.publisher, &outbox).await;
-        let _ = principal;
+        eprintln!(
+            "e2e-celld: chat.post cell={cell_ms}ms outbox={}",
+            outbox.len()
+        );
         if status >= 400 {
             let message = body
                 .get("error")
@@ -106,9 +114,9 @@ where
             });
         }
         let remote = CausalDispatchResult::from_wait_path_wire(body).map_err(|error| {
-            CausalDispatchError::Internal(format!("wait-path decode: {error:?}"))
+            CausalDispatchError::Internal(format!("wait-path decode: {error}"))
         })?;
-        let payload = graphql_todo_payload(command, &input, remote.payload(), &session);
+        let payload = graphql_chat_payload(&input, remote.payload(), &session);
         let mut remote = remote.with_payload(payload);
         if let Some(protocol) = protocol {
             remote = self
@@ -143,32 +151,16 @@ where
     }
 }
 
-fn graphql_todo_payload(command: &str, input: &Value, remote: &Value, session: &Session) -> Value {
-    let id = remote
-        .get("todo_id")
-        .or_else(|| remote.get("id"))
-        .or_else(|| input.get("todo_id"))
-        .cloned()
-        .unwrap_or(json!(""));
-    let status = remote.get("status").cloned().unwrap_or_else(|| {
-        if command == "todo.complete" {
-            json!("completed")
-        } else {
-            json!("open")
-        }
-    });
-    if command == "todo.complete" {
-        json!({ "todo_id": id, "status": status })
-    } else {
-        json!({
-            "todo_id": id,
-            "owner_id": remote
-                .get("owner_id")
-                .cloned()
-                .or_else(|| session.user_id().map(|id| json!(id)))
-                .unwrap_or(json!("")),
-            "title": remote.get("title").or_else(|| input.get("title")).cloned().unwrap_or(json!("")),
-            "status": status,
-        })
-    }
+fn graphql_chat_payload(input: &Value, remote: &Value, session: &Session) -> Value {
+    json!({
+        "message_id": remote.get("message_id").or_else(|| input.get("message_id")).cloned().unwrap_or(json!("")),
+        "room_id": remote.get("room_id").or_else(|| input.get("room_id")).cloned().unwrap_or(json!("lobby")),
+        "author_id": remote
+            .get("author_id")
+            .cloned()
+            .or_else(|| session.user_id().map(|id| json!(id)))
+            .unwrap_or(json!("")),
+        "body": remote.get("body").or_else(|| input.get("body")).cloned().unwrap_or(json!("")),
+        "created_at": remote.get("created_at").or_else(|| input.get("created_at")).cloned().unwrap_or(json!("")),
+    })
 }

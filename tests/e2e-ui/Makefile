@@ -138,7 +138,7 @@ up-celld-nats:
 	export AZURE_STORAGE_USE_EMULATOR="$(AZURE_STORAGE_USE_EMULATOR)"; \
 	export AZURE_STORAGE_ACCOUNT_NAME="$(AZURE_STORAGE_ACCOUNT_NAME)"; \
 	export AZURE_STORAGE_ACCOUNT_KEY="$(AZURE_STORAGE_ACCOUNT_KEY)"; \
-	echo "building Todo cell worker…"; \
+	echo "building Todo+Chat cell worker…"; \
 	( cd ../celld/worker && worker-build --release ); \
 	echo "deploying worker to az://celld…"; \
 	( cd $(REPO_ROOT) && celld deploy tests/celld/worker --bucket az://celld ); \

@@ -8,9 +8,10 @@ Rust · TypeScript · CQRS / ES · SvelteKit · celld · Kafka · NATS · Rabbit
 PSQL · SQLite · OIDC · Keycloak · Authentik
 
 Default is **one process** (`make run`). The same UI can wait-dispatch Todo
-create/complete to celld from [`../e2e-celld`](../e2e-celld). Todo commands
-are `portable_command!` declarations in `todo-domain`; hosts only `.mount`
-them.
+create/complete and `chat.post` to celld from [`../e2e-celld`](../e2e-celld).
+Todo commands are `portable_command!` declarations in `todo-domain`; hosts
+only `.mount` them. Chat is a small cell so `@live` still coming from GraphQL
+is the demo.
 
 ## Option A — local cluster + workspace GitOps
 
@@ -58,8 +59,9 @@ cd ../e2e-celld && make run
 
 `make up-celld-nats` / `make test-celld-nats` (`celld-nats-profile/`) start
 Azurite + celld + NATS. They are not `make run`. GraphQL wait-dispatches
-Todo create/complete to a cell (one SQLite shard per todo). Chat, Blob,
-GraphQL, and projectors stay in the GraphQL process.
+Todo create/complete and `chat.post` to cells (one SQLite shard per todo or
+message). GraphQL `@live`, Eventual projectors, Blob, and identity stay in
+the GraphQL process.
 
 ## The developer experience
 

@@ -581,6 +581,31 @@ impl Service {
         Ok(specs)
     }
 
+    /// Attach Eventual projection metadata to a cell wait-path result using this
+    /// process's command contract (no second aggregate write).
+    #[cfg(feature = "graphql")]
+    pub fn seal_wait_path_dispatch(
+        &self,
+        command: &str,
+        protocol: &crate::graphql::protocol::ProtocolResponseAccumulator,
+        result: CausalDispatchResult,
+    ) -> Result<CausalDispatchResult, CausalDispatchError> {
+        let contract = self
+            .typed_command_contracts()
+            .into_iter()
+            .find(|contract| contract.name == command)
+            .ok_or_else(|| {
+                CausalDispatchError::BadRequest(format!(
+                    "unknown typed command `{command}` for wait-path protocol"
+                ))
+            })?;
+        result.seal_wait_path_protocol(
+            protocol,
+            &contract,
+            self.causal_command_policy.replay_retention,
+        )
+    }
+
     pub(crate) fn typed_command_binding(&self) -> Result<TypedServiceCommandBinding, String> {
         let service_id = self
             .name()

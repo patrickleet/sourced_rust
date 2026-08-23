@@ -53,7 +53,7 @@
 				<span class="brand-mark" aria-hidden="true">df</span>
 				distributed
 				{#if celldProfile}
-					<span class="profile-badge" title="Todo create/complete wait-dispatch to celld"
+					<span class="profile-badge" title="Todo create/complete and chat.post wait-dispatch to celld; @live stays here"
 						>celld</span
 					>
 				{/if}

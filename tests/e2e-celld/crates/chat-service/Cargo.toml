@@ -3,9 +3,12 @@ name = "e2e-celld-chat"
 version.workspace = true
 edition.workspace = true
 publish = false
-description = "Chat lobby messages (in-process; not a cell)"
+description = "Chat lobby; celld wait-path for chat.post; outbox drains to NATS"
 
 [dependencies]
 distributed = { workspace = true }
+async-trait = { workspace = true }
+serde_json = { workspace = true }
+tokio = { workspace = true }
 chat-domain = { path = "../../../e2e-ui/crates/chat-domain" }
 e2e-projections = { path = "../../../e2e-ui/crates/projections" }

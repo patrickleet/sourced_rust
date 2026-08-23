@@ -345,7 +345,7 @@ mutation DeleteTodo {
 {
 			id: 'service',
 			label: '6 · Service + host',
-			lede: 'The domain crate is the same on both hosts. `tests/e2e-ui` is one process: SQLite or Postgres, a bus, GraphQL, and Eventual projectors. `tests/e2e-celld` is the same UI and GraphQL process, but Todo create and complete wait-dispatch to a cell (one private SQLite per todo id). GraphQL, `@live`, and projectors are not cell methods. Chat and Blob stay in-process on the GraphQL host.',
+			lede: 'The domain crate is the same on both hosts. `tests/e2e-ui` is one process: SQLite or Postgres, a bus, GraphQL, and Eventual projectors. `tests/e2e-celld` is the same UI and GraphQL process, but Todo create and complete wait-dispatch to a cell (one private SQLite per todo id). GraphQL, `@live`, and projectors are not cell methods. Chat posts also wait-dispatch to a Chat cell on that path; Blob stays in-process.',
 			principle: 'Compose modules into one Service. Let the host start the process. Keep the runner small.',
 			samples: [
 				{
@@ -416,7 +416,7 @@ export const chatWalkthrough: DemoWalkthrough = {
 	title: 'Lobby chat',
 	kicker: 'Live query, then Eventual post',
 	summary:
-		'This page uses one GraphQL document. `@load` fills the first HTML. `@live` continues the same query on a WebSocket. A post is an Eventual command. The client writes an optimistic row into the shared replica. Guests read through the `e2e-ui-public` surface.',
+		'This page uses one GraphQL document. `@load` fills the first HTML. `@live` continues the same query on a WebSocket. A post is an Eventual command. The client writes an optimistic row into the shared replica. Guests read through the `e2e-ui-public` surface. The same `chat.post` declaration mounts on a local Service (`tests/e2e-ui`) or wait-dispatches to a small Chat cell (`tests/e2e-celld`). `@live` stays on GraphQL either way — that is the point of this demo.',
 	tabs: [
 {
 			id: 'query',
@@ -676,7 +676,7 @@ mutation SaveChatMessage {
 {
 			id: 'service',
 			label: '6 · Service + host',
-			lede: 'The chat module mounts lobby posts and identity ingress. Identity ingress is the Zitadel Action and the scrape command. The module also mounts the chat and auth projectors. `build_service` adds these routes to one Service. The host starts the process. The runner only reads the environment.',
+			lede: 'The chat module mounts lobby posts. On the one-process playground it also mounts identity ingress. The module mounts the chat projector. `build_service` adds these routes to one Service. On `tests/e2e-celld`, `chat.post` wait-dispatches to a Chat cell; the local host dual-writes so this projector and `@live` still run. The host starts the process. The runner only reads the environment.',
 			principle: 'Compose modules into one Service. Let the host start the process. Keep the runner small.',
 			samples: [
 				{
@@ -709,7 +709,28 @@ Service::new()
   .routes(chat::routes(/* … */))  // ← this module
   .routes(blob::routes(/* … */))`
 				},
-				...hostAndRunnerSamples
+				...hostAndRunnerSamples,
+				{
+					file: 'e2e-celld · CelldChatCommandHost',
+					caption: 'The celld example wait-dispatches chat.post to POST {CELLD_URL}/chat/{message_id}/chat.post. Then it dual-writes the local Chat service so Eventual projectors update SQL and GraphQL @live still fires. GraphQL is not a cell method.',
+					code: `// tests/e2e-celld — not make run
+impl CommandHost for CelldChatCommandHost {
+  async fn invoke(&self, command, command_id, input, …) {
+    if command == "chat.post" {
+      let id = input["message_id"];
+      HttpCommandHost::new(format!("{celld}/chat/{id}"))
+        .invoke(command, command_id, input, …)
+        .await?;
+      // then local dual-write so the projector + @live fill
+    }
+    self.local.invoke(command, command_id, input, …).await
+  }
+}
+
+// cell class (tests/celld/worker): command HTTP + sealed GET only
+POST /chat/:id/chat.post   { commandId, input }
+GET  /chat/:id             // sealed row`
+				}
 			]
 		}
 	]

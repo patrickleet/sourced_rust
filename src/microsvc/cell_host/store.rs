@@ -33,6 +33,7 @@ use crate::repository::{
     TransactionalCommit,
 };
 use crate::snapshot::SnapshotRecord;
+use crate::outbox::OutboxMessage;
 use crate::{InMemoryOutboxStore, InMemoryRepository};
 use serde::{Deserialize, Serialize};
 
@@ -179,6 +180,19 @@ impl CellStreamStore {
             .into_iter()
             .map(|(stream, events)| DurableCellEvents { stream, events })
             .collect())
+    }
+
+    /// Outbox rows committed with this cell's events (same private SQLite).
+    pub fn durable_outbox(&self) -> Result<Vec<OutboxMessage>, RepositoryError> {
+        self.inner.clone_outbox()
+    }
+
+    /// Restore outbox rows from Durable Object SQLite.
+    pub fn restore_durable_outbox(
+        &self,
+        messages: Vec<OutboxMessage>,
+    ) -> Result<(), RepositoryError> {
+        self.inner.replace_outbox(messages)
     }
 
     /// Replace the working event log from Durable Object SQLite.
