@@ -113,11 +113,12 @@ struct VerifiedAudience {
 
 /// Authentication proof admitted to durable causal dispatch.
 ///
-/// This type is deliberately crate-private, has no public constructor, and is
-/// not deserializable. A [`Session`] or trusted header map therefore cannot be
-/// upgraded into a ledger principal by application or transport code.
+/// There is no deserializer and no constructor from a [`Session`] or header
+/// map. Production callers obtain this only from the OIDC/identity adapters.
+/// [`Self::test_oidc`] exists so wait-path tests can invoke causal dispatch
+/// without forging identity headers.
 #[derive(Clone, PartialEq, Eq)]
-pub(crate) struct VerifiedPrincipal {
+pub struct VerifiedPrincipal {
     issuer: String,
     subject: String,
     audiences: Vec<VerifiedAudience>,
@@ -125,8 +126,8 @@ pub(crate) struct VerifiedPrincipal {
 }
 
 impl VerifiedPrincipal {
-    #[cfg(test)]
-    pub(crate) fn test_oidc(issuer: &str, subject: &str, audiences: &[&str]) -> Self {
+    /// Test-only OIDC principal. Not a production identity constructor.
+    pub fn test_oidc(issuer: &str, subject: &str, audiences: &[&str]) -> Self {
         assert!(
             !issuer.trim().is_empty(),
             "test OIDC issuer must not be empty"

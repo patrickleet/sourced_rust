@@ -122,10 +122,11 @@ pub use service::{
     TypedRouteBuilder,
 };
 #[cfg(feature = "graphql")]
+pub use service::{CausalDispatchError, CausalDispatchResult};
+#[cfg(feature = "graphql")]
 pub(crate) use service::{
     CausalCommandProjectionObligation, CausalCommandPublicState, CausalCommandPublicStatus,
-    CausalCommandReceiptSource, CausalDispatchError, CausalDispatchResult,
-    CausalProjectionEvidenceState,
+    CausalCommandReceiptSource, CausalProjectionEvidenceState,
 };
 pub use session::{Session, ROLE_KEY, USER_ID_KEY};
 
