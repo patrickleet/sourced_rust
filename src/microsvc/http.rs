@@ -124,14 +124,44 @@ async fn metrics_handler(State(service): State<Arc<Service>>) -> impl IntoRespon
 }
 
 /// `POST /{command}` — dispatch a command with JSON body and headers as session.
+///
+/// `{ "commandId", "input" }` is the causal wait-path. Other JSON is legacy
+/// fire-and-forget `dispatch`. Identity is taken from headers, never the body.
 async fn command_handler(
     State(service): State<Arc<Service>>,
     Path(command): Path<String>,
     headers: HeaderMap,
-    Json(input): Json<Value>,
+    Json(body): Json<Value>,
 ) -> impl IntoResponse {
     let session = session_from_headers(&headers);
-    match service.dispatch(&command, input, session).await {
+    #[cfg(feature = "graphql")]
+    if let Some((command_id, input)) = super::wait_path::parse_wait_path_body(&body) {
+        return match super::wait_path::dispatch_wait_path(
+            service.as_ref(),
+            &command,
+            &command_id,
+            input,
+            session,
+        )
+        .await
+        {
+            Ok(result) => (
+                StatusCode::OK,
+                Json(super::wait_path::wait_path_response(&result)),
+            )
+                .into_response(),
+            Err(err) => {
+                let status = StatusCode::from_u16(err.status_code())
+                    .unwrap_or(StatusCode::INTERNAL_SERVER_ERROR);
+                if status.is_server_error() {
+                    eprintln!("microsvc command `{command}` failed: {err}");
+                }
+                let body = json!({ "error": err.client_message() });
+                (status, Json(body)).into_response()
+            }
+        };
+    }
+    match service.dispatch(&command, body, session).await {
         Ok(value) => (StatusCode::OK, Json(value)).into_response(),
         Err(err) => {
             let status = status_for_error(&err);

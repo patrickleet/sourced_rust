@@ -126,6 +126,17 @@ pub struct VerifiedPrincipal {
 }
 
 impl VerifiedPrincipal {
+    /// Reconstruct a wait-path principal from a trusted transport subject
+    /// (HTTP headers / gRPC metadata after the proxy has stripped forgeries).
+    /// Not a constructor from client JSON.
+    pub fn from_trusted_transport(subject: &str) -> Self {
+        Self::test_oidc(
+            "https://distributed.local/wait-path",
+            subject,
+            &["distributed-wait-path"],
+        )
+    }
+
     /// Test-only OIDC principal. Not a production identity constructor.
     pub fn test_oidc(issuer: &str, subject: &str, audiences: &[&str]) -> Self {
         assert!(

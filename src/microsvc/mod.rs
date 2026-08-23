@@ -128,6 +128,8 @@ pub(crate) use service::{
     CausalCommandProjectionObligation, CausalCommandPublicState, CausalCommandPublicStatus,
     CausalCommandReceiptSource, CausalProjectionEvidenceState,
 };
+#[cfg(feature = "graphql")]
+pub(crate) mod wait_path;
 pub use session::{Session, ROLE_KEY, USER_ID_KEY};
 
 /// Maximum accepted HTTP request body size for the microsvc ingresses, in bytes
