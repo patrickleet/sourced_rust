@@ -4,7 +4,7 @@
 use std::sync::Arc;
 
 use distributed::bus::{Bus, BusConsumer, InMemoryBus, TransportError};
-use distributed::command_dispatch::{CommandHost, HttpCommandHost};
+use distributed::command_dispatch::{CommandHost, HttpCommandHost, SharedCommandHost};
 use distributed::graphql::VerifiedPrincipal;
 use distributed::graphql::{
     typed_command, GraphqlInputType, GraphqlOutputType, GraphqlTypeDef, GraphqlTypeField, Succeeded,
@@ -115,12 +115,9 @@ fn wait_service() -> Arc<Service> {
         .succeeded(|aggregate| IdPayload {
             id: aggregate.entity().id().to_string(),
         });
-    let ping = Routes::new()
-        .with_dependencies(())
-        .command("ping")
-        .handle(|_ctx: &distributed::microsvc::Context<'_, ()>| async {
-            Ok(json!({ "pong": true }))
-        });
+    let ping = Routes::new().with_dependencies(()).command("ping").handle(
+        |_ctx: &distributed::microsvc::Context<'_, ()>| async { Ok(json!({ "pong": true })) },
+    );
     Arc::new(
         Service::new()
             .named("causal-wait-path")
@@ -210,6 +207,58 @@ async fn graphql_only_http_host_wait_dispatches_to_writer() {
     assert_eq!(result.state(), "succeeded");
 }
 
+#[cfg(feature = "sqlite")]
+#[tokio::test]
+async fn graphql_only_engine_wait_dispatches_to_loopback_writer() {
+    use async_graphql::Request;
+    use distributed::graphql::GraphqlEngine;
+    use distributed::microsvc::Session;
+
+    const PROTOCOL_TOKEN_KEY: [u8; 32] = [0x5a; 32];
+
+    let writer = wait_service();
+    let pool = sqlx::SqlitePool::connect_lazy("sqlite::memory:").unwrap();
+    let engine = GraphqlEngine::builder(pool)
+        .protocol_token_key(PROTOCOL_TOKEN_KEY)
+        .roles(&["user"])
+        .service(writer.as_ref())
+        .build()
+        .expect("GraphQL schema compiles from contracts without mounting the writer");
+    let mut query_session = Session::new();
+    query_session.set(ROLE_KEY, "user");
+    let query = engine
+        .execute(&query_session, Request::new("{ __typename }"))
+        .await;
+    assert!(
+        query.errors.is_empty(),
+        "SQL/local GraphQL query: {query:?}"
+    );
+
+    let base = start_http(Arc::clone(&writer)).await;
+    let host: SharedCommandHost = Arc::new(HttpCommandHost::new(base));
+    let mut session = Session::new();
+    session.set(USER_ID_KEY, "alice");
+    session.set(ROLE_KEY, "user");
+    let principal = VerifiedPrincipal::from_trusted_transport("alice");
+    let command_id = "0190a000-0000-7000-8000-000000000106";
+    let mutation = engine
+        .execute(
+            &session,
+            Request::new(format!(
+                "mutation {{ todo_create(commandId: \"{command_id}\", input: {{ id: \"todo-gql-only\" }}) {{ id }} }}"
+            ))
+            .data(Arc::clone(&host))
+            .data(principal),
+        )
+        .await;
+    assert!(
+        mutation.errors.is_empty(),
+        "GraphQL-only wait-dispatch: {mutation:?}"
+    );
+    let data = mutation.data.into_json().unwrap();
+    assert_eq!(data["todo_create"]["id"], "todo-gql-only");
+}
+
 #[tokio::test]
 async fn bus_send_has_no_reply_value() {
     let bus = InMemoryBus::new();
@@ -240,14 +289,11 @@ async fn same_host_listen_ping_and_http_wait_path() {
                         id: aggregate.entity().id().to_string(),
                     }),
             )
-            .routes(
-                Routes::new()
-                    .with_dependencies(())
-                    .command("ping")
-                    .handle(|_ctx: &distributed::microsvc::Context<'_, ()>| async {
-                        Ok(json!({ "pong": true }))
-                    }),
-            )
+            .routes(Routes::new().with_dependencies(()).command("ping").handle(
+                |_ctx: &distributed::microsvc::Context<'_, ()>| async {
+                    Ok(json!({ "pong": true }))
+                },
+            ))
             .with_bus(bus.clone()),
     );
     {

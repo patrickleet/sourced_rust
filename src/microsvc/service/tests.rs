@@ -769,6 +769,13 @@ fn session_with_role(role: &str) -> Session {
 }
 
 #[cfg(feature = "graphql")]
+fn command_host(service: &Arc<Service>) -> crate::command_dispatch::SharedCommandHost {
+    Arc::new(crate::command_dispatch::LocalCommandHost::new(Arc::clone(
+        service,
+    )))
+}
+
+#[cfg(feature = "graphql")]
 #[derive(Clone, Copy)]
 enum InjectedCommitBehavior {
     CommitThenErrorOnce,
@@ -2404,7 +2411,7 @@ async fn graphql_terminal_replay_revalidates_after_active_projection_starts_drai
         .execute(
             &session,
             async_graphql::Request::new(&mutation)
-                .data(Arc::clone(&active_service))
+                .data(command_host(&active_service))
                 .data(principal.clone()),
         )
         .await;
@@ -2441,7 +2448,7 @@ async fn graphql_terminal_replay_revalidates_after_active_projection_starts_drai
         .execute(
             &session,
             async_graphql::Request::new(&mutation)
-                .data(Arc::clone(&active_service))
+                .data(command_host(&active_service))
                 .data(principal.clone()),
         )
         .await;
@@ -2485,7 +2492,7 @@ async fn graphql_terminal_replay_revalidates_after_active_projection_starts_drai
         .execute(
             &session,
             async_graphql::Request::new(mutation)
-                .data(Arc::clone(&draining_service))
+                .data(command_host(&draining_service))
                 .data(principal.clone()),
         )
         .await;
@@ -2528,7 +2535,7 @@ async fn graphql_terminal_replay_revalidates_after_active_projection_starts_drai
         .execute(
             &session,
             async_graphql::Request::new(fresh_mutation)
-                .data(Arc::clone(&draining_service))
+                .data(command_host(&draining_service))
                 .data(principal.clone()),
         )
         .await;
@@ -2565,7 +2572,7 @@ async fn graphql_terminal_replay_revalidates_after_active_projection_starts_drai
         .execute(
             &session,
             async_graphql::Request::new(status_query)
-                .data(Arc::clone(&draining_service))
+                .data(command_host(&draining_service))
                 .data(principal),
         )
         .await;
