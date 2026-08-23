@@ -41,11 +41,11 @@ pub(crate) use causal::CausalCommandProjectionEvidence;
 #[cfg(feature = "graphql")]
 pub use causal::GraphqlServiceBindError;
 #[cfg(feature = "graphql")]
-pub use causal::{CausalDispatchError, CausalDispatchResult};
+pub use causal::{CausalCommandPublicStatus, CausalDispatchError, CausalDispatchResult};
 #[cfg(feature = "graphql")]
 pub(crate) use causal::{
-    CausalCommandProjectionObligation, CausalCommandPublicState, CausalCommandPublicStatus,
-    CausalCommandReceiptSource, CausalProjectionEvidenceState,
+    CausalCommandProjectionObligation, CausalCommandPublicState, CausalCommandReceiptSource,
+    CausalProjectionEvidenceState,
 };
 #[allow(unused_imports)] // public API surface for handler-owned projected commits
 pub use handlers::StagedProjectedRow;

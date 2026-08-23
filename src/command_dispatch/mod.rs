@@ -6,12 +6,16 @@
 
 mod envelope;
 mod error;
+#[cfg(feature = "graphql")]
+mod host;
 mod local;
 mod remote;
 
 pub use envelope::{
     CommandDispatchEnvelope, CommandDispatchReceipt, COMMAND_DISPATCH_ENVELOPE_VERSION,
 };
+#[cfg(feature = "graphql")]
+pub use host::{CommandHost, HttpCommandHost, LocalCommandHost, SharedCommandHost};
 pub use error::CommandDispatchError;
 pub use local::LocalCommandDispatcher;
 pub use remote::{
