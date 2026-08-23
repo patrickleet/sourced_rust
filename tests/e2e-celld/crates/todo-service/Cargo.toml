@@ -1,0 +1,13 @@
+[package]
+name = "e2e-celld-todo"
+version.workspace = true
+edition.workspace = true
+publish = false
+description = "Todo service: local dual-write mounts + celld HttpCommandHost wait-path"
+
+[dependencies]
+distributed = { workspace = true }
+async-trait = { workspace = true }
+serde_json = { workspace = true }
+todo-domain = { path = "../../../e2e-ui/crates/todo-domain" }
+e2e-projections = { path = "../../../e2e-ui/crates/projections" }
