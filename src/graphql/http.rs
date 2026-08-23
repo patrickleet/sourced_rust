@@ -10,7 +10,7 @@ use axum::extract::ws::WebSocketUpgrade;
 use axum::extract::{DefaultBodyLimit, State};
 use axum::http::{HeaderMap, StatusCode};
 use axum::response::{Html, IntoResponse, Response};
-use axum::routing::post;
+use axum::routing::{get, post};
 use axum::Router;
 use futures_util::stream::BoxStream;
 
@@ -236,16 +236,18 @@ pub fn graphql_router_with_host(engine: Arc<GraphqlEngine>, host: SharedCommandH
         engine,
         host: Some(host),
     };
-    let mut router = Router::new().route(
-        "/graphql",
-        post(graphql_handler_with_service).get(move || async move {
-            if graphiql {
-                graphiql_page().into_response()
-            } else {
-                axum::http::StatusCode::METHOD_NOT_ALLOWED.into_response()
-            }
-        }),
-    );
+    let mut router = Router::new()
+        .route(
+            "/graphql",
+            post(graphql_handler_with_service).get(move || async move {
+                if graphiql {
+                    graphiql_page().into_response()
+                } else {
+                    axum::http::StatusCode::METHOD_NOT_ALLOWED.into_response()
+                }
+            }),
+        )
+        .route("/graphql/ws", get(graphql_ws_with_host));
     router = router.layer(DefaultBodyLimit::max(MAX_HTTP_BODY_BYTES));
     router.with_state(state)
 }
@@ -372,7 +374,28 @@ pub async fn microsvc_graphql_ws(
         Some(e) => e,
         None => return StatusCode::NOT_FOUND.into_response(),
     };
+    let host: SharedCommandHost = Arc::new(LocalCommandHost::new(Arc::clone(&service)));
+    graphql_ws_upgrade(engine, Some(host), headers, uri, protocol, upgrade).await
+}
 
+async fn graphql_ws_with_host(
+    State(state): State<GraphqlHttpState>,
+    headers: HeaderMap,
+    uri: axum::http::Uri,
+    protocol: GraphQLProtocol,
+    upgrade: WebSocketUpgrade,
+) -> Response {
+    graphql_ws_upgrade(state.engine, state.host, headers, uri, protocol, upgrade).await
+}
+
+async fn graphql_ws_upgrade(
+    engine: Arc<GraphqlEngine>,
+    host: Option<SharedCommandHost>,
+    headers: HeaderMap,
+    uri: axum::http::Uri,
+    protocol: GraphQLProtocol,
+    upgrade: WebSocketUpgrade,
+) -> Response {
     let mut upgrade_headers = headers;
     merge_identity_query_params(&mut upgrade_headers, uri.query());
     let mode = engine.identity_config().mode;
@@ -399,7 +422,7 @@ pub async fn microsvc_graphql_ws(
         Arc::clone(&engine),
         upgrade_session.clone(),
         upgrade_principal,
-        Some(Arc::new(LocalCommandHost::new(Arc::clone(&service))) as SharedCommandHost),
+        host,
     );
     let engine_for_init = Arc::clone(&engine);
     upgrade

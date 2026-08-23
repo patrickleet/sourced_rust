@@ -226,6 +226,12 @@ impl CausalDispatchResult {
         &self.payload
     }
 
+    /// Replace the handler payload (wait-path clients remapping wire JSON).
+    pub fn with_payload(mut self, payload: Value) -> Self {
+        self.payload = payload;
+        self
+    }
+
     /// Client-supplied durable command id.
     pub fn command_id(&self) -> &str {
         &self.receipt.command_id
