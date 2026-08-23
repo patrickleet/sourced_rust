@@ -52,6 +52,19 @@
 	color: var(--wf-ink);
 }
 
+.profile-badge {
+	font-family: var(--wf-mono);
+	font-size: 0.68rem;
+	font-weight: 600;
+	letter-spacing: 0.06em;
+	text-transform: uppercase;
+	color: var(--wf-paper, #f6f5f2);
+	background: var(--wf-ink);
+	border: 1px solid var(--wf-ink);
+	padding: 0.18rem 0.45rem;
+	border-radius: 2px;
+}
+
 .navbar-burger {
 	display: flex;
 	flex-direction: column;
