@@ -7,8 +7,10 @@ Azurite (no AWS or Cloudflare account).
 The Worker is a workers-rs Durable Object class around
 `distributed::cell_host::AggregateCell<Todo>`. Shard rule is still
 `idFromName(todo_id)` (`PCH-DEC-004`). GraphQL and projectors are not
-cell methods. The event log is stored in the Durable Object SQLite
-table `cell_events` (replicated by celld via LTX).
+cell methods. The event log is stored in Durable Object SQLite table `cell_events`.
+Repository snapshot cache records go in `cell_snapshots`. Both are
+replicated by celld via LTX. The Todo cell uses `new_with_snapshots(1)`
+so load is snapshot + event tail, not a full replay of history.
 
 Azurite is celld's documented local development store. It is **not** a
 production fleet bucket.

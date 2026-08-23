@@ -14,7 +14,7 @@ use serde_json::json;
 
 use super::super::causal::{CausalWorkspace, CausalWorkspaceError};
 
-#[derive(Clone, Default)]
+#[derive(Clone, Default, Serialize, Deserialize, crate::Snapshot)]
 struct CellItem {
     entity: Entity,
     title: String,
@@ -194,7 +194,7 @@ async fn cell_rejects_commit_of_a_foreign_stream() {
 
 #[tokio::test]
 async fn cell_dispatches_complete_with_the_same_portable_command_as_soa() {
-    let cell = AggregateCell::<CellItem>::new("item-1")
+    let cell = AggregateCell::<CellItem>::new_with_snapshots("item-1", 1)
         .unwrap()
         .mount(Create)
         .mount(Complete);
@@ -229,13 +229,27 @@ async fn cell_dispatches_complete_with_the_same_portable_command_as_soa() {
     assert_eq!(completed["id"], "item-1");
     assert_eq!(completed["done"], true);
 
+    let snap = cell
+        .cached_snapshot()
+        .await
+        .expect("snapshot")
+        .expect("snapshot after complete");
+    assert_eq!(snap.version, 2);
+
     let exported = cell.durable_events().expect("export");
+    let snapshots = cell.durable_snapshots().expect("export snapshots");
     assert!(!exported.is_empty());
-    let restored = AggregateCell::<CellItem>::new("item-1")
+    assert!(!snapshots.is_empty());
+    let restored = AggregateCell::<CellItem>::new_with_snapshots("item-1", 1)
         .unwrap()
         .mount(Create)
         .mount(Complete);
-    restored.restore_durable_events(exported).expect("restore");
+    restored
+        .restore_durable_events(exported)
+        .expect("restore events");
+    restored
+        .restore_durable_snapshots(snapshots)
+        .expect("restore snapshots");
     let loaded = restored
         .load()
         .await
@@ -243,6 +257,7 @@ async fn cell_dispatches_complete_with_the_same_portable_command_as_soa() {
         .expect("durable");
     assert_eq!(loaded.title, "ship");
     assert!(loaded.done);
+    assert_eq!(loaded.entity.snapshot_version(), 2);
 }
 
 #[tokio::test]

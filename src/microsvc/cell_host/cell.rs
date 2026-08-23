@@ -5,12 +5,13 @@ use std::collections::HashMap;
 
 use serde_json::Value;
 
-use super::store::{CellStreamStore, DurableCellEvents};
+use super::store::{CellStreamStore, DurableCellEvents, DurableCellSnapshot};
 use crate::aggregate::{Aggregate, AggregateRepository};
 use crate::microsvc::error::HandlerError;
 use crate::microsvc::service::{PortableCommand, Routes};
 use crate::microsvc::session::Session;
-use crate::repository::{RepositoryError, StreamIdentity};
+use crate::repository::{RepositoryError, SnapshotStore, StreamIdentity};
+use crate::snapshot::{SnapshotRecord, Snapshottable};
 
 /// Cell class for aggregate `A`. Equivalent to
 /// `#[distributed::cell(aggregate = A)]`: mount the same domain
@@ -123,6 +124,47 @@ where
         events: Vec<DurableCellEvents>,
     ) -> Result<(), RepositoryError> {
         self.routes.repo().repo().restore_durable_events(events)
+    }
+
+    /// Snapshot cache for Durable Object SQLite.
+    pub fn durable_snapshots(&self) -> Result<Vec<DurableCellSnapshot>, RepositoryError> {
+        self.routes.repo().repo().durable_snapshots()
+    }
+
+    /// Restore the working snapshot cache from Durable Object SQLite.
+    pub fn restore_durable_snapshots(
+        &self,
+        snapshots: Vec<DurableCellSnapshot>,
+    ) -> Result<(), RepositoryError> {
+        self.routes
+            .repo()
+            .repo()
+            .restore_durable_snapshots(snapshots)
+    }
+
+    /// Read the repository snapshot cache for this cell's shard.
+    pub async fn cached_snapshot(&self) -> Result<Option<SnapshotRecord>, RepositoryError> {
+        SnapshotStore::get_snapshot(self.routes.repo().repo(), &self.shard).await
+    }
+}
+
+impl<A> AggregateCell<A>
+where
+    A: Aggregate + Snapshottable + Send + Sync + 'static,
+{
+    /// Open a cell with repository snapshot caching (`with_snapshots`).
+    pub fn new_with_snapshots(
+        shard_id: impl Into<String>,
+        frequency: u64,
+    ) -> Result<Self, RepositoryError> {
+        let shard = StreamIdentity::new(A::aggregate_type(), shard_id.into())?;
+        let store = CellStreamStore::for_identity(shard.clone());
+        Ok(Self {
+            shard,
+            routes: Routes::from_dependencies(
+                AggregateRepository::new(store).with_snapshots(frequency),
+            ),
+        })
     }
 }
 

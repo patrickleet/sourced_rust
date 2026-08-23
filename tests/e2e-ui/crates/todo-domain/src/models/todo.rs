@@ -1,9 +1,10 @@
-use distributed::{sourced, Entity};
+use distributed::{sourced, Entity, Snapshot};
 use serde::{Deserialize, Serialize};
 
 use super::{TodoError, TodoState, TodoStatus};
 
-#[derive(Debug, Clone, Default, Serialize, Deserialize)]
+#[derive(Debug, Clone, Default, Serialize, Deserialize, Snapshot)]
+#[snapshot(id = "todo_id")]
 pub struct Todo {
     #[serde(skip, default)]
     pub entity: Entity,
