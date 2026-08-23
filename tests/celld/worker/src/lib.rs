@@ -3,7 +3,7 @@
 //! HTTP is a thin adapter over domain create/complete + stream load.
 //! GraphQL and projectors are not methods on this class (`PCH-REQ-005`).
 
-use distributed::cell_host::{AggregateCell, DurableCellEvents};
+use distributed::cell_host::{AggregateCell, DurableCellEvents, DurableCellSnapshot};
 use distributed::microsvc::{HandlerError, Session, ROLE_KEY, USER_ID_KEY};
 use distributed::EventRecord;
 use serde::Deserialize;
@@ -18,6 +18,11 @@ const EVENTS_DDL: &str = "CREATE TABLE IF NOT EXISTS cell_events (
   PRIMARY KEY (stream, seq)
 )";
 
+const SNAPSHOTS_DDL: &str = "CREATE TABLE IF NOT EXISTS cell_snapshots (
+  stream TEXT PRIMARY KEY,
+  body TEXT NOT NULL
+)";
+
 #[durable_object]
 pub struct TodoCell {
     cell: AggregateCell<Todo>,
@@ -29,13 +34,18 @@ impl DurableObject for TodoCell {
         console_error_panic_hook::set_once();
         let sql = state.storage().sql();
         sql.exec(EVENTS_DDL, None).expect("create cell_events");
+        sql.exec(SNAPSHOTS_DDL, None)
+            .expect("create cell_snapshots");
         let shard = state.id().name().unwrap_or_else(|| "todo".to_string());
-        let cell = AggregateCell::<Todo>::new(shard)
+        let cell = AggregateCell::<Todo>::new_with_snapshots(shard, 1)
             .expect("todo cell identity")
             .mount(create())
             .mount(complete());
         if let Ok(events) = load_events(&sql) {
             let _ = cell.restore_durable_events(events);
+        }
+        if let Ok(snapshots) = load_snapshots(&sql) {
+            let _ = cell.restore_durable_snapshots(snapshots);
         }
         Self { cell, sql }
     }
@@ -214,6 +224,9 @@ fn restore_working_copy(
 ) -> std::result::Result<(), String> {
     let events = load_events(sql).map_err(|error| error.to_string())?;
     cell.restore_durable_events(events)
+        .map_err(|error| error.to_string())?;
+    let snapshots = load_snapshots(sql).map_err(|error| error.to_string())?;
+    cell.restore_durable_snapshots(snapshots)
         .map_err(|error| error.to_string())
 }
 
@@ -235,6 +248,18 @@ fn persist_working_copy(sql: &SqlStorage, cell: &AggregateCell<Todo>) -> Result<
                 ]),
             )?;
         }
+    }
+    let snapshots = cell
+        .durable_snapshots()
+        .map_err(|error| Error::RustError(error.to_string()))?;
+    sql.exec("DELETE FROM cell_snapshots", None)?;
+    for snapshot in snapshots {
+        let body = serde_json::to_string(&snapshot)
+            .map_err(|error| Error::RustError(error.to_string()))?;
+        sql.exec(
+            "INSERT INTO cell_snapshots (stream, body) VALUES (?, ?)",
+            Some(vec![snapshot.stream.into(), body.into()]),
+        )?;
     }
     Ok(())
 }
@@ -259,4 +284,24 @@ fn load_events(sql: &SqlStorage) -> Result<Vec<DurableCellEvents>> {
         }
     }
     Ok(grouped)
+}
+
+#[derive(Deserialize)]
+struct SnapshotRow {
+    stream: String,
+    body: String,
+}
+
+fn load_snapshots(sql: &SqlStorage) -> Result<Vec<DurableCellSnapshot>> {
+    let rows: Vec<SnapshotRow> = sql
+        .exec("SELECT stream, body FROM cell_snapshots", None)?
+        .to_array()?;
+    let mut snapshots = Vec::new();
+    for row in rows {
+        let mut snapshot: DurableCellSnapshot =
+            serde_json::from_str(&row.body).map_err(|error| Error::RustError(error.to_string()))?;
+        snapshot.stream = row.stream;
+        snapshots.push(snapshot);
+    }
+    Ok(snapshots)
 }

@@ -36,7 +36,10 @@ fn worker_declares_sqlite_todo_cell() {
     assert!(source.contains("mount(create())"));
     assert!(source.contains("mount(complete())"));
     assert!(source.contains("CREATE TABLE IF NOT EXISTS cell_events"));
+    assert!(source.contains("CREATE TABLE IF NOT EXISTS cell_snapshots"));
+    assert!(source.contains("new_with_snapshots"));
     assert!(source.contains("restore_durable_events"));
+    assert!(source.contains("restore_durable_snapshots"));
 }
 
 #[test]

@@ -157,6 +157,29 @@ impl InMemoryRepository {
         Ok(())
     }
 
+    /// Clone snapshot cache records for Durable Object SQLite persistence.
+    pub fn clone_snapshots(&self) -> Result<HashMap<String, SnapshotRecord>, RepositoryError> {
+        Ok(self
+            .snapshot_store
+            .storage
+            .read()
+            .map_err(|_| RepositoryError::LockPoisoned("snapshot log read"))?
+            .clone())
+    }
+
+    /// Replace snapshot cache records from Durable Object SQLite restore.
+    pub fn replace_snapshots(
+        &self,
+        snapshots: HashMap<String, SnapshotRecord>,
+    ) -> Result<(), RepositoryError> {
+        *self
+            .snapshot_store
+            .storage
+            .write()
+            .map_err(|_| RepositoryError::LockPoisoned("snapshot log write"))? = snapshots;
+        Ok(())
+    }
+
     /// Whether a consumer inbox receipt for `(consumer, message_id)` is recorded.
     pub fn inbox_contains(&self, consumer: &str, message_id: &str) -> bool {
         self.inbox_store
@@ -475,6 +498,31 @@ impl GetStream for InMemoryRepository {
             } else {
                 Ok(None)
             }
+        }
+    }
+
+    fn get_stream_tail<'a>(
+        &'a self,
+        identity: &'a StreamIdentity,
+        after_version: u64,
+    ) -> impl Future<Output = Result<Option<Entity>, RepositoryError>> + Send + 'a {
+        async move {
+            let storage = self
+                .event_store
+                .read()
+                .map_err(|_| RepositoryError::LockPoisoned("async stream tail read"))?;
+            let Some(events) = storage.get(&identity.storage_key()) else {
+                return Ok(None);
+            };
+            let tail: Vec<EventRecord> = events
+                .iter()
+                .filter(|event| event.sequence > after_version)
+                .cloned()
+                .collect();
+            let mut entity = Entity::new();
+            entity.set_id(identity.aggregate_id());
+            entity.load_tail_from_history(tail, after_version);
+            Ok(Some(entity))
         }
     }
 }

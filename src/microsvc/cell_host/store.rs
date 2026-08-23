@@ -26,8 +26,10 @@ use crate::projection_protocol::{
     ProjectorTopologyId, TrustedProjectionInput,
 };
 use crate::repository::{
-    CommitBatch, GetStream, RepositoryError, SnapshotWrite, StreamIdentity, TransactionalCommit,
+    CommitBatch, GetStream, RepositoryError, SnapshotStore, SnapshotWrite, StreamIdentity,
+    TransactionalCommit,
 };
+use crate::snapshot::SnapshotRecord;
 use crate::{InMemoryOutboxStore, InMemoryRepository};
 use serde::{Deserialize, Serialize};
 
@@ -61,6 +63,19 @@ enum CellOwnership {
 pub struct DurableCellEvents {
     pub stream: String,
     pub events: Vec<EventRecord>,
+}
+
+/// Snapshot cache record for Durable Object SQLite persistence.
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+pub struct DurableCellSnapshot {
+    pub stream: String,
+    pub aggregate_type: String,
+    pub aggregate_id: String,
+    pub version: u64,
+    pub snapshot_version: u64,
+    pub payload_codec: String,
+    pub payload_codec_version: u16,
+    pub payload: Vec<u8>,
 }
 
 #[derive(Clone)]
@@ -155,6 +170,53 @@ impl CellStreamStore {
         )
     }
 
+    /// Snapshot cache for Durable Object SQLite.
+    pub fn durable_snapshots(&self) -> Result<Vec<DurableCellSnapshot>, RepositoryError> {
+        Ok(self
+            .inner
+            .clone_snapshots()?
+            .into_iter()
+            .map(|(stream, record)| DurableCellSnapshot {
+                stream,
+                aggregate_type: record.aggregate_type,
+                aggregate_id: record.aggregate_id,
+                version: record.version,
+                snapshot_version: record.snapshot_version,
+                payload_codec: record.payload_codec,
+                payload_codec_version: record.payload_codec_version,
+                payload: record.payload,
+            })
+            .collect())
+    }
+
+    /// Replace the working snapshot cache from Durable Object SQLite.
+    pub fn restore_durable_snapshots(
+        &self,
+        snapshots: Vec<DurableCellSnapshot>,
+    ) -> Result<(), RepositoryError> {
+        self.inner.replace_snapshots(
+            snapshots
+                .into_iter()
+                .map(|row| {
+                    (
+                        row.stream,
+                        SnapshotRecord {
+                            aggregate_type: row.aggregate_type,
+                            aggregate_id: row.aggregate_id,
+                            version: row.version,
+                            snapshot_version: row.snapshot_version,
+                            payload_codec: row.payload_codec,
+                            payload_codec_version: row.payload_codec_version,
+                            payload: row.payload,
+                            metadata: Default::default(),
+                            recorded_at: crate::time::now(),
+                        },
+                    )
+                })
+                .collect(),
+        )
+    }
+
     fn ensure_batch(&self, batch: &CommitBatch<'_>) -> Result<(), RepositoryError> {
         for stream in &batch.streams {
             self.ensure_identity(&stream.identity)?;
@@ -188,6 +250,62 @@ impl GetStream for CellStreamStore {
         async move {
             self.ensure_identity(identity)?;
             GetStream::get_stream(&self.inner, identity).await
+        }
+    }
+
+    fn get_stream_tail<'a>(
+        &'a self,
+        identity: &'a StreamIdentity,
+        after_version: u64,
+    ) -> impl Future<Output = Result<Option<Entity>, RepositoryError>> + Send + 'a {
+        async move {
+            self.ensure_identity(identity)?;
+            GetStream::get_stream_tail(&self.inner, identity, after_version).await
+        }
+    }
+}
+
+impl SnapshotStore for CellStreamStore {
+    fn get_snapshot<'a>(
+        &'a self,
+        identity: &'a StreamIdentity,
+    ) -> impl Future<Output = Result<Option<SnapshotRecord>, RepositoryError>> + Send + 'a {
+        async move {
+            self.ensure_identity(identity)?;
+            SnapshotStore::get_snapshot(&self.inner, identity).await
+        }
+    }
+
+    fn get_snapshots<'a>(
+        &'a self,
+        identities: &'a [StreamIdentity],
+    ) -> impl Future<Output = Result<Vec<SnapshotRecord>, RepositoryError>> + Send + 'a {
+        async move {
+            for identity in identities {
+                self.ensure_identity(identity)?;
+            }
+            SnapshotStore::get_snapshots(&self.inner, identities).await
+        }
+    }
+
+    fn save_snapshot<'a>(
+        &'a self,
+        identity: &'a StreamIdentity,
+        record: SnapshotRecord,
+    ) -> impl Future<Output = Result<(), RepositoryError>> + Send + 'a {
+        async move {
+            self.ensure_identity(identity)?;
+            SnapshotStore::save_snapshot(&self.inner, identity, record).await
+        }
+    }
+
+    fn delete_snapshot<'a>(
+        &'a self,
+        identity: &'a StreamIdentity,
+    ) -> impl Future<Output = Result<bool, RepositoryError>> + Send + 'a {
+        async move {
+            self.ensure_identity(identity)?;
+            SnapshotStore::delete_snapshot(&self.inner, identity).await
         }
     }
 }

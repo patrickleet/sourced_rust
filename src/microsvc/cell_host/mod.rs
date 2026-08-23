@@ -13,7 +13,7 @@ mod cell;
 mod store;
 
 pub use cell::{instance_name, parent_cell_name, AggregateCell, CellNamespace};
-pub use store::{CellStreamStore, DurableCellEvents};
+pub use store::{CellStreamStore, DurableCellEvents, DurableCellSnapshot};
 
 #[cfg(test)]
 mod tests;
