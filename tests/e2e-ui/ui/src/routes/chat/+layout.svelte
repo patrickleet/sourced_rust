@@ -19,12 +19,11 @@
 	const signedIn = $derived(!!data.session?.user);
 
 	const initialData = untrack(() => data);
-	const guestBootstrap = untrack(
-		() =>
-			!initialData.session?.user &&
-			initialData.distributed !== undefined &&
-			initialData.distributedAuthority !== undefined
-	);
+	const guestAtMount = untrack(() => !initialData.session?.user);
+	const guestBootstrap =
+		guestAtMount &&
+		initialData.distributed !== undefined &&
+		initialData.distributedAuthority !== undefined;
 
 	const pageData = createPageDataSessionSource(initialData);
 	let appliedHydration: SveltekitReplicaHydration | undefined = guestBootstrap
@@ -32,12 +31,16 @@
 		: undefined;
 	let hydrationTimer: ReturnType<typeof setTimeout> | undefined;
 
-	const client = guestBootstrap
+	const client = guestAtMount
 		? provideDistributed({
 				session: pageData.session,
 				browser,
-				hydration: initialData.distributed!,
-				authority: initialData.distributedAuthority!
+				...(guestBootstrap
+					? {
+							hydration: initialData.distributed!,
+							authority: initialData.distributedAuthority!
+						}
+					: {})
 			})
 		: null;
 
