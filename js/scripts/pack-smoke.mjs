@@ -430,6 +430,7 @@ assert.deepEqual(Object.keys(replicaSurface).sort(), [
   'createReplicaGraphqlTransport',
   'createReplicaIndexMaintenanceRegistry',
   'createReplicaIndexedDbPersistence',
+  'createReplicaUuidV7',
   'createWasmJsonPure',
   'decideReplicaPaginationMaintenance',
   'evaluateReplicaFilter',
