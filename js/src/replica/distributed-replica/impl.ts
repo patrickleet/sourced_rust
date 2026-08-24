@@ -171,6 +171,7 @@ import {
 import {
 	applyReceiptOnly as applyReceiptOnlyOn,
 	confirmOptimisticLayerOn,
+	confirmOptimisticLayerWithCacheWriterOn,
 	createOptimisticLayerOn,
 	markOptimisticLayerAcceptedOn,
 	planOptimisticReceipts as planOptimisticReceiptsOn,
@@ -686,14 +687,61 @@ export class DistributedReplicaImpl implements DistributedReplicaApi {
 			pendingAnonymousRecordClocks,
 			consumedAnonymousRecordClocks
 		);
+		/*
+		 * The Atomic output is a complete authoritative row. Seal every active
+		 * collection membership that the compiler plan can prove from that row in
+		 * the same base transaction; otherwise the record exists by key while a
+		 * warm @load index still omits it until refresh.
+		 */
+		const indexMutations = apply
+			? this.#directProjectionIndexMutations(
+					commandId,
+					model,
+					recordKey,
+					fields
+				)
+			: Object.freeze([]);
+		const indexRevision =
+			indexMutations.length === 0
+				? undefined
+				: this.#allocateIndexRevision();
 
-		this.confirmOptimisticLayer(commandId, (writer) => {
-			if (!apply) return false;
-			return writer.writeRecord(model, identity, evidence.revision, {
-				incarnation: evidence.incarnation,
-				fields
-			});
-		});
+		confirmOptimisticLayerWithCacheWriterOn(
+			this.#optimisticHost(),
+			commandId,
+			(writer) => {
+				if (!apply) return false;
+				const wrote = writer.writeRecord({
+					key: recordKey,
+					revision: evidence.revision,
+					incarnation: evidence.incarnation,
+					fields
+				});
+				if (indexRevision !== undefined) {
+					for (const mutation of indexMutations) {
+						switch (mutation.kind) {
+							case 'write':
+								writer.writeIndex({
+									...mutation.write,
+									revision: indexRevision
+								});
+								break;
+							case 'stale':
+								writer.markIndexStale(
+									mutation.key,
+									mutation.reason,
+									indexRevision
+								);
+								break;
+							case 'delete':
+								writer.deleteIndex(mutation.key, indexRevision);
+								break;
+						}
+					}
+				}
+				return wrote;
+			}
+		);
 
 		for (const [key, clock] of pendingRecordClocks) {
 			this.#recordClocks.set(key, clock);
@@ -1988,6 +2036,30 @@ export class DistributedReplicaImpl implements DistributedReplicaApi {
 			});
 		}
 		return Object.freeze(mutations);
+	}
+
+	#directProjectionIndexMutations(
+		commandId: string,
+		model: ReplicaModelArtifact,
+		recordKey: string,
+		fields: Readonly<Record<string, ReplicaValue>>
+	): readonly DerivedIndexMutation[] {
+		const change: ReplicaIndexSemanticChange = Object.freeze({
+			kind: 'upsert',
+			model: model.id,
+			key: recordKey,
+			fields
+		});
+		const layer: OptimisticLayerView = Object.freeze({
+			id: commandId,
+			sequence: Number.MAX_SAFE_INTEGER,
+			state: 'accepted',
+			context: Object.freeze({
+				id: commandId,
+				changes: Object.freeze([change])
+			})
+		});
+		return this.#deriveMaintainedIndexes(this.#engine.extract(), [layer]);
 	}
 
 	#operationProtocol(

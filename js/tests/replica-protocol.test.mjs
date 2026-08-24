@@ -195,6 +195,24 @@ const TodosServerOnly = Object.freeze({
 	])
 });
 
+const TodosLocallyMaintainable = Object.freeze({
+	...TodosServerOnly,
+	id: 'query:todos-local',
+	protocol: Object.freeze({
+		...TodosServerOnly.protocol,
+		operation: 'query:todos-local'
+	}),
+	roots: Object.freeze([
+		Object.freeze({
+			...TodosServerOnly.roots[0],
+			filter: Object.freeze({
+				...TodosServerOnly.roots[0].filter,
+				rowPolicy: Object.freeze({ kind: 'unrestricted' })
+			})
+		})
+	])
+});
+
 const GamesWithOwner = Object.freeze({
 	id: 'query:games-with-owner',
 	document: 'query GamesWithOwner { games { id owner_id owner { id name } } }',
@@ -792,6 +810,83 @@ test('Atomic direct projection does not hold later complete @load membership', (
 		{ id: 'todo-1', title: 'first' },
 		{ id: 'todo-2', title: 'started' }
 	]);
+});
+
+test('Atomic direct projection commits locally provable collection membership', () => {
+	const replica = createDistributedReplica();
+	write(
+		replica,
+		{
+			operation: TodosLocallyMaintainable.id,
+			position: '1',
+			rows: [{ id: 'todo-1', title: 'first' }]
+		},
+		'network',
+		TodosLocallyMaintainable
+	);
+	// Render once so the operation's compiler plan owns collection maintenance.
+	replica.read(TodosLocallyMaintainable, {});
+	replica.createOptimisticLayer('cmd-atomic-create', (writer) => {
+		// Generated partial previews fail closed when the record is not known yet.
+		writer.writeRecord(Todo, 'todo-2', {
+			fields: { id: 'todo-2', title: 'preview' },
+			ifPresent: true
+		});
+	});
+	replica[replicaCommandDirectProjection]('cmd-atomic-create', {
+		model: Todo,
+		identity: 'todo-2',
+		evidence: {
+			model: Todo.id,
+			scopeToken: 'record:todo-2',
+			incarnation: '1',
+			revision: '2',
+			tombstone: false
+		},
+		fields: { id: 'todo-2', title: 'canonical', __typename: Todo.id }
+	});
+
+	assert.deepEqual(replica.read(TodosLocallyMaintainable, {}).data.todos, [
+		{ id: 'todo-1', title: 'first' },
+		{ id: 'todo-2', title: 'canonical' }
+	]);
+});
+
+test('Atomic direct projection keeps unprovable collection membership stale', () => {
+	const replica = createDistributedReplica();
+	write(
+		replica,
+		{
+			operation: TodosServerOnly.id,
+			position: '1',
+			rows: [{ id: 'todo-1', title: 'first' }]
+		},
+		'network',
+		TodosServerOnly
+	);
+	replica.read(TodosServerOnly, {});
+	replica.createOptimisticLayer('cmd-atomic-server-only', (writer) => {
+		writer.writeRecord(Todo, 'todo-2', {
+			fields: { id: 'todo-2', title: 'preview' },
+			ifPresent: true
+		});
+	});
+	replica[replicaCommandDirectProjection]('cmd-atomic-server-only', {
+		model: Todo,
+		identity: 'todo-2',
+		evidence: {
+			model: Todo.id,
+			scopeToken: 'record:todo-2',
+			incarnation: '1',
+			revision: '2',
+			tombstone: false
+		},
+		fields: { id: 'todo-2', title: 'canonical', __typename: Todo.id }
+	});
+
+	const snapshot = replica.read(TodosServerOnly, {});
+	assert.equal(snapshot.stale, true);
+	assert.deepEqual(snapshot.data.todos, [{ id: 'todo-1', title: 'first' }]);
 });
 
 test('shared non-comparable membership follows request-start order across operations', async () => {

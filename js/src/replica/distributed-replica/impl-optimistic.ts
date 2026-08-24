@@ -1,4 +1,5 @@
 import type {
+	BaseCacheWriter,
 	CacheEngine,
 	OptimisticLayerReplacement
 } from '../../internal/cache-engine.js';
@@ -220,9 +221,18 @@ export function confirmOptimisticLayerOn<T>(
 	id: string,
 	update: (writer: ReplicaBaseWriter) => T
 ): T {
-	const result = host.engine.confirmOptimisticLayer(id, (writer) =>
+	return confirmOptimisticLayerWithCacheWriterOn(host, id, (writer) =>
 		update(baseWriter(writer))
 	);
+}
+
+/** Internal confirmation seam for protocol code that must atomically seal indexes. */
+export function confirmOptimisticLayerWithCacheWriterOn<T>(
+	host: OptimisticHost,
+	id: string,
+	update: (writer: BaseCacheWriter) => T
+): T {
+	const result = host.engine.confirmOptimisticLayer(id, update);
 	host.retireDiagnosticLayer(id, 'retired', 'atomic');
 	host.optimisticReceipts.delete(id);
 	host.syncDiagnostics();

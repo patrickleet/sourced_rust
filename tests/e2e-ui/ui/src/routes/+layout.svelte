@@ -74,9 +74,12 @@
 			if (link.target && link.target !== '_self') return;
 			if (link.origin !== window.location.origin) return;
 			const signedIn = !!data.session?.user;
+			// Anonymous routes install their own public-surface client below this
+			// layout. Prefetching their user-surface artifact here cannot warm that
+			// client and may establish the wrong schema binding before navigation.
+			if (!signedIn) return;
 			for (const { plan, artifact } of DISTRIBUTED_ROUTE_OPERATIONS) {
 				if (!matchDistributedRoute(plan.route, link.pathname)) continue;
-				if (!signedIn && plan.operation !== 'ChatMessages') continue;
 				const variables =
 					plan.operation === 'ChatMessages'
 						? { limit: CHAT_PAGE_SIZE, offset: 0 }
