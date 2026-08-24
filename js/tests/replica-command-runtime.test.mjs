@@ -1430,6 +1430,54 @@ for (const statusState of ['atomic', 'succeeded_pending_projection']) {
 	});
 }
 
+test('terminal exact projection status settles without command-triggered revalidation', async () => {
+	const replica = new TestReplica();
+	let pendingMetadata;
+	const runtime = createReplicaCommandRuntime(
+		replica,
+		{
+			dispatch(request) {
+				pendingMetadata = commandMetadata(request, {
+					actualTitle: 'accepted'
+				});
+				return Promise.resolve(
+					envelope(request, { command: pendingMetadata })
+				);
+			},
+			status(request) {
+				const terminalMetadata = Object.freeze({
+					...pendingMetadata,
+					state: 'atomic',
+					observations: Object.freeze(
+						pendingMetadata.expects.map((expectation) =>
+							Object.freeze({
+								...expectation,
+								causationId: pendingMetadata.causationId
+							})
+						)
+					)
+				});
+				return Promise.resolve(
+					statusEnvelope(request, terminalMetadata)
+				);
+			}
+		},
+		{ change: artifact() },
+		{ status: STATUS }
+	);
+	const receipt = await runtime.commands.change(
+		{ id: 'todo-1', title: 'preview' },
+		{ commandId: COMMAND_A }
+	);
+
+	assert.equal((await receipt.status()).state, 'atomic');
+	assert.equal((await receipt.projected).state, 'atomic');
+	assert.deepEqual(replica.revalidations, []);
+	assert.equal(replica.layer(COMMAND_A), 'accepted');
+	assert.equal(replica.record('todo-1').fields.title, 'accepted');
+	runtime.dispose();
+});
+
 test('invalid live progression cannot poison a later valid status transition', async () => {
 	const replica = new TestReplica();
 	let request;

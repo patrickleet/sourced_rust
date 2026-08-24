@@ -34,7 +34,7 @@ The playground UI against celld is the sibling example `tests/e2e-celld/`
 
 | Path | Where |
 |---|---|
-| GraphQL wait-path mutations | `HttpCommandHost` → celld `POST /todo/{id}/todo.create` (`{ commandId, input }`) |
+| GraphQL wait-path mutations | `CelldCommandHost` → celld `POST /todo/{id}/todo.create` (`{ commandId, input }` + internal identity headers) |
 | Fire-and-forget / events | NATS JetStream `publish` / `subscribe` |
 | Todo / Chat lists | SQL read models (projectors subscribe on NATS, **not** in cells) |
 | BlobGames by-id | `ReadStore::CellByKey` GET of the sealed row |

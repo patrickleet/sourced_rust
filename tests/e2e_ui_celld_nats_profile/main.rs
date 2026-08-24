@@ -73,16 +73,40 @@ fn optional_profile_is_named_and_not_the_playground() {
 mod live {
     use super::*;
     use async_graphql::Request;
-    use distributed::command_dispatch::{HttpCommandHost, SharedCommandHost};
+    use distributed::bus::InMemoryBus;
+    use distributed::cell_host::{CelldCommandHost, CelldRoute};
+    use distributed::command_dispatch::SharedCommandHost;
     use distributed::graphql::{
         read, typed_command, GraphqlEngine, GraphqlInputType, GraphqlOutputType, GraphqlTypeDef,
         GraphqlTypeField, ModelPermissions, Succeeded, VerifiedPrincipal,
     };
     use distributed::microsvc::{Session, ROLE_KEY, USER_ID_KEY};
     use distributed::{
-        Aggregate, AggregateBuilder, Entity, InMemoryRepository, ReadModel, Snapshot,
+        Aggregate, AggregateBuilder, BusPublisher, Entity, InMemoryRepository, ReadModel, Snapshot,
     };
     use serde::{Deserialize, Serialize};
+    use serde_json::{json, Value};
+
+    const OPTIONAL_TODO_COMMANDS: &[&str] = &["todo.create"];
+
+    fn optional_todo_shard(input: &Value) -> Option<String> {
+        input.get("id").and_then(Value::as_str).map(str::to_owned)
+    }
+
+    fn optional_todo_payload(
+        _command: &str,
+        input: &Value,
+        remote: &Value,
+        _session: &Session,
+    ) -> Value {
+        json!({
+            "id": remote
+                .get("id")
+                .or_else(|| input.get("id"))
+                .cloned()
+                .unwrap_or(Value::Null)
+        })
+    }
 
     #[derive(Default, Snapshot)]
     struct SchemaAgg {
@@ -228,20 +252,27 @@ mod live {
                 .as_nanos()
         );
         let celld = celld.trim_end_matches('/');
-        let host: SharedCommandHost =
-            Arc::new(HttpCommandHost::new(format!("{celld}/todo/{todo_id}")));
 
         let pool = sqlx::SqlitePool::connect_lazy("sqlite::memory:").unwrap();
         sqlx::query("CREATE TABLE IF NOT EXISTS todos (id TEXT PRIMARY KEY, title TEXT)")
             .execute(&pool)
             .await
             .ok();
-        let schema = schema_service();
+        let schema = Arc::new(schema_service());
+        let publisher = BusPublisher::new(Arc::new(InMemoryBus::new()));
+        let host: SharedCommandHost = Arc::new(
+            CelldCommandHost::new(celld, Arc::clone(&schema), publisher).route(CelldRoute::new(
+                OPTIONAL_TODO_COMMANDS,
+                "todo",
+                optional_todo_shard,
+                optional_todo_payload,
+            )),
+        );
         let engine = GraphqlEngine::builder(pool)
             .protocol_token_key([0x5a; 32])
             .roles(&["user"])
             .model::<Todos>(ModelPermissions::new().grant("user", read().all_columns()))
-            .service(&schema)
+            .service(schema.as_ref())
             .build()
             .expect("optional-profile GraphQL engine");
 

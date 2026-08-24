@@ -1021,6 +1021,18 @@ export function createReplicaCommandRuntime<
 							settleTrackedProjection(tracker, pending);
 						}
 					} else if (
+						metadata.state === 'atomic' &&
+						!prepared.revalidation.required &&
+						!statusRequiresRevalidation
+					) {
+						/*
+						 * An exact terminal delta proves delivery but carries no
+						 * canonical revision. Keep its accepted overlay until a later
+						 * comparable authoritative result seals it, without racing
+						 * sibling commands with a command-triggered query.
+						 */
+						settleTrackedProjection(tracker, pending);
+					} else if (
 						metadata.state === 'atomic' ||
 						(metadata.state === 'succeeded' &&
 							metadata.expects.length === 0 &&

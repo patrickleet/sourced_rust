@@ -27,6 +27,7 @@ test.describe('unauthenticated access', () => {
 
 	test('home soft-navigation installs the anonymous chat client', async ({ page }) => {
 		await page.goto('/');
+		await page.waitForLoadState('networkidle');
 		const continuityToken = `anonymous-chat-${Date.now()}`;
 		await page.evaluate((token) => {
 			Object.assign(globalThis, { __anonymousChatContinuityToken: token });
