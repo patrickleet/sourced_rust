@@ -76,7 +76,9 @@ async fn run_sqlite(
         let repo = repo.clone();
         let locks = locks.clone();
         spawn_service_consumer_loop(move || {
-            let bus = SqliteBus::new(repo.pool().clone()).group(BUS_GROUP);
+            let bus = SqliteBus::new(repo.pool().clone())
+                .group(BUS_GROUP)
+                .with_idle_poll(Duration::from_millis(25));
             build_service(repo.clone(), locks.clone(), repo.clone()).with_bus(bus)
         });
     }
@@ -118,7 +120,9 @@ async fn run_postgres(
         let repo = repo.clone();
         let locks = locks.clone();
         spawn_service_consumer_loop(move || {
-            let bus = PostgresBus::new(repo.pool().clone()).group(BUS_GROUP);
+            let bus = PostgresBus::new(repo.pool().clone())
+                .group(BUS_GROUP)
+                .with_idle_poll(Duration::from_millis(25));
             build_service(repo.clone(), locks.clone(), repo.clone()).with_bus(bus)
         });
     }
@@ -131,7 +135,12 @@ async fn run_postgres(
 
 fn spawn_zitadel_scrape<R>(repo: R)
 where
-    R: distributed::TransactionalCommit + Clone + Send + Sync + 'static,
+    R: distributed::TransactionalCommit
+        + distributed::ReadModelWritePlanStore
+        + Clone
+        + Send
+        + Sync
+        + 'static,
 {
     match ZitadelScrapeConfig::from_env() {
         Some(cfg) if cfg.background_enabled() || cfg.on_start => {
