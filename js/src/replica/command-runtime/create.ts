@@ -1684,16 +1684,14 @@ export function createReplicaCommandRuntime<
 			 *
 			 * Eventual list membership fences may keep the optimistic overlay
 			 * until @live includes the new row. `projected` is delivery, not
-			 * overlay retirement: settle when this frame names the command or
-			 * when the overlay has already been retired.
+			 * overlay retirement. Query/live frames have no command payload;
+			 * settle those so Send/busy can clear. Frames that name a command
+			 * still wait for overlay retirement or the command-state paths
+			 * above (status regression must be able to reject `projected`).
 			 */
 			const remainsPending =
 				replica.markOptimisticLayerAccepted(commandId);
-			if (
-				!remainsPending ||
-				command === undefined ||
-				command.commandId === commandId
-			) {
+			if (!remainsPending || command === undefined) {
 				settleProjectionSuccess(controller);
 				pending.delete(commandId);
 			}
