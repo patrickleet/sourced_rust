@@ -318,17 +318,20 @@ impl CausalDispatchResult {
         // Cell wait-path has no GraphQL command-ledger observations. Keep the
         // modeled delta so the replica can apply it, but drop expects so
         // `projected` does not wait on live/status observations this process
-        // cannot emit. The client revalidates; SQL `@live` still catches up.
+        // cannot emit. Preserve the delta's own recovery disposition: a fully
+        // resolved actual delta is sufficient local authority and must not turn
+        // every successful cell command into a full-query revalidation.
         let metadata = if metadata.obligations.is_empty() {
             metadata
         } else {
+            let revalidate = metadata.revalidate;
             crate::graphql::protocol::CommandProjectionMetadataV1::try_new(
                 metadata.issued_at_unix_ms,
                 metadata.expires_at_unix_ms,
                 metadata.delta,
                 metadata.lifecycle_proofs,
                 Vec::new(),
-                true,
+                revalidate,
             )
             .map_err(|error| {
                 CausalDispatchError::Internal(format!(

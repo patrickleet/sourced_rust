@@ -181,7 +181,7 @@ test.describe('todos (alice)', () => {
 		await expect(add).toBeDisabled();
 	});
 
-	test('commands preserve rendered cache while revalidating', async ({ page }) => {
+	test('commands preserve rendered cache while settling', async ({ page }) => {
 		await page.goto('/todos');
 		await expect(page.getByRole('heading', { name: /todos/i })).toBeVisible();
 
@@ -285,15 +285,20 @@ test.describe('todos (alice)', () => {
 		// turns that event value into the upsert that must paint before the held
 		// Eventual response.
 		await expect(openItem).toBeVisible({ timeout: 1_000 });
+		await expect(openItem).toHaveAttribute('aria-busy', 'true');
+		await expect(openItem).toHaveClass(/item-pending/);
+		await expect(openItem.locator('.pending-state')).toHaveText('Saving…');
 		expect(
-			await page.locator('.board button:disabled').count(),
-			'routine command concurrency guards must not flash Todo row controls disabled'
-		).toBe(0);
+			await openItem.locator('button:disabled').count(),
+			'a newly created optimistic Todo must not expose actions before its receipt'
+		).toBe(3);
 		await createResponse;
 		await expect(openItem).toBeVisible();
+		await expect(openItem).toHaveAttribute('aria-busy', 'false');
+		await expect(openItem.locator('.pending-state')).toHaveCount(0);
 		expect(
 			await page.locator('.board button:disabled').count(),
-			'routine command concurrency guards must not flash Todo row controls disabled'
+			'Todo controls must unlock after its durable create receipt'
 		).toBe(0);
 		expectBinarySorted(await visibleTodoOrders(page));
 		const todoId = await openItem.getAttribute('data-todo-id');
@@ -417,6 +422,124 @@ test.describe('todos (alice)', () => {
 		await expect(archivedItem).toBeVisible({ timeout: 1_000 });
 		await archiveResponse;
 		await expect(archivedItem).toBeVisible();
+		await page.unrouteAll({ behavior: 'wait' });
+	});
+
+	test('rapid independent complete and reopen commands do not refetch or regress', async ({
+		page
+	}) => {
+		await page.goto('/todos');
+		await expect(page.getByRole('heading', { name: /todos/i })).toBeVisible();
+
+		const prefix = `rapid transitions ${Date.now()}`;
+		const titles = Array.from({ length: 6 }, (_, index) => `${prefix} ${index + 1}`);
+		const todoIds: string[] = [];
+		for (const title of titles) {
+			await page.locator('#todo-title').fill(title);
+			const response = waitForTodoCommand(page, 'todos_create');
+			await page.getByRole('button', { name: /^add$/i }).click();
+			expect((await response).ok(), 'setup todos_create must succeed').toBeTruthy();
+			const item = page.locator('.item', { hasText: title });
+			await expect(item).toBeVisible();
+			const todoId = await item.getAttribute('data-todo-id');
+			expect(todoId).not.toBeNull();
+			todoIds.push(todoId!);
+		}
+		await page.waitForLoadState('networkidle');
+
+		let transitionQueries = 0;
+		let transitionResponses = 0;
+		page.on('request', (request) => {
+			const body = request.postData() ?? '';
+			if (body.includes('query Todos')) transitionQueries += 1;
+		});
+		page.on('response', (response) => {
+			const body = response.request().postData() ?? '';
+			if (body.includes('todos_complete') || body.includes('todos_reopen')) {
+				transitionResponses += 1;
+			}
+		});
+		await page.route('**/graphql', async (route) => {
+			const body = route.request().postData() ?? '';
+			if (!body.includes('todos_complete') && !body.includes('todos_reopen')) {
+				await route.continue();
+				return;
+			}
+			const response = await route.fetch();
+			await new Promise((resolve) => setTimeout(resolve, 350));
+			await route.fulfill({ response });
+		});
+
+		const openPanel = page
+			.locator('.panel')
+			.filter({ has: page.getByRole('heading', { name: /^open$/i }) });
+		const donePanel = page
+			.locator('.panel')
+			.filter({ has: page.getByRole('heading', { name: /^done$/i }) });
+
+		await startTodoOrderTrace(page);
+		for (const title of titles) {
+			await openPanel
+				.locator('.item', { hasText: title })
+				.getByRole('button', { name: /^done$/i })
+				.click();
+		}
+		for (const title of titles) {
+			const item = donePanel.locator('.item', { hasText: title });
+			await expect(item).toBeVisible({ timeout: 1_000 });
+			await item.getByRole('button', { name: /^reopen$/i }).click();
+		}
+
+		for (const title of titles) {
+			await expect(openPanel.locator('.item', { hasText: title })).toBeVisible({
+				timeout: 1_000
+			});
+		}
+		await expect
+			.poll(() => transitionResponses, { timeout: 20_000 })
+			.toBe(titles.length * 2);
+		await page.waitForTimeout(750);
+
+		const frames = await stopTodoOrderTrace(page);
+		const allDoneFrame = frames.findIndex((frame) =>
+			todoIds.every((todoId) => todoIsIn(frame, todoId, 'done'))
+		);
+		const fullyReopenedFrame = frames.findIndex(
+			(frame, index) =>
+				index > allDoneFrame &&
+				todoIds.every((todoId) => todoIsIn(frame, todoId, 'open'))
+		);
+		for (const title of titles) {
+			await expect(openPanel.locator('.item', { hasText: title })).toBeVisible();
+			await expect(donePanel.locator('.item', { hasText: title })).toHaveCount(0);
+		}
+		expect(
+			transitionQueries,
+			'exact successful Todo deltas must not launch a full-list revalidation'
+		).toBe(0);
+		expect(allDoneFrame, `rapid transitions never reached Done: ${JSON.stringify(frames)}`).toBeGreaterThanOrEqual(
+			0
+		);
+		expect(
+			fullyReopenedFrame,
+			`rapid transitions never fully reopened: ${JSON.stringify(frames)}`
+		).toBeGreaterThan(allDoneFrame);
+		expect(
+			frames
+				.slice(fullyReopenedFrame)
+				.every((frame) => todoIds.every((todoId) => todoIsIn(frame, todoId, 'open'))),
+			`a stale result regressed a fully reopened Todo: ${JSON.stringify(frames)}`
+		).toBe(true);
+		expect(
+			frames.every(
+				(frame) =>
+					isBinarySorted(frame.open) &&
+					isBinarySorted(frame.done) &&
+					todoIds.every((todoId) => validTodoTransitionFrame(frame, todoId))
+			),
+			`rapid transitions rendered an invalid generated order: ${JSON.stringify(frames)}`
+		).toBe(true);
+
 		await page.unrouteAll({ behavior: 'wait' });
 	});
 });

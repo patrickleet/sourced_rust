@@ -32,7 +32,9 @@ export function prepareCommandProjection(
 		return Object.freeze({
 			contract,
 			preview: Object.freeze([...preview, ...pure]),
-			revalidate: contract.preview.recoveries.length !== 0
+			revalidate: contract.preview.recoveries.some(
+				(recovery) => recovery.condition === 'always'
+			)
 		});
 	} catch {
 		// Preview is only a convenience. Missing client authority must never be

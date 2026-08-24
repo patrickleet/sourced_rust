@@ -3221,6 +3221,7 @@ fn command_protocol_and_extensions_are_preserved_exactly() {
     assert!(!partial_commands.contains("\"op\": \"upsert\""));
     assert!(partial_commands.contains("\"condition\": \"if_record_missing\""));
     assert!(partial_commands.contains("\"kind\": \"record\""));
+    assert!(partial_commands.contains("\"required\": false"));
 
     let absent = compile_client(ClientCompileInput::new(
         absent_value,
@@ -3290,6 +3291,7 @@ fn command_protocol_and_extensions_are_preserved_exactly() {
         assert!(fallback_commands.contains("\"kind\": \"model\""));
         assert!(!fallback_commands.contains("\"op\": \"upsert\""));
         assert!(!fallback_commands.contains("\"op\": \"patch\""));
+        assert!(fallback_commands.contains("\"required\": true"));
     }
 
     let delete = compile_client(ClientCompileInput::new(
