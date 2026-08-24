@@ -990,7 +990,7 @@ where
             400,
         );
     }
-    let now = SystemTime::now();
+    let now = SystemTime::UNIX_EPOCH + Duration::from_millis(Date::now().as_millis());
     let lease = Duration::from_millis(body.lease_ms);
     let mut rows = cell
         .durable_outbox()
