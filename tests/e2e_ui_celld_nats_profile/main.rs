@@ -76,6 +76,7 @@ mod live {
     use distributed::bus::InMemoryBus;
     use distributed::cell_host::{
         CelldCommandHost, CelldRoute, InternalHttpSecret, CELL_INTERNAL_SECRET_ENV,
+        CELL_INTERNAL_SECRET_HEADER,
     };
     use distributed::command_dispatch::SharedCommandHost;
     use distributed::graphql::{
@@ -267,6 +268,7 @@ mod live {
                 .expect("live celld profile requires DISTRIBUTED_INTERNAL_SECRET"),
         )
         .expect("valid internal secret");
+        let read_secret = secret.clone();
         let host: SharedCommandHost = Arc::new(
             CelldCommandHost::new(celld, Arc::clone(&schema), publisher, secret)
                 .expect("valid celld host")
@@ -316,6 +318,7 @@ mod live {
             .unwrap();
         let got: serde_json::Value = client
             .get(format!("{celld}/todo/{todo_id}"))
+            .header(CELL_INTERNAL_SECRET_HEADER, read_secret.header_value())
             .send()
             .await
             .unwrap()
