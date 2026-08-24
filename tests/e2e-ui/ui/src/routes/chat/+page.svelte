@@ -327,9 +327,8 @@
 				room_id: LOBBY_ROOM,
 				created_at: String(now)
 			});
-			// Mutation returned: allow the next compose. Eventual `projected`
-			// is delivery confirmation (SQL/@live), not a send lock.
-			busy = false;
+			// Wait for causal projection when the runtime provides it; otherwise
+			// the command receipt itself is the server confirmation.
 			if (receipt.projected !== undefined) {
 				await receipt.projected;
 			}
@@ -469,7 +468,7 @@
 					autocomplete="off"
 					bind:value={draft}
 				/>
-				<Button type="submit" variant="ink" disabled={!draft.trim() || busy}>
+				<Button type="submit" variant="ink" disabled={busy}>
 					Send
 					<svg width="16" height="16" viewBox="0 0 24 24" fill="none" aria-hidden="true">
 						<path

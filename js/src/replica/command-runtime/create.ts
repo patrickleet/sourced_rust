@@ -1681,10 +1681,19 @@ export function createReplicaCommandRuntime<
 			 * DistributedReplica is the authority on whether this frame's
 			 * snapshot/observations were admissible. This callback runs only
 			 * after that exact frame committed.
+			 *
+			 * Eventual list membership fences may keep the optimistic overlay
+			 * until @live includes the new row. `projected` is delivery, not
+			 * overlay retirement: settle when this frame names the command or
+			 * when the overlay has already been retired.
 			 */
 			const remainsPending =
 				replica.markOptimisticLayerAccepted(commandId);
-			if (!remainsPending) {
+			if (
+				!remainsPending ||
+				command === undefined ||
+				command.commandId === commandId
+			) {
 				settleProjectionSuccess(controller);
 				pending.delete(commandId);
 			}

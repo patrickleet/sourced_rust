@@ -204,10 +204,19 @@ async fn snapshot_hydration_replays_every_event_after_snapshot_version() {
     assert_eq!(loaded.entity.version(), replayed.entity.version());
     assert_eq!(loaded.entity.snapshot_version(), 1);
     assert_eq!(replayed.entity.snapshot_version(), 0);
-    assert_eq!(loaded.entity.events().len(), 3);
-    assert_eq!(loaded.entity.events(), replayed.entity.events());
+    // Tail-only load: snapshot covers sequence 1; in-memory events are the
+    // post-snapshot replay (2, 3). Full-replay repo still holds the whole log.
     assert_eq!(
         loaded
+            .entity
+            .events()
+            .iter()
+            .map(|event| event.sequence)
+            .collect::<Vec<_>>(),
+        vec![2, 3]
+    );
+    assert_eq!(
+        replayed
             .entity
             .events()
             .iter()
