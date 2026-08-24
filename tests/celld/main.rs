@@ -123,7 +123,7 @@ async fn live_cell_private_routes_reject_missing_forged_and_malformed_authority(
         .build()
         .expect("client");
     wait_healthy(&client, &base).await;
-    let id = unique_todo();
+    let (id, _) = unique_cell_pair("todo");
     let command = serde_json::json!({
         "commandId": "0190a000-0000-7000-8000-000000000199",
         "input": { "title": "must not be created" }
@@ -190,8 +190,7 @@ async fn live_todo_cell_create_complete_reopen_archive_and_isolate() {
 
     wait_healthy(&client, &base).await;
 
-    let a = unique_todo();
-    let b = unique_todo();
+    let (a, b) = unique_cell_pair("todo");
 
     let created = trusted_cell_request(
         client
@@ -345,8 +344,7 @@ async fn live_chat_cell_post_and_isolate() {
 
     wait_healthy(&client, &base).await;
 
-    let a = unique_chat();
-    let b = unique_chat();
+    let (a, b) = unique_cell_pair("chat");
     let created_at = unix_millis();
 
     let posted = trusted_cell_request(
@@ -451,20 +449,12 @@ async fn live_chat_cell_post_and_isolate() {
     assert_eq!(other.status(), 404, "second name must be a different cell");
 }
 
-fn unique_todo() -> String {
+fn unique_cell_pair(kind: &str) -> (String, String) {
     let nanos = std::time::SystemTime::now()
         .duration_since(std::time::UNIX_EPOCH)
         .expect("clock")
         .as_nanos();
-    format!("todo-{nanos}")
-}
-
-fn unique_chat() -> String {
-    let nanos = std::time::SystemTime::now()
-        .duration_since(std::time::UNIX_EPOCH)
-        .expect("clock")
-        .as_nanos();
-    format!("chat-{nanos}")
+    (format!("{kind}-{nanos}-a"), format!("{kind}-{nanos}-b"))
 }
 
 fn unix_millis() -> String {
