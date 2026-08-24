@@ -107,6 +107,34 @@ const TodosOtherLiveOperation = Object.freeze({
 	})
 });
 
+const TodosOpen = Object.freeze({
+	...Todos,
+	id: 'query:todos-open',
+	document: 'query TodosOpen { todos(where: {status: {_eq: "open"}}) { id title } }',
+	protocol: Object.freeze({
+		...Todos.protocol,
+		operation: 'query:todos-open'
+	}),
+	live: Object.freeze({
+		id: 'live:todos-open',
+		document:
+			'subscription TodosOpenLive { todos(where: {status: {_eq: "open"}}) { id title } }'
+	}),
+	roots: Object.freeze([
+		Object.freeze({
+			...Todos.roots[0],
+			arguments: Object.freeze({
+				where: Object.freeze({
+					kind: 'literal',
+					value: Object.freeze({
+						status: Object.freeze({ _eq: 'open' })
+					})
+				})
+			})
+		})
+	])
+});
+
 /*
  * Mirrors the generated Todos artifact's material index semantics: an exact,
  * offset-backed collection whose authorization policy is server-only.
@@ -740,6 +768,153 @@ test('comparable live snapshot cannot drop an Eventual list row after confirmati
 					tombstone: false
 				}
 			]
+		},
+		'live'
+	);
+	assert.deepEqual(replica.read(Todos, {}).data.todos, [
+		{ id: 'todo-1', title: 'first' },
+		{ id: 'todo-2', title: 'posted' }
+	]);
+});
+
+test('Eventual membership fences are independent per index', () => {
+	const replica = createDistributedReplica();
+	const baseRows = [{ id: 'todo-1', title: 'first' }];
+	write(replica, { position: '1', rows: baseRows });
+	write(
+		replica,
+		{
+			position: '1',
+			operation: TodosOpen.id,
+			projection: 'todos-open-projector',
+			indexScope: 'index:todos-open',
+			snapshotScope: 'snapshot:todos-open',
+			rows: baseRows
+		},
+		'network',
+		TodosOpen
+	);
+	const allTarget = {
+		field: 'todos',
+		arguments: {},
+		dependencies: ['todos'],
+		complete: true
+	};
+	const openTarget = {
+		...allTarget,
+		arguments: { where: { status: { _eq: 'open' } } }
+	};
+	const recordKeys = [
+		replicaRecordKey(Todo, 'todo-1'),
+		replicaRecordKey(Todo, 'todo-2')
+	];
+	replica.createOptimisticLayer('cmd-two-indexes', () => undefined);
+	replica[replicaCommandProjectionDelta](
+		'cmd-two-indexes',
+		(writer) => {
+			writer.writeRecord(Todo, 'todo-2', {
+				fields: { id: 'todo-2', title: 'posted' }
+			});
+			writer.writeIndex(allTarget, recordKeys);
+			writer.writeIndex(openTarget, recordKeys);
+		},
+		[]
+	);
+	replica.confirmOptimisticLayer('cmd-two-indexes', () => undefined);
+
+	write(
+		replica,
+		{
+			position: '2',
+			operation: Todos.live.id,
+			rows: [
+				{ id: 'todo-1', title: 'first' },
+				{ id: 'todo-2', title: 'posted' }
+			],
+			live: { supported: true }
+		},
+		'live'
+	);
+	write(
+		replica,
+		{
+			position: '2',
+			operation: TodosOpen.live.id,
+			projection: 'todos-open-projector',
+			indexScope: 'index:todos-open',
+			snapshotScope: 'snapshot:todos-open',
+			rows: [{ id: 'todo-1', title: 'first' }],
+			live: { supported: true }
+		},
+		'live',
+		TodosOpen
+	);
+	assert.deepEqual(replica.read(TodosOpen, {}).data.todos, [
+		{ id: 'todo-1', title: 'first' },
+		{ id: 'todo-2', title: 'posted' }
+	]);
+
+	write(
+		replica,
+		{
+			position: '3',
+			operation: TodosOpen.live.id,
+			projection: 'todos-open-projector',
+			indexScope: 'index:todos-open',
+			snapshotScope: 'snapshot:todos-open',
+			rows: [
+				{ id: 'todo-1', title: 'first' },
+				{ id: 'todo-2', title: 'posted' }
+			],
+			live: { supported: true }
+		},
+		'live',
+		TodosOpen
+	);
+	assert.deepEqual(replica.read(TodosOpen, {}).data.todos, [
+		{ id: 'todo-1', title: 'first' },
+		{ id: 'todo-2', title: 'posted' }
+	]);
+});
+
+test('overlapping Eventual commands retain every membership-fence owner', () => {
+	const replica = createDistributedReplica();
+	write(replica, {
+		position: '1',
+		rows: [{ id: 'todo-1', title: 'first' }]
+	});
+	const target = {
+		field: 'todos',
+		arguments: {},
+		dependencies: ['todos'],
+		complete: true
+	};
+	const records = [
+		replicaRecordKey(Todo, 'todo-1'),
+		replicaRecordKey(Todo, 'todo-2')
+	];
+	for (const commandId of ['cmd-owner-a', 'cmd-owner-b']) {
+		replica.createOptimisticLayer(commandId, () => undefined);
+		replica[replicaCommandProjectionDelta](
+			commandId,
+			(writer) => {
+				writer.writeRecord(Todo, 'todo-2', {
+					fields: { id: 'todo-2', title: 'posted' }
+				});
+				writer.writeIndex(target, records);
+			},
+			[]
+		);
+	}
+	replica.rejectOptimisticLayer('cmd-owner-b');
+	replica.confirmOptimisticLayer('cmd-owner-a', () => undefined);
+	write(
+		replica,
+		{
+			position: '2',
+			operation: Todos.live.id,
+			rows: [{ id: 'todo-1', title: 'first' }],
+			live: { supported: true }
 		},
 		'live'
 	);

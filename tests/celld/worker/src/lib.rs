@@ -5,22 +5,28 @@
 //! projectors are not methods on this class (`PCH-REQ-005`). Chat `@live`
 //! stays on the GraphQL host.
 
-use std::time::Duration;
+use std::collections::HashSet;
+use std::time::{Duration, SystemTime};
 
 use chat_domain::{post, ChatMessage, ChatMessageState};
 use distributed::cell_host::{
-    AggregateCell, CellCommandIdentity, CellDispatchError, CellDispatchResult, DurableCellCommand,
-    DurableCellEvents, DurableCellSnapshot, CELL_PRINCIPAL_PARTITION_HEADER,
-    CELL_SERVICE_ID_HEADER,
+    AggregateCell, CellCommandIdentity, CellDispatchError, CellDispatchResult, CellOutboxWireItem,
+    CellWaitPathRequest, DurableCellCommand, DurableCellEvents, DurableCellSnapshot,
+    InternalHttpSecret, CELL_INTERNAL_SECRET_ENV, CELL_INTERNAL_SECRET_HEADER,
+    CELL_PRINCIPAL_PARTITION_HEADER, CELL_SERVICE_ID_HEADER, MAX_CELL_OUTBOX_ITEMS,
+    MAX_CELL_OUTBOX_PAYLOAD_BYTES, MAX_CELL_OUTBOX_WIRE_BYTES,
 };
 use distributed::microsvc::{Session, ROLE_KEY, USER_ID_KEY};
-use distributed::{EventRecord, OutboxMessage, OutboxMessageStatus};
+use distributed::{EventRecord, OutboxMessage};
+use serde::de::DeserializeOwned;
 use serde::Deserialize;
 use serde_json::{json, Value};
 use todo_domain::{
     archive, complete, create, force_archive, purge, rename, reopen, Todo, TodoState,
 };
 use worker::*;
+
+const MAX_CELL_REQUEST_BYTES: usize = 2 * 1024 * 1024;
 
 const EVENTS_DDL: &str = "CREATE TABLE IF NOT EXISTS cell_events (
   stream TEXT NOT NULL,
@@ -98,6 +104,9 @@ impl DurableObject for TodoCell {
     }
 
     async fn fetch(&self, mut req: Request) -> Result<Response> {
+        if let Err(error) = authenticate_internal_request(&req, &self.env) {
+            return internal_auth_error(error);
+        }
         if let Err(error) = restore_working_copy(&self.sql, &self.cell) {
             return json_status(json!({ "error": error }), 500);
         }
@@ -148,10 +157,31 @@ impl DurableObject for TodoCell {
                 )
                 .await
             }
-            (Method::Post, Some("outbox.complete")) => {
-                complete_outbox(&self.sql, &self.storage, &self.env, &self.cell, &mut req).await
+            (Method::Post, Some("outbox.claim")) => {
+                claim_outbox(&self.sql, &self.storage, &self.env, &self.cell, &mut req).await
             }
-            (Method::Post, Some("outbox.drain")) => drain_outbox(&self.cell),
+            (Method::Post, Some("outbox.complete")) => {
+                settle_outbox(
+                    &self.sql,
+                    &self.storage,
+                    &self.env,
+                    &self.cell,
+                    &mut req,
+                    true,
+                )
+                .await
+            }
+            (Method::Post, Some("outbox.release")) => {
+                settle_outbox(
+                    &self.sql,
+                    &self.storage,
+                    &self.env,
+                    &self.cell,
+                    &mut req,
+                    false,
+                )
+                .await
+            }
             _ => json_status(json!({ "error": "not found" }), 404),
         }
     }
@@ -202,6 +232,9 @@ impl DurableObject for ChatCell {
     }
 
     async fn fetch(&self, mut req: Request) -> Result<Response> {
+        if let Err(error) = authenticate_internal_request(&req, &self.env) {
+            return internal_auth_error(error);
+        }
         if let Err(error) = restore_chat_copy(&self.sql, &self.cell) {
             return json_status(json!({ "error": error }), 500);
         }
@@ -230,10 +263,31 @@ impl DurableObject for ChatCell {
                 )
                 .await
             }
-            (Method::Post, Some("outbox.complete")) => {
-                complete_outbox(&self.sql, &self.storage, &self.env, &self.cell, &mut req).await
+            (Method::Post, Some("outbox.claim")) => {
+                claim_outbox(&self.sql, &self.storage, &self.env, &self.cell, &mut req).await
             }
-            (Method::Post, Some("outbox.drain")) => drain_outbox(&self.cell),
+            (Method::Post, Some("outbox.complete")) => {
+                settle_outbox(
+                    &self.sql,
+                    &self.storage,
+                    &self.env,
+                    &self.cell,
+                    &mut req,
+                    true,
+                )
+                .await
+            }
+            (Method::Post, Some("outbox.release")) => {
+                settle_outbox(
+                    &self.sql,
+                    &self.storage,
+                    &self.env,
+                    &self.cell,
+                    &mut req,
+                    false,
+                )
+                .await
+            }
             _ => json_status(json!({ "error": "not found" }), 404),
         }
     }
@@ -254,13 +308,16 @@ async fn main(req: Request, env: Env, _ctx: Context) -> Result<Response> {
     if path == "/" || path == "/health" {
         return Response::ok("distributed todo+chat cells\n");
     }
+    if let Err(error) = authenticate_internal_request(&req, &env) {
+        return internal_auth_error(error);
+    }
     let parts: Vec<&str> = path.split('/').filter(|part| !part.is_empty()).collect();
     let (binding, id) = match (parts.first().copied(), parts.get(1).copied()) {
         (Some("todo"), Some(id)) => ("TODO", id),
         (Some("chat"), Some(id)) => ("CHAT", id),
         _ => {
             return Response::error(
-                "cells: GET|POST /todo/:id[/todo.<command>|outbox.drain|outbox.complete]  GET|POST /chat/:id[/chat.post|outbox.drain|outbox.complete]\n",
+                "cells: authenticated internal command/read/outbox routes\n",
                 404,
             );
         }
@@ -268,6 +325,45 @@ async fn main(req: Request, env: Env, _ctx: Context) -> Result<Response> {
     let namespace = env.durable_object(binding)?;
     let stub = namespace.id_from_name(id)?.get_stub()?;
     stub.fetch_with_request(req).await
+}
+
+fn authenticate_internal_request(
+    req: &Request,
+    env: &Env,
+) -> std::result::Result<(), CellDispatchError> {
+    let configured = env
+        .secret(CELL_INTERNAL_SECRET_ENV)
+        .map(|value| value.to_string())
+        .or_else(|_| {
+            env.var(CELL_INTERNAL_SECRET_ENV)
+                .map(|value| value.to_string())
+        })
+        .map_err(|_| {
+            CellDispatchError::Internal(format!("{CELL_INTERNAL_SECRET_ENV} is required"))
+        })?;
+    let secret = InternalHttpSecret::new(configured).map_err(CellDispatchError::Internal)?;
+    let candidate = req
+        .headers()
+        .get(CELL_INTERNAL_SECRET_HEADER)
+        .map_err(|_| CellDispatchError::Unauthorized)?
+        .ok_or(CellDispatchError::Unauthorized)?;
+    if !secret.matches(&candidate) {
+        return Err(CellDispatchError::Unauthorized);
+    }
+    Ok(())
+}
+
+fn internal_auth_error(error: CellDispatchError) -> Result<Response> {
+    match error {
+        CellDispatchError::Unauthorized => json_status(
+            json!({ "code": "UNAUTHORIZED", "error": "unauthorized" }),
+            401,
+        ),
+        _ => json_status(
+            json!({ "code": "INTERNAL", "error": "internal cell authentication is unavailable" }),
+            500,
+        ),
+    }
 }
 
 fn session_from_headers(user: Option<String>, roles: Option<String>) -> Session {
@@ -317,7 +413,10 @@ async fn post_chat(
     req: &mut Request,
 ) -> Result<Response> {
     let session = request_session(req);
-    let body = req.json::<Value>().await.unwrap_or(json!({}));
+    let body = match bounded_json::<Value>(req).await {
+        Ok(body) => body,
+        Err(error) => return map_cell_error(CellDispatchError::BadRequest(error.into()), cell),
+    };
     let (command_id, mut input) = match wait_path_parts(&body) {
         Ok(parts) => parts,
         Err(error) => return map_cell_error(error, cell),
@@ -435,15 +534,9 @@ async fn get_todo(cell: &AggregateCell<Todo>, id: &str) -> Result<Response> {
 }
 
 fn wait_path_parts(body: &Value) -> std::result::Result<(String, Value), CellDispatchError> {
-    let command_id = body
-        .get("commandId")
-        .and_then(Value::as_str)
-        .map(str::trim)
-        .filter(|value| !value.is_empty())
-        .map(str::to_string)
-        .ok_or_else(|| CellDispatchError::BadRequest("commandId is required".into()))?;
-    let input = body.get("input").cloned().unwrap_or_else(|| body.clone());
-    Ok((command_id, input))
+    let request =
+        CellWaitPathRequest::parse(body.clone()).map_err(CellDispatchError::BadRequest)?;
+    Ok((request.command_id, request.input))
 }
 
 fn request_cell_identity(
@@ -495,12 +588,15 @@ where
     A: distributed::Aggregate + Send + Sync + 'static,
 {
     let rows = cell.durable_outbox().unwrap_or_default();
-    Value::Array(
-        rows.iter()
-            .filter(|message| message.is_pending())
-            .map(outbox_item)
-            .collect(),
-    )
+    let mut budget = CellOutboxWireBudget::default();
+    let mut items = Vec::new();
+    for message in rows.iter().filter(|message| message.is_pending()) {
+        let Some(item) = budget.try_add(message) else {
+            break;
+        };
+        items.push(item);
+    }
+    Value::Array(items)
 }
 
 fn has_pending<A>(cell: &AggregateCell<A>) -> bool
@@ -509,7 +605,10 @@ where
 {
     cell.durable_outbox()
         .ok()
-        .map(|rows| rows.iter().any(OutboxMessage::is_pending))
+        .map(|rows| {
+            rows.iter()
+                .any(|row| !row.is_published() && !row.is_failed())
+        })
         .unwrap_or(false)
 }
 
@@ -521,7 +620,10 @@ async fn create_todo(
     id: &str,
     req: &mut Request,
 ) -> Result<Response> {
-    let body = req.json::<Value>().await.unwrap_or(json!({}));
+    let body = match bounded_json::<Value>(req).await {
+        Ok(body) => body,
+        Err(error) => return map_cell_error(CellDispatchError::BadRequest(error.into()), cell),
+    };
     let (command_id, input) = match wait_path_parts(&body) {
         Ok(parts) => parts,
         Err(error) => return map_cell_error(error, cell),
@@ -572,7 +674,10 @@ async fn transition_todo(
     command: &str,
     req: &mut Request,
 ) -> Result<Response> {
-    let body = req.json::<Value>().await.unwrap_or(json!({}));
+    let body = match bounded_json::<Value>(req).await {
+        Ok(body) => body,
+        Err(error) => return map_cell_error(CellDispatchError::BadRequest(error.into()), cell),
+    };
     let (command_id, mut input) = match wait_path_parts(&body) {
         Ok(parts) => parts,
         Err(error) => return map_cell_error(error, cell),
@@ -659,6 +764,29 @@ where
 
 fn json_status(body: Value, status: u16) -> Result<Response> {
     Ok(Response::from_json(&body)?.with_status(status))
+}
+
+async fn bounded_json<T: DeserializeOwned>(
+    req: &mut Request,
+) -> std::result::Result<T, &'static str> {
+    if req
+        .headers()
+        .get("content-length")
+        .ok()
+        .flatten()
+        .and_then(|value| value.parse::<usize>().ok())
+        .is_some_and(|length| length > MAX_CELL_REQUEST_BYTES)
+    {
+        return Err("cell request exceeds 2 MiB");
+    }
+    let bytes = req
+        .bytes()
+        .await
+        .map_err(|_| "could not read cell request body")?;
+    if bytes.len() > MAX_CELL_REQUEST_BYTES {
+        return Err("cell request exceeds 2 MiB");
+    }
+    serde_json::from_slice(&bytes).map_err(|_| "invalid cell request JSON")
 }
 
 #[derive(Deserialize)]
@@ -785,21 +913,55 @@ fn load_commands(sql: &SqlStorage) -> Result<Vec<DurableCellCommand>> {
 }
 
 fn outbox_item(message: &OutboxMessage) -> Value {
-    json!({
-        "id": message.id,
-        "eventType": message.event_type,
-        "payload": message.payload,
-        "payloadCodec": message.payload_codec,
-        "payloadCodecVersion": message.payload_codec_version,
-        "status": message.status.as_str(),
-        "metadata": message.metadata,
-        "sourceAggregateType": message.source_aggregate_type,
-        "sourceAggregateId": message.source_aggregate_id,
-        "sourceSequence": message.source_sequence,
-    })
+    serde_json::to_value(CellOutboxWireItem::from_message(message))
+        .expect("cell outbox wire item is serializable")
 }
 
-async fn complete_outbox<A>(
+#[derive(Default)]
+struct CellOutboxWireBudget {
+    items: usize,
+    payload_bytes: usize,
+    wire_bytes: usize,
+}
+
+impl CellOutboxWireBudget {
+    fn try_add(&mut self, message: &OutboxMessage) -> Option<Value> {
+        let item = outbox_item(message);
+        let encoded_bytes = serde_json::to_vec(&item).ok()?.len().saturating_add(1);
+        let items = self.items.saturating_add(1);
+        let payload_bytes = self.payload_bytes.saturating_add(message.payload.len());
+        let wire_bytes = self.wire_bytes.saturating_add(encoded_bytes);
+        if items > MAX_CELL_OUTBOX_ITEMS
+            || payload_bytes > MAX_CELL_OUTBOX_PAYLOAD_BYTES
+            || wire_bytes > MAX_CELL_OUTBOX_WIRE_BYTES
+        {
+            return None;
+        }
+        self.items = items;
+        self.payload_bytes = payload_bytes;
+        self.wire_bytes = wire_bytes;
+        Some(item)
+    }
+}
+
+#[derive(Deserialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+struct ClaimOutboxRequest {
+    worker_id: String,
+    limit: usize,
+    lease_ms: u64,
+}
+
+#[derive(Deserialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+struct SettleOutboxRequest {
+    worker_id: String,
+    ids: Vec<String>,
+    #[serde(default)]
+    error: Option<String>,
+}
+
+async fn claim_outbox<A>(
     sql: &SqlStorage,
     storage: &Storage,
     env: &Env,
@@ -809,56 +971,137 @@ async fn complete_outbox<A>(
 where
     A: distributed::Aggregate + Send + Sync + 'static,
 {
-    let body = req.json::<Value>().await.unwrap_or(json!({}));
-    let ids = ids_from_body(&body);
-    mark_outbox_published(sql, cell, &ids)?;
-    arm_drain_alarm(storage, env, has_pending(cell)).await;
-    json_status(json!({ "ok": true }), 200)
-}
-
-fn drain_outbox<A>(cell: &AggregateCell<A>) -> Result<Response>
-where
-    A: distributed::Aggregate + Send + Sync + 'static,
-{
-    json_status(json!({ "outbox": outbox_wire(cell) }), 200)
-}
-
-fn ids_from_body(body: &Value) -> Vec<String> {
-    if let Some(ids) = body.get("ids").and_then(Value::as_array) {
-        return ids
-            .iter()
-            .filter_map(|value| value.as_str().map(str::to_string))
-            .collect();
+    let body = match bounded_json::<ClaimOutboxRequest>(req).await {
+        Ok(body) => body,
+        Err(_) => {
+            return json_status(
+                json!({ "code": "BAD_REQUEST", "error": "invalid outbox claim request" }),
+                400,
+            )
+        }
+    };
+    if !valid_worker_id(&body.worker_id)
+        || body.limit == 0
+        || body.limit > MAX_CELL_OUTBOX_ITEMS
+        || !(1_000..=60_000).contains(&body.lease_ms)
+    {
+        return json_status(
+            json!({ "code": "BAD_REQUEST", "error": "invalid outbox claim bounds" }),
+            400,
+        );
     }
-    body.get("id")
-        .and_then(Value::as_str)
-        .map(|id| vec![id.to_string()])
-        .unwrap_or_default()
-}
-
-fn mark_outbox_published<A>(sql: &SqlStorage, cell: &AggregateCell<A>, ids: &[String]) -> Result<()>
-where
-    A: distributed::Aggregate + Send + Sync + 'static,
-{
-    if ids.is_empty() {
-        return Ok(());
-    }
+    let now = SystemTime::now();
+    let lease = Duration::from_millis(body.lease_ms);
     let mut rows = cell
         .durable_outbox()
         .map_err(|error| Error::RustError(error.to_string()))?;
-    let mut changed = false;
-    for row in &mut rows {
-        if ids.iter().any(|id| id == &row.id) && row.status != OutboxMessageStatus::Published {
-            row.status = OutboxMessageStatus::Published;
-            changed = true;
+    let mut claimed = Vec::new();
+    let mut budget = CellOutboxWireBudget::default();
+    let mut bound_violation = false;
+    for row in rows.iter_mut().filter(|row| row.is_claimable_at(now)) {
+        if claimed.len() == body.limit {
+            break;
         }
+        let mut candidate = row.clone();
+        candidate
+            .claim_at(body.worker_id.clone(), lease, now)
+            .map_err(|error| Error::RustError(error.to_string()))?;
+        let Some(item) = budget.try_add(&candidate) else {
+            bound_violation = true;
+            break;
+        };
+        *row = candidate;
+        claimed.push(item);
     }
-    if changed {
+    if bound_violation && claimed.is_empty() {
+        return json_status(
+            json!({ "code": "INTERNAL", "error": "stored outbox row violates transport bounds" }),
+            500,
+        );
+    }
+    if !claimed.is_empty() {
         cell.restore_durable_outbox(rows)
             .map_err(|error| Error::RustError(error.to_string()))?;
         persist_outbox(sql, cell)?;
     }
-    Ok(())
+    arm_drain_alarm(storage, env, has_pending(cell)).await;
+    json_status(json!({ "outbox": claimed }), 200)
+}
+
+async fn settle_outbox<A>(
+    sql: &SqlStorage,
+    storage: &Storage,
+    env: &Env,
+    cell: &AggregateCell<A>,
+    req: &mut Request,
+    complete: bool,
+) -> Result<Response>
+where
+    A: distributed::Aggregate + Send + Sync + 'static,
+{
+    let body = match bounded_json::<SettleOutboxRequest>(req).await {
+        Ok(body) => body,
+        Err(_) => {
+            return json_status(
+                json!({ "code": "BAD_REQUEST", "error": "invalid outbox settlement request" }),
+                400,
+            )
+        }
+    };
+    let unique = body.ids.iter().collect::<HashSet<_>>();
+    if !valid_worker_id(&body.worker_id)
+        || body.ids.is_empty()
+        || body.ids.len() > MAX_CELL_OUTBOX_ITEMS
+        || unique.len() != body.ids.len()
+        || body
+            .ids
+            .iter()
+            .any(|id| id.is_empty() || id.len() > 512 || id.chars().any(char::is_control))
+        || body.error.as_ref().is_some_and(|error| error.len() > 1_024)
+    {
+        return json_status(
+            json!({ "code": "BAD_REQUEST", "error": "invalid outbox settlement bounds" }),
+            400,
+        );
+    }
+    let mut rows = cell
+        .durable_outbox()
+        .map_err(|error| Error::RustError(error.to_string()))?;
+    if body.ids.iter().any(|id| {
+        !rows
+            .iter()
+            .any(|row| &row.id == id && row.is_in_flight() && row.is_claimed_by(&body.worker_id))
+    }) {
+        return json_status(
+            json!({ "code": "CONFLICT", "error": "outbox claim is stale or not owned by this worker" }),
+            409,
+        );
+    }
+    for row in rows
+        .iter_mut()
+        .filter(|row| body.ids.iter().any(|id| id == &row.id))
+    {
+        let result = if complete {
+            row.complete()
+        } else {
+            row.release(body.error.clone().unwrap_or_default())
+        };
+        if let Err(error) = result {
+            return json_status(
+                json!({ "code": "CONFLICT", "error": error.to_string() }),
+                409,
+            );
+        }
+    }
+    cell.restore_durable_outbox(rows)
+        .map_err(|error| Error::RustError(error.to_string()))?;
+    persist_outbox(sql, cell)?;
+    arm_drain_alarm(storage, env, has_pending(cell)).await;
+    json_status(json!({ "ok": true }), 200)
+}
+
+fn valid_worker_id(worker_id: &str) -> bool {
+    !worker_id.is_empty() && worker_id.len() <= 512 && !worker_id.chars().any(char::is_control)
 }
 
 async fn arm_drain_alarm(storage: &Storage, env: &Env, pending: bool) {
@@ -888,14 +1131,11 @@ async fn run_outbox_alarm<A>(
 where
     A: distributed::Aggregate + Send + Sync + 'static,
 {
-    let pending = outbox_wire(cell);
-    if pending
-        .as_array()
-        .map(|rows| !rows.is_empty())
-        .unwrap_or(false)
-    {
-        offer_pending(env, kind, id, &pending).await;
+    if has_pending(cell) {
+        offer_pending(env, kind, id).await;
         arm_drain_alarm(storage, env, true).await;
+    } else {
+        arm_drain_alarm(storage, env, false).await;
     }
     Response::ok("ok")
 }
@@ -907,13 +1147,24 @@ fn drain_url(env: &Env) -> Option<String> {
         .filter(|url| !url.is_empty())
 }
 
-async fn offer_pending(env: &Env, kind: &str, id: &str, outbox: &Value) {
+async fn offer_pending(env: &Env, kind: &str, id: &str) {
     let Some(url) = drain_url(env) else {
         return;
     };
-    let payload = json!({ "kind": kind, "id": id, "outbox": outbox });
+    let Ok(secret) = env
+        .secret(CELL_INTERNAL_SECRET_ENV)
+        .map(|value| value.to_string())
+        .or_else(|_| {
+            env.var(CELL_INTERNAL_SECRET_ENV)
+                .map(|value| value.to_string())
+        })
+    else {
+        return;
+    };
+    let payload = json!({ "kind": kind, "id": id });
     let headers = Headers::new();
     let _ = headers.set("content-type", "application/json");
+    let _ = headers.set(CELL_INTERNAL_SECRET_HEADER, &secret);
     let mut init = RequestInit::new();
     init.with_method(Method::Post)
         .with_headers(headers)
@@ -940,62 +1191,10 @@ fn load_outbox(sql: &SqlStorage) -> Result<Vec<OutboxMessage>> {
 }
 
 fn parse_outbox_item(item: &Value) -> Result<OutboxMessage> {
-    let id = item
-        .get("id")
-        .and_then(Value::as_str)
-        .ok_or_else(|| Error::RustError("outbox id".into()))?;
-    let event_type = item
-        .get("eventType")
-        .and_then(Value::as_str)
-        .ok_or_else(|| Error::RustError("outbox eventType".into()))?;
-    let payload = item
-        .get("payload")
-        .and_then(Value::as_array)
-        .map(|bytes| {
-            bytes
-                .iter()
-                .filter_map(|byte| byte.as_u64().map(|value| value as u8))
-                .collect::<Vec<_>>()
-        })
-        .unwrap_or_default();
-    let metadata = item
-        .get("metadata")
-        .and_then(Value::as_object)
-        .map(|object| {
-            object
-                .iter()
-                .filter_map(|(key, value)| Some((key.clone(), value.as_str()?.to_string())))
-                .collect()
-        })
-        .unwrap_or_default();
-    let mut message = OutboxMessage::create_with_metadata(
-        id.to_string(),
-        event_type.to_string(),
-        payload,
-        metadata,
-    )
-    .map_err(|error| Error::RustError(error.to_string()))?;
-    if let Some(codec) = item.get("payloadCodec").and_then(Value::as_str) {
-        message.payload_codec = codec.to_string();
-    }
-    if let Some(version) = item.get("payloadCodecVersion").and_then(Value::as_u64) {
-        message.payload_codec_version = version as u16;
-    }
-    message.source_aggregate_type = item
-        .get("sourceAggregateType")
-        .and_then(Value::as_str)
-        .map(str::to_string);
-    message.source_aggregate_id = item
-        .get("sourceAggregateId")
-        .and_then(Value::as_str)
-        .map(str::to_string);
-    message.source_sequence = item.get("sourceSequence").and_then(Value::as_u64);
-    if let Some(status) = item.get("status").and_then(Value::as_str) {
-        if let Ok(parsed) = status.parse::<OutboxMessageStatus>() {
-            message.status = parsed;
-        }
-    }
-    Ok(message)
+    serde_json::from_value::<CellOutboxWireItem>(item.clone())
+        .map_err(|error| Error::RustError(format!("outbox wire: {error}")))?
+        .try_into_stored_message()
+        .map_err(Error::RustError)
 }
 
 #[derive(Deserialize)]

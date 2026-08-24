@@ -4,6 +4,7 @@ struct ActualInput;
 
 #[distributed::command(
     id = "todo.mismatch",
+    roles(user),
     input = ExpectedInput,
     outcome = distributed::graphql::Succeeded<ActualInput>
 )]

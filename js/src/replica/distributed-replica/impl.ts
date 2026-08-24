@@ -218,7 +218,10 @@ export class DistributedReplicaImpl implements DistributedReplicaApi {
 	 * must not shrink the visible list. Atomic rows use projected-record
 	 * fences only — they have no @live that would otherwise clear this map.
 	 */
-	readonly #membershipFences = new Map<string, string>();
+	readonly #membershipFences = new Map<
+		string,
+		Map<string, Set<string>>
+	>();
 	readonly #deferredMembershipConfirms = new Set<string>();
 	readonly #anonymousRecordClocks = new Map<
 		DistributedOpaqueString,
@@ -1336,7 +1339,6 @@ export class DistributedReplicaImpl implements DistributedReplicaApi {
 					);
 				}
 				consumedRecordPaths.add(encodedPath);
-				this.#membershipFences.delete(recordKey);
 				const projectedFence =
 					this.#projectedRecordFences.get(recordKey);
 				const projectedDisposition =
@@ -1656,37 +1658,87 @@ export class DistributedReplicaImpl implements DistributedReplicaApi {
 		commandId: string,
 		writer: ReplicaOptimisticWriter
 	): ReplicaOptimisticWriter {
+		const touchedRecords = new Set<string>();
 		return {
 			writeRecord: (
 				model: ReplicaModelArtifact,
 				identity: ReplicaIdentity,
 				patch: ReplicaRecordPatch
 			) => {
-				this.#membershipFences.set(
-					replicaRecordKey(model, identity),
-					commandId
-				);
+				touchedRecords.add(replicaRecordKey(model, identity));
 				writer.writeRecord(model, identity, patch);
 			},
 			tombstoneRecord: (model, identity) => {
-				this.#membershipFences.delete(replicaRecordKey(model, identity));
+				const recordKey = replicaRecordKey(model, identity);
+				touchedRecords.delete(recordKey);
+				this.#clearMembershipFenceOwner(commandId, recordKey);
 				writer.tombstoneRecord(model, identity);
 			},
-			writeIndex: (target, records) => writer.writeIndex(target, records),
-			deleteIndex: (target) => writer.deleteIndex(target)
+			writeIndex: (target, records) => {
+				const indexKey = indexKeyFromTarget(target);
+				for (const recordKey of records) {
+					if (!touchedRecords.has(recordKey)) continue;
+					let recordsForIndex = this.#membershipFences.get(indexKey);
+					if (recordsForIndex === undefined) {
+						recordsForIndex = new Map();
+						this.#membershipFences.set(indexKey, recordsForIndex);
+					}
+					let owners = recordsForIndex.get(recordKey);
+					if (owners === undefined) {
+						owners = new Set();
+						recordsForIndex.set(recordKey, owners);
+					}
+					owners.add(commandId);
+				}
+				writer.writeIndex(target, records);
+			},
+			deleteIndex: (target) => {
+				const indexKey = indexKeyFromTarget(target);
+				const recordsForIndex = this.#membershipFences.get(indexKey);
+				if (recordsForIndex !== undefined) {
+					for (const [recordKey, owners] of recordsForIndex) {
+						owners.delete(commandId);
+						if (owners.size === 0) recordsForIndex.delete(recordKey);
+					}
+					if (recordsForIndex.size === 0) {
+						this.#membershipFences.delete(indexKey);
+					}
+				}
+				writer.deleteIndex(target);
+			}
 		};
 	}
 
 	#commandHasMembershipFence(commandId: string): boolean {
-		for (const owner of this.#membershipFences.values()) {
-			if (owner === commandId) return true;
+		for (const recordsForIndex of this.#membershipFences.values()) {
+			for (const owners of recordsForIndex.values()) {
+				if (owners.has(commandId)) return true;
+			}
 		}
 		return false;
 	}
 
 	#clearMembershipFencesForCommand(commandId: string): void {
-		for (const [recordKey, owner] of this.#membershipFences) {
-			if (owner === commandId) this.#membershipFences.delete(recordKey);
+		for (const [indexKey, recordsForIndex] of this.#membershipFences) {
+			for (const [recordKey, owners] of recordsForIndex) {
+				owners.delete(commandId);
+				if (owners.size === 0) recordsForIndex.delete(recordKey);
+			}
+			if (recordsForIndex.size === 0) {
+				this.#membershipFences.delete(indexKey);
+			}
+		}
+	}
+
+	#clearMembershipFenceOwner(commandId: string, recordKey: string): void {
+		for (const [indexKey, recordsForIndex] of this.#membershipFences) {
+			const owners = recordsForIndex.get(recordKey);
+			if (owners === undefined) continue;
+			owners.delete(commandId);
+			if (owners.size === 0) recordsForIndex.delete(recordKey);
+			if (recordsForIndex.size === 0) {
+				this.#membershipFences.delete(indexKey);
+			}
 		}
 	}
 
@@ -1698,15 +1750,13 @@ export class DistributedReplicaImpl implements DistributedReplicaApi {
 				writer.tombstoneRecord(key, revision, incarnation),
 			discardRecord: (key) => writer.discardRecord(key),
 			writeIndex: (write) => {
-				if (
-					write.complete === true &&
-					this.#membershipFences.size > 0
-				) {
+				const recordsForIndex = this.#membershipFences.get(write.key);
+				if (write.complete === true && recordsForIndex !== undefined) {
 					const visible =
 						this.#engine.read(
 							(reader) => reader.index(write.key)?.records
 						) ?? [];
-					for (const recordKey of this.#membershipFences.keys()) {
+					for (const recordKey of recordsForIndex.keys()) {
 						if (
 							visible.includes(recordKey) &&
 							!write.records.includes(recordKey)
@@ -1716,9 +1766,12 @@ export class DistributedReplicaImpl implements DistributedReplicaApi {
 					}
 				}
 				const wrote = writer.writeIndex(write);
-				if (wrote) {
+				if (wrote && recordsForIndex !== undefined) {
 					for (const recordKey of write.records) {
-						this.#membershipFences.delete(recordKey);
+						recordsForIndex.delete(recordKey);
+					}
+					if (recordsForIndex.size === 0) {
+						this.#membershipFences.delete(write.key);
 					}
 				}
 				return wrote;

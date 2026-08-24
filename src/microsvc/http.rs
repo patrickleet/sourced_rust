@@ -135,7 +135,18 @@ async fn command_handler(
 ) -> impl IntoResponse {
     let session = session_from_headers(&headers);
     #[cfg(feature = "graphql")]
-    if let Some((command_id, input)) = super::wait_path::parse_wait_path_body(&body) {
+    let wait_path = match super::wait_path::parse_wait_path_body(&body) {
+        Ok(wait_path) => wait_path,
+        Err(error) => {
+            return (
+                StatusCode::BAD_REQUEST,
+                Json(json!({ "code": "BAD_REQUEST", "error": error })),
+            )
+                .into_response();
+        }
+    };
+    #[cfg(feature = "graphql")]
+    if let Some((command_id, input)) = wait_path {
         return match super::wait_path::dispatch_wait_path(
             service.as_ref(),
             &command,

@@ -240,8 +240,12 @@ impl CausalDispatchResult {
     }
 
     /// Parse cell wait-path `outbox` even when the HTTP status is 409.
-    pub fn outbox_from_wait_path(body: &Value) -> Vec<crate::OutboxMessage> {
-        wait_path_outbox(body)
+    pub fn outbox_from_wait_path(
+        body: &Value,
+    ) -> Result<Vec<crate::OutboxMessage>, CausalDispatchError> {
+        crate::microsvc::cell_host::parse_cell_outbox(body).map_err(|error| {
+            CausalDispatchError::Internal(format!("invalid cell outbox response: {error}"))
+        })
     }
 
     /// Client-supplied durable command id.
@@ -397,39 +401,54 @@ impl CausalDispatchResult {
 
     /// Rebuild a receipt from the HTTP/gRPC wait-path JSON envelope.
     pub fn from_wait_path_wire(body: Value) -> Result<Self, CausalDispatchError> {
-        let payload = body
-            .get("payload")
-            .cloned()
-            .unwrap_or(Value::Null);
-        let receipt = body.get("receipt").ok_or_else(|| {
-            CausalDispatchError::Internal("wait-path response missing receipt".into())
+        #[derive(serde::Deserialize)]
+        #[serde(rename_all = "camelCase", deny_unknown_fields)]
+        struct ReceiptWire {
+            command_id: String,
+            causation_id: String,
+            state: String,
+            #[serde(default)]
+            replayed: Option<bool>,
+        }
+
+        #[derive(serde::Deserialize)]
+        #[serde(rename_all = "camelCase", deny_unknown_fields)]
+        struct ResponseWire {
+            #[serde(default)]
+            payload: Value,
+            receipt: ReceiptWire,
+            #[serde(default)]
+            outbox: Vec<crate::microsvc::cell_host::CellOutboxWireItem>,
+        }
+
+        let wire: ResponseWire = serde_json::from_value(body).map_err(|error| {
+            CausalDispatchError::Internal(format!("invalid wait-path response: {error}"))
         })?;
-        let command_id = receipt
-            .get("commandId")
-            .and_then(Value::as_str)
-            .ok_or_else(|| {
-                CausalDispatchError::Internal("wait-path receipt missing commandId".into())
-            })?
-            .to_string();
-        let causation_id = receipt
-            .get("causationId")
-            .and_then(Value::as_str)
-            .unwrap_or("")
-            .to_string();
-        let state = receipt
-            .get("state")
-            .and_then(Value::as_str)
-            .unwrap_or("succeeded");
-        let state = crate::command_ledger::CommandLedgerState::parse(state).map_err(|err| {
-            CausalDispatchError::Internal(format!("wait-path receipt state: {err}"))
+        if wire.receipt.command_id.trim().is_empty()
+            || wire.receipt.command_id.len() > 512
+            || wire.receipt.causation_id.len() > 512
+        {
+            return Err(CausalDispatchError::Internal(
+                "wait-path receipt contains an invalid identifier".into(),
+            ));
+        }
+        let state = crate::command_ledger::CommandLedgerState::parse(&wire.receipt.state).map_err(
+            |err| CausalDispatchError::Internal(format!("wait-path receipt state: {err}")),
+        )?;
+        let _ = wire.receipt.replayed;
+        let outbox = crate::microsvc::cell_host::parse_cell_outbox(&serde_json::json!({
+            "outbox": wire.outbox
+        }))
+        .map_err(|error| {
+            CausalDispatchError::Internal(format!("invalid cell outbox response: {error}"))
         })?;
         Ok(Self {
-            payload,
-            outbox: wait_path_outbox(&body),
+            payload: wire.payload,
+            outbox,
             receipt: CausalCommandReceiptSource {
-                command_id,
+                command_id: wire.receipt.command_id,
                 command_name: String::new(),
-                causation_id,
+                causation_id: wire.receipt.causation_id,
                 consistency: crate::graphql::CommandConsistency::Succeeded,
                 state,
                 outcome: Value::Null,
@@ -439,67 +458,6 @@ impl CausalDispatchResult {
             },
         })
     }
-}
-
-#[cfg(feature = "graphql")]
-fn wait_path_outbox(body: &Value) -> Vec<crate::OutboxMessage> {
-    let Some(items) = body.get("outbox").and_then(Value::as_array) else {
-        return Vec::new();
-    };
-    items
-        .iter()
-        .filter_map(|item| {
-            let id = item.get("id")?.as_str()?;
-            let event_type = item.get("eventType")?.as_str()?;
-            let payload = item
-                .get("payload")?
-                .as_array()?
-                .iter()
-                .filter_map(|byte| byte.as_u64().map(|value| value as u8))
-                .collect::<Vec<_>>();
-            let codec = item
-                .get("payloadCodec")
-                .and_then(Value::as_str)
-                .unwrap_or(crate::OutboxMessage::DOMAIN_EVENT_PAYLOAD_CODEC);
-            let codec_version = item
-                .get("payloadCodecVersion")
-                .and_then(Value::as_u64)
-                .unwrap_or(u64::from(
-                    crate::OutboxMessage::DOMAIN_EVENT_PAYLOAD_CODEC_VERSION,
-                )) as u16;
-            let metadata = item
-                .get("metadata")
-                .and_then(Value::as_object)
-                .map(|object| {
-                    object
-                        .iter()
-                        .filter_map(|(key, value)| {
-                            Some((key.clone(), value.as_str()?.to_string()))
-                        })
-                        .collect()
-                })
-                .unwrap_or_default();
-            let mut message = crate::OutboxMessage::create_with_metadata(
-                id.to_string(),
-                event_type.to_string(),
-                payload,
-                metadata,
-            )
-            .ok()?;
-            message.payload_codec = codec.to_string();
-            message.payload_codec_version = codec_version;
-            message.source_aggregate_type = item
-                .get("sourceAggregateType")
-                .and_then(Value::as_str)
-                .map(str::to_string);
-            message.source_aggregate_id = item
-                .get("sourceAggregateId")
-                .and_then(Value::as_str)
-                .map(str::to_string);
-            message.source_sequence = item.get("sourceSequence").and_then(Value::as_u64);
-            Some(message)
-        })
-        .collect()
 }
 
 /// Stable public command-status vocabulary.
@@ -632,9 +590,7 @@ pub(super) fn ensure_causal_grant(
     ) {
         Ok(()) => Ok(()),
         Err("unauthenticated") => Err(CausalDispatchError::Handler(
-            crate::microsvc::HandlerError::Unauthorized(
-                "missing authenticated principal".into(),
-            ),
+            crate::microsvc::HandlerError::Unauthorized("missing authenticated principal".into()),
         )),
         Err(_) => Err(CausalDispatchError::Forbidden),
     }

@@ -14,12 +14,15 @@ mod remote;
 pub use envelope::{
     CommandDispatchEnvelope, CommandDispatchReceipt, COMMAND_DISPATCH_ENVELOPE_VERSION,
 };
+pub use error::CommandDispatchError;
+#[cfg(feature = "graphql")]
+pub(crate) use host::{validate_principal_session, validate_principal_session_if_present};
 #[cfg(feature = "graphql")]
 pub use host::{CommandHost, HttpCommandHost, LocalCommandHost, SharedCommandHost};
-pub use error::CommandDispatchError;
 pub use local::LocalCommandDispatcher;
 pub use remote::{
-    RemoteCommandDispatcher, RemoteDispatchConfig, RemoteTrustMode, APPROVED_REMOTE_DISPATCH_PROFILE,
+    RemoteCommandDispatcher, RemoteDispatchConfig, RemoteTrustMode,
+    APPROVED_REMOTE_DISPATCH_PROFILE,
 };
 
 use crate::microsvc::{CommandRequest, CommandResponse};

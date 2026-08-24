@@ -16,9 +16,11 @@ pub(crate) mod causal;
 mod cell;
 #[cfg(feature = "graphql")]
 mod command;
+mod internal_auth;
 #[cfg(feature = "graphql")]
 mod outbox;
 mod store;
+mod wire;
 
 pub use causal::{
     CellCommandIdentity, CellDispatchError, CellDispatchResult, CELL_PRINCIPAL_PARTITION_HEADER,
@@ -27,12 +29,21 @@ pub use causal::{
 pub use cell::{instance_name, parent_cell_name, AggregateCell, CellNamespace};
 #[cfg(feature = "graphql")]
 pub use command::{CelldCommandHost, CelldRoute};
+pub use internal_auth::{
+    InternalHttpSecret, CELL_INTERNAL_SECRET_ENV, CELL_INTERNAL_SECRET_HEADER,
+};
 #[cfg(feature = "graphql")]
 pub use outbox::{
-    accept_outbox_drain, drain_cell_outbox, outbox_alarm_handler, spawn_cell_outbox_drain_loop,
-    CellOutboxDrainHandler, CELL_OUTBOX_DRAIN_PATH,
+    accept_outbox_drain, outbox_alarm_handler, CellOutboxDrainHandler, CellOutboxScheduler,
+    CELL_OUTBOX_DRAIN_PATH,
 };
 pub use store::{CellStreamStore, DurableCellCommand, DurableCellEvents, DurableCellSnapshot};
+pub(crate) use wire::validate_cell_outbox_messages;
+pub use wire::{
+    parse_cell_outbox, parse_claimed_cell_outbox, CellOutboxHint, CellOutboxWireItem,
+    CellWaitPathRequest, MAX_CELL_OUTBOX_ITEMS, MAX_CELL_OUTBOX_PAYLOAD_BYTES,
+    MAX_CELL_OUTBOX_WIRE_BYTES,
+};
 
 #[cfg(test)]
 mod tests;

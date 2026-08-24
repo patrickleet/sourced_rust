@@ -175,6 +175,10 @@ impl VerifiedPrincipal {
         &self.subject
     }
 
+    pub(crate) fn subject_matches(&self, subject: &str) -> bool {
+        self.subject == subject
+    }
+
     /// Versioned, domain-separated partition for one exact service identity.
     pub(crate) fn partition_for_service(&self, service_id: &str) -> String {
         let mut audiences = self

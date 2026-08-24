@@ -1697,6 +1697,17 @@ where
                     .await;
                 }
             };
+            if let Err(error) =
+                crate::microsvc::cell_host::validate_cell_outbox_messages(&batch.outbox_messages)
+            {
+                drop(batch);
+                return crate::microsvc::cell_host::causal::abandon_attempt(
+                    repository,
+                    attempt,
+                    format!("cell outbox violates its transport bounds: {error}"),
+                )
+                .await;
+            }
             let foreign_stream = batch
                 .streams
                 .iter()

@@ -9,7 +9,7 @@
 
 .PHONY: run stop test help wasm ensure-watch
 
-BIND         ?= 0.0.0.0:8791
+BIND         ?= 127.0.0.1:8791
 API_PORT     ?= 8791
 UI_PORT      ?= 5180
 UI_HOST      ?= localhost
@@ -23,6 +23,7 @@ NATS_URL     ?= nats://127.0.0.1:$(NATS_PORT)
 NPM          ?= npm
 WATCH        ?= 1
 WATCH_WORKER ?= 1
+DISTRIBUTED_INTERNAL_SECRET ?= test-only-internal-secret-change-me-2026
 
 wasm:
 	$(MAKE) -C ../e2e-ui wasm
@@ -64,8 +65,9 @@ run: wasm $(if $(filter 1,$(WATCH) $(WATCH_WORKER)),ensure-watch)
 	  exit 1; \
 	fi; \
 	export NATS_URL="$$_nats"; \
+	export DISTRIBUTED_INTERNAL_SECRET="$(DISTRIBUTED_INTERNAL_SECRET)"; \
 	export PUBLIC_E2E_PROFILE="celld-nats"; \
-	_bind="$${BIND:-0.0.0.0:8791}"; \
+	_bind="$${BIND:-127.0.0.1:8791}"; \
 	_api_port="$${_bind##*:}"; \
 	_base="$${E2E_API_ORIGIN:-http://127.0.0.1:$${_api_port}}"; \
 	_ui_port="$(UI_PORT)"; \
@@ -73,7 +75,7 @@ run: wasm $(if $(filter 1,$(WATCH) $(WATCH_WORKER)),ensure-watch)
 	_ui="$${E2E_UI_ORIGIN:-http://$${_ui_host}:$${_ui_port}}"; \
 	export AUTH_URL="$${_ui}"; \
 	export AUTH_USE_SECURE_COOKIES="false"; \
-	export BIND="0.0.0.0:$${_api_port}"; \
+	export BIND="127.0.0.1:$${_api_port}"; \
 	lsof -ti:$${_api_port} 2>/dev/null | xargs kill -9 2>/dev/null || true; \
 	lsof -ti:$${_ui_port} 2>/dev/null | xargs kill -9 2>/dev/null || true; \
 	rm -f .make-runner.pid .make-ui.pid .make-worker.pid .make-runner.log; \

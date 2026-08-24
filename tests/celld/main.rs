@@ -7,7 +7,10 @@
 use std::path::Path;
 use std::time::Duration;
 
-use distributed::cell_host::{CELL_PRINCIPAL_PARTITION_HEADER, CELL_SERVICE_ID_HEADER};
+use distributed::cell_host::{
+    CELL_INTERNAL_SECRET_ENV, CELL_INTERNAL_SECRET_HEADER, CELL_PRINCIPAL_PARTITION_HEADER,
+    CELL_SERVICE_ID_HEADER,
+};
 use serde_json::Value;
 
 const TEST_SERVICE_ID: &str = "celld-live-test";
@@ -60,7 +63,8 @@ fn worker_declares_sqlite_todo_and_chat_cells() {
     assert!(source.contains("todo.complete"));
     assert!(source.contains("chat.post"));
     assert!(source.contains("outbox.complete"));
-    assert!(source.contains("outbox.drain"));
+    assert!(source.contains("outbox.claim"));
+    assert!(source.contains("outbox.release"));
     assert!(source.contains("CREATE TABLE IF NOT EXISTS cell_outbox"));
     assert!(source.contains("CREATE TABLE IF NOT EXISTS cell_commands"));
     assert!(source.contains("dispatch_idempotent"));
@@ -102,8 +106,75 @@ fn compose_file_does_not_use_minio() {
         "do not run MinIO as the celld bucket"
     );
     assert!(compose.contains("CELLD_HTTP_PORT:-18080"));
+    assert!(compose.contains("127.0.0.1:${CELLD_HTTP_PORT:-18080}:8080"));
     assert!(compose.contains(":8080"));
     assert!(compose.contains("host.docker.internal:host-gateway"));
+}
+
+#[tokio::test]
+async fn live_cell_private_routes_reject_missing_forged_and_malformed_authority() {
+    let Some(base) = env_support::broker_env("CELLD_URL", "celld live security boundary") else {
+        return;
+    };
+    let base = base.trim_end_matches('/').to_string();
+    let client = reqwest::Client::builder()
+        .timeout(Duration::from_secs(10))
+        .redirect(reqwest::redirect::Policy::none())
+        .build()
+        .expect("client");
+    wait_healthy(&client, &base).await;
+    let id = unique_todo();
+    let command = serde_json::json!({
+        "commandId": "0190a000-0000-7000-8000-000000000199",
+        "input": { "title": "must not be created" }
+    });
+
+    let missing = client
+        .post(format!("{base}/todo/{id}/todo.create"))
+        .header(CELL_SERVICE_ID_HEADER, TEST_SERVICE_ID)
+        .header(CELL_PRINCIPAL_PARTITION_HEADER, TEST_PRINCIPAL_PARTITION)
+        .header("x-user-id", "alice")
+        .header("x-roles", "admin")
+        .json(&command)
+        .send()
+        .await
+        .expect("missing secret");
+    assert_eq!(missing.status(), 401);
+
+    let forged = client
+        .post(format!("{base}/todo/{id}/todo.create"))
+        .header(
+            CELL_INTERNAL_SECRET_HEADER,
+            "forged-secret-for-red-team-request",
+        )
+        .header(CELL_SERVICE_ID_HEADER, TEST_SERVICE_ID)
+        .header(CELL_PRINCIPAL_PARTITION_HEADER, TEST_PRINCIPAL_PARTITION)
+        .header("x-user-id", "alice")
+        .header("x-roles", "admin")
+        .json(&command)
+        .send()
+        .await
+        .expect("forged secret");
+    assert_eq!(forged.status(), 401);
+
+    let read = client
+        .get(format!("{base}/todo/{id}"))
+        .send()
+        .await
+        .expect("unauthenticated read");
+    assert_eq!(read.status(), 401);
+
+    let malformed = trusted_cell_request(client.post(format!("{base}/todo/{id}/outbox.claim")))
+        .json(&serde_json::json!({
+            "workerId": "attacker",
+            "limit": 1,
+            "leaseMs": 30_000,
+            "forged": true
+        }))
+        .send()
+        .await
+        .expect("malformed claim");
+    assert_eq!(malformed.status(), 400);
 }
 
 #[tokio::test]
@@ -244,8 +315,7 @@ async fn live_todo_cell_create_complete_reopen_archive_and_isolate() {
     let archived: Value = archived.json().await.unwrap();
     assert_eq!(archived["payload"]["status"], "archived");
 
-    let got: Value = client
-        .get(format!("{base}/todo/{a}"))
+    let got: Value = trusted_cell_request(client.get(format!("{base}/todo/{a}")))
         .send()
         .await
         .expect("get")
@@ -255,8 +325,7 @@ async fn live_todo_cell_create_complete_reopen_archive_and_isolate() {
     assert_eq!(got["title"], "ship celld");
     assert_eq!(got["status"], "archived");
 
-    let other = client
-        .get(format!("{base}/todo/{b}"))
+    let other = trusted_cell_request(client.get(format!("{base}/todo/{b}")))
         .send()
         .await
         .expect("missing cell");
@@ -308,8 +377,7 @@ async fn live_chat_cell_post_and_isolate() {
         "0190a000-0000-7000-8000-000000000301"
     );
 
-    let got: Value = client
-        .get(format!("{base}/chat/{a}"))
+    let got: Value = trusted_cell_request(client.get(format!("{base}/chat/{a}")))
         .send()
         .await
         .expect("get")
@@ -326,30 +394,57 @@ async fn live_chat_cell_post_and_isolate() {
             .iter()
             .filter_map(|row| row.get("id").cloned())
             .collect();
-        let complete = client
-            .post(format!("{base}/chat/{a}/outbox.complete"))
-            .json(&serde_json::json!({ "ids": ids }))
-            .send()
-            .await
-            .expect("outbox.complete");
-        assert_eq!(complete.status(), 200, "{}", complete.text().await.unwrap());
-        let drained: Value = client
-            .post(format!("{base}/chat/{a}/outbox.drain"))
+        let worker_id = "celld-live-test-worker";
+        let claim = trusted_cell_request(client.post(format!("{base}/chat/{a}/outbox.claim")))
             .json(&serde_json::json!({
-                "commandId": "drain",
-                "input": {}
+                "workerId": worker_id,
+                "limit": 64,
+                "leaseMs": 30_000
             }))
             .send()
             .await
-            .expect("outbox.drain")
-            .json()
+            .expect("outbox.claim");
+        assert_eq!(claim.status(), 200, "{}", claim.text().await.unwrap());
+        let claim: Value = claim.json().await.unwrap();
+        assert_eq!(claim["outbox"].as_array().map(Vec::len), Some(ids.len()));
+        assert!(claim["outbox"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .all(|row| row["status"] == "in_flight"));
+
+        let stale = trusted_cell_request(client.post(format!("{base}/chat/{a}/outbox.complete")))
+            .json(&serde_json::json!({ "workerId": "wrong-worker", "ids": ids }))
+            .send()
             .await
-            .unwrap();
+            .expect("stale completion");
+        assert_eq!(stale.status(), 409);
+
+        let complete =
+            trusted_cell_request(client.post(format!("{base}/chat/{a}/outbox.complete")))
+                .json(&serde_json::json!({ "workerId": worker_id, "ids": ids }))
+                .send()
+                .await
+                .expect("outbox.complete");
+        assert_eq!(complete.status(), 200, "{}", complete.text().await.unwrap());
+
+        let drained: Value =
+            trusted_cell_request(client.post(format!("{base}/chat/{a}/outbox.claim")))
+                .json(&serde_json::json!({
+                    "workerId": worker_id,
+                    "limit": 64,
+                    "leaseMs": 30_000
+                }))
+                .send()
+                .await
+                .expect("second outbox.claim")
+                .json()
+                .await
+                .unwrap();
         assert_eq!(drained["outbox"].as_array().map(Vec::len).unwrap_or(0), 0);
     }
 
-    let other = client
-        .get(format!("{base}/chat/{b}"))
+    let other = trusted_cell_request(client.get(format!("{base}/chat/{b}")))
         .send()
         .await
         .expect("missing cell");
@@ -381,7 +476,10 @@ fn unix_millis() -> String {
 }
 
 fn trusted_cell_request(request: reqwest::RequestBuilder) -> reqwest::RequestBuilder {
+    let secret = std::env::var(CELL_INTERNAL_SECRET_ENV)
+        .unwrap_or_else(|_| "test-only-internal-secret-change-me-2026".into());
     request
+        .header(CELL_INTERNAL_SECRET_HEADER, secret)
         .header(CELL_SERVICE_ID_HEADER, TEST_SERVICE_ID)
         .header(CELL_PRINCIPAL_PARTITION_HEADER, TEST_PRINCIPAL_PARTITION)
 }

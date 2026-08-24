@@ -4,15 +4,20 @@
 //! publish, complete, extra drain, and wait-path protocol seal are the same
 //! for every cell.
 
-use std::collections::{HashMap, HashSet};
+use std::collections::{HashMap, VecDeque};
 use std::sync::{Arc, Mutex};
+use std::time::{Duration, Instant};
 
 use async_trait::async_trait;
 use serde_json::Value;
 
-use super::outbox::{drain_cell_outbox, spawn_cell_outbox_drain_loop};
+use super::outbox::{outbox_alarm_handler, CellOutboxDrainHandler, CellOutboxScheduler};
+use super::{CellOutboxHint, InternalHttpSecret};
 use crate::bus::MessagePublisher;
-use crate::command_dispatch::{CommandHost, HttpCommandHost, LocalCommandHost};
+use crate::command_dispatch::{
+    validate_principal_session, validate_principal_session_if_present, CommandHost,
+    HttpCommandHost, LocalCommandHost,
+};
 use crate::graphql::identity::VerifiedPrincipal;
 use crate::graphql::protocol::ProtocolResponseAccumulator;
 use crate::microsvc::{
@@ -20,6 +25,53 @@ use crate::microsvc::{
 };
 
 const COMPLETED_STATUS_CACHE_LIMIT: usize = 4_096;
+const COMPLETED_STATUS_CACHE_TTL: Duration = Duration::from_secs(15 * 60);
+
+type CompletedStatusKey = (String, String);
+
+#[derive(Default)]
+struct CompletedStatusCache {
+    entries: HashMap<CompletedStatusKey, (Instant, CausalCommandPublicStatus)>,
+    order: VecDeque<CompletedStatusKey>,
+}
+
+impl CompletedStatusCache {
+    fn insert(&mut self, key: CompletedStatusKey, status: CausalCommandPublicStatus) {
+        self.purge_expired();
+        if self.entries.contains_key(&key) {
+            self.order.retain(|existing| existing != &key);
+            self.order.push_back(key.clone());
+            self.entries.insert(key, (Instant::now(), status));
+            return;
+        }
+        while self.entries.len() >= COMPLETED_STATUS_CACHE_LIMIT {
+            let Some(evicted) = self.order.pop_front() else {
+                break;
+            };
+            self.entries.remove(&evicted);
+        }
+        self.order.push_back(key.clone());
+        self.entries.insert(key, (Instant::now(), status));
+    }
+
+    fn get(&mut self, key: &CompletedStatusKey) -> Option<CausalCommandPublicStatus> {
+        self.purge_expired();
+        self.entries.get(key).map(|(_, status)| status.clone())
+    }
+
+    fn purge_expired(&mut self) {
+        let now = Instant::now();
+        while self.order.front().is_some_and(|key| {
+            self.entries.get(key).is_none_or(|(inserted, _)| {
+                now.duration_since(*inserted) >= COMPLETED_STATUS_CACHE_TTL
+            })
+        }) {
+            if let Some(expired) = self.order.pop_front() {
+                self.entries.remove(&expired);
+            }
+        }
+    }
+}
 
 /// One aggregate's cell wait-path: command names, URL kind, shard id, payload.
 #[derive(Clone, Copy)]
@@ -49,38 +101,44 @@ impl CelldRoute {
 
 /// Routes selected commands to celld; everything else stays on [`LocalCommandHost`].
 pub struct CelldCommandHost<P> {
-    celld_url: String,
     http: HttpCommandHost,
-    publisher: P,
+    scheduler: CellOutboxScheduler,
     local: LocalCommandHost,
     routes: Vec<CelldRoute>,
-    pending: Arc<Mutex<HashSet<(String, String)>>>,
-    completed: Arc<Mutex<HashMap<(String, String), CausalCommandPublicStatus>>>,
+    completed: Arc<Mutex<CompletedStatusCache>>,
+    _publisher: std::marker::PhantomData<P>,
 }
 
 impl<P> CelldCommandHost<P>
 where
     P: MessagePublisher + Clone + Send + Sync + 'static,
 {
-    pub fn new(celld_url: impl Into<String>, service: Arc<Service>, publisher: P) -> Self {
+    pub fn new(
+        celld_url: impl Into<String>,
+        service: Arc<Service>,
+        publisher: P,
+        internal_secret: InternalHttpSecret,
+    ) -> Result<Self, CausalDispatchError> {
         let celld_url = celld_url.into().trim_end_matches('/').to_string();
-        let http = HttpCommandHost::new(&celld_url);
-        let pending = Arc::new(Mutex::new(HashSet::new()));
-        spawn_cell_outbox_drain_loop(http.clone(), publisher.clone(), Arc::clone(&pending));
-        Self {
+        let http = HttpCommandHost::new_internal(&celld_url, internal_secret)?;
+        let scheduler = CellOutboxScheduler::spawn(http.clone(), publisher);
+        Ok(Self {
             http,
-            celld_url,
-            publisher,
+            scheduler,
             local: LocalCommandHost::new(service),
             routes: Vec::new(),
-            pending,
-            completed: Arc::new(Mutex::new(HashMap::new())),
-        }
+            completed: Arc::new(Mutex::new(CompletedStatusCache::default())),
+            _publisher: std::marker::PhantomData,
+        })
     }
 
     pub fn route(mut self, route: CelldRoute) -> Self {
         self.routes.push(route);
         self
+    }
+
+    pub fn outbox_alarm_handler(&self) -> CellOutboxDrainHandler {
+        outbox_alarm_handler(self.scheduler.clone())
     }
 
     fn route_for(&self, command: &str) -> Option<&CelldRoute> {
@@ -101,11 +159,6 @@ where
         let Ok(mut completed) = self.completed.lock() else {
             return;
         };
-        if completed.len() >= COMPLETED_STATUS_CACHE_LIMIT && !completed.contains_key(&key) {
-            if let Some(evicted) = completed.keys().next().cloned() {
-                completed.remove(&evicted);
-            }
-        }
         completed.insert(key, status);
     }
 }
@@ -157,6 +210,7 @@ where
         principal: VerifiedPrincipal,
         protocol: Option<ProtocolResponseAccumulator>,
     ) -> Result<CausalDispatchResult, CausalDispatchError> {
+        validate_principal_session(&session, &principal)?;
         let Some(route) = self.route_for(command).copied() else {
             return self
                 .local
@@ -173,9 +227,7 @@ where
             })?;
         let service_id = self.service_id()?.to_string();
         let principal_partition = principal.partition_for_service(&service_id);
-        let http = self
-            .http
-            .retarget(format!("{}/{}/{}", self.celld_url, route.kind, shard));
+        let http = self.http.retarget_segments(&[route.kind, &shard])?;
         let (status, body) = http
             .post_cell_wait_path(
                 command,
@@ -186,13 +238,17 @@ where
                 &principal_partition,
             )
             .await?;
-        let outbox = CausalDispatchResult::outbox_from_wait_path(&body);
+        let outbox = CausalDispatchResult::outbox_from_wait_path(&body)?;
         if !outbox.is_empty() {
-            if let Ok(mut guard) = self.pending.lock() {
-                guard.insert((route.kind.to_string(), shard));
+            let hint = CellOutboxHint::new(route.kind, shard.clone())
+                .map_err(CausalDispatchError::Internal)?;
+            if let Err(error) = self.scheduler.schedule(hint) {
+                eprintln!(
+                    "cell outbox schedule deferred for {}/{}: {error}; durable cell alarm remains armed",
+                    route.kind, shard
+                );
             }
         }
-        drain_cell_outbox(&http, &self.publisher, &outbox).await;
         if status >= 400 {
             return Err(remote_dispatch_error(status, &body));
         }
@@ -220,6 +276,7 @@ where
         principal: VerifiedPrincipal,
         protocol: Option<ProtocolResponseAccumulator>,
     ) -> Result<CausalCommandPublicStatus, CausalDispatchError> {
+        validate_principal_session_if_present(session, &principal)?;
         let service_id = self.service_id()?;
         let principal_partition = principal.partition_for_service(service_id);
         let key = (principal_partition, command_id.to_string());
@@ -227,7 +284,7 @@ where
             .completed
             .lock()
             .ok()
-            .and_then(|guard| guard.get(&key).cloned())
+            .and_then(|mut guard| guard.get(&key))
         {
             return Ok(status);
         }
