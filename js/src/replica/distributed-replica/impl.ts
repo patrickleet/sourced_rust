@@ -212,9 +212,10 @@ export class DistributedReplicaImpl implements DistributedReplicaApi {
 	readonly #recordKeysByScope = new Map<DistributedOpaqueString, string>();
 	readonly #projectedRecordFences = new Map<string, ProjectedRecordFence>();
 	/**
-	 * Record keys inserted by Eventual projection-delta (and Atomic fences).
-	 * A later complete query/live index that omits them is behind command
-	 * confirmation and must not shrink the visible list.
+	 * Record keys inserted by Eventual projection-delta. A later complete
+	 * query/live index that omits them is behind command confirmation and
+	 * must not shrink the visible list. Atomic rows use projected-record
+	 * fences only — they have no @live that would otherwise clear this map.
 	 */
 	readonly #membershipFences = new Map<string, string>();
 	readonly #deferredMembershipConfirms = new Set<string>();
@@ -716,6 +717,11 @@ export class DistributedReplicaImpl implements DistributedReplicaApi {
 			 * model necessarily catches up. Retain its complete row and causal
 			 * clock as a write fence until a query acknowledges it or a newer
 			 * record/tombstone supersedes it.
+			 *
+			 * Do not also take a membership fence: Atomic lists are @load, not
+			 * @live. A membership fence would reject later complete snapshots
+			 * until a live frame that never comes, stalling blob/new games and
+			 * client-side navigations.
 			 */
 			this.#projectedRecordFences.set(
 				recordKey,
@@ -730,7 +736,6 @@ export class DistributedReplicaImpl implements DistributedReplicaApi {
 					projectionGeneration: this.#projectionGeneration
 				})
 			);
-			this.#membershipFences.set(recordKey, commandId);
 		}
 	}
 

@@ -468,7 +468,7 @@
 					autocomplete="off"
 					bind:value={draft}
 				/>
-				<Button type="submit" variant="ink" disabled={busy}>
+				<Button type="submit" variant="ink" disabled={!draft.trim() || busy}>
 					Send
 					<svg width="16" height="16" viewBox="0 0 24 24" fill="none" aria-hidden="true">
 						<path
