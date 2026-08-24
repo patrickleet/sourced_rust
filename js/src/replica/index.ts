@@ -36,6 +36,7 @@ export type {
 	ReplicaOperationInjectedFieldInspection
 } from './diagnostics.js';
 export { createReplicaGraphqlTransport } from './graphql-transport.js';
+export { createReplicaUuidV7 } from './command-id.js';
 export type {
 	ReplicaGraphqlTransport,
 	ReplicaGraphqlTransportOptions

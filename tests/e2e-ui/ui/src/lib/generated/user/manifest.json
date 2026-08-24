@@ -27,15 +27,7 @@
     "String": "string",
     "Timestamptz": "string_unvalidated_timestamp"
   },
-  "commands_requiring_revalidation": [
-    "blob.move",
-    "blob.start",
-    "blob.start_level",
-    "todo.archive",
-    "todo.complete",
-    "todo.rename",
-    "todo.reopen"
-  ],
+  "commands_requiring_revalidation": [],
   "operations": [
     {
       "name": "BlobGames",

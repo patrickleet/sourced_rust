@@ -319,13 +319,6 @@ pub(crate) fn validate_command_projections(
                     .get(&value.slot)
                     .expect("exact slot coverage was validated");
                 validate_preview_source(command, &value.source, expected)?;
-                if matches!(
-                    value.source,
-                    ManifestProjectionPreviewSource::Unknown
-                        | ManifestProjectionPreviewSource::Absent
-                ) {
-                    requiring_revalidation.insert(command.name.clone());
-                }
             }
         }
         if selected_programs.is_empty() {

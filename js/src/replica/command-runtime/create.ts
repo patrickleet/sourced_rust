@@ -555,8 +555,7 @@ export function createReplicaCommandRuntime<
 				throw new Error('projection delta changed during command replay');
 			}
 			return Object.freeze({
-				requiresRevalidation:
-					actual.revalidate || actual.obligations.length === 0
+				requiresRevalidation: actual.revalidate
 			});
 		}
 		assertActualProjectionCapabilities(
@@ -572,14 +571,13 @@ export function createReplicaCommandRuntime<
 			canonical,
 			operations,
 			revalidation:
-				actual.revalidate || actual.obligations.length === 0
+				actual.revalidate
 					? actualProjectionRevalidation(
 							prepared.revalidation,
 							actual.delta
 						)
 					: undefined,
-			requiresRevalidation:
-				actual.revalidate || actual.obligations.length === 0
+			requiresRevalidation: actual.revalidate
 		});
 	};
 

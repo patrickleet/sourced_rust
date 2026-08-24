@@ -1558,7 +1558,7 @@ test('an allowed unpreviewed event arm can authoritatively replace the preview',
 	runtime.dispose();
 });
 
-test('zero-obligation revalidation includes actual unpreviewed target models', async () => {
+test('explicit revalidation includes actual unpreviewed target models', async () => {
 	const modeled = modeledArtifactWithAuditArm();
 	const replica = new TestReplica();
 	const runtime = createReplicaCommandRuntime(
@@ -1568,6 +1568,7 @@ test('zero-obligation revalidation includes actual unpreviewed target models', a
 				Promise.resolve(
 					envelope(request, {
 						obligations: 0,
+						revalidate: true,
 						mutation: {
 							op: 'upsert',
 							scope: scope(
@@ -1768,8 +1769,8 @@ test('zero, one, and many obligations are server-derived and never predicted key
 		assert.equal(receipt.projected === undefined, count === 0);
 		if (count === 0) {
 			await tick();
-			assert.equal(replica.revalidations.length, 1);
-			assert.equal(replica.layer(receipt.commandId), undefined);
+			assert.equal(replica.revalidations.length, 0);
+			assert.equal(replica.layer(receipt.commandId), 'accepted');
 		}
 		runtime.dispose();
 	}

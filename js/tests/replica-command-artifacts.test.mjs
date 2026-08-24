@@ -3,6 +3,7 @@ import { readFileSync } from 'node:fs';
 import test from 'node:test';
 
 import {
+	createReplicaUuidV7,
 	prepareReplicaCommand,
 	ReplicaCommandContractError,
 	verifyReplicaCommandReceipt
@@ -136,7 +137,7 @@ function projectionScope(model, ...fields) {
 	});
 }
 
-function projectionArtifact(operations, capabilities) {
+function projectionArtifact(operations, capabilities, recoveries = []) {
 	return Object.freeze({
 		version: 2,
 		deltaWireVersion: 1,
@@ -178,7 +179,7 @@ function projectionArtifact(operations, capabilities) {
 					})
 				)
 			),
-			recoveries: Object.freeze([])
+			recoveries: Object.freeze(recoveries)
 		}),
 		fallback: 'revalidate'
 	});
@@ -385,15 +386,16 @@ test('explicit defaulted fields are retained and their generators never run', ()
 });
 
 test('compact generated preview patches canonicalize an omitted unset list', () => {
+	const scope = projectionScope(
+		'Todo',
+		projectionField('id', inputValue(['id']))
+	);
 	const artifact = baseArtifact({
 		projection: projectionArtifact(
 			[
 				Object.freeze({
 					op: 'patch',
-					scope: projectionScope(
-						'Todo',
-						projectionField('id', inputValue(['id']))
-					),
+					scope,
 					set: Object.freeze([
 						projectionField('title', inputValue(['title']))
 					]),
@@ -410,6 +412,14 @@ test('compact generated preview patches canonicalize an omitted unset list', () 
 					upsert: false,
 					patch: true,
 					delete: false
+				})
+			],
+			[
+				Object.freeze({
+					occurrence_ordinal: 0,
+					projection_refs: Object.freeze([0]),
+					condition: 'if_record_missing',
+					target: Object.freeze({ kind: 'record', scope })
 				})
 			]
 		)
@@ -441,6 +451,11 @@ test('compact generated preview patches canonicalize an omitted unset list', () 
 	const unset = prepared.optimistic.operations[0].unset;
 	assert.equal(Object.isFrozen(unset), true);
 	assert.throws(() => unset.push('title'), TypeError);
+	assert.equal(
+		prepared.projection.revalidate,
+		false,
+		'a conditional missing-record fallback is not unconditional revalidation'
+	);
 });
 
 test('real default generators produce canonical values', () => {
@@ -452,6 +467,14 @@ test('real default generators produce canonical values', () => {
 
 	assert.match(prepared.input.id, /^[0-9a-f]{8}-[0-9a-f]{4}-7/);
 	assert.match(prepared.input.code, /^[0-7][0-9A-HJKMNP-TV-Z]{25}$/);
+});
+
+test('public UUIDv7 generation supports caller-correlated optimistic record ids', () => {
+	const id = createReplicaUuidV7();
+	assert.match(
+		id,
+		/^[0-9a-f]{8}-[0-9a-f]{4}-7[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/
+	);
 });
 
 test('none inputs and typed JSON fields produce exact canonical transport variables', () => {
