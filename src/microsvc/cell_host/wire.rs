@@ -71,7 +71,7 @@ impl CellOutboxWireItem {
 
     pub fn try_into_claimed_message(self) -> Result<OutboxMessage, String> {
         let message = self.try_into_message_with_status(&[OutboxMessageStatus::InFlight])?;
-        let now = SystemTime::now();
+        let now = crate::time::now();
         let valid_deadline = message.leased_until.is_some_and(|deadline| {
             deadline
                 .duration_since(now)
