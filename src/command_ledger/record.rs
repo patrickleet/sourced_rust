@@ -1,7 +1,8 @@
-use std::time::{Duration, SystemTime};
+use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
 use base64::engine::general_purpose::URL_SAFE_NO_PAD;
 use base64::Engine as _;
+use serde::{Deserialize, Serialize};
 use serde_json::Value;
 
 use crate::projection_protocol::{ResolvedProjectionObligation, SameTransactionProjectionEvidence};
@@ -60,6 +61,113 @@ impl CommandLedgerRecord {
             )?,
             compacted_at: None,
         })
+    }
+
+    /// Stable opaque key used by a cell host's private SQLite table.
+    pub(crate) fn durable_cell_key(&self) -> String {
+        let material = format!(
+            "{}\0{}\0{}",
+            self.key.service_id(),
+            self.key.principal_partition(),
+            self.key.command_id()
+        );
+        format!("v1.{}", URL_SAFE_NO_PAD.encode(material))
+    }
+
+    /// Versioned cell-storage representation. This is deliberately separate
+    /// from the public command receipt and retains the complete fenced row.
+    pub(crate) fn durable_cell_json(&self) -> Result<String, CommandLedgerError> {
+        self.validate_stored_shape()?;
+        let wire = DurableCellCommandRecordV1 {
+            version: 1,
+            service_id: self.key.service_id().to_string(),
+            principal_partition: self.key.principal_partition().to_string(),
+            command_id: self.key.command_id().to_string(),
+            command_name: self.command_name.clone(),
+            contract_fingerprint: self.contract_fingerprint.as_bytes().to_vec(),
+            input_hash: self.input_hash.as_bytes().to_vec(),
+            state: self.state.as_str().to_string(),
+            causation_id: self.causation_id.as_str().to_string(),
+            attempt_token: self
+                .attempt_token
+                .as_ref()
+                .map(|token| token.as_str().to_string()),
+            attempt_number: self.attempt_number,
+            lease_expires_at_ms: self
+                .lease_expires_at
+                .map(system_time_to_unix_millis)
+                .transpose()?,
+            outcome_json: self.outcome_json.clone(),
+            created_at_ms: system_time_to_unix_millis(self.created_at)?,
+            updated_at_ms: system_time_to_unix_millis(self.updated_at)?,
+            completed_at_ms: self
+                .completed_at
+                .map(system_time_to_unix_millis)
+                .transpose()?,
+            retention_expires_at_ms: system_time_to_unix_millis(self.retention_expires_at)?,
+            compacted_at_ms: self
+                .compacted_at
+                .map(system_time_to_unix_millis)
+                .transpose()?,
+        };
+        serde_json::to_string(&wire).map_err(|error| {
+            CommandLedgerError::Corrupt(format!(
+                "cell command ledger row could not be encoded: {error}"
+            ))
+        })
+    }
+
+    pub(crate) fn from_durable_cell_json(body: &str) -> Result<Self, CommandLedgerError> {
+        let wire: DurableCellCommandRecordV1 = serde_json::from_str(body).map_err(|error| {
+            CommandLedgerError::Corrupt(format!("cell command ledger row is invalid JSON: {error}"))
+        })?;
+        if wire.version != 1 {
+            return Err(CommandLedgerError::Corrupt(format!(
+                "cell command ledger row version `{}` is unsupported",
+                wire.version
+            )));
+        }
+        let key = CommandLedgerKey::new(
+            wire.service_id,
+            super::PrincipalPartitionId::new(wire.principal_partition)?,
+            super::CommandId::parse(wire.command_id)?,
+        )?;
+        let record = Self {
+            key,
+            command_name: wire.command_name,
+            contract_fingerprint: CommandContractFingerprint::try_from_slice(
+                &wire.contract_fingerprint,
+            )?,
+            input_hash: CanonicalInputHash::try_from_slice(&wire.input_hash)?,
+            state: CommandLedgerState::parse(&wire.state)?,
+            causation_id: CausationId::parse_stored(wire.causation_id)?,
+            attempt_token: wire
+                .attempt_token
+                .map(AttemptToken::parse_stored)
+                .transpose()?,
+            attempt_number: wire.attempt_number,
+            lease_expires_at: wire
+                .lease_expires_at_ms
+                .map(system_time_from_unix_millis)
+                .transpose()?,
+            outcome_json: wire.outcome_json,
+            created_at: system_time_from_unix_millis(wire.created_at_ms)?,
+            updated_at: system_time_from_unix_millis(wire.updated_at_ms)?,
+            completed_at: wire
+                .completed_at_ms
+                .map(system_time_from_unix_millis)
+                .transpose()?,
+            retention_expires_at: system_time_from_unix_millis(wire.retention_expires_at_ms)?,
+            compacted_at: wire
+                .compacted_at_ms
+                .map(system_time_from_unix_millis)
+                .transpose()?,
+        };
+        record.validate_stored_shape()?;
+        if record.state.is_replayable() {
+            record.replay()?;
+        }
+        Ok(record)
     }
 
     pub(crate) fn acquired_attempt(&self) -> Result<CommandAttempt, CommandLedgerError> {
@@ -497,6 +605,51 @@ impl CommandLedgerRecord {
             }
         }
     }
+}
+
+#[derive(Deserialize, Serialize)]
+#[serde(deny_unknown_fields)]
+struct DurableCellCommandRecordV1 {
+    version: u16,
+    service_id: String,
+    principal_partition: String,
+    command_id: String,
+    command_name: String,
+    contract_fingerprint: Vec<u8>,
+    input_hash: Vec<u8>,
+    state: String,
+    causation_id: String,
+    attempt_token: Option<String>,
+    attempt_number: u64,
+    lease_expires_at_ms: Option<u64>,
+    outcome_json: Option<String>,
+    created_at_ms: u64,
+    updated_at_ms: u64,
+    completed_at_ms: Option<u64>,
+    retention_expires_at_ms: u64,
+    compacted_at_ms: Option<u64>,
+}
+
+fn system_time_to_unix_millis(value: SystemTime) -> Result<u64, CommandLedgerError> {
+    let millis = value
+        .duration_since(UNIX_EPOCH)
+        .map_err(|_| {
+            CommandLedgerError::Corrupt(
+                "cell command ledger timestamp precedes the Unix epoch".into(),
+            )
+        })?
+        .as_millis();
+    u64::try_from(millis).map_err(|_| {
+        CommandLedgerError::Corrupt("cell command ledger timestamp exceeds u64 millis".into())
+    })
+}
+
+fn system_time_from_unix_millis(value: u64) -> Result<SystemTime, CommandLedgerError> {
+    UNIX_EPOCH
+        .checked_add(Duration::from_millis(value))
+        .ok_or_else(|| {
+            CommandLedgerError::Corrupt("cell command ledger timestamp is out of range".into())
+        })
 }
 
 fn checked_deadline(

@@ -37,3 +37,4 @@ pub(crate) use dialect::{
 };
 #[allow(unused_imports)]
 pub(crate) use evidence::{ExtractedQueryEvidence, QueryRecordEvidence, QueryResponsePathSegment};
+pub(crate) use projection::cell_row_matches;

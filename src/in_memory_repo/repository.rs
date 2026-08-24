@@ -204,6 +204,36 @@ impl InMemoryRepository {
         Ok(())
     }
 
+    pub(crate) fn clone_command_ledger(&self) -> Result<Vec<CommandLedgerRecord>, RepositoryError> {
+        Ok(self
+            .command_ledger
+            .read()
+            .map_err(|_| RepositoryError::LockPoisoned("command ledger read"))?
+            .values()
+            .cloned()
+            .collect())
+    }
+
+    pub(crate) fn replace_command_ledger(
+        &self,
+        records: Vec<CommandLedgerRecord>,
+    ) -> Result<(), RepositoryError> {
+        let mut ledger = HashMap::with_capacity(records.len());
+        for record in records {
+            let key = record.key.clone();
+            if ledger.insert(key, record).is_some() {
+                return Err(RepositoryError::Model(
+                    "cell command ledger restore contains a duplicate key".into(),
+                ));
+            }
+        }
+        *self
+            .command_ledger
+            .write()
+            .map_err(|_| RepositoryError::LockPoisoned("command ledger write"))? = ledger;
+        Ok(())
+    }
+
     /// Whether a consumer inbox receipt for `(consumer, message_id)` is recorded.
     pub fn inbox_contains(&self, consumer: &str, message_id: &str) -> bool {
         self.inbox_store

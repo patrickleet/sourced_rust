@@ -13,7 +13,7 @@ use distributed::bus::MessagePublisher;
 use distributed::BusPublisher;
 use distributed::graphql::IdentityConfig;
 use distributed::microsvc::{
-    spawn_outbox_publish_loop, spawn_service_consumer_loop, Service,
+    spawn_outbox_publish_loop, spawn_service_consumer_loop, Service, CONSUMER_IDLE_POLL,
 };
 use distributed::{PostgresLockManager, PostgresRepository};
 
@@ -83,7 +83,8 @@ async fn run_postgres(
         let locks = locks.clone();
         let nats = nats.clone();
         spawn_service_consumer_loop(move || {
-            build_service(repo.clone(), locks.clone(), repo.clone()).with_bus(nats.clone())
+            build_service(repo.clone(), locks.clone(), repo.clone())
+                .with_bus(nats.clone().with_idle_poll(CONSUMER_IDLE_POLL))
         });
     }
     spawn_zitadel_scrape(repo.clone());
@@ -129,7 +130,12 @@ async fn connect_nats(
 
 fn spawn_zitadel_scrape<R>(repo: R)
 where
-    R: distributed::TransactionalCommit + Clone + Send + Sync + 'static,
+    R: distributed::TransactionalCommit
+        + distributed::ReadModelWritePlanStore
+        + Clone
+        + Send
+        + Sync
+        + 'static,
 {
     match ZitadelScrapeConfig::from_env() {
         Some(cfg) if cfg.background_enabled() || cfg.on_start => {

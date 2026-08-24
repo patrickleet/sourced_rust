@@ -40,7 +40,20 @@ pub fn spawn_outbox_publish_loop<S, B>(
         .spawn();
 }
 
-/// Spawn a service consumer loop that re-runs the bus handler continuously.
+/// Idle poll for long-running SQL `listen`/`subscribe` hosts.
+///
+/// Drain-to-idle is for tests. A host that lets `Service::run` return `Ok(())`
+/// would otherwise reconstruct routes and bootstrap projectors on every quiet
+/// stretch — seconds of delay on the next Eventual command.
+pub const CONSUMER_IDLE_POLL: Duration = Duration::from_millis(25);
+
+/// Spawn the bus consumer for a long-running host.
+///
+/// `build_service` constructs the heavy route/projector graph **once**, then
+/// again only after `run` fails. A successful return means the bus drained to
+/// idle; that is a host bug for SQL buses (use `with_idle_poll` /
+/// [`CONSUMER_IDLE_POLL`]). We log and stop instead of reconstructing, so an
+/// idle drain cannot hide behind a rebuild storm.
 pub fn spawn_service_consumer_loop<F>(build_service: F)
 where
     F: Fn() -> Service + Send + Sync + 'static,
@@ -49,7 +62,13 @@ where
         loop {
             let service = build_service();
             match service.run(RunOptions::idempotent()).await {
-                Ok(()) => tokio::time::sleep(Duration::from_millis(25)).await,
+                Ok(()) => {
+                    eprintln!(
+                        "consumer: bus drained to idle; not reconstructing Service. \
+                         Long-running SQL hosts must call with_idle_poll({CONSUMER_IDLE_POLL:?})"
+                    );
+                    return;
+                }
                 Err(e) => {
                     eprintln!("consumer: {e}");
                     tokio::time::sleep(Duration::from_millis(100)).await;

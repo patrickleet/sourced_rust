@@ -16,6 +16,7 @@ use crate::command_ledger::{
 };
 use crate::entity::{Entity, EventRecord};
 use crate::microsvc::HasOutboxStore;
+use crate::outbox::OutboxMessage;
 use crate::projection_protocol::{
     ProjectionChangeCursor, ProjectionChangeRead, ProjectionCheckpoint, ProjectionCommitBatch,
     ProjectionCommitResult, ProjectionFailure, ProjectionFailureBatch, ProjectionFailureLocation,
@@ -33,7 +34,6 @@ use crate::repository::{
     TransactionalCommit,
 };
 use crate::snapshot::SnapshotRecord;
-use crate::outbox::OutboxMessage;
 use crate::{InMemoryOutboxStore, InMemoryRepository};
 use serde::{Deserialize, Serialize};
 
@@ -80,6 +80,13 @@ pub struct DurableCellSnapshot {
     pub payload_codec: String,
     pub payload_codec_version: u16,
     pub payload: Vec<u8>,
+}
+
+/// One versioned command-ledger row for Durable Object SQLite persistence.
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+pub struct DurableCellCommand {
+    pub id: String,
+    pub body: String,
 }
 
 #[derive(Clone)]
@@ -253,6 +260,41 @@ impl CellStreamStore {
                 })
                 .collect(),
         )
+    }
+
+    /// Fenced command rows committed with this cell's domain effects.
+    pub fn durable_commands(&self) -> Result<Vec<DurableCellCommand>, RepositoryError> {
+        self.inner
+            .clone_command_ledger()?
+            .into_iter()
+            .map(|record| {
+                let id = record.durable_cell_key();
+                let body = record
+                    .durable_cell_json()
+                    .map_err(|error| RepositoryError::Model(error.to_string()))?;
+                Ok(DurableCellCommand { id, body })
+            })
+            .collect()
+    }
+
+    /// Restore the complete command ledger before accepting another request.
+    pub fn restore_durable_commands(
+        &self,
+        commands: Vec<DurableCellCommand>,
+    ) -> Result<(), RepositoryError> {
+        let mut records = Vec::with_capacity(commands.len());
+        for command in commands {
+            let record =
+                crate::command_ledger::CommandLedgerRecord::from_durable_cell_json(&command.body)
+                    .map_err(|error| RepositoryError::Model(error.to_string()))?;
+            if record.durable_cell_key() != command.id {
+                return Err(RepositoryError::Model(
+                    "cell command ledger row key does not match its body".into(),
+                ));
+            }
+            records.push(record);
+        }
+        self.inner.replace_command_ledger(records)
     }
 
     fn ensure_batch(&self, batch: &CommitBatch<'_>) -> Result<(), RepositoryError> {

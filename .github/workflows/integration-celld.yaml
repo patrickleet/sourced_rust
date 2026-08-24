@@ -5,7 +5,10 @@ name: celld (live + e2e-celld)
 #
 # Local parity:
 #   make -C tests/e2e-celld test
-#   make -C tests/e2e-ui up-celld-nats && make -C tests/e2e-ui test-celld
+#   make -C tests/e2e-ui up && make -C tests/e2e-ui up-celld-nats
+#   WATCH=0 WATCH_WORKER=0 make -C tests/e2e-celld run
+#   E2E_UI_ORIGIN=http://localhost:5180 npx --prefix tests/e2e-ui playwright test \
+#     todos.user.spec.ts chat.user.spec.ts --project chromium-user
 #
 # Default `cargo test` (quality) still runs fixture-only celld checks and
 # skips live HTTP unless CELLD_URL is set. This job sets CELLD_URL / NATS_URL.
@@ -14,8 +17,9 @@ on:
 
 env:
   CARGO_TERM_COLOR: always
-  CELLD_HTTP_PORT: "18080"
-  CELLD_URL: http://127.0.0.1:18080
+  # Zitadel owns :18080 in the browser topology.
+  CELLD_HTTP_PORT: "18880"
+  CELLD_URL: http://127.0.0.1:18880
   NATS_PORT: "14222"
   NATS_URL: nats://127.0.0.1:14222
   AZURE_STORAGE_USE_EMULATOR: "true"
@@ -67,6 +71,14 @@ jobs:
       - uses: actions/setup-node@v4
         with:
           node-version: "22"
+          cache: npm
+          cache-dependency-path: |
+            js/package-lock.json
+            tests/e2e-ui/package-lock.json
+            tests/e2e-ui/ui/package-lock.json
+
+      - name: Install host tools
+        run: sudo apt-get update && sudo apt-get install -y jq openssl curl
 
       - name: Install esbuild
         run: npm install -g esbuild
@@ -81,6 +93,9 @@ jobs:
           curl -fsSL https://celld.dev/install.sh | sh
           echo "$HOME/.local/bin" >> "$GITHUB_PATH"
 
+      - name: Bring up Postgres + Zitadel and bootstrap OIDC
+        run: make -C tests/e2e-ui up
+
       - name: Bring up Azurite + celld + NATS
         run: |
           command -v celld
@@ -89,6 +104,95 @@ jobs:
 
       - name: Live celld HTTP + NATS profile tests
         run: make -C tests/e2e-ui test-celld
+
+      - name: Build e2e-celld API and UI
+        run: |
+          cargo build --manifest-path tests/e2e-celld/Cargo.toml \
+            -p e2e-celld-runner --bin e2e-celld
+          make -C tests/e2e-ui ui-install
+          npm install --prefix tests/e2e-ui
+
+      - name: Start e2e-celld API + UI
+        run: |
+          set -euo pipefail
+          set -a
+          # shellcheck disable=SC1091
+          . tests/e2e-ui/e2e-ui.env
+          set +a
+          export BIND=0.0.0.0:8791
+          export CELLD_URL=http://127.0.0.1:18880
+          export NATS_URL=nats://127.0.0.1:14222
+          export AUTH_URL=http://localhost:5180
+          export AUTH_USE_SECURE_COOKIES=false
+          export AUTH_TRUST_HOST=true
+
+          tests/e2e-celld/target/debug/e2e-celld \
+            > tests/e2e-celld/.ci-runner.log 2>&1 &
+          echo $! > tests/e2e-celld/.ci-runner.pid
+
+          ok=0
+          for i in $(seq 1 120); do
+            code=$(curl -s -o /dev/null -w '%{http_code}' -X POST \
+              "http://127.0.0.1:8791/graphql" \
+              -H 'content-type: application/json' \
+              -d '{"query":"{ __typename }"}' 2>/dev/null || echo 000)
+            if [ "$code" = "200" ] || [ "$code" = "401" ]; then ok=1; break; fi
+            sleep 0.5
+          done
+          if [ "$ok" != "1" ]; then
+            echo "e2e-celld API failed to become ready"
+            tail -120 tests/e2e-celld/.ci-runner.log
+            exit 1
+          fi
+
+          cd tests/e2e-ui/ui
+          PUBLIC_E2E_PROFILE=celld-nats \
+            E2E_API_ORIGIN=http://127.0.0.1:8791 \
+            npm run dev -- --host localhost --port 5180 \
+            > ../.ci-celld-ui.log 2>&1 &
+          echo $! > ../.ci-celld-ui.pid
+          cd ../../..
+
+          ok=0
+          for i in $(seq 1 60); do
+            code=$(curl -s -o /dev/null -w '%{http_code}' \
+              "http://localhost:5180/" 2>/dev/null || echo 000)
+            if [ "$code" = "200" ] || [ "$code" = "302" ] || [ "$code" = "303" ]; then
+              ok=1
+              break
+            fi
+            sleep 0.5
+          done
+          if [ "$ok" != "1" ]; then
+            echo "e2e-celld UI failed to become ready (last HTTP $code)"
+            tail -100 tests/e2e-ui/.ci-celld-ui.log
+            exit 1
+          fi
+
+      - name: Install Playwright + Chromium
+        working-directory: tests/e2e-ui
+        run: npx playwright install chromium --with-deps
+
+      - name: Todo + Chat browser lifecycle through celld
+        working-directory: tests/e2e-ui
+        run: >-
+          npx playwright test todos.user.spec.ts chat.user.spec.ts
+          --project chromium-user
+        env:
+          E2E_UI_ORIGIN: http://localhost:5180
+          E2E_API_ORIGIN: http://127.0.0.1:8791
+          CI: true
+
+      - name: Upload celld Playwright report
+        if: failure()
+        uses: actions/upload-artifact@v4
+        with:
+          name: celld-playwright-report
+          path: |
+            tests/e2e-ui/playwright-report
+            tests/e2e-ui/test-results
+          if-no-files-found: ignore
+          retention-days: 7
 
       - name: Dump logs on failure
         if: failure()
@@ -99,9 +203,23 @@ jobs:
           echo '=== NATS profile compose ==='
           docker compose -f tests/e2e-ui/celld-nats-profile/docker-compose.yml ps -a || true
           docker compose -f tests/e2e-ui/celld-nats-profile/docker-compose.yml logs --tail=80 || true
+          echo '=== e2e-celld API ==='
+          tail -180 tests/e2e-celld/.ci-runner.log || true
+          echo '=== e2e-celld UI ==='
+          tail -100 tests/e2e-ui/.ci-celld-ui.log || true
+          echo '=== Postgres + Zitadel ==='
+          docker compose -f tests/e2e-ui/docker/docker-compose.yml ps -a || true
+          docker compose -f tests/e2e-ui/docker/docker-compose.yml logs --tail=100 || true
 
       - name: Tear down
         if: always()
         run: |
+          [ -f tests/e2e-ui/.ci-celld-ui.pid ] && \
+            kill "$(cat tests/e2e-ui/.ci-celld-ui.pid)" 2>/dev/null || true
+          [ -f tests/e2e-celld/.ci-runner.pid ] && \
+            kill "$(cat tests/e2e-celld/.ci-runner.pid)" 2>/dev/null || true
+          lsof -ti:5180 2>/dev/null | xargs -r kill -9 2>/dev/null || true
+          lsof -ti:8791 2>/dev/null | xargs -r kill -9 2>/dev/null || true
           make -C tests/e2e-ui down-celld-nats || true
           make -C tests/e2e-ui down-celld || true
+          docker compose -f tests/e2e-ui/docker/docker-compose.yml down -v || true
