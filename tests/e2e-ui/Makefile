@@ -37,6 +37,7 @@ CELLD_HTTP_PORT  ?= 18080
 NATS_PORT        ?= 14222
 CELLD_URL        ?= http://127.0.0.1:$(CELLD_HTTP_PORT)
 NATS_URL         ?= nats://127.0.0.1:$(NATS_PORT)
+DISTRIBUTED_INTERNAL_SECRET ?= test-only-internal-secret-change-me-2026
 # Public Azurite emulator account (already in tests/celld compose). Not a secret.
 AZURE_STORAGE_USE_EMULATOR    ?= true
 AZURE_STORAGE_ACCOUNT_NAME    ?= devstoreaccount1
@@ -209,12 +210,14 @@ test-celld: test-celld-http test-celld-nats
 test-celld-http:
 	cd $(REPO_ROOT) && \
 	  CELLD_URL="$(CELLD_URL)" \
+	  DISTRIBUTED_INTERNAL_SECRET="$(DISTRIBUTED_INTERNAL_SECRET)" \
 	  cargo test --test celld -- --nocapture
 
 test-celld-nats:
 	@echo "optional profile smoke — default make test / make run unchanged"
 	cd $(REPO_ROOT) && \
 	  CELLD_URL="$(CELLD_URL)" NATS_URL="$(NATS_URL)" \
+	  DISTRIBUTED_INTERNAL_SECRET="$(DISTRIBUTED_INTERNAL_SECRET)" \
 	  cargo test --test e2e_ui_celld_nats_profile --features graphql,http,sqlite -- --nocapture
 
 test: test-domain test-suite ui-install ui-build ui-check ui-test
