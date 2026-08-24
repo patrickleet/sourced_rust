@@ -327,8 +327,9 @@
 				room_id: LOBBY_ROOM,
 				created_at: String(now)
 			});
-			// Wait for causal projection when the runtime provides it; otherwise
-			// the command receipt itself is the server confirmation.
+			// Mutation returned: allow the next compose. Eventual `projected`
+			// is delivery confirmation (SQL/@live), not a send lock.
+			busy = false;
 			if (receipt.projected !== undefined) {
 				await receipt.projected;
 			}

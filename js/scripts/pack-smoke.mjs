@@ -463,6 +463,7 @@ import {
   createDistributedSvelteKitServer,
   createPageDataSessionSource,
   defineDistributedSvelteKitOperation,
+  matchDistributedRoute,
   provideDistributedSvelteKitClient,
   useDistributedSvelteKitClient,
   useDistributedSvelteKitCommands
@@ -513,6 +514,7 @@ createDistributedSvelteKitServer({
   getSession: async () => null,
   getRole: () => 'user'
 });
+void matchDistributedRoute('/todos', '/todos');
 
 const compiler = {
   clients: [{
@@ -557,6 +559,7 @@ assert.deepEqual(Object.keys(sveltekitSurface).sort(), [
   'createDistributedSvelteKitServer',
   'createPageDataSessionSource',
   'defineDistributedSvelteKitOperation',
+  'matchDistributedRoute',
   'provideDistributedSvelteKitClient',
   'registerDistributedRoute',
   'sessionSourceFromPageData',

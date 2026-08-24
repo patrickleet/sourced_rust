@@ -1053,7 +1053,7 @@ where
 
 /// Current committed version (`MAX(sequence)`, 0 for a missing stream) through
 /// any executor (pool or transaction).
-async fn stream_version<'e, DB, E>(
+pub(super) async fn stream_version<'e, DB, E>(
     executor: E,
     identity: &StreamIdentity,
 ) -> Result<u64, RepositoryError>

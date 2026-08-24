@@ -213,7 +213,7 @@ impl CausalCommandReceiptSource {
 
 /// Successful typed causal dispatch plus its exact durable receipt source.
 #[cfg(feature = "graphql")]
-#[derive(Clone, Debug)]
+#[derive(Clone, Debug, PartialEq)]
 pub struct CausalDispatchResult {
     pub(crate) payload: Value,
     pub(crate) receipt: CausalCommandReceiptSource,
