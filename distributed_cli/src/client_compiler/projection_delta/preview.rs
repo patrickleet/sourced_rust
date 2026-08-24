@@ -165,7 +165,10 @@ impl CompiledCommandProjection {
     }
 
     pub(crate) fn requires_revalidation(&self) -> bool {
-        !self.preview.recoveries.is_empty()
+        self.preview
+            .recoveries
+            .iter()
+            .any(|recovery| recovery.condition == PreviewRecoveryCondition::Always)
     }
 
     pub(crate) fn selected_models(&self) -> &BTreeSet<String> {

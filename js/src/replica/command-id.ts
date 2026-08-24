@@ -1,5 +1,5 @@
-/** Create a browser/Node UUIDv7 command identity. */
-export function createReplicaCommandId(): string {
+/** Create a browser/Node UUIDv7 identity for commands or generated record IDs. */
+export function createReplicaUuidV7(): string {
 	const crypto = globalThis.crypto;
 	if (!crypto || typeof crypto.getRandomValues !== 'function') {
 		throw new Error('replica commands require crypto.getRandomValues');
@@ -19,3 +19,6 @@ export function createReplicaCommandId(): string {
 		.slice(6, 8)
 		.join('')}-${hex.slice(8, 10).join('')}-${hex.slice(10).join('')}`;
 }
+
+/** Package-internal semantic alias used while preparing command envelopes. */
+export const createReplicaCommandId = createReplicaUuidV7;

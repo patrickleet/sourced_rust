@@ -5,6 +5,7 @@
 	 * There is no app cache adapter or manual optimistic recipe here. The
 	 * compiler artifact tells the replica how command facts affect this query.
 	 */
+	import { createReplicaUuidV7 } from '@hops-ops/distributed/replica';
 	import { Todos, useCommands } from '$distributed';
 	import { Button } from '$lib/components/shared/ui';
 	import {
@@ -22,6 +23,7 @@
 
 	let title = $state('');
 	let actionError = $state<string | null>(null);
+	let pendingCreateIds = $state<Set<string>>(new Set());
 
 	const who = $derived(sessionDisplayName(data.session));
 
@@ -40,8 +42,13 @@
 
 		actionError = null;
 		title = '';
+		const todoId = createReplicaUuidV7();
+		pendingCreateIds = new Set(pendingCreateIds).add(todoId);
 		try {
-			await commands.todo.create({ title: text });
+			await commands.todo.create({ title: text, todo_id: todoId });
+			const next = new Set(pendingCreateIds);
+			next.delete(todoId);
+			pendingCreateIds = next;
 		} catch (error) {
 			actionError = error instanceof Error ? error.message : 'create failed';
 		}
@@ -137,16 +144,26 @@
 			{:else}
 				<ul class="list">
 					{#each open as t, i (t.todo_id)}
-						<li class="item" style="--i: {i}" data-todo-id={t.todo_id}>
+						<li
+							class="item"
+							class:item-pending={pendingCreateIds.has(t.todo_id)}
+							style="--i: {i}"
+							data-todo-id={t.todo_id}
+							aria-busy={pendingCreateIds.has(t.todo_id)}
+						>
 							<div class="item-main">
 								<button
 									class="check"
 									type="button"
 									title="Mark done"
 									aria-label="Mark done: {t.title}"
+									disabled={pendingCreateIds.has(t.todo_id)}
 									onclick={() => onComplete(t.todo_id)}
 								></button>
 								<span class="item-title">{t.title}</span>
+								{#if pendingCreateIds.has(t.todo_id)}
+									<span class="pending-state">Saving…</span>
+								{/if}
 							</div>
 							<div class="item-actions">
 								<Button
@@ -154,6 +171,7 @@
 									size="sm"
 									type="button"
 									title="Mark done"
+									disabled={pendingCreateIds.has(t.todo_id)}
 									onclick={() => onComplete(t.todo_id)}>Done</Button
 								>
 								<Button
@@ -161,6 +179,7 @@
 									size="sm"
 									type="button"
 									title="Archive"
+									disabled={pendingCreateIds.has(t.todo_id)}
 									onclick={() => onArchive(t.todo_id)}>Archive</Button
 								>
 							</div>
@@ -357,6 +376,29 @@
 		font-weight: 450;
 		line-height: 1.4;
 		word-break: break-word;
+	}
+
+	.item-pending .item-title {
+		color: var(--wf-ink-muted, #8a8a82);
+	}
+
+	.item-pending:hover {
+		background: transparent;
+	}
+
+	.pending-state {
+		align-self: center;
+		white-space: nowrap;
+		font-size: 0.68rem;
+		font-weight: 600;
+		letter-spacing: 0.045em;
+		text-transform: uppercase;
+		color: var(--wf-ink-muted, #8a8a82);
+	}
+
+	.check:disabled {
+		cursor: wait;
+		opacity: 0.48;
 	}
 
 	.item-done .item-title {
