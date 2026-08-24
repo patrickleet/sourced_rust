@@ -691,6 +691,16 @@ async fn execute_cell_by_key(
     let Some(row) = getter.get_sealed_row(pk).await? else {
         return Ok(Value::Null);
     };
+    let row_object = row
+        .as_object()
+        .ok_or_else(|| "cell sealed row must be a JSON object".to_string())?;
+    for (key, expected) in pk {
+        if row_object.get(key).and_then(serde_json::Value::as_str) != Some(expected) {
+            return Err(format!(
+                "cell sealed row primary key {key} does not match request"
+            ));
+        }
+    }
     if let Some(filter) = row_filter {
         let schema = &inner
             .catalog
@@ -753,7 +763,7 @@ async fn resolve_root(
             row_filter,
         } => execute_cell_by_key(&inner, &model, &pk, row_filter.as_ref(), &selection)
             .await
-            .map_err(|e| client_error("BAD_REQUEST", sanitize_compile_error(&e)))?,
+            .map_err(|_| client_error("INTERNAL", "cell read dependency failed"))?,
         QueryPlan::Sql(plan) => {
             if let Some(protocol) = ctx.data_opt::<ProtocolResponseAccumulator>().cloned() {
                 let role_surface = inner.role_surfaces.get(&role).cloned().ok_or_else(|| {

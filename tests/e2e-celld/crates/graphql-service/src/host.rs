@@ -6,15 +6,15 @@
 use std::sync::Arc;
 use std::time::Duration;
 
-use distributed::bus::NatsBus;
-use distributed::cell_host::{outbox_alarm_handler, CelldCommandHost};
-use distributed::command_dispatch::SharedCommandHost;
 use distributed::bus::MessagePublisher;
-use distributed::BusPublisher;
+use distributed::bus::NatsBus;
+use distributed::cell_host::{CelldCommandHost, InternalHttpSecret};
+use distributed::command_dispatch::SharedCommandHost;
 use distributed::graphql::IdentityConfig;
 use distributed::microsvc::{
     spawn_outbox_publish_loop, spawn_service_consumer_loop, Service, CONSUMER_IDLE_POLL,
 };
+use distributed::BusPublisher;
 use distributed::{PostgresLockManager, PostgresRepository};
 
 use crate::http::serve;
@@ -30,6 +30,7 @@ pub struct HostOptions {
     pub identity: IdentityConfig,
     pub celld_url: String,
     pub nats_url: String,
+    pub internal_secret: InternalHttpSecret,
 }
 
 pub async fn run(
@@ -65,11 +66,14 @@ async fn run_postgres(
     let gql = build_graphql_engine(&repo, &service, options.identity.clone(), Some(change_rx))?;
     let service = Arc::new(service.try_with_graphql(gql)?);
     let publisher = BusPublisher::new(Arc::new(nats.clone()));
-    let host: SharedCommandHost = Arc::new(celld_command_host(
+    let celld_host = celld_command_host(
         celld_url.clone(),
         Arc::clone(&service),
         publisher.clone(),
-    ));
+        options.internal_secret.clone(),
+    )?;
+    let outbox_drain = celld_host.outbox_alarm_handler();
+    let host: SharedCommandHost = Arc::new(celld_host);
 
     spawn_outbox_publish_loop(
         repo.outbox_store(),
@@ -97,7 +101,8 @@ async fn run_postgres(
         service,
         host,
         &options.bind,
-        Some(outbox_alarm_handler(publisher, celld_url)),
+        Some(outbox_drain),
+        options.internal_secret,
     )
     .await?;
     Ok(())
@@ -107,18 +112,19 @@ fn celld_command_host<P>(
     celld_url: String,
     service: Arc<Service>,
     publisher: P,
-) -> CelldCommandHost<P>
+    internal_secret: InternalHttpSecret,
+) -> Result<CelldCommandHost<P>, distributed::microsvc::CausalDispatchError>
 where
     P: MessagePublisher + Clone + Send + Sync + 'static,
 {
-    CelldCommandHost::new(celld_url, service, publisher)
-        .route(e2e_celld_todo::celld_route())
-        .route(e2e_celld_chat::celld_route())
+    Ok(
+        CelldCommandHost::new(celld_url, service, publisher, internal_secret)?
+            .route(e2e_celld_todo::celld_route())
+            .route(e2e_celld_chat::celld_route()),
+    )
 }
 
-async fn connect_nats(
-    url: &str,
-) -> Result<NatsBus, Box<dyn std::error::Error + Send + Sync>> {
+async fn connect_nats(url: &str) -> Result<NatsBus, Box<dyn std::error::Error + Send + Sync>> {
     let bus = NatsBus::connect(url)
         .namespace("e2e-celld")
         .group(BUS_GROUP)

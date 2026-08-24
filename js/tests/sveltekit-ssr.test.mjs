@@ -190,6 +190,23 @@ test('matchDistributedRoute covers optional and required segments', () => {
 	assert.equal(matchDistributedRoute('/blob/[[gameId]]', '/blob'), true);
 	assert.equal(matchDistributedRoute('/blob/[[gameId]]', '/blob/abc'), true);
 	assert.equal(matchDistributedRoute('/blob/[[gameId]]', '/blob/abc/extra'), false);
+	assert.equal(matchDistributedRoute('/[[lang]]/home', '/home'), true);
+	assert.equal(matchDistributedRoute('/[[lang]]/home', '/en/home'), true);
+	assert.equal(matchDistributedRoute('/[[lang]]/home', '/en/other'), false);
+	assert.equal(matchDistributedRoute('/(app)/todos/[id]', '/todos/1'), true);
+	assert.equal(matchDistributedRoute('/docs/[...rest]/edit', '/docs/edit'), true);
+	assert.equal(
+		matchDistributedRoute('/docs/[...rest]/edit', '/docs/a/b/edit'),
+		true
+	);
+	assert.equal(
+		matchDistributedRoute('/docs/[...rest]/edit', '/docs/a/b/view'),
+		false
+	);
+	assert.equal(
+		matchDistributedRoute('/users/[id=uuid]', '/users/0190a000'),
+		true
+	);
 	assert.equal(matchDistributedRoute('/chat', '/chat'), true);
 });
 

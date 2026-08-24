@@ -170,7 +170,17 @@ impl CommandService for GrpcHandler {
         let session = build_session(&metadata, req.session_variables);
 
         #[cfg(feature = "graphql")]
-        if let Some((command_id, wait_input)) = super::wait_path::parse_wait_path_body(&input) {
+        let wait_path = match super::wait_path::parse_wait_path_body(&input) {
+            Ok(wait_path) => wait_path,
+            Err(error) => {
+                return Ok(Response::new(GrpcResponse {
+                    status: 400,
+                    body: json!({ "code": "BAD_REQUEST", "error": error }).to_string(),
+                }));
+            }
+        };
+        #[cfg(feature = "graphql")]
+        if let Some((command_id, wait_input)) = wait_path {
             return match super::wait_path::dispatch_wait_path(
                 self.service.as_ref(),
                 &req.command,

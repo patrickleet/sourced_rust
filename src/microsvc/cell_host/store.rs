@@ -43,7 +43,10 @@ enum CellOwnership {
     Exclusive(StreamIdentity),
     /// Parent game cell: map/player/bomb/explosion/saga streams share this
     /// cell's private SQLite. There is no API to commit across two cells.
-    Parent { name: StreamIdentity },
+    Parent {
+        name: StreamIdentity,
+        owns: Arc<dyn Fn(&StreamIdentity) -> bool + Send + Sync>,
+    },
 }
 
 /// Private SQLite stand-in for one cell instance (`{aggregate_type}:{shard}`).
@@ -113,10 +116,12 @@ impl CellStreamStore {
     pub fn for_parent_shard(
         parent_type: impl Into<String>,
         parent_id: impl Into<String>,
+        owns: impl Fn(&StreamIdentity) -> bool + Send + Sync + 'static,
     ) -> Result<Self, RepositoryError> {
         Ok(Self {
             ownership: CellOwnership::Parent {
                 name: StreamIdentity::new(parent_type, parent_id)?,
+                owns: Arc::new(owns),
             },
             inner: InMemoryRepository::new(),
             sealed_row: Arc::new(Mutex::new(None)),
@@ -137,7 +142,7 @@ impl CellStreamStore {
     /// Cell instance name (`type:id`).
     pub fn instance_name(&self) -> String {
         match &self.ownership {
-            CellOwnership::Exclusive(identity) | CellOwnership::Parent { name: identity } => {
+            CellOwnership::Exclusive(identity) | CellOwnership::Parent { name: identity, .. } => {
                 identity.to_string()
             }
         }
@@ -153,7 +158,10 @@ impl CellStreamStore {
 
     fn ensure_identity(&self, identity: &StreamIdentity) -> Result<(), RepositoryError> {
         match &self.ownership {
-            CellOwnership::Parent { .. } => Ok(()),
+            CellOwnership::Parent { owns, .. } if owns(identity) => Ok(()),
+            CellOwnership::Parent { name, .. } => Err(RepositoryError::Model(format!(
+                "parent cell {name} does not own stream {identity}"
+            ))),
             CellOwnership::Exclusive(owned) if identity == owned => Ok(()),
             CellOwnership::Exclusive(owned) => Err(RepositoryError::Model(format!(
                 "cell `{owned}` cannot access stream `{identity}`"

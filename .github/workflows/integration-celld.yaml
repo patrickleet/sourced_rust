@@ -22,6 +22,7 @@ env:
   CELLD_URL: http://127.0.0.1:18880
   NATS_PORT: "14222"
   NATS_URL: nats://127.0.0.1:14222
+  DISTRIBUTED_INTERNAL_SECRET: test-only-internal-secret-change-me-2026
   AZURE_STORAGE_USE_EMULATOR: "true"
   AZURE_STORAGE_ACCOUNT_NAME: devstoreaccount1
   AZURE_STORAGE_ACCOUNT_KEY: Eby8vdM02xNOcqFlqUwJPLlmEtlCDXJ1OUzFT50uSRZ6IFsuFq2UVErCz4I6tq/K1SZFPTOtr/KBHBeksoGMGw==
@@ -119,7 +120,7 @@ jobs:
           # shellcheck disable=SC1091
           . tests/e2e-ui/e2e-ui.env
           set +a
-          export BIND=0.0.0.0:8791
+          export BIND=127.0.0.1:8791
           export CELLD_URL=http://127.0.0.1:18880
           export NATS_URL=nats://127.0.0.1:14222
           export AUTH_URL=http://localhost:5180
@@ -172,6 +173,45 @@ jobs:
       - name: Install Playwright + Chromium
         working-directory: tests/e2e-ui
         run: npx playwright install chromium --with-deps
+
+      - name: Red-team private HTTP boundaries
+        run: |
+          set -euo pipefail
+          assert_status() {
+            expected="$1"
+            shift
+            actual=$(curl -sS -o /tmp/celld-red-team-response -w '%{http_code}' "$@")
+            if [ "$actual" != "$expected" ]; then
+              echo "expected HTTP $expected, got $actual"
+              sed -n '1,40p' /tmp/celld-red-team-response
+              exit 1
+            fi
+          }
+
+          assert_status 401 -X POST \
+            http://127.0.0.1:8791/internal/outbox/drain \
+            -H 'content-type: application/json' \
+            -d '{"kind":"todo","id":"red-team"}'
+          assert_status 401 -X POST \
+            http://127.0.0.1:8791/internal/outbox/drain \
+            -H 'content-type: application/json' \
+            -H 'x-distributed-internal-secret: forged-red-team-secret-000000' \
+            -d '{"kind":"todo","id":"red-team"}'
+          assert_status 400 -X POST \
+            http://127.0.0.1:8791/internal/outbox/drain \
+            -H 'content-type: application/json' \
+            -H "x-distributed-internal-secret: $DISTRIBUTED_INTERNAL_SECRET" \
+            -d '{"kind":"todo","id":"red-team","outbox":[]}'
+          assert_status 401 -X POST \
+            http://127.0.0.1:8791/zitadel.scrape.v1 \
+            -H 'content-type: application/json' \
+            -d '{}'
+          assert_status 401 \
+            http://127.0.0.1:18880/todo/red-team
+          assert_status 401 -X POST \
+            http://127.0.0.1:18880/todo/red-team/outbox.complete \
+            -H 'content-type: application/json' \
+            -d '{"ids":["forged"]}'
 
       - name: Todo + Chat browser lifecycle through celld
         working-directory: tests/e2e-ui

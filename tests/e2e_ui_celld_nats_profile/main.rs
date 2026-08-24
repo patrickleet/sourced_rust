@@ -74,7 +74,9 @@ mod live {
     use super::*;
     use async_graphql::Request;
     use distributed::bus::InMemoryBus;
-    use distributed::cell_host::{CelldCommandHost, CelldRoute};
+    use distributed::cell_host::{
+        CelldCommandHost, CelldRoute, InternalHttpSecret, CELL_INTERNAL_SECRET_ENV,
+    };
     use distributed::command_dispatch::SharedCommandHost;
     use distributed::graphql::{
         read, typed_command, GraphqlEngine, GraphqlInputType, GraphqlOutputType, GraphqlTypeDef,
@@ -260,13 +262,20 @@ mod live {
             .ok();
         let schema = Arc::new(schema_service());
         let publisher = BusPublisher::new(Arc::new(InMemoryBus::new()));
+        let secret = InternalHttpSecret::new(
+            std::env::var(CELL_INTERNAL_SECRET_ENV)
+                .expect("live celld profile requires DISTRIBUTED_INTERNAL_SECRET"),
+        )
+        .expect("valid internal secret");
         let host: SharedCommandHost = Arc::new(
-            CelldCommandHost::new(celld, Arc::clone(&schema), publisher).route(CelldRoute::new(
-                OPTIONAL_TODO_COMMANDS,
-                "todo",
-                optional_todo_shard,
-                optional_todo_payload,
-            )),
+            CelldCommandHost::new(celld, Arc::clone(&schema), publisher, secret)
+                .expect("valid celld host")
+                .route(CelldRoute::new(
+                    OPTIONAL_TODO_COMMANDS,
+                    "todo",
+                    optional_todo_shard,
+                    optional_todo_payload,
+                )),
         );
         let engine = GraphqlEngine::builder(pool)
             .protocol_token_key([0x5a; 32])

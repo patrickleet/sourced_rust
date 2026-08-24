@@ -39,7 +39,8 @@ celld diagnose --bucket az://celld --listen 127.0.0.1:18090 --internal-listen 12
 (cd tests/celld/worker && worker-build --release)
 celld deploy tests/celld/worker --bucket az://celld
 docker compose -f tests/celld/docker-compose.yml up -d celld
-CELLD_URL=http://127.0.0.1:18080 cargo test --test celld
+DISTRIBUTED_INTERNAL_SECRET=test-only-internal-secret-change-me-2026 \
+  CELLD_URL=http://127.0.0.1:18080 cargo test --test celld
 ```
 
 Nodes load a deployment at startup, so deploy before the celld container starts (or restart it after deploy). `CELLD_WATCH` is the node's local SQLite/replication working directory — it does **not** watch Worker source. For source reload while iterating:
@@ -73,12 +74,18 @@ Chat does not snapshot). GET restores those tables into the working copy
 and returns the sealed row. After `docker compose … restart celld`, GET of
 an existing id should still return the row.
 
-Outbox drain: wait-path JSON includes still-`pending` rows. After the
-GraphQL process's `MessagePublisher` returns Ok it POSTs
-`/…/outbox.complete` with those ids (fire-and-forget — not on the mutation
-critical path). `POST /…/outbox.drain` re-lists pending rows. If
-`OUTBOX_DRAIN_URL` is set, a Durable Object alarm every
-`OUTBOX_DRAIN_INTERVAL_MS` offers pending rows to that URL.
+Outbox drain: wait-path JSON includes still-`pending` rows for projection
+metadata, but the mutation only schedules the cell address. The bounded host
+worker calls `outbox.claim` with a worker id and lease, publishes with a
+timeout, then calls `outbox.complete` or `outbox.release` with the same
+owner. Stale or forged completion is rejected. If `OUTBOX_DRAIN_URL` is set,
+a Durable Object alarm every `OUTBOX_DRAIN_INTERVAL_MS` sends an
+address-only retry hint; the cell remains the durable source of truth.
+
+Every non-health Worker route requires `DISTRIBUTED_INTERNAL_SECRET`. The
+fixture's checked-in value is only for loopback CI/local use. Production must
+provision a unique secret binding, TLS, and network policy; this example does
+not claim to provide a production celld fleet configuration.
 
 Tear down: `docker compose -f tests/celld/docker-compose.yml down -v`.
 

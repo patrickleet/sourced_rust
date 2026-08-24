@@ -6,11 +6,15 @@
 use std::collections::HashMap;
 use std::sync::Arc;
 
+use axum::extract::{Request, State};
 use axum::http::{HeaderMap, StatusCode};
-use axum::response::IntoResponse;
+use axum::middleware::{self, Next};
+use axum::response::{IntoResponse, Response};
 use axum::routing::{get, post};
 use axum::{Json, Router};
-use distributed::cell_host::CELL_OUTBOX_DRAIN_PATH;
+use distributed::cell_host::{
+    InternalHttpSecret, CELL_INTERNAL_SECRET_HEADER, CELL_OUTBOX_DRAIN_PATH,
+};
 use distributed::command_dispatch::SharedCommandHost;
 use distributed::graphql::graphql_router_with_host;
 use distributed::microsvc::{HandlerError, Service, Session};
@@ -58,8 +62,31 @@ async fn dispatch_named(
     }
 }
 
+async fn require_internal(
+    State(secret): State<InternalHttpSecret>,
+    request: Request,
+    next: Next,
+) -> Response {
+    if authorized_internal(request.headers(), &secret) {
+        return next.run(request).await;
+    }
+    (
+        StatusCode::UNAUTHORIZED,
+        Json(json!({ "code": "UNAUTHORIZED", "error": "unauthorized" })),
+    )
+        .into_response()
+}
+
+fn authorized_internal(headers: &HeaderMap, secret: &InternalHttpSecret) -> bool {
+    headers
+        .get(CELL_INTERNAL_SECRET_HEADER)
+        .and_then(|value| value.to_str().ok())
+        .is_some_and(|candidate| secret.matches(candidate))
+}
+
 /// Cell alarm POSTs pending outbox here; GraphQL publishes via MessagePublisher.
-pub type InternalOutboxDrain = Arc<dyn Fn(Value) -> BoxFuture<'static, ()> + Send + Sync>;
+pub type InternalOutboxDrain =
+    Arc<dyn Fn(Value) -> BoxFuture<'static, Result<(), String>> + Send + Sync>;
 
 /// GraphQL wait-dispatches through an explicit [`SharedCommandHost`].
 ///
@@ -70,6 +97,7 @@ pub async fn serve(
     host: SharedCommandHost,
     addr: &str,
     outbox_drain: Option<InternalOutboxDrain>,
+    internal_secret: InternalHttpSecret,
 ) -> Result<(), std::io::Error> {
     let engine = service
         .graphql_engine()
@@ -95,7 +123,8 @@ pub async fn serve(
                 async move { Json(body) }
             }),
         )
-        .merge(graphql_router_with_host(engine, host))
+        .merge(graphql_router_with_host(engine, host));
+    let mut internal = Router::new()
         .route(
             "/zitadel.ingress.v1",
             post(move |headers: HeaderMap, Json(input): Json<Value>| {
@@ -111,17 +140,37 @@ pub async fn serve(
             }),
         );
     if let Some(drain) = outbox_drain {
-        app = app.route(
+        internal = internal.route(
             CELL_OUTBOX_DRAIN_PATH,
             post(move |Json(body): Json<Value>| {
                 let drain = Arc::clone(&drain);
                 async move {
-                    drain(body).await;
-                    Json(json!({ "ok": true }))
+                    match drain(body).await {
+                        Ok(()) => (
+                            StatusCode::ACCEPTED,
+                            Json(json!({ "ok": true })),
+                        ),
+                        Err(error)
+                            if error.contains("capacity") || error.contains("not running") =>
+                        {
+                            (
+                                StatusCode::SERVICE_UNAVAILABLE,
+                                Json(json!({ "code": "UNAVAILABLE", "error": "outbox scheduler unavailable" })),
+                            )
+                        }
+                        Err(_) => (
+                            StatusCode::BAD_REQUEST,
+                            Json(json!({ "code": "BAD_REQUEST", "error": "invalid outbox hint" })),
+                        ),
+                    }
                 }
             }),
         );
     }
+    app = app.merge(internal.route_layer(middleware::from_fn_with_state(
+        internal_secret,
+        require_internal,
+    )));
 
     let listener = tokio::net::TcpListener::bind(addr).await?;
     axum::serve(listener, app).await

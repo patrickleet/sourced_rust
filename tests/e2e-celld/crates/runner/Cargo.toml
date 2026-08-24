@@ -10,5 +10,6 @@ name = "e2e-celld"
 path = "src/main.rs"
 
 [dependencies]
+distributed = { workspace = true }
 e2e-celld-graphql = { path = "../graphql-service" }
 tokio = { workspace = true }

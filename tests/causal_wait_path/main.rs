@@ -148,8 +148,7 @@ async fn http_wait_path_returns_command_id_and_receipt() {
         .header(ROLE_KEY, "user")
         .json(&json!({
             "commandId": command_id,
-            "input": { "id": "todo-wait-1" },
-            "session_variables": { "x-roles": "admin" }
+            "input": { "id": "todo-wait-1" }
         }))
         .send()
         .await
@@ -163,7 +162,7 @@ async fn http_wait_path_returns_command_id_and_receipt() {
 }
 
 #[tokio::test]
-async fn http_wait_path_ignores_spoofed_body_roles() {
+async fn http_wait_path_rejects_spoofed_body_identity() {
     let base = start_http(wait_service()).await;
     let client = reqwest::Client::new();
     let resp = client
@@ -179,13 +178,13 @@ async fn http_wait_path_ignores_spoofed_body_roles() {
         .send()
         .await
         .unwrap();
-    assert_eq!(resp.status(), 403, "{}", resp.text().await.unwrap());
+    assert_eq!(resp.status(), 400, "{}", resp.text().await.unwrap());
 }
 
 #[tokio::test]
 async fn graphql_only_http_host_wait_dispatches_to_writer() {
     let base = start_http(wait_service()).await;
-    let host = HttpCommandHost::new(base);
+    let host = HttpCommandHost::new(base).expect("valid wait-path URL");
     let mut session = distributed::microsvc::Session::new();
     session.set(USER_ID_KEY, "alice");
     session.set(ROLE_KEY, "user");
@@ -235,7 +234,8 @@ async fn graphql_only_engine_wait_dispatches_to_loopback_writer() {
     );
 
     let base = start_http(Arc::clone(&writer)).await;
-    let host: SharedCommandHost = Arc::new(HttpCommandHost::new(base));
+    let host: SharedCommandHost =
+        Arc::new(HttpCommandHost::new(base).expect("valid wait-path URL"));
     let mut session = Session::new();
     session.set(USER_ID_KEY, "alice");
     session.set(ROLE_KEY, "user");
@@ -350,8 +350,7 @@ async fn grpc_wait_path_returns_command_id_and_receipt() {
         command: "todo.create".into(),
         input: json!({
             "commandId": command_id,
-            "input": { "id": "todo-grpc-1" },
-            "session_variables": { "x-roles": "admin" }
+            "input": { "id": "todo-grpc-1" }
         })
         .to_string(),
         session_variables: Default::default(),

@@ -431,7 +431,10 @@ async fn namespace_get_by_name_addresses_type_and_shard() {
 
 #[tokio::test]
 async fn parent_cell_commits_sibling_streams_in_one_batch() {
-    let store = CellStreamStore::for_parent_shard("game", "game-1").expect("parent shard");
+    let store = CellStreamStore::for_parent_shard("game", "game-1", |identity| {
+        matches!(identity.aggregate_type(), "GameMap" | "Player" | "Bomb")
+    })
+    .expect("parent shard");
     assert_eq!(store.instance_name(), "game:game-1");
     assert_eq!(parent_cell_name("game", "game-1"), "game:game-1");
     assert_ne!(parent_cell_name("game", "game-1"), "player:player-1");
@@ -467,16 +470,25 @@ async fn parent_cell_commits_sibling_streams_in_one_batch() {
         .await
         .unwrap()
         .is_some());
+
+    let foreign = StreamIdentity::new("Foreign", "foreign-1").unwrap();
+    assert!(GetStream::get_stream(&store, &foreign).await.is_err());
 }
 
 #[tokio::test]
 async fn parent_cells_are_isolated_and_have_no_cross_cell_commit() {
-    let game_1 = CellStreamStore::for_parent_shard("game", "g1").unwrap();
-    let game_2 = CellStreamStore::for_parent_shard("game", "g2").unwrap();
+    let game_1 = CellStreamStore::for_parent_shard("game", "g1", |identity| {
+        identity.aggregate_id().starts_with("g1:")
+    })
+    .unwrap();
+    let game_2 = CellStreamStore::for_parent_shard("game", "g2", |identity| {
+        identity.aggregate_id().starts_with("g2:")
+    })
+    .unwrap();
 
-    let mut player = Entity::with_id("player:1");
+    let mut player = Entity::with_id("g1:player:1");
     player.digest_empty("joined").unwrap();
-    let player_id = StreamIdentity::new("Player", "player:1").unwrap();
+    let player_id = StreamIdentity::new("Player", "g1:player:1").unwrap();
     let batch = CommitBatch::new(vec![StreamWrite::new(player_id.clone(), &mut player)]);
     TransactionalCommit::commit_batch(&game_1, batch)
         .await
@@ -486,13 +498,7 @@ async fn parent_cells_are_isolated_and_have_no_cross_cell_commit() {
         .await
         .unwrap()
         .is_some());
-    assert!(
-        GetStream::get_stream(&game_2, &player_id)
-            .await
-            .unwrap()
-            .is_none(),
-        "a second game cell cannot see sibling streams of the first"
-    );
+    assert!(GetStream::get_stream(&game_2, &player_id).await.is_err());
 }
 
 #[test]

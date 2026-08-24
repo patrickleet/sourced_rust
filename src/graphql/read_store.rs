@@ -9,6 +9,9 @@ use std::sync::{Arc, Mutex};
 use async_trait::async_trait;
 use serde_json::Value;
 
+use crate::command_dispatch::HttpCommandHost;
+use crate::microsvc::cell_host::InternalHttpSecret;
+
 /// How one GraphQL model is served by this process.
 #[derive(Clone)]
 pub enum ReadStore {
@@ -46,16 +49,15 @@ pub trait CellByKeyGetter: Send + Sync {
 /// HTTP GET `{base}/{pk}` of the sealed row (Todo `/todo/{id}`, Blob `/blob/{game_id}`).
 #[derive(Clone)]
 pub struct HttpCellByKey {
-    base: String,
-    client: reqwest::Client,
+    http: HttpCommandHost,
 }
 
 impl HttpCellByKey {
-    pub fn new(base: impl Into<String>) -> Self {
-        Self {
-            base: base.into().trim_end_matches('/').to_string(),
-            client: reqwest::Client::new(),
-        }
+    pub fn new(base: impl AsRef<str>, internal_secret: InternalHttpSecret) -> Result<Self, String> {
+        Ok(Self {
+            http: HttpCommandHost::new_internal(base, internal_secret)
+                .map_err(|error| error.to_string())?,
+        })
     }
 }
 
@@ -65,28 +67,21 @@ impl CellByKeyGetter for HttpCellByKey {
         &self,
         primary_key: &BTreeMap<String, String>,
     ) -> Result<Option<Value>, String> {
-        let id = primary_key
-            .values()
-            .next()
-            .ok_or_else(|| "cell-by-key GET requires a primary key".to_string())?;
-        let url = format!("{}/{id}", self.base);
-        let response = self
-            .client
-            .get(&url)
-            .send()
+        if primary_key.len() != 1 {
+            return Err("cell-by-key HTTP GET requires exactly one primary-key field".into());
+        }
+        let id = primary_key.values().next().expect("length checked");
+        let (status, body) = self
+            .http
+            .get_json(id)
             .await
-            .map_err(|err| format!("cell GET {url}: {err}"))?;
-        let status = response.status();
-        if status.as_u16() == 404 {
+            .map_err(|error| format!("cell GET failed: {error}"))?;
+        if status == 404 {
             return Ok(None);
         }
-        if !status.is_success() {
-            return Err(format!("cell GET {url} status {}", status.as_u16()));
+        if !(200..300).contains(&status) {
+            return Err(format!("cell GET returned HTTP {status}"));
         }
-        let body: Value = response
-            .json()
-            .await
-            .map_err(|err| format!("cell GET body: {err}"))?;
         Ok(Some(body))
     }
 }
@@ -116,10 +111,10 @@ impl CellByKeyGetter for MapCellByKey {
         &self,
         primary_key: &BTreeMap<String, String>,
     ) -> Result<Option<Value>, String> {
-        let id = primary_key
-            .values()
-            .next()
-            .ok_or_else(|| "cell-by-key GET requires a primary key".to_string())?;
+        if primary_key.len() != 1 {
+            return Err("cell-by-key map requires exactly one primary-key field".into());
+        }
+        let id = primary_key.values().next().expect("length checked");
         Ok(self.rows.lock().expect("cell map lock").get(id).cloned())
     }
 }
@@ -472,23 +467,43 @@ mod tests {
 
     #[tokio::test]
     async fn http_cell_by_key_gets_sealed_row() {
+        use axum::extract::Path;
+        use axum::http::{HeaderMap, StatusCode};
         use axum::routing::get;
         use axum::{Json, Router};
+
+        const SECRET: &str = "test-only-cell-by-key-secret-32-bytes";
 
         let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
         let addr = listener.local_addr().unwrap();
         tokio::spawn(async move {
             let app = Router::new().route(
                 "/blob/{id}",
-                get(|| async { Json(json!({ "game_id": "g-http", "score": 3 })) }),
+                get(|headers: HeaderMap, Path(id): Path<String>| async move {
+                    if headers
+                        .get(crate::microsvc::cell_host::CELL_INTERNAL_SECRET_HEADER)
+                        .and_then(|value| value.to_str().ok())
+                        != Some(SECRET)
+                    {
+                        return (StatusCode::UNAUTHORIZED, Json(json!({ "error": "no" })));
+                    }
+                    (StatusCode::OK, Json(json!({ "game_id": id, "score": 3 })))
+                }),
             );
             axum::serve(listener, app).await.unwrap();
         });
-        let getter = HttpCellByKey::new(format!("http://{addr}/blob"));
+        let getter = HttpCellByKey::new(
+            format!("http://{addr}/blob"),
+            InternalHttpSecret::new(SECRET).unwrap(),
+        )
+        .unwrap();
         let mut pk = BTreeMap::new();
         pk.insert("game_id".into(), "g-http".into());
         let row = getter.get_sealed_row(&pk).await.unwrap().unwrap();
         assert_eq!(row["game_id"], "g-http");
         assert_eq!(row["score"], 3);
+
+        pk.insert("tenant_id".into(), "tenant-1".into());
+        assert!(getter.get_sealed_row(&pk).await.is_err());
     }
 }

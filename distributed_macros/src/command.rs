@@ -1,5 +1,6 @@
 use proc_macro2::TokenStream;
 use quote::{format_ident, quote};
+use std::collections::HashSet;
 use syn::parse::{Parse, ParseStream};
 use syn::punctuated::Punctuated;
 use syn::{Expr, FnArg, Ident, ItemFn, LitStr, PathArguments, ReturnType, Token, Type};
@@ -10,7 +11,7 @@ struct CommandArgs {
     field_name: Option<LitStr>,
     input: Option<Type>,
     outcome: Option<Type>,
-    roles: Vec<LitStr>,
+    roles: Option<Vec<LitStr>>,
     emits: Vec<Type>,
     applies: Option<Expr>,
     defaults: Option<Expr>,
@@ -20,33 +21,60 @@ struct CommandArgs {
 impl Parse for CommandArgs {
     fn parse(input: ParseStream<'_>) -> syn::Result<Self> {
         let mut args = Self::default();
+        let mut seen_options = HashSet::new();
         while !input.is_empty() {
             let key: Ident = input.parse()?;
+            let option = key.to_string();
+            if !seen_options.insert(option.clone()) {
+                return Err(syn::Error::new(
+                    key.span(),
+                    format!("duplicate command option {option}"),
+                ));
+            }
             match key.to_string().as_str() {
                 "roles" => {
                     let content;
                     syn::parenthesized!(content in input);
                     let values = Punctuated::<syn::Expr, Token![,]>::parse_terminated(&content)?;
+                    let mut roles = Vec::new();
+                    let mut seen_roles = HashSet::new();
                     for value in values {
-                        match value {
-                            syn::Expr::Path(path) if path.path.segments.len() == 1 => {
-                                args.roles.push(LitStr::new(
-                                    &path.path.segments[0].ident.to_string(),
-                                    path.path.segments[0].ident.span(),
-                                ));
-                            }
+                        let role = match value {
+                            syn::Expr::Path(path) if path.path.segments.len() == 1 => LitStr::new(
+                                &path.path.segments[0].ident.to_string(),
+                                path.path.segments[0].ident.span(),
+                            ),
                             syn::Expr::Lit(syn::ExprLit {
                                 lit: syn::Lit::Str(value),
                                 ..
-                            }) => args.roles.push(value),
+                            }) => value,
                             other => {
                                 return Err(syn::Error::new_spanned(
                                     other,
                                     "command roles must be identifiers or string literals",
                                 ))
                             }
+                        };
+                        if role.value().trim().is_empty() {
+                            return Err(syn::Error::new(
+                                role.span(),
+                                "command roles must not be empty",
+                            ));
                         }
+                        if !seen_roles.insert(role.value()) {
+                            return Err(syn::Error::new(
+                                role.span(),
+                                "command roles must not contain duplicates",
+                            ));
+                        }
+                        roles.push(role);
                     }
+                    if roles.is_empty() {
+                        return Err(content.error(
+                            "command roles must declare at least one role; use an explicit anonymous role when intended",
+                        ));
+                    }
+                    args.roles = Some(roles);
                 }
                 "emits" => {
                     let content;
@@ -120,6 +148,29 @@ impl Parse for CommandArgs {
     }
 }
 
+fn validate_command_id(id: &LitStr) -> syn::Result<()> {
+    let value = id.value();
+    let segments = value.split('.').collect::<Vec<_>>();
+    if value.len() > 128
+        || segments.len() < 2
+        || segments.iter().any(|segment| {
+            segment.is_empty()
+                || !segment.bytes().all(|byte| {
+                    byte.is_ascii_lowercase()
+                        || byte.is_ascii_digit()
+                        || byte == b'_'
+                        || byte == b'-'
+                })
+        })
+    {
+        return Err(syn::Error::new(
+            id.span(),
+            "command id must be 2+ dot-separated lowercase ASCII identifier segments",
+        ));
+    }
+    Ok(())
+}
+
 pub fn expand(
     attr: proc_macro2::TokenStream,
     item: proc_macro2::TokenStream,
@@ -131,6 +182,13 @@ pub fn expand(
         syn::Error::new(
             function.sig.ident.span(),
             "command declaration requires `id = \"...\"`",
+        )
+    })?;
+    validate_command_id(&id)?;
+    let roles = args.roles.ok_or_else(|| {
+        syn::Error::new(
+            function.sig.ident.span(),
+            "command declaration requires explicit roles(...)",
         )
     })?;
     if !function.sig.asyncness.is_some() {
@@ -148,7 +206,11 @@ pub fn expand(
             FnArg::Receiver(_) => None,
         })
         .collect::<Vec<_>>();
-    if function.sig.inputs.iter().any(|argument| matches!(argument, FnArg::Receiver(_)))
+    if function
+        .sig
+        .inputs
+        .iter()
+        .any(|argument| matches!(argument, FnArg::Receiver(_)))
         || typed_args.len() != 2
     {
         return Err(syn::Error::new_spanned(
@@ -213,18 +275,13 @@ pub fn expand(
     let mount_name = format_ident!("{}_mount", function_name);
     let mount_static = format_ident!("{}_MOUNT", function_name.to_string().to_uppercase());
     let definition_name = format_ident!("{}_definition", function_name);
-    let definition_static = format_ident!(
-        "{}_DEFINITION",
-        function_name.to_string().to_uppercase()
-    );
-    let command_id_static = format_ident!(
-        "{}_COMMAND_ID",
-        function_name.to_string().to_uppercase()
-    );
+    let definition_static =
+        format_ident!("{}_DEFINITION", function_name.to_string().to_uppercase());
+    let command_id_static =
+        format_ident!("{}_COMMAND_ID", function_name.to_string().to_uppercase());
     let accessor_name = format_ident!("{}_application_command", function_name);
     let register_name = format_ident!("{}_register", function_name);
     let visibility = &function.vis;
-    let roles = args.roles;
     let emits = args.emits;
     let applies = args.applies;
     let defaults = args.defaults;
@@ -233,9 +290,7 @@ pub fn expand(
         #framework::graphql::typed_command::<#input, #outcome>(#id)
             .field_name(#field_name)
     };
-    if !roles.is_empty() {
-        builder.extend(quote! { .roles([#(#roles),*]) });
-    }
+    builder.extend(quote! { .roles([#(#roles),*]) });
     if !emits.is_empty() {
         builder.extend(quote! { .emits(#framework::events!(#(#emits),*)) });
     }
@@ -397,7 +452,10 @@ fn validate_prepared_return(output: &ReturnType, outcome: &Type) -> syn::Result<
         ));
     };
     let Some(result_segment) = result.path.segments.last() else {
-        return Err(syn::Error::new_spanned(output, "missing Result return type"));
+        return Err(syn::Error::new_spanned(
+            output,
+            "missing Result return type",
+        ));
     };
     if result_segment.ident != "Result" {
         return Err(syn::Error::new_spanned(
@@ -416,10 +474,16 @@ fn validate_prepared_return(output: &ReturnType, outcome: &Type) -> syn::Result<
         _ => None,
     });
     let Some(prepared) = types.next() else {
-        return Err(syn::Error::new_spanned(output, "missing PreparedCommand return type"));
+        return Err(syn::Error::new_spanned(
+            output,
+            "missing PreparedCommand return type",
+        ));
     };
     let Some(error) = types.next() else {
-        return Err(syn::Error::new_spanned(output, "missing HandlerError return type"));
+        return Err(syn::Error::new_spanned(
+            output,
+            "missing HandlerError return type",
+        ));
     };
     let Type::Path(prepared) = prepared else {
         return Err(syn::Error::new_spanned(
@@ -428,7 +492,10 @@ fn validate_prepared_return(output: &ReturnType, outcome: &Type) -> syn::Result<
         ));
     };
     let Some(prepared_segment) = prepared.path.segments.last() else {
-        return Err(syn::Error::new_spanned(prepared, "missing PreparedCommand type"));
+        return Err(syn::Error::new_spanned(
+            prepared,
+            "missing PreparedCommand type",
+        ));
     };
     if prepared_segment.ident != "PreparedCommand" {
         return Err(syn::Error::new_spanned(

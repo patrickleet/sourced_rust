@@ -241,31 +241,55 @@ export function matchDistributedRoute(
 	const route = normalizeRoute(routeId);
 	const path = normalizePathname(pathname);
 	if (route === path) return true;
-	const routeParts = route.split('/').filter(Boolean);
+	const routeParts = route
+		.split('/')
+		.filter(Boolean)
+		.filter((part) => !(part.startsWith('(') && part.endsWith(')')));
 	const pathParts = path.split('/').filter(Boolean);
-	let i = 0;
-	let j = 0;
-	while (i < routeParts.length) {
-		const part = routeParts[i]!;
-		if (part.startsWith('[...') && part.endsWith(']')) {
-			return true;
+	const failed = new Set<string>();
+	const matches = (routeIndex: number, pathIndex: number): boolean => {
+		const state = routeIndex + ':' + pathIndex;
+		if (failed.has(state)) return false;
+		if (routeIndex === routeParts.length) {
+			return pathIndex === pathParts.length;
 		}
-		if (part.startsWith('[[') && part.endsWith(']]')) {
-			if (j < pathParts.length) j += 1;
-			i += 1;
-			continue;
+		const part = routeParts[routeIndex]!;
+		const optionalRest =
+			part.startsWith('[[...') && part.endsWith(']]');
+		const rest = part.startsWith('[...') && part.endsWith(']');
+		if (optionalRest || rest) {
+			for (let next = pathIndex; next <= pathParts.length; next += 1) {
+				if (matches(routeIndex + 1, next)) return true;
+			}
+			failed.add(state);
+			return false;
 		}
-		if (part.startsWith('[') && part.endsWith(']')) {
-			if (j >= pathParts.length) return false;
-			i += 1;
-			j += 1;
-			continue;
+		const optional =
+			part.startsWith('[[') && part.endsWith(']]');
+		if (optional) {
+			if (matches(routeIndex + 1, pathIndex)) return true;
+			if (
+				pathIndex < pathParts.length &&
+				matches(routeIndex + 1, pathIndex + 1)
+			) {
+				return true;
+			}
+			failed.add(state);
+			return false;
 		}
-		if (j >= pathParts.length || pathParts[j] !== part) return false;
-		i += 1;
-		j += 1;
-	}
-	return j === pathParts.length;
+		const parameter = part.startsWith('[') && part.endsWith(']');
+		if (
+			(parameter && pathIndex < pathParts.length) ||
+			(!parameter &&
+				pathIndex < pathParts.length &&
+				pathParts[pathIndex] === part)
+		) {
+			if (matches(routeIndex + 1, pathIndex + 1)) return true;
+		}
+		failed.add(state);
+		return false;
+	};
+	return matches(0, 0);
 }
 
 function normalizePathname(pathname: string): string {

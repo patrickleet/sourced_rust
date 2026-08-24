@@ -32,7 +32,7 @@ services:
       - --skipApiVersionCheck
       - --loose
     ports:
-      - "10000:10000"
+      - "127.0.0.1:10000:10000"
     volumes:
       - azurite-data:/data
 
@@ -54,7 +54,7 @@ services:
     restart: always
     init: true
     ports:
-      - "${CELLD_HTTP_PORT:-18080}:8080"
+      - "127.0.0.1:${CELLD_HTTP_PORT:-18080}:8080"
     extra_hosts:
       - "host.docker.internal:host-gateway"
     depends_on:

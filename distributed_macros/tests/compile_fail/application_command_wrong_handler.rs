@@ -3,6 +3,7 @@ struct WrongInput;
 
 #[distributed::command(
     id = "todo.create",
+    roles(user),
     input = WrongInput,
     outcome = distributed::graphql::Succeeded<WrongInput>
 )]

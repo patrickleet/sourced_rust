@@ -47,7 +47,10 @@ export type ProtocolHost = {
 	readonly recordClocks: Map<string, RecordProtocolClock>;
 	readonly recordKeysByScope: Map<DistributedOpaqueString, string>;
 	readonly projectedRecordFences: Map<string, ProjectedRecordFence>;
-	readonly membershipFences: Map<string, string>;
+	readonly membershipFences: Map<
+		string,
+		Map<string, Set<string>>
+	>;
 	readonly deferredMembershipConfirms: Set<string>;
 	readonly anonymousRecordClocks: Map<
 		DistributedOpaqueString,

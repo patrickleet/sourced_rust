@@ -231,18 +231,37 @@ async fn next_hint(hint_rx: &mut Option<mpsc::Receiver<Vec<String>>>) -> Option<
 
 fn coalesce_hints(
     hint_rx: &mut Option<mpsc::Receiver<Vec<String>>>,
-    mut ids: Vec<String>,
+    ids: Vec<String>,
     limit: usize,
 ) -> Vec<String> {
+    let mut seen = std::collections::HashSet::new();
+    let mut bounded = Vec::with_capacity(limit.min(ids.len()));
+    for id in ids {
+        if bounded.len() == limit {
+            break;
+        }
+        if seen.insert(id.clone()) {
+            bounded.push(id);
+        }
+    }
     if let Some(rx) = hint_rx.as_mut() {
-        while ids.len() < limit {
+        while bounded.len() < limit {
             match rx.try_recv() {
-                Ok(more) => ids.extend(more),
+                Ok(more) => {
+                    for id in more {
+                        if bounded.len() == limit {
+                            break;
+                        }
+                        if seen.insert(id.clone()) {
+                            bounded.push(id);
+                        }
+                    }
+                }
                 Err(_) => break,
             }
         }
     }
-    ids
+    bounded
 }
 
 async fn wake_notified(wake: &Option<Arc<Notify>>) {
@@ -278,6 +297,17 @@ mod tests {
     use crate::bus::Message;
     use crate::outbox_worker::{ClaimOutboxMessages, OutboxClaimRef, OutboxStore};
     use crate::repository::RepositoryError;
+
+    #[test]
+    fn hint_coalescing_deduplicates_and_never_exceeds_batch_limit() {
+        let (tx, rx) = mpsc::channel(4);
+        tx.try_send(vec!["b".into(), "c".into(), "d".into()])
+            .unwrap();
+        tx.try_send(vec!["e".into(), "f".into()]).unwrap();
+        let mut rx = Some(rx);
+        let ids = coalesce_hints(&mut rx, vec!["a".into(), "a".into(), "b".into()], 4);
+        assert_eq!(ids, vec!["a", "b", "c", "d"]);
+    }
     use crate::{
         CommitBatch, InMemoryOutboxStore, InMemoryRepository, OutboxMessage, OutboxMessageStatus,
         TransactionalCommit,
