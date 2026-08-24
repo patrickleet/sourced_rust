@@ -70,7 +70,6 @@ pub use permissions::{
 };
 pub use types::{GraphqlInputType, GraphqlOutputType, GraphqlTypeDef, GraphqlTypeField};
 
-#[cfg(feature = "graphql")]
 pub(crate) mod command_input;
 #[cfg(feature = "graphql")]
 mod compile;

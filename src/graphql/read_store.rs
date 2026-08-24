@@ -195,7 +195,12 @@ mod tests {
     }
 
     fn blob_perms() -> ModelPermissions<BlobGames> {
-        ModelPermissions::new().grant("user", read().all_columns())
+        ModelPermissions::new().grant(
+            "user",
+            read()
+                .all_columns()
+                .rows(col("owner_id").eq(claim("x-user-id"))),
+        )
     }
 
     fn todo_perms() -> ModelPermissions<Todos> {
@@ -402,6 +407,40 @@ mod tests {
         let data = response.data.into_json().unwrap();
         assert_eq!(data["blob_games_by_pk"]["game_id"], "game-1");
         assert_eq!(data["blob_games_by_pk"]["score"], 9);
+    }
+
+    #[tokio::test]
+    async fn graphql_by_id_hides_cell_rows_outside_the_role_policy() {
+        let cells = MapCellByKey::new();
+        cells.insert(
+            "game-bob",
+            json!({ "game_id": "game-bob", "owner_id": "bob", "score": 9 }),
+        );
+        cells.insert(
+            "game-malformed",
+            json!({ "game_id": "game-malformed", "score": 10 }),
+        );
+        let engine = GraphqlEngine::builder(pool())
+            .roles(&["user"])
+            .model::<BlobGames>(blob_perms())
+            .model::<AuthUsers>(user_perms())
+            .read_store::<BlobGames>(ReadStore::CellByKey(Arc::new(cells)))
+            .build()
+            .unwrap();
+
+        for game_id in ["game-bob", "game-malformed"] {
+            let response = engine
+                .execute(
+                    &session_user(),
+                    Request::new(format!(
+                        "{{ blob_games_by_pk(game_id: \"{game_id}\") {{ game_id score }} }}"
+                    )),
+                )
+                .await;
+            assert!(response.errors.is_empty(), "{response:?}");
+            let data = response.data.into_json().unwrap();
+            assert!(data["blob_games_by_pk"].is_null(), "{data}");
+        }
     }
 
     #[tokio::test]

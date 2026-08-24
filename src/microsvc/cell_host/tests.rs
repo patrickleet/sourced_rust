@@ -1,4 +1,7 @@
-use super::{instance_name, parent_cell_name, AggregateCell, CellNamespace, CellStreamStore};
+use super::{
+    instance_name, parent_cell_name, AggregateCell, CellCommandIdentity, CellDispatchError,
+    CellNamespace, CellStreamStore,
+};
 use crate::aggregate::{Aggregate, AggregateRepository};
 use crate::entity::Entity;
 use crate::graphql::{typed_command, PreparedCommand, Succeeded};
@@ -267,6 +270,121 @@ async fn cell_dispatches_complete_with_the_same_portable_command_as_soa() {
     assert_eq!(loaded.title, "ship");
     assert!(loaded.done);
     assert_eq!(loaded.entity.snapshot_version(), 2);
+}
+
+#[tokio::test]
+async fn cell_wait_path_replays_the_same_command_without_new_domain_effects() {
+    let cell = AggregateCell::<CellItem>::new("item-ledger")
+        .unwrap()
+        .mount(Create)
+        .mount(Complete);
+    let identity = CellCommandIdentity::new(
+        "cell-test-service",
+        "principal-alice",
+        "0190a000-0000-7000-8000-000000000401",
+    )
+    .unwrap();
+    let input = json!({ "id": "item-ledger", "title": "once" });
+
+    let first = cell
+        .dispatch_idempotent(
+            "cell_item.create",
+            &identity,
+            input.clone(),
+            owner_session(),
+        )
+        .await
+        .expect("first dispatch");
+    let replay = cell
+        .dispatch_idempotent("cell_item.create", &identity, input, owner_session())
+        .await
+        .expect("same-input replay");
+
+    assert!(!first.replayed());
+    assert!(replay.replayed());
+    assert_eq!(replay.payload(), first.payload());
+    assert_eq!(replay.causation_id(), first.causation_id());
+    let events = cell.durable_events().unwrap();
+    assert_eq!(
+        events
+            .iter()
+            .map(|stream| stream.events.len())
+            .sum::<usize>(),
+        1,
+        "replay must not invoke the handler or append another event"
+    );
+    assert_eq!(
+        events[0].events[0].causation_id(),
+        Some(first.causation_id())
+    );
+
+    let durable_commands = cell.durable_commands().expect("export command ledger");
+    assert_eq!(durable_commands.len(), 1);
+    let restored = AggregateCell::<CellItem>::new("item-ledger")
+        .unwrap()
+        .mount(Create)
+        .mount(Complete);
+    restored
+        .restore_durable_events(events)
+        .expect("restore domain events");
+    restored
+        .restore_durable_commands(durable_commands)
+        .expect("restore command ledger");
+    let replay_after_restart = restored
+        .dispatch_idempotent(
+            "cell_item.create",
+            &identity,
+            json!({ "id": "item-ledger", "title": "once" }),
+            owner_session(),
+        )
+        .await
+        .expect("durable replay after restart");
+    assert!(replay_after_restart.replayed());
+    assert_eq!(replay_after_restart.causation_id(), first.causation_id());
+    assert_eq!(
+        restored
+            .durable_events()
+            .unwrap()
+            .iter()
+            .map(|stream| stream.events.len())
+            .sum::<usize>(),
+        1
+    );
+}
+
+#[tokio::test]
+async fn cell_wait_path_rejects_command_id_reuse_with_different_input() {
+    let cell = AggregateCell::<CellItem>::new("item-conflict")
+        .unwrap()
+        .mount(Create)
+        .mount(Complete);
+    let identity = CellCommandIdentity::new(
+        "cell-test-service",
+        "principal-alice",
+        "0190a000-0000-7000-8000-000000000402",
+    )
+    .unwrap();
+    cell.dispatch_idempotent(
+        "cell_item.create",
+        &identity,
+        json!({ "id": "item-conflict", "title": "first" }),
+        owner_session(),
+    )
+    .await
+    .unwrap();
+
+    let error = cell
+        .dispatch_idempotent(
+            "cell_item.create",
+            &identity,
+            json!({ "id": "item-conflict", "title": "different" }),
+            owner_session(),
+        )
+        .await
+        .unwrap_err();
+    assert!(matches!(error, CellDispatchError::CommandIdReuse));
+    assert_eq!(error.code(), "COMMAND_ID_REUSE");
+    assert_eq!(error.status_code(), 409);
 }
 
 #[tokio::test]

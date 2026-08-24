@@ -105,6 +105,7 @@ pub struct NatsJetStreamSource {
     consumer: Consumer<PullConfig>,
     fetch_timeout: Duration,
     strip_prefix: Option<String>,
+    idle_poll: Duration,
 }
 
 impl NatsJetStreamSource {
@@ -114,6 +115,7 @@ impl NatsJetStreamSource {
             consumer,
             fetch_timeout: Duration::from_millis(500),
             strip_prefix: None,
+            idle_poll: Duration::ZERO,
         }
     }
 
@@ -131,6 +133,12 @@ impl NatsJetStreamSource {
     /// subject is the name).
     pub fn with_strip_prefix(mut self, prefix: impl Into<String>) -> Self {
         self.strip_prefix = Some(prefix.into());
+        self
+    }
+
+    /// Keep `recv` retrying after an empty fetch instead of draining to idle.
+    pub fn with_idle_poll(mut self, idle_poll: Duration) -> Self {
+        self.idle_poll = idle_poll;
         self
     }
 
@@ -188,22 +196,27 @@ impl MessageSource for NatsJetStreamSource {
     }
 
     async fn recv(&mut self) -> Result<Option<Self::Received>, TransportError> {
-        let mut batch = self
-            .consumer
-            .batch()
-            .max_messages(1)
-            .expires(self.fetch_timeout)
-            .messages()
-            .await
-            .map_err(|err| retryable("nats fetch", err))?;
+        loop {
+            let mut batch = self
+                .consumer
+                .batch()
+                .max_messages(1)
+                .expires(self.fetch_timeout)
+                .messages()
+                .await
+                .map_err(|err| retryable("nats fetch", err))?;
 
-        match batch.next().await {
-            Some(Ok(message)) => Ok(Some(NatsReceived::from_jetstream(
-                message,
-                self.strip_prefix.as_deref(),
-            ))),
-            Some(Err(err)) => Err(retryable("nats batch message", err)),
-            None => Ok(None),
+            match batch.next().await {
+                Some(Ok(message)) => {
+                    return Ok(Some(NatsReceived::from_jetstream(
+                        message,
+                        self.strip_prefix.as_deref(),
+                    )))
+                }
+                Some(Err(err)) => return Err(retryable("nats batch message", err)),
+                None if self.idle_poll.is_zero() => return Ok(None),
+                None => continue,
+            }
         }
     }
 }

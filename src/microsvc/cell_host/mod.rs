@@ -12,15 +12,19 @@
 //! GraphQL wait-path + cell SQLite outbox drain (`CelldCommandHost`) is
 //! the same for every aggregate: routes only supply kind, shard, and payload.
 
+pub(crate) mod causal;
 mod cell;
-mod store;
 #[cfg(feature = "graphql")]
 mod command;
 #[cfg(feature = "graphql")]
 mod outbox;
+mod store;
 
+pub use causal::{
+    CellCommandIdentity, CellDispatchError, CellDispatchResult, CELL_PRINCIPAL_PARTITION_HEADER,
+    CELL_SERVICE_ID_HEADER,
+};
 pub use cell::{instance_name, parent_cell_name, AggregateCell, CellNamespace};
-pub use store::{CellStreamStore, DurableCellEvents, DurableCellSnapshot};
 #[cfg(feature = "graphql")]
 pub use command::{CelldCommandHost, CelldRoute};
 #[cfg(feature = "graphql")]
@@ -28,6 +32,7 @@ pub use outbox::{
     accept_outbox_drain, drain_cell_outbox, outbox_alarm_handler, spawn_cell_outbox_drain_loop,
     CellOutboxDrainHandler, CELL_OUTBOX_DRAIN_PATH,
 };
+pub use store::{CellStreamStore, DurableCellCommand, DurableCellEvents, DurableCellSnapshot};
 
 #[cfg(test)]
 mod tests;

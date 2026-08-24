@@ -26,7 +26,7 @@ pub async fn handle<R, L, S>(ctx: &Context<'_, AuthDeps<R, L, S>>) -> Result<Val
 where
     R: crate::bounds::EventStore,
     L: crate::bounds::Locks,
-    S: Send + Sync + 'static,
+    S: crate::bounds::ReadStore,
 {
     // Not an Action event envelope — require shared secret.
     verify_authenticity(ctx.session(), false)?;
@@ -40,7 +40,7 @@ where
     })?;
 
     let leaf = ctx.repo().repo();
-    let report = scrape_users_to_outbox(leaf, &cfg).await;
+    let report = scrape_users_to_outbox(leaf, ctx.read_model_store(), &cfg).await;
 
     Ok(json!({
         "ok": report.errors.is_empty(),

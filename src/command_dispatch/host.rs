@@ -6,6 +6,7 @@ use std::sync::Arc;
 
 use crate::graphql::identity::VerifiedPrincipal;
 use crate::graphql::protocol::ProtocolResponseAccumulator;
+use crate::microsvc::cell_host::{CELL_PRINCIPAL_PARTITION_HEADER, CELL_SERVICE_ID_HEADER};
 use crate::microsvc::{
     CausalCommandPublicStatus, CausalDispatchError, CausalDispatchResult, Service, Session,
     ROLE_KEY, USER_ID_KEY,
@@ -157,18 +158,57 @@ impl HttpCommandHost {
         input: Value,
         session: &Session,
     ) -> Result<(u16, Value), CausalDispatchError> {
-        let mut request = self
-            .client
-            .post(format!("{}/{command}", self.base))
-            .json(&serde_json::json!({
-                "commandId": command_id,
-                "input": input,
-            }));
+        self.post_wait_path_inner(command, command_id, input, session, None)
+            .await
+    }
+
+    /// POST a cell wait-path command with identity derived by the verified
+    /// GraphQL host. These headers are part of the trusted internal boundary,
+    /// not values copied from public request headers or command input.
+    pub async fn post_cell_wait_path(
+        &self,
+        command: &str,
+        command_id: &str,
+        input: Value,
+        session: &Session,
+        service_id: &str,
+        principal_partition: &str,
+    ) -> Result<(u16, Value), CausalDispatchError> {
+        self.post_wait_path_inner(
+            command,
+            command_id,
+            input,
+            session,
+            Some((service_id, principal_partition)),
+        )
+        .await
+    }
+
+    async fn post_wait_path_inner(
+        &self,
+        command: &str,
+        command_id: &str,
+        input: Value,
+        session: &Session,
+        cell_identity: Option<(&str, &str)>,
+    ) -> Result<(u16, Value), CausalDispatchError> {
+        let mut request =
+            self.client
+                .post(format!("{}/{command}", self.base))
+                .json(&serde_json::json!({
+                    "commandId": command_id,
+                    "input": input,
+                }));
         if let Some(user) = session.user_id() {
             request = request.header(USER_ID_KEY, user);
         }
         if let Some(roles) = session.get(ROLE_KEY) {
             request = request.header(ROLE_KEY, roles);
+        }
+        if let Some((service_id, principal_partition)) = cell_identity {
+            request = request
+                .header(CELL_SERVICE_ID_HEADER, service_id)
+                .header(CELL_PRINCIPAL_PARTITION_HEADER, principal_partition);
         }
         let response = request.send().await.map_err(|err| {
             CausalDispatchError::Internal(format!("wait-path HTTP failed: {err}"))

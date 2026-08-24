@@ -13,7 +13,9 @@ use std::time::Duration;
 use distributed::bus::{PostgresBus, SqliteBus};
 use distributed::command_dispatch::LocalCommandDispatcher;
 use distributed::graphql::IdentityConfig;
-use distributed::microsvc::{spawn_outbox_publish_loop, spawn_service_consumer_loop};
+use distributed::microsvc::{
+    spawn_outbox_publish_loop, spawn_service_consumer_loop, CONSUMER_IDLE_POLL,
+};
 use distributed::{PostgresLockManager, PostgresRepository, SqliteLockManager, SqliteRepository};
 
 use crate::{
@@ -78,7 +80,7 @@ async fn run_sqlite(
         spawn_service_consumer_loop(move || {
             let bus = SqliteBus::new(repo.pool().clone())
                 .group(BUS_GROUP)
-                .with_idle_poll(Duration::from_millis(25));
+                .with_idle_poll(CONSUMER_IDLE_POLL);
             build_service(repo.clone(), locks.clone(), repo.clone()).with_bus(bus)
         });
     }
@@ -122,7 +124,7 @@ async fn run_postgres(
         spawn_service_consumer_loop(move || {
             let bus = PostgresBus::new(repo.pool().clone())
                 .group(BUS_GROUP)
-                .with_idle_poll(Duration::from_millis(25));
+                .with_idle_poll(CONSUMER_IDLE_POLL);
             build_service(repo.clone(), locks.clone(), repo.clone()).with_bus(bus)
         });
     }

@@ -19,6 +19,8 @@ use crate::microsvc::{
     CausalCommandPublicStatus, CausalDispatchError, CausalDispatchResult, Service, Session,
 };
 
+const COMPLETED_STATUS_CACHE_LIMIT: usize = 4_096;
+
 /// One aggregate's cell wait-path: command names, URL kind, shard id, payload.
 #[derive(Clone, Copy)]
 pub struct CelldRoute {
@@ -53,7 +55,7 @@ pub struct CelldCommandHost<P> {
     local: LocalCommandHost,
     routes: Vec<CelldRoute>,
     pending: Arc<Mutex<HashSet<(String, String)>>>,
-    completed: Arc<Mutex<HashMap<String, CausalCommandPublicStatus>>>,
+    completed: Arc<Mutex<HashMap<(String, String), CausalCommandPublicStatus>>>,
 }
 
 impl<P> CelldCommandHost<P>
@@ -86,6 +88,59 @@ where
             .iter()
             .find(|route| route.commands.contains(&command))
     }
+
+    fn service_id(&self) -> Result<&str, CausalDispatchError> {
+        self.local.service().name().ok_or_else(|| {
+            CausalDispatchError::Internal(
+                "celld command host requires a named executable service".into(),
+            )
+        })
+    }
+
+    fn remember_completed(&self, key: (String, String), status: CausalCommandPublicStatus) {
+        let Ok(mut completed) = self.completed.lock() else {
+            return;
+        };
+        if completed.len() >= COMPLETED_STATUS_CACHE_LIMIT && !completed.contains_key(&key) {
+            if let Some(evicted) = completed.keys().next().cloned() {
+                completed.remove(&evicted);
+            }
+        }
+        completed.insert(key, status);
+    }
+}
+
+fn remote_dispatch_error(status: u16, body: &Value) -> CausalDispatchError {
+    let message = body
+        .get("error")
+        .and_then(Value::as_str)
+        .unwrap_or("wait-path rejected")
+        .to_string();
+    match body.get("code").and_then(Value::as_str) {
+        Some("BAD_REQUEST") => CausalDispatchError::BadRequest(message),
+        Some("FORBIDDEN") => CausalDispatchError::Forbidden,
+        Some("COMMAND_ID_REUSE") => CausalDispatchError::CommandIdReuse,
+        Some("COMMAND_IN_PROGRESS") => CausalDispatchError::InProgress,
+        Some("COMMAND_EXPIRED") => CausalDispatchError::Expired,
+        Some("INTERNAL") => {
+            CausalDispatchError::Internal(format!("cell wait-path failed with HTTP {status}"))
+        }
+        Some("UNAUTHORIZED") => CausalDispatchError::Rejected {
+            code: "UNAUTHORIZED",
+            status,
+            message,
+        },
+        Some("NOT_FOUND") => CausalDispatchError::Rejected {
+            code: "NOT_FOUND",
+            status,
+            message,
+        },
+        _ => CausalDispatchError::Rejected {
+            code: "REJECTED",
+            status,
+            message,
+        },
+    }
 }
 
 #[async_trait]
@@ -108,17 +163,28 @@ where
                 .invoke(command, command_id, input, session, principal, protocol)
                 .await;
         };
-        let shard = (route.shard)(&input).filter(|value| !value.is_empty()).ok_or_else(|| {
-            CausalDispatchError::BadRequest(format!(
-                "{} id required for celld wait-path",
-                route.kind
-            ))
-        })?;
+        let shard = (route.shard)(&input)
+            .filter(|value| !value.is_empty())
+            .ok_or_else(|| {
+                CausalDispatchError::BadRequest(format!(
+                    "{} id required for celld wait-path",
+                    route.kind
+                ))
+            })?;
+        let service_id = self.service_id()?.to_string();
+        let principal_partition = principal.partition_for_service(&service_id);
         let http = self
             .http
             .retarget(format!("{}/{}/{}", self.celld_url, route.kind, shard));
         let (status, body) = http
-            .post_wait_path(command, command_id, input.clone(), &session)
+            .post_cell_wait_path(
+                command,
+                command_id,
+                input.clone(),
+                &session,
+                &service_id,
+                &principal_partition,
+            )
             .await?;
         let outbox = CausalDispatchResult::outbox_from_wait_path(&body);
         if !outbox.is_empty() {
@@ -128,20 +194,10 @@ where
         }
         drain_cell_outbox(&http, &self.publisher, &outbox).await;
         if status >= 400 {
-            let message = body
-                .get("error")
-                .and_then(Value::as_str)
-                .unwrap_or("wait-path rejected")
-                .to_string();
-            return Err(CausalDispatchError::Rejected {
-                code: "REJECTED",
-                status,
-                message,
-            });
+            return Err(remote_dispatch_error(status, &body));
         }
-        let remote = CausalDispatchResult::from_wait_path_wire(body).map_err(|error| {
-            CausalDispatchError::Internal(format!("wait-path decode: {error}"))
-        })?;
+        let remote = CausalDispatchResult::from_wait_path_wire(body)
+            .map_err(|error| CausalDispatchError::Internal(format!("wait-path decode: {error}")))?;
         let payload = (route.payload)(command, &input, remote.payload(), &session);
         let mut remote = remote.with_payload(payload);
         if let Some(protocol) = protocol {
@@ -149,10 +205,11 @@ where
                 .local
                 .service()
                 .seal_wait_path_dispatch(command, &protocol, remote)?;
-            if let Ok(mut guard) = self.completed.lock() {
-                guard.insert(command_id.to_string(), remote.public_status());
-            }
         }
+        self.remember_completed(
+            (principal_partition, command_id.to_string()),
+            remote.public_status(),
+        );
         Ok(remote)
     }
 
@@ -163,11 +220,14 @@ where
         principal: VerifiedPrincipal,
         protocol: Option<ProtocolResponseAccumulator>,
     ) -> Result<CausalCommandPublicStatus, CausalDispatchError> {
+        let service_id = self.service_id()?;
+        let principal_partition = principal.partition_for_service(service_id);
+        let key = (principal_partition, command_id.to_string());
         if let Some(status) = self
             .completed
             .lock()
             .ok()
-            .and_then(|guard| guard.get(command_id).cloned())
+            .and_then(|guard| guard.get(&key).cloned())
         {
             return Ok(status);
         }
