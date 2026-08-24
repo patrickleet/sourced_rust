@@ -118,8 +118,9 @@ pub trait GetStream: Send + Sync {
     /// not optimized.
     ///
     /// The returned entity's `version`/`committed_version` reflect the true
-    /// persisted stream position (`after_version + tail.len()`), not the tail
-    /// length, so optimistic concurrency and `new_events()` stay correct.
+    /// persisted stream position (`max(sequence)`), not the tail length.
+    /// When `after_version` is past the stream (stale or planted snapshot
+    /// cache), prefix is clamped so hydrate treats that snapshot as a miss.
     ///
     /// [`get_stream`]: GetStream::get_stream
     fn get_stream_tail<'a>(

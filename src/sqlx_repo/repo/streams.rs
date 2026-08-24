@@ -137,19 +137,28 @@ where
                 .await
                 .map_err(|err| repository_storage_error::<DB>("load stream tail", err))?;
 
-            // An empty tail is ambiguous from this query alone (no rows could
-            // mean "snapshot is current" or "stream does not exist"). The
-            // snapshot hydrate path only calls this after confirming a snapshot
-            // exists for the identity, so an empty tail means the snapshot is
-            // current. Return an entity at exactly `after_version`.
             let mut events = Vec::with_capacity(rows.len());
             for row in rows {
                 events.push(event_from_row::<DB>(row)?);
             }
 
+            // Empty tail is "snapshot current", "snapshot ahead of the stream",
+            // or "no events". Ask MAX(sequence) so a planted future snapshot
+            // cannot report `version == after_version` and hydrate forged state.
+            let prefix = if events.is_empty() {
+                let stream_version =
+                    super::commit::stream_version::<DB, _>(&self.pool, identity).await?;
+                if stream_version == 0 {
+                    return Ok(None);
+                }
+                after_version.min(stream_version)
+            } else {
+                after_version
+            };
+
             let mut entity = Entity::new();
             entity.set_id(identity.aggregate_id());
-            entity.load_tail_from_history(events, after_version);
+            entity.load_tail_from_history(events, prefix);
             Ok(Some(entity))
         }
     }

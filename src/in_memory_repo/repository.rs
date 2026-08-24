@@ -538,14 +538,20 @@ impl GetStream for InMemoryRepository {
             let Some(events) = storage.get(&identity.storage_key()) else {
                 return Ok(None);
             };
+            let true_version = events.iter().map(|event| event.sequence).max().unwrap_or(0);
             let tail: Vec<EventRecord> = events
                 .iter()
                 .filter(|event| event.sequence > after_version)
                 .cloned()
                 .collect();
+            // Prefix must not exceed the durable stream. A snapshot cache
+            // planted past stream version would otherwise report
+            // `version == after_version` on an empty tail and hydrate the
+            // forged payload (`snapshot_repository_ignores_cache_past_stream_version`).
+            let prefix = after_version.min(true_version);
             let mut entity = Entity::new();
             entity.set_id(identity.aggregate_id());
-            entity.load_tail_from_history(tail, after_version);
+            entity.load_tail_from_history(tail, prefix);
             Ok(Some(entity))
         }
     }

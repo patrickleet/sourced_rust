@@ -102,7 +102,7 @@ impl std::str::FromStr for OutboxMessageStatus {
 /// The message is an immutable publishable envelope plus mutable delivery state.
 /// It is not an aggregate stream; repositories store it in their outbox storage
 /// and workers update delivery state directly.
-#[derive(Clone, Debug, Serialize, Deserialize)]
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 #[non_exhaustive]
 pub struct OutboxMessage {
     pub id: String,
