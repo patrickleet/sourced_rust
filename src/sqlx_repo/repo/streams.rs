@@ -143,15 +143,17 @@ where
             }
 
             // Empty tail is "snapshot current", "snapshot ahead of the stream",
-            // or "no events". Ask MAX(sequence) so a planted future snapshot
-            // cannot report `version == after_version` and hydrate forged state.
+            // or "no event rows" (sqlite hardening deletes pre-snapshot rows).
+            // MAX(sequence) distinguishes a planted future snapshot (clamp) from
+            // a snapshot-only load (no rows → keep after_version).
             let prefix = if events.is_empty() {
                 let stream_version =
                     super::commit::stream_version::<DB, _>(&self.pool, identity).await?;
                 if stream_version == 0 {
-                    return Ok(None);
+                    after_version
+                } else {
+                    after_version.min(stream_version)
                 }
-                after_version.min(stream_version)
             } else {
                 after_version
             };
