@@ -10,7 +10,10 @@ import {
 	createDistributedReplica,
 	replicaRecordKey
 } from '../dist/replica/index.js';
-import { replicaCommandProjectionDelta } from '../dist/replica/command-runtime.js';
+import {
+	replicaCommandDirectProjection,
+	replicaCommandProjectionDelta
+} from '../dist/replica/command-runtime.js';
 import {
 	COMMAND_CONSISTENCY,
 	COMMAND_STATE,
@@ -725,6 +728,69 @@ test('comparable live snapshot cannot drop an Eventual list row after confirmati
 	assert.deepEqual(replica.read(Todos, {}).data.todos, [
 		{ id: 'todo-1', title: 'first' },
 		{ id: 'todo-2', title: 'posted' }
+	]);
+});
+
+test('Atomic direct projection does not hold later complete @load membership', () => {
+	const replica = createDistributedReplica();
+	write(replica, {
+		position: '1',
+		rows: [{ id: 'todo-1', title: 'first' }]
+	});
+	replica.createOptimisticLayer('cmd-atomic-start', (writer) => {
+		writer.writeRecord(Todo, 'todo-2', {
+			fields: { id: 'todo-2', title: 'started' }
+		});
+		writer.writeIndex(
+			{
+				field: 'todos',
+				arguments: {},
+				dependencies: ['todos'],
+				complete: true
+			},
+			[replicaRecordKey(Todo, 'todo-1'), replicaRecordKey(Todo, 'todo-2')]
+		);
+	});
+	replica[replicaCommandDirectProjection]('cmd-atomic-start', {
+		model: Todo,
+		identity: 'todo-2',
+		evidence: {
+			model: Todo.id,
+			scopeToken: 'record:todo-2',
+			incarnation: '1',
+			revision: '2',
+			tombstone: false
+		},
+		fields: { id: 'todo-2', title: 'started', __typename: Todo.id }
+	});
+	write(replica, {
+		position: '2',
+		rows: [
+			{ id: 'todo-1', title: 'first' },
+			{ id: 'todo-2', title: 'started' }
+		],
+		records: [
+			{
+				path: ['todos', '0'],
+				model: Todo.id,
+				scopeToken: 'record:todo-1',
+				incarnation: '1',
+				revision: '2',
+				tombstone: false
+			},
+			{
+				path: ['todos', '1'],
+				model: Todo.id,
+				scopeToken: 'record:todo-2',
+				incarnation: '1',
+				revision: '2',
+				tombstone: false
+			}
+		]
+	});
+	assert.deepEqual(replica.read(Todos, {}).data.todos, [
+		{ id: 'todo-1', title: 'first' },
+		{ id: 'todo-2', title: 'started' }
 	]);
 });
 
