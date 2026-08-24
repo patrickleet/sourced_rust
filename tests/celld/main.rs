@@ -7,7 +7,11 @@
 use std::path::Path;
 use std::time::Duration;
 
+use distributed::cell_host::{CELL_PRINCIPAL_PARTITION_HEADER, CELL_SERVICE_ID_HEADER};
 use serde_json::Value;
+
+const TEST_SERVICE_ID: &str = "celld-live-test";
+const TEST_PRINCIPAL_PARTITION: &str = "test-principal-alice";
 
 #[path = "../support/env.rs"]
 mod env_support;
@@ -58,6 +62,9 @@ fn worker_declares_sqlite_todo_and_chat_cells() {
     assert!(source.contains("outbox.complete"));
     assert!(source.contains("outbox.drain"));
     assert!(source.contains("CREATE TABLE IF NOT EXISTS cell_outbox"));
+    assert!(source.contains("CREATE TABLE IF NOT EXISTS cell_commands"));
+    assert!(source.contains("dispatch_idempotent"));
+    assert!(source.contains("restore_durable_commands"));
     assert!(source.contains("sealed_row"));
     assert!(source.contains("new_with_snapshots"));
     assert!(source.contains("restore_durable_events"));
@@ -100,7 +107,7 @@ fn compose_file_does_not_use_minio() {
 }
 
 #[tokio::test]
-async fn live_todo_cell_create_complete_and_isolate() {
+async fn live_todo_cell_create_complete_reopen_archive_and_isolate() {
     let Some(base) = env_support::broker_env("CELLD_URL", "celld live Todo cell") else {
         return;
     };
@@ -115,17 +122,19 @@ async fn live_todo_cell_create_complete_and_isolate() {
     let a = unique_todo();
     let b = unique_todo();
 
-    let created = client
-        .post(format!("{base}/todo/{a}/todo.create"))
-        .header("x-user-id", "alice")
-        .header("x-roles", "user")
-        .json(&serde_json::json!({
-            "commandId": "0190a000-0000-7000-8000-000000000201",
-            "input": { "title": "ship celld" }
-        }))
-        .send()
-        .await
-        .expect("create");
+    let created = trusted_cell_request(
+        client
+            .post(format!("{base}/todo/{a}/todo.create"))
+            .header("x-user-id", "alice")
+            .header("x-roles", "user"),
+    )
+    .json(&serde_json::json!({
+        "commandId": "0190a000-0000-7000-8000-000000000201",
+        "input": { "title": "ship celld" }
+    }))
+    .send()
+    .await
+    .expect("create");
     assert_eq!(created.status(), 201, "{}", created.text().await.unwrap());
     let created: Value = created.json().await.unwrap();
     assert_eq!(created["payload"]["id"], a);
@@ -134,18 +143,60 @@ async fn live_todo_cell_create_complete_and_isolate() {
         created["receipt"]["commandId"],
         "0190a000-0000-7000-8000-000000000201"
     );
+    let causation_id = created["receipt"]["causationId"]
+        .as_str()
+        .expect("causationId")
+        .to_string();
 
-    let completed = client
-        .post(format!("{base}/todo/{a}/todo.complete"))
-        .header("x-user-id", "alice")
-        .header("x-roles", "user")
-        .json(&serde_json::json!({
-            "commandId": "0190a000-0000-7000-8000-000000000202",
-            "input": {}
-        }))
-        .send()
-        .await
-        .expect("complete");
+    let replay = trusted_cell_request(
+        client
+            .post(format!("{base}/todo/{a}/todo.create"))
+            .header("x-user-id", "alice")
+            .header("x-roles", "user"),
+    )
+    .json(&serde_json::json!({
+        "commandId": "0190a000-0000-7000-8000-000000000201",
+        "input": { "title": "ship celld" }
+    }))
+    .send()
+    .await
+    .expect("replay create");
+    assert_eq!(replay.status(), 201, "{}", replay.text().await.unwrap());
+    let replay: Value = replay.json().await.unwrap();
+    assert_eq!(replay["receipt"]["replayed"], true);
+    assert_eq!(replay["receipt"]["causationId"], causation_id);
+    assert_eq!(replay["payload"], created["payload"]);
+
+    let conflict = trusted_cell_request(
+        client
+            .post(format!("{base}/todo/{a}/todo.create"))
+            .header("x-user-id", "alice")
+            .header("x-roles", "user"),
+    )
+    .json(&serde_json::json!({
+        "commandId": "0190a000-0000-7000-8000-000000000201",
+        "input": { "title": "different input" }
+    }))
+    .send()
+    .await
+    .expect("conflicting create");
+    assert_eq!(conflict.status(), 409, "{}", conflict.text().await.unwrap());
+    let conflict: Value = conflict.json().await.unwrap();
+    assert_eq!(conflict["code"], "COMMAND_ID_REUSE");
+
+    let completed = trusted_cell_request(
+        client
+            .post(format!("{base}/todo/{a}/todo.complete"))
+            .header("x-user-id", "alice")
+            .header("x-roles", "user"),
+    )
+    .json(&serde_json::json!({
+        "commandId": "0190a000-0000-7000-8000-000000000202",
+        "input": {}
+    }))
+    .send()
+    .await
+    .expect("complete");
     assert_eq!(
         completed.status(),
         200,
@@ -159,6 +210,40 @@ async fn live_todo_cell_create_complete_and_isolate() {
         "0190a000-0000-7000-8000-000000000202"
     );
 
+    let reopened = trusted_cell_request(
+        client
+            .post(format!("{base}/todo/{a}/todo.reopen"))
+            .header("x-user-id", "alice")
+            .header("x-roles", "user"),
+    )
+    .json(&serde_json::json!({
+        "commandId": "0190a000-0000-7000-8000-000000000203",
+        "input": {}
+    }))
+    .send()
+    .await
+    .expect("reopen");
+    assert_eq!(reopened.status(), 200, "{}", reopened.text().await.unwrap());
+    let reopened: Value = reopened.json().await.unwrap();
+    assert_eq!(reopened["payload"]["status"], "open");
+
+    let archived = trusted_cell_request(
+        client
+            .post(format!("{base}/todo/{a}/todo.archive"))
+            .header("x-user-id", "alice")
+            .header("x-roles", "user"),
+    )
+    .json(&serde_json::json!({
+        "commandId": "0190a000-0000-7000-8000-000000000204",
+        "input": {}
+    }))
+    .send()
+    .await
+    .expect("archive");
+    assert_eq!(archived.status(), 200, "{}", archived.text().await.unwrap());
+    let archived: Value = archived.json().await.unwrap();
+    assert_eq!(archived["payload"]["status"], "archived");
+
     let got: Value = client
         .get(format!("{base}/todo/{a}"))
         .send()
@@ -168,7 +253,7 @@ async fn live_todo_cell_create_complete_and_isolate() {
         .await
         .unwrap();
     assert_eq!(got["title"], "ship celld");
-    assert_eq!(got["status"], "completed");
+    assert_eq!(got["status"], "archived");
 
     let other = client
         .get(format!("{base}/todo/{b}"))
@@ -195,21 +280,24 @@ async fn live_chat_cell_post_and_isolate() {
     let b = unique_chat();
     let created_at = unix_millis();
 
-    let posted = client
-        .post(format!("{base}/chat/{a}/chat.post"))
-        .header("x-user-id", "alice")
-        .json(&serde_json::json!({
-            "commandId": "0190a000-0000-7000-8000-000000000301",
-            "input": {
-                "message_id": a,
-                "room_id": "lobby",
-                "body": "hello from a cell",
-                "created_at": created_at,
-            }
-        }))
-        .send()
-        .await
-        .expect("post");
+    let posted = trusted_cell_request(
+        client
+            .post(format!("{base}/chat/{a}/chat.post"))
+            .header("x-user-id", "alice")
+            .header("x-roles", "user"),
+    )
+    .json(&serde_json::json!({
+        "commandId": "0190a000-0000-7000-8000-000000000301",
+        "input": {
+            "message_id": a,
+            "room_id": "lobby",
+            "body": "hello from a cell",
+            "created_at": created_at,
+        }
+    }))
+    .send()
+    .await
+    .expect("post");
     assert_eq!(posted.status(), 201, "{}", posted.text().await.unwrap());
     let posted: Value = posted.json().await.unwrap();
     assert_eq!(posted["payload"]["message_id"], a);
@@ -234,19 +322,17 @@ async fn live_chat_cell_post_and_isolate() {
 
     let pending = posted["outbox"].as_array().cloned().unwrap_or_default();
     if !pending.is_empty() {
-        let ids: Vec<Value> = pending.iter().filter_map(|row| row.get("id").cloned()).collect();
+        let ids: Vec<Value> = pending
+            .iter()
+            .filter_map(|row| row.get("id").cloned())
+            .collect();
         let complete = client
             .post(format!("{base}/chat/{a}/outbox.complete"))
             .json(&serde_json::json!({ "ids": ids }))
             .send()
             .await
             .expect("outbox.complete");
-        assert_eq!(
-            complete.status(),
-            200,
-            "{}",
-            complete.text().await.unwrap()
-        );
+        assert_eq!(complete.status(), 200, "{}", complete.text().await.unwrap());
         let drained: Value = client
             .post(format!("{base}/chat/{a}/outbox.drain"))
             .json(&serde_json::json!({
@@ -292,6 +378,12 @@ fn unix_millis() -> String {
         .expect("clock")
         .as_millis()
         .to_string()
+}
+
+fn trusted_cell_request(request: reqwest::RequestBuilder) -> reqwest::RequestBuilder {
+    request
+        .header(CELL_SERVICE_ID_HEADER, TEST_SERVICE_ID)
+        .header(CELL_PRINCIPAL_PARTITION_HEADER, TEST_PRINCIPAL_PARTITION)
 }
 
 async fn wait_healthy(client: &reqwest::Client, base: &str) {

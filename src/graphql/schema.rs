@@ -681,6 +681,7 @@ async fn execute_cell_by_key(
     inner: &EngineInner,
     model: &str,
     pk: &BTreeMap<String, String>,
+    row_filter: Option<&super::filter::FilterExpr>,
     selection: &compile::SelectionNode,
 ) -> Result<Value, String> {
     let getter = inner
@@ -690,6 +691,16 @@ async fn execute_cell_by_key(
     let Some(row) = getter.get_sealed_row(pk).await? else {
         return Ok(Value::Null);
     };
+    if let Some(filter) = row_filter {
+        let schema = &inner
+            .catalog
+            .get(model)
+            .ok_or_else(|| format!("unknown model `{model}`"))?
+            .schema;
+        if !compile::cell_row_matches(schema, filter, &row) {
+            return Ok(Value::Null);
+        }
+    }
     let mut out = serde_json::Map::new();
     for child in &selection.children {
         if child.field_name == "__typename" {
@@ -736,7 +747,11 @@ async fn resolve_root(
     let plan = compile::compile_query(&inner, &session, &role, model, kind, &selection)
         .map_err(|e| client_error("BAD_REQUEST", sanitize_compile_error(&e)))?;
     let value = match plan {
-        QueryPlan::CellByKey { model, pk } => execute_cell_by_key(&inner, &model, &pk, &selection)
+        QueryPlan::CellByKey {
+            model,
+            pk,
+            row_filter,
+        } => execute_cell_by_key(&inner, &model, &pk, row_filter.as_ref(), &selection)
             .await
             .map_err(|e| client_error("BAD_REQUEST", sanitize_compile_error(&e)))?,
         QueryPlan::Sql(plan) => {

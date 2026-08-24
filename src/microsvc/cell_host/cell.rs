@@ -5,7 +5,8 @@ use std::collections::HashMap;
 
 use serde_json::Value;
 
-use super::store::{CellStreamStore, DurableCellEvents, DurableCellSnapshot};
+use super::causal::{CellCommandIdentity, CellDispatchError, CellDispatchResult};
+use super::store::{CellStreamStore, DurableCellCommand, DurableCellEvents, DurableCellSnapshot};
 use crate::aggregate::{Aggregate, AggregateRepository};
 use crate::microsvc::error::HandlerError;
 use crate::microsvc::service::{PortableCommand, Routes};
@@ -105,6 +106,23 @@ where
             .await
     }
 
+    /// Dispatch a wait-path command through this cell's fenced command ledger.
+    ///
+    /// Same principal/command ID plus the same canonical typed input replays
+    /// the original payload without invoking the handler. Reusing the ID for a
+    /// different command or input fails before domain effects can commit.
+    pub async fn dispatch_idempotent(
+        &self,
+        command: &str,
+        identity: &CellCommandIdentity,
+        input: Value,
+        session: Session,
+    ) -> Result<CellDispatchResult, CellDispatchError> {
+        self.routes
+            .dispatch_cell_causal(command, identity, input, session, &self.shard)
+            .await
+    }
+
     /// Load this cell's aggregate from the private stream store.
     ///
     /// HTTP GET on the cell host is a stream load, not a GraphQL/projector
@@ -153,6 +171,19 @@ where
             .repo()
             .repo()
             .restore_durable_snapshots(snapshots)
+    }
+
+    /// Command-ledger rows for Durable Object SQLite.
+    pub fn durable_commands(&self) -> Result<Vec<DurableCellCommand>, RepositoryError> {
+        self.routes.repo().repo().durable_commands()
+    }
+
+    /// Restore command-ledger rows before accepting another wait-path request.
+    pub fn restore_durable_commands(
+        &self,
+        commands: Vec<DurableCellCommand>,
+    ) -> Result<(), RepositoryError> {
+        self.routes.repo().repo().restore_durable_commands(commands)
     }
 
     /// Read the repository snapshot cache for this cell's shard.

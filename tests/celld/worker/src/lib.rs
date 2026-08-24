@@ -8,12 +8,18 @@
 use std::time::Duration;
 
 use chat_domain::{post, ChatMessage, ChatMessageState};
-use distributed::cell_host::{AggregateCell, DurableCellEvents, DurableCellSnapshot};
-use distributed::microsvc::{HandlerError, Session, ROLE_KEY, USER_ID_KEY};
+use distributed::cell_host::{
+    AggregateCell, CellCommandIdentity, CellDispatchError, CellDispatchResult, DurableCellCommand,
+    DurableCellEvents, DurableCellSnapshot, CELL_PRINCIPAL_PARTITION_HEADER,
+    CELL_SERVICE_ID_HEADER,
+};
+use distributed::microsvc::{Session, ROLE_KEY, USER_ID_KEY};
 use distributed::{EventRecord, OutboxMessage, OutboxMessageStatus};
 use serde::Deserialize;
 use serde_json::{json, Value};
-use todo_domain::{complete, create, Todo, TodoState};
+use todo_domain::{
+    archive, complete, create, force_archive, purge, rename, reopen, Todo, TodoState,
+};
 use worker::*;
 
 const EVENTS_DDL: &str = "CREATE TABLE IF NOT EXISTS cell_events (
@@ -38,6 +44,11 @@ const OUTBOX_DDL: &str = "CREATE TABLE IF NOT EXISTS cell_outbox (
   body TEXT NOT NULL
 )";
 
+const COMMANDS_DDL: &str = "CREATE TABLE IF NOT EXISTS cell_commands (
+  id TEXT PRIMARY KEY,
+  body TEXT NOT NULL
+)";
+
 #[durable_object]
 pub struct TodoCell {
     cell: AggregateCell<Todo>,
@@ -57,16 +68,25 @@ impl DurableObject for TodoCell {
             .expect("create cell_snapshots");
         sql.exec(SEALED_DDL, None).expect("create cell_sealed");
         sql.exec(OUTBOX_DDL, None).expect("create cell_outbox");
+        sql.exec(COMMANDS_DDL, None).expect("create cell_commands");
         let shard = state.id().name().unwrap_or_else(|| "todo".to_string());
         let cell = AggregateCell::<Todo>::new_with_snapshots(shard.clone(), 1)
             .expect("todo cell identity")
             .mount(create())
-            .mount(complete());
+            .mount(rename())
+            .mount(complete())
+            .mount(reopen())
+            .mount(archive())
+            .mount(force_archive())
+            .mount(purge());
         if let Ok(events) = load_events(&sql) {
             let _ = cell.restore_durable_events(events);
         }
         if let Ok(snapshots) = load_snapshots(&sql) {
             let _ = cell.restore_durable_snapshots(snapshots);
+        }
+        if let Ok(commands) = load_commands(&sql) {
+            let _ = cell.restore_durable_commands(commands);
         }
         Self {
             cell,
@@ -106,13 +126,24 @@ impl DurableObject for TodoCell {
                 )
                 .await
             }
-            (Method::Post, Some("todo.complete")) => {
-                complete_todo(
+            (Method::Post, Some(command))
+                if matches!(
+                    command,
+                    "todo.rename"
+                        | "todo.complete"
+                        | "todo.reopen"
+                        | "todo.archive"
+                        | "todo.force_archive"
+                        | "todo.purge"
+                ) =>
+            {
+                transition_todo(
                     &self.sql,
                     &self.storage,
                     &self.env,
                     &self.cell,
                     &id,
+                    command,
                     &mut req,
                 )
                 .await
@@ -150,12 +181,16 @@ impl DurableObject for ChatCell {
         sql.exec(EVENTS_DDL, None).expect("create cell_events");
         sql.exec(SEALED_DDL, None).expect("create cell_sealed");
         sql.exec(OUTBOX_DDL, None).expect("create cell_outbox");
+        sql.exec(COMMANDS_DDL, None).expect("create cell_commands");
         let shard = state.id().name().unwrap_or_else(|| "chat".to_string());
         let cell = AggregateCell::<ChatMessage>::new(shard.clone())
             .expect("chat cell identity")
             .mount(post());
         if let Ok(events) = load_events(&sql) {
             let _ = cell.restore_durable_events(events);
+        }
+        if let Ok(commands) = load_commands(&sql) {
+            let _ = cell.restore_durable_commands(commands);
         }
         Self {
             cell,
@@ -225,7 +260,7 @@ async fn main(req: Request, env: Env, _ctx: Context) -> Result<Response> {
         (Some("chat"), Some(id)) => ("CHAT", id),
         _ => {
             return Response::error(
-                "cells: GET|POST /todo/:id[/todo.create|todo.complete|outbox.drain|outbox.complete]  GET|POST /chat/:id[/chat.post|outbox.drain|outbox.complete]\n",
+                "cells: GET|POST /todo/:id[/todo.<command>|outbox.drain|outbox.complete]  GET|POST /chat/:id[/chat.post|outbox.drain|outbox.complete]\n",
                 404,
             );
         }
@@ -283,31 +318,39 @@ async fn post_chat(
 ) -> Result<Response> {
     let session = request_session(req);
     let body = req.json::<Value>().await.unwrap_or(json!({}));
-    let (command_id, mut input) = wait_path_parts(&body);
+    let (command_id, mut input) = match wait_path_parts(&body) {
+        Ok(parts) => parts,
+        Err(error) => return map_cell_error(error, cell),
+    };
+    let identity = match request_cell_identity(req, &command_id) {
+        Ok(identity) => identity,
+        Err(error) => return map_cell_error(error, cell),
+    };
     if input.get("message_id").and_then(Value::as_str).is_none() {
         input
             .as_object_mut()
             .map(|object| object.insert("message_id".into(), json!(id)));
     }
-    match cell.dispatch("chat.post", input, session).await {
-        Ok(payload) => {
+    match cell
+        .dispatch_idempotent("chat.post", &identity, input, session)
+        .await
+    {
+        Ok(dispatch) => {
             seal_chat_from_load(cell).await;
             persist_chat_copy(sql, cell)?;
             arm_drain_alarm(storage, env, has_pending(cell)).await;
-            wait_path_ok(payload, command_id, 201, outbox_wire(cell))
-        }
-        Err(HandlerError::Rejected(message)) if message.contains("already exists") => {
-            arm_drain_alarm(storage, env, has_pending(cell)).await;
-            json_status(
-                json!({
-                    "error": "already exists",
-                    "id": id,
-                    "outbox": outbox_wire(cell),
-                }),
-                409,
+            wait_path_ok(
+                dispatch.payload().clone(),
+                &dispatch,
+                201,
+                outbox_wire(cell),
             )
         }
-        Err(error) => map_handler_error(error),
+        Err(error) => {
+            persist_chat_copy(sql, cell)?;
+            arm_drain_alarm(storage, env, has_pending(cell)).await;
+            map_cell_error(error, cell)
+        }
     }
 }
 
@@ -327,6 +370,9 @@ fn restore_chat_copy(
 ) -> std::result::Result<(), String> {
     let events = load_events(sql).map_err(|error| error.to_string())?;
     cell.restore_durable_events(events)
+        .map_err(|error| error.to_string())?;
+    let commands = load_commands(sql).map_err(|error| error.to_string())?;
+    cell.restore_durable_commands(commands)
         .map_err(|error| error.to_string())?;
     let outbox = load_outbox(sql).map_err(|error| error.to_string())?;
     cell.restore_durable_outbox(outbox)
@@ -363,6 +409,7 @@ fn persist_chat_copy(sql: &SqlStorage, cell: &AggregateCell<ChatMessage>) -> Res
             )?;
         }
     }
+    persist_commands(sql, cell)?;
     persist_outbox(sql, cell)?;
     sql.exec("DELETE FROM cell_sealed", None)?;
     if let Ok(Some(row)) = cell.sealed_row() {
@@ -387,34 +434,60 @@ async fn get_todo(cell: &AggregateCell<Todo>, id: &str) -> Result<Response> {
     }
 }
 
-fn wait_path_parts(body: &Value) -> (Option<String>, Value) {
+fn wait_path_parts(body: &Value) -> std::result::Result<(String, Value), CellDispatchError> {
     let command_id = body
         .get("commandId")
         .and_then(Value::as_str)
         .map(str::trim)
         .filter(|value| !value.is_empty())
-        .map(str::to_string);
+        .map(str::to_string)
+        .ok_or_else(|| CellDispatchError::BadRequest("commandId is required".into()))?;
     let input = body.get("input").cloned().unwrap_or_else(|| body.clone());
-    (command_id, input)
+    Ok((command_id, input))
+}
+
+fn request_cell_identity(
+    req: &Request,
+    command_id: &str,
+) -> std::result::Result<CellCommandIdentity, CellDispatchError> {
+    let service_id = required_internal_header(req, CELL_SERVICE_ID_HEADER)?;
+    let principal_partition = required_internal_header(req, CELL_PRINCIPAL_PARTITION_HEADER)?;
+    CellCommandIdentity::new(service_id, principal_partition, command_id)
+}
+
+fn required_internal_header(
+    req: &Request,
+    name: &str,
+) -> std::result::Result<String, CellDispatchError> {
+    req.headers()
+        .get(name)
+        .map_err(|error| {
+            CellDispatchError::Internal(format!("could not read internal cell header: {error}"))
+        })?
+        .map(|value| value.trim().to_string())
+        .filter(|value| !value.is_empty())
+        .ok_or(CellDispatchError::Unauthorized)
 }
 
 fn wait_path_ok(
     payload: Value,
-    command_id: Option<String>,
+    dispatch: &CellDispatchResult,
     status: u16,
     outbox: Value,
 ) -> Result<Response> {
-    match command_id {
-        Some(command_id) => json_status(
-            json!({
-                "payload": payload,
-                "receipt": { "commandId": command_id, "state": "succeeded" },
-                "outbox": outbox,
-            }),
-            status,
-        ),
-        None => json_status(payload, status),
-    }
+    json_status(
+        json!({
+            "payload": payload,
+            "receipt": {
+                "commandId": dispatch.command_id(),
+                "causationId": dispatch.causation_id(),
+                "state": dispatch.state(),
+                "replayed": dispatch.replayed(),
+            },
+            "outbox": outbox,
+        }),
+        status,
+    )
 }
 
 fn outbox_wire<A>(cell: &AggregateCell<A>) -> Value
@@ -449,64 +522,79 @@ async fn create_todo(
     req: &mut Request,
 ) -> Result<Response> {
     let body = req.json::<Value>().await.unwrap_or(json!({}));
-    let (command_id, input) = wait_path_parts(&body);
+    let (command_id, input) = match wait_path_parts(&body) {
+        Ok(parts) => parts,
+        Err(error) => return map_cell_error(error, cell),
+    };
+    let identity = match request_cell_identity(req, &command_id) {
+        Ok(identity) => identity,
+        Err(error) => return map_cell_error(error, cell),
+    };
     let title = input
         .get("title")
         .and_then(Value::as_str)
         .unwrap_or("")
-        .trim();
-    if title.is_empty() {
-        return json_status(json!({ "error": "title required" }), 400);
-    }
+        .to_string();
     match cell
-        .dispatch(
+        .dispatch_idempotent(
             "todo.create",
+            &identity,
             json!({ "todo_id": id, "title": title }),
             request_session(req),
         )
         .await
     {
-        Ok(payload) => {
+        Ok(dispatch) => {
             seal_from_load(cell).await;
             persist_working_copy(sql, cell)?;
             arm_drain_alarm(storage, env, has_pending(cell)).await;
             wait_path_ok(
-                http_from_command(id, &payload, title),
-                command_id,
+                http_from_command(id, dispatch.payload(), &title),
+                &dispatch,
                 201,
                 outbox_wire(cell),
             )
         }
-        Err(HandlerError::Rejected(message)) if message.contains("already exists") => {
+        Err(error) => {
+            persist_working_copy(sql, cell)?;
             arm_drain_alarm(storage, env, has_pending(cell)).await;
-            json_status(
-                json!({
-                    "error": "already exists",
-                    "id": id,
-                    "outbox": outbox_wire(cell),
-                }),
-                409,
-            )
+            map_cell_error(error, cell)
         }
-        Err(error) => map_handler_error(error),
     }
 }
 
-async fn complete_todo(
+async fn transition_todo(
     sql: &SqlStorage,
     storage: &Storage,
     env: &Env,
     cell: &AggregateCell<Todo>,
     id: &str,
+    command: &str,
     req: &mut Request,
 ) -> Result<Response> {
     let body = req.json::<Value>().await.unwrap_or(json!({}));
-    let (command_id, _input) = wait_path_parts(&body);
+    let (command_id, mut input) = match wait_path_parts(&body) {
+        Ok(parts) => parts,
+        Err(error) => return map_cell_error(error, cell),
+    };
+    let identity = match request_cell_identity(req, &command_id) {
+        Ok(identity) => identity,
+        Err(error) => return map_cell_error(error, cell),
+    };
+    let Some(input_object) = input.as_object_mut() else {
+        return map_cell_error(
+            CellDispatchError::BadRequest("input must be an object".into()),
+            cell,
+        );
+    };
+    input_object
+        .entry("todo_id".to_string())
+        .or_insert_with(|| json!(id));
     match cell
-        .dispatch("todo.complete", json!({ "todo_id": id }), request_session(req))
+        .dispatch_idempotent(command, &identity, input, request_session(req))
         .await
     {
-        Ok(payload) => {
+        Ok(dispatch) => {
             seal_from_load(cell).await;
             persist_working_copy(sql, cell)?;
             arm_drain_alarm(storage, env, has_pending(cell)).await;
@@ -518,23 +606,17 @@ async fn complete_todo(
                 .map(|todo| TodoState::from(&todo).title)
                 .unwrap_or_default();
             wait_path_ok(
-                http_from_command(id, &payload, &title),
-                command_id,
+                http_from_command(id, dispatch.payload(), &title),
+                &dispatch,
                 200,
                 outbox_wire(cell),
             )
         }
-        Err(HandlerError::NotFound(_)) => {
-            json_status(json!({ "error": "not found", "id": id }), 404)
+        Err(error) => {
+            persist_working_copy(sql, cell)?;
+            arm_drain_alarm(storage, env, has_pending(cell)).await;
+            map_cell_error(error, cell)
         }
-        Err(HandlerError::Rejected(message)) if message.to_lowercase().contains("not found") => {
-            json_status(json!({ "error": "not found", "id": id }), 404)
-        }
-        Err(HandlerError::Rejected(message)) if message.contains("not open") => json_status(
-            json!({ "error": "not open", "id": id, "status": "completed" }),
-            422,
-        ),
-        Err(error) => map_handler_error(error),
     }
 }
 
@@ -547,24 +629,32 @@ fn http_todo(state: &TodoState) -> Value {
 }
 
 fn http_from_command(id: &str, payload: &Value, fallback_title: &str) -> Value {
-    json!({
-        "id": payload.get("todo_id").cloned().unwrap_or_else(|| json!(id)),
-        "todo_id": payload.get("todo_id").cloned().unwrap_or_else(|| json!(id)),
-        "owner_id": payload.get("owner_id").cloned().unwrap_or(json!("")),
-        "title": payload.get("title").cloned().unwrap_or_else(|| json!(fallback_title)),
-        "status": payload.get("status").cloned().unwrap_or_else(|| json!("open")),
-    })
+    let mut body = payload.as_object().cloned().unwrap_or_default();
+    body.entry("id".to_string()).or_insert_with(|| json!(id));
+    body.entry("todo_id".to_string())
+        .or_insert_with(|| json!(id));
+    body.entry("owner_id".to_string())
+        .or_insert_with(|| json!(""));
+    body.entry("title".to_string())
+        .or_insert_with(|| json!(fallback_title));
+    body.entry("status".to_string())
+        .or_insert_with(|| json!("open"));
+    Value::Object(body)
 }
 
-fn map_handler_error(error: HandlerError) -> Result<Response> {
-    let status = match &error {
-        HandlerError::NotFound(_) => 404,
-        HandlerError::Unauthorized(_) | HandlerError::GuardRejected(_) => 401,
-        HandlerError::Rejected(_) => 422,
-        HandlerError::DecodeFailed(_) => 400,
-        _ => 500,
-    };
-    json_status(json!({ "error": error.to_string() }), status)
+fn map_cell_error<A>(error: CellDispatchError, cell: &AggregateCell<A>) -> Result<Response>
+where
+    A: distributed::Aggregate + Send + Sync + 'static,
+{
+    let status = error.status_code();
+    json_status(
+        json!({
+            "error": error.client_message(),
+            "code": error.code(),
+            "outbox": outbox_wire(cell),
+        }),
+        status,
+    )
 }
 
 fn json_status(body: Value, status: u16) -> Result<Response> {
@@ -588,6 +678,9 @@ fn restore_working_copy(
         .map_err(|error| error.to_string())?;
     let snapshots = load_snapshots(sql).map_err(|error| error.to_string())?;
     cell.restore_durable_snapshots(snapshots)
+        .map_err(|error| error.to_string())?;
+    let commands = load_commands(sql).map_err(|error| error.to_string())?;
+    cell.restore_durable_commands(commands)
         .map_err(|error| error.to_string())?;
     let outbox = load_outbox(sql).map_err(|error| error.to_string())?;
     cell.restore_durable_outbox(outbox)
@@ -636,6 +729,7 @@ fn persist_working_copy(sql: &SqlStorage, cell: &AggregateCell<Todo>) -> Result<
             Some(vec![snapshot.stream.into(), body.into()]),
         )?;
     }
+    persist_commands(sql, cell)?;
     persist_outbox(sql, cell)?;
     sql.exec("DELETE FROM cell_sealed", None)?;
     if let Ok(Some(row)) = cell.sealed_row() {
@@ -666,6 +760,28 @@ where
         )?;
     }
     Ok(())
+}
+
+fn persist_commands<A>(sql: &SqlStorage, cell: &AggregateCell<A>) -> Result<()>
+where
+    A: distributed::Aggregate + Send + Sync + 'static,
+{
+    let rows = cell
+        .durable_commands()
+        .map_err(|error| Error::RustError(error.to_string()))?;
+    sql.exec("DELETE FROM cell_commands", None)?;
+    for command in rows {
+        sql.exec(
+            "INSERT INTO cell_commands (id, body) VALUES (?, ?)",
+            Some(vec![command.id.into(), command.body.into()]),
+        )?;
+    }
+    Ok(())
+}
+
+fn load_commands(sql: &SqlStorage) -> Result<Vec<DurableCellCommand>> {
+    sql.exec("SELECT id, body FROM cell_commands ORDER BY id", None)?
+        .to_array()
 }
 
 fn outbox_item(message: &OutboxMessage) -> Value {
@@ -720,11 +836,7 @@ fn ids_from_body(body: &Value) -> Vec<String> {
         .unwrap_or_default()
 }
 
-fn mark_outbox_published<A>(
-    sql: &SqlStorage,
-    cell: &AggregateCell<A>,
-    ids: &[String],
-) -> Result<()>
+fn mark_outbox_published<A>(sql: &SqlStorage, cell: &AggregateCell<A>, ids: &[String]) -> Result<()>
 where
     A: distributed::Aggregate + Send + Sync + 'static,
 {
@@ -805,7 +917,9 @@ async fn offer_pending(env: &Env, kind: &str, id: &str, outbox: &Value) {
     let mut init = RequestInit::new();
     init.with_method(Method::Post)
         .with_headers(headers)
-        .with_body(Some(worker::wasm_bindgen::JsValue::from_str(&payload.to_string())));
+        .with_body(Some(worker::wasm_bindgen::JsValue::from_str(
+            &payload.to_string(),
+        )));
     if let Ok(req) = Request::new_with_init(&url, &init) {
         let _ = Fetch::Request(req).send().await;
     }
