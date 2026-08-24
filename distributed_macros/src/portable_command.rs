@@ -6,7 +6,34 @@
 use proc_macro2::TokenStream;
 use quote::{format_ident, quote};
 use syn::parse::{Parse, ParseStream};
-use syn::{Expr, Ident, LitStr, Token, Type};
+use syn::{parenthesized, Expr, Ident, LitStr, Token, Type};
+
+struct AuthenticatedUserField {
+    event: Type,
+    state: Type,
+    field: LitStr,
+}
+
+impl Parse for AuthenticatedUserField {
+    fn parse(input: ParseStream<'_>) -> syn::Result<Self> {
+        let values;
+        parenthesized!(values in input);
+        let event = values.parse()?;
+        values.parse::<Token![,]>()?;
+        let state = values.parse()?;
+        values.parse::<Token![,]>()?;
+        let field = values.parse()?;
+        if !values.is_empty() {
+            return Err(values
+                .error("authenticated_user_field expects (EventType, StateType, \"field_name\")"));
+        }
+        Ok(Self {
+            event,
+            state,
+            field,
+        })
+    }
+}
 
 struct PortableCommandArgs {
     name: LitStr,
@@ -23,6 +50,9 @@ struct PortableCommandArgs {
     handle: Option<Expr>,
     guard: Option<Expr>,
     defaults: Option<Expr>,
+    constructor: Option<Ident>,
+    authenticated_user_field: Option<AuthenticatedUserField>,
+    preview_reduce_known_record: Option<Expr>,
 }
 
 enum LoadKind {
@@ -47,6 +77,9 @@ impl Parse for PortableCommandArgs {
         let mut handle = None;
         let mut guard = None;
         let mut defaults = None;
+        let mut constructor = None;
+        let mut authenticated_user_field = None;
+        let mut preview_reduce_known_record = None;
 
         while !input.is_empty() {
             let key: Ident = input.parse()?;
@@ -64,6 +97,9 @@ impl Parse for PortableCommandArgs {
                 "handle" => handle = Some(input.parse()?),
                 "guard" => guard = Some(input.parse()?),
                 "defaults" => defaults = Some(input.parse()?),
+                "constructor" => constructor = Some(input.parse()?),
+                "authenticated_user_field" => authenticated_user_field = Some(input.parse()?),
+                "preview_reduce_known_record" => preview_reduce_known_record = Some(input.parse()?),
                 "load" => {
                     let ident: Ident = input.parse()?;
                     load = match ident.to_string().as_str() {
@@ -111,6 +147,9 @@ impl Parse for PortableCommandArgs {
             handle,
             guard,
             defaults,
+            constructor,
+            authenticated_user_field,
+            preview_reduce_known_record,
         })
     }
 }
@@ -157,16 +196,14 @@ fn names_from_command(name: &LitStr) -> syn::Result<(Ident, Ident)> {
             }
         })
         .collect::<String>();
-    Ok((
-        format_ident!("{pascal}"),
-        Ident::new(last, name.span()),
-    ))
+    Ok((format_ident!("{pascal}"), Ident::new(last, name.span())))
 }
 
 pub fn expand(input: TokenStream) -> syn::Result<TokenStream> {
     let framework = crate::shared::framework_path()?;
     let args = syn::parse2::<PortableCommandArgs>(input)?;
-    let (ty, ctor) = names_from_command(&args.name)?;
+    let (ty, default_ctor) = names_from_command(&args.name)?;
+    let ctor = args.constructor.as_ref().unwrap_or(&default_ctor);
     let name = &args.name;
     let transition = &args.transition;
     let aggregate = &args.aggregate;
@@ -178,6 +215,16 @@ pub fn expand(input: TokenStream) -> syn::Result<TokenStream> {
     let defaults = args.defaults.as_ref().map(|defaults| {
         quote! { .input_defaults(#defaults) }
     });
+    let authenticated_user_field = args.authenticated_user_field.as_ref().map(|value| {
+        let event = &value.event;
+        let state = &value.state;
+        let field = &value.field;
+        quote! { .authenticated_user_field::<#event, #state>(#field) }
+    });
+    let preview_reduce_known_record = args
+        .preview_reduce_known_record
+        .as_ref()
+        .map(|preview| quote! { .preview_reduce_known_record(#preview) });
 
     let install_body = if let Some(handle) = &args.handle {
         if args.invoke.is_some() || args.payload.is_some() {
@@ -196,6 +243,8 @@ pub fn expand(input: TokenStream) -> syn::Result<TokenStream> {
                 .field_name(#field)
                 .roles([#(#roles),*].into_iter())
                 #defaults
+                #authenticated_user_field
+                #preview_reduce_known_record
                 #finish
         }
     } else {
@@ -234,6 +283,8 @@ pub fn expand(input: TokenStream) -> syn::Result<TokenStream> {
                 .field_name(#field)
                 .roles([#(#roles),*].into_iter())
                 #defaults
+                #authenticated_user_field
+                #preview_reduce_known_record
                 #load
                 .invoke(#invoke)
                 #finish

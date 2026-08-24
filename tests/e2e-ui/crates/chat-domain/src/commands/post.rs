@@ -1,57 +1,20 @@
-//! Portable Chat command declarations.
-//!
-//! Zitadel ingest stays on the service module — not a cell class method.
-
 use distributed::graphql::{Eventual, PreparedCommand};
-use distributed::microsvc::{
-    CausalCommandContext, CausalRouteDependencies, HandlerError, PortableCommand, Routes,
-};
-use distributed::Aggregate;
+use distributed::microsvc::{CausalCommandContext, HandlerError};
+use distributed::portable_command;
 use serde::{Deserialize, Serialize};
 
-use crate::domain_commands;
-use crate::{ChatMessage, ChatMessagePostedDomainEvent, ChatMessageState};
+use crate::{domain_commands, ChatMessage, ChatMessagePostedDomainEvent, ChatMessageState};
 
 fn rejected(err: impl std::fmt::Display) -> HandlerError {
     HandlerError::Rejected(err.to_string())
 }
 
-fn principal<A>(ctx: &CausalCommandContext<'_, A>) -> Result<String, HandlerError>
-where
-    A: Aggregate + Send + Sync + 'static,
-{
+fn principal(ctx: &CausalCommandContext<'_, ChatMessage>) -> Result<String, HandlerError> {
     ctx.user_id().map(str::to_string)
 }
 
-fn authenticated_user<A>(ctx: &CausalCommandContext<'_, A>) -> bool
-where
-    A: Aggregate + Send + Sync + 'static,
-{
+fn authenticated_user(ctx: &CausalCommandContext<'_, ChatMessage>) -> bool {
     ctx.session().user_id().is_some_and(|id| !id.is_empty())
-}
-
-/// `chat.post`
-pub struct Post;
-
-pub fn post() -> Post {
-    Post
-}
-
-impl<D> PortableCommand<D> for Post
-where
-    D: CausalRouteDependencies<Aggregate = ChatMessage> + Send + Sync + 'static,
-{
-    fn install(self, routes: Routes<D>) -> Routes<D> {
-        install_post(routes)
-    }
-}
-
-impl Post {
-    pub const COMMAND: &'static str = "chat.post";
-
-    pub fn shard(input: &ChatPostInput) -> String {
-        input.message_id.clone()
-    }
 }
 
 #[derive(Debug, Deserialize, distributed::GraphqlInput)]
@@ -88,19 +51,20 @@ pub async fn handle_post(
         )));
     }
 
-    let mut msg = repo.create();
-    msg.post(
-        &input.message_id,
-        &input.room_id,
-        &author,
-        &input.body,
-        &created_at,
-    )
-    .map_err(rejected)?;
+    let mut message = repo.create();
+    message
+        .post(
+            &input.message_id,
+            &input.room_id,
+            &author,
+            &input.body,
+            &created_at,
+        )
+        .map_err(rejected)?;
 
-    let state = ChatMessageState::from(&*msg);
+    let state = ChatMessageState::from(&*message);
     repo.publish_events()
-        .commit(msg)?
+        .commit(message)?
         .eventual(ChatPostPayload {
             message_id: state.message_id,
             room_id: state.room_id,
@@ -141,27 +105,32 @@ pub fn canonical_near_unix_millis(value: &str) -> Result<String, HandlerError> {
     Ok(value.to_string())
 }
 
-fn install_post<D>(routes: Routes<D>) -> Routes<D>
-where
-    D: CausalRouteDependencies<Aggregate = ChatMessage> + Send + Sync + 'static,
-{
-    routes
-        .command_transition::<domain_commands::Post, ChatPostInput, Eventual<ChatPostPayload>>(
-            Post::COMMAND,
-        )
-        .field_name("chat_messages_post")
-        .roles(["user", "admin"].into_iter())
-        .authenticated_user_field::<ChatMessagePostedDomainEvent, ChatMessageState>("author_id")
-        .guarded(authenticated_user, handle_post)
+portable_command! {
+    name: "chat.post",
+    transition: domain_commands::Post,
+    aggregate: ChatMessage,
+    input: ChatPostInput,
+    outcome: Eventual<ChatPostPayload>,
+    shard: |input| input.message_id.clone(),
+    roles: ["user", "admin"],
+    field: "chat_messages_post",
+    authenticated_user_field: (
+        ChatMessagePostedDomainEvent,
+        ChatMessageState,
+        "author_id"
+    ),
+    guard: authenticated_user,
+    handle: handle_post,
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+    use distributed::microsvc::Routes;
     use distributed::{AggregateBuilder, InMemoryRepository};
 
     #[test]
-    fn post_shard_is_message_id() {
+    fn shard_is_message_id() {
         let input = ChatPostInput {
             message_id: "m1".into(),
             body: "hi".into(),
@@ -172,7 +141,7 @@ mod tests {
     }
 
     #[test]
-    fn post_handle_is_the_escape_hatch() {
+    fn post_uses_handle_escape_hatch() {
         assert_eq!(Post::COMMAND, "chat.post");
         let _ = handle_post;
         let _ = canonical_near_unix_millis;
@@ -185,20 +154,17 @@ mod tests {
     }
 
     #[test]
-    fn domain_declaration_mounts_without_sqlx_or_celld() {
-        let repository = InMemoryRepository::new();
+    fn declaration_mounts_without_host_specific_dependencies() {
         let specs = Routes::new()
-            .with_repo(repository.aggregate::<ChatMessage>())
+            .with_repo(InMemoryRepository::new().aggregate::<ChatMessage>())
             .mount(post())
             .command_specs()
             .expect("chat command declaration compiles");
-        assert!(specs.iter().any(|spec| spec.id == "chat.post"));
-        assert_eq!(
-            specs
-                .iter()
-                .find(|spec| spec.id == "chat.post")
-                .map(|spec| spec.field_name.as_str()),
-            Some("chat_messages_post")
-        );
+        let spec = specs
+            .iter()
+            .find(|spec| spec.id == "chat.post")
+            .expect("chat.post");
+        assert_eq!(spec.field_name, "chat_messages_post");
+        assert_eq!(spec.roles, ["admin", "user"]);
     }
 }
