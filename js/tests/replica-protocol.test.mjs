@@ -11,6 +11,10 @@ import {
 	replicaRecordKey
 } from '../dist/replica/index.js';
 import {
+	replicaCommandDirectProjection,
+	replicaCommandProjectionDelta
+} from '../dist/replica/command-runtime.js';
+import {
 	COMMAND_CONSISTENCY,
 	COMMAND_STATE,
 	commandReceipt
@@ -103,6 +107,34 @@ const TodosOtherLiveOperation = Object.freeze({
 	})
 });
 
+const TodosOpen = Object.freeze({
+	...Todos,
+	id: 'query:todos-open',
+	document: 'query TodosOpen { todos(where: {status: {_eq: "open"}}) { id title } }',
+	protocol: Object.freeze({
+		...Todos.protocol,
+		operation: 'query:todos-open'
+	}),
+	live: Object.freeze({
+		id: 'live:todos-open',
+		document:
+			'subscription TodosOpenLive { todos(where: {status: {_eq: "open"}}) { id title } }'
+	}),
+	roots: Object.freeze([
+		Object.freeze({
+			...Todos.roots[0],
+			arguments: Object.freeze({
+				where: Object.freeze({
+					kind: 'literal',
+					value: Object.freeze({
+						status: Object.freeze({ _eq: 'open' })
+					})
+				})
+			})
+		})
+	])
+});
+
 /*
  * Mirrors the generated Todos artifact's material index semantics: an exact,
  * offset-backed collection whose authorization policy is server-only.
@@ -186,6 +218,24 @@ const TodosServerOnly = Object.freeze({
 				delete: 'local',
 				reorder: 'local',
 				stableUpdate: 'local'
+			})
+		})
+	])
+});
+
+const TodosLocallyMaintainable = Object.freeze({
+	...TodosServerOnly,
+	id: 'query:todos-local',
+	protocol: Object.freeze({
+		...TodosServerOnly.protocol,
+		operation: 'query:todos-local'
+	}),
+	roots: Object.freeze([
+		Object.freeze({
+			...TodosServerOnly.roots[0],
+			filter: Object.freeze({
+				...TodosServerOnly.roots[0].filter,
+				rowPolicy: Object.freeze({ kind: 'unrestricted' })
 			})
 		})
 	])
@@ -613,6 +663,405 @@ test('authoritative revalidation succeeds against confirmed data while a server-
 		{ id: 'todo-2', title: 'atomic' }
 	]);
 	watch.destroy();
+});
+
+test('comparable live snapshot cannot drop an Eventual list row after confirmation', () => {
+	const replica = createDistributedReplica();
+	write(replica, {
+		position: '1',
+		rows: [{ id: 'todo-1', title: 'first' }]
+	});
+	assert.deepEqual(replica.read(Todos, {}).data.todos, [
+		{ id: 'todo-1', title: 'first' }
+	]);
+
+	replica.createOptimisticLayer('cmd-eventual-post', (writer) => {
+		writer.writeRecord(Todo, 'todo-2', {
+			fields: { id: 'todo-2', title: 'posted' }
+		});
+		writer.writeIndex(
+			{
+				field: 'todos',
+				arguments: {},
+				dependencies: ['todos'],
+				complete: true
+			},
+			[
+				replicaRecordKey(Todo, 'todo-1'),
+				replicaRecordKey(Todo, 'todo-2')
+			]
+		);
+	});
+	replica[replicaCommandProjectionDelta](
+		'cmd-eventual-post',
+		(writer) => {
+			writer.writeRecord(Todo, 'todo-2', {
+				fields: { id: 'todo-2', title: 'posted' }
+			});
+			writer.writeIndex(
+				{
+					field: 'todos',
+					arguments: {},
+					dependencies: ['todos'],
+					complete: true
+				},
+				[
+					replicaRecordKey(Todo, 'todo-1'),
+					replicaRecordKey(Todo, 'todo-2')
+				]
+			);
+		},
+		[]
+	);
+	assert.deepEqual(replica.read(Todos, {}).data.todos, [
+		{ id: 'todo-1', title: 'first' },
+		{ id: 'todo-2', title: 'posted' }
+	]);
+
+	write(
+		replica,
+		{
+			position: '2',
+			operation: Todos.live.id,
+			rows: [{ id: 'todo-1', title: 'first' }],
+			live: { supported: true }
+		},
+		'live'
+	);
+	replica.confirmOptimisticLayer('cmd-eventual-post', () => undefined);
+
+	assert.equal(replica.read(Todos, {}).complete, true);
+	assert.deepEqual(
+		replica.read(Todos, {}).data.todos,
+		[
+			{ id: 'todo-1', title: 'first' },
+			{ id: 'todo-2', title: 'posted' }
+		],
+		'SQL @live that has not projected the confirmed Eventual row must not shrink the list'
+	);
+
+	write(
+		replica,
+		{
+			position: '3',
+			operation: Todos.live.id,
+			rows: [
+				{ id: 'todo-1', title: 'first' },
+				{ id: 'todo-2', title: 'posted' }
+			],
+			live: { supported: true },
+			records: [
+				{
+					path: ['todos', '0'],
+					model: 'TodoView',
+					scopeToken: 'record:todo-1',
+					incarnation: '1',
+					revision: '3',
+					tombstone: false
+				},
+				{
+					path: ['todos', '1'],
+					model: 'TodoView',
+					scopeToken: 'record:todo-2',
+					incarnation: '1',
+					revision: '3',
+					tombstone: false
+				}
+			]
+		},
+		'live'
+	);
+	assert.deepEqual(replica.read(Todos, {}).data.todos, [
+		{ id: 'todo-1', title: 'first' },
+		{ id: 'todo-2', title: 'posted' }
+	]);
+});
+
+test('Eventual membership fences are independent per index', () => {
+	const replica = createDistributedReplica();
+	const baseRows = [{ id: 'todo-1', title: 'first' }];
+	write(replica, { position: '1', rows: baseRows });
+	write(
+		replica,
+		{
+			position: '1',
+			operation: TodosOpen.id,
+			projection: 'todos-open-projector',
+			indexScope: 'index:todos-open',
+			snapshotScope: 'snapshot:todos-open',
+			rows: baseRows
+		},
+		'network',
+		TodosOpen
+	);
+	const allTarget = {
+		field: 'todos',
+		arguments: {},
+		dependencies: ['todos'],
+		complete: true
+	};
+	const openTarget = {
+		...allTarget,
+		arguments: { where: { status: { _eq: 'open' } } }
+	};
+	const recordKeys = [
+		replicaRecordKey(Todo, 'todo-1'),
+		replicaRecordKey(Todo, 'todo-2')
+	];
+	replica.createOptimisticLayer('cmd-two-indexes', () => undefined);
+	replica[replicaCommandProjectionDelta](
+		'cmd-two-indexes',
+		(writer) => {
+			writer.writeRecord(Todo, 'todo-2', {
+				fields: { id: 'todo-2', title: 'posted' }
+			});
+			writer.writeIndex(allTarget, recordKeys);
+			writer.writeIndex(openTarget, recordKeys);
+		},
+		[]
+	);
+	replica.confirmOptimisticLayer('cmd-two-indexes', () => undefined);
+
+	write(
+		replica,
+		{
+			position: '2',
+			operation: Todos.live.id,
+			rows: [
+				{ id: 'todo-1', title: 'first' },
+				{ id: 'todo-2', title: 'posted' }
+			],
+			live: { supported: true }
+		},
+		'live'
+	);
+	write(
+		replica,
+		{
+			position: '2',
+			operation: TodosOpen.live.id,
+			projection: 'todos-open-projector',
+			indexScope: 'index:todos-open',
+			snapshotScope: 'snapshot:todos-open',
+			rows: [{ id: 'todo-1', title: 'first' }],
+			live: { supported: true }
+		},
+		'live',
+		TodosOpen
+	);
+	assert.deepEqual(replica.read(TodosOpen, {}).data.todos, [
+		{ id: 'todo-1', title: 'first' },
+		{ id: 'todo-2', title: 'posted' }
+	]);
+
+	write(
+		replica,
+		{
+			position: '3',
+			operation: TodosOpen.live.id,
+			projection: 'todos-open-projector',
+			indexScope: 'index:todos-open',
+			snapshotScope: 'snapshot:todos-open',
+			rows: [
+				{ id: 'todo-1', title: 'first' },
+				{ id: 'todo-2', title: 'posted' }
+			],
+			live: { supported: true }
+		},
+		'live',
+		TodosOpen
+	);
+	assert.deepEqual(replica.read(TodosOpen, {}).data.todos, [
+		{ id: 'todo-1', title: 'first' },
+		{ id: 'todo-2', title: 'posted' }
+	]);
+});
+
+test('overlapping Eventual commands retain every membership-fence owner', () => {
+	const replica = createDistributedReplica();
+	write(replica, {
+		position: '1',
+		rows: [{ id: 'todo-1', title: 'first' }]
+	});
+	const target = {
+		field: 'todos',
+		arguments: {},
+		dependencies: ['todos'],
+		complete: true
+	};
+	const records = [
+		replicaRecordKey(Todo, 'todo-1'),
+		replicaRecordKey(Todo, 'todo-2')
+	];
+	for (const commandId of ['cmd-owner-a', 'cmd-owner-b']) {
+		replica.createOptimisticLayer(commandId, () => undefined);
+		replica[replicaCommandProjectionDelta](
+			commandId,
+			(writer) => {
+				writer.writeRecord(Todo, 'todo-2', {
+					fields: { id: 'todo-2', title: 'posted' }
+				});
+				writer.writeIndex(target, records);
+			},
+			[]
+		);
+	}
+	replica.rejectOptimisticLayer('cmd-owner-b');
+	replica.confirmOptimisticLayer('cmd-owner-a', () => undefined);
+	write(
+		replica,
+		{
+			position: '2',
+			operation: Todos.live.id,
+			rows: [{ id: 'todo-1', title: 'first' }],
+			live: { supported: true }
+		},
+		'live'
+	);
+	assert.deepEqual(replica.read(Todos, {}).data.todos, [
+		{ id: 'todo-1', title: 'first' },
+		{ id: 'todo-2', title: 'posted' }
+	]);
+});
+
+test('Atomic direct projection does not hold later complete @load membership', () => {
+	const replica = createDistributedReplica();
+	write(replica, {
+		position: '1',
+		rows: [{ id: 'todo-1', title: 'first' }]
+	});
+	replica.createOptimisticLayer('cmd-atomic-start', (writer) => {
+		writer.writeRecord(Todo, 'todo-2', {
+			fields: { id: 'todo-2', title: 'started' }
+		});
+		writer.writeIndex(
+			{
+				field: 'todos',
+				arguments: {},
+				dependencies: ['todos'],
+				complete: true
+			},
+			[replicaRecordKey(Todo, 'todo-1'), replicaRecordKey(Todo, 'todo-2')]
+		);
+	});
+	replica[replicaCommandDirectProjection]('cmd-atomic-start', {
+		model: Todo,
+		identity: 'todo-2',
+		evidence: {
+			model: Todo.id,
+			scopeToken: 'record:todo-2',
+			incarnation: '1',
+			revision: '2',
+			tombstone: false
+		},
+		fields: { id: 'todo-2', title: 'started', __typename: Todo.id }
+	});
+	write(replica, {
+		position: '2',
+		rows: [
+			{ id: 'todo-1', title: 'first' },
+			{ id: 'todo-2', title: 'started' }
+		],
+		records: [
+			{
+				path: ['todos', '0'],
+				model: Todo.id,
+				scopeToken: 'record:todo-1',
+				incarnation: '1',
+				revision: '2',
+				tombstone: false
+			},
+			{
+				path: ['todos', '1'],
+				model: Todo.id,
+				scopeToken: 'record:todo-2',
+				incarnation: '1',
+				revision: '2',
+				tombstone: false
+			}
+		]
+	});
+	assert.deepEqual(replica.read(Todos, {}).data.todos, [
+		{ id: 'todo-1', title: 'first' },
+		{ id: 'todo-2', title: 'started' }
+	]);
+});
+
+test('Atomic direct projection commits locally provable collection membership', () => {
+	const replica = createDistributedReplica();
+	write(
+		replica,
+		{
+			operation: TodosLocallyMaintainable.id,
+			position: '1',
+			rows: [{ id: 'todo-1', title: 'first' }]
+		},
+		'network',
+		TodosLocallyMaintainable
+	);
+	// Render once so the operation's compiler plan owns collection maintenance.
+	replica.read(TodosLocallyMaintainable, {});
+	replica.createOptimisticLayer('cmd-atomic-create', (writer) => {
+		// Generated partial previews fail closed when the record is not known yet.
+		writer.writeRecord(Todo, 'todo-2', {
+			fields: { id: 'todo-2', title: 'preview' },
+			ifPresent: true
+		});
+	});
+	replica[replicaCommandDirectProjection]('cmd-atomic-create', {
+		model: Todo,
+		identity: 'todo-2',
+		evidence: {
+			model: Todo.id,
+			scopeToken: 'record:todo-2',
+			incarnation: '1',
+			revision: '2',
+			tombstone: false
+		},
+		fields: { id: 'todo-2', title: 'canonical', __typename: Todo.id }
+	});
+
+	assert.deepEqual(replica.read(TodosLocallyMaintainable, {}).data.todos, [
+		{ id: 'todo-1', title: 'first' },
+		{ id: 'todo-2', title: 'canonical' }
+	]);
+});
+
+test('Atomic direct projection keeps unprovable collection membership stale', () => {
+	const replica = createDistributedReplica();
+	write(
+		replica,
+		{
+			operation: TodosServerOnly.id,
+			position: '1',
+			rows: [{ id: 'todo-1', title: 'first' }]
+		},
+		'network',
+		TodosServerOnly
+	);
+	replica.read(TodosServerOnly, {});
+	replica.createOptimisticLayer('cmd-atomic-server-only', (writer) => {
+		writer.writeRecord(Todo, 'todo-2', {
+			fields: { id: 'todo-2', title: 'preview' },
+			ifPresent: true
+		});
+	});
+	replica[replicaCommandDirectProjection]('cmd-atomic-server-only', {
+		model: Todo,
+		identity: 'todo-2',
+		evidence: {
+			model: Todo.id,
+			scopeToken: 'record:todo-2',
+			incarnation: '1',
+			revision: '2',
+			tombstone: false
+		},
+		fields: { id: 'todo-2', title: 'canonical', __typename: Todo.id }
+	});
+
+	const snapshot = replica.read(TodosServerOnly, {});
+	assert.equal(snapshot.stale, true);
+	assert.deepEqual(snapshot.data.todos, [{ id: 'todo-1', title: 'first' }]);
 });
 
 test('shared non-comparable membership follows request-start order across operations', async () => {

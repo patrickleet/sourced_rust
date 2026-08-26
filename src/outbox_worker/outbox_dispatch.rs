@@ -309,7 +309,7 @@ pub(crate) async fn record_backlog_gauges<S: OutboxStore>(store: &S, service: Op
     if let Ok(stats) = store.backlog_stats().await {
         let oldest_pending_age = stats
             .oldest_created_at
-            .and_then(|created_at| SystemTime::now().duration_since(created_at).ok());
+            .and_then(|created_at| crate::time::now().duration_since(created_at).ok());
         crate::metrics::set_outbox_backlog(service, stats.pending, oldest_pending_age);
     }
 }
@@ -333,10 +333,9 @@ pub(crate) struct SettleOutcome {
 ///
 /// This is the one publish-then-settle path, shared by the dispatcher
 /// (background polling and after-commit `dispatch_ids`) and by the
-/// after-commit publish hook. It never claims: callers must already hold the
-/// claims — the dispatcher claims first, and the hook is handed rows that were
-/// claimed inside the commit transaction (re-claiming there would bump
-/// attempts and race the lease).
+/// fallback publish hook. It never claims: callers must already hold the
+/// claims — the dispatcher claims first, and a mailbox-less hook is handed
+/// rows the test path spawned after commit.
 ///
 /// `publish_concurrency` bounds how many publishes are in flight at once.
 /// `1` preserves strict claim order; higher values overlap publish round

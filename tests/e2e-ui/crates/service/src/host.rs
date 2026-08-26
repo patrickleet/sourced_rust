@@ -1,7 +1,8 @@
 //! One-screen host bootstrap for the e2e-ui application.
 //!
 //! This playground is a single backend process plus the SvelteKit UI. Do not
-//! add extra e2e-ui process topologies here.
+//! add extra e2e-ui process topologies here. Optional celld+NATS is
+//! `tests/e2e-ui/celld-nats-profile/` (`DCS-DEC-001`).
 //!
 //! Dialect selection and identity remain here. Outbox/consumer loops use
 //! framework worker helpers.
@@ -12,13 +13,13 @@ use std::time::Duration;
 use distributed::bus::{PostgresBus, SqliteBus};
 use distributed::command_dispatch::LocalCommandDispatcher;
 use distributed::graphql::IdentityConfig;
-use distributed::microsvc::{spawn_outbox_publish_loop, spawn_service_consumer_loop};
-use distributed::{
-    PostgresLockManager, PostgresRepository, SqliteLockManager, SqliteRepository,
+use distributed::microsvc::{
+    spawn_outbox_publish_loop, spawn_service_consumer_loop, CONSUMER_IDLE_POLL,
 };
+use distributed::{PostgresLockManager, PostgresRepository, SqliteLockManager, SqliteRepository};
 
 use crate::{
-    build_graphql_engine, build_service, distributed_manifest, serve_with_oidc, spawn_scrape_loop,
+    build_graphql_engine, build_service, distributed_manifest, serve, spawn_scrape_loop,
     ZitadelScrapeConfig, E2E_UI_APPLICATION,
 };
 
@@ -77,14 +78,16 @@ async fn run_sqlite(
         let repo = repo.clone();
         let locks = locks.clone();
         spawn_service_consumer_loop(move || {
-            let bus = SqliteBus::new(repo.pool().clone()).group(BUS_GROUP);
+            let bus = SqliteBus::new(repo.pool().clone())
+                .group(BUS_GROUP)
+                .with_idle_poll(CONSUMER_IDLE_POLL);
             build_service(repo.clone(), locks.clone(), repo.clone()).with_bus(bus)
         });
     }
     spawn_zitadel_scrape(repo.clone());
 
     eprintln!("e2e-ui (sqlite) listening on http://{}", options.bind);
-    serve_with_oidc(service, options.identity, &options.bind).await?;
+    serve(service, &options.bind).await?;
     Ok(())
 }
 
@@ -119,20 +122,27 @@ async fn run_postgres(
         let repo = repo.clone();
         let locks = locks.clone();
         spawn_service_consumer_loop(move || {
-            let bus = PostgresBus::new(repo.pool().clone()).group(BUS_GROUP);
+            let bus = PostgresBus::new(repo.pool().clone())
+                .group(BUS_GROUP)
+                .with_idle_poll(CONSUMER_IDLE_POLL);
             build_service(repo.clone(), locks.clone(), repo.clone()).with_bus(bus)
         });
     }
     spawn_zitadel_scrape(repo.clone());
 
     eprintln!("e2e-ui (postgres) listening on http://{}", options.bind);
-    serve_with_oidc(service, options.identity, &options.bind).await?;
+    serve(service, &options.bind).await?;
     Ok(())
 }
 
 fn spawn_zitadel_scrape<R>(repo: R)
 where
-    R: distributed::TransactionalCommit + Clone + Send + Sync + 'static,
+    R: distributed::TransactionalCommit
+        + distributed::ReadModelWritePlanStore
+        + Clone
+        + Send
+        + Sync
+        + 'static,
 {
     match ZitadelScrapeConfig::from_env() {
         Some(cfg) if cfg.background_enabled() || cfg.on_start => {

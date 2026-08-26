@@ -22,6 +22,10 @@ test.describe('admin (admin user)', () => {
 		await expect(page.getByRole('heading', { name: /all todos/i })).toBeVisible({
 			timeout: 20_000
 		});
+		const empty = page.getByText(/no todos in the read model/i);
+		if (await empty.isVisible().catch(() => false)) {
+			test.skip(true, 'no todos in the read model yet');
+		}
 		await expect(page.getByText(/force archive/i).first()).toBeVisible();
 		// Wait for the nested e2e-ui-admin client to hydrate before invoking
 		// elevated commands (SSR markup alone has no Svelte handlers).

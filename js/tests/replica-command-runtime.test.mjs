@@ -1430,6 +1430,54 @@ for (const statusState of ['atomic', 'succeeded_pending_projection']) {
 	});
 }
 
+test('terminal exact projection status settles without command-triggered revalidation', async () => {
+	const replica = new TestReplica();
+	let pendingMetadata;
+	const runtime = createReplicaCommandRuntime(
+		replica,
+		{
+			dispatch(request) {
+				pendingMetadata = commandMetadata(request, {
+					actualTitle: 'accepted'
+				});
+				return Promise.resolve(
+					envelope(request, { command: pendingMetadata })
+				);
+			},
+			status(request) {
+				const terminalMetadata = Object.freeze({
+					...pendingMetadata,
+					state: 'atomic',
+					observations: Object.freeze(
+						pendingMetadata.expects.map((expectation) =>
+							Object.freeze({
+								...expectation,
+								causationId: pendingMetadata.causationId
+							})
+						)
+					)
+				});
+				return Promise.resolve(
+					statusEnvelope(request, terminalMetadata)
+				);
+			}
+		},
+		{ change: artifact() },
+		{ status: STATUS }
+	);
+	const receipt = await runtime.commands.change(
+		{ id: 'todo-1', title: 'preview' },
+		{ commandId: COMMAND_A }
+	);
+
+	assert.equal((await receipt.status()).state, 'atomic');
+	assert.equal((await receipt.projected).state, 'atomic');
+	assert.deepEqual(replica.revalidations, []);
+	assert.equal(replica.layer(COMMAND_A), 'accepted');
+	assert.equal(replica.record('todo-1').fields.title, 'accepted');
+	runtime.dispose();
+});
+
 test('invalid live progression cannot poison a later valid status transition', async () => {
 	const replica = new TestReplica();
 	let request;
@@ -1558,7 +1606,7 @@ test('an allowed unpreviewed event arm can authoritatively replace the preview',
 	runtime.dispose();
 });
 
-test('zero-obligation revalidation includes actual unpreviewed target models', async () => {
+test('explicit revalidation includes actual unpreviewed target models', async () => {
 	const modeled = modeledArtifactWithAuditArm();
 	const replica = new TestReplica();
 	const runtime = createReplicaCommandRuntime(
@@ -1568,6 +1616,7 @@ test('zero-obligation revalidation includes actual unpreviewed target models', a
 				Promise.resolve(
 					envelope(request, {
 						obligations: 0,
+						revalidate: true,
 						mutation: {
 							op: 'upsert',
 							scope: scope(
@@ -1768,8 +1817,8 @@ test('zero, one, and many obligations are server-derived and never predicted key
 		assert.equal(receipt.projected === undefined, count === 0);
 		if (count === 0) {
 			await tick();
-			assert.equal(replica.revalidations.length, 1);
-			assert.equal(replica.layer(receipt.commandId), undefined);
+			assert.equal(replica.revalidations.length, 0);
+			assert.equal(replica.layer(receipt.commandId), 'accepted');
 		}
 		runtime.dispose();
 	}

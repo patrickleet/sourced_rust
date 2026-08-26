@@ -21,12 +21,34 @@ export async function loginAs(
 
 	await page.locator('#loginName').fill(username);
 	await page.locator('#password').fill(password);
-	await page.getByRole('button', { name: /continue/i }).click();
+	const continueBtn = page.getByRole('button', { name: /continue/i });
+	await continueBtn.waitFor({ state: 'visible', timeout: 15_000 });
 
-	// After success we leave /login (callback then app route).
-	await page.waitForURL((url) => !url.pathname.startsWith('/login'), {
-		timeout: 60_000
-	});
+	// Click and wait together. A sequential click-then-waitForURL misses a
+	// fast navigation and, on a stuck Login V2 authRequest, never leaves
+	// /login. One retry covers an expired authorize round-trip.
+	for (let attempt = 0; attempt < 2; attempt += 1) {
+		try {
+			await Promise.all([
+				page.waitForURL((url) => !url.pathname.startsWith('/login'), {
+					timeout: 30_000
+				}),
+				continueBtn.click()
+			]);
+			return;
+		} catch {
+			if (attempt === 1) break;
+			await page.goto(destination, { waitUntil: 'domcontentloaded' });
+			await page.waitForURL(/\/login/, { timeout: 45_000 });
+			await page.waitForSelector('#loginName', { timeout: 45_000 });
+			await page.locator('#loginName').fill(username);
+			await page.locator('#password').fill(password);
+		}
+	}
+
+	throw new Error(
+		`login as ${username} stayed on ${page.url()} after Continue`
+	);
 }
 
 export async function expectLoggedInNav(page: Page) {

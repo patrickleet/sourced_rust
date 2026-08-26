@@ -65,9 +65,9 @@ pub use bus_publisher::BusPublisher;
     test,
 ))]
 pub use drain::{
-    drain_worker_id, OutboxDrainHandle, OutboxDrainRunner, DEFAULT_DRAIN_BATCH_SIZE,
-    DEFAULT_DRAIN_ERROR_BACKOFF, DEFAULT_DRAIN_LEASE, DEFAULT_DRAIN_MAX_ERROR_BACKOFF,
-    DEFAULT_DRAIN_POLL_INTERVAL,
+    drain_worker_id, OutboxDrainHandle, OutboxDrainRunner, OutboxPublishMailbox,
+    DEFAULT_DRAIN_BATCH_SIZE, DEFAULT_DRAIN_ERROR_BACKOFF, DEFAULT_DRAIN_LEASE,
+    DEFAULT_DRAIN_MAX_ERROR_BACKOFF, DEFAULT_DRAIN_POLL_INTERVAL, DEFAULT_OUTBOX_HINT_CAPACITY,
 };
 pub use outbox_dispatch::{OutboxDispatchOutcome, OutboxDispatcher, SOURCED_METADATA_PREFIX};
 pub use outbox_source::{

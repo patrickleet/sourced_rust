@@ -6,8 +6,11 @@
 use std::env;
 use std::time::Duration;
 
-use distributed::TransactionalCommit;
-use e2e_projections::{ZitadelEmail, ZitadelUserPayload};
+use distributed::read_model::ReadModelWritePlanBuilder;
+use distributed::{ReadModelWritePlanStore, TransactionalCommit};
+use e2e_projections::{
+    map_zitadel_user_status, map_zitadel_user_upsert, ZitadelEmail, ZitadelUserPayload,
+};
 use serde::Deserialize;
 use serde_json::{json, Value};
 
@@ -92,10 +95,15 @@ pub struct ScrapeReport {
 }
 
 /// List users from Zitadel Management API and publish provider messages for each.
-pub async fn scrape_users_to_outbox<R: TransactionalCommit>(
-    repo: &R,
+pub async fn scrape_users_to_outbox<R, S>(
+    outbox: &R,
+    directory: &S,
     cfg: &ZitadelScrapeConfig,
-) -> ScrapeReport {
+) -> ScrapeReport
+where
+    R: TransactionalCommit,
+    S: ReadModelWritePlanStore,
+{
     let mut report = ScrapeReport::default();
     let users = match list_all_users(cfg).await {
         Ok(u) => u,
@@ -111,7 +119,18 @@ pub async fn scrape_users_to_outbox<R: TransactionalCommit>(
             report.skipped += 1;
             continue;
         };
-        match publish_mapped_delivery(repo, &mapped).await {
+        // Directory joins (chat author, blob owner) must not wait on bus
+        // delivery. Scrape already has the profile; outbox is for other
+        // subscribers. Duplicate outbox ids used to skip this upsert, which
+        // left `auth_users` empty after a published-but-never-consumed scrape.
+        if let Err(e) = materialize_auth_user(directory, &mapped).await {
+            report.errors.push(format!(
+                "user {}: auth_users upsert failed: {e}",
+                mapped.payload.provider_subject
+            ));
+            continue;
+        }
+        match publish_mapped_delivery(outbox, &mapped).await {
             Ok(()) => report.published += 1,
             Err(e) => {
                 // Content-addressed scrape ids: unchanged profile re-scrape hits the
@@ -129,6 +148,22 @@ pub async fn scrape_users_to_outbox<R: TransactionalCommit>(
         }
     }
     report
+}
+
+async fn materialize_auth_user<S: ReadModelWritePlanStore>(
+    store: &S,
+    mapped: &MappedDelivery,
+) -> Result<(), String> {
+    let name = mapped.message_name.as_str();
+    let row = if name.contains("deactivated") || name.contains("reactivated") {
+        map_zitadel_user_status(name, &mapped.payload)
+    } else {
+        map_zitadel_user_upsert(name, &mapped.payload)
+    };
+    let mut plan = ReadModelWritePlanBuilder::new();
+    plan.upsert(&row).map_err(|e| e.to_string())?;
+    plan.commit(store).await.map_err(|e| e.to_string())?;
+    Ok(())
 }
 
 /// True when publish failed because this scrape delivery id was already committed.
@@ -385,14 +420,14 @@ fn now_ms() -> String {
 /// Background loop: optional immediate scrape, then every `cfg.interval`.
 pub fn spawn_scrape_loop<R>(repo: R, cfg: ZitadelScrapeConfig)
 where
-    R: TransactionalCommit + Clone + Send + Sync + 'static,
+    R: TransactionalCommit + ReadModelWritePlanStore + Clone + Send + Sync + 'static,
 {
     if !cfg.background_enabled() && !cfg.on_start {
         return;
     }
     tokio::spawn(async move {
         if cfg.on_start {
-            let r = scrape_users_to_outbox(&repo, &cfg).await;
+            let r = scrape_users_to_outbox(&repo, &repo, &cfg).await;
             eprintln!(
                 "zitadel scrape (start): listed={} published={} skipped={} errors={}",
                 r.listed,
@@ -409,7 +444,7 @@ where
         }
         loop {
             tokio::time::sleep(cfg.interval).await;
-            let r = scrape_users_to_outbox(&repo, &cfg).await;
+            let r = scrape_users_to_outbox(&repo, &repo, &cfg).await;
             if r.published > 0 || !r.errors.is_empty() {
                 eprintln!(
                     "zitadel scrape: listed={} published={} skipped={} errors={}",

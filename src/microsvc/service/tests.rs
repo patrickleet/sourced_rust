@@ -764,8 +764,15 @@ fn causal_test_input(id: &str, label: &str) -> Value {
 fn session_with_role(role: &str) -> Session {
     let mut session = Session::new();
     session.set(crate::microsvc::ROLE_KEY, role);
-    session.set(crate::microsvc::USER_ID_KEY, "causal-test-user");
+    session.set(crate::microsvc::USER_ID_KEY, "causal-test-subject");
     session
+}
+
+#[cfg(feature = "graphql")]
+fn command_host(service: &Arc<Service>) -> crate::command_dispatch::SharedCommandHost {
+    Arc::new(crate::command_dispatch::LocalCommandHost::new(Arc::clone(
+        service,
+    )))
 }
 
 #[cfg(feature = "graphql")]
@@ -1009,6 +1016,16 @@ impl CommandLedgerStore for AmbiguousCommitRepository {
 }
 
 #[cfg(feature = "graphql")]
+impl crate::repository::TransactionalCommit for AmbiguousCommitRepository {
+    fn commit_batch<'a>(
+        &'a self,
+        batch: crate::repository::CommitBatch<'a>,
+    ) -> impl Future<Output = Result<(), crate::RepositoryError>> + Send + 'a {
+        crate::repository::TransactionalCommit::commit_batch(&self.inner, batch)
+    }
+}
+
+#[cfg(feature = "graphql")]
 impl CausalTransactionalCommit for AmbiguousCommitRepository {
     async fn commit_causal_batch<'a>(
         &'a self,
@@ -1217,8 +1234,7 @@ async fn generated_mount_registers_and_executes_original_handler_through_causal_
         input: json!({"id": "generated-1", "label": "mounted"}),
         session_variables: HashMap::new(),
     };
-    let result = service
-        .registered_command_mounts()[0]
+    let result = service.registered_command_mounts()[0]
         .invoke_with(
             &service,
             &request,
@@ -1229,8 +1245,8 @@ async fn generated_mount_registers_and_executes_original_handler_through_causal_
             },
         )
         .await;
-    let crate::application::CommandMountExecutionResult::Causal(result) = result
-        .expect("authenticated causal mount dispatch should commit")
+    let crate::application::CommandMountExecutionResult::Causal(result) =
+        result.expect("authenticated causal mount dispatch should commit")
     else {
         panic!("typed mount must use the causal execution result");
     };
@@ -2006,6 +2022,25 @@ async fn causal_dispatch_uses_the_configured_immediate_outbox_publisher() {
         .expect("causal dispatch should commit before immediate publication");
 
     let outbox = repository.outbox_store();
+    tokio::time::timeout(std::time::Duration::from_secs(1), async {
+        loop {
+            if !outbox.pending(usize::MAX).await.unwrap().is_empty() {
+                tokio::task::yield_now().await;
+                continue;
+            }
+            if !outbox
+                .messages_by_status(crate::outbox::OutboxMessageStatus::Published, usize::MAX)
+                .await
+                .unwrap()
+                .is_empty()
+            {
+                break;
+            }
+            tokio::task::yield_now().await;
+        }
+    })
+    .await
+    .expect("immediate publish should settle the causal outbox row");
     assert!(outbox.pending(usize::MAX).await.unwrap().is_empty());
     let published = outbox
         .messages_by_status(crate::outbox::OutboxMessageStatus::Published, usize::MAX)
@@ -2376,7 +2411,7 @@ async fn graphql_terminal_replay_revalidates_after_active_projection_starts_drai
         .execute(
             &session,
             async_graphql::Request::new(&mutation)
-                .data(Arc::clone(&active_service))
+                .data(command_host(&active_service))
                 .data(principal.clone()),
         )
         .await;
@@ -2413,7 +2448,7 @@ async fn graphql_terminal_replay_revalidates_after_active_projection_starts_drai
         .execute(
             &session,
             async_graphql::Request::new(&mutation)
-                .data(Arc::clone(&active_service))
+                .data(command_host(&active_service))
                 .data(principal.clone()),
         )
         .await;
@@ -2457,7 +2492,7 @@ async fn graphql_terminal_replay_revalidates_after_active_projection_starts_drai
         .execute(
             &session,
             async_graphql::Request::new(mutation)
-                .data(Arc::clone(&draining_service))
+                .data(command_host(&draining_service))
                 .data(principal.clone()),
         )
         .await;
@@ -2500,7 +2535,7 @@ async fn graphql_terminal_replay_revalidates_after_active_projection_starts_drai
         .execute(
             &session,
             async_graphql::Request::new(fresh_mutation)
-                .data(Arc::clone(&draining_service))
+                .data(command_host(&draining_service))
                 .data(principal.clone()),
         )
         .await;
@@ -2537,7 +2572,7 @@ async fn graphql_terminal_replay_revalidates_after_active_projection_starts_drai
         .execute(
             &session,
             async_graphql::Request::new(status_query)
-                .data(Arc::clone(&draining_service))
+                .data(command_host(&draining_service))
                 .data(principal),
         )
         .await;

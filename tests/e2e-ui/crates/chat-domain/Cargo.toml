@@ -6,7 +6,9 @@ publish = false
 description = "ChatMessage aggregate for live chat (subscription demo)"
 
 [dependencies]
-distributed = { workspace = true }
+# Path + default-features so the wasm cell worker can depend on this crate
+# without pulling e2e-ui's sqlite/postgres/http/graphql feature set.
+distributed = { path = "../../../..", default-features = false }
 serde = { workspace = true }
 thiserror = { workspace = true }
 

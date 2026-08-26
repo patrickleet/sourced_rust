@@ -50,4 +50,6 @@ pub use table::{
 };
 
 // Commit helpers
+#[allow(unused_imports)] // used by graphql causal commit
+pub(crate) use commit::start_immediate_publish;
 pub use commit::{AggregateCommit, CommitReceipt, OutboxPublishHook, OutboxPublisherConfig};

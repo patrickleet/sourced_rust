@@ -6,7 +6,6 @@
 use std::collections::{HashMap, HashSet};
 use std::future::Future;
 use std::sync::{Arc, RwLock};
-use std::time::SystemTime;
 
 use super::projection_protocol::{
     reject_causal_owned_plans, stage_same_transaction_projection, InMemoryProjectionProtocolState,
@@ -135,6 +134,104 @@ impl InMemoryRepository {
     /// Access the embedded snapshot store directly.
     pub fn snapshot_store(&self) -> &InMemorySnapshotStore {
         &self.snapshot_store
+    }
+
+    /// Clone the event log for Durable Object SQLite persistence.
+    pub fn clone_events(&self) -> Result<HashMap<String, Vec<EventRecord>>, RepositoryError> {
+        Ok(self
+            .event_store
+            .read()
+            .map_err(|_| RepositoryError::LockPoisoned("event log read"))?
+            .clone())
+    }
+
+    /// Replace the event log from Durable Object SQLite restore.
+    pub fn replace_events(
+        &self,
+        events: HashMap<String, Vec<EventRecord>>,
+    ) -> Result<(), RepositoryError> {
+        *self
+            .event_store
+            .write()
+            .map_err(|_| RepositoryError::LockPoisoned("event log write"))? = events;
+        Ok(())
+    }
+
+    /// Clone outbox rows for Durable Object SQLite persistence.
+    pub fn clone_outbox(&self) -> Result<Vec<OutboxMessage>, RepositoryError> {
+        Ok(self
+            .outbox_store
+            .read()
+            .map_err(|_| RepositoryError::LockPoisoned("outbox read"))?
+            .values()
+            .cloned()
+            .collect())
+    }
+
+    /// Replace outbox rows from Durable Object SQLite restore.
+    pub fn replace_outbox(&self, messages: Vec<OutboxMessage>) -> Result<(), RepositoryError> {
+        let mut map = HashMap::new();
+        for message in messages {
+            map.insert(message.id.clone(), message);
+        }
+        *self
+            .outbox_store
+            .write()
+            .map_err(|_| RepositoryError::LockPoisoned("outbox write"))? = map;
+        Ok(())
+    }
+
+    /// Clone snapshot cache records for Durable Object SQLite persistence.
+    pub fn clone_snapshots(&self) -> Result<HashMap<String, SnapshotRecord>, RepositoryError> {
+        Ok(self
+            .snapshot_store
+            .storage
+            .read()
+            .map_err(|_| RepositoryError::LockPoisoned("snapshot log read"))?
+            .clone())
+    }
+
+    /// Replace snapshot cache records from Durable Object SQLite restore.
+    pub fn replace_snapshots(
+        &self,
+        snapshots: HashMap<String, SnapshotRecord>,
+    ) -> Result<(), RepositoryError> {
+        *self
+            .snapshot_store
+            .storage
+            .write()
+            .map_err(|_| RepositoryError::LockPoisoned("snapshot log write"))? = snapshots;
+        Ok(())
+    }
+
+    pub(crate) fn clone_command_ledger(&self) -> Result<Vec<CommandLedgerRecord>, RepositoryError> {
+        Ok(self
+            .command_ledger
+            .read()
+            .map_err(|_| RepositoryError::LockPoisoned("command ledger read"))?
+            .values()
+            .cloned()
+            .collect())
+    }
+
+    pub(crate) fn replace_command_ledger(
+        &self,
+        records: Vec<CommandLedgerRecord>,
+    ) -> Result<(), RepositoryError> {
+        let mut ledger = HashMap::with_capacity(records.len());
+        for record in records {
+            let key = record.key.clone();
+            if ledger.insert(key, record).is_some() {
+                return Err(RepositoryError::Model(
+                    "cell command ledger restore contains a duplicate key".into(),
+                ));
+            }
+        }
+        *self
+            .command_ledger
+            .write()
+            .map_err(|_| RepositoryError::LockPoisoned("command ledger write"))? = ledger;
+        Ok(())
     }
 
     /// Whether a consumer inbox receipt for `(consumer, message_id)` is recorded.
@@ -287,7 +384,7 @@ impl InMemoryRepository {
                 .ok_or_else(|| CommandLedgerError::AttemptFenced {
                     command_id: completion.attempt().key().command_id().to_string(),
                 })?;
-            record.validate_live_attempt(&completion.attempt_fence(), SystemTime::now())?;
+            record.validate_live_attempt(&completion.attempt_fence(), crate::time::now())?;
         }
 
         // Events: optimistic-concurrency check (reads only; appends cannot
@@ -386,7 +483,7 @@ impl InMemoryRepository {
                         command_id: completion.attempt().key().command_id().to_string(),
                     })?;
                 let mut staged = record.clone();
-                staged.complete(completion, SystemTime::now())?;
+                staged.complete(completion, crate::time::now())?;
                 Ok::<_, CommandLedgerError>(staged)
             })
             .transpose()?;
@@ -457,6 +554,37 @@ impl GetStream for InMemoryRepository {
             }
         }
     }
+
+    fn get_stream_tail<'a>(
+        &'a self,
+        identity: &'a StreamIdentity,
+        after_version: u64,
+    ) -> impl Future<Output = Result<Option<Entity>, RepositoryError>> + Send + 'a {
+        async move {
+            let storage = self
+                .event_store
+                .read()
+                .map_err(|_| RepositoryError::LockPoisoned("async stream tail read"))?;
+            let Some(events) = storage.get(&identity.storage_key()) else {
+                return Ok(None);
+            };
+            let true_version = events.iter().map(|event| event.sequence).max().unwrap_or(0);
+            let tail: Vec<EventRecord> = events
+                .iter()
+                .filter(|event| event.sequence > after_version)
+                .cloned()
+                .collect();
+            // Prefix must not exceed the durable stream. A snapshot cache
+            // planted past stream version would otherwise report
+            // `version == after_version` on an empty tail and hydrate the
+            // forged payload (`snapshot_repository_ignores_cache_past_stream_version`).
+            let prefix = after_version.min(true_version);
+            let mut entity = Entity::new();
+            entity.set_id(identity.aggregate_id());
+            entity.load_tail_from_history(tail, prefix);
+            Ok(Some(entity))
+        }
+    }
 }
 
 impl CausalGetStream for InMemoryRepository {
@@ -480,7 +608,7 @@ impl CommandLedgerStore for InMemoryRepository {
         reservation: CommandReservation,
     ) -> impl Future<Output = Result<ReservationOutcome, CommandLedgerError>> + Send + '_ {
         async move {
-            let now = SystemTime::now();
+            let now = crate::time::now();
             let mut ledger = self
                 .command_ledger
                 .write()
@@ -517,7 +645,7 @@ impl CommandLedgerStore for InMemoryRepository {
         scope: CommandLookupScope<'a>,
     ) -> impl Future<Output = Result<CommandLookup, CommandLedgerError>> + Send + 'a {
         async move {
-            let now = SystemTime::now();
+            let now = crate::time::now();
             let mut ledger = self
                 .command_ledger
                 .write()
@@ -552,7 +680,7 @@ impl CommandLedgerStore for InMemoryRepository {
                     .ok_or_else(|| CommandLedgerError::AttemptFenced {
                         command_id: attempt.key().command_id().to_string(),
                     })?;
-            record.mark_retryable_unknown(&attempt, SystemTime::now())
+            record.mark_retryable_unknown(&attempt, crate::time::now())
         }
     }
 
@@ -564,7 +692,7 @@ impl CommandLedgerStore for InMemoryRepository {
             if limit == 0 {
                 return Ok(0);
             }
-            let now = SystemTime::now();
+            let now = crate::time::now();
             let mut ledger = self
                 .command_ledger
                 .write()

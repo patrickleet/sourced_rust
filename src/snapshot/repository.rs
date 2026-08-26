@@ -313,8 +313,9 @@ where
 /// still paid the full I/O and decode cost. Here the snapshot bounds the read.
 ///
 /// Degrades gracefully on a cache miss: if there is no snapshot, or it is
-/// unusable (identity/codec/schema-version mismatch or decode failure), the
-/// aggregate is rebuilt from a full stream load — correct, just not optimized.
+/// unusable (identity/codec/schema-version mismatch, version past the
+/// stream, or decode failure), the aggregate is rebuilt from a full stream
+/// load — correct, just not optimized.
 fn load_from_store<'a, R, A>(
     repo: &'a R,
     identity: &'a StreamIdentity,

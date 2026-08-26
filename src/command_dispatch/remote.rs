@@ -11,7 +11,7 @@ use async_trait::async_trait;
 use serde::{Deserialize, Serialize};
 use std::collections::BTreeMap;
 use std::sync::Arc;
-use std::time::{Duration, SystemTime, UNIX_EPOCH};
+use std::time::{Duration, UNIX_EPOCH};
 
 /// Stable identifier for the single production remote profile approved by
 /// task 20. Implementation and tests must cite this constant.
@@ -131,7 +131,7 @@ impl CommandDispatcher for RemoteCommandDispatcher {
         }
 
         if let Some(deadline) = envelope.deadline_unix_ms {
-            let now = SystemTime::now()
+            let now = crate::time::now()
                 .duration_since(UNIX_EPOCH)
                 .unwrap_or(Duration::ZERO)
                 .as_millis() as u64;
@@ -141,10 +141,7 @@ impl CommandDispatcher for RemoteCommandDispatcher {
         }
 
         let mut headers = BTreeMap::new();
-        headers.insert(
-            "content-type".into(),
-            "application/json".into(),
-        );
+        headers.insert("content-type".into(), "application/json".into());
         headers.insert(
             "x-distributed-dispatch-profile".into(),
             APPROVED_REMOTE_DISPATCH_PROFILE.into(),
@@ -163,11 +160,12 @@ impl CommandDispatcher for RemoteCommandDispatcher {
                 "remote writer returned status {status}"
             )));
         }
-        let response: CommandResponse = serde_json::from_slice(&response_body).map_err(|error| {
-            CommandDispatchError::Transport(format!(
-                "remote writer returned invalid response: {error}"
-            ))
-        })?;
+        let response: CommandResponse =
+            serde_json::from_slice(&response_body).map_err(|error| {
+                CommandDispatchError::Transport(format!(
+                    "remote writer returned invalid response: {error}"
+                ))
+            })?;
         Ok(response)
     }
 

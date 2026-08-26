@@ -30,17 +30,16 @@ impl Service {
     ///
     /// Two effects, both composing with the rest of the builder:
     /// - installs an outbox publisher on the repository, so
-    ///   `repo.outbox(msg).commit(agg)` claims the row in the commit transaction
-    ///   and publishes it immediately after commit through this bus (a polling
-    ///   worker may be operated as the crash/retry backstop);
+    ///   `repo.outbox(msg).commit(agg)` writes pending rows and enqueues their
+    ///   ids on a bounded worker after commit (overflow wakes `dispatch_batch`);
     /// - captures how to consume, so [`run`](Self::run) listens for the
     ///   registered command names (competing) and subscribes to the event names
     ///   (fan-out).
     ///
-    /// `with_bus` and [`run`](Self::run) do not start the drain loop. Spawn
-    /// [`crate::OutboxDrainRunner`] (or `microsvc::spawn_outbox_publish_loop`)
-    /// next to `run` when durable recovery after a commit-to-publish crash is
-    /// required.
+    /// The worker also polls pending rows, so a crash between commit and
+    /// publish is recovered in-process. Spawn a separate
+    /// [`crate::OutboxDrainRunner`] next to `run` only when you want an extra
+    /// competing drainer.
     pub fn with_bus<B>(mut self, bus: B) -> Self
     where
         B: Bus + BusConsumer + 'static,
@@ -166,6 +165,25 @@ mod tests {
     use crate::bus::{Bus, InMemoryBus, RunOptions};
     use crate::microsvc::{Context, HandlerError, Routes, Service, Session};
     use crate::outbox_worker::OutboxStore;
+
+    async fn wait_until_published(store: &impl OutboxStore, count: usize) {
+        tokio::time::timeout(std::time::Duration::from_secs(1), async {
+            loop {
+                if store
+                    .messages_by_status(OutboxMessageStatus::Published, usize::MAX)
+                    .await
+                    .unwrap()
+                    .len()
+                    >= count
+                {
+                    break;
+                }
+                tokio::task::yield_now().await;
+            }
+        })
+        .await
+        .expect("immediate publish should settle outbox rows");
+    }
     use crate::{
         sourced, AggregateBuilder, AggregateRepository, Entity, InMemoryRepository, OutboxMessage,
         OutboxMessageStatus, Queueable, QueuedRepository, Snapshot, TransactionalCommit,
@@ -230,6 +248,9 @@ mod tests {
             .dispatch("dummy.touch.b", json!({}), Session::new())
             .await
             .unwrap();
+
+        wait_until_published(&store_a, 1).await;
+        wait_until_published(&store_b, 1).await;
 
         let published_a = store_a
             .messages_by_status(OutboxMessageStatus::Published, usize::MAX)
@@ -303,13 +324,14 @@ mod tests {
             )
             .with_bus(InMemoryBus::new());
 
-        // The handler runs `outbox().commit()`: claim-in-transaction, then
-        // immediate publish through the attached bus.
+        // The handler runs `outbox().commit()`: pending row, then the
+        // bounded worker publishes through the attached bus.
         service
             .dispatch("dummy.touch", json!({}), Session::new())
             .await
             .unwrap();
 
+        wait_until_published(&store, 1).await;
         let published = store
             .messages_by_status(OutboxMessageStatus::Published, usize::MAX)
             .await
@@ -338,6 +360,7 @@ mod tests {
         // `run` returns once the queue is empty (InMemoryBus yields `None`).
         bus.send("dummy.touch", b"{}".to_vec()).await.unwrap();
         service.run(RunOptions::idempotent()).await.unwrap();
+        wait_until_published(&store, 1).await;
 
         let published = store
             .messages_by_status(OutboxMessageStatus::Published, usize::MAX)
@@ -433,6 +456,7 @@ mod tests {
             .dispatch("snap.touch", json!({}), Session::new())
             .await
             .unwrap();
+        wait_until_published(&store, 1).await;
 
         let published = store
             .messages_by_status(OutboxMessageStatus::Published, usize::MAX)

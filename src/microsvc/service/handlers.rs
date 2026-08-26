@@ -542,7 +542,6 @@ impl<'a, A> CausalCommandContext<'a, A>
 where
     A: Aggregate + Send + Sync + 'static,
 {
-    #[cfg(feature = "graphql")]
     pub(super) fn new(
         message: &'a Message,
         session: &'a Session,

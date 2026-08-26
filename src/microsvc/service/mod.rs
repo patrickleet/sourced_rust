@@ -41,9 +41,10 @@ pub(crate) use causal::CausalCommandProjectionEvidence;
 #[cfg(feature = "graphql")]
 pub use causal::GraphqlServiceBindError;
 #[cfg(feature = "graphql")]
+pub use causal::{CausalCommandPublicStatus, CausalDispatchError, CausalDispatchResult};
+#[cfg(feature = "graphql")]
 pub(crate) use causal::{
-    CausalCommandProjectionObligation, CausalCommandPublicState, CausalCommandPublicStatus,
-    CausalCommandReceiptSource, CausalDispatchError, CausalDispatchResult,
+    CausalCommandProjectionObligation, CausalCommandPublicState, CausalCommandReceiptSource,
     CausalProjectionEvidenceState,
 };
 #[allow(unused_imports)] // public API surface for handler-owned projected commits
@@ -56,8 +57,8 @@ pub use invoke::{invoke_transition, require_loaded};
 pub use request::{CommandRequest, CommandResponse};
 pub(crate) use routes::DynBusPublisher;
 pub use routes::{
-    DeliveryKind, HandlerNames, HandlerSpec, RouteBuilder, Routes, ThinCommandBuilder,
-    ThinCommandInvoked, ThinCommandLoaded, TypedRouteBuilder,
+    DeliveryKind, HandlerNames, HandlerSpec, PortableCommand, RouteBuilder, Routes,
+    ThinCommandBuilder, ThinCommandInvoked, ThinCommandLoaded, TypedRouteBuilder,
 };
 pub use runtime::Service;
 

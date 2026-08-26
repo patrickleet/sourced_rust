@@ -8,7 +8,7 @@ use serde_json::Value;
 use crate::command_ledger::CausalTransactionalCommit;
 #[cfg(feature = "graphql")]
 use crate::command_ledger::{
-    AttemptFence, CausalCommitBatch, CommandAttempt, CommandId, CommandLedgerError,
+    AttemptFence, CausalCommitBatch, CausationId, CommandAttempt, CommandId, CommandLedgerError,
     CommandLedgerState, CommandLedgerStore, CommandLookup, CommandLookupScope, CommandReplay,
     TerminalCommandState,
 };
@@ -34,7 +34,7 @@ use crate::repository::CommitBatch;
 /// mutation edge without exposing repository details.
 #[derive(Debug)]
 #[cfg(feature = "graphql")]
-pub(crate) enum CausalDispatchError {
+pub enum CausalDispatchError {
     BadRequest(String),
     Forbidden,
     CommandIdReuse,
@@ -51,7 +51,7 @@ pub(crate) enum CausalDispatchError {
 
 #[cfg(feature = "graphql")]
 impl CausalDispatchError {
-    pub(crate) fn code(&self) -> &'static str {
+    pub fn code(&self) -> &'static str {
         match self {
             Self::BadRequest(_) => "BAD_REQUEST",
             Self::Forbidden => "FORBIDDEN",
@@ -71,7 +71,7 @@ impl CausalDispatchError {
         }
     }
 
-    pub(crate) fn status_code(&self) -> u16 {
+    pub fn status_code(&self) -> u16 {
         match self {
             Self::BadRequest(_) => 400,
             Self::Forbidden => 403,
@@ -83,7 +83,7 @@ impl CausalDispatchError {
         }
     }
 
-    pub(crate) fn client_message(&self) -> String {
+    pub fn client_message(&self) -> String {
         match self {
             Self::BadRequest(message) => message.clone(),
             Self::Rejected { message, .. } => message.clone(),
@@ -214,9 +214,250 @@ impl CausalCommandReceiptSource {
 /// Successful typed causal dispatch plus its exact durable receipt source.
 #[cfg(feature = "graphql")]
 #[derive(Clone, Debug, PartialEq)]
-pub(crate) struct CausalDispatchResult {
+pub struct CausalDispatchResult {
     pub(crate) payload: Value,
     pub(crate) receipt: CausalCommandReceiptSource,
+    /// Cell wait-path outbox rows to drain onto the bus. Empty for local hosts.
+    pub(crate) outbox: Vec<crate::OutboxMessage>,
+}
+
+#[cfg(feature = "graphql")]
+impl CausalDispatchResult {
+    /// Handler payload returned to the wait-path caller.
+    pub fn payload(&self) -> &Value {
+        &self.payload
+    }
+
+    /// Replace the handler payload (wait-path clients remapping wire JSON).
+    pub fn with_payload(mut self, payload: Value) -> Self {
+        self.payload = payload;
+        self
+    }
+
+    /// Outbox rows the wait-path cell committed with the aggregate.
+    pub fn outbox(&self) -> &[crate::OutboxMessage] {
+        &self.outbox
+    }
+
+    /// Parse cell wait-path `outbox` even when the HTTP status is 409.
+    pub fn outbox_from_wait_path(
+        body: &Value,
+    ) -> Result<Vec<crate::OutboxMessage>, CausalDispatchError> {
+        crate::microsvc::cell_host::parse_cell_outbox(body).map_err(|error| {
+            CausalDispatchError::Internal(format!("invalid cell outbox response: {error}"))
+        })
+    }
+
+    /// Client-supplied durable command id.
+    pub fn command_id(&self) -> &str {
+        &self.receipt.command_id
+    }
+
+    /// Ledger causation id assigned on accept.
+    pub fn causation_id(&self) -> &str {
+        &self.receipt.causation_id
+    }
+
+    /// Stable ledger state name (`succeeded`, `atomic`, …).
+    pub fn state(&self) -> &'static str {
+        self.receipt.state.as_str()
+    }
+
+    /// Fill Eventual modeled projection metadata from cell-committed outbox
+    /// rows. Wait-path JSON only has `{ commandId, state }`; the generated
+    /// replica still requires the same projection delta local dispatch records.
+    pub(crate) fn seal_wait_path_protocol(
+        mut self,
+        protocol: &crate::graphql::protocol::ProtocolResponseAccumulator,
+        contract: &TypedCommandContract,
+        replay_retention: Duration,
+    ) -> Result<Self, CausalDispatchError> {
+        self.receipt.command_name = contract.name.clone();
+        self.receipt.consistency = contract.consistency;
+        if contract.consistency == CommandConsistency::Atomic
+            || contract.projections.selectors.is_empty()
+            || self.outbox.is_empty()
+        {
+            return Ok(self);
+        }
+        let occurrences = self
+            .outbox
+            .iter()
+            .map(|row| {
+                row.domain_event_occurrence().map_err(|error| {
+                    CausalDispatchError::Internal(format!(
+                        "wait-path outbox is not a domain occurrence: {error}"
+                    ))
+                })
+            })
+            .collect::<Result<Vec<_>, _>>()?;
+        let causation = occurrences
+            .iter()
+            .find_map(|occurrence| occurrence.metadata().get("causation_id").cloned())
+            .or_else(|| {
+                self.outbox
+                    .iter()
+                    .find_map(|row| row.metadata.get("causation_id").cloned())
+            })
+            .filter(|value| !value.is_empty())
+            .ok_or_else(|| {
+                CausalDispatchError::Internal(
+                    "wait-path outbox missing causation_id for modeled projection".into(),
+                )
+            })?;
+        let causation_id = CausationId::parse_stored(causation).map_err(|error| {
+            CausalDispatchError::Internal(format!("wait-path causation id: {error}"))
+        })?;
+        self.receipt.causation_id = causation_id.as_str().to_string();
+        let metadata = protocol
+            .projection_metadata_for_actual(
+                causation_id,
+                replay_retention,
+                &occurrences,
+                &contract.projections.selectors,
+            )
+            .map_err(|error| {
+                CausalDispatchError::Internal(format!("wait-path projection metadata: {error}"))
+            })?;
+        // Cell wait-path has no GraphQL command-ledger observations. Keep the
+        // modeled delta so the replica can apply it, but drop expects so
+        // `projected` does not wait on live/status observations this process
+        // cannot emit. Preserve the delta's own recovery disposition: a fully
+        // resolved actual delta is sufficient local authority and must not turn
+        // every successful cell command into a full-query revalidation.
+        let metadata = if metadata.obligations.is_empty() {
+            metadata
+        } else {
+            let revalidate = metadata.revalidate;
+            crate::graphql::protocol::CommandProjectionMetadataV1::try_new(
+                metadata.issued_at_unix_ms,
+                metadata.expires_at_unix_ms,
+                metadata.delta,
+                metadata.lifecycle_proofs,
+                Vec::new(),
+                revalidate,
+            )
+            .map_err(|error| {
+                CausalDispatchError::Internal(format!(
+                    "wait-path projection metadata without ledger observations: {error}"
+                ))
+            })?
+        };
+        self.receipt.state = CommandLedgerState::Succeeded;
+        self.receipt.projection_metadata = Some(metadata);
+        Ok(self)
+    }
+
+    /// Status envelope matching this wait-path receipt so commandStatus can
+    /// complete Eventual expects without a local command-ledger row.
+    pub fn public_status(&self) -> CausalCommandPublicStatus {
+        let state = match self.receipt.state {
+            CommandLedgerState::InProgress | CommandLedgerState::RetryableUnknown => {
+                CausalCommandPublicState::InProgress
+            }
+            CommandLedgerState::Succeeded => CausalCommandPublicState::Succeeded,
+            CommandLedgerState::SucceededPendingProjection => {
+                CausalCommandPublicState::SucceededPendingProjection
+            }
+            CommandLedgerState::Atomic => CausalCommandPublicState::Atomic,
+            CommandLedgerState::Rejected => CausalCommandPublicState::Rejected,
+            CommandLedgerState::ProjectionFailed => CausalCommandPublicState::ProjectionFailed,
+            CommandLedgerState::Expired => CausalCommandPublicState::Expired,
+        };
+        let evidence = self
+            .receipt
+            .projection_metadata
+            .as_ref()
+            .map(|metadata| {
+                metadata
+                    .obligations
+                    .iter()
+                    .enumerate()
+                    .map(|(index, _)| CausalCommandProjectionEvidence {
+                        obligation_index: index,
+                        state: CausalProjectionEvidenceState::Observed,
+                        incarnation: None,
+                        revision: None,
+                    })
+                    .collect()
+            })
+            .unwrap_or_default();
+        CausalCommandPublicStatus {
+            state,
+            command_id: self.receipt.command_id.clone(),
+            command_name: (!self.receipt.command_name.is_empty())
+                .then(|| self.receipt.command_name.clone()),
+            causation_id: (!self.receipt.causation_id.is_empty())
+                .then(|| self.receipt.causation_id.clone()),
+            consistency: Some(self.receipt.consistency),
+            outcome: Some(self.payload.clone()),
+            obligations: self.receipt.obligations.clone(),
+            projection_metadata: self.receipt.projection_metadata.clone(),
+            projection_revalidate: false,
+            evidence,
+            direct_projection: self.receipt.direct_projection.clone(),
+        }
+    }
+
+    /// Rebuild a receipt from the HTTP/gRPC wait-path JSON envelope.
+    pub fn from_wait_path_wire(body: Value) -> Result<Self, CausalDispatchError> {
+        #[derive(serde::Deserialize)]
+        #[serde(rename_all = "camelCase", deny_unknown_fields)]
+        struct ReceiptWire {
+            command_id: String,
+            causation_id: String,
+            state: String,
+            #[serde(default)]
+            replayed: Option<bool>,
+        }
+
+        #[derive(serde::Deserialize)]
+        #[serde(rename_all = "camelCase", deny_unknown_fields)]
+        struct ResponseWire {
+            #[serde(default)]
+            payload: Value,
+            receipt: ReceiptWire,
+            #[serde(default)]
+            outbox: Vec<crate::microsvc::cell_host::CellOutboxWireItem>,
+        }
+
+        let wire: ResponseWire = serde_json::from_value(body).map_err(|error| {
+            CausalDispatchError::Internal(format!("invalid wait-path response: {error}"))
+        })?;
+        if wire.receipt.command_id.trim().is_empty()
+            || wire.receipt.command_id.len() > 512
+            || wire.receipt.causation_id.len() > 512
+        {
+            return Err(CausalDispatchError::Internal(
+                "wait-path receipt contains an invalid identifier".into(),
+            ));
+        }
+        let state = crate::command_ledger::CommandLedgerState::parse(&wire.receipt.state).map_err(
+            |err| CausalDispatchError::Internal(format!("wait-path receipt state: {err}")),
+        )?;
+        let _ = wire.receipt.replayed;
+        let outbox = crate::microsvc::cell_host::parse_cell_outbox(&serde_json::json!({
+            "outbox": wire.outbox
+        }))
+        .map_err(|error| {
+            CausalDispatchError::Internal(format!("invalid cell outbox response: {error}"))
+        })?;
+        Ok(Self {
+            payload: wire.payload,
+            outbox,
+            receipt: CausalCommandReceiptSource {
+                command_id: wire.receipt.command_id,
+                command_name: String::new(),
+                causation_id: wire.receipt.causation_id,
+                consistency: crate::graphql::CommandConsistency::Succeeded,
+                state,
+                outcome: Value::Null,
+                obligations: Vec::new(),
+                projection_metadata: None,
+                direct_projection: None,
+            },
+        })
+    }
 }
 
 /// Stable public command-status vocabulary.
@@ -278,7 +519,7 @@ pub(crate) struct CausalCommandProjectionEvidence {
 /// codec. This type is not serializable and contains no raw failure material.
 #[cfg(feature = "graphql")]
 #[derive(Clone, Debug, PartialEq)]
-pub(crate) struct CausalCommandPublicStatus {
+pub struct CausalCommandPublicStatus {
     pub(crate) state: CausalCommandPublicState,
     pub(crate) command_id: String,
     /// Trusted durable command identity for complete terminal receipts.
@@ -297,7 +538,7 @@ pub(crate) struct CausalCommandPublicStatus {
 
 #[cfg(feature = "graphql")]
 impl CausalCommandPublicStatus {
-    pub(super) fn unknown(command_id: impl Into<String>) -> Self {
+    pub(crate) fn unknown(command_id: impl Into<String>) -> Self {
         Self {
             state: CausalCommandPublicState::Unknown,
             command_id: command_id.into(),
@@ -313,7 +554,7 @@ impl CausalCommandPublicStatus {
         }
     }
 
-    pub(super) fn is_unknown(&self) -> bool {
+    pub fn is_unknown(&self) -> bool {
         self.state == CausalCommandPublicState::Unknown
     }
 }
@@ -349,9 +590,7 @@ pub(super) fn ensure_causal_grant(
     ) {
         Ok(()) => Ok(()),
         Err("unauthenticated") => Err(CausalDispatchError::Handler(
-            crate::microsvc::HandlerError::Unauthorized(
-                "missing authenticated principal".into(),
-            ),
+            crate::microsvc::HandlerError::Unauthorized("missing authenticated principal".into()),
         )),
         Err(_) => Err(CausalDispatchError::Forbidden),
     }
@@ -388,6 +627,7 @@ pub(super) fn replay_result(
             Ok(CausalDispatchResult {
                 payload: receipt.outcome.clone(),
                 receipt,
+                outbox: Vec::new(),
             })
         }
         CommandLedgerState::Rejected => replay_rejection(replay.outcome),

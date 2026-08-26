@@ -1,3 +1,4 @@
+use std::cmp::Ordering;
 use std::collections::BTreeMap;
 
 use async_graphql::Value;
@@ -7,9 +8,10 @@ use crate::microsvc::Session;
 use crate::table::{ColumnType, TableSchema};
 
 use super::super::engine::EngineInner;
+use super::super::filter::{CmpOp, FilterExpr, LitValue, Operand};
 use super::super::naming::{is_valid_graphql_name, scalar_type_name};
 use super::super::permissions::ReadPermission;
-use super::binds::{value_to_bind, BindValue};
+use super::binds::{operand_to_bind, value_to_bind, BindValue};
 use super::dialect::{placeholder, SqlDialect};
 use super::evidence::{
     ExtractedQueryEvidence, QueryEvidenceFieldPlan, QueryEvidenceKeyPlan, QueryEvidenceNode,
@@ -55,6 +57,444 @@ pub struct SelectionNode {
 }
 
 type RecordEvidenceProjection = (Vec<(String, String)>, Option<QueryEvidenceRecordPlan>);
+
+/// Compiled GraphQL read: SQL scan or cell GET-by-pk.
+#[derive(Clone, Debug)]
+pub enum QueryPlan {
+    Sql(SqlPlan),
+    CellByKey {
+        model: String,
+        pk: BTreeMap<String, String>,
+        /// Role row policy with every claim resolved from the trusted session.
+        row_filter: Option<FilterExpr>,
+    },
+}
+
+/// Compile a root field against the model's [`crate::graphql::ReadStore`].
+pub fn compile_query(
+    inner: &EngineInner,
+    session: &Session,
+    role: &str,
+    model_name: &str,
+    kind: RootKind,
+    selection: &SelectionNode,
+) -> Result<QueryPlan, String> {
+    let store = inner
+        .read_stores
+        .get(model_name)
+        .copied()
+        .unwrap_or(crate::graphql::read_store::ReadStoreKind::SqlScan);
+    match store {
+        crate::graphql::read_store::ReadStoreKind::SqlScan => Ok(QueryPlan::Sql(compile_root(
+            inner, session, role, model_name, kind, selection,
+        )?)),
+        crate::graphql::read_store::ReadStoreKind::CellByKey => {
+            compile_cell_by_key(inner, session, role, model_name, kind, selection)
+        }
+    }
+}
+
+fn compile_cell_by_key(
+    inner: &EngineInner,
+    session: &Session,
+    role: &str,
+    model_name: &str,
+    kind: RootKind,
+    selection: &SelectionNode,
+) -> Result<QueryPlan, String> {
+    let entry = inner
+        .catalog
+        .get(model_name)
+        .ok_or_else(|| format!("unknown model `{model_name}`"))?;
+    let permission = inner
+        .permissions
+        .get(&(model_name.to_string(), role.to_string()))
+        .map(|entry| &entry.permission)
+        .ok_or_else(|| format!("role `{role}` has no permission on `{model_name}`"))?;
+    match kind {
+        RootKind::List => {
+            return Err(
+                "cell-by-key store does not support list queries (would fan out to N cells); declare a SQL index read model"
+                    .into(),
+            );
+        }
+        RootKind::Aggregate => {
+            return Err(
+                "cell-by-key store does not support aggregate queries; declare a SQL index read model"
+                    .into(),
+            );
+        }
+        RootKind::ByPk => {}
+    }
+    if selection.args.contains_key("where") {
+        return Err("cell-by-key store does not support filter".into());
+    }
+    if selection.args.contains_key("order_by") {
+        return Err("cell-by-key store does not support sort".into());
+    }
+    for child in &selection.children {
+        let is_join = entry.schema.relationships.iter().any(|rel| {
+            rel.field_name == child.field_name
+                || child.field_name == format!("{}_aggregate", rel.field_name)
+        });
+        if is_join {
+            return Err(
+                "cell-by-key store does not support SQL joins; declare a SQL index read model"
+                    .into(),
+            );
+        }
+    }
+    let row_filter = permission
+        .row_filter
+        .as_ref()
+        .map(|filter| resolve_cell_row_filter(&entry.schema, session, filter))
+        .transpose()?;
+    let mut pk = BTreeMap::new();
+    for column in &entry.schema.primary_key.columns {
+        let value = selection
+            .args
+            .get(column)
+            .ok_or_else(|| format!("missing primary key argument `{column}`"))?;
+        let key = match value {
+            Value::String(s) => s.clone(),
+            Value::Number(n) => n.to_string(),
+            other => {
+                return Err(format!(
+                    "cell-by-key primary key `{column}` must be a scalar, got {other:?}"
+                ));
+            }
+        };
+        pk.insert(column.clone(), key);
+    }
+    Ok(QueryPlan::CellByKey {
+        model: model_name.to_string(),
+        pk,
+        row_filter,
+    })
+}
+
+/// Resolve a cell row policy before the remote GET so missing or malformed
+/// claims cannot turn row existence into an authorization side channel.
+fn resolve_cell_row_filter(
+    schema: &TableSchema,
+    session: &Session,
+    filter: &FilterExpr,
+) -> Result<FilterExpr, String> {
+    Ok(match filter {
+        FilterExpr::And(items) => FilterExpr::And(
+            items
+                .iter()
+                .map(|item| resolve_cell_row_filter(schema, session, item))
+                .collect::<Result<_, _>>()?,
+        ),
+        FilterExpr::Or(items) => FilterExpr::Or(
+            items
+                .iter()
+                .map(|item| resolve_cell_row_filter(schema, session, item))
+                .collect::<Result<_, _>>()?,
+        ),
+        FilterExpr::Not(item) => {
+            FilterExpr::Not(Box::new(resolve_cell_row_filter(schema, session, item)?))
+        }
+        FilterExpr::Cmp { column, op, rhs } => {
+            let column_schema = cell_policy_column(schema, column)?;
+            match op {
+                CmpOp::Eq | CmpOp::Neq
+                    if matches!(
+                        column_schema.column_type,
+                        ColumnType::Text
+                            | ColumnType::Timestamp
+                            | ColumnType::Boolean
+                            | ColumnType::Integer
+                            | ColumnType::UnsignedInteger
+                            | ColumnType::Float
+                    ) => {}
+                CmpOp::Gt | CmpOp::Gte | CmpOp::Lt | CmpOp::Lte
+                    if matches!(
+                        column_schema.column_type,
+                        ColumnType::Integer | ColumnType::UnsignedInteger | ColumnType::Float
+                    ) => {}
+                _ => {
+                    return Err(format!(
+                        "cell-by-key row policy operator `{op:?}` is unsupported for column `{column}`"
+                    ));
+                }
+            }
+            FilterExpr::Cmp {
+                column: column.clone(),
+                op: *op,
+                rhs: resolve_cell_operand(rhs, session, &column_schema.column_type)?,
+            }
+        }
+        FilterExpr::In {
+            column,
+            values,
+            negated,
+        } => {
+            let column_schema = cell_policy_column(schema, column)?;
+            if !matches!(
+                column_schema.column_type,
+                ColumnType::Text
+                    | ColumnType::Timestamp
+                    | ColumnType::Boolean
+                    | ColumnType::Integer
+                    | ColumnType::UnsignedInteger
+                    | ColumnType::Float
+            ) {
+                return Err(format!(
+                    "cell-by-key row policy IN is unsupported for column `{column}`"
+                ));
+            }
+            FilterExpr::In {
+                column: column.clone(),
+                values: values
+                    .iter()
+                    .map(|value| resolve_cell_operand(value, session, &column_schema.column_type))
+                    .collect::<Result<_, _>>()?,
+                negated: *negated,
+            }
+        }
+        FilterExpr::IsNull { column, is_null } => {
+            cell_policy_column(schema, column)?;
+            FilterExpr::IsNull {
+                column: column.clone(),
+                is_null: *is_null,
+            }
+        }
+        FilterExpr::Rel { field, .. } => {
+            return Err(format!(
+                "cell-by-key row policy cannot traverse relationship `{field}`"
+            ));
+        }
+    })
+}
+
+fn cell_policy_column<'a>(
+    schema: &'a TableSchema,
+    column: &str,
+) -> Result<&'a crate::table::TableColumn, String> {
+    schema
+        .columns
+        .iter()
+        .find(|candidate| candidate.column_name == column)
+        .ok_or_else(|| format!("unknown cell row-policy column `{column}`"))
+}
+
+fn resolve_cell_operand(
+    operand: &Operand,
+    session: &Session,
+    column_type: &ColumnType,
+) -> Result<Operand, String> {
+    let literal = match operand_to_bind(operand, session, column_type)? {
+        BindValue::Null => LitValue::Null,
+        BindValue::Bool(value) => LitValue::Bool(value),
+        BindValue::I64(value) => LitValue::I64(value),
+        BindValue::F64(value) if value.is_finite() => LitValue::F64(value),
+        BindValue::F64(value) => {
+            return Err(format!(
+                "cell-by-key row-policy float `{value}` must be finite"
+            ));
+        }
+        BindValue::Text(value) => LitValue::String(value),
+        BindValue::Json(value) => LitValue::Json(value),
+        BindValue::Bytes(_) => {
+            return Err("cell-by-key row policies do not support byte operands".into());
+        }
+    };
+    Ok(Operand::Lit(literal))
+}
+
+/// Apply the already-resolved scalar policy to a sealed cell row. Only an
+/// exact SQL-style TRUE authorizes the row; FALSE, NULL/unknown, malformed
+/// fields, and unsupported material all fail closed.
+pub(crate) fn cell_row_matches(schema: &TableSchema, filter: &FilterExpr, row: &JsonValue) -> bool {
+    let JsonValue::Object(row) = row else {
+        return false;
+    };
+    matches!(evaluate_cell_filter(schema, filter, row), CellTruth::True)
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+enum CellTruth {
+    True,
+    False,
+    Unknown,
+}
+
+impl CellTruth {
+    fn not(self) -> Self {
+        match self {
+            Self::True => Self::False,
+            Self::False => Self::True,
+            Self::Unknown => Self::Unknown,
+        }
+    }
+}
+
+fn evaluate_cell_filter(
+    schema: &TableSchema,
+    filter: &FilterExpr,
+    row: &serde_json::Map<String, JsonValue>,
+) -> CellTruth {
+    match filter {
+        FilterExpr::And(items) => {
+            let mut result = CellTruth::True;
+            for item in items {
+                match evaluate_cell_filter(schema, item, row) {
+                    CellTruth::False => return CellTruth::False,
+                    CellTruth::Unknown => result = CellTruth::Unknown,
+                    CellTruth::True => {}
+                }
+            }
+            result
+        }
+        FilterExpr::Or(items) => {
+            let mut result = CellTruth::False;
+            for item in items {
+                match evaluate_cell_filter(schema, item, row) {
+                    CellTruth::True => return CellTruth::True,
+                    CellTruth::Unknown => result = CellTruth::Unknown,
+                    CellTruth::False => {}
+                }
+            }
+            result
+        }
+        FilterExpr::Not(item) => evaluate_cell_filter(schema, item, row).not(),
+        FilterExpr::Cmp { column, op, rhs } => {
+            let Some((column_type, left)) = cell_row_value(schema, row, column) else {
+                return CellTruth::Unknown;
+            };
+            let Operand::Lit(right) = rhs else {
+                return CellTruth::Unknown;
+            };
+            evaluate_cell_comparison(&column_type, left, *op, right)
+        }
+        FilterExpr::In {
+            column,
+            values,
+            negated,
+        } => {
+            if values.is_empty() {
+                return if *negated {
+                    CellTruth::True
+                } else {
+                    CellTruth::False
+                };
+            }
+            let Some((column_type, left)) = cell_row_value(schema, row, column) else {
+                return CellTruth::Unknown;
+            };
+            let mut unknown = false;
+            for value in values {
+                let Operand::Lit(right) = value else {
+                    unknown = true;
+                    continue;
+                };
+                match cell_values_equal(&column_type, left, right) {
+                    Some(true) => {
+                        return if *negated {
+                            CellTruth::False
+                        } else {
+                            CellTruth::True
+                        };
+                    }
+                    Some(false) => {}
+                    None => unknown = true,
+                }
+            }
+            if unknown {
+                CellTruth::Unknown
+            } else if *negated {
+                CellTruth::True
+            } else {
+                CellTruth::False
+            }
+        }
+        FilterExpr::IsNull { column, is_null } => {
+            let Some((_, value)) = cell_row_value(schema, row, column) else {
+                return CellTruth::Unknown;
+            };
+            if value.is_null() == *is_null {
+                CellTruth::True
+            } else {
+                CellTruth::False
+            }
+        }
+        FilterExpr::Rel { .. } => CellTruth::Unknown,
+    }
+}
+
+fn cell_row_value<'a>(
+    schema: &TableSchema,
+    row: &'a serde_json::Map<String, JsonValue>,
+    column: &str,
+) -> Option<(ColumnType, &'a JsonValue)> {
+    let column_schema = schema
+        .columns
+        .iter()
+        .find(|candidate| candidate.column_name == column)?;
+    let value = row
+        .get(&column_schema.field_name)
+        .or_else(|| row.get(&column_schema.column_name))?;
+    Some((column_schema.column_type.clone(), value))
+}
+
+fn evaluate_cell_comparison(
+    column_type: &ColumnType,
+    left: &JsonValue,
+    op: CmpOp,
+    right: &LitValue,
+) -> CellTruth {
+    let matched = match op {
+        CmpOp::Eq => cell_values_equal(column_type, left, right),
+        CmpOp::Neq => cell_values_equal(column_type, left, right).map(|equal| !equal),
+        CmpOp::Gt => cell_values_order(column_type, left, right).map(|order| order.is_gt()),
+        CmpOp::Gte => cell_values_order(column_type, left, right).map(|order| order.is_ge()),
+        CmpOp::Lt => cell_values_order(column_type, left, right).map(|order| order.is_lt()),
+        CmpOp::Lte => cell_values_order(column_type, left, right).map(|order| order.is_le()),
+        CmpOp::Like | CmpOp::Ilike | CmpOp::Contains | CmpOp::ContainedIn | CmpOp::HasKey => None,
+    };
+    match matched {
+        Some(true) => CellTruth::True,
+        Some(false) => CellTruth::False,
+        None => CellTruth::Unknown,
+    }
+}
+
+fn cell_values_equal(column_type: &ColumnType, left: &JsonValue, right: &LitValue) -> Option<bool> {
+    if left.is_null() || matches!(right, LitValue::Null) {
+        return None;
+    }
+    Some(match (column_type, right) {
+        (ColumnType::Text | ColumnType::Timestamp, LitValue::String(right)) => {
+            left.as_str()? == right
+        }
+        (ColumnType::Boolean, LitValue::Bool(right)) => left.as_bool()? == *right,
+        (ColumnType::Integer, LitValue::I64(right)) => left.as_i64()? == *right,
+        (ColumnType::UnsignedInteger, LitValue::I64(right)) if *right >= 0 => {
+            left.as_u64()? == *right as u64
+        }
+        (ColumnType::Float, LitValue::F64(right)) => left.as_f64()? == *right,
+        (ColumnType::Float, LitValue::I64(right)) => left.as_f64()? == *right as f64,
+        _ => return None,
+    })
+}
+
+fn cell_values_order(
+    column_type: &ColumnType,
+    left: &JsonValue,
+    right: &LitValue,
+) -> Option<Ordering> {
+    match (column_type, right) {
+        (ColumnType::Integer, LitValue::I64(right)) => left.as_i64()?.partial_cmp(right),
+        (ColumnType::UnsignedInteger, LitValue::I64(right)) if *right >= 0 => {
+            left.as_u64()?.partial_cmp(&(*right as u64))
+        }
+        (ColumnType::Float, LitValue::F64(right)) => left.as_f64()?.partial_cmp(right),
+        (ColumnType::Float, LitValue::I64(right)) => left.as_f64()?.partial_cmp(&(*right as f64)),
+        _ => None,
+    }
+}
 
 /// Compile a root field selection into one SQL statement.
 pub fn compile_root(

@@ -190,7 +190,7 @@ fn optional_time_epoch_secs(value: Option<SystemTime>) -> Result<RowValue, Table
 
 fn status_failed_at(message: &OutboxMessage) -> Result<RowValue, TableStoreError> {
     if message.status == OutboxMessageStatus::Failed {
-        Ok(RowValue::U64(system_time_epoch_secs(SystemTime::now())?))
+        Ok(RowValue::U64(system_time_epoch_secs(crate::time::now())?))
     } else {
         Ok(RowValue::Null)
     }

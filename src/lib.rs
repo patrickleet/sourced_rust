@@ -19,6 +19,8 @@ pub mod __private {
     pub use serde;
 }
 
+mod time;
+
 pub mod aggregate;
 pub mod application;
 pub mod command_dispatch;
@@ -37,6 +39,8 @@ pub mod lock;
 #[cfg(feature = "metrics")]
 pub mod metrics;
 pub mod microsvc;
+/// Celld Durable Object host adapter (not a sqlx dialect; no `celld` feature).
+pub use microsvc::cell_host;
 pub mod mutation;
 pub mod outbox;
 pub mod outbox_worker;
@@ -77,6 +81,8 @@ pub use command_dispatch::{
     LocalCommandDispatcher, RemoteCommandDispatcher, RemoteDispatchConfig, RemoteTrustMode,
     SharedCommandDispatcher, APPROVED_REMOTE_DISPATCH_PROFILE, COMMAND_DISPATCH_ENVELOPE_VERSION,
 };
+#[cfg(feature = "graphql")]
+pub use command_dispatch::{CommandHost, HttpCommandHost, LocalCommandHost, SharedCommandHost};
 
 // Domain events: typed outward contracts distinct from replay events/snapshots.
 pub use domain_event::{
@@ -364,7 +370,10 @@ pub use outbox_worker::{
     feature = "kafka",
     test,
 ))]
-pub use outbox_worker::{drain_worker_id, OutboxDrainHandle, OutboxDrainRunner};
+pub use outbox_worker::{
+    drain_worker_id, OutboxDrainHandle, OutboxDrainRunner, OutboxPublishMailbox,
+    DEFAULT_OUTBOX_HINT_CAPACITY,
+};
 
 pub use queued_repo::{
     // WithOpts + unlock traits for the queued repository variant.
@@ -447,8 +456,8 @@ pub use microsvc::{
 // mount); commands predict events via `.emits`/`.preview`.
 pub use distributed_macros::{
     aggregate, application, command, command_input_defaults, digest, module, mutation,
-    mutation_file, sourced, DomainEvent, DomainState, GraphqlInput, GraphqlOutput, ReadModel,
-    Snapshot,
+    mutation_file, portable_command, sourced, DomainEvent, DomainState, GraphqlInput,
+    GraphqlOutput, ReadModel, Snapshot,
 };
 
 // Re-export enqueue macro (requires "emitter" feature)

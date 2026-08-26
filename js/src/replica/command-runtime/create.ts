@@ -555,8 +555,7 @@ export function createReplicaCommandRuntime<
 				throw new Error('projection delta changed during command replay');
 			}
 			return Object.freeze({
-				requiresRevalidation:
-					actual.revalidate || actual.obligations.length === 0
+				requiresRevalidation: actual.revalidate
 			});
 		}
 		assertActualProjectionCapabilities(
@@ -572,14 +571,13 @@ export function createReplicaCommandRuntime<
 			canonical,
 			operations,
 			revalidation:
-				actual.revalidate || actual.obligations.length === 0
+				actual.revalidate
 					? actualProjectionRevalidation(
 							prepared.revalidation,
 							actual.delta
 						)
 					: undefined,
-			requiresRevalidation:
-				actual.revalidate || actual.obligations.length === 0
+			requiresRevalidation: actual.revalidate
 		});
 	};
 
@@ -1022,6 +1020,18 @@ export function createReplicaCommandRuntime<
 						if (tracker.pending !== undefined) {
 							settleTrackedProjection(tracker, pending);
 						}
+					} else if (
+						metadata.state === 'atomic' &&
+						!prepared.revalidation.required &&
+						!statusRequiresRevalidation
+					) {
+						/*
+						 * An exact terminal delta proves delivery but carries no
+						 * canonical revision. Keep its accepted overlay until a later
+						 * comparable authoritative result seals it, without racing
+						 * sibling commands with a command-triggered query.
+						 */
+						settleTrackedProjection(tracker, pending);
 					} else if (
 						metadata.state === 'atomic' ||
 						(metadata.state === 'succeeded' &&
@@ -1681,10 +1691,17 @@ export function createReplicaCommandRuntime<
 			 * DistributedReplica is the authority on whether this frame's
 			 * snapshot/observations were admissible. This callback runs only
 			 * after that exact frame committed.
+			 *
+			 * Eventual list membership fences may keep the optimistic overlay
+			 * until @live includes the new row. `projected` is delivery, not
+			 * overlay retirement. Query/live frames have no command payload;
+			 * settle those so Send/busy can clear. Frames that name a command
+			 * still wait for overlay retirement or the command-state paths
+			 * above (status regression must be able to reject `projected`).
 			 */
 			const remainsPending =
 				replica.markOptimisticLayerAccepted(commandId);
-			if (!remainsPending) {
+			if (!remainsPending || command === undefined) {
 				settleProjectionSuccess(controller);
 				pending.delete(commandId);
 			}

@@ -1,12 +1,2 @@
-pub mod blob_move;
-pub mod blob_start;
-pub mod blob_start_level;
-pub mod chat_post;
-pub mod payloads;
-pub mod todo_archive;
-pub mod todo_complete;
-pub mod todo_create;
-pub mod todo_force_archive;
-pub mod todo_purge;
-pub mod todo_rename;
-pub mod todo_reopen;
+// Command handlers for Todo/Chat/Blob live in domain crates.
+// This module remains for service-only integration commands if any are added.

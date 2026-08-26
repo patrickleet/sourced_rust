@@ -79,7 +79,7 @@ struct LiveResumeTokenMaterial<'a> {
 }
 
 #[derive(Clone, Debug)]
-pub(crate) struct ProtocolResponseAccumulator {
+pub struct ProtocolResponseAccumulator {
     inner: Arc<ProtocolResponseState>,
 }
 

@@ -6,7 +6,9 @@ use crate::command_ledger::{
 };
 use crate::outbox::OutboxPublisherConfig;
 use crate::projection_protocol::ProjectionProtocolStore;
-use crate::repository::{ReadModelWritePlanStore, RelationalReadModelQueryStore, Repository};
+use crate::repository::{
+    ReadModelWritePlanStore, RelationalReadModelQueryStore, Repository, TransactionalCommit,
+};
 
 /// Dependency capability for services that expose an aggregate repository.
 pub trait HasRepo {
@@ -27,6 +29,7 @@ pub trait CausalRepositoryBackend:
     + CausalTransactionalCommit
     + CausalRepositoryIdentity
     + ProjectionProtocolStore
+    + TransactionalCommit
     + Send
     + Sync
     + 'static
@@ -39,6 +42,7 @@ impl<T> CausalRepositoryBackend for T where
         + CausalTransactionalCommit
         + CausalRepositoryIdentity
         + ProjectionProtocolStore
+        + TransactionalCommit
         + Send
         + Sync
         + 'static
@@ -105,8 +109,8 @@ where
 /// immediately.
 ///
 /// `Service::with_bus` installs an [`OutboxPublisherConfig`] through this so that
-/// `repo.outbox(msg).commit(agg)` publishes the row right after commit. Without
-/// it, commits leave the row `pending` for the polling worker.
+/// `repo.outbox(msg).commit(agg)` enqueues the pending row for the bounded
+/// worker. Without it, commits leave the row `pending` for a polling worker.
 pub trait ConfigurableOutboxPublisher {
     /// Install the outbox publisher.
     fn configure_outbox_publisher(&mut self, config: OutboxPublisherConfig);

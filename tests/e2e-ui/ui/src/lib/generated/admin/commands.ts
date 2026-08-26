@@ -678,7 +678,7 @@ export const Command_blob_games_start: ReplicaCommandArtifact<Command_blob_games
       "BlobGames"
     ],
     "relationships": [],
-    "required": true,
+    "required": false,
     "version": 1
   },
   "version": 2
@@ -1012,7 +1012,7 @@ export const Command_blob_games_start_level: ReplicaCommandArtifact<Command_blob
       "BlobGames"
     ],
     "relationships": [],
-    "required": true,
+    "required": false,
     "version": 1
   },
   "version": 2
@@ -1577,7 +1577,7 @@ export const Command_todos_archive: ReplicaCommandArtifact<Command_todos_archive
       "Todos"
     ],
     "relationships": [],
-    "required": true,
+    "required": false,
     "version": 1
   },
   "version": 2
@@ -1829,7 +1829,7 @@ export const Command_todos_complete: ReplicaCommandArtifact<Command_todos_comple
       "Todos"
     ],
     "relationships": [],
-    "required": true,
+    "required": false,
     "version": 1
   },
   "version": 2
@@ -2134,7 +2134,7 @@ export const Command_todos_create: ReplicaCommandArtifact<Command_todos_create_I
       "Todos"
     ],
     "relationships": [],
-    "required": true,
+    "required": false,
     "version": 1
   },
   "version": 2
@@ -2404,7 +2404,7 @@ export const Command_todos_force_archive: ReplicaCommandArtifact<Command_todos_f
       "Todos"
     ],
     "relationships": [],
-    "required": true,
+    "required": false,
     "version": 1
   },
   "version": 2
@@ -2878,7 +2878,7 @@ export const Command_todos_rename: ReplicaCommandArtifact<Command_todos_rename_I
       "Todos"
     ],
     "relationships": [],
-    "required": true,
+    "required": false,
     "version": 1
   },
   "version": 2
@@ -3130,7 +3130,7 @@ export const Command_todos_reopen: ReplicaCommandArtifact<Command_todos_reopen_I
       "Todos"
     ],
     "relationships": [],
-    "required": true,
+    "required": false,
     "version": 1
   },
   "version": 2

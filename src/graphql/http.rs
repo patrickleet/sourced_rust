@@ -10,10 +10,11 @@ use axum::extract::ws::WebSocketUpgrade;
 use axum::extract::{DefaultBodyLimit, State};
 use axum::http::{HeaderMap, StatusCode};
 use axum::response::{Html, IntoResponse, Response};
-use axum::routing::post;
+use axum::routing::{get, post};
 use axum::Router;
 use futures_util::stream::BoxStream;
 
+use crate::command_dispatch::{LocalCommandDispatcher, LocalCommandHost, SharedCommandHost};
 use crate::microsvc::{Service, Session, MAX_HTTP_BODY_BYTES, USER_ID_KEY};
 
 use super::engine::GraphqlEngine;
@@ -62,7 +63,7 @@ pub struct GraphqlSessionExecutor {
     engine: Arc<GraphqlEngine>,
     session: Session,
     principal: Option<VerifiedPrincipal>,
-    service: Option<Arc<Service>>,
+    host: Option<SharedCommandHost>,
 }
 
 impl GraphqlSessionExecutor {
@@ -71,7 +72,7 @@ impl GraphqlSessionExecutor {
             engine,
             session,
             principal: None,
-            service: None,
+            host: None,
         }
     }
 
@@ -79,13 +80,13 @@ impl GraphqlSessionExecutor {
         engine: Arc<GraphqlEngine>,
         session: Session,
         principal: Option<VerifiedPrincipal>,
-        service: Option<Arc<Service>>,
+        host: Option<SharedCommandHost>,
     ) -> Self {
         Self {
             engine,
             session,
             principal,
-            service,
+            host,
         }
     }
 }
@@ -100,7 +101,7 @@ impl Executor for GraphqlSessionExecutor {
                 request_with_context(
                     request,
                     self.principal.clone(),
-                    self.service.as_ref().map(Arc::clone),
+                    self.host.as_ref().map(Arc::clone),
                 ),
             )
             .await
@@ -132,17 +133,17 @@ impl Executor for GraphqlSessionExecutor {
                 }));
             }
         };
-        let service = self.service.as_ref().map(Arc::clone);
+        let host = self.host.as_ref().map(Arc::clone);
         if operation_type == OperationType::Subscription {
             return self
                 .engine
-                .execute_stream(&session, request_with_context(request, principal, service));
+                .execute_stream(&session, request_with_context(request, principal, host));
         }
 
         let engine = Arc::clone(&self.engine);
         Box::pin(futures_util::stream::once(async move {
             engine
-                .execute(&session, request_with_context(request, principal, service))
+                .execute(&session, request_with_context(request, principal, host))
                 .await
         }))
     }
@@ -178,11 +179,11 @@ fn request_with_principal(request: Request, principal: Option<VerifiedPrincipal>
 fn request_with_context(
     request: Request,
     principal: Option<VerifiedPrincipal>,
-    service: Option<Arc<Service>>,
+    host: Option<SharedCommandHost>,
 ) -> Request {
     let request = request_with_principal(request, principal);
-    match service {
-        Some(service) => request.data(service),
+    match host {
+        Some(host) => request.data(host),
         None => request,
     }
 }
@@ -204,52 +205,57 @@ pub fn graphql_router(engine: Arc<GraphqlEngine>) -> Router {
     router.with_state(engine)
 }
 
-/// GraphQL router that can dispatch command mutations through a [`Service`].
-///
-/// Prefer [`graphql_router_with_dispatcher`] for new hosts: local command
-/// mounts are still Service-backed, but the public host API is the dispatcher
-/// boundary rather than attaching `Service` directly.
+/// GraphQL router that wait-dispatches through a local [`Service`] wrapped as
+/// a [`LocalCommandHost`]. Request data holds the host, not `Arc<Service>`.
 pub fn graphql_router_with_service(engine: Arc<GraphqlEngine>, service: Arc<Service>) -> Router {
     service
         .validate_graphql_engine(&engine)
         .unwrap_or_else(|error| panic!("cannot serve GraphQL with this service: {error}"));
+    graphql_router_with_host(engine, Arc::new(LocalCommandHost::new(service)))
+}
 
+/// GraphQL router whose mutations dispatch through a local
+/// [`LocalCommandDispatcher`] as a [`crate::command_dispatch::CommandHost`].
+///
+/// Does **not** unwrap [`LocalCommandDispatcher::service`] into GraphQL
+/// request data (`DCS-AC-007.1`). Schema/client compilation never requires
+/// this handle. [`RemoteCommandDispatcher`] HTTPS-mTLS
+/// (`APPROVED_REMOTE_DISPATCH_PROFILE`) stays the CMP task-20 envelope;
+/// wait-path remote is [`crate::command_dispatch::HttpCommandHost`].
+pub fn graphql_router_with_dispatcher(
+    engine: Arc<GraphqlEngine>,
+    dispatcher: Arc<LocalCommandDispatcher>,
+) -> Router {
+    graphql_router_with_host(engine, dispatcher)
+}
+
+/// GraphQL router that wait-dispatches through an explicit command host.
+pub fn graphql_router_with_host(engine: Arc<GraphqlEngine>, host: SharedCommandHost) -> Router {
     let graphiql = engine.graphiql_enabled();
     let state = GraphqlHttpState {
         engine,
-        service: Some(service),
+        host: Some(host),
     };
-    let mut router = Router::new().route(
-        "/graphql",
-        post(graphql_handler_with_service).get(move || async move {
-            if graphiql {
-                graphiql_page().into_response()
-            } else {
-                axum::http::StatusCode::METHOD_NOT_ALLOWED.into_response()
-            }
-        }),
-    );
+    let mut router = Router::new()
+        .route(
+            "/graphql",
+            post(graphql_handler_with_service).get(move || async move {
+                if graphiql {
+                    graphiql_page().into_response()
+                } else {
+                    axum::http::StatusCode::METHOD_NOT_ALLOWED.into_response()
+                }
+            }),
+        )
+        .route("/graphql/ws", get(graphql_ws_with_host));
     router = router.layer(DefaultBodyLimit::max(MAX_HTTP_BODY_BYTES));
     router.with_state(state)
-}
-
-/// GraphQL router whose command mutations dispatch through a local
-/// [`crate::command_dispatch::LocalCommandDispatcher`].
-///
-/// Schema/client compilation never requires this handle. Only mutation/status
-/// execution does. The local adapter remains the sole production causal
-/// executor until remote causal receipts land fully behind the same trait.
-pub fn graphql_router_with_dispatcher(
-    engine: Arc<GraphqlEngine>,
-    dispatcher: Arc<crate::command_dispatch::LocalCommandDispatcher>,
-) -> Router {
-    graphql_router_with_service(engine, Arc::clone(dispatcher.service()))
 }
 
 #[derive(Clone)]
 struct GraphqlHttpState {
     engine: Arc<GraphqlEngine>,
-    service: Option<Arc<Service>>,
+    host: Option<SharedCommandHost>,
 }
 
 fn unauthorized_response() -> Response {
@@ -301,8 +307,8 @@ async fn graphql_handler_with_service(
     };
     let (session, principal) = identity.into_parts();
     let mut request = request_with_principal(req.into_inner(), principal);
-    if let Some(service) = &state.service {
-        request = request.data(Arc::clone(service));
+    if let Some(host) = &state.host {
+        request = request.data(Arc::clone(host));
     }
     let response = state.engine.execute(&session, request).await;
     GraphQLResponse::from(response).into_response()
@@ -328,7 +334,8 @@ pub async fn microsvc_graphql_handler(
         Err(AuthError::Unauthorized) => return unauthorized_response(),
     };
     let (session, principal) = identity.into_parts();
-    let request = request_with_principal(req.into_inner(), principal).data(Arc::clone(&service));
+    let host: SharedCommandHost = Arc::new(LocalCommandHost::new(Arc::clone(&service)));
+    let request = request_with_principal(req.into_inner(), principal).data(host);
     let response = engine.execute(&session, request).await;
     GraphQLResponse::from(response).into_response()
 }
@@ -367,7 +374,28 @@ pub async fn microsvc_graphql_ws(
         Some(e) => e,
         None => return StatusCode::NOT_FOUND.into_response(),
     };
+    let host: SharedCommandHost = Arc::new(LocalCommandHost::new(Arc::clone(&service)));
+    graphql_ws_upgrade(engine, Some(host), headers, uri, protocol, upgrade).await
+}
 
+async fn graphql_ws_with_host(
+    State(state): State<GraphqlHttpState>,
+    headers: HeaderMap,
+    uri: axum::http::Uri,
+    protocol: GraphQLProtocol,
+    upgrade: WebSocketUpgrade,
+) -> Response {
+    graphql_ws_upgrade(state.engine, state.host, headers, uri, protocol, upgrade).await
+}
+
+async fn graphql_ws_upgrade(
+    engine: Arc<GraphqlEngine>,
+    host: Option<SharedCommandHost>,
+    headers: HeaderMap,
+    uri: axum::http::Uri,
+    protocol: GraphQLProtocol,
+    upgrade: WebSocketUpgrade,
+) -> Response {
     let mut upgrade_headers = headers;
     merge_identity_query_params(&mut upgrade_headers, uri.query());
     let mode = engine.identity_config().mode;
@@ -394,7 +422,7 @@ pub async fn microsvc_graphql_ws(
         Arc::clone(&engine),
         upgrade_session.clone(),
         upgrade_principal,
-        Some(Arc::clone(&service)),
+        host,
     );
     let engine_for_init = Arc::clone(&engine);
     upgrade
@@ -626,19 +654,38 @@ mod connection_init_tests {
     use std::any::TypeId;
 
     #[test]
-    fn websocket_request_context_retains_attached_service() {
+    fn websocket_request_context_retains_command_host_not_service() {
         let service = Arc::new(Service::new());
+        let host: SharedCommandHost = Arc::new(LocalCommandHost::new(Arc::clone(&service)));
         let request = request_with_context(
             Request::new("{ __typename }"),
             None,
-            Some(Arc::clone(&service)),
+            Some(Arc::clone(&host)),
         );
-        let stored = request
+        assert!(request.data.get(&TypeId::of::<Arc<Service>>()).is_none());
+        request
             .data
-            .get(&TypeId::of::<Arc<Service>>())
-            .and_then(|service| service.downcast_ref::<Arc<Service>>())
-            .expect("service request data");
-        assert!(Arc::ptr_eq(stored, &service));
+            .get(&TypeId::of::<SharedCommandHost>())
+            .and_then(|host| host.downcast_ref::<SharedCommandHost>())
+            .expect("command host request data");
+    }
+
+    #[test]
+    fn dispatcher_as_command_host_does_not_put_service_in_request_data() {
+        let service = Arc::new(Service::new());
+        let dispatcher = Arc::new(LocalCommandDispatcher::new(Arc::clone(&service)));
+        let host: SharedCommandHost = dispatcher;
+        let request = request_with_context(
+            Request::new("{ __typename }"),
+            None,
+            Some(Arc::clone(&host)),
+        );
+        assert!(request.data.get(&TypeId::of::<Arc<Service>>()).is_none());
+        request
+            .data
+            .get(&TypeId::of::<SharedCommandHost>())
+            .and_then(|host| host.downcast_ref::<SharedCommandHost>())
+            .expect("command host request data");
     }
 
     #[test]

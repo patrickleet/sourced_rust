@@ -15,8 +15,8 @@ mod bounds;
 mod deps;
 pub mod handlers;
 mod host;
+mod http;
 pub mod modules;
-mod oidc_layer;
 
 pub use application::{
     DISTRIBUTED_ADMIN_CLIENT_SURFACE, DISTRIBUTED_CLIENT_SURFACE, DISTRIBUTED_PUBLIC_CLIENT_SURFACE,
@@ -27,9 +27,9 @@ pub use handlers::ingestors::zitadel::{
     scrape_users_to_outbox, spawn_scrape_loop, ScrapeReport, ZitadelScrapeConfig,
 };
 pub use host::{run, HostOptions};
+pub use http::serve;
 pub use modules::compose::build_service;
 pub use modules::graphql::{
     build_graphql_engine, dev_identity, distributed_admin_client_surface, distributed_client_surface,
     distributed_public_client_surface, identity_from_env, oidc_bearer_config,
 };
-pub use oidc_layer::serve_with_oidc;

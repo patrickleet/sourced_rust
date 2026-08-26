@@ -19,6 +19,7 @@ use domain::types::Direction;
 use sim::Game;
 
 use distributed::InMemoryRepository;
+use handlers::{tick_cell_name, tick_shard};
 
 const SMALL_MAP: &str = "\
 #######
@@ -33,6 +34,15 @@ const SMALL_MAP: &str = "\
 // Test 1: Game setup and movement
 // Pattern: Single aggregate + read model commit, terrain validation
 // ============================================================================
+
+#[test]
+fn tick_shards_by_game_id_not_player_or_bomb() {
+    assert_eq!(tick_shard("game-1"), "game-1");
+    assert_eq!(tick_cell_name("game-1"), "game:game-1");
+    assert_ne!(tick_shard("game-1"), "player:1");
+    assert_ne!(tick_cell_name("game-1"), "player:player-1");
+    assert_ne!(tick_cell_name("game-1"), "bomb:bomb-1");
+}
 
 #[tokio::test]
 async fn game_setup_and_movement() {

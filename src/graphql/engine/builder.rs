@@ -33,6 +33,7 @@ impl GraphqlEngineBuilder {
             pending_errors: Vec::new(),
             // DevHeaders keeps ambient header tests/green; public scaffolds set OidcBearer (D6).
             identity: IdentityConfig::dev_headers(),
+            read_stores: BTreeMap::new(),
         }
     }
 
@@ -457,6 +458,31 @@ impl GraphqlEngineBuilder {
         self.command_binding = Some(binding);
         self
     }
+
+    /// Mount a [`crate::graphql::ReadStore`] for one model. Default is SQL scan.
+    /// Does not record the store on the [`crate::RelationalReadModel`] type
+    /// (`DCS-DEC-008`).
+    pub fn read_store<M: crate::RelationalReadModel>(
+        mut self,
+        store: crate::graphql::ReadStore,
+    ) -> Self {
+        let name = M::schema().model_name.clone();
+        if !self.catalog.contains_key(&name) {
+            self.pending_errors.push(format!(
+                "read_store for unregistered model `{name}` (call `.model` first)"
+            ));
+            return self;
+        }
+        if self.read_stores.contains_key(&name) {
+            self.pending_errors.push(format!(
+                "read_store for model `{name}` was configured more than once"
+            ));
+            return self;
+        }
+        self.read_stores.insert(name, store);
+        self
+    }
+
     pub fn default_limit(mut self, n: u64) -> Self {
         self.default_limit = n;
         self
@@ -957,6 +983,14 @@ impl GraphqlEngineBuilder {
             }
         });
         let identity_validator = self.identity.oidc.clone().map(OidcValidator::new);
+        let mut read_store_kinds = BTreeMap::new();
+        let mut cell_getters = BTreeMap::new();
+        for (model, store) in self.read_stores {
+            read_store_kinds.insert(model.clone(), store.kind());
+            if let Some(getter) = store.cell_getter() {
+                cell_getters.insert(model, getter);
+            }
+        }
         let inner = Arc::new(EngineInner {
             service_id: self.service_id,
             command_binding: self.command_binding,
@@ -988,6 +1022,8 @@ impl GraphqlEngineBuilder {
             identity_validator,
             protocol,
             query_protocol,
+            read_stores: read_store_kinds,
+            cell_getters,
         });
 
         Ok(GraphqlEngine { inner })

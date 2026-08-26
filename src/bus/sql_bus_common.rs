@@ -354,6 +354,9 @@ pub struct SqlBus<B> {
     topology: BusTopologyConfig,
     lease: Duration,
     source_epoch: Option<ProjectionEpoch>,
+    /// When non-zero, empty `listen`/`subscribe` polls instead of draining to
+    /// idle. Long-running hosts need this; tests keep the default (zero).
+    idle_poll: Duration,
 }
 
 impl<B: SqlBusDialect> SqlBus<B> {
@@ -363,6 +366,7 @@ impl<B: SqlBusDialect> SqlBus<B> {
             topology: BusTopologyConfig::default(),
             lease: DEFAULT_LEASE,
             source_epoch: None,
+            idle_poll: Duration::ZERO,
         }
     }
 
@@ -389,6 +393,16 @@ impl<B: SqlBusDialect> SqlBus<B> {
     /// authorize a reset.
     pub fn with_source_epoch(mut self, epoch: ProjectionEpoch) -> Self {
         self.source_epoch = Some(epoch);
+        self
+    }
+
+    /// Keep `listen`/`subscribe` running when the queue or log is empty.
+    ///
+    /// Drain-to-idle (`Duration::ZERO`, the default) is for tests. A playground
+    /// or worker that rebuilds `Service` after every idle drain pays seconds
+    /// of projector bootstrap on the next Eventual command.
+    pub fn with_idle_poll(mut self, idle_poll: Duration) -> Self {
+        self.idle_poll = idle_poll;
         self
     }
 
@@ -472,6 +486,7 @@ impl<B: SqlBusDialect> BusConsumer for SqlBus<B> {
             names,
             lease_secs: self.lease.as_secs_f64(),
             buffer: VecDeque::new(),
+            idle_poll: self.idle_poll,
         };
         run_source(router, source, options).await
     }
@@ -502,6 +517,7 @@ impl<B: SqlBusDialect> BusConsumer for SqlBus<B> {
             last_delivered: None,
             settled_seq: Arc::new(AtomicI64::new(0)),
             source_epoch,
+            idle_poll: self.idle_poll,
         };
         run_source(router, source, options).await
     }
@@ -520,6 +536,7 @@ struct SqlQueueSource<B> {
     names: Vec<String>,
     lease_secs: f64,
     buffer: VecDeque<ClaimedRow>,
+    idle_poll: Duration,
 }
 
 impl<B: SqlBusDialect> MessageSource for SqlQueueSource<B> {
@@ -530,20 +547,28 @@ impl<B: SqlBusDialect> MessageSource for SqlQueueSource<B> {
     }
 
     async fn recv(&mut self) -> Result<Option<Self::Received>, TransportError> {
-        if self.buffer.is_empty() {
-            let mut claimed = self
-                .dialect
-                .claim(&self.names, self.lease_secs, SOURCE_BATCH)
-                .await?;
-            // `UPDATE … RETURNING` row order is unspecified; restore seq order.
-            claimed.sort_by_key(|claim| claim.row.seq);
-            self.buffer.extend(claimed);
+        loop {
+            if self.buffer.is_empty() {
+                let mut claimed = self
+                    .dialect
+                    .claim(&self.names, self.lease_secs, SOURCE_BATCH)
+                    .await?;
+                // `UPDATE … RETURNING` row order is unspecified; restore seq order.
+                claimed.sort_by_key(|claim| claim.row.seq);
+                self.buffer.extend(claimed);
+            }
+            if let Some(claimed) = self.buffer.pop_front() {
+                return Ok(Some(SqlQueueReceived {
+                    dialect: self.dialect.clone(),
+                    row: claimed.row,
+                    claim_token: claimed.claim_token,
+                }));
+            }
+            if self.idle_poll.is_zero() {
+                return Ok(None);
+            }
+            tokio::time::sleep(self.idle_poll).await;
         }
-        Ok(self.buffer.pop_front().map(|claimed| SqlQueueReceived {
-            dialect: self.dialect.clone(),
-            row: claimed.row,
-            claim_token: claimed.claim_token,
-        }))
     }
 }
 
@@ -612,6 +637,7 @@ struct SqlLogSource<B> {
     /// Highest `seq` settled forward by this source's handles.
     settled_seq: Arc<AtomicI64>,
     source_epoch: ProjectionEpoch,
+    idle_poll: Duration,
 }
 
 impl<B: SqlBusDialect> MessageSource for SqlLogSource<B> {
@@ -633,42 +659,48 @@ impl<B: SqlBusDialect> MessageSource for SqlLogSource<B> {
                 self.buffer.clear();
             }
         }
-        if self.buffer.is_empty() {
-            let rows = self
-                .dialect
-                .log_read(
-                    &self.names,
-                    &self.consumer,
-                    SOURCE_BATCH,
-                    &self.source_epoch,
+        loop {
+            if self.buffer.is_empty() {
+                let rows = self
+                    .dialect
+                    .log_read(
+                        &self.names,
+                        &self.consumer,
+                        SOURCE_BATCH,
+                        &self.source_epoch,
+                    )
+                    .await?;
+                self.buffer.extend(rows);
+            }
+            let Some(row) = self.buffer.pop_front() else {
+                if self.idle_poll.is_zero() {
+                    return Ok(None);
+                }
+                tokio::time::sleep(self.idle_poll).await;
+                continue;
+            };
+            let position = u64::try_from(row.seq).map_err(|_| {
+                corrupt_row(
+                    B::BACKEND,
+                    format!(
+                        "bus_log seq {} is outside the projection cursor domain",
+                        row.seq
+                    ),
                 )
-                .await?;
-            self.buffer.extend(rows);
+            })?;
+            let source = ProjectionSource::new(format!("{}.bus_log", B::BACKEND), b"global".to_vec())
+                .map_err(|error| corrupt_row(B::BACKEND, error.to_string()))?;
+            let ordered = OrderedDelivery::new(source, self.source_epoch.clone(), position, false)
+                .map_err(|error| corrupt_row(B::BACKEND, error.to_string()))?;
+            self.last_delivered = Some(row.seq);
+            return Ok(Some(SqlLogReceived {
+                dialect: self.dialect.clone(),
+                consumer: self.consumer.clone(),
+                settled_seq: self.settled_seq.clone(),
+                row,
+                ordered,
+            }));
         }
-        let Some(row) = self.buffer.pop_front() else {
-            return Ok(None);
-        };
-        let position = u64::try_from(row.seq).map_err(|_| {
-            corrupt_row(
-                B::BACKEND,
-                format!(
-                    "bus_log seq {} is outside the projection cursor domain",
-                    row.seq
-                ),
-            )
-        })?;
-        let source = ProjectionSource::new(format!("{}.bus_log", B::BACKEND), b"global".to_vec())
-            .map_err(|error| corrupt_row(B::BACKEND, error.to_string()))?;
-        let ordered = OrderedDelivery::new(source, self.source_epoch.clone(), position, false)
-            .map_err(|error| corrupt_row(B::BACKEND, error.to_string()))?;
-        self.last_delivered = Some(row.seq);
-        Ok(Some(SqlLogReceived {
-            dialect: self.dialect.clone(),
-            consumer: self.consumer.clone(),
-            settled_seq: self.settled_seq.clone(),
-            row,
-            ordered,
-        }))
     }
 }
 

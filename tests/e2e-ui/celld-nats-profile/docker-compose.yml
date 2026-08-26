@@ -1,0 +1,25 @@
+# OPTIONAL — e2e-ui celld+NATS profile.
+# Not the default playground (`tests/e2e-ui/docker/docker-compose.yml` + make run).
+# Not a three-process GraphQL/commands/projectors matrix.
+#
+# NATS only. celld + Azurite stay in tests/celld/docker-compose.yml (no MinIO).
+#
+#   docker compose -f tests/e2e-ui/celld-nats-profile/docker-compose.yml up -d
+#   NATS_URL=nats://127.0.0.1:14222
+#
+# Project name is explicit so `docker compose ls` cannot confuse this with e2e-ui.
+
+name: e2e-ui-celld-nats-optional
+
+services:
+  nats:
+    image: nats:2-alpine
+    command: ["-js", "-m", "8222"]
+    ports:
+      - "127.0.0.1:${NATS_PORT:-14222}:4222"
+    healthcheck:
+      test: ["CMD-SHELL", "wget -qO- http://127.0.0.1:8222/healthz >/dev/null || exit 1"]
+      interval: 2s
+      timeout: 2s
+      retries: 10
+      start_period: 2s

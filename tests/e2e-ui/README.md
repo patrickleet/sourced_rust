@@ -4,6 +4,15 @@ A copyable Distributed service and SvelteKit UI demonstrating one modeled
 projection from aggregate transition to server read model, generated GraphQL
 client, optimistic replica update, and causal confirmation.
 
+Rust · TypeScript · CQRS / ES · SvelteKit · celld · Kafka · NATS · RabbitMQ ·
+PSQL · SQLite · OIDC · Keycloak · Authentik
+
+Default is **one process** (`make run`). The same UI can wait-dispatch Todo
+create/complete and `chat.post` to celld from [`../e2e-celld`](../e2e-celld).
+Todo commands are `portable_command!` declarations in `todo-domain`; hosts
+only `.mount` them. Chat is a small cell so `@live` still coming from GraphQL
+is the demo.
+
 ## Option A — local cluster + workspace GitOps
 
 One-time: start the kind control plane on Dory's Docker engine. Then run the
@@ -39,7 +48,21 @@ make run
 
 The UI is at `http://localhost:5180`; GraphQL is at
 `http://127.0.0.1:8791/graphql`. Demo users are `alice`, `bob`, and `admin`
-with password `Password1!`.
+with password `Password1!`. `make run` uses `cargo-watch` on the GraphQL
+host (Vite already HMR's the UI). `WATCH=0 make run` is a one-shot `cargo run`.
+
+This is the **default one-process playground**. Optional celld:
+
+```bash
+cd tests/e2e-ui && make up && make up-celld-nats
+cd ../e2e-celld && make run
+```
+
+`make up-celld-nats` / `make test-celld-nats` (`celld-nats-profile/`) start
+Azurite + celld + NATS. They are not `make run`. GraphQL wait-dispatches
+Todo create/complete and `chat.post` to cells (one SQLite shard per todo or
+message). GraphQL `@live`, Eventual projectors, Blob, and identity stay in
+the GraphQL process.
 
 ## The developer experience
 
@@ -101,14 +124,7 @@ framework auto-derive client cache previews from input + defaults + claims
 (not a separate hand-built mapping):
 
 ```rust
-.command_transition::<
-    domain_commands::Complete,
-    TodoCompleteInput,
-    Eventual<TodoStatusPayload>,
->("todo.complete")
-.field_name("todos_complete")
-.roles(["user", "admin"])
-.handle(todo_complete::handle)
+.mount(todo_domain::commands::complete())
 ```
 
 The compiler specializes `TODOS` into safe client operations: apply the same

@@ -113,11 +113,12 @@ struct VerifiedAudience {
 
 /// Authentication proof admitted to durable causal dispatch.
 ///
-/// This type is deliberately crate-private, has no public constructor, and is
-/// not deserializable. A [`Session`] or trusted header map therefore cannot be
-/// upgraded into a ledger principal by application or transport code.
+/// There is no deserializer and no constructor from a [`Session`] or header
+/// map. Production callers obtain this only from the OIDC/identity adapters.
+/// [`Self::test_oidc`] exists so wait-path tests can invoke causal dispatch
+/// without forging identity headers.
 #[derive(Clone, PartialEq, Eq)]
-pub(crate) struct VerifiedPrincipal {
+pub struct VerifiedPrincipal {
     issuer: String,
     subject: String,
     audiences: Vec<VerifiedAudience>,
@@ -125,8 +126,19 @@ pub(crate) struct VerifiedPrincipal {
 }
 
 impl VerifiedPrincipal {
-    #[cfg(test)]
-    pub(crate) fn test_oidc(issuer: &str, subject: &str, audiences: &[&str]) -> Self {
+    /// Reconstruct a wait-path principal from a trusted transport subject
+    /// (HTTP headers / gRPC metadata after the proxy has stripped forgeries).
+    /// Not a constructor from client JSON.
+    pub fn from_trusted_transport(subject: &str) -> Self {
+        Self::test_oidc(
+            "https://distributed.local/wait-path",
+            subject,
+            &["distributed-wait-path"],
+        )
+    }
+
+    /// Test-only OIDC principal. Not a production identity constructor.
+    pub fn test_oidc(issuer: &str, subject: &str, audiences: &[&str]) -> Self {
         assert!(
             !issuer.trim().is_empty(),
             "test OIDC issuer must not be empty"
@@ -161,6 +173,10 @@ impl VerifiedPrincipal {
     #[cfg(test)]
     pub(crate) fn subject(&self) -> &str {
         &self.subject
+    }
+
+    pub(crate) fn subject_matches(&self, subject: &str) -> bool {
+        self.subject == subject
     }
 
     /// Versioned, domain-separated partition for one exact service identity.
@@ -796,7 +812,7 @@ fn map_jwt_error(e: jsonwebtoken::errors::Error) -> ValidationError {
 /// Current unix time for tests that craft exp manually.
 #[allow(dead_code)]
 pub fn now_unix() -> u64 {
-    SystemTime::now()
+    crate::time::now()
         .duration_since(UNIX_EPOCH)
         .map(|d| d.as_secs())
         .unwrap_or(0)

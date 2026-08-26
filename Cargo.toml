@@ -1,6 +1,6 @@
 [workspace]
 members = ["distributed_macros", "distributed_cli"]
-exclude = ["tests/e2e-ui"]
+exclude = ["tests/e2e-ui", "tests/celld/worker"]
 resolver = "2"
 
 [workspace.package]
@@ -58,7 +58,7 @@ base64 = "0.23.0"
 futures = { version = "0.3", optional = true }
 lapin = { version = "4", optional = true }
 rdkafka = { version = "0.39", features = ["cmake-build", "tokio"], optional = true }
-reqwest = { version = "0.13", default-features = false, features = ["rustls"], optional = true }
+reqwest = { version = "0.13", default-features = false, features = ["json", "rustls"], optional = true }
 jsonwebtoken = { version = "9", optional = true }
 bitcode = { version = "0.6.9", features = ["serde"] }
 event-emitter-rs = { version = "0.1.4", optional = true }
@@ -78,6 +78,10 @@ tokio = { version = "1", features = ["rt-multi-thread", "net", "macros", "time",
 tracing = { version = "0.1", optional = true }
 tracing-opentelemetry = { version = "0.33", default-features = false, optional = true }
 uuid = { version = "1", features = ["v7"] }
+
+[target.'cfg(all(target_arch = "wasm32", target_os = "unknown"))'.dependencies]
+js-sys = "0.3"
+uuid = { version = "1", features = ["v7", "js"] }
 
 [build-dependencies]
 serde = { version = "1.0.210", features = ["derive"] }

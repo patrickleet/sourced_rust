@@ -1504,7 +1504,8 @@ async fn matched_typed_inventory_attaches_while_unverified_mutations_fail_closed
             Request::new(
                 "mutation { todo_create(commandId: \"0190a000-0000-7000-8000-000000000001\", input: { id: \"todo-1\" }) { id } }",
             )
-            .data(Arc::clone(&service)),
+            .data(Arc::new(distributed::LocalCommandHost::new(Arc::clone(&service)))
+                as distributed::SharedCommandHost),
         )
         .await;
     assert_eq!(mutation.errors.len(), 1, "{mutation:?}");

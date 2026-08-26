@@ -1,0 +1,15 @@
+[package]
+name = "e2e-celld-runner"
+version.workspace = true
+edition.workspace = true
+publish = false
+description = "Runner for the celld GraphQL example (not make run in e2e-ui)"
+
+[[bin]]
+name = "e2e-celld"
+path = "src/main.rs"
+
+[dependencies]
+distributed = { workspace = true }
+e2e-celld-graphql = { path = "../graphql-service" }
+tokio = { workspace = true }

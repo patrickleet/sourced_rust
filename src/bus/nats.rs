@@ -18,8 +18,10 @@ use async_nats::jetstream::stream::Config as StreamConfig;
 use async_nats::jetstream::{self, AckKind};
 use futures::StreamExt;
 
+use crate::projection_protocol::{ProjectionEpoch, ProjectionSource};
+
 use super::source::{MessageSource, ReceivedMessage};
-use super::{message_from_wire, strip_address_prefix, Message};
+use super::{message_from_wire, strip_address_prefix, Message, OrderedDelivery};
 use super::{retryable, MessagePublisher, TransportError};
 
 /// Header carrying the stable message id (and JetStream dedup key).
@@ -103,6 +105,7 @@ pub struct NatsJetStreamSource {
     consumer: Consumer<PullConfig>,
     fetch_timeout: Duration,
     strip_prefix: Option<String>,
+    idle_poll: Duration,
 }
 
 impl NatsJetStreamSource {
@@ -112,6 +115,7 @@ impl NatsJetStreamSource {
             consumer,
             fetch_timeout: Duration::from_millis(500),
             strip_prefix: None,
+            idle_poll: Duration::ZERO,
         }
     }
 
@@ -129,6 +133,12 @@ impl NatsJetStreamSource {
     /// subject is the name).
     pub fn with_strip_prefix(mut self, prefix: impl Into<String>) -> Self {
         self.strip_prefix = Some(prefix.into());
+        self
+    }
+
+    /// Keep `recv` retrying after an empty fetch instead of draining to idle.
+    pub fn with_idle_poll(mut self, idle_poll: Duration) -> Self {
+        self.idle_poll = idle_poll;
         self
     }
 
@@ -186,22 +196,27 @@ impl MessageSource for NatsJetStreamSource {
     }
 
     async fn recv(&mut self) -> Result<Option<Self::Received>, TransportError> {
-        let mut batch = self
-            .consumer
-            .batch()
-            .max_messages(1)
-            .expires(self.fetch_timeout)
-            .messages()
-            .await
-            .map_err(|err| retryable("nats fetch", err))?;
+        loop {
+            let mut batch = self
+                .consumer
+                .batch()
+                .max_messages(1)
+                .expires(self.fetch_timeout)
+                .messages()
+                .await
+                .map_err(|err| retryable("nats fetch", err))?;
 
-        match batch.next().await {
-            Some(Ok(message)) => Ok(Some(NatsReceived::from_jetstream(
-                message,
-                self.strip_prefix.as_deref(),
-            ))),
-            Some(Err(err)) => Err(retryable("nats batch message", err)),
-            None => Ok(None),
+            match batch.next().await {
+                Some(Ok(message)) => {
+                    return Ok(Some(NatsReceived::from_jetstream(
+                        message,
+                        self.strip_prefix.as_deref(),
+                    )))
+                }
+                Some(Err(err)) => return Err(retryable("nats batch message", err)),
+                None if self.idle_poll.is_zero() => return Ok(None),
+                None => continue,
+            }
         }
     }
 }
@@ -210,6 +225,7 @@ impl MessageSource for NatsJetStreamSource {
 pub struct NatsReceived {
     raw: jetstream::Message,
     message: Message,
+    ordered: Option<OrderedDelivery>,
 }
 
 impl NatsReceived {
@@ -234,7 +250,12 @@ impl NatsReceived {
             MESSAGE_KIND_HEADER,
             headers,
         );
-        Self { raw, message }
+        let ordered = jetstream_ordered(&raw);
+        Self {
+            raw,
+            message,
+            ordered,
+        }
     }
 
     async fn settle(self, kind: AckKind) -> Result<(), TransportError> {
@@ -253,9 +274,20 @@ impl NatsReceived {
     }
 }
 
+fn jetstream_ordered(raw: &jetstream::Message) -> Option<OrderedDelivery> {
+    let info = raw.info().ok()?;
+    let source = ProjectionSource::new("nats.jetstream", info.stream.as_bytes()).ok()?;
+    let epoch = ProjectionEpoch::new(format!("nats.{}", info.stream)).ok()?;
+    OrderedDelivery::new(source, epoch, info.stream_sequence, false).ok()
+}
+
 impl ReceivedMessage for NatsReceived {
     fn message(&self) -> &Message {
         &self.message
+    }
+
+    fn ordered_delivery(&self) -> Option<&OrderedDelivery> {
+        self.ordered.as_ref()
     }
 
     async fn ack(self) -> Result<(), TransportError> {

@@ -27,7 +27,8 @@ pub use binds::BindValue;
 pub use dialect::{DialectOps, SqlDialect};
 #[allow(unused_imports)]
 pub use projection::{
-    compile_list_sql_for_test, compile_root, selection_from_field, RootKind, SelectionNode, SqlPlan,
+    compile_list_sql_for_test, compile_query, compile_root, selection_from_field, QueryPlan,
+    RootKind, SelectionNode, SqlPlan,
 };
 
 #[allow(unused_imports)]
@@ -36,3 +37,4 @@ pub(crate) use dialect::{
 };
 #[allow(unused_imports)]
 pub(crate) use evidence::{ExtractedQueryEvidence, QueryRecordEvidence, QueryResponsePathSegment};
+pub(crate) use projection::cell_row_matches;

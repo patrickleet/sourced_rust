@@ -494,4 +494,99 @@ mod tests {
         );
         assert!(out.contains("replay_event"), "got: {out}");
     }
+
+    #[test]
+    fn expand_portable_command_emits_thin_mount() {
+        let input = quote! {
+            name: "todo.complete",
+            transition: domain_commands::Complete,
+            aggregate: Todo,
+            input: TodoCompleteInput,
+            outcome: Eventual<TodoStatusPayload>,
+            shard: |input| input.todo_id.clone(),
+            load: required,
+            roles: ["user", "admin"],
+            field: "todos_complete",
+            invoke: |todo, _input, principal| todo.complete(principal),
+            payload: |todo| TodoStatusPayload::from_todo(&**todo),
+        };
+        let out = crate::portable_command::expand(input)
+            .expect("expand")
+            .to_string();
+        assert!(out.contains("struct Complete"), "{out}");
+        assert!(out.contains("fn complete"), "{out}");
+        assert!(out.contains("todo . complete"), "{out}");
+        assert!(out.contains("load_by"), "{out}");
+        assert!(out.contains("eventual"), "{out}");
+        assert!(out.contains("PortableCommand"), "{out}");
+    }
+
+    #[test]
+    fn expand_portable_command_preserves_contract_projection_options() {
+        let input = quote! {
+            name: "chat.post",
+            transition: domain_commands::Post,
+            aggregate: ChatMessage,
+            input: ChatPostInput,
+            outcome: Eventual<ChatPostPayload>,
+            shard: |input| input.message_id.clone(),
+            roles: ["user", "admin"],
+            field: "chat_messages_post",
+            constructor: post_message,
+            authenticated_user_field: (
+                ChatMessagePostedDomainEvent,
+                ChatMessageState,
+                "author_id"
+            ),
+            preview_reduce_known_record: blob_preview(),
+            guard: authenticated_user,
+            handle: handle_post,
+        };
+        let out = crate::portable_command::expand(input)
+            .expect("expand")
+            .to_string();
+        assert!(out.contains("authenticated_user_field"), "{out}");
+        assert!(out.contains("fn post_message"), "{out}");
+        assert!(out.contains("ChatMessagePostedDomainEvent"), "{out}");
+        assert!(out.contains("ChatMessageState"), "{out}");
+        assert!(out.contains("author_id"), "{out}");
+        assert!(out.contains("preview_reduce_known_record"), "{out}");
+        assert!(out.contains("blob_preview"), "{out}");
+    }
+
+    #[test]
+    fn expand_portable_command_allows_constructor_override_for_keyword_name() {
+        let input = quote! {
+            name: "blob.move",
+            transition: domain_commands::MoveDir,
+            aggregate: BlobGame,
+            input: BlobMoveInput,
+            outcome: Atomic<BlobGames>,
+            shard: |input| input.game_id.clone(),
+            roles: ["user", "admin"],
+            field: "blob_games_move",
+            constructor: move_dir,
+            guard: authenticated_user,
+            handle: handle_move,
+        };
+        let out = crate::portable_command::expand(input)
+            .expect("expand")
+            .to_string();
+        assert!(out.contains("struct Move"), "{out}");
+        assert!(out.contains("fn move_dir"), "{out}");
+    }
+
+    #[test]
+    fn expand_portable_command_rejects_unknown_key() {
+        let input = quote! {
+            name: "todo.complete",
+            nope: 1,
+        };
+        let err = crate::portable_command::expand(input).expect_err("unknown key");
+        assert!(
+            err.to_string()
+                .contains("unknown portable_command key `nope`"),
+            "got: {err}"
+        );
+    }
 }

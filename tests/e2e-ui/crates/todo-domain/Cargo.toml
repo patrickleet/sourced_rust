@@ -6,9 +6,13 @@ publish = false
 description = "Todo aggregate: create, rename, complete, reopen, archive (owner-scoped)"
 
 [dependencies]
-distributed = { workspace = true }
-serde = { workspace = true }
-thiserror = { workspace = true }
+# Path + default-features so a wasm worker can depend on this crate without
+# pulling e2e-ui's sqlite/postgres/http/graphql feature set. Those features
+# still unify when this crate is built inside the e2e-ui workspace.
+distributed = { path = "../../../..", default-features = false }
+serde = { version = "1", features = ["derive"] }
+thiserror = { version = "1" }
 
 [dev-dependencies]
-serde_json = { workspace = true }
+serde_json = { version = "1" }
+tokio = { version = "1", features = ["rt-multi-thread", "macros"] }

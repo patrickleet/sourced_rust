@@ -54,7 +54,7 @@ where
 
     // GraphQL-only public write surface. POST /todo.* stays 404 (suite T0).
     // Zitadel Action ingress still needs HTTP: those commands are registered in
-    // the chat module and re-mounted in `serve_with_oidc`.
+    // the chat module and re-mounted in `http::serve`.
     Service::new()
         .named("e2e-ui")
         .routes(todos)

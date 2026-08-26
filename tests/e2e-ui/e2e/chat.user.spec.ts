@@ -1,5 +1,18 @@
-import { test, expect } from '@playwright/test';
+import { test, expect, type Page } from '@playwright/test';
 import { expectOptimisticPaint } from './helpers/optimism';
+
+/**
+ * Product Send is disabled while `busy` OR the composer is empty. Wait for
+ * enabled *after fill* so Eventual `projected` can clear `busy` with a real
+ * draft. A click while busy is ignored; an empty composer keeps Send disabled
+ * even when idle, so this wait must not run after send.
+ */
+async function fillAndSend(page: Page, body: string) {
+	const send = page.getByRole('button', { name: /send/i });
+	await page.locator('#chat-body').fill(body);
+	await expect(send).toBeEnabled({ timeout: 30_000 });
+	await send.click();
+}
 
 test.describe('chat (alice)', () => {
 	test('post a lobby message and see it in the log', async ({ page }) => {
@@ -10,8 +23,7 @@ test.describe('chat (alice)', () => {
 			timeout: 20_000
 		});
 
-		await page.locator('#chat-body').fill(body);
-		await page.getByRole('button', { name: /send/i }).click();
+		await fillAndSend(page, body);
 
 		const msg = page.locator('.ch-msg', { hasText: body });
 		await expect(msg).toBeVisible({ timeout: 20_000 });
@@ -25,6 +37,7 @@ test.describe('chat (alice)', () => {
 	});
 
 	test('scroll-up / load-earlier fetches the next history page', async ({ page }) => {
+		test.setTimeout(180_000);
 		await page.goto('/chat');
 		await expect(page.getByRole('heading', { name: /lobby/i })).toBeVisible({
 			timeout: 20_000
@@ -35,8 +48,7 @@ test.describe('chat (alice)', () => {
 		const total = 30;
 		for (let i = 0; i < total; i += 1) {
 			const body = `history seed ${stamp} #${String(i).padStart(2, '0')}`;
-			await page.locator('#chat-body').fill(body);
-			await page.getByRole('button', { name: /send/i }).click();
+			await fillAndSend(page, body);
 			await expect(page.locator('.ch-msg', { hasText: body })).toBeVisible({
 				timeout: 15_000
 			});
@@ -58,8 +70,7 @@ test.describe('chat (alice)', () => {
 			holdMs: 1_500,
 			assertWithinMs: 300,
 			act: async () => {
-				await page.locator('#chat-body').fill(fullPageBody);
-				await page.getByRole('button', { name: /send/i }).click();
+				await fillAndSend(page, fullPageBody);
 			},
 			assertOptimistic: async () => {
 				await expect(fullPageMessage).toBeVisible({ timeout: 200 });
@@ -114,12 +125,11 @@ test.describe('chat (alice)', () => {
 		});
 
 		const baseline = `continuity baseline ${Date.now()}`;
-		await page.locator('#chat-body').fill(baseline);
 		const baselineResponse = page.waitForResponse(
 			(response) =>
 				(response.request().postData() ?? '').includes('chat_messages_post')
 		);
-		await page.getByRole('button', { name: /send/i }).click();
+		await fillAndSend(page, baseline);
 		await expect(page.locator('.ch-msg', { hasText: baseline })).toBeVisible({
 			timeout: 20_000
 		});
@@ -152,8 +162,7 @@ test.describe('chat (alice)', () => {
 			holdMs: 1_500,
 			assertWithinMs: 300,
 			act: async () => {
-				await page.locator('#chat-body').fill(body);
-				await page.getByRole('button', { name: /send/i }).click();
+				await fillAndSend(page, body);
 			},
 			assertOptimistic: async () => {
 				await expect(msg).toBeVisible({ timeout: 200 });

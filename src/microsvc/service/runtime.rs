@@ -581,6 +581,31 @@ impl Service {
         Ok(specs)
     }
 
+    /// Attach Eventual projection metadata to a cell wait-path result using this
+    /// process's command contract (no second aggregate write).
+    #[cfg(feature = "graphql")]
+    pub fn seal_wait_path_dispatch(
+        &self,
+        command: &str,
+        protocol: &crate::graphql::protocol::ProtocolResponseAccumulator,
+        result: CausalDispatchResult,
+    ) -> Result<CausalDispatchResult, CausalDispatchError> {
+        let contract = self
+            .typed_command_contracts()
+            .into_iter()
+            .find(|contract| contract.name == command)
+            .ok_or_else(|| {
+                CausalDispatchError::BadRequest(format!(
+                    "unknown typed command `{command}` for wait-path protocol"
+                ))
+            })?;
+        result.seal_wait_path_protocol(
+            protocol,
+            &contract,
+            self.causal_command_policy.replay_retention,
+        )
+    }
+
     pub(crate) fn typed_command_binding(&self) -> Result<TypedServiceCommandBinding, String> {
         let service_id = self
             .name()
@@ -591,8 +616,7 @@ impl Service {
     /// Execute one authenticated typed causal route through its durable ledger
     /// and framework-owned staged commit boundary.
     #[cfg(feature = "graphql")]
-    #[allow(dead_code)]
-    pub(crate) async fn dispatch_causal(
+    pub async fn dispatch_causal(
         &self,
         command: &str,
         command_id: &str,
@@ -608,7 +632,7 @@ impl Service {
     /// Execute one authenticated typed causal route and retain the exact
     /// durable replay material needed to construct a causal receipt.
     #[cfg(feature = "graphql")]
-    pub(crate) async fn dispatch_causal_with_receipt(
+    pub async fn dispatch_causal_with_receipt(
         &self,
         command: &str,
         command_id: &str,
@@ -687,7 +711,6 @@ impl Service {
     /// fingerprint. Malformed, absent, wrong-principal, revoked, drifted, and
     /// ambiguous IDs all collapse to `unknown`.
     #[cfg(feature = "graphql")]
-    #[cfg(test)]
     pub(crate) async fn causal_command_status(
         &self,
         command_id: &str,

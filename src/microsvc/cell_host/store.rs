@@ -1,0 +1,624 @@
+//! Per-shard stream store: in-process stand-in for one cell's private SQLite.
+//!
+//! Production celld wraps rusqlite (or workers-rs storage) the same way: sync
+//! calls inside async fns. This is **not** `feature = "sqlite"` (sqlx pool) and
+//! **not** a `celld` dialect.
+
+use std::future::Future;
+use std::sync::{Arc, Mutex};
+
+use serde_json::Value;
+
+use crate::command_ledger::{
+    AttemptFence, CausalCommitBatch, CausalGetStream, CausalRepositoryIdentity,
+    CausalStorageIdentity, CausalTransactionalCommit, CommandLedgerError, CommandLedgerKey,
+    CommandLedgerStore, CommandLookup, CommandLookupScope, CommandReservation, ReservationOutcome,
+};
+use crate::entity::{Entity, EventRecord};
+use crate::microsvc::HasOutboxStore;
+use crate::outbox::OutboxMessage;
+use crate::projection_protocol::{
+    ProjectionChangeCursor, ProjectionChangeRead, ProjectionCheckpoint, ProjectionCommitBatch,
+    ProjectionCommitResult, ProjectionFailure, ProjectionFailureBatch, ProjectionFailureLocation,
+    ProjectionGeneration, ProjectionInputCursor, ProjectionInputDisposition,
+    ProjectionLiveRecordBatch, ProjectionLiveRecordBatchRequest, ProjectionModelOwnership,
+    ProjectionObligationEvidenceBatch, ProjectionObligationEvidenceBatchRequest,
+    ProjectionObservation, ProjectionObservationKind, ProjectionPartition,
+    ProjectionPartitionRuntimeState, ProjectionProtocolError, ProjectionProtocolStore,
+    ProjectionQuerySnapshot, ProjectionQuerySnapshotBatch, ProjectionQuerySnapshotBatchRequest,
+    ProjectionQuerySnapshotRequest, ProjectionRecordMetadata, ProjectionRecordScope,
+    ProjectorTopologyId, TrustedProjectionInput,
+};
+use crate::repository::{
+    CommitBatch, GetStream, RepositoryError, SnapshotStore, SnapshotWrite, StreamIdentity,
+    TransactionalCommit,
+};
+use crate::snapshot::SnapshotRecord;
+use crate::{InMemoryOutboxStore, InMemoryRepository};
+use serde::{Deserialize, Serialize};
+
+#[derive(Clone)]
+enum CellOwnership {
+    /// One stream identity (Todo, BlobGame). Foreign streams are rejected.
+    Exclusive(StreamIdentity),
+    /// Parent game cell: map/player/bomb/explosion/saga streams share this
+    /// cell's private SQLite. There is no API to commit across two cells.
+    Parent {
+        name: StreamIdentity,
+        owns: Arc<dyn Fn(&StreamIdentity) -> bool + Send + Sync>,
+    },
+}
+
+/// Private SQLite stand-in for one cell instance (`{aggregate_type}:{shard}`).
+///
+/// Exclusive cells reject any stream that is not this cell's shard. Parent
+/// cells (`for_parent_shard`) hold sibling streams of one game and commit
+/// them in one [`CommitBatch`].
+///
+/// ```compile_fail
+/// fn two_cell_transaction_does_not_exist(
+///     left: &distributed::cell_host::CellStreamStore,
+///     right: &distributed::cell_host::CellStreamStore,
+///     batch: distributed::CommitBatch<'_>,
+/// ) {
+///     let _ = left.commit_across(right, batch);
+/// }
+/// ```
+
+/// One stream's event records for Durable Object SQLite persistence.
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+pub struct DurableCellEvents {
+    pub stream: String,
+    pub events: Vec<EventRecord>,
+}
+
+/// Snapshot cache record for Durable Object SQLite persistence.
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+pub struct DurableCellSnapshot {
+    pub stream: String,
+    pub aggregate_type: String,
+    pub aggregate_id: String,
+    pub version: u64,
+    pub snapshot_version: u64,
+    pub payload_codec: String,
+    pub payload_codec_version: u16,
+    pub payload: Vec<u8>,
+}
+
+/// One versioned command-ledger row for Durable Object SQLite persistence.
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+pub struct DurableCellCommand {
+    pub id: String,
+    pub body: String,
+}
+
+#[derive(Clone)]
+pub struct CellStreamStore {
+    ownership: CellOwnership,
+    inner: InMemoryRepository,
+    sealed_row: Arc<Mutex<Option<Value>>>,
+}
+
+impl CellStreamStore {
+    /// Bind a store to one exact stream identity.
+    pub fn for_identity(identity: StreamIdentity) -> Self {
+        Self {
+            ownership: CellOwnership::Exclusive(identity),
+            inner: InMemoryRepository::new(),
+            sealed_row: Arc::new(Mutex::new(None)),
+        }
+    }
+
+    /// Parent-shard cell: `"{parent_type}:{parent_id}"` (bomberman `game:{id}`).
+    ///
+    /// Child streams of any aggregate type live in this cell's SQLite. A
+    /// transaction across two parent cells does not exist.
+    pub fn for_parent_shard(
+        parent_type: impl Into<String>,
+        parent_id: impl Into<String>,
+        owns: impl Fn(&StreamIdentity) -> bool + Send + Sync + 'static,
+    ) -> Result<Self, RepositoryError> {
+        Ok(Self {
+            ownership: CellOwnership::Parent {
+                name: StreamIdentity::new(parent_type, parent_id)?,
+                owns: Arc::new(owns),
+            },
+            inner: InMemoryRepository::new(),
+            sealed_row: Arc::new(Mutex::new(None)),
+        })
+    }
+
+    /// Named exclusive-cell constructor used by [`super::AggregateCell`].
+    pub fn new(
+        aggregate_type: impl Into<String>,
+        shard_id: impl Into<String>,
+    ) -> Result<Self, RepositoryError> {
+        Ok(Self::for_identity(StreamIdentity::new(
+            aggregate_type,
+            shard_id,
+        )?))
+    }
+
+    /// Cell instance name (`type:id`).
+    pub fn instance_name(&self) -> String {
+        match &self.ownership {
+            CellOwnership::Exclusive(identity) | CellOwnership::Parent { name: identity, .. } => {
+                identity.to_string()
+            }
+        }
+    }
+
+    /// Stream this exclusive cell owns. Parent cells have no single stream.
+    pub fn identity(&self) -> Option<&StreamIdentity> {
+        match &self.ownership {
+            CellOwnership::Exclusive(identity) => Some(identity),
+            CellOwnership::Parent { .. } => None,
+        }
+    }
+
+    fn ensure_identity(&self, identity: &StreamIdentity) -> Result<(), RepositoryError> {
+        match &self.ownership {
+            CellOwnership::Parent { owns, .. } if owns(identity) => Ok(()),
+            CellOwnership::Parent { name, .. } => Err(RepositoryError::Model(format!(
+                "parent cell {name} does not own stream {identity}"
+            ))),
+            CellOwnership::Exclusive(owned) if identity == owned => Ok(()),
+            CellOwnership::Exclusive(owned) => Err(RepositoryError::Model(format!(
+                "cell `{owned}` cannot access stream `{identity}`"
+            ))),
+        }
+    }
+
+    /// Sealed read-model row for GET on this cell instance.
+    pub fn sealed_row(&self) -> Result<Option<Value>, RepositoryError> {
+        self.sealed_row
+            .lock()
+            .map(|guard| guard.clone())
+            .map_err(|_| RepositoryError::Model("cell sealed row lock poisoned".into()))
+    }
+
+    /// Replace the sealed read-model row (Atomic board / Todo view).
+    pub fn replace_sealed_row(&self, row: Value) -> Result<(), RepositoryError> {
+        let mut guard = self
+            .sealed_row
+            .lock()
+            .map_err(|_| RepositoryError::Model("cell sealed row lock poisoned".into()))?;
+        *guard = Some(row);
+        Ok(())
+    }
+
+    /// Event log for Durable Object SQLite. Memory remains the working copy.
+    pub fn durable_events(&self) -> Result<Vec<DurableCellEvents>, RepositoryError> {
+        Ok(self
+            .inner
+            .clone_events()?
+            .into_iter()
+            .map(|(stream, events)| DurableCellEvents { stream, events })
+            .collect())
+    }
+
+    /// Outbox rows committed with this cell's events (same private SQLite).
+    pub fn durable_outbox(&self) -> Result<Vec<OutboxMessage>, RepositoryError> {
+        self.inner.clone_outbox()
+    }
+
+    /// Restore outbox rows from Durable Object SQLite.
+    pub fn restore_durable_outbox(
+        &self,
+        messages: Vec<OutboxMessage>,
+    ) -> Result<(), RepositoryError> {
+        self.inner.replace_outbox(messages)
+    }
+
+    /// Replace the working event log from Durable Object SQLite.
+    pub fn restore_durable_events(
+        &self,
+        events: Vec<DurableCellEvents>,
+    ) -> Result<(), RepositoryError> {
+        self.inner.replace_events(
+            events
+                .into_iter()
+                .map(|row| (row.stream, row.events))
+                .collect(),
+        )
+    }
+
+    /// Snapshot cache for Durable Object SQLite.
+    pub fn durable_snapshots(&self) -> Result<Vec<DurableCellSnapshot>, RepositoryError> {
+        Ok(self
+            .inner
+            .clone_snapshots()?
+            .into_iter()
+            .map(|(stream, record)| DurableCellSnapshot {
+                stream,
+                aggregate_type: record.aggregate_type,
+                aggregate_id: record.aggregate_id,
+                version: record.version,
+                snapshot_version: record.snapshot_version,
+                payload_codec: record.payload_codec,
+                payload_codec_version: record.payload_codec_version,
+                payload: record.payload,
+            })
+            .collect())
+    }
+
+    /// Replace the working snapshot cache from Durable Object SQLite.
+    pub fn restore_durable_snapshots(
+        &self,
+        snapshots: Vec<DurableCellSnapshot>,
+    ) -> Result<(), RepositoryError> {
+        self.inner.replace_snapshots(
+            snapshots
+                .into_iter()
+                .map(|row| {
+                    (
+                        row.stream,
+                        SnapshotRecord {
+                            aggregate_type: row.aggregate_type,
+                            aggregate_id: row.aggregate_id,
+                            version: row.version,
+                            snapshot_version: row.snapshot_version,
+                            payload_codec: row.payload_codec,
+                            payload_codec_version: row.payload_codec_version,
+                            payload: row.payload,
+                            metadata: Default::default(),
+                            recorded_at: crate::time::now(),
+                        },
+                    )
+                })
+                .collect(),
+        )
+    }
+
+    /// Fenced command rows committed with this cell's domain effects.
+    pub fn durable_commands(&self) -> Result<Vec<DurableCellCommand>, RepositoryError> {
+        self.inner
+            .clone_command_ledger()?
+            .into_iter()
+            .map(|record| {
+                let id = record.durable_cell_key();
+                let body = record
+                    .durable_cell_json()
+                    .map_err(|error| RepositoryError::Model(error.to_string()))?;
+                Ok(DurableCellCommand { id, body })
+            })
+            .collect()
+    }
+
+    /// Restore the complete command ledger before accepting another request.
+    pub fn restore_durable_commands(
+        &self,
+        commands: Vec<DurableCellCommand>,
+    ) -> Result<(), RepositoryError> {
+        let mut records = Vec::with_capacity(commands.len());
+        for command in commands {
+            let record =
+                crate::command_ledger::CommandLedgerRecord::from_durable_cell_json(&command.body)
+                    .map_err(|error| RepositoryError::Model(error.to_string()))?;
+            if record.durable_cell_key() != command.id {
+                return Err(RepositoryError::Model(
+                    "cell command ledger row key does not match its body".into(),
+                ));
+            }
+            records.push(record);
+        }
+        self.inner.replace_command_ledger(records)
+    }
+
+    fn ensure_batch(&self, batch: &CommitBatch<'_>) -> Result<(), RepositoryError> {
+        for stream in &batch.streams {
+            self.ensure_identity(&stream.identity)?;
+        }
+        for snapshot in &batch.snapshots {
+            match snapshot {
+                SnapshotWrite::Save { identity, .. } => self.ensure_identity(identity)?,
+            }
+        }
+        Ok(())
+    }
+}
+
+impl CausalGetStream for CellStreamStore {
+    fn get_causal_stream<'a>(
+        &'a self,
+        identity: &'a StreamIdentity,
+    ) -> impl Future<Output = Result<Option<Entity>, RepositoryError>> + Send + 'a {
+        async move {
+            self.ensure_identity(identity)?;
+            CausalGetStream::get_causal_stream(&self.inner, identity).await
+        }
+    }
+}
+
+impl GetStream for CellStreamStore {
+    fn get_stream<'a>(
+        &'a self,
+        identity: &'a StreamIdentity,
+    ) -> impl Future<Output = Result<Option<Entity>, RepositoryError>> + Send + 'a {
+        async move {
+            self.ensure_identity(identity)?;
+            GetStream::get_stream(&self.inner, identity).await
+        }
+    }
+
+    fn get_stream_tail<'a>(
+        &'a self,
+        identity: &'a StreamIdentity,
+        after_version: u64,
+    ) -> impl Future<Output = Result<Option<Entity>, RepositoryError>> + Send + 'a {
+        async move {
+            self.ensure_identity(identity)?;
+            GetStream::get_stream_tail(&self.inner, identity, after_version).await
+        }
+    }
+}
+
+impl SnapshotStore for CellStreamStore {
+    fn get_snapshot<'a>(
+        &'a self,
+        identity: &'a StreamIdentity,
+    ) -> impl Future<Output = Result<Option<SnapshotRecord>, RepositoryError>> + Send + 'a {
+        async move {
+            self.ensure_identity(identity)?;
+            SnapshotStore::get_snapshot(&self.inner, identity).await
+        }
+    }
+
+    fn get_snapshots<'a>(
+        &'a self,
+        identities: &'a [StreamIdentity],
+    ) -> impl Future<Output = Result<Vec<SnapshotRecord>, RepositoryError>> + Send + 'a {
+        async move {
+            for identity in identities {
+                self.ensure_identity(identity)?;
+            }
+            SnapshotStore::get_snapshots(&self.inner, identities).await
+        }
+    }
+
+    fn save_snapshot<'a>(
+        &'a self,
+        identity: &'a StreamIdentity,
+        record: SnapshotRecord,
+    ) -> impl Future<Output = Result<(), RepositoryError>> + Send + 'a {
+        async move {
+            self.ensure_identity(identity)?;
+            SnapshotStore::save_snapshot(&self.inner, identity, record).await
+        }
+    }
+
+    fn delete_snapshot<'a>(
+        &'a self,
+        identity: &'a StreamIdentity,
+    ) -> impl Future<Output = Result<bool, RepositoryError>> + Send + 'a {
+        async move {
+            self.ensure_identity(identity)?;
+            SnapshotStore::delete_snapshot(&self.inner, identity).await
+        }
+    }
+}
+
+impl CausalRepositoryIdentity for CellStreamStore {
+    fn causal_storage_identity(&self) -> CausalStorageIdentity {
+        CausalRepositoryIdentity::causal_storage_identity(&self.inner)
+    }
+}
+
+impl CommandLedgerStore for CellStreamStore {
+    fn reserve_command(
+        &self,
+        reservation: CommandReservation,
+    ) -> impl Future<Output = Result<ReservationOutcome, CommandLedgerError>> + Send + '_ {
+        CommandLedgerStore::reserve_command(&self.inner, reservation)
+    }
+
+    fn lookup_command<'a>(
+        &'a self,
+        key: &'a CommandLedgerKey,
+        scope: CommandLookupScope<'a>,
+    ) -> impl Future<Output = Result<CommandLookup, CommandLedgerError>> + Send + 'a {
+        CommandLedgerStore::lookup_command(&self.inner, key, scope)
+    }
+
+    fn mark_retryable_unknown(
+        &self,
+        attempt: AttemptFence,
+    ) -> impl Future<Output = Result<(), CommandLedgerError>> + Send + '_ {
+        CommandLedgerStore::mark_retryable_unknown(&self.inner, attempt)
+    }
+
+    fn compact_expired_commands(
+        &self,
+        limit: usize,
+    ) -> impl Future<Output = Result<u64, CommandLedgerError>> + Send + '_ {
+        CommandLedgerStore::compact_expired_commands(&self.inner, limit)
+    }
+}
+
+impl TransactionalCommit for CellStreamStore {
+    fn commit_batch<'a>(
+        &'a self,
+        batch: CommitBatch<'a>,
+    ) -> impl Future<Output = Result<(), RepositoryError>> + Send + 'a {
+        async move {
+            self.ensure_batch(&batch)?;
+            TransactionalCommit::commit_batch(&self.inner, batch).await
+        }
+    }
+}
+
+impl CausalTransactionalCommit for CellStreamStore {
+    fn commit_causal_batch<'a>(
+        &'a self,
+        batch: CausalCommitBatch<'a>,
+    ) -> impl Future<Output = Result<(), CommandLedgerError>> + Send + 'a {
+        async move {
+            self.ensure_batch(&batch.domain)
+                .map_err(CommandLedgerError::Storage)?;
+            CausalTransactionalCommit::commit_causal_batch(&self.inner, batch).await
+        }
+    }
+}
+
+impl HasOutboxStore for CellStreamStore {
+    type OutboxStore = InMemoryOutboxStore;
+
+    fn outbox_store(&self) -> Self::OutboxStore {
+        self.inner.outbox_store()
+    }
+}
+
+impl ProjectionProtocolStore for CellStreamStore {
+    fn register_projection_models<'a>(
+        &'a self,
+        topology: &'a ProjectorTopologyId,
+        ownership: &'a [ProjectionModelOwnership],
+    ) -> impl Future<Output = Result<(), ProjectionProtocolError>> + Send + 'a {
+        self.inner.register_projection_models(topology, ownership)
+    }
+
+    fn commit_projection(
+        &self,
+        batch: ProjectionCommitBatch,
+    ) -> impl Future<Output = Result<ProjectionCommitResult, ProjectionProtocolError>> + Send + '_
+    {
+        self.inner.commit_projection(batch)
+    }
+
+    fn record_projection_failure(
+        &self,
+        batch: ProjectionFailureBatch,
+    ) -> impl Future<Output = Result<ProjectionFailure, ProjectionProtocolError>> + Send + '_ {
+        self.inner.record_projection_failure(batch)
+    }
+
+    fn projection_checkpoint<'a>(
+        &'a self,
+        cursor_scope: &'a ProjectionInputCursor,
+        generation: ProjectionGeneration,
+    ) -> impl Future<Output = Result<Option<ProjectionCheckpoint>, ProjectionProtocolError>> + Send + 'a
+    {
+        self.inner.projection_checkpoint(cursor_scope, generation)
+    }
+
+    fn projection_record<'a>(
+        &'a self,
+        scope: &'a ProjectionRecordScope,
+    ) -> impl Future<Output = Result<Option<ProjectionRecordMetadata>, ProjectionProtocolError>>
+           + Send
+           + 'a {
+        self.inner.projection_record(scope)
+    }
+
+    fn projection_input_disposition<'a>(
+        &'a self,
+        input: &'a TrustedProjectionInput,
+    ) -> impl Future<Output = Result<ProjectionInputDisposition, ProjectionProtocolError>> + Send + 'a
+    {
+        self.inner.projection_input_disposition(input)
+    }
+
+    fn projection_query_snapshot<'a>(
+        &'a self,
+        request: &'a ProjectionQuerySnapshotRequest,
+    ) -> impl Future<Output = Result<ProjectionQuerySnapshot, ProjectionProtocolError>> + Send + 'a
+    {
+        self.inner.projection_query_snapshot(request)
+    }
+
+    fn projection_query_snapshot_batch<'a>(
+        &'a self,
+        request: &'a ProjectionQuerySnapshotBatchRequest,
+    ) -> impl Future<Output = Result<ProjectionQuerySnapshotBatch, ProjectionProtocolError>> + Send + 'a
+    {
+        self.inner.projection_query_snapshot_batch(request)
+    }
+
+    fn projection_obligation_evidence_batch<'a>(
+        &'a self,
+        request: &'a ProjectionObligationEvidenceBatchRequest,
+    ) -> impl Future<Output = Result<ProjectionObligationEvidenceBatch, ProjectionProtocolError>>
+           + Send
+           + 'a {
+        self.inner.projection_obligation_evidence_batch(request)
+    }
+
+    fn projection_live_record_batch<'a>(
+        &'a self,
+        request: &'a ProjectionLiveRecordBatchRequest,
+    ) -> impl Future<Output = Result<ProjectionLiveRecordBatch, ProjectionProtocolError>> + Send + 'a
+    {
+        self.inner.projection_live_record_batch(request)
+    }
+
+    fn projection_partition_runtime_state<'a>(
+        &'a self,
+        topology: &'a ProjectorTopologyId,
+        partition: &'a ProjectionPartition,
+    ) -> impl Future<Output = Result<Option<ProjectionPartitionRuntimeState>, ProjectionProtocolError>>
+           + Send
+           + 'a {
+        self.inner
+            .projection_partition_runtime_state(topology, partition)
+    }
+
+    fn projection_observation<'a>(
+        &'a self,
+        causation_id: &'a str,
+        scope: &'a ProjectionRecordScope,
+        kind: ProjectionObservationKind,
+    ) -> impl Future<Output = Result<Option<ProjectionObservation>, ProjectionProtocolError>> + Send + 'a
+    {
+        self.inner.projection_observation(causation_id, scope, kind)
+    }
+
+    fn projection_changes<'a>(
+        &'a self,
+        topology: &'a ProjectorTopologyId,
+        partition: &'a ProjectionPartition,
+        after: Option<&'a ProjectionChangeCursor>,
+        limit: usize,
+    ) -> impl Future<Output = Result<ProjectionChangeRead, ProjectionProtocolError>> + Send + 'a
+    {
+        self.inner
+            .projection_changes(topology, partition, after, limit)
+    }
+
+    fn repair_projection<'a>(
+        &'a self,
+        topology: &'a ProjectorTopologyId,
+        partition: &'a ProjectionPartition,
+        failure_id: &'a str,
+    ) -> impl Future<Output = Result<ProjectionGeneration, ProjectionProtocolError>> + Send + 'a
+    {
+        self.inner
+            .repair_projection(topology, partition, failure_id)
+    }
+
+    fn compact_projection_changes<'a>(
+        &'a self,
+        through: &'a ProjectionChangeCursor,
+    ) -> impl Future<Output = Result<u64, ProjectionProtocolError>> + Send + 'a {
+        self.inner.compact_projection_changes(through)
+    }
+
+    fn projection_failure<'a>(
+        &'a self,
+        topology: &'a ProjectorTopologyId,
+        partition: &'a ProjectionPartition,
+        failure_id: &'a str,
+    ) -> impl Future<Output = Result<Option<ProjectionFailure>, ProjectionProtocolError>> + Send + 'a
+    {
+        self.inner
+            .projection_failure(topology, partition, failure_id)
+    }
+
+    fn projection_failure_location<'a>(
+        &'a self,
+        failure_id: &'a str,
+    ) -> impl Future<Output = Result<Option<ProjectionFailureLocation>, ProjectionProtocolError>>
+           + Send
+           + 'a {
+        self.inner.projection_failure_location(failure_id)
+    }
+}

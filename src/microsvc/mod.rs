@@ -56,6 +56,7 @@
 //! ```
 
 mod causal;
+pub mod cell_host;
 mod context;
 mod descriptor;
 mod dependencies;
@@ -112,19 +113,25 @@ pub use service::GraphqlServiceBindError;
     feature = "rabbitmq",
     feature = "kafka",
 ))]
-pub use workers::{spawn_outbox_publish_loop, spawn_service_consumer_loop};
+pub use workers::{
+    spawn_outbox_publish_loop, spawn_service_consumer_loop, CONSUMER_IDLE_POLL,
+};
 pub use service::{
     direct_read_model, invoke_transition, require_loaded, CausalCommandContext, CausalCommitBuilder,
     CausalRepository, CommandRequest, CommandResponse, DeliveryKind, DirectReadModelProjection,
-    HandlerNames, HandlerSpec, PreparedCausalCommit, PreparedCommandHandler, RouteBuilder, Routes,
-    Service, ThinCommandBuilder, ThinCommandInvoked, ThinCommandLoaded, TypedRouteBuilder,
+    HandlerNames, HandlerSpec, PortableCommand, PreparedCausalCommit, PreparedCommandHandler,
+    RouteBuilder, Routes, Service, ThinCommandBuilder, ThinCommandInvoked, ThinCommandLoaded,
+    TypedRouteBuilder,
 };
 #[cfg(feature = "graphql")]
+pub use service::{CausalCommandPublicStatus, CausalDispatchError, CausalDispatchResult};
+#[cfg(feature = "graphql")]
 pub(crate) use service::{
-    CausalCommandProjectionObligation, CausalCommandPublicState, CausalCommandPublicStatus,
-    CausalCommandReceiptSource, CausalDispatchError, CausalDispatchResult,
+    CausalCommandProjectionObligation, CausalCommandPublicState, CausalCommandReceiptSource,
     CausalProjectionEvidenceState,
 };
+#[cfg(feature = "graphql")]
+pub(crate) mod wait_path;
 pub use session::{Session, ROLE_KEY, USER_ID_KEY};
 
 /// Maximum accepted HTTP request body size for the microsvc ingresses, in bytes

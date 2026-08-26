@@ -9,7 +9,7 @@ use async_graphql::dynamic::{
 };
 use async_graphql::Value;
 
-use super::compile::{self, RootKind};
+use super::compile::{self, QueryPlan, RootKind};
 use super::engine::{EngineInner, ExecutionAuthority};
 use super::identity::VerifiedPrincipal;
 use super::naming::{
@@ -677,6 +677,52 @@ fn passthrough_key(
     Ok(lookup_key(value, key))
 }
 
+async fn execute_cell_by_key(
+    inner: &EngineInner,
+    model: &str,
+    pk: &BTreeMap<String, String>,
+    row_filter: Option<&super::filter::FilterExpr>,
+    selection: &compile::SelectionNode,
+) -> Result<Value, String> {
+    let getter = inner
+        .cell_getters
+        .get(model)
+        .ok_or_else(|| format!("cell-by-key getter not configured for `{model}`"))?;
+    let Some(row) = getter.get_sealed_row(pk).await? else {
+        return Ok(Value::Null);
+    };
+    let row_object = row
+        .as_object()
+        .ok_or_else(|| "cell sealed row must be a JSON object".to_string())?;
+    for (key, expected) in pk {
+        if row_object.get(key).and_then(serde_json::Value::as_str) != Some(expected) {
+            return Err(format!(
+                "cell sealed row primary key {key} does not match request"
+            ));
+        }
+    }
+    if let Some(filter) = row_filter {
+        let schema = &inner
+            .catalog
+            .get(model)
+            .ok_or_else(|| format!("unknown model `{model}`"))?
+            .schema;
+        if !compile::cell_row_matches(schema, filter, &row) {
+            return Ok(Value::Null);
+        }
+    }
+    let mut out = serde_json::Map::new();
+    for child in &selection.children {
+        if child.field_name == "__typename" {
+            continue;
+        }
+        if let Some(value) = row.get(&child.field_name) {
+            out.insert(child.response_key.clone(), value.clone());
+        }
+    }
+    Value::from_json(serde_json::Value::Object(out)).map_err(|error| error.to_string())
+}
+
 fn lookup_key(value: &Value, key: &str) -> Option<Value> {
     match value {
         Value::Object(map) => {
@@ -708,29 +754,40 @@ async fn resolve_root(
     let role = privilege_role_for_request(authority, &session, &inner.anonymous_role);
 
     let selection = compile::selection_from_field(ctx.field());
-    let plan = compile::compile_root(&inner, &session, &role, model, kind, &selection)
+    let plan = compile::compile_query(&inner, &session, &role, model, kind, &selection)
         .map_err(|e| client_error("BAD_REQUEST", sanitize_compile_error(&e)))?;
-    let value = if let Some(protocol) = ctx.data_opt::<ProtocolResponseAccumulator>().cloned() {
-        let role_surface = inner.role_surfaces.get(&role).cloned().ok_or_else(|| {
-            client_error("INTERNAL", "authorized GraphQL role surface is unavailable")
-        })?;
-        let executed = super::query_protocol::execute_query_with_protocol(
-            &inner,
-            role_surface,
-            protocol.clone(),
-            &plan,
-            None,
-        )
-        .await
-        .map_err(|e| client_error_for_execute_err(&e))?;
-        protocol
-            .record_query_metadata(executed.snapshot, None)
-            .map_err(|_| client_error("INTERNAL", "query evidence encoding failed"))?;
-        executed.value
-    } else {
-        super::engine::execute_plan(&inner, &plan)
+    let value = match plan {
+        QueryPlan::CellByKey {
+            model,
+            pk,
+            row_filter,
+        } => execute_cell_by_key(&inner, &model, &pk, row_filter.as_ref(), &selection)
             .await
-            .map_err(|e| client_error_for_execute_err(&e))?
+            .map_err(|_| client_error("INTERNAL", "cell read dependency failed"))?,
+        QueryPlan::Sql(plan) => {
+            if let Some(protocol) = ctx.data_opt::<ProtocolResponseAccumulator>().cloned() {
+                let role_surface = inner.role_surfaces.get(&role).cloned().ok_or_else(|| {
+                    client_error("INTERNAL", "authorized GraphQL role surface is unavailable")
+                })?;
+                let executed = super::query_protocol::execute_query_with_protocol(
+                    &inner,
+                    role_surface,
+                    protocol.clone(),
+                    &plan,
+                    None,
+                )
+                .await
+                .map_err(|e| client_error_for_execute_err(&e))?;
+                protocol
+                    .record_query_metadata(executed.snapshot, None)
+                    .map_err(|_| client_error("INTERNAL", "query evidence encoding failed"))?;
+                executed.value
+            } else {
+                super::engine::execute_plan(&inner, &plan)
+                    .await
+                    .map_err(|e| client_error_for_execute_err(&e))?
+            }
+        }
     };
     // `None` (not `Some(Null)`) so nullable by_pk roots do not try to resolve
     // non-null child fields on a null parent.
@@ -806,6 +863,8 @@ fn sanitize_compile_error(e: &str) -> String {
         || e.contains("ambiguous order_by")
     {
         "invalid filter".into()
+    } else if e.contains("cell-by-key") {
+        "unsupported on cell store".into()
     } else {
         "bad request".into()
     }
@@ -931,6 +990,12 @@ mod execute_err_mapping_tests {
             sanitize_compile_error("SELECT * FROM secret"),
             "bad request"
         );
+        assert_eq!(
+            sanitize_compile_error(
+                "cell-by-key store does not support list queries (would fan out to N cells); declare a SQL index read model"
+            ),
+            "unsupported on cell store"
+        );
     }
 }
 
@@ -938,17 +1003,17 @@ async fn resolve_command(
     ctx: &async_graphql::dynamic::ResolverContext<'_>,
     command_name: &str,
 ) -> Result<Option<Value>, async_graphql::Error> {
-    use crate::microsvc::Service;
+    use crate::command_dispatch::SharedCommandHost;
 
     let session = ctx
         .data_opt::<Session>()
         .cloned()
         .unwrap_or_else(Session::new);
-    let service = ctx.data_opt::<Arc<Service>>();
-    let Some(service) = service else {
+    let host = ctx.data_opt::<SharedCommandHost>();
+    let Some(host) = host else {
         return Err(client_error(
             "INTERNAL",
-            "command dispatcher not configured (use graphql_router_with_dispatcher or graphql_router_with_service)",
+            "command host not configured (use graphql_router_with_host or graphql_router_with_service)",
         ));
     };
 
@@ -988,14 +1053,14 @@ async fn resolve_command(
                 "durable commands require a verified OIDC bearer",
             )
         })?;
-    let result = service
-        .dispatch_causal_with_receipt_and_protocol(
+    let result = host
+        .invoke(
             command_name,
             &command_id,
             input,
             session,
             principal,
-            protocol.clone(),
+            Some(protocol.clone()),
         )
         .await
         .map_err(|error| {
@@ -1012,7 +1077,7 @@ async fn resolve_command(
 async fn resolve_command_status(
     ctx: &async_graphql::dynamic::ResolverContext<'_>,
 ) -> Result<Option<Value>, async_graphql::Error> {
-    use crate::microsvc::Service;
+    use crate::command_dispatch::SharedCommandHost;
     use async_graphql::indexmap::IndexMap;
 
     let session = ctx
@@ -1038,10 +1103,10 @@ async fn resolve_command_status(
                 "causal command protocol is not configured for this endpoint",
             )
         })?;
-    let service = ctx.data_opt::<Arc<Service>>().ok_or_else(|| {
+    let host = ctx.data_opt::<SharedCommandHost>().ok_or_else(|| {
         client_error(
             "INTERNAL",
-            "command dispatcher not configured (use graphql_router_with_dispatcher or graphql_router_with_service)",
+            "command host not configured (use graphql_router_with_host or graphql_router_with_service)",
         )
     })?;
     let command_id = ctx
@@ -1051,8 +1116,8 @@ async fn resolve_command_status(
         .deserialize::<String>()
         .map_err(|_| client_error("BAD_REQUEST", "invalid commandId"))?;
 
-    let status = service
-        .causal_command_status_with_protocol(&command_id, &session, principal, protocol.clone())
+    let status = host
+        .status(&command_id, &session, principal, Some(protocol.clone()))
         .await
         .map_err(|error| {
             client_error_with_status(error.code(), error.status_code(), error.client_message())
@@ -1074,6 +1139,7 @@ mod causal_command_schema_tests {
     use std::sync::Arc;
 
     use super::*;
+    use crate::command_dispatch::{LocalCommandHost, SharedCommandHost};
     use crate::graphql::command_contract::{CommandConsistency, CommandEffects};
     use crate::graphql::protocol::{
         DistributedEnvelopeV1, ProtocolResponseAccumulator, ProtocolTokenCodec,
@@ -1268,7 +1334,9 @@ mod causal_command_schema_tests {
             "{{ {COMMAND_STATUS_ROOT_FIELD}(commandId: \"{}\") {{ s: state }} }}",
             uuid::Uuid::now_v7()
         ))
-        .data(Arc::new(Service::new().named("status-test")))
+        .data(Arc::new(LocalCommandHost::new(Arc::new(
+            Service::new().named("status-test"),
+        ))) as SharedCommandHost)
         .data(VerifiedPrincipal::test_oidc(
             "https://issuer.example/",
             "status-test-subject",

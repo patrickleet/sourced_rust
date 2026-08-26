@@ -79,7 +79,7 @@ export const todosWalkthrough: DemoWalkthrough = {
 	title: 'Todos',
 	kicker: 'Query, then command, then domain, then projection',
 	summary:
-		'This page loads one GraphQL query into the client replica. Todo commands are Eventual. The client shows a safe preview from the command input and the domain transition. The event handler applies the same mutation program later. The client waits for projection obligations. The client does not wait for a response row.',
+		'This page loads one GraphQL query into the client replica. Todo commands are Eventual. The client shows a safe preview from the command input and the domain transition. The event handler applies the same mutation program later. The client waits for projection obligations. The client does not wait for a response row. The same portable_command! declarations mount on a local Service (tests/e2e-ui) or wait-dispatch create and complete to a cell (tests/e2e-celld).',
 	tabs: [
 {
 			id: 'query',
@@ -145,7 +145,7 @@ const todos = $derived($query.complete ? $query.data.todos : []);`
 {
 			id: 'commands',
 			label: '2 · Commands',
-			lede: 'The UI writes through generated commands. Todo commands are Eventual. The client writes a safe preview into the replica. The UI updates from that replica. The preview becomes confirmed when the projection obligation completes.',
+			lede: 'The UI writes through generated commands. Todo commands are Eventual. The client writes a safe preview into the replica. The UI updates from that replica. The preview becomes confirmed when the projection obligation completes. Domain crates declare the commands. Hosts only mount them.',
 			principle: 'Let the service declare how the UI updates after a command.',
 			samples: [
 				{
@@ -157,77 +157,74 @@ await commands.todo.create({ title: text });
 await commands.todo.complete({ todo_id });`
 				},
 				{
-					file: 'modules/todo.rs · todos_create',
-					caption: 'This mount sets the write roles and the session guard. The domain transition sets the emit fields. The owner claim is the auto-optimism key.',
-					code: `.command_transition::<
-  domain_commands::Create,
-  TodoCreateInput,
-  Eventual<TodoCreatePayload>,
->(todo_create::COMMAND)
-.field_name("todos_create")
-.roles(["user", "admin"])
-.input_defaults(command_input_defaults! {
-  input: TodoCreateInput;
-  default input.todo_id = uuid_v7();
-})
-.guarded(causal_has_user, todo_create::handle)`
+					file: 'todo-domain/src/commands.rs · complete',
+					caption: 'A thin portable command is shard + invoke + Eventual. The host does not write a handler body.',
+					code: `portable_command! {
+  name: "todo.complete",
+  transition: domain_commands::Complete,
+  aggregate: Todo,
+  input: TodoCompleteInput,
+  outcome: Eventual<TodoStatusPayload>,
+  shard: |input| input.todo_id.clone(),
+  load: required,
+  roles: ["user", "admin"],
+  field: "todos_complete",
+  invoke: |todo, _input, principal| todo.complete(principal),
+  payload: |todo| TodoStatusPayload::from_todo(&**todo),
+}`
 				},
 				{
-					file: 'modules/todo.rs · todos_force_archive',
-					caption: 'This command is for the admin role only. The user client tree does not include this field.',
-					code: `.command_transition::<
-  domain_commands::ForceArchive,
-  TodoForceArchiveInput,
-  Eventual<TodoForceArchivePayload>,
->(todo_force_archive::COMMAND)
-.field_name("todos_force_archive")
-.roles(["admin"])
-.guarded(causal_is_admin, todo_force_archive::handle)`
+					file: 'modules/todo.rs · mount',
+					caption: 'The service (or cell) mounts the same domain values. Roles and handlers live in todo-domain.',
+					code: `Routes::for_aggregate::<R, L, Todo, S>(repo, locks, read_models)
+  .mount(todo_domain::commands::create())
+  .mount(todo_domain::commands::complete())
+  .mount(todo_domain::commands::force_archive())`
 				}
 			]
 		},
 {
 			id: 'handlers',
 			label: '3 · Handlers',
-			lede: 'A command handler binds the principal after the mount guard. Then it gets or creates the aggregate. Then it calls one domain method. Then it commits. Todos use Eventual. The projector writes the read-model row after the commit.',
+			lede: 'Most Todo commands are thin: load or create, invoke one domain method, commit Eventual. The framework writes that handler. `todo.create` and `todo.force_archive` still use a handle function when the body needs extra checks or payload fields. Either way, ctx.repo() is the capability. The host is SQLite, Postgres, or a cell.',
 			principle: 'A command changes the write model. A table is only for reads.',
 			samples: [
 				{
-					file: 'handlers/commands/todo_create.rs',
-					caption: 'Get the principal. Create the aggregate. Call the domain. Publish events. Commit Eventual.',
-					code: `pub async fn handle(
+					file: 'todo-domain/src/commands.rs · complete (thin)',
+					caption: 'No CausalCommandContext body. The mount loads by shard, invokes the domain, and commits Eventual.',
+					code: `portable_command! {
+  name: "todo.complete",
+  // …
+  load: required,
+  invoke: |todo, _input, principal| todo.complete(principal),
+  payload: |todo| TodoStatusPayload::from_todo(&**todo),
+}`
+				},
+				{
+					file: 'todo-domain/src/commands.rs · handle_create',
+					caption: 'Escape hatch: get the principal, create the aggregate, call the domain, commit Eventual.',
+					code: `portable_command! {
+  name: "todo.create",
+  // …
+  guard: authenticated_user,
+  handle: handle_create,
+  defaults: command_input_defaults! {
+    input: TodoCreateInput;
+    default input.todo_id = uuid_v7();
+  },
+}
+
+pub async fn handle_create(
   ctx: &CausalCommandContext<'_, Todo>,
   input: TodoCreateInput,
 ) -> Result<PreparedCommand<Eventual<TodoCreatePayload>>, HandlerError> {
-  // Session admission already ran on .guarded(causal_has_user, …).
   let owner = principal(ctx)?;
   let repo = ctx.repo();
   let mut todo = repo.create();
   todo.create(&input.todo_id, &owner, &input.title)
     .map_err(rejected)?;
-  let state = TodoState::from(&*todo);
-  repo.publish_events().commit(todo)?.eventual(TodoCreatePayload {
-    todo_id: state.todo_id,
-    owner_id: state.owner_id,
-    title: state.title,
-    status: state.status,
-  })
+  repo.publish_events().commit(todo)?.eventual(/* payload */)
 }`
-				},
-				{
-					file: 'handlers/commands/todo_complete.rs',
-					caption: 'Load the aggregate by id. Then call `complete`. Then commit Eventual.',
-					code: `let owner = principal(ctx)?;
-let mut todo = repo
-  .get(&input.todo_id)
-  .await?
-  .ok_or_else(|| HandlerError::NotFound(input.todo_id.clone()))?;
-todo.complete(&owner).map_err(rejected)?;
-let state = TodoState::from(&*todo);
-repo.publish_events().commit(todo)?.eventual(TodoStatusPayload {
-  todo_id: state.todo_id,
-  status: state.status,
-})`
 				}
 			]
 		},
@@ -348,19 +345,19 @@ mutation DeleteTodo {
 {
 			id: 'service',
 			label: '6 · Service + host',
-			lede: 'The `e2e-service` crate is the application. Modules mount commands. `build_service` composes one Service. The host starts the database, the bus, the workers, and GraphQL. The `e2e-runner` binary reads the environment and calls `run`. The domain stays in `todo-domain`.',
+			lede: 'The domain crate is the same on both hosts. `tests/e2e-ui` is one process: SQLite or Postgres, a bus, GraphQL, and Eventual projectors. `tests/e2e-celld` is the same UI and GraphQL process, but Todo create and complete wait-dispatch to a cell (one private SQLite per todo id). GraphQL, `@live`, and projectors are not cell methods. Chat posts also wait-dispatch to a Chat cell on that path; Blob stays in-process.',
 			principle: 'Compose modules into one Service. Let the host start the process. Keep the runner small.',
 			samples: [
 				{
 					file: 'modules/todo.rs · MODULE_ID + routes()',
-					caption: 'This module lists the Todo commands and the Eventual projector.',
+					caption: 'This module lists the Todo commands and the Eventual projector. Both hosts call the same mounts.',
 					code: `pub const MODULE_ID: &str = "todo";
 
 pub fn routes<R, L, S>(...) -> TodoRoutes<R, L, S> {
   Routes::for_aggregate::<R, L, Todo, S>(repo, locks, read_models)
-    .command_transition::</* Create */>(todo_create::COMMAND)
-    .guarded(causal_has_user, todo_create::handle)
-    // … rename, complete, reopen, archive, force_archive, purge …
+    .mount(todo_domain::commands::create())
+    .mount(todo_domain::commands::complete())
+    // … rename, reopen, archive, force_archive, purge …
     .modeled_projector(todo_projector)
     .handle(handlers::events::project_todos::handle)
 }`
@@ -385,7 +382,29 @@ Service::new()
 pub const E2E_UI_MODULE_IDS: &[&str] = compose::MODULE_IDS;
 // todo | chat | blob | identity`
 				},
-				...hostAndRunnerSamples
+				...hostAndRunnerSamples,
+				{
+					file: 'e2e-celld · CelldTodoCommandHost',
+					caption: 'The celld example GraphQL process wait-dispatches todo.create and todo.complete to POST {CELLD_URL}/todo/{id}/{command}. Other commands stay local. SQL lists dual-write after the cell wait-path so the page can render.',
+					code: `// tests/e2e-celld — not make run
+impl CommandHost for CelldTodoCommandHost {
+  async fn invoke(&self, command, command_id, input, …) {
+    if command == "todo.create" || command == "todo.complete" {
+      let id = input["todo_id"];
+      HttpCommandHost::new(format!("{celld}/todo/{id}"))
+        .invoke(command, command_id, input, …)
+        .await?;
+      // then local dual-write so Eventual SQL lists fill
+    }
+    self.local.invoke(command, command_id, input, …).await
+  }
+}
+
+// cell class (tests/celld/worker): command HTTP + sealed GET only
+POST /todo/:id/todo.create   { commandId, input }
+POST /todo/:id/todo.complete
+GET  /todo/:id               // sealed row`
+				}
 			]
 		}
 	]
@@ -397,7 +416,7 @@ export const chatWalkthrough: DemoWalkthrough = {
 	title: 'Lobby chat',
 	kicker: 'Live query, then Eventual post',
 	summary:
-		'This page uses one GraphQL document. `@load` fills the first HTML. `@live` continues the same query on a WebSocket. A post is an Eventual command. The client writes an optimistic row into the shared replica. Guests read through the `e2e-ui-public` surface.',
+		'This page uses one GraphQL document. `@load` fills the first HTML. `@live` continues the same query on a WebSocket. A post is an Eventual command. The client writes an optimistic row into the shared replica. Guests read through the `e2e-ui-public` surface. The same `chat.post` declaration mounts on a local Service (`tests/e2e-ui`) or wait-dispatches to a small Chat cell (`tests/e2e-celld`). `@live` stays on GraphQL either way — that is the point of this demo.',
 	tabs: [
 {
 			id: 'query',
@@ -487,15 +506,8 @@ if (receipt.projected !== undefined) {
 				},
 				{
 					file: 'modules/chat.rs · chat_messages_post',
-					caption: 'Write roles and a session guard are on the mount. The public client has no commands.',
-					code: `.command_transition::<
-  domain_commands::Post,
-  ChatPostInput,
-  Eventual<ChatPostPayload>,
->(chat_post::COMMAND)
-.field_name("chat_messages_post")
-.roles(["user", "admin"])
-.guarded(causal_has_user, chat_post::handle)`
+					caption: 'Write roles and a session guard are on the domain-owned mount. The public client has no commands.',
+					code: `.mount(chat_domain::commands::post())`
 				},
 				{
 					file: 'generated/public/commands.ts',
@@ -512,7 +524,7 @@ export type GeneratedCommands = Readonly<Record<never, never>>;`
 			principle: 'Use the signed-in principal. Do not trust the author field in the request body.',
 			samples: [
 				{
-					file: 'handlers/commands/chat_post.rs',
+					file: 'chat-domain/src/commands.rs · handle_post',
 					caption: 'Get the principal. Reject a duplicate id. Create the aggregate. Call `post`. Commit Eventual.',
 					code: `pub async fn handle(
   ctx: &CausalCommandContext<'_, ChatMessage>,
@@ -664,7 +676,7 @@ mutation SaveChatMessage {
 {
 			id: 'service',
 			label: '6 · Service + host',
-			lede: 'The chat module mounts lobby posts and identity ingress. Identity ingress is the Zitadel Action and the scrape command. The module also mounts the chat and auth projectors. `build_service` adds these routes to one Service. The host starts the process. The runner only reads the environment.',
+			lede: 'The chat module mounts lobby posts. On the one-process playground it also mounts identity ingress. The module mounts the chat projector. `build_service` adds these routes to one Service. On `tests/e2e-celld`, `chat.post` wait-dispatches to a Chat cell; the local host dual-writes so this projector and `@live` still run. The host starts the process. The runner only reads the environment.',
 			principle: 'Compose modules into one Service. Let the host start the process. Keep the runner small.',
 			samples: [
 				{
@@ -674,8 +686,7 @@ mutation SaveChatMessage {
 
 pub fn routes<R, L, S>(...) -> ChatRoutes<R, L, S> {
   Routes::for_aggregate::<R, L, ChatMessage, S>(repo, locks, read_models)
-    .command_transition::</* Post */>(chat_post::COMMAND)
-    .guarded(causal_has_user, chat_post::handle)
+    .mount(chat_domain::commands::post())
     // Zitadel Action ingress + on-demand scrape (non-GraphQL).
     .command(zitadel::COMMAND)
     .guarded(zitadel::guard, zitadel::handle)
@@ -698,7 +709,28 @@ Service::new()
   .routes(chat::routes(/* … */))  // ← this module
   .routes(blob::routes(/* … */))`
 				},
-				...hostAndRunnerSamples
+				...hostAndRunnerSamples,
+				{
+					file: 'e2e-celld · CelldChatCommandHost',
+					caption: 'The celld example wait-dispatches chat.post to POST {CELLD_URL}/chat/{message_id}/chat.post. Then it dual-writes the local Chat service so Eventual projectors update SQL and GraphQL @live still fires. GraphQL is not a cell method.',
+					code: `// tests/e2e-celld — not make run
+impl CommandHost for CelldChatCommandHost {
+  async fn invoke(&self, command, command_id, input, …) {
+    if command == "chat.post" {
+      let id = input["message_id"];
+      HttpCommandHost::new(format!("{celld}/chat/{id}"))
+        .invoke(command, command_id, input, …)
+        .await?;
+      // then local dual-write so the projector + @live fill
+    }
+    self.local.invoke(command, command_id, input, …).await
+  }
+}
+
+// cell class (tests/celld/worker): command HTTP + sealed GET only
+POST /chat/:id/chat.post   { commandId, input }
+GET  /chat/:id             // sealed row`
+				}
 			]
 		}
 	]
@@ -803,28 +835,10 @@ await commands.blob.move({ game_id, direction });
 // Atomic seal confirms or corrects`
 				},
 				{
-					file: 'modules/blob.rs · declare the pure',
-					caption: 'This contract names the pure function, the WASM package, the keys, the args, and the assign fields.',
-					code: `.command_transition::<
-  domain_commands::MoveDir,
-  BlobMoveInput,
-  Atomic<BlobGames>,
->(blob_move::COMMAND)
-.field_name("blob_games_move")
-.roles(["user", "admin"])
-.preview_reduce_known_record(
-  CommandProjectionPureReduce::wasm(
-    "blob.simulate_move",       // pure id → pureFunctions key
-    "blob/pkg/blob_wasm",       // $lib wasm-pack package
-    "blobSimulateMove",         // WASM export (recordJson, argsJson)
-    "BlobGames",
-  )
-  .key_input("game_id", ["game_id"])
-  .arg_input("direction", ["direction"])
-  .assign(["map_json", "score", "player_dead",
-           "current_level_completed", "status"]),
-)
-.guarded(causal_has_user, blob_move::handle)`
+					file: 'blob-domain/src/commands.rs · move_dir',
+					caption: 'The domain mount names the pure function, the WASM package, the keys, the args, and the assign fields.',
+					code: `.mount(blob_domain::commands::move_dir())
+// preview: blob.simulate_move → blobSimulateMove WASM`
 				},
 				{
 					file: 'generated/user/pures.ts',
@@ -860,7 +874,7 @@ export async function ensurePureFunctionsReady() {
 			principle: 'A command changes the write model. A table is only for reads.',
 			samples: [
 				{
-					file: 'handlers/commands/blob_move.rs',
+					file: 'blob-domain/src/commands.rs · handle_move',
 					caption: 'Load the game. Call `move_dir`. Stage `SaveBlobGame`. Commit Atomic. The Atomic row is replica authority.',
 					code: `pub async fn handle(
   ctx: &CausalCommandContext<'_, BlobGame>,
@@ -1015,13 +1029,9 @@ mutation SaveBlobGame {
 
 pub fn routes<R, L, S>(...) -> BlobRoutes<R, L, S> {
   Routes::for_aggregate::<R, L, BlobGame, S>(repo, locks, read_models)
-    .command_transition::</* StartWithMap */>(blob_start::COMMAND)
-    .guarded(causal_has_user, blob_start::handle)
-    .command_transition::</* MoveDir */>(blob_move::COMMAND)
-    .preview_reduce_known_record(/* wasm pure blob.simulate_move */)
-    .guarded(causal_has_user, blob_move::handle)
-    .command_transition::</* StartLevel */>(blob_start_level::COMMAND)
-    .guarded(causal_has_user, blob_start_level::handle)
+    .mount(blob_domain::commands::start())
+    .mount(blob_domain::commands::move_dir())
+    .mount(blob_domain::commands::start_level())
 }`
 				},
 				{
@@ -1152,7 +1162,7 @@ pub struct Todos {
 			principle: 'Use the signed-in principal. Do not trust the request body for identity.',
 			samples: [
 				{
-					file: 'handlers/commands/todo_force_archive.rs',
+					file: 'todo-domain/src/commands.rs · handle_force_archive',
 					caption: 'Get the admin principal. Load the todo. Call the domain. Commit Eventual.',
 					code: `pub async fn handle(
   ctx: &CausalCommandContext<'_, Todo>,

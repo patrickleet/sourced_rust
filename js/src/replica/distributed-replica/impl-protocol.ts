@@ -47,6 +47,11 @@ export type ProtocolHost = {
 	readonly recordClocks: Map<string, RecordProtocolClock>;
 	readonly recordKeysByScope: Map<DistributedOpaqueString, string>;
 	readonly projectedRecordFences: Map<string, ProjectedRecordFence>;
+	readonly membershipFences: Map<
+		string,
+		Map<string, Set<string>>
+	>;
+	readonly deferredMembershipConfirms: Set<string>;
 	readonly anonymousRecordClocks: Map<
 		DistributedOpaqueString,
 		AnonymousRecordProtocolClock
@@ -192,6 +197,8 @@ export function purgeProtocolGeneration(host: ProtocolHost): void {
 	host.recordClocks.clear();
 	host.recordKeysByScope.clear();
 	host.projectedRecordFences.clear();
+	host.membershipFences.clear();
+	host.deferredMembershipConfirms.clear();
 	host.anonymousRecordClocks.clear();
 	host.optimisticReceipts.clear();
 	host.diagnosticLayers?.clear();

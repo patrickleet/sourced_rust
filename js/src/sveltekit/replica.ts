@@ -166,6 +166,8 @@ export type SveltekitBoundOperation<
 		...args: UseOperationArguments<TVariables>
 	): SveltekitQueryStore<TData>;
 	read(variables: TVariables): ReplicaSnapshot<TData>;
+	/** Client-side hover/nav warmup; no-ops when the replica already has a complete snapshot. */
+	prefetch(variables: TVariables): Promise<void>;
 }>;
 
 export type DistributedSvelteKitClient<TCommands> = Readonly<{
@@ -183,6 +185,10 @@ export type DistributedSvelteKitClient<TCommands> = Readonly<{
 		hydration: SveltekitReplicaHydration,
 		authority: SveltekitReplicaAuthority
 	): boolean;
+	prefetch(
+		artifact: ReplicaOperationArtifact<unknown, GraphqlVariables>,
+		variables: GraphqlVariables
+	): Promise<void>;
 	invalidateAuthorization(): void;
 	destroy(): void;
 }>;
@@ -300,6 +306,9 @@ export function createDistributedSvelteKit<TCommands = Readonly<Record<never, ne
 		commands,
 		operation,
 		hydrate,
+		prefetch(artifact, variables) {
+			return prefetchReplicaOperation(replica!, artifact, variables);
+		},
 		invalidateAuthorization(): void {
 			if (!destroyed) replica!.invalidateAuthorization();
 		},
@@ -416,8 +425,21 @@ function bindOperation<TData, TVariables extends GraphqlVariables>(
 	return Object.freeze({
 		artifact,
 		use,
-		read: (variables: TVariables) => replica.read(artifact, variables)
+		read: (variables: TVariables) => replica.read(artifact, variables),
+		prefetch: (variables: TVariables) =>
+			prefetchReplicaOperation(replica, artifact, variables)
 	});
+}
+
+function prefetchReplicaOperation<TData, TVariables extends GraphqlVariables>(
+	replica: DistributedReplica,
+	artifact: ReplicaOperationArtifact<TData, TVariables>,
+	variables: TVariables
+): Promise<void> {
+	const snapshot = replica.read(artifact, variables);
+	if (snapshot.complete && !snapshot.stale) return Promise.resolve();
+	const watch = replica.watch(artifact, variables, { live: false });
+	return watch.refresh().finally(() => watch.destroy());
 }
 
 type SveltekitStoreLifecycle<TData> = Readonly<{

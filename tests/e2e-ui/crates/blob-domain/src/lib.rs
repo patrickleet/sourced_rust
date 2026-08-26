@@ -9,6 +9,8 @@
 pub mod core;
 
 #[cfg(feature = "domain")]
+pub mod commands;
+#[cfg(feature = "domain")]
 pub mod levels;
 #[cfg(feature = "domain")]
 pub mod models;
@@ -18,6 +20,11 @@ pub mod wasm;
 
 pub use core::{simulate_move, tile, Direction, MovePreview, SimulateError};
 
+#[cfg(feature = "domain")]
+pub use commands::{
+    move_dir, start, start_level, BlobMoveInput, BlobStartInput, BlobStartLevelInput, Move, Start,
+    StartLevel,
+};
 #[cfg(feature = "domain")]
 pub use levels::{demo_map, generate_level, generate_level_with, is_hamiltonian_passable};
 #[cfg(feature = "domain")]

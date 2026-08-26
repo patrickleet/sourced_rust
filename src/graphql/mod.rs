@@ -48,8 +48,7 @@ pub use naming::{
     aggregate_field, by_pk_field, comparison_op_fields, include_postgres_json_comparison_ops,
     is_valid_graphql_name, mutation_delete_by_pk_field, mutation_insert_one_field,
     mutation_update_by_pk_field, mutation_upsert_field, object_type_name, root_list_field,
-    scalar_type_name, PORTABLE_COMPARISON_OPS, POSTGRES_JSON_COMPARISON_OPS,
-    STRING_COMPARISON_OPS,
+    scalar_type_name, PORTABLE_COMPARISON_OPS, POSTGRES_JSON_COMPARISON_OPS, STRING_COMPARISON_OPS,
 };
 pub use sdl::{
     graphql_sdl_for_role, graphql_sdl_for_tables, graphql_sdl_for_tables_with_options,
@@ -71,7 +70,6 @@ pub use permissions::{
 };
 pub use types::{GraphqlInputType, GraphqlOutputType, GraphqlTypeDef, GraphqlTypeField};
 
-#[cfg(feature = "graphql")]
 pub(crate) mod command_input;
 #[cfg(feature = "graphql")]
 mod compile;
@@ -86,9 +84,11 @@ pub mod http;
 #[cfg(feature = "graphql")]
 pub mod identity;
 #[cfg(feature = "graphql")]
-pub(crate) mod protocol;
+pub mod protocol;
 #[cfg(feature = "graphql")]
 pub(crate) mod query_protocol;
+#[cfg(feature = "graphql")]
+pub mod read_store;
 #[cfg(feature = "graphql")]
 mod schema;
 #[cfg(feature = "graphql")]
@@ -100,7 +100,8 @@ pub use engine::{
 };
 #[cfg(feature = "graphql")]
 pub use http::{
-    graphiql_page, graphql_router, graphql_router_with_dispatcher, graphql_router_with_service,
+    graphiql_page, graphql_router, graphql_router_with_dispatcher, graphql_router_with_host,
+    graphql_router_with_service,
 };
 #[cfg(feature = "graphql")]
 pub use identity::{
@@ -108,7 +109,9 @@ pub use identity::{
     public_oidc_identity_from_env_vars, resolve_session, resolve_session_sync,
     strip_identity_headers, AuthError, ClaimMapConfig, IdentityConfig, IdentityMode,
     IdentityResolver, OidcConfig, OidcValidator, TrustedProxyConfig, ValidationError,
-    DEFAULT_IDENTITY_STRIP_HEADERS, UNSET_OIDC_AUDIENCE, UNSET_OIDC_ISSUER,
+    VerifiedPrincipal, DEFAULT_IDENTITY_STRIP_HEADERS, UNSET_OIDC_AUDIENCE, UNSET_OIDC_ISSUER,
 };
+#[cfg(feature = "graphql")]
+pub use read_store::{CellByKeyGetter, HttpCellByKey, MapCellByKey, ReadStore};
 #[cfg(feature = "graphql")]
 pub use subscribe::ChangeHub;

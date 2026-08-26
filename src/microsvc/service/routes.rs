@@ -23,27 +23,25 @@ use super::handlers::{
 use crate::aggregate::Aggregate;
 use crate::application::{CommandMount, CommandMountRegistrar, CommandSpec};
 use crate::bus::{Bus, Message, MessageKind, MessagePublisher, OrderedDelivery, TransportError};
-#[cfg(feature = "graphql")]
 use crate::command_ledger::{
-    CanonicalInputHash, CausalCommitBatch, CausalRepositoryIdentity, CausalTransactionalCommit,
-    CommandContractFingerprint, CommandId, CommandLedgerKey, CommandLedgerStore, CommandLookup,
-    CommandLookupScope, CommandReservation, PrincipalPartitionId, ReservationOutcome,
-    TerminalCommandState,
+    CanonicalInputHash, CausalCommitBatch, CausalTransactionalCommit, CommandContractFingerprint,
+    CommandLedgerStore, CommandReservation, ReservationOutcome, TerminalCommandState,
 };
 #[cfg(feature = "graphql")]
+use crate::command_ledger::{
+    CausalRepositoryIdentity, CommandId, CommandLedgerKey, CommandLookup, CommandLookupScope,
+    PrincipalPartitionId,
+};
 use crate::graphql::command_contract::CommandConsistency;
 use crate::graphql::command_contract::{
     CommandEventSet, CommandOutcome, CompiledInputDefaults, TypedCommandContract,
 };
-#[cfg(feature = "graphql")]
 use crate::graphql::command_input::canonicalize_command_input;
 #[cfg(feature = "graphql")]
 use crate::graphql::identity::VerifiedPrincipal;
-use crate::graphql::{
-    command_transition, GraphqlInputType, SurfaceProjector, TypedCommand,
-};
-#[cfg(feature = "graphql")]
+use crate::graphql::{command_transition, GraphqlInputType, SurfaceProjector, TypedCommand};
 use crate::microsvc::causal::CausalWorkspace;
+use crate::microsvc::cell_host::{CellCommandIdentity, CellDispatchError, CellDispatchResult};
 use crate::microsvc::context::Context;
 use crate::microsvc::dependencies::{
     CausalProjectionRouteDependencies, CausalRouteDependencies, ConfigurableOutboxPublisher,
@@ -59,10 +57,25 @@ use crate::microsvc::projector::{ModeledProjectorHandlerFn, ModeledProjectorRout
 use crate::microsvc::session::Session;
 use crate::outbox::OutboxPublisherConfig;
 use crate::outbox_worker::BusOutboxPublishHook;
+#[cfg(any(
+    feature = "http",
+    feature = "grpc",
+    feature = "postgres",
+    feature = "sqlite",
+    feature = "nats",
+    feature = "rabbitmq",
+    feature = "kafka",
+    test,
+))]
+use crate::outbox_worker::{
+    OutboxDispatcher, OutboxDrainRunner, OutboxPublishMailbox, DEFAULT_DRAIN_LEASE,
+    DEFAULT_OUTBOX_HINT_CAPACITY,
+};
 #[cfg(feature = "graphql")]
 use crate::projection_protocol::ProjectionProtocolStore;
 #[cfg(feature = "graphql")]
 use crate::projection_protocol::{CompiledProjectionTopology, ProjectorTopologyId};
+use crate::repository::{StreamIdentity, TransactionalCommit};
 use serde_json::Value;
 
 /// How a handler expects the transport to deliver matching messages.
@@ -176,6 +189,8 @@ pub(super) type CausalHandlerFuture<'a> =
 pub(super) type CausalStatusFuture<'a> = Pin<
     Box<dyn Future<Output = Result<CausalCommandPublicStatus, CausalDispatchError>> + Send + 'a>,
 >;
+pub(super) type CellCausalHandlerFuture<'a> =
+    Pin<Box<dyn Future<Output = Result<CellDispatchResult, CellDispatchError>> + Send + 'a>>;
 
 pub(super) trait ErasedCausalHandler<D>: Send + Sync {
     fn contract(&self) -> &TypedCommandContract;
@@ -200,6 +215,15 @@ pub(super) trait ErasedCausalHandler<D>: Send + Sync {
         protocol: Option<crate::graphql::protocol::ProtocolResponseAccumulator>,
     ) -> CausalHandlerFuture<'a>;
 
+    fn dispatch_cell_causal<'a>(
+        &'a self,
+        dependencies: &'a D,
+        identity: &'a CellCommandIdentity,
+        input: Value,
+        session: Session,
+        shard: &'a StreamIdentity,
+    ) -> CellCausalHandlerFuture<'a>;
+
     #[cfg(feature = "graphql")]
     #[allow(dead_code)]
     fn lookup<'a>(
@@ -221,6 +245,15 @@ pub(super) trait ErasedCausalHandler<D>: Send + Sync {
         session: &'a Session,
         protocol: Option<crate::graphql::protocol::ProtocolResponseAccumulator>,
     ) -> CausalStatusFuture<'a>;
+
+    /// Run the same typed `handle` inside one cell, without GraphQL receipts.
+    fn invoke_cell<'a>(
+        &'a self,
+        dependencies: &'a D,
+        input: Value,
+        session: Session,
+        shard: &'a StreamIdentity,
+    ) -> Pin<Box<dyn Future<Output = Result<Value, HandlerError>> + Send + 'a>>;
 }
 
 struct RegisteredCausalHandler<A, I, K>
@@ -229,9 +262,7 @@ where
     K: CommandOutcome,
 {
     contract: TypedCommandContract,
-    #[cfg_attr(not(feature = "graphql"), allow(dead_code))]
     guard: Option<Arc<CausalGuardFn<A>>>,
-    #[cfg_attr(not(feature = "graphql"), allow(dead_code))]
     handle: Arc<PreparedHandlerFn<A, I, K>>,
     /// Retryable, fail-closed bootstrap for the bound projector's complete
     /// model/table ownership inventory. `get_or_try_init` leaves the cell empty
@@ -413,13 +444,77 @@ pub(super) fn configure_outbox_for<D>(
     D: HasOutboxStore + ConfigurableOutboxPublisher,
     D::OutboxStore: 'static,
 {
-    let hook = BusOutboxPublishHook::new(dependencies.outbox_store(), publisher, max_attempts)
-        .with_service(service_name);
-    dependencies.configure_outbox_publisher(OutboxPublisherConfig::new(
-        Arc::new(hook),
-        worker_id,
-        lease,
-    ));
+    let hook =
+        BusOutboxPublishHook::new(dependencies.outbox_store(), publisher.clone(), max_attempts)
+            .with_service(service_name.clone());
+
+    #[cfg(any(
+        feature = "http",
+        feature = "grpc",
+        feature = "postgres",
+        feature = "sqlite",
+        feature = "nats",
+        feature = "rabbitmq",
+        feature = "kafka",
+        test,
+    ))]
+    let config = {
+        let (mailbox, rx, wake) = OutboxPublishMailbox::channel(DEFAULT_OUTBOX_HINT_CAPACITY);
+        let mut dispatcher = OutboxDispatcher::new(
+            dependencies.outbox_store(),
+            publisher,
+            worker_id.clone(),
+            DEFAULT_DRAIN_LEASE,
+            max_attempts,
+        );
+        if let Some(name) = service_name {
+            dispatcher = dispatcher.with_service(name);
+        }
+        OutboxDrainRunner::new(dispatcher)
+            .with_hints(rx, wake)
+            .spawn();
+        OutboxPublisherConfig::new(Arc::new(hook), worker_id, lease)
+            .with_schedule(Arc::new(move |ids| mailbox.try_submit(ids)))
+    };
+
+    #[cfg(not(any(
+        feature = "http",
+        feature = "grpc",
+        feature = "postgres",
+        feature = "sqlite",
+        feature = "nats",
+        feature = "rabbitmq",
+        feature = "kafka",
+        test,
+    )))]
+    let config = {
+        let _ = publisher;
+        OutboxPublisherConfig::new(Arc::new(hook), worker_id, lease)
+    };
+
+    dependencies.configure_outbox_publisher(config);
+}
+
+/// Domain-owned command that can install itself onto a host [`Routes`] bundle.
+///
+/// Command declarations live next to the aggregate. SOA and later cell hosts
+/// call [`Routes::mount`] with the same value; the declaration must not name
+/// sqlx, celld, or `QueuedRepository`.
+///
+/// Prefer [`crate::portable_command!`] (`PCH-DEC-001`) for shard + invoke +
+/// Eventual. The fluent builder on [`Routes`] remains the expansion target.
+pub trait PortableCommand<D> {
+    /// Register this command on `routes` and return the bundle.
+    fn install(self, routes: Routes<D>) -> Routes<D>;
+}
+
+impl<D, F> PortableCommand<D> for F
+where
+    F: FnOnce(Routes<D>) -> Routes<D>,
+{
+    fn install(self, routes: Routes<D>) -> Routes<D> {
+        self(routes)
+    }
 }
 
 /// Builder returned by [`Routes::command`], [`Routes::event`],
@@ -636,16 +731,9 @@ where
 {
     /// Apply a domain method. The third argument is the session principal
     /// when `.roles` require one.
-    pub fn invoke<T, E>(
-        mut self,
-        transition: T,
-    ) -> ThinCommandBuilder<D, I, K, ThinCommandInvoked>
+    pub fn invoke<T, E>(mut self, transition: T) -> ThinCommandBuilder<D, I, K, ThinCommandInvoked>
     where
-        T: Fn(
-                &mut crate::microsvc::AggregateCheckout<D::Aggregate>,
-                &I,
-                &str,
-            ) -> Result<(), E>
+        T: Fn(&mut crate::microsvc::AggregateCheckout<D::Aggregate>, &I, &str) -> Result<(), E>
             + Send
             + Sync
             + 'static,
@@ -759,11 +847,7 @@ where
         >,
     >;
 
-    fn call(
-        &self,
-        ctx: &'a CausalCommandContext<'a, A>,
-        input: I,
-    ) -> Self::Future {
+    fn call(&self, ctx: &'a CausalCommandContext<'a, A>, input: I) -> Self::Future {
         let load_id = self.load_id.clone();
         let create = self.create;
         let transition = self.transition.clone();
@@ -824,11 +908,7 @@ where
         >,
     >;
 
-    fn call(
-        &self,
-        ctx: &'a CausalCommandContext<'a, A>,
-        input: I,
-    ) -> Self::Future {
+    fn call(&self, ctx: &'a CausalCommandContext<'a, A>, input: I) -> Self::Future {
         let load_id = self.load_id.clone();
         let create = self.create;
         let transition = self.transition.clone();
@@ -926,6 +1006,68 @@ impl<D: Send + Sync + 'static> Routes<D> {
     /// Start registering a command handler that consumes JSON payload input.
     pub fn command(self, name: &'static str) -> RouteBuilder<D> {
         self.handler(HandlerSpec::command(name))
+    }
+
+    /// Install a domain-owned command declaration onto this host bundle.
+    pub fn mount(self, command: impl PortableCommand<D>) -> Self {
+        command.install(self)
+    }
+
+    /// Dispatch a typed causal command inside one cell (no GraphQL envelope).
+    pub(in crate::microsvc) async fn dispatch_cell_command(
+        &self,
+        command: &str,
+        input: Value,
+        session: Session,
+        shard: &StreamIdentity,
+    ) -> Result<Value, HandlerError> {
+        let handler = self
+            .handlers
+            .get(&MessageKind::Command)
+            .and_then(|handlers| handlers.get(command));
+        match handler {
+            Some(RegisteredHandler::Causal(handler)) => {
+                handler
+                    .invoke_cell(&self.dependencies, input, session, shard)
+                    .await
+            }
+            Some(_) | None => Err(HandlerError::UnknownCommand(command.to_string())),
+        }
+    }
+
+    /// Dispatch a typed cell command through the same fenced ledger contract
+    /// as the in-process causal wait path.
+    pub(in crate::microsvc) async fn dispatch_cell_causal(
+        &self,
+        command: &str,
+        identity: &CellCommandIdentity,
+        input: Value,
+        session: Session,
+        shard: &StreamIdentity,
+    ) -> Result<CellDispatchResult, CellDispatchError> {
+        let handler = self
+            .handlers
+            .get(&MessageKind::Command)
+            .and_then(|handlers| handlers.get(command));
+        match handler {
+            Some(RegisteredHandler::Causal(handler)) => {
+                handler
+                    .dispatch_cell_causal(&self.dependencies, identity, input, session, shard)
+                    .await
+            }
+            Some(_) | None => Err(CellDispatchError::BadRequest(format!(
+                "`{command}` is not a typed causal command"
+            ))),
+        }
+    }
+
+    pub(in crate::microsvc) fn is_command_only(&self) -> bool {
+        self.projectors.is_empty()
+            && self.modeled_local_services.is_empty()
+            && self
+                .handler_specs
+                .iter()
+                .all(|spec| spec.kind == MessageKind::Command)
     }
 
     /// Register a typed command declaration and its executable handler as one
@@ -1175,9 +1317,8 @@ impl<D: Send + Sync + 'static> Routes<D> {
         );
         let spec = CommandSpec::from_contract(&contract)
             .unwrap_or_else(|error| panic!("typed command contract cannot compile: {error}"));
-        let mount = declared_mount.unwrap_or_else(|| {
-            CommandMount::from_typed_route(spec.clone(), route_name)
-        });
+        let mount = declared_mount
+            .unwrap_or_else(|| CommandMount::from_typed_route(spec.clone(), route_name));
         assert_eq!(
             mount.spec().id,
             spec.id,
@@ -1386,12 +1527,242 @@ impl<D: Send + Sync + 'static> CommandMountRegistrar for Routes<D> {
 impl<D, A, I, K> ErasedCausalHandler<D> for RegisteredCausalHandler<A, I, K>
 where
     D: CausalRouteDependencies<Aggregate = A> + Send + Sync + 'static,
+    D::Backend: TransactionalCommit,
     A: Aggregate + Send + Sync + 'static,
     I: serde::de::DeserializeOwned + Send + 'static,
     K: CommandOutcome,
 {
     fn contract(&self) -> &TypedCommandContract {
         &self.contract
+    }
+
+    fn dispatch_cell_causal<'a>(
+        &'a self,
+        dependencies: &'a D,
+        identity: &'a CellCommandIdentity,
+        input: Value,
+        session: Session,
+        shard: &'a StreamIdentity,
+    ) -> CellCausalHandlerFuture<'a> {
+        Box::pin(async move {
+            match crate::application::admit_command_session(
+                &self.contract.roles,
+                session.user_id(),
+                &session.roles(),
+            ) {
+                Ok(()) => {}
+                Err("unauthenticated") => return Err(CellDispatchError::Unauthorized),
+                Err(_) => return Err(CellDispatchError::Forbidden),
+            }
+            if self.contract.consistency == CommandConsistency::Atomic {
+                return Err(CellDispatchError::BadRequest(
+                    "atomic typed commands require a same-transaction relational projection host"
+                        .into(),
+                ));
+            }
+
+            let canonical = canonicalize_command_input(&self.contract.input, input)
+                .map_err(|error| CellDispatchError::BadRequest(error.to_string()))?;
+            let typed = canonical
+                .decode::<I>()
+                .map_err(|error| CellDispatchError::BadRequest(error.to_string()))?;
+            let (input, wire, input_digest) = typed.into_parts();
+            let policy = CausalCommandPolicy::default();
+            let reservation = CommandReservation::new(
+                identity.key().clone(),
+                self.contract.name.clone(),
+                CommandContractFingerprint::new(self.contract.fingerprint_bytes()),
+                CanonicalInputHash::new(input_digest),
+                policy.attempt_lease,
+                policy.replay_retention,
+            )
+            .map_err(crate::microsvc::cell_host::causal::internal_ledger_error)?;
+
+            let aggregate_repository = dependencies.__causal_aggregate_repository();
+            let repository = aggregate_repository.repo();
+            let attempt = match repository
+                .reserve_command(reservation)
+                .await
+                .map_err(crate::microsvc::cell_host::causal::internal_ledger_error)?
+            {
+                ReservationOutcome::Acquired(attempt) => attempt,
+                ReservationOutcome::InProgress { .. } => {
+                    return Err(CellDispatchError::InProgress);
+                }
+                ReservationOutcome::Replay(replay) => {
+                    return crate::microsvc::cell_host::causal::replay_result(replay, true);
+                }
+                ReservationOutcome::Conflict => return Err(CellDispatchError::CommandIdReuse),
+                ReservationOutcome::Expired => return Err(CellDispatchError::Expired),
+            };
+
+            let payload = serde_json::to_vec(&wire).map_err(|error| {
+                CellDispatchError::Internal(format!(
+                    "canonical cell command input could not be encoded: {error}"
+                ))
+            })?;
+            let mut metadata = session
+                .variables()
+                .iter()
+                .filter(|(name, _)| !name.eq_ignore_ascii_case(crate::trace_context::CAUSATION_ID))
+                .map(|(name, value)| (name.clone(), value.clone()))
+                .collect::<Vec<_>>();
+            metadata.push((
+                crate::trace_context::CAUSATION_ID.to_string(),
+                attempt.causation_id().as_str().to_string(),
+            ));
+            let message = Message {
+                id: Some(identity.command_id().to_string()),
+                name: self.contract.name.clone(),
+                kind: MessageKind::Command,
+                payload,
+                content_type: "application/json".into(),
+                metadata,
+            };
+
+            let workspace = CausalWorkspace::new(aggregate_repository);
+            let context = CausalCommandContext::new(&message, &session, &workspace);
+            if self.guard.as_ref().is_some_and(|guard| !guard(&context)) {
+                return crate::microsvc::cell_host::causal::commit_rejection(
+                    repository,
+                    attempt,
+                    policy.replay_retention,
+                    "REJECTED",
+                    422,
+                    format!("guard rejected command: {}", self.contract.name),
+                )
+                .await;
+            }
+
+            let mut prepared = match (self.handle)(&context, input).await {
+                Ok(prepared) => prepared,
+                Err(error) if error.status_code() < 500 => {
+                    return crate::microsvc::cell_host::causal::commit_rejection(
+                        repository,
+                        attempt,
+                        policy.replay_retention,
+                        crate::microsvc::cell_host::causal::handler_error_code(&error),
+                        error.status_code(),
+                        error.client_facing_message(),
+                    )
+                    .await;
+                }
+                Err(error) => {
+                    return crate::microsvc::cell_host::causal::abandon_attempt(
+                        repository,
+                        attempt,
+                        error.to_string(),
+                    )
+                    .await;
+                }
+            };
+
+            let mut parts = match workspace.into_parts() {
+                Ok(parts) => parts,
+                Err(error) => {
+                    return crate::microsvc::cell_host::causal::abandon_attempt(
+                        repository,
+                        attempt,
+                        error.to_string(),
+                    )
+                    .await;
+                }
+            };
+            if let Err(error) = parts.prepare_domain_publications(attempt.causation_id().as_str()) {
+                return crate::microsvc::cell_host::causal::abandon_attempt(
+                    repository,
+                    attempt,
+                    error.to_string(),
+                )
+                .await;
+            }
+            if let Err(error) = parts.validate_prepared(&self.contract, &mut prepared) {
+                return crate::microsvc::cell_host::causal::abandon_attempt(
+                    repository,
+                    attempt,
+                    error.to_string(),
+                )
+                .await;
+            }
+
+            let replay_payload = prepared.serialized_payload().clone();
+            let batch = match parts.prepare_commit_batch() {
+                Ok(batch) => batch,
+                Err(error) => {
+                    return crate::microsvc::cell_host::causal::abandon_attempt(
+                        repository,
+                        attempt,
+                        format!("cell causal commit batch preparation failed: {error}"),
+                    )
+                    .await;
+                }
+            };
+            if let Err(error) =
+                crate::microsvc::cell_host::validate_cell_outbox_messages(&batch.outbox_messages)
+            {
+                drop(batch);
+                return crate::microsvc::cell_host::causal::abandon_attempt(
+                    repository,
+                    attempt,
+                    format!("cell outbox violates its transport bounds: {error}"),
+                )
+                .await;
+            }
+            let foreign_stream = batch
+                .streams
+                .iter()
+                .find(|stream| stream.identity != *shard)
+                .map(|stream| stream.identity.to_string());
+            if let Some(foreign_stream) = foreign_stream {
+                drop(batch);
+                return crate::microsvc::cell_host::causal::abandon_attempt(
+                    repository,
+                    attempt,
+                    format!("cell `{shard}` cannot commit stream `{foreign_stream}`"),
+                )
+                .await;
+            }
+
+            let fence = attempt.fence();
+            let completion = attempt
+                .complete(
+                    TerminalCommandState::Succeeded,
+                    replay_payload.clone(),
+                    policy.replay_retention,
+                )
+                .map_err(crate::microsvc::cell_host::causal::internal_ledger_error)?;
+            match repository
+                .commit_causal_batch(CausalCommitBatch::new(batch, completion))
+                .await
+            {
+                Ok(()) => {
+                    parts.mark_committed_state().map_err(|error| {
+                        CellDispatchError::Internal(format!(
+                            "committed cell workspace cleanup failed: {error}"
+                        ))
+                    })?;
+                    let (_committed, serialized) = prepared.finalize_after_commit();
+                    let result = crate::microsvc::cell_host::causal::load_committed_result(
+                        repository, &fence, false,
+                    )
+                    .await?;
+                    if result.payload() != &serialized {
+                        return Err(CellDispatchError::Internal(
+                            "durable cell replay differs from the committed handler payload".into(),
+                        ));
+                    }
+                    Ok(result)
+                }
+                Err(error) => {
+                    crate::microsvc::cell_host::causal::recover_commit_error(
+                        repository,
+                        fence,
+                        error.to_string(),
+                    )
+                    .await
+                }
+            }
+        })
     }
 
     #[cfg(feature = "graphql")]
@@ -1714,26 +2085,22 @@ where
                 }
             };
 
-            // Match the ordinary aggregate commit path: when Service::with_bus
-            // installed an immediate publisher, make each fresh outbox row
-            // InFlight inside the same fenced transaction and publish it only
-            // after that transaction succeeds. A crash or publish failure leaves
-            // the durable lease for a separately operated polling worker to
-            // recover.
-            let mut claimed = Vec::new();
+            // Stamp causation, leave rows pending for the bounded worker, and
+            // only claim in-transaction when there is no mailbox (hook fallback).
+            let mut fallback_rows = Vec::new();
+            let mut outbox_ids = Vec::new();
             if let Some(config) = publisher {
-                let now = SystemTime::now();
+                let claim_now = config.schedule.is_none().then(crate::time::now);
                 let mut claim_error = None;
                 for message in &mut batch.outbox_messages {
-                    // The post-commit hook receives clones of this staged
-                    // batch. Stamp before cloning so the broker copy and the
-                    // persisted row carry the same authoritative causation.
                     message.overwrite_causation_id(attempt.causation_id().as_str());
-                    if let Err(error) = message.claim_at(&config.worker_id, config.lease, now) {
-                        claim_error = Some(error.to_string());
-                        break;
+                    outbox_ids.push(message.id().to_string());
+                    if let Some(now) = claim_now {
+                        if let Err(error) = message.claim_at(&config.worker_id, config.lease, now) {
+                            claim_error = Some(error.to_string());
+                            break;
+                        }
                     }
-                    claimed.push(message.clone());
                 }
                 if let Some(error) = claim_error {
                     drop(batch);
@@ -1744,6 +2111,9 @@ where
                         format!("causal outbox claim failed before commit: {error}"),
                     )
                     .await;
+                }
+                if config.schedule.is_none() {
+                    fallback_rows = batch.outbox_messages.clone();
                 }
             }
 
@@ -1780,7 +2150,8 @@ where
                         ))
                     })?;
                     if let Some(config) = publisher {
-                        let _ = config.hook.publish_claimed(claimed).await;
+                        crate::outbox::start_immediate_publish(config, outbox_ids, fallback_rows)
+                            .await;
                     }
                     let (_committed, serialized) = prepared.finalize_after_commit();
                     let result = load_committed_dispatch_result(
@@ -1878,6 +2249,59 @@ where
                 protocol.as_ref(),
             )
             .await
+        })
+    }
+
+    fn invoke_cell<'a>(
+        &'a self,
+        dependencies: &'a D,
+        input: Value,
+        session: Session,
+        shard: &'a StreamIdentity,
+    ) -> Pin<Box<dyn Future<Output = Result<Value, HandlerError>> + Send + 'a>> {
+        Box::pin(async move {
+            let payload = serde_json::to_vec(&input)
+                .map_err(|error| HandlerError::DecodeFailed(error.to_string()))?;
+            let typed: I = serde_json::from_value(input)
+                .map_err(|error| HandlerError::DecodeFailed(error.to_string()))?;
+            let message = Message::new(self.contract.name.clone(), MessageKind::Command, payload);
+            let aggregate_repository = dependencies.__causal_aggregate_repository();
+            let workspace = CausalWorkspace::new(aggregate_repository);
+            let context = CausalCommandContext::new(&message, &session, &workspace);
+            if self.guard.as_ref().is_some_and(|guard| !guard(&context)) {
+                return Err(HandlerError::GuardRejected(self.contract.name.clone()));
+            }
+            let mut prepared = (self.handle)(&context, typed).await?;
+            let mut parts = workspace
+                .into_parts()
+                .map_err(super::handlers::workspace_handler_error)?;
+            let causation = uuid::Uuid::now_v7().hyphenated().to_string();
+            parts
+                .prepare_domain_publications(&causation)
+                .map_err(super::handlers::workspace_handler_error)?;
+            parts
+                .validate_prepared(&self.contract, &mut prepared)
+                .map_err(|error| HandlerError::Rejected(error.to_string()))?;
+            {
+                let batch = parts
+                    .prepare_commit_batch()
+                    .map_err(super::handlers::workspace_handler_error)?;
+                for stream in &batch.streams {
+                    if stream.identity != *shard {
+                        return Err(HandlerError::Rejected(format!(
+                            "cell `{shard}` cannot commit stream `{}`",
+                            stream.identity
+                        )));
+                    }
+                }
+                TransactionalCommit::commit_batch(aggregate_repository.repo(), batch)
+                    .await
+                    .map_err(HandlerError::from)?;
+            }
+            parts
+                .mark_committed_state()
+                .map_err(super::handlers::workspace_handler_error)?;
+            Ok(prepared.serialized_payload().clone())
         })
     }
 }
