@@ -1,0 +1,13 @@
+local: false
+preview: false
+environment:
+  name: ""
+  namespace: ""
+source:
+  repoURL: ""
+  targetRevision: HEAD
+argocd:
+  namespace: argocd
+  project: default
+deploy:
+  values: {}

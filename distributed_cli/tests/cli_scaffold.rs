@@ -66,13 +66,23 @@ fn scaffold_generates_a_service_tree() {
         "src/lib.rs",
         "src/main.rs",
         "src/service.rs",
+        ".gitops/local/Chart.yaml",
+        ".gitops/local/values.yaml",
         ".gitops/deploy/Chart.yaml",
+        ".gitops/deploy/values.yaml",
     ] {
         assert!(
             out_dir.join(expected).exists(),
             "missing generated file: {expected}"
         );
     }
+
+    let local_values = read(&out_dir, ".gitops/local/values.yaml");
+    assert!(local_values.starts_with("local: true\npreview: false\n"));
+    let deploy_values = read(&out_dir, ".gitops/deploy/values.yaml");
+    assert!(deploy_values.starts_with("local: false\npreview: false\n"));
+    assert!(!read(&out_dir, ".gitops/local/templates/deployment.yaml").contains(".Values.local"));
+    assert!(!read(&out_dir, ".gitops/deploy/templates/deployment.yaml").contains(".Values.local"));
 
     let cargo = read(&out_dir, "Cargo.toml");
     assert!(cargo.contains("\"postgres\""), "Cargo.toml: {cargo}");
@@ -206,7 +216,34 @@ fn gitops_promote_variants_render_their_resource() {
             resource.contains(kind),
             "--gitops-promote {mode}: {resource}"
         );
+        assert!(resource.contains(".gitops/deploy"));
+        assert!(resource.contains(".Values.deploy.values"));
+        assert!(!resource.contains(".Values.source.repoURL | toYaml"));
     }
+}
+
+#[test]
+fn test_users_is_an_explicit_optional_chart() {
+    let without = scaffold("scaffold-without-test-users", &["--gitops"]);
+    assert!(!without.join(".gitops/test-users/Chart.yaml").exists());
+
+    let with = scaffold("scaffold-with-test-users", &["--gitops", "--test-users"]);
+    for expected in [
+        ".gitops/test-users/Chart.yaml",
+        ".gitops/test-users/values.yaml",
+        ".gitops/test-users/README.md",
+    ] {
+        assert!(
+            with.join(expected).exists(),
+            "missing generated file: {expected}"
+        );
+    }
+    assert!(!with
+        .join(".gitops/local/templates/test-users.yaml")
+        .exists());
+    assert!(!with
+        .join(".gitops/deploy/templates/test-users.yaml")
+        .exists());
 }
 
 #[test]

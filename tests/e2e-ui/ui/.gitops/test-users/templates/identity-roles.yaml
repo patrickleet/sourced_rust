@@ -1,4 +1,4 @@
-{{- /*
+{{- /* Test-user chart ownership.
   Cluster-shared project roles (user / admin) on the shared e2e-ui Project.
   orgId omitted — defaults to ProviderConfig credential org (see humans template).
 */ -}}

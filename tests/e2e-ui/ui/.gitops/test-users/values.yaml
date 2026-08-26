@@ -1,0 +1,53 @@
+local: true
+preview: false
+
+environment:
+  name: local
+  namespace: default
+
+name: e2e-ui-ui
+service:
+  port: 5180
+
+identity:
+  enabled: false
+  workspace: ""
+  oidcGeneration: 0
+  projectName: e2e-ui
+  projectNamespace: default
+  humansNamespace: default
+  mrNamespace: ""
+  demoUsers: true
+  instanceLoginV2: true
+  seedLocalOidcSecret: false
+  localOidcSeed: {}
+  seedLocalHumanPasswords: true
+  localHumanPasswords: {}
+  uiService: e2e-ui-ui
+  uiPort: 5180
+  uiBaseURL: ""
+  extraRedirectUris:
+    - http://127.0.0.1:5180/auth/callback/oidc
+    - http://localhost:5180/auth/callback/oidc
+  extraPostLogoutRedirectUris:
+    - http://127.0.0.1:5180/
+    - http://localhost:5180/
+  passwordSecret:
+    name: e2e-human-passwords
+  providerConfigRef:
+    name: default
+    kind: ClusterProviderConfig
+
+externalSecrets:
+  enabled: false
+  refreshInterval: 1m
+  secretStoreRef:
+    name: vault
+    kind: ClusterSecretStore
+  oidc:
+    vaultPath: ""
+    targetName: e2e-ui-oidc
+  humanPasswords:
+    enabled: true
+    vaultPath: ""
+    targetName: ""

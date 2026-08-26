@@ -1,0 +1,26 @@
+apiVersion: pkg.crossplane.io/v1
+kind: Provider
+metadata:
+  name: crossplane-contrib-provider-helm
+spec:
+  package: xpkg.crossplane.io/crossplane-contrib/provider-helm:v1.3.0
+  runtimeConfigRef:
+    name: local-dev-helm
+---
+apiVersion: pkg.crossplane.io/v1beta1
+kind: DeploymentRuntimeConfig
+metadata:
+  name: local-dev-helm
+spec:
+  serviceAccountTemplate:
+    metadata:
+      name: local-dev-helm
+---
+apiVersion: helm.m.crossplane.io/v1beta1
+kind: ProviderConfig
+metadata:
+  name: default
+  namespace: default
+spec:
+  credentials:
+    source: InjectedIdentity

@@ -1,4 +1,4 @@
-{{- /*
+{{- /* Test-user chart ownership.
   Cluster-shared Zitadel Project (one e2e-ui project for the whole CP).
 
   Roles and demo humans attach here. OIDC apps stay worktree-scoped and

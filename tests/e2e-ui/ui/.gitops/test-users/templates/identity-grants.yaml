@@ -1,4 +1,4 @@
-{{- /*
+{{- /* Test-user chart ownership.
   Cluster-shared role assignments for the demo humans.
 
   Grant XRs resolve HumanUser + Project IDs from status.atProvider, keeping

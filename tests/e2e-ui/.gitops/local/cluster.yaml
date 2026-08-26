@@ -1,0 +1,29 @@
+apiVersion: hops.local/v1alpha1
+kind: Cluster
+metadata:
+  name: e2e-ui
+spec:
+  clusterProvider: kind
+  dockerProvider: dory
+  mountRoot: ../..
+  manifests:
+    path: .gitops/local/cluster
+  controlPlane:
+    crossplane:
+      chart: crossplane-stable/crossplane
+      version: "2.4.0"
+      values:
+        resourcesCrossplane:
+          limits:
+            cpu: null
+            memory: null
+          requests:
+            cpu: null
+            memory: null
+        resourcesRBACManager:
+          limits:
+            cpu: null
+            memory: null
+          requests:
+            cpu: null
+            memory: null

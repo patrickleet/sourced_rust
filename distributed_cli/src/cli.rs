@@ -335,9 +335,13 @@ pub struct ScaffoldArgs {
     /// Metrics integration to scaffold.
     #[arg(long, value_enum)]
     pub metrics: Option<Metrics>,
-    /// Generate a Helm deploy chart under .gitops/deploy.
+    /// Generate independent local and cloud workload charts under
+    /// .gitops/local and .gitops/deploy.
     #[arg(long)]
     pub gitops: bool,
+    /// Generate an optional test-user chart under .gitops/test-users.
+    #[arg(long)]
+    pub test_users: bool,
     /// Generate a GitOps promotion chart for Argo CD or Flux.
     #[arg(long, value_enum)]
     pub gitops_promote: Option<GitopsPromote>,
@@ -1542,6 +1546,7 @@ fn run_scaffold(args: &ScaffoldArgs) -> Result<(), Box<dyn Error>> {
         events: args.event.clone(),
         distributed_dependency_path,
         gitops: args.gitops,
+        test_users: args.test_users,
         gitops_promote: args.gitops_promote.map(Into::into),
         github,
         github_preview,

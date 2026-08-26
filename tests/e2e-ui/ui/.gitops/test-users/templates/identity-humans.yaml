@@ -1,4 +1,4 @@
-{{- /*
+{{- /* Test-user chart ownership.
   Cluster-shared demo humans (alice / bob / admin).
 
   One set per local control plane — not per worktree. Login names stay plain

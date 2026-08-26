@@ -1,4 +1,3 @@
-{{- if and (not .Values.local) (ne .Values.appRuntime "cluster-dev") (ne .Values.appRuntime "host") }}
 apiVersion: apps/v1
 kind: Deployment
 metadata:
@@ -24,4 +23,3 @@ spec:
           ports:
             - containerPort: {{ .Values.service.targetPort }}
               name: http
-{{- end }}

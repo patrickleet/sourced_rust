@@ -1,4 +1,4 @@
-{{- /*
+{{- /* Test-user chart ownership.
   Worktree OIDC web app.
 
   - projectIdRef → shared Project MR (by name + labels), no live UUID in git

@@ -1,0 +1,6 @@
+apiVersion: pkg.crossplane.io/v1
+kind: Configuration
+metadata:
+  name: hops-ops-psql-stack
+spec:
+  package: ghcr.io/hops-ops/psql-stack:v0.9.1

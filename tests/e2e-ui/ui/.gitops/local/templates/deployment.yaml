@@ -1,4 +1,3 @@
-{{- if eq .Values.appRuntime "cluster-dev" }}
 apiVersion: apps/v1
 kind: Deployment
 metadata:
@@ -13,11 +12,10 @@ spec:
       app.kubernetes.io/name: {{ include "e2e-ui-ui.name" . }}
   template:
     metadata:
+      {{- if .Values.identity.enabled }}
       annotations:
-        hops.ops.com.ai/source-generation: {{ .Values.clusterDev.sourceGeneration | default 0 | quote }}
-        {{- if .Values.identity.enabled }}
         hops.ops.com.ai/oidc-generation: {{ .Values.identity.oidcGeneration | default 0 | quote }}
-        {{- end }}
+      {{- end }}
       labels:
         app.kubernetes.io/name: {{ include "e2e-ui-ui.name" . }}
         hops.ops.com.ai/runtime: cluster-dev
@@ -69,9 +67,9 @@ spec:
               name: http
           env:
             {{- range $k, $v := .Values.env }}
-            {{- if and (eq $k "AUTH_URL") $.Values.namespace }}
+            {{- if eq $k "AUTH_URL" }}
             - name: AUTH_URL
-              value: {{ printf "http://e2e-ui-ui.%s.svc.cluster.local:5180" $.Values.namespace | quote }}
+              value: {{ printf "http://e2e-ui-ui.%s.svc.cluster.local:5180" (include "e2e-ui-ui.releaseNamespace" $) | quote }}
             {{- else if and $v (ne $v "") }}
             - name: {{ $k }}
               value: {{ $v | quote }}
@@ -122,4 +120,3 @@ spec:
           emptyDir: {}
         - name: js-node-modules
           emptyDir: {}
-{{- end }}

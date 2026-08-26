@@ -1,0 +1,31 @@
+{{- if .Values.local }}
+{{- fail ".gitops/promote is cloud-only; local Environments render .gitops/local directly" }}
+{{- end }}
+{{- $environment := required "environment.name is required" .Values.environment.name }}
+{{- $namespace := required "environment.namespace is required" .Values.environment.namespace }}
+{{- $repoURL := required "source.repoURL is required" .Values.source.repoURL }}
+apiVersion: argoproj.io/v1alpha1
+kind: Application
+metadata:
+  name: {{ printf "%s-e2e-ui-ui" $environment }}
+  namespace: {{ .Values.argocd.namespace }}
+spec:
+  project: {{ .Values.argocd.project }}
+  source:
+    repoURL: {{ $repoURL | quote }}
+    targetRevision: {{ .Values.source.targetRevision | quote }}
+    path: tests/e2e-ui/ui/.gitops/deploy
+    helm:
+      valuesObject:
+        local: false
+        preview: {{ .Values.preview }}
+        {{- with .Values.deploy.values }}
+        {{- toYaml . | nindent 8 }}
+        {{- end }}
+  destination:
+    server: https://kubernetes.default.svc
+    namespace: {{ $namespace }}
+  syncPolicy:
+    automated:
+      prune: true
+      selfHeal: true

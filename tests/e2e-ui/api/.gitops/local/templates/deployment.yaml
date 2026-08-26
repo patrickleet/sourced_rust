@@ -1,4 +1,3 @@
-{{- if or (eq .Values.appRuntime "cluster-dev") (and .Values.local (eq .Values.appRuntime "cluster-dev")) }}
 apiVersion: apps/v1
 kind: Deployment
 metadata:
@@ -13,11 +12,10 @@ spec:
       app.kubernetes.io/name: {{ include "e2e-ui-api.name" . }}
   template:
     metadata:
+      {{- if .Values.identity.enabled }}
       annotations:
-        hops.ops.com.ai/source-generation: {{ .Values.clusterDev.sourceGeneration | default 0 | quote }}
-        {{- if .Values.identity.enabled }}
         hops.ops.com.ai/oidc-generation: {{ .Values.identity.oidcGeneration | default 0 | quote }}
-        {{- end }}
+      {{- end }}
       labels:
         app.kubernetes.io/name: {{ include "e2e-ui-api.name" . }}
         hops.ops.com.ai/runtime: cluster-dev
@@ -50,7 +48,16 @@ spec:
               command -v cargo
               rustc --version
               cd {{ .Values.clusterDev.workingDir }}
-              cargo run -p e2e-runner --bin e2e-ui
+              if ! command -v cargo-watch >/dev/null 2>&1; then
+                cargo install cargo-watch --locked
+              fi
+              cargo watch \
+                -w /workspace/tests/e2e-ui \
+                -w /workspace/src \
+                -w /workspace/distributed_cli \
+                -w /workspace/distributed_macros \
+                -w /workspace/Cargo.toml \
+                -x 'run -p e2e-runner --bin e2e-ui'
           {{- else }}
           command:
             {{- toYaml .Values.clusterDev.command | nindent 12 }}
@@ -92,4 +99,3 @@ spec:
           {{- end }}
         - name: cargo-target
           emptyDir: {}
-{{- end }}

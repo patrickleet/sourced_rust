@@ -53,6 +53,7 @@ pub(crate) struct Scaffold {
     pub(crate) query_api: bool,
     pub(crate) tracing: bool,
     pub(crate) gitops: bool,
+    pub(crate) test_users: bool,
     pub(crate) gitops_promote: Option<GitopsPromoteTarget>,
     pub(crate) github: Option<GithubRepo>,
     pub(crate) github_preview: Option<GithubRepo>,
@@ -106,6 +107,7 @@ impl Scaffold {
             query_api: spec.query_api,
             tracing: spec.tracing,
             gitops: spec.gitops,
+            test_users: spec.test_users,
             gitops_promote: spec.gitops_promote,
             github: spec.github,
             github_preview: spec.github_preview,
@@ -162,7 +164,7 @@ impl Scaffold {
             files.push(file("src/read_models/mod.rs", self.read_models_mod_rs()));
         }
 
-        // GitOps charts (.gitops/deploy + optional .gitops/promote) and GitHub
+        // GitOps charts (.gitops/{local,deploy} + optional promote/test-users) and GitHub
         // workflow files (+ promotion charts) — staged in the same project.
         files.extend(self.gitops_files());
         files.extend(self.github_files());
@@ -210,6 +212,7 @@ mod tests {
             events: Vec::new(),
             distributed_dependency_path: "../distributed".to_string(),
             gitops: false,
+            test_users: false,
             gitops_promote: None,
             github: None,
             github_preview: None,
@@ -405,12 +408,40 @@ mod tests {
         s.gitops = true;
         let project = generate_service_scaffold(s).unwrap();
         let paths = paths(&project);
+        assert!(paths.contains(&".gitops/local/Chart.yaml"));
+        assert!(paths.contains(&".gitops/local/templates/deployment.yaml"));
         assert!(paths.contains(&".gitops/deploy/Chart.yaml"));
         assert!(paths.contains(&".gitops/deploy/templates/deployment.yaml"));
         assert!(paths.contains(&".gitops/deploy/templates/service.yaml"));
         assert!(!paths.contains(&".gitops/deploy/templates/servicemonitor.yaml"));
         assert!(!paths.contains(&".gitops/deploy/templates/prometheusrule.yaml"));
         assert!(!paths.iter().any(|p| p.contains("knative")));
+
+        let local_values = contents(&project, ".gitops/local/values.yaml");
+        assert!(local_values.starts_with("local: true\npreview: false\n"));
+        let deploy_values = contents(&project, ".gitops/deploy/values.yaml");
+        assert!(deploy_values.starts_with("local: false\npreview: false\n"));
+        assert!(!local_values.contains("{{ if .Values.local }}"));
+        assert!(!deploy_values.contains("{{ if .Values.local }}"));
+        assert!(!paths.iter().any(|p| p.starts_with(".gitops/promote/")));
+        assert!(!paths.iter().any(|p| p.starts_with(".gitops/test-users/")));
+    }
+
+    #[test]
+    fn test_users_chart_is_opt_in_and_separate_from_workloads() {
+        let mut s = spec("orders");
+        s.gitops = true;
+        s.test_users = true;
+        let project = generate_service_scaffold(s).unwrap();
+        let paths = paths(&project);
+        assert!(paths.contains(&".gitops/test-users/Chart.yaml"));
+        assert!(paths.contains(&".gitops/test-users/values.yaml"));
+        assert!(!paths
+            .iter()
+            .any(|path| path.starts_with(".gitops/local/templates/test")));
+        assert!(!paths
+            .iter()
+            .any(|path| path.starts_with(".gitops/deploy/templates/test")));
     }
 
     #[test]
@@ -652,6 +683,21 @@ mod tests {
         let paths = paths(&project);
         assert!(paths.contains(&".gitops/promote/Chart.yaml"));
         assert!(paths.contains(&".gitops/promote/templates/helmrelease.yaml"));
+    }
+
+    #[test]
+    fn gitops_promote_forwards_only_deploy_values() {
+        let mut s = spec("orders");
+        s.gitops_promote = Some(crate::GitopsPromoteTarget::Argo);
+        let project = generate_service_scaffold(s).unwrap();
+        let values = contents(&project, ".gitops/promote/values.yaml");
+        assert!(values.contains("deploy:\n  values: {}"));
+        let application = contents(&project, ".gitops/promote/templates/application.yaml");
+        assert!(application.contains("path: .gitops/deploy"));
+        assert!(application.contains("with .Values.deploy.values"));
+        assert!(application.contains("toYaml . | nindent 8"));
+        assert!(!application.contains(".Values.source.repoURL | toYaml"));
+        assert!(application.contains("environment.name is required"));
     }
 
     #[test]
