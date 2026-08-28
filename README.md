@@ -1626,15 +1626,44 @@ let loaded = repo
   emit `RelationalReadModel` metadata, row conversion, PKs, indexes, FKs, and an
   adapter-owned version column. Use `#[id]`, `#[index]` / `#[unique]`,
   `#[readmodel(jsonb)]`, and relationship attributes (`has_many` / `belongs_to` /
-  `many_to_many` + `foreign_key` / `through`).
+  `many_to_many` + `foreign_key` / `through` / `target_foreign_key`).
+- **Relationship keys:** `foreign_key` lists columns on the FK-holding table in
+  the other end's PK order (comma-separated, same arity as that PK). GraphQL
+  ANDs those equalities for `has_many` and `belongs_to`, including composite
+  identities. `many_to_many` uses a `through` table that holds each end's full
+  PK (same-named columns, or `foreign_key` / `target_foreign_key` in PK order).
+  A one-column `foreign_key` on a composite PK is an error, not a silent
+  `.first()`.
 - **Writes:** `ReadModelWritePlan` / workspace `upsert` + `commit` (same transaction
   as events when staged on `CommitBatch`).
 - **Internal loads:** PK-anchored includes —
-  `store.workspace().load(...).include(...).one()` (one-level, opt-in).
+  `store.workspace().load(...).include(...).one()` (one-level, opt-in;
+  `has_many` / `belongs_to` only, single-column join). Nested queries go
+  through GraphQL.
 - **Schema lifecycle:** `ReadModelSchemaRegistry` + adapter for migration artifacts
   and startup verification; `distributed schema` / `read_model_catalog()` for SQL.
 - **Non-goals:** public query APIs belong on the GraphQL layer below (not the ORM
   include loader); do not write projections outside the projection path.
+
+```rust,ignore
+#[derive(Clone, Debug, ReadModel)]
+#[readmodel(table = "projects", primary_key = ["workspace_id", "path"])]
+pub struct ProjectView {
+    pub workspace_id: String,
+    pub path: String,
+    #[readmodel(belongs_to = "WorkspaceView", foreign_key = "workspace_id")]
+    pub workspace: Option<WorkspaceView>,
+    #[readmodel(has_many = "ProjectFileView", foreign_key = "workspace_id,path")]
+    pub files: Vec<ProjectFileView>,
+    #[readmodel(
+        many_to_many = "LabelView",
+        through = "project_labels",
+        foreign_key = "workspace_id,path",
+        target_foreign_key = "label_id"
+    )]
+    pub labels: Vec<LabelView>,
+}
+```
 
 ## GraphQL query service
 
@@ -1670,6 +1699,7 @@ distributed = { version = "0.1", features = ["graphql", "postgres"] }
 | In | Out |
 |---|---|
 | `SELECT`-only query surface from `TableSchema` / read models | Table mutations / write-to-projection via GraphQL |
+| Nested `has_many` / `belongs_to` / `many_to_many`, including composite keys | ORM `include()` of m2m or composite direct joins |
 | Role column allowlists + row filters (`claim(...)`) | Full IdP product UI (login pages live in your app / Auth.js) |
 | **First-class OIDC Bearer validation** (JWKS, iss/aud/exp, claim → session) | Assuming raw HTTP microsvc routes authenticate without a proxy or GraphQL edge |
 | SQLite + Postgres dialects | Cross-service federation / remote schemas |
