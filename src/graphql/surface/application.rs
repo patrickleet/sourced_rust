@@ -359,34 +359,55 @@ pub fn surface_for_role(
     })
 }
 
-/// Composite identities are valid for isolated roots. Relationship compilation
-/// still uses a single-column join contract, so reject the topology only when
-/// both ends are reachable on this selected authorization surface. Keeping the
-/// check here makes runtime role schemas and pool-free CLI exports fail at the
-/// same boundary without rejecting unrelated hidden catalog metadata.
+/// Join compilation is still a single-column contract:
+/// - **HasMany**: `child.fk = parent.pk` — parent PK must be one column
+/// - **BelongsTo**: `parent.pk = child.fk` — target PK must be one column
+/// - **ManyToMany**: both ends use their PK as a single join column
+///
+/// A composite-PK model may sit on the *other* side of that join: a workspace
+/// with a single-column PK can `has_many` line-item children whose identity is
+/// `(workspace_id, path)`. Isolated composite roots remain valid. Reject only
+/// when the selected surface would compile a join through a composite identity.
 pub(in crate::graphql::surface) fn validate_selected_composite_relationships(
     models: &BTreeMap<String, SurfaceModel>,
 ) -> Result<(), String> {
-    for model in models.values() {
-        let pk_n = model.primary_key.len();
-        if pk_n <= 1 {
-            continue;
-        }
-        let relationship_topology = !model.relationships.is_empty()
-            || models.values().any(|candidate| {
-                candidate
-                    .relationships
-                    .iter()
-                    .any(|relationship| relationship.target_model == model.model_name)
-            });
-        if relationship_topology {
-            return Err(format!(
-                "model `{}` has a {pk_n}-column primary key and relationship topology; composite-key GraphQL models are supported only as isolated roots until composite relationship keys are implemented",
-                model.model_name
-            ));
+    for source in models.values() {
+        for relationship in &source.relationships {
+            let Some(target) = models.get(&relationship.target_model) else {
+                continue;
+            };
+            if let Some(reason) = composite_join_rejection(
+                source.primary_key.len(),
+                target.primary_key.len(),
+                &relationship.kind,
+            ) {
+                return Err(format!(
+                    "model `{}` relationship `{}` {reason}; composite-key GraphQL models are supported as isolated roots or as has_many children of a single-column parent until composite relationship keys are implemented",
+                    source.model_name, relationship.name
+                ));
+            }
         }
     }
     Ok(())
+}
+
+pub(in crate::graphql::surface) fn composite_join_rejection(
+    source_pk_n: usize,
+    target_pk_n: usize,
+    kind: &RelationshipKind,
+) -> Option<&'static str> {
+    match kind {
+        RelationshipKind::HasMany if source_pk_n != 1 => {
+            Some("has_many join uses the source primary key as one column")
+        }
+        RelationshipKind::BelongsTo if target_pk_n != 1 => {
+            Some("belongs_to join uses the target primary key as one column")
+        }
+        RelationshipKind::ManyToMany if source_pk_n != 1 || target_pk_n != 1 => {
+            Some("many-to-many join uses each end's primary key as one column")
+        }
+        _ => None,
+    }
 }
 
 pub(in crate::graphql::surface) fn validate_role_grants(
@@ -519,9 +540,13 @@ pub(in crate::graphql::surface) fn validate_surface_filter(
                 )
             })?;
 
-            if schema.primary_key.columns.len() > 1 || target.primary_key.columns.len() > 1 {
+            if let Some(reason) = composite_join_rejection(
+                schema.primary_key.columns.len(),
+                target.primary_key.columns.len(),
+                &relationship.kind,
+            ) {
                 return Err(format!(
-                    "row policy for model `{model}` surface `{role}` traverses relationship `{field}` with composite-key topology; composite relationship keys are not implemented"
+                    "row policy for model `{model}` surface `{role}` traverses relationship `{field}` with composite-key topology ({reason}); composite relationship keys are not implemented"
                 ));
             }
 

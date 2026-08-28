@@ -4,7 +4,9 @@ use super::*;
 use crate::graphql::command_contract::{CommandEffects, TypedCommandContract};
 use crate::graphql::commands::TypedCommandInventory;
 use crate::graphql::{GraphqlTypeDef, GraphqlTypeField};
-use crate::table::{ColumnType, PrimaryKey, RelationshipDef, TableColumn, TableKind};
+use crate::table::{
+    ColumnType, PrimaryKey, RelationshipDef, RelationshipKind, TableColumn, TableKind,
+};
 
 fn orders() -> TableSchema {
     TableSchema {
@@ -1531,7 +1533,79 @@ fn pool_free_role_selection_rejects_only_reachable_composite_relationships() {
         ]),
     )
     .unwrap_err();
-    assert!(error.contains("relationship topology"), "{error}");
+    assert!(
+        error.contains("belongs_to join uses the target primary key as one column"),
+        "{error}"
+    );
+}
+
+#[test]
+fn has_many_onto_composite_child_is_selected_on_the_parent() {
+    let parent = TableSchema {
+        model_name: "WorkspaceView".into(),
+        table_name: "workspaces".into(),
+        columns: vec![TableColumn {
+            primary_key: true,
+            ..TableColumn::new("workspace_id", "workspace_id", ColumnType::Text)
+        }],
+        primary_key: PrimaryKey::new(["workspace_id"]),
+        version_column: None,
+        foreign_keys: Vec::new(),
+        indexes: Vec::new(),
+        relationships: vec![RelationshipDef {
+            field_name: "projects".into(),
+            kind: RelationshipKind::HasMany,
+            target_model: "ProjectView".into(),
+            foreign_key: Some("workspace_id".into()),
+            through: None,
+            target_foreign_key: None,
+        }],
+        kind: TableKind::ReadModel,
+    };
+    let child = TableSchema {
+        model_name: "ProjectView".into(),
+        table_name: "projects".into(),
+        columns: vec![
+            TableColumn {
+                primary_key: true,
+                ..TableColumn::new("workspace_id", "workspace_id", ColumnType::Text)
+            },
+            TableColumn {
+                primary_key: true,
+                ..TableColumn::new("path", "path", ColumnType::Text)
+            },
+            TableColumn::new("kind", "kind", ColumnType::Text),
+        ],
+        primary_key: PrimaryKey::new(["workspace_id", "path"]),
+        version_column: None,
+        foreign_keys: Vec::new(),
+        indexes: Vec::new(),
+        relationships: Vec::new(),
+        kind: TableKind::ReadModel,
+    };
+    let full = build_surface(&[parent, child], &SurfaceOptions::sqlite()).unwrap();
+    let selected = surface_for_role(
+        &full,
+        "user",
+        &BTreeMap::from([
+            ("WorkspaceView".into(), RoleGrant::all_columns()),
+            ("ProjectView".into(), RoleGrant::all_columns()),
+        ]),
+    )
+    .expect("single-column parent has_many onto composite child");
+    let projects = selected.models["WorkspaceView"]
+        .relationships
+        .iter()
+        .find(|rel| rel.name == "projects")
+        .expect("projects relationship");
+    assert_eq!(projects.target_model, "ProjectView");
+    assert_eq!(
+        projects.keys,
+        SurfaceRelationshipKeys::Direct {
+            local: vec!["workspace_id".into()],
+            remote: vec!["workspace_id".into()],
+        }
+    );
 }
 
 /// Production path: build_surface → surface_for_role → SDL (gap A10).

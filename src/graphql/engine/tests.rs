@@ -18,7 +18,7 @@ mod client_surface_parity_tests {
         GraphqlInputType, GraphqlOutputType, GraphqlTypeDef, GraphqlTypeField, RoleGrant,
     };
     #[cfg(feature = "sqlite")]
-    use crate::table::RelationshipDef;
+    use crate::table::{RelationshipDef, RelationshipKind};
     use crate::table::{ColumnType, PrimaryKey, TableColumn, TableKind, TableSchema};
 
     fn orders() -> TableSchema {
@@ -2227,58 +2227,182 @@ mod client_surface_parity_tests {
 
     #[cfg(feature = "sqlite")]
     #[tokio::test]
-    async fn composite_key_relationship_topology_is_rejected_in_both_directions() {
-        let cases = [
-            {
-                let mut composite = composite_records();
-                composite.columns.push(TableColumn::new(
-                    "simple_id",
-                    "simple_id",
-                    ColumnType::Text,
-                ));
-                composite.relationships.push(RelationshipDef {
-                    field_name: "simple".into(),
-                    kind: RelationshipKind::BelongsTo,
-                    target_model: "SimpleRecord".into(),
-                    foreign_key: Some("simple_id".into()),
-                    through: None,
-                    target_foreign_key: None,
-                });
-                ("outgoing", composite, simple_records())
-            },
-            {
-                let composite = composite_records();
-                let mut simple = simple_records();
-                simple.relationships.push(RelationshipDef {
-                    field_name: "composite".into(),
-                    kind: RelationshipKind::BelongsTo,
-                    target_model: "CompositeRecord".into(),
-                    foreign_key: Some("tenant_id".into()),
-                    through: None,
-                    target_foreign_key: None,
-                });
-                ("incoming", composite, simple)
-            },
-        ];
-        for (direction, composite, simple) in cases {
-            let pool = sqlx::sqlite::SqlitePoolOptions::new()
-                .connect_lazy("sqlite::memory:")
-                .unwrap();
-            let project = ReadModelCatalog::new("composite-service")
-                .table_schema(composite)
-                .table_schema(simple);
-            let error = GraphqlEngine::from_schema_catalog(&project, pool)
-                .unwrap()
-                .roles(&["admin"])
-                .grant_all("admin")
-                .build()
-                .err()
-                .expect("composite relationship topology must fail");
-            assert!(
-                error.to_string().contains("relationship topology"),
-                "{direction}: {error}"
-            );
+    async fn belongs_to_targeting_composite_identity_is_rejected() {
+        let composite = composite_records();
+        let mut simple = simple_records();
+        simple.relationships.push(RelationshipDef {
+            field_name: "composite".into(),
+            kind: RelationshipKind::BelongsTo,
+            target_model: "CompositeRecord".into(),
+            foreign_key: Some("tenant_id".into()),
+            through: None,
+            target_foreign_key: None,
+        });
+        let pool = sqlx::sqlite::SqlitePoolOptions::new()
+            .connect_lazy("sqlite::memory:")
+            .unwrap();
+        let project = ReadModelCatalog::new("composite-service")
+            .table_schema(composite)
+            .table_schema(simple);
+        let error = GraphqlEngine::from_schema_catalog(&project, pool)
+            .unwrap()
+            .roles(&["admin"])
+            .grant_all("admin")
+            .build()
+            .err()
+            .expect("belongs_to onto a composite primary key must fail");
+        assert!(
+            error
+                .to_string()
+                .contains("belongs_to join uses the target primary key as one column"),
+            "{error}"
+        );
+    }
+
+    #[cfg(feature = "sqlite")]
+    fn workspaces() -> TableSchema {
+        TableSchema {
+            model_name: "WorkspaceView".into(),
+            table_name: "workspaces".into(),
+            columns: vec![TableColumn {
+                primary_key: true,
+                ..TableColumn::new("workspace_id", "workspace_id", ColumnType::Text)
+            }],
+            primary_key: PrimaryKey::new(["workspace_id"]),
+            version_column: None,
+            foreign_keys: Vec::new(),
+            indexes: Vec::new(),
+            relationships: vec![RelationshipDef {
+                field_name: "projects".into(),
+                kind: RelationshipKind::HasMany,
+                target_model: "ProjectView".into(),
+                foreign_key: Some("workspace_id".into()),
+                through: None,
+                target_foreign_key: None,
+            }],
+            kind: TableKind::ReadModel,
         }
+    }
+
+    #[cfg(feature = "sqlite")]
+    fn projects() -> TableSchema {
+        TableSchema {
+            model_name: "ProjectView".into(),
+            table_name: "projects".into(),
+            columns: vec![
+                TableColumn {
+                    primary_key: true,
+                    ..TableColumn::new("workspace_id", "workspace_id", ColumnType::Text)
+                },
+                TableColumn {
+                    primary_key: true,
+                    ..TableColumn::new("path", "path", ColumnType::Text)
+                },
+                TableColumn::new("kind", "kind", ColumnType::Text),
+            ],
+            primary_key: PrimaryKey::new(["workspace_id", "path"]),
+            version_column: None,
+            foreign_keys: Vec::new(),
+            indexes: Vec::new(),
+            relationships: Vec::new(),
+            kind: TableKind::ReadModel,
+        }
+    }
+
+    #[cfg(feature = "sqlite")]
+    #[tokio::test]
+    async fn has_many_lists_composite_child_rows_on_a_single_column_parent() {
+        let pool = sqlx::sqlite::SqlitePoolOptions::new()
+            .max_connections(1)
+            .connect("sqlite::memory:")
+            .await
+            .unwrap();
+        sqlx::query(
+            "CREATE TABLE workspaces (workspace_id TEXT PRIMARY KEY NOT NULL)",
+        )
+        .execute(&pool)
+        .await
+        .unwrap();
+        sqlx::query(
+            "CREATE TABLE projects (\
+                workspace_id TEXT NOT NULL, \
+                path TEXT NOT NULL, \
+                kind TEXT NOT NULL, \
+                PRIMARY KEY (workspace_id, path)\
+            )",
+        )
+        .execute(&pool)
+        .await
+        .unwrap();
+        sqlx::query("INSERT INTO workspaces (workspace_id) VALUES ('acme')")
+            .execute(&pool)
+            .await
+            .unwrap();
+        sqlx::query(
+            "INSERT INTO projects (workspace_id, path, kind) VALUES \
+                ('acme', 'core', 'git'), \
+                ('acme', 'api', 'git')",
+        )
+        .execute(&pool)
+        .await
+        .unwrap();
+
+        let project = ReadModelCatalog::new("workspace-service")
+            .table_schema(workspaces())
+            .table_schema(projects());
+        let engine = GraphqlEngine::from_schema_catalog(&project, pool)
+            .unwrap()
+            .roles(&["admin"])
+            .grant_all("admin")
+            .build()
+            .expect("has_many onto composite child must build");
+        let mut session = Session::new();
+        session.set("x-roles", "admin");
+
+        let nested = engine
+            .execute(
+                &session,
+                Request::new(
+                    r#"{
+                        workspaces {
+                            workspace_id
+                            projects { path kind }
+                        }
+                    }"#,
+                ),
+            )
+            .await;
+        assert!(nested.errors.is_empty(), "{nested:?}");
+        let rows = nested.data.into_json().unwrap();
+        let listed = rows["workspaces"][0]["projects"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .map(|row| row["path"].as_str().unwrap().to_string())
+            .collect::<BTreeSet<_>>();
+        assert_eq!(
+            listed,
+            BTreeSet::from(["api".into(), "core".into()]),
+            "{rows}"
+        );
+
+        let filtered = engine
+            .execute(
+                &session,
+                Request::new(
+                    r#"{
+                        workspaces(where: { projects: { path: { _eq: "core" } } }) {
+                            workspace_id
+                        }
+                    }"#,
+                ),
+            )
+            .await;
+        assert!(filtered.errors.is_empty(), "{filtered:?}");
+        assert_eq!(
+            filtered.data.into_json().unwrap(),
+            serde_json::json!({ "workspaces": [{ "workspace_id": "acme" }] })
+        );
     }
 
     #[cfg(feature = "sqlite")]

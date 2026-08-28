@@ -2,15 +2,16 @@
 //!
 //! # v1 join / PK assumptions
 //!
-//! Relationship SQL assumes **single-column primary keys** and a single
+//! Relationship SQL assumes a **single-column join** and a single
 //! `foreign_key` column per relationship:
 //! - **HasMany**: FK lives on the child -> `child.fk = parent.pk`
+//!   (parent PK is one column; the child may have a composite identity)
 //! - **BelongsTo**: FK lives on the parent -> `child.pk = parent.fk`
+//!   (target PK is one column; the source may have a composite identity)
 //! - **ManyToMany**: through-table holds both FKs; join helpers emit
 //!   through->target ON + through->parent WHERE fragments
 //!
-//! Multi-column PKs/FKs are out of scope until a dedicated policy task lands
-//! (see maintain-3 / maintain-5). Join equality is centralized in
+//! Multi-column *join keys* remain out of scope. Join equality is centralized in
 //! [`join_predicate_direct`] / [`join_predicate_m2m_parent`] /
 //! [`join_predicate_m2m_target`]. Dialect SQL fragments live on [`DialectOps`].
 #![allow(clippy::only_used_in_recursion, clippy::too_many_arguments)]
