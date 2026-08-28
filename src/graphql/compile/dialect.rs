@@ -88,7 +88,12 @@ pub(crate) fn join_predicate_m2m_parent(
     parent_alias: &str,
     parent_pk: &str,
 ) -> String {
-    format!("{through_alias}.\"{source_join_col}\" = {parent_alias}.\"{parent_pk}\"")
+    join_predicate_m2m_pairs(
+        through_alias,
+        parent_alias,
+        &[(source_join_col.to_string(), parent_pk.to_string())],
+    )
+    .expect("single-column m2m parent join")
 }
 
 /// Through-row → target PK ON-clause fragment for m2m joins.
@@ -98,7 +103,30 @@ pub(crate) fn join_predicate_m2m_target(
     child_alias: &str,
     child_pk: &str,
 ) -> String {
-    format!("{through_alias}.\"{target_fk}\" = {child_alias}.\"{child_pk}\"")
+    join_predicate_m2m_pairs(
+        through_alias,
+        child_alias,
+        &[(target_fk.to_string(), child_pk.to_string())],
+    )
+    .expect("single-column m2m target join")
+}
+
+/// AND of `through.col = end.pk` equalities for one m2m side.
+pub(crate) fn join_predicate_m2m_pairs(
+    through_alias: &str,
+    end_alias: &str,
+    pairs: &[(String, String)],
+) -> Result<String, String> {
+    if pairs.is_empty() {
+        return Err("m2m join requires at least one key column".into());
+    }
+    Ok(pairs
+        .iter()
+        .map(|(through_col, end_col)| {
+            format!("{through_alias}.\"{through_col}\" = {end_alias}.\"{end_col}\"")
+        })
+        .collect::<Vec<_>>()
+        .join(" AND "))
 }
 
 #[cfg(test)]
@@ -176,6 +204,18 @@ mod join_predicate_tests {
         assert_eq!(
             join_predicate_m2m_parent("j1", "user_id", "t0", "id"),
             r#"j1."user_id" = t0."id""#
+        );
+        assert_eq!(
+            join_predicate_m2m_pairs(
+                "j1",
+                "t1",
+                &[
+                    ("workspace_id".into(), "workspace_id".into()),
+                    ("path".into(), "path".into()),
+                ]
+            )
+            .unwrap(),
+            r#"j1."workspace_id" = t1."workspace_id" AND j1."path" = t1."path""#
         );
     }
 }

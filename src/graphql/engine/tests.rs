@@ -17,9 +17,9 @@ mod client_surface_parity_tests {
         claim, col, ClientRootOperation, CommandConsistency, DistributedClientSurfaceExport,
         GraphqlInputType, GraphqlOutputType, GraphqlTypeDef, GraphqlTypeField, RoleGrant,
     };
+    use crate::table::{ColumnType, PrimaryKey, TableColumn, TableKind, TableSchema};
     #[cfg(feature = "sqlite")]
     use crate::table::{RelationshipDef, RelationshipKind};
-    use crate::table::{ColumnType, PrimaryKey, TableColumn, TableKind, TableSchema};
 
     fn orders() -> TableSchema {
         TableSchema {
@@ -1960,8 +1960,7 @@ mod client_surface_parity_tests {
         .execute(&pool)
         .await
         .unwrap();
-        let project =
-            ReadModelCatalog::new("composite-service").table_schema(composite_records());
+        let project = ReadModelCatalog::new("composite-service").table_schema(composite_records());
         let engine = GraphqlEngine::from_schema_catalog(&project, pool.clone())
             .unwrap()
             .roles(&["admin"])
@@ -2317,12 +2316,10 @@ mod client_surface_parity_tests {
             .connect("sqlite::memory:")
             .await
             .unwrap();
-        sqlx::query(
-            "CREATE TABLE workspaces (workspace_id TEXT PRIMARY KEY NOT NULL)",
-        )
-        .execute(&pool)
-        .await
-        .unwrap();
+        sqlx::query("CREATE TABLE workspaces (workspace_id TEXT PRIMARY KEY NOT NULL)")
+            .execute(&pool)
+            .await
+            .unwrap();
         sqlx::query(
             "CREATE TABLE projects (\
                 workspace_id TEXT NOT NULL, \
@@ -2406,6 +2403,202 @@ mod client_surface_parity_tests {
     }
 
     #[cfg(feature = "sqlite")]
+    fn labels() -> TableSchema {
+        TableSchema {
+            model_name: "LabelView".into(),
+            table_name: "labels".into(),
+            columns: vec![
+                TableColumn {
+                    primary_key: true,
+                    ..TableColumn::new("label_id", "label_id", ColumnType::Text)
+                },
+                TableColumn::new("name", "name", ColumnType::Text),
+            ],
+            primary_key: PrimaryKey::new(["label_id"]),
+            version_column: None,
+            foreign_keys: Vec::new(),
+            indexes: Vec::new(),
+            relationships: Vec::new(),
+            kind: TableKind::ReadModel,
+        }
+    }
+
+    #[cfg(feature = "sqlite")]
+    fn project_labels() -> TableSchema {
+        TableSchema {
+            model_name: "ProjectLabel".into(),
+            table_name: "project_labels".into(),
+            columns: vec![
+                TableColumn {
+                    primary_key: true,
+                    ..TableColumn::new("workspace_id", "workspace_id", ColumnType::Text)
+                },
+                TableColumn {
+                    primary_key: true,
+                    ..TableColumn::new("path", "path", ColumnType::Text)
+                },
+                TableColumn {
+                    primary_key: true,
+                    ..TableColumn::new("label_id", "label_id", ColumnType::Text)
+                },
+            ],
+            primary_key: PrimaryKey::new(["workspace_id", "path", "label_id"]),
+            version_column: None,
+            foreign_keys: Vec::new(),
+            indexes: Vec::new(),
+            relationships: Vec::new(),
+            kind: TableKind::ReadModel,
+        }
+    }
+
+    #[cfg(feature = "sqlite")]
+    fn projects_with_labels() -> TableSchema {
+        let mut schema = projects();
+        schema.relationships.push(RelationshipDef {
+            field_name: "labels".into(),
+            kind: RelationshipKind::ManyToMany,
+            target_model: "LabelView".into(),
+            foreign_key: Some("workspace_id".into()),
+            through: Some("project_labels".into()),
+            target_foreign_key: Some("label_id".into()),
+        });
+        schema
+    }
+
+    #[cfg(feature = "sqlite")]
+    #[tokio::test]
+    async fn m2m_joins_composite_parent_key_through_the_join_table() {
+        let pool = sqlx::sqlite::SqlitePoolOptions::new()
+            .max_connections(1)
+            .connect("sqlite::memory:")
+            .await
+            .unwrap();
+        sqlx::query(
+            "CREATE TABLE projects (\
+                workspace_id TEXT NOT NULL, \
+                path TEXT NOT NULL, \
+                kind TEXT NOT NULL, \
+                PRIMARY KEY (workspace_id, path)\
+            )",
+        )
+        .execute(&pool)
+        .await
+        .unwrap();
+        sqlx::query(
+            "CREATE TABLE labels (\
+                label_id TEXT PRIMARY KEY NOT NULL, \
+                name TEXT NOT NULL\
+            )",
+        )
+        .execute(&pool)
+        .await
+        .unwrap();
+        sqlx::query(
+            "CREATE TABLE project_labels (\
+                workspace_id TEXT NOT NULL, \
+                path TEXT NOT NULL, \
+                label_id TEXT NOT NULL, \
+                PRIMARY KEY (workspace_id, path, label_id)\
+            )",
+        )
+        .execute(&pool)
+        .await
+        .unwrap();
+        sqlx::query(
+            "INSERT INTO projects (workspace_id, path, kind) VALUES \
+                ('acme', 'core', 'git'), \
+                ('acme', 'api', 'git')",
+        )
+        .execute(&pool)
+        .await
+        .unwrap();
+        sqlx::query(
+            "INSERT INTO labels (label_id, name) VALUES ('rust', 'Rust'), ('svc', 'Service')",
+        )
+        .execute(&pool)
+        .await
+        .unwrap();
+        sqlx::query(
+            "INSERT INTO project_labels (workspace_id, path, label_id) VALUES \
+                ('acme', 'core', 'rust'), \
+                ('acme', 'api', 'svc'), \
+                ('acme', 'api', 'rust')",
+        )
+        .execute(&pool)
+        .await
+        .unwrap();
+
+        let catalog = ReadModelCatalog::new("label-service")
+            .table_schema(projects_with_labels())
+            .table_schema(labels())
+            .table_schema(project_labels());
+        let engine = GraphqlEngine::from_schema_catalog(&catalog, pool)
+            .unwrap()
+            .roles(&["admin"])
+            .grant_all("admin")
+            .build()
+            .expect("m2m from a composite parent must build");
+        let mut session = Session::new();
+        session.set("x-roles", "admin");
+
+        let nested = engine
+            .execute(
+                &session,
+                Request::new(
+                    r#"{
+                        projects {
+                            path
+                            labels { name }
+                        }
+                    }"#,
+                ),
+            )
+            .await;
+        assert!(nested.errors.is_empty(), "{nested:?}");
+        let rows = nested.data.into_json().unwrap();
+        let by_path = rows["projects"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .map(|row| {
+                let names = row["labels"]
+                    .as_array()
+                    .unwrap()
+                    .iter()
+                    .map(|label| label["name"].as_str().unwrap().to_string())
+                    .collect::<BTreeSet<_>>();
+                (row["path"].as_str().unwrap().to_string(), names)
+            })
+            .collect::<BTreeMap<_, _>>();
+        assert_eq!(
+            by_path.get("core").unwrap(),
+            &BTreeSet::from(["Rust".into()])
+        );
+        assert_eq!(
+            by_path.get("api").unwrap(),
+            &BTreeSet::from(["Rust".into(), "Service".into()])
+        );
+
+        let filtered = engine
+            .execute(
+                &session,
+                Request::new(
+                    r#"{
+                        projects(where: { labels: { name: { _eq: "Service" } } }) {
+                            path
+                        }
+                    }"#,
+                ),
+            )
+            .await;
+        assert!(filtered.errors.is_empty(), "{filtered:?}");
+        assert_eq!(
+            filtered.data.into_json().unwrap(),
+            serde_json::json!({ "projects": [{ "path": "api" }] })
+        );
+    }
+
+    #[cfg(feature = "sqlite")]
     fn metrics() -> TableSchema {
         TableSchema {
             model_name: "MetricView".into(),
@@ -2434,8 +2627,7 @@ mod client_surface_parity_tests {
                 let pool = sqlx::sqlite::SqlitePoolOptions::new()
                     .connect_lazy("sqlite::memory:")
                     .unwrap();
-                let project =
-                    ReadModelCatalog::new("metrics-service").table_schema(metrics());
+                let project = ReadModelCatalog::new("metrics-service").table_schema(metrics());
                 let mut builder = GraphqlEngine::from_schema_catalog(&project, pool)
                     .unwrap()
                     .roles(&["restricted"]);
@@ -2510,8 +2702,7 @@ mod client_surface_parity_tests {
             let pool = sqlx::sqlite::SqlitePoolOptions::new()
                 .connect_lazy("sqlite::memory:")
                 .unwrap();
-            let project =
-                ReadModelCatalog::new("metrics-service").table_schema(metrics());
+            let project = ReadModelCatalog::new("metrics-service").table_schema(metrics());
             let mut builder = GraphqlEngine::from_schema_catalog(&project, pool)
                 .unwrap()
                 .roles(&["restricted"]);

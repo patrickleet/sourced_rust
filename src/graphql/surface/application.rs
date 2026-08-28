@@ -359,15 +359,14 @@ pub fn surface_for_role(
     })
 }
 
-/// Join compilation is still a single-column contract:
+/// Direct joins are still a single-column contract:
 /// - **HasMany**: `child.fk = parent.pk` — parent PK must be one column
 /// - **BelongsTo**: `parent.pk = child.fk` — target PK must be one column
-/// - **ManyToMany**: both ends use their PK as a single join column
 ///
-/// A composite-PK model may sit on the *other* side of that join: a workspace
-/// with a single-column PK can `has_many` line-item children whose identity is
-/// `(workspace_id, path)`. Isolated composite roots remain valid. Reject only
-/// when the selected surface would compile a join through a composite identity.
+/// **ManyToMany** goes through a join table. Each end's full primary key is
+/// matched to same-named columns on that table, so composite identities are
+/// valid on either side. Isolated composite roots remain valid. Reject only
+/// when a direct join would compile through a composite identity.
 pub(in crate::graphql::surface) fn validate_selected_composite_relationships(
     models: &BTreeMap<String, SurfaceModel>,
 ) -> Result<(), String> {
@@ -382,7 +381,7 @@ pub(in crate::graphql::surface) fn validate_selected_composite_relationships(
                 &relationship.kind,
             ) {
                 return Err(format!(
-                    "model `{}` relationship `{}` {reason}; composite-key GraphQL models are supported as isolated roots or as has_many children of a single-column parent until composite relationship keys are implemented",
+                    "model `{}` relationship `{}` {reason}; composite-key GraphQL models are supported as isolated roots, as has_many children of a single-column parent, or as many-to-many ends joined through a table that carries the full key",
                     source.model_name, relationship.name
                 ));
             }
@@ -403,10 +402,9 @@ pub(in crate::graphql::surface) fn composite_join_rejection(
         RelationshipKind::BelongsTo if target_pk_n != 1 => {
             Some("belongs_to join uses the target primary key as one column")
         }
-        RelationshipKind::ManyToMany if source_pk_n != 1 || target_pk_n != 1 => {
-            Some("many-to-many join uses each end's primary key as one column")
+        RelationshipKind::HasMany | RelationshipKind::BelongsTo | RelationshipKind::ManyToMany => {
+            None
         }
-        _ => None,
     }
 }
 

@@ -2,16 +2,13 @@ use async_graphql::Value;
 
 use crate::graphql::filter::{CmpOp, FilterExpr};
 use crate::microsvc::Session;
-use crate::table::{resolve_m2m_target_foreign_key, ColumnType, RelationshipKind, TableSchema};
+use crate::table::{ColumnType, RelationshipKind, TableSchema};
 
 use super::super::engine::EngineInner;
 use super::super::permissions::ReadPermission;
 use super::binds::{operand_to_bind, value_to_bind, BindValue};
-use super::dialect::{
-    join_predicate_direct, join_predicate_m2m_parent, join_predicate_m2m_target, placeholder,
-    SqlDialect,
-};
-use super::relationship::column_name_for;
+use super::dialect::{join_predicate_direct, join_predicate_m2m_pairs, placeholder, SqlDialect};
+use super::relationship::{column_name_for, resolve_m2m_join};
 
 pub(super) fn compile_where(
     inner: &EngineInner,
@@ -254,32 +251,11 @@ fn compile_filter_expr(
                         .get(through)
                         .and_then(|m| inner.catalog.get(m))
                         .ok_or_else(|| format!("through `{through}` missing"))?;
-                    let target_fk = resolve_m2m_target_foreign_key(
-                        schema,
-                        rel,
-                        &through_entry.schema,
-                        &target.schema,
-                    )
-                    .map_err(|e| e.to_string())?;
-                    let source_pk = schema
-                        .primary_key
-                        .columns
-                        .first()
-                        .map(|s| s.as_str())
-                        .unwrap_or("id");
-                    let target_pk = target
-                        .schema
-                        .primary_key
-                        .columns
-                        .first()
-                        .map(|s| s.as_str())
-                        .unwrap_or("id");
+                    let join =
+                        resolve_m2m_join(schema, rel, &through_entry.schema, &target.schema)?;
                     let j = format!("j{depth}");
-                    let on_target =
-                        join_predicate_m2m_target(&j, &target_fk, &child_alias, target_pk);
-                    let source_join_col = column_name_for(&through_entry.schema, fk).unwrap_or(fk);
-                    let parent_pred =
-                        join_predicate_m2m_parent(&j, source_join_col, alias, source_pk);
+                    let on_target = join_predicate_m2m_pairs(&j, &child_alias, &join.target)?;
+                    let parent_pred = join_predicate_m2m_pairs(&j, alias, &join.parent)?;
                     Ok(format!(
                         "EXISTS (SELECT 1 FROM \"{through}\" {j} JOIN \"{}\" {child_alias} ON {on_target} WHERE {parent_pred} AND ({inner_pred}))",
                         target.schema.table_name
@@ -505,42 +481,18 @@ fn compile_client_where(
                                 .get(through)
                                 .and_then(|m| inner.catalog.get(m))
                                 .ok_or_else(|| format!("through `{through}` missing"))?;
-                            let target_fk = resolve_m2m_target_foreign_key(
+                            let join = resolve_m2m_join(
                                 schema,
                                 rel,
                                 &through_entry.schema,
                                 &target.schema,
-                            )
-                            .map_err(|e| e.to_string())?;
-                            let source_join_col =
-                                column_name_for(&through_entry.schema, fk).unwrap_or(fk);
-                            let source_pk = schema
-                                .primary_key
-                                .columns
-                                .first()
-                                .map(|s| s.as_str())
-                                .unwrap_or("id");
-                            let target_pk = target
-                                .schema
-                                .primary_key
-                                .columns
-                                .first()
-                                .map(|s| s.as_str())
-                                .unwrap_or("id");
+                            )?;
                             let join_alias = format!("cwj{depth}");
                             tables.push(through.to_string());
-                            let on_target = join_predicate_m2m_target(
-                                &join_alias,
-                                &target_fk,
-                                &child_alias,
-                                target_pk,
-                            );
-                            let parent_pred = join_predicate_m2m_parent(
-                                &join_alias,
-                                source_join_col,
-                                alias,
-                                source_pk,
-                            );
+                            let on_target =
+                                join_predicate_m2m_pairs(&join_alias, &child_alias, &join.target)?;
+                            let parent_pred =
+                                join_predicate_m2m_pairs(&join_alias, alias, &join.parent)?;
                             preds.push(format!(
                                 "EXISTS (SELECT 1 FROM \"{through}\" {join_alias} JOIN \"{}\" {child_alias} ON {on_target} WHERE {parent_pred} AND ({inner_pred}))",
                                 target.schema.table_name

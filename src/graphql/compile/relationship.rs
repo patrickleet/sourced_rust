@@ -4,9 +4,7 @@ use crate::table::{resolve_m2m_target_foreign_key, RelationshipKind, TableSchema
 use super::super::engine::{CatalogEntry, EngineInner};
 use super::super::permissions::ReadPermission;
 use super::binds::BindValue;
-use super::dialect::{
-    join_predicate_direct, join_predicate_m2m_parent, join_predicate_m2m_target, placeholder,
-};
+use super::dialect::{join_predicate_direct, join_predicate_m2m_pairs, placeholder};
 use super::evidence::{QueryEvidenceFieldPlan, QueryEvidenceNode, QueryEvidenceObjectPlan};
 use super::filter::compile_where;
 use super::projection::{
@@ -64,27 +62,16 @@ pub(super) fn compile_relationship_aggregate_subquery(
                 .get(through_name)
                 .and_then(|m| inner.catalog.get(m))
                 .ok_or_else(|| format!("through table `{through_name}` not in catalog"))?;
-            let target_fk =
-                resolve_m2m_target_foreign_key(source, rel, &through_model.schema, &target.schema)
-                    .map_err(|e| e.to_string())?;
-            let source_join_col = column_name_for(&through_model.schema, fk).unwrap_or(fk);
-            let target_pk = target
-                .schema
-                .primary_key
-                .columns
-                .first()
-                .map(|s| s.as_str())
-                .unwrap_or("id");
+            let join = resolve_m2m_join(source, rel, &through_model.schema, &target.schema)?;
             let join_alias = format!("ja{depth}");
             tables.push(through_name.to_string());
-            let on_target =
-                join_predicate_m2m_target(&join_alias, &target_fk, &child_alias, target_pk);
+            let on_target = join_predicate_m2m_pairs(&join_alias, &child_alias, &join.target)?;
             (
                 format!(
                     "\"{}\" {child_alias} JOIN \"{through_name}\" {join_alias} ON {on_target}",
                     target.schema.table_name
                 ),
-                join_predicate_m2m_parent(&join_alias, source_join_col, source_alias, source_pk),
+                join_predicate_m2m_pairs(&join_alias, source_alias, &join.parent)?,
             )
         }
         RelationshipKind::BelongsTo => {
@@ -304,36 +291,16 @@ pub(super) fn compile_relationship_subquery(
                 .get(through_name)
                 .and_then(|m| inner.catalog.get(m))
                 .ok_or_else(|| format!("through table `{through_name}` not in catalog"))?;
-            let target_fk =
-                resolve_m2m_target_foreign_key(source, rel, &through_model.schema, &target.schema)
-                    .map_err(|e| e.to_string())?;
-            let source_join_col = column_name_for(&through_model.schema, fk).unwrap_or(fk);
-            // Source PK for join (single-column assumption with FK fallback).
-            let source_pk = source
-                .primary_key
-                .columns
-                .first()
-                .map(|s| s.as_str())
-                .unwrap_or("id");
-            let target_pk = target
-                .schema
-                .primary_key
-                .columns
-                .first()
-                .map(|s| s.as_str())
-                .unwrap_or("id");
+            let join = resolve_m2m_join(source, rel, &through_model.schema, &target.schema)?;
             tables.push(through_name.to_string());
             return compile_m2m_subquery(
                 inner,
                 session,
                 role,
                 source_alias,
-                source_pk,
+                &join,
                 through_name,
-                source_join_col,
-                &target_fk,
                 &target.schema,
-                target_pk,
                 target_perm,
                 selection,
                 binds,
@@ -415,12 +382,9 @@ fn compile_m2m_subquery(
     session: &Session,
     role: &str,
     source_alias: &str,
-    source_pk: &str,
+    join: &M2mJoin,
     through_name: &str,
-    source_join_col: &str,
-    target_fk: &str,
     target_schema: &TableSchema,
-    target_pk: &str,
     target_perm: &ReadPermission,
     selection: &SelectionNode,
     binds: &mut Vec<BindValue>,
@@ -474,8 +438,8 @@ fn compile_m2m_subquery(
     let lim = placeholder(inner.dialect, binds.len());
     binds.push(BindValue::I64(offset as i64));
     let off = placeholder(inner.dialect, binds.len());
-    let on_target = join_predicate_m2m_target(&j_alias, target_fk, &child_alias, target_pk);
-    let parent_pred = join_predicate_m2m_parent(&j_alias, source_join_col, source_alias, source_pk);
+    let on_target = join_predicate_m2m_pairs(&j_alias, &child_alias, &join.target)?;
+    let parent_pred = join_predicate_m2m_pairs(&j_alias, source_alias, &join.parent)?;
     Ok((
         format!(
             "(SELECT coalesce({json_agg}(obj), {coalesce_empty}) FROM (\n  SELECT {projection} AS obj\n  FROM \"{target_table}\" {child_alias}\n  JOIN \"{through_name}\" {j_alias} ON {on_target}\n  WHERE {parent_pred}\n    AND ({where_extra})\n  {order_sql}\n  LIMIT {lim} OFFSET {off}\n) x)",
@@ -483,6 +447,69 @@ fn compile_m2m_subquery(
         ),
         QueryEvidenceNode::List(Box::new(QueryEvidenceNode::Object(object_evidence))),
     ))
+}
+
+pub(super) struct M2mJoin {
+    pub parent: Vec<(String, String)>,
+    pub target: Vec<(String, String)>,
+}
+
+pub(super) fn resolve_m2m_join(
+    source: &TableSchema,
+    rel: &crate::table::RelationshipDef,
+    through: &TableSchema,
+    target: &TableSchema,
+) -> Result<M2mJoin, String> {
+    let source_fk = rel.foreign_key.as_deref().unwrap_or("");
+    let target_fk = resolve_m2m_target_foreign_key(source, rel, through, target)
+        .map_err(|error| error.to_string())?;
+    Ok(M2mJoin {
+        parent: m2m_key_pairs(&source.primary_key.columns, through, source_fk)?,
+        target: m2m_key_pairs(&target.primary_key.columns, through, &target_fk)?,
+    })
+}
+
+fn m2m_key_pairs(
+    pk_columns: &[String],
+    through: &TableSchema,
+    explicit: &str,
+) -> Result<Vec<(String, String)>, String> {
+    if pk_columns.is_empty() {
+        return Err(format!(
+            "m2m join table `{}` cannot reference a model with an empty primary key",
+            through.table_name
+        ));
+    }
+    if pk_columns.len() == 1 {
+        let through_col = if !explicit.is_empty() {
+            column_name_for(through, explicit).ok_or_else(|| {
+                format!(
+                    "m2m join table `{}` is missing foreign key column `{explicit}`",
+                    through.table_name
+                )
+            })?
+        } else {
+            column_name_for(through, &pk_columns[0]).ok_or_else(|| {
+                format!(
+                    "m2m join table `{}` is missing column `{}` for the related primary key",
+                    through.table_name, pk_columns[0]
+                )
+            })?
+        };
+        return Ok(vec![(through_col.to_string(), pk_columns[0].clone())]);
+    }
+    let mut pairs = Vec::with_capacity(pk_columns.len());
+    for pk in pk_columns {
+        let through_col = column_name_for(through, pk).ok_or_else(|| {
+            format!(
+                "m2m join table `{}` is missing column `{pk}` required by composite key [{}]",
+                through.table_name,
+                pk_columns.join(", ")
+            )
+        })?;
+        pairs.push((through_col.to_string(), pk.clone()));
+    }
+    Ok(pairs)
 }
 
 pub(super) fn column_name_for<'a>(schema: &'a TableSchema, name: &str) -> Option<&'a str> {
