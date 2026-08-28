@@ -316,8 +316,12 @@ pub fn resolve_direct_join_keys(
     let mut pairs = Vec::with_capacity(pk_columns.len());
     for (fk_name, pk_column) in fk_names.iter().zip(pk_columns) {
         let foreign_key_column = column_name_on(fk_schema, fk_name).ok_or_else(|| {
+            let side = match relationship.kind {
+                RelationshipKind::HasMany => "target",
+                _ => "source",
+            };
             TableStoreError::Metadata(format!(
-                "model `{}` relationship `{}` foreign_key `{fk_name}` is not a column on `{}`",
+                "model `{}` relationship `{}` foreign key `{fk_name}` is not a column on {side} model `{}`",
                 source.model_name, relationship.field_name, fk_schema.model_name
             ))
         })?;
