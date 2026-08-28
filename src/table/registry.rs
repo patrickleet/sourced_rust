@@ -153,29 +153,9 @@ impl TableSchemaRegistry {
                 }
             }
 
-            let foreign_key = relationship.foreign_key.as_deref().unwrap_or_default();
             match relationship.kind {
-                RelationshipKind::HasMany => {
-                    if !schema_has_column_or_field(target_schema, foreign_key) {
-                        return Err(TableStoreError::Metadata(format!(
-                            "model `{}` relationship `{}` foreign key `{}` is not a column on target model `{}`",
-                            schema.model_name,
-                            relationship.field_name,
-                            foreign_key,
-                            relationship.target_model
-                        )));
-                    }
-                }
-                RelationshipKind::BelongsTo => {
-                    if !schema_has_column_or_field(schema, foreign_key) {
-                        return Err(TableStoreError::Metadata(format!(
-                            "model `{}` relationship `{}` foreign key `{}` is not a column on source model `{}`",
-                            schema.model_name,
-                            relationship.field_name,
-                            foreign_key,
-                            schema.model_name
-                        )));
-                    }
+                RelationshipKind::HasMany | RelationshipKind::BelongsTo => {
+                    let _ = resolve_direct_join_keys(schema, relationship, target_schema)?;
                 }
                 RelationshipKind::ManyToMany => {
                     let through = relationship.through.as_deref().ok_or_else(|| {
@@ -237,13 +217,6 @@ impl TableSchemaRegistry {
     }
 }
 
-fn schema_has_column_or_field(schema: &TableSchema, name: &str) -> bool {
-    schema
-        .columns
-        .iter()
-        .any(|column| column.column_name == name || column.field_name == name)
-}
-
 /// One through-table column paired with one end-table primary-key column.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct JoinColumnPair {
@@ -268,6 +241,89 @@ impl JoinColumnPair {
 pub struct M2mJoinKeys {
     pub parent: Vec<JoinColumnPair>,
     pub target: Vec<JoinColumnPair>,
+}
+
+/// One foreign-key column paired with one primary-key column for a direct join.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct DirectJoinPair {
+    pub foreign_key_column: String,
+    pub primary_key_column: String,
+}
+
+impl DirectJoinPair {
+    pub fn new(
+        foreign_key_column: impl Into<String>,
+        primary_key_column: impl Into<String>,
+    ) -> Self {
+        Self {
+            foreign_key_column: foreign_key_column.into(),
+            primary_key_column: primary_key_column.into(),
+        }
+    }
+}
+
+/// Resolve `has_many` / `belongs_to` join equalities.
+///
+/// `foreign_key` lists the FK-holding table's columns in the other end's PK
+/// order, same arity as that PK (comma-separated when more than one).
+///
+/// - **HasMany**: FK columns live on the target; PK is the source.
+/// - **BelongsTo**: FK columns live on the source; PK is the target.
+pub fn resolve_direct_join_keys(
+    source: &TableSchema,
+    relationship: &RelationshipDef,
+    target: &TableSchema,
+) -> Result<Vec<DirectJoinPair>, TableStoreError> {
+    let (fk_schema, pk_schema) = match relationship.kind {
+        RelationshipKind::HasMany => (target, source),
+        RelationshipKind::BelongsTo => (source, target),
+        RelationshipKind::ManyToMany => {
+            return Err(TableStoreError::Metadata(format!(
+                "model `{}` relationship `{}` must be has_many or belongs_to to resolve a direct join",
+                source.model_name, relationship.field_name
+            )));
+        }
+    };
+    let pk_columns = &pk_schema.primary_key.columns;
+    if pk_columns.is_empty() {
+        return Err(TableStoreError::Metadata(format!(
+            "model `{}` relationship `{}` cannot join because `{}` has an empty primary key",
+            source.model_name, relationship.field_name, pk_schema.model_name
+        )));
+    }
+    let Some(fk_names) = parse_explicit_through_columns(
+        source,
+        relationship,
+        "foreign_key",
+        relationship.foreign_key.as_deref(),
+    )?
+    else {
+        return Err(TableStoreError::Metadata(format!(
+            "model `{}` relationship `{}` must declare a foreign key",
+            source.model_name, relationship.field_name
+        )));
+    };
+    if fk_names.len() != pk_columns.len() {
+        return Err(TableStoreError::Metadata(format!(
+            "model `{}` relationship `{}` foreign_key lists {} column(s) but `{}` primary key has {}",
+            source.model_name,
+            relationship.field_name,
+            fk_names.len(),
+            pk_schema.model_name,
+            pk_columns.len()
+        )));
+    }
+    let mut pairs = Vec::with_capacity(pk_columns.len());
+    for (fk_name, pk_column) in fk_names.iter().zip(pk_columns) {
+        let foreign_key_column = column_name_on(fk_schema, fk_name).ok_or_else(|| {
+            TableStoreError::Metadata(format!(
+                "model `{}` relationship `{}` foreign_key `{fk_name}` is not a column on `{}`",
+                source.model_name, relationship.field_name, fk_schema.model_name
+            ))
+        })?;
+        pairs.push(DirectJoinPair::new(foreign_key_column, pk_column.clone()));
+    }
+    Ok(pairs)
 }
 
 /// Resolve every through-column ↔ end-PK pair for a many-to-many relationship.
@@ -778,5 +834,107 @@ mod m2m_join_key_tests {
             ]
         );
         assert_eq!(keys.target, vec![JoinColumnPair::new("tag_id", "label_id")]);
+    }
+
+    fn files_rel(foreign_key: &str) -> RelationshipDef {
+        RelationshipDef {
+            field_name: "files".into(),
+            kind: RelationshipKind::HasMany,
+            target_model: "ProjectFileView".into(),
+            foreign_key: Some(foreign_key.into()),
+            through: None,
+            target_foreign_key: None,
+        }
+    }
+
+    fn project_files() -> TableSchema {
+        schema(
+            "ProjectFileView",
+            "project_files",
+            vec![
+                pk_column("workspace_id"),
+                pk_column("path"),
+                pk_column("file_id"),
+            ],
+            &["workspace_id", "path", "file_id"],
+            Vec::new(),
+        )
+    }
+
+    #[test]
+    fn has_many_pairs_composite_parent_key_in_pk_order() {
+        let source = projects(files_rel("workspace_id,path"));
+        let pairs =
+            resolve_direct_join_keys(&source, &source.relationships[0], &project_files()).unwrap();
+        assert_eq!(
+            pairs,
+            vec![
+                DirectJoinPair::new("workspace_id", "workspace_id"),
+                DirectJoinPair::new("path", "path"),
+            ]
+        );
+    }
+
+    #[test]
+    fn belongs_to_pairs_composite_target_key_in_pk_order() {
+        let target = projects(files_rel("workspace_id,path"));
+        let source = schema(
+            "ProjectFileView",
+            "project_files",
+            vec![
+                pk_column("workspace_id"),
+                pk_column("path"),
+                pk_column("file_id"),
+            ],
+            &["workspace_id", "path", "file_id"],
+            vec![RelationshipDef {
+                field_name: "project".into(),
+                kind: RelationshipKind::BelongsTo,
+                target_model: "ProjectView".into(),
+                foreign_key: Some("workspace_id,path".into()),
+                through: None,
+                target_foreign_key: None,
+            }],
+        );
+        let pairs = resolve_direct_join_keys(&source, &source.relationships[0], &target).unwrap();
+        assert_eq!(
+            pairs,
+            vec![
+                DirectJoinPair::new("workspace_id", "workspace_id"),
+                DirectJoinPair::new("path", "path"),
+            ]
+        );
+    }
+
+    #[test]
+    fn partial_direct_foreign_key_does_not_silently_take_the_first_pk_column() {
+        let source = projects(files_rel("workspace_id"));
+        let error = resolve_direct_join_keys(&source, &source.relationships[0], &project_files())
+            .unwrap_err()
+            .to_string();
+        assert!(
+            error.contains("lists 1 column") && error.contains("primary key has 2"),
+            "{error}"
+        );
+    }
+
+    #[test]
+    fn renamed_direct_foreign_key_columns_pair_in_pk_order() {
+        let mut files = project_files();
+        files.columns = vec![
+            pk_column("project_workspace_id"),
+            pk_column("project_path"),
+            pk_column("file_id"),
+        ];
+        files.primary_key = PrimaryKey::new(["project_workspace_id", "project_path", "file_id"]);
+        let source = projects(files_rel("project_workspace_id,project_path"));
+        let pairs = resolve_direct_join_keys(&source, &source.relationships[0], &files).unwrap();
+        assert_eq!(
+            pairs,
+            vec![
+                DirectJoinPair::new("project_workspace_id", "workspace_id"),
+                DirectJoinPair::new("project_path", "path"),
+            ]
+        );
     }
 }

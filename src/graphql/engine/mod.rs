@@ -15,7 +15,10 @@ use sha2::{Digest, Sha256};
 use crate::microsvc::{Service, Session, ROLE_KEY, USER_ID_KEY};
 use crate::read_model::{ReadModelChange, RelationalReadModelIncludes};
 use crate::table::ReadModelCatalog;
-use crate::table::{resolve_m2m_join_keys, ColumnType, RelationshipKind, TableKind, TableSchema};
+use crate::table::{
+    resolve_direct_join_keys, resolve_m2m_join_keys, ColumnType, RelationshipKind, TableKind,
+    TableSchema,
+};
 
 use super::client_manifest::{
     trusted_preset_descriptors, ClientExecutionLimits, ClientManifestError, ClientSurfaceIdentity,

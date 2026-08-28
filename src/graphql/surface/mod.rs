@@ -22,7 +22,10 @@ use super::command_contract::{
 use super::filter::{validate_row_policy_operand_literal, FilterExpr, Operand};
 use crate::projection_protocol::ProjectionModelOwnership;
 use crate::projection_protocol::ProjectionPartitionSpec;
-use crate::table::{resolve_m2m_join_keys, ColumnType, RelationshipKind, TableColumn, TableSchema};
+use crate::table::{
+    resolve_direct_join_keys, resolve_m2m_join_keys, ColumnType, RelationshipKind, TableColumn,
+    TableSchema,
+};
 
 use super::naming::{
     by_pk_field, comparison_exp_name, comparison_op_fields, include_postgres_json_comparison_ops,

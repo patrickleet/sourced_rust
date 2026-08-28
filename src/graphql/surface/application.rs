@@ -359,53 +359,30 @@ pub fn surface_for_role(
     })
 }
 
-/// Direct joins are still a single-column contract:
-/// - **HasMany**: `child.fk = parent.pk` — parent PK must be one column
-/// - **BelongsTo**: `parent.pk = child.fk` — target PK must be one column
-///
-/// **ManyToMany** goes through a join table. Each end's full primary key is
-/// matched to same-named columns on that table, so composite identities are
-/// valid on either side. Isolated composite roots remain valid. Reject only
-/// when a direct join would compile through a composite identity.
+/// Direct and through keys on the selected surface must be paired: one local
+/// column per remote column. Join SQL ANDs those equalities.
 pub(in crate::graphql::surface) fn validate_selected_composite_relationships(
     models: &BTreeMap<String, SurfaceModel>,
 ) -> Result<(), String> {
     for source in models.values() {
         for relationship in &source.relationships {
-            let Some(target) = models.get(&relationship.target_model) else {
-                continue;
+            let unpaired = match &relationship.keys {
+                SurfaceRelationshipKeys::Direct { local, remote }
+                | SurfaceRelationshipKeys::Through { local, remote, .. }
+                | SurfaceRelationshipKeys::ThroughOpaque { local, remote, .. } => {
+                    local.is_empty() || local.len() != remote.len()
+                }
+                SurfaceRelationshipKeys::Embedded => false,
             };
-            if let Some(reason) = composite_join_rejection(
-                source.primary_key.len(),
-                target.primary_key.len(),
-                &relationship.kind,
-            ) {
+            if unpaired {
                 return Err(format!(
-                    "model `{}` relationship `{}` {reason}; composite-key GraphQL models are supported as isolated roots, as has_many children of a single-column parent, or as many-to-many ends joined through a table that carries the full key",
+                    "model `{}` relationship `{}` join keys must be non-empty and paired",
                     source.model_name, relationship.name
                 ));
             }
         }
     }
     Ok(())
-}
-
-pub(in crate::graphql::surface) fn composite_join_rejection(
-    source_pk_n: usize,
-    target_pk_n: usize,
-    kind: &RelationshipKind,
-) -> Option<&'static str> {
-    match kind {
-        RelationshipKind::HasMany if source_pk_n != 1 => {
-            Some("has_many join uses the source primary key as one column")
-        }
-        RelationshipKind::BelongsTo if target_pk_n != 1 => {
-            Some("belongs_to join uses the target primary key as one column")
-        }
-        RelationshipKind::HasMany | RelationshipKind::BelongsTo | RelationshipKind::ManyToMany => {
-            None
-        }
-    }
 }
 
 pub(in crate::graphql::surface) fn validate_role_grants(
@@ -538,14 +515,15 @@ pub(in crate::graphql::surface) fn validate_surface_filter(
                 )
             })?;
 
-            if let Some(reason) = composite_join_rejection(
-                schema.primary_key.columns.len(),
-                target.primary_key.columns.len(),
-                &relationship.kind,
-            ) {
-                return Err(format!(
-                    "row policy for model `{model}` surface `{role}` traverses relationship `{field}` with composite-key topology ({reason}); composite relationship keys are not implemented"
-                ));
+            match relationship.kind {
+                RelationshipKind::HasMany | RelationshipKind::BelongsTo => {
+                    resolve_direct_join_keys(schema, relationship, target).map_err(|error| {
+                        format!(
+                            "row policy for model `{model}` surface `{role}` traverses relationship `{field}`: {error}"
+                        )
+                    })?;
+                }
+                RelationshipKind::ManyToMany => {}
             }
 
             if matches!(relationship.kind, RelationshipKind::ManyToMany) {

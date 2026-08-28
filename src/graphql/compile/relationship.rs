@@ -1,7 +1,6 @@
 use crate::microsvc::Session;
 use crate::table::{
-    column_name_for, has_many_join_columns, resolve_m2m_join_keys, M2mJoinKeys, RelationshipKind,
-    TableSchema,
+    resolve_direct_join_keys, resolve_m2m_join_keys, M2mJoinKeys, RelationshipKind, TableSchema,
 };
 
 use super::super::engine::{CatalogEntry, EngineInner};
@@ -417,15 +416,13 @@ pub(super) fn compile_has_many_join(
     source_alias: &str,
     child_alias: &str,
 ) -> Result<String, String> {
-    let (target_fk, source_pk) =
-        has_many_join_columns(source, rel, target).map_err(|error| error.to_string())?;
-    join_predicate_direct(
+    compile_direct_join(
         RelationshipKind::HasMany,
+        source,
+        rel,
+        target,
         source_alias,
         child_alias,
-        &source_pk,
-        "",
-        &target_fk,
     )
 }
 
@@ -436,39 +433,24 @@ pub(super) fn compile_belongs_to_join(
     source_alias: &str,
     child_alias: &str,
 ) -> Result<String, String> {
-    let fk = rel.foreign_key.as_deref().ok_or_else(|| {
-        format!(
-            "model `{}` relationship `{}` is missing foreign_key",
-            source.model_name, rel.field_name
-        )
-    })?;
-    let fk_col = column_name_for(source, fk).ok_or_else(|| {
-        format!(
-            "relationship `{}` foreign key `{fk}` is not a column on model `{}`",
-            rel.field_name, source.model_name
-        )
-    })?;
-    let target_pk = match target.primary_key.columns.as_slice() {
-        [column] => column.as_str(),
-        [] => {
-            return Err(format!(
-                "belongs_to target `{}` has an empty primary key",
-                target.model_name
-            ))
-        }
-        _ => {
-            return Err(format!(
-                "belongs_to join uses the target primary key as one column; `{}` is composite",
-                target.model_name
-            ))
-        }
-    };
-    join_predicate_direct(
+    compile_direct_join(
         RelationshipKind::BelongsTo,
+        source,
+        rel,
+        target,
         source_alias,
         child_alias,
-        "",
-        target_pk,
-        &fk_col,
     )
+}
+
+fn compile_direct_join(
+    kind: RelationshipKind,
+    source: &TableSchema,
+    rel: &crate::table::RelationshipDef,
+    target: &TableSchema,
+    source_alias: &str,
+    child_alias: &str,
+) -> Result<String, String> {
+    let pairs = resolve_direct_join_keys(source, rel, target).map_err(|error| error.to_string())?;
+    join_predicate_direct(kind, source_alias, child_alias, &pairs)
 }

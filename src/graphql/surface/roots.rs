@@ -149,17 +149,31 @@ pub(in crate::graphql::surface) fn relationship_keys(
     let mut dependencies = vec![source.table_name.clone(), target.table_name.clone()];
     let keys = match relationship.kind {
         RelationshipKind::BelongsTo => {
-            let foreign_key = required_foreign_key(source, relationship)?;
+            let pairs = resolve_direct_join_keys(source, relationship, target)
+                .map_err(|error| error.to_string())?;
             SurfaceRelationshipKeys::Direct {
-                local: vec![canonical_column_name(source, foreign_key, relationship)?],
-                remote: target.primary_key.columns.clone(),
+                local: pairs
+                    .iter()
+                    .map(|pair| pair.foreign_key_column.clone())
+                    .collect(),
+                remote: pairs
+                    .into_iter()
+                    .map(|pair| pair.primary_key_column)
+                    .collect(),
             }
         }
         RelationshipKind::HasMany => {
-            let foreign_key = required_foreign_key(source, relationship)?;
+            let pairs = resolve_direct_join_keys(source, relationship, target)
+                .map_err(|error| error.to_string())?;
             SurfaceRelationshipKeys::Direct {
-                local: source.primary_key.columns.clone(),
-                remote: vec![canonical_column_name(target, foreign_key, relationship)?],
+                local: pairs
+                    .iter()
+                    .map(|pair| pair.primary_key_column.clone())
+                    .collect(),
+                remote: pairs
+                    .into_iter()
+                    .map(|pair| pair.foreign_key_column)
+                    .collect(),
             }
         }
         RelationshipKind::ManyToMany => {
@@ -196,36 +210,6 @@ pub(in crate::graphql::surface) fn relationship_keys(
         }
     };
     Ok((keys, dependencies))
-}
-
-fn required_foreign_key<'a>(
-    source: &TableSchema,
-    relationship: &'a crate::table::RelationshipDef,
-) -> Result<&'a str, String> {
-    relationship.foreign_key.as_deref().ok_or_else(|| {
-        format!(
-            "model `{}` relationship `{}` is missing foreign_key",
-            source.model_name, relationship.field_name
-        )
-    })
-}
-
-pub(in crate::graphql::surface) fn canonical_column_name(
-    schema: &TableSchema,
-    reference: &str,
-    relationship: &crate::table::RelationshipDef,
-) -> Result<String, String> {
-    schema
-        .columns
-        .iter()
-        .find(|column| column.column_name == reference || column.field_name == reference)
-        .map(|column| column.column_name.clone())
-        .ok_or_else(|| {
-            format!(
-                "relationship `{}` key `{reference}` is not a field or column on model `{}`",
-                relationship.field_name, schema.model_name
-            )
-        })
 }
 
 pub(in crate::graphql::surface) fn visible_columns(

@@ -1446,7 +1446,7 @@ fn relationship_keys_canonicalize_rust_field_names_to_graphql_columns() {
 }
 
 #[test]
-fn pool_free_role_selection_rejects_only_reachable_composite_relationships() {
+fn pool_free_surface_rejects_a_partial_composite_belongs_to_key() {
     let composite = TableSchema {
         model_name: "CompositeView".into(),
         table_name: "composites".into(),
@@ -1491,9 +1491,61 @@ fn pool_free_role_selection_rejects_only_reachable_composite_relationships() {
         }],
         kind: TableKind::ReadModel,
     };
-    let full = build_surface(&[simple, composite], &SurfaceOptions::sqlite()).unwrap();
+    let error = build_surface(&[simple, composite], &SurfaceOptions::sqlite()).unwrap_err();
+    assert!(
+        error.contains("lists 1 column") && error.contains("primary key has 2"),
+        "{error}"
+    );
+}
 
-    // Hidden catalog metadata cannot create a false rejection.
+#[test]
+fn belongs_to_onto_composite_identity_is_selected_when_keys_are_paired() {
+    let composite = TableSchema {
+        model_name: "CompositeView".into(),
+        table_name: "composites".into(),
+        columns: vec![
+            TableColumn {
+                primary_key: true,
+                ..TableColumn::new("tenant_id", "tenant_id", ColumnType::Text)
+            },
+            TableColumn {
+                primary_key: true,
+                ..TableColumn::new("record_id", "record_id", ColumnType::Text)
+            },
+        ],
+        primary_key: PrimaryKey::new(["tenant_id", "record_id"]),
+        version_column: None,
+        foreign_keys: Vec::new(),
+        indexes: Vec::new(),
+        relationships: Vec::new(),
+        kind: TableKind::ReadModel,
+    };
+    let simple = TableSchema {
+        model_name: "SimpleView".into(),
+        table_name: "simples".into(),
+        columns: vec![
+            TableColumn {
+                primary_key: true,
+                ..TableColumn::new("simple_id", "simple_id", ColumnType::Text)
+            },
+            TableColumn::new("tenant_id", "tenant_id", ColumnType::Text),
+            TableColumn::new("record_id", "record_id", ColumnType::Text),
+        ],
+        primary_key: PrimaryKey::new(["simple_id"]),
+        version_column: None,
+        foreign_keys: Vec::new(),
+        indexes: Vec::new(),
+        relationships: vec![RelationshipDef {
+            field_name: "composite".into(),
+            kind: RelationshipKind::BelongsTo,
+            target_model: "CompositeView".into(),
+            foreign_key: Some("tenant_id,record_id".into()),
+            through: None,
+            target_foreign_key: None,
+        }],
+        kind: TableKind::ReadModel,
+    };
+    let full = build_surface(&[simple, composite], &SurfaceOptions::sqlite()).unwrap();
     let source_only = surface_for_role(
         &full,
         "source-only",
@@ -1502,29 +1554,7 @@ fn pool_free_role_selection_rejects_only_reachable_composite_relationships() {
     .unwrap();
     assert!(source_only.models["SimpleView"].relationships.is_empty());
 
-    // A server-only policy may legitimately traverse a denied model, but
-    // it must still be rejected when the runtime's current join compiler
-    // cannot represent that composite identity safely.
-    let hidden_policy_error = surface_for_role(
-        &full,
-        "source-policy",
-        &BTreeMap::from([(
-            "SimpleView".into(),
-            RoleGrant::all_columns().rows(super::super::rel(
-                "composite",
-                super::super::col("tenant_id").eq("tenant-a"),
-            )),
-        )]),
-    )
-    .unwrap_err();
-    assert!(
-        hidden_policy_error.contains("composite-key topology"),
-        "{hidden_policy_error}"
-    );
-
-    // Once both models are reachable, pool-free export fails at the same
-    // selected-Surface boundary as runtime engine construction.
-    let error = surface_for_role(
+    let selected = surface_for_role(
         &full,
         "both",
         &BTreeMap::from([
@@ -1532,10 +1562,14 @@ fn pool_free_role_selection_rejects_only_reachable_composite_relationships() {
             ("SimpleView".into(), RoleGrant::all_columns()),
         ]),
     )
-    .unwrap_err();
-    assert!(
-        error.contains("belongs_to join uses the target primary key as one column"),
-        "{error}"
+    .unwrap();
+    let keys = &selected.models["SimpleView"].relationships[0].keys;
+    assert_eq!(
+        keys,
+        &SurfaceRelationshipKeys::Direct {
+            local: vec!["tenant_id".into(), "record_id".into()],
+            remote: vec!["tenant_id".into(), "record_id".into()],
+        }
     );
 }
 
@@ -1604,6 +1638,79 @@ fn has_many_onto_composite_child_is_selected_on_the_parent() {
         SurfaceRelationshipKeys::Direct {
             local: vec!["workspace_id".into()],
             remote: vec!["workspace_id".into()],
+        }
+    );
+}
+
+#[test]
+fn has_many_from_composite_parent_is_selected() {
+    let parent = TableSchema {
+        model_name: "ProjectView".into(),
+        table_name: "projects".into(),
+        columns: vec![
+            TableColumn {
+                primary_key: true,
+                ..TableColumn::new("workspace_id", "workspace_id", ColumnType::Text)
+            },
+            TableColumn {
+                primary_key: true,
+                ..TableColumn::new("path", "path", ColumnType::Text)
+            },
+        ],
+        primary_key: PrimaryKey::new(["workspace_id", "path"]),
+        version_column: None,
+        foreign_keys: Vec::new(),
+        indexes: Vec::new(),
+        relationships: vec![RelationshipDef {
+            field_name: "files".into(),
+            kind: RelationshipKind::HasMany,
+            target_model: "ProjectFileView".into(),
+            foreign_key: Some("workspace_id,path".into()),
+            through: None,
+            target_foreign_key: None,
+        }],
+        kind: TableKind::ReadModel,
+    };
+    let child = TableSchema {
+        model_name: "ProjectFileView".into(),
+        table_name: "project_files".into(),
+        columns: vec![
+            TableColumn {
+                primary_key: true,
+                ..TableColumn::new("workspace_id", "workspace_id", ColumnType::Text)
+            },
+            TableColumn {
+                primary_key: true,
+                ..TableColumn::new("path", "path", ColumnType::Text)
+            },
+            TableColumn {
+                primary_key: true,
+                ..TableColumn::new("file_id", "file_id", ColumnType::Text)
+            },
+        ],
+        primary_key: PrimaryKey::new(["workspace_id", "path", "file_id"]),
+        version_column: None,
+        foreign_keys: Vec::new(),
+        indexes: Vec::new(),
+        relationships: Vec::new(),
+        kind: TableKind::ReadModel,
+    };
+    let full = build_surface(&[parent, child], &SurfaceOptions::sqlite()).unwrap();
+    let selected = surface_for_role(
+        &full,
+        "user",
+        &BTreeMap::from([
+            ("ProjectView".into(), RoleGrant::all_columns()),
+            ("ProjectFileView".into(), RoleGrant::all_columns()),
+        ]),
+    )
+    .expect("composite parent has_many onto child");
+    let files = &selected.models["ProjectView"].relationships[0];
+    assert_eq!(
+        files.keys,
+        SurfaceRelationshipKeys::Direct {
+            local: vec!["workspace_id".into(), "path".into()],
+            remote: vec!["workspace_id".into(), "path".into()],
         }
     );
 }

@@ -4,15 +4,15 @@
 //!
 //! Relationship SQL:
 //! - **HasMany**: FK lives on the child -> `child.fk = parent.pk`
-//!   (parent PK is one column; the child may have a composite identity)
+//!   (`foreign_key` lists child columns in parent-PK order)
 //! - **BelongsTo**: FK lives on the parent -> `child.pk = parent.fk`
-//!   (target PK is one column; the source may have a composite identity)
+//!   (`foreign_key` lists parent columns in target-PK order)
 //! - **ManyToMany**: through-table holds the full primary key of each end
 //!   (same-named columns, or `foreign_key` / `target_foreign_key` listing
 //!   through columns in PK order). Join helpers AND those equalities.
 //!
-//! Multi-column *direct* join keys remain out of scope. Join equality is
-//! centralized in [`join_predicate_direct`] / [`join_predicate_m2m_pairs`].
+//! Join equality is centralized in [`join_predicate_direct`] /
+//! [`join_predicate_m2m_pairs`].
 //! Dialect SQL fragments live on [`DialectOps`].
 #![allow(clippy::only_used_in_recursion, clippy::too_many_arguments)]
 
