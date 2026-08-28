@@ -1499,6 +1499,92 @@ fn pool_free_surface_rejects_a_partial_composite_belongs_to_key() {
 }
 
 #[test]
+fn row_policy_rejects_a_partial_composite_m2m_mapping() {
+    let projects = TableSchema {
+        model_name: "ProjectView".into(),
+        table_name: "projects".into(),
+        columns: vec![
+            TableColumn {
+                primary_key: true,
+                ..TableColumn::new("workspace_id", "workspace_id", ColumnType::Text)
+            },
+            TableColumn {
+                primary_key: true,
+                ..TableColumn::new("path", "path", ColumnType::Text)
+            },
+        ],
+        primary_key: PrimaryKey::new(["workspace_id", "path"]),
+        version_column: None,
+        foreign_keys: Vec::new(),
+        indexes: Vec::new(),
+        relationships: vec![RelationshipDef {
+            field_name: "labels".into(),
+            kind: RelationshipKind::ManyToMany,
+            target_model: "OperationalLabel".into(),
+            foreign_key: Some("workspace_id".into()),
+            through: Some("project_labels".into()),
+            target_foreign_key: Some("label_id".into()),
+        }],
+        kind: TableKind::ReadModel,
+    };
+    let through = TableSchema {
+        model_name: "ProjectLabel".into(),
+        table_name: "project_labels".into(),
+        columns: vec![
+            TableColumn {
+                primary_key: true,
+                ..TableColumn::new("workspace_id", "workspace_id", ColumnType::Text)
+            },
+            TableColumn {
+                primary_key: true,
+                ..TableColumn::new("path", "path", ColumnType::Text)
+            },
+            TableColumn {
+                primary_key: true,
+                ..TableColumn::new("label_id", "label_id", ColumnType::Text)
+            },
+        ],
+        primary_key: PrimaryKey::new(["workspace_id", "path", "label_id"]),
+        version_column: None,
+        foreign_keys: Vec::new(),
+        indexes: Vec::new(),
+        relationships: Vec::new(),
+        kind: TableKind::Operational,
+    };
+    let labels = TableSchema {
+        model_name: "OperationalLabel".into(),
+        table_name: "labels".into(),
+        columns: vec![TableColumn {
+            primary_key: true,
+            ..TableColumn::new("label_id", "label_id", ColumnType::Text)
+        }],
+        primary_key: PrimaryKey::new(["label_id"]),
+        version_column: None,
+        foreign_keys: Vec::new(),
+        indexes: Vec::new(),
+        relationships: Vec::new(),
+        kind: TableKind::Operational,
+    };
+    let full = build_surface(&[projects, through, labels], &SurfaceOptions::sqlite()).unwrap();
+    let error = surface_for_role(
+        &full,
+        "user",
+        &BTreeMap::from([(
+            "ProjectView".into(),
+            RoleGrant::all_columns().rows(super::super::rel(
+                "labels",
+                super::super::col("label_id").eq("rust"),
+            )),
+        )]),
+    )
+    .unwrap_err();
+    assert!(
+        error.contains("lists 1 through column") && error.contains("primary key has 2"),
+        "{error}"
+    );
+}
+
+#[test]
 fn belongs_to_onto_composite_identity_is_selected_when_keys_are_paired() {
     let composite = TableSchema {
         model_name: "CompositeView".into(),

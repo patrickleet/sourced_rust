@@ -488,14 +488,15 @@ async fn has_many_lists_composite_child_rows_on_a_single_column_parent() {
     .execute(&pool)
     .await
     .unwrap();
-    sqlx::query("INSERT INTO workspaces (workspace_id) VALUES ('acme')")
+    sqlx::query("INSERT INTO workspaces (workspace_id) VALUES ('acme'), ('other')")
         .execute(&pool)
         .await
         .unwrap();
     sqlx::query(
         "INSERT INTO projects (workspace_id, path, kind) VALUES \
             ('acme', 'core', 'git'), \
-            ('acme', 'api', 'git')",
+            ('acme', 'api', 'git'), \
+            ('other', 'docs', 'git')",
     )
     .execute(&pool)
     .await
@@ -528,15 +529,28 @@ async fn has_many_lists_composite_child_rows_on_a_single_column_parent() {
         .await;
     assert!(nested.errors.is_empty(), "{nested:?}");
     let rows = nested.data.into_json().unwrap();
-    let listed = rows["workspaces"][0]["projects"]
+    let by_workspace = rows["workspaces"]
         .as_array()
         .unwrap()
         .iter()
-        .map(|row| row["path"].as_str().unwrap().to_string())
-        .collect::<BTreeSet<_>>();
+        .map(|row| {
+            let paths = row["projects"]
+                .as_array()
+                .unwrap()
+                .iter()
+                .map(|project| project["path"].as_str().unwrap().to_string())
+                .collect::<BTreeSet<_>>();
+            (row["workspace_id"].as_str().unwrap().to_string(), paths)
+        })
+        .collect::<BTreeMap<_, _>>();
     assert_eq!(
-        listed,
-        BTreeSet::from(["api".into(), "core".into()]),
+        by_workspace.get("acme").unwrap(),
+        &BTreeSet::from(["api".into(), "core".into()]),
+        "{rows}"
+    );
+    assert_eq!(
+        by_workspace.get("other").unwrap(),
+        &BTreeSet::from(["docs".into()]),
         "{rows}"
     );
 

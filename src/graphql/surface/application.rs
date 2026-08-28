@@ -523,20 +523,23 @@ pub(in crate::graphql::surface) fn validate_surface_filter(
                         )
                     })?;
                 }
-                RelationshipKind::ManyToMany => {}
-            }
-
-            if matches!(relationship.kind, RelationshipKind::ManyToMany) {
-                let through = relationship.through.as_deref().ok_or_else(|| {
-                    format!("rel(`{field}`) many-to-many missing through on `{model}`")
-                })?;
-                if !catalog
-                    .values()
-                    .any(|candidate| candidate.table_name == through)
-                {
-                    return Err(format!(
-                        "rel(`{field}`) through table `{through}` not in catalog"
-                    ));
+                RelationshipKind::ManyToMany => {
+                    let through = relationship.through.as_deref().ok_or_else(|| {
+                        format!("rel(`{field}`) many-to-many missing through on `{model}`")
+                    })?;
+                    let through_schema = catalog
+                        .values()
+                        .find(|candidate| candidate.table_name == through)
+                        .ok_or_else(|| {
+                            format!("rel(`{field}`) through table `{through}` not in catalog")
+                        })?;
+                    resolve_m2m_join_keys(schema, relationship, through_schema, target).map_err(
+                        |error| {
+                            format!(
+                                "row policy for model `{model}` surface `{role}` traverses relationship `{field}`: {error}"
+                            )
+                        },
+                    )?;
                 }
             }
             validate_surface_filter(predicate, target, catalog, &relationship.target_model, role)?;
