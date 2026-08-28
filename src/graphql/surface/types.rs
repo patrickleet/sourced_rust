@@ -149,8 +149,8 @@ pub enum SurfaceRelationshipKeys {
         local: Vec<String>,
         remote: Vec<String>,
         table: String,
-        source_foreign_key: String,
-        target_foreign_key: String,
+        source_foreign_key: Vec<String>,
+        target_foreign_key: Vec<String>,
     },
     /// Source/target identities are authorized, while the operational join
     /// table remains private. The opaque dependency is sufficient to mark

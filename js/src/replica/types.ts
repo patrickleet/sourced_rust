@@ -243,8 +243,8 @@ export type ReplicaRelationshipKeyMapping =
 			readonly local: readonly string[];
 			readonly remote: readonly string[];
 			readonly table: string;
-			readonly sourceForeignKey: string;
-			readonly targetForeignKey: string;
+			readonly sourceForeignKey: readonly string[];
+			readonly targetForeignKey: readonly string[];
 	  }
 	| {
 			readonly kind: 'through_opaque';

@@ -841,11 +841,23 @@ pub(crate) fn validate_key_mapping(
         } => {
             validate_fields(local, remote)?;
             validate_nonempty(table, "relationship through table")?;
-            validate_nonempty(
+            if source_foreign_key.is_empty() || source_foreign_key.len() != local.len() {
+                return Err(ClientCompileError::manifest(
+                    "client.manifest.relationship_keys",
+                    "relationship through source foreign key must list one through column per local key",
+                ));
+            }
+            if target_foreign_key.is_empty() || target_foreign_key.len() != remote.len() {
+                return Err(ClientCompileError::manifest(
+                    "client.manifest.relationship_keys",
+                    "relationship through target foreign key must list one through column per remote key",
+                ));
+            }
+            validate_nonempty_strings(
                 source_foreign_key,
                 "relationship through source foreign key",
             )?;
-            validate_nonempty(
+            validate_nonempty_strings(
                 target_foreign_key,
                 "relationship through target foreign key",
             )

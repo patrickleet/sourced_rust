@@ -792,8 +792,8 @@ test('relationship resolvers receive exact direct, belongs-to, has-many, m2m, an
 				local: Object.freeze(['id']),
 				remote: Object.freeze(['id']),
 				table: 'todo_members',
-				sourceForeignKey: 'todo_id',
-				targetForeignKey: 'user_id'
+				sourceForeignKey: Object.freeze(['todo_id']),
+				targetForeignKey: Object.freeze(['user_id'])
 			}),
 			maintenance: 'local',
 			dependencies: Object.freeze(['todo_members', 'todo_rows', 'user_rows'])

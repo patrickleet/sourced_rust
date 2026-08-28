@@ -1262,8 +1262,8 @@ fn emits_exact_relationship_plans_and_injects_direct_through_and_opaque_keys() {
         "local": ["title"],
         "remote": ["title"],
         "table": "todo_members",
-        "source_foreign_key": "todo_id",
-        "target_foreign_key": "member_id"
+        "source_foreign_key": ["todo_id"],
+        "target_foreign_key": ["member_id"]
     });
     many_to_many["dependencies"] = json!(["todo_members", "todo_rows"]);
 
@@ -1325,8 +1325,8 @@ fn emits_exact_relationship_plans_and_injects_direct_through_and_opaque_keys() {
                     "local": ["title"],
                     "remote": ["title"],
                     "table": "todo_members",
-                    "sourceForeignKey": "todo_id",
-                    "targetForeignKey": "member_id"
+                    "sourceForeignKey": ["todo_id"],
+                    "targetForeignKey": ["member_id"]
                 },
                 "maintenance": "local",
                 "dependencies": ["todo_members", "todo_rows"]

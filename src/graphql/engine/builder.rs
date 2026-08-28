@@ -680,7 +680,7 @@ impl GraphqlEngineBuilder {
                     {
                         if let Some(through_model) = self.by_table.get(through_name) {
                             if let Some(through) = self.catalog.get(through_model) {
-                                resolve_m2m_target_foreign_key(
+                                resolve_m2m_join_keys(
                                     &entry.schema,
                                     rel,
                                     &through.schema,

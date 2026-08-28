@@ -8,8 +8,8 @@
 //! - **BelongsTo**: FK lives on the parent -> `child.pk = parent.fk`
 //!   (target PK is one column; the source may have a composite identity)
 //! - **ManyToMany**: through-table holds the full primary key of each end
-//!   (same-named columns, or `foreign_key` / `target_foreign_key` when the
-//!   end is a single-column identity). Join helpers AND those equalities.
+//!   (same-named columns, or `foreign_key` / `target_foreign_key` listing
+//!   through columns in PK order). Join helpers AND those equalities.
 //!
 //! Multi-column *direct* join keys remain out of scope. Join equality is
 //! centralized in [`join_predicate_direct`] / [`join_predicate_m2m_pairs`].
@@ -33,10 +33,7 @@ pub use projection::{
 };
 
 #[allow(unused_imports)]
-pub(crate) use dialect::{
-    join_predicate_direct, join_predicate_m2m_pairs, join_predicate_m2m_parent,
-    join_predicate_m2m_target,
-};
+pub(crate) use dialect::{join_predicate_direct, join_predicate_m2m_pairs};
 #[allow(unused_imports)]
 pub(crate) use evidence::{ExtractedQueryEvidence, QueryRecordEvidence, QueryResponsePathSegment};
 pub(crate) use projection::cell_row_matches;

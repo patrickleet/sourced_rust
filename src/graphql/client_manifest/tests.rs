@@ -2259,8 +2259,8 @@ fn visible_read_model_join_emits_explicit_local_m2m_plan() {
             local: vec!["team_id".into()],
             remote: vec!["user_id".into()],
             table: "private_team_members".into(),
-            source_foreign_key: "team_id".into(),
-            target_foreign_key: "user_id".into(),
+            source_foreign_key: vec!["team_id".into()],
+            target_foreign_key: vec!["user_id".into()],
         }
     );
     assert_eq!(members.maintenance, ClientRelationshipMaintenance::Local);

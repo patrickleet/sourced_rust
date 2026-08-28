@@ -50,12 +50,14 @@ pub(in crate::graphql::surface) fn sanitize_relationship_identity(
                 } => {
                     let identity_visible = !local.is_empty()
                         && local.len() == remote.len()
+                        && source_foreign_key.len() == local.len()
+                        && target_foreign_key.len() == remote.len()
                         && local.iter().all(|key| source_fields.contains(key))
                         && remote.iter().all(|key| target_fields.contains(key));
                     if identity_visible
                         && !visible_tables.get(table).is_some_and(|fields| {
-                            fields.contains(source_foreign_key)
-                                && fields.contains(target_foreign_key)
+                            source_foreign_key.iter().all(|key| fields.contains(key))
+                                && target_foreign_key.iter().all(|key| fields.contains(key))
                         })
                     {
                         relationship.keys = SurfaceRelationshipKeys::ThroughOpaque {

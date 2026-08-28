@@ -12,12 +12,10 @@ use futures_util::StreamExt;
 use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
 
-use crate::table::ReadModelCatalog;
 use crate::microsvc::{Service, Session, ROLE_KEY, USER_ID_KEY};
 use crate::read_model::{ReadModelChange, RelationalReadModelIncludes};
-use crate::table::{
-    resolve_m2m_target_foreign_key, ColumnType, RelationshipKind, TableKind, TableSchema,
-};
+use crate::table::ReadModelCatalog;
+use crate::table::{resolve_m2m_join_keys, ColumnType, RelationshipKind, TableKind, TableSchema};
 
 use super::client_manifest::{
     trusted_preset_descriptors, ClientExecutionLimits, ClientManifestError, ClientSurfaceIdentity,
@@ -64,6 +62,8 @@ mod public_api;
 mod request;
 mod validation;
 
+#[cfg(all(test, any(feature = "sqlite", feature = "postgres")))]
+mod composite_relationship_tests;
 #[cfg(all(test, any(feature = "sqlite", feature = "postgres")))]
 mod tests;
 
