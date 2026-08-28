@@ -1144,8 +1144,8 @@ const M2M = Object.freeze({
 		local: Object.freeze(['id']),
 		remote: Object.freeze(['id']),
 		table: 'board_cards',
-		sourceForeignKey: 'board_id',
-		targetForeignKey: 'card_id'
+		sourceForeignKey: Object.freeze(['board_id']),
+		targetForeignKey: Object.freeze(['card_id'])
 	}),
 	maintenance: 'local',
 	dependencies: Object.freeze(['board_cards', 'boards', 'cards'])

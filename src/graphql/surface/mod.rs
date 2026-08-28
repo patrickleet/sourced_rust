@@ -23,7 +23,8 @@ use super::filter::{validate_row_policy_operand_literal, FilterExpr, Operand};
 use crate::projection_protocol::ProjectionModelOwnership;
 use crate::projection_protocol::ProjectionPartitionSpec;
 use crate::table::{
-    resolve_m2m_target_foreign_key, ColumnType, RelationshipKind, TableColumn, TableSchema,
+    resolve_direct_join_keys, resolve_m2m_join_keys, ColumnType, RelationshipKind, TableColumn,
+    TableSchema,
 };
 
 use super::naming::{

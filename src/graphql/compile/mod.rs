@@ -2,17 +2,18 @@
 //!
 //! # v1 join / PK assumptions
 //!
-//! Relationship SQL assumes **single-column primary keys** and a single
-//! `foreign_key` column per relationship:
+//! Relationship SQL:
 //! - **HasMany**: FK lives on the child -> `child.fk = parent.pk`
+//!   (`foreign_key` lists child columns in parent-PK order)
 //! - **BelongsTo**: FK lives on the parent -> `child.pk = parent.fk`
-//! - **ManyToMany**: through-table holds both FKs; join helpers emit
-//!   through->target ON + through->parent WHERE fragments
+//!   (`foreign_key` lists parent columns in target-PK order)
+//! - **ManyToMany**: through-table holds the full primary key of each end
+//!   (same-named columns, or `foreign_key` / `target_foreign_key` listing
+//!   through columns in PK order). Join helpers AND those equalities.
 //!
-//! Multi-column PKs/FKs are out of scope until a dedicated policy task lands
-//! (see maintain-3 / maintain-5). Join equality is centralized in
-//! [`join_predicate_direct`] / [`join_predicate_m2m_parent`] /
-//! [`join_predicate_m2m_target`]. Dialect SQL fragments live on [`DialectOps`].
+//! Join equality is centralized in [`join_predicate_direct`] /
+//! [`join_predicate_m2m_pairs`].
+//! Dialect SQL fragments live on [`DialectOps`].
 #![allow(clippy::only_used_in_recursion, clippy::too_many_arguments)]
 
 mod binds;
@@ -32,9 +33,7 @@ pub use projection::{
 };
 
 #[allow(unused_imports)]
-pub(crate) use dialect::{
-    join_predicate_direct, join_predicate_m2m_parent, join_predicate_m2m_target,
-};
+pub(crate) use dialect::{join_predicate_direct, join_predicate_m2m_pairs};
 #[allow(unused_imports)]
 pub(crate) use evidence::{ExtractedQueryEvidence, QueryRecordEvidence, QueryResponsePathSegment};
 pub(crate) use projection::cell_row_matches;

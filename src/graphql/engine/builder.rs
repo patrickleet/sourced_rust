@@ -665,28 +665,35 @@ impl GraphqlEngineBuilder {
         // Name grammar / collisions across exposed models.
         validate_generated_names(&self.catalog)?;
 
-        // m2m resolution for catalog relationships used in permissions/schema.
+        // Join-key resolution for catalog relationships used in permissions/schema.
         for entry in self.catalog.values() {
             for rel in &entry.schema.relationships {
-                if matches!(rel.kind, RelationshipKind::ManyToMany) {
-                    if rel.through.is_none() {
-                        return Err(GraphqlBuildError(format!(
-                            "model `{}` relationship `{}` many-to-many must declare `through`",
-                            entry.schema.model_name, rel.field_name
-                        )));
+                let Some(target) = self.catalog.get(&rel.target_model) else {
+                    continue;
+                };
+                match rel.kind {
+                    RelationshipKind::HasMany | RelationshipKind::BelongsTo => {
+                        resolve_direct_join_keys(&entry.schema, rel, &target.schema)
+                            .map_err(|e| GraphqlBuildError(e.to_string()))?;
                     }
-                    if let (Some(target), Some(through_name)) =
-                        (self.catalog.get(&rel.target_model), rel.through.as_deref())
-                    {
-                        if let Some(through_model) = self.by_table.get(through_name) {
-                            if let Some(through) = self.catalog.get(through_model) {
-                                resolve_m2m_target_foreign_key(
-                                    &entry.schema,
-                                    rel,
-                                    &through.schema,
-                                    &target.schema,
-                                )
-                                .map_err(|e| GraphqlBuildError(e.to_string()))?;
+                    RelationshipKind::ManyToMany => {
+                        if rel.through.is_none() {
+                            return Err(GraphqlBuildError(format!(
+                                "model `{}` relationship `{}` many-to-many must declare `through`",
+                                entry.schema.model_name, rel.field_name
+                            )));
+                        }
+                        if let Some(through_name) = rel.through.as_deref() {
+                            if let Some(through_model) = self.by_table.get(through_name) {
+                                if let Some(through) = self.catalog.get(through_model) {
+                                    resolve_m2m_join_keys(
+                                        &entry.schema,
+                                        rel,
+                                        &through.schema,
+                                        &target.schema,
+                                    )
+                                    .map_err(|e| GraphqlBuildError(e.to_string()))?;
+                                }
                             }
                         }
                     }

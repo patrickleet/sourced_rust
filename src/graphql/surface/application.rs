@@ -359,31 +359,27 @@ pub fn surface_for_role(
     })
 }
 
-/// Composite identities are valid for isolated roots. Relationship compilation
-/// still uses a single-column join contract, so reject the topology only when
-/// both ends are reachable on this selected authorization surface. Keeping the
-/// check here makes runtime role schemas and pool-free CLI exports fail at the
-/// same boundary without rejecting unrelated hidden catalog metadata.
+/// Direct and through keys on the selected surface must be paired: one local
+/// column per remote column. Join SQL ANDs those equalities.
 pub(in crate::graphql::surface) fn validate_selected_composite_relationships(
     models: &BTreeMap<String, SurfaceModel>,
 ) -> Result<(), String> {
-    for model in models.values() {
-        let pk_n = model.primary_key.len();
-        if pk_n <= 1 {
-            continue;
-        }
-        let relationship_topology = !model.relationships.is_empty()
-            || models.values().any(|candidate| {
-                candidate
-                    .relationships
-                    .iter()
-                    .any(|relationship| relationship.target_model == model.model_name)
-            });
-        if relationship_topology {
-            return Err(format!(
-                "model `{}` has a {pk_n}-column primary key and relationship topology; composite-key GraphQL models are supported only as isolated roots until composite relationship keys are implemented",
-                model.model_name
-            ));
+    for source in models.values() {
+        for relationship in &source.relationships {
+            let unpaired = match &relationship.keys {
+                SurfaceRelationshipKeys::Direct { local, remote }
+                | SurfaceRelationshipKeys::Through { local, remote, .. }
+                | SurfaceRelationshipKeys::ThroughOpaque { local, remote, .. } => {
+                    local.is_empty() || local.len() != remote.len()
+                }
+                SurfaceRelationshipKeys::Embedded => false,
+            };
+            if unpaired {
+                return Err(format!(
+                    "model `{}` relationship `{}` join keys must be non-empty and paired",
+                    source.model_name, relationship.name
+                ));
+            }
         }
     }
     Ok(())
@@ -519,23 +515,31 @@ pub(in crate::graphql::surface) fn validate_surface_filter(
                 )
             })?;
 
-            if schema.primary_key.columns.len() > 1 || target.primary_key.columns.len() > 1 {
-                return Err(format!(
-                    "row policy for model `{model}` surface `{role}` traverses relationship `{field}` with composite-key topology; composite relationship keys are not implemented"
-                ));
-            }
-
-            if matches!(relationship.kind, RelationshipKind::ManyToMany) {
-                let through = relationship.through.as_deref().ok_or_else(|| {
-                    format!("rel(`{field}`) many-to-many missing through on `{model}`")
-                })?;
-                if !catalog
-                    .values()
-                    .any(|candidate| candidate.table_name == through)
-                {
-                    return Err(format!(
-                        "rel(`{field}`) through table `{through}` not in catalog"
-                    ));
+            match relationship.kind {
+                RelationshipKind::HasMany | RelationshipKind::BelongsTo => {
+                    resolve_direct_join_keys(schema, relationship, target).map_err(|error| {
+                        format!(
+                            "row policy for model `{model}` surface `{role}` traverses relationship `{field}`: {error}"
+                        )
+                    })?;
+                }
+                RelationshipKind::ManyToMany => {
+                    let through = relationship.through.as_deref().ok_or_else(|| {
+                        format!("rel(`{field}`) many-to-many missing through on `{model}`")
+                    })?;
+                    let through_schema = catalog
+                        .values()
+                        .find(|candidate| candidate.table_name == through)
+                        .ok_or_else(|| {
+                            format!("rel(`{field}`) through table `{through}` not in catalog")
+                        })?;
+                    resolve_m2m_join_keys(schema, relationship, through_schema, target).map_err(
+                        |error| {
+                            format!(
+                                "row policy for model `{model}` surface `{role}` traverses relationship `{field}`: {error}"
+                            )
+                        },
+                    )?;
                 }
             }
             validate_surface_filter(predicate, target, catalog, &relationship.target_model, role)?;

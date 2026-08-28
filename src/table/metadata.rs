@@ -329,15 +329,34 @@ impl TableSchema {
                     self.model_name, relationship.field_name
                 )));
             }
-            if relationship
-                .foreign_key
-                .as_deref()
-                .is_none_or(str::is_empty)
-            {
-                return Err(TableStoreError::Metadata(format!(
-                    "model `{}` relationship `{}` must declare a foreign key",
-                    self.model_name, relationship.field_name
-                )));
+            let foreign_key = relationship.foreign_key.as_deref();
+            match relationship.kind {
+                RelationshipKind::HasMany | RelationshipKind::BelongsTo
+                    if foreign_key.is_none_or(str::is_empty) =>
+                {
+                    return Err(TableStoreError::Metadata(format!(
+                        "model `{}` relationship `{}` must declare a foreign key",
+                        self.model_name, relationship.field_name
+                    )));
+                }
+                RelationshipKind::ManyToMany if foreign_key.is_some_and(str::is_empty) => {
+                    return Err(TableStoreError::Metadata(format!(
+                        "model `{}` relationship `{}` foreign_key must not be empty",
+                        self.model_name, relationship.field_name
+                    )));
+                }
+                RelationshipKind::ManyToMany
+                    if relationship
+                        .target_foreign_key
+                        .as_deref()
+                        .is_some_and(str::is_empty) =>
+                {
+                    return Err(TableStoreError::Metadata(format!(
+                        "model `{}` relationship `{}` target_foreign_key must not be empty",
+                        self.model_name, relationship.field_name
+                    )));
+                }
+                _ => {}
             }
         }
 

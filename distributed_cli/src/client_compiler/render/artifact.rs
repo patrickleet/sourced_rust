@@ -147,9 +147,9 @@ enum ArtifactRelationshipKeyMapping<'a> {
         remote: &'a [String],
         table: &'a str,
         #[serde(rename = "sourceForeignKey")]
-        source_foreign_key: &'a str,
+        source_foreign_key: &'a [String],
         #[serde(rename = "targetForeignKey")]
-        target_foreign_key: &'a str,
+        target_foreign_key: &'a [String],
     },
     ThroughOpaque {
         local: &'a [String],

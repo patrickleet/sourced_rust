@@ -1,12 +1,12 @@
 use crate::microsvc::Session;
-use crate::table::{resolve_m2m_target_foreign_key, RelationshipKind, TableSchema};
+use crate::table::{
+    resolve_direct_join_keys, resolve_m2m_join_keys, M2mJoinKeys, RelationshipKind, TableSchema,
+};
 
 use super::super::engine::{CatalogEntry, EngineInner};
 use super::super::permissions::ReadPermission;
 use super::binds::BindValue;
-use super::dialect::{
-    join_predicate_direct, join_predicate_m2m_parent, join_predicate_m2m_target, placeholder,
-};
+use super::dialect::{join_predicate_direct, join_predicate_m2m_pairs, placeholder};
 use super::evidence::{QueryEvidenceFieldPlan, QueryEvidenceNode, QueryEvidenceObjectPlan};
 use super::filter::compile_where;
 use super::projection::{
@@ -31,29 +31,12 @@ pub(super) fn compile_relationship_aggregate_subquery(
     depth: usize,
 ) -> Result<(String, QueryEvidenceNode), String> {
     let child_alias = format!("ta{depth}");
-    let fk = rel.foreign_key.as_deref().unwrap_or("");
-    let source_pk = source
-        .primary_key
-        .columns
-        .first()
-        .map(|s| s.as_str())
-        .unwrap_or("id");
 
     let (from_sql, join_pred) = match rel.kind {
-        RelationshipKind::HasMany => {
-            let target_fk = column_name_for(&target.schema, fk).unwrap_or(fk);
-            (
-                format!("\"{}\" {child_alias}", target.schema.table_name),
-                join_predicate_direct(
-                    RelationshipKind::HasMany,
-                    source_alias,
-                    &child_alias,
-                    source_pk,
-                    /* child_pk unused for has_many */ "",
-                    target_fk,
-                )?,
-            )
-        }
+        RelationshipKind::HasMany => (
+            format!("\"{}\" {child_alias}", target.schema.table_name),
+            compile_has_many_join(source, rel, &target.schema, source_alias, &child_alias)?,
+        ),
         RelationshipKind::ManyToMany => {
             let through_name = rel
                 .through
@@ -64,27 +47,17 @@ pub(super) fn compile_relationship_aggregate_subquery(
                 .get(through_name)
                 .and_then(|m| inner.catalog.get(m))
                 .ok_or_else(|| format!("through table `{through_name}` not in catalog"))?;
-            let target_fk =
-                resolve_m2m_target_foreign_key(source, rel, &through_model.schema, &target.schema)
-                    .map_err(|e| e.to_string())?;
-            let source_join_col = column_name_for(&through_model.schema, fk).unwrap_or(fk);
-            let target_pk = target
-                .schema
-                .primary_key
-                .columns
-                .first()
-                .map(|s| s.as_str())
-                .unwrap_or("id");
+            let join = resolve_m2m_join_keys(source, rel, &through_model.schema, &target.schema)
+                .map_err(|error| error.to_string())?;
             let join_alias = format!("ja{depth}");
             tables.push(through_name.to_string());
-            let on_target =
-                join_predicate_m2m_target(&join_alias, &target_fk, &child_alias, target_pk);
+            let on_target = join_predicate_m2m_pairs(&join_alias, &child_alias, &join.target)?;
             (
                 format!(
                     "\"{}\" {child_alias} JOIN \"{through_name}\" {join_alias} ON {on_target}",
                     target.schema.table_name
                 ),
-                join_predicate_m2m_parent(&join_alias, source_join_col, source_alias, source_pk),
+                join_predicate_m2m_pairs(&join_alias, source_alias, &join.parent)?,
             )
         }
         RelationshipKind::BelongsTo => {
@@ -260,40 +233,13 @@ pub(super) fn compile_relationship_subquery(
         .and_then(value_as_u64)
         .unwrap_or(0);
 
-    let fk = rel.foreign_key.as_deref().unwrap_or("");
-    let fk_col = column_name_for(source, fk).unwrap_or(fk);
-    let target_fk_col = column_name_for(&target.schema, fk).unwrap_or(fk);
-    let source_pk_col = source
-        .primary_key
-        .columns
-        .first()
-        .map(|s| s.as_str())
-        .unwrap_or("id");
-    let target_pk_col = target
-        .schema
-        .primary_key
-        .columns
-        .first()
-        .map(|s| s.as_str())
-        .unwrap_or("id");
-
     let join_pred = match &rel.kind {
-        RelationshipKind::HasMany => join_predicate_direct(
-            RelationshipKind::HasMany,
-            source_alias,
-            &child_alias,
-            source_pk_col,
-            target_pk_col,
-            target_fk_col,
-        )?,
-        RelationshipKind::BelongsTo => join_predicate_direct(
-            RelationshipKind::BelongsTo,
-            source_alias,
-            &child_alias,
-            source_pk_col,
-            target_pk_col,
-            fk_col,
-        )?,
+        RelationshipKind::HasMany => {
+            compile_has_many_join(source, rel, &target.schema, source_alias, &child_alias)?
+        }
+        RelationshipKind::BelongsTo => {
+            compile_belongs_to_join(source, rel, &target.schema, source_alias, &child_alias)?
+        }
         RelationshipKind::ManyToMany => {
             let through_name = rel
                 .through
@@ -304,36 +250,17 @@ pub(super) fn compile_relationship_subquery(
                 .get(through_name)
                 .and_then(|m| inner.catalog.get(m))
                 .ok_or_else(|| format!("through table `{through_name}` not in catalog"))?;
-            let target_fk =
-                resolve_m2m_target_foreign_key(source, rel, &through_model.schema, &target.schema)
-                    .map_err(|e| e.to_string())?;
-            let source_join_col = column_name_for(&through_model.schema, fk).unwrap_or(fk);
-            // Source PK for join (single-column assumption with FK fallback).
-            let source_pk = source
-                .primary_key
-                .columns
-                .first()
-                .map(|s| s.as_str())
-                .unwrap_or("id");
-            let target_pk = target
-                .schema
-                .primary_key
-                .columns
-                .first()
-                .map(|s| s.as_str())
-                .unwrap_or("id");
+            let join = resolve_m2m_join_keys(source, rel, &through_model.schema, &target.schema)
+                .map_err(|error| error.to_string())?;
             tables.push(through_name.to_string());
             return compile_m2m_subquery(
                 inner,
                 session,
                 role,
                 source_alias,
-                source_pk,
+                &join,
                 through_name,
-                source_join_col,
-                &target_fk,
                 &target.schema,
-                target_pk,
                 target_perm,
                 selection,
                 binds,
@@ -415,12 +342,9 @@ fn compile_m2m_subquery(
     session: &Session,
     role: &str,
     source_alias: &str,
-    source_pk: &str,
+    join: &M2mJoinKeys,
     through_name: &str,
-    source_join_col: &str,
-    target_fk: &str,
     target_schema: &TableSchema,
-    target_pk: &str,
     target_perm: &ReadPermission,
     selection: &SelectionNode,
     binds: &mut Vec<BindValue>,
@@ -474,8 +398,8 @@ fn compile_m2m_subquery(
     let lim = placeholder(inner.dialect, binds.len());
     binds.push(BindValue::I64(offset as i64));
     let off = placeholder(inner.dialect, binds.len());
-    let on_target = join_predicate_m2m_target(&j_alias, target_fk, &child_alias, target_pk);
-    let parent_pred = join_predicate_m2m_parent(&j_alias, source_join_col, source_alias, source_pk);
+    let on_target = join_predicate_m2m_pairs(&j_alias, &child_alias, &join.target)?;
+    let parent_pred = join_predicate_m2m_pairs(&j_alias, source_alias, &join.parent)?;
     Ok((
         format!(
             "(SELECT coalesce({json_agg}(obj), {coalesce_empty}) FROM (\n  SELECT {projection} AS obj\n  FROM \"{target_table}\" {child_alias}\n  JOIN \"{through_name}\" {j_alias} ON {on_target}\n  WHERE {parent_pred}\n    AND ({where_extra})\n  {order_sql}\n  LIMIT {lim} OFFSET {off}\n) x)",
@@ -485,12 +409,48 @@ fn compile_m2m_subquery(
     ))
 }
 
-pub(super) fn column_name_for<'a>(schema: &'a TableSchema, name: &str) -> Option<&'a str> {
-    schema.columns.iter().find_map(|c| {
-        if c.column_name == name || c.field_name == name {
-            Some(c.column_name.as_str())
-        } else {
-            None
-        }
-    })
+pub(super) fn compile_has_many_join(
+    source: &TableSchema,
+    rel: &crate::table::RelationshipDef,
+    target: &TableSchema,
+    source_alias: &str,
+    child_alias: &str,
+) -> Result<String, String> {
+    compile_direct_join(
+        RelationshipKind::HasMany,
+        source,
+        rel,
+        target,
+        source_alias,
+        child_alias,
+    )
+}
+
+pub(super) fn compile_belongs_to_join(
+    source: &TableSchema,
+    rel: &crate::table::RelationshipDef,
+    target: &TableSchema,
+    source_alias: &str,
+    child_alias: &str,
+) -> Result<String, String> {
+    compile_direct_join(
+        RelationshipKind::BelongsTo,
+        source,
+        rel,
+        target,
+        source_alias,
+        child_alias,
+    )
+}
+
+fn compile_direct_join(
+    kind: RelationshipKind,
+    source: &TableSchema,
+    rel: &crate::table::RelationshipDef,
+    target: &TableSchema,
+    source_alias: &str,
+    child_alias: &str,
+) -> Result<String, String> {
+    let pairs = resolve_direct_join_keys(source, rel, target).map_err(|error| error.to_string())?;
+    join_predicate_direct(kind, source_alias, child_alias, &pairs)
 }

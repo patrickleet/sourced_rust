@@ -54,7 +54,9 @@ pub(crate) struct ManifestComplexityWeights {
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(tag = "kind", rename_all = "snake_case", deny_unknown_fields)]
 pub(crate) enum ManifestSurface {
-    Role { name: String },
+    Role {
+        name: String,
+    },
     Application {
         name: String,
         eligible_roles: Vec<String>,
@@ -322,8 +324,8 @@ pub(crate) enum ManifestRelationshipKeyMapping {
         local: Vec<String>,
         remote: Vec<String>,
         table: String,
-        source_foreign_key: String,
-        target_foreign_key: String,
+        source_foreign_key: Vec<String>,
+        target_foreign_key: Vec<String>,
     },
     ThroughOpaque {
         local: Vec<String>,

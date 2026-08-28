@@ -298,8 +298,8 @@ pub enum RelationshipKeyMapping {
         local: Vec<String>,
         remote: Vec<String>,
         table: String,
-        source_foreign_key: String,
-        target_foreign_key: String,
+        source_foreign_key: Vec<String>,
+        target_foreign_key: Vec<String>,
     },
     ThroughOpaque {
         local: Vec<String>,

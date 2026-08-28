@@ -872,12 +872,16 @@ export function relationshipKeyMapping(
 			value: Object.freeze({ kind: 'direct' as const, local, remote })
 		};
 	}
+	const sourceForeignKey = uniqueStringList(value.sourceForeignKey);
+	const targetForeignKey = uniqueStringList(value.targetForeignKey);
 	if (
 		value.kind === 'through' &&
 		isName(value.table) &&
 		dependencies.includes(value.table) &&
-		isName(value.sourceForeignKey) &&
-		isName(value.targetForeignKey)
+		sourceForeignKey !== undefined &&
+		targetForeignKey !== undefined &&
+		sourceForeignKey.length === local.length &&
+		targetForeignKey.length === remote.length
 	) {
 		return {
 			value: Object.freeze({
@@ -885,8 +889,8 @@ export function relationshipKeyMapping(
 				local,
 				remote,
 				table: value.table,
-				sourceForeignKey: value.sourceForeignKey,
-				targetForeignKey: value.targetForeignKey
+				sourceForeignKey,
+				targetForeignKey
 			})
 		};
 	}

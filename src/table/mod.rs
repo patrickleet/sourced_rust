@@ -31,7 +31,8 @@ pub use mutation::{
 };
 pub use plan::{TableAdapterCapabilities, TableCommitOutcome, TableWritePlan};
 pub use registry::{
-    resolve_m2m_target_foreign_key, TableMigrationArtifact, TableSchemaAdapter,
+    resolve_direct_join_keys, resolve_m2m_join_keys, DirectJoinPair, JoinColumnPair, M2mJoinKeys,
+    TableMigrationArtifact, TableSchemaAdapter,
     TableSchemaAdapterCapabilities, TableSchemaBootstrap, TableSchemaIssue, TableSchemaIssueKind,
     TableSchemaRegistry, TableSchemaVerification,
 };

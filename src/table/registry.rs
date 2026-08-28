@@ -153,29 +153,9 @@ impl TableSchemaRegistry {
                 }
             }
 
-            let foreign_key = relationship.foreign_key.as_deref().unwrap_or_default();
             match relationship.kind {
-                RelationshipKind::HasMany => {
-                    if !schema_has_column_or_field(target_schema, foreign_key) {
-                        return Err(TableStoreError::Metadata(format!(
-                            "model `{}` relationship `{}` foreign key `{}` is not a column on target model `{}`",
-                            schema.model_name,
-                            relationship.field_name,
-                            foreign_key,
-                            relationship.target_model
-                        )));
-                    }
-                }
-                RelationshipKind::BelongsTo => {
-                    if !schema_has_column_or_field(schema, foreign_key) {
-                        return Err(TableStoreError::Metadata(format!(
-                            "model `{}` relationship `{}` foreign key `{}` is not a column on source model `{}`",
-                            schema.model_name,
-                            relationship.field_name,
-                            foreign_key,
-                            schema.model_name
-                        )));
-                    }
+                RelationshipKind::HasMany | RelationshipKind::BelongsTo => {
+                    let _ = resolve_direct_join_keys(schema, relationship, target_schema)?;
                 }
                 RelationshipKind::ManyToMany => {
                     let through = relationship.through.as_deref().ok_or_else(|| {
@@ -190,30 +170,8 @@ impl TableSchemaRegistry {
                             schema.model_name, relationship.field_name, through
                         ))
                     })?;
-                    if !schema_has_column_or_field(through_schema, foreign_key) {
-                        return Err(TableStoreError::Metadata(format!(
-                            "model `{}` relationship `{}` foreign key `{}` is not a column on join table `{}`",
-                            schema.model_name,
-                            relationship.field_name,
-                            foreign_key,
-                            through
-                        )));
-                    }
-                    let target_fk = resolve_m2m_target_foreign_key(
-                        schema,
-                        relationship,
-                        through_schema,
-                        target_schema,
-                    )?;
-                    if !schema_has_column_or_field(through_schema, &target_fk) {
-                        return Err(TableStoreError::Metadata(format!(
-                            "model `{}` relationship `{}` target_foreign_key `{}` is not a column on join table `{}`",
-                            schema.model_name,
-                            relationship.field_name,
-                            target_fk,
-                            through
-                        )));
-                    }
+                    let _ =
+                        resolve_m2m_join_keys(schema, relationship, through_schema, target_schema)?;
                 }
             }
         }
@@ -259,68 +217,291 @@ impl TableSchemaRegistry {
     }
 }
 
-fn schema_has_column_or_field(schema: &TableSchema, name: &str) -> bool {
-    schema
-        .columns
-        .iter()
-        .any(|column| column.column_name == name || column.field_name == name)
+/// One through-table column paired with one end-table primary-key column.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct JoinColumnPair {
+    pub through_column: String,
+    pub end_column: String,
 }
 
-/// Resolve the join-table column that references the target model for m2m.
+impl JoinColumnPair {
+    pub fn new(through_column: impl Into<String>, end_column: impl Into<String>) -> Self {
+        Self {
+            through_column: through_column.into(),
+            end_column: end_column.into(),
+        }
+    }
+}
+
+/// Through-table join keys for both ends of a many-to-many relationship.
 ///
-/// When `target_foreign_key` is set, validates non-empty and returns it.
-/// Otherwise infers the unique join column whose FK targets the target table,
-/// excluding the source-side `foreign_key` column from candidacy.
-pub fn resolve_m2m_target_foreign_key(
+/// `parent` pairs through columns with the source model's primary key.
+/// `target` pairs through columns with the target model's primary key.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct M2mJoinKeys {
+    pub parent: Vec<JoinColumnPair>,
+    pub target: Vec<JoinColumnPair>,
+}
+
+/// One foreign-key column paired with one primary-key column for a direct join.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct DirectJoinPair {
+    pub foreign_key_column: String,
+    pub primary_key_column: String,
+}
+
+impl DirectJoinPair {
+    pub fn new(
+        foreign_key_column: impl Into<String>,
+        primary_key_column: impl Into<String>,
+    ) -> Self {
+        Self {
+            foreign_key_column: foreign_key_column.into(),
+            primary_key_column: primary_key_column.into(),
+        }
+    }
+}
+
+/// Resolve `has_many` / `belongs_to` join equalities.
+///
+/// `foreign_key` lists the FK-holding table's columns in the other end's PK
+/// order, same arity as that PK (comma-separated when more than one).
+///
+/// - **HasMany**: FK columns live on the target; PK is the source.
+/// - **BelongsTo**: FK columns live on the source; PK is the target.
+pub fn resolve_direct_join_keys(
+    source: &TableSchema,
+    relationship: &RelationshipDef,
+    target: &TableSchema,
+) -> Result<Vec<DirectJoinPair>, TableStoreError> {
+    let (fk_schema, pk_schema) = match relationship.kind {
+        RelationshipKind::HasMany => (target, source),
+        RelationshipKind::BelongsTo => (source, target),
+        RelationshipKind::ManyToMany => {
+            return Err(TableStoreError::Metadata(format!(
+                "model `{}` relationship `{}` must be has_many or belongs_to to resolve a direct join",
+                source.model_name, relationship.field_name
+            )));
+        }
+    };
+    let pk_columns = &pk_schema.primary_key.columns;
+    if pk_columns.is_empty() {
+        return Err(TableStoreError::Metadata(format!(
+            "model `{}` relationship `{}` cannot join because `{}` has an empty primary key",
+            source.model_name, relationship.field_name, pk_schema.model_name
+        )));
+    }
+    let Some(fk_names) = parse_explicit_through_columns(
+        source,
+        relationship,
+        "foreign_key",
+        relationship.foreign_key.as_deref(),
+    )?
+    else {
+        return Err(TableStoreError::Metadata(format!(
+            "model `{}` relationship `{}` must declare a foreign key",
+            source.model_name, relationship.field_name
+        )));
+    };
+    if fk_names.len() != pk_columns.len() {
+        return Err(TableStoreError::Metadata(format!(
+            "model `{}` relationship `{}` foreign_key lists {} column(s) but `{}` primary key has {}",
+            source.model_name,
+            relationship.field_name,
+            fk_names.len(),
+            pk_schema.model_name,
+            pk_columns.len()
+        )));
+    }
+    let mut pairs = Vec::with_capacity(pk_columns.len());
+    for (fk_name, pk_column) in fk_names.iter().zip(pk_columns) {
+        let foreign_key_column = column_name_on(fk_schema, fk_name).ok_or_else(|| {
+            let side = match relationship.kind {
+                RelationshipKind::HasMany => "target",
+                _ => "source",
+            };
+            TableStoreError::Metadata(format!(
+                "model `{}` relationship `{}` foreign key `{fk_name}` is not a column on {side} model `{}`",
+                source.model_name, relationship.field_name, fk_schema.model_name
+            ))
+        })?;
+        pairs.push(DirectJoinPair::new(foreign_key_column, pk_column.clone()));
+    }
+    Ok(pairs)
+}
+
+/// Resolve every through-column ↔ end-PK pair for a many-to-many relationship.
+///
+/// Through columns are either:
+/// - the end's primary-key column names (present on the join table), or
+/// - `foreign_key` / `target_foreign_key` listing through columns in PK order,
+///   same arity as that end's primary key (comma-separated when more than one).
+///
+/// When those are absent, a unique through-column foreign-key reference to each
+/// PK column is accepted. Compile SQL must not invent a second pairing.
+pub fn resolve_m2m_join_keys(
     source: &TableSchema,
     relationship: &RelationshipDef,
     through_schema: &TableSchema,
     target_schema: &TableSchema,
-) -> Result<String, TableStoreError> {
-    if let Some(explicit) = relationship.target_foreign_key.as_deref() {
-        if explicit.is_empty() {
+) -> Result<M2mJoinKeys, TableStoreError> {
+    if !matches!(relationship.kind, RelationshipKind::ManyToMany) {
+        return Err(TableStoreError::Metadata(format!(
+            "model `{}` relationship `{}` must be many-to-many to resolve join keys",
+            source.model_name, relationship.field_name
+        )));
+    }
+    Ok(M2mJoinKeys {
+        parent: m2m_key_pairs(
+            source,
+            relationship,
+            through_schema,
+            source,
+            "foreign_key",
+            relationship.foreign_key.as_deref(),
+        )?,
+        target: m2m_key_pairs(
+            source,
+            relationship,
+            through_schema,
+            target_schema,
+            "target_foreign_key",
+            relationship.target_foreign_key.as_deref(),
+        )?,
+    })
+}
+
+fn m2m_key_pairs(
+    source: &TableSchema,
+    relationship: &RelationshipDef,
+    through: &TableSchema,
+    end: &TableSchema,
+    field: &str,
+    explicit: Option<&str>,
+) -> Result<Vec<JoinColumnPair>, TableStoreError> {
+    let pk_columns = &end.primary_key.columns;
+    if pk_columns.is_empty() {
+        return Err(TableStoreError::Metadata(format!(
+            "model `{}` relationship `{}` cannot join through `{}` because `{}` has an empty primary key",
+            source.model_name, relationship.field_name, through.table_name, end.model_name
+        )));
+    }
+    if let Some(through_names) =
+        parse_explicit_through_columns(source, relationship, field, explicit)?
+    {
+        if through_names.len() != pk_columns.len() {
             return Err(TableStoreError::Metadata(format!(
-                "model `{}` relationship `{}` target_foreign_key must not be empty",
+                "model `{}` relationship `{}` {field} lists {} through column(s) but `{}` primary key has {}",
+                source.model_name,
+                relationship.field_name,
+                through_names.len(),
+                end.model_name,
+                pk_columns.len()
+            )));
+        }
+        let mut pairs = Vec::with_capacity(pk_columns.len());
+        for (through_name, end_column) in through_names.iter().zip(pk_columns) {
+            let through_column = column_name_on(through, through_name).ok_or_else(|| {
+                TableStoreError::Metadata(format!(
+                    "model `{}` relationship `{}` {field} `{through_name}` is not a column on join table `{}`",
+                    source.model_name, relationship.field_name, through.table_name
+                ))
+            })?;
+            pairs.push(JoinColumnPair::new(through_column, end_column.clone()));
+        }
+        return Ok(pairs);
+    }
+
+    let mut pairs = Vec::with_capacity(pk_columns.len());
+    let mut missing = Vec::new();
+    for end_column in pk_columns {
+        match column_name_on(through, end_column) {
+            Some(through_column) => {
+                pairs.push(JoinColumnPair::new(through_column, end_column.clone()));
+            }
+            None => missing.push(end_column.as_str()),
+        }
+    }
+    if missing.is_empty() {
+        return Ok(pairs);
+    }
+    if let Some(inferred) = infer_m2m_pairs_from_foreign_keys(through, end) {
+        return Ok(inferred);
+    }
+    Err(TableStoreError::Metadata(format!(
+        "model `{}` relationship `{}` cannot resolve {field} on join table `{}` for `{}` primary key [{}] \
+         (missing same-named through columns: {}); declare `{field}` as a PK-order through-column list",
+        source.model_name,
+        relationship.field_name,
+        through.table_name,
+        end.model_name,
+        pk_columns.join(", "),
+        missing.join(", ")
+    )))
+}
+
+fn parse_explicit_through_columns(
+    source: &TableSchema,
+    relationship: &RelationshipDef,
+    field: &str,
+    value: Option<&str>,
+) -> Result<Option<Vec<String>>, TableStoreError> {
+    let Some(raw) = value else {
+        return Ok(None);
+    };
+    if raw.trim().is_empty() {
+        return Err(TableStoreError::Metadata(format!(
+            "model `{}` relationship `{}` {field} must not be empty",
+            source.model_name, relationship.field_name
+        )));
+    }
+    let mut columns = Vec::new();
+    for part in raw.split(',') {
+        let name = part.trim();
+        if name.is_empty() {
+            return Err(TableStoreError::Metadata(format!(
+                "model `{}` relationship `{}` {field} lists an empty through column",
                 source.model_name, relationship.field_name
             )));
         }
-        return Ok(explicit.to_string());
+        columns.push(name.to_string());
     }
+    Ok(Some(columns))
+}
 
-    let source_fk = relationship.foreign_key.as_deref().unwrap_or_default();
-    let candidates: Vec<&str> = through_schema
-        .columns
-        .iter()
-        .filter(|column| {
-            column.column_name != source_fk
-                && column.field_name != source_fk
-                && column
+fn infer_m2m_pairs_from_foreign_keys(
+    through: &TableSchema,
+    end: &TableSchema,
+) -> Option<Vec<JoinColumnPair>> {
+    let mut pairs = Vec::with_capacity(end.primary_key.columns.len());
+    for end_column in &end.primary_key.columns {
+        let matches: Vec<&str> = through
+            .columns
+            .iter()
+            .filter(|column| {
+                column
                     .foreign_key
                     .as_ref()
-                    .is_some_and(|fk| fk.table == target_schema.table_name)
-        })
-        .map(|column| column.column_name.as_str())
-        .collect();
-
-    match candidates.as_slice() {
-        [only] => Ok((*only).to_string()),
-        [] => Err(TableStoreError::Metadata(format!(
-            "model `{}` relationship `{}` cannot infer target_foreign_key on join table `{}` \
-             (no remaining column FK targets `{}`); declare `target_foreign_key` explicitly",
-            source.model_name,
-            relationship.field_name,
-            through_schema.table_name,
-            target_schema.table_name
-        ))),
-        many => Err(TableStoreError::Metadata(format!(
-            "model `{}` relationship `{}` cannot infer target_foreign_key on join table `{}` \
-             (ambiguous candidates: {}); declare `target_foreign_key` explicitly",
-            source.model_name,
-            relationship.field_name,
-            through_schema.table_name,
-            many.join(", ")
-        ))),
+                    .is_some_and(|fk| fk.table == end.table_name && fk.column == *end_column)
+            })
+            .map(|column| column.column_name.as_str())
+            .collect();
+        let [only] = matches.as_slice() else {
+            return None;
+        };
+        pairs.push(JoinColumnPair::new(*only, end_column.clone()));
     }
+    Some(pairs)
+}
+
+fn column_name_on<'a>(schema: &'a TableSchema, name: &str) -> Option<&'a str> {
+    schema.columns.iter().find_map(|column| {
+        if column.column_name == name || column.field_name == name {
+            Some(column.column_name.as_str())
+        } else {
+            None
+        }
+    })
 }
 
 /// Schema lifecycle operations an adapter can support.
@@ -455,5 +636,309 @@ pub trait TableSchemaAdapter {
         Err(TableStoreError::Metadata(
             "read-model schema adapter does not support explicit dev/test bootstrap".into(),
         ))
+    }
+}
+
+#[cfg(test)]
+mod m2m_join_key_tests {
+    use super::*;
+    use crate::table::{
+        ColumnType, ForeignKey, PrimaryKey, RelationshipDef, RelationshipKind, TableColumn,
+        TableKind, TableSchema,
+    };
+
+    fn pk_column(name: &str) -> TableColumn {
+        TableColumn {
+            primary_key: true,
+            ..TableColumn::new(name, name, ColumnType::Text)
+        }
+    }
+
+    fn column(name: &str) -> TableColumn {
+        TableColumn::new(name, name, ColumnType::Text)
+    }
+
+    fn schema(
+        model: &str,
+        table: &str,
+        columns: Vec<TableColumn>,
+        pk: &[&str],
+        relationships: Vec<RelationshipDef>,
+    ) -> TableSchema {
+        TableSchema {
+            model_name: model.into(),
+            table_name: table.into(),
+            columns,
+            primary_key: PrimaryKey::new(pk.iter().copied()),
+            version_column: None,
+            foreign_keys: Vec::new(),
+            indexes: Vec::new(),
+            relationships,
+            kind: TableKind::ReadModel,
+        }
+    }
+
+    fn labels() -> TableSchema {
+        schema(
+            "LabelView",
+            "labels",
+            vec![pk_column("label_id"), column("name")],
+            &["label_id"],
+            Vec::new(),
+        )
+    }
+
+    fn projects(rel: RelationshipDef) -> TableSchema {
+        schema(
+            "ProjectView",
+            "projects",
+            vec![pk_column("workspace_id"), pk_column("path"), column("kind")],
+            &["workspace_id", "path"],
+            vec![rel],
+        )
+    }
+
+    fn project_labels() -> TableSchema {
+        schema(
+            "ProjectLabel",
+            "project_labels",
+            vec![
+                pk_column("workspace_id"),
+                pk_column("path"),
+                pk_column("label_id"),
+            ],
+            &["workspace_id", "path", "label_id"],
+            Vec::new(),
+        )
+    }
+
+    fn labels_rel(foreign_key: Option<&str>, target_foreign_key: Option<&str>) -> RelationshipDef {
+        RelationshipDef {
+            field_name: "labels".into(),
+            kind: RelationshipKind::ManyToMany,
+            target_model: "LabelView".into(),
+            foreign_key: foreign_key.map(str::to_string),
+            through: Some("project_labels".into()),
+            target_foreign_key: target_foreign_key.map(str::to_string),
+        }
+    }
+
+    #[test]
+    fn same_named_through_columns_pair_composite_and_single_keys() {
+        let source = projects(labels_rel(None, None));
+        let keys = resolve_m2m_join_keys(
+            &source,
+            &source.relationships[0],
+            &project_labels(),
+            &labels(),
+        )
+        .unwrap();
+        assert_eq!(
+            keys.parent,
+            vec![
+                JoinColumnPair::new("workspace_id", "workspace_id"),
+                JoinColumnPair::new("path", "path"),
+            ]
+        );
+        assert_eq!(
+            keys.target,
+            vec![JoinColumnPair::new("label_id", "label_id")]
+        );
+    }
+
+    #[test]
+    fn explicit_pk_order_list_renames_composite_through_columns() {
+        let mut through = project_labels();
+        through.columns = vec![
+            pk_column("project_workspace_id"),
+            pk_column("project_path"),
+            pk_column("tag_id"),
+        ];
+        through.primary_key = PrimaryKey::new(["project_workspace_id", "project_path", "tag_id"]);
+        let source = projects(labels_rel(
+            Some("project_workspace_id,project_path"),
+            Some("tag_id"),
+        ));
+        let keys =
+            resolve_m2m_join_keys(&source, &source.relationships[0], &through, &labels()).unwrap();
+        assert_eq!(
+            keys.parent,
+            vec![
+                JoinColumnPair::new("project_workspace_id", "workspace_id"),
+                JoinColumnPair::new("project_path", "path"),
+            ]
+        );
+        assert_eq!(keys.target, vec![JoinColumnPair::new("tag_id", "label_id")]);
+    }
+
+    #[test]
+    fn partial_explicit_foreign_key_does_not_silently_ignore_composite_pk() {
+        let source = projects(labels_rel(Some("workspace_id"), Some("label_id")));
+        let error = resolve_m2m_join_keys(
+            &source,
+            &source.relationships[0],
+            &project_labels(),
+            &labels(),
+        )
+        .unwrap_err()
+        .to_string();
+        assert!(
+            error.contains("lists 1 through column") && error.contains("primary key has 2"),
+            "{error}"
+        );
+    }
+
+    #[test]
+    fn empty_string_foreign_key_is_not_a_missing_sentinel() {
+        let source = projects(labels_rel(Some(""), None));
+        let error = resolve_m2m_join_keys(
+            &source,
+            &source.relationships[0],
+            &project_labels(),
+            &labels(),
+        )
+        .unwrap_err()
+        .to_string();
+        assert!(error.contains("foreign_key must not be empty"), "{error}");
+    }
+
+    #[test]
+    fn infers_renamed_through_columns_from_column_foreign_keys() {
+        let mut through = project_labels();
+        through.columns = vec![
+            TableColumn {
+                primary_key: true,
+                foreign_key: Some(ForeignKey::new("projects", "workspace_id")),
+                ..TableColumn::new(
+                    "project_workspace_id",
+                    "project_workspace_id",
+                    ColumnType::Text,
+                )
+            },
+            TableColumn {
+                primary_key: true,
+                foreign_key: Some(ForeignKey::new("projects", "path")),
+                ..TableColumn::new("project_path", "project_path", ColumnType::Text)
+            },
+            TableColumn {
+                primary_key: true,
+                foreign_key: Some(ForeignKey::new("labels", "label_id")),
+                ..TableColumn::new("tag_id", "tag_id", ColumnType::Text)
+            },
+        ];
+        through.primary_key = PrimaryKey::new(["project_workspace_id", "project_path", "tag_id"]);
+        let source = projects(labels_rel(None, None));
+        let keys =
+            resolve_m2m_join_keys(&source, &source.relationships[0], &through, &labels()).unwrap();
+        assert_eq!(
+            keys.parent,
+            vec![
+                JoinColumnPair::new("project_workspace_id", "workspace_id"),
+                JoinColumnPair::new("project_path", "path"),
+            ]
+        );
+        assert_eq!(keys.target, vec![JoinColumnPair::new("tag_id", "label_id")]);
+    }
+
+    fn files_rel(foreign_key: &str) -> RelationshipDef {
+        RelationshipDef {
+            field_name: "files".into(),
+            kind: RelationshipKind::HasMany,
+            target_model: "ProjectFileView".into(),
+            foreign_key: Some(foreign_key.into()),
+            through: None,
+            target_foreign_key: None,
+        }
+    }
+
+    fn project_files() -> TableSchema {
+        schema(
+            "ProjectFileView",
+            "project_files",
+            vec![
+                pk_column("workspace_id"),
+                pk_column("path"),
+                pk_column("file_id"),
+            ],
+            &["workspace_id", "path", "file_id"],
+            Vec::new(),
+        )
+    }
+
+    #[test]
+    fn has_many_pairs_composite_parent_key_in_pk_order() {
+        let source = projects(files_rel("workspace_id,path"));
+        let pairs =
+            resolve_direct_join_keys(&source, &source.relationships[0], &project_files()).unwrap();
+        assert_eq!(
+            pairs,
+            vec![
+                DirectJoinPair::new("workspace_id", "workspace_id"),
+                DirectJoinPair::new("path", "path"),
+            ]
+        );
+    }
+
+    #[test]
+    fn belongs_to_pairs_composite_target_key_in_pk_order() {
+        let target = projects(files_rel("workspace_id,path"));
+        let source = schema(
+            "ProjectFileView",
+            "project_files",
+            vec![
+                pk_column("workspace_id"),
+                pk_column("path"),
+                pk_column("file_id"),
+            ],
+            &["workspace_id", "path", "file_id"],
+            vec![RelationshipDef {
+                field_name: "project".into(),
+                kind: RelationshipKind::BelongsTo,
+                target_model: "ProjectView".into(),
+                foreign_key: Some("workspace_id,path".into()),
+                through: None,
+                target_foreign_key: None,
+            }],
+        );
+        let pairs = resolve_direct_join_keys(&source, &source.relationships[0], &target).unwrap();
+        assert_eq!(
+            pairs,
+            vec![
+                DirectJoinPair::new("workspace_id", "workspace_id"),
+                DirectJoinPair::new("path", "path"),
+            ]
+        );
+    }
+
+    #[test]
+    fn partial_direct_foreign_key_does_not_silently_take_the_first_pk_column() {
+        let source = projects(files_rel("workspace_id"));
+        let error = resolve_direct_join_keys(&source, &source.relationships[0], &project_files())
+            .unwrap_err()
+            .to_string();
+        assert!(
+            error.contains("lists 1 column") && error.contains("primary key has 2"),
+            "{error}"
+        );
+    }
+
+    #[test]
+    fn renamed_direct_foreign_key_columns_pair_in_pk_order() {
+        let mut files = project_files();
+        files.columns = vec![
+            pk_column("project_workspace_id"),
+            pk_column("project_path"),
+            pk_column("file_id"),
+        ];
+        files.primary_key = PrimaryKey::new(["project_workspace_id", "project_path", "file_id"]);
+        let source = projects(files_rel("project_workspace_id,project_path"));
+        let pairs = resolve_direct_join_keys(&source, &source.relationships[0], &files).unwrap();
+        assert_eq!(
+            pairs,
+            vec![
+                DirectJoinPair::new("project_workspace_id", "workspace_id"),
+                DirectJoinPair::new("project_path", "path"),
+            ]
+        );
     }
 }

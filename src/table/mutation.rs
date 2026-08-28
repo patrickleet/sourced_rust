@@ -362,11 +362,10 @@ pub(crate) fn column_name_for(schema: &TableSchema, field_or_column: &str) -> Op
         .map(|column| column.column_name.clone())
 }
 
-/// Resolve the target and root columns used by one `has_many` relationship.
+/// Single-column `has_many` join used by ORM includes and projection graphs.
 ///
-/// An explicit foreign-key reference on the target column is authoritative.
-/// Falling back to the root's sole primary-key column preserves the legacy
-/// shorthand only when the target schema does not declare that reference.
+/// Composite direct joins resolve through `resolve_direct_join_keys`; this
+/// helper stays one pair so existing loaders do not AND N predicates.
 pub(crate) fn has_many_join_columns(
     root_schema: &TableSchema,
     relationship: &RelationshipDef,
@@ -378,49 +377,17 @@ pub(crate) fn has_many_join_columns(
             relationship.field_name
         )));
     }
-    let foreign_key = relationship.foreign_key.as_deref().ok_or_else(|| {
-        TableStoreError::Metadata(format!(
-            "relationship `{}` must declare a foreign key",
+    let pairs = super::registry::resolve_direct_join_keys(root_schema, relationship, target_schema)?;
+    match pairs.as_slice() {
+        [pair] => Ok((
+            pair.foreign_key_column.clone(),
+            pair.primary_key_column.clone(),
+        )),
+        _ => Err(TableStoreError::Metadata(format!(
+            "relationship `{}` has a composite direct join; single-column has_many helpers cannot load it",
             relationship.field_name
-        ))
-    })?;
-    let target_column = column_name_for(target_schema, foreign_key).ok_or_else(|| {
-        TableStoreError::Metadata(format!(
-            "relationship `{}` foreign key `{foreign_key}` is not a target column",
-            relationship.field_name
-        ))
-    })?;
-    let target = target_schema
-        .columns
-        .iter()
-        .find(|column| column.column_name == target_column)
-        .expect("column_name_for returned a registered target column");
-    let root_column = match target.foreign_key.as_ref() {
-        Some(reference) if reference.table == root_schema.table_name => {
-            column_name_for(root_schema, &reference.column).ok_or_else(|| {
-                TableStoreError::Metadata(format!(
-                    "relationship `{}` targets missing root column `{}`",
-                    relationship.field_name, reference.column
-                ))
-            })?
-        }
-        Some(reference) => {
-            return Err(TableStoreError::Metadata(format!(
-                "relationship `{}` target column `{target_column}` references table `{}`, not root table `{}`",
-                relationship.field_name, reference.table, root_schema.table_name
-            )));
-        }
-        None => {
-            let [primary_key] = root_schema.primary_key.columns.as_slice() else {
-                return Err(TableStoreError::Metadata(format!(
-                    "relationship `{}` needs a target-column foreign-key reference because root model `{}` has a composite key",
-                    relationship.field_name, root_schema.model_name
-                )));
-            };
-            primary_key.clone()
-        }
-    };
-    Ok((target_column, root_column))
+        ))),
+    }
 }
 
 pub(crate) fn key_fingerprint(key: &RowKey) -> String {
@@ -568,7 +535,7 @@ mod tests {
         let error = has_many_join_columns(&root, &relationship, &target).unwrap_err();
 
         assert!(
-            matches!(error, TableStoreError::Metadata(message) if message.contains("composite key"))
+            matches!(error, TableStoreError::Metadata(message) if message.contains("lists 1 column") && message.contains("primary key has 2"))
         );
     }
 }

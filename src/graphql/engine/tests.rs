@@ -17,9 +17,9 @@ mod client_surface_parity_tests {
         claim, col, ClientRootOperation, CommandConsistency, DistributedClientSurfaceExport,
         GraphqlInputType, GraphqlOutputType, GraphqlTypeDef, GraphqlTypeField, RoleGrant,
     };
-    #[cfg(feature = "sqlite")]
-    use crate::table::RelationshipDef;
     use crate::table::{ColumnType, PrimaryKey, TableColumn, TableKind, TableSchema};
+    #[cfg(feature = "sqlite")]
+    use crate::table::{RelationshipDef, RelationshipKind};
 
     fn orders() -> TableSchema {
         TableSchema {
@@ -1960,8 +1960,7 @@ mod client_surface_parity_tests {
         .execute(&pool)
         .await
         .unwrap();
-        let project =
-            ReadModelCatalog::new("composite-service").table_schema(composite_records());
+        let project = ReadModelCatalog::new("composite-service").table_schema(composite_records());
         let engine = GraphqlEngine::from_schema_catalog(&project, pool.clone())
             .unwrap()
             .roles(&["admin"])
@@ -2066,27 +2065,6 @@ mod client_surface_parity_tests {
                 "missing": null
             })
         );
-    }
-
-    #[cfg(feature = "sqlite")]
-    fn simple_records() -> TableSchema {
-        TableSchema {
-            model_name: "SimpleRecord".into(),
-            table_name: "simple_records".into(),
-            columns: vec![
-                TableColumn {
-                    primary_key: true,
-                    ..TableColumn::new("simple_id", "simple_id", ColumnType::Text)
-                },
-                TableColumn::new("tenant_id", "tenant_id", ColumnType::Text),
-            ],
-            primary_key: PrimaryKey::new(["simple_id"]),
-            version_column: None,
-            foreign_keys: Vec::new(),
-            indexes: Vec::new(),
-            relationships: Vec::new(),
-            kind: TableKind::ReadModel,
-        }
     }
 
     #[cfg(feature = "sqlite")]
@@ -2226,62 +2204,6 @@ mod client_surface_parity_tests {
     }
 
     #[cfg(feature = "sqlite")]
-    #[tokio::test]
-    async fn composite_key_relationship_topology_is_rejected_in_both_directions() {
-        let cases = [
-            {
-                let mut composite = composite_records();
-                composite.columns.push(TableColumn::new(
-                    "simple_id",
-                    "simple_id",
-                    ColumnType::Text,
-                ));
-                composite.relationships.push(RelationshipDef {
-                    field_name: "simple".into(),
-                    kind: RelationshipKind::BelongsTo,
-                    target_model: "SimpleRecord".into(),
-                    foreign_key: Some("simple_id".into()),
-                    through: None,
-                    target_foreign_key: None,
-                });
-                ("outgoing", composite, simple_records())
-            },
-            {
-                let composite = composite_records();
-                let mut simple = simple_records();
-                simple.relationships.push(RelationshipDef {
-                    field_name: "composite".into(),
-                    kind: RelationshipKind::BelongsTo,
-                    target_model: "CompositeRecord".into(),
-                    foreign_key: Some("tenant_id".into()),
-                    through: None,
-                    target_foreign_key: None,
-                });
-                ("incoming", composite, simple)
-            },
-        ];
-        for (direction, composite, simple) in cases {
-            let pool = sqlx::sqlite::SqlitePoolOptions::new()
-                .connect_lazy("sqlite::memory:")
-                .unwrap();
-            let project = ReadModelCatalog::new("composite-service")
-                .table_schema(composite)
-                .table_schema(simple);
-            let error = GraphqlEngine::from_schema_catalog(&project, pool)
-                .unwrap()
-                .roles(&["admin"])
-                .grant_all("admin")
-                .build()
-                .err()
-                .expect("composite relationship topology must fail");
-            assert!(
-                error.to_string().contains("relationship topology"),
-                "{direction}: {error}"
-            );
-        }
-    }
-
-    #[cfg(feature = "sqlite")]
     fn metrics() -> TableSchema {
         TableSchema {
             model_name: "MetricView".into(),
@@ -2310,8 +2232,7 @@ mod client_surface_parity_tests {
                 let pool = sqlx::sqlite::SqlitePoolOptions::new()
                     .connect_lazy("sqlite::memory:")
                     .unwrap();
-                let project =
-                    ReadModelCatalog::new("metrics-service").table_schema(metrics());
+                let project = ReadModelCatalog::new("metrics-service").table_schema(metrics());
                 let mut builder = GraphqlEngine::from_schema_catalog(&project, pool)
                     .unwrap()
                     .roles(&["restricted"]);
@@ -2386,8 +2307,7 @@ mod client_surface_parity_tests {
             let pool = sqlx::sqlite::SqlitePoolOptions::new()
                 .connect_lazy("sqlite::memory:")
                 .unwrap();
-            let project =
-                ReadModelCatalog::new("metrics-service").table_schema(metrics());
+            let project = ReadModelCatalog::new("metrics-service").table_schema(metrics());
             let mut builder = GraphqlEngine::from_schema_catalog(&project, pool)
                 .unwrap()
                 .roles(&["restricted"]);

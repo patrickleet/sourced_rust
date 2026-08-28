@@ -1107,31 +1107,68 @@ fn validate_relationship_keys(value: &serde_json::Value) -> ApplicationResult<()
             "relationship keys contain missing or redundant material".into(),
         ));
     }
-    for field in ["table", "source_foreign_key", "target_foreign_key"] {
-        if kind == "through" && !fields.contains_key(field) {
-            return Err(ApplicationError::InvalidSpec(format!(
-                "through relationship keys need `{field}`"
-            )));
+    if kind == "through" {
+        for field in ["table", "source_foreign_key", "target_foreign_key"] {
+            if !fields.contains_key(field) {
+                return Err(ApplicationError::InvalidSpec(format!(
+                    "through relationship keys need `{field}`"
+                )));
+            }
         }
+        let table = fields
+            .get("table")
+            .and_then(serde_json::Value::as_str)
+            .ok_or_else(|| {
+                ApplicationError::InvalidSpec("relationship key `table` must be a string".into())
+            })?;
+        validate_portable_text("relationship key identity", table)?;
+        validate_through_key_list(fields, "source_foreign_key", local.len())?;
+        validate_through_key_list(fields, "target_foreign_key", remote.len())?;
     }
-    if kind == "through_opaque" && !fields.contains_key("dependency") {
-        return Err(ApplicationError::InvalidSpec(
-            "opaque relationship keys need a dependency identity".into(),
-        ));
+    if kind == "through_opaque" {
+        if !fields.contains_key("dependency") {
+            return Err(ApplicationError::InvalidSpec(
+                "opaque relationship keys need a dependency identity".into(),
+            ));
+        }
+        let value = fields
+            .get("dependency")
+            .and_then(serde_json::Value::as_str)
+            .ok_or_else(|| {
+                ApplicationError::InvalidSpec(
+                    "relationship key `dependency` must be a string".into(),
+                )
+            })?;
+        validate_portable_text("relationship key identity", value)?;
     }
-    let identity_fields: &[&str] = match kind {
-        "through" => &["table", "source_foreign_key", "target_foreign_key"],
-        "through_opaque" => &["dependency"],
-        "direct" => &[],
-        _ => unreachable!(),
-    };
-    for field in identity_fields {
-        let value = fields.get(*field).and_then(serde_json::Value::as_str).ok_or_else(|| {
+    Ok(())
+}
+
+fn validate_through_key_list(
+    fields: &serde_json::Map<String, serde_json::Value>,
+    field: &str,
+    expected_len: usize,
+) -> ApplicationResult<()> {
+    let columns = fields
+        .get(field)
+        .and_then(serde_json::Value::as_array)
+        .ok_or_else(|| {
             ApplicationError::InvalidSpec(format!(
-                "relationship key `{field}` must be a string"
+                "relationship key `{field}` must be a string list"
             ))
         })?;
-        validate_portable_text("relationship key identity", value)?;
+    if columns.len() != expected_len || columns.is_empty() {
+        return Err(ApplicationError::InvalidSpec(format!(
+            "relationship key `{field}` must list one through column per identity column"
+        )));
+    }
+    for column in columns {
+        let name = column.as_str().ok_or_else(|| {
+            ApplicationError::InvalidSpec(format!(
+                "relationship key `{field}` columns must be strings"
+            ))
+        })?;
+        validate_portable_text("relationship key identity", name)?;
     }
     Ok(())
 }

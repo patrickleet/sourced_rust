@@ -1,4 +1,4 @@
-use crate::table::RelationshipKind;
+use crate::table::{DirectJoinPair, JoinColumnPair, RelationshipKind};
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum SqlDialect {
@@ -55,50 +55,62 @@ pub(super) fn placeholder(dialect: SqlDialect, n: usize) -> String {
     }
 }
 
-/// Direct (non-m2m) join equality for HasMany / BelongsTo (dedup-2).
-///
-/// # Arguments
-/// - `fk_col`: resolved SQL column name of the foreign key
-///   (on child for HasMany, on parent for BelongsTo)
+/// AND of `fk = pk` equalities for a direct HasMany / BelongsTo join.
 pub(crate) fn join_predicate_direct(
     kind: RelationshipKind,
     parent_alias: &str,
     child_alias: &str,
-    parent_pk: &str,
-    child_pk: &str,
-    fk_col: &str,
+    pairs: &[DirectJoinPair],
 ) -> Result<String, String> {
+    if pairs.is_empty() {
+        return Err("direct join requires at least one key column".into());
+    }
     match kind {
-        RelationshipKind::HasMany => Ok(format!(
-            "{child_alias}.\"{fk_col}\" = {parent_alias}.\"{parent_pk}\""
-        )),
-        RelationshipKind::BelongsTo => Ok(format!(
-            "{child_alias}.\"{child_pk}\" = {parent_alias}.\"{fk_col}\""
-        )),
+        RelationshipKind::HasMany => Ok(pairs
+            .iter()
+            .map(|pair| {
+                format!(
+                    "{child_alias}.\"{}\" = {parent_alias}.\"{}\"",
+                    pair.foreign_key_column, pair.primary_key_column
+                )
+            })
+            .collect::<Vec<_>>()
+            .join(" AND ")),
+        RelationshipKind::BelongsTo => Ok(pairs
+            .iter()
+            .map(|pair| {
+                format!(
+                    "{child_alias}.\"{}\" = {parent_alias}.\"{}\"",
+                    pair.primary_key_column, pair.foreign_key_column
+                )
+            })
+            .collect::<Vec<_>>()
+            .join(" AND ")),
         RelationshipKind::ManyToMany => {
-            Err("m2m relationships use join_predicate_m2m_*, not join_predicate_direct".into())
+            Err("m2m relationships use join_predicate_m2m_pairs, not join_predicate_direct".into())
         }
     }
 }
 
-/// Through-row → parent PK predicate for m2m joins.
-pub(crate) fn join_predicate_m2m_parent(
+/// AND of `through.col = end.pk` equalities for one m2m side.
+pub(crate) fn join_predicate_m2m_pairs(
     through_alias: &str,
-    source_join_col: &str,
-    parent_alias: &str,
-    parent_pk: &str,
-) -> String {
-    format!("{through_alias}.\"{source_join_col}\" = {parent_alias}.\"{parent_pk}\"")
-}
-
-/// Through-row → target PK ON-clause fragment for m2m joins.
-pub(crate) fn join_predicate_m2m_target(
-    through_alias: &str,
-    target_fk: &str,
-    child_alias: &str,
-    child_pk: &str,
-) -> String {
-    format!("{through_alias}.\"{target_fk}\" = {child_alias}.\"{child_pk}\"")
+    end_alias: &str,
+    pairs: &[JoinColumnPair],
+) -> Result<String, String> {
+    if pairs.is_empty() {
+        return Err("m2m join requires at least one key column".into());
+    }
+    Ok(pairs
+        .iter()
+        .map(|pair| {
+            format!(
+                "{through_alias}.\"{}\" = {end_alias}.\"{}\"",
+                pair.through_column, pair.end_column
+            )
+        })
+        .collect::<Vec<_>>()
+        .join(" AND "))
 }
 
 #[cfg(test)]
@@ -138,9 +150,7 @@ mod join_predicate_tests {
             RelationshipKind::HasMany,
             "t0",
             "t1",
-            "order_id",
-            "line_id",
-            "order_id",
+            &[DirectJoinPair::new("order_id", "order_id")],
         )
         .unwrap();
         assert_eq!(sql, r#"t1."order_id" = t0."order_id""#);
@@ -152,30 +162,66 @@ mod join_predicate_tests {
             RelationshipKind::BelongsTo,
             "t0",
             "t1",
-            "line_id",
-            "customer_id",
-            "customer_id",
+            &[DirectJoinPair::new("customer_id", "customer_id")],
         )
         .unwrap();
         assert_eq!(sql, r#"t1."customer_id" = t0."customer_id""#);
     }
 
     #[test]
+    fn direct_composite_join_ands_equalities() {
+        let sql = join_predicate_direct(
+            RelationshipKind::HasMany,
+            "t0",
+            "t1",
+            &[
+                DirectJoinPair::new("workspace_id", "workspace_id"),
+                DirectJoinPair::new("path", "path"),
+            ],
+        )
+        .unwrap();
+        assert_eq!(
+            sql,
+            r#"t1."workspace_id" = t0."workspace_id" AND t1."path" = t0."path""#
+        );
+    }
+
+    #[test]
     fn m2m_rejects_direct_helper() {
-        let err = join_predicate_direct(RelationshipKind::ManyToMany, "t0", "t1", "a", "b", "c")
-            .unwrap_err();
+        let err = join_predicate_direct(
+            RelationshipKind::ManyToMany,
+            "t0",
+            "t1",
+            &[DirectJoinPair::new("a", "b")],
+        )
+        .unwrap_err();
         assert!(err.contains("m2m"), "{err}");
     }
 
     #[test]
     fn m2m_fragments() {
         assert_eq!(
-            join_predicate_m2m_target("j1", "post_id", "t1", "id"),
+            join_predicate_m2m_pairs("j1", "t1", &[JoinColumnPair::new("post_id", "id")]).unwrap(),
             r#"j1."post_id" = t1."id""#
         );
         assert_eq!(
-            join_predicate_m2m_parent("j1", "user_id", "t0", "id"),
+            join_predicate_m2m_pairs("j1", "t0", &[JoinColumnPair::new("user_id", "id")]).unwrap(),
             r#"j1."user_id" = t0."id""#
         );
+        assert_eq!(
+            join_predicate_m2m_pairs(
+                "j1",
+                "t1",
+                &[
+                    JoinColumnPair::new("workspace_id", "workspace_id"),
+                    JoinColumnPair::new("path", "path"),
+                ]
+            )
+            .unwrap(),
+            r#"j1."workspace_id" = t1."workspace_id" AND j1."path" = t1."path""#
+        );
+        assert!(join_predicate_m2m_pairs("j1", "t1", &[])
+            .unwrap_err()
+            .contains("at least one key column"));
     }
 }
