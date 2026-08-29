@@ -6,6 +6,8 @@ use std::fs::{self, File, OpenOptions};
 use std::io::{Read, Write};
 use std::path::{Component, Path, PathBuf};
 use std::process::{Command, Stdio};
+use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::Arc;
 use std::time::{Duration, Instant};
 
 use crate::contracts::ContractCatalog;
@@ -156,6 +158,8 @@ pub struct LifecycleBuildOptions {
     pub nodes: Option<BTreeSet<String>>,
     /// Optional content snapshot that must still match immediately before activation.
     pub activation_inputs: Option<BTreeMap<String, String>>,
+    /// Optional cooperative cancellation shared with a supervising watcher.
+    pub cancel: Option<Arc<AtomicBool>>,
 }
 
 #[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
@@ -237,6 +241,13 @@ pub fn run_lifecycle_build(
     let mut executed = Vec::new();
     let mut receipts = BTreeMap::new();
     for node_id in &order {
+        if options
+            .cancel
+            .as_ref()
+            .is_some_and(|cancel| cancel.load(Ordering::SeqCst))
+        {
+            return Err(LifecycleError::new("lifecycle build was canceled"));
+        }
         let node = &graph.nodes[node_id];
         if !selected.contains(node_id) {
             let (previous_generation, previous_root) = previous.as_ref().unwrap();
@@ -271,7 +282,14 @@ pub fn run_lifecycle_build(
                 (dependency.clone(), receipt.receipt_id.clone())
             })
             .collect();
-        execute_node(&root, stage.path(), node_id, &node.outputs, executor)?;
+        execute_node(
+            &root,
+            stage.path(),
+            node_id,
+            &node.outputs,
+            executor,
+            options.cancel.as_deref(),
+        )?;
         let output_identities = collect_node_outputs(stage.path(), node_id, &graph)?;
         let receipt = ArtifactNodeReceipt::new(
             node,
@@ -291,6 +309,13 @@ pub fn run_lifecycle_build(
     let drift = if options.check {
         compare_workspace_outputs(&root, &generation)?
     } else {
+        if options
+            .cancel
+            .as_ref()
+            .is_some_and(|cancel| cancel.load(Ordering::SeqCst))
+        {
+            return Err(LifecycleError::new("lifecycle build was canceled"));
+        }
         Vec::new()
     };
     let active_generation = if options.check {
@@ -459,6 +484,7 @@ fn execute_node(
     node_id: &str,
     declared_outputs: &BTreeSet<String>,
     executor: &LifecycleExecutor,
+    cancel: Option<&AtomicBool>,
 ) -> Result<(), LifecycleError> {
     let root_value = root.to_string_lossy();
     let stage_value = stage.to_string_lossy();
@@ -485,7 +511,7 @@ fn execute_node(
     } else {
         Stdio::null()
     };
-    let status = Command::new(&executor.program)
+    let mut child = Command::new(&executor.program)
         .args(args)
         .current_dir(stage)
         .env("DISTRIBUTED_LIFECYCLE_ROOT", root)
@@ -493,13 +519,33 @@ fn execute_node(
         .env("DISTRIBUTED_LIFECYCLE_NODE", node_id)
         .stdout(stdout)
         .stderr(Stdio::null())
-        .status()
+        .spawn()
         .map_err(|error| {
             LifecycleError::new(format!(
                 "lifecycle node `{node_id}` failed to start executor `{}`: {error}",
                 executor.program
             ))
         })?;
+    let status = loop {
+        if cancel.is_some_and(|cancel| cancel.load(Ordering::SeqCst)) {
+            child
+                .kill()
+                .map_err(io_error("cancel lifecycle executor"))?;
+            child
+                .wait()
+                .map_err(io_error("wait for canceled lifecycle executor"))?;
+            return Err(LifecycleError::new(format!(
+                "lifecycle build was canceled while node `{node_id}` was running"
+            )));
+        }
+        if let Some(status) = child
+            .try_wait()
+            .map_err(io_error("inspect lifecycle executor"))?
+        {
+            break status;
+        }
+        std::thread::sleep(Duration::from_millis(10));
+    };
     if !status.success() {
         return Err(LifecycleError::new(format!(
             "lifecycle node `{node_id}` executor failed with {status}"

@@ -626,6 +626,7 @@ fn run_build(args: &BuildArgs) -> Result<(), Box<dyn Error>> {
         lock_timeout: Duration::from_millis(args.lock_timeout_ms),
         nodes: None,
         activation_inputs: None,
+        cancel: None,
     })?;
     match args.output {
         LifecycleOutput::Json => println!("{}", serde_json::to_string(&report)?),
@@ -672,6 +673,7 @@ fn run_dev(args: &DevArgs) -> Result<(), Box<dyn Error>> {
             lock_timeout: Duration::from_millis(args.lock_timeout_ms),
             nodes: None,
             activation_inputs: None,
+            cancel: None,
         },
         stop,
     })?;

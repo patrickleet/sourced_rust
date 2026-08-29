@@ -66,6 +66,10 @@ if test -f "$root/fail-plan"; then
   printf 'injected downstream failure\n' >&2
   exit 17
 fi
+if test -f "$root/slow-plan"; then
+  printf 'started\n' >> "$root/build-plan-starts.log"
+  while test -f "$root/slow-plan"; do :; done
+fi
 printf 'plan:' > "$stage/generated/plan.json"
 tr -d '\n' < "$root/plan/input.txt" >> "$stage/generated/plan.json"
 printf ':' >> "$stage/generated/plan.json"
@@ -305,6 +309,7 @@ fn partial_build_reuses_verified_upstream_receipts() {
         lock_timeout: Duration::from_secs(1),
         nodes: None,
         activation_inputs: None,
+        cancel: None,
     };
     let first = run_lifecycle_build(&options).unwrap();
     let first_manifest: Value = serde_json::from_slice(
@@ -413,6 +418,7 @@ fn dev_waits_for_initial_generation_and_restarts_only_invalidated_processes() {
                 lock_timeout: Duration::from_secs(1),
                 nodes: None,
                 activation_inputs: None,
+                cancel: None,
             },
             stop: supervisor_stop,
         })
@@ -447,6 +453,73 @@ fn dev_waits_for_initial_generation_and_restarts_only_invalidated_processes() {
         log.lines().filter(|line| line.starts_with("ui:")).count(),
         1
     );
+    fs::remove_dir_all(root).unwrap();
+}
+
+#[test]
+fn dev_cancels_a_superseded_executor_before_activation() {
+    let root = temporary_root("dev-cancel");
+    write_fixture(&root);
+    enable_dev(&root);
+    let stop = Arc::new(AtomicBool::new(false));
+    let supervisor_stop = Arc::clone(&stop);
+    let supervisor_root = root.clone();
+    let supervisor = thread::spawn(move || {
+        run_lifecycle_dev(&LifecycleDevOptions {
+            build: LifecycleBuildOptions {
+                root: supervisor_root,
+                catalog: "distributed.contracts.json".into(),
+                config: "distributed.lifecycle.json".into(),
+                out: "dist/distributed".into(),
+                check: false,
+                lock_timeout: Duration::from_secs(1),
+                nodes: None,
+                activation_inputs: None,
+                cancel: None,
+            },
+            stop: supervisor_stop,
+        })
+    });
+    wait_until(Duration::from_secs(5), || {
+        fs::read_to_string(root.join("dev-process.log")).is_ok_and(|log| log.lines().count() == 2)
+    });
+    thread::sleep(Duration::from_millis(100));
+    let initial_active = fs::read(root.join("dist/distributed/active.json")).unwrap();
+
+    fs::write(root.join("slow-plan"), "yes\n").unwrap();
+    fs::write(root.join("plan/input.txt"), "obsolete\n").unwrap();
+    wait_until(Duration::from_secs(5), || {
+        root.join("build-plan-starts.log").exists()
+    });
+    fs::write(root.join("plan/input.txt"), "latest\n").unwrap();
+    thread::sleep(Duration::from_millis(100));
+    assert_eq!(
+        initial_active,
+        fs::read(root.join("dist/distributed/active.json")).unwrap()
+    );
+    fs::remove_file(root.join("slow-plan")).unwrap();
+    wait_until(Duration::from_secs(5), || {
+        fs::read(root.join("dist/distributed/active.json"))
+            .is_ok_and(|active| active != initial_active)
+    });
+    stop.store(true, Ordering::SeqCst);
+    let report = supervisor
+        .join()
+        .expect("join cancel supervisor")
+        .expect("cancel supervisor succeeds");
+    assert_eq!(report.rebuilds, 1);
+    assert_eq!(report.restarts["api"], 0);
+    assert_eq!(report.restarts["ui"], 0);
+    let active: Value =
+        serde_json::from_slice(&fs::read(root.join("dist/distributed/active.json")).unwrap())
+            .unwrap();
+    let plan = fs::read_to_string(
+        root.join("dist/distributed")
+            .join(active["path"].as_str().unwrap())
+            .join("generated/plan.json"),
+    )
+    .unwrap();
+    assert!(plan.contains("plan:latest:"));
     fs::remove_dir_all(root).unwrap();
 }
 

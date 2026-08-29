@@ -199,13 +199,60 @@ pub fn run_lifecycle_dev(
             let mut rebuild_options = options.build.clone();
             rebuild_options.nodes = Some(invalidated.clone());
             rebuild_options.activation_inputs = Some(latest.clone());
-            let generation = match run_lifecycle_build(&rebuild_options) {
+            let cancel = Arc::new(AtomicBool::new(false));
+            rebuild_options.cancel = Some(Arc::clone(&cancel));
+            let build = std::thread::spawn(move || run_lifecycle_build(&rebuild_options));
+            let mut superseded = false;
+            while !build.is_finished() {
+                if options.stop.load(Ordering::SeqCst) {
+                    cancel.store(true, Ordering::SeqCst);
+                }
+                if let Err(error) = children.ensure_running() {
+                    cancel.store(true, Ordering::SeqCst);
+                    let _ = build.join();
+                    return Err(error);
+                }
+                std::thread::sleep(Duration::from_millis(dev.poll_ms));
+                let observed = match lifecycle_input_snapshot(&root, &catalog, &graph) {
+                    Ok(observed) => observed,
+                    Err(error) => {
+                        cancel.store(true, Ordering::SeqCst);
+                        let _ = build.join();
+                        return Err(error);
+                    }
+                };
+                if !changed_paths(&latest, &observed).is_empty() {
+                    latest = observed;
+                    superseded = true;
+                    cancel.store(true, Ordering::SeqCst);
+                }
+            }
+            let build_result = build
+                .join()
+                .map_err(|_| LifecycleError::new("lifecycle build worker panicked"))?;
+            let generation = match build_result {
                 Ok(generation) => generation,
+                Err(error)
+                    if options.stop.load(Ordering::SeqCst)
+                        && error.message().contains("was canceled") =>
+                {
+                    return Ok(())
+                }
+                Err(error)
+                    if superseded
+                        && (error.message().contains("was canceled")
+                            || error.message().contains("was superseded")) =>
+                {
+                    continue
+                }
                 Err(error) if error.message().contains("was superseded") => continue,
                 Err(error) => return Err(error),
             };
             rebuilds += 1;
             final_generation = generation.generation_id.clone();
+            if options.stop.load(Ordering::SeqCst) {
+                return Ok(());
+            }
             children.restart_invalidated(&root, &dev, &generation, &invalidated, &mut restarts)?;
             snapshot = latest;
         }
