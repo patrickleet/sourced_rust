@@ -1,0 +1,91 @@
+{
+  "schema_version": 1,
+  "application": "e2e-ui",
+  "source": {
+    "rust": "sha256:eeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeee",
+    "cli": "sha256:eeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeee",
+    "javascript": "sha256:eeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeee"
+  },
+  "roots": ["e2e-application"],
+  "executors": {
+    "e2e-ui.application-manifest": {
+      "identity": "sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+      "program": "cargo",
+      "args": [
+        "run",
+        "--quiet",
+        "--manifest-path",
+        "{root}/Cargo.toml",
+        "-p",
+        "distributed_cli",
+        "--bin",
+        "distributed",
+        "--",
+        "describe",
+        "--manifest-path",
+        "{root}/tests/e2e-ui/Cargo.toml",
+        "--package",
+        "e2e-service",
+        "--entrypoint",
+        "e2e_service::application_manifest",
+        "--distributed-path",
+        "{root}"
+      ],
+      "stdout": "tests/e2e-ui/contracts/application-manifest.placeholder.json"
+    }
+  },
+  "dev": {
+    "poll_ms": 500,
+    "debounce_ms": 250,
+    "shutdown_ms": 5000,
+    "processes": {
+      "api": {
+        "program": "cargo",
+        "args": ["run", "--quiet", "-p", "e2e-runner", "--bin", "e2e-ui"],
+        "cwd": "tests/e2e-ui",
+        "env": {
+          "BIND": "127.0.0.1:8793"
+        },
+        "url": "http://127.0.0.1:8793/graphql",
+        "restart_on": ["e2e-application"],
+        "ready_after_ms": 100,
+        "ready": {
+          "program": "/usr/bin/curl",
+          "args": [
+            "-fsS",
+            "-X",
+            "POST",
+            "http://127.0.0.1:8793/graphql",
+            "-H",
+            "content-type: application/json",
+            "-d",
+            "{\"query\":\"{ __typename }\"}"
+          ],
+          "interval_ms": 250,
+          "timeout_ms": 15000
+        }
+      },
+      "ui": {
+        "program": "{root}/tests/e2e-ui/ui/node_modules/.bin/vite",
+        "args": ["dev", "--host", "localhost", "--port", "5182"],
+        "cwd": "tests/e2e-ui/ui",
+        "env": {
+          "AUTH_SECRET": "distributed-e2e-local-development-secret",
+          "AUTH_URL": "http://localhost:5182",
+          "AUTH_USE_SECURE_COOKIES": "false",
+          "DISTRIBUTED_SKIP_CLIENT_COMPILE": "0",
+          "E2E_API_ORIGIN": "http://127.0.0.1:8793"
+        },
+        "url": "http://localhost:5182",
+        "restart_on": ["e2e-application"],
+        "ready_after_ms": 100,
+        "ready": {
+          "program": "/usr/bin/curl",
+          "args": ["-fsS", "http://localhost:5182/"],
+          "interval_ms": 250,
+          "timeout_ms": 15000
+        }
+      }
+    }
+  }
+}

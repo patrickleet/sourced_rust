@@ -1,31 +1,30 @@
 # e2e-ui template — run from this directory.
 #
 #   make up          # Docker: Postgres + Zitadel + bootstrap env
-#   make run         # API + UI (cargo-watch GraphQL, Vite HMR; WATCH=0 to disable)
+#   make run         # coherent build + API + UI supervision (Vite HMR stays active)
 #   make test         # offline unit/suite/UI structural
 #   make test-browser # Playwright UI e2e (needs make up + make run)
 #   make up-celld-nats / test-celld / down-celld-nats
 #                    # optional celld+NATS profile (not make run; CI live path)
 
-.PHONY: all up down run run-api stop test ci-offline test-domain test-suite \
+.PHONY: all up down run lifecycle-prepare run-api stop test ci-offline test-domain test-suite \
 	test-browser test-browser-install js-install js-build wasm ui-install ui-build ui-check ui-test \
-	gen-client check-client contracts-check check clean help ensure-watch \
+	gen-client check-client contracts-check check clean help \
 	up-celld-nats down-celld-nats down-celld test-celld test-celld-http test-celld-nats
 
 # Defaults only — do NOT `include e2e-ui.env` (shell-quoted dotenv breaks Make).
 # Recipes `source` the env file so values stay clean.
-BIND         ?= 127.0.0.1:8791
-API_PORT     ?= 8791
-BASE_URL     ?= http://127.0.0.1:8791
-UI_PORT      ?= 5180
+BIND         ?= 127.0.0.1:8793
+API_PORT     ?= 8793
+BASE_URL     ?= http://127.0.0.1:8793
+UI_PORT      ?= 5182
 # localhost required for Auth.js cookies over HTTP (SvelteKit Secure default)
-UI_URL       ?= http://localhost:5180
+UI_URL       ?= http://localhost:5182
 UI_HOST      ?= localhost
 ENV_FILE     ?= e2e-ui.env
 NPM          ?= npm
 JS_DIR       ?= ../../js
 CARGO_TEST_FLAGS ?= -- --nocapture
-WATCH        ?= 1
 
 DATABASE_URL ?= sqlite:./e2e-ui.db?mode=rwc
 
@@ -53,78 +52,19 @@ up:
 down:
 	docker compose -f docker/docker-compose.yml down
 
-ensure-watch:
-	@command -v cargo-watch >/dev/null || { echo "installing cargo-watch…"; cargo install cargo-watch; }
+## Build the real host once so lifecycle readiness remains bounded on a cold checkout.
+lifecycle-prepare: ui-install
+	cargo build -p e2e-runner --bin e2e-ui
 
-## API + UI (loads e2e-ui.env when present)
-run: ui-install $(if $(filter 1,$(WATCH)),ensure-watch)
-	@set -e; \
-	if [ -f $(ENV_FILE) ]; then set -a; . ./$(ENV_FILE); set +a; fi; \
-	_bind="$${BIND:-127.0.0.1:8791}"; \
-	_api_port="$${_bind##*:}"; \
-	_base="$${E2E_API_ORIGIN:-http://$${_bind}}"; \
-	_ui_port="$(UI_PORT)"; \
-	_ui_host="$(UI_HOST)"; \
-	_ui="$${E2E_UI_ORIGIN:-http://$${_ui_host}:$${_ui_port}}"; \
-	export AUTH_URL="$${_ui}"; \
-	export AUTH_USE_SECURE_COOKIES="false"; \
-	lsof -ti:$${_api_port} 2>/dev/null | xargs kill -9 2>/dev/null || true; \
-	lsof -ti:$${_ui_port} 2>/dev/null | xargs kill -9 2>/dev/null || true; \
-	rm -f .make-runner.pid .make-ui.pid .make-runner.log; \
-	echo "starting API ($${DATABASE_URL:-sqlite}) on $$_base …"; \
-	if [ "$(WATCH)" = "1" ]; then \
-	  echo "API cargo-watch on (WATCH=0 to disable) …"; \
-	  cargo watch -d 1 \
-	    -i target -i '*.db' -i '.make-*' \
-	    -w crates -w Cargo.toml \
-	    -w ../../src -w ../../Cargo.toml \
-	    -x "run -p e2e-runner --bin e2e-ui" \
-	    > .make-runner.log 2>&1 & \
-	else \
-	  cargo run -p e2e-runner --bin e2e-ui > .make-runner.log 2>&1 & \
-	fi; \
-	echo $$! > .make-runner.pid; \
-	ok=0; \
-	for i in $$(seq 1 80); do \
-		code=$$(curl -s -o /dev/null -w '%{http_code}' -X POST "$${_base}/graphql" \
-			-H 'content-type: application/json' \
-			-d '{"query":"{ __typename }"}' 2>/dev/null || echo 000); \
-		if [ "$$code" = "200" ] || [ "$$code" = "401" ]; then ok=1; break; fi; \
-		sleep 0.25; \
-	done; \
-	if [ "$$ok" != "1" ]; then \
-		echo "API failed:"; tail -80 .make-runner.log; exit 1; \
-	fi; \
-	echo "API ready (HTTP probe $$code). starting UI …"; \
-	cd ui && $(NPM) run dev -- --host $$_ui_host --port $$_ui_port & \
-	echo $$! > ../.make-ui.pid; \
-	cd ..; \
-	stop_pidfile() { \
-		[ -f "$$1" ] || return 0; \
-		_pid=$$(cat "$$1"); \
-		for _child in $$(pgrep -P "$$_pid" 2>/dev/null); do \
-		  pkill -P "$$_child" 2>/dev/null || true; \
-		  kill "$$_child" 2>/dev/null || true; \
-		done; \
-		kill "$$_pid" 2>/dev/null || true; \
-		rm -f "$$1"; \
-	}; \
-	cleanup() { \
-		stop_pidfile .make-ui.pid; \
-		stop_pidfile .make-runner.pid; \
-		lsof -ti:$${_api_port} 2>/dev/null | xargs kill -9 2>/dev/null || true; \
-		lsof -ti:$${_ui_port} 2>/dev/null | xargs kill -9 2>/dev/null || true; \
-	}; \
-	trap cleanup EXIT INT TERM; \
-	echo ""; \
-	echo "  UI     $$_ui"; \
-	echo "  API    $$_base"; \
-	echo "  GraphiQL $$_base/graphql"; \
-	echo "  WS     $$_base/graphql/ws"; \
-	echo "  watch: GraphQL cargo-watch, Vite HMR (WATCH=0 to disable)"; \
-	echo "  Ctrl-C stops both"; \
-	echo ""; \
-	wait $$(cat .make-ui.pid) 2>/dev/null || wait
+## Coherent application build + actual API/UI supervision.
+## Vite still owns Svelte, CSS, and GraphQL hot updates.
+run: lifecycle-prepare
+	@if [ -f $(ENV_FILE) ]; then set -a; . ./$(ENV_FILE); set +a; fi; \
+	cargo run --quiet --manifest-path ../../Cargo.toml -p distributed_cli --bin distributed -- \
+		dev --root ../.. \
+		--catalog tests/e2e-ui/distributed.contracts.json \
+		--config tests/e2e-ui/distributed.lifecycle.json \
+		--out tests/e2e-ui/.distributed/lifecycle
 
 run-api:
 	@if [ -f $(ENV_FILE) ]; then set -a; . ./$(ENV_FILE); set +a; fi; \
@@ -309,7 +249,7 @@ test-domain:
 test-suite:
 	cargo test -p e2e-suite --test behavioral $(CARGO_TEST_FLAGS)
 
-## Browser e2e (Playwright). Requires make up + make run (UI :5180, API :8791).
+## Browser e2e (Playwright). Requires make up + make run (UI :5182, API :8793).
 test-browser-install:
 	$(NPM) install
 	npx playwright install chromium
@@ -376,7 +316,7 @@ clean: stop
 help:
 	@echo "e2e-ui"
 	@echo "  make up         Postgres + Zitadel + OIDC bootstrap → e2e-ui.env"
-	@echo "  make run        API + UI (cargo-watch GraphQL, Vite HMR; WATCH=0 one-shot)"
+	@echo "  make run        coherent build + API + UI supervision (Vite HMR active)"
 	@echo "  make test       offline suite + UI structural"
 	@echo "  make ci-offline CI drift + offline suites with safe pipeline overlap"
 	@echo "  make wasm            blob-domain core → ui/src/lib/blob/pkg (wasm-pack)"

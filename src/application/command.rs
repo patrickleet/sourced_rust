@@ -298,6 +298,65 @@ impl CommandSpec {
         Ok(self)
     }
 
+    /// Bind the authorization- and projector-enriched command material from
+    /// an already compiled application Surface back to its portable command.
+    pub fn with_surface_binding(
+        mut self,
+        exposed: &super::module::SurfaceCommandSpec,
+    ) -> ApplicationResult<Self> {
+        let mut mismatches = Vec::new();
+        if self.id != exposed.id {
+            mismatches.push("identity");
+        }
+        if self.field_name != exposed.field_name {
+            mismatches.push("field");
+        }
+        if self.consistency != exposed.consistency {
+            mismatches.push("consistency");
+        }
+        if exposed.confirmation_unavailable {
+            mismatches.push("confirmation availability");
+        }
+        if !mismatches.is_empty() {
+            return Err(ApplicationError::Collision {
+                kind: "command",
+                identity: self.id,
+                reason: format!(
+                    "compiled Surface command disagrees on {}",
+                    mismatches.join(", ")
+                ),
+            });
+        }
+        let confirmations = exposed.confirmations.as_array().cloned().ok_or_else(|| {
+            ApplicationError::InvalidSpec("surface confirmations must be an array".into())
+        })?;
+        self.input = exposed
+            .input
+            .clone()
+            .ok_or_else(|| ApplicationError::Missing {
+                kind: "command input",
+                identity: exposed.id.clone(),
+            })?;
+        self.output = exposed
+            .output
+            .clone()
+            .ok_or_else(|| ApplicationError::Missing {
+                kind: "command output",
+                identity: exposed.id.clone(),
+            })?;
+        self.roles = exposed.roles.clone();
+        self.defaults = exposed.defaults.clone();
+        self.effects = exposed.effects.clone();
+        self.applies = exposed.applies.clone();
+        self.projection_contract = exposed.projection_contract.clone();
+        self.confirmations = confirmations;
+        self.direct_projection = exposed.direct_projection.clone();
+        self.projected_model = exposed.projected_model.clone();
+        self.refresh_fingerprint()?;
+        self.validate()?;
+        Ok(self)
+    }
+
     /// Build a portable spec from the framework's existing typed declaration.
     pub fn from_typed_command<I, K>(command: &TypedCommand<I, K>) -> ApplicationResult<Self>
     where

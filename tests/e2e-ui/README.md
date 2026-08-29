@@ -7,7 +7,7 @@ client, optimistic replica update, and causal confirmation.
 Rust · TypeScript · CQRS / ES · SvelteKit · celld · Kafka · NATS · RabbitMQ ·
 PSQL · SQLite · OIDC · Keycloak · Authentik
 
-Default is **one process** (`make run`). The same UI can wait-dispatch Todo
+Default is **one command** (`make run`). The same UI can wait-dispatch Todo
 create/complete and `chat.post` to celld from [`../e2e-celld`](../e2e-celld).
 Todo commands are `portable_command!` declarations in `todo-domain`; hosts
 only `.mount` them. Chat is a small cell so `@live` still coming from GraphQL
@@ -37,19 +37,25 @@ Charts: `api/.gitops/deploy`, `ui/.gitops/deploy`.
 App Applications: `gitops/envs/local/`.
 Control plane: `gitops/cluster/` (`stacks/`, `configurations/`, …).
 
-## Option B — compose + host processes
+## Option B — lifecycle dev on the host
 
 ```bash
 cd tests/e2e-ui
-make up
-set -a && source e2e-ui.env && set +a
 make run
 ```
 
-The UI is at `http://localhost:5180`; GraphQL is at
-`http://127.0.0.1:8791/graphql`. Demo users are `alice`, `bob`, and `admin`
-with password `Password1!`. `make run` uses `cargo-watch` on the GraphQL
-host (Vite already HMR's the UI). `WATCH=0 make run` is a one-shot `cargo run`.
+The UI is at `http://localhost:5182`; GraphQL is at
+`http://127.0.0.1:8793/graphql`. Run `make up` once to create the local
+Postgres + Zitadel stack and `e2e-ui.env`; `make run` loads that file when it
+exists. Demo users are `alice`, `bob`, and `admin` with password `Password1!`.
+
+`make run` delegates directly to `distributed dev`. Before starting either
+process, it compiles and activates one coherent application manifest from the
+real e2e modules and surfaces. The lifecycle config declares each process's
+command, working directory, environment, readiness probe, and URL directly;
+there are no lifecycle wrapper scripts. Vite still handles Svelte/CSS/GraphQL
+HMR, while application-contract changes trigger a coherent rebuild and the
+configured process restart.
 
 This is the **default one-process playground**. Optional celld:
 
