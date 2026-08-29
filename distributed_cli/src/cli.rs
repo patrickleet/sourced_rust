@@ -14,6 +14,8 @@ use std::ffi::OsString;
 use std::fs;
 use std::path::{Component, Path, PathBuf};
 use std::process::Command;
+use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::Arc;
 use std::time::Duration;
 
 use crate::client_compiler::{
@@ -24,7 +26,9 @@ use crate::contracts::{
     contracts_accept, contracts_check, unknown_scope_diagnostic, ContractAcceptScope,
     ContractCatalog,
 };
-use crate::lifecycle::{run_lifecycle_build, LifecycleBuildOptions};
+use crate::lifecycle::{
+    run_lifecycle_build, run_lifecycle_dev, LifecycleBuildOptions, LifecycleDevOptions,
+};
 use crate::manifest_harness::{run_manifest_harness, HarnessMode, HarnessOptions};
 use crate::skills::{embedded_skills, generate_skills, SkillsInitSpec, AGENTS_MD_FILE};
 use crate::{
@@ -47,6 +51,8 @@ pub struct DistributedArgs {
 pub enum DistributedCommands {
     /// Build one coherent application generation
     Build(BuildArgs),
+    /// Run one coherent local application supervisor
+    Dev(DevArgs),
     /// Aggregate contract lifecycle check and accept
     Contracts(ContractsArgs),
     /// Scaffold a new Distributed microservice crate
@@ -75,6 +81,8 @@ pub struct ServiceArgs {
 pub enum ServiceCommands {
     /// Build one coherent application generation
     Build(BuildArgs),
+    /// Run one coherent local application supervisor
+    Dev(DevArgs),
     /// Scaffold a new Distributed microservice crate
     #[command(alias = "create")]
     Scaffold(ScaffoldArgs),
@@ -119,6 +127,25 @@ pub struct BuildArgs {
 pub enum LifecycleOutput {
     Human,
     Json,
+}
+
+#[derive(Args, Debug)]
+pub struct DevArgs {
+    /// Application repository root
+    #[arg(long, default_value = ".")]
+    pub root: PathBuf,
+    /// Contract catalog path, relative to root
+    #[arg(long, default_value = "distributed.contracts.json")]
+    pub catalog: PathBuf,
+    /// Lifecycle executor and dev process config, relative to root
+    #[arg(long, default_value = "distributed.lifecycle.json")]
+    pub config: PathBuf,
+    /// Content-addressed generation store, relative to root
+    #[arg(long, default_value = "dist/distributed")]
+    pub out: PathBuf,
+    /// Maximum wait for another lifecycle build process
+    #[arg(long, default_value_t = 10_000)]
+    pub lock_timeout_ms: u64,
 }
 
 #[derive(Args, Debug)]
@@ -557,6 +584,7 @@ impl From<GitopsPromote> for GitopsPromoteTarget {
 pub fn run_distributed(args: &DistributedArgs) -> Result<(), Box<dyn Error>> {
     match &args.command {
         DistributedCommands::Build(build) => run_build(build),
+        DistributedCommands::Dev(dev) => run_dev(dev),
         DistributedCommands::Contracts(contracts) => run_contracts(contracts),
         DistributedCommands::Scaffold(scaffold) => run_scaffold(scaffold),
         DistributedCommands::Describe(describe) => run_describe(describe),
@@ -575,6 +603,7 @@ pub fn run_distributed(args: &DistributedArgs) -> Result<(), Box<dyn Error>> {
 pub fn run(args: &ServiceArgs) -> Result<(), Box<dyn Error>> {
     match &args.command {
         ServiceCommands::Build(build) => run_build(build),
+        ServiceCommands::Dev(dev) => run_dev(dev),
         ServiceCommands::Scaffold(scaffold) => run_scaffold(scaffold),
         ServiceCommands::Describe(describe) => run_describe(describe),
         ServiceCommands::Client(client) => run_client(client),
@@ -623,6 +652,31 @@ fn run_build(args: &BuildArgs) -> Result<(), Box<dyn Error>> {
             message: "lifecycle build check detected drift",
             exit_code: 1,
         }));
+    }
+    Ok(())
+}
+
+fn run_dev(args: &DevArgs) -> Result<(), Box<dyn Error>> {
+    let stop = Arc::new(AtomicBool::new(false));
+    let signal_stop = Arc::clone(&stop);
+    ctrlc::set_handler(move || signal_stop.store(true, Ordering::SeqCst))?;
+    let report = run_lifecycle_dev(&LifecycleDevOptions {
+        build: LifecycleBuildOptions {
+            root: args.root.clone(),
+            catalog: args.catalog.clone(),
+            config: args.config.clone(),
+            out: args.out.clone(),
+            check: false,
+            lock_timeout: Duration::from_millis(args.lock_timeout_ms),
+        },
+        stop,
+    })?;
+    println!(
+        "lifecycle dev: stopped initial={} final={} rebuilds={}",
+        report.initial_generation, report.final_generation, report.rebuilds
+    );
+    for (process, count) in report.restarts {
+        println!("process={process} restarts={count}");
     }
     Ok(())
 }

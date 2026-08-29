@@ -1,10 +1,15 @@
 //! Process-level coherent lifecycle build checks.
 
+use distributed_cli::{run_lifecycle_dev, LifecycleBuildOptions, LifecycleDevOptions};
 use serde_json::Value;
 use std::collections::BTreeMap;
 use std::fs;
 use std::path::{Path, PathBuf};
 use std::process::{Command, Output};
+use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::Arc;
+use std::thread;
+use std::time::Duration;
 use std::time::{SystemTime, UNIX_EPOCH};
 
 fn distributed(root: &Path, extra: &[&str]) -> Output {
@@ -152,6 +157,58 @@ fn report(output: &Output) -> Value {
     })
 }
 
+fn enable_dev(root: &Path) {
+    fs::write(
+        root.join("dev-child.sh"),
+        r#"#!/bin/sh
+set -eu
+root="$1"
+name="$2"
+if test -f "$root/dist/distributed/active.json"; then
+  barrier=present
+else
+  barrier=missing
+fi
+printf '%s:%s:%s\n' "$name" "$barrier" "$DISTRIBUTED_GENERATION_ID" >> "$root/dev-process.log"
+exec tail -f /dev/null
+"#,
+    )
+    .expect("write dev child fixture");
+    let path = root.join("distributed.lifecycle.json");
+    let mut config: Value = serde_json::from_slice(&fs::read(&path).unwrap()).unwrap();
+    config["dev"] = serde_json::json!({
+        "poll_ms": 20,
+        "debounce_ms": 30,
+        "shutdown_ms": 1000,
+        "processes": {
+            "api": {
+                "program": "/bin/sh",
+                "args": ["{root}/dev-child.sh", "{root}", "{process}"],
+                "restart_on": ["application"],
+                "ready_after_ms": 20
+            },
+            "ui": {
+                "program": "/bin/sh",
+                "args": ["{root}/dev-child.sh", "{root}", "{process}"],
+                "restart_on": [],
+                "ready_after_ms": 20
+            }
+        }
+    });
+    fs::write(path, serde_json::to_vec_pretty(&config).unwrap()).unwrap();
+}
+
+fn wait_until(timeout: Duration, predicate: impl Fn() -> bool) {
+    let started = std::time::Instant::now();
+    while !predicate() {
+        assert!(
+            started.elapsed() < timeout,
+            "timed out waiting for fixture state"
+        );
+        thread::sleep(Duration::from_millis(10));
+    }
+}
+
 fn file_snapshot(root: &Path) -> BTreeMap<PathBuf, Vec<u8>> {
     fn visit(root: &Path, path: &Path, files: &mut BTreeMap<PathBuf, Vec<u8>>) {
         let mut entries = fs::read_dir(path)
@@ -251,6 +308,60 @@ fn mixed_source_and_unowned_outputs_fail_before_activation() {
     );
     assert!(!unowned_root.join("dist/distributed/active.json").exists());
     fs::remove_dir_all(unowned_root).unwrap();
+}
+
+#[test]
+fn dev_waits_for_initial_generation_and_restarts_only_invalidated_processes() {
+    let root = temporary_root("dev-supervisor");
+    write_fixture(&root);
+    enable_dev(&root);
+    let stop = Arc::new(AtomicBool::new(false));
+    let supervisor_stop = Arc::clone(&stop);
+    let supervisor_root = root.clone();
+    let supervisor = thread::spawn(move || {
+        run_lifecycle_dev(&LifecycleDevOptions {
+            build: LifecycleBuildOptions {
+                root: supervisor_root,
+                catalog: "distributed.contracts.json".into(),
+                config: "distributed.lifecycle.json".into(),
+                out: "dist/distributed".into(),
+                check: false,
+                lock_timeout: Duration::from_secs(1),
+            },
+            stop: supervisor_stop,
+        })
+    });
+
+    wait_until(Duration::from_secs(5), || {
+        fs::read_to_string(root.join("dev-process.log")).is_ok_and(|log| log.lines().count() == 2)
+    });
+    let initial_log = fs::read_to_string(root.join("dev-process.log")).unwrap();
+    assert!(initial_log
+        .lines()
+        .all(|line| line.contains(":present:sha256:")));
+    thread::sleep(Duration::from_millis(100));
+    fs::write(root.join("src/input.txt"), "second\n").unwrap();
+    wait_until(Duration::from_secs(5), || {
+        fs::read_to_string(root.join("dev-process.log")).is_ok_and(|log| log.lines().count() == 3)
+    });
+    stop.store(true, Ordering::SeqCst);
+    let report = supervisor
+        .join()
+        .expect("join lifecycle supervisor")
+        .expect("lifecycle supervisor succeeds");
+    assert_eq!(report.rebuilds, 1);
+    assert_eq!(report.restarts["api"], 1);
+    assert_eq!(report.restarts["ui"], 0);
+    let log = fs::read_to_string(root.join("dev-process.log")).unwrap();
+    assert_eq!(
+        log.lines().filter(|line| line.starts_with("api:")).count(),
+        2
+    );
+    assert_eq!(
+        log.lines().filter(|line| line.starts_with("ui:")).count(),
+        1
+    );
+    fs::remove_dir_all(root).unwrap();
 }
 
 #[test]

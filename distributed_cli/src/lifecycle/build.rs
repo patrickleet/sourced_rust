@@ -13,7 +13,8 @@ use crate::contracts::ContractCatalog;
 use super::{
     digest_bytes, validate_content_identity, validate_portable_path, validate_stable_value,
     ArtifactNodeReceipt, DistributedSourceIdentity, GenerationManifest, LifecycleConfig,
-    LifecycleError, LifecycleGraph, ReleaseManifest, LIFECYCLE_CONFIG_SCHEMA_VERSION,
+    LifecycleDevConfig, LifecycleError, LifecycleGraph, ReleaseManifest,
+    LIFECYCLE_CONFIG_SCHEMA_VERSION,
 };
 
 pub const LIFECYCLE_BUILD_CONFIG_SCHEMA_VERSION: u32 = 1;
@@ -75,6 +76,8 @@ pub struct LifecycleBuildConfig {
     pub source: DistributedSourceIdentity,
     pub roots: BTreeSet<String>,
     pub executors: BTreeMap<String, LifecycleExecutor>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub dev: Option<LifecycleDevConfig>,
 }
 
 impl LifecycleBuildConfig {
@@ -133,6 +136,9 @@ impl LifecycleBuildConfig {
         }
         for (name, executor) in &self.executors {
             executor.validate(name)?;
+        }
+        if let Some(dev) = &self.dev {
+            dev.validate()?;
         }
         Ok(())
     }
@@ -457,6 +463,34 @@ fn hash_source(
         )));
     }
     Ok(identities)
+}
+
+pub(super) fn lifecycle_input_snapshot(
+    root: &Path,
+    catalog: &ContractCatalog,
+    graph: &LifecycleGraph,
+) -> Result<BTreeMap<String, String>, LifecycleError> {
+    let generated = graph
+        .nodes
+        .values()
+        .flat_map(|node| node.outputs.iter())
+        .collect::<Vec<_>>();
+    let mut snapshot = BTreeMap::new();
+    for (node_id, node) in &graph.nodes {
+        let limit = catalog.entries[node_id].provenance.glob_limit;
+        for source in &node.inputs {
+            if generated
+                .iter()
+                .any(|output| source_uses_output(source, output))
+            {
+                continue;
+            }
+            for (path, identity) in hash_source(root, source, limit)? {
+                snapshot.insert(path, identity);
+            }
+        }
+    }
+    Ok(snapshot)
 }
 
 fn hash_path(path: &Path, base: &Path) -> Result<String, LifecycleError> {

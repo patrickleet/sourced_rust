@@ -4,6 +4,7 @@
 //! payload semantics and never executes a catalog generator as a shell command.
 
 mod build;
+mod dev;
 mod graph;
 mod receipt;
 mod release;
@@ -11,6 +12,10 @@ mod release;
 pub use build::{
     run_lifecycle_build, BuildDrift, LifecycleBuildConfig, LifecycleBuildOptions,
     LifecycleBuildReport, LifecycleExecutor, LIFECYCLE_BUILD_CONFIG_SCHEMA_VERSION,
+};
+pub use dev::{
+    run_lifecycle_dev, LifecycleDevConfig, LifecycleDevOptions, LifecycleDevProcess,
+    LifecycleDevReport,
 };
 pub use graph::{
     DistributedSourceIdentity, LifecycleConfig, LifecycleError, LifecycleGraph, LifecycleNode,

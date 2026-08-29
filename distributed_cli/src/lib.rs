@@ -19,9 +19,9 @@ pub use cli::{
     cli_error_exit_code, run, run_distributed, AgentHarness, BuildArgs, Bus, ClientArgs,
     ClientManifestArgs,
     ContractsAcceptArgs, ContractsArgs, ContractsCheckArgs, ContractsCommands, ContractsOutput,
-    DescribeArgs, DistributedArgs, DistributedCommands, Framework, GitopsPromote, LifecycleOutput,
-    ManifestFormat, Metrics, ScaffoldArgs, SchemaArgs, SchemaDialect, SchemaFormat, ServiceArgs,
-    ServiceCommands,
+    DescribeArgs, DevArgs, DistributedArgs, DistributedCommands, Framework, GitopsPromote,
+    LifecycleOutput, ManifestFormat, Metrics, ScaffoldArgs, SchemaArgs, SchemaDialect, SchemaFormat,
+    ServiceArgs, ServiceCommands,
     SkillsArgs, SkillsCommands, SkillsInitArgs, Store, Transport,
 };
 pub use client_compiler::{
@@ -49,9 +49,10 @@ pub use contracts::{
 };
 pub use generate::{generate_service_scaffold, package_name};
 pub use lifecycle::{
-    run_lifecycle_build, ArtifactNodeReceipt, BuildDrift, DistributedSourceIdentity,
+    run_lifecycle_build, run_lifecycle_dev, ArtifactNodeReceipt, BuildDrift, DistributedSourceIdentity,
     GenerationManifest, LifecycleBuildConfig, LifecycleBuildOptions, LifecycleBuildReport,
-    LifecycleConfig, LifecycleError, LifecycleExecutor, LifecycleGraph, LifecycleNode,
+    LifecycleConfig, LifecycleDevConfig, LifecycleDevOptions, LifecycleDevProcess,
+    LifecycleDevReport, LifecycleError, LifecycleExecutor, LifecycleGraph, LifecycleNode,
     ReleaseManifest, ReleaseMember, GENERATION_MANIFEST_SCHEMA_VERSION,
     LIFECYCLE_BUILD_CONFIG_SCHEMA_VERSION, LIFECYCLE_CONFIG_SCHEMA_VERSION,
     LIFECYCLE_GRAPH_SCHEMA_VERSION, NODE_RECEIPT_SCHEMA_VERSION,

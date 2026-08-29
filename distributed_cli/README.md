@@ -72,6 +72,52 @@ built output with its catalog-relative workspace output. Its JSON drift records
 name the owning node, output, built identity, and missing/current workspace
 identity. Compliant executors therefore need no separate check implementation.
 
+## `distributed dev` — coherent local supervision
+
+```bash
+distributed dev
+```
+
+`distributed dev` uses the same catalog, lifecycle config, lock, build graph,
+and active generation store. It completes and activates the initial generation
+before starting any child, then watches declared source content, coalesces a
+quiet-period batch, computes its exact downstream invalidation closure, and
+activates a complete replacement before restarting affected processes. Child
+processes receive `DISTRIBUTED_GENERATION_ID` and `DISTRIBUTED_RELEASE_ID`.
+
+Add a `dev` section to `distributed.lifecycle.json`:
+
+```json
+{
+  "dev": {
+    "poll_ms": 200,
+    "debounce_ms": 100,
+    "shutdown_ms": 5000,
+    "processes": {
+      "api": {
+        "program": "cargo",
+        "args": ["run", "--manifest-path", "{root}/Cargo.toml"],
+        "restart_on": ["application-manifest"],
+        "ready_after_ms": 250
+      },
+      "ui": {
+        "program": "npm",
+        "args": ["run", "dev", "--prefix", "{root}/ui"],
+        "restart_on": [],
+        "ready_after_ms": 500
+      }
+    }
+  }
+}
+```
+
+`restart_on` contains catalog node IDs, not another application inventory. An
+empty set deliberately leaves the process running, which is the native
+Vite/SvelteKit CSS and module-HMR fast path. A backend process names only the
+nodes that require its restart. Any initial-build, early-child-exit, watch,
+rebuild, or readiness failure is terminal and shuts down the supervised set;
+Ctrl-C also performs bounded child shutdown.
+
 ## `distributed scaffold <name>` — generate a service crate
 
 ```bash
