@@ -1,0 +1,30 @@
+# Local AuthStack: Zitadel with an embedded PostgreSQL cluster.
+# The masterkey is intentionally a live local Secret; see the fixture README.
+apiVersion: hops.ops.com.ai/v1alpha1
+kind: AuthStack
+metadata:
+  name: zitadel
+  namespace: default
+spec:
+  clusterName: e2e-ui
+  helmProviderConfigRef:
+    name: default
+  kubernetesProviderConfigRef:
+    name: default
+  namespace: auth
+  domain: zitadel-zitadel.auth.svc.cluster.local
+  externalSecure: false
+  gateway:
+    enabled: false
+  externalSecrets:
+    enabled: false
+  firstInstance:
+    org: hops-ops
+    masterkey:
+      secretRef:
+        name: zitadel-masterkey
+  database:
+    embedded:
+      storage:
+        size: 2Gi
+        class: psql

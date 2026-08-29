@@ -3,4 +3,4 @@ kind: Configuration
 metadata:
   name: hops-ops-auth-stack
 spec:
-  package: ghcr.io/hops-ops/auth-stack:v1.7.0
+  package: ghcr.io/hops-ops/auth-stack:v1.8.2

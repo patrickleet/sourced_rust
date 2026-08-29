@@ -5,28 +5,29 @@ metadata:
 spec:
   clusterRef:
     name: e2e-ui
-  # Paths resolve from the Cluster mount root (the Distributed checkout).
+  # Paths resolve from the Cluster mount root (the distributed checkout).
   # The resolved runtime Environment name defaults its namespace.
   root: tests/e2e-ui
   values:
     local: true
     preview: false
   deploys:
-    # A deploy path names an application root. Its chart defaults to
-    # .gitops/local; no promotion chart participates in local reconciliation.
-    - path: api
+    # Every path is an explicit renderer directory; no chart is inferred.
+    - path: api/.gitops/local
+      type: helm
       values:
         identity:
           enabled: true
           oidcGeneration: 1
-    - path: ui
+    - path: ui/.gitops/local
+      type: helm
       values:
         identity:
           enabled: true
           oidcGeneration: 1
     # Test identities are an explicit, independently rendered deploy.
-    - path: ui
-      chart: .gitops/test-users
+    - path: ui/.gitops/test-users
+      type: helm
       values:
         identity:
           enabled: true
@@ -34,6 +35,9 @@ spec:
           projectName: e2e-ui
           projectNamespace: default
           humansNamespace: default
+          # Local-only: Zitadel provider v0.1.1 requires this generated org ID
+          # for Roles/HumanUsers. It changes when the disposable cluster is reset.
+          orgId: "388460350938349602"
           instanceLoginV2: true
           demoUsers: true
           providerConfigRef:

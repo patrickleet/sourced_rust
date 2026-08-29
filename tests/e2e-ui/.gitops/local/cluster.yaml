@@ -5,9 +5,11 @@ metadata:
 spec:
   clusterProvider: kind
   dockerProvider: dory
-  mountRoot: ../..
+  # Mount the distributed checkout so cluster-dev workloads can see both
+  # shared packages (js/) and this fixture (tests/e2e-ui/).
+  mountRoot: ../../../..
   manifests:
-    path: .gitops/local/cluster
+    path: tests/e2e-ui/.gitops/local/cluster
   controlPlane:
     crossplane:
       chart: crossplane-stable/crossplane

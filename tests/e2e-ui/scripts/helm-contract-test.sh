@@ -6,7 +6,9 @@
 set -euo pipefail
 
 ROOT="$(cd "$(dirname "$0")/.." && pwd)"
-CHART="$ROOT/ui/.gitops/deploy"
+UI_CHART="$ROOT/ui/.gitops/local"
+IDENTITY_CHART="$ROOT/ui/.gitops/test-users"
+API_CHART="$ROOT/api/.gitops/local"
 fail=0
 
 need() {
@@ -18,26 +20,50 @@ need() {
 need helm
 need rg
 
-render() {
+render_ui() {
   local ns="$1"
-  local features="${2:-true}"
-  local oidc_generation="${3:-0}"
-  local source_generation="${4:-0}"
-  helm template "e2e-ui-ui-${ns}" "$CHART" \
+  local oidc_generation="${2:-0}"
+  helm template "e2e-ui-ui-${ns}" "$UI_CHART" \
     --namespace "$ns" \
     --set local=true \
-    --set appRuntime=cluster-dev \
-    --set "namespace=${ns}" \
-    --set "clusterDev.sourceGeneration=${source_generation}" \
+    --set preview=false \
+    --set "environment.name=${ns}" \
+    --set "environment.namespace=${ns}" \
     --set identity.enabled=true \
     --set "identity.oidcGeneration=${oidc_generation}" \
     --set identity.projectName=e2e-ui \
     --set identity.projectNamespace=default \
     --set identity.humansNamespace=default \
-    --set identity.mrNamespace= \
+    --set identity.providerConfigRef.name=default \
+    --set identity.providerConfigRef.kind=ClusterProviderConfig
+}
+
+render_identity() {
+  local ns="$1"
+  local features="${2:-true}"
+  local oidc_generation="${3:-0}"
+  helm template "e2e-ui-test-users-${ns}" "$IDENTITY_CHART" \
+    --namespace "$ns" \
+    --set local=true \
+    --set preview=false \
+    --set "environment.name=${ns}" \
+    --set "environment.namespace=${ns}" \
+    --set identity.enabled=true \
+    --set "identity.oidcGeneration=${oidc_generation}" \
+    --set identity.projectName=e2e-ui \
+    --set identity.projectNamespace=default \
+    --set identity.humansNamespace=default \
     --set "identity.instanceLoginV2=${features}" \
     --set identity.providerConfigRef.name=default \
     --set identity.providerConfigRef.kind=ClusterProviderConfig
+}
+
+render() {
+  local ns="$1"
+  local features="${2:-true}"
+  local oidc_generation="${3:-0}"
+  render_ui "$ns" "$oidc_generation"
+  render_identity "$ns" "$features" "$oidc_generation"
 }
 
 assert_contains() {
@@ -139,22 +165,18 @@ assert_contains "$rotated_out" 'hops.ops.com.ai/oidc-generation: "1"' \
 assert_contains "$rotated_out" 'name: "e2e-ui-alice-oidc-conn-g1"' \
   "OIDC rotation uses matching connection secret generation"
 
-ui_source_out="$(render alice true 1 7)"
-assert_contains "$ui_source_out" 'hops.ops.com.ai/source-generation: "7"' \
-  "UI source generation rolls the Vite dev process"
-
 # API derives the same connection Secret and uses the generated client id as
 # both the JWT audience and client id. No Zitadel UUID belongs in values.
-api_out="$(helm template e2e-ui-api-alice "$ROOT/api/.gitops/deploy" \
+api_out="$(helm template e2e-ui-api-alice "$API_CHART" \
   --namespace alice \
   --set local=true \
-  --set appRuntime=cluster-dev \
-  --set namespace=alice \
-  --set clusterDev.sourceGeneration=7 \
+  --set preview=false \
+  --set environment.name=alice \
+  --set environment.namespace=alice \
   --set identity.enabled=true \
-  --set identity.oidcGeneration=1)"
-assert_contains "$api_out" 'hops.ops.com.ai/source-generation: "7"' \
-  "API source generation rolls the one-shot dev process"
+  --set identity.oidcGeneration=1 \
+  --set identity.providerConfigRef.name=default \
+  --set identity.providerConfigRef.kind=ClusterProviderConfig)"
 assert_contains "$api_out" 'hops.ops.com.ai/oidc-generation: "1"' \
   "API OIDC generation rolls pod template"
 assert_contains "$api_out" 'name: "e2e-ui-alice-oidc-conn-g1"' \

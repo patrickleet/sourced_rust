@@ -1,0 +1,32 @@
+# The local Helm and Kubernetes providers reconcile cluster-level platform
+# resources (namespaces, StorageClasses, and Helm-installed CRDs). Keep these
+# bindings in the project Cluster tree so a fresh local cluster is self-contained.
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRoleBinding
+metadata:
+  name: local-dev-helm-cluster-admin
+  labels:
+    app.kubernetes.io/managed-by: hops-local-gitops
+roleRef:
+  apiGroup: rbac.authorization.k8s.io
+  kind: ClusterRole
+  name: cluster-admin
+subjects:
+  - kind: ServiceAccount
+    name: local-dev-helm
+    namespace: crossplane-system
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRoleBinding
+metadata:
+  name: local-dev-kubernetes-cluster-admin
+  labels:
+    app.kubernetes.io/managed-by: hops-local-gitops
+roleRef:
+  apiGroup: rbac.authorization.k8s.io
+  kind: ClusterRole
+  name: cluster-admin
+subjects:
+  - kind: ServiceAccount
+    name: local-dev-kubernetes
+    namespace: crossplane-system
