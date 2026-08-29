@@ -94,7 +94,9 @@ function assertActualProjectionCapabilities(
 			if (item.occurrence_ordinal !== ordinal) continue;
 			for (const reference of item.projection_refs) references.add(reference);
 		}
-		let selectedEvent: ProjectionCapabilityArm['event'] | undefined;
+		let selectedEvents:
+			| Map<string, ProjectionCapabilityArm['event']>
+			| undefined;
 		for (const reference of references) {
 			const operations = delta.operations.filter(
 				(item) =>
@@ -116,25 +118,32 @@ function assertActualProjectionCapabilities(
 						capabilityAllowsRecovery(arm, target)
 					)
 			);
-			if (candidates.length !== 1) {
+			if (candidates.length === 0) {
 				throw new Error(
-					'actual projection delta does not identify one generated event arm'
+					'actual projection delta is outside every generated event arm'
 				);
 			}
-			const event = candidates[0]!.event;
-			if (
-				selectedEvent !== undefined &&
-				(event.id !== selectedEvent.id ||
-					event.name !== selectedEvent.name ||
-					event.version !== selectedEvent.version)
-			) {
+			const candidateEvents = new Map(
+				candidates.map(({ event }) => [eventIdentity(event), event])
+			);
+			if (selectedEvents === undefined) {
+				selectedEvents = candidateEvents;
+				continue;
+			}
+			for (const identity of selectedEvents.keys()) {
+				if (!candidateEvents.has(identity)) selectedEvents.delete(identity);
+			}
+			if (selectedEvents.size === 0) {
 				throw new Error(
 					'actual projection refs disagree on their generated event arm'
 				);
 			}
-			selectedEvent = event;
 		}
 	}
+}
+
+function eventIdentity(event: ProjectionCapabilityArm['event']): string {
+	return JSON.stringify([event.id, event.name, event.version]);
 }
 
 function capabilityAllowsMutation(

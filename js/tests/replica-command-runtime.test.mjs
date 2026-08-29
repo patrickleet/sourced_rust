@@ -2668,7 +2668,7 @@ test('link obligations may name any server-selected affected model', async () =>
 	runtime.dispose();
 });
 
-test('ambiguous selected-arm capabilities fail before actual mutation', async () => {
+test('equivalent event arms may fan out to the same read-model mutation', async () => {
 	const modeled = structuredClone(artifact());
 	const event = { id: 'event-2', name: 'todo.duplicated', version: 1 };
 	modeled.projection.eventSet.push(event);
@@ -2683,15 +2683,12 @@ test('ambiguous selected-arm capabilities fail before actual mutation', async ()
 		{ dispatch: (request) => Promise.resolve(envelope(request)) },
 		{ change: modeled }
 	);
-	await assert.rejects(
-		runtime.commands.change(
-			{ id: 'todo-1', title: 'preview' },
-			{ commandId: COMMAND_A }
-		),
-		{ code: 'REPLICA_COMMAND_PROTOCOL_INVALID' }
+	await runtime.commands.change(
+		{ id: 'todo-1', title: 'preview' },
+		{ commandId: COMMAND_A }
 	);
-	assert.equal(replica.replacements.length, 0);
-	assert.equal(replica.record('todo-1'), undefined);
+	assert.equal(replica.replacements.length, 1);
+	assert.equal(replica.record('todo-1').fields.title, 'preview');
 	runtime.dispose();
 });
 
