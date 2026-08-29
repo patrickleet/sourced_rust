@@ -1,6 +1,8 @@
 //! Process-level coherent lifecycle build checks.
 
-use distributed_cli::{run_lifecycle_dev, LifecycleBuildOptions, LifecycleDevOptions};
+use distributed_cli::{
+    run_lifecycle_build, run_lifecycle_dev, LifecycleBuildOptions, LifecycleDevOptions,
+};
 use serde_json::Value;
 use std::collections::BTreeMap;
 use std::fs;
@@ -39,6 +41,8 @@ fn temporary_root(label: &str) -> PathBuf {
 
 fn write_fixture(root: &Path) {
     fs::write(root.join("src/input.txt"), "first\n").expect("write lifecycle input");
+    fs::create_dir_all(root.join("plan")).expect("create plan input directory");
+    fs::write(root.join("plan/input.txt"), "local\n").expect("write plan input");
     fs::write(
         root.join("build-app.sh"),
         r#"#!/bin/sh
@@ -62,7 +66,10 @@ if test -f "$root/fail-plan"; then
   printf 'injected downstream failure\n' >&2
   exit 17
 fi
-sed 's/^/plan:/' "$stage/generated/application.json" > "$stage/generated/plan.json"
+printf 'plan:' > "$stage/generated/plan.json"
+tr -d '\n' < "$root/plan/input.txt" >> "$stage/generated/plan.json"
+printf ':' >> "$stage/generated/plan.json"
+cat "$stage/generated/application.json" >> "$stage/generated/plan.json"
 "#,
     )
     .expect("write plan executor");
@@ -72,8 +79,11 @@ sed 's/^/plan:/' "$stage/generated/application.json" > "$stage/generated/plan.js
         "application:first\n",
     )
     .expect("write accepted application output");
-    fs::write(root.join("generated/plan.json"), "plan:application:first\n")
-        .expect("write accepted plan output");
+    fs::write(
+        root.join("generated/plan.json"),
+        "plan:local:application:first\n",
+    )
+    .expect("write accepted plan output");
 
     let catalog = serde_json::json!({
         "schema_version": 1,
@@ -98,7 +108,7 @@ sed 's/^/plan:/' "$stage/generated/application.json" > "$stage/generated/plan.js
                 "owner": "deployment/fixture",
                 "identity": { "kind": "deployment_plan", "value": "ref:plan" },
                 "provenance": {
-                    "sources": ["generated/application.json"],
+                    "sources": ["generated/application.json", "plan/input.txt"],
                     "generator": "fixture.plan"
                 },
                 "predecessor": {
@@ -283,6 +293,80 @@ fn build_is_deterministic_and_check_is_read_only_and_content_based() {
 }
 
 #[test]
+fn partial_build_reuses_verified_upstream_receipts() {
+    let root = temporary_root("partial");
+    write_fixture(&root);
+    let options = LifecycleBuildOptions {
+        root: root.clone(),
+        catalog: "distributed.contracts.json".into(),
+        config: "distributed.lifecycle.json".into(),
+        out: "dist/distributed".into(),
+        check: false,
+        lock_timeout: Duration::from_secs(1),
+        nodes: None,
+        activation_inputs: None,
+    };
+    let first = run_lifecycle_build(&options).unwrap();
+    let first_manifest: Value = serde_json::from_slice(
+        &fs::read(
+            root.join("dist/distributed/generations")
+                .join(&first.generation_id)
+                .join("generation.json"),
+        )
+        .unwrap(),
+    )
+    .unwrap();
+    let old_inputs = BTreeMap::from([
+        (
+            "src/input.txt".to_string(),
+            first_manifest["receipts"]["application"]["input_identities"]["src/input.txt"]
+                .as_str()
+                .unwrap()
+                .to_string(),
+        ),
+        (
+            "plan/input.txt".to_string(),
+            first_manifest["receipts"]["plan"]["input_identities"]["plan/input.txt"]
+                .as_str()
+                .unwrap()
+                .to_string(),
+        ),
+    ]);
+    fs::write(root.join("plan/input.txt"), "split\n").unwrap();
+    let mut partial = options.clone();
+    partial.nodes = Some(["plan".to_string()].into_iter().collect());
+    partial.activation_inputs = Some(old_inputs);
+    let superseded = run_lifecycle_build(&partial).unwrap_err();
+    assert!(superseded.message().contains("superseded"));
+    assert!(
+        fs::read_to_string(root.join("dist/distributed/active.json"))
+            .unwrap()
+            .contains(&first.generation_id)
+    );
+    partial.activation_inputs = None;
+    let second = run_lifecycle_build(&partial).unwrap();
+    assert_eq!(second.executed, ["plan"]);
+    assert_ne!(first.generation_id, second.generation_id);
+
+    let manifest = |generation: &str| -> Value {
+        serde_json::from_slice(
+            &fs::read(
+                root.join("dist/distributed/generations")
+                    .join(generation)
+                    .join("generation.json"),
+            )
+            .unwrap(),
+        )
+        .unwrap()
+    };
+    assert_eq!(
+        manifest(&first.generation_id)["receipts"]["application"],
+        manifest(&second.generation_id)["receipts"]["application"]
+    );
+    fs::remove_dir_all(root).unwrap();
+}
+
+#[test]
 fn mixed_source_and_unowned_outputs_fail_before_activation() {
     let mixed_root = temporary_root("mixed-source");
     write_fixture(&mixed_root);
@@ -327,6 +411,8 @@ fn dev_waits_for_initial_generation_and_restarts_only_invalidated_processes() {
                 out: "dist/distributed".into(),
                 check: false,
                 lock_timeout: Duration::from_secs(1),
+                nodes: None,
+                activation_inputs: None,
             },
             stop: supervisor_stop,
         })

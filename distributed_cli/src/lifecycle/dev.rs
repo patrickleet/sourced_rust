@@ -154,7 +154,10 @@ pub fn run_lifecycle_dev(
     validate_restart_nodes(&dev, &graph)?;
 
     // Initial coherent generation is an absolute serving barrier.
-    let initial = run_lifecycle_build(&options.build)?;
+    let mut initial_options = options.build.clone();
+    initial_options.nodes = None;
+    initial_options.activation_inputs = None;
+    let initial = run_lifecycle_build(&initial_options)?;
     let mut children = ChildSet::start(&root, &dev, &initial)?;
     let mut snapshot = lifecycle_input_snapshot(&root, &catalog, &graph)?;
     let mut final_generation = initial.generation_id.clone();
@@ -193,7 +196,14 @@ pub fn run_lifecycle_dev(
             }
 
             let invalidated = graph.invalidated_by_paths(&changed)?;
-            let generation = run_lifecycle_build(&options.build)?;
+            let mut rebuild_options = options.build.clone();
+            rebuild_options.nodes = Some(invalidated.clone());
+            rebuild_options.activation_inputs = Some(latest.clone());
+            let generation = match run_lifecycle_build(&rebuild_options) {
+                Ok(generation) => generation,
+                Err(error) if error.message().contains("was superseded") => continue,
+                Err(error) => return Err(error),
+            };
             rebuilds += 1;
             final_generation = generation.generation_id.clone();
             children.restart_invalidated(&root, &dev, &generation, &invalidated, &mut restarts)?;

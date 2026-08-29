@@ -152,6 +152,10 @@ pub struct LifecycleBuildOptions {
     pub out: PathBuf,
     pub check: bool,
     pub lock_timeout: Duration,
+    /// Optional downstream-closed node subset; other receipts are verified and reused.
+    pub nodes: Option<BTreeSet<String>>,
+    /// Optional content snapshot that must still match immediately before activation.
+    pub activation_inputs: Option<BTreeMap<String, String>>,
 }
 
 #[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
@@ -172,6 +176,7 @@ pub struct LifecycleBuildReport {
     pub generation_id: String,
     pub release_id: String,
     pub order: Vec<String>,
+    pub executed: Vec<String>,
     pub drift: Vec<BuildDrift>,
     pub active_generation: Option<String>,
 }
@@ -203,6 +208,12 @@ pub fn run_lifecycle_build(
 
     let _lock = BuildLock::acquire(&root, options.lock_timeout)?;
     let out = resolve_output(&root, &options.out)?;
+    let selected = selected_nodes(options.nodes.as_ref(), &graph)?;
+    let previous = if selected.len() == graph.nodes.len() {
+        None
+    } else {
+        Some(load_active_generation(&out, &graph)?)
+    };
     let stage_parent = if options.check {
         None
     } else {
@@ -223,9 +234,33 @@ pub fn run_lifecycle_build(
     .map_err(io_error("create isolated lifecycle stage"))?;
 
     let order = graph.topological_order()?;
+    let mut executed = Vec::new();
     let mut receipts = BTreeMap::new();
     for node_id in &order {
         let node = &graph.nodes[node_id];
+        if !selected.contains(node_id) {
+            let (previous_generation, previous_root) = previous.as_ref().unwrap();
+            let receipt = previous_generation.receipts[node_id].clone();
+            receipt.validate_against(node)?;
+            for (output, expected_identity) in &receipt.output_identities {
+                let source = previous_root.join(output);
+                let source_identity = hash_path(&source, previous_root)?;
+                if &source_identity != expected_identity {
+                    return Err(LifecycleError::new(format!(
+                        "active generation output `{output}` for node `{node_id}` disagrees with its receipt"
+                    )));
+                }
+                copy_path(&source, &stage.path().join(output))?;
+                let observed = hash_path(&stage.path().join(output), stage.path())?;
+                if &observed != expected_identity {
+                    return Err(LifecycleError::new(format!(
+                        "active generation output `{output}` for node `{node_id}` disagrees with its receipt"
+                    )));
+                }
+            }
+            receipts.insert(node_id.clone(), receipt);
+            continue;
+        }
         let executor = &config.executors[&node.executor];
         let input_identities = collect_node_inputs(&root, stage.path(), &catalog, &graph, node_id)?;
         let dependency_receipts = node
@@ -247,6 +282,7 @@ pub fn run_lifecycle_build(
             true,
         )?;
         receipts.insert(node_id.clone(), receipt);
+        executed.push(node_id.clone());
     }
     reject_unowned_stage_files(stage.path(), &graph)?;
     let generation = GenerationManifest::new(&graph, receipts.into_values())?;
@@ -260,6 +296,14 @@ pub fn run_lifecycle_build(
     let active_generation = if options.check {
         read_active_generation(&out)?
     } else {
+        if let Some(expected) = &options.activation_inputs {
+            let observed = lifecycle_input_snapshot(&root, &catalog, &graph)?;
+            if &observed != expected {
+                return Err(LifecycleError::new(
+                    "lifecycle build was superseded by newer input content before activation",
+                ));
+            }
+        }
         write_manifest(
             stage.path(),
             "generation.json",
@@ -281,9 +325,110 @@ pub fn run_lifecycle_build(
         generation_id: generation.generation_id,
         release_id: release.release_id,
         order,
+        executed,
         drift,
         active_generation,
     })
+}
+
+fn selected_nodes(
+    requested: Option<&BTreeSet<String>>,
+    graph: &LifecycleGraph,
+) -> Result<BTreeSet<String>, LifecycleError> {
+    let selected = requested
+        .cloned()
+        .unwrap_or_else(|| graph.nodes.keys().cloned().collect());
+    if selected.is_empty() {
+        return Err(LifecycleError::new(
+            "lifecycle build node selection must not be empty",
+        ));
+    }
+    let unknown = selected
+        .iter()
+        .filter(|node| !graph.nodes.contains_key(*node))
+        .cloned()
+        .collect::<Vec<_>>();
+    if !unknown.is_empty() {
+        return Err(LifecycleError::new(format!(
+            "lifecycle build selects unknown nodes: {}",
+            unknown.join(", ")
+        )));
+    }
+    for (node_id, node) in &graph.nodes {
+        if !selected.contains(node_id)
+            && node
+                .dependencies
+                .iter()
+                .any(|dependency| selected.contains(dependency))
+        {
+            return Err(LifecycleError::new(format!(
+                "lifecycle build selection is not downstream-closed: `{node_id}` depends on a selected node"
+            )));
+        }
+    }
+    Ok(selected)
+}
+
+fn load_active_generation(
+    out: &Path,
+    graph: &LifecycleGraph,
+) -> Result<(GenerationManifest, PathBuf), LifecycleError> {
+    let generation_id = read_active_generation(out)?.ok_or_else(|| {
+        LifecycleError::new("partial lifecycle build requires an active complete generation")
+    })?;
+    validate_content_identity(&generation_id, "active generation identity")?;
+    let root = out.join("generations").join(&generation_id);
+    reject_symlink_components(out, &root, "active generation")?;
+    let manifest_path = root.join("generation.json");
+    let metadata = fs::symlink_metadata(&manifest_path)
+        .map_err(io_error("inspect active generation manifest"))?;
+    if !metadata.is_file() || metadata.file_type().is_symlink() || metadata.len() > 16 * 1024 * 1024
+    {
+        return Err(LifecycleError::new(
+            "active generation manifest is missing, linked, or oversized",
+        ));
+    }
+    let bytes = fs::read(&manifest_path).map_err(io_error("read active generation manifest"))?;
+    let manifest: GenerationManifest = serde_json::from_slice(&bytes).map_err(|error| {
+        LifecycleError::new(format!("invalid active generation manifest: {error}"))
+    })?;
+    manifest.validate_against(graph)?;
+    if manifest.generation_id != generation_id {
+        return Err(LifecycleError::new(
+            "active generation pointer and manifest identity disagree",
+        ));
+    }
+    Ok((manifest, root))
+}
+
+fn copy_path(source: &Path, target: &Path) -> Result<(), LifecycleError> {
+    let metadata = fs::symlink_metadata(source).map_err(io_error("inspect reusable output"))?;
+    if metadata.file_type().is_symlink() {
+        return Err(LifecycleError::new(format!(
+            "reusable output `{}` must not be a symlink",
+            source.display()
+        )));
+    }
+    if metadata.is_file() {
+        if let Some(parent) = target.parent() {
+            fs::create_dir_all(parent).map_err(io_error("create reusable output parent"))?;
+        }
+        fs::copy(source, target).map_err(io_error("copy reusable output"))?;
+        return Ok(());
+    }
+    if !metadata.is_dir() {
+        return Err(LifecycleError::new("reusable output is not a regular path"));
+    }
+    fs::create_dir_all(target).map_err(io_error("create reusable output directory"))?;
+    let mut entries = fs::read_dir(source)
+        .map_err(io_error("read reusable output directory"))?
+        .collect::<Result<Vec<_>, _>>()
+        .map_err(io_error("read reusable output entry"))?;
+    entries.sort_by_key(|entry| entry.file_name());
+    for entry in entries {
+        copy_path(&entry.path(), &target.join(entry.file_name()))?;
+    }
+    Ok(())
 }
 
 fn validate_executor_coverage(
