@@ -1,47 +1,17 @@
 # Distributed
 
-**Distributed** is a state-of-the-art framework for building distributed
-systems and realtime applications.
+**Distributed** is an end-to-end fullstack framework for building distributed systems and realtime applications with CQRS and Event Sourcing, with generated GraphQL query APIs over rust defined Read Models with RBAC, and automatic client side optimism via generated command clients.
 
-An end-to-end cloud native stack — domain, service, query edge, live client,
-and even GitOps — so engineers who care about quality code can stay on the
-model and still ship polished, fast, maintainable products.
+Distributed lets you define domain logic cleanly, then compose those pieces like blocks into one service or many — whatever suits your size. Change transports and sharding later as you grow. 
 
-It is also a toolkit of distributed-systems tools. You do not need the whole
-path. Event-source aggregates and stop there. Use the service bus alone.
-Take GraphQL reads without the replica. Adopt what you need.
+Distributed is an end-to-end cloud native stack — from aggregates to GitOps friendly deployments.
 
-Distributed lets you define domain logic cleanly, then compose those pieces
-like blocks into one service or many — whatever suits your size. Change
-transports and sharding later as you grow.
+It is also a toolkit of distributed-systems tools. You do not need the whole path. Event-source aggregates and stop there. Use the service bus alone. Adopt what you need.
 
 Rust · TypeScript · CQRS / ES · SvelteKit · celld · Kafka · NATS · RabbitMQ ·
 PSQL · SQLite · OIDC · Keycloak · Authentik
 
-The living playground is [`tests/e2e-ui`](tests/e2e-ui): real apps (chat,
-todos, blob, admin) with a **How it is built** panel on every screen. Default
-is one process. The same UI can wait-dispatch Todo create/complete and
-`chat.post` to celld from [`tests/e2e-celld`](tests/e2e-celld). Chat is a
-small cell so GraphQL `@live` still working is the demo. This README is the
-same story, in the repo.
-
-- [The bar](#the-bar) — what “state of the art” means here
-- [Backstory](#backstory) — why the full path is one system, and the pieces still stand alone
-- [How it delivers](#how-it-delivers) — the unidirectional loop, with real code
-- [See it run](#see-it-run) — playground, GraphiQL, live OIDC
-- [Use as a dependency](#use-as-a-dependency) — workspace layout and features
-- [Reference](#feature-flags) — macros, repos, bus, GraphQL, CLI
-
----
-
-## The bar
-
-You never get perfect consistency, always-available writes, and partition
-tolerance at once (**CAP**). Products that stay up accept **eventual
-consistency** on reads — with clear rules about what the user can trust now.
-The bar for the full product is not a glue job of excellent parts. It is
-one path from domain event to optimistic row. You can still take one part
-and ignore the rest.
+See [`tests/e2e-ui`](tests/e2e-ui) for a complex demo and starting template.
 
 **Event-driven backend.** Command in, domain event out, projections update
 reads. The UI does not patch tables. **CQRS** keeps aggregates for rules and
@@ -80,27 +50,13 @@ pieces out of the binary.
 
 ## Backstory
 
-Built by someone who has lived the glue. Patrick Lee Scott is a multi-time
-CTO and long-time consultant on microservices and DevOps. He has maintained
-**sourced** and **servicebus** in the Node ecosystem for nearly a decade,
-and has been a student of domain-driven design since before CQRS/ES was the
-usual name for the write path.
+Patrick Lee Scott is a multi-time CTO and long-time consultant on microservices and DevOps. He has maintained **sourced** and **servicebus**, originally made by Matt Walters, in the Node ecosystem for nearly a decade, and has been a student of domain-driven design since before CQRS/ES was the name of the Google Group.
 
-Early on the pieces were wired together. **Matt Walters** authored Node
-`sourced` and `servicebus`, which inspired parts of what this library does.
-Later, Knative Eventing replaced much of hand-rolled service-bus plumbing.
-For reads, Hasura-style SQL (joins, RBAC, generated query APIs) worked. It
-was still a kit of parts.
-
-Distributed started in late 2024 as AI became usable for real systems work —
-and as models got good enough that building the dream framework (everything
-in one coherent place) stopped being a multi-year solo fantasy. The
-playground is that system: domain through live UI, with the DX we always
-wanted.
+Distributed started in late 2024 as just event sourcing in Rust, and then expanded to be my dream framework.
 
 ---
 
-## How it delivers
+## How it works
 
 Write the domain once, compose it into one `Service` or several, then
 generate the client. Each stage below uses real code from
