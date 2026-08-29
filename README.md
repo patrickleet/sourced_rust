@@ -2,60 +2,6 @@
 
 **Distributed** is an end-to-end fullstack framework for building distributed systems and realtime applications with CQRS and Event Sourcing, with generated GraphQL query APIs over rust defined Read Models with RBAC, and automatic client side optimism via generated command clients.
 
-Distributed lets you define domain logic cleanly, then compose those pieces like blocks into one service or many — whatever suits your size. Change transports and sharding later as you grow. 
-
-Distributed is an end-to-end cloud native stack — from aggregates to GitOps friendly deployments.
-
-It is also a toolkit of distributed-systems tools. You do not need the whole path. Event-source aggregates and stop there. Use the service bus alone. Adopt what you need.
-
-Rust · TypeScript · CQRS / ES · SvelteKit · celld · Kafka · NATS · RabbitMQ ·
-PSQL · SQLite · OIDC · Keycloak · Authentik
-
-See [`tests/e2e-ui`](tests/e2e-ui) for a complex demo and starting template.
-
-**Event-driven backend.** Command in, domain event out, projections update
-reads. The UI does not patch tables. **CQRS** keeps aggregates for rules and
-read models for screens. **Event sourcing** records what happened as history
-you can unit-test. Identity is OIDC and RBAC on the same claims — not a
-one-off check per endpoint.
-
-**Compiler-owned frontend.** You write Rust models, commands, and
-projections. The **GraphQL schema**, filters, typed operations, and command
-stubs are **generated** from those definitions — no resolvers, no
-hand-written query API. Pages only select fields. Writes stay **commands**.
-
-**Replica cache + one effect.** A client **replica** is a cache of the
-authorized slice. Auto-optimism applies the **projection mutation** to that
-cache — the same program the server projector runs against SQL. When the
-next row needs a known-record calculation, ship the domain **pure as WASM**;
-the generated client hosts it.
-
-**Same blocks, few or many processes.** Domain, modules, and projections are
-packages — not a deploy shape. A **service crate** lists the modules this
-process runs. Todo commands are `portable_command!` declarations in
-`todo-domain`. Today the playground is one host. [`tests/e2e-celld`](tests/e2e-celld)
-mounts the same declarations and wait-dispatches create/complete and
-`chat.post` to a cell (one private SQLite per todo or message). GraphQL
-`@live` and Eventual projectors stay off the cell. Later you write another
-`Service` from the same modules. Eventual
-projectors can move; Atomic seals stay with commands. The same Rust pures
-can compile to WASM for the replica.
-
-**Distributed** is that path when you want the whole product — one system
-so generation can keep the DX simple. The same crates stay usable as tools:
-aggregates, bus, outbox, locks, GraphQL, replica. Feature flags keep unused
-pieces out of the binary.
-
----
-
-## Backstory
-
-Patrick Lee Scott is a multi-time CTO and long-time consultant on microservices and DevOps. He has maintained **sourced** and **servicebus**, originally made by Matt Walters, in the Node ecosystem for nearly a decade, and has been a student of domain-driven design since before CQRS/ES was the name of the Google Group.
-
-Distributed started in late 2024 as just event sourcing in Rust, and then expanded to be my dream framework.
-
----
-
 ## How it works
 
 Write the domain once, compose it into one `Service` or several, then
