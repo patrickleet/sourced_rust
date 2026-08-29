@@ -51,8 +51,8 @@ pub use generate::{generate_service_scaffold, package_name};
 pub use lifecycle::{
     run_lifecycle_build, run_lifecycle_dev, ArtifactNodeReceipt, BuildDrift, DistributedSourceIdentity,
     GenerationManifest, LifecycleBuildConfig, LifecycleBuildOptions, LifecycleBuildReport,
-    LifecycleConfig, LifecycleDevConfig, LifecycleDevOptions, LifecycleDevProcess,
-    LifecycleDevReport, LifecycleError, LifecycleExecutor, LifecycleGraph, LifecycleNode,
+    LifecycleConfig, LifecycleDevConfig, LifecycleDevOptions, LifecycleDevProbe,
+    LifecycleDevProcess, LifecycleDevReport, LifecycleError, LifecycleExecutor, LifecycleGraph, LifecycleNode,
     ReleaseManifest, ReleaseMember, GENERATION_MANIFEST_SCHEMA_VERSION,
     LIFECYCLE_BUILD_CONFIG_SCHEMA_VERSION, LIFECYCLE_CONFIG_SCHEMA_VERSION,
     LIFECYCLE_GRAPH_SCHEMA_VERSION, NODE_RECEIPT_SCHEMA_VERSION,

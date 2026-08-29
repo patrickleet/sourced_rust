@@ -98,7 +98,13 @@ Add a `dev` section to `distributed.lifecycle.json`:
         "program": "cargo",
         "args": ["run", "--manifest-path", "{root}/Cargo.toml"],
         "restart_on": ["application-manifest"],
-        "ready_after_ms": 250
+        "ready_after_ms": 250,
+        "ready": {
+          "program": "curl",
+          "args": ["--fail", "--silent", "http://127.0.0.1:3000/health"],
+          "interval_ms": 100,
+          "timeout_ms": 5000
+        }
       },
       "ui": {
         "program": "npm",
@@ -114,7 +120,9 @@ Add a `dev` section to `distributed.lifecycle.json`:
 `restart_on` contains catalog node IDs, not another application inventory. An
 empty set deliberately leaves the process running, which is the native
 Vite/SvelteKit CSS and module-HMR fast path. A backend process names only the
-nodes that require its restart. Any initial-build, early-child-exit, watch,
+nodes that require its restart. Optional `ready` commands run directly with
+bounded intervals/timeouts and must exit successfully before readiness. Any
+initial-build, early-child-exit, watch,
 rebuild, or readiness failure is terminal and shuts down the supervised set;
 Ctrl-C also performs bounded child shutdown.
 

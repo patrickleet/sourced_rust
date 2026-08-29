@@ -14,8 +14,8 @@ pub use build::{
     LifecycleBuildReport, LifecycleExecutor, LIFECYCLE_BUILD_CONFIG_SCHEMA_VERSION,
 };
 pub use dev::{
-    run_lifecycle_dev, LifecycleDevConfig, LifecycleDevOptions, LifecycleDevProcess,
-    LifecycleDevReport,
+    run_lifecycle_dev, LifecycleDevConfig, LifecycleDevOptions, LifecycleDevProbe,
+    LifecycleDevProcess, LifecycleDevReport,
 };
 pub use graph::{
     DistributedSourceIdentity, LifecycleConfig, LifecycleError, LifecycleGraph, LifecycleNode,

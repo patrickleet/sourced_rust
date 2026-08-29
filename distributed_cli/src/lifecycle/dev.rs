@@ -46,6 +46,21 @@ pub struct LifecycleDevProcess {
     pub restart_on: BTreeSet<String>,
     #[serde(default = "default_ready_after_ms")]
     pub ready_after_ms: u64,
+    /// Optional command probe; exit status 0 is readiness evidence.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub ready: Option<LifecycleDevProbe>,
+}
+
+#[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
+#[serde(deny_unknown_fields)]
+pub struct LifecycleDevProbe {
+    pub program: String,
+    #[serde(default)]
+    pub args: Vec<String>,
+    #[serde(default = "default_poll_ms")]
+    pub interval_ms: u64,
+    #[serde(default = "default_shutdown_ms")]
+    pub timeout_ms: u64,
 }
 
 #[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
@@ -81,7 +96,7 @@ impl LifecycleDevConfig {
         if self
             .processes
             .values()
-            .map(|process| process.ready_after_ms)
+            .map(readiness_budget_ms)
             .sum::<u64>()
             > MAX_DEV_INTERVAL.as_millis() as u64
         {
@@ -107,12 +122,34 @@ impl LifecycleDevConfig {
                     "lifecycle dev process `{name}` readiness interval is out of bounds"
                 )));
             }
+            if let Some(probe) = &process.ready {
+                validate_stable_value(&probe.program, "lifecycle readiness probe program")?;
+                if probe.args.len() > 256
+                    || probe.args.iter().map(String::len).sum::<usize>() > 16 * 1024
+                    || probe.args.iter().any(|arg| arg.contains('\0'))
+                    || probe.interval_ms == 0
+                    || probe.timeout_ms == 0
+                    || probe.interval_ms > probe.timeout_ms
+                    || Duration::from_millis(probe.timeout_ms) > MAX_DEV_INTERVAL
+                {
+                    return Err(LifecycleError::new(format!(
+                        "lifecycle dev process `{name}` readiness probe is out of bounds"
+                    )));
+                }
+            }
             for node in &process.restart_on {
                 validate_stable_value(node, "lifecycle dev restart node")?;
             }
         }
         Ok(())
     }
+}
+
+fn readiness_budget_ms(process: &LifecycleDevProcess) -> u64 {
+    process
+        .ready
+        .as_ref()
+        .map_or(process.ready_after_ms, |probe| probe.timeout_ms)
 }
 
 #[derive(Clone, Debug)]
@@ -328,22 +365,15 @@ impl ChildSet {
             }
         }
         for (name, process) in &config.processes {
-            std::thread::sleep(Duration::from_millis(process.ready_after_ms));
-            if let Some(status) =
-                set.children
-                    .get_mut(name)
-                    .unwrap()
-                    .try_wait()
-                    .map_err(|error| {
-                        LifecycleError::new(format!(
-                            "failed to inspect dev process `{name}`: {error}"
-                        ))
-                    })?
-            {
+            if let Err(error) = wait_ready(
+                root,
+                name,
+                process,
+                generation,
+                set.children.get_mut(name).unwrap(),
+            ) {
                 let _ = set.shutdown(Duration::from_secs(1));
-                return Err(LifecycleError::new(format!(
-                    "lifecycle dev process `{name}` exited before readiness with {status}"
-                )));
+                return Err(error);
             }
         }
         Ok(set)
@@ -375,7 +405,11 @@ impl ChildSet {
                 continue;
             }
             stop_child(name, self.children.get_mut(name).unwrap())?;
-            let child = spawn_process(root, name, process, generation)?;
+            let mut child = spawn_process(root, name, process, generation)?;
+            if let Err(error) = wait_ready(root, name, process, generation, &mut child) {
+                let _ = stop_child(name, &mut child);
+                return Err(error);
+            }
             self.children.insert(name.clone(), child);
             *restarts.get_mut(name).unwrap() += 1;
         }
@@ -400,6 +434,63 @@ impl ChildSet {
             }
         }
         Ok(())
+    }
+}
+
+fn wait_ready(
+    root: &Path,
+    name: &str,
+    process: &LifecycleDevProcess,
+    generation: &LifecycleBuildReport,
+    child: &mut Child,
+) -> Result<(), LifecycleError> {
+    let started = Instant::now();
+    loop {
+        if let Some(status) = child.try_wait().map_err(|error| {
+            LifecycleError::new(format!("failed to inspect dev process `{name}`: {error}"))
+        })? {
+            return Err(LifecycleError::new(format!(
+                "lifecycle dev process `{name}` exited before readiness with {status}"
+            )));
+        }
+        let Some(probe) = &process.ready else {
+            std::thread::sleep(Duration::from_millis(process.ready_after_ms));
+            return Ok(());
+        };
+        let root_value = root.to_string_lossy();
+        let args = probe
+            .args
+            .iter()
+            .map(|arg| {
+                arg.replace("{root}", &root_value)
+                    .replace("{process}", name)
+                    .replace("{generation}", &generation.generation_id)
+            })
+            .collect::<Vec<_>>();
+        let status = Command::new(&probe.program)
+            .args(args)
+            .current_dir(root)
+            .env("DISTRIBUTED_GENERATION_ID", &generation.generation_id)
+            .env("DISTRIBUTED_RELEASE_ID", &generation.release_id)
+            .stdin(Stdio::null())
+            .stdout(Stdio::null())
+            .stderr(Stdio::null())
+            .status()
+            .map_err(|error| {
+                LifecycleError::new(format!(
+                    "failed to run readiness probe for lifecycle dev process `{name}`: {error}"
+                ))
+            })?;
+        if status.success() {
+            return Ok(());
+        }
+        if started.elapsed() >= Duration::from_millis(probe.timeout_ms) {
+            return Err(LifecycleError::new(format!(
+                "readiness probe for lifecycle dev process `{name}` timed out after {}ms",
+                probe.timeout_ms
+            )));
+        }
+        std::thread::sleep(Duration::from_millis(probe.interval_ms));
     }
 }
 

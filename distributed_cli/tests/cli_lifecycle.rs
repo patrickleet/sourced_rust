@@ -199,7 +199,13 @@ exec tail -f /dev/null
                 "program": "/bin/sh",
                 "args": ["{root}/dev-child.sh", "{root}", "{process}"],
                 "restart_on": ["application"],
-                "ready_after_ms": 20
+                "ready_after_ms": 20,
+                "ready": {
+                    "program": "/bin/test",
+                    "args": ["-f", "{root}/dist/distributed/active.json"],
+                    "interval_ms": 10,
+                    "timeout_ms": 200
+                }
             },
             "ui": {
                 "program": "/bin/sh",
