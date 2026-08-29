@@ -651,10 +651,7 @@ fn run_build(args: &BuildArgs) -> Result<(), Box<dyn Error>> {
         }
     }
     if !report.ok {
-        return Err(Box::new(CliExitError {
-            message: "lifecycle build check detected drift",
-            exit_code: 1,
-        }));
+        return Err("lifecycle build check detected drift".into());
     }
     Ok(())
 }

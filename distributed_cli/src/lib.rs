@@ -16,8 +16,7 @@ mod skills;
 
 pub use atlas::{render_atlas_schema, AtlasDatabaseUrl, AtlasSchemaSpec};
 pub use cli::{
-    cli_error_exit_code, run, run_distributed, AgentHarness, BuildArgs, Bus, ClientArgs,
-    ClientManifestArgs,
+    run, run_distributed, AgentHarness, BuildArgs, Bus, ClientArgs, ClientManifestArgs,
     ContractsAcceptArgs, ContractsArgs, ContractsCheckArgs, ContractsCommands, ContractsOutput,
     DescribeArgs, DevArgs, DistributedArgs, DistributedCommands, Framework, GitopsPromote,
     LifecycleOutput, ManifestFormat, Metrics, ScaffoldArgs, SchemaArgs, SchemaDialect, SchemaFormat,

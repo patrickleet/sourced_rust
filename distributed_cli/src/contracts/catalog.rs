@@ -148,7 +148,17 @@ impl ContractCatalog {
             .parent()
             .filter(|parent| !parent.as_os_str().is_empty())
             .unwrap_or_else(|| Path::new("."));
-        let canonical_root = fs::canonicalize(root).map_err(|error| {
+        Self::from_path_at_root(path, root)
+    }
+
+    /// Read a catalog file while resolving every declared path against an
+    /// explicit repository root.
+    pub fn from_path_at_root(
+        path: impl AsRef<Path>,
+        root: impl AsRef<Path>,
+    ) -> Result<Self, ContractError> {
+        let path = path.as_ref();
+        let canonical_root = fs::canonicalize(root.as_ref()).map_err(|error| {
             ContractError::new(
                 ContractDiagnosticCode::CatalogPath,
                 format!("resolve catalog repository root: {error}"),
@@ -186,7 +196,7 @@ impl ContractCatalog {
             )
         })?;
         let catalog = Self::from_json_str(input)?;
-        catalog.validate_paths(canonical_root)?;
+        catalog.validate_paths(&canonical_root)?;
         Ok(catalog)
     }
 
