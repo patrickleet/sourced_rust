@@ -1,6 +1,6 @@
 # Distributed
 
-**Distributed** is an end-to-end fullstack framework for building distributed systems and realtime applications with CQRS and Event Sourcing, with generated GraphQL query APIs over rust defined Read Models with RBAC, and automatic client side optimism via generated command clients.
+**Distributed** is an end-to-end fullstack framework for building distributed systems and realtime applications with CQRS and Event Sourcing, with generated GraphQL query APIs over rust defined Read Models with RBAC, and automatic client side optimism via generated command clients and client side replica cache.
 
 ## How it works
 
