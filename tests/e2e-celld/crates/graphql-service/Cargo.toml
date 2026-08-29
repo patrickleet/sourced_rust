@@ -14,7 +14,6 @@ tokio = { workspace = true }
 sqlx = { workspace = true }
 axum = { workspace = true }
 reqwest = { workspace = true }
-futures-util = "0.3"
 todo-domain = { path = "../../../e2e-ui/crates/todo-domain" }
 chat-domain = { path = "../../../e2e-ui/crates/chat-domain" }
 blob-domain = { path = "../../../e2e-ui/crates/blob-domain" }

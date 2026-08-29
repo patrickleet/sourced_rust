@@ -56,3 +56,6 @@ tests/workshop-service/*.db
 tests/fixtures/**/target/
 tests/celld/worker/target/
 tests/celld/worker/build/
+tests/celld/worker/.celld/
+tests/celld/relay-worker/target/
+tests/celld/relay-worker/build/

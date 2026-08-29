@@ -1,6 +1,6 @@
 [workspace]
 members = ["distributed_macros", "distributed_cli"]
-exclude = ["tests/e2e-ui", "tests/celld/worker"]
+exclude = ["tests/e2e-ui", "tests/celld/worker", "tests/celld/relay-worker"]
 resolver = "2"
 
 [workspace.package]
@@ -45,6 +45,7 @@ sqlite = ["dep:sqlx", "dep:tokio", "sqlx/migrate", "sqlx/runtime-tokio", "sqlx/s
 nats = ["dep:async-nats", "dep:futures", "dep:tokio"]
 rabbitmq = ["dep:lapin", "dep:futures", "dep:tokio"]
 kafka = ["dep:rdkafka", "dep:tokio"]
+workers-rs = ["dep:worker"]
 otel = ["dep:opentelemetry", "dep:opentelemetry_sdk", "dep:tracing", "dep:tracing-opentelemetry"]
 graphql = ["dep:async-graphql", "dep:async-graphql-axum", "dep:hmac", "dep:jsonwebtoken", "http", "axum?/ws"]
 
@@ -78,6 +79,7 @@ tokio = { version = "1", features = ["rt-multi-thread", "net", "macros", "time",
 tracing = { version = "0.1", optional = true }
 tracing-opentelemetry = { version = "0.33", default-features = false, optional = true }
 uuid = { version = "1", features = ["v7"] }
+worker = { version = "0.8", features = ["queue"], optional = true }
 
 [target.'cfg(all(target_arch = "wasm32", target_os = "unknown"))'.dependencies]
 js-sys = "0.3"

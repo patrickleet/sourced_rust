@@ -2,17 +2,23 @@
 //! one instance per shard (`{aggregate_type}:{shard}`).
 
 use std::collections::HashMap;
+use std::time::Duration;
 
 use serde_json::Value;
 
 use super::causal::{CellCommandIdentity, CellDispatchError, CellDispatchResult};
-use super::store::{CellStreamStore, DurableCellCommand, DurableCellEvents, DurableCellSnapshot};
+use super::store::{
+    CellStreamStore, DurableAggregateCellState, DurableCellCommand, DurableCellEvents,
+    DurableCellSnapshot,
+};
 use crate::aggregate::{Aggregate, AggregateRepository};
 use crate::microsvc::error::HandlerError;
 use crate::microsvc::service::{PortableCommand, Routes};
 use crate::microsvc::session::Session;
+use crate::microsvc::HasOutboxStore;
 use crate::repository::{RepositoryError, SnapshotStore, StreamIdentity};
 use crate::snapshot::{SnapshotRecord, Snapshottable};
+use crate::{InMemoryOutboxStore, OutboxDispatcher};
 
 /// Cell class for aggregate `A`. Equivalent to
 /// `#[distributed::cell(aggregate = A)]`: mount the same domain
@@ -149,6 +155,29 @@ where
         self.routes.repo().repo().durable_outbox()
     }
 
+    /// Build the standard claim → publish → settle drain over this cell's
+    /// committed outbox. A celld Worker normally supplies a
+    /// `CelldQueuePublisher`, persists the settled outbox state, and lets
+    /// celld's output gate order Queue egress after the cell write.
+    pub fn outbox_dispatcher<P>(
+        &self,
+        publisher: P,
+        worker_id: impl Into<String>,
+        lease: Duration,
+        max_attempts: u32,
+    ) -> OutboxDispatcher<InMemoryOutboxStore, P>
+    where
+        P: crate::bus::MessagePublisher,
+    {
+        OutboxDispatcher::new(
+            self.routes.repo().repo().outbox_store(),
+            publisher,
+            worker_id,
+            lease,
+            max_attempts,
+        )
+    }
+
     /// Restore outbox rows from Durable Object SQLite.
     pub fn restore_durable_outbox(
         &self,
@@ -184,6 +213,20 @@ where
         commands: Vec<DurableCellCommand>,
     ) -> Result<(), RepositoryError> {
         self.routes.repo().repo().restore_durable_commands(commands)
+    }
+
+    /// Export events, snapshots, command ledger, outbox, and sealed row as one
+    /// versioned value suitable for a single durable storage write.
+    pub fn durable_state(&self) -> Result<DurableAggregateCellState, RepositoryError> {
+        self.routes.repo().repo().durable_state()
+    }
+
+    /// Restore the complete working copy from one durable storage value.
+    pub fn restore_durable_state(
+        &self,
+        state: DurableAggregateCellState,
+    ) -> Result<(), RepositoryError> {
+        self.routes.repo().repo().restore_durable_state(state)
     }
 
     /// Read the repository snapshot cache for this cell's shard.

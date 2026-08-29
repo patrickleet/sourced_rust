@@ -6,6 +6,7 @@
 use std::sync::Arc;
 use std::time::Duration;
 
+use distributed::bus::celld_queue_relay_handler;
 use distributed::bus::MessagePublisher;
 use distributed::bus::NatsBus;
 use distributed::cell_host::{CelldCommandHost, InternalHttpSecret};
@@ -72,7 +73,7 @@ async fn run_postgres(
         publisher.clone(),
         options.internal_secret.clone(),
     )?;
-    let outbox_drain = celld_host.outbox_alarm_handler();
+    let queue_relay = celld_queue_relay_handler(publisher);
     let host: SharedCommandHost = Arc::new(celld_host);
 
     spawn_outbox_publish_loop(
@@ -101,7 +102,7 @@ async fn run_postgres(
         service,
         host,
         &options.bind,
-        Some(outbox_drain),
+        queue_relay,
         options.internal_secret,
     )
     .await?;

@@ -23,6 +23,13 @@ fn worker_dir() -> &'static Path {
     Path::new(concat!(env!("CARGO_MANIFEST_DIR"), "/tests/celld/worker"))
 }
 
+fn relay_worker_dir() -> &'static Path {
+    Path::new(concat!(
+        env!("CARGO_MANIFEST_DIR"),
+        "/tests/celld/relay-worker"
+    ))
+}
+
 #[test]
 fn worker_declares_sqlite_todo_and_chat_cells() {
     let wrangler =
@@ -42,10 +49,12 @@ fn worker_declares_sqlite_todo_and_chat_cells() {
         .as_array()
         .unwrap();
     assert_eq!(v2[0], "ChatCell");
+    assert_eq!(spec["queues"]["producers"][0]["binding"], "EVENTS");
     assert_eq!(
-        spec["vars"]["OUTBOX_DRAIN_URL"],
-        "http://host.docker.internal:8791/internal/outbox/drain"
+        spec["queues"]["producers"][0]["queue"],
+        "distributed-domain-events"
     );
+    assert!(spec["vars"].get("OUTBOX_DRAIN_URL").is_none());
 
     let source = std::fs::read_to_string(worker_dir().join("src/lib.rs")).expect("lib.rs");
     assert!(source.contains("pub struct TodoCell"));
@@ -67,7 +76,13 @@ fn worker_declares_sqlite_todo_and_chat_cells() {
     assert!(source.contains("outbox.release"));
     assert!(source.contains("CREATE TABLE IF NOT EXISTS cell_outbox"));
     assert!(source.contains("CREATE TABLE IF NOT EXISTS cell_commands"));
+    assert!(source.contains("CREATE TABLE IF NOT EXISTS cell_state"));
+    assert!(source.contains("durable_state"));
+    assert!(source.contains("restore_durable_state"));
+    assert!(source.contains("ON CONFLICT(id) DO UPDATE SET body = excluded.body"));
     assert!(source.contains("dispatch_idempotent"));
+    assert!(source.contains("CelldQueuePublisher::from_env"));
+    assert!(source.contains("outbox_dispatcher"));
     assert!(source.contains("restore_durable_commands"));
     assert!(source.contains("sealed_row"));
     assert!(source.contains("new_with_snapshots"));
@@ -77,38 +92,43 @@ fn worker_declares_sqlite_todo_and_chat_cells() {
 }
 
 #[test]
-fn compose_file_does_not_use_minio() {
+fn relay_worker_consumes_events_queue_through_native_bus_boundary() {
+    let wrangler = std::fs::read_to_string(relay_worker_dir().join("wrangler.jsonc"))
+        .expect("relay wrangler.jsonc");
+    let spec: Value = serde_json::from_str(&wrangler).expect("relay wrangler json");
+    assert_eq!(
+        spec["queues"]["consumers"][0]["queue"],
+        "distributed-domain-events"
+    );
+    assert_eq!(
+        spec["vars"]["CELLD_QUEUE_RELAY_URL"],
+        "http://host.docker.internal:8792/internal/celld-queue/relay"
+    );
+
+    let source =
+        std::fs::read_to_string(relay_worker_dir().join("src/lib.rs")).expect("relay lib.rs");
+    assert!(source.contains("#[event(queue)]"));
+    assert!(source.contains("CelldQueueRelay"));
+    assert!(source.contains("CelldQueueHttpPublisher"));
+    assert!(!source.contains("event(fetch)"));
+}
+
+#[test]
+fn compose_uses_celld_0_4_local_store_with_persistent_volume() {
     let compose = std::fs::read_to_string(concat!(
         env!("CARGO_MANIFEST_DIR"),
         "/tests/celld/docker-compose.yml"
     ))
     .expect("compose");
-    let dockerfile = std::fs::read_to_string(concat!(
-        env!("CARGO_MANIFEST_DIR"),
-        "/tests/celld/Dockerfile"
-    ))
-    .expect("dockerfile");
-    assert!(dockerfile.contains("ghcr.io/denoland/celld"));
-    assert!(dockerfile.contains("socat"));
-    assert!(compose.contains("mcr.microsoft.com/azure-storage/azurite"));
-    assert!(compose.contains("az://celld"));
-    assert!(compose.contains("AZURE_STORAGE_USE_EMULATOR"));
-    assert!(
-        !compose
-            .lines()
-            .any(|line| line.trim_start().starts_with("network_mode")),
-        "Docker Desktop extra_hosts cannot combine with network_mode"
-    );
-    assert!(
-        !compose
-            .lines()
-            .any(|line| line.trim_start().starts_with("image:") && line.contains("minio")),
-        "do not run MinIO as the celld bucket"
-    );
+    assert!(compose.contains("ghcr.io/denoland/celld:0.4.0"));
+    assert!(compose.contains("- dev"));
+    assert!(compose.contains("celld-dev-data:/worker/.celld"));
+    assert!(!compose.contains("azurite"));
+    assert!(!compose.contains("AZURE_STORAGE"));
+    assert!(!compose.contains("s3"));
     assert!(compose.contains("CELLD_HTTP_PORT:-18080"));
     assert!(compose.contains("127.0.0.1:${CELLD_HTTP_PORT:-18080}:8080"));
     assert!(compose.contains(":8080"));
-    assert!(compose.contains("host.docker.internal:host-gateway"));
 }
 
 #[tokio::test]

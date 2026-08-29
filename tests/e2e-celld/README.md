@@ -11,24 +11,25 @@ New example, sibling of `tests/e2e-ui`. It is **not** `make run` in e2e-ui.
 | `e2e-celld-identity` | Zitadel ingress/scrape + AuthUsers projector |
 | `e2e-celld-graphql` | GraphQL process (`graphql_router_with_host`) |
 | `tests/celld/worker` | `TodoCell` + `ChatCell` |
+| `tests/celld/relay-worker` | Queue-only canonical-message relay |
 
 `distributed::cell_host::CelldCommandHost` wait-dispatches `todo.create` /
 `todo.complete` / `chat.post` to `{CELLD_URL}/{kind}/{shard}/{command}`.
 Aggregate crates only supply a `CelldRoute` (kind, shard id, payload map).
-The cell commits events and outbox in one private SQLite. A single bounded host
-scheduler claims leased rows, publishes them through `MessagePublisher` (NATS
-here; Kafka/Rabbit swap the bus), and settles only rows owned by that worker.
-Mutation completion only queues the durable cell address; it never waits for
-the broker. Cell alarms POST the same address-only hint to
-`/internal/outbox/drain`. Eventual projectors here fill SQL so
-`@live` still fires. Blob and identity stay in-process. GraphQL is the user edge (`OidcBearer`
-on the engine); Zitadel Actions and outbox drain are internal HTTP on the
-same process. GraphQL and projectors are not cell class methods.
+The cell commits its complete aggregate state and outbox as one versioned
+SQLite value, then publishes pending messages to celld Queue through
+`CelldQueuePublisher`. A Queue-only Worker relays canonical messages to the
+authenticated native endpoint. The endpoint uses `BusPublisher<NatsBus>`;
+Kafka, RabbitMQ, or Knative only change that native publisher. There is no
+response-based outbox fallback. Eventual projectors fill SQL so `@live` still
+fires. Blob and identity stay in-process. GraphQL is the user edge
+(`OidcBearer` on the engine); Zitadel Actions and the Queue relay are internal
+HTTP on the same process. GraphQL and projectors are not cell class methods.
 
 ## Private HTTP boundary
 
-All cell reads, commands, outbox claim/settle operations, cell alarms, and
-Zitadel internal routes require `DISTRIBUTED_INTERNAL_SECRET` in the
+All cell reads, commands, Queue relay deliveries, and Zitadel internal routes
+require `DISTRIBUTED_INTERNAL_SECRET` in the
 `x-distributed-internal-secret` header. Startup fails when the secret is
 missing or invalid. Local compose ports and the GraphQL listener bind to
 loopback by default. The checked-in value in the worker config is test-only;
@@ -37,9 +38,9 @@ network policy. Health endpoints remain public and disclose no secret.
 
 The threat model assumes the GraphQL edge has already verified user identity.
 The internal secret prevents a network caller from forging trusted user/role,
-service, partition, alarm, or outbox-settlement headers. Strict envelopes,
-body limits, URL encoding, disabled redirects, timeouts, leases, and ownership
-tokens bound the damage from malformed, replayed, slow, or concurrent requests.
+service, partition, or relay headers. Strict envelopes, body limits, URL
+encoding, disabled redirects, timeouts, Queue leases, and stable message ids
+bound the damage from malformed, replayed, slow, or concurrent requests.
 
 Workspace tests (no live celld):
 
@@ -50,7 +51,7 @@ make test               # cargo test --workspace (CI)
 ```sh
 cd tests/e2e-ui
 make up                 # Zitadel + Postgres (read models + login)
-make up-celld-nats      # Azurite + celld + NATS
+make up-celld-nats      # celld 0.4 local store + NATS
 
 cd ../e2e-celld
 make run                # GraphQL :8791 + UI :5180 (watches sources)

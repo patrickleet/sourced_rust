@@ -9,10 +9,11 @@ use std::collections::HashSet;
 use std::time::{Duration, SystemTime};
 
 use chat_domain::{post, ChatMessage, ChatMessageState};
+use distributed::bus::CelldQueuePublisher;
 use distributed::cell_host::{
     AggregateCell, CellCommandIdentity, CellDispatchError, CellDispatchResult, CellOutboxWireItem,
-    CellWaitPathRequest, DurableCellCommand, DurableCellEvents, DurableCellSnapshot,
-    InternalHttpSecret, CELL_INTERNAL_SECRET_ENV, CELL_INTERNAL_SECRET_HEADER,
+    CellWaitPathRequest, DurableAggregateCellState, DurableCellCommand, DurableCellEvents,
+    DurableCellSnapshot, InternalHttpSecret, CELL_INTERNAL_SECRET_ENV, CELL_INTERNAL_SECRET_HEADER,
     CELL_PRINCIPAL_PARTITION_HEADER, CELL_SERVICE_ID_HEADER, MAX_CELL_OUTBOX_ITEMS,
     MAX_CELL_OUTBOX_PAYLOAD_BYTES, MAX_CELL_OUTBOX_WIRE_BYTES,
 };
@@ -55,6 +56,11 @@ const COMMANDS_DDL: &str = "CREATE TABLE IF NOT EXISTS cell_commands (
   body TEXT NOT NULL
 )";
 
+const STATE_DDL: &str = "CREATE TABLE IF NOT EXISTS cell_state (
+  id INTEGER PRIMARY KEY CHECK (id = 1),
+  body TEXT NOT NULL
+)";
+
 #[durable_object]
 pub struct TodoCell {
     cell: AggregateCell<Todo>,
@@ -75,6 +81,7 @@ impl DurableObject for TodoCell {
         sql.exec(SEALED_DDL, None).expect("create cell_sealed");
         sql.exec(OUTBOX_DDL, None).expect("create cell_outbox");
         sql.exec(COMMANDS_DDL, None).expect("create cell_commands");
+        sql.exec(STATE_DDL, None).expect("create cell_state");
         let shard = state.id().name().unwrap_or_else(|| "todo".to_string());
         let cell = AggregateCell::<Todo>::new_with_snapshots(shard.clone(), 1)
             .expect("todo cell identity")
@@ -85,15 +92,7 @@ impl DurableObject for TodoCell {
             .mount(archive())
             .mount(force_archive())
             .mount(purge());
-        if let Ok(events) = load_events(&sql) {
-            let _ = cell.restore_durable_events(events);
-        }
-        if let Ok(snapshots) = load_snapshots(&sql) {
-            let _ = cell.restore_durable_snapshots(snapshots);
-        }
-        if let Ok(commands) = load_commands(&sql) {
-            let _ = cell.restore_durable_commands(commands);
-        }
+        let _ = restore_working_copy(&sql, &cell);
         Self {
             cell,
             sql,
@@ -190,7 +189,15 @@ impl DurableObject for TodoCell {
         if let Err(error) = restore_working_copy(&self.sql, &self.cell) {
             return json_status(json!({ "error": error }), 500);
         }
-        run_outbox_alarm(&self.storage, &self.env, &self.cell, "todo", &self.shard).await
+        run_outbox_alarm(
+            &self.sql,
+            &self.storage,
+            &self.env,
+            &self.cell,
+            "todo",
+            &self.shard,
+        )
+        .await
     }
 }
 
@@ -212,16 +219,12 @@ impl DurableObject for ChatCell {
         sql.exec(SEALED_DDL, None).expect("create cell_sealed");
         sql.exec(OUTBOX_DDL, None).expect("create cell_outbox");
         sql.exec(COMMANDS_DDL, None).expect("create cell_commands");
+        sql.exec(STATE_DDL, None).expect("create cell_state");
         let shard = state.id().name().unwrap_or_else(|| "chat".to_string());
         let cell = AggregateCell::<ChatMessage>::new(shard.clone())
             .expect("chat cell identity")
             .mount(post());
-        if let Ok(events) = load_events(&sql) {
-            let _ = cell.restore_durable_events(events);
-        }
-        if let Ok(commands) = load_commands(&sql) {
-            let _ = cell.restore_durable_commands(commands);
-        }
+        let _ = restore_chat_copy(&sql, &cell);
         Self {
             cell,
             sql,
@@ -296,7 +299,15 @@ impl DurableObject for ChatCell {
         if let Err(error) = restore_chat_copy(&self.sql, &self.cell) {
             return json_status(json!({ "error": error }), 500);
         }
-        run_outbox_alarm(&self.storage, &self.env, &self.cell, "chat", &self.shard).await
+        run_outbox_alarm(
+            &self.sql,
+            &self.storage,
+            &self.env,
+            &self.cell,
+            "chat",
+            &self.shard,
+        )
+        .await
     }
 }
 
@@ -436,8 +447,9 @@ async fn post_chat(
     {
         Ok(dispatch) => {
             seal_chat_from_load(cell).await;
+            arm_drain_alarm(storage, env, has_pending(cell)).await?;
             persist_chat_copy(sql, cell)?;
-            arm_drain_alarm(storage, env, has_pending(cell)).await;
+            drain_outbox_to_queue(sql, storage, env, cell, "chat", id).await?;
             wait_path_ok(
                 dispatch.payload().clone(),
                 &dispatch,
@@ -446,8 +458,9 @@ async fn post_chat(
             )
         }
         Err(error) => {
+            arm_drain_alarm(storage, env, has_pending(cell)).await?;
             persist_chat_copy(sql, cell)?;
-            arm_drain_alarm(storage, env, has_pending(cell)).await;
+            drain_outbox_to_queue(sql, storage, env, cell, "chat", id).await?;
             map_cell_error(error, cell)
         }
     }
@@ -467,6 +480,11 @@ fn restore_chat_copy(
     sql: &SqlStorage,
     cell: &AggregateCell<ChatMessage>,
 ) -> std::result::Result<(), String> {
+    if let Some(state) = load_cell_state(sql).map_err(|error| error.to_string())? {
+        return cell
+            .restore_durable_state(state)
+            .map_err(|error| error.to_string());
+    }
     let events = load_events(sql).map_err(|error| error.to_string())?;
     cell.restore_durable_events(events)
         .map_err(|error| error.to_string())?;
@@ -490,36 +508,7 @@ async fn seal_chat_from_load(cell: &AggregateCell<ChatMessage>) {
 }
 
 fn persist_chat_copy(sql: &SqlStorage, cell: &AggregateCell<ChatMessage>) -> Result<()> {
-    let events = cell
-        .durable_events()
-        .map_err(|error| Error::RustError(error.to_string()))?;
-    sql.exec("DELETE FROM cell_events", None)?;
-    for stream in events {
-        for event in stream.events {
-            let body = serde_json::to_string(&event)
-                .map_err(|error| Error::RustError(error.to_string()))?;
-            sql.exec(
-                "INSERT INTO cell_events (stream, seq, body) VALUES (?, ?, ?)",
-                Some(vec![
-                    stream.stream.clone().into(),
-                    SqlStorageValue::Integer(event.sequence as i64),
-                    body.into(),
-                ]),
-            )?;
-        }
-    }
-    persist_commands(sql, cell)?;
-    persist_outbox(sql, cell)?;
-    sql.exec("DELETE FROM cell_sealed", None)?;
-    if let Ok(Some(row)) = cell.sealed_row() {
-        let body =
-            serde_json::to_string(&row).map_err(|error| Error::RustError(error.to_string()))?;
-        sql.exec(
-            "INSERT INTO cell_sealed (id, body) VALUES (?, ?)",
-            Some(vec!["row".into(), body.into()]),
-        )?;
-    }
-    Ok(())
+    persist_cell_state(sql, cell)
 }
 
 async fn get_todo(cell: &AggregateCell<Todo>, id: &str) -> Result<Response> {
@@ -648,8 +637,9 @@ async fn create_todo(
     {
         Ok(dispatch) => {
             seal_from_load(cell).await;
+            arm_drain_alarm(storage, env, has_pending(cell)).await?;
             persist_working_copy(sql, cell)?;
-            arm_drain_alarm(storage, env, has_pending(cell)).await;
+            drain_outbox_to_queue(sql, storage, env, cell, "todo", id).await?;
             wait_path_ok(
                 http_from_command(id, dispatch.payload(), &title),
                 &dispatch,
@@ -658,8 +648,9 @@ async fn create_todo(
             )
         }
         Err(error) => {
+            arm_drain_alarm(storage, env, has_pending(cell)).await?;
             persist_working_copy(sql, cell)?;
-            arm_drain_alarm(storage, env, has_pending(cell)).await;
+            drain_outbox_to_queue(sql, storage, env, cell, "todo", id).await?;
             map_cell_error(error, cell)
         }
     }
@@ -701,8 +692,9 @@ async fn transition_todo(
     {
         Ok(dispatch) => {
             seal_from_load(cell).await;
+            arm_drain_alarm(storage, env, has_pending(cell)).await?;
             persist_working_copy(sql, cell)?;
-            arm_drain_alarm(storage, env, has_pending(cell)).await;
+            drain_outbox_to_queue(sql, storage, env, cell, "todo", id).await?;
             let title = cell
                 .load()
                 .await
@@ -718,8 +710,9 @@ async fn transition_todo(
             )
         }
         Err(error) => {
+            arm_drain_alarm(storage, env, has_pending(cell)).await?;
             persist_working_copy(sql, cell)?;
-            arm_drain_alarm(storage, env, has_pending(cell)).await;
+            drain_outbox_to_queue(sql, storage, env, cell, "todo", id).await?;
             map_cell_error(error, cell)
         }
     }
@@ -801,6 +794,11 @@ fn restore_working_copy(
     sql: &SqlStorage,
     cell: &AggregateCell<Todo>,
 ) -> std::result::Result<(), String> {
+    if let Some(state) = load_cell_state(sql).map_err(|error| error.to_string())? {
+        return cell
+            .restore_durable_state(state)
+            .map_err(|error| error.to_string());
+    }
     let events = load_events(sql).map_err(|error| error.to_string())?;
     cell.restore_durable_events(events)
         .map_err(|error| error.to_string())?;
@@ -827,84 +825,41 @@ async fn seal_from_load(cell: &AggregateCell<Todo>) {
 }
 
 fn persist_working_copy(sql: &SqlStorage, cell: &AggregateCell<Todo>) -> Result<()> {
-    let events = cell
-        .durable_events()
-        .map_err(|error| Error::RustError(error.to_string()))?;
-    sql.exec("DELETE FROM cell_events", None)?;
-    for stream in events {
-        for event in stream.events {
-            let body = serde_json::to_string(&event)
-                .map_err(|error| Error::RustError(error.to_string()))?;
-            sql.exec(
-                "INSERT INTO cell_events (stream, seq, body) VALUES (?, ?, ?)",
-                Some(vec![
-                    stream.stream.clone().into(),
-                    SqlStorageValue::Integer(event.sequence as i64),
-                    body.into(),
-                ]),
-            )?;
-        }
-    }
-    let snapshots = cell
-        .durable_snapshots()
-        .map_err(|error| Error::RustError(error.to_string()))?;
-    sql.exec("DELETE FROM cell_snapshots", None)?;
-    for snapshot in snapshots {
-        let body = serde_json::to_string(&snapshot)
-            .map_err(|error| Error::RustError(error.to_string()))?;
-        sql.exec(
-            "INSERT INTO cell_snapshots (stream, body) VALUES (?, ?)",
-            Some(vec![snapshot.stream.into(), body.into()]),
-        )?;
-    }
-    persist_commands(sql, cell)?;
-    persist_outbox(sql, cell)?;
-    sql.exec("DELETE FROM cell_sealed", None)?;
-    if let Ok(Some(row)) = cell.sealed_row() {
-        let body =
-            serde_json::to_string(&row).map_err(|error| Error::RustError(error.to_string()))?;
-        sql.exec(
-            "INSERT INTO cell_sealed (id, body) VALUES (?, ?)",
-            Some(vec!["row".into(), body.into()]),
-        )?;
-    }
-    Ok(())
+    persist_cell_state(sql, cell)
 }
 
-fn persist_outbox<A>(sql: &SqlStorage, cell: &AggregateCell<A>) -> Result<()>
+fn persist_cell_state<A>(sql: &SqlStorage, cell: &AggregateCell<A>) -> Result<()>
 where
     A: distributed::Aggregate + Send + Sync + 'static,
 {
-    let rows = cell
-        .durable_outbox()
+    let state = cell
+        .durable_state()
         .map_err(|error| Error::RustError(error.to_string()))?;
-    sql.exec("DELETE FROM cell_outbox", None)?;
-    for message in rows {
-        let body = serde_json::to_string(&outbox_item(&message))
-            .map_err(|error| Error::RustError(error.to_string()))?;
-        sql.exec(
-            "INSERT INTO cell_outbox (id, body) VALUES (?, ?)",
-            Some(vec![message.id.into(), body.into()]),
-        )?;
-    }
+    let body =
+        serde_json::to_string(&state).map_err(|error| Error::RustError(error.to_string()))?;
+    sql.exec(
+        "INSERT INTO cell_state (id, body) VALUES (1, ?) \
+         ON CONFLICT(id) DO UPDATE SET body = excluded.body",
+        Some(vec![body.into()]),
+    )?;
     Ok(())
 }
 
-fn persist_commands<A>(sql: &SqlStorage, cell: &AggregateCell<A>) -> Result<()>
-where
-    A: distributed::Aggregate + Send + Sync + 'static,
-{
-    let rows = cell
-        .durable_commands()
-        .map_err(|error| Error::RustError(error.to_string()))?;
-    sql.exec("DELETE FROM cell_commands", None)?;
-    for command in rows {
-        sql.exec(
-            "INSERT INTO cell_commands (id, body) VALUES (?, ?)",
-            Some(vec![command.id.into(), command.body.into()]),
-        )?;
-    }
-    Ok(())
+fn load_cell_state(sql: &SqlStorage) -> Result<Option<DurableAggregateCellState>> {
+    let rows: Vec<StateRow> = sql
+        .exec("SELECT body FROM cell_state WHERE id = 1", None)?
+        .to_array()?;
+    rows.into_iter()
+        .next()
+        .map(|row| {
+            serde_json::from_str(&row.body).map_err(|error| Error::RustError(error.to_string()))
+        })
+        .transpose()
+}
+
+#[derive(Deserialize)]
+struct StateRow {
+    body: String,
 }
 
 fn load_commands(sql: &SqlStorage) -> Result<Vec<DurableCellCommand>> {
@@ -1022,9 +977,9 @@ where
     if !claimed.is_empty() {
         cell.restore_durable_outbox(rows)
             .map_err(|error| Error::RustError(error.to_string()))?;
-        persist_outbox(sql, cell)?;
+        persist_cell_state(sql, cell)?;
     }
-    arm_drain_alarm(storage, env, has_pending(cell)).await;
+    arm_drain_alarm(storage, env, has_pending(cell)).await?;
     json_status(json!({ "outbox": claimed }), 200)
 }
 
@@ -1095,8 +1050,8 @@ where
     }
     cell.restore_durable_outbox(rows)
         .map_err(|error| Error::RustError(error.to_string()))?;
-    persist_outbox(sql, cell)?;
-    arm_drain_alarm(storage, env, has_pending(cell)).await;
+    persist_cell_state(sql, cell)?;
+    arm_drain_alarm(storage, env, has_pending(cell)).await?;
     json_status(json!({ "ok": true }), 200)
 }
 
@@ -1104,13 +1059,10 @@ fn valid_worker_id(worker_id: &str) -> bool {
     !worker_id.is_empty() && worker_id.len() <= 512 && !worker_id.chars().any(char::is_control)
 }
 
-async fn arm_drain_alarm(storage: &Storage, env: &Env, pending: bool) {
+async fn arm_drain_alarm(storage: &Storage, env: &Env, pending: bool) -> Result<()> {
     if !pending {
-        let _ = storage.delete_alarm().await;
-        return;
-    }
-    if drain_url(env).is_none() {
-        return;
+        storage.delete_alarm().await?;
+        return Ok(());
     }
     let ms = env
         .var("OUTBOX_DRAIN_INTERVAL_MS")
@@ -1118,10 +1070,12 @@ async fn arm_drain_alarm(storage: &Storage, env: &Env, pending: bool) {
         .and_then(|value| value.to_string().parse::<u64>().ok())
         .unwrap_or(5_000)
         .max(1_000);
-    let _ = storage.set_alarm(Duration::from_millis(ms)).await;
+    storage.set_alarm(Duration::from_millis(ms)).await?;
+    Ok(())
 }
 
 async fn run_outbox_alarm<A>(
+    sql: &SqlStorage,
     storage: &Storage,
     env: &Env,
     cell: &AggregateCell<A>,
@@ -1131,49 +1085,55 @@ async fn run_outbox_alarm<A>(
 where
     A: distributed::Aggregate + Send + Sync + 'static,
 {
-    if has_pending(cell) {
-        offer_pending(env, kind, id).await;
-        arm_drain_alarm(storage, env, true).await;
-    } else {
-        arm_drain_alarm(storage, env, false).await;
-    }
+    drain_outbox_to_queue(sql, storage, env, cell, kind, id).await?;
     Response::ok("ok")
 }
 
-fn drain_url(env: &Env) -> Option<String> {
-    env.var("OUTBOX_DRAIN_URL")
-        .ok()
-        .map(|value| value.to_string())
-        .filter(|url| !url.is_empty())
-}
-
-async fn offer_pending(env: &Env, kind: &str, id: &str) {
-    let Some(url) = drain_url(env) else {
-        return;
-    };
-    let Ok(secret) = env
-        .secret(CELL_INTERNAL_SECRET_ENV)
-        .map(|value| value.to_string())
-        .or_else(|_| {
-            env.var(CELL_INTERNAL_SECRET_ENV)
-                .map(|value| value.to_string())
-        })
-    else {
-        return;
-    };
-    let payload = json!({ "kind": kind, "id": id });
-    let headers = Headers::new();
-    let _ = headers.set("content-type", "application/json");
-    let _ = headers.set(CELL_INTERNAL_SECRET_HEADER, &secret);
-    let mut init = RequestInit::new();
-    init.with_method(Method::Post)
-        .with_headers(headers)
-        .with_body(Some(worker::wasm_bindgen::JsValue::from_str(
-            &payload.to_string(),
-        )));
-    if let Ok(req) = Request::new_with_init(&url, &init) {
-        let _ = Fetch::Request(req).send().await;
+async fn drain_outbox_to_queue<A>(
+    sql: &SqlStorage,
+    storage: &Storage,
+    env: &Env,
+    cell: &AggregateCell<A>,
+    kind: &str,
+    id: &str,
+) -> Result<()>
+where
+    A: distributed::Aggregate + Send + Sync + 'static,
+{
+    if !has_pending(cell) {
+        arm_drain_alarm(storage, env, false).await?;
+        return Ok(());
     }
+
+    // Establish the watchdog before attempting Queue egress. If Queue accepts
+    // but settling the outbox is interrupted, this alarm retries the stable id.
+    arm_drain_alarm(storage, env, true).await?;
+
+    let publisher = CelldQueuePublisher::from_env(env, "EVENTS")
+        .map_err(|error| Error::RustError(error.to_string()))?;
+    let dispatcher = cell.outbox_dispatcher(
+        publisher,
+        format!("celld-queue:{kind}:{id}"),
+        Duration::from_secs(30),
+        10_000,
+    );
+    let outcome = dispatcher
+        .dispatch_batch(100)
+        .await
+        .map_err(|error| Error::RustError(error.to_string()))?;
+
+    // Queue acceptance settles the in-memory outbox. Persisting that settlement
+    // can be interrupted, in which case the stable event id is sent again.
+    persist_cell_state(sql, cell)?;
+    let pending = has_pending(cell);
+    arm_drain_alarm(storage, env, pending).await?;
+    if outcome.released > 0 || outcome.failed > 0 {
+        return Err(Error::RustError(format!(
+            "celld Queue did not accept {} outbox message(s)",
+            outcome.released + outcome.failed
+        )));
+    }
+    Ok(())
 }
 
 fn load_outbox(sql: &SqlStorage) -> Result<Vec<OutboxMessage>> {

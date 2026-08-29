@@ -92,6 +92,26 @@ pub struct DurableCellCommand {
     pub body: String,
 }
 
+/// Current persisted aggregate-cell state envelope version.
+pub const DURABLE_AGGREGATE_CELL_STATE_VERSION: u16 = 1;
+
+/// Complete durable working copy for one aggregate cell.
+///
+/// Hosts should serialize this value and persist it with one storage write.
+/// That makes the event log, snapshot cache, command ledger, outbox, and sealed
+/// row one commit even when a Worker SDK does not expose celld's
+/// `transactionSync` API.
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct DurableAggregateCellState {
+    pub version: u16,
+    pub events: Vec<DurableCellEvents>,
+    pub snapshots: Vec<DurableCellSnapshot>,
+    pub commands: Vec<DurableCellCommand>,
+    pub outbox: Vec<OutboxMessage>,
+    pub sealed_row: Option<Value>,
+}
+
 #[derive(Clone)]
 pub struct CellStreamStore {
     ownership: CellOwnership,
@@ -303,6 +323,44 @@ impl CellStreamStore {
             records.push(record);
         }
         self.inner.replace_command_ledger(records)
+    }
+
+    /// Export every durable concern as one versioned persistence envelope.
+    pub fn durable_state(&self) -> Result<DurableAggregateCellState, RepositoryError> {
+        Ok(DurableAggregateCellState {
+            version: DURABLE_AGGREGATE_CELL_STATE_VERSION,
+            events: self.durable_events()?,
+            snapshots: self.durable_snapshots()?,
+            commands: self.durable_commands()?,
+            outbox: self.durable_outbox()?,
+            sealed_row: self.sealed_row()?,
+        })
+    }
+
+    /// Replace the complete working copy from one persisted envelope.
+    pub fn restore_durable_state(
+        &self,
+        state: DurableAggregateCellState,
+    ) -> Result<(), RepositoryError> {
+        if state.version != DURABLE_AGGREGATE_CELL_STATE_VERSION {
+            return Err(RepositoryError::Model(format!(
+                "unsupported durable aggregate cell state version {}",
+                state.version
+            )));
+        }
+
+        // Parse and validate the command ledger before replacing the other
+        // working-copy components; malformed persisted JSON must fail closed.
+        self.restore_durable_commands(state.commands)?;
+        self.restore_durable_events(state.events)?;
+        self.restore_durable_snapshots(state.snapshots)?;
+        self.restore_durable_outbox(state.outbox)?;
+        let mut sealed = self
+            .sealed_row
+            .lock()
+            .map_err(|_| RepositoryError::Model("cell sealed row lock poisoned".into()))?;
+        *sealed = state.sealed_row;
+        Ok(())
     }
 
     fn ensure_batch(&self, batch: &CommitBatch<'_>) -> Result<(), RepositoryError> {

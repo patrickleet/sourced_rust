@@ -37,7 +37,10 @@ pub use outbox::{
     accept_outbox_drain, outbox_alarm_handler, CellOutboxDrainHandler, CellOutboxScheduler,
     CELL_OUTBOX_DRAIN_PATH,
 };
-pub use store::{CellStreamStore, DurableCellCommand, DurableCellEvents, DurableCellSnapshot};
+pub use store::{
+    CellStreamStore, DurableAggregateCellState, DurableCellCommand, DurableCellEvents,
+    DurableCellSnapshot, DURABLE_AGGREGATE_CELL_STATE_VERSION,
+};
 pub(crate) use wire::validate_cell_outbox_messages;
 pub use wire::{
     parse_cell_outbox, parse_claimed_cell_outbox, CellOutboxHint, CellOutboxWireItem,
