@@ -6,7 +6,6 @@
 
 #![allow(missing_docs)]
 
-
 use crate::graphql::{SurfaceDirectProjection, SurfaceModeledProjection, SurfaceProjector};
 use crate::projection::catalog::{
     ActiveProjectionBindings, ProjectionBindingActivation, ProjectionCatalog,
@@ -20,6 +19,9 @@ use crate::projection::placement::{
 use crate::projection_protocol::ProjectorTopologyId;
 use crate::table::TableSchema;
 use crate::RelationalReadModel;
+use sha2::{Digest, Sha256};
+
+const LOCAL_TOPOLOGY_DIGEST_DOMAIN: &[u8] = b"distributed.local-projection-topology\0";
 
 /// One eventual surface projector ready for GraphQL/service mounts.
 #[derive(Clone)]
@@ -114,12 +116,9 @@ impl LocalProjectionMountsBuilder {
         domain_source: impl Into<String>,
     ) -> Result<Self, String> {
         let service_id = service_id.into();
-        let source = ProjectionSourceBinding::try_new(
-            format!("{service_id}-domain"),
-            domain_source,
-            1,
-        )
-        .map_err(|error| error.to_string())?;
+        let source =
+            ProjectionSourceBinding::try_new(format!("{service_id}-domain"), domain_source, 1)
+                .map_err(|error| error.to_string())?;
         Ok(Self {
             service_id,
             source,
@@ -268,21 +267,34 @@ fn projection_output_for<M: RelationalReadModel>() -> Result<ProjectionOutput, S
         .map_err(|e| e.to_string())
 }
 
-fn physical_topology(name: &str, digest: u8) -> ProjectionPhysicalTopology {
+fn physical_topology(name: &str, digest: [u8; 32]) -> ProjectionPhysicalTopology {
     ProjectionPhysicalTopology::from_protocol(
-        &ProjectorTopologyId::new(1, name, [digest; 32])
-            .expect("canonical local projection topology"),
+        &ProjectorTopologyId::new(1, name, digest).expect("canonical local projection topology"),
     )
 }
 
-fn stable_topology_digest(owner: &str) -> u8 {
-    let mut acc = 0u8;
-    for (i, b) in owner.as_bytes().iter().enumerate() {
-        acc = acc.wrapping_add(b.wrapping_mul((i as u8).wrapping_add(1)));
-    }
-    if acc == 0 {
-        0x20
-    } else {
-        acc
+fn stable_topology_digest(owner: &str) -> [u8; 32] {
+    let mut digest = Sha256::new();
+    digest.update(LOCAL_TOPOLOGY_DIGEST_DOMAIN);
+    digest.update((owner.len() as u64).to_be_bytes());
+    digest.update(owner.as_bytes());
+    digest.finalize().into()
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn local_topology_identity_is_stable_and_does_not_alias_projectors() {
+        let workspace = "project_meta_workspaces";
+        let changes = "project_meta_change_sets";
+
+        let first = physical_topology(workspace, stable_topology_digest(workspace));
+        let after_restart = physical_topology(workspace, stable_topology_digest(workspace));
+        let subscriber = physical_topology(changes, stable_topology_digest(changes));
+
+        assert_eq!(first, after_restart);
+        assert_ne!(first.digest(), subscriber.digest());
     }
 }
