@@ -420,7 +420,7 @@ export const Operation_ChatMessages: ReplicaOperationArtifact<Operation_ChatMess
   ],
   "protocol": {
     "version": 1,
-    "schemaHash": "sha256:fac0df1bf0bc761b8dbb44bcb619cb835ca50669da19c88cbf33e3402cf7eb22",
+    "schemaHash": "sha256:56fc871394fd6e5cbf484e916e060477bd3fd269af9ff20139e218e75779f669",
     "surface": {
       "kind": "application",
       "name": "e2e-ui",

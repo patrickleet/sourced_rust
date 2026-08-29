@@ -516,15 +516,15 @@ impl Service {
             "cannot add typed command routes after attaching a GraphQL engine"
         );
         for (kind, name) in &keys {
-            if let Some(existing) = self.index.get(kind).and_then(|by_name| by_name.get(name)) {
-                let projector_fanout = *kind == MessageKind::Event
-                    && routes.is_projector_route(*kind, name)
-                    && existing
-                        .iter()
-                        .all(|index| self.routes[*index].is_projector_route(*kind, name));
+            if self
+                .index
+                .get(kind)
+                .and_then(|by_name| by_name.get(name))
+                .is_some()
+            {
                 assert!(
-                    projector_fanout,
-                    "duplicate route registration for {:?} `{}` is allowed only between causal projectors",
+                    *kind == MessageKind::Event,
+                    "duplicate route registration for {:?} `{}` is allowed only for domain-event fan-out",
                     kind, name
                 );
             }

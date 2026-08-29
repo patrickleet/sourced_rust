@@ -309,8 +309,6 @@ pub(super) trait ErasedRoutes: Send + Sync {
 
     fn is_causal_projector(&self, message: &Message) -> bool;
 
-    fn is_projector_route(&self, kind: MessageKind, name: &str) -> bool;
-
     fn repair_projection<'a>(
         &'a self,
         handle: &'a ProjectionRepairHandle,
@@ -2401,15 +2399,6 @@ where
             self.handlers
                 .get(&message.kind)
                 .and_then(|handlers| handlers.get(message.name())),
-            Some(RegisteredHandler::Projector(_))
-        )
-    }
-
-    fn is_projector_route(&self, kind: MessageKind, name: &str) -> bool {
-        matches!(
-            self.handlers
-                .get(&kind)
-                .and_then(|handlers| handlers.get(name)),
             Some(RegisteredHandler::Projector(_))
         )
     }

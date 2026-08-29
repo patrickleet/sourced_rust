@@ -3,6 +3,8 @@
 use distributed::microsvc::{Context, HandlerError, Routes, Service, Session};
 use distributed::{AggregateBuilder, InMemoryRepository};
 use serde_json::json;
+use std::sync::atomic::{AtomicUsize, Ordering};
+use std::sync::Arc;
 
 use crate::models::counter::{Counter, CreateCounter, DecrementCounter, IncrementCounter};
 
@@ -98,4 +100,46 @@ async fn full_lifecycle() {
     // Verify final state via repo
     let counter: Counter = counter_repo.get("c1").await.unwrap().unwrap();
     assert_eq!(counter.value, 6);
+}
+
+#[tokio::test]
+async fn domain_event_fans_out_to_multiple_subscribers() {
+    let projections = Arc::new(AtomicUsize::new(0));
+    let policies = Arc::new(AtomicUsize::new(0));
+    let projection_handler_count = projections.clone();
+    let policy_handler_count = policies.clone();
+    let service = Service::new()
+        .routes(
+            Routes::new()
+                .with_dependencies(projections.clone())
+                .event("metachangeset.opened")
+                .handle(move |_ctx: &Context<Arc<AtomicUsize>>| {
+                    let count = projection_handler_count.clone();
+                    async move {
+                        count.fetch_add(1, Ordering::SeqCst);
+                        Ok(json!({ "subscriber": "projection" }))
+                    }
+                }),
+        )
+        .routes(
+            Routes::new()
+                .with_dependencies(policies.clone())
+                .event("metachangeset.opened")
+                .handle(move |_ctx: &Context<Arc<AtomicUsize>>| {
+                    let count = policy_handler_count.clone();
+                    async move {
+                        count.fetch_add(1, Ordering::SeqCst);
+                        Ok(json!({ "subscriber": "policy" }))
+                    }
+                }),
+        );
+
+    let message = distributed::microsvc::Message::new(
+        "metachangeset.opened",
+        distributed::microsvc::MessageKind::Event,
+        b"{}".to_vec(),
+    );
+    service.dispatch_message(&message).await.unwrap();
+    assert_eq!(projections.load(Ordering::SeqCst), 1);
+    assert_eq!(policies.load(Ordering::SeqCst), 1);
 }

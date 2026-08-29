@@ -46,7 +46,7 @@ export const Command_blob_games_move: ReplicaCommandArtifact<Command_blob_games_
     ],
     "model": "BlobGames",
     "topology": {
-      "digest": "sha256:bfbfbfbfbfbfbfbfbfbfbfbfbfbfbfbfbfbfbfbfbfbfbfbfbfbfbfbfbfbfbfbf",
+      "digest": "sha256:e0a7d27b434ff0cd38d767cd325bf86a0c1da490341dda4ebccee772b0dbbc15",
       "name": "project_blob",
       "version": 1
     }
@@ -260,7 +260,7 @@ export const Command_blob_games_move: ReplicaCommandArtifact<Command_blob_games_
     "projectionProgramVersion": 2,
     "projections": [
       {
-        "bindingId": "pb1:sha256:b40b478dc0256eca20d7601a495b1bef3c09eb809c5efd79b2d9dd77637cd712",
+        "bindingId": "pb1:sha256:843f53453bb8bdc88b633bcfbe1e1cbb018a73f0388974ad4f2eb4484a830725",
         "epoch": "e2e-ui-blob-v2",
         "operationSemanticsVersion": 1,
         "programId": "pp1:sha256:5b95a587dbe4c35b80f7fbe1c953861538a7066568535520f36417d81e95deed",
@@ -317,7 +317,7 @@ export const Command_blob_games_move: ReplicaCommandArtifact<Command_blob_games_
   "protocol": {
     "operation": "sha256:6e3c6c00474e126a3fce6b671cd8a06eed988546f161793d39a08cc784ae49c7",
     "protocolHash": "sha256:00fb342f3acb4dc1c1716a43cc3001c748d5f6c500ff831690d820e9e43e2782",
-    "schemaHash": "sha256:698b20914d68f575bd70961a9c73ecebe44b79ee862b46ccaaee92dae2e21170",
+    "schemaHash": "sha256:3ef42391779ffe9d0150c9f3b5ebe14ee6ac3ec403c9a38623a5e04e9a815f41",
     "surface": {
       "eligible_roles": [
         "admin"
@@ -382,7 +382,7 @@ export const Command_blob_games_start: ReplicaCommandArtifact<Command_blob_games
     ],
     "model": "BlobGames",
     "topology": {
-      "digest": "sha256:bfbfbfbfbfbfbfbfbfbfbfbfbfbfbfbfbfbfbfbfbfbfbfbfbfbfbfbfbfbfbfbf",
+      "digest": "sha256:e0a7d27b434ff0cd38d767cd325bf86a0c1da490341dda4ebccee772b0dbbc15",
       "name": "project_blob",
       "version": 1
     }
@@ -639,7 +639,7 @@ export const Command_blob_games_start: ReplicaCommandArtifact<Command_blob_games
     "projectionProgramVersion": 2,
     "projections": [
       {
-        "bindingId": "pb1:sha256:b40b478dc0256eca20d7601a495b1bef3c09eb809c5efd79b2d9dd77637cd712",
+        "bindingId": "pb1:sha256:843f53453bb8bdc88b633bcfbe1e1cbb018a73f0388974ad4f2eb4484a830725",
         "epoch": "e2e-ui-blob-v2",
         "operationSemanticsVersion": 1,
         "programId": "pp1:sha256:5b95a587dbe4c35b80f7fbe1c953861538a7066568535520f36417d81e95deed",
@@ -651,7 +651,7 @@ export const Command_blob_games_start: ReplicaCommandArtifact<Command_blob_games
   "protocol": {
     "operation": "sha256:4b7ab56a38aec41d21809801ecefc5d7039a09e53a350187152c72a305de1567",
     "protocolHash": "sha256:00fb342f3acb4dc1c1716a43cc3001c748d5f6c500ff831690d820e9e43e2782",
-    "schemaHash": "sha256:698b20914d68f575bd70961a9c73ecebe44b79ee862b46ccaaee92dae2e21170",
+    "schemaHash": "sha256:3ef42391779ffe9d0150c9f3b5ebe14ee6ac3ec403c9a38623a5e04e9a815f41",
     "surface": {
       "eligible_roles": [
         "admin"
@@ -716,7 +716,7 @@ export const Command_blob_games_start_level: ReplicaCommandArtifact<Command_blob
     ],
     "model": "BlobGames",
     "topology": {
-      "digest": "sha256:bfbfbfbfbfbfbfbfbfbfbfbfbfbfbfbfbfbfbfbfbfbfbfbfbfbfbfbfbfbfbfbf",
+      "digest": "sha256:e0a7d27b434ff0cd38d767cd325bf86a0c1da490341dda4ebccee772b0dbbc15",
       "name": "project_blob",
       "version": 1
     }
@@ -973,7 +973,7 @@ export const Command_blob_games_start_level: ReplicaCommandArtifact<Command_blob
     "projectionProgramVersion": 2,
     "projections": [
       {
-        "bindingId": "pb1:sha256:b40b478dc0256eca20d7601a495b1bef3c09eb809c5efd79b2d9dd77637cd712",
+        "bindingId": "pb1:sha256:843f53453bb8bdc88b633bcfbe1e1cbb018a73f0388974ad4f2eb4484a830725",
         "epoch": "e2e-ui-blob-v2",
         "operationSemanticsVersion": 1,
         "programId": "pp1:sha256:5b95a587dbe4c35b80f7fbe1c953861538a7066568535520f36417d81e95deed",
@@ -985,7 +985,7 @@ export const Command_blob_games_start_level: ReplicaCommandArtifact<Command_blob
   "protocol": {
     "operation": "sha256:37c108a568f62e7391a03728555d7013bb717f14d1957a5c3527151fd70093bf",
     "protocolHash": "sha256:00fb342f3acb4dc1c1716a43cc3001c748d5f6c500ff831690d820e9e43e2782",
-    "schemaHash": "sha256:698b20914d68f575bd70961a9c73ecebe44b79ee862b46ccaaee92dae2e21170",
+    "schemaHash": "sha256:3ef42391779ffe9d0150c9f3b5ebe14ee6ac3ec403c9a38623a5e04e9a815f41",
     "surface": {
       "eligible_roles": [
         "admin"
@@ -1280,7 +1280,7 @@ export const Command_chat_messages_post: ReplicaCommandArtifact<Command_chat_mes
     "projectionProgramVersion": 2,
     "projections": [
       {
-        "bindingId": "pb1:sha256:cbf168dbe404c58a31770556f4a957af30ded9ed2becc1ba4dabdcd0d8f086e2",
+        "bindingId": "pb1:sha256:40ca58f40161333ce8517946f2da350f574e765a0c5c2cf4b8a441df38946e5d",
         "epoch": "e2e-ui-chat-v2",
         "operationSemanticsVersion": 1,
         "programId": "pp1:sha256:8ee4c26f6c722082149b590085111d66ba6153891ab51cdd2867a4fe3178c3c8",
@@ -1292,7 +1292,7 @@ export const Command_chat_messages_post: ReplicaCommandArtifact<Command_chat_mes
   "protocol": {
     "operation": "sha256:838e5ccb79daebb523ea3c634bea27077bcea191feabb86e45923470a7b9373d",
     "protocolHash": "sha256:00fb342f3acb4dc1c1716a43cc3001c748d5f6c500ff831690d820e9e43e2782",
-    "schemaHash": "sha256:698b20914d68f575bd70961a9c73ecebe44b79ee862b46ccaaee92dae2e21170",
+    "schemaHash": "sha256:3ef42391779ffe9d0150c9f3b5ebe14ee6ac3ec403c9a38623a5e04e9a815f41",
     "surface": {
       "eligible_roles": [
         "admin"
@@ -1538,7 +1538,7 @@ export const Command_todos_archive: ReplicaCommandArtifact<Command_todos_archive
     "projectionProgramVersion": 2,
     "projections": [
       {
-        "bindingId": "pb1:sha256:03b1f0abe72f7c4990809715c7db5fad3c4a187c73fe399859062f82af983eae",
+        "bindingId": "pb1:sha256:1949ba65e1cb6095ff47d4a804fc7457443df9fafdf16c7b496294ff1ba903bf",
         "epoch": "e2e-ui-todos-v2",
         "operationSemanticsVersion": 1,
         "programId": "pp1:sha256:c41935c886137d267269a792855a0255ce3b24ebcdf8a867801a94cd715e1d0e",
@@ -1550,7 +1550,7 @@ export const Command_todos_archive: ReplicaCommandArtifact<Command_todos_archive
   "protocol": {
     "operation": "sha256:fb2d3a14933841a966836ced65263a9ba2413d5aed8c582d31165aaee6e632ab",
     "protocolHash": "sha256:00fb342f3acb4dc1c1716a43cc3001c748d5f6c500ff831690d820e9e43e2782",
-    "schemaHash": "sha256:698b20914d68f575bd70961a9c73ecebe44b79ee862b46ccaaee92dae2e21170",
+    "schemaHash": "sha256:3ef42391779ffe9d0150c9f3b5ebe14ee6ac3ec403c9a38623a5e04e9a815f41",
     "surface": {
       "eligible_roles": [
         "admin"
@@ -1790,7 +1790,7 @@ export const Command_todos_complete: ReplicaCommandArtifact<Command_todos_comple
     "projectionProgramVersion": 2,
     "projections": [
       {
-        "bindingId": "pb1:sha256:03b1f0abe72f7c4990809715c7db5fad3c4a187c73fe399859062f82af983eae",
+        "bindingId": "pb1:sha256:1949ba65e1cb6095ff47d4a804fc7457443df9fafdf16c7b496294ff1ba903bf",
         "epoch": "e2e-ui-todos-v2",
         "operationSemanticsVersion": 1,
         "programId": "pp1:sha256:c41935c886137d267269a792855a0255ce3b24ebcdf8a867801a94cd715e1d0e",
@@ -1802,7 +1802,7 @@ export const Command_todos_complete: ReplicaCommandArtifact<Command_todos_comple
   "protocol": {
     "operation": "sha256:9b8185c835d3308bda308593486767731acaf4b084a7962b4b17e3e2e319922c",
     "protocolHash": "sha256:00fb342f3acb4dc1c1716a43cc3001c748d5f6c500ff831690d820e9e43e2782",
-    "schemaHash": "sha256:698b20914d68f575bd70961a9c73ecebe44b79ee862b46ccaaee92dae2e21170",
+    "schemaHash": "sha256:3ef42391779ffe9d0150c9f3b5ebe14ee6ac3ec403c9a38623a5e04e9a815f41",
     "surface": {
       "eligible_roles": [
         "admin"
@@ -2095,7 +2095,7 @@ export const Command_todos_create: ReplicaCommandArtifact<Command_todos_create_I
     "projectionProgramVersion": 2,
     "projections": [
       {
-        "bindingId": "pb1:sha256:03b1f0abe72f7c4990809715c7db5fad3c4a187c73fe399859062f82af983eae",
+        "bindingId": "pb1:sha256:1949ba65e1cb6095ff47d4a804fc7457443df9fafdf16c7b496294ff1ba903bf",
         "epoch": "e2e-ui-todos-v2",
         "operationSemanticsVersion": 1,
         "programId": "pp1:sha256:c41935c886137d267269a792855a0255ce3b24ebcdf8a867801a94cd715e1d0e",
@@ -2107,7 +2107,7 @@ export const Command_todos_create: ReplicaCommandArtifact<Command_todos_create_I
   "protocol": {
     "operation": "sha256:187e72cd747aaa13ac0362942d73085a5166401f8cc3a188badeb3e7fa50cacb",
     "protocolHash": "sha256:00fb342f3acb4dc1c1716a43cc3001c748d5f6c500ff831690d820e9e43e2782",
-    "schemaHash": "sha256:698b20914d68f575bd70961a9c73ecebe44b79ee862b46ccaaee92dae2e21170",
+    "schemaHash": "sha256:3ef42391779ffe9d0150c9f3b5ebe14ee6ac3ec403c9a38623a5e04e9a815f41",
     "surface": {
       "eligible_roles": [
         "admin"
@@ -2365,7 +2365,7 @@ export const Command_todos_force_archive: ReplicaCommandArtifact<Command_todos_f
     "projectionProgramVersion": 2,
     "projections": [
       {
-        "bindingId": "pb1:sha256:03b1f0abe72f7c4990809715c7db5fad3c4a187c73fe399859062f82af983eae",
+        "bindingId": "pb1:sha256:1949ba65e1cb6095ff47d4a804fc7457443df9fafdf16c7b496294ff1ba903bf",
         "epoch": "e2e-ui-todos-v2",
         "operationSemanticsVersion": 1,
         "programId": "pp1:sha256:c41935c886137d267269a792855a0255ce3b24ebcdf8a867801a94cd715e1d0e",
@@ -2377,7 +2377,7 @@ export const Command_todos_force_archive: ReplicaCommandArtifact<Command_todos_f
   "protocol": {
     "operation": "sha256:50d0d05ce63148fd7c4041478b57656e927f500f938798df61bf7ade6b53ccbf",
     "protocolHash": "sha256:00fb342f3acb4dc1c1716a43cc3001c748d5f6c500ff831690d820e9e43e2782",
-    "schemaHash": "sha256:698b20914d68f575bd70961a9c73ecebe44b79ee862b46ccaaee92dae2e21170",
+    "schemaHash": "sha256:3ef42391779ffe9d0150c9f3b5ebe14ee6ac3ec403c9a38623a5e04e9a815f41",
     "surface": {
       "eligible_roles": [
         "admin"
@@ -2570,7 +2570,7 @@ export const Command_todos_purge: ReplicaCommandArtifact<Command_todos_purge_Inp
     "projectionProgramVersion": 2,
     "projections": [
       {
-        "bindingId": "pb1:sha256:03b1f0abe72f7c4990809715c7db5fad3c4a187c73fe399859062f82af983eae",
+        "bindingId": "pb1:sha256:1949ba65e1cb6095ff47d4a804fc7457443df9fafdf16c7b496294ff1ba903bf",
         "epoch": "e2e-ui-todos-v2",
         "operationSemanticsVersion": 1,
         "programId": "pp1:sha256:c41935c886137d267269a792855a0255ce3b24ebcdf8a867801a94cd715e1d0e",
@@ -2582,7 +2582,7 @@ export const Command_todos_purge: ReplicaCommandArtifact<Command_todos_purge_Inp
   "protocol": {
     "operation": "sha256:01875defc418ccf0e607f316baa30d2f9cf8305602976cc5b1ce30cc5078c15e",
     "protocolHash": "sha256:00fb342f3acb4dc1c1716a43cc3001c748d5f6c500ff831690d820e9e43e2782",
-    "schemaHash": "sha256:698b20914d68f575bd70961a9c73ecebe44b79ee862b46ccaaee92dae2e21170",
+    "schemaHash": "sha256:3ef42391779ffe9d0150c9f3b5ebe14ee6ac3ec403c9a38623a5e04e9a815f41",
     "surface": {
       "eligible_roles": [
         "admin"
@@ -2839,7 +2839,7 @@ export const Command_todos_rename: ReplicaCommandArtifact<Command_todos_rename_I
     "projectionProgramVersion": 2,
     "projections": [
       {
-        "bindingId": "pb1:sha256:03b1f0abe72f7c4990809715c7db5fad3c4a187c73fe399859062f82af983eae",
+        "bindingId": "pb1:sha256:1949ba65e1cb6095ff47d4a804fc7457443df9fafdf16c7b496294ff1ba903bf",
         "epoch": "e2e-ui-todos-v2",
         "operationSemanticsVersion": 1,
         "programId": "pp1:sha256:c41935c886137d267269a792855a0255ce3b24ebcdf8a867801a94cd715e1d0e",
@@ -2851,7 +2851,7 @@ export const Command_todos_rename: ReplicaCommandArtifact<Command_todos_rename_I
   "protocol": {
     "operation": "sha256:a3e8a5ceae1a0f2c33863a4f2bf377a95b79da2157a619eb7823aa845ef681c3",
     "protocolHash": "sha256:00fb342f3acb4dc1c1716a43cc3001c748d5f6c500ff831690d820e9e43e2782",
-    "schemaHash": "sha256:698b20914d68f575bd70961a9c73ecebe44b79ee862b46ccaaee92dae2e21170",
+    "schemaHash": "sha256:3ef42391779ffe9d0150c9f3b5ebe14ee6ac3ec403c9a38623a5e04e9a815f41",
     "surface": {
       "eligible_roles": [
         "admin"
@@ -3091,7 +3091,7 @@ export const Command_todos_reopen: ReplicaCommandArtifact<Command_todos_reopen_I
     "projectionProgramVersion": 2,
     "projections": [
       {
-        "bindingId": "pb1:sha256:03b1f0abe72f7c4990809715c7db5fad3c4a187c73fe399859062f82af983eae",
+        "bindingId": "pb1:sha256:1949ba65e1cb6095ff47d4a804fc7457443df9fafdf16c7b496294ff1ba903bf",
         "epoch": "e2e-ui-todos-v2",
         "operationSemanticsVersion": 1,
         "programId": "pp1:sha256:c41935c886137d267269a792855a0255ce3b24ebcdf8a867801a94cd715e1d0e",
@@ -3103,7 +3103,7 @@ export const Command_todos_reopen: ReplicaCommandArtifact<Command_todos_reopen_I
   "protocol": {
     "operation": "sha256:04531ace98fd3ee5e652761abbcb6ebd745d5ff6ed0ad100030f935335c5a35e",
     "protocolHash": "sha256:00fb342f3acb4dc1c1716a43cc3001c748d5f6c500ff831690d820e9e43e2782",
-    "schemaHash": "sha256:698b20914d68f575bd70961a9c73ecebe44b79ee862b46ccaaee92dae2e21170",
+    "schemaHash": "sha256:3ef42391779ffe9d0150c9f3b5ebe14ee6ac3ec403c9a38623a5e04e9a815f41",
     "surface": {
       "eligible_roles": [
         "admin"
