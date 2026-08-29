@@ -16,10 +16,12 @@ mod skills;
 
 pub use atlas::{render_atlas_schema, AtlasDatabaseUrl, AtlasSchemaSpec};
 pub use cli::{
-    run, run_distributed, AgentHarness, Bus, ClientArgs, ClientManifestArgs, ContractsAcceptArgs,
-    ContractsArgs, ContractsCheckArgs, ContractsCommands, ContractsOutput, DescribeArgs,
-    DistributedArgs, DistributedCommands, Framework, GitopsPromote, ManifestFormat, Metrics,
-    ScaffoldArgs, SchemaArgs, SchemaDialect, SchemaFormat, ServiceArgs, ServiceCommands,
+    cli_error_exit_code, run, run_distributed, AgentHarness, BuildArgs, Bus, ClientArgs,
+    ClientManifestArgs,
+    ContractsAcceptArgs, ContractsArgs, ContractsCheckArgs, ContractsCommands, ContractsOutput,
+    DescribeArgs, DistributedArgs, DistributedCommands, Framework, GitopsPromote, LifecycleOutput,
+    ManifestFormat, Metrics, ScaffoldArgs, SchemaArgs, SchemaDialect, SchemaFormat, ServiceArgs,
+    ServiceCommands,
     SkillsArgs, SkillsCommands, SkillsInitArgs, Store, Transport,
 };
 pub use client_compiler::{
@@ -47,10 +49,13 @@ pub use contracts::{
 };
 pub use generate::{generate_service_scaffold, package_name};
 pub use lifecycle::{
-    ArtifactNodeReceipt, DistributedSourceIdentity, GenerationManifest, LifecycleConfig,
-    LifecycleError, LifecycleGraph, LifecycleNode, GENERATION_MANIFEST_SCHEMA_VERSION,
-    LIFECYCLE_CONFIG_SCHEMA_VERSION, LIFECYCLE_GRAPH_SCHEMA_VERSION,
-    NODE_RECEIPT_SCHEMA_VERSION,
+    run_lifecycle_build, ArtifactNodeReceipt, BuildDrift, DistributedSourceIdentity,
+    GenerationManifest, LifecycleBuildConfig, LifecycleBuildOptions, LifecycleBuildReport,
+    LifecycleConfig, LifecycleError, LifecycleExecutor, LifecycleGraph, LifecycleNode,
+    ReleaseManifest, ReleaseMember, GENERATION_MANIFEST_SCHEMA_VERSION,
+    LIFECYCLE_BUILD_CONFIG_SCHEMA_VERSION, LIFECYCLE_CONFIG_SCHEMA_VERSION,
+    LIFECYCLE_GRAPH_SCHEMA_VERSION, NODE_RECEIPT_SCHEMA_VERSION,
+    RELEASE_MANIFEST_SCHEMA_VERSION,
 };
 pub use skills::{embedded_skills, generate_skills, EmbeddedFile, EmbeddedSkill, SkillsInitSpec};
 

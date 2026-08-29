@@ -3,9 +3,15 @@
 //! This module composes the existing contract catalog. It never owns artifact
 //! payload semantics and never executes a catalog generator as a shell command.
 
+mod build;
 mod graph;
 mod receipt;
+mod release;
 
+pub use build::{
+    run_lifecycle_build, BuildDrift, LifecycleBuildConfig, LifecycleBuildOptions,
+    LifecycleBuildReport, LifecycleExecutor, LIFECYCLE_BUILD_CONFIG_SCHEMA_VERSION,
+};
 pub use graph::{
     DistributedSourceIdentity, LifecycleConfig, LifecycleError, LifecycleGraph, LifecycleNode,
     LIFECYCLE_CONFIG_SCHEMA_VERSION, LIFECYCLE_GRAPH_SCHEMA_VERSION, MAX_LIFECYCLE_NODES,
@@ -14,6 +20,7 @@ pub use receipt::{
     ArtifactNodeReceipt, GenerationManifest, GENERATION_MANIFEST_SCHEMA_VERSION,
     NODE_RECEIPT_SCHEMA_VERSION,
 };
+pub use release::{ReleaseManifest, ReleaseMember, RELEASE_MANIFEST_SCHEMA_VERSION};
 
 pub(crate) fn digest_bytes(bytes: &[u8]) -> String {
     use sha2::{Digest, Sha256};
@@ -35,6 +42,22 @@ pub(crate) fn validate_stable_value(value: &str, label: &str) -> Result<(), Life
     if value.chars().any(char::is_control) {
         return Err(LifecycleError::new(format!(
             "{label} contains control characters"
+        )));
+    }
+    Ok(())
+}
+
+pub(crate) fn validate_content_identity(value: &str, label: &str) -> Result<(), LifecycleError> {
+    let hex = value
+        .strip_prefix("sha256:")
+        .ok_or_else(|| LifecycleError::new(format!("{label} must be a sha256 content identity")))?;
+    if hex.len() != 64
+        || !hex
+            .bytes()
+            .all(|byte| byte.is_ascii_hexdigit() && !byte.is_ascii_uppercase())
+    {
+        return Err(LifecycleError::new(format!(
+            "{label} must contain exactly 64 lowercase hexadecimal digits"
         )));
     }
     Ok(())

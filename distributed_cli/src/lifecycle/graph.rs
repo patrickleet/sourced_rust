@@ -5,7 +5,9 @@ use std::collections::{BTreeMap, BTreeSet};
 use std::fmt;
 use std::path::Path;
 
-use super::{digest_bytes, validate_portable_path, validate_stable_value};
+use super::{
+    digest_bytes, validate_content_identity, validate_portable_path, validate_stable_value,
+};
 
 pub const LIFECYCLE_CONFIG_SCHEMA_VERSION: u32 = 1;
 pub const LIFECYCLE_GRAPH_SCHEMA_VERSION: u32 = 1;
@@ -52,9 +54,9 @@ pub struct DistributedSourceIdentity {
 
 impl DistributedSourceIdentity {
     pub fn validate(&self) -> Result<(), LifecycleError> {
-        validate_stable_value(&self.rust, "Distributed Rust source identity")?;
-        validate_stable_value(&self.cli, "Distributed CLI source identity")?;
-        validate_stable_value(&self.javascript, "Distributed JavaScript source identity")?;
+        validate_content_identity(&self.rust, "Distributed Rust source identity")?;
+        validate_content_identity(&self.cli, "Distributed CLI source identity")?;
+        validate_content_identity(&self.javascript, "Distributed JavaScript source identity")?;
         if self.rust != self.cli || self.rust != self.javascript {
             return Err(LifecycleError::new(format!(
                 "mixed Distributed source identities: rust=`{}`, cli=`{}`, javascript=`{}`",
@@ -204,7 +206,7 @@ impl LifecycleGraph {
             ));
         }
         validate_stable_value(&self.application, "application identity")?;
-        validate_stable_value(&self.source_identity, "Distributed source identity")?;
+        validate_content_identity(&self.source_identity, "Distributed source identity")?;
         if self.nodes.is_empty() || self.nodes.len() > MAX_LIFECYCLE_NODES {
             return Err(LifecycleError::new(format!(
                 "lifecycle graph must contain 1..={MAX_LIFECYCLE_NODES} nodes"
@@ -225,7 +227,7 @@ impl LifecycleGraph {
                 )));
             }
             validate_stable_value(&node.owner, "lifecycle node owner")?;
-            validate_stable_value(&node.executor, "lifecycle executor identity")?;
+            validate_stable_value(&node.executor, "lifecycle executor key")?;
             if node.inputs.is_empty() || node.outputs.is_empty() {
                 return Err(LifecycleError::new(format!(
                     "lifecycle node `{id}` must declare inputs and outputs"
@@ -489,13 +491,14 @@ mod tests {
     }
 
     fn config() -> LifecycleConfig {
+        let source = digest_bytes(b"fixture-distributed-source");
         LifecycleConfig {
             schema_version: LIFECYCLE_CONFIG_SCHEMA_VERSION,
             application: "fixture".into(),
             source: DistributedSourceIdentity {
-                rust: "git:abc".into(),
-                cli: "git:abc".into(),
-                javascript: "git:abc".into(),
+                rust: source.clone(),
+                cli: source.clone(),
+                javascript: source,
             },
             roots: ["client".into()].into_iter().collect(),
         }
@@ -535,10 +538,10 @@ mod tests {
     fn mixed_sources_and_missing_roots_fail_before_graph_execution() {
         let catalog = fixture_catalog();
         let mut mixed = config();
-        mixed.source.javascript = "git:def".into();
+        mixed.source.javascript = digest_bytes(b"different-distributed-source");
         let error = LifecycleGraph::from_catalog(&catalog, &mixed).unwrap_err();
-        assert!(error.message().contains("rust=`git:abc`"));
-        assert!(error.message().contains("javascript=`git:def`"));
+        assert!(error.message().contains(&mixed.source.rust));
+        assert!(error.message().contains(&mixed.source.javascript));
 
         let mut missing = config();
         missing.roots = ["missing".into()].into_iter().collect();

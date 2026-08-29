@@ -2,7 +2,10 @@ use crate::contracts::ContractArtifactKind;
 use serde::{Deserialize, Serialize};
 use std::collections::{BTreeMap, BTreeSet};
 
-use super::{digest_bytes, validate_stable_value, LifecycleError, LifecycleGraph, LifecycleNode};
+use super::{
+    digest_bytes, validate_content_identity, validate_stable_value, LifecycleError, LifecycleGraph,
+    LifecycleNode,
+};
 
 pub const NODE_RECEIPT_SCHEMA_VERSION: u32 = 1;
 pub const GENERATION_MANIFEST_SCHEMA_VERSION: u32 = 1;
@@ -60,7 +63,7 @@ impl ArtifactNodeReceipt {
                 self.node_id, node.id
             )));
         }
-        validate_stable_value(&self.executor_identity, "receipt executor identity")?;
+        validate_content_identity(&self.executor_identity, "receipt executor identity")?;
         validate_identity_map(&self.input_identities, "receipt input")?;
         validate_identity_map(&self.dependency_receipts, "dependency receipt")?;
         validate_identity_map(&self.output_identities, "receipt output")?;
@@ -243,7 +246,7 @@ fn validate_identity_map(
 ) -> Result<(), LifecycleError> {
     for (name, identity) in identities {
         validate_stable_value(name, &format!("{label} name"))?;
-        validate_stable_value(identity, &format!("{label} identity"))?;
+        validate_content_identity(identity, &format!("{label} identity"))?;
     }
     Ok(())
 }
@@ -319,10 +322,13 @@ mod tests {
             &LifecycleConfig {
                 schema_version: LIFECYCLE_CONFIG_SCHEMA_VERSION,
                 application: "fixture".into(),
-                source: DistributedSourceIdentity {
-                    rust: "git:abc".into(),
-                    cli: "git:abc".into(),
-                    javascript: "git:abc".into(),
+                source: {
+                    let source = digest_bytes(b"fixture-distributed-source");
+                    DistributedSourceIdentity {
+                        rust: source.clone(),
+                        cli: source.clone(),
+                        javascript: source,
+                    }
                 },
                 roots: ["plan".into()].into_iter().collect(),
             },
@@ -339,15 +345,25 @@ mod tests {
         let node = &graph.nodes[node_id];
         ArtifactNodeReceipt::new(
             node,
-            format!("tool:{node_id}:1"),
+            digest_bytes(format!("tool:{node_id}:1").as_bytes()),
             node.inputs
                 .iter()
-                .map(|path| (path.clone(), format!("sha256:{node_id}-input")))
+                .map(|path| {
+                    (
+                        path.clone(),
+                        digest_bytes(format!("{node_id}-input").as_bytes()),
+                    )
+                })
                 .collect(),
             dependencies,
             node.outputs
                 .iter()
-                .map(|path| (path.clone(), format!("sha256:{node_id}-output")))
+                .map(|path| {
+                    (
+                        path.clone(),
+                        digest_bytes(format!("{node_id}-output").as_bytes()),
+                    )
+                })
                 .collect(),
             ready,
         )
@@ -401,7 +417,7 @@ mod tests {
         let stale_plan = receipt(
             &graph,
             "plan",
-            [("application".into(), "sha256:stale".into())]
+            [("application".into(), digest_bytes(b"stale"))]
                 .into_iter()
                 .collect(),
             true,

@@ -14,6 +14,7 @@ use std::ffi::OsString;
 use std::fs;
 use std::path::{Component, Path, PathBuf};
 use std::process::Command;
+use std::time::Duration;
 
 use crate::client_compiler::{
     compile_client, ClientCompileInput, ClientDocument, ClientRouteRegistration,
@@ -23,6 +24,7 @@ use crate::contracts::{
     contracts_accept, contracts_check, unknown_scope_diagnostic, ContractAcceptScope,
     ContractCatalog,
 };
+use crate::lifecycle::{run_lifecycle_build, LifecycleBuildOptions};
 use crate::manifest_harness::{run_manifest_harness, HarnessMode, HarnessOptions};
 use crate::skills::{embedded_skills, generate_skills, SkillsInitSpec, AGENTS_MD_FILE};
 use crate::{
@@ -43,6 +45,8 @@ pub struct DistributedArgs {
 
 #[derive(Subcommand, Debug)]
 pub enum DistributedCommands {
+    /// Build one coherent application generation
+    Build(BuildArgs),
     /// Aggregate contract lifecycle check and accept
     Contracts(ContractsArgs),
     /// Scaffold a new Distributed microservice crate
@@ -69,6 +73,8 @@ pub struct ServiceArgs {
 
 #[derive(Subcommand, Debug)]
 pub enum ServiceCommands {
+    /// Build one coherent application generation
+    Build(BuildArgs),
     /// Scaffold a new Distributed microservice crate
     #[command(alias = "create")]
     Scaffold(ScaffoldArgs),
@@ -82,6 +88,37 @@ pub enum ServiceCommands {
     Schema(SchemaArgs),
     /// Extract the embedded Distributed agent skills into a project
     Skills(SkillsArgs),
+}
+
+#[derive(Args, Debug)]
+pub struct BuildArgs {
+    /// Application repository root
+    #[arg(long, default_value = ".")]
+    pub root: PathBuf,
+    /// Contract catalog path, relative to root
+    #[arg(long, default_value = "distributed.contracts.json")]
+    pub catalog: PathBuf,
+    /// Lifecycle executor config path, relative to root
+    #[arg(long, default_value = "distributed.lifecycle.json")]
+    pub config: PathBuf,
+    /// Content-addressed generation store, relative to root
+    #[arg(long, default_value = "dist/distributed")]
+    pub out: PathBuf,
+    /// Rebuild in isolation and compare workspace outputs without activating
+    #[arg(long)]
+    pub check: bool,
+    /// Maximum wait for another lifecycle build process
+    #[arg(long, default_value_t = 10_000)]
+    pub lock_timeout_ms: u64,
+    /// Output format
+    #[arg(long, value_enum, default_value = "human")]
+    pub output: LifecycleOutput,
+}
+
+#[derive(Clone, Copy, Debug, ValueEnum)]
+pub enum LifecycleOutput {
+    Human,
+    Json,
 }
 
 #[derive(Args, Debug)]
@@ -519,6 +556,7 @@ impl From<GitopsPromote> for GitopsPromoteTarget {
 /// Dispatch the standalone `distributed` binary command tree.
 pub fn run_distributed(args: &DistributedArgs) -> Result<(), Box<dyn Error>> {
     match &args.command {
+        DistributedCommands::Build(build) => run_build(build),
         DistributedCommands::Contracts(contracts) => run_contracts(contracts),
         DistributedCommands::Scaffold(scaffold) => run_scaffold(scaffold),
         DistributedCommands::Describe(describe) => run_describe(describe),
@@ -536,6 +574,7 @@ pub fn run_distributed(args: &DistributedArgs) -> Result<(), Box<dyn Error>> {
 /// call this without mounting the aggregate contracts surface.
 pub fn run(args: &ServiceArgs) -> Result<(), Box<dyn Error>> {
     match &args.command {
+        ServiceCommands::Build(build) => run_build(build),
         ServiceCommands::Scaffold(scaffold) => run_scaffold(scaffold),
         ServiceCommands::Describe(describe) => run_describe(describe),
         ServiceCommands::Client(client) => run_client(client),
@@ -546,6 +585,46 @@ pub fn run(args: &ServiceArgs) -> Result<(), Box<dyn Error>> {
             SkillsCommands::List => run_skills_list(),
         },
     }
+}
+
+fn run_build(args: &BuildArgs) -> Result<(), Box<dyn Error>> {
+    let report = run_lifecycle_build(&LifecycleBuildOptions {
+        root: args.root.clone(),
+        catalog: args.catalog.clone(),
+        config: args.config.clone(),
+        out: args.out.clone(),
+        check: args.check,
+        lock_timeout: Duration::from_millis(args.lock_timeout_ms),
+    })?;
+    match args.output {
+        LifecycleOutput::Json => println!("{}", serde_json::to_string(&report)?),
+        LifecycleOutput::Human => {
+            let mode = if report.check { "check" } else { "build" };
+            println!(
+                "lifecycle {mode}: {} generation={} release={} nodes={}",
+                if report.ok { "ok" } else { "drift" },
+                report.generation_id,
+                report.release_id,
+                report.order.len()
+            );
+            for drift in &report.drift {
+                println!(
+                    "drift node={} output={} workspace={} built={}",
+                    drift.node_id,
+                    drift.output,
+                    drift.workspace_identity.as_deref().unwrap_or("missing"),
+                    drift.built_identity
+                );
+            }
+        }
+    }
+    if !report.ok {
+        return Err(Box::new(CliExitError {
+            message: "lifecycle build check detected drift",
+            exit_code: 1,
+        }));
+    }
+    Ok(())
 }
 
 fn run_contracts(args: &ContractsArgs) -> Result<(), Box<dyn Error>> {

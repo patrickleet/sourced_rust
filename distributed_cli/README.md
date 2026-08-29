@@ -15,6 +15,63 @@ reimplementing them. `hops`, for example, exposes the same surface under
 `distributed_cli::run`. **Everything below documented as `distributed <cmd>` is also
 available as `hops service <cmd>`.**
 
+## `distributed build` — one coherent application generation
+
+```bash
+distributed build                         # activate an immutable generation
+distributed build --check                 # isolated rebuild; report drift, write nothing
+distributed build --output json           # deterministic machine-readable report
+```
+
+`distributed build` reads `distributed.contracts.json` for semantic artifact
+membership and a small `distributed.lifecycle.json` for the selected roots,
+one Distributed source identity, and native executor adapters. It hashes
+content rather than timestamps, runs nodes in dependency order under a bounded
+process lock, and emits `generation.json` plus `release.json` beneath
+`dist/distributed/generations/<GenerationId>/`. Only a complete generation is
+selected through the atomically replaced `dist/distributed/active.json` pointer.
+A failed node leaves the prior active generation unchanged.
+
+```json
+{
+  "schema_version": 1,
+  "application": "orders",
+  "source": {
+    "rust": "sha256:<64 lowercase hex digits>",
+    "cli": "sha256:<the same digest>",
+    "javascript": "sha256:<the same digest>"
+  },
+  "roots": ["orders-ui-program"],
+  "executors": {
+    "orders.application-manifest": {
+      "identity": "sha256:<digest of tool version and config>",
+      "program": "distributed",
+      "args": ["describe", "--path", "{root}"],
+      "stdout": "generated/application.json"
+    },
+    "orders.client": {
+      "identity": "sha256:<digest of tool version and config>",
+      "program": "npm",
+      "args": ["run", "build:distributed", "--", "--out", "{stage}/ui/generated"]
+    }
+  }
+}
+```
+
+Executor keys match catalog `provenance.generator` values. The CLI invokes
+`program` directly, never as a shell string. `{root}`, `{stage}`, and `{node}`
+are expanded in individual arguments; the executor starts in the isolated
+stage and must place every output at its catalog-relative path below `{stage}`.
+For stdout-producing tools, `stdout` must name one exact declared output.
+Executors are explicit trusted project configuration, while all canonical tool,
+source, input, dependency, and output identities are SHA-256 values so paths,
+environment values, endpoints, and credentials do not enter generation IR.
+
+`--check` runs the same graph in an OS temporary directory and compares every
+built output with its catalog-relative workspace output. Its JSON drift records
+name the owning node, output, built identity, and missing/current workspace
+identity. Compliant executors therefore need no separate check implementation.
+
 ## `distributed scaffold <name>` — generate a service crate
 
 ```bash
