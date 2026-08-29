@@ -222,7 +222,8 @@ mod tests {
                 #[event("todo.completed", version = 1, domain)]
                 fn record_completed(&mut self) {
                     self.status = TodoStatus::Completed;
-                    self.label = String::from("done");
+                    self.label = std::string::String::from("done");
+                    self.shadowed_label = String::from("not-known");
                     self.assignee_id = None;
                     if self.audit_enabled {
                         self.audit_label = "conditional";
@@ -245,9 +246,10 @@ mod tests {
         assert!(output.contains("TodoStatus :: Completed"), "got: {output}");
         assert!(output.contains("\"label\""), "got: {output}");
         assert!(
-            output.contains("String :: from (\"done\")"),
+            output.contains("std :: string :: String :: from (\"done\")"),
             "got: {output}"
         );
+        assert!(!output.contains("\"shadowed_label\""), "got: {output}");
         assert!(output.contains("\"assignee_id\""), "got: {output}");
         assert!(
             !output.contains("\"audit_label\""),

@@ -1087,9 +1087,11 @@ fn known_state_value_source(expression: &Expr) -> Option<KnownStateValueSource> 
                 && matches!(
                     ungroup_expr(&call.func),
                     Expr::Path(path)
-                        if path.path.segments.len() == 2
-                            && path.path.segments[0].ident == "String"
-                            && path.path.segments[1].ident == "from"
+                        if path.path.segments.len() == 4
+                            && path.path.segments[0].ident == "std"
+                            && path.path.segments[1].ident == "string"
+                            && path.path.segments[2].ident == "String"
+                            && path.path.segments[3].ident == "from"
                 )
                 && matches!(
                     call.args.first().map(ungroup_expr),
