@@ -518,7 +518,7 @@ fn execute_node(
         .env("DISTRIBUTED_LIFECYCLE_STAGE", stage)
         .env("DISTRIBUTED_LIFECYCLE_NODE", node_id)
         .stdout(stdout)
-        .stderr(Stdio::null())
+        .stderr(Stdio::inherit())
         .spawn()
         .map_err(|error| {
             LifecycleError::new(format!(

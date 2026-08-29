@@ -1,6 +1,8 @@
 use serde::{Deserialize, Serialize};
 use std::collections::{BTreeMap, BTreeSet};
 use std::fs;
+#[cfg(unix)]
+use std::os::unix::process::CommandExt;
 use std::path::{Path, PathBuf};
 use std::process::{Child, Command, Stdio};
 use std::sync::atomic::{AtomicBool, Ordering};
@@ -11,8 +13,8 @@ use crate::contracts::ContractCatalog;
 
 use super::build::lifecycle_input_snapshot;
 use super::{
-    run_lifecycle_build, validate_stable_value, LifecycleBuildConfig, LifecycleBuildOptions,
-    LifecycleBuildReport, LifecycleError, LifecycleGraph,
+    run_lifecycle_build, validate_portable_path, validate_stable_value, LifecycleBuildConfig,
+    LifecycleBuildOptions, LifecycleBuildReport, LifecycleError, LifecycleGraph,
 };
 
 const MAX_DEV_PROCESSES: usize = 64;
@@ -40,6 +42,15 @@ pub struct LifecycleDevProcess {
     pub program: String,
     #[serde(default)]
     pub args: Vec<String>,
+    /// Working directory relative to the lifecycle root.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub cwd: Option<String>,
+    /// Process-specific environment. Values may use lifecycle placeholders.
+    #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
+    pub env: BTreeMap<String, String>,
+    /// Operator-facing URL printed after readiness succeeds.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub url: Option<String>,
     /// Restart after a successful generation when any named node invalidates.
     /// An empty set leaves native HMR/process watching entirely in charge.
     #[serde(default)]
@@ -107,6 +118,13 @@ impl LifecycleDevConfig {
         for (name, process) in &self.processes {
             validate_stable_value(name, "lifecycle dev process name")?;
             validate_stable_value(&process.program, "lifecycle dev process program")?;
+            if let Some(cwd) = &process.cwd {
+                validate_portable_path(cwd, "lifecycle dev process cwd")?;
+            }
+            validate_process_env(name, &process.env)?;
+            if let Some(url) = &process.url {
+                validate_stable_value(url, "lifecycle dev process URL")?;
+            }
             if process.args.len() > 256
                 || process.args.iter().map(String::len).sum::<usize>() > 16 * 1024
                 || process.args.iter().any(|arg| arg.contains('\0'))
@@ -156,6 +174,8 @@ fn readiness_budget_ms(process: &LifecycleDevProcess) -> u64 {
 pub struct LifecycleDevOptions {
     pub build: LifecycleBuildOptions,
     pub stop: Arc<AtomicBool>,
+    /// Emit operator-facing readiness and rebuild progress to stderr.
+    pub progress: bool,
 }
 
 #[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
@@ -196,6 +216,18 @@ pub fn run_lifecycle_dev(
     initial_options.activation_inputs = None;
     let initial = run_lifecycle_build(&initial_options)?;
     let mut children = ChildSet::start(&root, &dev, &initial)?;
+    if options.progress {
+        for (name, process) in &dev.processes {
+            if let Some(url) = &process.url {
+                eprintln!("lifecycle dev: process {name} ready {url}");
+            }
+        }
+        eprintln!(
+            "lifecycle dev: ready generation={} processes={} (Ctrl-C to stop)",
+            initial.generation_id,
+            dev.processes.keys().cloned().collect::<Vec<_>>().join(",")
+        );
+    }
     let mut snapshot = lifecycle_input_snapshot(&root, &catalog, &graph)?;
     let mut final_generation = initial.generation_id.clone();
     let mut rebuilds = 0;
@@ -290,7 +322,25 @@ pub fn run_lifecycle_dev(
             if options.stop.load(Ordering::SeqCst) {
                 return Ok(());
             }
+            let restarting = dev
+                .processes
+                .iter()
+                .filter(|(_, process)| !process.restart_on.is_disjoint(&invalidated))
+                .map(|(name, _)| name.clone())
+                .collect::<Vec<_>>();
             children.restart_invalidated(&root, &dev, &generation, &invalidated, &mut restarts)?;
+            if options.progress {
+                eprintln!(
+                    "lifecycle dev: activated generation={} invalidated={} restarted={}",
+                    generation.generation_id,
+                    invalidated.iter().cloned().collect::<Vec<_>>().join(","),
+                    if restarting.is_empty() {
+                        "none".to_string()
+                    } else {
+                        restarting.join(",")
+                    }
+                );
+            }
             snapshot = latest;
         }
         Ok(())
@@ -404,10 +454,14 @@ impl ChildSet {
             if process.restart_on.is_disjoint(invalidated) {
                 continue;
             }
-            stop_child(name, self.children.get_mut(name).unwrap())?;
+            stop_child(
+                name,
+                self.children.get_mut(name).unwrap(),
+                Duration::from_millis(config.shutdown_ms),
+            )?;
             let mut child = spawn_process(root, name, process, generation)?;
             if let Err(error) = wait_ready(root, name, process, generation, &mut child) {
-                let _ = stop_child(name, &mut child);
+                let _ = stop_child(name, &mut child, Duration::from_millis(config.shutdown_ms));
                 return Err(error);
             }
             self.children.insert(name.clone(), child);
@@ -417,23 +471,30 @@ impl ChildSet {
     }
 
     fn shutdown(&mut self, timeout: Duration) -> Result<(), LifecycleError> {
-        for child in self.children.values_mut() {
-            if child.try_wait().map_err(io_error)?.is_none() {
-                child.kill().map_err(io_error)?;
-            }
+        for (name, child) in &mut self.children {
+            terminate_process_group(name, child)?;
         }
         let started = Instant::now();
-        for (name, child) in &mut self.children {
-            while child.try_wait().map_err(io_error)?.is_none() {
-                if started.elapsed() >= timeout {
-                    return Err(LifecycleError::new(format!(
-                        "timed out shutting down lifecycle dev process `{name}`"
-                    )));
+        loop {
+            let mut running = Vec::new();
+            for (name, child) in &mut self.children {
+                if child.try_wait().map_err(io_error)?.is_none() {
+                    running.push(name.clone());
                 }
-                std::thread::sleep(Duration::from_millis(10));
             }
+            if running.is_empty() {
+                return Ok(());
+            }
+            if started.elapsed() >= timeout {
+                for name in running {
+                    let child = self.children.get_mut(&name).unwrap();
+                    kill_process_group(&name, child)?;
+                    child.wait().map_err(io_error)?;
+                }
+                return Ok(());
+            }
+            std::thread::sleep(Duration::from_millis(10));
         }
-        Ok(())
     }
 }
 
@@ -457,19 +518,17 @@ fn wait_ready(
             std::thread::sleep(Duration::from_millis(process.ready_after_ms));
             return Ok(());
         };
-        let root_value = root.to_string_lossy();
+        let cwd = resolve_working_dir(root, process.cwd.as_deref())?;
+        let environment = expand_environment(root, name, process, generation);
         let args = probe
             .args
             .iter()
-            .map(|arg| {
-                arg.replace("{root}", &root_value)
-                    .replace("{process}", name)
-                    .replace("{generation}", &generation.generation_id)
-            })
+            .map(|arg| expand_process_value(arg, root, name, generation))
             .collect::<Vec<_>>();
-        let status = Command::new(&probe.program)
+        let status = Command::new(expand_process_value(&probe.program, root, name, generation))
             .args(args)
-            .current_dir(root)
+            .current_dir(cwd)
+            .envs(environment)
             .env("DISTRIBUTED_GENERATION_ID", &generation.generation_id)
             .env("DISTRIBUTED_RELEASE_ID", &generation.release_id)
             .stdin(Stdio::null())
@@ -500,41 +559,176 @@ fn spawn_process(
     process: &LifecycleDevProcess,
     generation: &LifecycleBuildReport,
 ) -> Result<Child, LifecycleError> {
-    let root_value = root.to_string_lossy();
+    let cwd = resolve_working_dir(root, process.cwd.as_deref())?;
     let args = process
         .args
         .iter()
-        .map(|arg| {
-            arg.replace("{root}", &root_value)
-                .replace("{process}", name)
-                .replace("{generation}", &generation.generation_id)
-        })
+        .map(|arg| expand_process_value(arg, root, name, generation))
         .collect::<Vec<_>>();
-    Command::new(&process.program)
+    let program = expand_process_value(&process.program, root, name, generation);
+    let mut command = Command::new(&program);
+    command
         .args(args)
-        .current_dir(root)
+        .current_dir(cwd)
+        .envs(expand_environment(root, name, process, generation))
         .env("DISTRIBUTED_GENERATION_ID", &generation.generation_id)
         .env("DISTRIBUTED_RELEASE_ID", &generation.release_id)
-        .stdin(Stdio::null())
-        .spawn()
-        .map_err(|error| {
-            LifecycleError::new(format!(
-                "failed to start lifecycle dev process `{name}` with `{}`: {error}",
-                process.program
-            ))
-        })
+        .stdin(Stdio::null());
+    #[cfg(unix)]
+    command.process_group(0);
+    command.spawn().map_err(|error| {
+        LifecycleError::new(format!(
+            "failed to start lifecycle dev process `{name}` with `{program}`: {error}"
+        ))
+    })
 }
 
-fn stop_child(name: &str, child: &mut Child) -> Result<(), LifecycleError> {
-    if child.try_wait().map_err(io_error)?.is_none() {
-        child.kill().map_err(|error| {
-            LifecycleError::new(format!(
-                "failed to stop lifecycle dev process `{name}`: {error}"
-            ))
-        })?;
-        child.wait().map_err(io_error)?;
+fn stop_child(name: &str, child: &mut Child, timeout: Duration) -> Result<(), LifecycleError> {
+    terminate_process_group(name, child)?;
+    let started = Instant::now();
+    while child.try_wait().map_err(io_error)?.is_none() {
+        if started.elapsed() >= timeout {
+            kill_process_group(name, child)?;
+            child.wait().map_err(io_error)?;
+            break;
+        }
+        std::thread::sleep(Duration::from_millis(10));
     }
     Ok(())
+}
+
+fn expand_process_value(
+    value: &str,
+    root: &Path,
+    name: &str,
+    generation: &LifecycleBuildReport,
+) -> String {
+    value
+        .replace("{root}", &root.to_string_lossy())
+        .replace("{process}", name)
+        .replace("{generation}", &generation.generation_id)
+}
+
+fn expand_environment(
+    root: &Path,
+    name: &str,
+    process: &LifecycleDevProcess,
+    generation: &LifecycleBuildReport,
+) -> BTreeMap<String, String> {
+    process
+        .env
+        .iter()
+        .map(|(key, value)| {
+            (
+                key.clone(),
+                expand_process_value(value, root, name, generation),
+            )
+        })
+        .collect()
+}
+
+fn resolve_working_dir(root: &Path, cwd: Option<&str>) -> Result<PathBuf, LifecycleError> {
+    let path = cwd.map_or_else(|| root.to_path_buf(), |cwd| root.join(cwd));
+    let resolved = path.canonicalize().map_err(|error| {
+        LifecycleError::new(format!(
+            "failed to resolve lifecycle dev working directory `{}`: {error}",
+            path.display()
+        ))
+    })?;
+    if !resolved.starts_with(root)
+        || !fs::metadata(&resolved).is_ok_and(|metadata| metadata.is_dir())
+    {
+        return Err(LifecycleError::new(
+            "lifecycle dev working directory must be a directory under the root",
+        ));
+    }
+    Ok(resolved)
+}
+
+fn validate_process_env(
+    process_name: &str,
+    environment: &BTreeMap<String, String>,
+) -> Result<(), LifecycleError> {
+    let valid_key = |key: &str| {
+        let mut bytes = key.bytes();
+        bytes
+            .next()
+            .is_some_and(|byte| byte == b'_' || byte.is_ascii_alphabetic())
+            && bytes.all(|byte| byte == b'_' || byte.is_ascii_alphanumeric())
+    };
+    if environment.len() > 64
+        || environment
+            .iter()
+            .map(|(key, value)| key.len() + value.len())
+            .sum::<usize>()
+            > 16 * 1024
+        || environment
+            .iter()
+            .any(|(key, value)| !valid_key(key) || value.contains('\0'))
+    {
+        return Err(LifecycleError::new(format!(
+            "lifecycle dev process `{process_name}` has invalid or oversized environment"
+        )));
+    }
+    Ok(())
+}
+
+#[cfg(unix)]
+fn signal_process_group(child: &Child, signal: libc::c_int) -> std::io::Result<()> {
+    let result = unsafe { libc::kill(-(child.id() as libc::pid_t), signal) };
+    if result == 0 {
+        return Ok(());
+    }
+    let error = std::io::Error::last_os_error();
+    if error.raw_os_error() == Some(libc::ESRCH) {
+        Ok(())
+    } else {
+        Err(error)
+    }
+}
+
+fn terminate_process_group(name: &str, child: &mut Child) -> Result<(), LifecycleError> {
+    #[cfg(unix)]
+    {
+        signal_process_group(child, libc::SIGTERM).map_err(|error| {
+            LifecycleError::new(format!(
+                "failed to stop lifecycle dev process group `{name}`: {error}"
+            ))
+        })
+    }
+    #[cfg(not(unix))]
+    {
+        if child.try_wait().map_err(io_error)?.is_none() {
+            child.kill().map_err(|error| {
+                LifecycleError::new(format!(
+                    "failed to stop lifecycle dev process `{name}`: {error}"
+                ))
+            })?;
+        }
+        Ok(())
+    }
+}
+
+fn kill_process_group(name: &str, child: &mut Child) -> Result<(), LifecycleError> {
+    #[cfg(unix)]
+    {
+        signal_process_group(child, libc::SIGKILL).map_err(|error| {
+            LifecycleError::new(format!(
+                "failed to kill lifecycle dev process group `{name}`: {error}"
+            ))
+        })
+    }
+    #[cfg(not(unix))]
+    {
+        if child.try_wait().map_err(io_error)?.is_none() {
+            child.kill().map_err(|error| {
+                LifecycleError::new(format!(
+                    "failed to kill lifecycle dev process `{name}`: {error}"
+                ))
+            })?;
+        }
+        Ok(())
+    }
 }
 
 fn resolve_file(root: &Path, path: &PathBuf) -> Result<PathBuf, LifecycleError> {

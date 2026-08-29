@@ -7,7 +7,7 @@ use serde_json::Value;
 use std::collections::BTreeMap;
 use std::fs;
 use std::path::{Path, PathBuf};
-use std::process::{Command, Output};
+use std::process::{Command, Output, Stdio};
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Arc;
 use std::thread;
@@ -184,7 +184,11 @@ else
   barrier=missing
 fi
 printf '%s:%s:%s\n' "$name" "$barrier" "$DISTRIBUTED_GENERATION_ID" >> "$root/dev-process.log"
-exec tail -f /dev/null
+printf '%s:%s:%s\n' "$name" "$DEV_FIXTURE_NAME" "$PWD" >> "$root/dev-environment.log"
+tail -f /dev/null &
+descendant=$!
+printf '%s\n' "$descendant" >> "$root/dev-descendants.log"
+wait "$descendant"
 "#,
     )
     .expect("write dev child fixture");
@@ -198,6 +202,9 @@ exec tail -f /dev/null
             "api": {
                 "program": "/bin/sh",
                 "args": ["{root}/dev-child.sh", "{root}", "{process}"],
+                "cwd": "src",
+                "env": { "DEV_FIXTURE_NAME": "{process}" },
+                "url": "http://localhost:8000",
                 "restart_on": ["application"],
                 "ready_after_ms": 20,
                 "ready": {
@@ -210,6 +217,8 @@ exec tail -f /dev/null
             "ui": {
                 "program": "/bin/sh",
                 "args": ["{root}/dev-child.sh", "{root}", "{process}"],
+                "cwd": "src",
+                "env": { "DEV_FIXTURE_NAME": "{process}" },
                 "restart_on": [],
                 "ready_after_ms": 20
             }
@@ -427,6 +436,7 @@ fn dev_waits_for_initial_generation_and_restarts_only_invalidated_processes() {
                 cancel: None,
             },
             stop: supervisor_stop,
+            progress: false,
         })
     });
 
@@ -437,6 +447,14 @@ fn dev_waits_for_initial_generation_and_restarts_only_invalidated_processes() {
     assert!(initial_log
         .lines()
         .all(|line| line.contains(":present:sha256:")));
+    let environment_log = fs::read_to_string(root.join("dev-environment.log")).unwrap();
+    let expected_cwd = root.join("src").canonicalize().unwrap();
+    assert!(environment_log
+        .lines()
+        .any(|line| line == format!("api:api:{}", expected_cwd.display())));
+    assert!(environment_log
+        .lines()
+        .any(|line| line == format!("ui:ui:{}", expected_cwd.display())));
     thread::sleep(Duration::from_millis(100));
     fs::write(root.join("src/input.txt"), "second\n").unwrap();
     wait_until(Duration::from_secs(5), || {
@@ -459,6 +477,18 @@ fn dev_waits_for_initial_generation_and_restarts_only_invalidated_processes() {
         log.lines().filter(|line| line.starts_with("ui:")).count(),
         1
     );
+    #[cfg(unix)]
+    for pid in fs::read_to_string(root.join("dev-descendants.log"))
+        .unwrap()
+        .lines()
+    {
+        let status = Command::new("/bin/kill")
+            .args(["-0", pid])
+            .stderr(Stdio::null())
+            .status()
+            .expect("inspect lifecycle descendant");
+        assert!(!status.success(), "descendant process {pid} leaked");
+    }
     fs::remove_dir_all(root).unwrap();
 }
 
@@ -484,6 +514,7 @@ fn dev_cancels_a_superseded_executor_before_activation() {
                 cancel: None,
             },
             stop: supervisor_stop,
+            progress: false,
         })
     });
     wait_until(Duration::from_secs(5), || {

@@ -660,6 +660,10 @@ fn run_dev(args: &DevArgs) -> Result<(), Box<dyn Error>> {
     let stop = Arc::new(AtomicBool::new(false));
     let signal_stop = Arc::clone(&stop);
     ctrlc::set_handler(move || signal_stop.store(true, Ordering::SeqCst))?;
+    eprintln!(
+        "lifecycle dev: starting root={} and waiting for the initial generation (Ctrl-C to stop)",
+        args.root.display()
+    );
     let report = run_lifecycle_dev(&LifecycleDevOptions {
         build: LifecycleBuildOptions {
             root: args.root.clone(),
@@ -673,6 +677,7 @@ fn run_dev(args: &DevArgs) -> Result<(), Box<dyn Error>> {
             cancel: None,
         },
         stop,
+        progress: true,
     })?;
     println!(
         "lifecycle dev: stopped initial={} final={} rebuilds={}",
