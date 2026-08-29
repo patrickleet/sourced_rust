@@ -5,7 +5,7 @@ import type { ReplicaCommandStatusArtifact } from '@hops-ops/distributed/replica
 export const CLIENT_PROTOCOL = {
 	version: 1,
 	serviceId: "e2e-ui",
-	schemaHash: "sha256:698b20914d68f575bd70961a9c73ecebe44b79ee862b46ccaaee92dae2e21170",
+	schemaHash: "sha256:3ef42391779ffe9d0150c9f3b5ebe14ee6ac3ec403c9a38623a5e04e9a815f41",
 	protocolHash: "sha256:00fb342f3acb4dc1c1716a43cc3001c748d5f6c500ff831690d820e9e43e2782",
 	surface: {"kind":"application","name":"e2e-ui-admin","eligible_roles":["admin"],"schema_roles":["admin"]},
 	trustedPresets: [
@@ -32,7 +32,7 @@ export const COMMAND_STATUS: ReplicaCommandStatusArtifact = {
   "protocol": {
     "operation": "sha256:eb3ce6a8b306d935fc9f3d6f071804ce3ec415d209594c04015fa35b080282ef",
     "protocolHash": "sha256:00fb342f3acb4dc1c1716a43cc3001c748d5f6c500ff831690d820e9e43e2782",
-    "schemaHash": "sha256:698b20914d68f575bd70961a9c73ecebe44b79ee862b46ccaaee92dae2e21170",
+    "schemaHash": "sha256:3ef42391779ffe9d0150c9f3b5ebe14ee6ac3ec403c9a38623a5e04e9a815f41",
     "surface": {
       "eligible_roles": [
         "admin"
