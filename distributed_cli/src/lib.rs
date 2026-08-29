@@ -10,6 +10,7 @@ mod cli;
 mod client_compiler;
 pub mod contracts;
 mod generate;
+pub mod lifecycle;
 mod manifest_harness;
 mod skills;
 
@@ -45,6 +46,12 @@ pub use contracts::{
     MIGRATION_INVENTORY_SCHEMA_VERSION, MIGRATION_OWNER, MIGRATION_SCOPE,
 };
 pub use generate::{generate_service_scaffold, package_name};
+pub use lifecycle::{
+    ArtifactNodeReceipt, DistributedSourceIdentity, GenerationManifest, LifecycleConfig,
+    LifecycleError, LifecycleGraph, LifecycleNode, GENERATION_MANIFEST_SCHEMA_VERSION,
+    LIFECYCLE_CONFIG_SCHEMA_VERSION, LIFECYCLE_GRAPH_SCHEMA_VERSION,
+    NODE_RECEIPT_SCHEMA_VERSION,
+};
 pub use skills::{embedded_skills, generate_skills, EmbeddedFile, EmbeddedSkill, SkillsInitSpec};
 
 /// What to scaffold. The pure input to [`generate_service_scaffold`].
