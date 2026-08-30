@@ -155,13 +155,85 @@ pub struct CelldQueueHttpPublisher {
     headers: Vec<(String, String)>,
 }
 
+#[cfg(all(feature = "workers-rs", any(target_arch = "wasm32", test)))]
+#[derive(Clone, Copy)]
+enum CelldQueueHttpEndpointPolicy {
+    HttpsOnly,
+    LocalTestHttp,
+}
+
+#[cfg(all(feature = "workers-rs", any(target_arch = "wasm32", test)))]
+fn validate_celld_queue_http_endpoint(
+    endpoint: &str,
+    policy: CelldQueueHttpEndpointPolicy,
+    test_credential: Option<&str>,
+) -> Result<(), TransportError> {
+    let url = worker::Url::parse(endpoint)
+        .map_err(|error| TransportError::permanent(format!("invalid Queue relay URL: {error}")))?;
+    if url.host_str().is_none() || !url.username().is_empty() || url.password().is_some() {
+        return Err(TransportError::permanent(
+            "Queue relay URL must have a host and must not contain credentials",
+        ));
+    }
+
+    match policy {
+        CelldQueueHttpEndpointPolicy::HttpsOnly if url.scheme() == "https" => Ok(()),
+        CelldQueueHttpEndpointPolicy::HttpsOnly => {
+            Err(TransportError::permanent("Queue relay URL must use HTTPS"))
+        }
+        CelldQueueHttpEndpointPolicy::LocalTestHttp => {
+            let host = url.host_str().unwrap_or_default();
+            let local_host = matches!(host, "127.0.0.1" | "localhost" | "::1" | "[::1]");
+            let test_credential = test_credential.unwrap_or_default();
+            if url.scheme() != "http" || !local_host {
+                return Err(TransportError::permanent(
+                    "local-test Queue relay URL must use HTTP on an approved local host",
+                ));
+            }
+            if !test_credential.starts_with("test-only-") || test_credential.len() < 24 {
+                return Err(TransportError::permanent(
+                    "local-test Queue relay requires an explicit test-only credential",
+                ));
+            }
+            Ok(())
+        }
+    }
+}
+
 #[cfg(all(feature = "workers-rs", target_arch = "wasm32"))]
 impl CelldQueueHttpPublisher {
-    pub fn new(endpoint: impl Into<String>) -> Self {
-        Self {
-            endpoint: endpoint.into(),
+    /// Build a relay publisher that sends credentials only over HTTPS.
+    pub fn new(endpoint: impl Into<String>) -> Result<Self, TransportError> {
+        let endpoint = endpoint.into();
+        validate_celld_queue_http_endpoint(
+            &endpoint,
+            CelldQueueHttpEndpointPolicy::HttpsOnly,
+            None,
+        )?;
+        Ok(Self {
+            endpoint,
             headers: Vec::new(),
-        }
+        })
+    }
+
+    /// Build an HTTP publisher for explicit loopback test fixtures.
+    ///
+    /// This never permits arbitrary cleartext endpoints or production-looking
+    /// credentials. Production callers must use [`Self::new`] with HTTPS.
+    pub fn new_local_test(
+        endpoint: impl Into<String>,
+        test_credential: &str,
+    ) -> Result<Self, TransportError> {
+        let endpoint = endpoint.into();
+        validate_celld_queue_http_endpoint(
+            &endpoint,
+            CelldQueueHttpEndpointPolicy::LocalTestHttp,
+            Some(test_credential),
+        )?;
+        Ok(Self {
+            endpoint,
+            headers: Vec::new(),
+        })
     }
 
     pub fn with_header(mut self, name: impl Into<String>, value: impl Into<String>) -> Self {
@@ -285,6 +357,41 @@ mod tests {
     use crate::outbox_worker::testing::block_on;
     use crate::BusPublisher;
     use std::sync::{Arc, Mutex};
+
+    #[cfg(feature = "workers-rs")]
+    #[test]
+    fn relay_http_endpoint_requires_https_or_explicit_local_test_mode() {
+        assert!(validate_celld_queue_http_endpoint(
+            "https://relay.example.test/internal/celld-queue/relay",
+            CelldQueueHttpEndpointPolicy::HttpsOnly,
+            None,
+        )
+        .is_ok());
+        assert!(validate_celld_queue_http_endpoint(
+            "http://relay.example.test/internal/celld-queue/relay",
+            CelldQueueHttpEndpointPolicy::HttpsOnly,
+            None,
+        )
+        .is_err());
+        assert!(validate_celld_queue_http_endpoint(
+            "http://127.0.0.1:8791/internal/celld-queue/relay",
+            CelldQueueHttpEndpointPolicy::LocalTestHttp,
+            Some("test-only-internal-secret-change-me"),
+        )
+        .is_ok());
+        assert!(validate_celld_queue_http_endpoint(
+            "http://relay.example.test/internal/celld-queue/relay",
+            CelldQueueHttpEndpointPolicy::LocalTestHttp,
+            Some("test-only-internal-secret-change-me"),
+        )
+        .is_err());
+        assert!(validate_celld_queue_http_endpoint(
+            "http://localhost:8791/internal/celld-queue/relay",
+            CelldQueueHttpEndpointPolicy::LocalTestHttp,
+            Some("production-secret"),
+        )
+        .is_err());
+    }
 
     #[derive(Clone, Default)]
     struct RecordingPublisher {

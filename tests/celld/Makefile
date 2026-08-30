@@ -1,52 +1,41 @@
-# Local celld 0.4 worker. State persists in the celld-dev-data volume.
+# Thin entrypoint for the canonical celld 0.4 + Queue + NATS local profile.
+# State persists in worker/.celld/dev across reloads and ordinary shutdowns.
 
-.PHONY: build build-relay dev-relay up reload logs down reset test help
+.PHONY: up reload logs down test help
 
-REPO_ROOT := $(abspath ../..)
-COMPOSE   ?= docker-compose.yml
+PROFILE_DIR := ../e2e-ui
 CELLD_HTTP_PORT ?= 18080
 CELLD_URL ?= http://127.0.0.1:$(CELLD_HTTP_PORT)
+NATS_PORT ?= 14222
+NATS_URL ?= nats://127.0.0.1:$(NATS_PORT)
+DISTRIBUTED_INTERNAL_SECRET ?= test-only-internal-secret-change-me-2026
 
-build:
-	@command -v worker-build >/dev/null || { echo "worker-build required: cargo install worker-build"; exit 1; }
-	cd worker && worker-build --dev
+PROFILE_VARS = \
+	CELLD_HTTP_PORT="$(CELLD_HTTP_PORT)" \
+	CELLD_URL="$(CELLD_URL)" \
+	NATS_PORT="$(NATS_PORT)" \
+	NATS_URL="$(NATS_URL)" \
+	DISTRIBUTED_INTERNAL_SECRET="$(DISTRIBUTED_INTERNAL_SECRET)"
 
-# celld dev serves one project at a time. Copy the generated consumer bundle
-# under the producer project so both deployments use worker/.celld/dev.
-build-relay:
-	@command -v worker-build >/dev/null || { echo "worker-build required: cargo install worker-build"; exit 1; }
-	cd relay-worker && worker-build --dev
-	mkdir -p worker/build/relay-worker
-	cp -R relay-worker/build/. worker/build/relay-worker
+up:
+	$(MAKE) -C $(PROFILE_DIR) up-celld-nats $(PROFILE_VARS)
 
-dev-relay: build-relay
-	celld dev worker/relay.wrangler.jsonc --host 127.0.0.1 --port 18081 --logs
-
-up: build
-	docker compose -f $(COMPOSE) up -d celld
-	@echo "celld 0.4 dev: $(CELLD_URL) (state volume: celld-dev-data)"
-
-reload: build
-	docker compose -f $(COMPOSE) up -d --force-recreate celld
+reload: up
 
 logs:
-	docker compose -f $(COMPOSE) logs -f celld
+	tail -F $(PROFILE_DIR)/.make-celld.log $(PROFILE_DIR)/.make-celld-relay.log
 
 down:
-	docker compose -f $(COMPOSE) down
-
-# Explicit destructive reset. Ordinary down/reload preserves the volume.
-reset:
-	docker compose -f $(COMPOSE) down -v
+	$(MAKE) -C $(PROFILE_DIR) down-celld $(PROFILE_VARS)
+	$(MAKE) -C $(PROFILE_DIR) down-celld-nats $(PROFILE_VARS)
 
 test:
-	cd $(REPO_ROOT) && CELLD_URL="$(CELLD_URL)" cargo test --test celld -- --nocapture
+	$(MAKE) -C $(PROFILE_DIR) test-celld $(PROFILE_VARS)
 
 help:
-	@echo "celld 0.4 worker"
-	@echo "  make up      build Worker + start celld dev"
-	@echo "  make dev-relay build + run the Queue consumer against the same dev store"
-	@echo "  make reload  rebuild + recreate celld (preserves data)"
-	@echo "  make down    stop celld (preserves data)"
-	@echo "  make reset   stop celld and delete local cell/queue data"
-	@echo "  make test    run live cell tests"
+	@echo "celld 0.4 + Queue + NATS profile"
+	@echo "  make up      build/register both Workers and start the shared local profile"
+	@echo "  make reload  rebuild and restart without deleting worker/.celld/dev"
+	@echo "  make logs    follow aggregate and relay registration logs"
+	@echo "  make down    stop celld and NATS; preserve worker/.celld/dev"
+	@echo "  make test    validate the already-running profile"

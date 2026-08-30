@@ -31,7 +31,6 @@ DATABASE_URL ?= sqlite:./e2e-ui.db?mode=rwc
 
 # Optional celld+NATS profile (same UI, not the one-process playground).
 REPO_ROOT        := $(abspath ../..)
-CELLD_COMPOSE    := ../celld/docker-compose.yml
 PROFILE_COMPOSE  := celld-nats-profile/docker-compose.yml
 CELLD_HTTP_PORT  ?= 18080
 NATS_PORT        ?= 14222
@@ -157,6 +156,11 @@ up-celld-nats:
 	celld dev --help >/dev/null 2>&1 || { echo "celld 0.4.0+ required (missing 'celld dev')"; exit 1; }; \
 	command -v worker-build >/dev/null || { echo "worker-build required: cargo install worker-build"; exit 1; }; \
 	$(MAKE) --no-print-directory down-celld; \
+	if lsof -tiTCP:$(CELLD_HTTP_PORT) -sTCP:LISTEN >/dev/null 2>&1; then \
+		echo "refusing to start celld: port $(CELLD_HTTP_PORT) is owned by an untracked listener"; \
+		lsof -nP -iTCP:$(CELLD_HTTP_PORT) -sTCP:LISTEN; \
+		exit 1; \
+	fi; \
 	echo "optional profile — not make run"; \
 	echo "NATS: $(PROFILE_COMPOSE)"; \
 	if docker compose -f $(PROFILE_COMPOSE) ps --status running --services 2>/dev/null | grep -qx nats; then \
@@ -187,7 +191,8 @@ up-celld-nats:
 		echo "celld relay registration failed:"; tail -80 $(CELLD_RELAY_LOG); \
 		kill "$$relay_launcher_pid" 2>/dev/null || true; exit 1; \
 	fi; \
-	relay_node_pid=$$(lsof -tiTCP:$(CELLD_HTTP_PORT) -sTCP:LISTEN); \
+	relay_node_pid=$$(lsof -tiTCP:$(CELLD_HTTP_PORT) -sTCP:LISTEN | head -1); \
+	[ -n "$$relay_node_pid" ] || { echo "celld relay listener PID was not found"; kill "$$relay_launcher_pid" 2>/dev/null || true; exit 1; }; \
 	kill "$$relay_launcher_pid" 2>/dev/null || true; \
 	for i in $$(seq 1 80); do \
 		lsof -tiTCP:$(CELLD_HTTP_PORT) -sTCP:LISTEN >/dev/null 2>&1 || break; \
@@ -243,7 +248,21 @@ down-celld:
 			"") ;; \
 			*) echo "refusing to stop unexpected celld node $$node_pid: $$node_command"; exit 1 ;; \
 		esac; \
+		for i in $$(seq 1 160); do \
+			lsof -tiTCP:$(CELLD_HTTP_PORT) -sTCP:LISTEN >/dev/null 2>&1 || break; \
+			sleep 0.25; \
+		done; \
+		if lsof -tiTCP:$(CELLD_HTTP_PORT) -sTCP:LISTEN >/dev/null 2>&1; then \
+			echo "tracked celld listener on port $(CELLD_HTTP_PORT) did not stop"; \
+			lsof -nP -iTCP:$(CELLD_HTTP_PORT) -sTCP:LISTEN; \
+			exit 1; \
+		fi; \
 		rm -f $(CELLD_NODE_PID); \
+	fi; \
+	if lsof -tiTCP:$(CELLD_HTTP_PORT) -sTCP:LISTEN >/dev/null 2>&1; then \
+		echo "refusing to stop untracked listener on port $(CELLD_HTTP_PORT)"; \
+		lsof -nP -iTCP:$(CELLD_HTTP_PORT) -sTCP:LISTEN; \
+		exit 1; \
 	fi; \
 	echo "celld stopped; $(CELLD_PROJECT)/.celld/dev preserved. NATS: make down-celld-nats."
 

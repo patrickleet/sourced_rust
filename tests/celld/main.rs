@@ -105,33 +105,39 @@ fn relay_worker_consumes_events_queue_through_native_bus_boundary() {
     );
     assert_eq!(
         spec["vars"]["CELLD_QUEUE_RELAY_URL"],
-        "http://host.docker.internal:8791/internal/celld-queue/relay"
+        "http://127.0.0.1:8791/internal/celld-queue/relay"
     );
+    assert_eq!(spec["vars"]["CELLD_QUEUE_RELAY_LOCAL_TEST"], "1");
 
     let source =
         std::fs::read_to_string(relay_worker_dir().join("src/lib.rs")).expect("relay lib.rs");
     assert!(source.contains("#[event(queue)]"));
     assert!(source.contains("CelldQueueRelay"));
     assert!(source.contains("CelldQueueHttpPublisher"));
+    assert!(source.contains("new_local_test"));
     assert!(!source.contains("event(fetch)"));
 }
 
 #[test]
-fn compose_uses_celld_0_4_local_store_with_persistent_volume() {
-    let compose = std::fs::read_to_string(concat!(
+fn local_entrypoint_delegates_to_the_single_persistent_profile() {
+    let makefile =
+        std::fs::read_to_string(concat!(env!("CARGO_MANIFEST_DIR"), "/tests/celld/Makefile"))
+            .expect("Makefile");
+    assert!(makefile.contains("PROFILE_DIR := ../e2e-ui"));
+    assert!(makefile.contains("up-celld-nats"));
+    assert!(makefile.contains("test-celld"));
+    assert!(makefile.contains("down-celld"));
+    assert!(makefile.contains("worker/.celld/dev"));
+    assert!(!makefile.contains("docker-compose.yml"));
+    assert!(!makefile.contains("dev-relay"));
+
+    let profile_makefile = std::fs::read_to_string(concat!(
         env!("CARGO_MANIFEST_DIR"),
-        "/tests/celld/docker-compose.yml"
+        "/tests/e2e-ui/Makefile"
     ))
-    .expect("compose");
-    assert!(compose.contains("ghcr.io/denoland/celld:0.4.0"));
-    assert!(compose.contains("- dev"));
-    assert!(compose.contains("celld-dev-data:/worker/.celld"));
-    assert!(!compose.contains("azurite"));
-    assert!(!compose.contains("AZURE_STORAGE"));
-    assert!(!compose.contains("s3"));
-    assert!(compose.contains("CELLD_HTTP_PORT:-18080"));
-    assert!(compose.contains("127.0.0.1:${CELLD_HTTP_PORT:-18080}:8080"));
-    assert!(compose.contains(":8080"));
+    .expect("profile Makefile");
+    assert!(profile_makefile.contains("refusing to start celld"));
+    assert!(profile_makefile.contains("refusing to stop untracked listener"));
 }
 
 #[tokio::test]

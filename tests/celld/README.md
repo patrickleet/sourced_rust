@@ -27,27 +27,28 @@ native `BusPublisher<B>` changes.
 
 ## Local celld
 
-Prerequisites: Docker, `worker-build`, and the `wasm32-unknown-unknown` Rust
-target.
+Prerequisites: Docker (for NATS), celld 0.4, `worker-build`, and the
+`wasm32-unknown-unknown` Rust target.
 
 ```sh
 make -C tests/celld up
 make -C tests/celld test
+make -C tests/celld down
 ```
 
 celld 0.4 development mode supplies its own local object store; Azurite, MinIO,
-and an external S3 endpoint are not used. Docker stores `PROJECT/.celld/dev` in
-the named `celld-dev-data` volume. `make down` and `make reload` preserve it.
-Only the explicit `make reset` target deletes cell and Queue data.
+and an external S3 endpoint are not used. The canonical profile stores cell and
+Queue data in `tests/celld/worker/.celld/dev`. `make down` and `make reload`
+preserve that directory.
 
 celld permits only one consumer script per Queue, and that script cannot also
 export `fetch`, so it is deliberately a separate project. `celld dev` serves
-one project at a time; the live local proof uses the same `.celld/dev` store
-while switching from the aggregate producer project to
-`worker/relay.wrangler.jsonc`. The retained Queue row is then delivered to the
-e2e-celld native host, accepted by NATS JetStream, and applied by the normal Todo
-projection. A deployed fleet can keep the producer and consumer deployments as
-separate scripts without changing the relay code.
+one project at a time. `make up` delegates to the e2e-ui profile, which registers
+`worker/relay.wrangler.jsonc`, stops that process, and then starts the aggregate
+Worker from the same persistent `.celld/dev` store. The retained Queue row is
+then delivered to the e2e-celld native host, accepted by NATS JetStream, and
+applied by the normal Todo projection. A deployed fleet can keep the producer
+and consumer deployments as separate scripts without changing the relay code.
 
 Without `CELLD_URL`, `cargo test --test celld` checks the fixtures and skips the
 live HTTP round trips.

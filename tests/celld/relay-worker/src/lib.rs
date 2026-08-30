@@ -8,11 +8,15 @@ use worker::{event, Context, Env, Error, MessageBatch, MessageExt, Result};
 #[event(queue)]
 pub async fn main(batch: MessageBatch<CelldQueueEnvelope>, env: Env, _ctx: Context) -> Result<()> {
     console_error_panic_hook::set_once();
-    let publisher = CelldQueueHttpPublisher::new(required_var(&env, "CELLD_QUEUE_RELAY_URL")?)
-        .with_header(
-            CELL_INTERNAL_SECRET_HEADER,
-            required_var(&env, "DISTRIBUTED_INTERNAL_SECRET")?,
-        );
+    let endpoint = required_var(&env, "CELLD_QUEUE_RELAY_URL")?;
+    let internal_secret = required_var(&env, "DISTRIBUTED_INTERNAL_SECRET")?;
+    let publisher = if local_test_mode(&env)? {
+        CelldQueueHttpPublisher::new_local_test(endpoint, &internal_secret)
+    } else {
+        CelldQueueHttpPublisher::new(endpoint)
+    }
+    .map_err(|error| Error::RustError(error.to_string()))?
+    .with_header(CELL_INTERNAL_SECRET_HEADER, internal_secret);
     let relay = CelldQueueRelay::new(publisher);
 
     for delivery in batch.messages()? {
@@ -25,6 +29,16 @@ pub async fn main(batch: MessageBatch<CelldQueueEnvelope>, env: Env, _ctx: Conte
         }
     }
     Ok(())
+}
+
+fn local_test_mode(env: &Env) -> Result<bool> {
+    match env.var("CELLD_QUEUE_RELAY_LOCAL_TEST") {
+        Err(_) => Ok(false),
+        Ok(value) if value.to_string() == "1" => Ok(true),
+        Ok(_) => Err(Error::RustError(
+            "CELLD_QUEUE_RELAY_LOCAL_TEST must be exactly `1` when enabled".into(),
+        )),
+    }
 }
 
 fn required_var(env: &Env, name: &str) -> Result<String> {
