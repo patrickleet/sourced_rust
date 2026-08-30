@@ -5,15 +5,12 @@
 //! projectors are not methods on this class (`PCH-REQ-005`). Chat `@live`
 //! stays on the GraphQL host.
 
-use std::time::Duration;
-
 use chat_domain::{post, ChatMessage, ChatMessageState};
-use distributed::bus::CelldQueuePublisher;
 use distributed::cell_host::{
     cell_projection_event_evidence, AggregateCell, CellCommandIdentity, CellDispatchError,
-    CellDispatchResult, CellWaitPathRequest, DurableAggregateCellState, InternalHttpSecret,
-    CELL_INTERNAL_SECRET_ENV, CELL_INTERNAL_SECRET_HEADER, CELL_PRINCIPAL_PARTITION_HEADER,
-    CELL_SERVICE_ID_HEADER,
+    CellDispatchResult, CellWaitPathRequest, CelldOutbox, DurableAggregateCellState,
+    InternalHttpSecret, CELL_INTERNAL_SECRET_ENV, CELL_INTERNAL_SECRET_HEADER,
+    CELL_PRINCIPAL_PARTITION_HEADER, CELL_SERVICE_ID_HEADER,
 };
 use distributed::microsvc::{Session, ROLE_KEY, USER_ID_KEY};
 use serde::de::DeserializeOwned;
@@ -37,7 +34,6 @@ pub struct TodoCell {
     sql: SqlStorage,
     storage: Storage,
     env: Env,
-    shard: String,
 }
 
 impl DurableObject for TodoCell {
@@ -47,6 +43,7 @@ impl DurableObject for TodoCell {
         let sql = storage.sql();
         sql.exec(STATE_DDL, None).expect("create cell_state");
         let shard = state.id().name().unwrap_or_else(|| "todo".to_string());
+        let outbox = CelldOutbox::from_env(&env, "OUTBOX").expect("OUTBOX Queue binding");
         let cell = AggregateCell::<Todo>::new_with_snapshots(shard.clone(), 1)
             .expect("todo cell identity")
             .mount(create())
@@ -55,14 +52,14 @@ impl DurableObject for TodoCell {
             .mount(reopen())
             .mount(archive())
             .mount(force_archive())
-            .mount(purge());
+            .mount(purge())
+            .with_celld_outbox(outbox);
         let _ = restore_cell_state(&sql, &cell);
         Self {
             cell,
             sql,
             storage,
             env,
-            shard,
         }
     }
 
@@ -128,15 +125,13 @@ impl DurableObject for TodoCell {
         if let Err(error) = restore_cell_state(&self.sql, &self.cell) {
             return json_status(json!({ "error": error }), 500);
         }
-        run_outbox_alarm(
-            &self.sql,
-            &self.storage,
-            &self.env,
-            &self.cell,
-            "todo",
-            &self.shard,
-        )
-        .await
+        self.cell
+            .persist_and_drain_outbox(&self.env, &self.storage, |state| {
+                persist_cell_state(&self.sql, state)
+            })
+            .await
+            .map_err(|error| Error::RustError(error.to_string()))?;
+        Response::ok("ok")
     }
 }
 
@@ -146,7 +141,6 @@ pub struct ChatCell {
     sql: SqlStorage,
     storage: Storage,
     env: Env,
-    shard: String,
 }
 
 impl DurableObject for ChatCell {
@@ -156,16 +150,17 @@ impl DurableObject for ChatCell {
         let sql = storage.sql();
         sql.exec(STATE_DDL, None).expect("create cell_state");
         let shard = state.id().name().unwrap_or_else(|| "chat".to_string());
+        let outbox = CelldOutbox::from_env(&env, "OUTBOX").expect("OUTBOX Queue binding");
         let cell = AggregateCell::<ChatMessage>::new(shard.clone())
             .expect("chat cell identity")
-            .mount(post());
+            .mount(post())
+            .with_celld_outbox(outbox);
         let _ = restore_cell_state(&sql, &cell);
         Self {
             cell,
             sql,
             storage,
             env,
-            shard,
         }
     }
 
@@ -209,15 +204,13 @@ impl DurableObject for ChatCell {
         if let Err(error) = restore_cell_state(&self.sql, &self.cell) {
             return json_status(json!({ "error": error }), 500);
         }
-        run_outbox_alarm(
-            &self.sql,
-            &self.storage,
-            &self.env,
-            &self.cell,
-            "chat",
-            &self.shard,
-        )
-        .await
+        self.cell
+            .persist_and_drain_outbox(&self.env, &self.storage, |state| {
+                persist_cell_state(&self.sql, state)
+            })
+            .await
+            .map_err(|error| Error::RustError(error.to_string()))?;
+        Response::ok("ok")
     }
 }
 
@@ -354,16 +347,16 @@ async fn post_chat(
     {
         Ok(dispatch) => {
             seal_chat_from_load(cell).await;
-            arm_drain_alarm(storage, env, has_pending(cell)).await?;
-            persist_chat_copy(sql, cell)?;
+            cell.persist_and_drain_outbox(env, storage, |state| persist_cell_state(sql, state))
+                .await
+                .map_err(|error| Error::RustError(error.to_string()))?;
             let events = projection_events_wire(cell, dispatch.causation_id())?;
-            drain_outbox_to_queue(sql, storage, env, cell, "chat", id).await?;
             wait_path_ok(dispatch.payload().clone(), &dispatch, 201, events)
         }
         Err(error) => {
-            arm_drain_alarm(storage, env, has_pending(cell)).await?;
-            persist_chat_copy(sql, cell)?;
-            drain_outbox_to_queue(sql, storage, env, cell, "chat", id).await?;
+            cell.persist_and_drain_outbox(env, storage, |state| persist_cell_state(sql, state))
+                .await
+                .map_err(|error| Error::RustError(error.to_string()))?;
             map_cell_error(error, cell)
         }
     }
@@ -397,10 +390,6 @@ async fn seal_chat_from_load(cell: &AggregateCell<ChatMessage>) {
     if let Ok(Some(message)) = cell.load().await {
         let _ = cell.replace_sealed_row(http_chat(&ChatMessageState::from(&message)));
     }
-}
-
-fn persist_chat_copy(sql: &SqlStorage, cell: &AggregateCell<ChatMessage>) -> Result<()> {
-    persist_cell_state(sql, cell)
 }
 
 async fn get_todo(cell: &AggregateCell<Todo>, id: &str) -> Result<Response> {
@@ -477,19 +466,6 @@ where
     .map_err(|error| Error::RustError(error.to_string()))
 }
 
-fn has_pending<A>(cell: &AggregateCell<A>) -> bool
-where
-    A: distributed::Aggregate + Send + Sync + 'static,
-{
-    cell.durable_outbox()
-        .ok()
-        .map(|rows| {
-            rows.iter()
-                .any(|row| !row.is_published() && !row.is_failed())
-        })
-        .unwrap_or(false)
-}
-
 async fn create_todo(
     sql: &SqlStorage,
     storage: &Storage,
@@ -526,10 +502,10 @@ async fn create_todo(
     {
         Ok(dispatch) => {
             seal_from_load(cell).await;
-            arm_drain_alarm(storage, env, has_pending(cell)).await?;
-            persist_working_copy(sql, cell)?;
+            cell.persist_and_drain_outbox(env, storage, |state| persist_cell_state(sql, state))
+                .await
+                .map_err(|error| Error::RustError(error.to_string()))?;
             let events = projection_events_wire(cell, dispatch.causation_id())?;
-            drain_outbox_to_queue(sql, storage, env, cell, "todo", id).await?;
             wait_path_ok(
                 http_from_command(id, dispatch.payload(), &title),
                 &dispatch,
@@ -538,9 +514,9 @@ async fn create_todo(
             )
         }
         Err(error) => {
-            arm_drain_alarm(storage, env, has_pending(cell)).await?;
-            persist_working_copy(sql, cell)?;
-            drain_outbox_to_queue(sql, storage, env, cell, "todo", id).await?;
+            cell.persist_and_drain_outbox(env, storage, |state| persist_cell_state(sql, state))
+                .await
+                .map_err(|error| Error::RustError(error.to_string()))?;
             map_cell_error(error, cell)
         }
     }
@@ -582,10 +558,10 @@ async fn transition_todo(
     {
         Ok(dispatch) => {
             seal_from_load(cell).await;
-            arm_drain_alarm(storage, env, has_pending(cell)).await?;
-            persist_working_copy(sql, cell)?;
+            cell.persist_and_drain_outbox(env, storage, |state| persist_cell_state(sql, state))
+                .await
+                .map_err(|error| Error::RustError(error.to_string()))?;
             let events = projection_events_wire(cell, dispatch.causation_id())?;
-            drain_outbox_to_queue(sql, storage, env, cell, "todo", id).await?;
             let title = cell
                 .load()
                 .await
@@ -601,9 +577,9 @@ async fn transition_todo(
             )
         }
         Err(error) => {
-            arm_drain_alarm(storage, env, has_pending(cell)).await?;
-            persist_working_copy(sql, cell)?;
-            drain_outbox_to_queue(sql, storage, env, cell, "todo", id).await?;
+            cell.persist_and_drain_outbox(env, storage, |state| persist_cell_state(sql, state))
+                .await
+                .map_err(|error| Error::RustError(error.to_string()))?;
             map_cell_error(error, cell)
         }
     }
@@ -678,19 +654,8 @@ async fn seal_from_load(cell: &AggregateCell<Todo>) {
     }
 }
 
-fn persist_working_copy(sql: &SqlStorage, cell: &AggregateCell<Todo>) -> Result<()> {
-    persist_cell_state(sql, cell)
-}
-
-fn persist_cell_state<A>(sql: &SqlStorage, cell: &AggregateCell<A>) -> Result<()>
-where
-    A: distributed::Aggregate + Send + Sync + 'static,
-{
-    let state = cell
-        .durable_state()
-        .map_err(|error| Error::RustError(error.to_string()))?;
-    let body =
-        serde_json::to_string(&state).map_err(|error| Error::RustError(error.to_string()))?;
+fn persist_cell_state(sql: &SqlStorage, state: &DurableAggregateCellState) -> Result<()> {
+    let body = serde_json::to_string(state).map_err(|error| Error::RustError(error.to_string()))?;
     sql.exec(
         "INSERT INTO cell_state (id, body) VALUES (1, ?) \
          ON CONFLICT(id) DO UPDATE SET body = excluded.body",
@@ -714,75 +679,4 @@ fn load_cell_state(sql: &SqlStorage) -> Result<Option<DurableAggregateCellState>
 #[derive(Deserialize)]
 struct StateRow {
     body: String,
-}
-
-async fn arm_drain_alarm(storage: &Storage, env: &Env, pending: bool) -> Result<()> {
-    if !pending {
-        storage.delete_alarm().await?;
-        return Ok(());
-    }
-    let ms = env
-        .var("OUTBOX_DRAIN_INTERVAL_MS")
-        .ok()
-        .and_then(|value| value.to_string().parse::<u64>().ok())
-        .unwrap_or(5_000)
-        .max(1_000);
-    storage.set_alarm(Duration::from_millis(ms)).await?;
-    Ok(())
-}
-
-async fn run_outbox_alarm<A>(
-    sql: &SqlStorage,
-    storage: &Storage,
-    env: &Env,
-    cell: &AggregateCell<A>,
-    kind: &str,
-    id: &str,
-) -> Result<Response>
-where
-    A: distributed::Aggregate + Send + Sync + 'static,
-{
-    drain_outbox_to_queue(sql, storage, env, cell, kind, id).await?;
-    Response::ok("ok")
-}
-
-async fn drain_outbox_to_queue<A>(
-    sql: &SqlStorage,
-    storage: &Storage,
-    env: &Env,
-    cell: &AggregateCell<A>,
-    kind: &str,
-    id: &str,
-) -> Result<()>
-where
-    A: distributed::Aggregate + Send + Sync + 'static,
-{
-    if !has_pending(cell) {
-        arm_drain_alarm(storage, env, false).await?;
-        return Ok(());
-    }
-
-    // Establish the watchdog before attempting Queue egress. If Queue accepts
-    // but settling the outbox is interrupted, this alarm retries the stable id.
-    arm_drain_alarm(storage, env, true).await?;
-
-    let publisher = CelldQueuePublisher::from_env(env, "OUTBOX")
-        .map_err(|error| Error::RustError(error.to_string()))?;
-    let dispatcher = cell.outbox_dispatcher(
-        publisher,
-        format!("celld-queue:{kind}:{id}"),
-        Duration::from_secs(30),
-        10_000,
-    );
-    dispatcher
-        .dispatch_batch(100)
-        .await
-        .map_err(|error| Error::RustError(error.to_string()))?;
-
-    // Accepted rows settle; retryable publish outcomes remain pending for the
-    // alarm. Persist both states before returning the committed command receipt.
-    persist_cell_state(sql, cell)?;
-    let pending = has_pending(cell);
-    arm_drain_alarm(storage, env, pending).await?;
-    Ok(())
 }

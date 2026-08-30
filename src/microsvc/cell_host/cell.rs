@@ -50,6 +50,8 @@ where
 {
     shard: StreamIdentity,
     routes: Routes<AggregateRepository<CellStreamStore, A>>,
+    #[cfg(feature = "workers-rs")]
+    celld_outbox: Option<super::celld_outbox::CelldOutbox>,
 }
 
 impl<A> AggregateCell<A>
@@ -63,6 +65,8 @@ where
         Ok(Self {
             shard,
             routes: Routes::from_dependencies(AggregateRepository::new(store)),
+            #[cfg(feature = "workers-rs")]
+            celld_outbox: None,
         })
     }
 
@@ -178,6 +182,35 @@ where
         )
     }
 
+    /// Attach the celld Queue binding and drain policy used by this cell host.
+    #[cfg(feature = "workers-rs")]
+    pub fn with_celld_outbox(mut self, outbox: super::celld_outbox::CelldOutbox) -> Self {
+        self.celld_outbox = Some(outbox);
+        self
+    }
+
+    /// Persist this cell's complete state, durably arm its Queue watchdog,
+    /// dispatch pending outbox rows, persist settlements, and rearm or clear
+    /// the watchdog according to the remaining backlog.
+    #[cfg(feature = "workers-rs")]
+    pub async fn persist_and_drain_outbox<F, E>(
+        &self,
+        env: &worker::Env,
+        storage: &worker::Storage,
+        persist: F,
+    ) -> Result<crate::OutboxDispatchOutcome, crate::bus::TransportError>
+    where
+        F: Fn(&DurableAggregateCellState) -> Result<(), E>,
+        E: std::fmt::Display,
+    {
+        let outbox = self.celld_outbox.as_ref().ok_or_else(|| {
+            crate::bus::TransportError::permanent(
+                "aggregate cell has no celld outbox binding configured",
+            )
+        })?;
+        outbox.persist_and_drain(self, env, storage, persist).await
+    }
+
     /// Restore outbox rows from Durable Object SQLite.
     pub fn restore_durable_outbox(
         &self,
@@ -261,6 +294,8 @@ where
             routes: Routes::from_dependencies(
                 AggregateRepository::new(store).with_snapshots(frequency),
             ),
+            #[cfg(feature = "workers-rs")]
+            celld_outbox: None,
         })
     }
 }

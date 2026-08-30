@@ -81,8 +81,12 @@ fn worker_declares_sqlite_todo_and_chat_cells() {
     assert!(source.contains("restore_durable_state"));
     assert!(source.contains("ON CONFLICT(id) DO UPDATE SET body = excluded.body"));
     assert!(source.contains("dispatch_idempotent"));
-    assert!(source.contains("CelldQueuePublisher::from_env(env, \"OUTBOX\")"));
-    assert!(source.contains("outbox_dispatcher"));
+    assert!(source.contains("CelldOutbox::from_env(&env, \"OUTBOX\")"));
+    assert!(source.contains("with_celld_outbox(outbox)"));
+    assert!(source.contains("persist_and_drain_outbox"));
+    assert!(!source.contains("CelldQueuePublisher::from_env"));
+    assert!(!source.contains("drain_outbox_to_queue"));
+    assert!(!source.contains("arm_drain_alarm"));
     assert!(
         !source.contains("outcome.released") && !source.contains("outcome.failed"),
         "retryable Queue outcomes must stay alarm-owned, not fail a committed command"

@@ -15,6 +15,8 @@
 
 pub(crate) mod causal;
 mod cell;
+#[cfg(feature = "workers-rs")]
+mod celld_outbox;
 #[cfg(feature = "graphql")]
 mod command;
 mod internal_auth;
@@ -26,6 +28,12 @@ pub use causal::{
     CELL_SERVICE_ID_HEADER,
 };
 pub use cell::{instance_name, parent_cell_name, AggregateCell, CellNamespace};
+#[cfg(feature = "workers-rs")]
+pub use celld_outbox::{
+    CelldOutbox, CELLD_OUTBOX_DEFAULT_BATCH_SIZE, CELLD_OUTBOX_DEFAULT_BINDING,
+    CELLD_OUTBOX_DEFAULT_DRAIN_INTERVAL_MS, CELLD_OUTBOX_DEFAULT_LEASE,
+    CELLD_OUTBOX_DEFAULT_MAX_ATTEMPTS, CELLD_OUTBOX_DRAIN_INTERVAL_ENV,
+};
 #[cfg(feature = "graphql")]
 pub use command::{CelldCommandHost, CelldRoute};
 pub use internal_auth::{

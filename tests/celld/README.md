@@ -11,11 +11,31 @@ The aggregate Worker owns one SQLite Durable Object per Todo or Chat shard.
 `AggregateCell::durable_state` assembles the event log, command ledger,
 snapshot/sealed state, and outbox into one versioned envelope. The Worker saves
 that envelope with one SQLite upsert, so the aggregate mutation and its outbox
-are one cell commit. `AggregateCell::outbox_dispatcher` then publishes through
-`CelldQueuePublisher`. celld's output gate holds Queue egress until the cell
-write is durable. Queue acceptance then settles the outbox row with a second
-single-state upsert. If that settlement is interrupted, the same stable event
-id may be delivered again; consumers must deduplicate by that id.
+are one cell commit. The host attaches `CelldOutbox::from_env(&env, "OUTBOX")`
+to the `AggregateCell`, then `persist_and_drain_outbox` owns the complete
+persist, watchdog, Queue dispatch, settlement persistence, and alarm-rearming
+lifecycle. celld's output gate holds Queue egress until the cell write is
+durable. If settlement persistence is interrupted, the same stable event id may
+be delivered again; consumers must deduplicate by that id.
+
+```rust,ignore
+let cell = AggregateCell::<Todo>::new_with_snapshots(shard, 1)?
+    .mount(create())
+    .mount(complete())
+    .with_celld_outbox(CelldOutbox::from_env(&env, "OUTBOX")?);
+
+cell.persist_and_drain_outbox(&env, &storage, |state| {
+    persist_cell_state(&sql, state)
+})
+.await?;
+```
+
+The same `persist_and_drain_outbox` call runs after a command and from the
+Durable Object alarm. It persists the full state before Queue egress, arms the
+watchdog before publishing, persists any settlements even when a later store
+operation errors, and clears the alarm only when no retryable rows remain.
+Released Queue outcomes stay pending for the alarm and do not turn an already
+committed command into an HTTP error.
 
 Queue is intentionally not modeled as a full Distributed `Bus`: it has one
 consumer and no fanout. `CelldQueueRelay` is generic over `MessagePublisher`,
