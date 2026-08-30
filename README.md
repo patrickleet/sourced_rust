@@ -8,14 +8,66 @@ Write the domain once, compose it into one `Service` or several, then
 generate the client. Each stage below uses real code from
 [`tests/e2e-ui`](tests/e2e-ui).
 
-```text
-                    query · command · live
-Client ──────────────────────────────────► GraphQL gateway
-                                              │
-     ┌── commands → aggregate → domain event → projection → read model ──┐
-     │                                                                   │
-     └──────────────────────────── one way ──────────────────────────────┘
+```mermaid
+sequenceDiagram
+    actor Author
+    participant Build as distributed build + Vite
+    participant Kit as SvelteKit
+    participant API as GraphQL gateway
+    participant Domain as Command handler + aggregate
+    participant Projector as Projection worker
+    participant DB as Read-model database
+    participant Replica as Browser replica
+
+    rect rgb(245, 247, 255)
+        Note over Author,Replica: Generate one application from authored Rust and page GraphQL
+        Author->>Build: Domain crates: commands, events, command RBAC
+        Author->>Build: Read-model crates: query shapes, relationships, read RBAC
+        Author->>Build: Projections: event → internal read-model mutation
+        Author->>Build: +page.graphql: @load and optional @live
+        Build-->>API: Command + query/subscription surfaces with RBAC
+        Build-->>Projector: Server projection programs
+        Build-->>Kit: Loaders, live operations, typed commands, replica plans
+        Build-->>Replica: Optimistic projection programs + optional Rust/WASM pures
+    end
+
+    rect rgb(245, 255, 247)
+        Note over Kit,Replica: Initial page render — @load
+        Kit->>API: Authorized @load query (SSR or navigation)
+        API->>DB: Read the authorized model slice
+        DB-->>API: Rows + identities + revisions
+        API-->>Kit: Query result
+        Kit->>Replica: Normalize, dehydrate, hydrate + server authority
+        Note right of Replica: Browser does not repeat the first query
+        Replica-->>Kit: Reactive confirmed snapshot
+    end
+
+    rect rgb(255, 251, 240)
+        Note over Kit,Replica: Ongoing page updates — @live
+        Kit->>Replica: Generated operation attaches live automatically
+        Replica->>API: Subscribe with the same query + variables
+    end
+
+    rect rgb(255, 245, 250)
+        Note over Kit,Replica: Write path — public domain command, never public model mutation
+        Kit->>Replica: Generated typed command + input
+        Replica-->>Kit: Apply predicted projection immediately
+        Replica->>API: Authorized domain command
+        API->>Domain: Execute command
+        Domain-->>Projector: Commit domain event
+        Projector->>DB: Apply internal projection mutation
+        DB-->>API: Publish committed read-model change
+        API-->>Replica: @live records + causal clocks
+        Replica-->>Kit: Confirm or reconcile the optimistic snapshot
+        Note over Projector,Replica: The generated projection protocol drives both server updates and browser optimism
+    end
 ```
+
+The page-level GraphQL documents are part of the application contract. `@load`
+generates the SvelteKit SSR/navigation data path; `@live` adds the subscription
+that carries committed read-model changes back into the browser replica. Public
+writes still use domain commands. Projection mutation programs stay internal and
+provide the shared server-update and optimistic-replica protocol.
 
 ### 01 · Unidirectional
 

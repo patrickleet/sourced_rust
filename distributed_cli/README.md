@@ -43,7 +43,10 @@ authored crates and preserves the framework's separation of responsibility:
 - projections map domain events to read-model mutations used by the server and
   browser optimism;
 - optional Rust/WASM pure functions cover optimistic transitions that cannot be
-  predicted from command inputs alone.
+  predicted from command inputs alone;
+- SvelteKit `+page.graphql` documents add page-level `@load` loaders and `@live`
+  subscriptions, generated against the read-model query surface and hydrated
+  into the browser replica.
 
 `distributed build` compiles the Rust runtime and the SvelteKit/Vite UI, then
 introspects the typed composition without scanning Rust source. The active
