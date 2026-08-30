@@ -38,10 +38,11 @@ NATS_PORT        ?= 14222
 CELLD_URL        ?= http://127.0.0.1:$(CELLD_HTTP_PORT)
 NATS_URL         ?= nats://127.0.0.1:$(NATS_PORT)
 DISTRIBUTED_INTERNAL_SECRET ?= test-only-internal-secret-change-me-2026
-# Public Azurite emulator account (already in tests/celld compose). Not a secret.
-AZURE_STORAGE_USE_EMULATOR    ?= true
-AZURE_STORAGE_ACCOUNT_NAME    ?= devstoreaccount1
-AZURE_STORAGE_ACCOUNT_KEY     ?= Eby8vdM02xNOcqFlqUwJPLlmEtlCDXJ1OUzFT50uSRZ6IFsuFq2UVErCz4I6tq/K1SZFPTOtr/KBHBeksoGMGw==
+CELLD_PROJECT    := ../celld/worker
+CELLD_RELAY_PROJECT := ../celld/relay-worker
+CELLD_NODE_PID   := .make-celld-node.pid
+CELLD_LOG        := .make-celld.log
+CELLD_RELAY_LOG  := .make-celld-relay.log
 
 all: run
 
@@ -148,12 +149,14 @@ stop:
 	echo stopped
 
 ## Optional celld + NATS profile of the same UI. Does NOT replace make run.
-## Brings up tests/celld (Azurite + celld) and celld-nats-profile (NATS only).
+## celld 0.4 keeps its local object store under tests/celld/worker/.celld/dev.
 up-celld-nats:
 	@set -e; \
 	command -v docker >/dev/null || { echo "docker required"; exit 1; }; \
 	command -v celld >/dev/null || { echo "celld CLI required: curl -fsSL https://celld.dev/install.sh | sh"; exit 1; }; \
+	celld dev --help >/dev/null 2>&1 || { echo "celld 0.4.0+ required (missing 'celld dev')"; exit 1; }; \
 	command -v worker-build >/dev/null || { echo "worker-build required: cargo install worker-build"; exit 1; }; \
+	$(MAKE) --no-print-directory down-celld; \
 	echo "optional profile — not make run"; \
 	echo "NATS: $(PROFILE_COMPOSE)"; \
 	if docker compose -f $(PROFILE_COMPOSE) ps --status running --services 2>/dev/null | grep -qx nats; then \
@@ -166,42 +169,83 @@ up-celld-nats:
 	else \
 		docker compose -f $(PROFILE_COMPOSE) up -d; \
 	fi; \
-	echo "celld + Azurite: $(CELLD_COMPOSE)"; \
-	docker compose -f $(CELLD_COMPOSE) up -d azurite; \
-	docker compose -f $(CELLD_COMPOSE) up --exit-code-from azurite-init azurite-init; \
-	export AZURE_STORAGE_USE_EMULATOR="$(AZURE_STORAGE_USE_EMULATOR)"; \
-	export AZURE_STORAGE_ACCOUNT_NAME="$(AZURE_STORAGE_ACCOUNT_NAME)"; \
-	export AZURE_STORAGE_ACCOUNT_KEY="$(AZURE_STORAGE_ACCOUNT_KEY)"; \
-	echo "building Todo+Chat cell worker…"; \
+	echo "building aggregate and Queue relay Workers…"; \
 	( cd ../celld/worker && worker-build --release ); \
-	echo "deploying worker to az://celld…"; \
-	( cd $(REPO_ROOT) && celld deploy tests/celld/worker --bucket az://celld ); \
-	docker compose -f $(CELLD_COMPOSE) up -d celld; \
-	docker compose -f $(CELLD_COMPOSE) restart celld; \
+	( cd ../celld/relay-worker && worker-build --release ); \
+	mkdir -p $(CELLD_PROJECT)/build/relay-worker; \
+	cp -R $(CELLD_RELAY_PROJECT)/build/. $(CELLD_PROJECT)/build/relay-worker; \
+	echo "registering Queue consumer in the persistent celld dev store…"; \
+	celld dev $(CELLD_PROJECT)/relay.wrangler.jsonc --host 127.0.0.1 --port $(CELLD_HTTP_PORT) --logs > $(CELLD_RELAY_LOG) 2>&1 & \
+	relay_launcher_pid=$$!; \
+	relay_ok=0; \
+	for i in $$(seq 1 120); do \
+		code=$$(curl -s -o /dev/null -w '%{http_code}' "$(CELLD_URL)/.well-known/celld/health" 2>/dev/null || echo 000); \
+		if [ "$$code" = "200" ]; then relay_ok=1; break; fi; \
+		sleep 0.5; \
+	done; \
+	if [ "$$relay_ok" != "1" ]; then \
+		echo "celld relay registration failed:"; tail -80 $(CELLD_RELAY_LOG); \
+		kill "$$relay_launcher_pid" 2>/dev/null || true; exit 1; \
+	fi; \
+	relay_node_pid=$$(lsof -tiTCP:$(CELLD_HTTP_PORT) -sTCP:LISTEN); \
+	kill "$$relay_launcher_pid" 2>/dev/null || true; \
+	for i in $$(seq 1 80); do \
+		lsof -tiTCP:$(CELLD_HTTP_PORT) -sTCP:LISTEN >/dev/null 2>&1 || break; \
+		sleep 0.25; \
+	done; \
+	if kill -0 "$$relay_node_pid" 2>/dev/null; then kill "$$relay_node_pid"; fi; \
+	if lsof -tiTCP:$(CELLD_HTTP_PORT) -sTCP:LISTEN >/dev/null 2>&1; then \
+		echo "celld relay listener remained after registration"; exit 1; \
+	fi; \
+	echo "starting aggregate Worker from the same celld dev store…"; \
+	celld dev $(CELLD_PROJECT) --host 127.0.0.1 --port $(CELLD_HTTP_PORT) --logs > $(CELLD_LOG) 2>&1 & \
+	launcher_pid=$$!; \
 	ok=0; \
-	for i in $$(seq 1 40); do \
+	for i in $$(seq 1 120); do \
 		code=$$(curl -s -o /dev/null -w '%{http_code}' "$(CELLD_URL)/health" 2>/dev/null || echo 000); \
 		if [ "$$code" = "200" ]; then ok=1; break; fi; \
 		sleep 0.5; \
 	done; \
-	if [ "$$ok" != "1" ]; then echo "celld not healthy at $(CELLD_URL)/health"; exit 1; fi; \
+	if [ "$$ok" != "1" ]; then \
+		echo "celld not healthy at $(CELLD_URL)/health"; tail -80 $(CELLD_LOG); \
+		kill "$$launcher_pid" 2>/dev/null || true; exit 1; \
+	fi; \
+	node_pid=$$(lsof -tiTCP:$(CELLD_HTTP_PORT) -sTCP:LISTEN); \
+	echo "$$launcher_pid $$node_pid" > $(CELLD_NODE_PID); \
 	echo ""; \
 	echo "  CELLD_URL $(CELLD_URL)"; \
 	echo "  NATS_URL  $(NATS_URL)"; \
 	echo "  smoke:    make test-celld-nats"; \
 	echo "  stop:     make down-celld-nats   (NATS only)"; \
-	echo "            make down-celld        (Azurite + celld)"; \
+	echo "            make down-celld        (celld; state preserved)"; \
 	echo "  playground remains: make run"; \
 	echo ""
 
 down-celld-nats:
 	docker compose -f $(PROFILE_COMPOSE) down
 	-@docker rm -f e2e-ui-celld-nats-optional >/dev/null 2>&1 || true
-	@echo "NATS profile stopped. celld/Azurite untouched (make down-celld). playground untouched (make down)."
+	@echo "NATS profile stopped. celld untouched (make down-celld). playground untouched (make down)."
 
 down-celld:
-	docker compose -f $(CELLD_COMPOSE) down
-	@echo "celld + Azurite stopped. NATS: make down-celld-nats. playground: make down."
+	@set -e; \
+	if [ -f $(CELLD_NODE_PID) ]; then \
+		launcher_pid=$$(awk '{print $$1}' $(CELLD_NODE_PID)); \
+		node_pid=$$(awk '{print $$2}' $(CELLD_NODE_PID)); \
+		launcher_command=$$(ps -p "$$launcher_pid" -o command= 2>/dev/null || true); \
+		node_command=$$(ps -p "$$node_pid" -o command= 2>/dev/null || true); \
+		case "$$launcher_command" in \
+			*"celld dev $(CELLD_PROJECT) --host 127.0.0.1 --port $(CELLD_HTTP_PORT)"*) kill "$$launcher_pid" 2>/dev/null || true ;; \
+			"") ;; \
+			*) echo "refusing to stop unexpected tracked process $$launcher_pid: $$launcher_command"; exit 1 ;; \
+		esac; \
+		case "$$node_command" in \
+			*"celld --no-control-plane --bucket celld-dev --listen 127.0.0.1:$(CELLD_HTTP_PORT)"*) kill "$$node_pid" 2>/dev/null || true ;; \
+			"") ;; \
+			*) echo "refusing to stop unexpected celld node $$node_pid: $$node_command"; exit 1 ;; \
+		esac; \
+		rm -f $(CELLD_NODE_PID); \
+	fi; \
+	echo "celld stopped; $(CELLD_PROJECT)/.celld/dev preserved. NATS: make down-celld-nats."
 
 ## Live celld tests (needs make up-celld-nats). Fixture-only checks still run
 ## in root `cargo test` without CELLD_URL; these set CELLD_URL so HTTP runs.
@@ -321,9 +365,9 @@ help:
 	@echo "  make check-client    verify generated artifacts byte-for-byte"
 	@echo "  make down       playground docker compose down (not celld/NATS)"
 	@echo "  make up-celld-nats    optional celld+NATS profile (not make run)"
-	@echo "  make -C ../celld watch  worker source reload after up-celld-nats"
+	@echo "  rebuild/restart with make up-celld-nats after Worker source changes"
 	@echo "  make test-celld      live --test celld + e2e_ui_celld_nats_profile (CI)"
 	@echo "  make test-celld-nats  cargo test --test e2e_ui_celld_nats_profile"
 	@echo "  make down-celld-nats  stop NATS profile only"
-	@echo "  make down-celld       stop tests/celld Azurite + celld"
+	@echo "  make down-celld       stop celld and preserve its local dev store"
 	@echo "  GRAPHIQL=0      disable GraphiQL when running the API"

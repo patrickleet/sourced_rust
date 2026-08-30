@@ -59,7 +59,8 @@ cd ../e2e-celld && make run
 ```
 
 `make up-celld-nats` / `make test-celld-nats` (`celld-nats-profile/`) start
-Azurite + celld + NATS. They are not `make run`. GraphQL wait-dispatches
+celld 0.4 with its persistent local store, the Queue relay, and NATS. They are
+not `make run`. GraphQL wait-dispatches
 Todo create/complete and `chat.post` to cells (one SQLite shard per todo or
 message). GraphQL `@live`, Eventual projectors, Blob, and identity stay in
 the GraphQL process.

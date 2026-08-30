@@ -23,9 +23,6 @@ env:
   NATS_PORT: "14222"
   NATS_URL: nats://127.0.0.1:14222
   DISTRIBUTED_INTERNAL_SECRET: test-only-internal-secret-change-me-2026
-  AZURE_STORAGE_USE_EMULATOR: "true"
-  AZURE_STORAGE_ACCOUNT_NAME: devstoreaccount1
-  AZURE_STORAGE_ACCOUNT_KEY: Eby8vdM02xNOcqFlqUwJPLlmEtlCDXJ1OUzFT50uSRZ6IFsuFq2UVErCz4I6tq/K1SZFPTOtr/KBHBeksoGMGw==
 
 jobs:
   e2e-celld:
@@ -49,7 +46,7 @@ jobs:
         run: cargo test --workspace --verbose
 
   live:
-    name: celld live (Azurite + worker + NATS)
+    name: celld 0.4 live (local store + Queue + NATS)
     runs-on: ubuntu-latest
     timeout-minutes: 60
     steps:
@@ -97,7 +94,7 @@ jobs:
       - name: Bring up Postgres + Zitadel and bootstrap OIDC
         run: make -C tests/e2e-ui up
 
-      - name: Bring up Azurite + celld + NATS
+      - name: Bring up celld 0.4 + Queue relay + NATS
         run: |
           command -v celld
           command -v worker-build
@@ -189,19 +186,19 @@ jobs:
           }
 
           assert_status 401 -X POST \
-            http://127.0.0.1:8791/internal/outbox/drain \
+            http://127.0.0.1:8791/internal/celld-queue/relay \
             -H 'content-type: application/json' \
-            -d '{"kind":"todo","id":"red-team"}'
+            -d '{}'
           assert_status 401 -X POST \
-            http://127.0.0.1:8791/internal/outbox/drain \
+            http://127.0.0.1:8791/internal/celld-queue/relay \
             -H 'content-type: application/json' \
             -H 'x-distributed-internal-secret: forged-red-team-secret-000000' \
-            -d '{"kind":"todo","id":"red-team"}'
-          assert_status 400 -X POST \
-            http://127.0.0.1:8791/internal/outbox/drain \
+            -d '{}'
+          assert_status 422 -X POST \
+            http://127.0.0.1:8791/internal/celld-queue/relay \
             -H 'content-type: application/json' \
             -H "x-distributed-internal-secret: $DISTRIBUTED_INTERNAL_SECRET" \
-            -d '{"kind":"todo","id":"red-team","outbox":[]}'
+            -d '{}'
           assert_status 401 -X POST \
             http://127.0.0.1:8791/zitadel.scrape.v1 \
             -H 'content-type: application/json' \
@@ -237,9 +234,10 @@ jobs:
       - name: Dump logs on failure
         if: failure()
         run: |
-          echo '=== celld compose ==='
-          docker compose -f tests/celld/docker-compose.yml ps -a || true
-          docker compose -f tests/celld/docker-compose.yml logs --tail=200 || true
+          echo '=== celld ==='
+          tail -200 tests/e2e-ui/.make-celld.log || true
+          echo '=== celld Queue relay registration ==='
+          tail -120 tests/e2e-ui/.make-celld-relay.log || true
           echo '=== NATS profile compose ==='
           docker compose -f tests/e2e-ui/celld-nats-profile/docker-compose.yml ps -a || true
           docker compose -f tests/e2e-ui/celld-nats-profile/docker-compose.yml logs --tail=80 || true

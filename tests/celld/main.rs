@@ -102,7 +102,7 @@ fn relay_worker_consumes_events_queue_through_native_bus_boundary() {
     );
     assert_eq!(
         spec["vars"]["CELLD_QUEUE_RELAY_URL"],
-        "http://host.docker.internal:8792/internal/celld-queue/relay"
+        "http://host.docker.internal:8791/internal/celld-queue/relay"
     );
 
     let source =
