@@ -200,6 +200,13 @@ fn validate_celld_queue_http_endpoint(
     }
 }
 
+#[cfg(all(feature = "workers-rs", any(target_arch = "wasm32", test)))]
+fn celld_queue_http_redirect_policy() -> worker::RequestRedirect {
+    // Credential-bearing relay requests never follow redirects. A redirect is
+    // a transport failure; operators must configure the final HTTPS endpoint.
+    worker::RequestRedirect::Error
+}
+
 #[cfg(all(feature = "workers-rs", target_arch = "wasm32"))]
 impl CelldQueueHttpPublisher {
     /// Build a relay publisher that sends credentials only over HTTPS.
@@ -273,6 +280,7 @@ impl MessagePublisher for CelldQueueHttpPublisher {
             let mut init = worker::RequestInit::new();
             init.with_method(worker::Method::Post)
                 .with_headers(headers)
+                .with_redirect(celld_queue_http_redirect_policy())
                 .with_body(Some(worker::wasm_bindgen::JsValue::from_str(&body)));
             let request = worker::Request::new_with_init(&endpoint, &init).map_err(|error| {
                 TransportError::permanent(format!("cannot build Queue relay request: {error}"))
@@ -499,5 +507,14 @@ mod tests {
         let mut envelope = CelldQueueEnvelope::new(message(MessageKind::Event)).unwrap();
         envelope.version += 1;
         assert!(block_on(relay.relay(envelope)).is_err());
+    }
+
+    #[cfg(feature = "workers-rs")]
+    #[test]
+    fn relay_http_requests_never_follow_redirects() {
+        assert!(matches!(
+            celld_queue_http_redirect_policy(),
+            worker::RequestRedirect::Error
+        ));
     }
 }
