@@ -12,6 +12,14 @@ members = [
     "crates/runner",
 ]
 
+[workspace.metadata.distributed.application]
+package = "e2e-celld-graphql"
+entrypoint = "application_manifest"
+
+[workspace.metadata.distributed.runtime]
+package = "e2e-celld-runner"
+binary = "e2e-celld"
+
 [workspace.package]
 version = "0.1.0"
 edition = "2021"

@@ -63,6 +63,7 @@ jobs:
         with:
           workspaces: |
             . -> target
+            tests/e2e-celld -> target
             tests/celld/worker -> tests/celld/worker/target
           shared-key: celld-live
 
@@ -103,14 +104,14 @@ jobs:
       - name: Live celld HTTP + NATS profile tests
         run: make -C tests/e2e-ui test-celld
 
-      - name: Build e2e-celld API and UI
+      - name: Build Distributed CLI and e2e-celld application
         run: |
-          cargo build --manifest-path tests/e2e-celld/Cargo.toml \
-            -p e2e-celld-runner --bin e2e-celld
+          cargo build -p distributed_cli --bin distributed
+          target/debug/distributed build tests/e2e-celld --output json
           make -C tests/e2e-ui ui-install
           npm install --prefix tests/e2e-ui
 
-      - name: Start e2e-celld API + UI
+      - name: Start e2e-celld API with Distributed dev + shared UI
         run: |
           set -euo pipefail
           set -a
@@ -124,24 +125,31 @@ jobs:
           export AUTH_USE_SECURE_COOKIES=false
           export AUTH_TRUST_HOST=true
 
-          tests/e2e-celld/target/debug/e2e-celld \
-            > tests/e2e-celld/.ci-runner.log 2>&1 &
-          echo $! > tests/e2e-celld/.ci-runner.pid
+          target/debug/distributed dev tests/e2e-celld \
+            > tests/e2e-celld/.ci-distributed-dev.log 2>&1 &
+          echo $! > tests/e2e-celld/.ci-distributed-dev.pid
 
           ok=0
-          for i in $(seq 1 120); do
-            code=$(curl -s -o /dev/null -w '%{http_code}' -X POST \
-              "http://127.0.0.1:8791/graphql" \
-              -H 'content-type: application/json' \
-              -d '{"query":"{ __typename }"}' 2>/dev/null || echo 000)
-            if [ "$code" = "200" ] || [ "$code" = "401" ]; then ok=1; break; fi
+          for i in $(seq 1 240); do
+            if grep -Fq 'lifecycle dev: ready generation=' \
+              tests/e2e-celld/.ci-distributed-dev.log; then
+              ok=1
+              break
+            fi
+            if ! kill -0 "$(cat tests/e2e-celld/.ci-distributed-dev.pid)" 2>/dev/null; then
+              echo "distributed dev exited before e2e-celld readiness"
+              tail -200 tests/e2e-celld/.ci-distributed-dev.log
+              exit 1
+            fi
             sleep 0.5
           done
           if [ "$ok" != "1" ]; then
-            echo "e2e-celld API failed to become ready"
-            tail -120 tests/e2e-celld/.ci-runner.log
+            echo "distributed dev failed to make e2e-celld ready"
+            tail -200 tests/e2e-celld/.ci-distributed-dev.log
             exit 1
           fi
+          grep -F 'lifecycle dev: process api ready http://127.0.0.1:8791' \
+            tests/e2e-celld/.ci-distributed-dev.log
 
           cd tests/e2e-ui/ui
           PUBLIC_E2E_PROFILE=celld-nats \
@@ -243,7 +251,7 @@ jobs:
           docker compose -f tests/e2e-ui/celld-nats-profile/docker-compose.yml ps -a || true
           docker compose -f tests/e2e-ui/celld-nats-profile/docker-compose.yml logs --tail=80 || true
           echo '=== e2e-celld API ==='
-          tail -180 tests/e2e-celld/.ci-runner.log || true
+          tail -240 tests/e2e-celld/.ci-distributed-dev.log || true
           echo '=== e2e-celld UI ==='
           tail -100 tests/e2e-ui/.ci-celld-ui.log || true
           echo '=== Postgres + Zitadel ==='
@@ -255,8 +263,14 @@ jobs:
         run: |
           [ -f tests/e2e-ui/.ci-celld-ui.pid ] && \
             kill "$(cat tests/e2e-ui/.ci-celld-ui.pid)" 2>/dev/null || true
-          [ -f tests/e2e-celld/.ci-runner.pid ] && \
-            kill "$(cat tests/e2e-celld/.ci-runner.pid)" 2>/dev/null || true
+          if [ -f tests/e2e-celld/.ci-distributed-dev.pid ]; then
+            pid=$(cat tests/e2e-celld/.ci-distributed-dev.pid)
+            kill -INT "$pid" 2>/dev/null || true
+            for _ in $(seq 1 40); do
+              kill -0 "$pid" 2>/dev/null || break
+              sleep 0.25
+            done
+          fi
           lsof -ti:5180 2>/dev/null | xargs -r kill -9 2>/dev/null || true
           lsof -ti:8791 2>/dev/null | xargs -r kill -9 2>/dev/null || true
           make -C tests/e2e-ui down-celld-nats || true

@@ -24,6 +24,7 @@ UI_HOST      ?= localhost
 ENV_FILE     ?= e2e-ui.env
 NPM          ?= npm
 JS_DIR       ?= ../../js
+DISTRIBUTED  ?= cargo run --quiet --manifest-path ../../Cargo.toml -p distributed_cli --bin distributed --
 CARGO_TEST_FLAGS ?= -- --nocapture
 
 DATABASE_URL ?= sqlite:./e2e-ui.db?mode=rwc
@@ -217,15 +218,15 @@ test-celld-nats:
 test: test-domain test-suite ui-install ui-build ui-check ui-test
 	@echo "OK — offline domain + suite + UI build + typecheck + structural tests"
 
-## CI-only orchestration: install/build shared JS prerequisites once, then overlap
-## independent Rust and UI pipelines without running UI writers concurrently.
+## CI-only orchestration: build the real application through Distributed, then
+## overlap read-only Rust and UI verification without concurrent UI writers.
 ci-offline: ui-install
+	cd ui && $(NPM) run client:check
+	$(DISTRIBUTED) build .
 	@set -eu; \
 	status=0; \
 	$(MAKE) test-domain test-suite & rust_pid=$$!; \
 	( cd ui && \
-		$(NPM) run client:check && \
-		$(NPM) run build && \
 		$(NPM) run check && \
 		$(NPM) test \
 	) & ui_pid=$$!; \

@@ -10,8 +10,8 @@ mod http;
 pub mod modules;
 
 pub use application::{
-    DISTRIBUTED_ADMIN_CLIENT_SURFACE, DISTRIBUTED_CLIENT_SURFACE, DISTRIBUTED_PUBLIC_CLIENT_SURFACE,
-    E2E_UI_APPLICATION, E2E_UI_MODULE_IDS,
+    DISTRIBUTED_ADMIN_CLIENT_SURFACE, DISTRIBUTED_CLIENT_SURFACE,
+    DISTRIBUTED_PUBLIC_CLIENT_SURFACE, E2E_UI_APPLICATION, E2E_UI_MODULE_IDS,
 };
 pub use e2e_celld_identity::{
     scrape_users_to_outbox, spawn_scrape_loop, ScrapeReport, ZitadelScrapeConfig,
@@ -20,6 +20,7 @@ pub use e2e_readmodels::distributed_manifest;
 pub use host::{run, HostOptions};
 pub use modules::compose::build_service;
 pub use modules::graphql::{
-    build_graphql_engine, dev_identity, distributed_admin_client_surface, distributed_client_surface,
-    distributed_public_client_surface, identity_from_env, oidc_bearer_config,
+    application_manifest, build_graphql_engine, dev_identity, distributed_admin_client_surface,
+    distributed_client_surface, distributed_public_client_surface, identity_from_env,
+    oidc_bearer_config,
 };

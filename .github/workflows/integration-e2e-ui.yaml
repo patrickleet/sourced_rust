@@ -4,7 +4,8 @@ name: e2e-ui fixture (offline + browser)
 # Local parity:
 #   cd tests/e2e-ui && make check-client
 #   cd tests/e2e-ui && make test
-#   cd tests/e2e-ui && make up && make run   # then make test-browser
+#   cd tests/e2e-ui && make ci-offline
+#   cd tests/e2e-ui && make up && make run   # distributed dev; then make test-browser
 on:
   workflow_call:
 
@@ -32,7 +33,9 @@ jobs:
 
       - uses: Swatinem/rust-cache@v2
         with:
-          workspaces: tests/e2e-ui -> target
+          workspaces: |
+            . -> target
+            tests/e2e-ui -> target
           shared-key: e2e-ui-offline
 
       - name: Install wasm-pack
@@ -46,10 +49,12 @@ jobs:
             js/package-lock.json
             tests/e2e-ui/ui/package-lock.json
 
-      # Install/build shared JS prerequisites once, then overlap the independent
-      # Rust and UI pipelines while retaining byte-for-byte generated drift.
-      - name: Verify generated artifacts and run offline suite
-        run: make ci-offline
+      - name: Build Distributed CLI
+        run: cargo build --manifest-path ../../Cargo.toml -p distributed_cli --bin distributed
+
+      # Production Rust + SvelteKit build enters through the same command users run.
+      - name: Distributed build + offline suites
+        run: make ci-offline DISTRIBUTED=../../target/debug/distributed
 
   browser:
     name: e2e-ui Playwright (live stack)
@@ -70,7 +75,9 @@ jobs:
 
       - uses: Swatinem/rust-cache@v2
         with:
-          workspaces: tests/e2e-ui -> target
+          workspaces: |
+            . -> target
+            tests/e2e-ui -> target
           shared-key: e2e-ui-browser
 
       - name: Install wasm-pack
@@ -93,55 +100,44 @@ jobs:
           chmod +x scripts/up.sh
           make up
 
-      - name: Build e2e-ui API binary
-        run: cargo build -p e2e-runner --bin e2e-ui
+      - name: Build Distributed CLI
+        run: cargo build --manifest-path ../../Cargo.toml -p distributed_cli --bin distributed
 
       - name: Install UI deps
         run: make ui-install
 
-      - name: Start API + UI
+      - name: Start application with Distributed dev
         run: |
           set -euo pipefail
-          set -a
-          # shellcheck disable=SC1091
-          . ./e2e-ui.env
-          set +a
           export AUTH_URL="${E2E_UI_ORIGIN:-http://localhost:5180}"
           export AUTH_USE_SECURE_COOKIES=false
           export AUTH_TRUST_HOST=true
 
-          ./target/debug/e2e-ui > .make-runner.log 2>&1 &
-          echo $! > .make-runner.pid
+          ../../target/debug/distributed dev . > .distributed-dev.log 2>&1 &
+          echo $! > .distributed-dev.pid
 
           ok=0
-          for i in $(seq 1 90); do
-            code=$(curl -s -o /dev/null -w '%{http_code}' -X POST "http://127.0.0.1:8791/graphql" \
-              -H 'content-type: application/json' \
-              -d '{"query":"{ __typename }"}' 2>/dev/null || echo 000)
-            if [ "$code" = "200" ] || [ "$code" = "401" ]; then ok=1; break; fi
+          for i in $(seq 1 240); do
+            if grep -Fq 'lifecycle dev: ready generation=' .distributed-dev.log; then
+              ok=1
+              break
+            fi
+            if ! kill -0 "$(cat .distributed-dev.pid)" 2>/dev/null; then
+              echo "distributed dev exited before readiness"
+              tail -200 .distributed-dev.log
+              exit 1
+            fi
             sleep 0.5
           done
           if [ "$ok" != "1" ]; then
-            echo "API failed to become ready"; tail -100 .make-runner.log; exit 1
+            echo "distributed dev failed to become ready"
+            tail -200 .distributed-dev.log
+            exit 1
           fi
-          echo "API ready (HTTP $code)"
 
-          cd ui
-          npm run dev -- --host localhost --port 5180 > ../.make-ui.log 2>&1 &
-          echo $! > ../.make-ui.pid
-          cd ..
-
-          ok=0
-          for i in $(seq 1 60); do
-            code=$(curl -s -o /dev/null -w '%{http_code}' "http://localhost:5180/" 2>/dev/null || echo 000)
-            # 200 home, or 303 redirect when auth wraps routes — not 000/5xx
-            if [ "$code" = "200" ] || [ "$code" = "303" ] || [ "$code" = "302" ]; then ok=1; break; fi
-            sleep 0.5
-          done
-          if [ "$ok" != "1" ]; then
-            echo "UI failed to become ready (last HTTP $code)"; tail -80 .make-ui.log; exit 1
-          fi
-          echo "UI ready (HTTP $code)"
+          grep -F 'lifecycle dev: process api ready http://127.0.0.1:8791' .distributed-dev.log
+          grep -F 'lifecycle dev: process ui ready http://localhost:5180' .distributed-dev.log
+          tail -40 .distributed-dev.log
 
       - name: Install Playwright + Chromium
         run: |
@@ -169,18 +165,22 @@ jobs:
       - name: Dump logs on failure
         if: failure()
         run: |
-          echo '=== API log ==='
-          tail -150 .make-runner.log || true
-          echo '=== UI log ==='
-          tail -80 .make-ui.log || true
+          echo '=== distributed dev ==='
+          tail -240 .distributed-dev.log || true
           docker compose -f docker/docker-compose.yml ps -a || true
           docker compose -f docker/docker-compose.yml logs --tail=100 || true
 
       - name: Stop API/UI
         if: always()
         run: |
-          [ -f .make-ui.pid ] && kill "$(cat .make-ui.pid)" 2>/dev/null || true
-          [ -f .make-runner.pid ] && kill "$(cat .make-runner.pid)" 2>/dev/null || true
+          if [ -f .distributed-dev.pid ]; then
+            pid=$(cat .distributed-dev.pid)
+            kill -INT "$pid" 2>/dev/null || true
+            for _ in $(seq 1 40); do
+              kill -0 "$pid" 2>/dev/null || break
+              sleep 0.25
+            done
+          fi
           lsof -ti:8791 2>/dev/null | xargs -r kill -9 2>/dev/null || true
           lsof -ti:5180 2>/dev/null | xargs -r kill -9 2>/dev/null || true
 
