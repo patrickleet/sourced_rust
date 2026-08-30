@@ -774,21 +774,15 @@ where
         Duration::from_secs(30),
         10_000,
     );
-    let outcome = dispatcher
+    dispatcher
         .dispatch_batch(100)
         .await
         .map_err(|error| Error::RustError(error.to_string()))?;
 
-    // Queue acceptance settles the in-memory outbox. Persisting that settlement
-    // can be interrupted, in which case the stable event id is sent again.
+    // Accepted rows settle; retryable publish outcomes remain pending for the
+    // alarm. Persist both states before returning the committed command receipt.
     persist_cell_state(sql, cell)?;
     let pending = has_pending(cell);
     arm_drain_alarm(storage, env, pending).await?;
-    if outcome.released > 0 || outcome.failed > 0 {
-        return Err(Error::RustError(format!(
-            "celld Queue did not accept {} outbox message(s)",
-            outcome.released + outcome.failed
-        )));
-    }
     Ok(())
 }

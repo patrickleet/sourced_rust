@@ -83,6 +83,10 @@ fn worker_declares_sqlite_todo_and_chat_cells() {
     assert!(source.contains("dispatch_idempotent"));
     assert!(source.contains("CelldQueuePublisher::from_env"));
     assert!(source.contains("outbox_dispatcher"));
+    assert!(
+        !source.contains("outcome.released") && !source.contains("outcome.failed"),
+        "retryable Queue outcomes must stay alarm-owned, not fail a committed command"
+    );
     assert!(source.contains("cell_projection_event_evidence"));
     assert!(source.contains("\"events\": events"));
     assert!(!source.contains("CellOutboxWireItem"));
