@@ -312,9 +312,11 @@ observability:
         let image_validation = if local {
             ""
         } else {
-            r#"{{{{- if or (not .Values.image.tag) (eq .Values.image.tag "latest") }}}}
-{{{{- fail "image.tag must be an immutable build tag for cloud deployments; latest and empty are not allowed" }}}}
-{{{{- end }}}}
+            // This fragment is interpolated as a value below, so its Helm
+            // delimiters must not be escaped for the surrounding `format!`.
+            r#"{{- if or (not .Values.image.tag) (eq .Values.image.tag "latest") }}
+{{- fail "image.tag must be an immutable build tag for cloud deployments; latest and empty are not allowed" }}
+{{- end }}
 "#
         };
         format!(
@@ -450,9 +452,11 @@ spec:
         let image_validation = if local {
             ""
         } else {
-            r#"{{{{- if or (not .Values.image.tag) (eq .Values.image.tag "latest") }}}}
-{{{{- fail "image.tag must be an immutable build tag for cloud deployments; latest and empty are not allowed" }}}}
-{{{{- end }}}}
+            // This fragment is interpolated as a value below, so its Helm
+            // delimiters must not be escaped for the surrounding `format!`.
+            r#"{{- if or (not .Values.image.tag) (eq .Values.image.tag "latest") }}
+{{- fail "image.tag must be an immutable build tag for cloud deployments; latest and empty are not allowed" }}
+{{- end }}
 "#
         };
         format!(
