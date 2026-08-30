@@ -187,7 +187,8 @@ root=$1
 name=$2
 printf '%s:%s:%s\n' "$name" "$DISTRIBUTED_GENERATION_ID" "$DISTRIBUTED_RELEASE_ID" >> "$root/dev-process.log"
 printf '%s:%s:%s\n' "$name" "$DEV_FIXTURE_NAME" "$PWD" >> "$root/dev-environment.log"
-tail -f /dev/null &
+trap 'exit 0' TERM
+/bin/sh -c 'trap "" TERM; while :; do sleep 1; done' &
 descendant=$!
 printf '%s\n' "$descendant" >> "$root/dev-descendants.log"
 wait "$descendant"
@@ -255,7 +256,7 @@ JSON
   "dev": {
     "poll_ms": 20,
     "debounce_ms": 30,
-    "shutdown_ms": 1000,
+    "shutdown_ms": 100,
     "processes": {
       "api": {
         "program": "/bin/sh",

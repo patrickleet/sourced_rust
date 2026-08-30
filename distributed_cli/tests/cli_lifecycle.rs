@@ -186,7 +186,8 @@ else
 fi
 printf '%s:%s:%s\n' "$name" "$barrier" "$DISTRIBUTED_GENERATION_ID" >> "$root/dev-process.log"
 printf '%s:%s:%s\n' "$name" "$DEV_FIXTURE_NAME" "$PWD" >> "$root/dev-environment.log"
-tail -f /dev/null &
+trap 'exit 0' TERM
+/bin/sh -c 'trap "" TERM; while :; do sleep 1; done' &
 descendant=$!
 printf '%s\n' "$descendant" >> "$root/dev-descendants.log"
 wait "$descendant"
@@ -198,7 +199,7 @@ wait "$descendant"
     config["dev"] = serde_json::json!({
         "poll_ms": 20,
         "debounce_ms": 30,
-        "shutdown_ms": 1000,
+        "shutdown_ms": 100,
         "processes": {
             "api": {
                 "program": "/bin/sh",
@@ -224,6 +225,32 @@ wait "$descendant"
                 "ready_after_ms": 20
             }
         }
+    });
+    fs::write(path, serde_json::to_vec_pretty(&config).unwrap()).unwrap();
+}
+
+fn configure_blocking_readiness_probe(root: &Path, timeout_ms: u64) {
+    fs::write(
+        root.join("readiness-probe.sh"),
+        r#"#!/bin/sh
+set -eu
+root="$1"
+printf '%s\n' "$$" > "$root/readiness-probe-leader.pid"
+/bin/sh -c 'trap "" TERM; sleep 2' &
+descendant=$!
+printf '%s\n' "$descendant" > "$root/readiness-probe-descendant.pid"
+wait "$descendant"
+exit 1
+"#,
+    )
+    .expect("write blocking readiness probe");
+    let path = root.join("distributed.lifecycle.json");
+    let mut config: Value = serde_json::from_slice(&fs::read(&path).unwrap()).unwrap();
+    config["dev"]["processes"]["api"]["ready"] = serde_json::json!({
+        "program": "/bin/sh",
+        "args": ["{root}/readiness-probe.sh", "{root}"],
+        "interval_ms": 10,
+        "timeout_ms": timeout_ms
     });
     fs::write(path, serde_json::to_vec_pretty(&config).unwrap()).unwrap();
 }
@@ -271,13 +298,17 @@ impl DevSupervisor {
         }
     }
 
-    fn stop_and_join_result(mut self) -> Result<LifecycleDevReport, LifecycleError> {
-        self.stop.store(true, Ordering::SeqCst);
+    fn join_result(mut self) -> Result<LifecycleDevReport, LifecycleError> {
         self.handle
             .take()
             .expect("lifecycle supervisor handle")
             .join()
             .expect("join lifecycle supervisor")
+    }
+
+    fn stop_and_join_result(self) -> Result<LifecycleDevReport, LifecycleError> {
+        self.stop.store(true, Ordering::SeqCst);
+        self.join_result()
     }
 
     fn stop_and_join(self) -> LifecycleDevReport {
@@ -506,6 +537,8 @@ fn dev_waits_for_initial_generation_and_restarts_only_invalidated_processes() {
 
     wait_until(Duration::from_secs(5), || {
         fs::read_to_string(root.join("dev-process.log")).is_ok_and(|log| log.lines().count() == 2)
+            && fs::read_to_string(root.join("dev-environment.log"))
+                .is_ok_and(|log| log.lines().count() == 2)
     });
     let initial_log = fs::read_to_string(root.join("dev-process.log")).unwrap();
     assert!(initial_log
@@ -624,6 +657,68 @@ fn dev_stop_cancels_the_initial_build_before_process_startup() {
     assert!(error.message().contains("was canceled"));
     assert!(!root.join("dev-process.log").exists());
 }
+
+#[test]
+fn dev_enforces_timeout_while_readiness_probe_is_running() {
+    let fixture = temporary_root("dev-readiness-timeout");
+    let root = fixture.path().to_path_buf();
+    write_fixture(&root);
+    enable_dev(&root);
+    configure_blocking_readiness_probe(&root, 100);
+
+    let started = std::time::Instant::now();
+    let error = DevSupervisor::start(root.clone())
+        .join_result()
+        .expect_err("blocked readiness probe should time out");
+    assert!(started.elapsed() < Duration::from_secs(1));
+    assert!(error.message().contains("timed out after 100ms"));
+    assert_fixture_processes_gone(&root, "readiness-probe");
+}
+
+#[test]
+fn dev_stop_cancels_a_running_readiness_probe() {
+    let fixture = temporary_root("dev-readiness-cancel");
+    let root = fixture.path().to_path_buf();
+    write_fixture(&root);
+    enable_dev(&root);
+    configure_blocking_readiness_probe(&root, 2_000);
+    let supervisor = DevSupervisor::start(root.clone());
+    wait_until(Duration::from_secs(1), || {
+        root.join("readiness-probe-descendant.pid").exists()
+    });
+
+    let started = std::time::Instant::now();
+    let error = supervisor
+        .stop_and_join_result()
+        .expect_err("readiness cancellation should be reported");
+    assert!(started.elapsed() < Duration::from_secs(1));
+    assert!(error.message().contains("readiness") && error.message().contains("canceled"));
+    assert_fixture_processes_gone(&root, "readiness-probe");
+}
+
+#[cfg(unix)]
+fn assert_fixture_processes_gone(root: &Path, prefix: &str) {
+    let mut alive = Vec::new();
+    for label in ["leader", "descendant"] {
+        let path = root.join(format!("{prefix}-{label}.pid"));
+        let Ok(pid) = fs::read_to_string(path) else {
+            continue;
+        };
+        let pid = pid.trim().parse::<libc::pid_t>().expect("fixture PID");
+        if unsafe { libc::kill(pid, 0) } == 0 {
+            alive.push(pid);
+        }
+    }
+    for pid in &alive {
+        unsafe {
+            libc::kill(*pid, libc::SIGKILL);
+        }
+    }
+    assert!(alive.is_empty(), "fixture processes leaked: {alive:?}");
+}
+
+#[cfg(not(unix))]
+fn assert_fixture_processes_gone(_root: &Path, _prefix: &str) {}
 
 #[test]
 fn stale_check_names_owner_and_failed_downstream_build_preserves_active_generation() {

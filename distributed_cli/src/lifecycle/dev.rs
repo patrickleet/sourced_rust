@@ -217,7 +217,7 @@ pub fn run_lifecycle_dev(
     initial_options.activation_inputs = None;
     initial_options.cancel = Some(Arc::clone(&options.stop));
     let initial = run_lifecycle_build(&initial_options)?;
-    let mut children = ChildSet::start(&root, &dev, &initial)?;
+    let mut children = ChildSet::start(&root, &dev, &initial, &options.stop)?;
     if options.progress {
         for (name, process) in &dev.processes {
             if let Some(url) = &process.url {
@@ -333,7 +333,21 @@ pub fn run_lifecycle_dev(
                 .filter(|(_, process)| !process.restart_on.is_disjoint(&invalidated))
                 .map(|(name, _)| name.clone())
                 .collect::<Vec<_>>();
-            children.restart_invalidated(&root, &dev, &generation, &invalidated, &mut restarts)?;
+            if let Err(error) = children.restart_invalidated(
+                &root,
+                &dev,
+                &generation,
+                &invalidated,
+                &mut restarts,
+                &options.stop,
+            ) {
+                if options.stop.load(Ordering::SeqCst)
+                    && error.reason() == LifecycleErrorReason::Canceled
+                {
+                    return Ok(());
+                }
+                return Err(error);
+            }
             if options.progress {
                 eprintln!(
                     "lifecycle dev: activated generation={} invalidated={} restarted={}",
@@ -404,6 +418,7 @@ impl ChildSet {
         root: &Path,
         config: &LifecycleDevConfig,
         generation: &LifecycleBuildReport,
+        stop: &AtomicBool,
     ) -> Result<Self, LifecycleError> {
         let mut set = Self {
             children: BTreeMap::new(),
@@ -414,7 +429,7 @@ impl ChildSet {
                     set.children.insert(name.clone(), child);
                 }
                 Err(error) => {
-                    let _ = set.shutdown(Duration::from_secs(1));
+                    let _ = set.shutdown(Duration::from_millis(config.shutdown_ms));
                     return Err(error);
                 }
             }
@@ -426,8 +441,9 @@ impl ChildSet {
                 process,
                 generation,
                 set.children.get_mut(name).unwrap(),
+                stop,
             ) {
-                let _ = set.shutdown(Duration::from_secs(1));
+                let _ = set.shutdown(Duration::from_millis(config.shutdown_ms));
                 return Err(error);
             }
         }
@@ -454,6 +470,7 @@ impl ChildSet {
         generation: &LifecycleBuildReport,
         invalidated: &BTreeSet<String>,
         restarts: &mut BTreeMap<String, usize>,
+        stop: &AtomicBool,
     ) -> Result<(), LifecycleError> {
         for (name, process) in &config.processes {
             if process.restart_on.is_disjoint(invalidated) {
@@ -465,7 +482,7 @@ impl ChildSet {
                 Duration::from_millis(config.shutdown_ms),
             )?;
             let mut child = spawn_process(root, name, process, generation)?;
-            if let Err(error) = wait_ready(root, name, process, generation, &mut child) {
+            if let Err(error) = wait_ready(root, name, process, generation, &mut child, stop) {
                 let _ = stop_child(name, &mut child, Duration::from_millis(config.shutdown_ms));
                 return Err(error);
             }
@@ -483,7 +500,7 @@ impl ChildSet {
         loop {
             let mut running = Vec::new();
             for (name, child) in &mut self.children {
-                if child.try_wait().map_err(io_error)?.is_none() {
+                if process_group_is_running(child)? {
                     running.push(name.clone());
                 }
             }
@@ -491,12 +508,11 @@ impl ChildSet {
                 return Ok(());
             }
             if started.elapsed() >= timeout {
-                for name in running {
-                    let child = self.children.get_mut(&name).unwrap();
-                    kill_process_group(&name, child)?;
-                    child.wait().map_err(io_error)?;
+                for name in &running {
+                    let child = self.children.get_mut(name).unwrap();
+                    kill_process_group(name, child)?;
                 }
-                return Ok(());
+                return wait_for_stopped_groups(&mut self.children, Duration::from_secs(1));
             }
             std::thread::sleep(Duration::from_millis(10));
         }
@@ -509,9 +525,19 @@ fn wait_ready(
     process: &LifecycleDevProcess,
     generation: &LifecycleBuildReport,
     child: &mut Child,
+    stop: &AtomicBool,
 ) -> Result<(), LifecycleError> {
     let started = Instant::now();
+    let timeout = process
+        .ready
+        .as_ref()
+        .map(|probe| Duration::from_millis(probe.timeout_ms));
     loop {
+        if stop.load(Ordering::SeqCst) {
+            return Err(LifecycleError::canceled(format!(
+                "readiness for lifecycle dev process `{name}` was canceled"
+            )));
+        }
         if let Some(status) = child.try_wait().map_err(|error| {
             LifecycleError::new(format!("failed to inspect dev process `{name}`: {error}"))
         })? {
@@ -520,9 +546,12 @@ fn wait_ready(
             )));
         }
         let Some(probe) = &process.ready else {
-            std::thread::sleep(Duration::from_millis(process.ready_after_ms));
+            sleep_interruptibly(Duration::from_millis(process.ready_after_ms), stop, name)?;
             return Ok(());
         };
+        if started.elapsed() >= timeout.unwrap() {
+            return Err(readiness_timeout(name, probe.timeout_ms));
+        }
         let cwd = resolve_working_dir(root, process.cwd.as_deref())?;
         let environment = expand_environment(root, name, process, generation);
         let args = probe
@@ -530,7 +559,9 @@ fn wait_ready(
             .iter()
             .map(|arg| expand_process_value(arg, root, name, generation))
             .collect::<Vec<_>>();
-        let status = Command::new(expand_process_value(&probe.program, root, name, generation))
+        let program = expand_process_value(&probe.program, root, name, generation);
+        let mut command = Command::new(&program);
+        command
             .args(args)
             .current_dir(cwd)
             .envs(environment)
@@ -538,24 +569,79 @@ fn wait_ready(
             .env("DISTRIBUTED_RELEASE_ID", &generation.release_id)
             .stdin(Stdio::null())
             .stdout(Stdio::null())
-            .stderr(Stdio::null())
-            .status()
-            .map_err(|error| {
-                LifecycleError::new(format!(
-                    "failed to run readiness probe for lifecycle dev process `{name}`: {error}"
-                ))
-            })?;
+            .stderr(Stdio::null());
+        #[cfg(unix)]
+        command.process_group(0);
+        let mut probe_child = command.spawn().map_err(|error| {
+            LifecycleError::new(format!(
+                "failed to run readiness probe for lifecycle dev process `{name}` with `{program}`: {error}"
+            ))
+        })?;
+        let status = loop {
+            match probe_child.try_wait() {
+                Ok(Some(status)) => {
+                    if started.elapsed() >= timeout.unwrap() {
+                        return Err(readiness_timeout(name, probe.timeout_ms));
+                    }
+                    break status;
+                }
+                Ok(None) => {}
+                Err(error) => {
+                    let _ = force_stop_child(name, &mut probe_child);
+                    return Err(LifecycleError::new(format!(
+                        "failed to inspect readiness probe for lifecycle dev process `{name}`: {error}"
+                    )));
+                }
+            }
+            if stop.load(Ordering::SeqCst) {
+                force_stop_child(name, &mut probe_child)?;
+                return Err(LifecycleError::canceled(format!(
+                    "readiness for lifecycle dev process `{name}` was canceled"
+                )));
+            }
+            if started.elapsed() >= timeout.unwrap() {
+                force_stop_child(name, &mut probe_child)?;
+                return Err(readiness_timeout(name, probe.timeout_ms));
+            }
+            std::thread::sleep(
+                Duration::from_millis(10).min(timeout.unwrap().saturating_sub(started.elapsed())),
+            );
+        };
         if status.success() {
             return Ok(());
         }
-        if started.elapsed() >= Duration::from_millis(probe.timeout_ms) {
-            return Err(LifecycleError::new(format!(
-                "readiness probe for lifecycle dev process `{name}` timed out after {}ms",
-                probe.timeout_ms
+        let remaining = timeout.unwrap().saturating_sub(started.elapsed());
+        sleep_interruptibly(
+            Duration::from_millis(probe.interval_ms).min(remaining),
+            stop,
+            name,
+        )?;
+    }
+}
+
+fn readiness_timeout(name: &str, timeout_ms: u64) -> LifecycleError {
+    LifecycleError::new(format!(
+        "readiness probe for lifecycle dev process `{name}` timed out after {timeout_ms}ms"
+    ))
+}
+
+fn sleep_interruptibly(
+    duration: Duration,
+    stop: &AtomicBool,
+    name: &str,
+) -> Result<(), LifecycleError> {
+    let started = Instant::now();
+    while started.elapsed() < duration {
+        if stop.load(Ordering::SeqCst) {
+            return Err(LifecycleError::canceled(format!(
+                "readiness for lifecycle dev process `{name}` was canceled"
             )));
         }
-        std::thread::sleep(Duration::from_millis(probe.interval_ms));
+        std::thread::sleep(
+            Duration::from_millis(10).min(duration.saturating_sub(started.elapsed())),
+        );
     }
+    Ok(())
 }
 
 fn spawn_process(
@@ -590,16 +676,17 @@ fn spawn_process(
 
 fn stop_child(name: &str, child: &mut Child, timeout: Duration) -> Result<(), LifecycleError> {
     terminate_process_group(name, child)?;
-    let started = Instant::now();
-    while child.try_wait().map_err(io_error)?.is_none() {
-        if started.elapsed() >= timeout {
-            kill_process_group(name, child)?;
-            child.wait().map_err(io_error)?;
-            break;
-        }
-        std::thread::sleep(Duration::from_millis(10));
+    if wait_for_stopped_child(child, timeout)? {
+        return Ok(());
     }
-    Ok(())
+    kill_process_group(name, child)?;
+    if wait_for_stopped_child(child, Duration::from_secs(1))? {
+        Ok(())
+    } else {
+        Err(LifecycleError::new(format!(
+            "lifecycle dev process group `{name}` remained alive after SIGKILL"
+        )))
+    }
 }
 
 fn expand_process_value(
@@ -689,6 +776,78 @@ fn signal_process_group(child: &Child, signal: libc::c_int) -> std::io::Result<(
         Ok(())
     } else {
         Err(error)
+    }
+}
+
+fn process_group_is_running(child: &mut Child) -> Result<bool, LifecycleError> {
+    let leader_running = child.try_wait().map_err(io_error)?.is_none();
+    #[cfg(unix)]
+    {
+        let result = unsafe { libc::kill(-(child.id() as libc::pid_t), 0) };
+        if result == 0 {
+            return Ok(true);
+        }
+        let error = std::io::Error::last_os_error();
+        match error.raw_os_error() {
+            Some(libc::ESRCH) => Ok(leader_running),
+            Some(libc::EPERM) => Ok(true),
+            _ => Err(LifecycleError::new(format!(
+                "failed to inspect lifecycle dev process group: {error}"
+            ))),
+        }
+    }
+    #[cfg(not(unix))]
+    {
+        Ok(leader_running)
+    }
+}
+
+fn wait_for_stopped_child(child: &mut Child, timeout: Duration) -> Result<bool, LifecycleError> {
+    let started = Instant::now();
+    loop {
+        if !process_group_is_running(child)? {
+            return Ok(true);
+        }
+        if started.elapsed() >= timeout {
+            return Ok(false);
+        }
+        std::thread::sleep(Duration::from_millis(10));
+    }
+}
+
+fn wait_for_stopped_groups(
+    children: &mut BTreeMap<String, Child>,
+    timeout: Duration,
+) -> Result<(), LifecycleError> {
+    let started = Instant::now();
+    loop {
+        let mut running = Vec::new();
+        for (name, child) in children.iter_mut() {
+            if process_group_is_running(child)? {
+                running.push(name.clone());
+            }
+        }
+        if running.is_empty() {
+            return Ok(());
+        }
+        if started.elapsed() >= timeout {
+            return Err(LifecycleError::new(format!(
+                "lifecycle dev process groups remained alive after SIGKILL: {}",
+                running.join(", ")
+            )));
+        }
+        std::thread::sleep(Duration::from_millis(10));
+    }
+}
+
+fn force_stop_child(name: &str, child: &mut Child) -> Result<(), LifecycleError> {
+    kill_process_group(name, child)?;
+    if wait_for_stopped_child(child, Duration::from_secs(1))? {
+        Ok(())
+    } else {
+        Err(LifecycleError::new(format!(
+            "readiness probe for lifecycle dev process `{name}` remained alive after SIGKILL"
+        )))
     }
 }
 
