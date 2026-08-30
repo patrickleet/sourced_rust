@@ -2,6 +2,7 @@
 
 use distributed_cli::{
     run_lifecycle_build, run_lifecycle_dev, LifecycleBuildOptions, LifecycleDevOptions,
+    LifecycleDevReport, LifecycleError,
 };
 use serde_json::Value;
 use std::collections::BTreeMap;
@@ -11,8 +12,9 @@ use std::process::{Command, Output, Stdio};
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Arc;
 use std::thread;
+use std::thread::JoinHandle;
 use std::time::Duration;
-use std::time::{SystemTime, UNIX_EPOCH};
+use tempfile::TempDir;
 
 fn distributed(root: &Path, extra: &[&str]) -> Output {
     let mut args = vec![
@@ -29,13 +31,12 @@ fn distributed(root: &Path, extra: &[&str]) -> Output {
         .expect("distributed build should run")
 }
 
-fn temporary_root(label: &str) -> PathBuf {
-    let nanos = SystemTime::now()
-        .duration_since(UNIX_EPOCH)
-        .expect("system clock after epoch")
-        .as_nanos();
-    let root = std::env::temp_dir().join(format!("distributed-lifecycle-{label}-{nanos}"));
-    fs::create_dir_all(root.join("src")).expect("create lifecycle fixture root");
+fn temporary_root(label: &str) -> TempDir {
+    let root = tempfile::Builder::new()
+        .prefix(&format!("distributed-lifecycle-{label}-"))
+        .tempdir()
+        .expect("create exclusive lifecycle fixture root");
+    fs::create_dir_all(root.path().join("src")).expect("create lifecycle fixture source");
     root
 }
 
@@ -238,6 +239,87 @@ fn wait_until(timeout: Duration, predicate: impl Fn() -> bool) {
     }
 }
 
+struct DevSupervisor {
+    stop: Arc<AtomicBool>,
+    handle: Option<JoinHandle<Result<LifecycleDevReport, LifecycleError>>>,
+}
+
+impl DevSupervisor {
+    fn start(root: PathBuf) -> Self {
+        let stop = Arc::new(AtomicBool::new(false));
+        let supervisor_stop = Arc::clone(&stop);
+        let handle = thread::spawn(move || {
+            run_lifecycle_dev(&LifecycleDevOptions {
+                build: LifecycleBuildOptions {
+                    root,
+                    catalog: "distributed.contracts.json".into(),
+                    config: "distributed.lifecycle.json".into(),
+                    out: "dist/distributed".into(),
+                    check: false,
+                    lock_timeout: Duration::from_secs(1),
+                    nodes: None,
+                    activation_inputs: None,
+                    cancel: None,
+                },
+                stop: supervisor_stop,
+                progress: false,
+            })
+        });
+        Self {
+            stop,
+            handle: Some(handle),
+        }
+    }
+
+    fn stop_and_join_result(mut self) -> Result<LifecycleDevReport, LifecycleError> {
+        self.stop.store(true, Ordering::SeqCst);
+        self.handle
+            .take()
+            .expect("lifecycle supervisor handle")
+            .join()
+            .expect("join lifecycle supervisor")
+    }
+
+    fn stop_and_join(self) -> LifecycleDevReport {
+        self.stop_and_join_result()
+            .expect("lifecycle supervisor succeeds")
+    }
+}
+
+impl Drop for DevSupervisor {
+    fn drop(&mut self) {
+        self.stop.store(true, Ordering::SeqCst);
+        if let Some(handle) = self.handle.take() {
+            let _ = handle.join();
+        }
+    }
+}
+
+fn wait_for_stable_file(path: &Path, timeout: Duration) -> Vec<u8> {
+    let started = std::time::Instant::now();
+    let mut previous = None;
+    let mut stable_observations = 0;
+    loop {
+        if let Ok(bytes) = fs::read(path) {
+            if previous.as_ref() == Some(&bytes) {
+                stable_observations += 1;
+                if stable_observations >= 2 {
+                    return bytes;
+                }
+            } else {
+                previous = Some(bytes);
+                stable_observations = 0;
+            }
+        }
+        assert!(
+            started.elapsed() < timeout,
+            "timed out waiting for stable fixture file `{}`",
+            path.display()
+        );
+        thread::sleep(Duration::from_millis(25));
+    }
+}
+
 fn file_snapshot(root: &Path) -> BTreeMap<PathBuf, Vec<u8>> {
     fn visit(root: &Path, path: &Path, files: &mut BTreeMap<PathBuf, Vec<u8>>) {
         let mut entries = fs::read_dir(path)
@@ -264,7 +346,8 @@ fn file_snapshot(root: &Path) -> BTreeMap<PathBuf, Vec<u8>> {
 
 #[test]
 fn build_is_deterministic_and_check_is_read_only_and_content_based() {
-    let root = temporary_root("deterministic");
+    let fixture = temporary_root("deterministic");
+    let root = fixture.path().to_path_buf();
     write_fixture(&root);
 
     let first = distributed(&root, &[]);
@@ -308,12 +391,12 @@ fn build_is_deterministic_and_check_is_read_only_and_content_based() {
         fs::read(root.join("dist/distributed/active.json")).unwrap()
     );
     assert_eq!(snapshot_before_check, file_snapshot(&root));
-    fs::remove_dir_all(root).expect("remove lifecycle fixture");
 }
 
 #[test]
 fn partial_build_reuses_verified_upstream_receipts() {
-    let root = temporary_root("partial");
+    let fixture = temporary_root("partial");
+    let root = fixture.path().to_path_buf();
     write_fixture(&root);
     let options = LifecycleBuildOptions {
         root: root.clone(),
@@ -383,12 +466,12 @@ fn partial_build_reuses_verified_upstream_receipts() {
         manifest(&first.generation_id)["receipts"]["application"],
         manifest(&second.generation_id)["receipts"]["application"]
     );
-    fs::remove_dir_all(root).unwrap();
 }
 
 #[test]
 fn mixed_source_and_unowned_outputs_fail_before_activation() {
-    let mixed_root = temporary_root("mixed-source");
+    let mixed_fixture = temporary_root("mixed-source");
+    let mixed_root = mixed_fixture.path().to_path_buf();
     write_fixture(&mixed_root);
     let config_path = mixed_root.join("distributed.lifecycle.json");
     let mut config: Value = serde_json::from_slice(&fs::read(&config_path).unwrap()).unwrap();
@@ -400,9 +483,9 @@ fn mixed_source_and_unowned_outputs_fail_before_activation() {
     assert!(diagnostic.contains(&format!("sha256:{}", "a".repeat(64))));
     assert!(diagnostic.contains(&format!("sha256:{}", "b".repeat(64))));
     assert!(!mixed_root.join("dist/distributed/active.json").exists());
-    fs::remove_dir_all(mixed_root).unwrap();
 
-    let unowned_root = temporary_root("unowned-output");
+    let unowned_fixture = temporary_root("unowned-output");
+    let unowned_root = unowned_fixture.path().to_path_buf();
     write_fixture(&unowned_root);
     fs::write(unowned_root.join("produce-unowned"), "yes\n").unwrap();
     let unowned = distributed(&unowned_root, &[]);
@@ -411,34 +494,15 @@ fn mixed_source_and_unowned_outputs_fail_before_activation() {
         String::from_utf8_lossy(&unowned.stderr).contains("unowned staged output `unowned.txt`")
     );
     assert!(!unowned_root.join("dist/distributed/active.json").exists());
-    fs::remove_dir_all(unowned_root).unwrap();
 }
 
 #[test]
 fn dev_waits_for_initial_generation_and_restarts_only_invalidated_processes() {
-    let root = temporary_root("dev-supervisor");
+    let fixture = temporary_root("dev-supervisor");
+    let root = fixture.path().to_path_buf();
     write_fixture(&root);
     enable_dev(&root);
-    let stop = Arc::new(AtomicBool::new(false));
-    let supervisor_stop = Arc::clone(&stop);
-    let supervisor_root = root.clone();
-    let supervisor = thread::spawn(move || {
-        run_lifecycle_dev(&LifecycleDevOptions {
-            build: LifecycleBuildOptions {
-                root: supervisor_root,
-                catalog: "distributed.contracts.json".into(),
-                config: "distributed.lifecycle.json".into(),
-                out: "dist/distributed".into(),
-                check: false,
-                lock_timeout: Duration::from_secs(1),
-                nodes: None,
-                activation_inputs: None,
-                cancel: None,
-            },
-            stop: supervisor_stop,
-            progress: false,
-        })
-    });
+    let supervisor = DevSupervisor::start(root.clone());
 
     wait_until(Duration::from_secs(5), || {
         fs::read_to_string(root.join("dev-process.log")).is_ok_and(|log| log.lines().count() == 2)
@@ -455,16 +519,15 @@ fn dev_waits_for_initial_generation_and_restarts_only_invalidated_processes() {
     assert!(environment_log
         .lines()
         .any(|line| line == format!("ui:ui:{}", expected_cwd.display())));
-    thread::sleep(Duration::from_millis(100));
+    wait_for_stable_file(
+        &root.join("dist/distributed/active.json"),
+        Duration::from_secs(5),
+    );
     fs::write(root.join("src/input.txt"), "second\n").unwrap();
     wait_until(Duration::from_secs(5), || {
         fs::read_to_string(root.join("dev-process.log")).is_ok_and(|log| log.lines().count() == 3)
     });
-    stop.store(true, Ordering::SeqCst);
-    let report = supervisor
-        .join()
-        .expect("join lifecycle supervisor")
-        .expect("lifecycle supervisor succeeds");
+    let report = supervisor.stop_and_join();
     assert_eq!(report.rebuilds, 1);
     assert_eq!(report.restarts["api"], 1);
     assert_eq!(report.restarts["ui"], 0);
@@ -489,39 +552,22 @@ fn dev_waits_for_initial_generation_and_restarts_only_invalidated_processes() {
             .expect("inspect lifecycle descendant");
         assert!(!status.success(), "descendant process {pid} leaked");
     }
-    fs::remove_dir_all(root).unwrap();
 }
 
 #[test]
 fn dev_cancels_a_superseded_executor_before_activation() {
-    let root = temporary_root("dev-cancel");
+    let fixture = temporary_root("dev-cancel");
+    let root = fixture.path().to_path_buf();
     write_fixture(&root);
     enable_dev(&root);
-    let stop = Arc::new(AtomicBool::new(false));
-    let supervisor_stop = Arc::clone(&stop);
-    let supervisor_root = root.clone();
-    let supervisor = thread::spawn(move || {
-        run_lifecycle_dev(&LifecycleDevOptions {
-            build: LifecycleBuildOptions {
-                root: supervisor_root,
-                catalog: "distributed.contracts.json".into(),
-                config: "distributed.lifecycle.json".into(),
-                out: "dist/distributed".into(),
-                check: false,
-                lock_timeout: Duration::from_secs(1),
-                nodes: None,
-                activation_inputs: None,
-                cancel: None,
-            },
-            stop: supervisor_stop,
-            progress: false,
-        })
-    });
+    let supervisor = DevSupervisor::start(root.clone());
     wait_until(Duration::from_secs(5), || {
         fs::read_to_string(root.join("dev-process.log")).is_ok_and(|log| log.lines().count() == 2)
     });
-    thread::sleep(Duration::from_millis(100));
-    let initial_active = fs::read(root.join("dist/distributed/active.json")).unwrap();
+    let initial_active = wait_for_stable_file(
+        &root.join("dist/distributed/active.json"),
+        Duration::from_secs(5),
+    );
 
     fs::write(root.join("slow-plan"), "yes\n").unwrap();
     fs::write(root.join("plan/input.txt"), "obsolete\n").unwrap();
@@ -529,7 +575,10 @@ fn dev_cancels_a_superseded_executor_before_activation() {
         root.join("build-plan-starts.log").exists()
     });
     fs::write(root.join("plan/input.txt"), "latest\n").unwrap();
-    thread::sleep(Duration::from_millis(100));
+    wait_until(Duration::from_secs(5), || {
+        fs::read_to_string(root.join("build-plan-starts.log"))
+            .is_ok_and(|log| log.lines().count() >= 2)
+    });
     assert_eq!(
         initial_active,
         fs::read(root.join("dist/distributed/active.json")).unwrap()
@@ -539,11 +588,7 @@ fn dev_cancels_a_superseded_executor_before_activation() {
         fs::read(root.join("dist/distributed/active.json"))
             .is_ok_and(|active| active != initial_active)
     });
-    stop.store(true, Ordering::SeqCst);
-    let report = supervisor
-        .join()
-        .expect("join cancel supervisor")
-        .expect("cancel supervisor succeeds");
+    let report = supervisor.stop_and_join();
     assert_eq!(report.rebuilds, 1);
     assert_eq!(report.restarts["api"], 0);
     assert_eq!(report.restarts["ui"], 0);
@@ -557,12 +602,33 @@ fn dev_cancels_a_superseded_executor_before_activation() {
     )
     .unwrap();
     assert!(plan.contains("plan:latest:"));
-    fs::remove_dir_all(root).unwrap();
+}
+
+#[test]
+fn dev_stop_cancels_the_initial_build_before_process_startup() {
+    let fixture = temporary_root("dev-initial-cancel");
+    let root = fixture.path().to_path_buf();
+    write_fixture(&root);
+    enable_dev(&root);
+    fs::write(root.join("slow-plan"), "yes\n").unwrap();
+    let supervisor = DevSupervisor::start(root.clone());
+    wait_until(Duration::from_secs(5), || {
+        root.join("build-plan-starts.log").exists()
+    });
+
+    let started = std::time::Instant::now();
+    let error = supervisor
+        .stop_and_join_result()
+        .expect_err("initial build should report cancellation");
+    assert!(started.elapsed() < Duration::from_secs(1));
+    assert!(error.message().contains("was canceled"));
+    assert!(!root.join("dev-process.log").exists());
 }
 
 #[test]
 fn stale_check_names_owner_and_failed_downstream_build_preserves_active_generation() {
-    let root = temporary_root("failure");
+    let fixture = temporary_root("failure");
+    let root = fixture.path().to_path_buf();
     write_fixture(&root);
     let baseline = distributed(&root, &[]);
     assert!(baseline.status.success());
@@ -587,10 +653,11 @@ fn stale_check_names_owner_and_failed_downstream_build_preserves_active_generati
     fs::write(root.join("fail-plan"), "fail\n").expect("inject downstream failure");
     let failed = distributed(&root, &[]);
     assert!(!failed.status.success());
-    assert!(String::from_utf8_lossy(&failed.stderr).contains("lifecycle node `plan`"));
+    let failed_diagnostic = String::from_utf8_lossy(&failed.stderr);
+    assert!(failed_diagnostic.contains("lifecycle node `plan`"));
+    assert!(failed_diagnostic.contains("injected downstream failure"));
     assert_eq!(
         active_before,
         fs::read(root.join("dist/distributed/active.json")).unwrap()
     );
-    fs::remove_dir_all(root).expect("remove lifecycle fixture");
 }

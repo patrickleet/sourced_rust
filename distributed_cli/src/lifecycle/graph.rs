@@ -17,13 +17,40 @@ const MAX_LIFECYCLE_ROOTS: usize = 64;
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct LifecycleError {
     message: String,
+    reason: LifecycleErrorReason,
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub(crate) enum LifecycleErrorReason {
+    Other,
+    Canceled,
+    Superseded,
 }
 
 impl LifecycleError {
     pub(crate) fn new(message: impl Into<String>) -> Self {
         Self {
             message: message.into(),
+            reason: LifecycleErrorReason::Other,
         }
+    }
+
+    pub(crate) fn canceled(message: impl Into<String>) -> Self {
+        Self {
+            message: message.into(),
+            reason: LifecycleErrorReason::Canceled,
+        }
+    }
+
+    pub(crate) fn superseded(message: impl Into<String>) -> Self {
+        Self {
+            message: message.into(),
+            reason: LifecycleErrorReason::Superseded,
+        }
+    }
+
+    pub(crate) fn reason(&self) -> LifecycleErrorReason {
+        self.reason
     }
 
     pub fn message(&self) -> &str {
@@ -392,13 +419,15 @@ fn catalog_dependencies(
     Ok(dependencies)
 }
 
-fn source_uses_output(source: &str, output: &str) -> bool {
+pub(crate) fn source_uses_output(source: &str, output: &str) -> bool {
     let stable_prefix = source
         .split(['*', '?', '['])
         .next()
         .unwrap_or(source)
         .trim_end_matches('/');
-    stable_prefix == output || stable_prefix.starts_with(&format!("{output}/"))
+    stable_prefix == output
+        || stable_prefix.starts_with(&format!("{output}/"))
+        || pattern_matches(source, output).unwrap_or(false)
 }
 
 fn pattern_matches(pattern: &str, path: &str) -> Result<bool, LifecycleError> {
@@ -578,5 +607,39 @@ mod tests {
         lifecycle.roots = ["right".into()].into_iter().collect();
         let error = LifecycleGraph::from_catalog(&catalog, &lifecycle).unwrap_err();
         assert!(error.message().contains("cycle contains: left, right"));
+    }
+
+    #[test]
+    fn glob_source_infers_dependency_on_matching_owned_output() {
+        let producer = entry(
+            "producer",
+            ContractArtifactKind::ApplicationManifest,
+            &["src/*.rs"],
+            "generated/plan.json",
+            None,
+        );
+        let consumer = entry(
+            "consumer",
+            ContractArtifactKind::DeploymentPlan,
+            &["generated/*.json"],
+            "generated/release.json",
+            None,
+        );
+        let catalog = ContractCatalog {
+            schema_version: CONTRACT_CATALOG_SCHEMA_VERSION,
+            entries: [producer, consumer]
+                .into_iter()
+                .map(|entry| (entry.id.clone(), entry))
+                .collect(),
+        };
+        let mut lifecycle = config();
+        lifecycle.roots = ["consumer".into()].into_iter().collect();
+
+        let graph = LifecycleGraph::from_catalog(&catalog, &lifecycle).unwrap();
+        assert_eq!(
+            graph.nodes["consumer"].dependencies,
+            ["producer".into()].into_iter().collect()
+        );
+        assert_eq!(graph.topological_order().unwrap(), ["producer", "consumer"]);
     }
 }

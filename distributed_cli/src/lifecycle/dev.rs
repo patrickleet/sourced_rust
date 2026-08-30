@@ -12,6 +12,7 @@ use std::time::{Duration, Instant};
 use crate::contracts::ContractCatalog;
 
 use super::build::lifecycle_input_snapshot;
+use super::graph::LifecycleErrorReason;
 use super::{
     run_lifecycle_build, validate_portable_path, validate_stable_value, LifecycleBuildConfig,
     LifecycleBuildOptions, LifecycleBuildReport, LifecycleError, LifecycleGraph,
@@ -214,6 +215,7 @@ pub fn run_lifecycle_dev(
     let mut initial_options = options.build.clone();
     initial_options.nodes = None;
     initial_options.activation_inputs = None;
+    initial_options.cancel = Some(Arc::clone(&options.stop));
     let initial = run_lifecycle_build(&initial_options)?;
     let mut children = ChildSet::start(&root, &dev, &initial)?;
     if options.progress {
@@ -267,7 +269,8 @@ pub fn run_lifecycle_dev(
             let invalidated = graph.invalidated_by_paths(&changed)?;
             let mut rebuild_options = options.build.clone();
             rebuild_options.nodes = Some(invalidated.clone());
-            rebuild_options.activation_inputs = Some(latest.clone());
+            let submitted_inputs = latest.clone();
+            rebuild_options.activation_inputs = Some(submitted_inputs.clone());
             let cancel = Arc::new(AtomicBool::new(false));
             rebuild_options.cancel = Some(Arc::clone(&cancel));
             let build = std::thread::spawn(move || run_lifecycle_build(&rebuild_options));
@@ -303,18 +306,20 @@ pub fn run_lifecycle_dev(
                 Ok(generation) => generation,
                 Err(error)
                     if options.stop.load(Ordering::SeqCst)
-                        && error.message().contains("was canceled") =>
+                        && error.reason() == LifecycleErrorReason::Canceled =>
                 {
                     return Ok(())
                 }
                 Err(error)
                     if superseded
-                        && (error.message().contains("was canceled")
-                            || error.message().contains("was superseded")) =>
+                        && matches!(
+                            error.reason(),
+                            LifecycleErrorReason::Canceled | LifecycleErrorReason::Superseded
+                        ) =>
                 {
                     continue
                 }
-                Err(error) if error.message().contains("was superseded") => continue,
+                Err(error) if error.reason() == LifecycleErrorReason::Superseded => continue,
                 Err(error) => return Err(error),
             };
             rebuilds += 1;
@@ -341,7 +346,7 @@ pub fn run_lifecycle_dev(
                     }
                 );
             }
-            snapshot = latest;
+            snapshot = submitted_inputs;
         }
         Ok(())
     })();

@@ -674,9 +674,9 @@ fn run_dev(args: &DevArgs) -> Result<(), Box<dyn Error>> {
             lock_timeout: Duration::from_millis(args.lock_timeout_ms),
             nodes: None,
             activation_inputs: None,
-            cancel: None,
+            cancel: Some(Arc::clone(&stop)),
         },
-        stop,
+        stop: Arc::clone(&stop),
         progress: true,
     })?;
     println!(

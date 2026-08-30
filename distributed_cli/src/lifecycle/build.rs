@@ -12,6 +12,7 @@ use std::time::{Duration, Instant};
 
 use crate::contracts::ContractCatalog;
 
+use super::graph::source_uses_output;
 use super::{
     digest_bytes, validate_content_identity, validate_portable_path, validate_stable_value,
     ArtifactNodeReceipt, DistributedSourceIdentity, GenerationManifest, LifecycleConfig,
@@ -27,6 +28,7 @@ const MAX_HASHED_FILES: usize = 8192;
 const MAX_HASHED_FILE_BYTES: u64 = 64 * 1024 * 1024;
 const MAX_HASHED_TOTAL_BYTES: u64 = 256 * 1024 * 1024;
 const MAX_HASH_DEPTH: usize = 64;
+const MAX_EXECUTOR_STDERR_BYTES: usize = 64 * 1024;
 const MAX_LOCK_TIMEOUT: Duration = Duration::from_secs(60);
 
 #[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
@@ -210,8 +212,18 @@ pub fn run_lifecycle_build(
     let graph = LifecycleGraph::from_catalog(&catalog, &config.lifecycle())?;
     validate_executor_coverage(&graph, &config)?;
 
-    let _lock = BuildLock::acquire(&root, options.lock_timeout)?;
     let out = resolve_output(&root, &options.out)?;
+    let out_parent = out
+        .parent()
+        .ok_or_else(|| LifecycleError::new("lifecycle output must have a parent directory"))?;
+    if !options.check {
+        fs::create_dir_all(out_parent).map_err(io_error("create lifecycle output parent"))?;
+    }
+    let _lock = if out_parent.exists() {
+        Some(BuildLock::acquire(&root, out_parent, options.lock_timeout)?)
+    } else {
+        None
+    };
     let selected = selected_nodes(options.nodes.as_ref(), &graph)?;
     let previous = if selected.len() == graph.nodes.len() {
         None
@@ -221,11 +233,7 @@ pub fn run_lifecycle_build(
     let stage_parent = if options.check {
         None
     } else {
-        let parent = out
-            .parent()
-            .ok_or_else(|| LifecycleError::new("lifecycle output must have a parent directory"))?;
-        fs::create_dir_all(parent).map_err(io_error("create lifecycle output parent"))?;
-        Some(parent)
+        Some(out_parent)
     };
     let stage = match stage_parent {
         Some(parent) => tempfile::Builder::new()
@@ -246,7 +254,7 @@ pub fn run_lifecycle_build(
             .as_ref()
             .is_some_and(|cancel| cancel.load(Ordering::SeqCst))
         {
-            return Err(LifecycleError::new("lifecycle build was canceled"));
+            return Err(LifecycleError::canceled("lifecycle build was canceled"));
         }
         let node = &graph.nodes[node_id];
         if !selected.contains(node_id) {
@@ -314,7 +322,7 @@ pub fn run_lifecycle_build(
             .as_ref()
             .is_some_and(|cancel| cancel.load(Ordering::SeqCst))
         {
-            return Err(LifecycleError::new("lifecycle build was canceled"));
+            return Err(LifecycleError::canceled("lifecycle build was canceled"));
         }
         Vec::new()
     };
@@ -324,7 +332,7 @@ pub fn run_lifecycle_build(
         if let Some(expected) = &options.activation_inputs {
             let observed = lifecycle_input_snapshot(&root, &catalog, &graph)?;
             if &observed != expected {
-                return Err(LifecycleError::new(
+                return Err(LifecycleError::superseded(
                     "lifecycle build was superseded by newer input content before activation",
                 ));
             }
@@ -511,21 +519,36 @@ fn execute_node(
     } else {
         Stdio::null()
     };
-    let mut child = Command::new(&executor.program)
+    let mut command = Command::new(&executor.program);
+    command
         .args(args)
         .current_dir(stage)
         .env("DISTRIBUTED_LIFECYCLE_ROOT", root)
         .env("DISTRIBUTED_LIFECYCLE_STAGE", stage)
         .env("DISTRIBUTED_LIFECYCLE_NODE", node_id)
         .stdout(stdout)
-        .stderr(Stdio::inherit())
-        .spawn()
-        .map_err(|error| {
-            LifecycleError::new(format!(
-                "lifecycle node `{node_id}` failed to start executor `{}`: {error}",
-                executor.program
-            ))
-        })?;
+        .stderr(Stdio::piped());
+    let mut child = command.spawn().map_err(|error| {
+        LifecycleError::new(format!(
+            "lifecycle node `{node_id}` failed to start executor `{}`: {error}",
+            executor.program
+        ))
+    })?;
+    let stderr = child
+        .stderr
+        .take()
+        .ok_or_else(|| LifecycleError::new("lifecycle executor stderr pipe is unavailable"))?;
+    let stderr_reader = match std::thread::Builder::new()
+        .name(format!("lifecycle-stderr-{node_id}"))
+        .spawn(move || forward_executor_stderr(stderr))
+    {
+        Ok(reader) => reader,
+        Err(error) => {
+            let _ = child.kill();
+            let _ = child.wait();
+            return Err(io_error("start lifecycle executor stderr reader")(error));
+        }
+    };
     let status = loop {
         if cancel.is_some_and(|cancel| cancel.load(Ordering::SeqCst)) {
             child
@@ -534,7 +557,8 @@ fn execute_node(
             child
                 .wait()
                 .map_err(io_error("wait for canceled lifecycle executor"))?;
-            return Err(LifecycleError::new(format!(
+            let _ = finish_executor_stderr(stderr_reader);
+            return Err(LifecycleError::canceled(format!(
                 "lifecycle build was canceled while node `{node_id}` was running"
             )));
         }
@@ -546,10 +570,17 @@ fn execute_node(
         }
         std::thread::sleep(Duration::from_millis(10));
     };
+    let stderr_tail = finish_executor_stderr(stderr_reader)?;
     if !status.success() {
-        return Err(LifecycleError::new(format!(
-            "lifecycle node `{node_id}` executor failed with {status}"
-        )));
+        let detail = String::from_utf8_lossy(&stderr_tail);
+        let detail = detail.trim();
+        return Err(LifecycleError::new(if detail.is_empty() {
+            format!("lifecycle node `{node_id}` executor failed with {status}")
+        } else {
+            format!(
+                "lifecycle node `{node_id}` executor failed with {status}; stderr tail:\n{detail}"
+            )
+        }));
     }
     Ok(())
 }
@@ -785,7 +816,10 @@ fn collect_regular_files(
             )));
         }
         if files.len() > MAX_HASHED_FILES {
-            break;
+            return Err(LifecycleError::new(format!(
+                "lifecycle directory `{}` exceeds the file bound",
+                path.display()
+            )));
         }
     }
     Ok(())
@@ -922,10 +956,10 @@ struct BuildLock {
 }
 
 impl BuildLock {
-    fn acquire(root: &Path, timeout: Duration) -> Result<Self, LifecycleError> {
+    fn acquire(root: &Path, directory: &Path, timeout: Duration) -> Result<Self, LifecycleError> {
         let identity = digest_bytes(root.to_string_lossy().as_bytes());
         let name = format!("distributed-lifecycle-{}.lock", &identity[7..23]);
-        let path = std::env::temp_dir().join(name);
+        let path = directory.join(name);
         let file = OpenOptions::new()
             .create(true)
             .truncate(false)
@@ -937,7 +971,7 @@ impl BuildLock {
         loop {
             match file.try_lock_exclusive() {
                 Ok(()) => return Ok(Self { file }),
-                Err(error) if error.kind() == std::io::ErrorKind::WouldBlock => {
+                Err(error) if lock_is_contended(&error) => {
                     if started.elapsed() >= timeout {
                         return Err(LifecycleError::new(format!(
                             "timed out after {}ms waiting for lifecycle process lock",
@@ -950,6 +984,11 @@ impl BuildLock {
             }
         }
     }
+}
+
+fn lock_is_contended(error: &std::io::Error) -> bool {
+    error.kind() == std::io::ErrorKind::WouldBlock
+        || error.raw_os_error() == fs2::lock_contended_error().raw_os_error()
 }
 
 impl Drop for BuildLock {
@@ -1049,13 +1088,29 @@ fn portable_relative(base: &Path, path: &Path) -> Result<String, LifecycleError>
     Ok(value.to_string())
 }
 
-fn source_uses_output(source: &str, output: &str) -> bool {
-    let prefix = source
-        .split(['*', '?', '['])
-        .next()
-        .unwrap_or(source)
-        .trim_end_matches('/');
-    prefix == output || prefix.starts_with(&format!("{output}/"))
+fn forward_executor_stderr(mut stderr: impl Read) -> std::io::Result<Vec<u8>> {
+    let mut tail = Vec::new();
+    let mut chunk = [0_u8; 4096];
+    loop {
+        let count = stderr.read(&mut chunk)?;
+        if count == 0 {
+            return Ok(tail);
+        }
+        let _ = std::io::stderr().write_all(&chunk[..count]);
+        tail.extend_from_slice(&chunk[..count]);
+        if tail.len() > MAX_EXECUTOR_STDERR_BYTES {
+            tail.drain(..tail.len() - MAX_EXECUTOR_STDERR_BYTES);
+        }
+    }
+}
+
+fn finish_executor_stderr(
+    reader: std::thread::JoinHandle<std::io::Result<Vec<u8>>>,
+) -> Result<Vec<u8>, LifecycleError> {
+    reader
+        .join()
+        .map_err(|_| LifecycleError::new("lifecycle executor stderr reader panicked"))?
+        .map_err(io_error("read lifecycle executor stderr"))
 }
 
 fn io_error(label: &'static str) -> impl FnOnce(std::io::Error) -> LifecycleError {
@@ -1069,10 +1124,27 @@ mod tests {
     #[test]
     fn concurrent_build_lock_wait_is_bounded() {
         let root = tempfile::tempdir().expect("create lock fixture root");
-        let _first = BuildLock::acquire(root.path(), Duration::from_millis(100))
+        let _first = BuildLock::acquire(root.path(), root.path(), Duration::from_millis(100))
             .expect("acquire first lifecycle lock");
-        let error = BuildLock::acquire(root.path(), Duration::from_millis(20))
+        assert!(fs::read_dir(root.path()).unwrap().any(|entry| entry
+            .unwrap()
+            .file_name()
+            .to_string_lossy()
+            .ends_with(".lock")));
+        let error = BuildLock::acquire(root.path(), root.path(), Duration::from_millis(20))
             .expect_err("second lifecycle lock should time out");
         assert!(error.message().contains("timed out"));
+    }
+
+    #[test]
+    fn directory_file_bound_fails_closed_for_every_caller() {
+        let root = tempfile::tempdir().expect("create file-bound fixture root");
+        fs::write(root.path().join("overflow.txt"), b"overflow").unwrap();
+        let mut files = vec![PathBuf::new(); MAX_HASHED_FILES];
+        let mut total_bytes = 0;
+
+        let error = collect_regular_files(root.path(), &mut files, &mut total_bytes, 0)
+            .expect_err("file bound must reject rather than truncate");
+        assert!(error.message().contains("exceeds the file bound"));
     }
 }
