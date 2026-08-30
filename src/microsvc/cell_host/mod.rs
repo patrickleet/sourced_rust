@@ -35,10 +35,11 @@ pub use store::{
     CellStreamStore, DurableAggregateCellState, DurableCellCommand, DurableCellEvents,
     DurableCellSnapshot, DURABLE_AGGREGATE_CELL_STATE_VERSION,
 };
-pub(crate) use wire::validate_cell_outbox_messages;
+pub(crate) use wire::validate_cell_projection_events;
 pub use wire::{
-    parse_cell_outbox, CellOutboxWireItem, CellWaitPathRequest, MAX_CELL_OUTBOX_ITEMS,
-    MAX_CELL_OUTBOX_PAYLOAD_BYTES, MAX_CELL_OUTBOX_WIRE_BYTES,
+    cell_projection_event_evidence, parse_cell_projection_events, CellProjectionEventWireItem,
+    CellWaitPathRequest, MAX_CELL_PROJECTION_EVENTS, MAX_CELL_PROJECTION_EVENT_PAYLOAD_BYTES,
+    MAX_CELL_PROJECTION_EVENT_WIRE_BYTES,
 };
 
 #[cfg(test)]

@@ -10,14 +10,13 @@ use std::time::Duration;
 use chat_domain::{post, ChatMessage, ChatMessageState};
 use distributed::bus::CelldQueuePublisher;
 use distributed::cell_host::{
-    AggregateCell, CellCommandIdentity, CellDispatchError, CellDispatchResult, CellOutboxWireItem,
-    CellWaitPathRequest, DurableAggregateCellState, DurableCellCommand, DurableCellEvents,
-    DurableCellSnapshot, InternalHttpSecret, CELL_INTERNAL_SECRET_ENV, CELL_INTERNAL_SECRET_HEADER,
-    CELL_PRINCIPAL_PARTITION_HEADER, CELL_SERVICE_ID_HEADER, MAX_CELL_OUTBOX_ITEMS,
-    MAX_CELL_OUTBOX_PAYLOAD_BYTES, MAX_CELL_OUTBOX_WIRE_BYTES,
+    cell_projection_event_evidence, AggregateCell, CellCommandIdentity, CellDispatchError,
+    CellDispatchResult, CellWaitPathRequest, DurableAggregateCellState, DurableCellCommand,
+    DurableCellEvents, DurableCellSnapshot, InternalHttpSecret, CELL_INTERNAL_SECRET_ENV,
+    CELL_INTERNAL_SECRET_HEADER, CELL_PRINCIPAL_PARTITION_HEADER, CELL_SERVICE_ID_HEADER,
 };
 use distributed::microsvc::{Session, ROLE_KEY, USER_ID_KEY};
-use distributed::{EventRecord, OutboxMessage};
+use distributed::EventRecord;
 use serde::de::DeserializeOwned;
 use serde::Deserialize;
 use serde_json::{json, Value};
@@ -41,11 +40,6 @@ const SNAPSHOTS_DDL: &str = "CREATE TABLE IF NOT EXISTS cell_snapshots (
 )";
 
 const SEALED_DDL: &str = "CREATE TABLE IF NOT EXISTS cell_sealed (
-  id TEXT PRIMARY KEY,
-  body TEXT NOT NULL
-)";
-
-const OUTBOX_DDL: &str = "CREATE TABLE IF NOT EXISTS cell_outbox (
   id TEXT PRIMARY KEY,
   body TEXT NOT NULL
 )";
@@ -78,7 +72,6 @@ impl DurableObject for TodoCell {
         sql.exec(SNAPSHOTS_DDL, None)
             .expect("create cell_snapshots");
         sql.exec(SEALED_DDL, None).expect("create cell_sealed");
-        sql.exec(OUTBOX_DDL, None).expect("create cell_outbox");
         sql.exec(COMMANDS_DDL, None).expect("create cell_commands");
         sql.exec(STATE_DDL, None).expect("create cell_state");
         let shard = state.id().name().unwrap_or_else(|| "todo".to_string());
@@ -191,7 +184,6 @@ impl DurableObject for ChatCell {
         let sql = storage.sql();
         sql.exec(EVENTS_DDL, None).expect("create cell_events");
         sql.exec(SEALED_DDL, None).expect("create cell_sealed");
-        sql.exec(OUTBOX_DDL, None).expect("create cell_outbox");
         sql.exec(COMMANDS_DDL, None).expect("create cell_commands");
         sql.exec(STATE_DDL, None).expect("create cell_state");
         let shard = state.id().name().unwrap_or_else(|| "chat".to_string());
@@ -276,10 +268,7 @@ async fn main(req: Request, env: Env, _ctx: Context) -> Result<Response> {
         (Some("todo"), Some(id)) => ("TODO", id),
         (Some("chat"), Some(id)) => ("CHAT", id),
         _ => {
-            return Response::error(
-                "cells: authenticated internal command/read/outbox routes\n",
-                404,
-            );
+            return Response::error("cells: authenticated internal command/read routes\n", 404);
         }
     };
     let namespace = env.durable_object(binding)?;
@@ -398,13 +387,9 @@ async fn post_chat(
             seal_chat_from_load(cell).await;
             arm_drain_alarm(storage, env, has_pending(cell)).await?;
             persist_chat_copy(sql, cell)?;
+            let events = projection_events_wire(cell, dispatch.causation_id())?;
             drain_outbox_to_queue(sql, storage, env, cell, "chat", id).await?;
-            wait_path_ok(
-                dispatch.payload().clone(),
-                &dispatch,
-                201,
-                outbox_wire(cell),
-            )
+            wait_path_ok(dispatch.payload().clone(), &dispatch, 201, events)
         }
         Err(error) => {
             arm_drain_alarm(storage, env, has_pending(cell)).await?;
@@ -439,9 +424,6 @@ fn restore_chat_copy(
         .map_err(|error| error.to_string())?;
     let commands = load_commands(sql).map_err(|error| error.to_string())?;
     cell.restore_durable_commands(commands)
-        .map_err(|error| error.to_string())?;
-    let outbox = load_outbox(sql).map_err(|error| error.to_string())?;
-    cell.restore_durable_outbox(outbox)
         .map_err(|error| error.to_string())?;
     if let Some(row) = load_sealed(sql).map_err(|error| error.to_string())? {
         cell.replace_sealed_row(row)
@@ -504,7 +486,7 @@ fn wait_path_ok(
     payload: Value,
     dispatch: &CellDispatchResult,
     status: u16,
-    outbox: Value,
+    events: Value,
 ) -> Result<Response> {
     json_status(
         json!({
@@ -515,26 +497,23 @@ fn wait_path_ok(
                 "state": dispatch.state(),
                 "replayed": dispatch.replayed(),
             },
-            "outbox": outbox,
+            "events": events,
         }),
         status,
     )
 }
 
-fn outbox_wire<A>(cell: &AggregateCell<A>) -> Value
+fn projection_events_wire<A>(cell: &AggregateCell<A>, causation_id: &str) -> Result<Value>
 where
     A: distributed::Aggregate + Send + Sync + 'static,
 {
-    let rows = cell.durable_outbox().unwrap_or_default();
-    let mut budget = CellOutboxWireBudget::default();
-    let mut items = Vec::new();
-    for message in rows.iter().filter(|message| message.is_pending()) {
-        let Some(item) = budget.try_add(message) else {
-            break;
-        };
-        items.push(item);
-    }
-    Value::Array(items)
+    let rows = cell
+        .durable_outbox()
+        .map_err(|error| Error::RustError(error.to_string()))?;
+    serde_json::to_value(
+        cell_projection_event_evidence(&rows, causation_id).map_err(Error::RustError)?,
+    )
+    .map_err(|error| Error::RustError(error.to_string()))
 }
 
 fn has_pending<A>(cell: &AggregateCell<A>) -> bool
@@ -588,12 +567,13 @@ async fn create_todo(
             seal_from_load(cell).await;
             arm_drain_alarm(storage, env, has_pending(cell)).await?;
             persist_working_copy(sql, cell)?;
+            let events = projection_events_wire(cell, dispatch.causation_id())?;
             drain_outbox_to_queue(sql, storage, env, cell, "todo", id).await?;
             wait_path_ok(
                 http_from_command(id, dispatch.payload(), &title),
                 &dispatch,
                 201,
-                outbox_wire(cell),
+                events,
             )
         }
         Err(error) => {
@@ -643,6 +623,7 @@ async fn transition_todo(
             seal_from_load(cell).await;
             arm_drain_alarm(storage, env, has_pending(cell)).await?;
             persist_working_copy(sql, cell)?;
+            let events = projection_events_wire(cell, dispatch.causation_id())?;
             drain_outbox_to_queue(sql, storage, env, cell, "todo", id).await?;
             let title = cell
                 .load()
@@ -655,7 +636,7 @@ async fn transition_todo(
                 http_from_command(id, dispatch.payload(), &title),
                 &dispatch,
                 200,
-                outbox_wire(cell),
+                events,
             )
         }
         Err(error) => {
@@ -689,7 +670,7 @@ fn http_from_command(id: &str, payload: &Value, fallback_title: &str) -> Value {
     Value::Object(body)
 }
 
-fn map_cell_error<A>(error: CellDispatchError, cell: &AggregateCell<A>) -> Result<Response>
+fn map_cell_error<A>(error: CellDispatchError, _cell: &AggregateCell<A>) -> Result<Response>
 where
     A: distributed::Aggregate + Send + Sync + 'static,
 {
@@ -698,7 +679,6 @@ where
         json!({
             "error": error.client_message(),
             "code": error.code(),
-            "outbox": outbox_wire(cell),
         }),
         status,
     )
@@ -757,9 +737,6 @@ fn restore_working_copy(
     let commands = load_commands(sql).map_err(|error| error.to_string())?;
     cell.restore_durable_commands(commands)
         .map_err(|error| error.to_string())?;
-    let outbox = load_outbox(sql).map_err(|error| error.to_string())?;
-    cell.restore_durable_outbox(outbox)
-        .map_err(|error| error.to_string())?;
     if let Some(row) = load_sealed(sql).map_err(|error| error.to_string())? {
         cell.replace_sealed_row(row)
             .map_err(|error| error.to_string())?;
@@ -814,38 +791,6 @@ struct StateRow {
 fn load_commands(sql: &SqlStorage) -> Result<Vec<DurableCellCommand>> {
     sql.exec("SELECT id, body FROM cell_commands ORDER BY id", None)?
         .to_array()
-}
-
-fn outbox_item(message: &OutboxMessage) -> Value {
-    serde_json::to_value(CellOutboxWireItem::from_message(message))
-        .expect("cell outbox wire item is serializable")
-}
-
-#[derive(Default)]
-struct CellOutboxWireBudget {
-    items: usize,
-    payload_bytes: usize,
-    wire_bytes: usize,
-}
-
-impl CellOutboxWireBudget {
-    fn try_add(&mut self, message: &OutboxMessage) -> Option<Value> {
-        let item = outbox_item(message);
-        let encoded_bytes = serde_json::to_vec(&item).ok()?.len().saturating_add(1);
-        let items = self.items.saturating_add(1);
-        let payload_bytes = self.payload_bytes.saturating_add(message.payload.len());
-        let wire_bytes = self.wire_bytes.saturating_add(encoded_bytes);
-        if items > MAX_CELL_OUTBOX_ITEMS
-            || payload_bytes > MAX_CELL_OUTBOX_PAYLOAD_BYTES
-            || wire_bytes > MAX_CELL_OUTBOX_WIRE_BYTES
-        {
-            return None;
-        }
-        self.items = items;
-        self.payload_bytes = payload_bytes;
-        self.wire_bytes = wire_bytes;
-        Some(item)
-    }
 }
 
 async fn arm_drain_alarm(storage: &Storage, env: &Env, pending: bool) -> Result<()> {
@@ -923,34 +868,6 @@ where
         )));
     }
     Ok(())
-}
-
-fn load_outbox(sql: &SqlStorage) -> Result<Vec<OutboxMessage>> {
-    let rows: Vec<OutboxRow> = match sql.exec("SELECT id, body FROM cell_outbox", None) {
-        Ok(cursor) => cursor.to_array()?,
-        Err(_) => return Ok(Vec::new()),
-    };
-    rows.into_iter()
-        .map(|row| {
-            let value: Value = serde_json::from_str(&row.body)
-                .map_err(|error| Error::RustError(error.to_string()))?;
-            parse_outbox_item(&value)
-        })
-        .collect()
-}
-
-fn parse_outbox_item(item: &Value) -> Result<OutboxMessage> {
-    serde_json::from_value::<CellOutboxWireItem>(item.clone())
-        .map_err(|error| Error::RustError(format!("outbox wire: {error}")))?
-        .try_into_stored_message()
-        .map_err(Error::RustError)
-}
-
-#[derive(Deserialize)]
-struct OutboxRow {
-    #[allow(dead_code)]
-    id: String,
-    body: String,
 }
 
 fn load_sealed(sql: &SqlStorage) -> Result<Option<Value>> {

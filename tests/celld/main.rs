@@ -74,7 +74,7 @@ fn worker_declares_sqlite_todo_and_chat_cells() {
     assert!(!source.contains("outbox.complete"));
     assert!(!source.contains("outbox.claim"));
     assert!(!source.contains("outbox.release"));
-    assert!(source.contains("CREATE TABLE IF NOT EXISTS cell_outbox"));
+    assert!(!source.contains("CREATE TABLE IF NOT EXISTS cell_outbox"));
     assert!(source.contains("CREATE TABLE IF NOT EXISTS cell_commands"));
     assert!(source.contains("CREATE TABLE IF NOT EXISTS cell_state"));
     assert!(source.contains("durable_state"));
@@ -83,6 +83,9 @@ fn worker_declares_sqlite_todo_and_chat_cells() {
     assert!(source.contains("dispatch_idempotent"));
     assert!(source.contains("CelldQueuePublisher::from_env"));
     assert!(source.contains("outbox_dispatcher"));
+    assert!(source.contains("cell_projection_event_evidence"));
+    assert!(source.contains("\"events\": events"));
+    assert!(!source.contains("CellOutboxWireItem"));
     assert!(source.contains("restore_durable_commands"));
     assert!(source.contains("sealed_row"));
     assert!(source.contains("new_with_snapshots"));
