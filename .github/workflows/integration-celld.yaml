@@ -205,9 +205,10 @@ jobs:
             -d '{}'
           assert_status 401 \
             http://127.0.0.1:18880/todo/red-team
-          assert_status 401 -X POST \
+          assert_status 404 -X POST \
             http://127.0.0.1:18880/todo/red-team/outbox.complete \
             -H 'content-type: application/json' \
+            -H "x-distributed-internal-secret: $DISTRIBUTED_INTERNAL_SECRET" \
             -d '{"ids":["forged"]}'
 
       - name: Todo + Chat browser lifecycle through celld

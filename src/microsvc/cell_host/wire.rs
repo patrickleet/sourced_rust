@@ -14,7 +14,6 @@ const MAX_IDENTIFIER_BYTES: usize = 512;
 const MAX_CODEC_BYTES: usize = 128;
 const MAX_METADATA_ENTRIES: usize = 64;
 const MAX_METADATA_VALUE_BYTES: usize = 1024;
-const MAX_CLAIM_LEASE_AHEAD: Duration = Duration::from_secs(5 * 60);
 const CLAIM_WIRE_RESERVE_PER_ITEM: usize = 768;
 
 #[derive(Clone, Debug, Deserialize, Serialize)]
@@ -67,20 +66,6 @@ impl CellOutboxWireItem {
 
     pub fn try_into_message(self) -> Result<OutboxMessage, String> {
         self.try_into_message_with_status(&[OutboxMessageStatus::Pending])
-    }
-
-    pub fn try_into_claimed_message(self) -> Result<OutboxMessage, String> {
-        let message = self.try_into_message_with_status(&[OutboxMessageStatus::InFlight])?;
-        let now = crate::time::now();
-        let valid_deadline = message.leased_until.is_some_and(|deadline| {
-            deadline
-                .duration_since(now)
-                .is_ok_and(|remaining| remaining <= MAX_CLAIM_LEASE_AHEAD)
-        });
-        if message.attempts == 0 || !valid_deadline {
-            return Err("claimed cell outbox row has an invalid or expired lease".into());
-        }
-        Ok(message)
     }
 
     pub fn try_into_stored_message(self) -> Result<OutboxMessage, String> {
@@ -185,13 +170,6 @@ impl CellOutboxWireItem {
     }
 }
 
-#[derive(Clone, Debug, Deserialize, Serialize, PartialEq, Eq, Hash)]
-#[serde(rename_all = "camelCase", deny_unknown_fields)]
-pub struct CellOutboxHint {
-    pub kind: String,
-    pub id: String,
-}
-
 #[derive(Clone, Debug, Deserialize, Serialize)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
 pub struct CellWaitPathRequest {
@@ -214,28 +192,8 @@ impl CellWaitPathRequest {
     }
 }
 
-impl CellOutboxHint {
-    pub fn new(kind: impl Into<String>, id: impl Into<String>) -> Result<Self, String> {
-        let hint = Self {
-            kind: kind.into(),
-            id: id.into(),
-        };
-        hint.validate()?;
-        Ok(hint)
-    }
-
-    pub fn validate(&self) -> Result<(), String> {
-        validate_path_segment("cell kind", &self.kind)?;
-        validate_path_segment("cell id", &self.id)
-    }
-}
-
 pub fn parse_cell_outbox(value: &serde_json::Value) -> Result<Vec<OutboxMessage>, String> {
     parse_cell_outbox_with(value, CellOutboxWireItem::try_into_message)
-}
-
-pub fn parse_claimed_cell_outbox(value: &serde_json::Value) -> Result<Vec<OutboxMessage>, String> {
-    parse_cell_outbox_with(value, CellOutboxWireItem::try_into_claimed_message)
 }
 
 /// Reject a cell command's outbox before commit if its bounded HTTP form could
@@ -298,14 +256,6 @@ fn validate_identifier(label: &str, value: &str) -> Result<(), String> {
     Ok(())
 }
 
-fn validate_path_segment(label: &str, value: &str) -> Result<(), String> {
-    validate_identifier(label, value)?;
-    if matches!(value, "." | "..") || value.contains('/') || value.contains('\\') {
-        return Err(format!("{label} is not a safe path segment"));
-    }
-    Ok(())
-}
-
 fn validate_metadata(metadata: &HashMap<String, String>) -> Result<(), String> {
     if metadata.len() > MAX_METADATA_ENTRIES {
         return Err("cell outbox metadata has too many entries".into());
@@ -354,7 +304,7 @@ mod tests {
     }
 
     #[test]
-    fn rejects_unknown_fields_status_and_unsafe_hints() {
+    fn rejects_unknown_fields_and_status() {
         let mut unknown = valid_item();
         unknown["forged"] = json!(true);
         assert!(parse_cell_outbox(&json!({ "outbox": [unknown] })).is_err());
@@ -363,8 +313,6 @@ mod tests {
         published["status"] = json!("published");
         assert!(parse_cell_outbox(&json!({ "outbox": [published] })).is_err());
 
-        assert!(CellOutboxHint::new("todo", "../other").is_err());
-        assert!(CellOutboxHint::new("todo", "valid-id").is_ok());
         assert!(CellWaitPathRequest::parse(json!({
             "commandId": "command-1",
             "input": {},
@@ -387,23 +335,6 @@ mod tests {
         let mut oversized = valid_item();
         oversized["payload"] = json!(vec![0_u8; MAX_CELL_OUTBOX_PAYLOAD_BYTES + 1]);
         assert!(parse_cell_outbox(&json!({ "outbox": [oversized] })).is_err());
-    }
-
-    #[test]
-    fn rejects_expired_or_unreasonably_distant_claim_leases_without_panicking() {
-        let mut expired = valid_item();
-        expired["status"] = json!("in_flight");
-        expired["attempts"] = json!(1);
-        expired["workerId"] = json!("worker-1");
-        expired["leasedUntilUnixMs"] = json!(1);
-        assert!(parse_claimed_cell_outbox(&json!({ "outbox": [expired] })).is_err());
-
-        let mut overflowing = valid_item();
-        overflowing["status"] = json!("in_flight");
-        overflowing["attempts"] = json!(1);
-        overflowing["workerId"] = json!("worker-1");
-        overflowing["leasedUntilUnixMs"] = json!(u64::MAX);
-        assert!(parse_claimed_cell_outbox(&json!({ "outbox": [overflowing] })).is_err());
     }
 
     #[test]

@@ -5,8 +5,7 @@
 //! projectors are not methods on this class (`PCH-REQ-005`). Chat `@live`
 //! stays on the GraphQL host.
 
-use std::collections::HashSet;
-use std::time::{Duration, SystemTime};
+use std::time::Duration;
 
 use chat_domain::{post, ChatMessage, ChatMessageState};
 use distributed::bus::CelldQueuePublisher;
@@ -156,31 +155,6 @@ impl DurableObject for TodoCell {
                 )
                 .await
             }
-            (Method::Post, Some("outbox.claim")) => {
-                claim_outbox(&self.sql, &self.storage, &self.env, &self.cell, &mut req).await
-            }
-            (Method::Post, Some("outbox.complete")) => {
-                settle_outbox(
-                    &self.sql,
-                    &self.storage,
-                    &self.env,
-                    &self.cell,
-                    &mut req,
-                    true,
-                )
-                .await
-            }
-            (Method::Post, Some("outbox.release")) => {
-                settle_outbox(
-                    &self.sql,
-                    &self.storage,
-                    &self.env,
-                    &self.cell,
-                    &mut req,
-                    false,
-                )
-                .await
-            }
             _ => json_status(json!({ "error": "not found" }), 404),
         }
     }
@@ -263,31 +237,6 @@ impl DurableObject for ChatCell {
                     &self.cell,
                     &id,
                     &mut req,
-                )
-                .await
-            }
-            (Method::Post, Some("outbox.claim")) => {
-                claim_outbox(&self.sql, &self.storage, &self.env, &self.cell, &mut req).await
-            }
-            (Method::Post, Some("outbox.complete")) => {
-                settle_outbox(
-                    &self.sql,
-                    &self.storage,
-                    &self.env,
-                    &self.cell,
-                    &mut req,
-                    true,
-                )
-                .await
-            }
-            (Method::Post, Some("outbox.release")) => {
-                settle_outbox(
-                    &self.sql,
-                    &self.storage,
-                    &self.env,
-                    &self.cell,
-                    &mut req,
-                    false,
                 )
                 .await
             }
@@ -897,166 +846,6 @@ impl CellOutboxWireBudget {
         self.wire_bytes = wire_bytes;
         Some(item)
     }
-}
-
-#[derive(Deserialize)]
-#[serde(rename_all = "camelCase", deny_unknown_fields)]
-struct ClaimOutboxRequest {
-    worker_id: String,
-    limit: usize,
-    lease_ms: u64,
-}
-
-#[derive(Deserialize)]
-#[serde(rename_all = "camelCase", deny_unknown_fields)]
-struct SettleOutboxRequest {
-    worker_id: String,
-    ids: Vec<String>,
-    #[serde(default)]
-    error: Option<String>,
-}
-
-async fn claim_outbox<A>(
-    sql: &SqlStorage,
-    storage: &Storage,
-    env: &Env,
-    cell: &AggregateCell<A>,
-    req: &mut Request,
-) -> Result<Response>
-where
-    A: distributed::Aggregate + Send + Sync + 'static,
-{
-    let body = match bounded_json::<ClaimOutboxRequest>(req).await {
-        Ok(body) => body,
-        Err(_) => {
-            return json_status(
-                json!({ "code": "BAD_REQUEST", "error": "invalid outbox claim request" }),
-                400,
-            )
-        }
-    };
-    if !valid_worker_id(&body.worker_id)
-        || body.limit == 0
-        || body.limit > MAX_CELL_OUTBOX_ITEMS
-        || !(1_000..=60_000).contains(&body.lease_ms)
-    {
-        return json_status(
-            json!({ "code": "BAD_REQUEST", "error": "invalid outbox claim bounds" }),
-            400,
-        );
-    }
-    let now = SystemTime::UNIX_EPOCH + Duration::from_millis(Date::now().as_millis());
-    let lease = Duration::from_millis(body.lease_ms);
-    let mut rows = cell
-        .durable_outbox()
-        .map_err(|error| Error::RustError(error.to_string()))?;
-    let mut claimed = Vec::new();
-    let mut budget = CellOutboxWireBudget::default();
-    let mut bound_violation = false;
-    for row in rows.iter_mut().filter(|row| row.is_claimable_at(now)) {
-        if claimed.len() == body.limit {
-            break;
-        }
-        let mut candidate = row.clone();
-        candidate
-            .claim_at(body.worker_id.clone(), lease, now)
-            .map_err(|error| Error::RustError(error.to_string()))?;
-        let Some(item) = budget.try_add(&candidate) else {
-            bound_violation = true;
-            break;
-        };
-        *row = candidate;
-        claimed.push(item);
-    }
-    if bound_violation && claimed.is_empty() {
-        return json_status(
-            json!({ "code": "INTERNAL", "error": "stored outbox row violates transport bounds" }),
-            500,
-        );
-    }
-    if !claimed.is_empty() {
-        cell.restore_durable_outbox(rows)
-            .map_err(|error| Error::RustError(error.to_string()))?;
-        persist_cell_state(sql, cell)?;
-    }
-    arm_drain_alarm(storage, env, has_pending(cell)).await?;
-    json_status(json!({ "outbox": claimed }), 200)
-}
-
-async fn settle_outbox<A>(
-    sql: &SqlStorage,
-    storage: &Storage,
-    env: &Env,
-    cell: &AggregateCell<A>,
-    req: &mut Request,
-    complete: bool,
-) -> Result<Response>
-where
-    A: distributed::Aggregate + Send + Sync + 'static,
-{
-    let body = match bounded_json::<SettleOutboxRequest>(req).await {
-        Ok(body) => body,
-        Err(_) => {
-            return json_status(
-                json!({ "code": "BAD_REQUEST", "error": "invalid outbox settlement request" }),
-                400,
-            )
-        }
-    };
-    let unique = body.ids.iter().collect::<HashSet<_>>();
-    if !valid_worker_id(&body.worker_id)
-        || body.ids.is_empty()
-        || body.ids.len() > MAX_CELL_OUTBOX_ITEMS
-        || unique.len() != body.ids.len()
-        || body
-            .ids
-            .iter()
-            .any(|id| id.is_empty() || id.len() > 512 || id.chars().any(char::is_control))
-        || body.error.as_ref().is_some_and(|error| error.len() > 1_024)
-    {
-        return json_status(
-            json!({ "code": "BAD_REQUEST", "error": "invalid outbox settlement bounds" }),
-            400,
-        );
-    }
-    let mut rows = cell
-        .durable_outbox()
-        .map_err(|error| Error::RustError(error.to_string()))?;
-    if body.ids.iter().any(|id| {
-        !rows
-            .iter()
-            .any(|row| &row.id == id && row.is_in_flight() && row.is_claimed_by(&body.worker_id))
-    }) {
-        return json_status(
-            json!({ "code": "CONFLICT", "error": "outbox claim is stale or not owned by this worker" }),
-            409,
-        );
-    }
-    for row in rows
-        .iter_mut()
-        .filter(|row| body.ids.iter().any(|id| id == &row.id))
-    {
-        let result = if complete {
-            row.complete()
-        } else {
-            row.release(body.error.clone().unwrap_or_default())
-        };
-        if let Err(error) = result {
-            return json_status(
-                json!({ "code": "CONFLICT", "error": error.to_string() }),
-                409,
-            );
-        }
-    }
-    cell.restore_durable_outbox(rows)
-        .map_err(|error| Error::RustError(error.to_string()))?;
-    persist_cell_state(sql, cell)?;
-    arm_drain_alarm(storage, env, has_pending(cell)).await?;
-    json_status(json!({ "ok": true }), 200)
-}
-
-fn valid_worker_id(worker_id: &str) -> bool {
-    !worker_id.is_empty() && worker_id.len() <= 512 && !worker_id.chars().any(char::is_control)
 }
 
 async fn arm_drain_alarm(storage: &Storage, env: &Env, pending: bool) -> Result<()> {

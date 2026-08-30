@@ -304,7 +304,7 @@ impl HttpCommandHost {
         Ok((status, body))
     }
 
-    /// POST `{base}/{path}` with a JSON body (cell `outbox.complete`, alarms).
+    /// POST `{base}/{path}` with a JSON body for internal host protocols.
     pub async fn post_json(
         &self,
         path: &str,

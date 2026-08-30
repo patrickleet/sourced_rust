@@ -71,9 +71,9 @@ fn worker_declares_sqlite_todo_and_chat_cells() {
     assert!(source.contains("todo.create"));
     assert!(source.contains("todo.complete"));
     assert!(source.contains("chat.post"));
-    assert!(source.contains("outbox.complete"));
-    assert!(source.contains("outbox.claim"));
-    assert!(source.contains("outbox.release"));
+    assert!(!source.contains("outbox.complete"));
+    assert!(!source.contains("outbox.claim"));
+    assert!(!source.contains("outbox.release"));
     assert!(source.contains("CREATE TABLE IF NOT EXISTS cell_outbox"));
     assert!(source.contains("CREATE TABLE IF NOT EXISTS cell_commands"));
     assert!(source.contains("CREATE TABLE IF NOT EXISTS cell_state"));
@@ -184,17 +184,12 @@ async fn live_cell_private_routes_reject_missing_forged_and_malformed_authority(
         .expect("unauthenticated read");
     assert_eq!(read.status(), 401);
 
-    let malformed = trusted_cell_request(client.post(format!("{base}/todo/{id}/outbox.claim")))
-        .json(&serde_json::json!({
-            "workerId": "attacker",
-            "limit": 1,
-            "leaseMs": 30_000,
-            "forged": true
-        }))
+    let removed = trusted_cell_request(client.post(format!("{base}/todo/{id}/outbox.claim")))
+        .json(&serde_json::json!({}))
         .send()
         .await
-        .expect("malformed claim");
-    assert_eq!(malformed.status(), 400);
+        .expect("removed host-drain route");
+    assert_eq!(removed.status(), 404);
 }
 
 #[tokio::test]
@@ -405,62 +400,6 @@ async fn live_chat_cell_post_and_isolate() {
     assert_eq!(got["body"], "hello from a cell");
     assert_eq!(got["author_id"], "alice");
     assert_eq!(got["room_id"], "lobby");
-
-    let pending = posted["outbox"].as_array().cloned().unwrap_or_default();
-    if !pending.is_empty() {
-        let ids: Vec<Value> = pending
-            .iter()
-            .filter_map(|row| row.get("id").cloned())
-            .collect();
-        let worker_id = "celld-live-test-worker";
-        let claim = trusted_cell_request(client.post(format!("{base}/chat/{a}/outbox.claim")))
-            .json(&serde_json::json!({
-                "workerId": worker_id,
-                "limit": 64,
-                "leaseMs": 30_000
-            }))
-            .send()
-            .await
-            .expect("outbox.claim");
-        assert_eq!(claim.status(), 200, "{}", claim.text().await.unwrap());
-        let claim: Value = claim.json().await.unwrap();
-        assert_eq!(claim["outbox"].as_array().map(Vec::len), Some(ids.len()));
-        assert!(claim["outbox"]
-            .as_array()
-            .unwrap()
-            .iter()
-            .all(|row| row["status"] == "in_flight"));
-
-        let stale = trusted_cell_request(client.post(format!("{base}/chat/{a}/outbox.complete")))
-            .json(&serde_json::json!({ "workerId": "wrong-worker", "ids": ids }))
-            .send()
-            .await
-            .expect("stale completion");
-        assert_eq!(stale.status(), 409);
-
-        let complete =
-            trusted_cell_request(client.post(format!("{base}/chat/{a}/outbox.complete")))
-                .json(&serde_json::json!({ "workerId": worker_id, "ids": ids }))
-                .send()
-                .await
-                .expect("outbox.complete");
-        assert_eq!(complete.status(), 200, "{}", complete.text().await.unwrap());
-
-        let drained: Value =
-            trusted_cell_request(client.post(format!("{base}/chat/{a}/outbox.claim")))
-                .json(&serde_json::json!({
-                    "workerId": worker_id,
-                    "limit": 64,
-                    "leaseMs": 30_000
-                }))
-                .send()
-                .await
-                .expect("second outbox.claim")
-                .json()
-                .await
-                .unwrap();
-        assert_eq!(drained["outbox"].as_array().map(Vec::len).unwrap_or(0), 0);
-    }
 
     let other = trusted_cell_request(client.get(format!("{base}/chat/{b}")))
         .send()
