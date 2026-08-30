@@ -217,8 +217,9 @@ impl CausalCommandReceiptSource {
 pub struct CausalDispatchResult {
     pub(crate) payload: Value,
     pub(crate) receipt: CausalCommandReceiptSource,
-    /// Cell wait-path outbox rows to drain onto the bus. Empty for local hosts.
-    pub(crate) outbox: Vec<crate::OutboxMessage>,
+    /// Domain-event evidence used to seal wait-path projection metadata.
+    /// Transport delivery remains owned by the aggregate cell and Queue.
+    pub(crate) projection_events: Vec<crate::OutboxMessage>,
 }
 
 #[cfg(feature = "graphql")]
@@ -234,18 +235,9 @@ impl CausalDispatchResult {
         self
     }
 
-    /// Outbox rows the wait-path cell committed with the aggregate.
-    pub fn outbox(&self) -> &[crate::OutboxMessage] {
-        &self.outbox
-    }
-
-    /// Parse cell wait-path `outbox` even when the HTTP status is 409.
-    pub fn outbox_from_wait_path(
-        body: &Value,
-    ) -> Result<Vec<crate::OutboxMessage>, CausalDispatchError> {
-        crate::microsvc::cell_host::parse_cell_outbox(body).map_err(|error| {
-            CausalDispatchError::Internal(format!("invalid cell outbox response: {error}"))
-        })
+    /// Domain events committed by the wait-path command for projection sealing.
+    pub fn projection_events(&self) -> &[crate::OutboxMessage] {
+        &self.projection_events
     }
 
     /// Client-supplied durable command id.
@@ -263,9 +255,9 @@ impl CausalDispatchResult {
         self.receipt.state.as_str()
     }
 
-    /// Fill Eventual modeled projection metadata from cell-committed outbox
-    /// rows. Wait-path JSON only has `{ commandId, state }`; the generated
-    /// replica still requires the same projection delta local dispatch records.
+    /// Fill Eventual modeled projection metadata from cell-committed domain
+    /// events. The generated replica requires the same projection delta local
+    /// dispatch records, independently of how those events are transported.
     pub(crate) fn seal_wait_path_protocol(
         mut self,
         protocol: &crate::graphql::protocol::ProtocolResponseAccumulator,
@@ -276,17 +268,17 @@ impl CausalDispatchResult {
         self.receipt.consistency = contract.consistency;
         if contract.consistency == CommandConsistency::Atomic
             || contract.projections.selectors.is_empty()
-            || self.outbox.is_empty()
+            || self.projection_events.is_empty()
         {
             return Ok(self);
         }
         let occurrences = self
-            .outbox
+            .projection_events
             .iter()
             .map(|row| {
                 row.domain_event_occurrence().map_err(|error| {
                     CausalDispatchError::Internal(format!(
-                        "wait-path outbox is not a domain occurrence: {error}"
+                        "wait-path projection event is not a domain occurrence: {error}"
                     ))
                 })
             })
@@ -295,14 +287,15 @@ impl CausalDispatchResult {
             .iter()
             .find_map(|occurrence| occurrence.metadata().get("causation_id").cloned())
             .or_else(|| {
-                self.outbox
+                self.projection_events
                     .iter()
                     .find_map(|row| row.metadata.get("causation_id").cloned())
             })
             .filter(|value| !value.is_empty())
             .ok_or_else(|| {
                 CausalDispatchError::Internal(
-                    "wait-path outbox missing causation_id for modeled projection".into(),
+                    "wait-path projection events missing causation_id for modeled projection"
+                        .into(),
                 )
             })?;
         let causation_id = CausationId::parse_stored(causation).map_err(|error| {
@@ -418,7 +411,7 @@ impl CausalDispatchResult {
             payload: Value,
             receipt: ReceiptWire,
             #[serde(default)]
-            outbox: Vec<crate::microsvc::cell_host::CellOutboxWireItem>,
+            events: Vec<crate::microsvc::cell_host::CellProjectionEventWireItem>,
         }
 
         let wire: ResponseWire = serde_json::from_value(body).map_err(|error| {
@@ -436,15 +429,18 @@ impl CausalDispatchResult {
             |err| CausalDispatchError::Internal(format!("wait-path receipt state: {err}")),
         )?;
         let _ = wire.receipt.replayed;
-        let outbox = crate::microsvc::cell_host::parse_cell_outbox(&serde_json::json!({
-            "outbox": wire.outbox
-        }))
-        .map_err(|error| {
-            CausalDispatchError::Internal(format!("invalid cell outbox response: {error}"))
-        })?;
+        let projection_events =
+            crate::microsvc::cell_host::parse_cell_projection_events(&serde_json::json!({
+                "events": wire.events
+            }))
+            .map_err(|error| {
+                CausalDispatchError::Internal(format!(
+                    "invalid cell projection event response: {error}"
+                ))
+            })?;
         Ok(Self {
             payload: wire.payload,
-            outbox,
+            projection_events,
             receipt: CausalCommandReceiptSource {
                 command_id: wire.receipt.command_id,
                 command_name: String::new(),
@@ -627,7 +623,7 @@ pub(super) fn replay_result(
             Ok(CausalDispatchResult {
                 payload: receipt.outcome.clone(),
                 receipt,
-                outbox: Vec::new(),
+                projection_events: Vec::new(),
             })
         }
         CommandLedgerState::Rejected => replay_rejection(replay.outcome),

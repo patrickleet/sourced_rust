@@ -23,6 +23,13 @@ fn worker_dir() -> &'static Path {
     Path::new(concat!(env!("CARGO_MANIFEST_DIR"), "/tests/celld/worker"))
 }
 
+fn relay_worker_dir() -> &'static Path {
+    Path::new(concat!(
+        env!("CARGO_MANIFEST_DIR"),
+        "/tests/celld/relay-worker"
+    ))
+}
+
 #[test]
 fn worker_declares_sqlite_todo_and_chat_cells() {
     let wrangler =
@@ -42,10 +49,12 @@ fn worker_declares_sqlite_todo_and_chat_cells() {
         .as_array()
         .unwrap();
     assert_eq!(v2[0], "ChatCell");
+    assert_eq!(spec["queues"]["producers"][0]["binding"], "OUTBOX");
     assert_eq!(
-        spec["vars"]["OUTBOX_DRAIN_URL"],
-        "http://host.docker.internal:8791/internal/outbox/drain"
+        spec["queues"]["producers"][0]["queue"],
+        "distributed-outbox"
     );
+    assert!(spec["vars"].get("OUTBOX_DRAIN_URL").is_none());
 
     let source = std::fs::read_to_string(worker_dir().join("src/lib.rs")).expect("lib.rs");
     assert!(source.contains("pub struct TodoCell"));
@@ -56,59 +65,87 @@ fn worker_declares_sqlite_todo_and_chat_cells() {
     assert!(source.contains("mount(create())"));
     assert!(source.contains("mount(complete())"));
     assert!(source.contains("mount(post())"));
-    assert!(source.contains("CREATE TABLE IF NOT EXISTS cell_events"));
-    assert!(source.contains("CREATE TABLE IF NOT EXISTS cell_snapshots"));
-    assert!(source.contains("CREATE TABLE IF NOT EXISTS cell_sealed"));
+    assert!(!source.contains("CREATE TABLE IF NOT EXISTS cell_events"));
+    assert!(!source.contains("CREATE TABLE IF NOT EXISTS cell_snapshots"));
+    assert!(!source.contains("CREATE TABLE IF NOT EXISTS cell_sealed"));
     assert!(source.contains("todo.create"));
     assert!(source.contains("todo.complete"));
     assert!(source.contains("chat.post"));
-    assert!(source.contains("outbox.complete"));
-    assert!(source.contains("outbox.claim"));
-    assert!(source.contains("outbox.release"));
-    assert!(source.contains("CREATE TABLE IF NOT EXISTS cell_outbox"));
-    assert!(source.contains("CREATE TABLE IF NOT EXISTS cell_commands"));
+    assert!(!source.contains("outbox.complete"));
+    assert!(!source.contains("outbox.claim"));
+    assert!(!source.contains("outbox.release"));
+    assert!(!source.contains("CREATE TABLE IF NOT EXISTS cell_outbox"));
+    assert!(!source.contains("CREATE TABLE IF NOT EXISTS cell_commands"));
+    assert!(source.contains("CREATE TABLE IF NOT EXISTS cell_state"));
+    assert!(source.contains("durable_state"));
+    assert!(source.contains("restore_durable_state"));
+    assert!(source.contains("ON CONFLICT(id) DO UPDATE SET body = excluded.body"));
     assert!(source.contains("dispatch_idempotent"));
-    assert!(source.contains("restore_durable_commands"));
+    assert!(source.contains("CelldOutbox::from_env(&env, \"OUTBOX\")"));
+    assert!(source.contains("with_celld_outbox(outbox)"));
+    assert!(source.contains("persist_and_drain_outbox"));
+    assert!(!source.contains("CelldQueuePublisher::from_env"));
+    assert!(!source.contains("drain_outbox_to_queue"));
+    assert!(!source.contains("arm_drain_alarm"));
+    assert!(
+        !source.contains("outcome.released") && !source.contains("outcome.failed"),
+        "retryable Queue outcomes must stay alarm-owned, not fail a committed command"
+    );
+    assert!(source.contains("cell_projection_event_evidence"));
+    assert!(source.contains("\"events\": events"));
+    assert!(!source.contains("CellOutboxWireItem"));
+    assert!(!source.contains("restore_durable_commands"));
     assert!(source.contains("sealed_row"));
     assert!(source.contains("new_with_snapshots"));
-    assert!(source.contains("restore_durable_events"));
-    assert!(source.contains("restore_durable_snapshots"));
-    assert!(source.contains("restore_chat_copy"));
+    assert!(!source.contains("restore_durable_events"));
+    assert!(!source.contains("restore_durable_snapshots"));
+    assert!(source.contains("restore_cell_state"));
 }
 
 #[test]
-fn compose_file_does_not_use_minio() {
-    let compose = std::fs::read_to_string(concat!(
-        env!("CARGO_MANIFEST_DIR"),
-        "/tests/celld/docker-compose.yml"
-    ))
-    .expect("compose");
-    let dockerfile = std::fs::read_to_string(concat!(
-        env!("CARGO_MANIFEST_DIR"),
-        "/tests/celld/Dockerfile"
-    ))
-    .expect("dockerfile");
-    assert!(dockerfile.contains("ghcr.io/denoland/celld"));
-    assert!(dockerfile.contains("socat"));
-    assert!(compose.contains("mcr.microsoft.com/azure-storage/azurite"));
-    assert!(compose.contains("az://celld"));
-    assert!(compose.contains("AZURE_STORAGE_USE_EMULATOR"));
-    assert!(
-        !compose
-            .lines()
-            .any(|line| line.trim_start().starts_with("network_mode")),
-        "Docker Desktop extra_hosts cannot combine with network_mode"
+fn relay_worker_consumes_events_queue_through_native_bus_boundary() {
+    let wrangler = std::fs::read_to_string(relay_worker_dir().join("wrangler.jsonc"))
+        .expect("relay wrangler.jsonc");
+    let spec: Value = serde_json::from_str(&wrangler).expect("relay wrangler json");
+    assert_eq!(
+        spec["queues"]["consumers"][0]["queue"],
+        "distributed-outbox"
     );
-    assert!(
-        !compose
-            .lines()
-            .any(|line| line.trim_start().starts_with("image:") && line.contains("minio")),
-        "do not run MinIO as the celld bucket"
+    assert_eq!(
+        spec["vars"]["CELLD_QUEUE_RELAY_URL"],
+        "http://127.0.0.1:8791/internal/celld-queue/relay"
     );
-    assert!(compose.contains("CELLD_HTTP_PORT:-18080"));
-    assert!(compose.contains("127.0.0.1:${CELLD_HTTP_PORT:-18080}:8080"));
-    assert!(compose.contains(":8080"));
-    assert!(compose.contains("host.docker.internal:host-gateway"));
+    assert_eq!(spec["vars"]["CELLD_QUEUE_RELAY_LOCAL_TEST"], "1");
+
+    let source =
+        std::fs::read_to_string(relay_worker_dir().join("src/lib.rs")).expect("relay lib.rs");
+    assert!(source.contains("#[event(queue)]"));
+    assert!(source.contains("CelldQueueRelay"));
+    assert!(source.contains("CelldQueueHttpPublisher"));
+    assert!(source.contains("new_local_test"));
+    assert!(!source.contains("event(fetch)"));
+}
+
+#[test]
+fn local_entrypoint_delegates_to_the_single_persistent_profile() {
+    let makefile =
+        std::fs::read_to_string(concat!(env!("CARGO_MANIFEST_DIR"), "/tests/celld/Makefile"))
+            .expect("Makefile");
+    assert!(makefile.contains("PROFILE_DIR := ../e2e-ui"));
+    assert!(makefile.contains("up-celld-nats"));
+    assert!(makefile.contains("test-celld"));
+    assert!(makefile.contains("down-celld"));
+    assert!(makefile.contains("worker/.celld/dev"));
+    assert!(!makefile.contains("docker-compose.yml"));
+    assert!(!makefile.contains("dev-relay"));
+
+    let profile_makefile = std::fs::read_to_string(concat!(
+        env!("CARGO_MANIFEST_DIR"),
+        "/tests/e2e-ui/Makefile"
+    ))
+    .expect("profile Makefile");
+    assert!(profile_makefile.contains("refusing to start celld"));
+    assert!(profile_makefile.contains("refusing to stop untracked listener"));
 }
 
 #[tokio::test]
@@ -164,17 +201,12 @@ async fn live_cell_private_routes_reject_missing_forged_and_malformed_authority(
         .expect("unauthenticated read");
     assert_eq!(read.status(), 401);
 
-    let malformed = trusted_cell_request(client.post(format!("{base}/todo/{id}/outbox.claim")))
-        .json(&serde_json::json!({
-            "workerId": "attacker",
-            "limit": 1,
-            "leaseMs": 30_000,
-            "forged": true
-        }))
+    let removed = trusted_cell_request(client.post(format!("{base}/todo/{id}/outbox.claim")))
+        .json(&serde_json::json!({}))
         .send()
         .await
-        .expect("malformed claim");
-    assert_eq!(malformed.status(), 400);
+        .expect("removed host-drain route");
+    assert_eq!(removed.status(), 404);
 }
 
 #[tokio::test]
@@ -385,62 +417,6 @@ async fn live_chat_cell_post_and_isolate() {
     assert_eq!(got["body"], "hello from a cell");
     assert_eq!(got["author_id"], "alice");
     assert_eq!(got["room_id"], "lobby");
-
-    let pending = posted["outbox"].as_array().cloned().unwrap_or_default();
-    if !pending.is_empty() {
-        let ids: Vec<Value> = pending
-            .iter()
-            .filter_map(|row| row.get("id").cloned())
-            .collect();
-        let worker_id = "celld-live-test-worker";
-        let claim = trusted_cell_request(client.post(format!("{base}/chat/{a}/outbox.claim")))
-            .json(&serde_json::json!({
-                "workerId": worker_id,
-                "limit": 64,
-                "leaseMs": 30_000
-            }))
-            .send()
-            .await
-            .expect("outbox.claim");
-        assert_eq!(claim.status(), 200, "{}", claim.text().await.unwrap());
-        let claim: Value = claim.json().await.unwrap();
-        assert_eq!(claim["outbox"].as_array().map(Vec::len), Some(ids.len()));
-        assert!(claim["outbox"]
-            .as_array()
-            .unwrap()
-            .iter()
-            .all(|row| row["status"] == "in_flight"));
-
-        let stale = trusted_cell_request(client.post(format!("{base}/chat/{a}/outbox.complete")))
-            .json(&serde_json::json!({ "workerId": "wrong-worker", "ids": ids }))
-            .send()
-            .await
-            .expect("stale completion");
-        assert_eq!(stale.status(), 409);
-
-        let complete =
-            trusted_cell_request(client.post(format!("{base}/chat/{a}/outbox.complete")))
-                .json(&serde_json::json!({ "workerId": worker_id, "ids": ids }))
-                .send()
-                .await
-                .expect("outbox.complete");
-        assert_eq!(complete.status(), 200, "{}", complete.text().await.unwrap());
-
-        let drained: Value =
-            trusted_cell_request(client.post(format!("{base}/chat/{a}/outbox.claim")))
-                .json(&serde_json::json!({
-                    "workerId": worker_id,
-                    "limit": 64,
-                    "leaseMs": 30_000
-                }))
-                .send()
-                .await
-                .expect("second outbox.claim")
-                .json()
-                .await
-                .unwrap();
-        assert_eq!(drained["outbox"].as_array().map(Vec::len).unwrap_or(0), 0);
-    }
 
     let other = trusted_cell_request(client.get(format!("{base}/chat/{b}")))
         .send()

@@ -58,8 +58,9 @@ cd tests/e2e-ui && make up && make up-celld-nats
 cd ../e2e-celld && make run
 ```
 
-`make up-celld-nats` / `make test-celld-nats` (`celld-nats-profile/`) start
-Azurite + celld + NATS. They are not `make run`. GraphQL wait-dispatches
+`make up-celld-nats` starts celld 0.4 with its persistent local store, the Queue
+relay, and NATS (`celld-nats-profile/`). `make test-celld-nats` only validates
+an already-running profile. Neither command is `make run`. GraphQL wait-dispatches
 Todo create/complete and `chat.post` to cells (one SQLite shard per todo or
 message). GraphQL `@live`, Eventual projectors, Blob, and identity stay in
 the GraphQL process.

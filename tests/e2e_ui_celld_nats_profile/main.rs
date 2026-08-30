@@ -73,7 +73,6 @@ fn optional_profile_is_named_and_not_the_playground() {
 mod live {
     use super::*;
     use async_graphql::Request;
-    use distributed::bus::InMemoryBus;
     use distributed::cell_host::{
         CelldCommandHost, CelldRoute, InternalHttpSecret, CELL_INTERNAL_SECRET_ENV,
         CELL_INTERNAL_SECRET_HEADER,
@@ -85,7 +84,7 @@ mod live {
     };
     use distributed::microsvc::{Session, ROLE_KEY, USER_ID_KEY};
     use distributed::{
-        Aggregate, AggregateBuilder, BusPublisher, Entity, InMemoryRepository, ReadModel, Snapshot,
+        Aggregate, AggregateBuilder, Entity, InMemoryRepository, ReadModel, Snapshot,
     };
     use serde::{Deserialize, Serialize};
     use serde_json::{json, Value};
@@ -262,7 +261,6 @@ mod live {
             .await
             .ok();
         let schema = Arc::new(schema_service());
-        let publisher = BusPublisher::new(Arc::new(InMemoryBus::new()));
         let secret = InternalHttpSecret::new(
             std::env::var(CELL_INTERNAL_SECRET_ENV)
                 .expect("live celld profile requires DISTRIBUTED_INTERNAL_SECRET"),
@@ -270,7 +268,7 @@ mod live {
         .expect("valid internal secret");
         let read_secret = secret.clone();
         let host: SharedCommandHost = Arc::new(
-            CelldCommandHost::new(celld, Arc::clone(&schema), publisher, secret)
+            CelldCommandHost::new(celld, Arc::clone(&schema), secret)
                 .expect("valid celld host")
                 .route(CelldRoute::new(
                     OPTIONAL_TODO_COMMANDS,

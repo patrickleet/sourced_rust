@@ -1,39 +1,31 @@
 //! Strict, size-bounded wire values shared by cell workers and command hosts.
 
 use std::collections::HashMap;
-use std::time::{Duration, SystemTime};
 
 use serde::{Deserialize, Serialize};
 
-use crate::{OutboxMessage, OutboxMessageStatus};
+use crate::OutboxMessage;
 
-pub const MAX_CELL_OUTBOX_ITEMS: usize = 256;
-pub const MAX_CELL_OUTBOX_PAYLOAD_BYTES: usize = 1024 * 1024;
-pub const MAX_CELL_OUTBOX_WIRE_BYTES: usize = 1536 * 1024;
+pub const MAX_CELL_PROJECTION_EVENTS: usize = 256;
+pub const MAX_CELL_PROJECTION_EVENT_PAYLOAD_BYTES: usize = 1024 * 1024;
+pub const MAX_CELL_PROJECTION_EVENT_WIRE_BYTES: usize = 1536 * 1024;
 const MAX_IDENTIFIER_BYTES: usize = 512;
 const MAX_CODEC_BYTES: usize = 128;
 const MAX_METADATA_ENTRIES: usize = 64;
 const MAX_METADATA_VALUE_BYTES: usize = 1024;
-const MAX_CLAIM_LEASE_AHEAD: Duration = Duration::from_secs(5 * 60);
-const CLAIM_WIRE_RESERVE_PER_ITEM: usize = 768;
 
+/// Domain-event evidence returned by a cell wait-path.
+///
+/// This is not a delivery record. Delivery status, leases, attempts, and
+/// settlement belong exclusively to the cell's durable outbox and Queue.
 #[derive(Clone, Debug, Deserialize, Serialize)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
-pub struct CellOutboxWireItem {
+pub struct CellProjectionEventWireItem {
     pub id: String,
     pub event_type: String,
     pub payload: Vec<u8>,
     pub payload_codec: String,
     pub payload_codec_version: u16,
-    pub status: String,
-    #[serde(default)]
-    pub attempts: u32,
-    #[serde(default)]
-    pub last_error: Option<String>,
-    #[serde(default)]
-    pub worker_id: Option<String>,
-    #[serde(default)]
-    pub leased_until_unix_ms: Option<u64>,
     #[serde(default)]
     pub metadata: HashMap<String, String>,
     pub source_aggregate_type: Option<String>,
@@ -41,7 +33,7 @@ pub struct CellOutboxWireItem {
     pub source_sequence: Option<u64>,
 }
 
-impl CellOutboxWireItem {
+impl CellProjectionEventWireItem {
     pub fn from_message(message: &OutboxMessage) -> Self {
         Self {
             id: message.id.clone(),
@@ -49,15 +41,6 @@ impl CellOutboxWireItem {
             payload: message.payload.clone(),
             payload_codec: message.payload_codec.clone(),
             payload_codec_version: message.payload_codec_version,
-            status: message.status.as_str().to_string(),
-            attempts: message.attempts,
-            last_error: message.last_error.clone(),
-            worker_id: message.worker_id.clone(),
-            leased_until_unix_ms: message.leased_until.and_then(|time| {
-                time.duration_since(SystemTime::UNIX_EPOCH)
-                    .ok()
-                    .and_then(|duration| u64::try_from(duration.as_millis()).ok())
-            }),
             metadata: message.metadata.clone(),
             source_aggregate_type: message.source_aggregate_type.clone(),
             source_aggregate_id: message.source_aggregate_id.clone(),
@@ -66,78 +49,18 @@ impl CellOutboxWireItem {
     }
 
     pub fn try_into_message(self) -> Result<OutboxMessage, String> {
-        self.try_into_message_with_status(&[OutboxMessageStatus::Pending])
-    }
-
-    pub fn try_into_claimed_message(self) -> Result<OutboxMessage, String> {
-        let message = self.try_into_message_with_status(&[OutboxMessageStatus::InFlight])?;
-        let now = crate::time::now();
-        let valid_deadline = message.leased_until.is_some_and(|deadline| {
-            deadline
-                .duration_since(now)
-                .is_ok_and(|remaining| remaining <= MAX_CLAIM_LEASE_AHEAD)
-        });
-        if message.attempts == 0 || !valid_deadline {
-            return Err("claimed cell outbox row has an invalid or expired lease".into());
-        }
-        Ok(message)
-    }
-
-    pub fn try_into_stored_message(self) -> Result<OutboxMessage, String> {
-        self.try_into_message_with_status(&[
-            OutboxMessageStatus::Pending,
-            OutboxMessageStatus::InFlight,
-            OutboxMessageStatus::Published,
-            OutboxMessageStatus::Failed,
-        ])
-    }
-
-    fn try_into_message_with_status(
-        self,
-        allowed_statuses: &[OutboxMessageStatus],
-    ) -> Result<OutboxMessage, String> {
-        validate_identifier("outbox id", &self.id)?;
+        validate_identifier("projection event id", &self.id)?;
         validate_identifier("event type", &self.event_type)?;
-        if self.payload.len() > MAX_CELL_OUTBOX_PAYLOAD_BYTES {
-            return Err("cell outbox payload exceeds 1 MiB".into());
+        if self.payload.len() > MAX_CELL_PROJECTION_EVENT_PAYLOAD_BYTES {
+            return Err("cell projection event payload exceeds 1 MiB".into());
         }
         if self.payload_codec.is_empty()
             || self.payload_codec.len() > MAX_CODEC_BYTES
             || self.payload_codec_version == 0
         {
-            return Err("cell outbox payload codec is invalid".into());
-        }
-        let status = self
-            .status
-            .parse::<OutboxMessageStatus>()
-            .map_err(|_| "cell outbox status is invalid")?;
-        if !allowed_statuses.contains(&status) {
-            return Err("cell outbox row has an invalid delivery status for this response".into());
-        }
-        match status {
-            OutboxMessageStatus::Pending
-                if self.worker_id.is_some() || self.leased_until_unix_ms.is_some() =>
-            {
-                return Err("pending cell outbox row must not carry lease ownership".into())
-            }
-            OutboxMessageStatus::InFlight
-                if self.worker_id.is_none() || self.leased_until_unix_ms.is_none() =>
-            {
-                return Err("claimed cell outbox row is missing lease ownership".into())
-            }
-            _ => {}
+            return Err("cell projection event payload codec is invalid".into());
         }
         validate_metadata(&self.metadata)?;
-        if let Some(worker_id) = &self.worker_id {
-            validate_identifier("outbox worker id", worker_id)?;
-        }
-        if self
-            .last_error
-            .as_ref()
-            .is_some_and(|error| error.len() > MAX_METADATA_VALUE_BYTES)
-        {
-            return Err("cell outbox last error is too large".into());
-        }
         if let Some(value) = &self.source_aggregate_type {
             validate_identifier("source aggregate type", value)?;
         }
@@ -152,10 +75,10 @@ impl CellOutboxWireItem {
         if source_fields.iter().any(|present| *present)
             && source_fields.iter().any(|present| !*present)
         {
-            return Err("cell outbox source identity must be complete or absent".into());
+            return Err("cell projection event source identity must be complete or absent".into());
         }
         if self.source_sequence == Some(0) {
-            return Err("cell outbox source sequence must be nonzero".into());
+            return Err("cell projection event source sequence must be nonzero".into());
         }
         let mut message = OutboxMessage::create_with_metadata(
             self.id,
@@ -166,30 +89,11 @@ impl CellOutboxWireItem {
         .map_err(|error| error.to_string())?;
         message.payload_codec = self.payload_codec;
         message.payload_codec_version = self.payload_codec_version;
-        message.status = status;
-        message.attempts = self.attempts;
-        message.last_error = self.last_error;
-        message.worker_id = self.worker_id;
-        message.leased_until = self
-            .leased_until_unix_ms
-            .map(|millis| {
-                SystemTime::UNIX_EPOCH
-                    .checked_add(Duration::from_millis(millis))
-                    .ok_or_else(|| "cell outbox lease timestamp is out of range".to_string())
-            })
-            .transpose()?;
         message.source_aggregate_type = self.source_aggregate_type;
         message.source_aggregate_id = self.source_aggregate_id;
         message.source_sequence = self.source_sequence;
         Ok(message)
     }
-}
-
-#[derive(Clone, Debug, Deserialize, Serialize, PartialEq, Eq, Hash)]
-#[serde(rename_all = "camelCase", deny_unknown_fields)]
-pub struct CellOutboxHint {
-    pub kind: String,
-    pub id: String,
 }
 
 #[derive(Clone, Debug, Deserialize, Serialize)]
@@ -214,63 +118,17 @@ impl CellWaitPathRequest {
     }
 }
 
-impl CellOutboxHint {
-    pub fn new(kind: impl Into<String>, id: impl Into<String>) -> Result<Self, String> {
-        let hint = Self {
-            kind: kind.into(),
-            id: id.into(),
-        };
-        hint.validate()?;
-        Ok(hint)
-    }
-
-    pub fn validate(&self) -> Result<(), String> {
-        validate_path_segment("cell kind", &self.kind)?;
-        validate_path_segment("cell id", &self.id)
-    }
-}
-
-pub fn parse_cell_outbox(value: &serde_json::Value) -> Result<Vec<OutboxMessage>, String> {
-    parse_cell_outbox_with(value, CellOutboxWireItem::try_into_message)
-}
-
-pub fn parse_claimed_cell_outbox(value: &serde_json::Value) -> Result<Vec<OutboxMessage>, String> {
-    parse_cell_outbox_with(value, CellOutboxWireItem::try_into_claimed_message)
-}
-
-/// Reject a cell command's outbox before commit if its bounded HTTP form could
-/// not later be claimed and published by the host.
-pub(crate) fn validate_cell_outbox_messages(messages: &[OutboxMessage]) -> Result<(), String> {
-    let value = serde_json::json!({
-        "outbox": messages
-            .iter()
-            .map(CellOutboxWireItem::from_message)
-            .collect::<Vec<_>>()
-    });
-    parse_cell_outbox(&value)?;
-    let encoded = serde_json::to_vec(&value)
-        .map_err(|error| format!("cell outbox could not be encoded: {error}"))?;
-    let claimed_size_upper_bound = encoded
-        .len()
-        .saturating_add(messages.len().saturating_mul(CLAIM_WIRE_RESERVE_PER_ITEM));
-    if claimed_size_upper_bound > MAX_CELL_OUTBOX_WIRE_BYTES {
-        return Err("cell outbox wire envelope exceeds 1.5 MiB".into());
-    }
-    Ok(())
-}
-
-fn parse_cell_outbox_with(
+pub fn parse_cell_projection_events(
     value: &serde_json::Value,
-    convert: fn(CellOutboxWireItem) -> Result<OutboxMessage, String>,
 ) -> Result<Vec<OutboxMessage>, String> {
-    let Some(items) = value.get("outbox") else {
+    let Some(items) = value.get("events") else {
         return Ok(Vec::new());
     };
-    let items: Vec<CellOutboxWireItem> =
-        serde_json::from_value(items.clone()).map_err(|error| format!("cell outbox: {error}"))?;
-    if items.len() > MAX_CELL_OUTBOX_ITEMS {
+    let items: Vec<CellProjectionEventWireItem> = serde_json::from_value(items.clone())
+        .map_err(|error| format!("cell projection events: {error}"))?;
+    if items.len() > MAX_CELL_PROJECTION_EVENTS {
         return Err(format!(
-            "cell outbox contains more than {MAX_CELL_OUTBOX_ITEMS} rows"
+            "cell response contains more than {MAX_CELL_PROJECTION_EVENTS} projection events"
         ));
     }
     let mut total_payload = 0_usize;
@@ -279,15 +137,53 @@ fn parse_cell_outbox_with(
         .into_iter()
         .map(|item| {
             if !ids.insert(item.id.clone()) {
-                return Err("cell outbox response contains duplicate ids".into());
+                return Err("cell projection event response contains duplicate ids".into());
             }
             total_payload = total_payload.saturating_add(item.payload.len());
-            if total_payload > MAX_CELL_OUTBOX_PAYLOAD_BYTES {
-                return Err("cell outbox payloads exceed 1 MiB in total".into());
+            if total_payload > MAX_CELL_PROJECTION_EVENT_PAYLOAD_BYTES {
+                return Err("cell projection event payloads exceed 1 MiB in total".into());
             }
-            convert(item)
+            item.try_into_message()
         })
         .collect()
+}
+
+/// Select the exact events committed by one causal command and encode them as
+/// delivery-neutral projection evidence. Published rows remain valid evidence;
+/// Queue settlement must not erase the data needed by optimistic replicas.
+pub fn cell_projection_event_evidence(
+    messages: &[OutboxMessage],
+    causation_id: &str,
+) -> Result<Vec<CellProjectionEventWireItem>, String> {
+    validate_identifier("projection event causation id", causation_id)?;
+    let selected = messages
+        .iter()
+        .filter(|message| message.causation_id() == Some(causation_id))
+        .cloned()
+        .collect::<Vec<_>>();
+    validate_cell_projection_events(&selected)?;
+    Ok(selected
+        .iter()
+        .map(CellProjectionEventWireItem::from_message)
+        .collect())
+}
+
+/// Reject a cell command before commit when its domain-event evidence cannot
+/// fit in the bounded wait-path response used to seal optimistic projections.
+pub(crate) fn validate_cell_projection_events(messages: &[OutboxMessage]) -> Result<(), String> {
+    let value = serde_json::json!({
+        "events": messages
+            .iter()
+            .map(CellProjectionEventWireItem::from_message)
+            .collect::<Vec<_>>()
+    });
+    parse_cell_projection_events(&value)?;
+    let encoded = serde_json::to_vec(&value)
+        .map_err(|error| format!("cell projection events could not be encoded: {error}"))?;
+    if encoded.len() > MAX_CELL_PROJECTION_EVENT_WIRE_BYTES {
+        return Err("cell projection event envelope exceeds 1.5 MiB".into());
+    }
+    Ok(())
 }
 
 fn validate_identifier(label: &str, value: &str) -> Result<(), String> {
@@ -298,17 +194,9 @@ fn validate_identifier(label: &str, value: &str) -> Result<(), String> {
     Ok(())
 }
 
-fn validate_path_segment(label: &str, value: &str) -> Result<(), String> {
-    validate_identifier(label, value)?;
-    if matches!(value, "." | "..") || value.contains('/') || value.contains('\\') {
-        return Err(format!("{label} is not a safe path segment"));
-    }
-    Ok(())
-}
-
 fn validate_metadata(metadata: &HashMap<String, String>) -> Result<(), String> {
     if metadata.len() > MAX_METADATA_ENTRIES {
-        return Err("cell outbox metadata has too many entries".into());
+        return Err("cell projection event metadata has too many entries".into());
     }
     for (key, value) in metadata {
         if key.is_empty()
@@ -317,7 +205,7 @@ fn validate_metadata(metadata: &HashMap<String, String>) -> Result<(), String> {
             || key.chars().any(char::is_control)
             || value.chars().any(char::is_control)
         {
-            return Err("cell outbox metadata is invalid".into());
+            return Err("cell projection event metadata is invalid".into());
         }
     }
     Ok(())
@@ -335,7 +223,6 @@ mod tests {
             "payload": [0, 127, 255],
             "payloadCodec": "bytes",
             "payloadCodecVersion": 1,
-            "status": "pending",
             "metadata": {},
             "sourceAggregateType": "todo",
             "sourceAggregateId": "todo-1",
@@ -344,27 +231,26 @@ mod tests {
     }
 
     #[test]
-    fn parses_strict_pending_item_without_numeric_truncation() {
-        let rows = parse_cell_outbox(&json!({ "outbox": [valid_item()] })).expect("valid");
+    fn parses_strict_projection_event_without_numeric_truncation() {
+        let rows =
+            parse_cell_projection_events(&json!({ "events": [valid_item()] })).expect("valid");
         assert_eq!(rows[0].payload, vec![0, 127, 255]);
 
         let mut invalid = valid_item();
         invalid["payload"] = json!([256]);
-        assert!(parse_cell_outbox(&json!({ "outbox": [invalid] })).is_err());
+        assert!(parse_cell_projection_events(&json!({ "events": [invalid] })).is_err());
     }
 
     #[test]
-    fn rejects_unknown_fields_status_and_unsafe_hints() {
+    fn rejects_unknown_and_delivery_fields() {
         let mut unknown = valid_item();
         unknown["forged"] = json!(true);
-        assert!(parse_cell_outbox(&json!({ "outbox": [unknown] })).is_err());
+        assert!(parse_cell_projection_events(&json!({ "events": [unknown] })).is_err());
 
-        let mut published = valid_item();
-        published["status"] = json!("published");
-        assert!(parse_cell_outbox(&json!({ "outbox": [published] })).is_err());
+        let mut delivery = valid_item();
+        delivery["status"] = json!("published");
+        assert!(parse_cell_projection_events(&json!({ "events": [delivery] })).is_err());
 
-        assert!(CellOutboxHint::new("todo", "../other").is_err());
-        assert!(CellOutboxHint::new("todo", "valid-id").is_ok());
         assert!(CellWaitPathRequest::parse(json!({
             "commandId": "command-1",
             "input": {},
@@ -374,41 +260,58 @@ mod tests {
     }
 
     #[test]
+    fn published_queue_rows_remain_delivery_neutral_projection_evidence() {
+        let mut selected = OutboxMessage::create_with_metadata(
+            "event-1",
+            "todo.created",
+            vec![1, 2, 3],
+            HashMap::new(),
+        )
+        .expect("selected");
+        selected.set_causation_id("causation-1");
+        selected.status = crate::OutboxMessageStatus::Published;
+        selected.attempts = 7;
+        selected.worker_id = Some("queue-worker".into());
+
+        let mut unrelated = selected.clone();
+        unrelated.id = "event-2".into();
+        unrelated.set_causation_id("causation-2");
+
+        let evidence =
+            cell_projection_event_evidence(&[selected.clone(), unrelated], "causation-1")
+                .expect("evidence");
+        assert_eq!(evidence.len(), 1);
+        let wire = serde_json::to_value(&evidence[0]).expect("wire");
+        assert!(wire.get("status").is_none());
+        assert!(wire.get("attempts").is_none());
+        assert!(wire.get("workerId").is_none());
+
+        let parsed = parse_cell_projection_events(&json!({ "events": evidence }))
+            .expect("projection events");
+        assert_eq!(parsed.len(), 1);
+        assert_eq!(parsed[0].id, selected.id);
+        assert_eq!(parsed[0].causation_id(), Some("causation-1"));
+    }
+
+    #[test]
     fn enforces_row_and_total_payload_limits() {
-        let items = (0..=MAX_CELL_OUTBOX_ITEMS)
+        let items = (0..=MAX_CELL_PROJECTION_EVENTS)
             .map(|index| {
                 let mut item = valid_item();
                 item["id"] = json!(format!("event-{index}"));
                 item
             })
             .collect::<Vec<_>>();
-        assert!(parse_cell_outbox(&json!({ "outbox": items })).is_err());
+        assert!(parse_cell_projection_events(&json!({ "events": items })).is_err());
 
         let mut oversized = valid_item();
-        oversized["payload"] = json!(vec![0_u8; MAX_CELL_OUTBOX_PAYLOAD_BYTES + 1]);
-        assert!(parse_cell_outbox(&json!({ "outbox": [oversized] })).is_err());
-    }
-
-    #[test]
-    fn rejects_expired_or_unreasonably_distant_claim_leases_without_panicking() {
-        let mut expired = valid_item();
-        expired["status"] = json!("in_flight");
-        expired["attempts"] = json!(1);
-        expired["workerId"] = json!("worker-1");
-        expired["leasedUntilUnixMs"] = json!(1);
-        assert!(parse_claimed_cell_outbox(&json!({ "outbox": [expired] })).is_err());
-
-        let mut overflowing = valid_item();
-        overflowing["status"] = json!("in_flight");
-        overflowing["attempts"] = json!(1);
-        overflowing["workerId"] = json!("worker-1");
-        overflowing["leasedUntilUnixMs"] = json!(u64::MAX);
-        assert!(parse_claimed_cell_outbox(&json!({ "outbox": [overflowing] })).is_err());
+        oversized["payload"] = json!(vec![0_u8; MAX_CELL_PROJECTION_EVENT_PAYLOAD_BYTES + 1]);
+        assert!(parse_cell_projection_events(&json!({ "events": [oversized] })).is_err());
     }
 
     #[test]
     fn precommit_validation_enforces_the_encoded_wire_budget() {
-        let rows = (0..MAX_CELL_OUTBOX_ITEMS)
+        let rows = (0..MAX_CELL_PROJECTION_EVENTS)
             .map(|index| {
                 OutboxMessage::create_with_metadata(
                     format!("event-{index}"),
@@ -419,6 +322,6 @@ mod tests {
                 .expect("message")
             })
             .collect::<Vec<_>>();
-        assert!(validate_cell_outbox_messages(&rows).is_err());
+        assert!(validate_cell_projection_events(&rows).is_err());
     }
 }

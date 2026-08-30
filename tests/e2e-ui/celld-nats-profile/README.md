@@ -16,11 +16,11 @@ Optional profile:
 
 ```sh
 cd tests/e2e-ui
-make up-celld-nats     # Azurite + celld + NATS (not make run)
+make up-celld-nats     # celld 0.4 local store + Queue relay + NATS
 make test-celld        # live --test celld + GraphQL wait-path smoke (CI)
 make test-celld-nats   # GraphQL wait-path smoke + SQL list only
 make down-celld-nats   # NATS only
-make down-celld        # Azurite + celld
+make down-celld        # celld; local state is preserved
 
 cd ../e2e-celld
 make run               # new GraphQL service crates + the Svelte UI
@@ -45,8 +45,10 @@ GraphQL, `@live`, and Eventual projectors are **not** cell class methods
 
 ## Bring-up (local only)
 
-Azurite + celld already live under `tests/celld/docker-compose.yml`. NATS
-is extra and named so it cannot be confused with `tests/e2e-ui/docker`.
+celld 0.4 runs through its CLI and keeps the object store under
+`tests/celld/worker/.celld/dev`. The Make target first registers the separate
+Queue consumer in that store, then serves the aggregate Worker. NATS is the
+only Docker service in this optional profile.
 
 ```sh
 cd tests/e2e-ui
@@ -57,15 +59,21 @@ make test-celld-nats
 Override ports if busy: `CELLD_HTTP_PORT=18880 NATS_PORT=14223 make up-celld-nats`.
 If `14222` is already taken by a leftover `docker run` NATS, `make down-celld-nats` removes that container too.
 
-Manual equivalent (same as the Make recipes):
+The relevant manual commands are:
 
 ```sh
-# 1) celld + Azurite (no MinIO)
-docker compose -f tests/celld/docker-compose.yml up -d --build azurite
-# deploy worker, then:
-docker compose -f tests/celld/docker-compose.yml up -d celld
+# Build both Workers. The Make target also copies the relay bundle beneath the
+# aggregate project so both deployments share worker/.celld/dev.
+(cd tests/celld/worker && worker-build --release)
+(cd tests/celld/relay-worker && worker-build --release)
 
-# 2) NATS for this optional profile only
+# Register the Queue-only deployment, stop that dev listener, then serve the
+# aggregate project from the same local store. Use make up-celld-nats for the
+# complete, guarded lifecycle.
+celld dev tests/celld/worker/relay.wrangler.jsonc --port 18080 --logs
+celld dev tests/celld/worker --port 18080 --logs
+
+# NATS for this optional profile only
 docker compose -f tests/e2e-ui/celld-nats-profile/docker-compose.yml up -d
 
 export CELLD_URL=http://127.0.0.1:${CELLD_HTTP_PORT:-18080}
@@ -83,5 +91,5 @@ Do not use that as `make down` for the playground.
 
 ## Identity
 
-Reuse e2e-ui OIDC / DevHeaders. No new secret files. Azurite uses the
-public emulator account already documented in `tests/celld`.
+Reuse e2e-ui OIDC / DevHeaders. No new secret files or object-store emulator
+credentials are required. The checked-in internal relay secret is test-only.

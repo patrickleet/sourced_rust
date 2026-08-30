@@ -1,107 +1,118 @@
-# celld live Todo and Chat cells
+# celld 0.4 aggregate cells, Queue, and bus relay
 
-First live celld host for portable command hosts: one `TodoCell` Durable
-Object per todo id, one `ChatCell` per message id, private SQLite, Docker
-Compose for the daemon **and** Azurite (no AWS or Cloudflare account).
+This fixture exercises the write side of the Distributed flow:
 
-The Worker is workers-rs Durable Object classes around
-`distributed::cell_host::AggregateCell<Todo>` and
-`AggregateCell<ChatMessage>`. Shard rule is still
-`idFromName(todo_id)` / `idFromName(message_id)` (`PCH-DEC-004`). GraphQL
-and projectors are not cell methods — Chat `@live` stays on the GraphQL
-host. The event log is stored in Durable Object SQLite table `cell_events`.
-Repository snapshot cache records go in `cell_snapshots`. The sealed
-read-model row for GET lives in `cell_sealed`. All three are replicated
-by celld via LTX. GET on a cell instance queues behind in-flight POST on
-that same isolate (one writer); different todo ids are concurrent. The Todo cell uses `new_with_snapshots(1)`
-so load is snapshot + event tail, not a full replay of history.
-
-Azurite is celld's documented local development store. It is **not** a
-production fleet bucket.
-
-## Prerequisites
-
-- Docker
-- `celld` CLI + `esbuild` on `PATH` (`curl -fsSL https://celld.dev/install.sh | sh`)
-- `worker-build` (`cargo install worker-build`) and the `wasm32-unknown-unknown` target
-
-## Run
-
-```sh
-docker compose -f tests/celld/docker-compose.yml up -d --build azurite
-# wait until azurite-init exits 0
-
-export AZURE_STORAGE_USE_EMULATOR=true
-export AZURE_STORAGE_ACCOUNT_NAME=devstoreaccount1
-export AZURE_STORAGE_ACCOUNT_KEY='Eby8vdM02xNOcqFlqUwJPLlmEtlCDXJ1OUzFT50uSRZ6IFsuFq2UVErCz4I6tq/K1SZFPTOtr/KBHBeksoGMGw=='
-
-celld diagnose --bucket az://celld --listen 127.0.0.1:18090 --internal-listen 127.0.0.1:18091
-(cd tests/celld/worker && worker-build --release)
-celld deploy tests/celld/worker --bucket az://celld
-docker compose -f tests/celld/docker-compose.yml up -d celld
-DISTRIBUTED_INTERNAL_SECRET=test-only-internal-secret-change-me-2026 \
-  CELLD_URL=http://127.0.0.1:18080 cargo test --test celld
+```text
+command -> AggregateCell -> domain event -> same-cell outbox
+        -> celld OUTBOX Queue binding -> Worker relay -> Distributed Bus -> NATS
 ```
 
-Nodes load a deployment at startup, so deploy before the celld container starts (or restart it after deploy). `CELLD_WATCH` is the node's local SQLite/replication working directory — it does **not** watch Worker source. For source reload while iterating:
+The aggregate Worker owns one SQLite Durable Object per Todo or Chat shard.
+`AggregateCell::durable_state` assembles the event log, command ledger,
+snapshot/sealed state, and outbox into one versioned envelope. The Worker saves
+that envelope with one SQLite upsert, so the aggregate mutation and its outbox
+are one cell commit. The host attaches `CelldOutbox::from_env(&env, "OUTBOX")`
+to the `AggregateCell`, then `persist_and_drain_outbox` owns the complete
+persist, watchdog, Queue dispatch, settlement persistence, and alarm-rearming
+lifecycle. celld's output gate holds Queue egress until the cell write is
+durable. If settlement persistence is interrupted, the same stable event id may
+be delivered again; consumers must deduplicate by that id.
 
-```sh
-make -C tests/celld watch    # cargo-watch: worker-build --dev + deploy + restart
-# or, with the GraphQL playground:
-cd tests/e2e-celld && make run    # also watches GraphQL (WATCH_WORKER=0 to skip wasm)
+```rust,ignore
+let cell = AggregateCell::<Todo>::new_with_snapshots(shard, 1)?
+    .mount(create())
+    .mount(complete())
+    .with_celld_outbox(CelldOutbox::from_env(&env, "OUTBOX")?);
+
+cell.persist_and_drain_outbox(&env, &storage, |state| {
+    persist_cell_state(&sql, state)
+})
+.await?;
 ```
 
-`celld diagnose` should report `ok bucket conditional write`. A host-side peer probe to `:8081` is expected to fail: that listener is not published.
+The same `persist_and_drain_outbox` call runs after a command and from the
+Durable Object alarm. It persists the full state before Queue egress, arms the
+watchdog before publishing, persists any settlements even when a later store
+operation errors, and clears the alarm only when no retryable rows remain.
+Released Queue outcomes stay pending for the alarm and do not turn an already
+committed command into an HTTP error.
 
-If host port 18080 is already taken, set `CELLD_HTTP_PORT` (for example `18880`)
-before `docker compose up` and use that port in `CELLD_URL`. If host port 8080 is taken, pass `--listen` / `--internal-listen` to `celld diagnose` as above.
+Queue is intentionally not modeled as a full Distributed `Bus`: it has one
+consumer and no fanout. `CelldQueueRelay` is generic over `MessagePublisher`,
+and `BusPublisher<B>` can route to any Distributed `Bus`. The included Worker
+consumer POSTs the canonical envelope to the authenticated native relay route.
+The e2e-celld host wires that one route to `BusPublisher<NatsBus>`. Kafka,
+RabbitMQ, and Knative use the same Queue consumer and relay contract; only the
+native `BusPublisher<B>` changes.
 
-Without `CELLD_URL`, `cargo test --test celld` only checks the worker
-fixture and skips the live HTTP round-trip.
+## Queue naming and sharding
 
-CI (`integration-celld.yaml`) brings the stack up and runs:
+The producer binding name is local to the Worker and may be any valid binding
+name. This fixture calls it `OUTBOX` because it is the aggregate's durable
+egress port. The fleet-wide Queue resource is `distributed-outbox` because its
+role is the durable handoff from those aggregate outboxes to the bus:
 
-```sh
-make -C tests/e2e-ui up-celld-nats
-make -C tests/e2e-ui test-celld   # --test celld + e2e_ui_celld_nats_profile
+```json
+{
+  "queues": {
+    "producers": [
+      { "binding": "OUTBOX", "queue": "distributed-outbox" }
+    ]
+  }
+}
 ```
 
-Durability: `POST /todo/:id/todo.create` (wait-path `{ commandId, input }`)
-writes `cell_events`, `cell_snapshots`, `cell_sealed`, and `cell_outbox`
-in the same Durable Object fetch (one SQLite transaction). Chat posts
-`POST /chat/:id/chat.post` the same wait-path (events + sealed + outbox;
-Chat does not snapshot). GET restores those tables into the working copy
-and returns the sealed row. After `docker compose … restart celld`, GET of
-an existing id should still return the row.
+Use one Queue per bounded context or independently deployed write service by
+default. That keeps configuration, relay deployments, DLQs, redrive, and
+monitoring proportional to operational boundaries rather than to the number of
+domain types. A temporary downstream-bus outage backs up every Queue targeting
+that bus, so additional Queue shards do not by themselves improve that failure
+mode. Start with consumer concurrency, batching, retry/DLQ policy, queue-depth
+monitoring, and idempotent downstream handlers.
 
-Outbox drain: wait-path JSON includes still-`pending` rows for projection
-metadata, but the mutation only schedules the cell address. The bounded host
-worker calls `outbox.claim` with a worker id and lease, publishes with a
-timeout, then calls `outbox.complete` or `outbox.release` with the same
-owner. Stale or forged completion is rejected. If `OUTBOX_DRAIN_URL` is set,
-a Durable Object alarm every `OUTBOX_DRAIN_INTERVAL_MS` sends an
-address-only retry hint; the cell remains the durable source of truth.
+Split a bounded context into one Queue per aggregate type only when the types
+need independent throughput, availability, pause/purge/redrive controls,
+security policy, or downstream transports. Each binding then names its own
+Queue, for example `TODO_OUTBOX` -> `todo-outbox` and `CHAT_OUTBOX` ->
+`chat-outbox`. This prevents one aggregate type's backlog from consuming
+another type's relay capacity, at the cost of another Queue, consumer
+registration, DLQ, and set of operational signals for every shard.
 
-Every non-health Worker route requires `DISTRIBUTED_INTERNAL_SECRET`. The
-fixture's checked-in value is only for loopback CI/local use. Production must
-provision a unique secret binding, TLS, and network policy; this example does
-not claim to provide a production celld fleet configuration.
+Do not create a Queue per aggregate instance. That makes Queue and consumer
+configuration grow with domain cardinality, and it does not guarantee
+end-to-end ordering once concurrent relay delivery reaches the downstream bus.
+Preserve stable message ids and aggregate versions so projectors can deduplicate
+and reject stale transitions instead of relying on Queue topology for
+correctness.
 
-Tear down: `docker compose -f tests/celld/docker-compose.yml down -v`.
+## Local celld
 
-Optional e2e-ui split (same Svelte app, not the default playground):
-`cd tests/e2e-ui && make up-celld-nats` then `make test-celld-nats`.
-GraphQL wait-path → this cell HTTP; NATS for Eventual events; SQL lists stay SQL.
+Prerequisites: Docker (for NATS), celld 0.4, `worker-build`, and the
+`wasm32-unknown-unknown` Rust target.
 
-## Ports
+```sh
+make -C tests/celld up
+make -C tests/celld test
+make -C tests/celld down
+```
 
-| Host | Inside compose | What |
-|---|---|---|
-| 18080 (or `CELLD_HTTP_PORT`) | celld `:8080` | Worker HTTP |
-| 10000 | Azurite blob | Host `celld deploy` / `diagnose` |
-| — | celld `:8081` | Peer/internal — not published |
+celld 0.4 development mode supplies its own local object store; Azurite, MinIO,
+and an external S3 endpoint are not used. The canonical profile stores cell and
+Queue data in `tests/celld/worker/.celld/dev`. `make down` and `make reload`
+preserve that directory.
 
-celld's Azure emulator client always uses `127.0.0.1:10000`. The celld
-container forwards that address to the `azurite` service. Sharing Azurite's
-network namespace is not used: Docker Desktop injects `extra_hosts`, which
-conflicts with `network_mode: service:…`.
+celld permits only one consumer script per Queue, and that script cannot also
+export `fetch`, so it is deliberately a separate project. `celld dev` serves
+one project at a time. `make up` delegates to the e2e-ui profile, which registers
+`worker/relay.wrangler.jsonc`, stops that process, and then starts the aggregate
+Worker from the same persistent `.celld/dev` store. The retained Queue row is
+then delivered to the e2e-celld native host, accepted by NATS JetStream, and
+applied by the normal Todo projection. A deployed fleet can keep the producer
+and consumer deployments as separate scripts without changing the relay code.
+
+Without `CELLD_URL`, `cargo test --test celld` checks the fixtures and skips the
+live HTTP round trips.
+
+Every non-health aggregate route requires `DISTRIBUTED_INTERNAL_SECRET`. The
+checked-in value is loopback test data only; production requires a separately
+provisioned secret plus the normal network policy.

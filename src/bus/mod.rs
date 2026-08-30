@@ -83,6 +83,7 @@
 
 mod bus;
 mod capabilities;
+mod celld_queue;
 mod error;
 mod failure_policy;
 mod handlers;
@@ -139,6 +140,14 @@ pub use rabbitmq_bus::{RabbitBus, RabbitBusConnect};
 
 pub use bus::{Bus, BusConsumer};
 pub use capabilities::{ConsumerAckKind, KnativeIntegrationKind, TransportCapabilities};
+#[cfg(all(feature = "workers-rs", target_arch = "wasm32"))]
+pub use celld_queue::CelldQueueHttpPublisher;
+#[cfg(feature = "workers-rs")]
+pub use celld_queue::CelldQueuePublisher;
+pub use celld_queue::{
+    celld_queue_relay_handler, CelldQueueEnvelope, CelldQueueRelay, CelldQueueRelayHandler,
+    CELLD_QUEUE_ENVELOPE_VERSION, CELLD_QUEUE_MAX_BODY_BYTES, CELLD_QUEUE_RELAY_PATH,
+};
 #[cfg(any(feature = "nats", feature = "kafka", feature = "rabbitmq"))]
 pub(crate) use error::retryable;
 pub use error::{TransportError, TransportErrorKind};

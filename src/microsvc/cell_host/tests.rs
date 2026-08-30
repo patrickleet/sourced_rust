@@ -1,6 +1,6 @@
 use super::{
     instance_name, parent_cell_name, AggregateCell, CellCommandIdentity, CellDispatchError,
-    CellNamespace, CellStreamStore,
+    CellNamespace, CellStreamStore, DURABLE_AGGREGATE_CELL_STATE_VERSION,
 };
 use crate::aggregate::{Aggregate, AggregateRepository};
 use crate::entity::Entity;
@@ -244,23 +244,23 @@ async fn cell_dispatches_complete_with_the_same_portable_command_as_soa() {
         .expect("seal row after complete");
     assert_eq!(cell.sealed_row().expect("read seal"), Some(sealed.clone()));
 
-    let exported = cell.durable_events().expect("export");
-    let snapshots = cell.durable_snapshots().expect("export snapshots");
-    assert!(!exported.is_empty());
-    assert!(!snapshots.is_empty());
+    let state = cell.durable_state().expect("export durable state");
+    assert_eq!(state.version, DURABLE_AGGREGATE_CELL_STATE_VERSION);
+    assert!(!state.events.is_empty());
+    assert!(!state.snapshots.is_empty());
+    let mut unsupported = state.clone();
+    unsupported.version += 1;
+    let rejected = AggregateCell::<CellItem>::new_with_snapshots("item-1", 1)
+        .unwrap()
+        .restore_durable_state(unsupported);
+    assert!(rejected.is_err());
     let restored = AggregateCell::<CellItem>::new_with_snapshots("item-1", 1)
         .unwrap()
         .mount(Create)
         .mount(Complete);
     restored
-        .restore_durable_events(exported)
-        .expect("restore events");
-    restored
-        .restore_durable_snapshots(snapshots)
-        .expect("restore snapshots");
-    restored
-        .replace_sealed_row(sealed.clone())
-        .expect("restore sealed row");
+        .restore_durable_state(state)
+        .expect("restore durable state");
     assert_eq!(restored.sealed_row().expect("restored seal"), Some(sealed));
     let loaded = restored
         .load()

@@ -1,0 +1,23 @@
+{
+  "name": "distributed-events-relay",
+  "main": "build/worker/shim.mjs",
+  "compatibility_date": "2026-01-01",
+  "queues": {
+    "consumers": [
+      {
+        "queue": "distributed-outbox",
+        "max_batch_size": 10,
+        "max_batch_timeout": 5,
+        "max_retries": 10,
+        "dead_letter_queue": "distributed-outbox-dlq",
+        "max_concurrency": 5,
+        "retry_delay": 5
+      }
+    ]
+  },
+  "vars": {
+    "CELLD_QUEUE_RELAY_URL": "http://127.0.0.1:8791/internal/celld-queue/relay",
+    "CELLD_QUEUE_RELAY_LOCAL_TEST": "1",
+    "DISTRIBUTED_INTERNAL_SECRET": "test-only-internal-secret-change-me-2026"
+  }
+}

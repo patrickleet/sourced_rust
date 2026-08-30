@@ -1,6 +1,6 @@
 # Celld GraphQL example — sibling of tests/e2e-ui, not make run there.
 #
-#   make -C tests/e2e-ui up-celld-nats   # Azurite + celld + NATS
+#   make -C tests/e2e-ui up-celld-nats   # celld 0.4 local store + Queue + NATS
 #   make run                             # this GraphQL host + the e2e-ui Svelte app
 #
 # make run watches Rust (cargo-watch) and the cell worker; Vite HMR covers

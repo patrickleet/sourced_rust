@@ -6,7 +6,7 @@
 use std::sync::Arc;
 use std::time::Duration;
 
-use distributed::bus::MessagePublisher;
+use distributed::bus::celld_queue_relay_handler;
 use distributed::bus::NatsBus;
 use distributed::cell_host::{CelldCommandHost, InternalHttpSecret};
 use distributed::command_dispatch::SharedCommandHost;
@@ -69,10 +69,9 @@ async fn run_postgres(
     let celld_host = celld_command_host(
         celld_url.clone(),
         Arc::clone(&service),
-        publisher.clone(),
         options.internal_secret.clone(),
     )?;
-    let outbox_drain = celld_host.outbox_alarm_handler();
+    let queue_relay = celld_queue_relay_handler(publisher);
     let host: SharedCommandHost = Arc::new(celld_host);
 
     spawn_outbox_publish_loop(
@@ -101,27 +100,21 @@ async fn run_postgres(
         service,
         host,
         &options.bind,
-        Some(outbox_drain),
+        queue_relay,
         options.internal_secret,
     )
     .await?;
     Ok(())
 }
 
-fn celld_command_host<P>(
+fn celld_command_host(
     celld_url: String,
     service: Arc<Service>,
-    publisher: P,
     internal_secret: InternalHttpSecret,
-) -> Result<CelldCommandHost<P>, distributed::microsvc::CausalDispatchError>
-where
-    P: MessagePublisher + Clone + Send + Sync + 'static,
-{
-    Ok(
-        CelldCommandHost::new(celld_url, service, publisher, internal_secret)?
-            .route(e2e_celld_todo::celld_route())
-            .route(e2e_celld_chat::celld_route()),
-    )
+) -> Result<CelldCommandHost, distributed::microsvc::CausalDispatchError> {
+    Ok(CelldCommandHost::new(celld_url, service, internal_secret)?
+        .route(e2e_celld_todo::celld_route())
+        .route(e2e_celld_chat::celld_route()))
 }
 
 async fn connect_nats(url: &str) -> Result<NatsBus, Box<dyn std::error::Error + Send + Sync>> {

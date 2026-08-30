@@ -1,8 +1,8 @@
-//! GraphQL [`CommandHost`] for celld wait-path + shared cell outbox drain.
+//! GraphQL [`CommandHost`] for the celld wait-path.
 //!
-//! Aggregate crates supply a [`CelldRoute`] (kind, shard, payload map). Outbox
-//! publish, complete, extra drain, and wait-path protocol seal are the same
-//! for every cell.
+//! Aggregate crates supply a [`CelldRoute`] (kind, shard, payload map). The
+//! aggregate Worker owns outbox delivery through celld Queue; this host only
+//! invokes commands and seals the returned projection evidence.
 
 use std::collections::{HashMap, VecDeque};
 use std::sync::{Arc, Mutex};
@@ -11,9 +11,7 @@ use std::time::{Duration, Instant};
 use async_trait::async_trait;
 use serde_json::Value;
 
-use super::outbox::{outbox_alarm_handler, CellOutboxDrainHandler, CellOutboxScheduler};
-use super::{CellOutboxHint, InternalHttpSecret};
-use crate::bus::MessagePublisher;
+use super::InternalHttpSecret;
 use crate::command_dispatch::{
     validate_principal_session, validate_principal_session_if_present, CommandHost,
     HttpCommandHost, LocalCommandHost,
@@ -100,45 +98,32 @@ impl CelldRoute {
 }
 
 /// Routes selected commands to celld; everything else stays on [`LocalCommandHost`].
-pub struct CelldCommandHost<P> {
+pub struct CelldCommandHost {
     http: HttpCommandHost,
-    scheduler: CellOutboxScheduler,
     local: LocalCommandHost,
     routes: Vec<CelldRoute>,
     completed: Arc<Mutex<CompletedStatusCache>>,
-    _publisher: std::marker::PhantomData<P>,
 }
 
-impl<P> CelldCommandHost<P>
-where
-    P: MessagePublisher + Clone + Send + Sync + 'static,
-{
+impl CelldCommandHost {
     pub fn new(
         celld_url: impl Into<String>,
         service: Arc<Service>,
-        publisher: P,
         internal_secret: InternalHttpSecret,
     ) -> Result<Self, CausalDispatchError> {
         let celld_url = celld_url.into().trim_end_matches('/').to_string();
         let http = HttpCommandHost::new_internal(&celld_url, internal_secret)?;
-        let scheduler = CellOutboxScheduler::spawn(http.clone(), publisher);
         Ok(Self {
             http,
-            scheduler,
             local: LocalCommandHost::new(service),
             routes: Vec::new(),
             completed: Arc::new(Mutex::new(CompletedStatusCache::default())),
-            _publisher: std::marker::PhantomData,
         })
     }
 
     pub fn route(mut self, route: CelldRoute) -> Self {
         self.routes.push(route);
         self
-    }
-
-    pub fn outbox_alarm_handler(&self) -> CellOutboxDrainHandler {
-        outbox_alarm_handler(self.scheduler.clone())
     }
 
     fn route_for(&self, command: &str) -> Option<&CelldRoute> {
@@ -197,10 +182,7 @@ fn remote_dispatch_error(status: u16, body: &Value) -> CausalDispatchError {
 }
 
 #[async_trait]
-impl<P> CommandHost for CelldCommandHost<P>
-where
-    P: MessagePublisher + Clone + Send + Sync + 'static,
-{
+impl CommandHost for CelldCommandHost {
     async fn invoke(
         &self,
         command: &str,
@@ -238,17 +220,6 @@ where
                 &principal_partition,
             )
             .await?;
-        let outbox = CausalDispatchResult::outbox_from_wait_path(&body)?;
-        if !outbox.is_empty() {
-            let hint = CellOutboxHint::new(route.kind, shard.clone())
-                .map_err(CausalDispatchError::Internal)?;
-            if let Err(error) = self.scheduler.schedule(hint) {
-                eprintln!(
-                    "cell outbox schedule deferred for {}/{}: {error}; durable cell alarm remains armed",
-                    route.kind, shard
-                );
-            }
-        }
         if status >= 400 {
             return Err(remote_dispatch_error(status, &body));
         }
