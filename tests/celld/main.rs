@@ -65,9 +65,9 @@ fn worker_declares_sqlite_todo_and_chat_cells() {
     assert!(source.contains("mount(create())"));
     assert!(source.contains("mount(complete())"));
     assert!(source.contains("mount(post())"));
-    assert!(source.contains("CREATE TABLE IF NOT EXISTS cell_events"));
-    assert!(source.contains("CREATE TABLE IF NOT EXISTS cell_snapshots"));
-    assert!(source.contains("CREATE TABLE IF NOT EXISTS cell_sealed"));
+    assert!(!source.contains("CREATE TABLE IF NOT EXISTS cell_events"));
+    assert!(!source.contains("CREATE TABLE IF NOT EXISTS cell_snapshots"));
+    assert!(!source.contains("CREATE TABLE IF NOT EXISTS cell_sealed"));
     assert!(source.contains("todo.create"));
     assert!(source.contains("todo.complete"));
     assert!(source.contains("chat.post"));
@@ -75,7 +75,7 @@ fn worker_declares_sqlite_todo_and_chat_cells() {
     assert!(!source.contains("outbox.claim"));
     assert!(!source.contains("outbox.release"));
     assert!(!source.contains("CREATE TABLE IF NOT EXISTS cell_outbox"));
-    assert!(source.contains("CREATE TABLE IF NOT EXISTS cell_commands"));
+    assert!(!source.contains("CREATE TABLE IF NOT EXISTS cell_commands"));
     assert!(source.contains("CREATE TABLE IF NOT EXISTS cell_state"));
     assert!(source.contains("durable_state"));
     assert!(source.contains("restore_durable_state"));
@@ -86,12 +86,12 @@ fn worker_declares_sqlite_todo_and_chat_cells() {
     assert!(source.contains("cell_projection_event_evidence"));
     assert!(source.contains("\"events\": events"));
     assert!(!source.contains("CellOutboxWireItem"));
-    assert!(source.contains("restore_durable_commands"));
+    assert!(!source.contains("restore_durable_commands"));
     assert!(source.contains("sealed_row"));
     assert!(source.contains("new_with_snapshots"));
-    assert!(source.contains("restore_durable_events"));
-    assert!(source.contains("restore_durable_snapshots"));
-    assert!(source.contains("restore_chat_copy"));
+    assert!(!source.contains("restore_durable_events"));
+    assert!(!source.contains("restore_durable_snapshots"));
+    assert!(source.contains("restore_cell_state"));
 }
 
 #[test]

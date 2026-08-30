@@ -11,12 +11,11 @@ use chat_domain::{post, ChatMessage, ChatMessageState};
 use distributed::bus::CelldQueuePublisher;
 use distributed::cell_host::{
     cell_projection_event_evidence, AggregateCell, CellCommandIdentity, CellDispatchError,
-    CellDispatchResult, CellWaitPathRequest, DurableAggregateCellState, DurableCellCommand,
-    DurableCellEvents, DurableCellSnapshot, InternalHttpSecret, CELL_INTERNAL_SECRET_ENV,
-    CELL_INTERNAL_SECRET_HEADER, CELL_PRINCIPAL_PARTITION_HEADER, CELL_SERVICE_ID_HEADER,
+    CellDispatchResult, CellWaitPathRequest, DurableAggregateCellState, InternalHttpSecret,
+    CELL_INTERNAL_SECRET_ENV, CELL_INTERNAL_SECRET_HEADER, CELL_PRINCIPAL_PARTITION_HEADER,
+    CELL_SERVICE_ID_HEADER,
 };
 use distributed::microsvc::{Session, ROLE_KEY, USER_ID_KEY};
-use distributed::EventRecord;
 use serde::de::DeserializeOwned;
 use serde::Deserialize;
 use serde_json::{json, Value};
@@ -26,28 +25,6 @@ use todo_domain::{
 use worker::*;
 
 const MAX_CELL_REQUEST_BYTES: usize = 2 * 1024 * 1024;
-
-const EVENTS_DDL: &str = "CREATE TABLE IF NOT EXISTS cell_events (
-  stream TEXT NOT NULL,
-  seq INTEGER NOT NULL,
-  body TEXT NOT NULL,
-  PRIMARY KEY (stream, seq)
-)";
-
-const SNAPSHOTS_DDL: &str = "CREATE TABLE IF NOT EXISTS cell_snapshots (
-  stream TEXT PRIMARY KEY,
-  body TEXT NOT NULL
-)";
-
-const SEALED_DDL: &str = "CREATE TABLE IF NOT EXISTS cell_sealed (
-  id TEXT PRIMARY KEY,
-  body TEXT NOT NULL
-)";
-
-const COMMANDS_DDL: &str = "CREATE TABLE IF NOT EXISTS cell_commands (
-  id TEXT PRIMARY KEY,
-  body TEXT NOT NULL
-)";
 
 const STATE_DDL: &str = "CREATE TABLE IF NOT EXISTS cell_state (
   id INTEGER PRIMARY KEY CHECK (id = 1),
@@ -68,11 +45,6 @@ impl DurableObject for TodoCell {
         console_error_panic_hook::set_once();
         let storage = state.storage();
         let sql = storage.sql();
-        sql.exec(EVENTS_DDL, None).expect("create cell_events");
-        sql.exec(SNAPSHOTS_DDL, None)
-            .expect("create cell_snapshots");
-        sql.exec(SEALED_DDL, None).expect("create cell_sealed");
-        sql.exec(COMMANDS_DDL, None).expect("create cell_commands");
         sql.exec(STATE_DDL, None).expect("create cell_state");
         let shard = state.id().name().unwrap_or_else(|| "todo".to_string());
         let cell = AggregateCell::<Todo>::new_with_snapshots(shard.clone(), 1)
@@ -84,7 +56,7 @@ impl DurableObject for TodoCell {
             .mount(archive())
             .mount(force_archive())
             .mount(purge());
-        let _ = restore_working_copy(&sql, &cell);
+        let _ = restore_cell_state(&sql, &cell);
         Self {
             cell,
             sql,
@@ -98,7 +70,7 @@ impl DurableObject for TodoCell {
         if let Err(error) = authenticate_internal_request(&req, &self.env) {
             return internal_auth_error(error);
         }
-        if let Err(error) = restore_working_copy(&self.sql, &self.cell) {
+        if let Err(error) = restore_cell_state(&self.sql, &self.cell) {
             return json_status(json!({ "error": error }), 500);
         }
         let url = req.url()?;
@@ -153,7 +125,7 @@ impl DurableObject for TodoCell {
     }
 
     async fn alarm(&self) -> Result<Response> {
-        if let Err(error) = restore_working_copy(&self.sql, &self.cell) {
+        if let Err(error) = restore_cell_state(&self.sql, &self.cell) {
             return json_status(json!({ "error": error }), 500);
         }
         run_outbox_alarm(
@@ -182,15 +154,12 @@ impl DurableObject for ChatCell {
         console_error_panic_hook::set_once();
         let storage = state.storage();
         let sql = storage.sql();
-        sql.exec(EVENTS_DDL, None).expect("create cell_events");
-        sql.exec(SEALED_DDL, None).expect("create cell_sealed");
-        sql.exec(COMMANDS_DDL, None).expect("create cell_commands");
         sql.exec(STATE_DDL, None).expect("create cell_state");
         let shard = state.id().name().unwrap_or_else(|| "chat".to_string());
         let cell = AggregateCell::<ChatMessage>::new(shard.clone())
             .expect("chat cell identity")
             .mount(post());
-        let _ = restore_chat_copy(&sql, &cell);
+        let _ = restore_cell_state(&sql, &cell);
         Self {
             cell,
             sql,
@@ -204,7 +173,7 @@ impl DurableObject for ChatCell {
         if let Err(error) = authenticate_internal_request(&req, &self.env) {
             return internal_auth_error(error);
         }
-        if let Err(error) = restore_chat_copy(&self.sql, &self.cell) {
+        if let Err(error) = restore_cell_state(&self.sql, &self.cell) {
             return json_status(json!({ "error": error }), 500);
         }
         let url = req.url()?;
@@ -237,7 +206,7 @@ impl DurableObject for ChatCell {
     }
 
     async fn alarm(&self) -> Result<Response> {
-        if let Err(error) = restore_chat_copy(&self.sql, &self.cell) {
+        if let Err(error) = restore_cell_state(&self.sql, &self.cell) {
             return json_status(json!({ "error": error }), 500);
         }
         run_outbox_alarm(
@@ -410,23 +379,15 @@ fn http_chat(state: &ChatMessageState) -> Value {
     })
 }
 
-fn restore_chat_copy(
+fn restore_cell_state<A>(
     sql: &SqlStorage,
-    cell: &AggregateCell<ChatMessage>,
-) -> std::result::Result<(), String> {
+    cell: &AggregateCell<A>,
+) -> std::result::Result<(), String>
+where
+    A: distributed::Aggregate + Send + Sync + 'static,
+{
     if let Some(state) = load_cell_state(sql).map_err(|error| error.to_string())? {
-        return cell
-            .restore_durable_state(state)
-            .map_err(|error| error.to_string());
-    }
-    let events = load_events(sql).map_err(|error| error.to_string())?;
-    cell.restore_durable_events(events)
-        .map_err(|error| error.to_string())?;
-    let commands = load_commands(sql).map_err(|error| error.to_string())?;
-    cell.restore_durable_commands(commands)
-        .map_err(|error| error.to_string())?;
-    if let Some(row) = load_sealed(sql).map_err(|error| error.to_string())? {
-        cell.replace_sealed_row(row)
+        cell.restore_durable_state(state)
             .map_err(|error| error.to_string())?;
     }
     Ok(())
@@ -711,39 +672,6 @@ async fn bounded_json<T: DeserializeOwned>(
     serde_json::from_slice(&bytes).map_err(|_| "invalid cell request JSON")
 }
 
-#[derive(Deserialize)]
-struct EventRow {
-    stream: String,
-    #[allow(dead_code)]
-    seq: i64,
-    body: String,
-}
-
-fn restore_working_copy(
-    sql: &SqlStorage,
-    cell: &AggregateCell<Todo>,
-) -> std::result::Result<(), String> {
-    if let Some(state) = load_cell_state(sql).map_err(|error| error.to_string())? {
-        return cell
-            .restore_durable_state(state)
-            .map_err(|error| error.to_string());
-    }
-    let events = load_events(sql).map_err(|error| error.to_string())?;
-    cell.restore_durable_events(events)
-        .map_err(|error| error.to_string())?;
-    let snapshots = load_snapshots(sql).map_err(|error| error.to_string())?;
-    cell.restore_durable_snapshots(snapshots)
-        .map_err(|error| error.to_string())?;
-    let commands = load_commands(sql).map_err(|error| error.to_string())?;
-    cell.restore_durable_commands(commands)
-        .map_err(|error| error.to_string())?;
-    if let Some(row) = load_sealed(sql).map_err(|error| error.to_string())? {
-        cell.replace_sealed_row(row)
-            .map_err(|error| error.to_string())?;
-    }
-    Ok(())
-}
-
 async fn seal_from_load(cell: &AggregateCell<Todo>) {
     if let Ok(Some(todo)) = cell.load().await {
         let _ = cell.replace_sealed_row(http_todo(&TodoState::from(&todo)));
@@ -786,11 +714,6 @@ fn load_cell_state(sql: &SqlStorage) -> Result<Option<DurableAggregateCellState>
 #[derive(Deserialize)]
 struct StateRow {
     body: String,
-}
-
-fn load_commands(sql: &SqlStorage) -> Result<Vec<DurableCellCommand>> {
-    sql.exec("SELECT id, body FROM cell_commands ORDER BY id", None)?
-        .to_array()
 }
 
 async fn arm_drain_alarm(storage: &Storage, env: &Env, pending: bool) -> Result<()> {
@@ -868,65 +791,4 @@ where
         )));
     }
     Ok(())
-}
-
-fn load_sealed(sql: &SqlStorage) -> Result<Option<Value>> {
-    let rows: Vec<SealedRow> = sql
-        .exec("SELECT id, body FROM cell_sealed", None)?
-        .to_array()?;
-    rows.into_iter()
-        .next()
-        .map(|row| {
-            serde_json::from_str(&row.body).map_err(|error| Error::RustError(error.to_string()))
-        })
-        .transpose()
-}
-
-#[derive(Deserialize)]
-struct SealedRow {
-    #[allow(dead_code)]
-    id: String,
-    body: String,
-}
-
-fn load_events(sql: &SqlStorage) -> Result<Vec<DurableCellEvents>> {
-    let rows: Vec<EventRow> = sql
-        .exec(
-            "SELECT stream, seq, body FROM cell_events ORDER BY stream, seq",
-            None,
-        )?
-        .to_array()?;
-    let mut grouped: Vec<DurableCellEvents> = Vec::new();
-    for row in rows {
-        let event: EventRecord =
-            serde_json::from_str(&row.body).map_err(|error| Error::RustError(error.to_string()))?;
-        match grouped.last_mut() {
-            Some(stream) if stream.stream == row.stream => stream.events.push(event),
-            _ => grouped.push(DurableCellEvents {
-                stream: row.stream,
-                events: vec![event],
-            }),
-        }
-    }
-    Ok(grouped)
-}
-
-#[derive(Deserialize)]
-struct SnapshotRow {
-    stream: String,
-    body: String,
-}
-
-fn load_snapshots(sql: &SqlStorage) -> Result<Vec<DurableCellSnapshot>> {
-    let rows: Vec<SnapshotRow> = sql
-        .exec("SELECT stream, body FROM cell_snapshots", None)?
-        .to_array()?;
-    let mut snapshots = Vec::new();
-    for row in rows {
-        let mut snapshot: DurableCellSnapshot =
-            serde_json::from_str(&row.body).map_err(|error| Error::RustError(error.to_string()))?;
-        snapshot.stream = row.stream;
-        snapshots.push(snapshot);
-    }
-    Ok(snapshots)
 }
