@@ -74,7 +74,7 @@ impl Scaffold {
             ServiceTransport::Http => {
                 files.push(file(
                     &format!("{root}/templates/deployment.yaml"),
-                    self.gitops_http_deployment_yaml(),
+                    self.gitops_http_deployment_yaml(local),
                 ));
                 files.push(file(
                     &format!("{root}/templates/service.yaml"),
@@ -94,7 +94,7 @@ impl Scaffold {
             ServiceTransport::Knative => {
                 files.push(file(
                     &format!("{root}/templates/knative-service.yaml"),
-                    self.gitops_knative_service_yaml(),
+                    self.gitops_knative_service_yaml(local),
                 ));
                 files.push(file(
                     &format!("{root}/templates/knative-brokers.yaml"),
@@ -282,13 +282,16 @@ prometheusRule:
         } else {
             ""
         };
+        let image_tag = if local { "latest" } else { "" };
         format!(
             r#"local: {local}
 preview: false
 
 image:
   repository: {image_repository}
-  tag: latest
+  # Cloud promotion supplies an immutable release/build tag. Local charts keep
+  # the conventional latest default because they are local-runtime artifacts.
+  tag: "{image_tag}"
 service:
   port: 3000
 observability:
@@ -297,16 +300,25 @@ observability:
     otlpEndpoint: ""
 {bus}{metrics}{query_api_values}"#,
             image_repository = self.image_repository(),
+            image_tag = image_tag,
         )
     }
 
-    fn gitops_http_deployment_yaml(&self) -> String {
+    fn gitops_http_deployment_yaml(&self, local: bool) -> String {
         let name = k8s_name(&self.names.package_name);
         let bus_env = self.bus_env_yaml();
         let tracing_env = self.tracing_env_yaml();
         let query_api_env = self.query_api_env_yaml();
+        let image_validation = if local {
+            ""
+        } else {
+            r#"{{{{- if or (not .Values.image.tag) (eq .Values.image.tag "latest") }}}}
+{{{{- fail "image.tag must be an immutable build tag for cloud deployments; latest and empty are not allowed" }}}}
+{{{{- end }}}}
+"#
+        };
         format!(
-            r#"apiVersion: apps/v1
+            r#"{image_validation}apiVersion: apps/v1
 kind: Deployment
 metadata:
   name: {name}
@@ -335,6 +347,7 @@ spec:
             - name: BIND_ADDR
               value: 0.0.0.0:3000
 {bus_env}{tracing_env}{query_api_env}"#,
+            image_validation = image_validation,
         )
     }
 
@@ -429,13 +442,21 @@ spec:
         )
     }
 
-    fn gitops_knative_service_yaml(&self) -> String {
+    fn gitops_knative_service_yaml(&self, local: bool) -> String {
         let name = k8s_name(&self.names.package_name);
         let bus_env = self.bus_env_yaml();
         let tracing_env = self.tracing_env_yaml();
         let query_api_env = self.query_api_env_yaml();
+        let image_validation = if local {
+            ""
+        } else {
+            r#"{{{{- if or (not .Values.image.tag) (eq .Values.image.tag "latest") }}}}
+{{{{- fail "image.tag must be an immutable build tag for cloud deployments; latest and empty are not allowed" }}}}
+{{{{- end }}}}
+"#
+        };
         format!(
-            r#"apiVersion: serving.knative.dev/v1
+            r#"{image_validation}apiVersion: serving.knative.dev/v1
 kind: Service
 metadata:
   name: {name}
@@ -461,6 +482,7 @@ spec:
             - name: BIND_ADDR
               value: 0.0.0.0:3000
 {bus_env}{tracing_env}{query_api_env}"#,
+            image_validation = image_validation,
         )
     }
 

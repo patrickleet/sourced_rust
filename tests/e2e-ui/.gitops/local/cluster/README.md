@@ -20,6 +20,10 @@ imperative substrate prerequisite. Application charts live under their own
 `.gitops/local` and `.gitops/deploy` roots.
 
 The environment's identity chart uses the auth-stack `HumanUser` and `Grant`
-XRs. The installed auth-stack package must provide those APIs; while that
-package is being developed locally, install it from its source checkout with
-`hops config install` before reconciling `../environment.yaml`.
+XRs. The pinned `ghcr.io/hops-ops/auth-stack:v1.9.0` package provides those
+APIs, so a clean cluster can reconcile this tree without a source checkout.
+
+The provider service accounts in `rbac/provider-accounts.yaml` are deliberately
+cluster-admin because this disposable Cluster may install arbitrary explicit
+Helm/Kubernetes platform resources. Use this tree only with a single-user local
+cluster, never a shared or production context.

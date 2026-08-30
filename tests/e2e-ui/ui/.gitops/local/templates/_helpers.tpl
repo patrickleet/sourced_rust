@@ -13,7 +13,11 @@ app.kubernetes.io/managed-by: {{ .Release.Service }}
 {{- end -}}
 
 {{- define "e2e-ui-ui.workspace" -}}
+{{- if .Values.identity.workspace -}}
+{{- .Values.identity.workspace -}}
+{{- else -}}
 {{- coalesce .Values.environment.name (include "e2e-ui-ui.releaseNamespace" .) -}}
+{{- end -}}
 {{- end -}}
 
 {{- define "e2e-ui-ui.identityPrefix" -}}

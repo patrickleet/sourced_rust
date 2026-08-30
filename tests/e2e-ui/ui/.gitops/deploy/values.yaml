@@ -5,7 +5,9 @@ preview: false
 name: e2e-ui-ui
 image:
   repository: ghcr.io/hops-ops/e2e-ui-ui
-  tag: latest
+  # Cloud promotion must supply a release/build tag. `latest` is deliberately
+  # not a valid default because it is mutable across replicas and rollouts.
+  tag: ""
   pullPolicy: IfNotPresent
 
 service:

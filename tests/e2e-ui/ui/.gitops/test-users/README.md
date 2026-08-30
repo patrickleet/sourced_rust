@@ -28,7 +28,7 @@ Demo login (every local env): **alice / bob / admin · Password1!**
 |-------|---------|
 | `identity.enabled` | Gate identity templates |
 | `identity.projectName` | Shared Project name (default `e2e-ui`) |
-| `identity.workspace` | Optional Environment-name override for OIDC app names |
+| `identity.workspace` | Optional shared workspace override; pass the same value to the UI/API charts |
 | `identity.oidcGeneration` | Bump to rotate generated OIDC client credentials through GitOps prune |
 | `identity.demoUsers` | Cluster-shared alice / bob / admin |
 | `identity.projectNamespace` | Namespace for Project + Role MRs |
@@ -58,6 +58,11 @@ Project by name from `status.atProvider`; the referenced resources and Grant
 must share `identity.projectNamespace`. The chart adds the auth-stack's stable
 reference-name label to the Project and HumanUsers. Prefer a
 **ClusterProviderConfig** so all identity resources share credentials.
+
+If `identity.workspace` is set, put it in the Environment's shared `values`
+so the UI, API, and test-users deploys all derive the same OIDC resource and
+connection-Secret names. Leaving it empty makes all three charts use the
+resolved Environment name.
 
 Project, role, human, Grant, and OIDC resources omit live
 org/project/user/client UUIDs.

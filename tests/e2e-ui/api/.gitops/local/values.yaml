@@ -18,8 +18,13 @@ clusterDev:
       if ! command -v cargo-watch >/dev/null 2>&1; then
         cargo install cargo-watch --locked
       fi
+      # Watch source inputs only; the fixture root also contains Playwright
+      # reports/auth state and Cargo's target output, which must not restart
+      # the API while tests are running.
       cargo watch \
-        -w /workspace/tests/e2e-ui \
+        -w /workspace/tests/e2e-ui/Cargo.toml \
+        -w /workspace/tests/e2e-ui/Cargo.lock \
+        -w /workspace/tests/e2e-ui/crates \
         -w /workspace/src \
         -w /workspace/distributed_cli \
         -w /workspace/distributed_macros \
@@ -28,6 +33,9 @@ clusterDev:
 
 identity:
   enabled: false
+  # Must match the identity.workspace value passed to the UI and test-users
+  # charts. Empty means the resolved Environment name.
+  workspace: ""
   oidcGeneration: 0
   connectionSecretName: ""
 
@@ -49,6 +57,9 @@ secretEnv:
     key: ZITADEL_SERVICE_USER_TOKEN
 
 sourceDelivery:
+  # Hops local gitops replaces this sentinel with the Cluster mountRoot
+  # hostPath before applying the Deployment. The chart is intentionally not a
+  # standalone Helm checkout; its command expects the mounted workspace.
   mode: none
   hostPath: ""
   mountPath: /workspace

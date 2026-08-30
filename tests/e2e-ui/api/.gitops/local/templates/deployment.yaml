@@ -51,8 +51,13 @@ spec:
               if ! command -v cargo-watch >/dev/null 2>&1; then
                 cargo install cargo-watch --locked
               fi
+              # Watch source inputs only; reports/auth state and Cargo's
+              # target output live under the fixture root and must not
+              # restart the API while tests are running.
               cargo watch \
-                -w /workspace/tests/e2e-ui \
+                -w /workspace/tests/e2e-ui/Cargo.toml \
+                -w /workspace/tests/e2e-ui/Cargo.lock \
+                -w /workspace/tests/e2e-ui/crates \
                 -w /workspace/src \
                 -w /workspace/distributed_cli \
                 -w /workspace/distributed_macros \

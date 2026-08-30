@@ -27,3 +27,10 @@ spec:
             httpGet:
               path: /v2/
               port: registry
+          volumeMounts:
+            - name: registry-data
+              mountPath: /var/lib/registry
+      volumes:
+        - name: registry-data
+          persistentVolumeClaim:
+            claimName: registry

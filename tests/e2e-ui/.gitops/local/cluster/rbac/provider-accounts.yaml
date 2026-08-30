@@ -1,6 +1,10 @@
-# The local Helm and Kubernetes providers reconcile cluster-level platform
-# resources (namespaces, StorageClasses, and Helm-installed CRDs). Keep these
-# bindings in the project Cluster tree so a fresh local cluster is self-contained.
+# SECURITY BOUNDARY: these bindings are intentionally cluster-admin. The local
+# Helm and Kubernetes providers reconcile the arbitrary, explicitly selected
+# cluster tree (namespaces, StorageClasses, Helm-installed CRDs, and provider
+# resources), so a static least-privilege role would either break the fixture or
+# silently make a newly added manifest fail. This Cluster definition is for a
+# disposable, single-user kind cluster only; never point it at a shared or
+# production context, and do not run untrusted charts in it.
 apiVersion: rbac.authorization.k8s.io/v1
 kind: ClusterRoleBinding
 metadata:

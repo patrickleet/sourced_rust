@@ -416,10 +416,14 @@ mod tests {
 
         let local_values = contents(&project, ".gitops/local/values.yaml");
         assert!(local_values.starts_with("local: true\npreview: false\n"));
+        assert!(local_values.contains("tag: \"latest\""));
         let deploy_values = contents(&project, ".gitops/deploy/values.yaml");
         assert!(deploy_values.starts_with("local: false\npreview: false\n"));
+        assert!(deploy_values.contains("tag: \"\""));
         assert!(!local_values.contains("{{ if .Values.local }}"));
         assert!(!deploy_values.contains("{{ if .Values.local }}"));
+        let deploy = contents(&project, ".gitops/deploy/templates/deployment.yaml");
+        assert!(deploy.contains("image.tag must be an immutable build tag"));
         assert!(!paths.iter().any(|p| p.starts_with(".gitops/promote/")));
     }
 

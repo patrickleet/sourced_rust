@@ -23,6 +23,7 @@ need rg
 render_ui() {
   local ns="$1"
   local oidc_generation="${2:-0}"
+  local workspace="${3:-}"
   helm template "e2e-ui-ui-${ns}" "$UI_CHART" \
     --namespace "$ns" \
     --set local=true \
@@ -31,6 +32,7 @@ render_ui() {
     --set "environment.namespace=${ns}" \
     --set identity.enabled=true \
     --set "identity.oidcGeneration=${oidc_generation}" \
+    --set "identity.workspace=${workspace}" \
     --set identity.projectName=e2e-ui \
     --set identity.projectNamespace=default \
     --set identity.humansNamespace=default \
@@ -42,6 +44,7 @@ render_identity() {
   local ns="$1"
   local features="${2:-true}"
   local oidc_generation="${3:-0}"
+  local workspace="${4:-}"
   helm template "e2e-ui-test-users-${ns}" "$IDENTITY_CHART" \
     --namespace "$ns" \
     --set local=true \
@@ -50,6 +53,7 @@ render_identity() {
     --set "environment.namespace=${ns}" \
     --set identity.enabled=true \
     --set "identity.oidcGeneration=${oidc_generation}" \
+    --set "identity.workspace=${workspace}" \
     --set identity.projectName=e2e-ui \
     --set identity.projectNamespace=default \
     --set identity.humansNamespace=default \
@@ -62,8 +66,9 @@ render() {
   local ns="$1"
   local features="${2:-true}"
   local oidc_generation="${3:-0}"
-  render_ui "$ns" "$oidc_generation"
-  render_identity "$ns" "$features" "$oidc_generation"
+  local workspace="${4:-}"
+  render_ui "$ns" "$oidc_generation" "$workspace"
+  render_identity "$ns" "$features" "$oidc_generation" "$workspace"
 }
 
 assert_contains() {
@@ -201,6 +206,57 @@ assert_contains "$api_out" "name: OIDC_AUDIENCE" \
   "API audience comes from the generated connection secret"
 assert_contains "$api_out" "key: attribute.client_id" \
   "API audience/client id use the generated client id key"
+
+# An explicit workspace override is shared by the UI and test-users charts.
+# The environment should pass this value through its shared values, rather than
+# overriding only one deploy and producing a client-Secret name mismatch.
+workspace_out="$(render alice true 1 dogfood)"
+assert_contains "$workspace_out" "name: e2e-ui-dogfood-web" \
+  "shared workspace override names the OIDC app"
+assert_contains "$workspace_out" 'name: "e2e-ui-dogfood-oidc-conn-g1"' \
+  "shared workspace override names the OIDC connection Secret"
+assert_not_contains "$workspace_out" "e2e-ui-alice-web" \
+  "shared workspace override removes the environment-name OIDC app"
+
+api_workspace_out="$(helm template e2e-ui-api-alice "$API_CHART" \
+  --namespace alice \
+  --set local=true \
+  --set preview=false \
+  --set environment.name=alice \
+  --set environment.namespace=alice \
+  --set identity.enabled=true \
+  --set identity.workspace=dogfood \
+  --set identity.oidcGeneration=1 \
+  --set identity.providerConfigRef.name=default \
+  --set identity.providerConfigRef.kind=ClusterProviderConfig)"
+assert_contains "$api_workspace_out" 'name: "e2e-ui-dogfood-oidc-conn-g1"' \
+  "API uses the shared workspace override"
+
+# Local residual OIDC credentials are opt-in and cannot coexist with the
+# ExternalSecret path for the same target Secret.
+seeded_out="$(helm template e2e-ui-test-users-seeded "$IDENTITY_CHART" \
+  --namespace alice \
+  --set local=true \
+  --set identity.enabled=true \
+  --set identity.seedLocalOidcSecret=true)"
+assert_contains "$seeded_out" "hops.ops.com.ai/secret: oidc-local-seed" \
+  "explicit local OIDC seed renders when enabled"
+external_out="$(helm template e2e-ui-test-users-external "$IDENTITY_CHART" \
+  --namespace alice \
+  --set local=true \
+  --set identity.enabled=true \
+  --set identity.seedLocalOidcSecret=true \
+  --set externalSecrets.enabled=true)"
+assert_not_contains "$external_out" "hops.ops.com.ai/secret: oidc-local-seed" \
+  "local OIDC seed is suppressed when ExternalSecrets are enabled"
+assert_contains "$external_out" "kind: ExternalSecret" \
+  "ExternalSecret remains the sole OIDC Secret owner"
+
+registry_manifest="$(cat "$ROOT/.gitops/local/cluster/registry/deployment.yaml")"
+assert_contains "$registry_manifest" "mountPath: /var/lib/registry" \
+  "package registry mounts persistent storage"
+assert_contains "$registry_manifest" "claimName: registry" \
+  "package registry uses the registry PVC"
 
 if [ "$fail" -ne 0 ]; then
   echo "helm-contract-test: FAILED" >&2

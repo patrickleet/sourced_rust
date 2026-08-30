@@ -9,7 +9,11 @@ app.kubernetes.io/managed-by: {{ .Release.Service }}
 {{- end -}}
 
 {{- define "e2e-ui-api.workspace" -}}
+{{- if .Values.identity.workspace -}}
+{{- .Values.identity.workspace -}}
+{{- else -}}
 {{- coalesce .Values.environment.name .Values.environment.namespace .Release.Namespace "default" -}}
+{{- end -}}
 {{- end -}}
 
 {{- define "e2e-ui-api.oidcConnectionSecretName" -}}

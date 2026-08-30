@@ -3,4 +3,6 @@ kind: Configuration
 metadata:
   name: hops-ops-auth-stack
 spec:
-  package: ghcr.io/hops-ops/auth-stack:v1.8.2
+  # v1.9.0 is the first released auth-stack package that includes the
+  # auth.hops.ops.com.ai/v1alpha1 HumanUser API used by ui/.gitops/test-users.
+  package: ghcr.io/hops-ops/auth-stack:v1.9.0

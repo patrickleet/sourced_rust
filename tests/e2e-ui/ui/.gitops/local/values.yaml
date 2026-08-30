@@ -60,9 +60,16 @@ envFromSecrets: []
 # explicit .gitops/test-users Environment deploy.
 identity:
   enabled: false
+  # Must match the identity.workspace value passed to ui/.gitops/test-users.
+  # Empty means the resolved Environment name.
+  workspace: ""
   oidcGeneration: 0
 
 sourceDelivery:
+  # Hops local gitops replaces this sentinel with the Cluster mountRoot
+  # hostPath before applying the Deployment. The chart is intentionally not a
+  # standalone Helm checkout; its command expects /workspace/js and the
+  # mounted tests/e2e-ui tree.
   mode: none
   hostPath: ""
   mountPath: /workspace
