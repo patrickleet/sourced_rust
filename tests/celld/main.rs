@@ -49,7 +49,7 @@ fn worker_declares_sqlite_todo_and_chat_cells() {
         .as_array()
         .unwrap();
     assert_eq!(v2[0], "ChatCell");
-    assert_eq!(spec["queues"]["producers"][0]["binding"], "EVENTS");
+    assert_eq!(spec["queues"]["producers"][0]["binding"], "OUTBOX");
     assert_eq!(
         spec["queues"]["producers"][0]["queue"],
         "distributed-domain-events"
@@ -81,7 +81,7 @@ fn worker_declares_sqlite_todo_and_chat_cells() {
     assert!(source.contains("restore_durable_state"));
     assert!(source.contains("ON CONFLICT(id) DO UPDATE SET body = excluded.body"));
     assert!(source.contains("dispatch_idempotent"));
-    assert!(source.contains("CelldQueuePublisher::from_env"));
+    assert!(source.contains("CelldQueuePublisher::from_env(env, \"OUTBOX\")"));
     assert!(source.contains("outbox_dispatcher"));
     assert!(
         !source.contains("outcome.released") && !source.contains("outcome.failed"),

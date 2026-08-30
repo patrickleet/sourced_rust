@@ -14,7 +14,7 @@
   ],
   "queues": {
     "producers": [
-      { "binding": "EVENTS", "queue": "distributed-domain-events" }
+      { "binding": "OUTBOX", "queue": "distributed-domain-events" }
     ]
   },
   "vars": {

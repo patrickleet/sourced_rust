@@ -766,7 +766,7 @@ where
     // but settling the outbox is interrupted, this alarm retries the stable id.
     arm_drain_alarm(storage, env, true).await?;
 
-    let publisher = CelldQueuePublisher::from_env(env, "EVENTS")
+    let publisher = CelldQueuePublisher::from_env(env, "OUTBOX")
         .map_err(|error| Error::RustError(error.to_string()))?;
     let dispatcher = cell.outbox_dispatcher(
         publisher,

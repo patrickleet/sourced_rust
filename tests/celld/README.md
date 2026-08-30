@@ -4,7 +4,7 @@ This fixture exercises the write side of the Distributed flow:
 
 ```text
 command -> AggregateCell -> domain event -> same-cell outbox
-        -> celld EVENTS Queue -> Worker relay -> Distributed Bus -> NATS
+        -> celld OUTBOX Queue binding -> Worker relay -> Distributed Bus -> NATS
 ```
 
 The aggregate Worker owns one SQLite Durable Object per Todo or Chat shard.
@@ -24,6 +24,46 @@ consumer POSTs the canonical envelope to the authenticated native relay route.
 The e2e-celld host wires that one route to `BusPublisher<NatsBus>`. Kafka,
 RabbitMQ, and Knative use the same Queue consumer and relay contract; only the
 native `BusPublisher<B>` changes.
+
+## Queue naming and sharding
+
+The producer binding name is local to the Worker and may be any valid binding
+name. This fixture calls it `OUTBOX` because it is the aggregate's durable
+egress port; the fleet-wide Queue resource remains named
+`distributed-domain-events` to describe what it carries:
+
+```json
+{
+  "queues": {
+    "producers": [
+      { "binding": "OUTBOX", "queue": "distributed-domain-events" }
+    ]
+  }
+}
+```
+
+Use one Queue per bounded context or independently deployed write service by
+default. That keeps configuration, relay deployments, DLQs, redrive, and
+monitoring proportional to operational boundaries rather than to the number of
+domain types. A temporary downstream-bus outage backs up every Queue targeting
+that bus, so additional Queue shards do not by themselves improve that failure
+mode. Start with consumer concurrency, batching, retry/DLQ policy, queue-depth
+monitoring, and idempotent downstream handlers.
+
+Split a bounded context into one Queue per aggregate type only when the types
+need independent throughput, availability, pause/purge/redrive controls,
+security policy, or downstream transports. Each binding then names its own
+Queue, for example `TODO_OUTBOX` -> `todo-domain-events` and `CHAT_OUTBOX` ->
+`chat-domain-events`. This prevents one aggregate type's backlog from consuming
+another type's relay capacity, at the cost of another Queue, consumer
+registration, DLQ, and set of operational signals for every shard.
+
+Do not create a Queue per aggregate instance. That makes Queue and consumer
+configuration grow with domain cardinality, and it does not guarantee
+end-to-end ordering once concurrent relay delivery reaches the downstream bus.
+Preserve stable message ids and aggregate versions so projectors can deduplicate
+and reject stale transitions instead of relying on Queue topology for
+correctness.
 
 ## Local celld
 
