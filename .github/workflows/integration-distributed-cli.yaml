@@ -19,5 +19,16 @@ jobs:
       - uses: dtolnay/rust-toolchain@29eef336d9b2848a0b548edc03f92a220660cdb8
         with:
           toolchain: stable
+      - name: Install Bats
+        uses: bats-core/bats-action@77d6fb60505b4d0d1d73e48bd035b55074bbfb43 # 4.0.0
+        with:
+          bats-version: 1.14.0
+          support-install: false
+          assert-install: false
+          detik-install: false
+          file-install: false
+          github-token: ${{ secrets.GITHUB_TOKEN }}
       - name: Run distributed_cli integration tests (incl. harness e2e)
         run: cargo test -p distributed_cli --verbose -- --include-ignored
+      - name: Run lifecycle CLI acceptance tests
+        run: make test-cli-lifecycle

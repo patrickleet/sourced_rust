@@ -1,7 +1,10 @@
 SHELL = /bin/sh
 
 CARGO ?= cargo
+BATS ?= bats
 DOCKER_COMPOSE ?= docker compose
+
+DISTRIBUTED_BIN ?= $(CURDIR)/target/debug/distributed
 
 COMPOSE_UP_FLAGS ?= -d --wait
 COMPOSE_DOWN_FLAGS ?= --remove-orphans
@@ -16,7 +19,7 @@ NATS_URL ?= nats://localhost:4222
 
 test: test-local
 
-.PHONY: test test-local test-cargo compose-up compose-down
+.PHONY: test test-local test-cargo test-cli-lifecycle compose-up compose-down
 
 test-local:
 	set -eu; \
@@ -37,6 +40,10 @@ test-local:
 test-cargo:
 	$(CARGO) test $(CARGO_TEST_ARGS) --all-targets
 	$(CARGO) test $(CARGO_TEST_ARGS) --doc
+
+test-cli-lifecycle:
+	$(CARGO) build -p distributed_cli --bin distributed
+	DISTRIBUTED_BIN="$(DISTRIBUTED_BIN)" $(BATS) distributed_cli/tests/bats/lifecycle.bats
 
 compose-up:
 	$(DOCKER_COMPOSE) up $(COMPOSE_UP_FLAGS)

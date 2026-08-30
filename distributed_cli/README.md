@@ -126,6 +126,17 @@ initial-build, early-child-exit, watch,
 rebuild, or readiness failure is terminal and shuts down the supervised set;
 Ctrl-C also performs bounded child shutdown.
 
+The lifecycle CLI contract has black-box Bats coverage. The tests compile and
+invoke the real `distributed` executable against an isolated fixture, covering
+atomic build activation, drift-only checks, rollback on executor failure,
+selective dev-process restarts, readiness output, Ctrl-C during the initial
+build, and descendant-process cleanup:
+
+```bash
+# Requires Bats; CI installs the pinned version used by the project.
+make test-cli-lifecycle
+```
+
 ## `distributed scaffold <name>` — generate a service crate
 
 ```bash
