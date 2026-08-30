@@ -3,6 +3,8 @@
 setup_file() {
   : "${DISTRIBUTED_BIN:?set DISTRIBUTED_BIN to the compiled distributed binary}"
   [ -x "$DISTRIBUTED_BIN" ]
+  DISTRIBUTED_ROOT="$(cd "$(dirname "$DISTRIBUTED_BIN")/../.." && pwd -P)"
+  export DISTRIBUTED_ROOT
 }
 
 setup() {
@@ -24,6 +26,71 @@ teardown() {
       kill -TERM "$pid" 2>/dev/null || true
     done < "$ROOT/dev-descendants.log"
   fi
+}
+
+@test "project build and dev discover Rust and SvelteKit without lifecycle JSON" {
+  PROJECT="$ROOT/zero-config-app"
+  run "$DISTRIBUTED_BIN" scaffold zero-config-app \
+    --path "$PROJECT" \
+    --distributed-path "$DISTRIBUTED_ROOT" \
+    --query-api \
+    --store sqlite
+  [ "$status" -eq 0 ]
+
+  mkdir -p "$PROJECT/ui" "$ROOT/bin"
+  printf '{"name":"zero-config-ui","private":true,"scripts":{"build":"vite build"}}\n' \
+    > "$PROJECT/ui/package.json"
+  cat > "$ROOT/bin/npm" <<'SCRIPT'
+#!/bin/sh
+set -eu
+printf '%s:%s\n' "$PWD" "$*" > "$ZERO_CONFIG_NPM_LOG"
+if [ "$1" = "run" ] && [ "$2" = "dev" ]; then
+  exec python3 -m http.server "${UI_PORT:-15180}" --bind 127.0.0.1
+fi
+mkdir -p node_modules
+mkdir -p .svelte-kit/output
+SCRIPT
+  chmod +x "$ROOT/bin/npm"
+
+  run env \
+    PATH="$ROOT/bin:$PATH" \
+    ZERO_CONFIG_NPM_LOG="$ROOT/npm.log" \
+    "$DISTRIBUTED_BIN" build "$PROJECT" --output json
+  [ "$status" -eq 0 ]
+  [[ "$output" == *'"ok":true'* ]]
+  [ -x "$PROJECT/target/debug/zero-config-app" ]
+  [ -f "$ROOT/npm.log" ]
+  grep -F "$PROJECT/ui:run build" "$ROOT/npm.log"
+  [ ! -e "$PROJECT/distributed.contracts.json" ]
+  [ ! -e "$PROJECT/distributed.lifecycle.json" ]
+  manifest_count="$(find "$PROJECT/.distributed/lifecycle/generations" \
+    -path '*/artifacts/application-manifest.json' -type f | wc -l | tr -d ' ')"
+  [ "$manifest_count" -eq 1 ]
+
+  API_PORT="$(free_port)"
+  UI_PORT_VALUE="$(free_port)"
+  while [ "$UI_PORT_VALUE" = "$API_PORT" ]; do
+    UI_PORT_VALUE="$(free_port)"
+  done
+  env \
+    PATH="$ROOT/bin:$PATH" \
+    ZERO_CONFIG_NPM_LOG="$ROOT/npm.log" \
+    BIND="127.0.0.1:$API_PORT" \
+    UI_HOST="127.0.0.1" \
+    UI_PORT="$UI_PORT_VALUE" \
+    DISTRIBUTED_GRAPHQL_PROTOCOL_TOKEN_KEY="0123456789abcdef0123456789abcdef" \
+    "$DISTRIBUTED_BIN" dev "$PROJECT" > "$DEV_LOG" 2>&1 &
+  SUPERVISOR_PID=$!
+  wait_for_log 'lifecycle dev: ready generation=' 300
+  grep -F "lifecycle dev: process api ready http://127.0.0.1:$API_PORT" "$DEV_LOG"
+  grep -F "lifecycle dev: process ui ready http://127.0.0.1:$UI_PORT_VALUE" "$DEV_LOG"
+
+  kill -INT "$SUPERVISOR_PID"
+  wait_for_exit "$SUPERVISOR_PID" 200
+  wait "$SUPERVISOR_PID"
+  dev_status=$?
+  SUPERVISOR_PID=""
+  [ "$dev_status" -eq 0 ]
 }
 
 @test "build activates atomically and check reports drift without replacing active" {
@@ -97,6 +164,15 @@ teardown() {
   [ "$dev_status" -ne 0 ]
   grep -F 'lifecycle build was canceled' "$DEV_LOG"
   [ ! -e "$ROOT/dev-process.log" ]
+}
+
+free_port() {
+  python3 - <<'PY'
+import socket
+with socket.socket() as listener:
+    listener.bind(("127.0.0.1", 0))
+    print(listener.getsockname()[1])
+PY
 }
 
 wait_for_log() {

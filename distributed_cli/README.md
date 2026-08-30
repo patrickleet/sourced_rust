@@ -18,119 +18,70 @@ available as `hops service <cmd>`.**
 ## `distributed build` — one coherent application generation
 
 ```bash
-distributed build                         # activate an immutable generation
-distributed build --check                 # isolated rebuild; report drift, write nothing
-distributed build --output json           # deterministic machine-readable report
+cd my-application
+distributed build
+
+# Equivalent from another directory:
+distributed build path/to/my-application
 ```
 
-`distributed build` reads `distributed.contracts.json` for semantic artifact
-membership and a small `distributed.lifecycle.json` for the selected roots,
-one Distributed source identity, and native executor adapters. It hashes
-content rather than timestamps, runs nodes in dependency order under a bounded
-process lock, and emits `generation.json` plus `release.json` beneath
-`dist/distributed/generations/<GenerationId>/`. Only a complete generation is
-selected through the atomically replaced `dist/distributed/active.json` pointer.
-A failed node leaves the prior active generation unchanged.
+Application authors write Rust crates and, optionally, a conventional `ui/`
+SvelteKit project. They do not write a lifecycle catalog, executor list, or
+process-supervisor JSON.
 
-```json
-{
-  "schema_version": 1,
-  "application": "orders",
-  "source": {
-    "rust": "sha256:<64 lowercase hex digits>",
-    "cli": "sha256:<the same digest>",
-    "javascript": "sha256:<the same digest>"
-  },
-  "roots": ["orders-ui-program"],
-  "executors": {
-    "orders.application-manifest": {
-      "identity": "sha256:<digest of tool version and config>",
-      "program": "distributed",
-      "args": ["describe", "--path", "{root}"],
-      "stdout": "generated/application.json"
-    },
-    "orders.client": {
-      "identity": "sha256:<digest of tool version and config>",
-      "program": "npm",
-      "args": ["run", "build:distributed", "--", "--out", "{stage}/ui/generated"]
-    }
-  }
-}
-```
+The CLI asks Cargo for the workspace model, locates the crate that exports the
+typed `ApplicationManifest`, locates the runtime binary, and detects
+`ui/package.json`. A generated scaffold records the two Rust targets in Cargo
+package metadata. Existing workspaces with one conventional `*-service` library
+and one runtime binary need no metadata at all.
 
-Executor keys match catalog `provenance.generator` values. The CLI invokes
-`program` directly, never as a shell string. `{root}`, `{stage}`, and `{node}`
-are expanded in individual arguments; the executor starts in the isolated
-stage and must place every output at its catalog-relative path below `{stage}`.
-For stdout-producing tools, `stdout` must name one exact declared output.
-Executors are explicit trusted project configuration, while all canonical tool,
-source, input, dependency, and output identities are SHA-256 values so paths,
-environment values, endpoints, and credentials do not enter generation IR.
+The typed application export is the semantic boundary. It is composed from the
+authored crates and preserves the framework's separation of responsibility:
 
-`--check` runs the same graph in an OS temporary directory and compares every
-built output with its catalog-relative workspace output. Its JSON drift records
-name the owning node, output, built identity, and missing/current workspace
-identity. Compliant executors therefore need no separate check implementation.
+- domain code contributes command APIs and their RBAC;
+- read models contribute query/subscription GraphQL surfaces and their RBAC;
+- projections map domain events to read-model mutations used by the server and
+  browser optimism;
+- optional Rust/WASM pure functions cover optimistic transitions that cannot be
+  predicted from command inputs alone.
+
+`distributed build` compiles the Rust runtime and the SvelteKit/Vite UI, then
+introspects the typed composition without scanning Rust source. The active
+application generation advances only after those program builds and typed
+introspection succeed. Vite remains the client-generation integration point.
+Lifecycle receipts and the generated application manifest are tool-owned state
+under `.distributed/lifecycle/`.
+Rust binaries remain in Cargo's target directory and SvelteKit output remains
+in its adapter-selected output directory.
+
+Use `--output json` for a machine-readable lifecycle report. The compatibility
+flags `--root`, `--catalog`, and `--config` exist for older low-level lifecycle
+fixtures; normal application builds do not use them.
 
 ## `distributed dev` — coherent local supervision
 
 ```bash
+cd my-application
 distributed dev
 ```
 
-`distributed dev` uses the same catalog, lifecycle config, lock, build graph,
-and active generation store. It completes and activates the initial generation
-before starting any child, then watches declared source content, coalesces a
-quiet-period batch, computes its exact downstream invalidation closure, and
-activates a complete replacement before restarting affected processes. Child
-processes receive `DISTRIBUTED_GENERATION_ID` and `DISTRIBUTED_RELEASE_ID`.
+`distributed dev` activates an initial typed application generation, starts the
+Cargo runtime and `npm run dev` for `ui/`, waits for both readiness probes, and
+prints the usable API and browser URLs. Vite owns Svelte/CSS/client HMR; the
+supervisor restarts the Rust process only when the typed application inputs
+change. Ctrl-C shuts down both process groups and their descendants.
 
-Add a `dev` section to `distributed.lifecycle.json`:
+Shell environment variables win. The CLI then loads `<project-name>.env` and
+`.env` when present, without displaying their values. `BIND` selects the API
+address; `UI_HOST` and `UI_PORT` select the Vite URL. Infrastructure setup is
+still project-specific—for example, the e2e UI's `make up` creates its local
+Zitadel/Postgres environment—but starting the application no longer needs a
+lifecycle shell script.
 
-```json
-{
-  "dev": {
-    "poll_ms": 200,
-    "debounce_ms": 100,
-    "shutdown_ms": 5000,
-    "processes": {
-      "api": {
-        "program": "cargo",
-        "args": ["run", "--manifest-path", "{root}/Cargo.toml"],
-        "restart_on": ["application-manifest"],
-        "ready_after_ms": 250,
-        "ready": {
-          "program": "curl",
-          "args": ["--fail", "--silent", "http://127.0.0.1:3000/health"],
-          "interval_ms": 100,
-          "timeout_ms": 5000
-        }
-      },
-      "ui": {
-        "program": "npm",
-        "args": ["run", "dev", "--prefix", "{root}/ui"],
-        "restart_on": [],
-        "ready_after_ms": 500
-      }
-    }
-  }
-}
-```
-
-`restart_on` contains catalog node IDs, not another application inventory. An
-empty set deliberately leaves the process running, which is the native
-Vite/SvelteKit CSS and module-HMR fast path. A backend process names only the
-nodes that require its restart. Optional `ready` commands run directly with
-bounded intervals/timeouts and must exit successfully before readiness. Any
-initial-build, early-child-exit, watch,
-rebuild, or readiness failure is terminal and shuts down the supervised set;
-Ctrl-C also performs bounded child shutdown.
-
-The lifecycle CLI contract has black-box Bats coverage. The tests compile and
-invoke the real `distributed` executable against an isolated fixture, covering
-atomic build activation, drift-only checks, rollback on executor failure,
-selective dev-process restarts, readiness output, Ctrl-C during the initial
-build, and descendant-process cleanup:
+The lifecycle CLI contract has black-box Bats coverage. It builds and starts a
+generated Rust application plus conventional SvelteKit project with no lifecycle JSON,
+as well as lower-level coverage for atomic activation, rollback, selective
+restarts, readiness, cancellation, and descendant cleanup:
 
 ```bash
 # Requires Bats; CI installs the pinned version used by the project.

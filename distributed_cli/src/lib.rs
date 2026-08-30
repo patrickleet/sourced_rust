@@ -19,8 +19,8 @@ pub use cli::{
     run, run_distributed, AgentHarness, BuildArgs, Bus, ClientArgs, ClientManifestArgs,
     ContractsAcceptArgs, ContractsArgs, ContractsCheckArgs, ContractsCommands, ContractsOutput,
     DescribeArgs, DevArgs, DistributedArgs, DistributedCommands, Framework, GitopsPromote,
-    LifecycleOutput, ManifestFormat, Metrics, ScaffoldArgs, SchemaArgs, SchemaDialect, SchemaFormat,
-    ServiceArgs, ServiceCommands,
+    LifecycleOutput, ManifestFormat, Metrics, ProbeArgs, ScaffoldArgs, SchemaArgs, SchemaDialect,
+    SchemaFormat, ServiceArgs, ServiceCommands,
     SkillsArgs, SkillsCommands, SkillsInitArgs, Store, Transport,
 };
 pub use client_compiler::{

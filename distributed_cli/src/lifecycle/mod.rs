@@ -6,21 +6,24 @@
 mod build;
 mod dev;
 mod graph;
+mod project;
 mod receipt;
 mod release;
 
 pub use build::{
-    run_lifecycle_build, BuildDrift, LifecycleBuildConfig, LifecycleBuildOptions,
-    LifecycleBuildReport, LifecycleExecutor, LIFECYCLE_BUILD_CONFIG_SCHEMA_VERSION,
+    run_lifecycle_build, run_lifecycle_project_build, BuildDrift, LifecycleBuildConfig,
+    LifecycleBuildOptions, LifecycleBuildReport, LifecycleBuildRequest, LifecycleCheckBaseline,
+    LifecycleExecutor, LifecycleProjectPlan, LIFECYCLE_BUILD_CONFIG_SCHEMA_VERSION,
 };
 pub use dev::{
-    run_lifecycle_dev, LifecycleDevConfig, LifecycleDevOptions, LifecycleDevProbe,
-    LifecycleDevProcess, LifecycleDevReport,
+    run_lifecycle_dev, run_lifecycle_project_dev, LifecycleDevConfig, LifecycleDevOptions,
+    LifecycleDevProbe, LifecycleDevProcess, LifecycleDevReport, LifecycleProjectDevOptions,
 };
 pub use graph::{
     DistributedSourceIdentity, LifecycleConfig, LifecycleError, LifecycleGraph, LifecycleNode,
     LIFECYCLE_CONFIG_SCHEMA_VERSION, LIFECYCLE_GRAPH_SCHEMA_VERSION, MAX_LIFECYCLE_NODES,
 };
+pub use project::{discover_lifecycle_project, DiscoveredLifecycleProject};
 pub use receipt::{
     ArtifactNodeReceipt, GenerationManifest, GENERATION_MANIFEST_SCHEMA_VERSION,
     NODE_RECEIPT_SCHEMA_VERSION,

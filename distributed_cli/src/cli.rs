@@ -27,7 +27,10 @@ use crate::contracts::{
     ContractCatalog,
 };
 use crate::lifecycle::{
-    run_lifecycle_build, run_lifecycle_dev, LifecycleBuildOptions, LifecycleDevOptions,
+    discover_lifecycle_project, run_lifecycle_build, run_lifecycle_dev,
+    run_lifecycle_project_build, run_lifecycle_project_dev, DiscoveredLifecycleProject,
+    LifecycleBuildOptions, LifecycleBuildRequest, LifecycleCheckBaseline, LifecycleDevOptions,
+    LifecycleProjectDevOptions,
 };
 use crate::manifest_harness::{run_manifest_harness, HarnessMode, HarnessOptions};
 use crate::skills::{embedded_skills, generate_skills, SkillsInitSpec, AGENTS_MD_FILE};
@@ -68,6 +71,17 @@ pub enum DistributedCommands {
     Schema(SchemaArgs),
     /// Extract the embedded Distributed agent skills into a project
     Skills(SkillsArgs),
+    /// Internal bounded readiness probe used by `distributed dev`.
+    #[command(name = "__probe", hide = true)]
+    Probe(ProbeArgs),
+}
+
+#[derive(Args, Debug)]
+/// Arguments for the supervisor's hidden bounded TCP readiness probe.
+pub struct ProbeArgs {
+    /// TCP address to connect to.
+    #[arg(long)]
+    pub address: String,
 }
 
 /// Library adapter for embedding service-related commands under another CLI.
@@ -96,23 +110,29 @@ pub enum ServiceCommands {
     Schema(SchemaArgs),
     /// Extract the embedded Distributed agent skills into a project
     Skills(SkillsArgs),
+    /// Internal bounded readiness probe used by `hops service dev`.
+    #[command(name = "__probe", hide = true)]
+    Probe(ProbeArgs),
 }
 
 #[derive(Args, Debug)]
 pub struct BuildArgs {
-    /// Application repository root
-    #[arg(long, default_value = ".")]
-    pub root: PathBuf,
-    /// Contract catalog path, relative to root
-    #[arg(long, default_value = "distributed.contracts.json")]
-    pub catalog: PathBuf,
-    /// Lifecycle executor config path, relative to root
-    #[arg(long, default_value = "distributed.lifecycle.json")]
-    pub config: PathBuf,
-    /// Content-addressed generation store, relative to root
-    #[arg(long, default_value = "dist/distributed")]
-    pub out: PathBuf,
-    /// Rebuild in isolation and compare workspace outputs without activating
+    /// Project to build; defaults to the current directory
+    #[arg(value_name = "PROJECT")]
+    pub project: Option<PathBuf>,
+    /// Deprecated alias for the project directory
+    #[arg(long, hide = true, conflicts_with = "project")]
+    pub root: Option<PathBuf>,
+    /// Advanced contract-catalog override, relative to the project
+    #[arg(long, hide = true)]
+    pub catalog: Option<PathBuf>,
+    /// Advanced lifecycle-config override, relative to the project
+    #[arg(long, hide = true)]
+    pub config: Option<PathBuf>,
+    /// Advanced generation-store override, relative to the project
+    #[arg(long)]
+    pub out: Option<PathBuf>,
+    /// Rebuild in isolation and report drift without activating
     #[arg(long)]
     pub check: bool,
     /// Maximum wait for another lifecycle build process
@@ -131,18 +151,21 @@ pub enum LifecycleOutput {
 
 #[derive(Args, Debug)]
 pub struct DevArgs {
-    /// Application repository root
-    #[arg(long, default_value = ".")]
-    pub root: PathBuf,
-    /// Contract catalog path, relative to root
-    #[arg(long, default_value = "distributed.contracts.json")]
-    pub catalog: PathBuf,
-    /// Lifecycle executor and dev process config, relative to root
-    #[arg(long, default_value = "distributed.lifecycle.json")]
-    pub config: PathBuf,
-    /// Content-addressed generation store, relative to root
-    #[arg(long, default_value = "dist/distributed")]
-    pub out: PathBuf,
+    /// Project to run; defaults to the current directory
+    #[arg(value_name = "PROJECT")]
+    pub project: Option<PathBuf>,
+    /// Deprecated alias for the project directory
+    #[arg(long, hide = true, conflicts_with = "project")]
+    pub root: Option<PathBuf>,
+    /// Advanced contract-catalog override, relative to the project
+    #[arg(long, hide = true)]
+    pub catalog: Option<PathBuf>,
+    /// Advanced lifecycle-config override, relative to the project
+    #[arg(long, hide = true)]
+    pub config: Option<PathBuf>,
+    /// Advanced generation-store override, relative to the project
+    #[arg(long)]
+    pub out: Option<PathBuf>,
     /// Maximum wait for another lifecycle build process
     #[arg(long, default_value_t = 10_000)]
     pub lock_timeout_ms: u64,
@@ -583,8 +606,8 @@ impl From<GitopsPromote> for GitopsPromoteTarget {
 /// Dispatch the standalone `distributed` binary command tree.
 pub fn run_distributed(args: &DistributedArgs) -> Result<(), Box<dyn Error>> {
     match &args.command {
-        DistributedCommands::Build(build) => run_build(build),
-        DistributedCommands::Dev(dev) => run_dev(dev),
+        DistributedCommands::Build(build) => run_build(build, &[]),
+        DistributedCommands::Dev(dev) => run_dev(dev, &[]),
         DistributedCommands::Contracts(contracts) => run_contracts(contracts),
         DistributedCommands::Scaffold(scaffold) => run_scaffold(scaffold),
         DistributedCommands::Describe(describe) => run_describe(describe),
@@ -595,15 +618,39 @@ pub fn run_distributed(args: &DistributedArgs) -> Result<(), Box<dyn Error>> {
             SkillsCommands::Init(init) => run_skills_init(init),
             SkillsCommands::List => run_skills_list(),
         },
+        DistributedCommands::Probe(probe) => run_probe(probe),
     }
+}
+
+fn run_probe(args: &ProbeArgs) -> Result<(), Box<dyn Error>> {
+    use std::net::{TcpStream, ToSocketAddrs};
+
+    let addresses = args.address.to_socket_addrs()?.collect::<Vec<_>>();
+    if addresses.is_empty() {
+        return Err(format!("probe address `{}` resolved no endpoints", args.address).into());
+    }
+    let timeout = Duration::from_millis(200);
+    let mut last_error = None;
+    for address in addresses {
+        match TcpStream::connect_timeout(&address, timeout) {
+            Ok(_) => return Ok(()),
+            Err(error) => last_error = Some(error),
+        }
+    }
+    Err(format!(
+        "probe could not connect to `{}`: {}",
+        args.address,
+        last_error.expect("at least one resolved probe endpoint")
+    )
+    .into())
 }
 
 /// Dispatch a parsed service command. Host CLIs (for example `hops service`)
 /// call this without mounting the aggregate contracts surface.
 pub fn run(args: &ServiceArgs) -> Result<(), Box<dyn Error>> {
     match &args.command {
-        ServiceCommands::Build(build) => run_build(build),
-        ServiceCommands::Dev(dev) => run_dev(dev),
+        ServiceCommands::Build(build) => run_build(build, &["service"]),
+        ServiceCommands::Dev(dev) => run_dev(dev, &["service"]),
         ServiceCommands::Scaffold(scaffold) => run_scaffold(scaffold),
         ServiceCommands::Describe(describe) => run_describe(describe),
         ServiceCommands::Client(client) => run_client(client),
@@ -613,27 +660,220 @@ pub fn run(args: &ServiceArgs) -> Result<(), Box<dyn Error>> {
             SkillsCommands::Init(init) => run_skills_init(init),
             SkillsCommands::List => run_skills_list(),
         },
+        ServiceCommands::Probe(probe) => run_probe(probe),
     }
 }
 
-fn run_build(args: &BuildArgs) -> Result<(), Box<dyn Error>> {
-    let report = run_lifecycle_build(&LifecycleBuildOptions {
-        root: args.root.clone(),
-        catalog: args.catalog.clone(),
-        config: args.config.clone(),
-        out: args.out.clone(),
-        check: args.check,
-        lock_timeout: Duration::from_millis(args.lock_timeout_ms),
-        nodes: None,
-        activation_inputs: None,
-        cancel: None,
+#[derive(Debug)]
+enum ResolvedLifecycleProject {
+    Discovered(Box<DiscoveredLifecycleProject>),
+    Files {
+        project: PathBuf,
+        workspace: PathBuf,
+        catalog: PathBuf,
+        config: PathBuf,
+        out: PathBuf,
+    },
+}
+
+fn resolve_lifecycle_project(
+    project: Option<&Path>,
+    legacy_root: Option<&Path>,
+    catalog: Option<&Path>,
+    config: Option<&Path>,
+    out: Option<&Path>,
+    command_prefix: &[&str],
+) -> Result<ResolvedLifecycleProject, Box<dyn Error>> {
+    if project.is_some() && legacy_root.is_some() {
+        return Err("pass a project path or --root, not both".into());
+    }
+    let requested = project.or(legacy_root).unwrap_or_else(|| Path::new("."));
+    let project = requested.canonicalize().map_err(|error| {
+        format!(
+            "failed to resolve lifecycle project `{}`: {error}",
+            requested.display()
+        )
     })?;
+    if !project.is_dir() {
+        return Err(format!(
+            "lifecycle project `{}` is not a directory",
+            project.display()
+        )
+        .into());
+    }
+
+    let uses_file_adapter = legacy_root.is_some() || catalog.is_some() || config.is_some();
+    if !uses_file_adapter {
+        load_project_environment(&project)?;
+        let executable = std::env::current_exe()?;
+        return discover_lifecycle_project(&project, executable, command_prefix, out)
+            .map(Box::new)
+            .map(ResolvedLifecycleProject::Discovered)
+            .map_err(Into::into);
+    }
+    if catalog.is_some() != config.is_some() && legacy_root.is_none() {
+        return Err("advanced lifecycle overrides require both --catalog and --config".into());
+    }
+
+    let resolve_input = |provided: Option<&Path>, default: &str, label: &str| {
+        let requested = provided.unwrap_or_else(|| Path::new(default));
+        let candidate = if requested.is_absolute() {
+            requested.to_path_buf()
+        } else {
+            project.join(requested)
+        };
+        candidate.canonicalize().map_err(|error| {
+            let guidance = if provided.is_none() {
+                format!(
+                    "; expected this project to contain `{default}` (run from the project directory or pass the project path)"
+                )
+            } else {
+                String::new()
+            };
+            format!(
+                "failed to resolve lifecycle {label} `{}`: {error}{guidance}",
+                candidate.display()
+            )
+        })
+    };
+    let catalog = resolve_input(catalog, "distributed.contracts.json", "contract catalog")?;
+    let config = resolve_input(config, "distributed.lifecycle.json", "config")?;
+    let requested_out = out.unwrap_or_else(|| Path::new("dist/distributed"));
+    let out = if requested_out.is_absolute() {
+        requested_out.to_path_buf()
+    } else {
+        project.join(requested_out)
+    };
+
+    let mut failures = Vec::new();
+    let mut workspace = None;
+    for candidate in project.ancestors() {
+        if !catalog.starts_with(candidate)
+            || !config.starts_with(candidate)
+            || !out.starts_with(candidate)
+        {
+            continue;
+        }
+        match ContractCatalog::from_path_at_root(&catalog, candidate) {
+            Ok(_) => {
+                workspace = Some(candidate.to_path_buf());
+                break;
+            }
+            Err(error) => failures.push(format!("{}: {error}", candidate.display())),
+        }
+    }
+    let workspace = workspace.ok_or_else(|| {
+        let detail = failures
+            .last()
+            .map(|failure| format!(" Last attempted root: {failure}"))
+            .unwrap_or_default();
+        format!(
+            "unable to discover the workspace for lifecycle project `{}`; no project ancestor resolves every catalog source.{detail}",
+            project.display()
+        )
+    })?;
+
+    Ok(ResolvedLifecycleProject::Files {
+        project,
+        workspace,
+        catalog,
+        config,
+        out,
+    })
+}
+
+fn load_project_environment(project: &Path) -> Result<(), Box<dyn Error>> {
+    let project_name = project
+        .file_name()
+        .and_then(|name| name.to_str())
+        .filter(|name| !name.is_empty());
+    let candidates = project_name
+        .map(|name| vec![project.join(format!("{name}.env")), project.join(".env")])
+        .unwrap_or_else(|| vec![project.join(".env")]);
+    for candidate in candidates {
+        if candidate.is_file() {
+            dotenvy::from_path(&candidate).map_err(|error| {
+                format!(
+                    "failed to load project environment `{}`: {error}",
+                    candidate.display()
+                )
+            })?;
+        }
+    }
+    Ok(())
+}
+
+fn run_build(args: &BuildArgs, command_prefix: &[&str]) -> Result<(), Box<dyn Error>> {
+    let resolved = resolve_lifecycle_project(
+        args.project.as_deref(),
+        args.root.as_deref(),
+        args.catalog.as_deref(),
+        args.config.as_deref(),
+        args.out.as_deref(),
+        command_prefix,
+    )?;
+    let (report, detail) = match &resolved {
+        ResolvedLifecycleProject::Discovered(project) => {
+            if !args.check {
+                build_project_programs(project)?;
+            }
+            eprintln!(
+                "distributed build: introspecting typed application {} (the first run may compile its harness)",
+                project.application_package
+            );
+            let report = run_lifecycle_project_build(
+                &project.plan,
+                &LifecycleBuildRequest {
+                    check: args.check,
+                    check_baseline: LifecycleCheckBaseline::ActiveGeneration,
+                    lock_timeout: Duration::from_millis(args.lock_timeout_ms),
+                    nodes: None,
+                    activation_inputs: None,
+                    cancel: None,
+                },
+            )?;
+            (report, Some(project))
+        }
+        ResolvedLifecycleProject::Files {
+            workspace,
+            catalog,
+            config,
+            out,
+            ..
+        } => (
+            run_lifecycle_build(&LifecycleBuildOptions {
+                root: workspace.clone(),
+                catalog: catalog.clone(),
+                config: config.clone(),
+                out: out.clone(),
+                check: args.check,
+                lock_timeout: Duration::from_millis(args.lock_timeout_ms),
+                nodes: None,
+                activation_inputs: None,
+                cancel: None,
+            })?,
+            None,
+        ),
+    };
     match args.output {
         LifecycleOutput::Json => println!("{}", serde_json::to_string(&report)?),
         LifecycleOutput::Human => {
             let mode = if report.check { "check" } else { "build" };
+            if let Some(project) = detail {
+                println!(
+                    "distributed {mode}: project={} application={} runtime={}{}",
+                    project.name,
+                    project.application_package,
+                    project.runtime_binary,
+                    project
+                        .ui
+                        .as_ref()
+                        .map(|ui| format!(" ui={}", ui.display()))
+                        .unwrap_or_default()
+                );
+            }
             println!(
-                "lifecycle {mode}: {} generation={} release={} nodes={}",
+                "lifecycle graph: {} generation={} release={} nodes={}",
                 if report.ok { "ok" } else { "drift" },
                 report.generation_id,
                 report.release_id,
@@ -656,29 +896,143 @@ fn run_build(args: &BuildArgs) -> Result<(), Box<dyn Error>> {
     Ok(())
 }
 
-fn run_dev(args: &DevArgs) -> Result<(), Box<dyn Error>> {
+fn build_project_programs(project: &DiscoveredLifecycleProject) -> Result<(), Box<dyn Error>> {
+    eprintln!(
+        "distributed build: compiling Rust runtime {} ({})",
+        project.runtime_binary, project.runtime_package
+    );
+    run_project_command(
+        &project.plan.root,
+        "cargo",
+        &[
+            OsString::from("build"),
+            OsString::from("--package"),
+            OsString::from(&project.runtime_package),
+            OsString::from("--bin"),
+            OsString::from(&project.runtime_binary),
+        ],
+        "Rust runtime build",
+    )?;
+    if let Some(ui) = &project.ui {
+        let ui_root = project.plan.root.join(ui);
+        ensure_ui_dependencies(&ui_root)?;
+        eprintln!(
+            "distributed build: compiling SvelteKit UI {}",
+            ui_root.display()
+        );
+        run_project_command(
+            &ui_root,
+            "npm",
+            &[OsString::from("run"), OsString::from("build")],
+            "SvelteKit UI build",
+        )?;
+    }
+    Ok(())
+}
+
+fn ensure_ui_dependencies(ui_root: &Path) -> Result<(), Box<dyn Error>> {
+    if ui_root.join("node_modules").is_dir() {
+        return Ok(());
+    }
+    let install = if ui_root.join("package-lock.json").is_file() {
+        "ci"
+    } else {
+        "install"
+    };
+    eprintln!(
+        "distributed: installing SvelteKit dependencies with `npm {install}` in {}",
+        ui_root.display()
+    );
+    run_project_command(
+        ui_root,
+        "npm",
+        &[OsString::from(install)],
+        "SvelteKit dependency install",
+    )
+}
+
+fn run_project_command(
+    cwd: &Path,
+    program: &str,
+    args: &[OsString],
+    label: &str,
+) -> Result<(), Box<dyn Error>> {
+    let status = Command::new(program).args(args).current_dir(cwd).status()?;
+    if !status.success() {
+        return Err(format!("{label} failed with {status}").into());
+    }
+    Ok(())
+}
+
+fn run_dev(args: &DevArgs, command_prefix: &[&str]) -> Result<(), Box<dyn Error>> {
+    let resolved = resolve_lifecycle_project(
+        args.project.as_deref(),
+        args.root.as_deref(),
+        args.catalog.as_deref(),
+        args.config.as_deref(),
+        args.out.as_deref(),
+        command_prefix,
+    )?;
     let stop = Arc::new(AtomicBool::new(false));
     let signal_stop = Arc::clone(&stop);
     ctrlc::set_handler(move || signal_stop.store(true, Ordering::SeqCst))?;
-    eprintln!(
-        "lifecycle dev: starting root={} and waiting for the initial generation (Ctrl-C to stop)",
-        args.root.display()
-    );
-    let report = run_lifecycle_dev(&LifecycleDevOptions {
-        build: LifecycleBuildOptions {
-            root: args.root.clone(),
-            catalog: args.catalog.clone(),
-            config: args.config.clone(),
-            out: args.out.clone(),
-            check: false,
-            lock_timeout: Duration::from_millis(args.lock_timeout_ms),
-            nodes: None,
-            activation_inputs: None,
-            cancel: Some(Arc::clone(&stop)),
-        },
-        stop: Arc::clone(&stop),
-        progress: true,
-    })?;
+    let report = match resolved {
+        ResolvedLifecycleProject::Discovered(project) => {
+            if let Some(ui) = &project.ui {
+                ensure_ui_dependencies(&project.plan.root.join(ui))?;
+            }
+            eprintln!(
+                "distributed dev: project={} api={} ui={} (Ctrl-C to stop)",
+                project.name,
+                project.runtime_binary,
+                project
+                    .ui
+                    .as_ref()
+                    .map(|ui| ui.display().to_string())
+                    .unwrap_or_else(|| "none".to_string())
+            );
+            run_lifecycle_project_dev(&LifecycleProjectDevOptions {
+                project: project.plan,
+                build: LifecycleBuildRequest {
+                    check: false,
+                    check_baseline: LifecycleCheckBaseline::Workspace,
+                    lock_timeout: Duration::from_millis(args.lock_timeout_ms),
+                    nodes: None,
+                    activation_inputs: None,
+                    cancel: Some(Arc::clone(&stop)),
+                },
+                stop: Arc::clone(&stop),
+                progress: true,
+            })?
+        }
+        ResolvedLifecycleProject::Files {
+            project,
+            workspace,
+            catalog,
+            config,
+            out,
+        } => {
+            eprintln!(
+                "lifecycle dev: starting project={} and waiting for the initial generation (Ctrl-C to stop)",
+                project.display()
+            );
+            run_lifecycle_dev(&LifecycleDevOptions {
+                build: LifecycleBuildOptions {
+                    root: workspace,
+                    catalog,
+                    config,
+                    out,
+                    check: false,
+                    lock_timeout: Duration::from_millis(args.lock_timeout_ms),
+                    nodes: None,
+                    activation_inputs: None,
+                    cancel: Some(Arc::clone(&stop)),
+                },
+                stop: Arc::clone(&stop),
+                progress: true,
+            })?
+        }
+    };
     println!(
         "lifecycle dev: stopped initial={} final={} rebuilds={}",
         report.initial_generation, report.final_generation, report.rebuilds

@@ -41,21 +41,27 @@ Control plane: `gitops/cluster/` (`stacks/`, `configurations/`, …).
 
 ```bash
 cd tests/e2e-ui
-make run
+make up            # once: writes e2e-ui.env
+make ui-install    # once: local JS package + optional Rust/WASM example
+distributed dev
 ```
 
-The UI is at `http://localhost:5182`; GraphQL is at
-`http://127.0.0.1:8793/graphql`. Run `make up` once to create the local
-Postgres + Zitadel stack and `e2e-ui.env`; `make run` loads that file when it
-exists. Demo users are `alice`, `bob`, and `admin` with password `Password1!`.
+The UI is at `http://localhost:5180`; GraphQL is at
+`http://127.0.0.1:8791/graphql`. The CLI loads `e2e-ui.env` when it exists.
+Demo users are `alice`, `bob`, and `admin` with password `Password1!`.
 
-`make run` delegates directly to `distributed dev`. Before starting either
-process, it compiles and activates one coherent application manifest from the
-real e2e modules and surfaces. The lifecycle config declares each process's
-command, working directory, environment, readiness probe, and URL directly;
-there are no lifecycle wrapper scripts. Vite still handles Svelte/CSS/GraphQL
-HMR, while application-contract changes trigger a coherent rebuild and the
-configured process restart.
+`make run` is a convenience alias for the same zero-config command. Before
+starting either process, the CLI compiles and activates one coherent application
+manifest from the real e2e modules and surfaces. Cargo metadata locates the
+typed application and runtime; the conventional `ui/` directory selects
+SvelteKit. No lifecycle JSON or wrapper scripts are required. Vite still handles
+Svelte/CSS/GraphQL HMR, while application-contract changes trigger a coherent
+rebuild and the Rust process restart.
+
+The extra one-time `ui-install` step is specific to this repository: the demo
+consumes the unpublished `../../../js` workspace package and compiles its
+optional Blob pure function to WASM. Published applications use their ordinary
+package-manager dependencies; neither prerequisite is lifecycle configuration.
 
 This is the **default one-process playground**. Optional celld:
 

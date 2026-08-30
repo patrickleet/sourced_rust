@@ -7,19 +7,19 @@
 #   make up-celld-nats / test-celld / down-celld-nats
 #                    # optional celld+NATS profile (not make run; CI live path)
 
-.PHONY: all up down run lifecycle-prepare run-api stop test ci-offline test-domain test-suite \
+.PHONY: all up down run run-api stop test ci-offline test-domain test-suite \
 	test-browser test-browser-install js-install js-build wasm ui-install ui-build ui-check ui-test \
 	gen-client check-client contracts-check check clean help \
 	up-celld-nats down-celld-nats down-celld test-celld test-celld-http test-celld-nats
 
 # Defaults only — do NOT `include e2e-ui.env` (shell-quoted dotenv breaks Make).
 # Recipes `source` the env file so values stay clean.
-BIND         ?= 127.0.0.1:8793
-API_PORT     ?= 8793
-BASE_URL     ?= http://127.0.0.1:8793
-UI_PORT      ?= 5182
+BIND         ?= 127.0.0.1:8791
+API_PORT     ?= 8791
+BASE_URL     ?= http://127.0.0.1:8791
+UI_PORT      ?= 5180
 # localhost required for Auth.js cookies over HTTP (SvelteKit Secure default)
-UI_URL       ?= http://localhost:5182
+UI_URL       ?= http://localhost:5180
 UI_HOST      ?= localhost
 ENV_FILE     ?= e2e-ui.env
 NPM          ?= npm
@@ -52,19 +52,10 @@ up:
 down:
 	docker compose -f docker/docker-compose.yml down
 
-## Build the real host once so lifecycle readiness remains bounded on a cold checkout.
-lifecycle-prepare: ui-install
-	cargo build -p e2e-runner --bin e2e-ui
-
 ## Coherent application build + actual API/UI supervision.
 ## Vite still owns Svelte, CSS, and GraphQL hot updates.
-run: lifecycle-prepare
-	@if [ -f $(ENV_FILE) ]; then set -a; . ./$(ENV_FILE); set +a; fi; \
-	cargo run --quiet --manifest-path ../../Cargo.toml -p distributed_cli --bin distributed -- \
-		dev --root ../.. \
-		--catalog tests/e2e-ui/distributed.contracts.json \
-		--config tests/e2e-ui/distributed.lifecycle.json \
-		--out tests/e2e-ui/.distributed/lifecycle
+run: ui-install
+	cargo run --quiet --manifest-path ../../Cargo.toml -p distributed_cli --bin distributed -- dev .
 
 run-api:
 	@if [ -f $(ENV_FILE) ]; then set -a; . ./$(ENV_FILE); set +a; fi; \
@@ -249,7 +240,7 @@ test-domain:
 test-suite:
 	cargo test -p e2e-suite --test behavioral $(CARGO_TEST_FLAGS)
 
-## Browser e2e (Playwright). Requires make up + make run (UI :5182, API :8793).
+## Browser e2e (Playwright). Requires make up + make run (UI :5180, API :8791).
 test-browser-install:
 	$(NPM) install
 	npx playwright install chromium

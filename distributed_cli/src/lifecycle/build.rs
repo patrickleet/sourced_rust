@@ -164,6 +164,59 @@ pub struct LifecycleBuildOptions {
     pub cancel: Option<Arc<AtomicBool>>,
 }
 
+/// A lifecycle graph resolved from project metadata rather than user-authored
+/// lifecycle files.
+#[derive(Clone, Debug)]
+pub struct LifecycleProjectPlan {
+    /// Canonical Cargo workspace root.
+    pub root: PathBuf,
+    /// Tool-derived ownership catalog for generated application artifacts.
+    pub catalog: ContractCatalog,
+    /// Tool-derived executors, roots, source identity, and dev processes.
+    pub config: LifecycleBuildConfig,
+    /// Project-relative or absolute content-addressed lifecycle state directory.
+    pub out: PathBuf,
+}
+
+/// Per-invocation behavior for an already resolved lifecycle project.
+#[derive(Clone, Debug)]
+pub struct LifecycleBuildRequest {
+    /// Build in an isolated stage and report drift without activation.
+    pub check: bool,
+    /// Existing output set against which check-mode outputs are compared.
+    pub check_baseline: LifecycleCheckBaseline,
+    /// Maximum time to wait for a concurrent lifecycle build.
+    pub lock_timeout: Duration,
+    /// Optional downstream-closed node subset for incremental rebuilds.
+    pub nodes: Option<BTreeSet<String>>,
+    /// Optional source snapshot that must still match before activation.
+    pub activation_inputs: Option<BTreeMap<String, String>>,
+    /// Optional cooperative cancellation shared with a supervisor.
+    pub cancel: Option<Arc<AtomicBool>>,
+}
+
+/// Output set used as the baseline for a read-only lifecycle check.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum LifecycleCheckBaseline {
+    /// Compare staged outputs with catalog-owned files in the source workspace.
+    Workspace,
+    /// Compare staged outputs with the currently active immutable generation.
+    ActiveGeneration,
+}
+
+impl From<&LifecycleBuildOptions> for LifecycleBuildRequest {
+    fn from(options: &LifecycleBuildOptions) -> Self {
+        Self {
+            check: options.check,
+            check_baseline: LifecycleCheckBaseline::Workspace,
+            lock_timeout: options.lock_timeout,
+            nodes: options.nodes.clone(),
+            activation_inputs: options.activation_inputs.clone(),
+            cancel: options.cancel.clone(),
+        }
+    }
+}
+
 #[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
 #[serde(deny_unknown_fields)]
 pub struct BuildDrift {
@@ -190,11 +243,6 @@ pub struct LifecycleBuildReport {
 pub fn run_lifecycle_build(
     options: &LifecycleBuildOptions,
 ) -> Result<LifecycleBuildReport, LifecycleError> {
-    if options.lock_timeout.is_zero() || options.lock_timeout > MAX_LOCK_TIMEOUT {
-        return Err(LifecycleError::new(
-            "lifecycle lock timeout must be within 1ms..=60s",
-        ));
-    }
     let root = options.root.canonicalize().map_err(|error| {
         LifecycleError::new(format!(
             "failed to resolve lifecycle root `{}`: {error}",
@@ -209,28 +257,62 @@ pub fn run_lifecycle_build(
     let config = LifecycleBuildConfig::from_path(config_path)?;
     let catalog = ContractCatalog::from_path_at_root(&catalog_path, &root)
         .map_err(|error| LifecycleError::new(error.to_string()))?;
-    let graph = LifecycleGraph::from_catalog(&catalog, &config.lifecycle())?;
-    validate_executor_coverage(&graph, &config)?;
+    run_lifecycle_project_build(
+        &LifecycleProjectPlan {
+            root,
+            catalog,
+            config,
+            out: options.out.clone(),
+        },
+        &LifecycleBuildRequest::from(options),
+    )
+}
 
-    let out = resolve_output(&root, &options.out)?;
+/// Build a lifecycle project whose catalog and execution plan were derived by
+/// the CLI from Cargo metadata and project conventions.
+pub fn run_lifecycle_project_build(
+    project: &LifecycleProjectPlan,
+    request: &LifecycleBuildRequest,
+) -> Result<LifecycleBuildReport, LifecycleError> {
+    if request.lock_timeout.is_zero() || request.lock_timeout > MAX_LOCK_TIMEOUT {
+        return Err(LifecycleError::new(
+            "lifecycle lock timeout must be within 1ms..=60s",
+        ));
+    }
+    let root = project.root.canonicalize().map_err(|error| {
+        LifecycleError::new(format!(
+            "failed to resolve lifecycle root `{}`: {error}",
+            project.root.display()
+        ))
+    })?;
+    if !root.is_dir() {
+        return Err(LifecycleError::new("lifecycle root must be a directory"));
+    }
+    let config = &project.config;
+    config.validate()?;
+    let catalog = &project.catalog;
+    let graph = LifecycleGraph::from_catalog(catalog, &config.lifecycle())?;
+    validate_executor_coverage(&graph, config)?;
+
+    let out = resolve_output(&root, &project.out)?;
     let out_parent = out
         .parent()
         .ok_or_else(|| LifecycleError::new("lifecycle output must have a parent directory"))?;
-    if !options.check {
+    if !request.check {
         fs::create_dir_all(out_parent).map_err(io_error("create lifecycle output parent"))?;
     }
     let _lock = if out_parent.exists() {
-        Some(BuildLock::acquire(&root, out_parent, options.lock_timeout)?)
+        Some(BuildLock::acquire(&root, out_parent, request.lock_timeout)?)
     } else {
         None
     };
-    let selected = selected_nodes(options.nodes.as_ref(), &graph)?;
+    let selected = selected_nodes(request.nodes.as_ref(), &graph)?;
     let previous = if selected.len() == graph.nodes.len() {
         None
     } else {
         Some(load_active_generation(&out, &graph)?)
     };
-    let stage_parent = if options.check {
+    let stage_parent = if request.check {
         None
     } else {
         Some(out_parent)
@@ -249,7 +331,7 @@ pub fn run_lifecycle_build(
     let mut executed = Vec::new();
     let mut receipts = BTreeMap::new();
     for node_id in &order {
-        if options
+        if request
             .cancel
             .as_ref()
             .is_some_and(|cancel| cancel.load(Ordering::SeqCst))
@@ -281,7 +363,7 @@ pub fn run_lifecycle_build(
             continue;
         }
         let executor = &config.executors[&node.executor];
-        let input_identities = collect_node_inputs(&root, stage.path(), &catalog, &graph, node_id)?;
+        let input_identities = collect_node_inputs(&root, stage.path(), catalog, &graph, node_id)?;
         let dependency_receipts = node
             .dependencies
             .iter()
@@ -296,7 +378,7 @@ pub fn run_lifecycle_build(
             node_id,
             &node.outputs,
             executor,
-            options.cancel.as_deref(),
+            request.cancel.as_deref(),
         )?;
         let output_identities = collect_node_outputs(stage.path(), node_id, &graph)?;
         let receipt = ArtifactNodeReceipt::new(
@@ -314,10 +396,15 @@ pub fn run_lifecycle_build(
     let generation = GenerationManifest::new(&graph, receipts.into_values())?;
     let release = ReleaseManifest::new(&graph, &generation)?;
 
-    let drift = if options.check {
-        compare_workspace_outputs(&root, &generation)?
+    let drift = if request.check {
+        match request.check_baseline {
+            LifecycleCheckBaseline::Workspace => compare_workspace_outputs(&root, &generation)?,
+            LifecycleCheckBaseline::ActiveGeneration => {
+                compare_active_outputs(&out, &generation)?
+            }
+        }
     } else {
-        if options
+        if request
             .cancel
             .as_ref()
             .is_some_and(|cancel| cancel.load(Ordering::SeqCst))
@@ -326,11 +413,11 @@ pub fn run_lifecycle_build(
         }
         Vec::new()
     };
-    let active_generation = if options.check {
+    let active_generation = if request.check {
         read_active_generation(&out)?
     } else {
-        if let Some(expected) = &options.activation_inputs {
-            let observed = lifecycle_input_snapshot(&root, &catalog, &graph)?;
+        if let Some(expected) = &request.activation_inputs {
+            let observed = lifecycle_input_snapshot(&root, catalog, &graph)?;
             if &observed != expected {
                 return Err(LifecycleError::superseded(
                     "lifecycle build was superseded by newer input content before activation",
@@ -352,8 +439,8 @@ pub fn run_lifecycle_build(
     };
 
     Ok(LifecycleBuildReport {
-        ok: !options.check || drift.is_empty(),
-        check: options.check,
+        ok: !request.check || drift.is_empty(),
+        check: request.check,
         graph_id: graph.graph_id,
         generation_id: generation.generation_id,
         release_id: release.release_id,
@@ -362,6 +449,36 @@ pub fn run_lifecycle_build(
         drift,
         active_generation,
     })
+}
+
+fn compare_active_outputs(
+    out: &Path,
+    generation: &GenerationManifest,
+) -> Result<Vec<BuildDrift>, LifecycleError> {
+    let active = read_active_generation(out)?;
+    let active_root = active.as_ref().map(|identity| out.join("generations").join(identity));
+    let mut drift = Vec::new();
+    for receipt in generation.receipts.values() {
+        for (output, built_identity) in &receipt.output_identities {
+            let active_identity = match &active_root {
+                Some(root) => match fs::symlink_metadata(root.join(output)) {
+                    Ok(_) => Some(hash_path(&root.join(output), root)?),
+                    Err(error) if error.kind() == std::io::ErrorKind::NotFound => None,
+                    Err(error) => return Err(io_error("inspect active generation output")(error)),
+                },
+                None => None,
+            };
+            if active_identity.as_ref() != Some(built_identity) {
+                drift.push(BuildDrift {
+                    node_id: receipt.node_id.clone(),
+                    output: output.clone(),
+                    built_identity: built_identity.clone(),
+                    workspace_identity: active_identity,
+                });
+            }
+        }
+    }
+    Ok(drift)
 }
 
 fn selected_nodes(

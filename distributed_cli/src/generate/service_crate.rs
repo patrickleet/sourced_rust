@@ -41,6 +41,12 @@ edition = "2021"
 
 [workspace]
 
+[package.metadata.distributed.application]
+entrypoint = "application_manifest"
+
+[package.metadata.distributed.runtime]
+binary = {package_name}
+
 [dependencies]
 distributed = {{ path = {distributed_path}, features = [{features}] }}
 {axum}serde = {{ version = "1", features = ["derive"] }}
@@ -149,7 +155,9 @@ pub use manifest::{{application_manifest, read_model_catalog, service_descriptor
         format!(
             r#"#[tokio::main]
 async fn main() -> Result<(), {error_type}> {{
-{tracing_init}    let addr = std::env::var("BIND_ADDR").unwrap_or_else(|_| "127.0.0.1:3000".to_string());
+{tracing_init}    let addr = std::env::var("BIND")
+        .or_else(|_| std::env::var("BIND_ADDR"))
+        .unwrap_or_else(|_| "127.0.0.1:3000".to_string());
 {service_init}{serve_block}{tracing_shutdown}    Ok(())
 }}
 

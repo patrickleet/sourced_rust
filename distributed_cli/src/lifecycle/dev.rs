@@ -14,8 +14,9 @@ use crate::contracts::ContractCatalog;
 use super::build::lifecycle_input_snapshot;
 use super::graph::LifecycleErrorReason;
 use super::{
-    run_lifecycle_build, validate_portable_path, validate_stable_value, LifecycleBuildConfig,
-    LifecycleBuildOptions, LifecycleBuildReport, LifecycleError, LifecycleGraph,
+    run_lifecycle_project_build, validate_portable_path, validate_stable_value,
+    LifecycleBuildConfig, LifecycleBuildOptions, LifecycleBuildReport, LifecycleBuildRequest,
+    LifecycleError, LifecycleGraph, LifecycleProjectPlan,
 };
 
 const MAX_DEV_PROCESSES: usize = 64;
@@ -179,6 +180,18 @@ pub struct LifecycleDevOptions {
     pub progress: bool,
 }
 
+#[derive(Clone, Debug)]
+pub struct LifecycleProjectDevOptions {
+    /// In-memory lifecycle plan derived from the project.
+    pub project: LifecycleProjectPlan,
+    /// Build behavior shared by the initial and incremental generations.
+    pub build: LifecycleBuildRequest,
+    /// Cooperative stop flag set by Ctrl-C or the embedding host.
+    pub stop: Arc<AtomicBool>,
+    /// Emit operator-facing readiness and rebuild progress to stderr.
+    pub progress: bool,
+}
+
 #[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
 #[serde(deny_unknown_fields)]
 pub struct LifecycleDevReport {
@@ -208,7 +221,39 @@ pub fn run_lifecycle_dev(
     dev.validate()?;
     let catalog = ContractCatalog::from_path_at_root(&catalog_path, &root)
         .map_err(|error| LifecycleError::new(error.to_string()))?;
-    let graph = LifecycleGraph::from_catalog(&catalog, &config.lifecycle())?;
+    run_lifecycle_project_dev(&LifecycleProjectDevOptions {
+        project: LifecycleProjectPlan {
+            root,
+            catalog,
+            config,
+            out: options.build.out.clone(),
+        },
+        build: LifecycleBuildRequest::from(&options.build),
+        stop: Arc::clone(&options.stop),
+        progress: options.progress,
+    })
+}
+
+/// Run development processes for a project resolved from Cargo metadata and
+/// filesystem conventions.
+pub fn run_lifecycle_project_dev(
+    options: &LifecycleProjectDevOptions,
+) -> Result<LifecycleDevReport, LifecycleError> {
+    if options.build.check {
+        return Err(LifecycleError::new(
+            "lifecycle dev requires an activating build configuration",
+        ));
+    }
+    let root = options.project.root.canonicalize().map_err(|error| {
+        LifecycleError::new(format!("failed to resolve lifecycle dev root: {error}"))
+    })?;
+    let config = &options.project.config;
+    let dev = config.dev.clone().ok_or_else(|| {
+        LifecycleError::new("lifecycle project has no development process configuration")
+    })?;
+    dev.validate()?;
+    let catalog = &options.project.catalog;
+    let graph = LifecycleGraph::from_catalog(catalog, &config.lifecycle())?;
     validate_restart_nodes(&dev, &graph)?;
 
     // Initial coherent generation is an absolute serving barrier.
@@ -216,7 +261,7 @@ pub fn run_lifecycle_dev(
     initial_options.nodes = None;
     initial_options.activation_inputs = None;
     initial_options.cancel = Some(Arc::clone(&options.stop));
-    let initial = run_lifecycle_build(&initial_options)?;
+    let initial = run_lifecycle_project_build(&options.project, &initial_options)?;
     let mut children = ChildSet::start(&root, &dev, &initial, &options.stop)?;
     if options.progress {
         for (name, process) in &dev.processes {
@@ -230,7 +275,7 @@ pub fn run_lifecycle_dev(
             dev.processes.keys().cloned().collect::<Vec<_>>().join(",")
         );
     }
-    let mut snapshot = lifecycle_input_snapshot(&root, &catalog, &graph)?;
+    let mut snapshot = lifecycle_input_snapshot(&root, catalog, &graph)?;
     let mut final_generation = initial.generation_id.clone();
     let mut rebuilds = 0;
     let mut restarts = dev
@@ -243,7 +288,7 @@ pub fn run_lifecycle_dev(
         while !options.stop.load(Ordering::SeqCst) {
             children.ensure_running()?;
             std::thread::sleep(Duration::from_millis(dev.poll_ms));
-            let next = lifecycle_input_snapshot(&root, &catalog, &graph)?;
+            let next = lifecycle_input_snapshot(&root, catalog, &graph)?;
             let mut changed = changed_paths(&snapshot, &next);
             if changed.is_empty() {
                 continue;
@@ -257,7 +302,7 @@ pub fn run_lifecycle_dev(
                     return Ok(());
                 }
                 std::thread::sleep(Duration::from_millis(dev.poll_ms.min(dev.debounce_ms)));
-                let observed = lifecycle_input_snapshot(&root, &catalog, &graph)?;
+                let observed = lifecycle_input_snapshot(&root, catalog, &graph)?;
                 let delta = changed_paths(&latest, &observed);
                 if !delta.is_empty() {
                     changed.extend(delta);
@@ -273,7 +318,10 @@ pub fn run_lifecycle_dev(
             rebuild_options.activation_inputs = Some(submitted_inputs.clone());
             let cancel = Arc::new(AtomicBool::new(false));
             rebuild_options.cancel = Some(Arc::clone(&cancel));
-            let build = std::thread::spawn(move || run_lifecycle_build(&rebuild_options));
+            let build_project = options.project.clone();
+            let build = std::thread::spawn(move || {
+                run_lifecycle_project_build(&build_project, &rebuild_options)
+            });
             let mut superseded = false;
             while !build.is_finished() {
                 if options.stop.load(Ordering::SeqCst) {
@@ -285,7 +333,7 @@ pub fn run_lifecycle_dev(
                     return Err(error);
                 }
                 std::thread::sleep(Duration::from_millis(dev.poll_ms));
-                let observed = match lifecycle_input_snapshot(&root, &catalog, &graph) {
+                let observed = match lifecycle_input_snapshot(&root, catalog, &graph) {
                     Ok(observed) => observed,
                     Err(error) => {
                         cancel.store(true, Ordering::SeqCst);

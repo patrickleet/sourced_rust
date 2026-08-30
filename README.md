@@ -375,9 +375,12 @@ OIDC, SvelteKit SSR, generated clients, live WS. Full runbook:
 # Default: one process (SQLite or Postgres + bus)
 cd tests/e2e-ui
 make up                    # Postgres + Zitadel → e2e-ui.env
-source e2e-ui.env && make run
+make ui-install            # local JS package + optional WASM demo
+distributed dev            # loads e2e-ui.env; starts Rust + SvelteKit
 # UI  http://localhost:5180
 # API http://127.0.0.1:8791
+
+distributed build          # typed manifest + Rust build + Vite build
 
 # Optional: same UI, Todo create/complete on celld
 cd tests/e2e-ui && make up && make up-celld-nats
@@ -1794,7 +1797,9 @@ no async blob event handler).
 
 ```bash
 cd tests/e2e-ui
-make up && set -a && source e2e-ui.env && set +a && make run
+make up
+make ui-install
+distributed dev
 # UI http://127.0.0.1:5180  ·  API GraphQL http://127.0.0.1:8791/graphql
 # /todos  /chat  /blob  /admin  /login
 make test         # domain + behavioral + JS-backed UI build/typecheck/tests
