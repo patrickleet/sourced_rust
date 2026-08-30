@@ -223,30 +223,6 @@ fn gitops_promote_variants_render_their_resource() {
 }
 
 #[test]
-fn test_users_is_an_explicit_optional_chart() {
-    let without = scaffold("scaffold-without-test-users", &["--gitops"]);
-    assert!(!without.join(".gitops/test-users/Chart.yaml").exists());
-
-    let with = scaffold("scaffold-with-test-users", &["--gitops", "--test-users"]);
-    for expected in [
-        ".gitops/test-users/Chart.yaml",
-        ".gitops/test-users/values.yaml",
-        ".gitops/test-users/README.md",
-    ] {
-        assert!(
-            with.join(expected).exists(),
-            "missing generated file: {expected}"
-        );
-    }
-    assert!(!with
-        .join(".gitops/local/templates/test-users.yaml")
-        .exists());
-    assert!(!with
-        .join(".gitops/deploy/templates/test-users.yaml")
-        .exists());
-}
-
-#[test]
 fn scaffold_refuses_a_non_empty_directory() {
     let out_dir = Path::new(env!("CARGO_TARGET_TMPDIR")).join("scaffold-non-empty");
     let _ = fs::remove_dir_all(&out_dir);

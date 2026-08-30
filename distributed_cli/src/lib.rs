@@ -96,8 +96,6 @@ pub struct ServiceScaffoldSpec {
     /// Generate independent local and cloud workload charts under
     /// `.gitops/local` and `.gitops/deploy`.
     pub gitops: bool,
-    /// Generate an optional test-user chart under `.gitops/test-users`.
-    pub test_users: bool,
     /// Generate a GitOps promotion chart for Argo CD or Flux.
     pub gitops_promote: Option<GitopsPromoteTarget>,
     /// The service's own GitHub repository: emits the version/release workflows

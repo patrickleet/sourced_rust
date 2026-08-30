@@ -4,7 +4,7 @@
 //!
 //! - [`names`] — name/message normalization + validation (the portable rules);
 //! - [`service_crate`] — the Rust service-crate templates;
-//! - [`gitops`] — the `.gitops/{deploy,promote}` Helm/Knative charts;
+//! - [`gitops`] — the `.gitops/{local,deploy,promote}` Helm/Knative charts;
 //! - [`github`] — GitHub repo parsing + the release/preview/promote workflows.
 
 mod github;
@@ -53,7 +53,6 @@ pub(crate) struct Scaffold {
     pub(crate) query_api: bool,
     pub(crate) tracing: bool,
     pub(crate) gitops: bool,
-    pub(crate) test_users: bool,
     pub(crate) gitops_promote: Option<GitopsPromoteTarget>,
     pub(crate) github: Option<GithubRepo>,
     pub(crate) github_preview: Option<GithubRepo>,
@@ -107,7 +106,6 @@ impl Scaffold {
             query_api: spec.query_api,
             tracing: spec.tracing,
             gitops: spec.gitops,
-            test_users: spec.test_users,
             gitops_promote: spec.gitops_promote,
             github: spec.github,
             github_preview: spec.github_preview,
@@ -164,7 +162,7 @@ impl Scaffold {
             files.push(file("src/read_models/mod.rs", self.read_models_mod_rs()));
         }
 
-        // GitOps charts (.gitops/{local,deploy} + optional promote/test-users) and GitHub
+        // GitOps charts (.gitops/{local,deploy} + optional promote) and GitHub
         // workflow files (+ promotion charts) — staged in the same project.
         files.extend(self.gitops_files());
         files.extend(self.github_files());
@@ -212,7 +210,6 @@ mod tests {
             events: Vec::new(),
             distributed_dependency_path: "../distributed".to_string(),
             gitops: false,
-            test_users: false,
             gitops_promote: None,
             github: None,
             github_preview: None,
@@ -424,24 +421,6 @@ mod tests {
         assert!(!local_values.contains("{{ if .Values.local }}"));
         assert!(!deploy_values.contains("{{ if .Values.local }}"));
         assert!(!paths.iter().any(|p| p.starts_with(".gitops/promote/")));
-        assert!(!paths.iter().any(|p| p.starts_with(".gitops/test-users/")));
-    }
-
-    #[test]
-    fn test_users_chart_is_opt_in_and_separate_from_workloads() {
-        let mut s = spec("orders");
-        s.gitops = true;
-        s.test_users = true;
-        let project = generate_service_scaffold(s).unwrap();
-        let paths = paths(&project);
-        assert!(paths.contains(&".gitops/test-users/Chart.yaml"));
-        assert!(paths.contains(&".gitops/test-users/values.yaml"));
-        assert!(!paths
-            .iter()
-            .any(|path| path.starts_with(".gitops/local/templates/test")));
-        assert!(!paths
-            .iter()
-            .any(|path| path.starts_with(".gitops/deploy/templates/test")));
     }
 
     #[test]

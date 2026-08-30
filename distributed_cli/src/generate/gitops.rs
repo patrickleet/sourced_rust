@@ -1,6 +1,6 @@
 //! GitOps artifact templates: independent `.gitops/local` and `.gitops/deploy`
-//! workload charts, plus optional `.gitops/promote` and `.gitops/test-users`
-//! charts. Pure — produces `GeneratedFile`s.
+//! workload charts, plus the optional `.gitops/promote` chart. Pure — produces
+//! `GeneratedFile`s.
 
 use std::collections::BTreeSet;
 
@@ -11,9 +11,9 @@ use super::{file, Scaffold};
 use crate::{GeneratedFile, GitopsPromoteTarget, MetricsTarget, ServiceTransport};
 
 impl Scaffold {
-    /// The required local/deploy workload charts and optional promote/test-users
-    /// charts. Local and cloud workload charts are separate render roots so a
-    /// local chart never needs a cloud branch (or vice versa).
+    /// The required local/deploy workload charts and optional promote chart.
+    /// Local and cloud workload charts are separate render roots so a local
+    /// chart never needs a cloud branch (or vice versa).
     pub(super) fn gitops_files(&self) -> Vec<GeneratedFile> {
         let mut files = Vec::new();
         let want_workloads = self.gitops
@@ -45,23 +45,6 @@ impl Scaffold {
                     self.gitops_flux_helmrelease_yaml(),
                 )),
             }
-        }
-
-        if self.test_users {
-            files.extend([
-                file(
-                    ".gitops/test-users/Chart.yaml",
-                    self.gitops_test_users_chart_yaml(),
-                ),
-                file(
-                    ".gitops/test-users/values.yaml",
-                    self.gitops_test_users_values_yaml(),
-                ),
-                file(
-                    ".gitops/test-users/README.md",
-                    "# Test users\n\nAdd project-specific test identity resources here. This chart is selected as a separate Environment deploy and is never part of the local or cloud workload chart.\n".to_string(),
-                ),
-            ]);
         }
 
         files
@@ -315,31 +298,6 @@ observability:
 {bus}{metrics}{query_api_values}"#,
             image_repository = self.image_repository(),
         )
-    }
-
-    fn gitops_test_users_chart_yaml(&self) -> String {
-        format!(
-            r#"apiVersion: v2
-name: {chart_name}
-description: Optional test-user provisioning chart for {service_name}
-type: application
-version: 0.1.0
-appVersion: "0.1.0"
-"#,
-            chart_name = k8s_name(&format!("{}-test-users", self.names.package_name)),
-            service_name = self.names.package_name,
-        )
-    }
-
-    fn gitops_test_users_values_yaml(&self) -> String {
-        r#"local: true
-preview: false
-environment:
-  name: ""
-  namespace: ""
-enabled: true
-"#
-        .to_string()
     }
 
     fn gitops_http_deployment_yaml(&self) -> String {
