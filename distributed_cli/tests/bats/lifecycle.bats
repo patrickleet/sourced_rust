@@ -28,7 +28,7 @@ teardown() {
   fi
 }
 
-@test "project build and dev discover Rust and SvelteKit without lifecycle JSON" {
+@test "project build and dev are zero-config and invalid typed exports fail before UI" {
   PROJECT="$ROOT/zero-config-app"
   run "$DISTRIBUTED_BIN" scaffold zero-config-app \
     --path "$PROJECT" \
@@ -91,6 +91,24 @@ SCRIPT
   dev_status=$?
   SUPERVISOR_PID=""
   [ "$dev_status" -eq 0 ]
+
+  # A conventionally named service is only a candidate until its typed export
+  # compiles. Reject an older/incompatible checkout before rebuilding the UI.
+  active_before="$(cat "$PROJECT/.distributed/lifecycle/active.json")"
+  sed 's/application_manifest, //' "$PROJECT/src/lib.rs" > "$PROJECT/src/lib.rs.next"
+  mv "$PROJECT/src/lib.rs.next" "$PROJECT/src/lib.rs"
+  printf 'npm-must-not-run\n' > "$ROOT/npm.log"
+
+  run env \
+    PATH="$ROOT/bin:$PATH" \
+    ZERO_CONFIG_NPM_LOG="$ROOT/npm.log" \
+    "$DISTRIBUTED_BIN" build "$PROJECT"
+  [ "$status" -ne 0 ]
+  [[ "$output" == *'validating typed application zero-config-app through zero_config_app::application_manifest'* ]]
+  [[ "$output" == *'must publicly export a zero-argument function returning `distributed::ApplicationManifest`'* ]]
+  [[ "$output" != *'compiling SvelteKit UI'* ]]
+  [ "$(cat "$ROOT/npm.log")" = 'npm-must-not-run' ]
+  [ "$(cat "$PROJECT/.distributed/lifecycle/active.json")" = "$active_before" ]
 }
 
 @test "build activates atomically and check reports drift without replacing active" {

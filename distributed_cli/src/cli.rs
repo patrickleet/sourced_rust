@@ -815,7 +815,9 @@ fn run_build(args: &BuildArgs, command_prefix: &[&str]) -> Result<(), Box<dyn Er
     let (report, detail) = match &resolved {
         ResolvedLifecycleProject::Discovered(project) => {
             if !args.check {
-                build_project_programs(project)?;
+                build_project_runtime(project)?;
+                validate_project_application(project, args.lock_timeout_ms)?;
+                build_project_ui(project)?;
             }
             eprintln!(
                 "distributed build: introspecting typed application {} (the first run may compile its harness)",
@@ -831,7 +833,8 @@ fn run_build(args: &BuildArgs, command_prefix: &[&str]) -> Result<(), Box<dyn Er
                     activation_inputs: None,
                     cancel: None,
                 },
-            )?;
+            )
+            .map_err(|error| contextualize_project_application_error(project, error))?;
             (report, Some(project))
         }
         ResolvedLifecycleProject::Files {
@@ -896,7 +899,7 @@ fn run_build(args: &BuildArgs, command_prefix: &[&str]) -> Result<(), Box<dyn Er
     Ok(())
 }
 
-fn build_project_programs(project: &DiscoveredLifecycleProject) -> Result<(), Box<dyn Error>> {
+fn build_project_runtime(project: &DiscoveredLifecycleProject) -> Result<(), Box<dyn Error>> {
     eprintln!(
         "distributed build: compiling Rust runtime {} ({})",
         project.runtime_binary, project.runtime_package
@@ -912,7 +915,44 @@ fn build_project_programs(project: &DiscoveredLifecycleProject) -> Result<(), Bo
             OsString::from(&project.runtime_binary),
         ],
         "Rust runtime build",
-    )?;
+    )
+}
+
+fn validate_project_application(
+    project: &DiscoveredLifecycleProject,
+    lock_timeout_ms: u64,
+) -> Result<(), Box<dyn Error>> {
+    eprintln!(
+        "distributed build: validating typed application {} through {}",
+        project.application_package, project.application_entrypoint
+    );
+    run_lifecycle_project_build(
+        &project.plan,
+        &LifecycleBuildRequest {
+            check: true,
+            check_baseline: LifecycleCheckBaseline::ActiveGeneration,
+            lock_timeout: Duration::from_millis(lock_timeout_ms),
+            nodes: None,
+            activation_inputs: None,
+            cancel: None,
+        },
+    )
+    .map(|_| ())
+    .map_err(|error| contextualize_project_application_error(project, error))
+}
+
+fn contextualize_project_application_error(
+    project: &DiscoveredLifecycleProject,
+    error: impl std::fmt::Display,
+) -> Box<dyn Error> {
+    format!(
+        "typed application `{}` could not be introspected through `{}`; the selected application crate must publicly export a zero-argument function returning `distributed::ApplicationManifest` (or select another export with `[package.metadata.distributed.application] entrypoint = \"...\"`):\n{error}",
+        project.application_package, project.application_entrypoint
+    )
+    .into()
+}
+
+fn build_project_ui(project: &DiscoveredLifecycleProject) -> Result<(), Box<dyn Error>> {
     if let Some(ui) = &project.ui {
         let ui_root = project.plan.root.join(ui);
         ensure_ui_dependencies(&ui_root)?;

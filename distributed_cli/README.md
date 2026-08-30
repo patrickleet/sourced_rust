@@ -48,10 +48,13 @@ authored crates and preserves the framework's separation of responsibility:
   subscriptions, generated against the read-model query surface and hydrated
   into the browser replica.
 
-`distributed build` compiles the Rust runtime and the SvelteKit/Vite UI, then
-introspects the typed composition without scanning Rust source. The active
-application generation advances only after those program builds and typed
-introspection succeed. Vite remains the client-generation integration point.
+`distributed build` compiles the Rust runtime, validates the typed composition
+without scanning Rust source, and only then starts the SvelteKit/Vite UI build.
+After all program builds succeed it reuses the cached harness to create and
+atomically activate the application generation. An older or incompatible
+project therefore fails on its missing typed export before spending time in
+Vite, and the active generation remains unchanged. Vite remains the
+client-generation integration point.
 Lifecycle receipts and the generated application manifest are tool-owned state
 under `.distributed/lifecycle/`.
 Rust binaries remain in Cargo's target directory and SvelteKit output remains

@@ -13,6 +13,8 @@ use std::process::Command;
 use crate::cli::{path_for_toml, resolve_distributed_path};
 use crate::SchemaDialect;
 
+const MAX_HARNESS_ERROR_CHARS: usize = 16 * 1024;
+
 #[derive(Clone, Debug)]
 pub(crate) struct HarnessOptions {
     pub(crate) path: PathBuf,
@@ -109,10 +111,32 @@ pub(crate) fn run_manifest_harness(
 
     if !output.status.success() {
         let stderr = String::from_utf8_lossy(&output.stderr);
-        return Err(format!("manifest harness failed: {stderr}").into());
+        return Err(format!(
+            "manifest harness failed for package `{}` entrypoint `{entrypoint}`:\n{}",
+            package.name,
+            manifest_harness_error(&stderr)
+        )
+        .into());
     }
 
     Ok(String::from_utf8_lossy(&output.stdout).to_string())
+}
+
+fn manifest_harness_error(stderr: &str) -> String {
+    let lines = stderr.lines().collect::<Vec<_>>();
+    let first_error = lines
+        .iter()
+        .position(|line| line.starts_with("error"))
+        .unwrap_or(0);
+    let excerpt = lines[first_error..].join("\n");
+    let mut bounded = excerpt
+        .chars()
+        .take(MAX_HARNESS_ERROR_CHARS)
+        .collect::<String>();
+    if excerpt.chars().count() > MAX_HARNESS_ERROR_CHARS {
+        bounded.push_str("\n<compiler output truncated>");
+    }
+    bounded
 }
 
 fn harness_cargo_toml(
@@ -385,5 +409,16 @@ mod tests {
         ));
         assert!(main_rs.contains(".manifest()"));
         assert!(!main_rs.contains("build_surface"));
+    }
+
+    #[test]
+    fn harness_failure_starts_at_the_compiler_error_and_omits_dependency_warnings() {
+        let stderr = "warning: unused import: SystemTime\n  --> dependency.rs:1:1\n\nerror[E0425]: cannot find function `application_manifest`\n  --> src/main.rs:2:1\n\nerror: could not compile harness\n";
+
+        let failure = manifest_harness_error(stderr);
+
+        assert!(failure.starts_with("error[E0425]"), "{failure}");
+        assert!(failure.contains("could not compile harness"), "{failure}");
+        assert!(!failure.contains("unused import"), "{failure}");
     }
 }

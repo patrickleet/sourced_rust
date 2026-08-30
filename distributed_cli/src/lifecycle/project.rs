@@ -26,6 +26,8 @@ pub struct DiscoveredLifecycleProject {
     pub name: String,
     /// Package exporting the typed `distributed::ApplicationManifest`.
     pub application_package: String,
+    /// Fully-qualified zero-argument Rust export used for typed introspection.
+    pub application_entrypoint: String,
     /// Cargo package containing the local runtime binary.
     pub runtime_package: String,
     /// Binary started by `distributed dev` and compiled by `distributed build`.
@@ -213,7 +215,7 @@ pub fn discover_lifecycle_project(
             "--package".to_string(),
             application.package.clone(),
             "--entrypoint".to_string(),
-            entrypoint,
+            entrypoint.clone(),
             "--distributed-path".to_string(),
             distributed_root.to_string_lossy().into_owned(),
         ])
@@ -246,6 +248,7 @@ pub fn discover_lifecycle_project(
     Ok(DiscoveredLifecycleProject {
         name: project_name,
         application_package: application.package,
+        application_entrypoint: entrypoint,
         runtime_package: runtime.package,
         runtime_binary: runtime.binary,
         ui,
