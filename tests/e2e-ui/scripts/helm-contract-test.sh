@@ -86,6 +86,16 @@ assert_not_contains() {
   fi
 }
 
+assert_not_matches() {
+  local hay="$1" pattern="$2" msg="$3"
+  if printf '%s' "$hay" | rg -q "$pattern"; then
+    echo "FAIL: $msg (unexpected match: $pattern)" >&2
+    fail=1
+  else
+    echo "ok: $msg"
+  fi
+}
+
 check_workspace() {
   local ns="$1"
   local features="$2"
@@ -105,11 +115,15 @@ check_workspace() {
     "Project requires a GitOps-owned role grant"
   assert_contains "$out" "name: e2e-role-user" "shared role e2e-role-user"
   assert_contains "$out" "name: e2e-alice" "shared human e2e-alice"
+  assert_contains "$out" "apiVersion: auth.hops.ops.com.ai/v1alpha1" \
+    "demo humans use the auth-stack HumanUser XR"
   assert_contains "$out" "name: e2e-alice-e2e-ui" "shared Grant for alice"
   assert_contains "$out" "name: e2e-bob-e2e-ui" "shared Grant for bob"
   assert_contains "$out" "name: e2e-admin-e2e-ui" "shared Grant for admin"
   assert_contains "$out" "userIdRef:" "Grant resolves HumanUser by reference"
   assert_contains "$out" "projectIdRef:" "Grant resolves Project by reference"
+  assert_contains "$out" "apiVersion: auth.hops.ops.com.ai/v1alpha1" \
+    "Grant resolves the auth-stack HumanUser XR"
   assert_contains "$out" 'roles: ["user","admin"]' "admin receives user and admin roles"
   assert_not_contains "$out" "oidc-local-seed" \
     "GitOps does not overwrite the residual OIDC session/PAT Secret"
@@ -142,6 +156,8 @@ check_workspace() {
   fi
 
   assert_not_contains "$out" "hops-wt-" "no legacy hops-wt- prefix"
+  assert_not_matches "$out" 'orgId:\s*"[0-9]{15,}"' \
+    "no generated organization UUID in GitOps"
 }
 
 check_workspace alice true

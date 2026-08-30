@@ -35,9 +35,6 @@ spec:
           projectName: e2e-ui
           projectNamespace: default
           humansNamespace: default
-          # Local-only: Zitadel provider v0.1.1 requires this generated org ID
-          # for Roles/HumanUsers. It changes when the disposable cluster is reset.
-          orgId: "388460350938349602"
           instanceLoginV2: true
           demoUsers: true
           providerConfigRef:

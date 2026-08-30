@@ -6,18 +6,19 @@
   shared; only the OIDC web app is worktree-scoped.
 */ -}}
 {{- /*
-  orgId intentionally omitted: provider-upjet-zitadel defaults to the
-  organization of the ProviderConfig credentials (AuthStack firstInstance org).
-  Never hardcode live org ids in Application values — they change every AuthStack.
+  HumanUser is the auth-stack XR. It resolves the generated Zitadel organization
+  UUID from the shared Project status, so no live UUID belongs in GitOps.
 */ -}}
 {{- if and .Values.identity.enabled .Values.identity.demoUsers }}
 {{- $ns := .Values.identity.humansNamespace | default .Values.identity.projectNamespace | default .Values.identity.mrNamespace | default "default" -}}
+{{- $project := include "e2e-ui-ui.clusterProjectName" . -}}
+{{- $projectNs := .Values.identity.projectNamespace | default .Values.identity.mrNamespace | default "default" -}}
 {{- $pc := .Values.identity.providerConfigRef.name | default "default" -}}
 {{- $pck := .Values.identity.providerConfigRef.kind | default "ProviderConfig" -}}
 {{- $pwSecret := .Values.identity.passwordSecret.name | default "e2e-human-passwords" -}}
 {{- range $user := list "alice" "bob" "admin" }}
 ---
-apiVersion: user.zitadel.m.crossplane.io/v1alpha1
+apiVersion: auth.hops.ops.com.ai/v1alpha1
 kind: HumanUser
 metadata:
   # Stable cluster-scoped names (no worktree prefix).
@@ -31,20 +32,19 @@ metadata:
     hops.ops.com.ai/demo-user: {{ $user | quote }}
     auth.hops.ops.com.ai/reference-name: {{ printf "e2e-%s" $user }}
 spec:
-  forProvider:
-    {{- if $.Values.identity.orgId }}
-    orgId: {{ $.Values.identity.orgId | quote }}
-    {{- end }}
-    userName: {{ $user | quote }}
-    firstName: {{ $user | quote }}
-    lastName: E2E
-    displayName: {{ $user | quote }}
-    email: {{ printf "%s@e2e.local" $user | quote }}
-    isEmailVerified: true
-    initialSkipPasswordChange: true
-    initialPasswordSecretRef:
-      name: {{ $pwSecret | quote }}
-      key: {{ $user | quote }}
+  orgIdRef:
+    name: {{ $project | quote }}
+    namespace: {{ $projectNs | quote }}
+  userName: {{ $user | quote }}
+  firstName: {{ $user | quote }}
+  lastName: E2E
+  displayName: {{ $user | quote }}
+  email: {{ printf "%s@e2e.local" $user | quote }}
+  isEmailVerified: true
+  initialSkipPasswordChange: true
+  initialPasswordSecretRef:
+    name: {{ $pwSecret | quote }}
+    key: {{ $user | quote }}
   providerConfigRef:
     name: {{ $pc | quote }}
     kind: {{ $pck | quote }}

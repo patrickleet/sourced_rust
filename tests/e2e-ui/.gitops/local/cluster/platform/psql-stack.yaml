@@ -1,6 +1,6 @@
-# Local platform StorageClass for AuthStack's embedded PostgreSQL.
-# The AuthStack owns its database XR; this cluster-level PSQLStack only
-# provides the local-path-backed `psql` StorageClass.
+# Local PostgreSQL platform substrate. PSQLStack installs CNPG/Atlas and the
+# local-path-backed `psql` StorageClass; platform/psql-cluster.yaml owns the
+# serving database independently from AuthStack.
 apiVersion: hops.ops.com.ai/v1alpha1
 kind: PSQLStack
 metadata:

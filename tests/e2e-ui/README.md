@@ -13,29 +13,29 @@ Todo commands are `portable_command!` declarations in `todo-domain`; hosts
 only `.mount` them. Chat is a small cell so `@live` still coming from GraphQL
 is the demo.
 
-## Option A — local cluster + workspace GitOps
+## Option A — local cluster + environment GitOps
 
-One-time: start the kind control plane on Dory's Docker engine. Then run the
-two GitOps processes in separate terminals:
+Start the kind control plane on Dory's Docker engine, then run the cluster and
+environment watchers in separate terminals:
 
 ```bash
 cd tests/e2e-ui
-hops local gitops cluster ./gitops/cluster \
+hops local gitops cluster ./.gitops/local/cluster.yaml \
   --cluster-provider kind --docker-provider dory \
-  --cluster-name hops --context kind-hops
+  --cluster-name e2e-ui --context kind-e2e-ui
 
-hops local gitops worktree ./gitops/envs/local --name e2e \
-  --cluster-provider kind --docker-provider dory \
-  --cluster-name hops --context kind-hops
+hops local gitops environment ./.gitops/local/environment.yaml \
+  --context kind-e2e-ui
 ```
 
 Both commands watch by default; use `--once` for CI or a single diagnostic
-reconcile. Platform XRs and application workloads must be changed in their
-respective GitOps trees, not applied over the watcher with `kubectl`.
+reconcile. The cluster tree owns Crossplane, providers, AuthStack, and the
+serving PSQLCluster; the environment tree owns the API, UI, and explicit
+test-user deploys. Change those GitOps trees rather than applying over the
+watchers with `kubectl`.
 
-Charts: `api/.gitops/deploy`, `ui/.gitops/deploy`.
-App Applications: `gitops/envs/local/`.
-Control plane: `gitops/cluster/` (`stacks/`, `configurations/`, …).
+Charts: `api/.gitops/local`, `ui/.gitops/local`, and
+`ui/.gitops/test-users`. Control plane: `.gitops/local/cluster/`.
 
 ## Option B — lifecycle dev on the host
 

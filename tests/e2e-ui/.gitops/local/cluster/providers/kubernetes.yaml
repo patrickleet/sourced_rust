@@ -24,3 +24,11 @@ metadata:
 spec:
   credentials:
     source: InjectedIdentity
+---
+apiVersion: kubernetes.m.crossplane.io/v1alpha1
+kind: ClusterProviderConfig
+metadata:
+  name: default
+spec:
+  credentials:
+    source: InjectedIdentity
