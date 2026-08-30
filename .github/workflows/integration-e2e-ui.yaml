@@ -214,6 +214,7 @@ jobs:
       - uses: dtolnay/rust-toolchain@29eef336d9b2848a0b548edc03f92a220660cdb8
         with:
           toolchain: stable
+          targets: wasm32-unknown-unknown
 
       - uses: actions/setup-node@v4
         with:
@@ -263,6 +264,16 @@ jobs:
           echo "$RUNNER_TEMP/hops-cli/bin" >> "$GITHUB_PATH"
           export PATH="$RUNNER_TEMP/hops-cli/bin:$PATH"
           hops --version
+
+      - name: Install wasm-pack
+        run: cargo install wasm-pack --locked || cargo install wasm-pack
+
+      - name: Build generated UI WASM assets
+        run: |
+          set -euo pipefail
+          make wasm
+          test -s ui/src/lib/blob/pkg/blob_wasm.js
+          test -s ui/src/lib/blob/pkg/blob_wasm_bg.wasm
 
       - name: Start kind and apply the Cluster GitOps tree
         run: |
@@ -505,17 +516,30 @@ jobs:
             ui_code="$(curl -sS -o /dev/null -w '%{http_code}' \
               --noproxy '*' \
               http://e2e-ui-ui.local.svc.cluster.local:5180/ || true)"
+            pures_code="$(curl -sS -o /dev/null -w '%{http_code}' \
+              --noproxy '*' \
+              http://e2e-ui-ui.local.svc.cluster.local:5180/src/lib/generated/user/pures.ts || true)"
+            node_code="$(curl -sS -o /dev/null -w '%{http_code}' \
+              --noproxy '*' \
+              http://e2e-ui-ui.local.svc.cluster.local:5180/.svelte-kit/generated/client/nodes/0.js || true)"
             oidc_code="$(curl -sS -o /dev/null -w '%{http_code}' \
               --noproxy '*' \
               http://zitadel-zitadel.auth.svc.cluster.local:8080/.well-known/openid-configuration || true)"
             if [ "$ui_code" = 200 ] || [ "$ui_code" = 302 ] || [ "$ui_code" = 303 ]; then
-              if [ "$oidc_code" = 200 ]; then
+              if [ "$pures_code" = 200 ] && [ "$node_code" = 200 ] && [ "$oidc_code" = 200 ]; then
                 break
               fi
             fi
             sleep 2
           done
           test "$ui_code" = 200 -o "$ui_code" = 302 -o "$ui_code" = 303
+          if [ "$pures_code" != 200 ] || [ "$node_code" != 200 ]; then
+            echo "UI generated module preflight failed (pures.ts=$pures_code nodes/0.js=$node_code)" >&2
+            curl -sS --noproxy '*' \
+              http://e2e-ui-ui.local.svc.cluster.local:5180/src/lib/generated/user/pures.ts \
+              | sed -n '1,120p' >&2 || true
+            exit 1
+          fi
           test "$oidc_code" = 200
 
           E2E_UI_ORIGIN=http://e2e-ui-ui.local.svc.cluster.local:5180 \
