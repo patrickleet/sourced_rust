@@ -53,7 +53,7 @@ teardown() {
   [ "$(cat "$ROOT/dist/distributed/active.json")" = "$active_before" ]
 }
 
-@test "dev reports usable processes, rebuilds selectively, and cleans descendants" {
+@test "dev reports process readiness, rebuilds selectively, and cleans descendants" {
   "$DISTRIBUTED_BIN" dev --root "$ROOT" > "$DEV_LOG" 2>&1 &
   SUPERVISOR_PID=$!
 
