@@ -106,6 +106,12 @@ jobs:
       - name: Install UI deps
         run: make ui-install
 
+      # Build first so dev starts from the same coherent, warm generation that
+      # users get after `distributed build`, rather than racing a cold Cargo
+      # compile against the readiness deadline.
+      - name: Build application with Distributed
+        run: ../../target/debug/distributed build . --output json
+
       - name: Start application with Distributed dev
         run: |
           set -euo pipefail

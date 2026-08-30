@@ -95,6 +95,20 @@ jobs:
       - name: Bring up Postgres + Zitadel and bootstrap OIDC
         run: make -C tests/e2e-ui up
 
+      # Finish every compile before celld starts watching the Worker project.
+      # The live phase should only execute already-built test binaries and the
+      # application lifecycle commands, so a cold cache cannot trigger celld
+      # hot reloads in the middle of an HTTP assertion.
+      - name: Build Distributed application and live test binaries
+        run: |
+          cargo build -p distributed_cli --bin distributed
+          target/debug/distributed build tests/e2e-celld --output json
+          cargo test --test celld --no-run
+          cargo test --test e2e_ui_celld_nats_profile \
+            --features graphql,http,sqlite --no-run
+          make -C tests/e2e-ui ui-install
+          npm install --prefix tests/e2e-ui
+
       - name: Bring up celld 0.4 + Queue relay + NATS
         run: |
           command -v celld
@@ -103,13 +117,6 @@ jobs:
 
       - name: Live celld HTTP + NATS profile tests
         run: make -C tests/e2e-ui test-celld
-
-      - name: Build Distributed CLI and e2e-celld application
-        run: |
-          cargo build -p distributed_cli --bin distributed
-          target/debug/distributed build tests/e2e-celld --output json
-          make -C tests/e2e-ui ui-install
-          npm install --prefix tests/e2e-ui
 
       - name: Start e2e-celld API with Distributed dev + shared UI
         run: |
