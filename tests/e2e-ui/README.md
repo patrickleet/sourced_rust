@@ -15,13 +15,14 @@ is the demo.
 
 ## Option A — local cluster + environment GitOps
 
-Start the kind control plane on Dory's Docker engine, then run the cluster and
-environment watchers in separate terminals:
+Start the kind control plane, then run the cluster and environment watchers in
+separate terminals. Hops uses Dory's socket automatically when it is available
+on macOS; CI uses the host Docker daemon:
 
 ```bash
 cd tests/e2e-ui
 hops local gitops cluster ./.gitops/local/cluster.yaml \
-  --cluster-provider kind --docker-provider dory \
+  --cluster-provider kind --docker-provider docker \
   --cluster-name e2e-ui --context kind-e2e-ui
 
 hops local gitops environment ./.gitops/local/environment.yaml \

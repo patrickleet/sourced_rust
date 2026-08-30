@@ -1,4 +1,4 @@
-name: e2e-ui fixture (offline + browser)
+name: e2e-ui fixture (offline + browser + local GitOps)
 
 # Nested Todos template under tests/e2e-ui — not the root workspace.
 # Local parity:
@@ -6,6 +6,7 @@ name: e2e-ui fixture (offline + browser)
 #   cd tests/e2e-ui && make test
 #   cd tests/e2e-ui && make ci-offline
 #   cd tests/e2e-ui && make up && make run   # distributed dev; then make test-browser
+#   cd tests/e2e-ui && hops local gitops cluster ./.gitops/local/cluster.yaml --once
 on:
   workflow_call:
 
@@ -190,3 +191,378 @@ jobs:
       - name: Tear down Docker
         if: always()
         run: docker compose -f docker/docker-compose.yml down -v || true
+
+  local-gitops:
+    name: e2e-ui Playwright (local GitOps kind)
+    runs-on: ubuntu-latest
+    timeout-minutes: 120
+    defaults:
+      run:
+        working-directory: tests/e2e-ui
+    env:
+      # Explicit deploy renderer support is merged in hops-cli #102. Keep the
+      # exact commit here until that change is included in a tagged release.
+      HOPS_CLI_REV: 339b32a81caaadb35e46f8be4c895d5a5dcc42e7
+      HOPS_KUBE_CONTEXT: kind-e2e-ui
+      HOPS_CLUSTER_NAME: e2e-ui
+
+    steps:
+      - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5
+        with:
+          persist-credentials: false
+
+      - uses: dtolnay/rust-toolchain@29eef336d9b2848a0b548edc03f92a220660cdb8
+        with:
+          toolchain: stable
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "22"
+          cache: npm
+          cache-dependency-path: |
+            js/package-lock.json
+            tests/e2e-ui/package-lock.json
+            tests/e2e-ui/ui/package-lock.json
+
+      - name: Install Kubernetes tools
+        run: |
+          set -euo pipefail
+          sudo apt-get update
+          sudo apt-get install -y jq openssl curl
+
+      - uses: azure/setup-kubectl@v4
+        with:
+          version: v1.32.0
+
+      - uses: azure/setup-helm@v4
+        with:
+          version: v3.17.3
+
+      - name: Install kind
+        run: |
+          set -euo pipefail
+          mkdir -p "$HOME/bin"
+          curl -fsSL \
+            https://kind.sigs.k8s.io/dl/v0.29.0/kind-linux-amd64 \
+            -o "$HOME/bin/kind"
+          chmod 0755 "$HOME/bin/kind"
+          echo "$HOME/bin" >> "$GITHUB_PATH"
+          export PATH="$HOME/bin:$PATH"
+          kind version
+
+      - name: Build hops CLI with local GitOps support
+        run: |
+          set -euo pipefail
+          cargo install \
+            --git https://github.com/hops-ops/hops-cli.git \
+            --rev "$HOPS_CLI_REV" \
+            --locked \
+            --root "$RUNNER_TEMP/hops-cli" \
+            --bin hops-cli
+          ln -sf "$RUNNER_TEMP/hops-cli/bin/hops-cli" "$RUNNER_TEMP/hops-cli/bin/hops"
+          echo "$RUNNER_TEMP/hops-cli/bin" >> "$GITHUB_PATH"
+          export PATH="$RUNNER_TEMP/hops-cli/bin:$PATH"
+          hops --version
+
+      - name: Start kind and apply the Cluster GitOps tree
+        run: |
+          set -euo pipefail
+
+          k() { kubectl --context "$HOPS_KUBE_CONTEXT" "$@"; }
+
+          # AuthStack intentionally references live local secrets. Create only
+          # disposable CI values once the API server exists, before the
+          # Cluster tree starts reconciling AuthStack and its providers.
+          (
+            for attempt in $(seq 1 300); do
+              if k get namespace default >/dev/null 2>&1; then
+                k apply -f - <<'EOF'
+          apiVersion: v1
+          kind: Namespace
+          metadata:
+            name: auth
+          ---
+          apiVersion: v1
+          kind: Secret
+          metadata:
+            name: zitadel-masterkey
+            namespace: auth
+          type: Opaque
+          stringData:
+            masterkey: MasterkeyNeedsToHave32Characters
+          ---
+          apiVersion: v1
+          kind: Secret
+          metadata:
+            name: aws-creds
+            namespace: default
+          type: Opaque
+          stringData:
+            credentials: |
+              [default]
+              aws_access_key_id = ci
+              aws_secret_access_key = ci
+          EOF
+                exit 0
+              fi
+              sleep 2
+            done
+            echo "kind API did not become available while Hops was starting the cluster" >&2
+            exit 1
+          ) &
+          secrets_pid=$!
+          trap 'kill "$secrets_pid" 2>/dev/null || true' EXIT
+
+          # The first pass may apply the Cluster tree before AuthStack has
+          # produced its iam-admin PAT. That is expected; the second pass below
+          # runs after hops local zitadel has materialized the provider secret.
+          set +e
+          hops local gitops cluster ./.gitops/local/cluster.yaml \
+            --cluster-provider kind \
+            --docker-provider docker \
+            --cluster-name "$HOPS_CLUSTER_NAME" \
+            --context "$HOPS_KUBE_CONTEXT" \
+            --once
+          first_status=$?
+          set -e
+          wait "$secrets_pid"
+          trap - EXIT
+
+          # Do not hide a failure to create the kind cluster itself.
+          k get nodes
+          if [ "$first_status" -ne 0 ]; then
+            echo "Initial Cluster reconcile returned $first_status; continuing after AuthStack bootstrap"
+          fi
+
+      - name: Wait for AuthStack bootstrap credentials
+        run: |
+          set -euo pipefail
+          k() { kubectl --context "$HOPS_KUBE_CONTEXT" "$@"; }
+          for attempt in $(seq 1 180); do
+            pat="$(k -n auth get secret iam-admin-pat -o jsonpath='{.data.pat}' 2>/dev/null || true)"
+            if [ -n "$pat" ]; then
+              echo "AuthStack iam-admin-pat is available"
+              exit 0
+            fi
+
+            # The initial Cluster reconcile also installs the Crossplane
+            # packages. Their CRDs are not available until those package
+            # revisions become healthy, so platform manifests that were
+            # intentionally skipped for an unknown kind need another
+            # declarative pass. Retry only while AuthStack itself is absent;
+            # once it exists, its controller owns the remaining bootstrap.
+            if [ $((attempt % 12)) -eq 0 ] && ! k -n default get authstack zitadel >/dev/null 2>&1; then
+              echo "AuthStack CRD/object is not ready; retrying Cluster GitOps reconcile"
+              set +e
+              hops local gitops cluster ./.gitops/local/cluster.yaml \
+                --cluster-provider kind \
+                --docker-provider docker \
+                --cluster-name "$HOPS_CLUSTER_NAME" \
+                --context "$HOPS_KUBE_CONTEXT" \
+                --once
+              retry_status=$?
+              set -e
+              echo "Cluster retry returned $retry_status"
+            fi
+            if [ $((attempt % 12)) -eq 0 ]; then
+              k -n auth get pods -o wide || true
+              k -n default get authstack zitadel -o wide || true
+            fi
+            sleep 5
+          done
+          echo "Timed out waiting for AuthStack iam-admin-pat" >&2
+          k -n auth get pods -o wide || true
+          k -n default get authstack zitadel -o yaml || true
+          exit 1
+
+      - name: Materialize the Zitadel provider Secret with hops CLI
+        run: |
+          set -euo pipefail
+          # The Cluster tree owns Provider/ProviderConfig YAML. This command
+          # only materializes the live credential Secret from AuthStack's PAT.
+          hops local zitadel \
+            --cluster-provider kind \
+            --docker-provider docker \
+            --cluster-name "$HOPS_CLUSTER_NAME" \
+            --context "$HOPS_KUBE_CONTEXT" \
+            --source-context "$HOPS_KUBE_CONTEXT" \
+            --source-namespace auth \
+            --source-secret-name iam-admin-pat \
+            --source-secret-key pat \
+            --domain zitadel-zitadel.auth.svc.cluster.local \
+            --port 8080 \
+            --insecure \
+            --refresh
+
+      - name: Materialize the local UI session Secret from AuthStack
+        run: |
+          set -euo pipefail
+          k() { kubectl --context "$HOPS_KUBE_CONTEXT" "$@"; }
+
+          # e2e-ui's custom Login V2 flow needs a stable Auth.js session key
+          # and the AuthStack-generated login-client PAT. The residual Secret
+          # is deliberately outside the Cluster/Environment source trees: it
+          # is local runtime state, just like the source PAT used above.
+          for attempt in $(seq 1 120); do
+            login_pat="$(k -n auth get secret login-client -o jsonpath='{.data.pat}' 2>/dev/null || true)"
+            if [ -n "$login_pat" ]; then
+              login_pat_value="$(printf '%s' "$login_pat" | base64 --decode)"
+              k -n local create secret generic e2e-ui-oidc \
+                --from-literal=AUTH_SECRET=local-gitops-ci-auth-secret \
+                --from-literal=ZITADEL_SERVICE_USER_TOKEN="$login_pat_value" \
+                --dry-run=client -o yaml | k apply -f -
+              echo "Materialized local e2e-ui-oidc session Secret"
+              exit 0
+            fi
+            sleep 5
+          done
+          echo "Timed out waiting for AuthStack login-client PAT" >&2
+          k -n auth get secret login-client -o yaml || true
+          exit 1
+
+      - name: Reconcile Cluster and Environment GitOps definitions
+        run: |
+          set -euo pipefail
+          k() { kubectl --context "$HOPS_KUBE_CONTEXT" "$@"; }
+
+          succeeded=0
+          for attempt in $(seq 1 18); do
+            if hops local gitops cluster ./.gitops/local/cluster.yaml \
+              --cluster-provider kind \
+              --docker-provider docker \
+              --cluster-name "$HOPS_CLUSTER_NAME" \
+              --context "$HOPS_KUBE_CONTEXT" \
+              --once; then
+              succeeded=1
+              break
+            fi
+            echo "Cluster/Environment reconcile not ready (attempt $attempt/18); retrying"
+            sleep 10
+          done
+          test "$succeeded" = 1
+
+          # Exercise the reusable Environment entry point explicitly as well;
+          # the Cluster controller also discovers this file automatically.
+          hops local gitops environment ./.gitops/local/environment.yaml \
+            --cluster-provider kind \
+            --docker-provider docker \
+            --cluster-name "$HOPS_CLUSTER_NAME" \
+            --context "$HOPS_KUBE_CONTEXT" \
+            --once
+
+      - name: Wait for app, identity, and auth services
+        run: |
+          set -euo pipefail
+          k() { kubectl --context "$HOPS_KUBE_CONTEXT" "$@"; }
+
+          k -n auth wait --for=condition=Available \
+            deployment/zitadel-zitadel --timeout=900s
+          k -n default wait --for=condition=Ready \
+            "projects.project.zitadel.m.crossplane.io/e2e-ui" --timeout=600s
+          k -n local wait --for=condition=Ready \
+            "oidc.application.zitadel.m.crossplane.io/e2e-ui-local-web-g1" \
+            --timeout=600s
+          k -n local wait --for=condition=Ready \
+            "features.instance.zitadel.m.crossplane.io/e2e-ui-login-v2" \
+            --timeout=600s
+          k -n local wait --for=create \
+            secret/e2e-ui-local-oidc-conn-g1 --timeout=600s
+          for user in alice bob admin; do
+            k -n default wait --for=condition=Ready \
+              "humanuser.auth.hops.ops.com.ai/e2e-$user" --timeout=600s
+          done
+
+          k -n local wait --for=condition=Available \
+            deployment/e2e-ui-api deployment/e2e-ui-ui --timeout=900s
+
+      - name: Install Playwright + Chromium
+        run: |
+          set -euo pipefail
+          npm ci
+          npx playwright install chromium --with-deps
+
+      - name: Port-forward the Kubernetes services and run browser e2e
+        run: |
+          set -euo pipefail
+          k() { kubectl --context "$HOPS_KUBE_CONTEXT" "$@"; }
+
+          # The app intentionally advertises service DNS names in AUTH_URL and
+          # OIDC redirects. Map those names to the local port-forwards so the
+          # browser follows the same URLs it uses inside the cluster.
+          sudo sed -i '/# hops e2e-ui local GitOps/d' /etc/hosts
+          printf '%s\n' \
+            '127.0.0.1 e2e-ui-ui.local.svc.cluster.local e2e-ui-api.local.svc.cluster.local zitadel-zitadel.auth.svc.cluster.local # hops e2e-ui local GitOps' \
+            | sudo tee -a /etc/hosts >/dev/null
+
+          k -n local port-forward --address 127.0.0.1 svc/e2e-ui-ui 5180:5180 > .ci-ui-port-forward.log 2>&1 &
+          echo $! > .ci-ui-port-forward.pid
+          k -n local port-forward --address 127.0.0.1 svc/e2e-ui-api 8791:8791 > .ci-api-port-forward.log 2>&1 &
+          echo $! > .ci-api-port-forward.pid
+          k -n auth port-forward --address 127.0.0.1 svc/zitadel-zitadel 8080:8080 > .ci-zitadel-port-forward.log 2>&1 &
+          echo $! > .ci-zitadel-port-forward.pid
+
+          for attempt in $(seq 1 120); do
+            ui_code="$(curl -sS -o /dev/null -w '%{http_code}' \
+              --noproxy '*' \
+              http://e2e-ui-ui.local.svc.cluster.local:5180/ || true)"
+            oidc_code="$(curl -sS -o /dev/null -w '%{http_code}' \
+              --noproxy '*' \
+              http://zitadel-zitadel.auth.svc.cluster.local:8080/.well-known/openid-configuration || true)"
+            if [ "$ui_code" = 200 ] || [ "$ui_code" = 302 ] || [ "$ui_code" = 303 ]; then
+              if [ "$oidc_code" = 200 ]; then
+                break
+              fi
+            fi
+            sleep 2
+          done
+          test "$ui_code" = 200 -o "$ui_code" = 302 -o "$ui_code" = 303
+          test "$oidc_code" = 200
+
+          E2E_UI_ORIGIN=http://e2e-ui-ui.local.svc.cluster.local:5180 \
+          E2E_API_ORIGIN=http://e2e-ui-api.local.svc.cluster.local:8791 \
+            npm run test:browser
+
+      - name: Upload Kubernetes Playwright report
+        if: failure()
+        uses: actions/upload-artifact@v4
+        with:
+          name: e2e-ui-k8s-playwright-report
+          path: |
+            tests/e2e-ui/playwright-report
+            tests/e2e-ui/test-results
+          if-no-files-found: ignore
+          retention-days: 7
+
+      - name: Dump Kubernetes diagnostics on failure
+        if: failure()
+        run: |
+          set +e
+          kubectl --context "$HOPS_KUBE_CONTEXT" get pods -A -o wide
+          kubectl --context "$HOPS_KUBE_CONTEXT" get events -A --sort-by=.lastTimestamp
+          kubectl --context "$HOPS_KUBE_CONTEXT" -n local get all
+          kubectl --context "$HOPS_KUBE_CONTEXT" -n auth get all
+          for file in .ci-api-port-forward.log .ci-ui-port-forward.log .ci-zitadel-port-forward.log; do
+            echo "=== $file ==="
+            tail -100 "$file" 2>/dev/null || true
+          done
+
+      - name: Upload Kubernetes diagnostics
+        if: failure()
+        uses: actions/upload-artifact@v4
+        with:
+          name: e2e-ui-k8s-diagnostics
+          path: |
+            tests/e2e-ui/.ci-*-port-forward.log
+          if-no-files-found: ignore
+          retention-days: 7
+
+      - name: Tear down kind
+        if: always()
+        run: |
+          set +e
+          for file in .ci-api-port-forward.pid .ci-ui-port-forward.pid .ci-zitadel-port-forward.pid; do
+            if [ -f "$file" ]; then
+              kill "$(cat "$file")" 2>/dev/null || true
+            fi
+          done
+          kind delete cluster --name "$HOPS_CLUSTER_NAME" || true
