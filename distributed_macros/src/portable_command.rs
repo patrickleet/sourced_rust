@@ -224,7 +224,13 @@ pub fn expand(input: TokenStream) -> syn::Result<TokenStream> {
     let preview_reduce_known_record = args
         .preview_reduce_known_record
         .as_ref()
-        .map(|preview| quote! { .preview_reduce_known_record(#preview) });
+        .map(|preview| {
+            quote! {
+                .preview_reduce_known_record(
+                    (#preview).declared_in_rust_package(env!("CARGO_PKG_NAME"))
+                )
+            }
+        });
 
     let install_body = if let Some(handle) = &args.handle {
         if args.invoke.is_some() || args.payload.is_some() {

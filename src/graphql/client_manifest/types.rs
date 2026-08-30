@@ -861,6 +861,8 @@ pub struct ClientCommandPureReduce {
     pub wasm_package: String,
     #[serde(default, skip_serializing_if = "String::is_empty")]
     pub wasm_export: String,
+    #[serde(default, skip_serializing_if = "String::is_empty")]
+    pub wasm_rust_package: String,
     pub model: String,
     pub key: Vec<ClientCommandPureArg>,
     pub args: Vec<ClientCommandPureArg>,

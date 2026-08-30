@@ -8,7 +8,7 @@
 #                    # optional celld+NATS profile (not make run; CI live path)
 
 .PHONY: all up down run run-api stop test ci-offline test-domain test-suite \
-	test-browser test-browser-install js-install js-build wasm ui-install ui-build ui-check ui-test \
+	test-browser test-browser-install js-install js-build ui-install ui-build ui-check ui-test \
 	gen-client check-client contracts-check check clean help \
 	up-celld-nats down-celld-nats down-celld test-celld test-celld-http test-celld-nats
 
@@ -258,15 +258,9 @@ js-install:
 js-build: js-install
 	cd $(JS_DIR) && $(NPM) run build
 
-## blob-domain pure core → ui/src/lib/blob/pkg (wasm-pack; requires wasm32-unknown-unknown).
-wasm:
-	@command -v wasm-pack >/dev/null || { echo "wasm-pack required: cargo install wasm-pack"; exit 1; }
-	@rustup target list --installed | grep -q wasm32-unknown-unknown || rustup target add wasm32-unknown-unknown
-	@out="$(CURDIR)/ui/src/lib/blob/pkg"; \
-	  wasm-pack build crates/blob-domain --target web --out-dir "$$out" --out-name blob_wasm \
-	    -- --no-default-features --features wasm
-
-ui-install: js-build wasm
+## This fixture links checkout JS so CI exercises the framework source under test.
+## distributed build/dev owns every Rust/WASM pure declared by the application.
+ui-install: js-build
 	cd ui && $(NPM) install
 
 ui-build: ui-install
@@ -311,7 +305,6 @@ help:
 	@echo "  make run        coherent build + API + UI supervision (Vite HMR active)"
 	@echo "  make test       offline suite + UI structural"
 	@echo "  make ci-offline CI drift + offline suites with safe pipeline overlap"
-	@echo "  make wasm            blob-domain core → ui/src/lib/blob/pkg (wasm-pack)"
 	@echo "  make gen-client      typed Service → generated user/admin clients"
 	@echo "  make check-client    verify generated artifacts byte-for-byte"
 	@echo "  make down       playground docker compose down (not celld/NATS)"

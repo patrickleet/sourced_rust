@@ -28,6 +28,8 @@ pub struct DiscoveredLifecycleProject {
     pub application_package: String,
     /// Fully-qualified zero-argument Rust export used for typed introspection.
     pub application_entrypoint: String,
+    /// Resolved source directory of the `distributed` Rust dependency.
+    pub distributed_root: PathBuf,
     /// Cargo package containing the local runtime binary.
     pub runtime_package: String,
     /// Binary started by `distributed dev` and compiled by `distributed build`.
@@ -249,6 +251,7 @@ pub fn discover_lifecycle_project(
         name: project_name,
         application_package: application.package,
         application_entrypoint: entrypoint,
+        distributed_root,
         runtime_package: runtime.package,
         runtime_binary: runtime.binary,
         ui,

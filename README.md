@@ -28,7 +28,7 @@ sequenceDiagram
         Build-->>API: Command + query/subscription surfaces with RBAC
         Build-->>Projector: Server projection programs
         Build-->>Kit: Loaders, live operations, typed commands, replica plans
-        Build-->>Replica: Optimistic projection programs + optional Rust/WASM pures
+        Build-->>Replica: Optimistic projection programs + declared Rust/WASM pures
     end
 
     rect rgb(245, 255, 247)

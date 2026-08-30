@@ -34,6 +34,7 @@ use crate::lifecycle::{
 };
 use crate::manifest_harness::{run_manifest_harness, HarnessMode, HarnessOptions};
 use crate::skills::{embedded_skills, generate_skills, SkillsInitSpec, AGENTS_MD_FILE};
+use crate::wasm_pures::build_declared_wasm_pures;
 use crate::{
     generate_service_scaffold, package_name, render_atlas_schema, AtlasDatabaseUrl,
     AtlasSchemaSpec, BusTarget, FileMode, GeneratedFile, GithubRepo, GitopsPromoteTarget,
@@ -817,6 +818,7 @@ fn run_build(args: &BuildArgs, command_prefix: &[&str]) -> Result<(), Box<dyn Er
             if !args.check {
                 build_project_runtime(project)?;
                 validate_project_application(project, args.lock_timeout_ms)?;
+                prepare_project_wasm_pures(project)?;
                 build_project_ui(project)?;
             }
             eprintln!(
@@ -950,6 +952,30 @@ fn contextualize_project_application_error(
         project.application_package, project.application_entrypoint
     )
     .into()
+}
+
+fn prepare_project_wasm_pures(
+    project: &DiscoveredLifecycleProject,
+) -> Result<(), Box<dyn Error>> {
+    if project.ui.is_none() {
+        return Ok(());
+    }
+    let json = run_manifest_harness(
+        &HarnessOptions {
+            path: project.plan.root.clone(),
+            manifest_path: Some(project.plan.root.join("Cargo.toml")),
+            package: Some(project.application_package.clone()),
+            features: Vec::new(),
+            no_default_features: false,
+            entrypoint: Some(project.application_entrypoint.clone()),
+            distributed_path: Some(project.distributed_root.clone()),
+        },
+        HarnessMode::DescribeJson,
+    )?;
+    let manifest: serde_json::Value = serde_json::from_str(&json)?;
+    validate_manifest_json(&manifest)?;
+    build_declared_wasm_pures(&manifest, &project.plan.root)?;
+    Ok(())
 }
 
 fn build_project_ui(project: &DiscoveredLifecycleProject) -> Result<(), Box<dyn Error>> {
@@ -1493,6 +1519,16 @@ fn run_describe(args: &DescribeArgs) -> Result<(), Box<dyn Error>> {
             )?;
             let envelope: serde_json::Value = serde_json::from_str(&json)?;
             validate_manifest_json(&envelope)?;
+            if std::env::var_os("DISTRIBUTED_LIFECYCLE_ROOT").is_some()
+                && std::env::var_os("DISTRIBUTED_LIFECYCLE_CHECK").as_deref()
+                    != Some(std::ffi::OsStr::new("1"))
+            {
+                let root = PathBuf::from(
+                    std::env::var_os("DISTRIBUTED_LIFECYCLE_ROOT")
+                        .expect("lifecycle root was checked above"),
+                );
+                build_declared_wasm_pures(&envelope, &root)?;
+            }
             println!("{}", serde_json::to_string_pretty(&envelope)?);
             Ok(())
         }

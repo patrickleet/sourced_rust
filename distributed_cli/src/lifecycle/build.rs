@@ -378,6 +378,7 @@ pub fn run_lifecycle_project_build(
             node_id,
             &node.outputs,
             executor,
+            request.check,
             request.cancel.as_deref(),
         )?;
         let output_identities = collect_node_outputs(stage.path(), node_id, &graph)?;
@@ -609,6 +610,7 @@ fn execute_node(
     node_id: &str,
     declared_outputs: &BTreeSet<String>,
     executor: &LifecycleExecutor,
+    check: bool,
     cancel: Option<&AtomicBool>,
 ) -> Result<(), LifecycleError> {
     let root_value = root.to_string_lossy();
@@ -643,6 +645,10 @@ fn execute_node(
         .env("DISTRIBUTED_LIFECYCLE_ROOT", root)
         .env("DISTRIBUTED_LIFECYCLE_STAGE", stage)
         .env("DISTRIBUTED_LIFECYCLE_NODE", node_id)
+        .env(
+            "DISTRIBUTED_LIFECYCLE_CHECK",
+            if check { "1" } else { "0" },
+        )
         .stdout(stdout)
         .stderr(Stdio::piped());
     let mut child = command.spawn().map_err(|error| {

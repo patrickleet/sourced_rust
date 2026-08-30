@@ -42,8 +42,9 @@ authored crates and preserves the framework's separation of responsibility:
 - read models contribute query/subscription GraphQL surfaces and their RBAC;
 - projections map domain events to read-model mutations used by the server and
   browser optimism;
-- optional Rust/WASM pure functions cover optimistic transitions that cannot be
-  predicted from command inputs alone;
+- Rust/WASM pure functions cover optimistic transitions that cannot be
+  predicted from command inputs alone; once declared, they are required build
+  artifacts compiled by `distributed build` and `distributed dev` before Vite;
 - SvelteKit `+page.graphql` documents add page-level `@load` loaders and `@live`
   subscriptions, generated against the read-model query surface and hydrated
   into the browser replica.

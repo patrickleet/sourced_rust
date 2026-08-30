@@ -13,6 +13,7 @@ mod generate;
 pub mod lifecycle;
 mod manifest_harness;
 mod skills;
+mod wasm_pures;
 
 pub use atlas::{render_atlas_schema, AtlasDatabaseUrl, AtlasSchemaSpec};
 pub use cli::{

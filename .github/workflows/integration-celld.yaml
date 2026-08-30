@@ -102,11 +102,12 @@ jobs:
       - name: Build Distributed application and live test binaries
         run: |
           cargo build -p distributed_cli --bin distributed
+          make -C tests/e2e-ui ui-install
+          target/debug/distributed build tests/e2e-ui --output json
           target/debug/distributed build tests/e2e-celld --output json
           cargo test --test celld --no-run
           cargo test --test e2e_ui_celld_nats_profile \
             --features graphql,http,sqlite --no-run
-          make -C tests/e2e-ui ui-install
           npm install --prefix tests/e2e-ui
 
       - name: Bring up celld 0.4 + Queue relay + NATS

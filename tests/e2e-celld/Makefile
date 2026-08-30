@@ -7,7 +7,7 @@
 # the UI. WATCH=0 / WATCH_WORKER=0 disable those loops. CELLD_WATCH in
 # compose is the node's SQLite dir, not a source watcher.
 
-.PHONY: run stop test help wasm ensure-watch
+.PHONY: run stop test help ui-build ensure-watch
 
 BIND         ?= 127.0.0.1:8791
 API_PORT     ?= 8791
@@ -21,17 +21,20 @@ CELLD_URL    ?= http://127.0.0.1:$(CELLD_HTTP_PORT)
 NATS_PORT    ?= 14222
 NATS_URL     ?= nats://127.0.0.1:$(NATS_PORT)
 NPM          ?= npm
+DISTRIBUTED  ?= cargo run --quiet --manifest-path ../../Cargo.toml -p distributed_cli --bin distributed --
 WATCH        ?= 1
 WATCH_WORKER ?= 1
 DISTRIBUTED_INTERNAL_SECRET ?= test-only-internal-secret-change-me-2026
 
-wasm:
-	$(MAKE) -C ../e2e-ui wasm
+## The shared UI belongs to e2e-ui; its Distributed build owns declared WASM.
+ui-build:
+	$(MAKE) -C ../e2e-ui ui-install
+	$(DISTRIBUTED) build ../e2e-ui
 
 ensure-watch:
 	@command -v cargo-watch >/dev/null || { echo "installing cargo-watch…"; cargo install cargo-watch; }
 
-run: wasm $(if $(filter 1,$(WATCH) $(WATCH_WORKER)),ensure-watch)
+run: ui-build $(if $(filter 1,$(WATCH) $(WATCH_WORKER)),ensure-watch)
 	@set -e; \
 	if [ -f $(ENV_FILE) ]; then set -a; . ./$(ENV_FILE); set +a; fi; \
 	if [ -n "$${E2E_CELLD_DATABASE_URL:-}" ]; then export DATABASE_URL="$$E2E_CELLD_DATABASE_URL"; fi; \
