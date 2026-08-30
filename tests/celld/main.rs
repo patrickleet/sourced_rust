@@ -52,7 +52,7 @@ fn worker_declares_sqlite_todo_and_chat_cells() {
     assert_eq!(spec["queues"]["producers"][0]["binding"], "OUTBOX");
     assert_eq!(
         spec["queues"]["producers"][0]["queue"],
-        "distributed-domain-events"
+        "distributed-outbox"
     );
     assert!(spec["vars"].get("OUTBOX_DRAIN_URL").is_none());
 
@@ -105,7 +105,7 @@ fn relay_worker_consumes_events_queue_through_native_bus_boundary() {
     let spec: Value = serde_json::from_str(&wrangler).expect("relay wrangler json");
     assert_eq!(
         spec["queues"]["consumers"][0]["queue"],
-        "distributed-domain-events"
+        "distributed-outbox"
     );
     assert_eq!(
         spec["vars"]["CELLD_QUEUE_RELAY_URL"],

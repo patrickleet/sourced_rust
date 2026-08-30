@@ -5,11 +5,11 @@
   "queues": {
     "consumers": [
       {
-        "queue": "distributed-domain-events",
+        "queue": "distributed-outbox",
         "max_batch_size": 10,
         "max_batch_timeout": 5,
         "max_retries": 10,
-        "dead_letter_queue": "distributed-domain-events-dlq",
+        "dead_letter_queue": "distributed-outbox-dlq",
         "max_concurrency": 5,
         "retry_delay": 5
       }

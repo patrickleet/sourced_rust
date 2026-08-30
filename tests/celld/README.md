@@ -29,14 +29,14 @@ native `BusPublisher<B>` changes.
 
 The producer binding name is local to the Worker and may be any valid binding
 name. This fixture calls it `OUTBOX` because it is the aggregate's durable
-egress port; the fleet-wide Queue resource remains named
-`distributed-domain-events` to describe what it carries:
+egress port. The fleet-wide Queue resource is `distributed-outbox` because its
+role is the durable handoff from those aggregate outboxes to the bus:
 
 ```json
 {
   "queues": {
     "producers": [
-      { "binding": "OUTBOX", "queue": "distributed-domain-events" }
+      { "binding": "OUTBOX", "queue": "distributed-outbox" }
     ]
   }
 }
@@ -53,8 +53,8 @@ monitoring, and idempotent downstream handlers.
 Split a bounded context into one Queue per aggregate type only when the types
 need independent throughput, availability, pause/purge/redrive controls,
 security policy, or downstream transports. Each binding then names its own
-Queue, for example `TODO_OUTBOX` -> `todo-domain-events` and `CHAT_OUTBOX` ->
-`chat-domain-events`. This prevents one aggregate type's backlog from consuming
+Queue, for example `TODO_OUTBOX` -> `todo-outbox` and `CHAT_OUTBOX` ->
+`chat-outbox`. This prevents one aggregate type's backlog from consuming
 another type's relay capacity, at the cost of another Queue, consumer
 registration, DLQ, and set of operational signals for every shard.
 
