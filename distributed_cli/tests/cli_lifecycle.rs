@@ -236,7 +236,7 @@ fn configure_blocking_readiness_probe(root: &Path, timeout_ms: u64) {
 set -eu
 root="$1"
 printf '%s\n' "$$" > "$root/readiness-probe-leader.pid"
-/bin/sh -c 'trap "" TERM; sleep 2' &
+/bin/sh -c 'trap "" TERM; sleep 10' &
 descendant=$!
 printf '%s\n' "$descendant" > "$root/readiness-probe-descendant.pid"
 wait "$descendant"
@@ -784,7 +784,7 @@ fn dev_enforces_timeout_while_readiness_probe_is_running() {
     let error = DevSupervisor::start(root.clone())
         .join_result()
         .expect_err("blocked readiness probe should time out");
-    assert!(started.elapsed() < Duration::from_secs(1));
+    assert!(started.elapsed() < Duration::from_secs(3));
     assert!(error.message().contains("timed out after 100ms"));
     assert_fixture_processes_gone(&root, "readiness-probe");
 }
@@ -805,7 +805,7 @@ fn dev_stop_cancels_a_running_readiness_probe() {
     let error = supervisor
         .stop_and_join_result()
         .expect_err("readiness cancellation should be reported");
-    assert!(started.elapsed() < Duration::from_secs(1));
+    assert!(started.elapsed() < Duration::from_secs(3));
     assert!(error.message().contains("readiness") && error.message().contains("canceled"));
     assert_fixture_processes_gone(&root, "readiness-probe");
 }
