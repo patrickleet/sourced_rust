@@ -25,8 +25,15 @@ export {
 	type DistributedBoundaryVariableSources
 } from './boundary-variables.js';
 export {
+	DistributedSvelteKitBoundaryController,
+	type DistributedSvelteKitBoundaryInstance,
+	type SveltekitBoundaryLifecycleDiagnostic,
+	type SveltekitBoundaryRetention
+} from './boundary-lifecycle.js';
+export {
 	defineDistributedSvelteKitOperation,
 	provideDistributedSvelteKitClient,
+	retainDistributedSvelteKitBoundary,
 	useDistributedSvelteKitClient,
 	useDistributedSvelteKitCommands
 } from './context.js';

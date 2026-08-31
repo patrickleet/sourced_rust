@@ -13,6 +13,10 @@ import {
 	type DistributedBoundaryVariableSources
 } from './boundary-variables.js';
 import type {
+	DistributedSvelteKitBoundaryInstance,
+	SveltekitBoundaryRetention
+} from './boundary-lifecycle.js';
+import type {
 	DistributedSvelteKitClient,
 	SveltekitBoundOperation
 } from './replica.js';
@@ -73,6 +77,17 @@ export function useDistributedSvelteKitClient<
 /** Resolve the nearest generated command surface without a global proxy. */
 export function useDistributedSvelteKitCommands<TCommands>(): TCommands {
 	return useDistributedSvelteKitClient<TCommands>().commands;
+}
+
+/** Retain the generated selections owned by the nearest page/layout instance. */
+export function retainDistributedSvelteKitBoundary<TSession, TProps>(
+	instance: DistributedSvelteKitBoundaryInstance,
+	context: import('./boundary-variables.js').DistributedBoundaryVariableContext<
+		TSession,
+		TProps
+	>
+): SveltekitBoundaryRetention {
+	return useDistributedSvelteKitClient<unknown>().retainBoundary(instance, context);
 }
 
 /**

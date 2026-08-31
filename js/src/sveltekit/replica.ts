@@ -31,6 +31,12 @@ import {
 	type DistributedBoundaryVariableContext
 } from './boundary-variables.js';
 import {
+	DistributedSvelteKitBoundaryController,
+	type DistributedSvelteKitBoundaryInstance,
+	type SveltekitBoundaryLifecycleDiagnostic,
+	type SveltekitBoundaryRetention
+} from './boundary-lifecycle.js';
+import {
 	distributedReloadLifecycle,
 	registerDistributedReloadClient,
 	type DistributedReloadOptions
@@ -124,6 +130,8 @@ export type CreateDistributedSvelteKitOptions<TCommands = Readonly<Record<never,
 		replica?: Omit<DistributedReplicaOptions, 'transport'>;
 		/** Generated boundary operations accepted by this component-tree client. */
 		boundaries?: readonly DistributedBoundaryOperation[];
+		/** Redacted structural lifecycle events for boundary ownership diagnostics. */
+		onBoundaryDiagnostic?: (event: SveltekitBoundaryLifecycleDiagnostic) => void;
 		onAuthError?: (error: unknown) => void;
 		/** Generated clients supply the surface key; apps may declare safe state partitions. */
 		reload?: DistributedReloadOptions;
@@ -212,6 +220,11 @@ export type DistributedSvelteKitClient<TCommands> = Readonly<{
 	>(
 		operation: DistributedBoundaryOperation<TData, TVariables, TSession, TProps>
 	): SveltekitBoundBoundaryOperation<TData, TVariables, TSession, TProps>;
+	/** Retain every generated selection owned by one mounted page/layout instance. */
+	retainBoundary<TSession, TProps>(
+		instance: DistributedSvelteKitBoundaryInstance,
+		context: DistributedBoundaryVariableContext<TSession, TProps>
+	): SveltekitBoundaryRetention;
 	/**
 	 * Apply a server seed. A malformed or mismatched seed closes the old
 	 * generation and returns false so the bound operation refetches.
@@ -276,12 +289,16 @@ export function createDistributedSvelteKit<TCommands = Readonly<Record<never, ne
 	}
 
 	let replica: DistributedReplica | undefined;
+	let boundaryController: DistributedSvelteKitBoundaryController | undefined;
 	const boundaryIds = Object.freeze(
 		[...new Set((options.boundaries ?? []).map(({ binding }) => binding.id))].sort()
 	);
 	const auth = createAuthorizationFence(
 		options.session,
-		() => replica?.invalidateAuthorization(),
+		() => {
+			boundaryController?.disposeScope();
+			replica?.invalidateAuthorization();
+		},
 		options.onAuthError
 	);
 	const configuredUrl = options.url;
@@ -298,8 +315,17 @@ export function createDistributedSvelteKit<TCommands = Readonly<Record<never, ne
 	});
 	replica = createDistributedReplica({
 		transport,
-		...(options.replica ?? {})
+		...(options.replica ?? {}),
+		onAuthorizationGenerationDispose: () => {
+			boundaryController?.disposeScope();
+			options.replica?.onAuthorizationGenerationDispose?.();
+		}
 	});
+	boundaryController = new DistributedSvelteKitBoundaryController(
+		replica,
+		options.boundaries ?? [],
+		options.onBoundaryDiagnostic
+	);
 
 	const stores = new Set<SveltekitQueryStoreImpl<unknown>>();
 	const pending = new PendingReceiptStore();
@@ -329,7 +355,10 @@ export function createDistributedSvelteKit<TCommands = Readonly<Record<never, ne
 		} catch {
 			accepted = false;
 		}
-		if (!accepted) replica!.invalidateAuthorization();
+		if (!accepted) {
+			boundaryController!.disposeScope();
+			replica!.invalidateAuthorization();
+		}
 		return accepted;
 	};
 	if (options.hydration !== undefined && options.authority !== undefined) {
@@ -431,17 +460,27 @@ export function createDistributedSvelteKit<TCommands = Readonly<Record<never, ne
 		commands,
 		operation,
 		boundary,
+		retainBoundary(instance, context) {
+			if (destroyed) {
+				throw new Error('Distributed SvelteKit client is destroyed');
+			}
+			return boundaryController!.retain(instance, context);
+		},
 		hydrate,
 		prefetch(artifact, variables) {
 			return prefetchReplicaOperation(replica!, artifact, variables);
 		},
 		invalidateAuthorization(): void {
-			if (!destroyed) replica!.invalidateAuthorization();
+			if (!destroyed) {
+				boundaryController!.disposeScope();
+				replica!.invalidateAuthorization();
+			}
 		},
 		destroy(): void {
 			if (destroyed) return;
 			destroyed = true;
 			auth.dispose();
+			boundaryController!.destroy();
 			for (const store of [...stores]) store.destroy();
 			stores.clear();
 			pending.clear();

@@ -423,6 +423,7 @@ fn render_sveltekit(
         "DISTRIBUTED_ISLAND_OPERATIONS".to_string(),
         "PROJECTOR_ARTIFACTS".to_string(),
         "provideDistributed".to_string(),
+        "retainBoundary".to_string(),
         "useCommands".to_string(),
     ]);
     if !manifest.commands.is_empty() {
@@ -459,13 +460,17 @@ fn render_sveltekit(
             "  createDistributedSvelteKit,",
             "  defineDistributedSvelteKitOperation,",
             "  provideDistributedSvelteKitClient,",
+            "  retainDistributedSvelteKitBoundary,",
             "  useDistributedSvelteKitCommands",
             "} from '@hops-ops/distributed/sveltekit';",
             "",
             "import type {",
             "  CreateDistributedSvelteKitOptions,",
+            "  DistributedBoundaryVariableContext,",
             "  DistributedReloadOptions,",
-            "  DistributedSvelteKitClient",
+            "  DistributedSvelteKitBoundaryInstance,",
+            "  DistributedSvelteKitClient,",
+            "  SveltekitBoundaryRetention",
             "} from '@hops-ops/distributed/sveltekit';",
         ]
         .join("\n"),
@@ -547,6 +552,14 @@ fn render_sveltekit(
             "/** Resolve the nearest generated command surface during component initialization. */",
             "export function useCommands(): GeneratedCommands {",
             "  return useDistributedSvelteKitCommands<GeneratedCommands>();",
+            "}",
+            "",
+            "/** Retain all generated selections for one mounted page/layout instance. */",
+            "export function retainBoundary<TSession, TProps>(",
+            "  instance: DistributedSvelteKitBoundaryInstance,",
+            "  context: DistributedBoundaryVariableContext<TSession, TProps>",
+            "): SveltekitBoundaryRetention {",
+            "  return retainDistributedSvelteKitBoundary(instance, context);",
             "}",
         ]
         .into_iter()

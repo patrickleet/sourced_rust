@@ -4,9 +4,11 @@ import test from 'node:test';
 import {
 	createDistributedSvelteKit,
 	createDistributedSvelteKitServer,
+	DistributedSvelteKitBoundaryController,
 	defineDistributedBoundaryBinding,
 	defineDistributedBoundaryOperation
 } from '../dist/sveltekit/index.js';
+import { createDistributedReplica } from '../dist/replica/index.js';
 import {
 	REACT_FIXTURE_SCHEMA,
 	TodosArtifact,
@@ -376,4 +378,218 @@ test('boundary SSR preserves successful siblings on partial failure and aborts h
 	controller.abort();
 	await assert.rejects(held, (error) => error.name === 'AbortError');
 	assert.equal(transportAborted, true);
+});
+
+test('boundary controller retains layouts, replaces pages, and closes one shared live subscription', async () => {
+	const layout = operationAt({
+		name: 'LayoutItems', route: '/items', kind: 'layout', limit: 20
+	});
+	const page = operationAt({
+		name: 'PageItems', route: '/items/[itemId]', kind: 'page', limit: 20
+	});
+	const nonLiveArtifact = Object.freeze({
+		...Object.fromEntries(
+			Object.entries(BoundTodosArtifact).filter(([key]) => key !== 'live')
+		),
+		id: 'bound-todos-static-v1',
+		protocol: Object.freeze({
+			...BoundTodosArtifact.protocol,
+			operation: 'bound-todos-static-v1'
+		})
+	});
+	const nonLive = defineDistributedBoundaryOperation(
+		{
+			operation: 'StaticItems',
+			route: '/static',
+			kind: 'page',
+			discovery: 'explicit'
+		},
+		nonLiveArtifact,
+		defineDistributedBoundaryBinding(nonLiveArtifact, layout.binding.sources)
+	);
+	const subscriptions = [];
+	let unsubscribes = 0;
+	const diagnostics = [];
+	const replica = createDistributedReplica({
+		transport: {
+			async fetch(request) {
+				return todoFrame(
+					request.artifact,
+					[{ id: 'todo-live', title: 'live', status: 'open' }],
+					{ cacheScope: 'cache:owner-1', position: '1' }
+				);
+			},
+			subscribe(request, observer) {
+				const subscription = { request, observer, closed: false };
+				subscriptions.push(subscription);
+				return () => {
+					if (subscription.closed) return;
+					subscription.closed = true;
+					unsubscribes += 1;
+				};
+			}
+		}
+	});
+	const controller = new DistributedSvelteKitBoundaryController(
+		replica,
+		[layout, page, nonLive],
+		(event) => diagnostics.push(event)
+	);
+	const selected = context();
+	const layoutOwner = controller.retain(
+		{ id: 'layout-instance', route: '/items', kind: 'layout' },
+		selected
+	);
+	assert.equal(subscriptions.length, 1);
+	const pageOwner = controller.retain(
+		{ id: 'page-instance-a', route: '/items/[itemId]', kind: 'page' },
+		selected
+	);
+	assert.equal(
+		subscriptions.length,
+		1,
+		'layout and page reuse the core canonical live subscription'
+	);
+	const hmrOwner = controller.retain(
+		{ id: 'layout-instance', route: '/items', kind: 'layout' },
+		selected
+	);
+	pageOwner.release();
+	pageOwner.release();
+	assert.equal(unsubscribes, 0, 'releasing one owner preserves the layout watch');
+	layoutOwner.release();
+	assert.equal(unsubscribes, 0, 'a repeated instance retain is independently released');
+	hmrOwner.release();
+	assert.equal(unsubscribes, 1, 'the final canonical owner closes exactly once');
+	const staticOwner = controller.retain(
+		{ id: 'static-page', route: '/static', kind: 'page' },
+		selected
+	);
+	assert.equal(
+		subscriptions.length,
+		1,
+		'load-only boundaries retain selection without opening live transport work'
+	);
+	staticOwner.release();
+	assert.equal(unsubscribes, 1);
+
+	const nextContext = Object.freeze({
+		...selected,
+		params: Object.freeze({ itemId: 'next-item' })
+	});
+	const retainedLayout = controller.retain(
+		{ id: 'layout-instance-b', route: '/items', kind: 'layout' },
+		selected
+	);
+	const nextPage = controller.retain(
+		{ id: 'page-instance-b', route: '/items/[itemId]', kind: 'page' },
+		nextContext
+	);
+	assert.equal(subscriptions.length, 3, 'a new canonical page identity gets its own live work');
+	controller.disposeScope();
+	assert.equal(unsubscribes, 3, 'scope disposal closes layout and page work before reuse');
+	retainedLayout.release();
+	nextPage.release();
+
+	const afterScope = controller.retain(
+		{ id: 'layout-instance-b', route: '/items', kind: 'layout' },
+		selected
+	);
+	afterScope.release();
+	assert.equal(unsubscribes, 4, 'the controller is reusable for the new scope generation');
+	assert.ok(diagnostics.some(({ action }) => action === 'retain'));
+	assert.ok(diagnostics.some(({ action }) => action === 'scope-dispose'));
+	assert.equal(
+		diagnostics.filter(({ action }) => action === 'final-unsubscribe').length,
+		4
+	);
+	assert.doesNotMatch(JSON.stringify(diagnostics), /owner-1|next-item/);
+	controller.destroy();
+});
+
+test('server scope transition disposes retained boundaries before old work can continue', async () => {
+	class FakeWebSocket {
+		static CONNECTING = 0;
+		static OPEN = 1;
+		static CLOSING = 2;
+		static CLOSED = 3;
+		static instances = [];
+		readyState = FakeWebSocket.CONNECTING;
+		closed = false;
+
+		constructor() {
+			FakeWebSocket.instances.push(this);
+		}
+
+		send() {}
+
+		close() {
+			this.closed = true;
+			this.readyState = FakeWebSocket.CLOSED;
+		}
+
+		message(value) {
+			this.onmessage?.({ data: JSON.stringify(value) });
+		}
+	}
+
+	const diagnostics = [];
+	const boundary = operationAt({
+		name: 'ScopedItems', route: '/items', kind: 'layout', limit: 20
+	});
+	const client = createDistributedSvelteKit({
+		session: { getAuth: () => ({ userId: 'owner-1', role: 'user' }) },
+		boundaries: [boundary],
+		webSocket: FakeWebSocket,
+		onBoundaryDiagnostic: (event) => diagnostics.push(event),
+		async fetch(_url, init) {
+			const request = JSON.parse(init.body);
+			return jsonResponse(
+				todoFrame(
+					BoundTodosArtifact,
+					[{ id: `todo-${request.variables.limit}`, title: 'scope', status: 'open' }],
+					{ cacheScope: 'cache:owner-1', position: '1' }
+				)
+			);
+		}
+	});
+	const retained = client.retainBoundary(
+		{ id: 'scope-layout', route: '/items', kind: 'layout' },
+		context()
+	);
+	await new Promise((resolve) => setTimeout(resolve, 0));
+	assert.equal(FakeWebSocket.instances.length, 1);
+	assert.equal(client.replica.scope?.cacheScope, 'cache:owner-1');
+	const variables = boundary.binding.resolve(context());
+	client.replica.writeResult(
+		BoundTodosArtifact,
+		variables,
+		todoFrame(
+			BoundTodosArtifact,
+			[{ id: 'todo-next', title: 'new scope', status: 'open' }],
+			{ cacheScope: 'cache:owner-2', authorizationGeneration: 'auth-2', position: '2' }
+		),
+		'network'
+	);
+	assert.equal(FakeWebSocket.instances[0].closed, true);
+	assert.equal(client.replica.scope?.cacheScope, 'cache:owner-2');
+	assert.deepEqual(
+		diagnostics.slice(-2).map(({ action }) => action),
+		['scope-dispose', 'final-unsubscribe']
+	);
+	FakeWebSocket.instances[0].message({
+		type: 'next',
+		id: '1',
+		payload: todoFrame(
+			BoundTodosArtifact,
+			[{ id: 'todo-old', title: 'late old scope', status: 'open' }],
+			{ cacheScope: 'cache:owner-1', position: '3', source: 'live' }
+		)
+	});
+	assert.equal(
+		client.replica.read(BoundTodosArtifact, variables).data.todos?.[0]?.title,
+		'new scope'
+	);
+	retained.release();
+	client.destroy();
 });

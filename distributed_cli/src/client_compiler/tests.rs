@@ -2460,6 +2460,8 @@ fn explicit_load_registration_is_the_documented_fallback() {
         "{sveltekit}"
     );
     assert!(sveltekit.contains("export function provideDistributed("));
+    assert!(sveltekit.contains("export function retainBoundary<TSession, TProps>("));
+    assert!(sveltekit.contains("return retainDistributedSvelteKitBoundary(instance, context);"));
     assert!(sveltekit.contains("export function useCommands(): GeneratedCommands"));
     assert!(sveltekit.contains("export type GeneratedCommands = Readonly<Record<never, never>>;"));
     assert!(!sveltekit.contains("createGeneratedCommands"));

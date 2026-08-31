@@ -725,6 +725,11 @@ export type WatchReplicaOptions = {
 export type DistributedReplicaOptions = {
 	readonly transport?: ReplicaTransport;
 	readonly onObserverError?: (error: AggregateError) => void;
+	/**
+	 * Runs after the old generation is fenced and before its transports/state
+	 * are purged. Framework adapters use this to release generation-owned views.
+	 */
+	readonly onAuthorizationGenerationDispose?: () => void;
 	/** Opt-in framework-neutral diagnostics; absent in production by default. */
 	readonly diagnostics?: ReplicaDiagnosticsSink;
 };
