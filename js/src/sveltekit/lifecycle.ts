@@ -180,6 +180,10 @@ export function registerDistributedReloadClient(
 }
 
 let sharedLifecycle: DistributedReloadLifecycle | undefined;
+// Schedule from the completed request, leaving a full idle window between
+// heartbeats. Besides reducing background work, this preserves browser tooling
+// that defines network-idle as 500 ms without an in-flight request.
+const LIFECYCLE_POLL_INTERVAL_MS = 1_000;
 
 /** Browser singleton used by every generated SvelteKit surface in one page. */
 export function distributedReloadLifecycle(): DistributedReloadLifecycle {
@@ -245,7 +249,7 @@ function createDistributedReloadLifecycle(): DistributedReloadLifecycle {
 			// during an already-observed transition.
 			if (preparing !== undefined) blocked = true;
 		} finally {
-			if (!destroyed) timer = setTimeout(() => void poll(), 200);
+			if (!destroyed) timer = setTimeout(() => void poll(), LIFECYCLE_POLL_INTERVAL_MS);
 		}
 	};
 
