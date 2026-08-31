@@ -33,6 +33,8 @@ import {
 import {
 	DistributedSvelteKitBoundaryController,
 	type DistributedSvelteKitBoundaryInstance,
+	type DistributedSvelteKitBoundaryLocation,
+	type DistributedSvelteKitLocationContext,
 	type SveltekitBoundaryLifecycleDiagnostic,
 	type SveltekitBoundaryRetention
 } from './boundary-lifecycle.js';
@@ -129,7 +131,7 @@ export type CreateDistributedSvelteKitOptions<TCommands = Readonly<Record<never,
 		createCommands?: SveltekitCommandRuntimeFactory<TCommands>;
 		replica?: Omit<DistributedReplicaOptions, 'transport'>;
 		/** Generated boundary operations accepted by this component-tree client. */
-		boundaries?: readonly DistributedBoundaryOperation[];
+		boundaries: readonly DistributedBoundaryOperation[];
 		/** Redacted structural lifecycle events for boundary ownership diagnostics. */
 		onBoundaryDiagnostic?: (event: SveltekitBoundaryLifecycleDiagnostic) => void;
 		onAuthError?: (error: unknown) => void;
@@ -225,6 +227,16 @@ export type DistributedSvelteKitClient<TCommands> = Readonly<{
 		instance: DistributedSvelteKitBoundaryInstance,
 		context: DistributedBoundaryVariableContext<TSession, TProps>
 	): SveltekitBoundaryRetention;
+	/** Retain the nearest generated page/layout boundary at this location. */
+	retainLocation<TSession, TProps>(
+		location: DistributedSvelteKitBoundaryLocation,
+		context: DistributedSvelteKitLocationContext<TSession, TProps>
+	): SveltekitBoundaryRetention;
+	/** Prefetch the generated page and owning layout selections for a target URL. */
+	prefetchLocation<TSession, TProps>(
+		pathname: string,
+		context: DistributedSvelteKitLocationContext<TSession, TProps>
+	): Promise<void>;
 	/**
 	 * Apply a server seed. A malformed or mismatched seed closes the old
 	 * generation and returns false so the bound operation refetches.
@@ -279,6 +291,9 @@ export function createDistributedSvelteKit<TCommands = Readonly<Record<never, ne
 	) {
 		throw new TypeError('Distributed SvelteKit requires one session source');
 	}
+	if (!Array.isArray(options.boundaries)) {
+		throw new TypeError('Distributed SvelteKit requires generated boundary operations');
+	}
 	if (
 		(options.hydration === undefined) !==
 		(options.authority === undefined)
@@ -291,7 +306,7 @@ export function createDistributedSvelteKit<TCommands = Readonly<Record<never, ne
 	let replica: DistributedReplica | undefined;
 	let boundaryController: DistributedSvelteKitBoundaryController | undefined;
 	const boundaryIds = Object.freeze(
-		[...new Set((options.boundaries ?? []).map(({ binding }) => binding.id))].sort()
+		[...new Set(options.boundaries.map(({ binding }) => binding.id))].sort()
 	);
 	const auth = createAuthorizationFence(
 		options.session,
@@ -323,7 +338,7 @@ export function createDistributedSvelteKit<TCommands = Readonly<Record<never, ne
 	});
 	boundaryController = new DistributedSvelteKitBoundaryController(
 		replica,
-		options.boundaries ?? [],
+		options.boundaries,
 		options.onBoundaryDiagnostic
 	);
 
@@ -465,6 +480,20 @@ export function createDistributedSvelteKit<TCommands = Readonly<Record<never, ne
 				throw new Error('Distributed SvelteKit client is destroyed');
 			}
 			return boundaryController!.retain(instance, context);
+		},
+		retainLocation(location, context) {
+			if (destroyed) {
+				throw new Error('Distributed SvelteKit client is destroyed');
+			}
+			return boundaryController!.retainLocation(location, context);
+		},
+		prefetchLocation(pathname, context) {
+			if (destroyed) {
+				return Promise.reject(
+					new Error('Distributed SvelteKit client is destroyed')
+				);
+			}
+			return boundaryController!.prefetchLocation(pathname, context);
 		},
 		hydrate,
 		prefetch(artifact, variables) {

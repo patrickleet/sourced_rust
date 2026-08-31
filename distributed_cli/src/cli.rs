@@ -19,8 +19,8 @@ use std::sync::Arc;
 use std::time::Duration;
 
 use crate::client_compiler::{
-    compile_client, ClientCompileInput, ClientDocument, ClientRouteRegistration,
-    ClientSurfaceSelector, GeneratedClientFile, GeneratedClientProject,
+    compile_client, ClientCompileInput, ClientDocument, ClientSurfaceSelector,
+    GeneratedClientFile, GeneratedClientProject,
 };
 use crate::contracts::{
     contracts_accept, contracts_check, unknown_scope_diagnostic, ContractAcceptScope,
@@ -449,9 +449,6 @@ pub struct ClientArgs {
     /// GraphQL document glob. Repeat for multiple source roots.
     #[arg(long, required = true, value_name = "GLOB")]
     pub documents: Vec<String>,
-    /// Explicit @load fallback in OPERATION=/route form. Repeat as needed.
-    #[arg(long, value_name = "OPERATION=/route")]
-    pub route: Vec<String>,
     /// Generated artifact directory.
     #[arg(long, default_value = "src/generated/distributed")]
     pub out: PathBuf,
@@ -1647,14 +1644,7 @@ fn run_client(args: &ClientArgs) -> Result<(), Box<dyn Error>> {
         }
     };
     let documents = collect_client_documents(&args.documents)?;
-    let routes = args
-        .route
-        .iter()
-        .map(|registration| parse_client_route_registration(registration))
-        .collect::<Result<Vec<_>, _>>()?;
-    let project = compile_client(
-        ClientCompileInput::new(manifest, selector, documents).with_route_registrations(routes),
-    )?;
+    let project = compile_client(ClientCompileInput::new(manifest, selector, documents))?;
 
     if args.check {
         check_client_project(&args.out, &project)?;
@@ -1799,18 +1789,6 @@ fn insert_client_document_path(
     let source_path = portable_relative_path(relative)?;
     matched.entry(canonical).or_insert(source_path);
     Ok(())
-}
-
-fn parse_client_route_registration(value: &str) -> Result<ClientRouteRegistration, Box<dyn Error>> {
-    let Some((operation, route)) = value.split_once('=') else {
-        return Err(format!("invalid --route `{value}`; expected OPERATION=/route").into());
-    };
-    if operation.trim().is_empty() || route.trim().is_empty() {
-        return Err(
-            format!("invalid --route `{value}`; expected non-empty OPERATION=/route").into(),
-        );
-    }
-    Ok(ClientRouteRegistration::new(operation.trim(), route.trim()))
 }
 
 fn portable_relative_path(path: &Path) -> Result<String, Box<dyn Error>> {

@@ -4,13 +4,17 @@ import {
   createDistributedSvelteKit,
   defineDistributedSvelteKitOperation,
   provideDistributedSvelteKitClient,
+  retainDistributedSvelteKitBoundary,
   useDistributedSvelteKitCommands
 } from '@hops-ops/distributed/sveltekit';
 
 import type {
   CreateDistributedSvelteKitOptions,
+  DistributedBoundaryVariableContext,
   DistributedReloadOptions,
-  DistributedSvelteKitClient
+  DistributedSvelteKitBoundaryInstance,
+  DistributedSvelteKitClient,
+  SveltekitBoundaryRetention
 } from '@hops-ops/distributed/sveltekit';
 
 import {
@@ -48,3 +52,13 @@ export function provideDistributed(
 export function useCommands(): GeneratedCommands {
   return useDistributedSvelteKitCommands<GeneratedCommands>();
 }
+
+/** Retain all generated selections for one mounted page/layout instance. */
+export function retainBoundary<TSession, TProps>(
+  instance: DistributedSvelteKitBoundaryInstance,
+  context: DistributedBoundaryVariableContext<TSession, TProps>
+): SveltekitBoundaryRetention {
+  return retainDistributedSvelteKitBoundary(instance, context);
+}
+
+export { DISTRIBUTED_BOUNDARY_OPERATIONS, DISTRIBUTED_BOUNDARY_PLAN } from './boundaries.js';

@@ -27,6 +27,8 @@ export {
 export {
 	DistributedSvelteKitBoundaryController,
 	type DistributedSvelteKitBoundaryInstance,
+	type DistributedSvelteKitBoundaryLocation,
+	type DistributedSvelteKitLocationContext,
 	type SveltekitBoundaryLifecycleDiagnostic,
 	type SveltekitBoundaryRetention
 } from './boundary-lifecycle.js';
@@ -61,12 +63,7 @@ export {
 } from './replica.js';
 export {
 	createDistributedSvelteKitServer,
-	matchDistributedRoute,
-	registerDistributedRoute,
 	type CreateDistributedSvelteKitServerOptions,
-	type DistributedRouteOperation,
-	type DistributedRoutePlan,
-	type DistributedRouteVariables,
 	type DistributedSvelteKitServer,
 	type SveltekitServerLoadEventLike
 } from './server-replica.js';

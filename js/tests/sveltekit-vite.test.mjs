@@ -87,6 +87,8 @@ writeFileSync(
       id: surface + '-island-' + index,
       operation: 'Operation' + index,
 	  operationHash: 'hash-' + index,
+	  modulePath: 'operations/operation-' + index + '.ts',
+	  exportName: 'Operation_Operation' + index,
       source: { path: source, line: 1, column: 1 },
       directives: { load: true, live: false },
       liveCoverage: {
@@ -196,6 +198,8 @@ function islandInventory(source, operation = 'WidgetQuery', variables = []) {
 				id: `island-${operation}`,
 				operation,
 				operationHash: `hash-${operation}`,
+				modulePath: `operations/${operation.toLowerCase()}.ts`,
+				exportName: `Operation_${operation}`,
 				source: { path: source, line: 1, column: 1 },
 				directives: { load: true, live: false },
 				liveCoverage: {

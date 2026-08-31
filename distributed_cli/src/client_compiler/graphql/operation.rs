@@ -3,7 +3,6 @@ use super::*;
 pub(crate) fn compile_document(
     document: &ClientDocument,
     manifest: &ClientManifest,
-    registrations: &BTreeMap<String, String>,
 ) -> Result<CompiledOperation, ClientCompileError> {
     if document.source.len() > MAX_SOURCE_BYTES {
         return Err(source_error(
@@ -217,13 +216,6 @@ pub(crate) fn compile_document(
     } else {
         None
     };
-    let route = compile_route(
-        &name,
-        compiler_directives.load,
-        document,
-        registrations.get(&name),
-        operation.pos,
-    )?;
     let variable_constraints = operation_variable_constraints(&root);
     let variable_codec = compile_variable_codec(&variables, manifest, &variable_constraints)?;
     let module_stem = module_stem(&name);
@@ -241,7 +233,6 @@ pub(crate) fn compile_document(
         variables,
         variable_codec,
         root,
-        route,
     })
 }
 
@@ -373,68 +364,6 @@ pub(super) fn arguments_compatible(left: &[ManifestArgument], right: &[ManifestA
             .collect::<BTreeSet<_>>()
     };
     canonical(left) == canonical(right)
-}
-
-pub(super) fn compile_route(
-    operation: &str,
-    load: bool,
-    document: &ClientDocument,
-    registration: Option<&String>,
-    position: Pos,
-) -> Result<Option<GeneratedRoutePlan>, ClientCompileError> {
-    if !load {
-        return Ok(None);
-    }
-    if let Some(route) = infer_route(&document.path) {
-        if registration.is_some() {
-            return Err(source_error(
-                "client.route.redundant_registration",
-                format!(
-                    "`{operation}` is already discovered from `{}`; remove its explicit route registration",
-                    document.path
-                ),
-                document,
-                position,
-            ));
-        }
-        return Ok(Some(GeneratedRoutePlan {
-            operation: operation.to_string(),
-            route,
-            source_path: document.path.clone(),
-            discovery: ClientRouteDiscovery::Convention,
-        }));
-    }
-    let Some(route) = registration else {
-        // Component-owned load islands intentionally have no route here. The
-        // framework adapter must prove their static reachability and promote
-        // them to a page/layout boundary before application execution.
-        return Ok(None);
-    };
-    Ok(Some(GeneratedRoutePlan {
-        operation: operation.to_string(),
-        route: route.clone(),
-        source_path: document.path.clone(),
-        discovery: ClientRouteDiscovery::Explicit,
-    }))
-}
-
-pub(super) fn infer_route(path: &str) -> Option<String> {
-    let marker = "src/routes/";
-    let start = if path.starts_with(marker) {
-        marker.len()
-    } else {
-        path.find(&format!("/{marker}"))? + marker.len() + 1
-    };
-    let rest = path.get(start..)?;
-    if rest == "+page.graphql" {
-        return Some("/".into());
-    }
-    let directory = rest.strip_suffix("/+page.graphql")?;
-    if directory.is_empty() {
-        Some("/".into())
-    } else {
-        Some(format!("/{directory}"))
-    }
 }
 
 pub(super) fn render_operation(
@@ -653,21 +582,7 @@ pub(super) fn source_error(
 
 #[cfg(test)]
 mod local_tests {
-    use super::{infer_route, module_stem};
-
-    #[test]
-    fn route_convention_is_narrow() {
-        assert_eq!(
-            infer_route("src/routes/todos/+page.graphql").as_deref(),
-            Some("/todos")
-        );
-        assert_eq!(
-            infer_route("/tmp/app/src/routes/+page.graphql").as_deref(),
-            Some("/")
-        );
-        assert_eq!(infer_route("src/lib/todos.graphql"), None);
-        assert_eq!(infer_route("src/routes/todos/query.graphql"), None);
-    }
+    use super::module_stem;
 
     #[test]
     fn module_names_are_portable() {

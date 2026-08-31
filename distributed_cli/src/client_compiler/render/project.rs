@@ -7,7 +7,6 @@ use super::super::islands::{island_plan, GeneratedIslandInventory, ISLAND_PLAN_V
 use super::super::manifest::{canonical_json_value, ClientManifest, ManifestSurface};
 use super::super::{
     ClientCompileError, GeneratedClientFile, GeneratedClientProject, GeneratedOperationSummary,
-    GeneratedRoutePlan,
 };
 use super::commands::render_commands;
 use super::common::json_string;
@@ -23,8 +22,6 @@ pub(crate) fn render_project(
         .iter()
         .map(|operation| island_plan(manifest, operation))
         .collect::<Vec<_>>();
-    let mut routes = Vec::new();
-
     for operation in &operations {
         files.push(GeneratedClientFile {
             path: operation.module_path.clone(),
@@ -38,15 +35,7 @@ pub(crate) fn render_project(
             operation_hash: operation.query_hash.clone(),
             live_operation_hash: operation.live.as_ref().map(|live| live.hash.clone()),
         });
-        if let Some(route) = &operation.route {
-            routes.push(route.clone());
-        }
     }
-    routes.sort_by(|left, right| {
-        left.route
-            .cmp(&right.route)
-            .then_with(|| left.operation.cmp(&right.operation))
-    });
     files.push(GeneratedClientFile {
         path: "commands.ts".into(),
         contents: render_commands(manifest)?,
@@ -72,10 +61,6 @@ pub(crate) fn render_project(
         contents: render_islands(&islands, &operations)?,
     });
     files.push(GeneratedClientFile {
-        path: "routes.ts".into(),
-        contents: render_routes(&routes, &operations)?,
-    });
-    files.push(GeneratedClientFile {
         path: "sveltekit.ts".into(),
         contents: render_sveltekit(manifest, &operations)?,
     });
@@ -85,7 +70,7 @@ pub(crate) fn render_project(
     });
     files.push(GeneratedClientFile {
         path: "manifest.json".into(),
-        contents: render_compiler_manifest(manifest, &summaries, &islands, &routes)?,
+        contents: render_compiler_manifest(manifest, &summaries, &islands)?,
     });
     files.sort_by(|left, right| left.path.cmp(&right.path));
 
@@ -93,7 +78,6 @@ pub(crate) fn render_project(
         files,
         operations: summaries,
         islands,
-        routes,
         schema_fingerprint: manifest.schema_fingerprint.clone(),
         protocol_fingerprint: manifest.protocol_fingerprint.clone(),
     })
@@ -184,14 +168,12 @@ struct CompilerManifest<'a> {
     commands_requiring_revalidation: &'a BTreeSet<String>,
     operations: &'a [GeneratedOperationSummary],
     islands: &'a [super::super::GeneratedIslandPlan],
-    routes: &'a [GeneratedRoutePlan],
 }
 
 fn render_compiler_manifest(
     manifest: &ClientManifest,
     operations: &[GeneratedOperationSummary],
     islands: &[super::super::GeneratedIslandPlan],
-    routes: &[GeneratedRoutePlan],
 ) -> Result<String, ClientCompileError> {
     let provenance = CompilerManifest {
         compiler_manifest_version: 2,
@@ -205,7 +187,6 @@ fn render_compiler_manifest(
         commands_requiring_revalidation: &manifest.commands_requiring_revalidation,
         operations,
         islands,
-        routes,
     };
     serde_json::to_string_pretty(&provenance)
         .map(|rendered| format!("{rendered}\n"))
@@ -298,74 +279,12 @@ fn render_islands(
     ))
 }
 
-fn render_routes(
-    routes: &[GeneratedRoutePlan],
-    operations: &[CompiledOperation],
-) -> Result<String, ClientCompileError> {
-    let routes_json = serde_json::to_string_pretty(routes).map_err(|error| {
-        ClientCompileError::manifest(
-            "client.render.routes",
-            format!("failed to render route plan: {error}"),
-        )
-    })?;
-    let mut imports = Vec::new();
-    let mut bindings = Vec::new();
-    for (index, route) in routes.iter().enumerate() {
-        let operation = operations
-            .iter()
-            .find(|operation| operation.name == route.operation)
-            .ok_or_else(|| {
-                ClientCompileError::manifest(
-                    "client.render.routes",
-                    format!(
-                        "route `{}` references missing operation `{}`",
-                        route.route, route.operation
-                    ),
-                )
-            })?;
-        let module = operation
-            .module_path
-            .strip_suffix(".ts")
-            .expect("compiler module paths end in .ts");
-        imports.push(format!(
-            "import {{ {} }} from './{module}.js';",
-            operation.export_name
-        ));
-        bindings.push(format!(
-            "  {{ plan: DISTRIBUTED_ROUTES[{index}], artifact: {} }}",
-            operation.export_name
-        ));
-    }
-    let import_section = if imports.is_empty() {
-        String::new()
-    } else {
-        format!("{}\n\n", imports.join("\n"))
-    };
-    let bindings = if bindings.is_empty() {
-        "[]".to_string()
-    } else {
-        format!("[\n{}\n]", bindings.join(",\n"))
-    };
-    Ok(format!(
-        "{import_section}\
-         /** GENERATED framework-neutral `@load` ownership plan. */\n\
-         export const DISTRIBUTED_ROUTES = {routes_json} as const;\n\
-         \n\
-         /** Static route-to-artifact bindings consumed by framework SSR adapters. */\n\
-         export const DISTRIBUTED_ROUTE_OPERATIONS = {bindings} as const;\n\
-         \n\
-         export type DistributedRoutePlan = (typeof DISTRIBUTED_ROUTES)[number];\n\
-         export type DistributedRouteOperation = (typeof DISTRIBUTED_ROUTE_OPERATIONS)[number];\n"
-    ))
-}
-
 fn render_index(operations: &[CompiledOperation], has_pures: bool) -> String {
     let mut lines = vec![
         "/** GENERATED public entrypoint. */".to_string(),
         "export * from './commands.js';".into(),
         "export * from './islands.js';".into(),
         "export * from './protocol.js';".into(),
-        "export * from './routes.js';".into(),
     ];
     if has_pures {
         lines.push("export * from './pures.js';".into());
@@ -417,8 +336,6 @@ fn render_sveltekit(
     let mut value_exports = BTreeSet::from([
         "COMMAND_ARTIFACTS".to_string(),
         "COMMANDS".to_string(),
-        "DISTRIBUTED_ROUTES".to_string(),
-        "DISTRIBUTED_ROUTE_OPERATIONS".to_string(),
         "DISTRIBUTED_ISLANDS".to_string(),
         "DISTRIBUTED_ISLAND_OPERATIONS".to_string(),
         "PROJECTOR_ARTIFACTS".to_string(),

@@ -7,6 +7,8 @@ import type {
 
 const MAX_BOUNDARY_INSTANCES = 4_096;
 const MAX_INSTANCE_ID_BYTES = 512;
+const MAX_LOCATION_PATHNAME_BYTES = 8_192;
+const MAX_LOCATION_SEGMENTS = 256;
 
 export type DistributedSvelteKitBoundaryInstance = Readonly<{
 	/** Opaque identity for one mounted SvelteKit page or layout instance. */
@@ -14,6 +16,18 @@ export type DistributedSvelteKitBoundaryInstance = Readonly<{
 	route: string;
 	kind: 'layout' | 'page';
 }>;
+
+export type DistributedSvelteKitBoundaryLocation = Readonly<{
+	/** Opaque identity for one mounted page or layout instance. */
+	id: string;
+	pathname: string;
+	kind: 'layout' | 'page';
+}>;
+
+export type DistributedSvelteKitLocationContext<
+	TSession = unknown,
+	TProps = Readonly<Record<string, unknown>>
+> = Omit<DistributedBoundaryVariableContext<TSession, TProps>, 'params'>;
 
 export type SveltekitBoundaryLifecycleDiagnostic = Readonly<{
 	action:
@@ -146,6 +160,73 @@ export class DistributedSvelteKitBoundaryController {
 			});
 		}
 		return this.#lease(validated.id, retained);
+	}
+
+	/** Retain the nearest generated page/layout boundary at a browser location. */
+	retainLocation<TSession, TProps>(
+		location: DistributedSvelteKitBoundaryLocation,
+		context: DistributedSvelteKitLocationContext<TSession, TProps>
+	): SveltekitBoundaryRetention {
+		const matched = matchNearestBoundary(
+			this.#operations,
+			location.pathname,
+			location.kind
+		);
+		if (matched === undefined) {
+			return Object.freeze({ release: () => undefined });
+		}
+		return this.retain(
+			{
+				id: location.id,
+				route: matched.route,
+				kind: location.kind
+			},
+			Object.freeze({ ...context, params: matched.params })
+		);
+	}
+
+	/** Warm every generated page and owning layout selection for one target URL. */
+	async prefetchLocation<TSession, TProps>(
+		pathname: string,
+		context: DistributedSvelteKitLocationContext<TSession, TProps>
+	): Promise<void> {
+		if (this.#destroyed) {
+			throw new Error('Distributed SvelteKit boundary controller is destroyed');
+		}
+		const matches = matchLocationBoundaries(this.#operations, pathname);
+		const scheduled = new Map<string, ResolvedBoundary>();
+		for (const matched of matches) {
+			for (const item of this.#resolve(
+				{
+					id: 'prefetch',
+					route: matched.route,
+					kind: matched.kind,
+					boundary: `${matched.kind}:${matched.route}`
+				},
+				Object.freeze({ ...context, params: matched.params })
+			)) {
+				scheduled.set(item.identity, item);
+			}
+		}
+		await Promise.all(
+			[...scheduled.values()].map(async (item) => {
+				const snapshot = this.#replica.read(
+					item.operation.artifact,
+					item.variables
+				);
+				if (snapshot.complete && !snapshot.stale) return;
+				const watch = this.#replica.watch(
+					item.operation.artifact,
+					item.variables,
+					{ live: false }
+				);
+				try {
+					await watch.refresh();
+				} finally {
+					watch.destroy();
+				}
+			})
+		);
 	}
 
 	/** Close every old-scope owner while keeping the controller reusable. */
@@ -290,6 +371,161 @@ function normalizeRoute(value: string): string {
 	}
 	const normalized = value.length === 1 ? value : value.replace(/\/+$/, '');
 	return normalized.length === 0 ? '/' : normalized;
+}
+
+type MatchedBoundary = Readonly<{
+	route: string;
+	kind: 'layout' | 'page';
+	params: Readonly<Record<string, string | undefined>>;
+	specificity: number;
+}>;
+
+function matchNearestBoundary(
+	operations: readonly DistributedBoundaryOperation[],
+	pathname: string,
+	kind: 'layout' | 'page'
+): MatchedBoundary | undefined {
+	const matches = matchLocationBoundaries(operations, pathname).filter(
+		(candidate) => candidate.kind === kind
+	);
+	if (matches.length === 0) return undefined;
+	const mostSpecific = matches[0]!;
+	if (
+		matches[1] !== undefined &&
+		matches[1].specificity === mostSpecific.specificity
+	) {
+		throw new Error(
+			`Distributed SvelteKit boundary plan is ambiguous for this ${kind} location`
+		);
+	}
+	return mostSpecific;
+}
+
+function matchLocationBoundaries(
+	operations: readonly DistributedBoundaryOperation[],
+	pathname: string
+): readonly MatchedBoundary[] {
+	const routes = new Map<
+		string,
+		Readonly<{ route: string; kind: 'layout' | 'page' }>
+	>();
+	for (const { plan } of operations) {
+		routes.set(`${plan.kind}\u0000${plan.route}`, {
+			route: plan.route,
+			kind: plan.kind
+		});
+	}
+	const matches: MatchedBoundary[] = [];
+	for (const candidate of routes.values()) {
+		const matched = matchRoutePattern(
+			candidate.route,
+			pathname,
+			candidate.kind === 'layout'
+		);
+		if (matched !== undefined) {
+			matches.push(Object.freeze({ ...candidate, ...matched }));
+		}
+	}
+	return Object.freeze(
+		matches.sort(
+			(left, right) =>
+				right.specificity - left.specificity ||
+				left.kind.localeCompare(right.kind) ||
+				left.route.localeCompare(right.route)
+		)
+	);
+}
+
+function matchRoutePattern(
+	pattern: string,
+	pathname: string,
+	prefix: boolean
+): Readonly<{
+	params: Readonly<Record<string, string | undefined>>;
+	specificity: number;
+}> | undefined {
+	const route = normalizeRoute(pattern);
+	const path = normalizePathname(pathname);
+	const routeSegments = route
+		.split('/')
+		.filter(
+			(segment) => segment.length > 0 && !/^\(.+\)$/.test(segment)
+		);
+	const pathSegments = path.split('/').filter((segment) => segment.length > 0);
+	const params: Record<string, string | undefined> = Object.create(null);
+	let pathIndex = 0;
+	let specificity = 0;
+	for (let routeIndex = 0; routeIndex < routeSegments.length; routeIndex += 1) {
+		const segment = routeSegments[routeIndex]!;
+		// SvelteKit matcher functions are application code. The browser adapter
+		// cannot execute or guess them from a generated route pattern.
+		if (segment.startsWith('[') && segment.includes('=')) return undefined;
+		const rest = /^\[\[?\.\.\.([^\]=]+)(?:=[^\]]+)?\]?\]$/.exec(segment);
+		if (rest !== null) {
+			const values = pathSegments.slice(pathIndex).map(decodePathSegment);
+			if (values.some((value) => value === undefined)) return undefined;
+			params[rest[1]!] =
+				values.length === 0 ? undefined : (values as string[]).join('/');
+			pathIndex = pathSegments.length;
+			break;
+		}
+		const optional = /^\[\[([^\]=]+)(?:=[^\]]+)?\]\]$/.exec(segment);
+		if (optional !== null) {
+			const remainingRequired = routeSegments
+				.slice(routeIndex + 1)
+				.filter((part) => !/^\[\[/.test(part)).length;
+			if (pathSegments.length - pathIndex > remainingRequired) {
+				const value = decodePathSegment(pathSegments[pathIndex++]!);
+				if (value === undefined) return undefined;
+				params[optional[1]!] = value;
+			} else {
+				params[optional[1]!] = undefined;
+			}
+			continue;
+		}
+		const dynamic = /^\[([^\]=]+)(?:=[^\]]+)?\]$/.exec(segment);
+		if (dynamic !== null) {
+			if (pathSegments[pathIndex] === undefined) return undefined;
+			const value = decodePathSegment(pathSegments[pathIndex++]!);
+			if (value === undefined) return undefined;
+			params[dynamic[1]!] = value;
+			continue;
+		}
+		if (pathSegments[pathIndex] === undefined) return undefined;
+		const actual = decodePathSegment(pathSegments[pathIndex++]!);
+		if (actual === undefined || actual !== segment) return undefined;
+		specificity += 1;
+	}
+	if (!prefix && pathIndex !== pathSegments.length) return undefined;
+	return Object.freeze({
+		params: Object.freeze(params),
+		specificity: specificity * 1_000 + routeSegments.length
+	});
+}
+
+function normalizePathname(value: string): string {
+	if (
+		typeof value !== 'string' ||
+		!value.startsWith('/') ||
+		new TextEncoder().encode(value).byteLength > MAX_LOCATION_PATHNAME_BYTES ||
+		value.split('/').length - 1 > MAX_LOCATION_SEGMENTS
+	) {
+		throw new TypeError(
+			'Distributed SvelteKit location pathname is invalid or exceeds adapter limits'
+		);
+	}
+	const withoutQuery = value.split(/[?#]/u, 1)[0]!;
+	return withoutQuery.length === 1
+		? withoutQuery
+		: withoutQuery.replace(/\/+$/, '');
+}
+
+function decodePathSegment(value: string): string | undefined {
+	try {
+		return decodeURIComponent(value);
+	} catch {
+		return undefined;
+	}
 }
 
 function operationIdentity(

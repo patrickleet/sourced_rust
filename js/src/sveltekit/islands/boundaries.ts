@@ -42,6 +42,8 @@ export type DistributedIslandPlanInput = Readonly<{
 	id: string;
 	operation: string;
 	operationHash: string;
+	modulePath: string;
+	exportName: string;
 	source: Readonly<{ path: string; line: number; column: number }>;
 	directives: Readonly<{ load: boolean; live: boolean }>;
 	liveCoverage: Readonly<{
@@ -63,6 +65,8 @@ export type DistributedIslandPlanInput = Readonly<{
 export type DistributedSvelteKitBoundaryOccurrence = Readonly<{
 	islandId: string;
 	operation: string;
+	modulePath: string;
+	exportName: string;
 	component: string;
 	graphqlSource: string;
 	reason: 'route_document' | 'static_component_import' | 'explicit';
@@ -402,6 +406,8 @@ function occurrence(
 	return Object.freeze({
 		islandId: entry.island.id,
 		operation: entry.island.operation,
+		modulePath: entry.island.modulePath,
+		exportName: entry.island.exportName,
 		component: projectPath(cwd, component),
 		graphqlSource: entry.source,
 		reason,
@@ -895,6 +901,10 @@ function validateInventory(module: string, inventory: DistributedIslandInventory
 			island?.version !== 1 ||
 			typeof island.id !== 'string' ||
 			typeof island.operation !== 'string' ||
+			typeof island.modulePath !== 'string' ||
+			!island.modulePath.startsWith('operations/') ||
+			!island.modulePath.endsWith('.ts') ||
+			typeof island.exportName !== 'string' ||
 			typeof source?.path !== 'string' ||
 			!Number.isSafeInteger(source.line) ||
 			source.line < 1 ||

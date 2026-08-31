@@ -1,7 +1,9 @@
 import {
 	bindSveltekitOperation,
 	createDistributedSvelteKit,
-	createDistributedSvelteKitServer
+	createDistributedSvelteKitServer,
+	defineDistributedBoundaryBinding,
+	defineDistributedBoundaryOperation
 } from '@hops-ops/distributed/sveltekit';
 import { distributedSvelteKit } from '@hops-ops/distributed/sveltekit/vite';
 import type {
@@ -46,6 +48,7 @@ standaloneTodos.subscribe((snapshot) => {
 void standaloneTodos.refetch();
 
 const client = createDistributedSvelteKit({
+	boundaries: [],
 	session: {
 		getAuth: () => ({ accessToken: 'token' })
 	},
@@ -55,6 +58,15 @@ const todos = client.operation(Todos).use({}, { live: true });
 const selected = client.operation(TodoById).use({ id: 'todo-1' });
 selected.data.todo?.status;
 todos.pending.map((receipt) => receipt.status());
+client.retainLocation(
+	{ id: 'active-page', pathname: '/todos/todo-1', kind: 'page' },
+	{ search: new URLSearchParams(), session: null, props: {} }
+).release();
+void client.prefetchLocation('/todos/todo-1', {
+	search: new URLSearchParams(),
+	session: null,
+	props: {}
+});
 
 void client.commands.todo.complete({ todoId: 'todo-1' });
 // @ts-expect-error Generated command input remains exact through Svelte usage.
@@ -98,16 +110,16 @@ client.operation(TodoById).boundary(
 );
 
 createDistributedSvelteKitServer({
-	routes: [
+	boundaries: [defineDistributedBoundaryOperation(
 		{
-			plan: {
-				operation: 'Todos',
-				route: '/todos',
-				discovery: 'convention'
-			},
-			artifact: Todos
-		}
-	] as const,
+			operation: 'Todos',
+			route: '/todos',
+			kind: 'page',
+			discovery: 'route_document'
+		},
+		Todos,
+		defineDistributedBoundaryBinding(Todos, {})
+	)],
 	getSession: async () => null,
 	getRole: () => 'user'
 });

@@ -402,7 +402,6 @@ fn generate_then_check_accepts_the_exact_artifact_tree() {
         "manifest.json",
         "operations/todos.ts",
         "protocol.ts",
-        "routes.ts",
         "sveltekit.ts",
     ] {
         assert!(
@@ -584,8 +583,8 @@ fn unmatched_document_glob_fails_before_creating_output() {
 }
 
 #[test]
-fn explicit_route_is_the_load_fallback_outside_route_conventions() {
-    let project = project_dir("client-explicit-route");
+fn component_load_intent_remains_framework_neutral_outside_route_conventions() {
+	let project = project_dir("client-component-load");
     write_document(&project, "queries/todos.graphql", LOAD_TODOS_QUERY);
 
     let unplaced = generate(&project, "queries/*.graphql", &[]);
@@ -597,23 +596,10 @@ fn explicit_route_is_the_load_fallback_outside_route_conventions() {
         "unplaced component island must retain its load intent for the adapter"
     );
 
-    let generated = generate(&project, "queries/*.graphql", &["--route", "Todos=/todos"]);
-    assert_success(&generated, "client generation with explicit route");
-    let routes =
-        fs::read_to_string(project.join("generated/routes.ts")).expect("read generated route plan");
-    assert!(
-        routes.contains("\"route\": \"/todos\""),
-        "routes.ts: {routes}"
-    );
-    assert!(
-        routes.contains("\"discovery\": \"explicit\""),
-        "routes.ts: {routes}"
-    );
-    assert!(
-        routes.contains("DISTRIBUTED_ROUTE_OPERATIONS")
-            && routes.contains("artifact: Operation_Todos"),
-        "routes.ts must statically bind discovered ownership to its artifact: {routes}"
-    );
+	assert!(
+		!project.join("generated/routes.ts").exists(),
+		"the framework-neutral compiler must not invent adapter route ownership"
+	);
 }
 
 #[test]

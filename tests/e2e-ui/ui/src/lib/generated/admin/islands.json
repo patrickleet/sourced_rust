@@ -1,8 +1,7 @@
 {
-  "compiler_manifest_version": 2,
-  "distributed_manifest_version": 2,
-  "protocol_version": 1,
-  "service_id": "e2e-ui",
+  "version": 1,
+  "schemaFingerprint": "sha256:3ef42391779ffe9d0150c9f3b5ebe14ee6ac3ec403c9a38623a5e04e9a815f41",
+  "protocolFingerprint": "sha256:00fb342f3acb4dc1c1716a43cc3001c748d5f6c500ff831690d820e9e43e2782",
   "surface": {
     "kind": "application",
     "name": "e2e-ui-admin",
@@ -13,29 +12,6 @@
       "admin"
     ]
   },
-  "schema_fingerprint": "sha256:3ef42391779ffe9d0150c9f3b5ebe14ee6ac3ec403c9a38623a5e04e9a815f41",
-  "protocol_fingerprint": "sha256:00fb342f3acb4dc1c1716a43cc3001c748d5f6c500ff831690d820e9e43e2782",
-  "scalar_codecs": {
-    "BigInt": "json_number_precision_limited",
-    "Boolean": "boolean",
-    "Bytea": "base64",
-    "Float": "float64",
-    "ID": "string",
-    "Int": "int32",
-    "JSON": "json",
-    "String": "string",
-    "Timestamptz": "string_unvalidated_timestamp"
-  },
-  "commands_requiring_revalidation": [],
-  "operations": [
-    {
-      "name": "AdminAllTodos",
-      "source_path": "src/routes/admin/+page.graphql",
-      "module_path": "operations/admin-all-todos.ts",
-      "export_name": "Operation_AdminAllTodos",
-      "operation_hash": "sha256:3436d01402748d8c4f2f5d2ff5f1173fea89786c8e902de09a24bd03596eaf27"
-    }
-  ],
   "islands": [
     {
       "version": 1,

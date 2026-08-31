@@ -1,5 +1,3 @@
-use std::collections::BTreeMap;
-
 use super::graphql::{compile_document, CompiledOperation};
 use super::manifest::ClientManifest;
 use super::render::{render_operation_artifact_json, render_operation_module};
@@ -22,8 +20,8 @@ fn compile_runtime_bridge_operation() -> (ClientManifest, CompiledOperation) {
         "src/routes/runtime-bridge/+page.graphql",
         RUNTIME_BRIDGE_QUERY,
     );
-    let operation = compile_document(&document, &manifest, &BTreeMap::new())
-        .expect("compile runtime bridge operation");
+    let operation =
+        compile_document(&document, &manifest).expect("compile runtime bridge operation");
     (manifest, operation)
 }
 

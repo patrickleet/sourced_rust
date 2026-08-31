@@ -5,8 +5,9 @@
       "module": "$distributed",
       "surface": "e2e-ui",
       "documents": [
+		"src/lib/components/blob/*.graphql",
         "src/routes/blob/*/+page.graphql",
-        "src/routes/chat/+page.graphql",
+        "src/routes/chat/+layout.graphql",
         "src/routes/todos/+page.graphql"
       ],
       "output": "src/lib/generated/user"
@@ -21,7 +22,7 @@
     {
       "module": "$distributed/public",
       "surface": "e2e-ui-public",
-      "documents": ["src/routes/chat/+page.graphql"],
+      "documents": ["src/graphql/public/chat.graphql"],
       "output": "src/lib/generated/public",
       "manifest_entrypoint": "e2e_service::distributed_public_client_surface"
     }

@@ -1,5 +1,4 @@
-# Newest page is live (offset 0). Older pages load via the same operation
-# with rising offset; the UI merges by message_id and displays ascending.
+# The nested chat layout owns the finite live lobby window across child pages.
 query ChatMessages($limit: Int!, $offset: Int!) @load @live {
   chat_messages(
     where: { room_id: { _eq: "lobby" } }

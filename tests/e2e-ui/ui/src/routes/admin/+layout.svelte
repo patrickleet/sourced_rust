@@ -6,7 +6,7 @@
 		createPageDataSessionSource,
 		type SveltekitReplicaHydration
 	} from '@hops-ops/distributed/sveltekit';
-	import { provideDistributed } from '$distributed/admin';
+	import { DISTRIBUTED_BOUNDARY_OPERATIONS, provideDistributed } from '$distributed/admin';
 
 	import type { LayoutData } from './$types';
 
@@ -19,6 +19,7 @@
 	let hydrationTimer: ReturnType<typeof setTimeout> | undefined;
 
 	const client = provideDistributed({
+		boundaries: DISTRIBUTED_BOUNDARY_OPERATIONS,
 		session: pageData.session,
 		browser,
 		...(initialData.distributed !== undefined &&

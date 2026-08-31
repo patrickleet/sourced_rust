@@ -4,7 +4,7 @@ import {
 	type SveltekitDistributedPageData
 } from '@hops-ops/distributed/sveltekit';
 
-import { DISTRIBUTED_ROUTE_OPERATIONS } from '$distributed/admin';
+import { DISTRIBUTED_BOUNDARY_OPERATIONS } from '$distributed/admin';
 import { engineRoleFromGroups, isAdminEngineRole } from '$lib/roles';
 import { graphqlHttpUrl } from '$lib/server/graphql';
 
@@ -20,7 +20,7 @@ type Session = NonNullable<
  * Role failure happens before the server adapter can issue any GraphQL request.
  */
 const distributed = createDistributedSvelteKitServer<Session, LoadEvent>({
-	routes: DISTRIBUTED_ROUTE_OPERATIONS,
+	boundaries: DISTRIBUTED_BOUNDARY_OPERATIONS,
 	getSession: (event) => event.locals.auth(),
 	getRole: (session) => {
 		const role = engineRoleFromGroups(session?.user?.groups);

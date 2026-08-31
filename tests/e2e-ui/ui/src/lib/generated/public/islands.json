@@ -1,8 +1,7 @@
 {
-  "compiler_manifest_version": 2,
-  "distributed_manifest_version": 2,
-  "protocol_version": 1,
-  "service_id": "e2e-ui",
+  "version": 1,
+  "schemaFingerprint": "sha256:a206d73627c88205f30bc1a3aa7f6cc67472d5492ad073b2efea9cd6199b08d2",
+  "protocolFingerprint": "sha256:00fb342f3acb4dc1c1716a43cc3001c748d5f6c500ff831690d820e9e43e2782",
   "surface": {
     "kind": "application",
     "name": "e2e-ui-public",
@@ -13,30 +12,6 @@
       "anonymous"
     ]
   },
-  "schema_fingerprint": "sha256:a206d73627c88205f30bc1a3aa7f6cc67472d5492ad073b2efea9cd6199b08d2",
-  "protocol_fingerprint": "sha256:00fb342f3acb4dc1c1716a43cc3001c748d5f6c500ff831690d820e9e43e2782",
-  "scalar_codecs": {
-    "BigInt": "json_number_precision_limited",
-    "Boolean": "boolean",
-    "Bytea": "base64",
-    "Float": "float64",
-    "ID": "string",
-    "Int": "int32",
-    "JSON": "json",
-    "String": "string",
-    "Timestamptz": "string_unvalidated_timestamp"
-  },
-  "commands_requiring_revalidation": [],
-  "operations": [
-    {
-      "name": "ChatMessages",
-      "source_path": "src/graphql/public/chat.graphql",
-      "module_path": "operations/chat-messages.ts",
-      "export_name": "Operation_ChatMessages",
-      "operation_hash": "sha256:16e82d9939a08f205efef9238393f8e4582da0e58d15ace6470d7831c0798603",
-      "live_operation_hash": "sha256:1679906f6ce4c8de83deb937cccce20561447e4f74e410d3a83d1aecebd6bd00"
-    }
-  ],
   "islands": [
     {
       "version": 1,

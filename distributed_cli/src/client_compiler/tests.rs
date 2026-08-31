@@ -3,8 +3,7 @@ use sha2::{Digest, Sha256};
 
 use super::manifest::{refresh_schema_fingerprint, ClientManifest};
 use super::{
-    compile_client, ClientCompileInput, ClientDocument, ClientRouteDiscovery,
-    ClientRouteRegistration, ClientSurfaceSelector,
+    compile_client, ClientCompileInput, ClientDocument, ClientSurfaceSelector,
 };
 
 fn fingerprint(label: &str) -> String {
@@ -1124,11 +1123,6 @@ fn compiles_aliases_composite_wire_identity_live_and_load() {
         )
     );
     assert!(operation.live_operation_hash.is_some());
-    assert_eq!(project.routes[0].route, "/todos");
-    assert_eq!(
-        project.routes[0].discovery,
-        ClientRouteDiscovery::Convention
-    );
 }
 
 #[test]
@@ -1159,7 +1153,7 @@ fn component_load_compiles_to_a_framework_neutral_island_inventory() {
     ))
     .expect("component load island compiles before adapter placement");
 
-    assert!(project.routes.is_empty());
+    assert!(project.files.iter().all(|file| file.path != "routes.ts"));
     assert_eq!(project.islands.len(), 1);
     let island = &project.islands[0];
     assert_eq!(island.version, 1);
@@ -1203,15 +1197,10 @@ fn multiple_load_islands_may_share_one_future_boundary() {
                     "query TodoTitles @load { todos { title } }",
                 ),
             ],
-        )
-        .with_route_registrations(vec![
-            ClientRouteRegistration::new("TodoCount", "/todos"),
-            ClientRouteRegistration::new("TodoTitles", "/todos"),
-        ]),
+        ),
     )
     .expect("route ownership is no longer one-operation-per-route");
 
-    assert_eq!(project.routes.len(), 2);
     assert_eq!(project.islands.len(), 2);
     assert_ne!(project.islands[0].id, project.islands[1].id);
 }
@@ -2429,7 +2418,7 @@ fn application_surfaces_are_explicit_and_fingerprint_separate_chunks() {
 }
 
 #[test]
-fn explicit_load_registration_is_the_documented_fallback() {
+fn sveltekit_wrapper_exposes_framework_neutral_islands_without_routes() {
     let input = ClientCompileInput::new(
         manifest(),
         ClientSurfaceSelector::role("user"),
@@ -2438,20 +2427,9 @@ fn explicit_load_registration_is_the_documented_fallback() {
             "query Todos @load { todos { id } }",
         )],
     );
-    let unplaced = compile_client(input.clone()).expect("adapter-owned island placement");
-    assert!(unplaced.routes.is_empty());
-    assert!(unplaced.islands[0].directives.load);
-
-    let project = compile_client(
-        input.with_route_registrations(vec![ClientRouteRegistration::new("Todos", "/todos")]),
-    )
-    .expect("explicit route");
-    assert_eq!(project.routes[0].route, "/todos");
-    assert_eq!(project.routes[0].discovery, ClientRouteDiscovery::Explicit);
-    let routes = file(&project, "routes.ts");
-    assert!(routes.contains("import { Operation_Todos } from './operations/todos.js';"));
-    assert!(routes.contains("export const DISTRIBUTED_ROUTE_OPERATIONS"));
-    assert!(routes.contains("plan: DISTRIBUTED_ROUTES[0], artifact: Operation_Todos"));
+    let project = compile_client(input).expect("adapter-owned island placement");
+    assert!(project.islands[0].directives.load);
+    assert!(project.files.iter().all(|file| file.path != "routes.ts"));
     let sveltekit = file(&project, "sveltekit.ts");
     assert!(
         sveltekit.contains(
@@ -4070,25 +4048,6 @@ fn manifest_parser_accepts_mixed_per_model_revision_evidence() {
 
     ClientManifest::parse(value, &ClientSurfaceSelector::role("user"))
         .expect("global record evidence describes the selected query footprint, not any model");
-}
-
-#[test]
-fn rejects_unknown_and_duplicate_route_registrations() {
-    let error = compile_client(
-        input("query Todos { todos { id } }")
-            .with_route_registrations(vec![ClientRouteRegistration::new("Missing", "/missing")]),
-    )
-    .expect_err("unknown registration");
-    assert_eq!(error.code, "client.route.unknown_registration");
-
-    let error = compile_client(
-        input("query Todos { todos { id } }").with_route_registrations(vec![
-            ClientRouteRegistration::new("Todos", "/one"),
-            ClientRouteRegistration::new("Todos", "/two"),
-        ]),
-    )
-    .expect_err("duplicate registration");
-    assert_eq!(error.code, "client.route.duplicate_registration");
 }
 
 #[test]

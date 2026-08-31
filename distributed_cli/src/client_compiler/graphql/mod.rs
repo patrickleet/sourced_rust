@@ -18,7 +18,7 @@ use super::manifest::{
     ManifestRelationshipKeyMapping, ManifestRelationshipKind, ManifestRelationshipMaintenance,
     ManifestRoot, ManifestRowPolicy, RootKind, RootOperation,
 };
-use super::{ClientCompileError, ClientDocument, ClientRouteDiscovery, GeneratedRoutePlan};
+use super::{ClientCompileError, ClientDocument};
 
 mod arguments;
 mod fragments;

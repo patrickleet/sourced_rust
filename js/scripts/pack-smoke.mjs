@@ -465,7 +465,6 @@ import {
   createDistributedSvelteKitServer,
   createPageDataSessionSource,
   defineDistributedSvelteKitOperation,
-  matchDistributedRoute,
   provideDistributedSvelteKitClient,
   useDistributedSvelteKitClient,
   useDistributedSvelteKitCommands
@@ -503,6 +502,7 @@ const pageData = createPageDataSessionSource({
   engineRole: null
 });
 const client = createDistributedSvelteKit<Commands>({
+  boundaries: [],
   browser: false,
   session: pageData.session
 });
@@ -515,13 +515,19 @@ client.retainBoundary(
   { id: 'page-instance', route: '/todos', kind: 'page' },
   { params: {}, search: new URLSearchParams(), session: null, props: {} }
 ).release();
+client.retainLocation(
+  { id: 'active-page', pathname: '/todos', kind: 'page' },
+  { search: new URLSearchParams(), session: null, props: {} }
+).release();
+void client.prefetchLocation('/todos', {
+  search: new URLSearchParams(), session: null, props: {}
+});
 
 createDistributedSvelteKitServer({
-  routes: [],
+  boundaries: [],
   getSession: async () => null,
   getRole: () => 'user'
 });
-void matchDistributedRoute('/todos', '/todos');
 
 const compiler = {
   clients: [{
@@ -571,11 +577,9 @@ assert.deepEqual(Object.keys(sveltekitSurface).sort(), [
   'defineDistributedBoundaryOperation',
   'defineDistributedSvelteKitOperation',
   'distributedReloadLifecycle',
-  'matchDistributedRoute',
   'parseDistributedGenerationEnvelope',
   'provideDistributedSvelteKitClient',
   'registerDistributedReloadClient',
-  'registerDistributedRoute',
   'resolveDistributedBoundaryVariables',
   'retainDistributedSvelteKitBoundary',
   'sessionSourceFromPageData',
@@ -615,6 +619,7 @@ pageData.set({
 assert.equal(pageData.session.getAuth().accessToken, 'token');
 
 const client = createDistributedSvelteKit({
+  boundaries: [],
   browser: false,
   session: pageData.session
 });

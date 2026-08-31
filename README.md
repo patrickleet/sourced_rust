@@ -381,7 +381,7 @@ SSR first, then live — one query.
 rehydrate, and a push change feed. Users get a fast first paint and rooms
 that stay current without a second subscription document or polling.
 
-[`tests/e2e-ui/ui/src/routes/chat/+page.graphql`](tests/e2e-ui/ui/src/routes/chat/+page.graphql)
+[`tests/e2e-ui/ui/src/routes/chat/+layout.graphql`](tests/e2e-ui/ui/src/routes/chat/+layout.graphql)
 
 ```graphql
 # Same query powers SSR (@load) and live change feed (@live)
@@ -460,7 +460,7 @@ Start here in the code:
 |---|---|
 | [`ui/src/routes/todos/+page.graphql`](tests/e2e-ui/ui/src/routes/todos/+page.graphql) | Co-located read. `@load` → SSR seed; no hand-written load function for the list. |
 | [`ui/src/routes/todos/+page.svelte`](tests/e2e-ui/ui/src/routes/todos/+page.svelte) | `Todos.use()` + `useCommands()` — page never invents a cache or optimistic recipe. |
-| [`ui/src/routes/chat/+page.graphql`](tests/e2e-ui/ui/src/routes/chat/+page.graphql) | Same document does SSR **and** live: `@load @live`. |
+| [`ui/src/routes/chat/+layout.graphql`](tests/e2e-ui/ui/src/routes/chat/+layout.graphql) | Same document does layout-retained SSR **and** live: `@load @live`. |
 | [`ui/src/routes/blob/[[gameId]]/+page.svelte`](tests/e2e-ui/ui/src/routes/blob/[[gameId]]/+page.svelte) | Arrow keys → `commands.blob.move`; board from `BlobGames.use()`. |
 | [`crates/service/src/modules/compose.rs`](tests/e2e-ui/crates/service/src/modules/compose.rs) | One `Service` lists modules. No `Runtime::role`. |
 | [`crates/service/src/handlers/commands/blob_move.rs`](tests/e2e-ui/crates/service/src/handlers/commands/blob_move.rs) | `PreparedCommand<Atomic<BlobGameView>>` — map/score written with the event. |

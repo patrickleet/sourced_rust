@@ -20,7 +20,6 @@ pub(crate) struct CompiledOperation {
     pub(crate) variables: Vec<CompiledVariable>,
     pub(crate) variable_codec: CompiledVariableCodec,
     pub(crate) root: CompiledRoot,
-    pub(crate) route: Option<GeneratedRoutePlan>,
 }
 
 #[derive(Clone, Debug)]

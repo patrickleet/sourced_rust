@@ -7,7 +7,6 @@ import {
 	realpathSync
 } from 'node:fs';
 import {
-	cp,
 	lstat,
 	mkdir,
 	mkdtemp,
@@ -53,6 +52,7 @@ export {
 } from './islands/boundaries.js';
 
 const GENERATED_SVELTEKIT_MODULE = 'sveltekit.ts';
+const GENERATED_BOUNDARIES_MODULE = 'boundaries.ts';
 const MAX_COMMAND_OUTPUT_BYTES = 16 * 1024 * 1024;
 const MAX_GENERATED_COMPARE_FILES = 20_000;
 const MAX_GENERATED_COMPARE_BYTES = 128 * 1024 * 1024;
@@ -114,8 +114,6 @@ export type DistributedSvelteKitClientCompiler = Readonly<{
 	surface?: string;
 	/** GraphQL globs passed verbatim as repeated `distributed client --documents`. */
 	documents: readonly string[];
-	/** Explicit `OPERATION=/route` fallbacks. */
-	routes?: readonly string[];
 	/** Typed fallback when static component ownership cannot be proven. */
 	boundaries?: readonly DistributedSvelteKitBoundaryRegistration[];
 	/** Compiler-owned artifact directory, relative to `cwd` by default. */
@@ -143,7 +141,6 @@ type ResolvedClient = Readonly<{
 	manifest: DistributedSvelteKitManifestSource;
 	selector: readonly ['--role' | '--surface', string];
 	documents: readonly string[];
-	routes: readonly string[];
 	boundaries: readonly DistributedSvelteKitBoundaryRegistration[];
 	out: string;
 	entry: string;
@@ -853,9 +850,6 @@ function resolveIntegration(
 				`${client.module} documents[${documentIndex}]`
 			)
 		);
-		const routes = (client.routes ?? []).map((route: string, routeIndex: number) =>
-			nonempty(route, `${client.module} routes[${routeIndex}]`)
-		);
 		const boundaries = (client.boundaries ?? []).map((
 			boundary: DistributedSvelteKitBoundaryRegistration,
 			boundaryIndex: number
@@ -907,7 +901,6 @@ function resolveIntegration(
 			manifest: client.manifest,
 			selector,
 			documents: Object.freeze(documents),
-			routes: Object.freeze(routes),
 			boundaries: Object.freeze(boundaries),
 			out,
 			entry: join(out, GENERATED_SVELTEKIT_MODULE),
@@ -1106,15 +1099,10 @@ async function compileTransaction(
 					);
 				}
 				hadOutput = true;
-				await cp(client.out, output, {
-					recursive: true,
-					errorOnExist: true,
-					force: false,
-					dereference: false
-				});
 			} catch (error) {
 				if (!isMissing(error)) throw error;
 			}
+			await mkdir(output, { recursive: true });
 			const args = [
 				'client',
 				'--manifest',
@@ -1125,7 +1113,6 @@ async function compileTransaction(
 					'--documents',
 					document
 				]),
-				...client.routes.flatMap((route) => ['--route', route]),
 				'--out',
 				output
 			];
@@ -1143,10 +1130,17 @@ async function compileTransaction(
 		}
 		const plans = await analyzeStagedBoundaries(integration, staged);
 		for (const [index, item] of staged.entries()) {
+			const plan = plans[index]!;
+			await writeFile(
+				join(item.output, GENERATED_BOUNDARIES_MODULE),
+				boundaryModuleSource(plan),
+				{ encoding: 'utf8', flag: 'wx' }
+			);
+			await exposeBoundaryModule(item.output);
 			await mkdir(item.adapterOutput, { recursive: true });
 			await writeFile(
 				join(item.adapterOutput, 'boundaries.json'),
-				boundaryPlanSource(plans[index]!),
+				boundaryPlanSource(plan),
 				{ encoding: 'utf8', flag: 'wx' }
 			);
 		}
@@ -1169,6 +1163,7 @@ async function checkTransaction(
 		join(transactionRoot, '.distributed-sveltekit-check-')
 	);
 	try {
+		const staged: Array<Readonly<{ client: ResolvedClient; output: string }>> = [];
 		for (const [index, client] of integration.clients.entries()) {
 			throwIfAborted(signal);
 			const manifest = await materializeManifest(
@@ -1179,11 +1174,12 @@ async function checkTransaction(
 				children,
 				signal
 			);
+			const output = join(transaction, `output-${index}`);
+			await mkdir(output, { recursive: true });
 			await runCommand(
 				integration,
 				[
 					'client',
-					'--check',
 					'--manifest',
 					manifest,
 					client.selector[0],
@@ -1192,28 +1188,26 @@ async function checkTransaction(
 						'--documents',
 						document
 					]),
-					...client.routes.flatMap((route) => ['--route', route]),
 					'--out',
-					client.out
+					output
 				],
 				children,
 				signal
 			);
+			await validateGeneratedEntrypoint(integration.cwd, output, client.module);
+			staged.push(Object.freeze({ client, output }));
 		}
-		const plans = await analyzeDistributedSvelteKitBoundaries({
-			cwd: integration.cwd,
-			routesDir: portablePath(relative(integration.cwd, integration.routesDir)),
-			libDir: portablePath(relative(integration.cwd, integration.libDir)),
-			aliases: integration.aliases,
-			clients: await Promise.all(
-				integration.clients.map(async (client) => ({
-					module: client.module,
-					inventory: await readIslandInventory(integration.cwd, client.out),
-					explicitBoundaries: client.boundaries
-				}))
-			)
-		});
+		const plans = await analyzeStagedBoundaries(integration, staged);
 		for (const [index, client] of integration.clients.entries()) {
+			const output = staged[index]!.output;
+			const plan = plans[index]!;
+			await writeFile(
+				join(output, GENERATED_BOUNDARIES_MODULE),
+				boundaryModuleSource(plan),
+				{ encoding: 'utf8', flag: 'wx' }
+			);
+			await exposeBoundaryModule(output);
+			await compareGeneratedTrees(client.out, output, client.module);
 			const actual = await readFile(join(client.adapterOut, 'boundaries.json'), 'utf8');
 			let persisted: unknown;
 			try {
@@ -1224,7 +1218,7 @@ async function checkTransaction(
 				);
 			}
 			validateDistributedSvelteKitBoundaryPlan(persisted, client.module);
-			const expected = boundaryPlanSource(plans[index]!);
+			const expected = boundaryPlanSource(plan);
 			if (actual !== expected) {
 				throw new Error(
 					`Distributed SvelteKit boundary plan for ${client.module} is stale; run generation without check`
@@ -1285,6 +1279,145 @@ async function readIslandInventory(
 
 function boundaryPlanSource(plan: DistributedSvelteKitBoundaryPlan): string {
 	return `${JSON.stringify(plan, null, 2)}\n`;
+}
+
+function boundaryModuleSource(plan: DistributedSvelteKitBoundaryPlan): string {
+	validateDistributedSvelteKitBoundaryPlan(plan, plan.module);
+	const occurrences = plan.boundaries.flatMap((boundary) =>
+		boundary.islands.map((island) => ({ boundary, island }))
+	);
+	const artifacts = new Map<string, Readonly<{ alias: string; module: string; exportName: string }>>();
+	for (const { island } of occurrences) {
+		if (
+			!/^operations\/[A-Za-z0-9._-]+\.ts$/.test(island.modulePath) ||
+			!/^[_A-Za-z][_0-9A-Za-z]*$/.test(island.exportName)
+		) {
+			throw new Error(
+				`[distributed.island.boundary_plan_invalid] ${island.graphqlSource} has an unsafe generated artifact reference`
+			);
+		}
+		const key = `${island.modulePath}\u0000${island.exportName}`;
+		if (!artifacts.has(key)) {
+			artifacts.set(key, Object.freeze({
+				alias: `DistributedBoundaryArtifact_${artifacts.size}`,
+				module: island.modulePath.slice(0, -3),
+				exportName: island.exportName
+			}));
+		}
+	}
+	const imports = [...artifacts.values()].map(
+		({ alias, module, exportName }) =>
+			`import { ${exportName} as ${alias} } from './${module}.js';`
+	);
+	const definitions = occurrences.map(({ boundary, island }, index) => {
+		const artifact = artifacts.get(`${island.modulePath}\u0000${island.exportName}`)!;
+		const discovery =
+			island.reason === 'static_component_import' ? 'component' : island.reason;
+		return [
+			`const DistributedBoundaryBinding_${index} = defineDistributedBoundaryBinding(`,
+			`  ${artifact.alias},`,
+			`  ${JSON.stringify(island.binding.sources, null, 2)} as const`,
+			`);`,
+			`const DistributedBoundaryOperation_${index} = defineDistributedBoundaryOperation(`,
+			`  ${JSON.stringify({
+				operation: island.operation,
+				route: boundary.route,
+				kind: boundary.kind,
+				sourcePath: island.graphqlSource,
+				discovery
+			}, null, 2)} as const,`,
+			`  ${artifact.alias},`,
+			`  DistributedBoundaryBinding_${index}`,
+			`);`
+		].join('\n');
+	});
+	const operations = occurrences.map((_, index) => `  DistributedBoundaryOperation_${index}`);
+	return [
+		'/** GENERATED by the Distributed SvelteKit boundary planner. Do not edit. */',
+		"import { defineDistributedBoundaryBinding, defineDistributedBoundaryOperation } from '@hops-ops/distributed/sveltekit';",
+		...imports,
+		'',
+		`export const DISTRIBUTED_BOUNDARY_PLAN = ${JSON.stringify(plan, null, 2)} as const;`,
+		'',
+		...definitions,
+		'',
+		'/** Executable SSR/browser ownership assembled from the same boundary plan. */',
+		`export const DISTRIBUTED_BOUNDARY_OPERATIONS = ${operations.length === 0 ? '[]' : `[\n${operations.join(',\n')}\n]`} as const;`,
+		''
+	].join('\n');
+}
+
+async function exposeBoundaryModule(output: string): Promise<void> {
+	const path = join(output, GENERATED_SVELTEKIT_MODULE);
+	const source = await readFile(path, 'utf8');
+	if (!source.startsWith('/** GENERATED by distributed client. Do not edit. */')) {
+		throw new Error('generated SvelteKit entrypoint is missing its ownership marker');
+	}
+	await writeFile(
+		path,
+		`${source.trimEnd()}\n\nexport { DISTRIBUTED_BOUNDARY_OPERATIONS, DISTRIBUTED_BOUNDARY_PLAN } from './boundaries.js';\n`,
+		'utf8'
+	);
+}
+
+async function compareGeneratedTrees(
+	actualRoot: string,
+	expectedRoot: string,
+	module: string
+): Promise<void> {
+	const [actual, expected] = await Promise.all([
+		readGeneratedTree(actualRoot),
+		readGeneratedTree(expectedRoot)
+	]);
+	const drift: string[] = [];
+	for (const [path, contents] of expected) {
+		const current = actual.get(path);
+		if (current === undefined) drift.push(`missing ${path}`);
+		else if (current !== contents) drift.push(`changed ${path}`);
+	}
+	for (const path of actual.keys()) {
+		if (!expected.has(path)) drift.push(`unexpected ${path}`);
+	}
+	if (drift.length > 0) {
+		throw new Error(
+			`Distributed SvelteKit client ${module} is stale:\n  ${drift.sort().join('\n  ')}\nrun generation without check`
+		);
+	}
+}
+
+async function readGeneratedTree(root: string): Promise<ReadonlyMap<string, string>> {
+	const rootMetadata = await lstat(root);
+	if (rootMetadata.isSymbolicLink() || !rootMetadata.isDirectory()) {
+		throw new Error(`generated output ${root} must be a real directory`);
+	}
+	const files = new Map<string, string>();
+	const pending: Array<Readonly<{ absolute: string; relative: string }>> = [
+		{ absolute: root, relative: '' }
+	];
+	while (pending.length > 0) {
+		const directory = pending.pop()!;
+		for (const entry of await readdir(directory.absolute, { withFileTypes: true })) {
+			const relativePath = directory.relative.length === 0
+				? entry.name
+				: `${directory.relative}/${entry.name}`;
+			const absolutePath = join(directory.absolute, entry.name);
+			if (entry.isSymbolicLink()) {
+				throw new Error(`generated output contains unsupported symlink ${relativePath}`);
+			}
+			if (entry.isDirectory()) {
+				pending.push({ absolute: absolutePath, relative: relativePath });
+				continue;
+			}
+			if (!entry.isFile()) {
+				throw new Error(`generated output contains unsupported entry ${relativePath}`);
+			}
+			files.set(relativePath, await readFile(absolutePath, 'utf8'));
+			if (files.size > 8_192) {
+				throw new Error('generated output exceeds 8192 files');
+			}
+		}
+	}
+	return files;
 }
 
 async function realDirectoryExists(path: string): Promise<boolean> {

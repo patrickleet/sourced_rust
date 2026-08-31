@@ -19,18 +19,6 @@ import type {
 	SveltekitReplicaHydration
 } from './replica.js';
 
-export type DistributedRoutePlan = Readonly<{
-	operation: string;
-	route: string;
-	source_path?: string;
-	discovery: 'convention' | 'explicit';
-}>;
-
-export type DistributedRouteOperation = Readonly<{
-	plan: DistributedRoutePlan;
-	artifact: ReplicaOperationArtifact<unknown, GraphqlVariables>;
-}>;
-
 export type SveltekitServerLoadEventLike<TLocals = unknown> = Readonly<{
 	locals: TLocals;
 	route?: Readonly<{ id?: string | null }>;
@@ -47,23 +35,12 @@ export type SveltekitServerLoadEventLike<TLocals = unknown> = Readonly<{
 	isDataRequest?: boolean;
 }>;
 
-export type DistributedRouteVariables<
-	TEvent extends SveltekitServerLoadEventLike
-> = Readonly<
-	Record<
-		string,
-		(event: TEvent) => GraphqlVariables | Promise<GraphqlVariables>
-	>
->;
-
 export type CreateDistributedSvelteKitServerOptions<
 	TSession extends NonNullable<PageGraphqlData['session']>,
 	TEvent extends SveltekitServerLoadEventLike = SveltekitServerLoadEventLike
 > = Readonly<{
-	/** Transitional route inventory; removed after generated boundaries migrate. */
-	routes?: readonly DistributedRouteOperation[];
 	/** One executable binding per promoted page/layout island. */
-	boundaries?: readonly DistributedBoundaryOperation<
+	boundaries: readonly DistributedBoundaryOperation<
 		unknown,
 		GraphqlVariables,
 		TSession,
@@ -77,8 +54,6 @@ export type CreateDistributedSvelteKitServerOptions<
 	getAuth?(pageData: PageGraphqlData, event: TEvent): GqlAuth;
 	/** Private API origin or same-origin `/graphql`; defaults to `/graphql`. */
 	getUrl?(event: TEvent): string;
-	/** Variables for routed operations that do not accept `{}`. */
-	variables?: DistributedRouteVariables<TEvent>;
 	/** Maximum simultaneous SSR island refreshes. Defaults to 8, maximum 32. */
 	maxConcurrency?: number;
 }>;
@@ -100,8 +75,7 @@ export function createDistributedSvelteKitServer<
 >(
 	options: CreateDistributedSvelteKitServerOptions<TSession, TEvent>
 ): DistributedSvelteKitServer<TEvent> {
-	const routes = validateRoutes(options.routes ?? []);
-	const boundaries = validateBoundaryOperations(options.boundaries ?? []);
+	const boundaries = validateBoundaryOperations(options.boundaries);
 	const maxConcurrency = validateConcurrency(options.maxConcurrency ?? 8);
 	return Object.freeze({
 		async load(event: TEvent) {
@@ -122,7 +96,6 @@ export function createDistributedSvelteKitServer<
 			const auth =
 				options.getAuth?.(pageData, event) ?? authFromPageData(pageData);
 			const routeId = routeIdentity(event);
-			const selectedRoutes = routes.filter(({ plan }) => plan.route === routeId);
 			const selectedBoundaries = boundaries
 				.filter(({ plan }) =>
 					plan.kind === 'page'
@@ -130,8 +103,7 @@ export function createDistributedSvelteKitServer<
 						: layoutOwnsRoute(plan.route, routeId)
 				)
 				.sort(compareBoundaryOperations);
-			const selected = [...selectedRoutes, ...selectedBoundaries];
-			if (selected.length === 0) {
+			if (selectedBoundaries.length === 0) {
 				return {
 					...pageData,
 					gqlError: null
@@ -189,37 +161,21 @@ export function createDistributedSvelteKitServer<
 			});
 			try {
 				const scheduled = new Map<string, Scheduled>();
-				for (const binding of selected) {
+				for (const binding of selectedBoundaries) {
 					if (aborted) throw requestAborted();
-					let variables: GraphqlVariables;
-					try {
-						variables = 'binding' in binding
-							? resolveDistributedBoundaryVariables(
-									binding.artifact,
-									binding.binding.sources,
-									boundaryContext
-								)
-							: (await options.variables?.[binding.plan.operation]?.(event)) ?? {};
-						const identity = ssrOperationIdentity(binding.artifact, variables);
-						if (scheduled.has(identity)) continue;
-						scheduled.set(identity, {
-							identity,
-							operation: binding.plan.operation,
-							artifact: binding.artifact,
-							variables
-						});
-					} catch (error) {
-						if (
-							!('binding' in binding) &&
-							options.variables?.[binding.plan.operation] === undefined
-						) {
-							throw new Error(
-								`Distributed @load operation \`${binding.plan.operation}\` needs route variables; configure variables.${binding.plan.operation}(event) in createDistributedSvelteKitServer`,
-								{ cause: error }
-							);
-						}
-						throw error;
-					}
+					const variables = resolveDistributedBoundaryVariables(
+						binding.artifact,
+						binding.binding.sources,
+						boundaryContext
+					);
+					const identity = ssrOperationIdentity(binding.artifact, variables);
+					if (scheduled.has(identity)) continue;
+					scheduled.set(identity, {
+						identity,
+						operation: binding.plan.operation,
+						artifact: binding.artifact,
+						variables
+					});
 				}
 				const completed = await mapBounded(
 					[...scheduled.values()],
@@ -257,7 +213,7 @@ export function createDistributedSvelteKitServer<
 						? undefined
 						: hydrationTransfer(
 								replica.dehydrate(),
-								selected.map(({ plan }) => plan.operation),
+								selectedBoundaries.map(({ plan }) => plan.operation),
 								selectedBoundaries.map(({ binding }) => binding.id)
 							);
 				return {
@@ -283,30 +239,6 @@ export function createDistributedSvelteKitServer<
 	});
 }
 
-/**
- * Explicit one-line fallback when the compiler cannot discover route ownership.
- *
- * Prefer co-locating `+page.graphql`; the compiler diagnostic includes the
- * equivalent `--route Operation=/route-id` registration.
- */
-export function registerDistributedRoute<
-	TData,
-	TVariables extends GraphqlVariables
->(
-	route: string,
-	operation: string,
-	artifact: ReplicaOperationArtifact<TData, TVariables>
-): DistributedRouteOperation {
-	return Object.freeze({
-		plan: Object.freeze({
-			operation: nonEmpty(operation, 'operation'),
-			route: normalizeRoute(route),
-			discovery: 'explicit' as const
-		}),
-		artifact: artifact as ReplicaOperationArtifact<unknown, GraphqlVariables>
-	});
-}
-
 function hydrationTransfer(
 	state: ReplicaDehydratedState,
 	operations: readonly string[],
@@ -329,118 +261,6 @@ function hydrationTransfer(
 			scope: state.scope
 		})
 	});
-}
-
-/**
- * Match a SvelteKit route id (`/blob/[[gameId]]`) to a browser pathname.
- */
-export function matchDistributedRoute(
-	routeId: string,
-	pathname: string
-): boolean {
-	const route = normalizeRoute(routeId);
-	const path = normalizePathname(pathname);
-	if (route === path) return true;
-	const routeParts = route
-		.split('/')
-		.filter(Boolean)
-		.filter((part) => !(part.startsWith('(') && part.endsWith(')')));
-	const pathParts = path.split('/').filter(Boolean);
-	const failed = new Set<string>();
-	const matches = (routeIndex: number, pathIndex: number): boolean => {
-		const state = routeIndex + ':' + pathIndex;
-		if (failed.has(state)) return false;
-		if (routeIndex === routeParts.length) {
-			return pathIndex === pathParts.length;
-		}
-		const part = routeParts[routeIndex]!;
-		const optionalRest =
-			part.startsWith('[[...') && part.endsWith(']]');
-		const rest = part.startsWith('[...') && part.endsWith(']');
-		if (optionalRest || rest) {
-			for (let next = pathIndex; next <= pathParts.length; next += 1) {
-				if (matches(routeIndex + 1, next)) return true;
-			}
-			failed.add(state);
-			return false;
-		}
-		const optional =
-			part.startsWith('[[') && part.endsWith(']]');
-		if (optional) {
-			if (matches(routeIndex + 1, pathIndex)) return true;
-			if (
-				pathIndex < pathParts.length &&
-				matches(routeIndex + 1, pathIndex + 1)
-			) {
-				return true;
-			}
-			failed.add(state);
-			return false;
-		}
-		const parameter = part.startsWith('[') && part.endsWith(']');
-		if (
-			(parameter && pathIndex < pathParts.length) ||
-			(!parameter &&
-				pathIndex < pathParts.length &&
-				pathParts[pathIndex] === part)
-		) {
-			if (matches(routeIndex + 1, pathIndex + 1)) return true;
-		}
-		failed.add(state);
-		return false;
-	};
-	return matches(0, 0);
-}
-
-function normalizePathname(pathname: string): string {
-	if (typeof pathname !== 'string' || pathname.length === 0) return '/';
-	const trimmed = pathname.replace(/\/+$/, '');
-	return trimmed.length === 0 ? '/' : trimmed.startsWith('/') ? trimmed : `/${trimmed}`;
-}
-
-function validateRoutes(
-	value: readonly DistributedRouteOperation[]
-): readonly DistributedRouteOperation[] {
-	if (!Array.isArray(value)) {
-		throw new TypeError(
-			'createDistributedSvelteKitServer requires generated DISTRIBUTED_ROUTE_OPERATIONS'
-		);
-	}
-	const identities = new Set<string>();
-	return Object.freeze(
-		value.map((binding, index) => {
-			if (
-				binding === null ||
-				typeof binding !== 'object' ||
-				binding.plan === null ||
-				typeof binding.plan !== 'object' ||
-				binding.artifact === null ||
-				typeof binding.artifact !== 'object'
-			) {
-				throw new TypeError(`invalid Distributed route binding at index ${index}`);
-			}
-			const operation = nonEmpty(binding.plan.operation, 'route operation');
-			const route = normalizeRoute(binding.plan.route);
-			if (binding.artifact.id.length === 0) {
-				throw new TypeError(`invalid Distributed route artifact for ${operation}`);
-			}
-			const identity = `${route}\u0000${operation}`;
-			if (identities.has(identity)) {
-				throw new TypeError(
-					`duplicate Distributed route operation ${operation} at ${route}`
-				);
-			}
-			identities.add(identity);
-			return Object.freeze({
-				plan: Object.freeze({
-					...binding.plan,
-					operation,
-					route
-				}),
-				artifact: binding.artifact
-			});
-		})
-	);
 }
 
 function validateBoundaryOperations<TSession>(

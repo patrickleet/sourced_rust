@@ -4,7 +4,8 @@ import test from 'node:test';
 import {
 	createDistributedSvelteKit,
 	createDistributedSvelteKitServer,
-	matchDistributedRoute
+	defineDistributedBoundaryBinding,
+	defineDistributedBoundaryOperation
 } from '../dist/sveltekit/index.js';
 import {
 	REACT_FIXTURE_SCHEMA,
@@ -51,32 +52,34 @@ class SsrWebSocket {
 		this.closed = true;
 		this.readyState = SsrWebSocket.CLOSED;
 	}
+
+	open() {
+		this.readyState = SsrWebSocket.OPEN;
+		this.onopen?.();
+	}
+
+	receive(message) {
+		this.onmessage?.({ data: JSON.stringify(message) });
+	}
 }
 
-function routeBinding(artifact = TodosArtifact) {
-	return Object.freeze({
-		plan: Object.freeze({
-			operation: 'Todos',
-			route: '/todos',
-			discovery: 'convention'
-		}),
-		artifact
-	});
-}
+const todosBoundary = defineDistributedBoundaryOperation(
+	{
+		operation: 'Todos',
+		route: '/todos',
+		kind: 'page',
+		discovery: 'route_document'
+	},
+	TodosArtifact,
+	defineDistributedBoundaryBinding(TodosArtifact, {})
+);
 
 function serverHarness() {
 	const calls = [];
-	let variablesCalls = 0;
 	const server = createDistributedSvelteKitServer({
-		routes: [routeBinding()],
+		boundaries: [todosBoundary],
 		getSession: async (event) => event.locals.session,
-		getRole: () => 'user',
-		variables: {
-			Todos: () => {
-				variablesCalls += 1;
-				return {};
-			}
-		}
+		getRole: () => 'user'
 	});
 	const event = (token, position = '1') => ({
 		locals: {
@@ -117,10 +120,7 @@ function serverHarness() {
 	return {
 		server,
 		event,
-		calls,
-		get variablesCalls() {
-			return variablesCalls;
-		}
+		calls
 	};
 }
 
@@ -132,7 +132,6 @@ test('static @load SSR is request-isolated and hydration avoids a duplicate firs
 	]);
 
 	assert.equal(harness.calls.length, 2);
-	assert.equal(harness.variablesCalls, 2, 'variables run exactly once per request');
 	assert.equal(alice.gqlError, null);
 	assert.equal(bob.gqlError, null);
 	assert.equal(alice.distributed.state.scope.cacheScope, 'cache:alice');
@@ -143,6 +142,7 @@ test('static @load SSR is request-isolated and hydration avoids a duplicate firs
 	SsrWebSocket.instances.length = 0;
 	let browserFetches = 0;
 	const client = createDistributedSvelteKit({
+		boundaries: [todosBoundary],
 		session: { getAuth: () => ({ accessToken: 'alice' }) },
 		hydration: alice.distributed,
 		authority: alice.distributedAuthority,
@@ -162,8 +162,26 @@ test('static @load SSR is request-isolated and hydration avoids a duplicate firs
 	await flushMicrotasks();
 	assert.equal(browserFetches, 0);
 	assert.equal(SsrWebSocket.instances.length, 1, '@live attaches after hydration');
+	const socket = SsrWebSocket.instances[0];
+	socket.open();
+	socket.receive({ type: 'connection_ack' });
+	socket.receive({
+		type: 'next',
+		id: '1',
+		payload: todoFrame(
+			TodosArtifact,
+			[{ id: 'todo-alice', title: 'alice:1', status: 'open' }],
+			{ cacheScope: 'cache:alice', position: '1', source: 'live' }
+		)
+	});
+	await flushMicrotasks();
+	assert.equal(
+		browserFetches,
+		0,
+		'query-to-live handoff must not fetch through transient cache state'
+	);
 	unsubscribe();
-	assert.equal(SsrWebSocket.instances[0].closed, true);
+	assert.equal(socket.closed, true);
 	client.destroy();
 });
 
@@ -183,33 +201,6 @@ test('client-side data requests skip GraphQL so navigation stays SPA', async () 
 	assert.equal(dataNav.accessToken, 'alice');
 });
 
-test('matchDistributedRoute covers optional and required segments', () => {
-	assert.equal(matchDistributedRoute('/todos', '/todos'), true);
-	assert.equal(matchDistributedRoute('/todos', '/todos/'), true);
-	assert.equal(matchDistributedRoute('/todos', '/chat'), false);
-	assert.equal(matchDistributedRoute('/blob/[[gameId]]', '/blob'), true);
-	assert.equal(matchDistributedRoute('/blob/[[gameId]]', '/blob/abc'), true);
-	assert.equal(matchDistributedRoute('/blob/[[gameId]]', '/blob/abc/extra'), false);
-	assert.equal(matchDistributedRoute('/[[lang]]/home', '/home'), true);
-	assert.equal(matchDistributedRoute('/[[lang]]/home', '/en/home'), true);
-	assert.equal(matchDistributedRoute('/[[lang]]/home', '/en/other'), false);
-	assert.equal(matchDistributedRoute('/(app)/todos/[id]', '/todos/1'), true);
-	assert.equal(matchDistributedRoute('/docs/[...rest]/edit', '/docs/edit'), true);
-	assert.equal(
-		matchDistributedRoute('/docs/[...rest]/edit', '/docs/a/b/edit'),
-		true
-	);
-	assert.equal(
-		matchDistributedRoute('/docs/[...rest]/edit', '/docs/a/b/view'),
-		false
-	);
-	assert.equal(
-		matchDistributedRoute('/users/[id=uuid]', '/users/0190a000'),
-		true
-	);
-	assert.equal(matchDistributedRoute('/chat', '/chat'), true);
-});
-
 test('replica state never self-authorizes hydration scope', async () => {
 	const harness = serverHarness();
 	const [alice, bob] = await Promise.all([
@@ -220,6 +211,7 @@ test('replica state never self-authorizes hydration scope', async () => {
 	assert.throws(
 		() =>
 			createDistributedSvelteKit({
+				boundaries: [todosBoundary],
 				session: { getAuth: () => ({ accessToken: 'alice' }) },
 				hydration: alice.distributed
 			}),
@@ -227,6 +219,7 @@ test('replica state never self-authorizes hydration scope', async () => {
 	);
 
 	const client = createDistributedSvelteKit({
+		boundaries: [todosBoundary],
 		session: { getAuth: () => ({ accessToken: 'bob' }) }
 	});
 	assert.equal(
@@ -289,6 +282,7 @@ test('route misses do no GraphQL work and same-scope soft-nav merges overlapping
 	const second = await harness.server.load(harness.event('alice', '2'));
 	let browserFetches = 0;
 	const client = createDistributedSvelteKit({
+		boundaries: [todosBoundary],
 		session: { getAuth: () => ({ accessToken: 'alice' }) },
 		hydration: first.distributed,
 		authority: first.distributedAuthority,
@@ -328,6 +322,7 @@ test('auth changes purge old data, abort live work, and reject cross-scope hydra
 	const requests = [];
 	SsrWebSocket.instances.length = 0;
 	const client = createDistributedSvelteKit({
+		boundaries: [todosBoundary],
 		session: {
 			getAuth: () => credential,
 			subscribe(listener) {
@@ -374,6 +369,7 @@ test('one browser replica refuses to mix user and elevated generated surfaces', 
 	const harness = serverHarness();
 	const alice = await harness.server.load(harness.event('alice'));
 	const client = createDistributedSvelteKit({
+		boundaries: [todosBoundary],
 		session: { getAuth: () => ({ accessToken: 'alice' }) },
 		hydration: alice.distributed,
 		authority: alice.distributedAuthority

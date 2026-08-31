@@ -1,0 +1,13 @@
+# Reusable component island: the SvelteKit adapter binds the optional route
+# parameter once for SSR, hydration, navigation, and component reads.
+query SelectedBlobGame($gameId: String) @load {
+  blob_games(
+    where: { game_id: { _eq: $gameId } }
+    limit: 1
+    order_by: [{ game_id: asc }]
+  ) {
+    game_id
+    score
+    status
+  }
+}

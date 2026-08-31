@@ -1,7 +1,6 @@
 import { createDistributedSvelteKitServer } from '@hops-ops/distributed/sveltekit';
 
-import { DISTRIBUTED_ROUTE_OPERATIONS } from '$distributed';
-import { CHAT_PAGE_SIZE } from '$lib/chat/lobby-log';
+import { DISTRIBUTED_BOUNDARY_OPERATIONS } from '$distributed';
 import { engineRoleFromGroups } from '$lib/roles';
 import { graphqlHttpUrl } from '$lib/server/graphql';
 
@@ -18,14 +17,10 @@ type Session = NonNullable<
  * absent from the generated registry.
  */
 const distributed = createDistributedSvelteKitServer<Session, LoadEvent>({
-	routes: DISTRIBUTED_ROUTE_OPERATIONS,
+	boundaries: DISTRIBUTED_BOUNDARY_OPERATIONS,
 	getSession: (event) => event.locals.auth(),
 	getRole: (session) => engineRoleFromGroups(session?.user?.groups),
-	getUrl: graphqlHttpUrl,
-	// ChatMessages requires limit/offset; seed the live newest page on SSR.
-	variables: {
-		ChatMessages: () => ({ limit: CHAT_PAGE_SIZE, offset: 0 })
-	}
+	getUrl: graphqlHttpUrl
 });
 
 /**

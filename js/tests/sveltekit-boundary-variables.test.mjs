@@ -252,6 +252,90 @@ test('SSR, hydration, component use, navigation read, and prefetch share canonic
 	stale.destroy();
 });
 
+test('location orchestration derives one canonical key for layout, page, and hover prefetch', async () => {
+	const layout = operationAt({
+		name: 'LocationLayout',
+		route: '/items/[itemId]',
+		kind: 'layout',
+		limit: 20
+	});
+	const page = operationAt({
+		name: 'LocationPage',
+		route: '/items/[itemId]',
+		kind: 'page',
+		limit: 20
+	});
+	const requests = [];
+	const selected = context();
+	const locationContext = Object.freeze({
+		search: selected.search,
+		session: selected.session,
+		props: selected.props
+	});
+	const client = createDistributedSvelteKit({
+		boundaries: [layout, page],
+		session: { getAuth: () => ({ accessToken: 'browser' }) },
+		async fetch(_url, init) {
+			const request = JSON.parse(init.body);
+			requests.push(request);
+			return jsonResponse(
+				todoFrame(
+					BoundTodosArtifact,
+					[{ id: 'todo-location', title: 'location', status: 'open' }],
+					{ cacheScope: 'cache:location', position: '1' }
+				)
+			);
+		}
+	});
+
+	await client.prefetchLocation('/items/caf%C3%A9', locationContext);
+	assert.equal(
+		requests.length,
+		1,
+		'exact layout/page occurrences share one replica prefetch identity'
+	);
+	assert.deepEqual(requests[0].variables, {
+		...binding().resolve({ ...selected, params: { itemId: 'café' } })
+	});
+	const warm = page.binding.resolve({
+		...selected,
+		params: { itemId: 'café' }
+	});
+	assert.equal(client.replica.read(BoundTodosArtifact, warm).complete, true);
+	await client.prefetchLocation('/items/caf%C3%A9', locationContext);
+	assert.equal(requests.length, 1, 'navigation reuses the hover-prefetched key');
+
+	const absent = client.retainLocation(
+		{ id: 'no-island-page', pathname: '/unrelated', kind: 'page' },
+		locationContext
+	);
+	absent.release();
+	client.destroy();
+
+	let matcherFetches = 0;
+	const matched = operationAt({
+		name: 'ApplicationMatcher',
+		route: '/matched/[itemId=owned]',
+		kind: 'page',
+		limit: 20
+	});
+	const matcherClient = createDistributedSvelteKit({
+		boundaries: [matched],
+		session: { getAuth: () => ({ accessToken: 'browser' }) },
+		async fetch() {
+			matcherFetches += 1;
+			throw new Error('an application matcher cannot be guessed by the adapter');
+		}
+	});
+	await matcherClient.prefetchLocation('/matched/value', locationContext);
+	assert.equal(matcherFetches, 0);
+	await assert.rejects(
+		matcherClient.prefetchLocation(`/${'x'.repeat(8_192)}`, locationContext),
+		/exceeds adapter limits/
+	);
+	matcherClient.destroy();
+});
+
 test('boundary SSR selects parent layouts, deduplicates exact work, and bounds distinct refreshes', async () => {
 	const boundaries = [
 		operationAt({ name: 'RootItems', route: '/', kind: 'layout', limit: 20 }),

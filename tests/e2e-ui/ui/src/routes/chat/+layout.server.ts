@@ -3,8 +3,7 @@ import {
 	type SveltekitDistributedPageData
 } from '@hops-ops/distributed/sveltekit';
 
-import { DISTRIBUTED_ROUTE_OPERATIONS } from '$distributed/public';
-import { CHAT_PAGE_SIZE } from '$lib/chat/lobby-log';
+import { DISTRIBUTED_BOUNDARY_OPERATIONS } from '$distributed/public';
 import { graphqlHttpUrl } from '$lib/server/graphql';
 
 import type { LayoutServerLoad } from './$types';
@@ -17,13 +16,10 @@ type Session = NonNullable<Awaited<ReturnType<LoadEvent['locals']['auth']>>>;
  * Signed-in visitors inherit the root user client hydration from +layout.server.
  */
 const publicDistributed = createDistributedSvelteKitServer<Session, LoadEvent>({
-	routes: DISTRIBUTED_ROUTE_OPERATIONS,
+	boundaries: DISTRIBUTED_BOUNDARY_OPERATIONS,
 	getSession: async () => null,
 	getRole: () => null,
-	getUrl: graphqlHttpUrl,
-	variables: {
-		ChatMessages: () => ({ limit: CHAT_PAGE_SIZE, offset: 0 })
-	}
+	getUrl: graphqlHttpUrl
 });
 
 export const load: LayoutServerLoad = (async (event) => {

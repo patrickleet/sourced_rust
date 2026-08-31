@@ -29,8 +29,8 @@ export const Operation_ChatMessages: ReplicaOperationArtifact<Operation_ChatMess
   "id": "sha256:16e82d9939a08f205efef9238393f8e4582da0e58d15ace6470d7831c0798603",
   "document": "query ChatMessages($limit: Int!, $offset: Int!) {\n  chat_messages(limit: $limit, offset: $offset, order_by: [{created_at: desc}], where: {room_id: {_eq: \"lobby\"}}) {\n    message_id\n    room_id\n    author_id\n    body\n    created_at\n    author {\n      user_id\n      display_name\n      email\n      _distributed_typename: __typename\n    }\n    _distributed_typename: __typename\n  }\n}\n",
   "source": {
-    "path": "src/routes/chat/+page.graphql",
-    "line": 3,
+    "path": "src/routes/chat/+layout.graphql",
+    "line": 2,
     "column": 1
   },
   "variableCodec": {
