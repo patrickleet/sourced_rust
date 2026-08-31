@@ -11,10 +11,16 @@ use super::module::{ModelSpec, Module, ModuleManifest, ProjectionSpec, SurfaceSp
 pub const APPLICATION_MANIFEST_SCHEMA_VERSION: u32 = 1;
 
 /// Bounds applied before a portable application artifact is accepted.
-pub const MAX_APPLICATION_MANIFEST_BYTES: usize = 1024 * 1024;
+///
+/// A complete manifest intentionally carries authoritative module declarations,
+/// their flattened application inventory, and selected Surface contracts. Keep
+/// the total bounded while leaving room for a production-sized application.
+pub const MAX_APPLICATION_MANIFEST_BYTES: usize = 4 * 1024 * 1024;
 pub const MAX_MANIFEST_COLLECTION_ITEMS: usize = 4096;
 pub const MAX_MANIFEST_STRING_BYTES: usize = 4096;
-pub const MAX_MANIFEST_JSON_BYTES: usize = 256 * 1024;
+/// Per-value JSON bound. Several independently bounded contracts may comprise
+/// one application manifest, but no opaque value receives the whole budget.
+pub const MAX_MANIFEST_JSON_BYTES: usize = 1024 * 1024;
 pub const MAX_MANIFEST_JSON_DEPTH: usize = 32;
 /// Reserved manifest extension carrying the framework release that compiled it.
 pub const FRAMEWORK_COMPATIBILITY_EXTENSION_ID: &str = "distributed.framework";
@@ -2001,4 +2007,55 @@ fn validate_sorted_unique(kind: &'static str, identities: &[String]) -> Applicat
         return Err(ApplicationError::NonCanonical(kind));
     }
     Ok(())
+}
+
+#[cfg(test)]
+mod size_limit_tests {
+    use super::*;
+
+    #[test]
+    fn json_contract_can_exceed_the_old_256_kib_limit() {
+        let chunk = "x".repeat(MAX_MANIFEST_STRING_BYTES);
+        let within_budget = serde_json::json!(vec![chunk.clone(); 96]);
+        assert!(serde_json::to_vec(&within_budget).unwrap().len() > 256 * 1024);
+        validate_json_contract("surface canonical contract", &within_budget).unwrap();
+
+        let over_budget = serde_json::json!(vec![chunk; 257]);
+        assert!(serde_json::to_vec(&over_budget).unwrap().len() > MAX_MANIFEST_JSON_BYTES);
+        assert!(validate_json_contract("surface canonical contract", &over_budget).is_err());
+    }
+
+    #[test]
+    fn manifest_accepts_multiple_bounded_contracts_beyond_one_mib() {
+        let value = serde_json::json!(vec!["x".repeat(MAX_MANIFEST_STRING_BYTES); 200]);
+        assert!(serde_json::to_vec(&value).unwrap().len() < MAX_MANIFEST_JSON_BYTES);
+        let mut manifest = ApplicationManifest::new("large-app");
+        for index in 0..2 {
+            manifest.extensions.push(
+                ApplicationExtension::try_new(format!("large.contract.{index}"), 1, value.clone())
+                    .unwrap(),
+            );
+        }
+
+        let bytes = manifest.canonical_bytes().unwrap();
+        assert!(bytes.len() > 1024 * 1024);
+        assert!(bytes.len() < MAX_APPLICATION_MANIFEST_BYTES);
+        ApplicationManifest::from_canonical_bytes(&bytes).unwrap();
+    }
+
+    #[test]
+    fn manifest_rejects_multiple_contracts_beyond_four_mib() {
+        let value = serde_json::json!(vec!["x".repeat(MAX_MANIFEST_STRING_BYTES); 230]);
+        assert!(serde_json::to_vec(&value).unwrap().len() < MAX_MANIFEST_JSON_BYTES);
+        let mut manifest = ApplicationManifest::new("oversized-app");
+        for index in 0..5 {
+            manifest.extensions.push(
+                ApplicationExtension::try_new(format!("large.contract.{index}"), 1, value.clone())
+                    .unwrap(),
+            );
+        }
+
+        let error = manifest.canonical_bytes().unwrap_err().to_string();
+        assert!(error.contains("application manifest exceeds 4194304 bytes"));
+    }
 }
