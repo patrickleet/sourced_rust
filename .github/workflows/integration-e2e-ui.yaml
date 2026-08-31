@@ -736,11 +736,11 @@ jobs:
         with:
           name: e2e-ui-k8s-diagnostics
           path: |
-            .ci-*-port-forward.log
-            .ci-zitadel-proxy.log
-            .ci-kubernetes-diagnostics.log
-            .ci-api-readiness.json
-            .ci-chat-preflight.html
+            tests/e2e-ui/.ci-*-port-forward.log
+            tests/e2e-ui/.ci-zitadel-proxy.log
+            tests/e2e-ui/.ci-kubernetes-diagnostics.log
+            tests/e2e-ui/.ci-api-readiness.json
+            tests/e2e-ui/.ci-chat-preflight.html
           if-no-files-found: ignore
           retention-days: 7
 
