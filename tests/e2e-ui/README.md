@@ -7,7 +7,7 @@ client, optimistic replica update, and causal confirmation.
 Rust · TypeScript · CQRS / ES · SvelteKit · celld · Kafka · NATS · RabbitMQ ·
 PSQL · SQLite · OIDC · Keycloak · Authentik
 
-Default is **one process** (`make run`). The same UI can wait-dispatch Todo
+Default is **one command** (`make run`). The same UI can wait-dispatch Todo
 create/complete and `chat.post` to celld from [`../e2e-celld`](../e2e-celld).
 Todo commands are `portable_command!` declarations in `todo-domain`; hosts
 only `.mount` them. Chat is a small cell so `@live` still coming from GraphQL
@@ -37,19 +37,33 @@ Charts: `api/.gitops/deploy`, `ui/.gitops/deploy`.
 App Applications: `gitops/envs/local/`.
 Control plane: `gitops/cluster/` (`stacks/`, `configurations/`, …).
 
-## Option B — compose + host processes
+## Option B — lifecycle dev on the host
 
 ```bash
 cd tests/e2e-ui
-make up
-set -a && source e2e-ui.env && set +a
-make run
+make up            # once: writes e2e-ui.env
+make ui-install    # once: install this checkout's locally linked JS package
+distributed dev
 ```
 
 The UI is at `http://localhost:5180`; GraphQL is at
-`http://127.0.0.1:8791/graphql`. Demo users are `alice`, `bob`, and `admin`
-with password `Password1!`. `make run` uses `cargo-watch` on the GraphQL
-host (Vite already HMR's the UI). `WATCH=0 make run` is a one-shot `cargo run`.
+`http://127.0.0.1:8791/graphql`. The CLI loads `e2e-ui.env` when it exists.
+Demo users are `alice`, `bob`, and `admin` with password `Password1!`.
+
+`make run` is a convenience alias for the same zero-config command. Before
+starting either process, the CLI compiles and activates one coherent application
+manifest from the real e2e modules and surfaces. Cargo metadata locates the
+typed application and runtime; the conventional `ui/` directory selects
+SvelteKit. No lifecycle JSON or wrapper scripts are required. Vite still handles
+Svelte/CSS/GraphQL HMR, while application-contract changes trigger a coherent
+rebuild and the Rust process restart.
+
+The extra one-time `ui-install` target is specific to this source fixture. It
+builds and installs the locally linked `../../../js` checkout so the test covers
+the exact framework source in this repository; `@hops-ops/distributed` is also
+published to npm for ordinary applications. Rust/WASM pures are not a fixture
+prerequisite: when an application declares one, `distributed build` and
+`distributed dev` compile it from its declaring Cargo package before Vite starts.
 
 This is the **default one-process playground**. Optional celld:
 

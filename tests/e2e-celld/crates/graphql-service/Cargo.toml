@@ -1,5 +1,6 @@
 [package]
 name = "e2e-celld-graphql"
+workspace = "../.."
 version.workspace = true
 edition.workspace = true
 publish = false

@@ -173,6 +173,11 @@ pub struct CommandProjectionPureReduce {
     pub wasm_package: String,
     /// Named WASM export `(recordJson, argsJson) -> assignJson | undefined`.
     pub wasm_export: String,
+    /// Cargo package that declared this WASM pure. `portable_command!` fills
+    /// this from `CARGO_PKG_NAME`; application authors do not maintain a
+    /// parallel build inventory.
+    #[serde(default, skip_serializing_if = "String::is_empty")]
+    pub wasm_rust_package: String,
     /// Projection model id (e.g. `BlobGames`).
     pub model: String,
     /// Record key fields: `name` is the model field; `source` is input/default/preset.
@@ -204,6 +209,7 @@ impl CommandProjectionPureReduce {
             client_export: client_export.into(),
             wasm_package: String::new(),
             wasm_export: String::new(),
+            wasm_rust_package: String::new(),
             model: model.into(),
             key: Vec::new(),
             args: Vec::new(),
@@ -224,11 +230,25 @@ impl CommandProjectionPureReduce {
             client_export: String::new(),
             wasm_package: wasm_package.into(),
             wasm_export: wasm_export.into(),
+            wasm_rust_package: String::new(),
             model: model.into(),
             key: Vec::new(),
             args: Vec::new(),
             assign: Vec::new(),
         }
+    }
+
+    /// Attach the Cargo package that owns a declared WASM pure.
+    ///
+    /// Normal application code receives this through `portable_command!`.
+    /// It is public only so generated declarations can remain ordinary Rust.
+    #[doc(hidden)]
+    #[must_use]
+    pub fn declared_in_rust_package(mut self, package: impl Into<String>) -> Self {
+        if !self.wasm_package.is_empty() || !self.wasm_export.is_empty() {
+            self.wasm_rust_package = package.into();
+        }
+        self
     }
 
     /// Deprecated alias for [`Self::client_module`].

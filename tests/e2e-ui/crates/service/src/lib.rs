@@ -30,6 +30,7 @@ pub use host::{run, HostOptions};
 pub use http::serve;
 pub use modules::compose::build_service;
 pub use modules::graphql::{
-    build_graphql_engine, dev_identity, distributed_admin_client_surface, distributed_client_surface,
-    distributed_public_client_surface, identity_from_env, oidc_bearer_config,
+    application_manifest, build_graphql_engine, dev_identity, distributed_admin_client_surface,
+    distributed_client_surface, distributed_public_client_surface, identity_from_env,
+    oidc_bearer_config,
 };

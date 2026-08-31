@@ -15,6 +15,86 @@ reimplementing them. `hops`, for example, exposes the same surface under
 `distributed_cli::run`. **Everything below documented as `distributed <cmd>` is also
 available as `hops service <cmd>`.**
 
+## `distributed build` — one coherent application generation
+
+```bash
+cd my-application
+distributed build
+
+# Equivalent from another directory:
+distributed build path/to/my-application
+```
+
+Application authors write Rust crates and, optionally, a conventional `ui/`
+SvelteKit project. They do not write a lifecycle catalog, executor list, or
+process-supervisor JSON.
+
+The CLI asks Cargo for the workspace model, locates the crate that exports the
+typed `ApplicationManifest`, locates the runtime binary, and detects
+`ui/package.json`. A generated scaffold records the two Rust targets in Cargo
+package metadata. Existing workspaces with one conventional `*-service` library
+and one runtime binary need no metadata at all.
+
+The typed application export is the semantic boundary. It is composed from the
+authored crates and preserves the framework's separation of responsibility:
+
+- domain code contributes command APIs and their RBAC;
+- read models contribute query/subscription GraphQL surfaces and their RBAC;
+- projections map domain events to read-model mutations used by the server and
+  browser optimism;
+- Rust/WASM pure functions cover optimistic transitions that cannot be
+  predicted from command inputs alone; once declared, they are required build
+  artifacts compiled by `distributed build` and `distributed dev` before Vite;
+- SvelteKit `+page.graphql` documents add page-level `@load` loaders and `@live`
+  subscriptions, generated against the read-model query surface and hydrated
+  into the browser replica.
+
+`distributed build` compiles the Rust runtime, validates the typed composition
+without scanning Rust source, and only then starts the SvelteKit/Vite UI build.
+After all program builds succeed it reuses the cached harness to create and
+atomically activate the application generation. An older or incompatible
+project therefore fails on its missing typed export before spending time in
+Vite, and the active generation remains unchanged. Vite remains the
+client-generation integration point.
+Lifecycle receipts and the generated application manifest are tool-owned state
+under `.distributed/lifecycle/`.
+Rust binaries remain in Cargo's target directory and SvelteKit output remains
+in its adapter-selected output directory.
+
+Use `--output json` for a machine-readable lifecycle report. The compatibility
+flags `--root`, `--catalog`, and `--config` exist for older low-level lifecycle
+fixtures; normal application builds do not use them.
+
+## `distributed dev` — coherent local supervision
+
+```bash
+cd my-application
+distributed dev
+```
+
+`distributed dev` activates an initial typed application generation, starts the
+Cargo runtime and `npm run dev` for `ui/`, waits for both readiness probes, and
+prints the usable API and browser URLs. Vite owns Svelte/CSS/client HMR; the
+supervisor restarts the Rust process only when the typed application inputs
+change. Ctrl-C shuts down both process groups and their descendants.
+
+Shell environment variables win. The CLI then loads `<project-name>.env` and
+`.env` when present, without displaying their values. `BIND` selects the API
+address; `UI_HOST` and `UI_PORT` select the Vite URL. Infrastructure setup is
+still project-specific—for example, the e2e UI's `make up` creates its local
+Zitadel/Postgres environment—but starting the application no longer needs a
+lifecycle shell script.
+
+The lifecycle CLI contract has black-box Bats coverage. It builds and starts a
+generated Rust application plus conventional SvelteKit project with no lifecycle JSON,
+as well as lower-level coverage for atomic activation, rollback, selective
+restarts, readiness, cancellation, and descendant cleanup:
+
+```bash
+# Requires Bats; CI installs the pinned version used by the project.
+make test-cli-lifecycle
+```
+
 ## `distributed scaffold <name>` — generate a service crate
 
 ```bash

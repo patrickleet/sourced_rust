@@ -1,15 +1,20 @@
 use std::sync::Arc;
 
+use distributed::application::CommandDefinition;
 use distributed::graphql::{
     build_surface, surface_for_application_contract, DistributedClientSurfaceExport, GraphqlEngine,
-    GraphqlPoolSource, IdentityConfig, OidcConfig, SurfaceOptions,
+    GraphqlPoolSource, IdentityConfig, OidcConfig, Surface, SurfaceOptions,
 };
 use distributed::microsvc::Service;
-use distributed::{InMemoryLockManager, InMemoryRepository, LockError, LockManager};
+use distributed::{
+    Application, ApplicationManifest, InMemoryLockManager, InMemoryRepository, LockError,
+    LockManager, Module, SurfaceSpec,
+};
 use e2e_readmodels::{AuthUsers, BlobGames, ChatMessages, Todos};
 
 use crate::application::{
-    DISTRIBUTED_ADMIN_CLIENT_SURFACE, DISTRIBUTED_CLIENT_SURFACE, DISTRIBUTED_PUBLIC_CLIENT_SURFACE,
+    DISTRIBUTED_ADMIN_CLIENT_SURFACE, DISTRIBUTED_CLIENT_SURFACE,
+    DISTRIBUTED_PUBLIC_CLIENT_SURFACE, E2E_UI_APPLICATION, E2E_UI_MODULE_IDS,
 };
 use crate::modules::projections;
 
@@ -87,24 +92,7 @@ fn pool_free_client_surface_contract(
     eligible_roles: &[&str],
     schema_roles: &[&str],
 ) -> DistributedClientSurfaceExport {
-    let project = e2e_readmodels::distributed_manifest();
-    let repository = InMemoryRepository::new();
-    let service = crate::modules::compose::build_service(
-        repository.clone(),
-        ClientSurfaceLocks::default(),
-        repository,
-    );
-    let projections = projections::projection_owners();
-    let full = build_surface(&project.tables, &SurfaceOptions::sqlite())
-        .expect("e2e-ui client Surface should build")
-        .with_projection_owners([
-            projections.todo.into(),
-            projections.chat.into(),
-            projections.blob.into(),
-        ])
-        .expect("e2e-ui projector topology should bind")
-        .with_service(&service)
-        .expect("e2e-ui typed Service inventory should bind");
+    let full = pool_free_full_surface();
     let eligible = eligible_roles
         .iter()
         .map(|role| (*role).to_string())
@@ -119,6 +107,78 @@ fn pool_free_client_surface_contract(
             .expect("e2e-ui application Surface should select");
     DistributedClientSurfaceExport::from_selected("e2e-ui", selected)
         .expect("e2e-ui application Surface should export")
+}
+
+fn pool_free_full_surface() -> Surface {
+    let project = e2e_readmodels::distributed_manifest();
+    let service = pool_free_service();
+    let projections = projections::projection_owners();
+    build_surface(&project.tables, &SurfaceOptions::sqlite())
+        .expect("e2e-celld client Surface should build")
+        .with_projection_owners([
+            projections.todo.into(),
+            projections.chat.into(),
+            projections.blob.into(),
+        ])
+        .expect("e2e-celld projector topology should bind")
+        .with_service(&service)
+        .expect("e2e-celld typed Service inventory should bind")
+}
+
+fn pool_free_service() -> Service {
+    let repository = InMemoryRepository::new();
+    crate::modules::compose::build_service(
+        repository.clone(),
+        ClientSurfaceLocks::default(),
+        repository,
+    )
+}
+
+/// Logical application artifact consumed by `distributed build` and `dev`.
+/// Runtime repositories, celld transport, and NATS connections are erased.
+pub fn application_manifest() -> ApplicationManifest {
+    let surface = SurfaceSpec::from_surface(E2E_UI_APPLICATION, &pool_free_full_surface())
+        .expect("e2e-celld full Surface should compile into an application artifact");
+
+    let commands = pool_free_service()
+        .command_specs()
+        .expect("e2e-celld typed commands should compile into portable specs")
+        .into_iter()
+        .map(|command| {
+            let exposed = surface
+                .commands
+                .iter()
+                .find(|exposed| exposed.id == command.id)
+                .expect("full e2e-celld Surface should expose every application command");
+            command
+                .with_surface_binding(exposed)
+                .expect("e2e-celld Surface command should bind to its portable declaration")
+        })
+        .collect::<Vec<_>>();
+    let modules = E2E_UI_MODULE_IDS
+        .iter()
+        .map(|module_id| {
+            let prefix = format!("{module_id}.");
+            let definitions = commands
+                .iter()
+                .filter(|command| command.id.starts_with(&prefix))
+                .cloned()
+                .map(CommandDefinition::contract)
+                .collect::<Vec<_>>();
+            Module::new(*module_id)
+                .command_definitions(definitions)
+                .build()
+                .expect("e2e-celld application module should compile")
+        })
+        .collect::<Vec<_>>();
+
+    Application::new(E2E_UI_APPLICATION)
+        .modules(modules)
+        .surface(surface)
+        .build()
+        .expect("e2e-celld application manifest should compile")
+        .manifest()
+        .clone()
 }
 
 /// Pool-free normal application export consumed by `distributed client-manifest`.
@@ -214,6 +274,21 @@ mod client_surface_tests {
     use crate::application::{DISTRIBUTED_CLIENT_SURFACE, DISTRIBUTED_PUBLIC_CLIENT_SURFACE};
     use crate::modules::compose::build_service;
     use distributed::InMemoryRepository;
+
+    #[test]
+    fn application_manifest_compiles_real_modules_and_surfaces() {
+        let manifest = application_manifest();
+        manifest
+            .validate()
+            .expect("valid e2e-celld application manifest");
+        assert_eq!(manifest.name, "e2e-ui");
+        assert_eq!(
+            manifest.module_ids(),
+            vec!["blob", "chat", "identity", "todo"]
+        );
+        assert_eq!(manifest.surfaces.len(), 1);
+        assert!(!manifest.commands.is_empty());
+    }
 
     #[test]
     fn pool_free_user_and_admin_exports_compile_real_manifests() {

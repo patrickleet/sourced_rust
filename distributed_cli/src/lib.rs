@@ -10,15 +10,18 @@ mod cli;
 mod client_compiler;
 pub mod contracts;
 mod generate;
+pub mod lifecycle;
 mod manifest_harness;
 mod skills;
+mod wasm_pures;
 
 pub use atlas::{render_atlas_schema, AtlasDatabaseUrl, AtlasSchemaSpec};
 pub use cli::{
-    run, run_distributed, AgentHarness, Bus, ClientArgs, ClientManifestArgs, ContractsAcceptArgs,
-    ContractsArgs, ContractsCheckArgs, ContractsCommands, ContractsOutput, DescribeArgs,
-    DistributedArgs, DistributedCommands, Framework, GitopsPromote, ManifestFormat, Metrics,
-    ScaffoldArgs, SchemaArgs, SchemaDialect, SchemaFormat, ServiceArgs, ServiceCommands,
+    run, run_distributed, AgentHarness, BuildArgs, Bus, ClientArgs, ClientManifestArgs,
+    ContractsAcceptArgs, ContractsArgs, ContractsCheckArgs, ContractsCommands, ContractsOutput,
+    DescribeArgs, DevArgs, DistributedArgs, DistributedCommands, Framework, GitopsPromote,
+    LifecycleOutput, ManifestFormat, Metrics, ProbeArgs, ScaffoldArgs, SchemaArgs, SchemaDialect,
+    SchemaFormat, ServiceArgs, ServiceCommands,
     SkillsArgs, SkillsCommands, SkillsInitArgs, Store, Transport,
 };
 pub use client_compiler::{
@@ -45,6 +48,16 @@ pub use contracts::{
     MIGRATION_INVENTORY_SCHEMA_VERSION, MIGRATION_OWNER, MIGRATION_SCOPE,
 };
 pub use generate::{generate_service_scaffold, package_name};
+pub use lifecycle::{
+    run_lifecycle_build, run_lifecycle_dev, ArtifactNodeReceipt, BuildDrift, DistributedSourceIdentity,
+    GenerationManifest, LifecycleBuildConfig, LifecycleBuildOptions, LifecycleBuildReport,
+    LifecycleConfig, LifecycleDevConfig, LifecycleDevOptions, LifecycleDevProbe,
+    LifecycleDevProcess, LifecycleDevReport, LifecycleError, LifecycleExecutor, LifecycleGraph, LifecycleNode,
+    ReleaseManifest, ReleaseMember, GENERATION_MANIFEST_SCHEMA_VERSION,
+    LIFECYCLE_BUILD_CONFIG_SCHEMA_VERSION, LIFECYCLE_CONFIG_SCHEMA_VERSION,
+    LIFECYCLE_GRAPH_SCHEMA_VERSION, NODE_RECEIPT_SCHEMA_VERSION,
+    RELEASE_MANIFEST_SCHEMA_VERSION,
+};
 pub use skills::{embedded_skills, generate_skills, EmbeddedFile, EmbeddedSkill, SkillsInitSpec};
 
 /// What to scaffold. The pure input to [`generate_service_scaffold`].

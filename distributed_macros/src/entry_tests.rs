@@ -560,6 +560,8 @@ mod tests {
         assert!(out.contains("author_id"), "{out}");
         assert!(out.contains("preview_reduce_known_record"), "{out}");
         assert!(out.contains("blob_preview"), "{out}");
+        assert!(out.contains("declared_in_rust_package"), "{out}");
+        assert!(out.contains("CARGO_PKG_NAME"), "{out}");
     }
 
     #[test]

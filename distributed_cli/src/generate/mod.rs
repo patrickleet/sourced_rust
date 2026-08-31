@@ -278,6 +278,10 @@ mod tests {
         let cargo = contents(&project, "Cargo.toml");
         assert!(cargo.contains("\"http\""));
         assert!(cargo.contains("\"sqlite\""));
+        assert!(cargo.contains("[package.metadata.distributed.application]"));
+        assert!(cargo.contains("entrypoint = \"application_manifest\""));
+        assert!(cargo.contains("[package.metadata.distributed.runtime]"));
+        assert!(cargo.contains("binary = \"orders\""));
     }
 
     #[test]

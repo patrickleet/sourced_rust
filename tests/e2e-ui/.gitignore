@@ -1,7 +1,9 @@
 /target
 **/*.db
 .make-*
+.distributed-dev.*
 e2e-ui.env
+.distributed/
 docker/machinekey/
 docker/web-client.secret
 ui/node_modules

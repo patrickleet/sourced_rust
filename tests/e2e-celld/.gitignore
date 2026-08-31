@@ -1,4 +1,6 @@
 /target
+.distributed/
+.ci-distributed-dev.*
 e2e-celld.db
 .make-runner.pid
 .make-ui.pid
