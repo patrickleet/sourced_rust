@@ -1085,6 +1085,57 @@ fn named_service_preserves_identity_with_route_bundles() {
     );
 }
 
+#[cfg(feature = "graphql")]
+#[test]
+fn service_compiles_exact_application_modules_from_command_namespaces() {
+    let repository = InMemoryRepository::new();
+    let service = Service::new().named("catalog").routes(
+        Routes::new()
+            .with_repo(repository.queued().aggregate::<RouteComboAggregate>())
+            .typed_command(
+                typed_command::<TypedInput, Succeeded<TypedOutput>>("access.grant")
+                    .roles(["user"]),
+            )
+            .handle(typed_handler)
+            .typed_command(
+                typed_command::<TypedInput, Succeeded<TypedOutput>>("repository.create")
+                    .roles(["user"]),
+            )
+            .handle(typed_handler),
+    );
+    let surface = crate::graphql::build_surface(
+        &[],
+        &crate::graphql::SurfaceOptions::sqlite(),
+    )
+    .expect("empty read-model Surface should build")
+    .with_service(&service)
+    .expect("typed Service should bind to the Surface");
+    let surface = crate::application::SurfaceSpec::from_surface("catalog", &surface)
+        .expect("Surface should become a portable application contract");
+
+    let application = service
+        .application("catalog", surface)
+        .expect("Service and Surface should compile into one application");
+
+    assert_eq!(
+        application
+            .modules()
+            .iter()
+            .map(crate::application::Module::id)
+            .collect::<Vec<_>>(),
+        ["access", "repository"]
+    );
+    assert_eq!(
+        application
+            .manifest()
+            .commands
+            .iter()
+            .map(|command| command.id.as_str())
+            .collect::<Vec<_>>(),
+        ["access.grant", "repository.create"]
+    );
+}
+
 #[tokio::test]
 async fn typed_direct_dispatch_fails_before_invoking_handler() {
     TYPED_HANDLER_INVOKED.store(false, Ordering::SeqCst);
