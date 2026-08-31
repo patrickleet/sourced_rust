@@ -7,20 +7,22 @@ use std::path::{Path, PathBuf};
 use std::process::{Child, Command, Stdio};
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Arc;
-use std::time::{Duration, Instant};
+use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 
 use crate::contracts::ContractCatalog;
 
-use super::build::lifecycle_input_snapshot;
+use super::build::{lifecycle_input_snapshot, resolve_output};
 use super::graph::LifecycleErrorReason;
 use super::{
-    run_lifecycle_project_build, validate_portable_path, validate_stable_value,
-    LifecycleBuildConfig, LifecycleBuildOptions, LifecycleBuildReport, LifecycleBuildRequest,
-    LifecycleError, LifecycleGraph, LifecycleProjectPlan,
+    activate_lifecycle_project_generation, run_lifecycle_project_build, validate_portable_path,
+    validate_stable_value, LifecycleActivation, LifecycleBuildConfig, LifecycleBuildOptions,
+    LifecycleBuildReport, LifecycleBuildRequest, LifecycleError, LifecycleGraph,
+    LifecycleProjectPlan,
 };
 
 const MAX_DEV_PROCESSES: usize = 64;
 const MAX_DEV_INTERVAL: Duration = Duration::from_secs(30);
+const MAX_DEV_READINESS_TOTAL: Duration = Duration::from_secs(60);
 
 fn default_poll_ms() -> u64 {
     200
@@ -36,6 +38,10 @@ fn default_ready_after_ms() -> u64 {
 
 fn default_shutdown_ms() -> u64 {
     5_000
+}
+
+fn default_prepare_ms() -> u64 {
+    30_000
 }
 
 #[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
@@ -85,6 +91,9 @@ pub struct LifecycleDevConfig {
     pub debounce_ms: u64,
     #[serde(default = "default_shutdown_ms")]
     pub shutdown_ms: u64,
+    /// Maximum browser capsule preparation window for coherent reloads.
+    #[serde(default = "default_prepare_ms")]
+    pub prepare_ms: u64,
     pub processes: BTreeMap<String, LifecycleDevProcess>,
 }
 
@@ -94,6 +103,7 @@ impl LifecycleDevConfig {
             ("poll", self.poll_ms),
             ("debounce", self.debounce_ms),
             ("shutdown", self.shutdown_ms),
+            ("prepare", self.prepare_ms),
         ] {
             if value == 0 || Duration::from_millis(value) > MAX_DEV_INTERVAL {
                 return Err(LifecycleError::new(format!(
@@ -111,10 +121,10 @@ impl LifecycleDevConfig {
             .values()
             .map(readiness_budget_ms)
             .sum::<u64>()
-            > MAX_DEV_INTERVAL.as_millis() as u64
+            > MAX_DEV_READINESS_TOTAL.as_millis() as u64
         {
             return Err(LifecycleError::new(
-                "total lifecycle dev readiness delay must not exceed 30s",
+                "total lifecycle dev readiness delay must not exceed 60s",
             ));
         }
         for (name, process) in &self.processes {
@@ -248,7 +258,7 @@ pub fn run_lifecycle_project_dev(
         LifecycleError::new(format!("failed to resolve lifecycle dev root: {error}"))
     })?;
     let config = &options.project.config;
-    let dev = config.dev.clone().ok_or_else(|| {
+    let mut dev = config.dev.clone().ok_or_else(|| {
         LifecycleError::new("lifecycle project has no development process configuration")
     })?;
     dev.validate()?;
@@ -262,6 +272,14 @@ pub fn run_lifecycle_project_dev(
     initial_options.activation_inputs = None;
     initial_options.cancel = Some(Arc::clone(&options.stop));
     let initial = run_lifecycle_project_build(&options.project, &initial_options)?;
+    let state = DevStateStore::new(&root, &options.project.out)?;
+    state.write_active(&initial)?;
+    for process in dev.processes.values_mut() {
+        process.env.insert(
+            "DISTRIBUTED_LIFECYCLE_DIR".to_string(),
+            state.root.to_string_lossy().into_owned(),
+        );
+    }
     let mut children = ChildSet::start(&root, &dev, &initial, &options.stop)?;
     if options.progress {
         for (name, process) in &dev.processes {
@@ -277,6 +295,7 @@ pub fn run_lifecycle_project_dev(
     }
     let mut snapshot = lifecycle_input_snapshot(&root, catalog, &graph)?;
     let mut final_generation = initial.generation_id.clone();
+    let mut active = initial.clone();
     let mut rebuilds = 0;
     let mut restarts = dev
         .processes
@@ -316,6 +335,7 @@ pub fn run_lifecycle_project_dev(
             rebuild_options.nodes = Some(invalidated.clone());
             let submitted_inputs = latest.clone();
             rebuild_options.activation_inputs = Some(submitted_inputs.clone());
+            rebuild_options.activation = LifecycleActivation::Deferred;
             let cancel = Arc::new(AtomicBool::new(false));
             rebuild_options.cancel = Some(Arc::clone(&cancel));
             let build_project = options.project.clone();
@@ -371,9 +391,35 @@ pub fn run_lifecycle_project_dev(
                 Err(error) => return Err(error),
             };
             rebuilds += 1;
-            final_generation = generation.generation_id.clone();
             if options.stop.load(Ordering::SeqCst) {
                 return Ok(());
+            }
+            let transition_id = generation.generation_id.clone();
+            state.write_preparing(&active, &generation, &transition_id, dev.prepare_ms)?;
+            if let Err(error) = state.wait_for_prepare(
+                &transition_id,
+                Duration::from_millis(dev.prepare_ms),
+                &options.stop,
+            ) {
+                state.write_active(&active)?;
+                if options.stop.load(Ordering::SeqCst)
+                    && error.reason() == LifecycleErrorReason::Canceled
+                {
+                    return Ok(());
+                }
+                children.ensure_running().map_err(|serving| {
+					LifecycleError::new(format!(
+						"pending generation preparation failed: {error}; prior generation is no longer serving: {serving}"
+					))
+				})?;
+                if options.progress {
+                    eprintln!(
+						"lifecycle dev: rejected generation={} during preparation; prior generation remains active: {}",
+						generation.generation_id, error
+					);
+                }
+                snapshot = submitted_inputs;
+                continue;
             }
             let restarting = dev
                 .processes
@@ -381,9 +427,10 @@ pub fn run_lifecycle_project_dev(
                 .filter(|(_, process)| !process.restart_on.is_disjoint(&invalidated))
                 .map(|(name, _)| name.clone())
                 .collect::<Vec<_>>();
-            if let Err(error) = children.restart_invalidated(
+            if let Err(error) = children.restart_transactional(
                 &root,
                 &dev,
+                &active,
                 &generation,
                 &invalidated,
                 &mut restarts,
@@ -392,10 +439,54 @@ pub fn run_lifecycle_project_dev(
                 if options.stop.load(Ordering::SeqCst)
                     && error.reason() == LifecycleErrorReason::Canceled
                 {
+                    state.write_active(&active)?;
                     return Ok(());
                 }
-                return Err(error);
+                state.write_active(&active)?;
+                children.ensure_running().map_err(|serving| {
+					LifecycleError::new(format!(
+						"pending generation readiness failed: {error}; prior generation rollback is not serving: {serving}"
+					))
+				})?;
+                if options.progress {
+                    eprintln!(
+						"lifecycle dev: rejected generation={} during readiness; prior generation remains active: {}",
+						generation.generation_id, error
+					);
+                }
+                snapshot = submitted_inputs;
+                continue;
             }
+            if let Err(error) = activate_lifecycle_project_generation(&options.project, &generation)
+            {
+                let rollback = children.replace_generation(
+                    &root,
+                    &dev,
+                    &generation,
+                    &active,
+                    &invalidated,
+                    &options.stop,
+                );
+                return match rollback {
+					Ok(()) => {
+						state.write_active(&active)?;
+						if options.progress {
+							eprintln!(
+								"lifecycle dev: rejected generation={} during activation; prior generation remains active: {}",
+								generation.generation_id, error
+							);
+						}
+						snapshot = submitted_inputs;
+						continue;
+					}
+                    Err(rollback) => Err(LifecycleError::new(format!(
+                        "failed to activate pending generation: {error}; process rollback also failed: {rollback}"
+                    ))),
+                };
+            }
+            final_generation = generation.generation_id.clone();
+            active = generation.clone();
+            state.write_active(&active)?;
             if options.progress {
                 eprintln!(
                     "lifecycle dev: activated generation={} invalidated={} restarted={}",
@@ -422,6 +513,266 @@ pub fn run_lifecycle_project_dev(
         rebuilds,
         restarts,
     })
+}
+
+#[derive(Serialize)]
+#[serde(rename_all = "camelCase")]
+struct DevGenerationState<'a> {
+    generation_id: &'a str,
+    release_id: &'a str,
+    topology_id: &'a str,
+    compatibility_id: &'a str,
+}
+
+#[derive(Serialize)]
+#[serde(rename_all = "camelCase")]
+struct DevLifecycleState<'a> {
+    schema_version: u32,
+    phase: &'static str,
+    active: DevGenerationState<'a>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pending: Option<DevGenerationState<'a>>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    transition_id: Option<&'a str>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    deadline_unix_ms: Option<u64>,
+}
+
+struct DevStateStore {
+    root: PathBuf,
+    state: PathBuf,
+}
+
+impl DevStateStore {
+    fn new(project_root: &Path, output: &Path) -> Result<Self, LifecycleError> {
+        let root = resolve_output(project_root, output)?;
+        fs::create_dir_all(root.join("dev-control/participants"))
+            .map_err(dev_io("create lifecycle participant directory"))?;
+        fs::create_dir_all(root.join("dev-control/acks"))
+            .map_err(dev_io("create lifecycle acknowledgement directory"))?;
+        Ok(Self {
+            state: root.join("dev.json"),
+            root,
+        })
+    }
+
+    fn write_active(&self, active: &LifecycleBuildReport) -> Result<(), LifecycleError> {
+        self.write(&DevLifecycleState {
+            schema_version: 1,
+            phase: "active",
+            active: generation_state(active),
+            pending: None,
+            transition_id: None,
+            deadline_unix_ms: None,
+        })
+    }
+
+    fn write_preparing(
+        &self,
+        active: &LifecycleBuildReport,
+        pending: &LifecycleBuildReport,
+        transition_id: &str,
+        prepare_ms: u64,
+    ) -> Result<(), LifecycleError> {
+        let deadline = unix_ms()?.saturating_add(prepare_ms);
+        self.write(&DevLifecycleState {
+            schema_version: 1,
+            phase: "preparing",
+            active: generation_state(active),
+            pending: Some(generation_state(pending)),
+            transition_id: Some(transition_id),
+            deadline_unix_ms: Some(deadline),
+        })
+    }
+
+    fn write(&self, state: &DevLifecycleState<'_>) -> Result<(), LifecycleError> {
+        let bytes = serde_json::to_vec(state).map_err(|error| {
+            LifecycleError::new(format!("serialize lifecycle dev state: {error}"))
+        })?;
+        let mut file = tempfile::NamedTempFile::new_in(&self.root)
+            .map_err(dev_io("create lifecycle dev state"))?;
+        use std::io::Write as _;
+        file.write_all(&bytes)
+            .map_err(dev_io("write lifecycle dev state"))?;
+        file.as_file()
+            .sync_all()
+            .map_err(dev_io("sync lifecycle dev state"))?;
+        file.persist(&self.state)
+            .map_err(|error| dev_io("activate lifecycle dev state")(error.error))?;
+        Ok(())
+    }
+
+    fn wait_for_prepare(
+        &self,
+        transition_id: &str,
+        timeout: Duration,
+        stop: &AtomicBool,
+    ) -> Result<(), LifecycleError> {
+        let started = Instant::now();
+        let discovery = Duration::from_millis(500).min(timeout);
+        let acknowledgement_settle = Duration::from_millis(1_000).min(timeout);
+        let mut complete_since = None;
+        loop {
+            if stop.load(Ordering::SeqCst) {
+                return Err(LifecycleError::canceled(
+                    "browser reload preparation was canceled",
+                ));
+            }
+            let participants = self.fresh_participants(Duration::from_secs(5))?;
+            if !participants.is_empty() {
+                let acknowledgements = self.acknowledgements(transition_id)?;
+                if participants
+                    .iter()
+                    .any(|id| acknowledgements.get(id) == Some(&false))
+                {
+                    return Err(LifecycleError::new(
+                        "a browser rejected coherent reload capsule preparation",
+                    ));
+                }
+                if participants
+                    .iter()
+                    .all(|id| acknowledgements.get(id) == Some(&true))
+                {
+                    let complete = complete_since.get_or_insert_with(Instant::now);
+                    if complete.elapsed() >= acknowledgement_settle {
+                        return Ok(());
+                    }
+                } else {
+                    complete_since = None;
+                }
+            } else if started.elapsed() >= discovery {
+                return Ok(());
+            } else {
+                complete_since = None;
+            }
+            if started.elapsed() >= timeout {
+                return Err(LifecycleError::new(format!(
+                    "browser reload preparation timed out after {}ms",
+                    timeout.as_millis()
+                )));
+            }
+            std::thread::sleep(Duration::from_millis(25));
+        }
+    }
+
+    fn fresh_participants(
+        &self,
+        maximum_age: Duration,
+    ) -> Result<BTreeSet<String>, LifecycleError> {
+        let now = SystemTime::now();
+        let mut result = BTreeSet::new();
+        for entry in fs::read_dir(self.root.join("dev-control/participants"))
+            .map_err(dev_io("read lifecycle participants"))?
+        {
+            let entry = entry.map_err(dev_io("read lifecycle participant"))?;
+            let name = entry.file_name().to_string_lossy().into_owned();
+            if !safe_control_id(name.strip_suffix(".json").unwrap_or("")) {
+                continue;
+            }
+            if !entry
+                .file_type()
+                .map_err(dev_io("inspect lifecycle participant type"))?
+                .is_file()
+            {
+                continue;
+            }
+            let metadata = entry
+                .metadata()
+                .map_err(dev_io("inspect lifecycle participant"))?;
+            if metadata.is_file()
+                && now
+                    .duration_since(
+                        metadata
+                            .modified()
+                            .map_err(dev_io("read participant time"))?,
+                    )
+                    .unwrap_or_default()
+                    <= maximum_age
+            {
+                result.insert(name.trim_end_matches(".json").to_string());
+            }
+        }
+        Ok(result)
+    }
+
+    fn acknowledgements(
+        &self,
+        transition_id: &str,
+    ) -> Result<BTreeMap<String, bool>, LifecycleError> {
+        let mut result = BTreeMap::new();
+        let directory = self.root.join("dev-control/acks").join(transition_id);
+        let entries = match fs::read_dir(directory) {
+            Ok(entries) => entries,
+            Err(error) if error.kind() == std::io::ErrorKind::NotFound => return Ok(result),
+            Err(error) => return Err(dev_io("read lifecycle acknowledgements")(error)),
+        };
+        for entry in entries {
+            let entry = entry.map_err(dev_io("read lifecycle acknowledgement"))?;
+            let name = entry.file_name().to_string_lossy().into_owned();
+            let id = name.strip_suffix(".json").unwrap_or("");
+            if !safe_control_id(id)
+                || !entry
+                    .file_type()
+                    .map_err(dev_io("inspect lifecycle acknowledgement type"))?
+                    .is_file()
+                || entry
+                    .metadata()
+                    .map_err(dev_io("inspect lifecycle acknowledgement"))?
+                    .len()
+                    > 1024
+            {
+                continue;
+            }
+            #[derive(Deserialize)]
+            #[serde(deny_unknown_fields)]
+            struct Ack {
+                ok: bool,
+            }
+            let ack: Ack = serde_json::from_slice(
+                &fs::read(entry.path()).map_err(dev_io("read lifecycle acknowledgement"))?,
+            )
+            .map_err(|error| {
+                LifecycleError::new(format!("parse lifecycle acknowledgement: {error}"))
+            })?;
+            result.insert(id.to_string(), ack.ok);
+        }
+        Ok(result)
+    }
+}
+
+impl Drop for DevStateStore {
+    fn drop(&mut self) {
+        let _ = fs::remove_file(&self.state);
+    }
+}
+
+fn generation_state(report: &LifecycleBuildReport) -> DevGenerationState<'_> {
+    DevGenerationState {
+        generation_id: &report.generation_id,
+        release_id: &report.release_id,
+        topology_id: &report.graph_id,
+        compatibility_id: &report.compatibility_id,
+    }
+}
+
+fn unix_ms() -> Result<u64, LifecycleError> {
+    SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .map_err(|error| LifecycleError::new(format!("system clock precedes Unix epoch: {error}")))?
+        .as_millis()
+        .try_into()
+        .map_err(|_| LifecycleError::new("system clock exceeds lifecycle timestamp bounds"))
+}
+
+fn safe_control_id(value: &str) -> bool {
+    (16..=128).contains(&value.len())
+        && value
+            .bytes()
+            .all(|byte| byte.is_ascii_alphanumeric() || matches!(byte, b'_' | b'-' | b':'))
+}
+
+fn dev_io(label: &'static str) -> impl FnOnce(std::io::Error) -> LifecycleError {
+    move |error| LifecycleError::new(format!("{label}: {error}"))
 }
 
 fn validate_restart_nodes(
@@ -511,31 +862,98 @@ impl ChildSet {
         Ok(())
     }
 
-    fn restart_invalidated(
+    fn restart_transactional(
         &mut self,
         root: &Path,
         config: &LifecycleDevConfig,
+        previous: &LifecycleBuildReport,
         generation: &LifecycleBuildReport,
         invalidated: &BTreeSet<String>,
         restarts: &mut BTreeMap<String, usize>,
         stop: &AtomicBool,
     ) -> Result<(), LifecycleError> {
+        let mut replaced = BTreeSet::new();
         for (name, process) in &config.processes {
             if process.restart_on.is_disjoint(invalidated) {
                 continue;
             }
-            stop_child(
+            if let Err(error) = stop_child(
                 name,
                 self.children.get_mut(name).unwrap(),
                 Duration::from_millis(config.shutdown_ms),
-            )?;
-            let mut child = spawn_process(root, name, process, generation)?;
-            if let Err(error) = wait_ready(root, name, process, generation, &mut child, stop) {
+            ) {
+                return Err(error);
+            }
+            let replacement =
+                spawn_process(root, name, process, generation).and_then(|mut child| {
+                    if let Err(error) =
+                        wait_ready(root, name, process, generation, &mut child, stop)
+                    {
+                        let _ =
+                            stop_child(name, &mut child, Duration::from_millis(config.shutdown_ms));
+                        return Err(error);
+                    }
+                    Ok(child)
+                });
+            match replacement {
+                Ok(child) => {
+                    self.children.insert(name.clone(), child);
+                    replaced.insert(name.clone());
+                }
+                Err(error) => {
+                    replaced.insert(name.clone());
+                    let rollback =
+                        self.replace_named_generation(root, config, previous, &replaced, stop);
+                    return match rollback {
+                        Ok(()) => Err(error),
+                        Err(rollback) => Err(LifecycleError::new(format!(
+                            "pending generation readiness failed: {error}; process rollback also failed: {rollback}"
+                        ))),
+                    };
+                }
+            }
+            *restarts.get_mut(name).unwrap() += 1;
+        }
+        Ok(())
+    }
+
+    fn replace_generation(
+        &mut self,
+        root: &Path,
+        config: &LifecycleDevConfig,
+        _current: &LifecycleBuildReport,
+        replacement: &LifecycleBuildReport,
+        invalidated: &BTreeSet<String>,
+        stop: &AtomicBool,
+    ) -> Result<(), LifecycleError> {
+        let names = config
+            .processes
+            .iter()
+            .filter(|(_, process)| !process.restart_on.is_disjoint(invalidated))
+            .map(|(name, _)| name.clone())
+            .collect();
+        self.replace_named_generation(root, config, replacement, &names, stop)
+    }
+
+    fn replace_named_generation(
+        &mut self,
+        root: &Path,
+        config: &LifecycleDevConfig,
+        replacement: &LifecycleBuildReport,
+        names: &BTreeSet<String>,
+        stop: &AtomicBool,
+    ) -> Result<(), LifecycleError> {
+        for name in names {
+            let process = &config.processes[name];
+            if let Some(child) = self.children.get_mut(name) {
+                stop_child(name, child, Duration::from_millis(config.shutdown_ms))?;
+            }
+            let mut child = spawn_process(root, name, process, replacement)?;
+            if let Err(error) = wait_ready(root, name, process, replacement, &mut child, stop) {
                 let _ = stop_child(name, &mut child, Duration::from_millis(config.shutdown_ms));
                 return Err(error);
             }
             self.children.insert(name.clone(), child);
-            *restarts.get_mut(name).unwrap() += 1;
         }
         Ok(())
     }
@@ -615,6 +1033,9 @@ fn wait_ready(
             .envs(environment)
             .env("DISTRIBUTED_GENERATION_ID", &generation.generation_id)
             .env("DISTRIBUTED_RELEASE_ID", &generation.release_id)
+            .env("DISTRIBUTED_TOPOLOGY_ID", &generation.graph_id)
+            .env("DISTRIBUTED_COMPATIBILITY_ID", &generation.compatibility_id)
+            .env("DISTRIBUTED_MEMBER_ID", name)
             .stdin(Stdio::null())
             .stdout(Stdio::null())
             .stderr(Stdio::null());
@@ -712,6 +1133,9 @@ fn spawn_process(
         .envs(expand_environment(root, name, process, generation))
         .env("DISTRIBUTED_GENERATION_ID", &generation.generation_id)
         .env("DISTRIBUTED_RELEASE_ID", &generation.release_id)
+        .env("DISTRIBUTED_TOPOLOGY_ID", &generation.graph_id)
+        .env("DISTRIBUTED_COMPATIBILITY_ID", &generation.compatibility_id)
+        .env("DISTRIBUTED_MEMBER_ID", name)
         .stdin(Stdio::null());
     #[cfg(unix)]
     command.process_group(0);

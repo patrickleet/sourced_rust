@@ -267,11 +267,23 @@ fn unauthorized_response() -> Response {
         .into_response()
 }
 
+fn lifecycle_reloading_response() -> Response {
+    (
+        axum::http::StatusCode::SERVICE_UNAVAILABLE,
+        [("content-type", "application/json")],
+        r#"{"errors":[{"message":"application generation is reloading","extensions":{"code":"APPLICATION_RELOADING"}}]}"#,
+    )
+        .into_response()
+}
+
 async fn graphql_handler(
     State(engine): State<Arc<GraphqlEngine>>,
     headers: axum::http::HeaderMap,
     req: GraphQLRequest,
 ) -> Response {
+    if !crate::microsvc::lifecycle_mutations_open() {
+        return lifecycle_reloading_response();
+    }
     let identity = match resolve_identity_with_validator(
         &headers,
         engine.identity_config(),
@@ -295,6 +307,9 @@ async fn graphql_handler_with_service(
     headers: axum::http::HeaderMap,
     req: GraphQLRequest,
 ) -> Response {
+    if !crate::microsvc::lifecycle_mutations_open() {
+        return lifecycle_reloading_response();
+    }
     let identity = match resolve_identity_with_validator(
         &headers,
         state.engine.identity_config(),
@@ -320,6 +335,9 @@ pub async fn microsvc_graphql_handler(
     headers: axum::http::HeaderMap,
     req: GraphQLRequest,
 ) -> Response {
+    if !crate::microsvc::lifecycle_mutations_open() {
+        return lifecycle_reloading_response();
+    }
     let engine = service
         .graphql_engine()
         .expect("graphql route mounted without engine");

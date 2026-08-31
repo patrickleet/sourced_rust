@@ -149,7 +149,9 @@ jobs:
           npx playwright install chromium --with-deps
 
       - name: Run browser e2e
-        run: npm run test:browser
+        run: |
+          npm run test:browser
+          npm run test:lifecycle-reload
         env:
           E2E_UI_ORIGIN: http://localhost:5180
           E2E_API_ORIGIN: http://127.0.0.1:8791

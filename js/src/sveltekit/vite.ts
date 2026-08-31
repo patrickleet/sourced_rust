@@ -11,6 +11,7 @@ import {
 	mkdtemp,
 	open,
 	readFile,
+	readdir,
 	realpath,
 	rename,
 	rm,
@@ -30,6 +31,8 @@ import { isMainThread } from 'node:worker_threads';
 
 const GENERATED_SVELTEKIT_MODULE = 'sveltekit.ts';
 const MAX_COMMAND_OUTPUT_BYTES = 16 * 1024 * 1024;
+const MAX_GENERATED_COMPARE_FILES = 20_000;
+const MAX_GENERATED_COMPARE_BYTES = 128 * 1024 * 1024;
 const MODULE_NAME = /^\$distributed(?:\/[A-Za-z0-9][A-Za-z0-9._-]*)*$/;
 const COMPILER_LOCK = join('.svelte-kit', 'distributed', 'compiler.lock');
 const COMPILER_COORDINATORS = Symbol.for(
@@ -111,6 +114,7 @@ type ResolvedClient = Readonly<{
 	out: string;
 	entry: string;
 	watchRoots: readonly string[];
+	manifestWatchRoots: readonly string[];
 }>;
 
 type ResolvedIntegration = Readonly<{
@@ -143,10 +147,29 @@ type ViteModuleGraphLike = Readonly<{
 	invalidateModule(module: unknown): void;
 }>;
 
+type ViteMiddlewareRequest = Readonly<{
+	method?: string;
+	headers: Readonly<Record<string, string | readonly string[] | undefined>>;
+	on(event: 'data', listener: (chunk: Uint8Array) => void): void;
+	on(event: 'end' | 'error', listener: (value?: unknown) => void): void;
+}>;
+
+type ViteMiddlewareResponse = {
+	statusCode: number;
+	setHeader(name: string, value: string): void;
+	end(body?: string | Uint8Array): void;
+};
+
 type ViteServerLike = Readonly<{
 	watcher: Readonly<{ add(paths: string | readonly string[]): void }>;
 	ws: ViteWebSocketLike;
 	moduleGraph: ViteModuleGraphLike;
+	middlewares?: Readonly<{
+		use(
+			path: string,
+			handler: (request: ViteMiddlewareRequest, response: ViteMiddlewareResponse) => void
+		): void;
+	}>;
 	httpServer?:
 		| Readonly<{
 				once(event: 'close', listener: () => void): void;
@@ -157,6 +180,7 @@ type ViteServerLike = Readonly<{
 type ViteHotContextLike = Readonly<{
 	file: string;
 	server: ViteServerLike;
+	modules?: readonly unknown[];
 }>;
 
 type RollupWatchContextLike = Readonly<{
@@ -176,6 +200,30 @@ export type DistributedSvelteKitVitePlugin = Readonly<{
 	watchChange(id: string): Promise<void>;
 	closeBundle(): Promise<void>;
 }>;
+
+export type DistributedLifecycleVitePlugin = Readonly<{
+	name: string;
+	enforce: 'pre';
+	configResolved(config: Readonly<{ root: string }>): void;
+	configureServer(server: ViteServerLike): void;
+	handleHotUpdate(context: ViteHotContextLike): never[] | undefined;
+}>;
+
+/** Lifecycle-only side channel for projects using committed generated clients. */
+export function distributedLifecycle(): DistributedLifecycleVitePlugin {
+	let frameworkDist: string | undefined;
+	return {
+		name: '@hops-ops/distributed:lifecycle',
+		enforce: 'pre',
+		configResolved(config): void {
+			frameworkDist = localFrameworkDist(config.root);
+		},
+		configureServer: configureLifecycleServer,
+		handleHotUpdate(context): never[] | undefined {
+			return suppressFrameworkHotUpdate(context, frameworkDist);
+		}
+	};
+}
 
 /** Generate every configured surface through the same transaction used by Vite. */
 export async function generateDistributedSvelteKit(
@@ -207,6 +255,7 @@ export function distributedSvelteKit(
 	let completedGeneration = 0;
 	let reloadedGeneration = 0;
 	let stopped = false;
+	let frameworkDist: string | undefined;
 	const children = new Set<ChildProcess>();
 	const cancellation = new AbortController();
 	let lock: CompilerLockLease | undefined;
@@ -273,6 +322,7 @@ export function distributedSvelteKit(
 				);
 			}
 			resolved = resolveIntegration(options, options.cwd ?? config.root);
+			frameworkDist = localFrameworkDist(config.root);
 			await validateResolvedPaths(resolved);
 			/*
 			 * SvelteKit post-build analysis loads Vite config in an isolated
@@ -291,8 +341,14 @@ export function distributedSvelteKit(
 			}
 		},
 		configureServer(server): void {
+			configureLifecycleServer(server, async () => {
+				await running;
+			});
 			const integration = requireResolved(resolved);
-			const roots = integration.clients.flatMap((client) => client.watchRoots);
+			const roots = integration.clients.flatMap((client) => [
+				...client.watchRoots,
+				...client.manifestWatchRoots
+			]);
 			if (roots.length > 0) server.watcher.add(roots);
 			server.httpServer?.once('close', () => {
 				void stop();
@@ -301,7 +357,7 @@ export function distributedSvelteKit(
 		buildStart(): void {
 			const integration = requireResolved(resolved);
 			for (const client of integration.clients) {
-				for (const root of client.watchRoots) this.addWatchFile(root);
+				for (const root of [...client.watchRoots, ...client.manifestWatchRoots]) this.addWatchFile(root);
 			}
 		},
 		resolveId(source): string | undefined {
@@ -318,8 +374,10 @@ export function distributedSvelteKit(
 			return `export * from ${JSON.stringify(portablePath(client.entry))};\n`;
 		},
 		async handleHotUpdate(context): Promise<never[] | undefined> {
+			const suppressed = suppressFrameworkHotUpdate(context, frameworkDist);
+			if (suppressed !== undefined) return suppressed;
 			const integration = requireResolved(resolved);
-			if (!isGraphqlInput(context.file, integration)) return undefined;
+			if (!isCompilerInput(context.file, integration)) return undefined;
 			try {
 				await compile(`GraphQL change ${context.file}`);
 			} catch (error) {
@@ -338,18 +396,214 @@ export function distributedSvelteKit(
 					context.server.moduleGraph.invalidateModule(module);
 				}
 			}
-			context.server.ws.send({ type: 'full-reload', path: '*' });
+			if (process.env.DISTRIBUTED_LIFECYCLE_DIR === undefined) {
+				context.server.ws.send({ type: 'full-reload', path: '*' });
+			}
 			reloadedGeneration = completedGeneration;
 			return [];
 		},
 		async watchChange(id): Promise<void> {
 			const integration = requireResolved(resolved);
-			if (isGraphqlInput(id, integration)) {
+			if (isCompilerInput(id, integration)) {
 				await compile(`GraphQL watch change ${id}`);
 			}
 		},
 		closeBundle: stop
 	};
+}
+
+function localFrameworkDist(root: string): string | undefined {
+	try {
+		const candidate = join(
+			root,
+			'node_modules',
+			'@hops-ops',
+			'distributed',
+			'dist'
+		);
+		return existsSync(candidate) ? realpathSync(candidate) : undefined;
+	} catch {
+		return undefined;
+	}
+}
+
+function suppressFrameworkHotUpdate(
+	context: ViteHotContextLike,
+	frameworkDist: string | undefined
+): never[] | undefined {
+	if (
+		process.env.DISTRIBUTED_LIFECYCLE_DIR === undefined ||
+		frameworkDist === undefined ||
+		!isWithin(frameworkDist, canonicalExistingPath(context.file))
+	) return undefined;
+	for (const module of context.modules ?? []) {
+		context.server.moduleGraph.invalidateModule(module);
+	}
+	return [];
+}
+
+function canonicalExistingPath(value: string): string {
+	try {
+		return realpathSync(value);
+	} catch {
+		return resolve(value);
+	}
+}
+
+const CONTROL_ID = /^[A-Za-z0-9_:-]{16,128}$/;
+const MAX_LIFECYCLE_STATE_BYTES = 1024 * 1024;
+const MAX_ACK_BYTES = 4096;
+
+function configureLifecycleServer(
+	server: ViteServerLike,
+	settleCompiler?: () => Promise<void>
+): void {
+	const configured = process.env.DISTRIBUTED_LIFECYCLE_DIR;
+	if (configured === undefined || !isAbsolute(configured)) return;
+	const lifecycleRoot = resolve(configured);
+	server.middlewares?.use('/__distributed/lifecycle', (request, response) => {
+		void handleLifecycleRequest(lifecycleRoot, request, response, settleCompiler).catch(() => {
+			if (response.statusCode < 400) response.statusCode = 500;
+			response.end();
+		});
+	});
+}
+
+async function handleLifecycleRequest(
+	lifecycleRoot: string,
+	request: ViteMiddlewareRequest,
+	response: ViteMiddlewareResponse,
+	settleCompiler?: () => Promise<void>
+): Promise<void> {
+	response.setHeader('cache-control', 'no-store');
+	if (request.method === 'GET') {
+		const participant = singleHeader(request.headers['x-distributed-participant']);
+		if (participant !== undefined && CONTROL_ID.test(participant)) {
+			await writeParticipantHeartbeat(lifecycleRoot, participant);
+		}
+		let state = await readLifecycleState(lifecycleRoot);
+		if (state === undefined) {
+			response.statusCode = 404;
+			response.end();
+			return;
+		}
+		if ((JSON.parse(state) as Record<string, unknown>).phase === 'preparing') {
+			const heartbeat = participant !== undefined && CONTROL_ID.test(participant)
+				? setInterval(
+					() => void writeParticipantHeartbeat(lifecycleRoot, participant).catch(() => undefined),
+					1_000
+				)
+				: undefined;
+			try {
+				await settleCompiler?.();
+			} finally {
+				if (heartbeat !== undefined) clearInterval(heartbeat);
+			}
+			state = await readLifecycleState(lifecycleRoot);
+			if (state === undefined) {
+				response.statusCode = 404;
+				response.end();
+				return;
+			}
+		}
+		response.statusCode = 200;
+		response.setHeader('content-type', 'application/json');
+		response.end(state);
+		return;
+	}
+	if (request.method === 'POST') {
+		const body = JSON.parse(await readRequestBody(request, MAX_ACK_BYTES)) as Record<string, unknown>;
+		if (
+			!CONTROL_ID.test(String(body.transitionId ?? '')) ||
+			!CONTROL_ID.test(String(body.participantId ?? '')) ||
+			typeof body.ok !== 'boolean'
+		) {
+			response.statusCode = 400;
+			response.end();
+			return;
+		}
+		const stateSource = await readLifecycleState(lifecycleRoot);
+		const state = stateSource === undefined ? undefined : JSON.parse(stateSource) as Record<string, unknown>;
+		if (state?.phase !== 'preparing' || state.transitionId !== body.transitionId) {
+			response.statusCode = 409;
+			response.end();
+			return;
+		}
+		await writeControlJson(
+			join(lifecycleRoot, 'dev-control', 'acks', String(body.transitionId)),
+			`${String(body.participantId)}.json`,
+			{ ok: body.ok }
+		);
+		response.statusCode = 204;
+		response.end();
+		return;
+	}
+	response.statusCode = 405;
+	response.end();
+}
+
+function writeParticipantHeartbeat(root: string, participant: string): Promise<void> {
+	return writeControlJson(
+		join(root, 'dev-control', 'participants'),
+		`${participant}.json`,
+		{ seenAtUnixMs: Date.now() }
+	);
+}
+
+async function readLifecycleState(root: string): Promise<string | undefined> {
+	const path = join(root, 'dev.json');
+	let metadata;
+	try {
+		metadata = await lstat(path);
+	} catch (error) {
+		if ((error as NodeJS.ErrnoException).code === 'ENOENT') return undefined;
+		throw error;
+	}
+	if (metadata.isSymbolicLink() || !metadata.isFile() || metadata.size > MAX_LIFECYCLE_STATE_BYTES) {
+		throw new Error('invalid Distributed lifecycle state file');
+	}
+	return readFile(path, 'utf8');
+}
+
+async function writeControlJson(
+	directory: string,
+	name: string,
+	value: Readonly<Record<string, unknown>>
+): Promise<void> {
+	await mkdir(directory, { recursive: true });
+	const temporary = join(directory, `.${name}.${process.pid}.${Date.now()}`);
+	await writeFile(temporary, `${JSON.stringify(value)}\n`, { flag: 'wx', mode: 0o600 });
+	await rename(temporary, join(directory, name));
+}
+
+function singleHeader(value: string | readonly string[] | undefined): string | undefined {
+	return typeof value === 'string' ? value : value?.[0];
+}
+
+function readRequestBody(
+	request: ViteMiddlewareRequest,
+	maximum: number
+): Promise<string> {
+	return new Promise((resolvePromise, reject) => {
+		const chunks: Uint8Array[] = [];
+		let bytes = 0;
+		let exceeded = false;
+		request.on('data', (chunk) => {
+			if (exceeded) return;
+			bytes += chunk.byteLength;
+			if (bytes > maximum) {
+				exceeded = true;
+				chunks.length = 0;
+				reject(new Error('lifecycle acknowledgement exceeds bound'));
+				return;
+			}
+			chunks.push(chunk);
+		});
+		request.on('error', reject);
+		request.on('end', () => {
+			if (!exceeded) resolvePromise(Buffer.concat(chunks).toString('utf8'));
+		});
+	});
 }
 
 async function runCompilerOnce(
@@ -503,7 +757,8 @@ function resolveIntegration(
 			routes: Object.freeze(routes),
 			out,
 			entry: join(out, GENERATED_SVELTEKIT_MODULE),
-			watchRoots: Object.freeze(documentWatchRoots(cwd, documents, out))
+			watchRoots: Object.freeze(documentWatchRoots(cwd, documents, out)),
+			manifestWatchRoots: Object.freeze(manifestWatchRoots(cwd, client.manifest))
 		});
 	});
 	return Object.freeze({
@@ -592,6 +847,38 @@ function documentWatchRoots(
 	return [...roots].sort();
 }
 
+function manifestWatchRoots(
+	cwd: string,
+	manifest: DistributedSvelteKitManifestSource
+): string[] {
+	const manifestPath =
+		typeof manifest === 'string'
+			? resolve(cwd, manifest)
+			: (() => {
+					const index = manifest.args.indexOf('--manifest-path');
+					return index === -1 || manifest.args[index + 1] === undefined
+						? undefined
+						: resolve(cwd, manifest.args[index + 1]);
+				})();
+	if (manifestPath === undefined) return [];
+	const root = dirname(manifestPath);
+	return [manifestPath, join(root, 'src'), join(root, 'crates')]
+		.filter((candidate) => existsSync(candidate))
+		.sort();
+}
+
+function isCompilerInput(file: string, integration: ResolvedIntegration): boolean {
+	if (isGraphqlInput(file, integration)) return true;
+	const absolute = resolve(integration.cwd, file);
+	const basenameValue = basename(absolute);
+	if (!absolute.endsWith('.rs') && basenameValue !== 'Cargo.toml' && basenameValue !== 'Cargo.lock') {
+		return false;
+	}
+	return integration.clients.some((client) =>
+		client.manifestWatchRoots.some((root) => isWithin(root, absolute))
+	);
+}
+
 function isGraphqlInput(
 	file: string,
 	integration: ResolvedIntegration
@@ -620,8 +907,9 @@ async function compileTransaction(
 ): Promise<void> {
 	throwIfAborted(signal);
 	await validateResolvedPaths(integration);
+	const transactionRoot = await compilerTransactionRoot(integration);
 	const transaction = await mkdtemp(
-		join(integration.cwd, '.distributed-sveltekit-')
+		join(transactionRoot, '.distributed-sveltekit-')
 	);
 	const staged: Array<{
 		client: ResolvedClient;
@@ -674,7 +962,7 @@ async function compileTransaction(
 				output
 			];
 			await runCommand(integration, args, children, signal);
-			await validateGeneratedEntrypoint(integration.cwd, output, client.module);
+			await validateGeneratedEntrypoint(transaction, output, client.module);
 			staged.push({
 				client,
 				output,
@@ -696,8 +984,9 @@ async function checkTransaction(
 ): Promise<void> {
 	throwIfAborted(signal);
 	await validateResolvedPaths(integration);
+	const transactionRoot = await compilerTransactionRoot(integration);
 	const transaction = await mkdtemp(
-		join(integration.cwd, '.distributed-sveltekit-check-')
+		join(transactionRoot, '.distributed-sveltekit-check-')
 	);
 	try {
 		for (const [index, client] of integration.clients.entries()) {
@@ -734,6 +1023,17 @@ async function checkTransaction(
 	} finally {
 		await rm(transaction, { recursive: true, force: true });
 	}
+}
+
+async function compilerTransactionRoot(
+	integration: ResolvedIntegration
+): Promise<string> {
+	const lifecycle = process.env.DISTRIBUTED_LIFECYCLE_DIR;
+	const root = lifecycle !== undefined && isAbsolute(lifecycle)
+		? resolve(lifecycle)
+		: integration.cwd;
+	await mkdir(root, { recursive: true });
+	return root;
 }
 
 async function materializeManifest(
@@ -824,6 +1124,9 @@ async function commitOutputs(
 			throwIfAborted(signal);
 			await mkdir(dirname(item.client.out), { recursive: true });
 			await validateNearestExistingParent(integration.cwd, item.client.out);
+			if (item.hadOutput && await generatedTreesEqual(item.client.out, item.output)) {
+				continue;
+			}
 			if (item.hadOutput) await rename(item.client.out, item.backup);
 			try {
 				await rename(item.output, item.client.out);
@@ -841,6 +1144,51 @@ async function commitOutputs(
 		}
 		throw error;
 	}
+}
+
+async function generatedTreesEqual(left: string, right: string): Promise<boolean> {
+	const budget = { files: 0, bytes: 0 };
+	const compare = async (leftDirectory: string, rightDirectory: string): Promise<boolean> => {
+		const [leftEntries, rightEntries] = await Promise.all([
+			readdir(leftDirectory, { withFileTypes: true }),
+			readdir(rightDirectory, { withFileTypes: true })
+		]);
+		leftEntries.sort((a, b) => a.name.localeCompare(b.name));
+		rightEntries.sort((a, b) => a.name.localeCompare(b.name));
+		if (leftEntries.length !== rightEntries.length) return false;
+		for (let index = 0; index < leftEntries.length; index += 1) {
+			const leftEntry = leftEntries[index];
+			const rightEntry = rightEntries[index];
+			if (
+				leftEntry.name !== rightEntry.name ||
+				leftEntry.isDirectory() !== rightEntry.isDirectory() ||
+				leftEntry.isFile() !== rightEntry.isFile()
+			) return false;
+			if (!leftEntry.isDirectory() && !leftEntry.isFile()) return false;
+			const leftPath = join(leftDirectory, leftEntry.name);
+			const rightPath = join(rightDirectory, rightEntry.name);
+			if (leftEntry.isDirectory()) {
+				if (!await compare(leftPath, rightPath)) return false;
+				continue;
+			}
+			budget.files += 1;
+			if (budget.files > MAX_GENERATED_COMPARE_FILES) return false;
+			const [leftMetadata, rightMetadata] = await Promise.all([
+				lstat(leftPath),
+				lstat(rightPath)
+			]);
+			if (leftMetadata.size !== rightMetadata.size) return false;
+			budget.bytes += leftMetadata.size;
+			if (budget.bytes > MAX_GENERATED_COMPARE_BYTES) return false;
+			const [leftBytes, rightBytes] = await Promise.all([
+				readFile(leftPath),
+				readFile(rightPath)
+			]);
+			if (!leftBytes.equals(rightBytes)) return false;
+		}
+		return true;
+	};
+	return compare(left, right);
 }
 
 async function runCommand(

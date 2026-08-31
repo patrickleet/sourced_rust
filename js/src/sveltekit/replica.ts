@@ -22,6 +22,11 @@ import type { WebSocketConstructor } from '../websocket.js';
 import type { FetchLike } from '../request.js';
 import { replicaCommandProjectedLifecycleOf } from '../replica/command-runtime.js';
 import { authFromPageData, type PageGraphqlData } from './auth.js';
+import {
+	distributedReloadLifecycle,
+	registerDistributedReloadClient,
+	type DistributedReloadOptions
+} from './lifecycle.js';
 
 type UnknownCommandEntries = Readonly<Record<string, never>>;
 
@@ -73,7 +78,7 @@ export type SveltekitDistributedPageData = PageGraphqlData &
 
 export type SveltekitCommandRuntimeLike<TCommands> = Pick<
 	ReplicaCommandRuntime<UnknownCommandEntries>,
-	'dispose'
+	'dispose' | 'pendingCommandIds'
 > &
 	Readonly<{
 		commands: TCommands;
@@ -87,7 +92,7 @@ export type SveltekitCommandRuntimeFactory<TCommands> = (
 
 export type SveltekitCommandRuntimeFactoryOptions = Pick<
 	ReplicaCommandRuntimeOptions,
-	'diagnostics'
+	'diagnostics' | 'lifecycle'
 >;
 
 export type CreateDistributedSvelteKitOptions<TCommands = Readonly<Record<never, never>>> =
@@ -108,6 +113,8 @@ export type CreateDistributedSvelteKitOptions<TCommands = Readonly<Record<never,
 		createCommands?: SveltekitCommandRuntimeFactory<TCommands>;
 		replica?: Omit<DistributedReplicaOptions, 'transport'>;
 		onAuthError?: (error: unknown) => void;
+		/** Generated clients supply the surface key; apps may declare safe state partitions. */
+		reload?: DistributedReloadOptions;
 	}>;
 
 export type SveltekitQuerySnapshot<TData> = ReplicaSnapshot<TData> &
@@ -278,9 +285,16 @@ export function createDistributedSvelteKit<TCommands = Readonly<Record<never, ne
 		Object.freeze({
 			...(options.replica?.diagnostics === undefined
 				? {}
-				: { diagnostics: options.replica.diagnostics })
+				: { diagnostics: options.replica.diagnostics }),
+			...(options.browser === true && options.reload !== undefined
+				? { lifecycle: distributedReloadLifecycle() }
+				: {})
 		})
 	);
+	const unregisterReload =
+		options.browser === true && options.reload !== undefined
+			? registerDistributedReloadClient(replica, commandRuntime, options.reload)
+			: undefined;
 	const commands =
 		commandRuntime === undefined
 			? (Object.freeze({}) as TCommands)
@@ -319,6 +333,7 @@ export function createDistributedSvelteKit<TCommands = Readonly<Record<never, ne
 			for (const store of [...stores]) store.destroy();
 			stores.clear();
 			pending.clear();
+			unregisterReload?.();
 			commandRuntime?.dispose();
 		}
 	});

@@ -676,6 +676,42 @@ test('artifact v1 is rejected at the public boundary', () => {
 	);
 });
 
+test('coherent reload gate rejects before optimism or transport dispatch', async () => {
+	const replica = new TestReplica();
+	let dispatches = 0;
+	let blocked = true;
+	const runtime = createReplicaCommandRuntime(
+		replica,
+		{
+			dispatch() {
+				dispatches += 1;
+				throw new Error('must not dispatch while reloading');
+			}
+		},
+		{ change: artifact() },
+		{
+			lifecycle: {
+				assertDispatchOpen() {
+					if (blocked) throw new Error('reload pending');
+				}
+			}
+		}
+	);
+	await assert.rejects(
+		runtime.commands.change(
+			{ id: 'todo-1', title: 'blocked' },
+			{ commandId: COMMAND_A }
+		),
+		(error) =>
+			error instanceof ReplicaCommandRuntimeError &&
+			error.code === 'REPLICA_COMMAND_RELOADING'
+	);
+	assert.equal(dispatches, 0);
+	assert.equal(replica.layer(COMMAND_A), undefined);
+	blocked = false;
+	runtime.dispose();
+});
+
 test('actual delta rebases later optimism while same-record dispatch retains invocation order', async () => {
 	const replica = new TestReplica();
 	const first = deferred();

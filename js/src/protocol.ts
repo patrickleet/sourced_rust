@@ -10,6 +10,10 @@ import {
 	parseCommandProjectionMetadata,
 	type CommandProjectionMetadata
 } from './replica/projection-delta/index.js';
+import {
+	parseDistributedGenerationEnvelope,
+	type DistributedGenerationEnvelope
+} from './generation.js';
 
 /** The only Distributed GraphQL protocol version understood by this package. */
 export const DISTRIBUTED_PROTOCOL_VERSION = 1 as const;
@@ -188,6 +192,7 @@ export type DistributedProtocolEnvelope = Readonly<
 		schemaHash: string;
 		authorizationGeneration: string;
 		cacheScope: DistributedOpaqueString;
+		generation?: DistributedGenerationEnvelope;
 		operation?: string;
 		command?: DistributedCommandMetadata;
 		snapshot?: DistributedQuerySnapshot;
@@ -309,6 +314,13 @@ export function parseDistributedProtocolEnvelope(
 		envelope.cacheScope,
 		'extensions.distributed.cacheScope'
 	);
+	const generation =
+		envelope.generation === undefined
+			? undefined
+			: parseDistributedGenerationEnvelope(
+					envelope.generation,
+					'extensions.distributed.generation'
+				);
 	const operation =
 		envelope.operation === undefined
 			? undefined
@@ -339,6 +351,7 @@ export function parseDistributedProtocolEnvelope(
 		schemaHash,
 		authorizationGeneration,
 		cacheScope,
+		...(generation === undefined ? {} : { generation }),
 		...(operation === undefined ? {} : { operation }),
 		...(command === undefined ? {} : { command }),
 		...(snapshot === undefined ? {} : { snapshot }),

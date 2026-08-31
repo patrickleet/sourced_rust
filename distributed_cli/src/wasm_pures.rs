@@ -27,6 +27,19 @@ struct CargoMetadata {
     workspace_root: PathBuf,
     workspace_members: Vec<String>,
     packages: Vec<CargoPackage>,
+    resolve: Option<CargoResolve>,
+}
+
+#[derive(Debug, Deserialize)]
+struct CargoResolve {
+    nodes: Vec<CargoResolveNode>,
+}
+
+#[derive(Debug, Deserialize)]
+struct CargoResolveNode {
+    id: String,
+    #[serde(default)]
+    dependencies: Vec<String>,
 }
 
 #[derive(Debug, Deserialize)]
@@ -37,6 +50,15 @@ struct CargoPackage {
     source: Option<String>,
     #[serde(default)]
     features: BTreeMap<String, Vec<String>>,
+    #[serde(default)]
+    targets: Vec<CargoTarget>,
+}
+
+#[derive(Debug, Deserialize)]
+struct CargoTarget {
+    src_path: PathBuf,
+    #[serde(default)]
+    kind: Vec<String>,
 }
 
 #[derive(Debug, Deserialize, Serialize)]
@@ -60,7 +82,6 @@ pub(crate) fn build_declared_wasm_pures(
         return Ok(0);
     }
     let metadata = cargo_metadata(&project_root.join("Cargo.toml"))?;
-    let source_identity = workspace_source_identity(&metadata)?;
     let workspace_ids = metadata
         .workspace_members
         .iter()
@@ -115,7 +136,7 @@ pub(crate) fn build_declared_wasm_pures(
             .ok_or_else(|| format!("WASM import `{}` has no UTF-8 output name", pure.import))?;
         let stamp = WasmStamp {
             schema_version: 1,
-            source_identity: source_identity.clone(),
+            source_identity: package_source_identity(&metadata, &package.id)?,
             rust_package: pure.rust_package.clone(),
             import: pure.import.clone(),
         };
@@ -230,7 +251,10 @@ fn cargo_metadata(manifest: &Path) -> Result<CargoMetadata, Box<dyn Error>> {
     Ok(serde_json::from_slice(&output.stdout)?)
 }
 
-fn workspace_source_identity(metadata: &CargoMetadata) -> Result<String, Box<dyn Error>> {
+fn package_source_identity(
+    metadata: &CargoMetadata,
+    root_package_id: &str,
+) -> Result<String, Box<dyn Error>> {
     let mut files = BTreeSet::new();
     for path in [
         metadata.workspace_root.join("Cargo.toml"),
@@ -240,17 +264,66 @@ fn workspace_source_identity(metadata: &CargoMetadata) -> Result<String, Box<dyn
             files.insert(path);
         }
     }
-    for package in metadata
+    let local_packages = metadata
         .packages
         .iter()
         .filter(|package| package.source.is_none())
-    {
+        .map(|package| (package.id.as_str(), package))
+        .collect::<BTreeMap<_, _>>();
+    let dependencies = metadata
+        .resolve
+        .as_ref()
+        .ok_or("cargo metadata did not include a dependency graph")?
+        .nodes
+        .iter()
+        .map(|node| (node.id.as_str(), node.dependencies.as_slice()))
+        .collect::<BTreeMap<_, _>>();
+    let mut pending = vec![root_package_id];
+    let mut visited = BTreeSet::new();
+    while let Some(package_id) = pending.pop() {
+        if !visited.insert(package_id) {
+            continue;
+        }
+        let Some(package) = local_packages.get(package_id) else {
+            continue;
+        };
         files.insert(package.manifest_path.clone());
         let package_dir = package
             .manifest_path
             .parent()
             .ok_or_else(|| format!("package `{}` Cargo.toml has no parent", package.name))?;
-        collect_source_files(package_dir, &mut files)?;
+        let mut source_roots = BTreeSet::new();
+        for target in package.targets.iter().filter(|target| {
+            target
+                .kind
+                .iter()
+                .any(|kind| matches!(kind.as_str(), "lib" | "rlib" | "cdylib" | "custom-build"))
+        }) {
+            let relative = target.src_path.strip_prefix(package_dir).map_err(|_| {
+                format!(
+                    "Cargo target `{}` escapes package `{}`",
+                    target.src_path.display(),
+                    package.name
+                )
+            })?;
+            if relative.components().count() == 1 {
+                files.insert(target.src_path.clone());
+            } else if let Some(Component::Normal(top)) = relative.components().next() {
+                source_roots.insert(package_dir.join(top));
+            }
+        }
+        for source_root in source_roots {
+            collect_source_files(&source_root, &mut files)?;
+        }
+        if let Some(package_dependencies) = dependencies.get(package_id) {
+            pending.extend(package_dependencies.iter().map(String::as_str));
+        }
+    }
+    if !visited.contains(root_package_id) || !local_packages.contains_key(root_package_id) {
+        return Err(format!(
+            "browser WASM package `{root_package_id}` is not a local Cargo package"
+        )
+        .into());
     }
     let mut hash = Sha256::new();
     let mut bytes = 0_u64;
@@ -503,5 +576,60 @@ mod tests {
     fn rejects_import_path_traversal() {
         let error = portable_import_path("../outside/module").unwrap_err();
         assert!(error.to_string().contains("portable relative path"));
+    }
+
+    #[test]
+    fn wasm_source_identity_tracks_only_the_local_dependency_closure() {
+        let fixture = tempfile::tempdir().unwrap();
+        let root = fixture.path();
+        fs::write(root.join("Cargo.toml"), "[workspace]\n").unwrap();
+        fs::write(root.join("Cargo.lock"), "version = 4\n").unwrap();
+        let package = |id: &str, name: &str| {
+            let directory = root.join(name);
+            fs::create_dir_all(directory.join("src")).unwrap();
+            fs::write(
+                directory.join("Cargo.toml"),
+                format!("[package]\nname = \"{name}\"\n"),
+            )
+            .unwrap();
+            fs::write(directory.join("src/lib.rs"), format!("// {name}\n")).unwrap();
+            CargoPackage {
+                id: id.to_string(),
+                name: name.to_string(),
+                manifest_path: directory.join("Cargo.toml"),
+                source: None,
+                features: BTreeMap::new(),
+                targets: vec![CargoTarget {
+                    src_path: directory.join("src/lib.rs"),
+                    kind: vec!["lib".to_string()],
+                }],
+            }
+        };
+        let metadata = CargoMetadata {
+            workspace_root: root.to_path_buf(),
+            workspace_members: vec!["pure".to_string(), "unrelated".to_string()],
+            packages: vec![
+                package("pure", "pure"),
+                package("dependency", "dependency"),
+                package("unrelated", "unrelated"),
+            ],
+            resolve: Some(CargoResolve {
+                nodes: vec![
+                    CargoResolveNode {
+                        id: "pure".to_string(),
+                        dependencies: vec!["dependency".to_string()],
+                    },
+                    CargoResolveNode {
+                        id: "dependency".to_string(),
+                        dependencies: Vec::new(),
+                    },
+                ],
+            }),
+        };
+        let initial = package_source_identity(&metadata, "pure").unwrap();
+        fs::write(root.join("unrelated/src/lib.rs"), "// changed\n").unwrap();
+        assert_eq!(initial, package_source_identity(&metadata, "pure").unwrap());
+        fs::write(root.join("dependency/src/lib.rs"), "// changed\n").unwrap();
+        assert_ne!(initial, package_source_identity(&metadata, "pure").unwrap());
     }
 }

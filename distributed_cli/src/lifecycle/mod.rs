@@ -11,9 +11,10 @@ mod receipt;
 mod release;
 
 pub use build::{
-    run_lifecycle_build, run_lifecycle_project_build, BuildDrift, LifecycleBuildConfig,
-    LifecycleBuildOptions, LifecycleBuildReport, LifecycleBuildRequest, LifecycleCheckBaseline,
-    LifecycleExecutor, LifecycleProjectPlan, LIFECYCLE_BUILD_CONFIG_SCHEMA_VERSION,
+    activate_lifecycle_project_generation, run_lifecycle_build, run_lifecycle_project_build,
+    BuildDrift, LifecycleActivation, LifecycleBuildConfig, LifecycleBuildOptions,
+    LifecycleBuildReport, LifecycleBuildRequest, LifecycleCheckBaseline, LifecycleExecutor,
+    LifecycleProjectPlan, LIFECYCLE_BUILD_CONFIG_SCHEMA_VERSION,
 };
 pub use dev::{
     run_lifecycle_dev, run_lifecycle_project_dev, LifecycleDevConfig, LifecycleDevOptions,

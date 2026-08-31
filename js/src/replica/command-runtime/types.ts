@@ -232,6 +232,7 @@ export type ReplicaCommandRuntimeErrorCode =
 	| 'REPLICA_COMMAND_PROJECTION_FAILED'
 	| 'REPLICA_COMMAND_PROTOCOL_INVALID'
 	| 'REPLICA_COMMAND_REJECTED'
+	| 'REPLICA_COMMAND_RELOADING'
 	| 'REPLICA_COMMAND_SCOPE_INVALIDATED'
 	| 'REPLICA_COMMAND_STATUS_UNAVAILABLE'
 	| 'REPLICA_COMMAND_TRANSPORT_AMBIGUOUS';
@@ -325,6 +326,8 @@ export type ReplicaCommandRuntimeOptions = Readonly<{
 	 * Generated clients ship their inventory; apps do not invent board sims ad hoc.
 	 */
 	pureFunctions?: Readonly<Record<string, ReplicaPureFunction>>;
+	/** Framework lifecycle fence checked immediately before command preparation. */
+	lifecycle?: Readonly<{ assertDispatchOpen(): void }>;
 }>;
 
 export interface ReplicaCommandRuntime<
@@ -338,6 +341,8 @@ export interface ReplicaCommandRuntime<
 	 * it does not normalize or confirm cache data itself.
 	 */
 	observeResult(envelope: ReplicaResultEnvelope<unknown>): void;
+	/** Opaque receipt identities safe to carry across a controlled reload. */
+	pendingCommandIds(): readonly string[];
 	dispose(): void;
 }
 

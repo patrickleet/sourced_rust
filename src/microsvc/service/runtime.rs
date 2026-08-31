@@ -842,6 +842,11 @@ impl Service {
         input: Value,
         session: Session,
     ) -> Result<Value, HandlerError> {
+        if !crate::microsvc::lifecycle_mutations_open() {
+            return Err(HandlerError::Rejected(
+                "application generation is reloading".into(),
+            ));
+        }
         if !self.handles_message(MessageKind::Command, command) {
             return Err(HandlerError::UnknownCommand(command.to_string()));
         }
@@ -919,6 +924,11 @@ impl Service {
         message: &Message,
         ordered: Option<&OrderedDelivery>,
     ) -> Result<Value, HandlerError> {
+        if !crate::microsvc::lifecycle_mutations_open() {
+            return Err(HandlerError::Rejected(
+                "application generation is reloading".into(),
+            ));
+        }
         if !self.handles_message(message.kind, &message.name) {
             return Err(HandlerError::UnknownCommand(message.name.clone()));
         }

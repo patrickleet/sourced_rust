@@ -193,6 +193,18 @@ pub struct LifecycleBuildRequest {
     pub activation_inputs: Option<BTreeMap<String, String>>,
     /// Optional cooperative cancellation shared with a supervisor.
     pub cancel: Option<Arc<AtomicBool>>,
+    /// Whether this invocation may move the active generation pointer.
+    pub activation: LifecycleActivation,
+}
+
+/// Activation policy for one coherent build.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum LifecycleActivation {
+    /// Install the immutable generation and atomically make it active.
+    Immediate,
+    /// Install the immutable generation but leave the current pointer untouched.
+    /// The dev supervisor uses this while it proves replacement processes ready.
+    Deferred,
 }
 
 /// Output set used as the baseline for a read-only lifecycle check.
@@ -213,6 +225,7 @@ impl From<&LifecycleBuildOptions> for LifecycleBuildRequest {
             nodes: options.nodes.clone(),
             activation_inputs: options.activation_inputs.clone(),
             cancel: options.cancel.clone(),
+            activation: LifecycleActivation::Immediate,
         }
     }
 }
@@ -234,6 +247,8 @@ pub struct LifecycleBuildReport {
     pub graph_id: String,
     pub generation_id: String,
     pub release_id: String,
+    /// Identity of generated public artifacts, independent of source-only rebuilds.
+    pub compatibility_id: String,
     pub order: Vec<String>,
     pub executed: Vec<String>,
     pub drift: Vec<BuildDrift>,
@@ -396,6 +411,15 @@ pub fn run_lifecycle_project_build(
     reject_unowned_stage_files(stage.path(), &graph)?;
     let generation = GenerationManifest::new(&graph, receipts.into_values())?;
     let release = ReleaseManifest::new(&graph, &generation)?;
+    let compatibility_bytes = serde_json::to_vec(
+        &generation
+            .receipts
+            .values()
+            .map(|receipt| (&receipt.node_id, &receipt.output_identities))
+            .collect::<Vec<_>>(),
+    )
+    .map_err(|error| LifecycleError::new(format!("serialize compatibility identity: {error}")))?;
+    let compatibility_id = digest_bytes(&compatibility_bytes);
 
     let drift = if request.check {
         match request.check_baseline {
@@ -435,8 +459,13 @@ pub fn run_lifecycle_project_build(
             "release.json",
             &release.canonical_bytes(&graph, &generation)?,
         )?;
-        activate_generation(stage, &out, &generation.generation_id, &release.release_id)?;
-        Some(generation.generation_id.clone())
+        install_generation(stage, &out, &generation.generation_id)?;
+        if request.activation == LifecycleActivation::Immediate {
+            write_active_generation(&out, &generation.generation_id, &release.release_id)?;
+            Some(generation.generation_id.clone())
+        } else {
+            read_active_generation(&out)?
+        }
     };
 
     Ok(LifecycleBuildReport {
@@ -445,6 +474,7 @@ pub fn run_lifecycle_project_build(
         graph_id: graph.graph_id,
         generation_id: generation.generation_id,
         release_id: release.release_id,
+        compatibility_id,
         order,
         executed,
         drift,
@@ -998,11 +1028,10 @@ fn reject_unowned_stage_files(stage: &Path, graph: &LifecycleGraph) -> Result<()
     Ok(())
 }
 
-fn activate_generation(
+fn install_generation(
     stage: tempfile::TempDir,
     out: &Path,
     generation_id: &str,
-    release_id: &str,
 ) -> Result<(), LifecycleError> {
     let generations = out.join("generations");
     fs::create_dir_all(&generations).map_err(io_error("create generations directory"))?;
@@ -1022,6 +1051,14 @@ fn activate_generation(
             ))
         })?;
     }
+    Ok(())
+}
+
+fn write_active_generation(
+    out: &Path,
+    generation_id: &str,
+    release_id: &str,
+) -> Result<(), LifecycleError> {
     let active = serde_json::to_vec(&serde_json::json!({
         "schema_version": 1,
         "generation_id": generation_id,
@@ -1043,6 +1080,70 @@ fn activate_generation(
         .persist(out.join("active.json"))
         .map_err(|error| io_error("activate generation pointer")(error.error))?;
     Ok(())
+}
+
+/// Atomically activate an already-installed immutable generation.
+///
+/// The IDs are checked against both manifests before the pointer can move, so
+/// callers cannot relabel an arbitrary directory as a coherent generation.
+pub fn activate_lifecycle_project_generation(
+    project: &LifecycleProjectPlan,
+    report: &LifecycleBuildReport,
+) -> Result<(), LifecycleError> {
+    validate_content_identity(&report.generation_id, "generation identity")?;
+    validate_content_identity(&report.release_id, "release identity")?;
+    let root = project.root.canonicalize().map_err(|error| {
+        LifecycleError::new(format!("failed to resolve lifecycle root: {error}"))
+    })?;
+    let out = resolve_output(&root, &project.out)?;
+    let generation_root = out.join("generations").join(&report.generation_id);
+    let metadata = fs::symlink_metadata(&generation_root).map_err(|error| {
+        LifecycleError::new(format!(
+            "failed to inspect installed generation `{}`: {error}",
+            report.generation_id
+        ))
+    })?;
+    if metadata.file_type().is_symlink() || !metadata.is_dir() {
+        return Err(LifecycleError::new(
+            "installed generation must be a non-symlink directory",
+        ));
+    }
+    let generation: GenerationManifest = read_bounded_manifest(
+        &generation_root.join("generation.json"),
+        "installed generation manifest",
+    )?;
+    let release: ReleaseManifest = read_bounded_manifest(
+        &generation_root.join("release.json"),
+        "installed release manifest",
+    )?;
+    if generation.generation_id != report.generation_id
+        || release.generation_id != report.generation_id
+        || release.release_id != report.release_id
+    {
+        return Err(LifecycleError::new(
+            "installed lifecycle manifests disagree with the requested activation",
+        ));
+    }
+    fs::create_dir_all(&out).map_err(io_error("create lifecycle output"))?;
+    let _lock = BuildLock::acquire(&root, &out, Duration::from_secs(60))?;
+    write_active_generation(&out, &report.generation_id, &report.release_id)
+}
+
+fn read_bounded_manifest<T: for<'de> Deserialize<'de>>(
+    path: &Path,
+    label: &str,
+) -> Result<T, LifecycleError> {
+    let metadata = fs::symlink_metadata(path)
+        .map_err(|error| LifecycleError::new(format!("failed to inspect {label}: {error}")))?;
+    if metadata.file_type().is_symlink() || !metadata.is_file() || metadata.len() > 1024 * 1024 {
+        return Err(LifecycleError::new(format!(
+            "{label} must be a regular non-symlink file no larger than 1 MiB"
+        )));
+    }
+    let bytes = fs::read(path)
+        .map_err(|error| LifecycleError::new(format!("failed to read {label}: {error}")))?;
+    serde_json::from_slice(&bytes)
+        .map_err(|error| LifecycleError::new(format!("failed to parse {label}: {error}")))
 }
 
 fn write_manifest(stage: &Path, name: &str, bytes: &[u8]) -> Result<(), LifecycleError> {
@@ -1141,7 +1242,7 @@ fn resolve_under_root(root: &Path, path: &Path, label: &str) -> Result<PathBuf, 
     Ok(resolved)
 }
 
-fn resolve_output(root: &Path, path: &Path) -> Result<PathBuf, LifecycleError> {
+pub(super) fn resolve_output(root: &Path, path: &Path) -> Result<PathBuf, LifecycleError> {
     if path
         .components()
         .any(|component| matches!(component, Component::ParentDir))

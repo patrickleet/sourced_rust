@@ -255,6 +255,32 @@ exit 1
     fs::write(path, serde_json::to_vec_pretty(&config).unwrap()).unwrap();
 }
 
+fn configure_generation_rejecting_probe(root: &Path) {
+    fs::write(
+        root.join("generation-probe.sh"),
+        r#"#!/bin/sh
+set -eu
+root="$1"
+baseline="$root/accepted-generation.txt"
+if test ! -f "$baseline"; then
+  printf '%s\n' "$DISTRIBUTED_GENERATION_ID" > "$baseline"
+fi
+test "$(cat "$baseline")" = "$DISTRIBUTED_GENERATION_ID"
+"#,
+    )
+    .expect("write generation readiness probe");
+    let path = root.join("distributed.lifecycle.json");
+    let mut config: Value = serde_json::from_slice(&fs::read(&path).unwrap()).unwrap();
+    config["dev"]["prepare_ms"] = serde_json::json!(100);
+    config["dev"]["processes"]["api"]["ready"] = serde_json::json!({
+        "program": "/bin/sh",
+        "args": ["{root}/generation-probe.sh", "{root}"],
+        "interval_ms": 10,
+        "timeout_ms": 100
+    });
+    fs::write(path, serde_json::to_vec_pretty(&config).unwrap()).unwrap();
+}
+
 fn wait_until(timeout: Duration, predicate: impl Fn() -> bool) {
     let started = std::time::Instant::now();
     while !predicate() {
@@ -585,6 +611,94 @@ fn dev_waits_for_initial_generation_and_restarts_only_invalidated_processes() {
             .expect("inspect lifecycle descendant");
         assert!(!status.success(), "descendant process {pid} leaked");
     }
+}
+
+#[test]
+fn dev_readiness_failure_restores_processes_and_preserves_active_pointer() {
+    let fixture = temporary_root("dev-rollback");
+    let root = fixture.path().to_path_buf();
+    write_fixture(&root);
+    enable_dev(&root);
+    configure_generation_rejecting_probe(&root);
+    let supervisor = DevSupervisor::start(root.clone());
+    wait_until(Duration::from_secs(5), || {
+        fs::read_to_string(root.join("dev-process.log")).is_ok_and(|log| log.lines().count() == 2)
+    });
+    let active_before = wait_for_stable_file(
+        &root.join("dist/distributed/active.json"),
+        Duration::from_secs(5),
+    );
+
+    fs::write(root.join("src/input.txt"), "replacement\n").unwrap();
+    wait_until(Duration::from_secs(5), || {
+        fs::read_to_string(root.join("dev-process.log"))
+            .is_ok_and(|log| log.lines().filter(|line| line.starts_with("api:")).count() == 3)
+    });
+    let report = supervisor.stop_and_join();
+    assert_eq!(report.initial_generation, report.final_generation);
+    assert_eq!(
+        active_before,
+        fs::read(root.join("dist/distributed/active.json")).unwrap()
+    );
+    let log = fs::read_to_string(root.join("dev-process.log")).unwrap();
+    assert_eq!(
+        log.lines().filter(|line| line.starts_with("api:")).count(),
+        3,
+        "initial, rejected replacement, and restored prior process must all start"
+    );
+    assert_eq!(
+        log.lines().filter(|line| line.starts_with("ui:")).count(),
+        1
+    );
+}
+
+#[test]
+fn dev_browser_prepare_timeout_preserves_active_pointer_and_processes() {
+    let fixture = temporary_root("dev-prepare-timeout");
+    let root = fixture.path().to_path_buf();
+    write_fixture(&root);
+    enable_dev(&root);
+    let config_path = root.join("distributed.lifecycle.json");
+    let mut config: Value = serde_json::from_slice(&fs::read(&config_path).unwrap()).unwrap();
+    config["dev"]["prepare_ms"] = serde_json::json!(100);
+    fs::write(&config_path, serde_json::to_vec_pretty(&config).unwrap()).unwrap();
+    let supervisor = DevSupervisor::start(root.clone());
+    wait_until(Duration::from_secs(5), || {
+        fs::read_to_string(root.join("dev-process.log")).is_ok_and(|log| log.lines().count() == 2)
+    });
+    let active_before = wait_for_stable_file(
+        &root.join("dist/distributed/active.json"),
+        Duration::from_secs(5),
+    );
+    let participants = root.join("dist/distributed/dev-control/participants");
+    fs::create_dir_all(&participants).unwrap();
+    fs::write(
+        participants.join("browserparticipant123.json"),
+        br#"{"seenAtUnixMs":1}"#,
+    )
+    .unwrap();
+
+    fs::write(root.join("src/input.txt"), "replacement\n").unwrap();
+    wait_until(Duration::from_secs(5), || {
+        fs::read_dir(root.join("dist/distributed/generations"))
+            .is_ok_and(|entries| entries.count() > 1)
+    });
+    thread::sleep(Duration::from_millis(250));
+    let report = supervisor.stop_and_join();
+    assert_eq!(report.initial_generation, report.final_generation);
+    assert_eq!(
+        active_before,
+        fs::read(root.join("dist/distributed/active.json")).unwrap()
+    );
+    let log = fs::read_to_string(root.join("dev-process.log")).unwrap();
+    assert_eq!(
+        log.lines().filter(|line| line.starts_with("api:")).count(),
+        1
+    );
+    assert_eq!(
+        log.lines().filter(|line| line.starts_with("ui:")).count(),
+        1
+    );
 }
 
 #[test]

@@ -8,7 +8,7 @@
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
 use sha2::{Digest, Sha256};
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, BTreeSet};
 use std::fs;
 use std::io::Write;
 use std::path::{Path, PathBuf};
@@ -175,6 +175,11 @@ impl JavascriptFrameworkPackage {
         prepare_local_package(root, project_root, check)
     }
 
+    pub(crate) fn lifecycle_receipt(&self, project_root: &Path) -> Option<PathBuf> {
+        self.local_root()
+            .map(|root| receipt_path(project_root, root))
+    }
+
     pub(crate) fn verify_installed(&self, ui_root: &Path) -> Result<(), LifecycleError> {
         let installed_root = ui_root.join("node_modules").join(DISTRIBUTED_JS_PACKAGE);
         match &self.source {
@@ -318,7 +323,7 @@ fn prepare_local_package(
         "distributed: compiling local {DISTRIBUTED_JS_PACKAGE} from {}",
         root.display()
     );
-    run_npm(root, &["run", "build"], "JavaScript framework build")?;
+    build_local_package_staged(root, &package)?;
     let output_identity = output_identity(root, &package)?;
     let receipt = JavascriptReceipt {
         schema_version: RECEIPT_SCHEMA_VERSION,
@@ -361,6 +366,131 @@ fn prepare_local_package(
     Ok(())
 }
 
+fn build_local_package_staged(root: &Path, package: &PackageJson) -> Result<(), LifecycleError> {
+    let parent = root
+        .parent()
+        .ok_or_else(|| LifecycleError::new("local JavaScript package has no parent directory"))?;
+    let stage = tempfile::tempdir_in(parent).map_err(|error| {
+        LifecycleError::new(format!(
+            "failed to stage JavaScript framework build: {error}"
+        ))
+    })?;
+    for source in build_input_files(root)? {
+        let relative = source.strip_prefix(root).map_err(|_| {
+            LifecycleError::new("JavaScript package input escapes its package root")
+        })?;
+        let target = stage.path().join(relative);
+        if let Some(parent) = target.parent() {
+            fs::create_dir_all(parent).map_err(|error| {
+                LifecycleError::new(format!("create staged JavaScript input: {error}"))
+            })?;
+        }
+        fs::copy(&source, &target).map_err(|error| {
+            LifecycleError::new(format!(
+                "copy staged JavaScript input `{}`: {error}",
+                relative.display()
+            ))
+        })?;
+    }
+    link_build_dependencies(
+        &root.join("node_modules"),
+        &stage.path().join("node_modules"),
+    )?;
+    run_npm(
+        stage.path(),
+        &["run", "build"],
+        "JavaScript framework build",
+    )?;
+    output_identity(stage.path(), package)?;
+    publish_dist(&stage.path().join("dist"), &root.join("dist"))
+}
+
+#[cfg(unix)]
+fn link_build_dependencies(source: &Path, target: &Path) -> Result<(), LifecycleError> {
+    std::os::unix::fs::symlink(source, target).map_err(|error| {
+        LifecycleError::new(format!("link staged JavaScript dependencies: {error}"))
+    })
+}
+
+#[cfg(windows)]
+fn link_build_dependencies(source: &Path, target: &Path) -> Result<(), LifecycleError> {
+    std::os::windows::fs::symlink_dir(source, target).map_err(|error| {
+        LifecycleError::new(format!("link staged JavaScript dependencies: {error}"))
+    })
+}
+
+fn publish_dist(staged: &Path, destination: &Path) -> Result<(), LifecycleError> {
+    let staged_root = staged
+        .parent()
+        .ok_or_else(|| LifecycleError::new("staged JavaScript dist has no package root"))?;
+    let mut staged_files = Vec::new();
+    collect_source_files(staged_root, staged, &mut staged_files)?;
+    let staged_relative = staged_files
+        .iter()
+        .map(|path| {
+            path.strip_prefix(staged)
+                .map(Path::to_path_buf)
+                .map_err(|_| LifecycleError::new("staged JavaScript output escapes dist"))
+        })
+        .collect::<Result<BTreeSet<_>, _>>()?;
+
+    if destination.is_dir() {
+        let destination_root = destination
+            .parent()
+            .ok_or_else(|| LifecycleError::new("JavaScript dist has no package root"))?;
+        let mut existing = Vec::new();
+        collect_source_files(destination_root, destination, &mut existing)?;
+        for path in existing {
+            let relative = path
+                .strip_prefix(destination)
+                .map_err(|_| LifecycleError::new("existing JavaScript output escapes dist"))?;
+            if !staged_relative.contains(relative) {
+                fs::remove_file(&path).map_err(|error| {
+                    LifecycleError::new(format!(
+                        "remove stale JavaScript output `{}`: {error}",
+                        relative.display()
+                    ))
+                })?;
+            }
+        }
+    }
+
+    for source in staged_files {
+        let relative = source
+            .strip_prefix(staged)
+            .map_err(|_| LifecycleError::new("staged JavaScript output escapes dist"))?;
+        let target = destination.join(relative);
+        let bytes = fs::read(&source).map_err(|error| {
+            LifecycleError::new(format!(
+                "read staged JavaScript output `{}`: {error}",
+                relative.display()
+            ))
+        })?;
+        if fs::read(&target).ok().as_deref() == Some(bytes.as_slice()) {
+            continue;
+        }
+        let parent = target
+            .parent()
+            .ok_or_else(|| LifecycleError::new("JavaScript output has no parent directory"))?;
+        fs::create_dir_all(parent).map_err(|error| {
+            LifecycleError::new(format!("create JavaScript output directory: {error}"))
+        })?;
+        let mut staged_file = tempfile::NamedTempFile::new_in(parent)
+            .map_err(|error| LifecycleError::new(format!("stage JavaScript output: {error}")))?;
+        staged_file.write_all(&bytes).map_err(|error| {
+            LifecycleError::new(format!("write staged JavaScript output: {error}"))
+        })?;
+        staged_file.persist(&target).map_err(|error| {
+            LifecycleError::new(format!(
+                "publish JavaScript output `{}`: {}",
+                relative.display(),
+                error.error
+            ))
+        })?;
+    }
+    Ok(())
+}
+
 fn run_npm(root: &Path, args: &[&str], label: &str) -> Result<(), LifecycleError> {
     let status = Command::new("npm")
         .args(args)
@@ -388,6 +518,10 @@ fn receipt_path(project_root: &Path, package_root: &Path) -> PathBuf {
 }
 
 fn source_identity(root: &Path) -> Result<String, LifecycleError> {
+    hash_files(root, build_input_files(root)?)
+}
+
+fn build_input_files(root: &Path) -> Result<Vec<PathBuf>, LifecycleError> {
     let mut files = Vec::new();
     for name in ["package.json", "package-lock.json", "src", "scripts"] {
         let path = root.join(name);
@@ -412,7 +546,7 @@ fn source_identity(root: &Path) -> Result<String, LifecycleError> {
             "Distributed JavaScript package has no build inputs",
         ));
     }
-    hash_files(root, files)
+    Ok(files)
 }
 
 fn collect_source_files(
@@ -702,6 +836,43 @@ mod tests {
             "export const value = 2;\n",
         );
         assert_ne!(source_identity(fixture.path()).unwrap(), initial);
+    }
+
+    #[test]
+    fn staged_dist_publish_changes_only_changed_outputs() {
+        let fixture = tempfile::tempdir().unwrap();
+        let staged = fixture.path().join("stage/dist");
+        let destination = fixture.path().join("package/dist");
+        write(&staged.join("same.js"), "same\n");
+        write(&staged.join("changed.js"), "new\n");
+        write(&destination.join("same.js"), "same\n");
+        write(&destination.join("changed.js"), "old\n");
+        write(&destination.join("stale.js"), "stale\n");
+        #[cfg(unix)]
+        let same_inode = {
+            use std::os::unix::fs::MetadataExt;
+            fs::metadata(destination.join("same.js")).unwrap().ino()
+        };
+
+        publish_dist(&staged, &destination).unwrap();
+
+        assert_eq!(
+            fs::read_to_string(destination.join("same.js")).unwrap(),
+            "same\n"
+        );
+        assert_eq!(
+            fs::read_to_string(destination.join("changed.js")).unwrap(),
+            "new\n"
+        );
+        assert!(!destination.join("stale.js").exists());
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::MetadataExt;
+            assert_eq!(
+                fs::metadata(destination.join("same.js")).unwrap().ino(),
+                same_inode
+            );
+        }
     }
 
     #[test]

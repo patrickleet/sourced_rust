@@ -9,6 +9,7 @@ import {
 
 import type {
   CreateDistributedSvelteKitOptions,
+  DistributedReloadOptions,
   DistributedSvelteKitClient
 } from '@hops-ops/distributed/sveltekit';
 
@@ -27,11 +28,12 @@ export const ChatMessages = defineDistributedSvelteKitOperation(DistributedOpera
  * No client or command proxy is retained by this module.
  */
 export function provideDistributed(
-  options: Omit<CreateDistributedSvelteKitOptions<GeneratedCommands>, 'createCommands'>
+  options: Omit<CreateDistributedSvelteKitOptions<GeneratedCommands>, 'createCommands' | 'reload'> & { reload?: Omit<DistributedReloadOptions, 'key'> }
 ): DistributedSvelteKitClient<GeneratedCommands> {
   return provideDistributedSvelteKitClient(
     createDistributedSvelteKit<GeneratedCommands>({
-      ...options
+      ...options,
+      reload: { ...options.reload, key: "surface:application:e2e-ui-public" }
     })
   );
 }

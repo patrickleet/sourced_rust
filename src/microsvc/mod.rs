@@ -145,6 +145,66 @@ pub use session::{Session, ROLE_KEY, USER_ID_KEY};
 #[cfg(feature = "http")]
 pub const MAX_HTTP_BODY_BYTES: usize = 1024 * 1024;
 
+/// Fail closed for writes while a `distributed dev` process is not the active
+/// application generation. Outside the dev supervisor there is no lifecycle
+/// directory, so ordinary production/runtime embedding remains unchanged.
+pub(crate) fn lifecycle_mutations_open() -> bool {
+    let Some(root) = std::env::var_os("DISTRIBUTED_LIFECYCLE_DIR") else {
+        return true;
+    };
+    let Some(generation) = std::env::var_os("DISTRIBUTED_GENERATION_ID") else {
+        return false;
+    };
+    let root = std::path::PathBuf::from(root);
+    let Some(generation) = generation.to_str() else {
+        return false;
+    };
+    if !root.is_absolute() {
+        return false;
+    }
+    let state = root.join("dev.json");
+    let Ok(metadata) = std::fs::symlink_metadata(&state) else {
+        return false;
+    };
+    if metadata.file_type().is_symlink()
+        || !metadata.is_file()
+        || metadata.len() > 1024 * 1024
+    {
+        return false;
+    }
+    std::fs::read(&state)
+        .ok()
+        .is_some_and(|source| lifecycle_state_allows_mutations(&source, generation))
+}
+
+fn lifecycle_state_allows_mutations(source: &[u8], generation: &str) -> bool {
+    let Ok(state) = serde_json::from_slice::<serde_json::Value>(source) else {
+        return false;
+    };
+    state.get("phase").and_then(serde_json::Value::as_str) == Some("active")
+        && state
+            .get("active")
+            .and_then(|active| active.get("generationId"))
+            .and_then(serde_json::Value::as_str)
+            == Some(generation)
+}
+
+#[cfg(test)]
+mod lifecycle_gate_tests {
+    use super::lifecycle_state_allows_mutations;
+
+    #[test]
+    fn mutations_open_only_for_the_exact_active_generation() {
+        let active = br#"{"phase":"active","active":{"generationId":"sha256:one"}}"#;
+        let preparing =
+            br#"{"phase":"preparing","active":{"generationId":"sha256:one"}}"#;
+        assert!(lifecycle_state_allows_mutations(active, "sha256:one"));
+        assert!(!lifecycle_state_allows_mutations(active, "sha256:two"));
+        assert!(!lifecycle_state_allows_mutations(preparing, "sha256:one"));
+        assert!(!lifecycle_state_allows_mutations(b"not-json", "sha256:one"));
+    }
+}
+
 // HTTP transport (requires "http" feature)
 #[cfg(feature = "http")]
 mod http;

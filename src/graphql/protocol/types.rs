@@ -199,6 +199,8 @@ pub(crate) struct DistributedEnvelopeV1 {
     pub(crate) authorization_generation: String,
     pub(crate) cache_scope: OpaqueProtocolToken,
     #[serde(skip_serializing_if = "Option::is_none")]
+    pub(crate) generation: Option<DistributedGenerationEnvelope>,
+    #[serde(skip_serializing_if = "Option::is_none")]
     pub(crate) operation: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub(crate) command: Option<DistributedCommandMetadata>,
@@ -222,6 +224,7 @@ impl DistributedEnvelopeV1 {
             schema_hash: schema_hash.into(),
             authorization_generation: authorization_generation.into(),
             cache_scope,
+            generation: DistributedGenerationEnvelope::from_environment(),
             operation,
             command: None,
             snapshot: None,
@@ -236,5 +239,88 @@ impl DistributedEnvelopeV1 {
     ) -> Self {
         self.trusted_presets = trusted_presets;
         self
+    }
+}
+
+/// Process generation advertised independently from domain result objects.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub(crate) struct DistributedGenerationEnvelope {
+    version: u32,
+    generation_id: String,
+    release_id: String,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    topology_id: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    compatibility_id: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    member_id: Option<String>,
+}
+
+impl DistributedGenerationEnvelope {
+    fn from_environment() -> Option<Self> {
+        let generation_id = std::env::var("DISTRIBUTED_GENERATION_ID").ok()?;
+        let release_id = std::env::var("DISTRIBUTED_RELEASE_ID").ok()?;
+        if !bounded_identity(&generation_id) || !bounded_identity(&release_id) {
+            return None;
+        }
+        Some(Self {
+            version: 1,
+            generation_id,
+            release_id,
+            topology_id: optional_environment_identity("DISTRIBUTED_TOPOLOGY_ID"),
+            compatibility_id: optional_environment_identity("DISTRIBUTED_COMPATIBILITY_ID"),
+            member_id: optional_environment_identity("DISTRIBUTED_MEMBER_ID"),
+        })
+    }
+}
+
+fn optional_environment_identity(name: &str) -> Option<String> {
+    std::env::var(name)
+        .ok()
+        .filter(|value| bounded_identity(value))
+}
+
+fn bounded_identity(value: &str) -> bool {
+    !value.is_empty()
+        && value.len() <= 512
+        && value == value.trim()
+        && !value.chars().any(char::is_control)
+}
+
+#[cfg(test)]
+mod generation_tests {
+    use super::*;
+
+    #[test]
+    fn generation_envelope_is_camel_case_and_contains_no_process_environment() {
+        let envelope = DistributedGenerationEnvelope {
+            version: 1,
+            generation_id: "sha256:generation".into(),
+            release_id: "sha256:release".into(),
+            topology_id: Some("sha256:topology".into()),
+            compatibility_id: Some("sha256:compatibility".into()),
+            member_id: Some("api".into()),
+        };
+        assert_eq!(
+            serde_json::to_value(envelope).unwrap(),
+            serde_json::json!({
+                "version": 1,
+                "generationId": "sha256:generation",
+                "releaseId": "sha256:release",
+                "topologyId": "sha256:topology",
+                "compatibilityId": "sha256:compatibility",
+                "memberId": "api"
+            })
+        );
+    }
+
+    #[test]
+    fn generation_environment_identities_are_bounded() {
+        assert!(bounded_identity("sha256:stable"));
+        assert!(!bounded_identity(""));
+        assert!(!bounded_identity(" leading"));
+        assert!(!bounded_identity("line\nbreak"));
+        assert!(!bounded_identity(&"x".repeat(513)));
     }
 }

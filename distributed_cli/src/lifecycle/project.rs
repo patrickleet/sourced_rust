@@ -169,7 +169,16 @@ pub fn discover_lifecycle_project(
         .map(|ui| discover_javascript_framework(&root.join(ui)))
         .transpose()?
         .flatten();
-    let sources = workspace_sources(&root, &workspace_packages)?;
+    let mut sources = workspace_sources(&root, &workspace_packages)?;
+    if let Some(receipt) = javascript
+        .as_ref()
+        .and_then(|package| package.lifecycle_receipt(&root))
+    {
+        let receipt = receipt.strip_prefix(&root).map_err(|_| {
+            LifecycleError::new("JavaScript lifecycle receipt escapes the project root")
+        })?;
+        sources.insert(portable_path(receipt)?);
+    }
     let identities = framework_identities(
         distributed,
         &distributed_root,
@@ -718,7 +727,7 @@ fn lifecycle_dev(
                 program: executable.to_string_lossy().into_owned(),
                 args: probe_args(command_prefix, api_address),
                 interval_ms: 250,
-                timeout_ms: 14_900,
+                timeout_ms: 20_000,
             }),
         },
     )]);
@@ -756,7 +765,7 @@ fn lifecycle_dev(
                     program: executable.to_string_lossy().into_owned(),
                     args: probe_args(command_prefix, socket_address(&ui_host, &ui_port)),
                     interval_ms: 250,
-                    timeout_ms: 14_900,
+                    timeout_ms: 30_000,
                 }),
             },
         );
@@ -791,6 +800,7 @@ fn lifecycle_dev(
         poll_ms: 500,
         debounce_ms: 250,
         shutdown_ms: 5_000,
+        prepare_ms: 30_000,
         processes,
     }
 }

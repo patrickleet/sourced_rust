@@ -30,8 +30,8 @@ use crate::js_framework::watch_local_javascript;
 use crate::lifecycle::{
     discover_lifecycle_project, run_lifecycle_build, run_lifecycle_dev,
     run_lifecycle_project_build, run_lifecycle_project_dev, DiscoveredLifecycleProject,
-    LifecycleBuildOptions, LifecycleBuildRequest, LifecycleCheckBaseline, LifecycleDevOptions,
-    LifecycleProjectDevOptions,
+    LifecycleActivation, LifecycleBuildOptions, LifecycleBuildRequest, LifecycleCheckBaseline,
+    LifecycleDevOptions, LifecycleProjectDevOptions,
 };
 use crate::manifest_harness::{run_manifest_harness, HarnessMode, HarnessOptions};
 use crate::skills::{embedded_skills, generate_skills, SkillsInitSpec, AGENTS_MD_FILE};
@@ -860,6 +860,7 @@ fn run_build(args: &BuildArgs, command_prefix: &[&str]) -> Result<(), Box<dyn Er
                     nodes: None,
                     activation_inputs: None,
                     cancel: None,
+                    activation: LifecycleActivation::Immediate,
                 },
             )
             .map_err(|error| contextualize_project_application_error(project, error))?;
@@ -963,6 +964,7 @@ fn validate_project_application(
             nodes: None,
             activation_inputs: None,
             cancel: None,
+            activation: LifecycleActivation::Immediate,
         },
     )
     .map(|_| ())
@@ -1012,12 +1014,17 @@ fn build_project_ui(project: &DiscoveredLifecycleProject) -> Result<(), Box<dyn 
             "distributed build: compiling SvelteKit UI {}",
             ui_root.display()
         );
-        run_project_command(
-            &ui_root,
-            "npm",
-            &[OsString::from("run"), OsString::from("build")],
-            "SvelteKit UI build",
-        )?;
+        let status = Command::new("npm")
+            .args(["run", "build"])
+            .current_dir(&ui_root)
+            // Production builds must run the same compiler transaction as dev;
+            // committed generated files are an input to --check, not a reason
+            // to skip generation during an activating build.
+            .env("DISTRIBUTED_SKIP_CLIENT_COMPILE", "0")
+            .status()?;
+        if !status.success() {
+            return Err(format!("SvelteKit UI build failed with {status}").into());
+        }
     }
     Ok(())
 }
@@ -1130,6 +1137,7 @@ fn run_dev(args: &DevArgs, command_prefix: &[&str]) -> Result<(), Box<dyn Error>
                     nodes: None,
                     activation_inputs: None,
                     cancel: Some(Arc::clone(&stop)),
+                    activation: LifecycleActivation::Immediate,
                 },
                 stop: Arc::clone(&stop),
                 progress: true,
