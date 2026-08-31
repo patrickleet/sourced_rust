@@ -82,6 +82,24 @@ function operation(bound = binding()) {
 	);
 }
 
+function operationAt({
+	name,
+	route,
+	kind,
+	limit
+}) {
+	return defineDistributedBoundaryOperation(
+		{
+			operation: name,
+			route,
+			kind,
+			discovery: 'explicit'
+		},
+		BoundTodosArtifact,
+		binding(limit)
+	);
+}
+
 function context() {
 	return Object.freeze({
 		params: Object.freeze({ itemId: 'café/東京' }),
@@ -230,4 +248,132 @@ test('SSR, hydration, component use, navigation read, and prefetch share canonic
 	});
 	assert.equal(stale.replica.scope, undefined, 'changed binding rejects stale hydration');
 	stale.destroy();
+});
+
+test('boundary SSR selects parent layouts, deduplicates exact work, and bounds distinct refreshes', async () => {
+	const boundaries = [
+		operationAt({ name: 'RootItems', route: '/', kind: 'layout', limit: 20 }),
+		operationAt({
+			name: 'ItemPage',
+			route: '/items/[itemId]',
+			kind: 'page',
+			limit: 20
+		}),
+		operationAt({
+			name: 'ItemSibling',
+			route: '/items',
+			kind: 'layout',
+			limit: 21
+		}),
+		operationAt({
+			name: 'ItemSiblingTwo',
+			route: '/items',
+			kind: 'layout',
+			limit: 22
+		})
+	];
+	let active = 0;
+	let maximum = 0;
+	const calls = [];
+	const server = createDistributedSvelteKitServer({
+		boundaries,
+		maxConcurrency: 2,
+		getSession: async (event) => event.locals.session,
+		getRole: () => 'user'
+	});
+	const selectedContext = context();
+	const page = await server.load({
+		locals: { session: selectedContext.session },
+		route: { id: '/items/[itemId]' },
+		params: selectedContext.params,
+		url: new URL(`https://app.example/items/value?${selectedContext.search}`),
+		parent: async () => selectedContext.props,
+		async fetch(_url, init) {
+			const body = JSON.parse(init.body);
+			calls.push(body.variables.limit);
+			active += 1;
+			maximum = Math.max(maximum, active);
+			await new Promise((resolve) => setTimeout(resolve, 10));
+			active -= 1;
+			return jsonResponse(
+				todoFrame(
+					BoundTodosArtifact,
+					[{ id: `todo-${body.variables.limit}`, title: 'bound', status: 'open' }],
+					{ cacheScope: 'cache:owner-1', position: String(body.variables.limit) }
+				)
+			);
+		}
+	});
+	assert.deepEqual(calls.sort((left, right) => left - right), [20, 21, 22]);
+	assert.equal(maximum, 2, 'request scheduling never exceeds configured concurrency');
+	assert.ok(page.distributed, 'one request-local replica publishes one final seed');
+	assert.equal(page.distributed.operations.length, 4, 'logical duplicate ownership remains inspectable');
+	assert.equal(
+		new Set(page.distributed.bindings).size,
+		3,
+		'exact duplicate binding identities are represented once'
+	);
+	assert.equal(page.distributed.bindings.length, 3);
+});
+
+test('boundary SSR preserves successful siblings on partial failure and aborts held work', async () => {
+	const boundaries = [
+		operationAt({ name: 'First', route: '/items', kind: 'layout', limit: 20 }),
+		operationAt({ name: 'Second', route: '/items/[itemId]', kind: 'page', limit: 21 })
+	];
+	const selectedContext = context();
+	const server = createDistributedSvelteKitServer({
+		boundaries,
+		getSession: async (event) => event.locals.session,
+		getRole: () => 'user'
+	});
+	const sharedEvent = {
+		locals: { session: selectedContext.session },
+		route: { id: '/items/[itemId]' },
+		params: selectedContext.params,
+		url: new URL(`https://app.example/items/value?${selectedContext.search}`),
+		parent: async () => selectedContext.props
+	};
+	const partial = await server.load({
+		...sharedEvent,
+		async fetch(_url, init) {
+			const body = JSON.parse(init.body);
+			if (body.variables.limit === 21) throw new Error('sensitive upstream detail');
+			return jsonResponse(
+				todoFrame(
+					BoundTodosArtifact,
+					[{ id: 'todo-20', title: 'valid sibling', status: 'open' }],
+					{ cacheScope: 'cache:owner-1', position: '20' }
+				)
+			);
+		}
+	});
+	assert.ok(partial.distributed, 'successful sibling data remains dehydrated');
+	assert.equal(partial.gqlError, 'Distributed GraphQL island refresh failed');
+	assert.doesNotMatch(partial.gqlError, /sensitive upstream detail/);
+
+	const controller = new AbortController();
+	let transportAborted = false;
+	const held = server.load({
+		...sharedEvent,
+		request: { signal: controller.signal },
+		fetch(_url, init) {
+			return new Promise((_resolve, reject) => {
+				init.signal.addEventListener(
+					'abort',
+					() => {
+						transportAborted = true;
+						const error = new Error('transport aborted');
+						error.name = 'AbortError';
+						reject(error);
+					},
+					{ once: true }
+				);
+			});
+		}
+	});
+	await new Promise((resolve) => setTimeout(resolve, 0));
+	controller.abort();
+	await assert.rejects(held, (error) => error.name === 'AbortError');
+	assert.equal(transportAborted, true);
 });

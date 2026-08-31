@@ -37,6 +37,7 @@ export type SveltekitServerLoadEventLike<TLocals = unknown> = Readonly<{
 	url?: URL;
 	params?: Readonly<Record<string, string | undefined>>;
 	parent?(): Promise<Readonly<Record<string, unknown>>>;
+	request?: Readonly<{ signal: AbortSignal }>;
 	fetch?: FetchLike;
 	/**
 	 * SvelteKit client-side navigation and hover preload (`__data.json`).
@@ -78,6 +79,8 @@ export type CreateDistributedSvelteKitServerOptions<
 	getUrl?(event: TEvent): string;
 	/** Variables for routed operations that do not accept `{}`. */
 	variables?: DistributedRouteVariables<TEvent>;
+	/** Maximum simultaneous SSR island refreshes. Defaults to 8, maximum 32. */
+	maxConcurrency?: number;
 }>;
 
 export type DistributedSvelteKitServer<TEvent> = Readonly<{
@@ -99,6 +102,7 @@ export function createDistributedSvelteKitServer<
 ): DistributedSvelteKitServer<TEvent> {
 	const routes = validateRoutes(options.routes ?? []);
 	const boundaries = validateBoundaryOperations(options.boundaries ?? []);
+	const maxConcurrency = validateConcurrency(options.maxConcurrency ?? 8);
 	return Object.freeze({
 		async load(event: TEvent) {
 			const session = await options.getSession(event);
@@ -119,9 +123,13 @@ export function createDistributedSvelteKitServer<
 				options.getAuth?.(pageData, event) ?? authFromPageData(pageData);
 			const routeId = routeIdentity(event);
 			const selectedRoutes = routes.filter(({ plan }) => plan.route === routeId);
-			const selectedBoundaries = boundaries.filter(
-				({ plan }) => plan.route === routeId
-			);
+			const selectedBoundaries = boundaries
+				.filter(({ plan }) =>
+					plan.kind === 'page'
+						? plan.route === routeId
+						: layoutOwnsRoute(plan.route, routeId)
+				)
+				.sort(compareBoundaryOperations);
 			const selected = [...selectedRoutes, ...selectedBoundaries];
 			if (selected.length === 0) {
 				return {
@@ -130,19 +138,43 @@ export function createDistributedSvelteKitServer<
 				};
 			}
 
+			const requestSignal = event.request?.signal;
 			const fetchImpl = event.fetch;
+			const requestFetch: FetchLike | undefined =
+				fetchImpl === undefined || requestSignal === undefined
+					? fetchImpl
+					: ((input, init) => {
+							const transportSignal = init?.signal;
+							const signal =
+								transportSignal === undefined || transportSignal === null
+									? requestSignal
+									: AbortSignal.any([requestSignal, transportSignal]);
+							return fetchImpl(input, { ...init, signal });
+						});
 			const transport = createReplicaGraphqlTransport({
 				getUrl: () => options.getUrl?.(event) ?? '/graphql',
 				getAuth: () => auth,
-				...(fetchImpl === undefined ? {} : { fetch: fetchImpl })
+				...(requestFetch === undefined ? {} : { fetch: requestFetch })
 			});
 			const replica = createDistributedReplica({ transport });
-			const watches: Array<{
+			type Scheduled = Readonly<{
+				identity: string;
 				operation: string;
 				artifact: ReplicaOperationArtifact<unknown, GraphqlVariables>;
 				variables: GraphqlVariables;
+			}>;
+			type Execution = Scheduled & Readonly<{
 				watch: ReplicaWatch<unknown>;
-			}> = [];
+				failure: string | null;
+			}>;
+			const activeWatches = new Set<ReplicaWatch<unknown>>();
+			const executions: Execution[] = [];
+			let aborted = requestSignal?.aborted ?? false;
+			const abort = (): void => {
+				aborted = true;
+				for (const watch of activeWatches) watch.destroy();
+			};
+			requestSignal?.addEventListener('abort', abort, { once: true });
 			const boundaryContext: DistributedBoundaryVariableContext<
 				TSession,
 				Readonly<Record<string, unknown>>
@@ -156,7 +188,9 @@ export function createDistributedSvelteKitServer<
 						: Object.freeze({})
 			});
 			try {
+				const scheduled = new Map<string, Scheduled>();
 				for (const binding of selected) {
+					if (aborted) throw requestAborted();
 					let variables: GraphqlVariables;
 					try {
 						variables = 'binding' in binding
@@ -166,16 +200,13 @@ export function createDistributedSvelteKitServer<
 									boundaryContext
 								)
 							: (await options.variables?.[binding.plan.operation]?.(event)) ?? {};
-						const watch = replica.watch(
-							binding.artifact,
-							variables,
-							{ live: false }
-						);
-						watches.push({
+						const identity = ssrOperationIdentity(binding.artifact, variables);
+						if (scheduled.has(identity)) continue;
+						scheduled.set(identity, {
+							identity,
 							operation: binding.plan.operation,
 							artifact: binding.artifact,
-							variables,
-							watch
+							variables
 						});
 					} catch (error) {
 						if (
@@ -190,13 +221,36 @@ export function createDistributedSvelteKitServer<
 						throw error;
 					}
 				}
-				await Promise.all(watches.map(({ watch }) => watch.refresh()));
-				const errors = watches.flatMap(({ watch }) => watch.get().errors);
-				for (const { artifact, variables, watch } of watches) {
+				const completed = await mapBounded(
+					[...scheduled.values()],
+					maxConcurrency,
+					async (item): Promise<Execution> => {
+						if (aborted) throw requestAborted();
+						const watch = replica.watch(item.artifact, item.variables, { live: false });
+						activeWatches.add(watch);
+						let failure: string | null = null;
+						try {
+							await watch.refresh();
+						} catch {
+							failure = 'Distributed GraphQL island refresh failed';
+						}
+						if (watch.get().errors.length > 0) {
+							failure = 'Distributed GraphQL island refresh failed';
+						}
+						return Object.freeze({ ...item, watch, failure });
+					}
+				);
+				executions.push(...completed);
+				if (aborted) throw requestAborted();
+				const errors = executions.flatMap(({ failure }) =>
+					failure === null ? [] : [failure]
+				);
+				for (const { artifact, variables, watch } of executions) {
 					// Preserve exact rendered-operation reachability after the
 					// temporary watch is released.
 					replica.read(artifact, variables);
 					watch.destroy();
+					activeWatches.delete(watch);
 				}
 				const transfer =
 					replica.scope === undefined
@@ -215,13 +269,15 @@ export function createDistributedSvelteKitServer<
 								distributedAuthority: transfer.authority
 							}),
 					gqlError:
-						errors[0]?.message ??
+						errors[0] ??
 						(transfer === undefined
 							? 'Distributed GraphQL response did not establish an authoritative cache scope'
 							: null)
 				};
 			} finally {
-				for (const { watch } of watches) watch.destroy();
+				requestSignal?.removeEventListener('abort', abort);
+				for (const watch of activeWatches) watch.destroy();
+				activeWatches.clear();
 			}
 		}
 	});
@@ -266,7 +322,7 @@ function hydrationTransfer(
 			operations: Object.freeze([...operations]),
 			...(bindings.length === 0
 				? {}
-				: { bindings: Object.freeze([...bindings].sort()) })
+				: { bindings: Object.freeze([...new Set(bindings)].sort()) })
 		}),
 		authority: Object.freeze({
 			version: 1,
@@ -428,6 +484,73 @@ function validateBoundaryOperations<TSession>(
 			});
 		})
 	);
+}
+
+function compareBoundaryOperations(
+	left: DistributedBoundaryOperation,
+	right: DistributedBoundaryOperation
+): number {
+	const leftDepth = left.plan.route.split('/').filter(Boolean).length;
+	const rightDepth = right.plan.route.split('/').filter(Boolean).length;
+	return (
+		leftDepth - rightDepth ||
+		left.plan.kind.localeCompare(right.plan.kind) ||
+		left.plan.route.localeCompare(right.plan.route) ||
+		left.plan.operation.localeCompare(right.plan.operation) ||
+		left.binding.id.localeCompare(right.binding.id)
+	);
+}
+
+function layoutOwnsRoute(layout: string, route: string): boolean {
+	const owner = normalizeRoute(layout);
+	const selected = normalizeRoute(route);
+	return owner === '/' || selected === owner || selected.startsWith(`${owner}/`);
+}
+
+function ssrOperationIdentity(
+	artifact: ReplicaOperationArtifact<unknown, GraphqlVariables>,
+	variables: GraphqlVariables
+): string {
+	return JSON.stringify([
+		artifact.protocol.version,
+		artifact.protocol.schemaHash,
+		artifact.protocol.surface,
+		artifact.id,
+		variables
+	]);
+}
+
+function validateConcurrency(value: number): number {
+	if (!Number.isSafeInteger(value) || value < 1 || value > 32) {
+		throw new TypeError('Distributed SvelteKit maxConcurrency must be an integer from 1 through 32');
+	}
+	return value;
+}
+
+async function mapBounded<TInput, TResult>(
+	values: readonly TInput[],
+	concurrency: number,
+	map: (value: TInput, index: number) => Promise<TResult>
+): Promise<TResult[]> {
+	const results = new Array<TResult>(values.length);
+	let next = 0;
+	const worker = async (): Promise<void> => {
+		while (next < values.length) {
+			const index = next;
+			next += 1;
+			results[index] = await map(values[index]!, index);
+		}
+	};
+	await Promise.all(
+		Array.from({ length: Math.min(concurrency, values.length) }, () => worker())
+	);
+	return results;
+}
+
+function requestAborted(): Error {
+	const error = new Error('Distributed SvelteKit request was aborted');
+	error.name = 'AbortError';
+	return error;
 }
 
 function routeIdentity(event: SveltekitServerLoadEventLike): string {

@@ -277,11 +277,8 @@ export function createDistributedSvelteKit<TCommands = Readonly<Record<never, ne
 
 	let replica: DistributedReplica | undefined;
 	const boundaryIds = Object.freeze(
-		(options.boundaries ?? []).map(({ binding }) => binding.id).sort()
+		[...new Set((options.boundaries ?? []).map(({ binding }) => binding.id))].sort()
 	);
-	if (new Set(boundaryIds).size !== boundaryIds.length) {
-		throw new TypeError('Distributed SvelteKit boundary bindings must be unique');
-	}
 	const auth = createAuthorizationFence(
 		options.session,
 		() => replica?.invalidateAuthorization(),
