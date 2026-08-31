@@ -28,6 +28,8 @@ use super::{retryable, MessagePublisher, TransportError};
 const MESSAGE_ID_HEADER: &str = "Nats-Msg-Id";
 /// Header carrying the canonical message kind.
 const MESSAGE_KIND_HEADER: &str = "X-Sourced-Kind";
+/// Header carrying the canonical payload media type.
+const CONTENT_TYPE_HEADER: &str = "Content-Type";
 
 /// Publishes canonical messages to a NATS JetStream subject.
 ///
@@ -75,13 +77,20 @@ impl MessagePublisher for NatsPublisher {
     async fn publish(&self, mut message: Message) -> Result<(), TransportError> {
         let subject = self.subject(&message);
         let mut headers = async_nats::HeaderMap::new();
+        for (key, value) in &message.metadata {
+            if [MESSAGE_ID_HEADER, MESSAGE_KIND_HEADER, CONTENT_TYPE_HEADER]
+                .iter()
+                .any(|reserved| key.eq_ignore_ascii_case(reserved))
+            {
+                continue;
+            }
+            headers.insert(key.as_str(), value.as_str());
+        }
         if let Some(id) = message.id() {
             headers.insert(MESSAGE_ID_HEADER, id);
         }
         headers.insert(MESSAGE_KIND_HEADER, message.kind.as_str());
-        for (key, value) in &message.metadata {
-            headers.insert(key.as_str(), value.as_str());
-        }
+        headers.insert(CONTENT_TYPE_HEADER, message.content_type.as_str());
 
         // `message` is owned and dropped here, so move its payload out instead of
         // cloning. `Bytes::from(Vec<u8>)` takes ownership of the buffer (no copy).
@@ -243,13 +252,20 @@ impl NatsReceived {
                     .map(|value| (key.to_string(), value.to_string()))
             })
             .collect();
-        let message = message_from_wire(
+        let mut message = message_from_wire(
             name,
             payload,
             Some(MESSAGE_ID_HEADER),
             MESSAGE_KIND_HEADER,
             headers,
         );
+        if let Some(index) = message
+            .metadata
+            .iter()
+            .position(|(key, _)| key.eq_ignore_ascii_case(CONTENT_TYPE_HEADER))
+        {
+            message.content_type = message.metadata.remove(index).1;
+        }
         let ordered = jetstream_ordered(&raw);
         Self {
             raw,
