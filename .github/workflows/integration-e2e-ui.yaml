@@ -612,6 +612,46 @@ jobs:
             exit 1
           fi
 
+          # A Ready Oidc/Features resource only proves that Crossplane has
+          # reconciled its managed resource. Zitadel can still briefly serve a
+          # cached authorize configuration from before the app's Login V2
+          # baseUri was applied. Exercise the real authorize endpoint and wait
+          # until it points back to the app's custom /login page; otherwise the
+          # browser would be sent to the stock Login V2 service, which is not
+          # the flow exercised by this fixture.
+          client_id="$(k -n local get secret e2e-ui-local-oidc-conn-g1 -o json \
+            | jq -r '.data["attribute.client_id"] // empty' \
+            | base64 --decode)"
+          test -n "$client_id"
+          expected_login_prefix='http://e2e-ui-ui.local.svc.cluster.local:5180/login?authRequest=V2_'
+          authorize_location=""
+          for attempt in $(seq 1 90); do
+            authorize_location="$(curl -sS --noproxy '*' -D - -o /dev/null \
+              --get 'http://zitadel-zitadel.auth.svc.cluster.local:8080/oauth/v2/authorize' \
+              --data-urlencode "client_id=$client_id" \
+              --data-urlencode 'redirect_uri=http://e2e-ui-ui.local.svc.cluster.local:5180/auth/callback/oidc' \
+              --data-urlencode 'response_type=code' \
+              --data-urlencode 'scope=openid profile email' \
+              --data-urlencode 'state=ci-preflight' \
+              --data-urlencode 'code_challenge=ci-preflight-code-challenge-123456789012345678901234567890' \
+              --data-urlencode 'code_challenge_method=S256' \
+              | awk -F': ' 'tolower($1) == "location" {print $2}' \
+              | tr -d '\r' | tail -n1)"
+            if [[ "$authorize_location" == "$expected_login_prefix"* ]]; then
+              echo "Zitadel authorize redirects to the app Login V2 baseUri"
+              break
+            fi
+            if [ $((attempt % 10)) -eq 0 ]; then
+              echo "Waiting for app Login V2 redirect (attempt $attempt; location=${authorize_location:-none})"
+            fi
+            sleep 2
+          done
+          if [[ "$authorize_location" != "$expected_login_prefix"* ]]; then
+            echo "Zitadel authorize did not converge on the app Login V2 baseUri" >&2
+            echo "last Location: ${authorize_location:-<none>}" >&2
+            exit 1
+          fi
+
           E2E_UI_ORIGIN=http://e2e-ui-ui.local.svc.cluster.local:5180 \
           E2E_API_ORIGIN=http://e2e-ui-api.local.svc.cluster.local:8791 \
             npm run test:browser
@@ -648,8 +688,8 @@ jobs:
         with:
           name: e2e-ui-k8s-diagnostics
           path: |
-            tests/e2e-ui/.ci-*-port-forward.log
-            tests/e2e-ui/.ci-zitadel-proxy.log
+            .ci-*-port-forward.log
+            .ci-zitadel-proxy.log
           if-no-files-found: ignore
           retention-days: 7
 
