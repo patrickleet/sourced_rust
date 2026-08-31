@@ -409,6 +409,7 @@ assert.deepEqual(Object.keys(rootSurface).sort(), [
   'graphqlWsUrl',
   'httpUrlToWsUrl',
   'jwtPayloadSub',
+  'parseDistributedGenerationEnvelope',
   'parseDistributedProtocolEnvelope',
   'parseGraphqlResponseExtensions',
   'requestGraphql',
@@ -560,16 +561,22 @@ assert.deepEqual(Object.keys(sveltekitSurface).sort(), [
   'createDistributedSvelteKitServer',
   'createPageDataSessionSource',
   'defineDistributedSvelteKitOperation',
+  'distributedReloadLifecycle',
   'matchDistributedRoute',
+  'parseDistributedGenerationEnvelope',
   'provideDistributedSvelteKitClient',
+  'registerDistributedReloadClient',
   'registerDistributedRoute',
   'sessionSourceFromPageData',
   'useDistributedSvelteKitClient',
-  'useDistributedSvelteKitCommands'
+  'useDistributedSvelteKitCommands',
+  'validateDistributedReloadLocation',
+  'validateDistributedReloadState'
 ]);
 assert.deepEqual(Object.keys(sveltekitViteSurface).sort(), [
   'checkDistributedSvelteKit',
   'distributedGraphqlProxy',
+  'distributedLifecycle',
   'distributedSvelteKit',
   'distributedSvelteKitAliases',
   'generateDistributedSvelteKit'
