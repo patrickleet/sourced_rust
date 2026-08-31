@@ -297,6 +297,41 @@ test('same-process Vite instances coalesce one shared startup generation', async
 	await checkDistributedSvelteKit(options);
 });
 
+test('supervised Vite defers generated-client compilation to the lifecycle', async (t) => {
+	const { root, script, log } = await fixture(t);
+	const previousLifecycle = process.env.DISTRIBUTED_LIFECYCLE_DIR;
+	process.env.DISTRIBUTED_LIFECYCLE_DIR = join(root, '.distributed', 'lifecycle');
+	t.after(() => {
+		if (previousLifecycle === undefined) {
+			delete process.env.DISTRIBUTED_LIFECYCLE_DIR;
+		} else {
+			process.env.DISTRIBUTED_LIFECYCLE_DIR = previousLifecycle;
+		}
+	});
+	const plugin = distributedSvelteKit(pluginOptions(root, script));
+	await plugin.configResolved({ root });
+	const added = [];
+	const server = {
+		watcher: { add: (paths) => added.push(paths) },
+		ws: { send() {} },
+		moduleGraph: { getModuleById() {}, invalidateModule() {} }
+	};
+	plugin.configureServer(server);
+
+	assert.deepEqual(await commandLog(log), []);
+	assert.deepEqual(added, []);
+	assert.deepEqual(
+		await plugin.handleHotUpdate({
+			file: join(root, 'src/routes/todos/+page.graphql'),
+			server
+		}),
+		[]
+	);
+	await plugin.watchChange(join(root, 'src/routes/admin/+page.graphql'));
+	assert.deepEqual(await commandLog(log), []);
+	await plugin.closeBundle();
+});
+
 test('SvelteKit config-probe workers never compile or contend for the project lock', async (t) => {
 	const { root, script, log } = await fixture(t);
 	const options = pluginOptions(root, script);

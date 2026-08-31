@@ -262,6 +262,8 @@ export async function checkDistributedSvelteKit(
 export function distributedSvelteKit(
 	options: DistributedSvelteKitViteOptions
 ): DistributedSvelteKitVitePlugin {
+	const lifecycleOwnsCompile =
+		process.env.DISTRIBUTED_LIFECYCLE_DIR !== undefined;
 	let resolved: ResolvedIntegration | undefined;
 	let dirty = false;
 	let running: Promise<void> | undefined;
@@ -338,6 +340,14 @@ export function distributedSvelteKit(
 			frameworkDist = localFrameworkDist(config.root);
 			await validateResolvedPaths(resolved);
 			/*
+			 * `distributed dev` has already staged this generation and owns every
+			 * compiler input through its application watcher. Recompiling here would
+			 * race the API process for Cargo and mutate generated output outside the
+			 * lifecycle transaction. The virtual modules still resolve the staged
+			 * files, while compiler inputs below are held for the supervisor reload.
+			 */
+			if (lifecycleOwnsCompile) return;
+			/*
 			 * SvelteKit post-build analysis loads Vite config in an isolated
 			 * worker marked with SVELTEKIT_FORK. That pass reads framework
 			 * configuration only; running the compiler there would contend with
@@ -356,17 +366,20 @@ export function distributedSvelteKit(
 		configureServer(server): void {
 			configureLifecycleServer(server);
 			const integration = requireResolved(resolved);
-			const roots = integration.clients.flatMap((client) => [
-				...client.watchRoots,
-				...client.manifestWatchRoots
-			]);
-			if (roots.length > 0) server.watcher.add(roots);
+			if (!lifecycleOwnsCompile) {
+				const roots = integration.clients.flatMap((client) => [
+					...client.watchRoots,
+					...client.manifestWatchRoots
+				]);
+				if (roots.length > 0) server.watcher.add(roots);
+			}
 			server.httpServer?.once('close', () => {
 				void stop();
 			});
 		},
 		buildStart(): void {
 			const integration = requireResolved(resolved);
+			if (lifecycleOwnsCompile) return;
 			for (const client of integration.clients) {
 				for (const root of [...client.watchRoots, ...client.manifestWatchRoots]) this.addWatchFile(root);
 			}
@@ -390,6 +403,7 @@ export function distributedSvelteKit(
 			if (suppressed !== undefined) return suppressed;
 			const integration = requireResolved(resolved);
 			if (!isCompilerInput(context.file, integration)) return undefined;
+			if (lifecycleOwnsCompile) return [];
 			try {
 				await compile(`GraphQL change ${context.file}`);
 			} catch (error) {
@@ -416,6 +430,7 @@ export function distributedSvelteKit(
 		},
 		async watchChange(id): Promise<void> {
 			const integration = requireResolved(resolved);
+			if (lifecycleOwnsCompile) return;
 			if (isCompilerInput(id, integration)) {
 				await compile(`GraphQL watch change ${id}`);
 			}
