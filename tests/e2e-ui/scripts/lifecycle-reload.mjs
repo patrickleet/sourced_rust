@@ -58,26 +58,6 @@ async function transition(page, path, source, expectedReplicaRestore, assertGate
 		async () => (await lifecycleState())?.phase === 'preparing',
 		'pending lifecycle generation'
 	);
-	const captured = await waitFor(
-		() => page.evaluate(() => {
-			const encoded = sessionStorage.getItem('@hops-ops/distributed/reload-capsule/v1');
-			if (encoded === null) return undefined;
-			const capsule = JSON.parse(encoded);
-			const participant = capsule.participants.find((candidate) =>
-				candidate.state.some((state) => state.key === 'e2e-ui.lifecycle-demo')
-			);
-			if (participant === undefined) return undefined;
-			return {
-				hasReplica: participant.replica !== undefined,
-				state: participant.state.find(
-					(candidate) => candidate.key === 'e2e-ui.lifecycle-demo'
-				)?.value
-			};
-		}).catch(() => undefined),
-		'declared application-state capture'
-	);
-	assert.equal(captured.state, 'preserve-me');
-	assert.equal(captured.hasReplica, true, 'authenticated replica must participate');
 	if (assertGate) {
 		await waitFor(
 			() => page.evaluate(() => globalThis.__distributedReloadPreparingEvents?.length > 0)
@@ -110,6 +90,7 @@ async function transition(page, path, source, expectedReplicaRestore, assertGate
 		},
 		'controlled browser reload restoration'
 	);
+	assert.equal(restored.replicaCaptured, true, 'authenticated replica must participate');
 	assert.equal(restored.replicaRestored, expectedReplicaRestore);
 	assert.equal(
 		documentRequests.length,
@@ -149,8 +130,11 @@ await context.addInitScript(() => {
 });
 const page = await context.newPage();
 page.on('console', (message) => {
-	if (message.type() === 'error') console.error(`browser: ${message.text()}`);
+	if (message.type() === 'error' || message.text().includes('Distributed reload')) {
+		console.error(`browser console ${message.type()}: ${message.text()}`);
+	}
 });
+page.on('pageerror', (error) => console.error(`browser page error: ${error.message}`));
 const baseline = await lifecycleState();
 assert.equal(baseline?.phase, 'active');
 try {

@@ -153,6 +153,7 @@ export function registerDistributedReloadClient(
 			});
 		},
 		async restore(saved, compatible) {
+			const replicaCaptured = saved.replica !== undefined;
 			let replicaRestored = saved.replica === undefined;
 			if (compatible && saved.replica !== undefined && replica.scope !== undefined) {
 				replicaRestored = replica.hydrate(saved.replica, replica.scope);
@@ -170,6 +171,7 @@ export function registerDistributedReloadClient(
 				new CustomEvent('distributed:reload-restored', {
 					detail: Object.freeze({
 						key: options.key,
+						replicaCaptured,
 						replicaRestored,
 						pendingCommandIds: saved.pendingCommandIds
 					})
