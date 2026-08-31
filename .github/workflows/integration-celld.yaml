@@ -82,10 +82,8 @@ jobs:
       - name: Install esbuild
         run: npm install -g esbuild
 
-      - name: Install wasm-pack and worker-build
-        run: |
-          cargo install wasm-pack --locked || cargo install wasm-pack
-          cargo install worker-build --locked || cargo install worker-build
+      - name: Install worker-build
+        run: cargo install worker-build --locked || cargo install worker-build
 
       - name: Install celld CLI
         run: |

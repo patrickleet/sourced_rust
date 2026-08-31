@@ -39,9 +39,6 @@ jobs:
             tests/e2e-ui -> target
           shared-key: e2e-ui-offline
 
-      - name: Install wasm-pack
-        run: cargo install wasm-pack --locked || cargo install wasm-pack
-
       - uses: actions/setup-node@v4
         with:
           node-version: "22"
@@ -80,9 +77,6 @@ jobs:
             . -> target
             tests/e2e-ui -> target
           shared-key: e2e-ui-browser
-
-      - name: Install wasm-pack
-        run: cargo install wasm-pack --locked || cargo install wasm-pack
 
       - uses: actions/setup-node@v4
         with:
@@ -279,9 +273,6 @@ jobs:
           echo "$RUNNER_TEMP/hops-cli/bin" >> "$GITHUB_PATH"
           export PATH="$RUNNER_TEMP/hops-cli/bin:$PATH"
           hops --version
-
-      - name: Install wasm-pack
-        run: cargo install wasm-pack --locked || cargo install wasm-pack
 
       - name: Build Distributed CLI
         run: cargo build --manifest-path ../../Cargo.toml -p distributed_cli --bin distributed
