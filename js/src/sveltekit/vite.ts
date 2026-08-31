@@ -1208,22 +1208,7 @@ async function checkTransaction(
 			);
 			await exposeBoundaryModule(output);
 			await compareGeneratedTrees(client.out, output, client.module);
-			const actual = await readFile(join(client.adapterOut, 'boundaries.json'), 'utf8');
-			let persisted: unknown;
-			try {
-				persisted = JSON.parse(actual);
-			} catch {
-				throw new Error(
-					`[distributed.island.boundary_plan_invalid] ${client.module} boundaries.json is not valid JSON`
-				);
-			}
-			validateDistributedSvelteKitBoundaryPlan(persisted, client.module);
-			const expected = boundaryPlanSource(plan);
-			if (actual !== expected) {
-				throw new Error(
-					`Distributed SvelteKit boundary plan for ${client.module} is stale; run generation without check`
-				);
-			}
+			await validateAdapterBoundaryPlan(client, plan);
 		}
 	} finally {
 		await rm(transaction, { recursive: true, force: true });
@@ -1239,6 +1224,39 @@ async function compilerTransactionRoot(
 		: integration.cwd;
 	await mkdir(root, { recursive: true });
 	return root;
+}
+
+async function validateAdapterBoundaryPlan(
+	client: ResolvedClient,
+	plan: DistributedSvelteKitBoundaryPlan
+): Promise<void> {
+	let actual: string;
+	try {
+		actual = await readFile(join(client.adapterOut, 'boundaries.json'), 'utf8');
+	} catch (error) {
+		/*
+		 * `.svelte-kit` is SvelteKit-owned build state. A production build may
+		 * replace it after our Vite startup generation, while the durable client
+		 * tree (including boundaries.ts) remains current and was checked above.
+		 */
+		if (isMissing(error)) return;
+		throw error;
+	}
+	let persisted: unknown;
+	try {
+		persisted = JSON.parse(actual);
+	} catch {
+		throw new Error(
+			`[distributed.island.boundary_plan_invalid] ${client.module} boundaries.json is not valid JSON`
+		);
+	}
+	validateDistributedSvelteKitBoundaryPlan(persisted, client.module);
+	const expected = boundaryPlanSource(plan);
+	if (actual !== expected) {
+		throw new Error(
+			`Distributed SvelteKit boundary plan for ${client.module} is stale; run generation without check`
+		);
+	}
 }
 
 async function analyzeStagedBoundaries(

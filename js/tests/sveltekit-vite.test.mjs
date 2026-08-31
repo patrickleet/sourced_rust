@@ -853,17 +853,33 @@ test('Vite compiles and resolves isolated user/admin physical entrypoints', asyn
 		join(root, 'src/generated/user/sveltekit.ts'),
 		'utf8'
 	);
+	await rm(join(root, '.svelte-kit'), { recursive: true, force: true });
 	await checkDistributedSvelteKit(options);
 	assert.equal(
 		await readFile(join(root, 'src/generated/user/sveltekit.ts'), 'utf8'),
 		beforeCheck,
-		'the shared check runner never rewrites generated output'
+		'the shared check runner validates durable output without requiring SvelteKit build state'
 	);
 	await generateDistributedSvelteKit(options);
 	assert.match(
 		await readFile(join(root, 'src/generated/user/sveltekit.ts'), 'utf8'),
 		/todos/
 	);
+	await writeFile(
+		join(
+			root,
+			'.svelte-kit/distributed/clients',
+			Buffer.from('$distributed').toString('base64url'),
+			'boundaries.json'
+		),
+		'{not-json}\n'
+	);
+	await assert.rejects(
+		checkDistributedSvelteKit(options),
+		/\[distributed\.island\.boundary_plan_invalid\]/,
+		'existing adapter build state still fails closed when it is invalid'
+	);
+	await generateDistributedSvelteKit(options);
 	await writeFile(join(root, 'src/routes/todos/+page.svelte'), '<p>changed</p>\n');
 	const pluginAfterGenerate = distributedSvelteKit(options);
 	await pluginAfterGenerate.configResolved({ root });
