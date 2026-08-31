@@ -842,8 +842,13 @@ fn run_build(args: &BuildArgs, command_prefix: &[&str]) -> Result<(), Box<dyn Er
                 prepare_project_javascript(project, true)?;
             } else {
                 build_project_runtime(project)?;
-                validate_project_application(project, args.lock_timeout_ms)?;
+                // The linked JavaScript source receipt is a declared input to
+                // the typed application node. Materialize it before the
+                // read-only validation pass so a clean checkout is valid for
+                // the same reason as a warm checkout, not because a prior
+                // build happened to leave the receipt behind.
                 prepare_project_javascript(project, false)?;
+                validate_project_application(project, args.lock_timeout_ms)?;
                 prepare_project_wasm_pures(project)?;
                 build_project_ui(project)?;
             }
