@@ -322,7 +322,10 @@ fn cargo_metadata(manifest: &Path) -> Result<CargoMetadata, LifecycleError> {
         .map_err(|error| LifecycleError::new(format!("failed to parse Cargo metadata: {error}")))
 }
 
-fn discover_ui(workspace_metadata: &Value, root: &Path) -> Result<Option<PathBuf>, LifecycleError> {
+pub(crate) fn discover_ui(
+    workspace_metadata: &Value,
+    root: &Path,
+) -> Result<Option<PathBuf>, LifecycleError> {
     let declared = match workspace_metadata.pointer("/distributed/ui") {
         None => None,
         Some(ui) => Some(ui.get("path").and_then(Value::as_str).ok_or_else(|| {

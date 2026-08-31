@@ -25,9 +25,10 @@ struct WasmPure {
 #[derive(Debug, Deserialize)]
 struct CargoMetadata {
     workspace_root: PathBuf,
-    workspace_members: Vec<String>,
     packages: Vec<CargoPackage>,
     resolve: Option<CargoResolve>,
+    #[serde(default)]
+    metadata: Value,
 }
 
 #[derive(Debug, Deserialize)]
@@ -73,27 +74,15 @@ pub(crate) fn build_declared_wasm_pures(
     manifest: &Value,
     project_root: &Path,
 ) -> Result<usize, Box<dyn Error>> {
-    let ui_lib = project_root.join("ui/src/lib");
-    if !project_root.join("ui/package.json").is_file() {
+    let metadata = cargo_metadata(&project_root.join("Cargo.toml"))?;
+    let Some(ui_root) = crate::lifecycle::discover_ui(&metadata.metadata, project_root)? else {
         return Ok(0);
-    }
+    };
+    let ui_lib = ui_root.join("src/lib");
     let pures = collect_wasm_pures(manifest)?;
     if pures.is_empty() {
         return Ok(0);
     }
-    let metadata = cargo_metadata(&project_root.join("Cargo.toml"))?;
-    let workspace_ids = metadata
-        .workspace_members
-        .iter()
-        .map(String::as_str)
-        .collect::<BTreeSet<_>>();
-    let packages = metadata
-        .packages
-        .iter()
-        .filter(|package| workspace_ids.contains(package.id.as_str()))
-        .map(|package| (package.name.as_str(), package))
-        .collect::<BTreeMap<_, _>>();
-
     let mut outputs = BTreeMap::<PathBuf, &WasmPure>::new();
     for pure in &pures {
         let relative = portable_import_path(&pure.import)?;
@@ -117,12 +106,7 @@ pub(crate) fn build_declared_wasm_pures(
     }
 
     for (destination, pure) in outputs {
-        let package = packages.get(pure.rust_package.as_str()).ok_or_else(|| {
-            format!(
-                "WASM pure `{}` is declared by Cargo package `{}`, which is not a workspace member",
-                pure.import, pure.rust_package
-            )
-        })?;
+        let package = resolve_local_package(&metadata, pure)?;
         if !package.features.contains_key("wasm") {
             return Err(format!(
                 "WASM pure `{}` requires package `{}` to define a `wasm` Cargo feature",
@@ -152,6 +136,7 @@ pub(crate) fn build_declared_wasm_pures(
             .ok_or_else(|| format!("package `{}` Cargo.toml has no parent", package.name))?;
         build_wasm_pure(
             project_root,
+            &ui_root,
             package_dir,
             output_name,
             &destination,
@@ -160,6 +145,31 @@ pub(crate) fn build_declared_wasm_pures(
         )?;
     }
     Ok(pures.len())
+}
+
+fn resolve_local_package<'a>(
+    metadata: &'a CargoMetadata,
+    pure: &WasmPure,
+) -> Result<&'a CargoPackage, Box<dyn Error>> {
+    let mut candidates = metadata
+        .packages
+        .iter()
+        .filter(|package| package.name == pure.rust_package && package.source.is_none());
+    let Some(package) = candidates.next() else {
+        return Err(format!(
+            "WASM pure `{}` is declared by Cargo package `{}`, which is not a local application dependency",
+            pure.import, pure.rust_package
+        )
+        .into());
+    };
+    if candidates.next().is_some() {
+        return Err(format!(
+            "WASM pure `{}` has more than one local Cargo package named `{}`",
+            pure.import, pure.rust_package
+        )
+        .into());
+    }
+    Ok(package)
 }
 
 fn collect_wasm_pures(manifest: &Value) -> Result<BTreeSet<WasmPure>, Box<dyn Error>> {
@@ -294,13 +304,12 @@ fn package_source_identity(
             .ok_or_else(|| format!("package `{}` Cargo.toml has no parent", package.name))?;
         let mut source_roots = BTreeSet::new();
         for target in package.targets.iter().filter(|target| {
-            target
-                .kind
-                .iter()
-                .any(|kind| matches!(
+            target.kind.iter().any(|kind| {
+                matches!(
                     kind.as_str(),
                     "lib" | "rlib" | "cdylib" | "proc-macro" | "custom-build"
-                ))
+                )
+            })
         }) {
             let relative = target.src_path.strip_prefix(package_dir).map_err(|_| {
                 format!(
@@ -426,6 +435,7 @@ fn stamp_matches(
 
 fn build_wasm_pure(
     project_root: &Path,
+    ui_root: &Path,
     package_dir: &Path,
     output_name: &str,
     destination: &Path,
@@ -435,7 +445,7 @@ fn build_wasm_pure(
     let parent = destination
         .parent()
         .ok_or("WASM output has no parent directory")?;
-    ensure_real_directory_path(project_root, parent)?;
+    ensure_real_directory_path(ui_root, parent)?;
     if let Ok(metadata) = fs::symlink_metadata(destination) {
         if metadata.file_type().is_symlink() || !metadata.is_dir() {
             return Err(format!(
@@ -452,7 +462,8 @@ fn build_wasm_pure(
         "distributed: compiling required browser WASM {} from Cargo package {}",
         stamp.import, stamp.rust_package
     );
-    let output = Command::new("wasm-pack")
+    let wasm_pack = wasm_pack_executable(ui_root);
+    let output = Command::new(&wasm_pack)
         .arg("build")
         .arg(package_dir)
         .args(["--target", "web", "--out-dir"])
@@ -463,8 +474,8 @@ fn build_wasm_pure(
         .status()
         .map_err(|error| {
             format!(
-                "failed to start `wasm-pack` for required WASM pure `{}`; install wasm-pack and ensure it is on PATH: {error}",
-                stamp.import
+                "failed to start required WASM compiler `{}` for pure `{}`; run `npm install` in `{}` or install wasm-pack on PATH: {error}",
+                wasm_pack.display(), stamp.import, ui_root.display()
             )
         })?;
     if !output.success() {
@@ -516,6 +527,25 @@ fn build_wasm_pure(
     }
     fs::write(stamp_path, serde_json::to_vec(stamp)?)?;
     Ok(())
+}
+
+fn wasm_pack_executable(ui_root: &Path) -> PathBuf {
+    let executable = if cfg!(windows) {
+        "wasm-pack.cmd"
+    } else {
+        "wasm-pack"
+    };
+    for installed in [
+        ui_root.join("node_modules/.bin").join(executable),
+        ui_root
+            .join("node_modules/@hops-ops/distributed/node_modules/.bin")
+            .join(executable),
+    ] {
+        if installed.is_file() {
+            return installed;
+        }
+    }
+    PathBuf::from(executable)
 }
 
 fn ensure_real_directory_path(root: &Path, directory: &Path) -> Result<(), Box<dyn Error>> {
@@ -613,7 +643,6 @@ mod tests {
         };
         let metadata = CargoMetadata {
             workspace_root: root.to_path_buf(),
-            workspace_members: vec!["pure".to_string(), "unrelated".to_string()],
             packages: vec![
                 package("pure", "pure"),
                 package("dependency", "dependency"),
@@ -631,6 +660,7 @@ mod tests {
                     },
                 ],
             }),
+            metadata: Value::Null,
         };
         let initial = package_source_identity(&metadata, "pure").unwrap();
         fs::write(root.join("unrelated/src/lib.rs"), "// changed\n").unwrap();
@@ -646,12 +676,15 @@ mod tests {
         let package_dir = workspace.join("pure");
         fs::create_dir_all(&package_dir).unwrap();
         fs::write(workspace.join("Cargo.toml"), "[workspace]\n").unwrap();
-        fs::write(package_dir.join("Cargo.toml"), "[package]\nname = \"pure\"\n").unwrap();
+        fs::write(
+            package_dir.join("Cargo.toml"),
+            "[package]\nname = \"pure\"\n",
+        )
+        .unwrap();
         fs::write(package_dir.join("lib.rs"), "mod sibling;\n").unwrap();
         fs::write(package_dir.join("sibling.rs"), "pub const VALUE: u8 = 1;\n").unwrap();
         let metadata = CargoMetadata {
             workspace_root: workspace.to_path_buf(),
-            workspace_members: vec!["pure".to_string()],
             packages: vec![CargoPackage {
                 id: "pure".to_string(),
                 name: "pure".to_string(),
@@ -669,6 +702,7 @@ mod tests {
                     dependencies: Vec::new(),
                 }],
             }),
+            metadata: Value::Null,
         };
 
         let initial = package_source_identity(&metadata, "pure").unwrap();
@@ -684,8 +718,11 @@ mod tests {
         let package = |id: &str, kind: &str| {
             let directory = root.join(id);
             fs::create_dir_all(directory.join("src")).unwrap();
-            fs::write(directory.join("Cargo.toml"), format!("[package]\nname = \"{id}\"\n"))
-                .unwrap();
+            fs::write(
+                directory.join("Cargo.toml"),
+                format!("[package]\nname = \"{id}\"\n"),
+            )
+            .unwrap();
             fs::write(directory.join("src/lib.rs"), format!("// {id}\n")).unwrap();
             CargoPackage {
                 id: id.to_string(),
@@ -701,8 +738,10 @@ mod tests {
         };
         let metadata = CargoMetadata {
             workspace_root: root.to_path_buf(),
-            workspace_members: vec!["pure".to_string(), "pure-macros".to_string()],
-            packages: vec![package("pure", "cdylib"), package("pure-macros", "proc-macro")],
+            packages: vec![
+                package("pure", "cdylib"),
+                package("pure-macros", "proc-macro"),
+            ],
             resolve: Some(CargoResolve {
                 nodes: vec![
                     CargoResolveNode {
@@ -715,10 +754,113 @@ mod tests {
                     },
                 ],
             }),
+            metadata: Value::Null,
         };
 
         let initial = package_source_identity(&metadata, "pure").unwrap();
-        fs::write(root.join("pure-macros/src/lib.rs"), "// changed expansion\n").unwrap();
+        fs::write(
+            root.join("pure-macros/src/lib.rs"),
+            "// changed expansion\n",
+        )
+        .unwrap();
         assert_ne!(initial, package_source_identity(&metadata, "pure").unwrap());
+    }
+
+    #[test]
+    fn wasm_pure_accepts_a_unique_local_path_dependency() {
+        let pure = WasmPure {
+            rust_package: "domain".to_string(),
+            import: "domain/pkg/domain_wasm".to_string(),
+        };
+        let package = CargoPackage {
+            id: "path+file:///repo/domain#0.1.0".to_string(),
+            name: "domain".to_string(),
+            manifest_path: PathBuf::from("/repo/domain/Cargo.toml"),
+            source: None,
+            features: BTreeMap::new(),
+            targets: Vec::new(),
+        };
+        let metadata = CargoMetadata {
+            workspace_root: PathBuf::from("/repo/application"),
+            packages: vec![package],
+            resolve: None,
+            metadata: Value::Null,
+        };
+
+        assert_eq!(
+            resolve_local_package(&metadata, &pure).unwrap().name,
+            "domain"
+        );
+    }
+
+    #[test]
+    fn wasm_pure_rejects_a_registry_package() {
+        let pure = WasmPure {
+            rust_package: "domain".to_string(),
+            import: "domain/pkg/domain_wasm".to_string(),
+        };
+        let metadata = CargoMetadata {
+            workspace_root: PathBuf::from("/repo/application"),
+            packages: vec![CargoPackage {
+                id: "registry+https://example.invalid#domain@0.1.0".to_string(),
+                name: "domain".to_string(),
+                manifest_path: PathBuf::from("/cargo/registry/domain/Cargo.toml"),
+                source: Some("registry+https://example.invalid".to_string()),
+                features: BTreeMap::new(),
+                targets: Vec::new(),
+            }],
+            resolve: None,
+            metadata: Value::Null,
+        };
+
+        let error = resolve_local_package(&metadata, &pure).unwrap_err();
+        assert!(error
+            .to_string()
+            .contains("not a local application dependency"));
+    }
+
+    #[test]
+    fn wasm_pure_rejects_ambiguous_local_package_names() {
+        let pure = WasmPure {
+            rust_package: "domain".to_string(),
+            import: "domain/pkg/domain_wasm".to_string(),
+        };
+        let package = |id: &str| CargoPackage {
+            id: id.to_string(),
+            name: "domain".to_string(),
+            manifest_path: PathBuf::from(format!("/repo/{id}/Cargo.toml")),
+            source: None,
+            features: BTreeMap::new(),
+            targets: Vec::new(),
+        };
+        let metadata = CargoMetadata {
+            workspace_root: PathBuf::from("/repo/application"),
+            packages: vec![package("domain-one"), package("domain-two")],
+            resolve: None,
+            metadata: Value::Null,
+        };
+
+        let error = resolve_local_package(&metadata, &pure).unwrap_err();
+        assert!(error
+            .to_string()
+            .contains("more than one local Cargo package"));
+    }
+
+    #[test]
+    fn wasm_pack_prefers_the_framework_installed_ui_binary() {
+        let fixture = tempfile::tempdir().unwrap();
+        let executable = if cfg!(windows) {
+            "wasm-pack.cmd"
+        } else {
+            "wasm-pack"
+        };
+        let installed = fixture
+            .path()
+            .join("node_modules/@hops-ops/distributed/node_modules/.bin")
+            .join(executable);
+        fs::create_dir_all(installed.parent().unwrap()).unwrap();
+        fs::write(&installed, "fixture").unwrap();
+
+        assert_eq!(wasm_pack_executable(fixture.path()), installed);
     }
 }

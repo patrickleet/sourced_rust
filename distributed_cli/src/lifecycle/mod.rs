@@ -24,6 +24,7 @@ pub use graph::{
     DistributedSourceIdentity, LifecycleConfig, LifecycleError, LifecycleGraph, LifecycleNode,
     LIFECYCLE_CONFIG_SCHEMA_VERSION, LIFECYCLE_GRAPH_SCHEMA_VERSION, MAX_LIFECYCLE_NODES,
 };
+pub(crate) use project::discover_ui;
 pub use project::{discover_lifecycle_project, DiscoveredLifecycleProject};
 pub use receipt::{
     ArtifactNodeReceipt, GenerationManifest, GENERATION_MANIFEST_SCHEMA_VERSION,

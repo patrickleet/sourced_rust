@@ -292,6 +292,9 @@ fn prepare_local_package(
             && current_output.as_ref() == Some(&receipt.output_identity)
     });
     if current {
+        if !check {
+            prepare_local_wasm_pack(root)?;
+        }
         return Ok(());
     }
     if check {
@@ -319,6 +322,7 @@ fn prepare_local_package(
             "JavaScript framework dependency install",
         )?;
     }
+    prepare_local_wasm_pack(root)?;
     eprintln!(
         "distributed: compiling local {DISTRIBUTED_JS_PACKAGE} from {}",
         root.display()
@@ -364,6 +368,31 @@ fn prepare_local_package(
         ))
     })?;
     Ok(())
+}
+
+fn prepare_local_wasm_pack(root: &Path) -> Result<(), LifecycleError> {
+    let package = root.join("node_modules/wasm-pack/package.json");
+    if !package.is_file() {
+        return Ok(());
+    }
+    let binary = root
+        .join("node_modules/wasm-pack/binary")
+        .join(if cfg!(windows) {
+            "wasm-pack.exe"
+        } else {
+            "wasm-pack"
+        });
+    if binary.is_file() {
+        return Ok(());
+    }
+    eprintln!(
+        "distributed: installing the pinned wasm-pack binary required by {DISTRIBUTED_JS_PACKAGE}"
+    );
+    run_npm(
+        root,
+        &["rebuild", "wasm-pack"],
+        "JavaScript framework wasm-pack install",
+    )
 }
 
 fn build_local_package_staged(root: &Path, package: &PackageJson) -> Result<(), LifecycleError> {

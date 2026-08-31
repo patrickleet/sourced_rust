@@ -8,9 +8,10 @@ one lifecycle participant set.
 
 Hops supplies the source mount or sync delivery. A Node init container places
 the pinned Node/npm toolchain beside the Rust toolchain without a custom local
-image or network package installer. Dependency and framework builds are then
-owned by `distributed dev`, not by chart shell scripts or a second UI
-Deployment.
+image or chart-level package installer. The linked framework package pins and
+installs its required `wasm-pack` compiler, so declared Rust/WASM pures are
+built inside the same lifecycle too. Dependency and framework builds are owned
+by `distributed dev`, not by chart shell scripts or a second UI Deployment.
 
 OIDC project, demo humans, and web application resources live in the explicit
 `ui/.gitops/test-users` chart. When identity is enabled, this chart consumes
