@@ -921,6 +921,7 @@ function validateInventory(module: string, inventory: DistributedIslandInventory
 	}
 	for (const island of inventory.islands) {
 		const source = island?.source;
+		const variableSchema = island?.variableSchema;
 		if (
 			island?.version !== 1 ||
 			typeof island.id !== 'string' ||
@@ -940,6 +941,20 @@ function validateInventory(module: string, inventory: DistributedIslandInventory
 			typeof island.directives.live !== 'boolean' ||
 			island.liveCoverage === null ||
 			typeof island.liveCoverage !== 'object' ||
+			variableSchema === null ||
+			typeof variableSchema !== 'object' ||
+			Array.isArray(variableSchema) ||
+			typeof variableSchema.reference !== 'string' ||
+			!Number.isSafeInteger(variableSchema.codecVersion) ||
+			!Array.isArray(variableSchema.variables) ||
+			variableSchema.variables.some(
+				(variable: unknown) =>
+					variable === null ||
+					typeof variable !== 'object' ||
+					Array.isArray(variable) ||
+					typeof (variable as { name?: unknown }).name !== 'string' ||
+					typeof (variable as { graphqlType?: unknown }).graphqlType !== 'string'
+			) ||
 			typeof island.liveCoverage.requested !== 'boolean' ||
 			typeof island.liveCoverage.finite !== 'boolean' ||
 			typeof island.liveCoverage.kind !== 'string' ||

@@ -1129,8 +1129,14 @@ async function compileTransaction(
 			});
 		}
 		const plans = await analyzeStagedBoundaries(integration, staged);
-		for (const [index, item] of staged.entries()) {
-			const plan = plans[index]!;
+		const plansByModule = new Map(plans.map((plan) => [plan.module, plan]));
+		for (const item of staged) {
+			const plan = plansByModule.get(item.client.module);
+			if (plan === undefined) {
+				throw new Error(
+					`Distributed SvelteKit boundary analysis returned no plan for ${item.client.module}`
+				);
+			}
 			await writeFile(
 				join(item.output, GENERATED_BOUNDARIES_MODULE),
 				boundaryModuleSource(plan),
@@ -1198,9 +1204,15 @@ async function checkTransaction(
 			staged.push(Object.freeze({ client, output }));
 		}
 		const plans = await analyzeStagedBoundaries(integration, staged);
+		const plansByModule = new Map(plans.map((plan) => [plan.module, plan]));
 		for (const [index, client] of integration.clients.entries()) {
 			const output = staged[index]!.output;
-			const plan = plans[index]!;
+			const plan = plansByModule.get(client.module);
+			if (plan === undefined) {
+				throw new Error(
+					`Distributed SvelteKit boundary analysis returned no plan for ${client.module}`
+				);
+			}
 			await writeFile(
 				join(output, GENERATED_BOUNDARIES_MODULE),
 				boundaryModuleSource(plan),

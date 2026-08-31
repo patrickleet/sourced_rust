@@ -134,6 +134,11 @@ test('one boundary binding canonicalizes route, search, session, constant, and f
 	});
 	assert.equal(Object.hasOwn(variables, 'omitted'), false, 'omission remains distinct from null');
 	assert.equal(first.canonicalBytes(context()), JSON.stringify(variables));
+	assert.deepEqual(
+		first.resolve({ ...context(), search: {} }).tags,
+		[],
+		'an absent record-backed multi-value search parameter matches URLSearchParams.getAll'
+	);
 	assert.equal(binding().id, first.id, 'equivalent bindings have stable fingerprints');
 	assert.notEqual(binding(21).id, first.id, 'binding contract changes alter hydration identity');
 });

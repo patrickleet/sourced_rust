@@ -734,6 +734,18 @@ test('boundary diagnostics reject cycles, stale plans, and unbounded layout live
 		}),
 		/\[distributed\.island\.version_unsupported\] src\/lib\/Missing\.graphql:1:1/
 	);
+	const malformedVariables = islandInventory(
+		'src/lib/Missing.graphql',
+		'MalformedVariables'
+	);
+	malformedVariables.islands[0].variableSchema.variables = [{}];
+	await assert.rejects(
+		analyzeDistributedSvelteKitBoundaries({
+			cwd: root,
+			clients: [{ module: '$distributed', inventory: malformedVariables }]
+		}),
+		/\[distributed\.island\.version_unsupported\] src\/lib\/Missing\.graphql:1:1/
+	);
 	assert.throws(
 		() => validateDistributedSvelteKitBoundaryPlan(
 			{ version: 2, module: '$distributed', boundaries: [], unplaced: [] },
@@ -741,6 +753,30 @@ test('boundary diagnostics reject cycles, stale plans, and unbounded layout live
 		),
 		/\[distributed\.island\.boundary_plan_invalid\]/
 	);
+});
+
+test('Vite maps analyzed boundary plans by module rather than declaration order', async (t) => {
+	const { root, script } = await fixture(t);
+	const options = {
+		...pluginOptions(root, script),
+		clients: [...clients()].reverse()
+	};
+
+	await generateDistributedSvelteKit(options);
+
+	const admin = await readFile(
+		join(root, 'src/generated/admin/boundaries.ts'),
+		'utf8'
+	);
+	const user = await readFile(
+		join(root, 'src/generated/user/boundaries.ts'),
+		'utf8'
+	);
+	assert.match(admin, /"module": "\$distributed\/admin"/);
+	assert.match(admin, /src\/routes\/admin\/\+page\.graphql/);
+	assert.match(user, /"module": "\$distributed"/);
+	assert.match(user, /src\/routes\/todos\/\+page\.graphql/);
+	await checkDistributedSvelteKit(options);
 });
 
 test('Vite compiles and resolves isolated user/admin physical entrypoints', async (t) => {

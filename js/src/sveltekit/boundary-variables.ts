@@ -190,7 +190,7 @@ function resolveSource<TSession, TProps>(
 				return value === null ? OMITTED : value;
 			}
 			const value = ownValue(search, source.name);
-			if (value === undefined) return OMITTED;
+			if (value === undefined) return source.mode === 'all' ? [] : OMITTED;
 			if (source.mode === 'all') return Array.isArray(value) ? [...value] : [value];
 			return Array.isArray(value) ? (value[0] ?? OMITTED) : value;
 		}
