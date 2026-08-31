@@ -200,7 +200,7 @@ export type DistributedSvelteKitVitePlugin = Readonly<{
 	buildStart(this: RollupWatchContextLike): void;
 	resolveId(source: string): string | undefined;
 	load(id: string): string | undefined;
-	transformIndexHtml(): readonly LifecycleHtmlTag[];
+	transformIndexHtml(): LifecycleHtmlTag[];
 	handleHotUpdate(context: ViteHotContextLike): Promise<never[] | undefined>;
 	watchChange(id: string): Promise<void>;
 	closeBundle(): Promise<void>;
@@ -211,7 +211,7 @@ export type DistributedLifecycleVitePlugin = Readonly<{
 	enforce: 'pre';
 	configResolved(config: Readonly<{ root: string }>): void;
 	configureServer(server: ViteServerLike): void;
-	transformIndexHtml(): readonly LifecycleHtmlTag[];
+	transformIndexHtml(): LifecycleHtmlTag[];
 	handleHotUpdate(context: ViteHotContextLike): never[] | undefined;
 }>;
 
@@ -465,7 +465,7 @@ function canonicalExistingPath(value: string): string {
 const CONTROL_ID = /^[A-Za-z0-9_:-]{16,128}$/;
 const MAX_ACK_BYTES = 4096;
 
-function lifecycleGenerationMeta(): readonly LifecycleHtmlTag[] {
+function lifecycleGenerationMeta(): LifecycleHtmlTag[] {
 	const configured = process.env.DISTRIBUTED_LIFECYCLE_DIR;
 	if (configured === undefined || !isAbsolute(configured)) return [];
 	try {
