@@ -148,24 +148,26 @@ export function createDistributedSvelteKitServer<
 				for (const watch of activeWatches) watch.destroy();
 			};
 			requestSignal?.addEventListener('abort', abort, { once: true });
-			const needsParent = selectedBoundaries.some(({ binding }) =>
-				Object.values(binding.sources).some(
-					(source) => source?.kind === 'forwarded_prop'
-				)
-			);
-			const boundaryContext: DistributedBoundaryVariableContext<
-				TSession,
-				Readonly<Record<string, unknown>>
-			> = Object.freeze({
-				params: event.params ?? Object.freeze({}),
-				search: event.url?.searchParams ?? new URLSearchParams(),
-				session,
-				props:
-					needsParent && event.parent !== undefined
-						? await event.parent()
-						: Object.freeze({})
-			});
 			try {
+				const needsParent = selectedBoundaries.some(({ binding }) =>
+					Object.values(binding.sources).some(
+						(source) => source?.kind === 'forwarded_prop'
+					)
+				);
+				const props =
+					needsParent && event.parent !== undefined
+						? await settleWithRequestAbort(() => event.parent!(), requestSignal)
+						: Object.freeze({});
+				if (aborted) throw requestAborted();
+				const boundaryContext: DistributedBoundaryVariableContext<
+					TSession,
+					Readonly<Record<string, unknown>>
+				> = Object.freeze({
+					params: event.params ?? Object.freeze({}),
+					search: event.url?.searchParams ?? new URLSearchParams(),
+					session,
+					props
+				});
 				const scheduled = new Map<string, Scheduled>();
 				for (const binding of selectedBoundaries) {
 					if (aborted) throw requestAborted();
@@ -364,6 +366,27 @@ function requestAborted(): Error {
 	const error = new Error('Distributed SvelteKit request was aborted');
 	error.name = 'AbortError';
 	return error;
+}
+
+async function settleWithRequestAbort<T>(
+	start: () => Promise<T>,
+	signal: AbortSignal | undefined
+): Promise<T> {
+	if (signal === undefined) return await start();
+	if (signal.aborted) throw requestAborted();
+	let rejectAbort: ((reason: Error) => void) | undefined;
+	const aborted = new Promise<never>((_resolve, reject) => {
+		rejectAbort = reject;
+	});
+	const abort = (): void => rejectAbort?.(requestAborted());
+	signal.addEventListener('abort', abort, { once: true });
+	try {
+		if (signal.aborted) throw requestAborted();
+		return await Promise.race([start(), aborted]);
+	} finally {
+		signal.removeEventListener('abort', abort);
+		rejectAbort = undefined;
+	}
 }
 
 function routeIdentity(event: SveltekitServerLoadEventLike): string {

@@ -74,6 +74,41 @@ const todosBoundary = defineDistributedBoundaryOperation(
 	defineDistributedBoundaryBinding(TodosArtifact, {})
 );
 
+const forwardedTodosArtifact = Object.freeze({
+	...TodosArtifact,
+	id: 'forwarded-todos-v1',
+	document:
+		'query ForwardedTodos($payload: JSON) { todos { id title status } }',
+	protocol: Object.freeze({
+		...TodosArtifact.protocol,
+		operation: 'forwarded-todos-v1'
+	}),
+	variableCodec: Object.freeze({
+		version: 1,
+		limits: Object.freeze({ maxDepth: 64, maxBoolWidth: 256, maxInList: 1000 }),
+		variables: Object.freeze({
+			payload: Object.freeze({
+				kind: 'scalar', scalar: 'JSON', codec: 'json', nullable: true
+			})
+		}),
+		inputs: Object.freeze({})
+	})
+});
+
+const forwardedTodosBoundary = defineDistributedBoundaryOperation(
+	{
+		operation: 'ForwardedTodos',
+		route: '/todos',
+		kind: 'page',
+		discovery: 'component',
+		sourcePath: 'src/lib/ForwardedTodos.graphql'
+	},
+	forwardedTodosArtifact,
+	defineDistributedBoundaryBinding(forwardedTodosArtifact, {
+		payload: { kind: 'forwarded_prop', path: ['filters'] }
+	})
+);
+
 function serverHarness() {
 	const calls = [];
 	const server = createDistributedSvelteKitServer({
@@ -205,6 +240,34 @@ test('SSR only awaits parent data for forwarded-prop bindings', async () => {
 
 	assert.equal(page.gqlError, null);
 	assert.equal(parentCalls, 0);
+});
+
+test('SSR abort settles while forwarded parent data remains pending', async () => {
+	const controller = new AbortController();
+	let parentCalls = 0;
+	const server = createDistributedSvelteKitServer({
+		boundaries: [forwardedTodosBoundary],
+		getSession: async (event) => event.locals.session,
+		getRole: () => 'user'
+	});
+	const pendingParent = new Promise(() => undefined);
+	const load = server.load({
+		locals: {
+			session: { accessToken: 'alice', user: { id: 'alice' } }
+		},
+		route: { id: '/todos' },
+		url: new URL('https://app.example/todos'),
+		request: { signal: controller.signal },
+		parent() {
+			parentCalls += 1;
+			return pendingParent;
+		}
+	});
+	await flushMicrotasks();
+	controller.abort();
+
+	await assert.rejects(load, (error) => error?.name === 'AbortError');
+	assert.equal(parentCalls, 1);
 });
 
 test('client-side data requests skip GraphQL so navigation stays SPA', async () => {
