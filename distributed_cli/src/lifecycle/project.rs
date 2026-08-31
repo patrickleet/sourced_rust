@@ -765,7 +765,7 @@ fn lifecycle_dev(
                     program: executable.to_string_lossy().into_owned(),
                     args: probe_args(command_prefix, socket_address(&ui_host, &ui_port)),
                     interval_ms: 250,
-                    timeout_ms: 30_000,
+                    timeout_ms: 60_000,
                 }),
             },
         );

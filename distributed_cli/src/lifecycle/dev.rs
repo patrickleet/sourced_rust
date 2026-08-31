@@ -22,7 +22,8 @@ use super::{
 
 const MAX_DEV_PROCESSES: usize = 64;
 const MAX_DEV_INTERVAL: Duration = Duration::from_secs(30);
-const MAX_DEV_READINESS_TOTAL: Duration = Duration::from_secs(60);
+const MAX_DEV_PROBE_TIMEOUT: Duration = Duration::from_secs(60);
+const MAX_DEV_READINESS_TOTAL: Duration = Duration::from_secs(90);
 
 fn default_poll_ms() -> u64 {
     200
@@ -124,7 +125,7 @@ impl LifecycleDevConfig {
             > MAX_DEV_READINESS_TOTAL.as_millis() as u64
         {
             return Err(LifecycleError::new(
-                "total lifecycle dev readiness delay must not exceed 60s",
+                "total lifecycle dev readiness delay must not exceed 90s",
             ));
         }
         for (name, process) in &self.processes {
@@ -160,7 +161,7 @@ impl LifecycleDevConfig {
                     || probe.interval_ms == 0
                     || probe.timeout_ms == 0
                     || probe.interval_ms > probe.timeout_ms
-                    || Duration::from_millis(probe.timeout_ms) > MAX_DEV_INTERVAL
+                    || Duration::from_millis(probe.timeout_ms) > MAX_DEV_PROBE_TIMEOUT
                 {
                     return Err(LifecycleError::new(format!(
                         "lifecycle dev process `{name}` readiness probe is out of bounds"
@@ -1388,4 +1389,63 @@ fn resolve_file(root: &Path, path: &PathBuf) -> Result<PathBuf, LifecycleError> 
 
 fn io_error(error: std::io::Error) -> LifecycleError {
     LifecycleError::new(error.to_string())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn probed_process(timeout_ms: u64) -> LifecycleDevProcess {
+        LifecycleDevProcess {
+            program: "process".to_string(),
+            args: Vec::new(),
+            cwd: None,
+            env: BTreeMap::new(),
+            url: None,
+            restart_on: BTreeSet::new(),
+            ready_after_ms: 100,
+            ready: Some(LifecycleDevProbe {
+                program: "probe".to_string(),
+                args: Vec::new(),
+                interval_ms: 250,
+                timeout_ms,
+            }),
+        }
+    }
+
+    fn config(processes: BTreeMap<String, LifecycleDevProcess>) -> LifecycleDevConfig {
+        LifecycleDevConfig {
+            poll_ms: 500,
+            debounce_ms: 250,
+            shutdown_ms: 5_000,
+            prepare_ms: 30_000,
+            processes,
+        }
+    }
+
+    #[test]
+    fn readiness_allows_one_slow_ui_probe_within_a_bounded_total() {
+        config(BTreeMap::from([
+            ("api".to_string(), probed_process(20_000)),
+            ("ui".to_string(), probed_process(60_000)),
+        ]))
+        .validate()
+        .unwrap();
+    }
+
+    #[test]
+    fn readiness_rejects_an_unbounded_probe_or_aggregate_budget() {
+        let probe_error = config(BTreeMap::from([("ui".to_string(), probed_process(60_001))]))
+            .validate()
+            .unwrap_err();
+        assert!(probe_error.message().contains("probe is out of bounds"));
+
+        let total_error = config(BTreeMap::from([
+            ("api".to_string(), probed_process(31_000)),
+            ("ui".to_string(), probed_process(60_000)),
+        ]))
+        .validate()
+        .unwrap_err();
+        assert!(total_error.message().contains("must not exceed 90s"));
+    }
 }
