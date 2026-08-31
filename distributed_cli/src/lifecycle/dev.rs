@@ -22,8 +22,8 @@ use super::{
 
 const MAX_DEV_PROCESSES: usize = 64;
 const MAX_DEV_INTERVAL: Duration = Duration::from_secs(30);
-const MAX_DEV_PROBE_TIMEOUT: Duration = Duration::from_secs(60);
-const MAX_DEV_READINESS_TOTAL: Duration = Duration::from_secs(90);
+const MAX_DEV_PROBE_TIMEOUT: Duration = Duration::from_secs(300);
+const MAX_DEV_READINESS_TOTAL: Duration = Duration::from_secs(360);
 
 fn default_poll_ms() -> u64 {
     200
@@ -129,7 +129,7 @@ impl LifecycleDevConfig {
             > MAX_DEV_READINESS_TOTAL.as_millis() as u64
         {
             return Err(LifecycleError::new(
-                "total lifecycle dev readiness delay must not exceed 90s",
+                "total lifecycle dev readiness delay must not exceed 360s",
             ));
         }
         for (name, process) in &self.processes {
@@ -1495,9 +1495,9 @@ mod tests {
     }
 
     #[test]
-    fn readiness_allows_one_slow_ui_probe_within_a_bounded_total() {
+    fn readiness_allows_cold_runtime_and_ui_probes_within_a_bounded_total() {
         config(BTreeMap::from([
-            ("api".to_string(), probed_process(20_000)),
+            ("api".to_string(), probed_process(300_000)),
             ("ui".to_string(), probed_process(60_000)),
         ]))
         .validate()
@@ -1506,18 +1506,21 @@ mod tests {
 
     #[test]
     fn readiness_rejects_an_unbounded_probe_or_aggregate_budget() {
-        let probe_error = config(BTreeMap::from([("ui".to_string(), probed_process(60_001))]))
-            .validate()
-            .unwrap_err();
+        let probe_error = config(BTreeMap::from([(
+            "ui".to_string(),
+            probed_process(300_001),
+        )]))
+        .validate()
+        .unwrap_err();
         assert!(probe_error.message().contains("probe is out of bounds"));
 
         let total_error = config(BTreeMap::from([
-            ("api".to_string(), probed_process(31_000)),
-            ("ui".to_string(), probed_process(60_000)),
+            ("api".to_string(), probed_process(300_000)),
+            ("ui".to_string(), probed_process(60_001)),
         ]))
         .validate()
         .unwrap_err();
-        assert!(total_error.message().contains("must not exceed 90s"));
+        assert!(total_error.message().contains("must not exceed 360s"));
     }
 
     #[test]

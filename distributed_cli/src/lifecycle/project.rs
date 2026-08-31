@@ -21,6 +21,7 @@ use super::{
 
 const APPLICATION_NODE: &str = "application";
 const APPLICATION_OUTPUT: &str = "artifacts/application-manifest.json";
+const COLD_RUNTIME_READY_TIMEOUT_MS: u64 = 300_000;
 
 /// Cargo- and convention-derived inputs for one Distributed application.
 #[derive(Clone, Debug)]
@@ -791,7 +792,11 @@ fn lifecycle_dev(
                 program: executable.to_string_lossy().into_owned(),
                 args: probe_args(command_prefix, api_address),
                 interval_ms: 250,
-                timeout_ms: 20_000,
+                // `cargo run` may populate an empty target directory in a fresh
+                // worktree or development container. A real process failure is
+                // observed immediately; this budget only permits valid cold
+                // compilation to reach the readiness probe.
+                timeout_ms: COLD_RUNTIME_READY_TIMEOUT_MS,
             }),
         },
     )]);
@@ -986,6 +991,11 @@ mod tests {
             probe_args(&["service"], "localhost:5180".to_string()),
             ["service", "__probe", "--address", "localhost:5180"]
         );
+    }
+
+    #[test]
+    fn discovered_runtime_allows_a_cold_cargo_build() {
+        assert_eq!(COLD_RUNTIME_READY_TIMEOUT_MS, 5 * 60 * 1_000);
     }
 
     #[test]
