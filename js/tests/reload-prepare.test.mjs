@@ -10,6 +10,16 @@ test('prepared reload capsule survives the bounded activation transaction', asyn
 	const capsuleKey = '@hops-ops/distributed/reload-capsule/v1';
 	const values = new Map();
 	const deadlineUnixMs = Date.now() + 10_000;
+	const previousCrypto = Object.getOwnPropertyDescriptor(globalThis, 'crypto');
+	Object.defineProperty(globalThis, 'crypto', {
+		configurable: true,
+		value: {
+			getRandomValues(bytes) {
+				bytes.fill(0x5a);
+				return bytes;
+			}
+		}
+	});
 	const generation = (generationId) => ({
 		generationId,
 		releaseId: `release-${generationId}`,
@@ -66,5 +76,7 @@ test('prepared reload capsule survives the bounded activation transaction', asyn
 	} finally {
 		unregister();
 		distributedReloadLifecycle().destroy();
+		if (previousCrypto === undefined) delete globalThis.crypto;
+		else Object.defineProperty(globalThis, 'crypto', previousCrypto);
 	}
 });

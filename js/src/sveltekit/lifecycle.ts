@@ -207,7 +207,7 @@ export function distributedReloadLifecycle(): DistributedReloadLifecycle {
 		try {
 			sharedLifecycle = createDistributedReloadLifecycle();
 		} catch {
-			// Storage and randomUUID are optional browser capabilities. Losing
+			// Storage and Web Crypto are optional browser capabilities. Losing
 			// them disables coherent reload state transfer, not the application.
 			sharedLifecycle = inertLifecycle();
 		}
@@ -492,7 +492,15 @@ function browserParticipantId(): string {
 	const key = '@hops-ops/distributed/reload-participant/v1';
 	const existing = sessionStorage.getItem(key);
 	if (existing !== null && PARTICIPANT_ID.test(existing)) return existing;
-	const created = crypto.randomUUID().replaceAll('-', '');
+	// `crypto.randomUUID()` is restricted to secure contexts, while
+	// `getRandomValues()` is intentionally available on ordinary HTTP origins.
+	// Local GitOps and LAN development commonly serve Vite through an HTTP
+	// service hostname, so requiring randomUUID would silently disable the
+	// lifecycle client there.
+	const bytes = crypto.getRandomValues(new Uint8Array(16));
+	const created = [...bytes]
+		.map((byte) => byte.toString(16).padStart(2, '0'))
+		.join('');
 	sessionStorage.setItem(key, created);
 	return created;
 }

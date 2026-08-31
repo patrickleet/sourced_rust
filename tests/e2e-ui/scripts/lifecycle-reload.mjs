@@ -15,6 +15,8 @@ const baseURL = process.env.E2E_UI_ORIGIN || 'http://127.0.0.1:5180';
 const apiURL = process.env.E2E_API_ORIGIN || 'http://127.0.0.1:8791';
 const timeoutMs = 120_000;
 const preparingEvents = [];
+const participantStorageKey = '@hops-ops/distributed/reload-participant/v1';
+const participantIdPattern = /^[A-Za-z0-9_-]{16,128}$/;
 const kubeWorkload = process.env.DISTRIBUTED_LIFECYCLE_KUBE_WORKLOAD;
 const kubeContext = process.env.DISTRIBUTED_LIFECYCLE_KUBE_CONTEXT;
 const kubeNamespace = process.env.DISTRIBUTED_LIFECYCLE_KUBE_NAMESPACE || 'default';
@@ -100,6 +102,28 @@ async function lifecycleState() {
 	} catch {
 		return undefined;
 	}
+}
+
+async function waitForBrowserParticipant(page) {
+	const participantId = await waitFor(
+		() => page.evaluate((key) => sessionStorage.getItem(key), participantStorageKey),
+		'browser lifecycle participant ID'
+	);
+	assert.match(participantId, participantIdPattern);
+	const heartbeatFile = resolve(
+		root,
+		'.distributed/lifecycle/dev-control/participants',
+		`${participantId}.json`
+	);
+	await waitFor(() => {
+		try {
+			const heartbeat = JSON.parse(fixtureIO.read(heartbeatFile));
+			return Number.isFinite(heartbeat.seenAtUnixMs) &&
+				Date.now() - heartbeat.seenAtUnixMs < 5_000;
+		} catch {
+			return false;
+		}
+	}, 'fresh browser lifecycle participant heartbeat');
 }
 
 async function transition(page, path, source, expectedReplicaRestore, assertGate = false) {
@@ -217,6 +241,7 @@ try {
 		() => page.evaluate(() => globalThis.__distributedReloadState !== undefined),
 		'client hydration'
 	);
+	await waitForBrowserParticipant(page);
 	await page.evaluate(() => {
 		globalThis.__distributedReloadState.value = 'preserve-me';
 	});
