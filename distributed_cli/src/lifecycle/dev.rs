@@ -395,10 +395,13 @@ pub fn run_lifecycle_project_dev(
             if options.stop.load(Ordering::SeqCst) {
                 return Ok(());
             }
-            let transition_id = generation.generation_id.clone();
-            state.write_preparing(&active, &generation, &transition_id, dev.prepare_ms)?;
+            // A generation may be attempted more than once. Scope browser
+            // acknowledgements to this attempt so a persisted response from a
+            // rejected/superseded attempt can never authorize the next one.
+            let transition = state.begin_transition()?;
+            state.write_preparing(&active, &generation, transition.id(), dev.prepare_ms)?;
             if let Err(error) = state.wait_for_prepare(
-                &transition_id,
+                transition.id(),
                 Duration::from_millis(dev.prepare_ms),
                 &options.stop,
             ) {
@@ -568,6 +571,24 @@ impl DevStateStore {
             pending: None,
             transition_id: None,
             deadline_unix_ms: None,
+        })
+    }
+
+    fn begin_transition(&self) -> Result<DevTransition, LifecycleError> {
+        let directory = tempfile::Builder::new()
+            .prefix("transition-")
+            .tempdir_in(self.root.join("dev-control/acks"))
+            .map_err(dev_io("create lifecycle transition acknowledgement directory"))?;
+        let id = directory
+            .path()
+            .file_name()
+            .and_then(|name| name.to_str())
+            .filter(|name| safe_control_id(name))
+            .ok_or_else(|| LifecycleError::new("temporary lifecycle transition ID is invalid"))?
+            .to_string();
+        Ok(DevTransition {
+            id,
+            _directory: directory,
         })
     }
 
@@ -741,6 +762,19 @@ impl DevStateStore {
             result.insert(id.to_string(), ack.ok);
         }
         Ok(result)
+    }
+}
+
+struct DevTransition {
+    id: String,
+    // TempDir removes this attempt's acknowledgement directory after the
+    // preparation barrier completes or unwinds on an error.
+    _directory: tempfile::TempDir,
+}
+
+impl DevTransition {
+    fn id(&self) -> &str {
+        &self.id
     }
 }
 
@@ -1450,5 +1484,27 @@ mod tests {
         .validate()
         .unwrap_err();
         assert!(total_error.message().contains("must not exceed 90s"));
+    }
+
+    #[test]
+    fn transition_attempts_have_fresh_ids_and_isolated_acknowledgements() {
+        let project = tempfile::tempdir().unwrap();
+        let root = project.path().canonicalize().unwrap();
+        let state = DevStateStore::new(&root, Path::new(".distributed/lifecycle")).unwrap();
+        let first = state.begin_transition().unwrap();
+        let second = state.begin_transition().unwrap();
+
+        assert_ne!(first.id(), second.id());
+        assert!(safe_control_id(first.id()));
+        assert!(safe_control_id(second.id()));
+        let first_path = first._directory.path().to_path_buf();
+        let second_path = second._directory.path().to_path_buf();
+        fs::write(first_path.join("browser_participant.json"), br#"{"ok":false}"#)
+            .unwrap();
+        assert!(second_path.read_dir().unwrap().next().is_none());
+
+        drop(first);
+        assert!(!first_path.exists());
+        assert!(second_path.exists());
     }
 }

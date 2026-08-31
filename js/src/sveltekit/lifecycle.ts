@@ -5,6 +5,7 @@ import type {
 
 const STATE_ENDPOINT = '/__distributed/lifecycle';
 const CAPSULE_KEY = '@hops-ops/distributed/reload-capsule/v1';
+const GENERATION_META = 'distributed-generation';
 const MAX_CAPSULE_BYTES = 1024 * 1024;
 const MAX_STATE_DEPTH = 32;
 const PARTICIPANT_ID = /^[A-Za-z0-9_-]{16,128}$/;
@@ -12,6 +13,11 @@ const SECRET_KEY = /(?:authorization|cookie|password|secret|token|credential)/i;
 const AUTH_QUERY_KEY = /^(?:code|samlresponse|session|state)$/i;
 const STATE_KEY = /^[A-Za-z0-9][A-Za-z0-9._-]{0,127}$/;
 const RESTORE_TIMEOUT_MS = 3_000;
+const CAPSULE_MIN_LIFETIME_MS = 30_000;
+// Preparation is followed by a bounded process-readiness transaction. Keep
+// the capsule alive through the CLI's 90-second aggregate readiness budget,
+// restoration, and ordinary browser scheduling delay.
+const CAPSULE_ACTIVATION_GRACE_MS = 120_000;
 
 export type DistributedReloadStateDeclaration = Readonly<{
 	/** Stable application-owned partition name. */
@@ -58,7 +64,8 @@ type ReloadParticipant = Readonly<{
 			value: unknown;
 		}>[];
 	}>;
-	restore(value: ReloadParticipantCapsule, compatible: boolean): void | Promise<void>;
+	/** Return false when restoration is valid but must be retried later. */
+	restore(value: ReloadParticipantCapsule, compatible: boolean): boolean | Promise<boolean>;
 }>;
 
 type ReloadParticipantCapsule = Readonly<{
@@ -153,6 +160,12 @@ export function registerDistributedReloadClient(
 			});
 		},
 		async restore(saved, compatible) {
+			// A client-only application learns its replica authority from its first
+			// query. Retain the capsule until that authority exists instead of
+			// treating a skipped compatible hydrate as successful restoration.
+			if (compatible && saved.replica !== undefined && replica.scope === undefined) {
+				return false;
+			}
 			const replicaCaptured = saved.replica !== undefined;
 			let replicaRestored = saved.replica === undefined;
 			if (compatible && saved.replica !== undefined && replica.scope !== undefined) {
@@ -177,6 +190,7 @@ export function registerDistributedReloadClient(
 					})
 				})
 			);
+			return true;
 		}
 	}));
 }
@@ -209,6 +223,7 @@ function createDistributedReloadLifecycle(): DistributedReloadLifecycle {
 	let destroyed = false;
 	let preparing: string | undefined;
 	let reloadRequested = false;
+	let loadedGenerationId = documentGenerationId();
 	let timer: ReturnType<typeof setTimeout> | undefined;
 	let restoration = Promise.resolve();
 	const queueRestoration = (active?: LifecycleGeneration): Promise<void> => {
@@ -235,6 +250,10 @@ function createDistributedReloadLifecycle(): DistributedReloadLifecycle {
 			}
 			if (!response.ok) throw new Error(`lifecycle state returned ${response.status}`);
 			const state = parseLifecycleState(await response.json());
+			// The Vite lifecycle integration stamps the generation that served this
+			// document into its HTML. Fall back to the first observed active state for
+			// consumers that mount the lifecycle client without that integration.
+			loadedGenerationId ??= state.active.generationId;
 			if (state.phase === 'preparing' && state.pending !== undefined && state.transitionId !== undefined) {
 				blocked = true;
 				if (preparing !== state.transitionId) {
@@ -252,7 +271,7 @@ function createDistributedReloadLifecycle(): DistributedReloadLifecycle {
 				}
 				return;
 			}
-			if (preparing !== undefined && state.active.generationId !== capsuleFromGeneration()) {
+			if (state.active.generationId !== loadedGenerationId) {
 				blocked = true;
 				if (!reloadRequested) {
 					reloadRequested = true;
@@ -309,7 +328,10 @@ async function prepareReload(
 			to: state.pending!,
 			location: validateDistributedReloadLocation(new URL(window.location.href)),
 			createdAtUnixMs: now,
-			expiresAtUnixMs: now + 30_000,
+			expiresAtUnixMs: Math.max(
+				now + CAPSULE_MIN_LIFETIME_MS,
+				state.deadlineUnixMs! + CAPSULE_ACTIVATION_GRACE_MS
+			),
 			phase: 'prepared',
 			participants: Object.freeze(
 				[...participants.values()]
@@ -362,10 +384,11 @@ async function restoreAvailableParticipants(
 			continue;
 		}
 		try {
-			await withDeadline(
+			const restored = await withDeadline(
 				Promise.resolve(participant.restore(saved, compatible)),
 				Math.min(RESTORE_TIMEOUT_MS, Math.max(1, capsule.expiresAtUnixMs - Date.now()))
 			);
+			if (!restored) remaining.push(saved);
 		} catch {
 			// Incompatible partitions are intentionally dropped; the mounted
 			// operation stores perform their ordinary authoritative fetch.
@@ -427,10 +450,6 @@ function markCapsuleRestoring(): void {
 	if (capsule !== undefined) storeCapsule(Object.freeze({ ...capsule, phase: 'restoring' }));
 }
 
-function capsuleFromGeneration(): string | undefined {
-	return readCapsule()?.from.generationId;
-}
-
 function parseLifecycleState(value: unknown): LifecycleDevState {
 	const state = object(value, 'lifecycle');
 	if (state.schemaVersion !== 1 || (state.phase !== 'active' && state.phase !== 'preparing')) {
@@ -476,6 +495,19 @@ function browserParticipantId(): string {
 	const created = crypto.randomUUID().replaceAll('-', '');
 	sessionStorage.setItem(key, created);
 	return created;
+}
+
+function documentGenerationId(): string | undefined {
+	if (typeof document === 'undefined') return undefined;
+	const candidate = document
+		.querySelector(`meta[name="${GENERATION_META}"]`)
+		?.getAttribute('content');
+	if (candidate === null || candidate === undefined) return undefined;
+	try {
+		return identity(candidate, 'document generation');
+	} catch {
+		return undefined;
+	}
 }
 
 function inertLifecycle(): DistributedReloadLifecycle {

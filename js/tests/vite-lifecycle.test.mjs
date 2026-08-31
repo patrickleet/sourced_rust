@@ -64,7 +64,8 @@ test('Vite lifecycle side channel registers browsers and writes bounded acknowle
 	const previous = process.env.DISTRIBUTED_LIFECYCLE_DIR;
 	process.env.DISTRIBUTED_LIFECYCLE_DIR = root;
 	let handler;
-	distributedLifecycle().configureServer({
+	const plugin = distributedLifecycle();
+	plugin.configureServer({
 		middlewares: {
 			use(path, candidate) {
 				assert.equal(path, '/__distributed/lifecycle');
@@ -73,6 +74,13 @@ test('Vite lifecycle side channel registers browsers and writes bounded acknowle
 		}
 	});
 	try {
+		assert.deepEqual(plugin.transformIndexHtml(), [
+			{
+				tag: 'meta',
+				attrs: { name: 'distributed-generation', content: hash('a') },
+				injectTo: 'head-prepend'
+			}
+		]);
 		const participantId = 'browser_participant_1234';
 		const state = await invoke(handler, 'GET', {
 			'x-distributed-participant': participantId

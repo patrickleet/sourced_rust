@@ -3,6 +3,7 @@ import { randomUUID } from 'node:crypto';
 import {
 	existsSync,
 	lstatSync,
+	readFileSync,
 	realpathSync
 } from 'node:fs';
 import {
@@ -36,6 +37,8 @@ const MAX_GENERATED_COMPARE_FILES = 20_000;
 const MAX_GENERATED_COMPARE_BYTES = 128 * 1024 * 1024;
 const MODULE_NAME = /^\$distributed(?:\/[A-Za-z0-9][A-Za-z0-9._-]*)*$/;
 const COMPILER_LOCK = join('.svelte-kit', 'distributed', 'compiler.lock');
+const GENERATION_META = 'distributed-generation';
+const MAX_LIFECYCLE_STATE_BYTES = 1024 * 1024;
 const COMPILER_COORDINATORS = Symbol.for(
 	'@hops-ops/distributed/sveltekit/compiler-coordinators/v1'
 );
@@ -197,6 +200,7 @@ export type DistributedSvelteKitVitePlugin = Readonly<{
 	buildStart(this: RollupWatchContextLike): void;
 	resolveId(source: string): string | undefined;
 	load(id: string): string | undefined;
+	transformIndexHtml(): readonly LifecycleHtmlTag[];
 	handleHotUpdate(context: ViteHotContextLike): Promise<never[] | undefined>;
 	watchChange(id: string): Promise<void>;
 	closeBundle(): Promise<void>;
@@ -207,7 +211,14 @@ export type DistributedLifecycleVitePlugin = Readonly<{
 	enforce: 'pre';
 	configResolved(config: Readonly<{ root: string }>): void;
 	configureServer(server: ViteServerLike): void;
+	transformIndexHtml(): readonly LifecycleHtmlTag[];
 	handleHotUpdate(context: ViteHotContextLike): never[] | undefined;
+}>;
+
+type LifecycleHtmlTag = Readonly<{
+	tag: 'meta';
+	attrs: Readonly<{ name: string; content: string }>;
+	injectTo: 'head-prepend';
 }>;
 
 /** Lifecycle-only side channel for projects using committed generated clients. */
@@ -220,6 +231,7 @@ export function distributedLifecycle(): DistributedLifecycleVitePlugin {
 			frameworkDist = localFrameworkDist(config.root);
 		},
 		configureServer: configureLifecycleServer,
+		transformIndexHtml: lifecycleGenerationMeta,
 		handleHotUpdate(context): never[] | undefined {
 			return suppressFrameworkHotUpdate(context, frameworkDist);
 		}
@@ -372,6 +384,7 @@ export function distributedSvelteKit(
 			if (client === undefined) return undefined;
 			return `export * from ${JSON.stringify(portablePath(client.entry))};\n`;
 		},
+		transformIndexHtml: lifecycleGenerationMeta,
 		async handleHotUpdate(context): Promise<never[] | undefined> {
 			const suppressed = suppressFrameworkHotUpdate(context, frameworkDist);
 			if (suppressed !== undefined) return suppressed;
@@ -450,8 +463,36 @@ function canonicalExistingPath(value: string): string {
 }
 
 const CONTROL_ID = /^[A-Za-z0-9_:-]{16,128}$/;
-const MAX_LIFECYCLE_STATE_BYTES = 1024 * 1024;
 const MAX_ACK_BYTES = 4096;
+
+function lifecycleGenerationMeta(): readonly LifecycleHtmlTag[] {
+	const configured = process.env.DISTRIBUTED_LIFECYCLE_DIR;
+	if (configured === undefined || !isAbsolute(configured)) return [];
+	try {
+		const encoded = readFileSync(join(resolve(configured), 'dev.json'));
+		if (encoded.byteLength > MAX_LIFECYCLE_STATE_BYTES) return [];
+		const state = JSON.parse(encoded.toString('utf8')) as {
+			active?: { generationId?: unknown };
+		};
+		const generationId = state.active?.generationId;
+		if (
+			typeof generationId !== 'string' ||
+			generationId.length === 0 ||
+			generationId.length > 512 ||
+			generationId !== generationId.trim() ||
+			/[\u0000-\u001f\u007f]/.test(generationId)
+		) return [];
+		return [Object.freeze({
+			tag: 'meta',
+			attrs: Object.freeze({ name: GENERATION_META, content: generationId }),
+			injectTo: 'head-prepend'
+		})];
+	} catch {
+		// A lifecycle file is atomically replaced. Missing or malformed state
+		// simply omits the hint; the browser falls back to its first poll.
+		return [];
+	}
+}
 
 function configureLifecycleServer(server: ViteServerLike): void {
 	const configured = process.env.DISTRIBUTED_LIFECYCLE_DIR;

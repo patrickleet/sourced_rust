@@ -297,7 +297,10 @@ fn package_source_identity(
             target
                 .kind
                 .iter()
-                .any(|kind| matches!(kind.as_str(), "lib" | "rlib" | "cdylib" | "custom-build"))
+                .any(|kind| matches!(
+                    kind.as_str(),
+                    "lib" | "rlib" | "cdylib" | "proc-macro" | "custom-build"
+                ))
         }) {
             let relative = target.src_path.strip_prefix(package_dir).map_err(|_| {
                 format!(
@@ -670,6 +673,52 @@ mod tests {
 
         let initial = package_source_identity(&metadata, "pure").unwrap();
         fs::write(package_dir.join("sibling.rs"), "pub const VALUE: u8 = 2;\n").unwrap();
+        assert_ne!(initial, package_source_identity(&metadata, "pure").unwrap());
+    }
+
+    #[test]
+    fn wasm_source_identity_tracks_local_proc_macro_dependencies() {
+        let fixture = tempfile::tempdir().unwrap();
+        let root = fixture.path();
+        fs::write(root.join("Cargo.toml"), "[workspace]\n").unwrap();
+        let package = |id: &str, kind: &str| {
+            let directory = root.join(id);
+            fs::create_dir_all(directory.join("src")).unwrap();
+            fs::write(directory.join("Cargo.toml"), format!("[package]\nname = \"{id}\"\n"))
+                .unwrap();
+            fs::write(directory.join("src/lib.rs"), format!("// {id}\n")).unwrap();
+            CargoPackage {
+                id: id.to_string(),
+                name: id.to_string(),
+                manifest_path: directory.join("Cargo.toml"),
+                source: None,
+                features: BTreeMap::new(),
+                targets: vec![CargoTarget {
+                    src_path: directory.join("src/lib.rs"),
+                    kind: vec![kind.to_string()],
+                }],
+            }
+        };
+        let metadata = CargoMetadata {
+            workspace_root: root.to_path_buf(),
+            workspace_members: vec!["pure".to_string(), "pure-macros".to_string()],
+            packages: vec![package("pure", "cdylib"), package("pure-macros", "proc-macro")],
+            resolve: Some(CargoResolve {
+                nodes: vec![
+                    CargoResolveNode {
+                        id: "pure".to_string(),
+                        dependencies: vec!["pure-macros".to_string()],
+                    },
+                    CargoResolveNode {
+                        id: "pure-macros".to_string(),
+                        dependencies: Vec::new(),
+                    },
+                ],
+            }),
+        };
+
+        let initial = package_source_identity(&metadata, "pure").unwrap();
+        fs::write(root.join("pure-macros/src/lib.rs"), "// changed expansion\n").unwrap();
         assert_ne!(initial, package_source_identity(&metadata, "pure").unwrap());
     }
 }
