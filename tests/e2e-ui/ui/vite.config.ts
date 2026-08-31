@@ -12,7 +12,7 @@ import { defineConfig } from 'vite';
 import { distributedViteOptions } from './distributed.config.js';
 
 const api = process.env.E2E_API_ORIGIN || process.env.E2E_BASE_URL || 'http://127.0.0.1:8791';
-const uiPort = Number.parseInt(process.env.UI_PORT || '5180', 10);
+const uiPort = Number(process.env.UI_PORT || '5180');
 if (!Number.isSafeInteger(uiPort) || uiPort < 1 || uiPort > 65_535) {
 	throw new TypeError('UI_PORT must be an integer from 1 through 65535');
 }

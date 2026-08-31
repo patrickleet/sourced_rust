@@ -414,9 +414,30 @@ fn link_build_dependencies(source: &Path, target: &Path) -> Result<(), Lifecycle
 
 #[cfg(windows)]
 fn link_build_dependencies(source: &Path, target: &Path) -> Result<(), LifecycleError> {
-    std::os::windows::fs::symlink_dir(source, target).map_err(|error| {
-        LifecycleError::new(format!("link staged JavaScript dependencies: {error}"))
-    })
+    match std::os::windows::fs::symlink_dir(source, target) {
+        Ok(()) => Ok(()),
+        Err(symlink_error) => create_windows_junction(source, target).map_err(|junction_error| {
+            LifecycleError::new(format!(
+                "link staged JavaScript dependencies: symlink failed: {symlink_error}; directory junction failed: {junction_error}"
+            ))
+        }),
+    }
+}
+
+#[cfg(windows)]
+fn create_windows_junction(source: &Path, target: &Path) -> std::io::Result<()> {
+    let status = Command::new("cmd")
+        .args(["/D", "/C", "mklink", "/J"])
+        .arg(target)
+        .arg(source)
+        .status()?;
+    if status.success() {
+        Ok(())
+    } else {
+        Err(std::io::Error::other(format!(
+            "mklink /J exited with {status}"
+        )))
+    }
 }
 
 fn publish_dist(staged: &Path, destination: &Path) -> Result<(), LifecycleError> {
@@ -910,5 +931,22 @@ mod tests {
             .to_string();
 
         assert!(error.contains("instead of declared local source"));
+    }
+
+    #[cfg(windows)]
+    #[test]
+    fn windows_staging_can_fall_back_to_a_directory_junction() {
+        let fixture = tempfile::tempdir().unwrap();
+        let source = fixture.path().join("node_modules");
+        let target = fixture.path().join("stage-node_modules");
+        fs::create_dir_all(&source).unwrap();
+        fs::write(source.join("visible.txt"), "junction\n").unwrap();
+
+        create_windows_junction(&source, &target).unwrap();
+
+        assert_eq!(
+            fs::read_to_string(target.join("visible.txt")).unwrap(),
+            "junction\n"
+        );
     }
 }

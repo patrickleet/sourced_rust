@@ -31,6 +31,16 @@ use crate::microsvc::error::HandlerError;
 use crate::microsvc::projector::{ProjectionRepairHandle, ProjectorRegistration};
 use crate::microsvc::session::Session;
 
+fn ensure_lifecycle_mutations_open() -> Result<(), HandlerError> {
+    if crate::microsvc::lifecycle_mutations_open() {
+        Ok(())
+    } else {
+        Err(HandlerError::Rejected(
+            "application generation is reloading".into(),
+        ))
+    }
+}
+
 /// The bus run behavior captured by [`Service::with_bus`](crate::microsvc::Service::with_bus).
 pub(crate) type ServiceRunner = Box<
     dyn Fn(
@@ -341,6 +351,7 @@ impl Service {
         mount: &CommandMount,
         request: &CommandRequest,
     ) -> Result<CommandResponse, HandlerError> {
+        ensure_lifecycle_mutations_open()?;
         if request.command != mount.spec().id {
             return Err(HandlerError::Rejected(format!(
                 "command request `{}` does not match mount `{}`",
@@ -679,6 +690,7 @@ impl Service {
         principal: VerifiedPrincipal,
         protocol: Option<crate::graphql::protocol::ProtocolResponseAccumulator>,
     ) -> Result<CausalDispatchResult, CausalDispatchError> {
+        ensure_lifecycle_mutations_open().map_err(CausalDispatchError::Handler)?;
         let service_id = self.name().ok_or_else(|| {
             CausalDispatchError::Internal(
                 "typed causal dispatch requires Service::named identity".into(),
@@ -842,11 +854,7 @@ impl Service {
         input: Value,
         session: Session,
     ) -> Result<Value, HandlerError> {
-        if !crate::microsvc::lifecycle_mutations_open() {
-            return Err(HandlerError::Rejected(
-                "application generation is reloading".into(),
-            ));
-        }
+        ensure_lifecycle_mutations_open()?;
         if !self.handles_message(MessageKind::Command, command) {
             return Err(HandlerError::UnknownCommand(command.to_string()));
         }

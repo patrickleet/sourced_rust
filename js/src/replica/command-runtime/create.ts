@@ -1730,7 +1730,9 @@ export function createReplicaCommandRuntime<
 		commands: commands as ReplicaBoundCommands<TEntries>,
 		observeResult,
 		pendingCommandIds(): readonly string[] {
-			return Object.freeze([...pending.keys()].sort());
+			return Object.freeze(
+				[...new Set([...pending.keys(), ...unmanagedLayers])].sort()
+			);
 		},
 		dispose(): void {
 			if (disposed) return;

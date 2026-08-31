@@ -1089,7 +1089,13 @@ fn write_active_generation(
 pub fn activate_lifecycle_project_generation(
     project: &LifecycleProjectPlan,
     report: &LifecycleBuildReport,
+    lock_timeout: Duration,
 ) -> Result<(), LifecycleError> {
+    if lock_timeout.is_zero() || lock_timeout > MAX_LOCK_TIMEOUT {
+        return Err(LifecycleError::new(
+            "lifecycle lock timeout must be within 1ms..=60s",
+        ));
+    }
     validate_content_identity(&report.generation_id, "generation identity")?;
     validate_content_identity(&report.release_id, "release identity")?;
     let root = project.root.canonicalize().map_err(|error| {
@@ -1125,7 +1131,10 @@ pub fn activate_lifecycle_project_generation(
         ));
     }
     fs::create_dir_all(&out).map_err(io_error("create lifecycle output"))?;
-    let _lock = BuildLock::acquire(&root, &out, Duration::from_secs(60))?;
+    let out_parent = out
+        .parent()
+        .ok_or_else(|| LifecycleError::new("lifecycle output must have a parent directory"))?;
+    let _lock = BuildLock::acquire(&root, out_parent, lock_timeout)?;
     write_active_generation(&out, &report.generation_id, &report.release_id)
 }
 

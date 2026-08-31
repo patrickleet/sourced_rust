@@ -68,7 +68,7 @@ async function transition(page, path, source, expectedReplicaRestore, assertGate
 		const direct = await fetch(`${apiURL}/graphql`, {
 			method: 'POST',
 			headers: { 'content-type': 'application/json' },
-			body: JSON.stringify({ query: 'query ReloadGateProbe { __typename }' })
+			body: JSON.stringify({ query: 'mutation ReloadGateProbe { __typename }' })
 		});
 		assert.equal(direct.status, 503, 'pending API must reject direct GraphQL dispatch');
 		assert.equal(

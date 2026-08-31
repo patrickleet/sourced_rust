@@ -291,10 +291,27 @@ export function createDistributedSvelteKit<TCommands = Readonly<Record<never, ne
 				: {})
 		})
 	);
-	const unregisterReload =
-		options.browser === true && options.reload !== undefined
-			? registerDistributedReloadClient(replica, commandRuntime, options.reload)
-			: undefined;
+	let unregisterReload: (() => void) | undefined;
+	try {
+		unregisterReload =
+			options.browser === true && options.reload !== undefined
+				? registerDistributedReloadClient(replica, commandRuntime, options.reload)
+				: undefined;
+	} catch (error) {
+		// Client construction is transactional: a malformed reload declaration
+		// must not retain its session subscription or command authority.
+		try {
+			commandRuntime?.dispose();
+		} catch {
+			// Preserve the construction failure; disposal is best effort here.
+		}
+		try {
+			auth.dispose();
+		} catch {
+			// Preserve the construction failure; disposal is best effort here.
+		}
+		throw error;
+	}
 	const commands =
 		commandRuntime === undefined
 			? (Object.freeze({}) as TCommands)

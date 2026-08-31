@@ -92,7 +92,11 @@ test('Vite lifecycle side channel registers browsers and writes bounded acknowle
 		const acknowledged = await invoke(
 			handler,
 			'POST',
-			{ 'content-type': 'application/json' },
+			{
+				'content-type': 'application/json',
+				host: 'localhost:5180',
+				origin: 'http://localhost:5180'
+			},
 			JSON.stringify({ transitionId, participantId, ok: true })
 		);
 		assert.equal(acknowledged.status, 204);
@@ -108,10 +112,25 @@ test('Vite lifecycle side channel registers browsers and writes bounded acknowle
 		const invalid = await invoke(
 			handler,
 			'POST',
-			{ 'content-type': 'application/json' },
+			{
+				'content-type': 'application/json',
+				host: 'localhost:5180',
+				origin: 'http://localhost:5180'
+			},
 			JSON.stringify({ transitionId: '../../escape', participantId, ok: true })
 		);
 		assert.equal(invalid.status, 400);
+		const crossSite = await invoke(
+			handler,
+			'POST',
+			{
+				'content-type': 'application/json',
+				host: 'localhost:5180',
+				origin: 'http://attacker.example'
+			},
+			JSON.stringify({ transitionId, participantId, ok: false })
+		);
+		assert.equal(crossSite.status, 403);
 	} finally {
 		if (previous === undefined) delete process.env.DISTRIBUTED_LIFECYCLE_DIR;
 		else process.env.DISTRIBUTED_LIFECYCLE_DIR = previous;
@@ -132,7 +151,7 @@ test('lifecycle suppresses linked framework HMR until generation activation', as
 		const plugin = distributedLifecycle();
 		plugin.configResolved({ root });
 		assert.deepEqual(
-			plugin.handleHotUpdate({
+			await plugin.handleHotUpdate({
 				file: join(dist, 'sveltekit/lifecycle.js'),
 				modules: [module],
 				server: {
@@ -147,7 +166,7 @@ test('lifecycle suppresses linked framework HMR until generation activation', as
 		);
 		assert.deepEqual(invalidated, [module]);
 		assert.equal(
-			plugin.handleHotUpdate({
+			await plugin.handleHotUpdate({
 				file: join(root, 'src/app.ts'),
 				server: { moduleGraph: { invalidateModule() {} } }
 			}),

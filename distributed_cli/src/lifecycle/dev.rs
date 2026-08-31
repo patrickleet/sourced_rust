@@ -458,8 +458,11 @@ pub fn run_lifecycle_project_dev(
                 snapshot = submitted_inputs;
                 continue;
             }
-            if let Err(error) = activate_lifecycle_project_generation(&options.project, &generation)
-            {
+            if let Err(error) = activate_lifecycle_project_generation(
+                &options.project,
+                &generation,
+                options.build.lock_timeout,
+            ) {
                 let rollback = children.replace_generation(
                     &root,
                     &dev,

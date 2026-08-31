@@ -1,4 +1,5 @@
 import { spawn, type ChildProcess } from 'node:child_process';
+import { randomUUID } from 'node:crypto';
 import {
 	existsSync,
 	lstatSync,
@@ -473,7 +474,9 @@ async function handleLifecycleRequest(
 	if (request.method === 'GET') {
 		const participant = singleHeader(request.headers['x-distributed-participant']);
 		if (participant !== undefined && CONTROL_ID.test(participant)) {
-			await writeParticipantHeartbeat(lifecycleRoot, participant);
+			await writeParticipantHeartbeat(lifecycleRoot, participant).catch(
+				() => undefined
+			);
 		}
 		const state = await readLifecycleState(lifecycleRoot);
 		if (state === undefined) {
@@ -487,6 +490,17 @@ async function handleLifecycleRequest(
 		return;
 	}
 	if (request.method === 'POST') {
+		const contentType = singleHeader(request.headers['content-type']);
+		if (contentType?.split(';', 1)[0]?.trim().toLowerCase() !== 'application/json') {
+			response.statusCode = 415;
+			response.end();
+			return;
+		}
+		if (!sameOriginLifecycleRequest(request)) {
+			response.statusCode = 403;
+			response.end();
+			return;
+		}
 		const body = JSON.parse(await readRequestBody(request, MAX_ACK_BYTES)) as Record<string, unknown>;
 		if (
 			!CONTROL_ID.test(String(body.transitionId ?? '')) ||
@@ -546,9 +560,38 @@ async function writeControlJson(
 	value: Readonly<Record<string, unknown>>
 ): Promise<void> {
 	await mkdir(directory, { recursive: true });
-	const temporary = join(directory, `.${name}.${process.pid}.${Date.now()}`);
+	const temporary = join(
+		directory,
+		`.${name}.${process.pid}.${Date.now()}.${randomUUID()}`
+	);
 	await writeFile(temporary, `${JSON.stringify(value)}\n`, { flag: 'wx', mode: 0o600 });
 	await rename(temporary, join(directory, name));
+}
+
+function sameOriginLifecycleRequest(request: ViteMiddlewareRequest): boolean {
+	const origin = singleHeader(request.headers.origin);
+	const host = singleHeader(request.headers.host);
+	if (origin === undefined || host === undefined) return false;
+	try {
+		const parsed = new URL(origin);
+		const forwarded = singleHeader(request.headers['x-forwarded-proto']);
+		const socket = (request as Readonly<{
+			socket?: Readonly<{ encrypted?: boolean }>;
+		}>).socket;
+		const protocol =
+			forwarded === 'http' || forwarded === 'https'
+				? `${forwarded}:`
+				: socket?.encrypted === true
+					? 'https:'
+					: 'http:';
+		return (
+			parsed.protocol === protocol &&
+			parsed.host === host &&
+			parsed.origin === origin
+		);
+	} catch {
+		return false;
+	}
 }
 
 function singleHeader(value: string | readonly string[] | undefined): string | undefined {

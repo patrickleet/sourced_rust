@@ -307,7 +307,10 @@ fn package_source_identity(
                 )
             })?;
             if relative.components().count() == 1 {
-                files.insert(target.src_path.clone());
+                // A package-root target can declare sibling modules with
+                // `mod`; hash the bounded Rust input tree, not only lib.rs or
+                // build.rs, so a sibling edit cannot reuse stale WASM.
+                source_roots.insert(package_dir.to_path_buf());
             } else if let Some(Component::Normal(top)) = relative.components().next() {
                 source_roots.insert(package_dir.join(top));
             }
@@ -630,6 +633,43 @@ mod tests {
         fs::write(root.join("unrelated/src/lib.rs"), "// changed\n").unwrap();
         assert_eq!(initial, package_source_identity(&metadata, "pure").unwrap());
         fs::write(root.join("dependency/src/lib.rs"), "// changed\n").unwrap();
+        assert_ne!(initial, package_source_identity(&metadata, "pure").unwrap());
+    }
+
+    #[test]
+    fn wasm_source_identity_tracks_sibling_modules_for_root_targets() {
+        let fixture = tempfile::tempdir().unwrap();
+        let workspace = fixture.path();
+        let package_dir = workspace.join("pure");
+        fs::create_dir_all(&package_dir).unwrap();
+        fs::write(workspace.join("Cargo.toml"), "[workspace]\n").unwrap();
+        fs::write(package_dir.join("Cargo.toml"), "[package]\nname = \"pure\"\n").unwrap();
+        fs::write(package_dir.join("lib.rs"), "mod sibling;\n").unwrap();
+        fs::write(package_dir.join("sibling.rs"), "pub const VALUE: u8 = 1;\n").unwrap();
+        let metadata = CargoMetadata {
+            workspace_root: workspace.to_path_buf(),
+            workspace_members: vec!["pure".to_string()],
+            packages: vec![CargoPackage {
+                id: "pure".to_string(),
+                name: "pure".to_string(),
+                manifest_path: package_dir.join("Cargo.toml"),
+                source: None,
+                features: BTreeMap::new(),
+                targets: vec![CargoTarget {
+                    src_path: package_dir.join("lib.rs"),
+                    kind: vec!["lib".to_string()],
+                }],
+            }],
+            resolve: Some(CargoResolve {
+                nodes: vec![CargoResolveNode {
+                    id: "pure".to_string(),
+                    dependencies: Vec::new(),
+                }],
+            }),
+        };
+
+        let initial = package_source_identity(&metadata, "pure").unwrap();
+        fs::write(package_dir.join("sibling.rs"), "pub const VALUE: u8 = 2;\n").unwrap();
         assert_ne!(initial, package_source_identity(&metadata, "pure").unwrap());
     }
 }

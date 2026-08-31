@@ -189,7 +189,15 @@ const LIFECYCLE_POLL_INTERVAL_MS = 1_000;
 
 /** Browser singleton used by every generated SvelteKit surface in one page. */
 export function distributedReloadLifecycle(): DistributedReloadLifecycle {
-	sharedLifecycle ??= createDistributedReloadLifecycle();
+	if (sharedLifecycle === undefined) {
+		try {
+			sharedLifecycle = createDistributedReloadLifecycle();
+		} catch {
+			// Storage and randomUUID are optional browser capabilities. Losing
+			// them disables coherent reload state transfer, not the application.
+			sharedLifecycle = inertLifecycle();
+		}
+	}
 	return sharedLifecycle;
 }
 
@@ -202,6 +210,16 @@ function createDistributedReloadLifecycle(): DistributedReloadLifecycle {
 	let preparing: string | undefined;
 	let reloadRequested = false;
 	let timer: ReturnType<typeof setTimeout> | undefined;
+	let restoration = Promise.resolve();
+	const queueRestoration = (active?: LifecycleGeneration): Promise<void> => {
+		const requested = restoration.then(() =>
+			restoreAvailableParticipants(participants, active)
+		);
+		// Keep the queue usable after a storage/restore failure while returning
+		// the real result to the caller that owns this attempt.
+		restoration = requested.catch(() => undefined);
+		return requested;
+	};
 
 	const poll = async (): Promise<void> => {
 		if (destroyed) return;
@@ -245,7 +263,7 @@ function createDistributedReloadLifecycle(): DistributedReloadLifecycle {
 			}
 			preparing = undefined;
 			blocked = false;
-			await restoreAvailableParticipants(participants, state.active);
+			await queueRestoration(state.active);
 		} catch {
 			// A missing/failed lifecycle side channel cannot authorize dispatch
 			// during an already-observed transition.
@@ -261,12 +279,13 @@ function createDistributedReloadLifecycle(): DistributedReloadLifecycle {
 			if (blocked) throw new Error('coherent application reload is in progress');
 		},
 		register(participant: ReloadParticipant): () => void {
-			if (participants.has(participant.key)) {
-				throw new TypeError(`duplicate Distributed reload participant ${participant.key}`);
-			}
 			participants.set(participant.key, participant);
-			void restoreAvailableParticipants(participants);
-			return () => participants.delete(participant.key);
+			void queueRestoration().catch(() => undefined);
+			return () => {
+				if (participants.get(participant.key) === participant) {
+					participants.delete(participant.key);
+				}
+			};
 		},
 		destroy(): void {
 			destroyed = true;

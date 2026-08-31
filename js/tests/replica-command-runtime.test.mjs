@@ -2122,6 +2122,7 @@ test('ambiguous dispatch exposes generated recovery and retains optimism', async
 	);
 	assert.equal(typeof recovery.status, 'function');
 	assert.equal(replica.layer(COMMAND_A), 'optimistic');
+	assert.deepEqual(runtime.pendingCommandIds(), [COMMAND_A]);
 	runtime.dispose();
 });
 
@@ -2168,6 +2169,7 @@ test('terminal status rolls back only its tracked optimistic layer', async () =>
 			return error.code === 'REPLICA_COMMAND_OUTCOME_PENDING';
 		}
 	);
+	assert.deepEqual(runtime.pendingCommandIds(), [COMMAND_A]);
 	assert.equal((await recovery.status()).state, 'rejected');
 	assert.equal(replica.layer(COMMAND_A), undefined);
 	runtime.dispose();

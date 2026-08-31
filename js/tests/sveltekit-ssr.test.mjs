@@ -247,6 +247,33 @@ test('replica state never self-authorizes hydration scope', async () => {
 	client.destroy();
 });
 
+test('failed reload registration disposes partially constructed client resources', () => {
+	let unsubscribed = false;
+	let runtimeDisposed = false;
+	assert.throws(
+		() =>
+			createDistributedSvelteKit({
+				session: {
+					getAuth: () => ({}),
+					subscribe: () => () => {
+						unsubscribed = true;
+					}
+				},
+				browser: true,
+				reload: { key: '' },
+				createCommands: () => ({
+					commands: Object.freeze({}),
+					dispose() {
+						runtimeDisposed = true;
+					}
+				})
+			}),
+		/reload participant key/
+	);
+	assert.equal(runtimeDisposed, true);
+	assert.equal(unsubscribed, true);
+});
+
 test('route misses do no GraphQL work and same-scope soft-nav merges overlapping seed', async () => {
 	const harness = serverHarness();
 	const missed = await harness.server.load({
