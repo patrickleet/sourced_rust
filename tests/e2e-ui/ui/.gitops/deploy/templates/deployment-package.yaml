@@ -1,6 +1,6 @@
-{{- $imageTag := required "image.tag must be an immutable build tag for cloud deployments" .Values.image.tag -}}
-{{- if eq $imageTag "latest" -}}
-{{- fail "image.tag=latest is not allowed for cloud deployments; supply a release/build tag" -}}
+{{- $imageTag := required "image.tag is required for cloud deployments" .Values.image.tag | toString -}}
+{{- if not (regexMatch "^(v[0-9]+[.][0-9]+[.][0-9]+|pr-[0-9]+-[0-9a-f]{40})$" $imageTag) -}}
+{{- fail (printf "image.tag must match vMAJOR.MINOR.PATCH or pr-NUMBER-40_HEX_SHA; got %q" $imageTag) -}}
 {{- end -}}
 apiVersion: apps/v1
 kind: Deployment

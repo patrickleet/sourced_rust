@@ -423,7 +423,8 @@ mod tests {
         assert!(!local_values.contains("{{ if .Values.local }}"));
         assert!(!deploy_values.contains("{{ if .Values.local }}"));
         let deploy = contents(&project, ".gitops/deploy/templates/deployment.yaml");
-        assert!(deploy.contains("image.tag must be an immutable build tag"));
+        assert!(deploy.contains("^(v[0-9]+[.][0-9]+[.][0-9]+|pr-[0-9]+-[0-9a-f]{40})$"));
+        assert!(deploy.contains("image.tag must match vMAJOR.MINOR.PATCH or pr-NUMBER-40_HEX_SHA"));
         assert!(!paths.iter().any(|p| p.starts_with(".gitops/promote/")));
     }
 
@@ -654,6 +655,8 @@ mod tests {
         let paths = paths(&project);
         assert!(paths.contains(&".gitops/deploy/templates/knative-service.yaml"));
         assert!(paths.contains(&".gitops/deploy/templates/knative-brokers.yaml"));
+        let service = contents(&project, ".gitops/deploy/templates/knative-service.yaml");
+        assert!(service.contains("^(v[0-9]+[.][0-9]+[.][0-9]+|pr-[0-9]+-[0-9a-f]{40})$"));
         let triggers = contents(&project, ".gitops/deploy/templates/knative-triggers.yaml");
         assert!(triggers.contains("type: orders.shipped"));
     }

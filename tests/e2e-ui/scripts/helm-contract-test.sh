@@ -9,6 +9,8 @@ ROOT="$(cd "$(dirname "$0")/.." && pwd)"
 UI_CHART="$ROOT/ui/.gitops/local"
 IDENTITY_CHART="$ROOT/ui/.gitops/test-users"
 API_CHART="$ROOT/api/.gitops/local"
+UI_DEPLOY_CHART="$ROOT/ui/.gitops/deploy"
+API_DEPLOY_CHART="$ROOT/api/.gitops/deploy"
 fail=0
 
 need() {
@@ -98,6 +100,28 @@ assert_not_matches() {
     fail=1
   else
     echo "ok: $msg"
+  fi
+}
+
+assert_chart_accepts_tag() {
+  local chart="$1" component="$2" tag="$3"
+  if helm template "e2e-ui-${component}-tag-contract" "$chart" \
+    --set-string "image.tag=${tag}" >/dev/null; then
+    echo "ok: ${component} deploy accepts ${tag}"
+  else
+    echo "FAIL: ${component} deploy rejected valid tag ${tag}" >&2
+    fail=1
+  fi
+}
+
+assert_chart_rejects_tag() {
+  local chart="$1" component="$2" tag="$3"
+  if helm template "e2e-ui-${component}-tag-contract" "$chart" \
+    --set-string "image.tag=${tag}" >/dev/null 2>&1; then
+    echo "FAIL: ${component} deploy accepted invalid tag ${tag:-<empty>}" >&2
+    fail=1
+  else
+    echo "ok: ${component} deploy rejects ${tag:-<empty>}"
   fi
 }
 
@@ -251,6 +275,22 @@ assert_not_contains "$external_out" "hops.ops.com.ai/secret: oidc-local-seed" \
   "local OIDC seed is suppressed when ExternalSecrets are enabled"
 assert_contains "$external_out" "kind: ExternalSecret" \
   "ExternalSecret remains the sole OIDC Secret owner"
+
+# Cloud workload charts accept only tags emitted by the generated release and
+# preview workflows. Labels such as latest/stable/dev are mutable pointers.
+for deploy_chart in "$API_DEPLOY_CHART" "$UI_DEPLOY_CHART"; do
+  if [ "$deploy_chart" = "$API_DEPLOY_CHART" ]; then
+    component="api"
+  else
+    component="ui"
+  fi
+  assert_chart_accepts_tag "$deploy_chart" "$component" "v1.2.3"
+  assert_chart_accepts_tag "$deploy_chart" "$component" \
+    "pr-42-0123456789abcdef0123456789abcdef01234567"
+  for invalid_tag in "" latest stable dev v1.2 pr-42-deadbeef; do
+    assert_chart_rejects_tag "$deploy_chart" "$component" "$invalid_tag"
+  done
+done
 
 registry_manifest="$(cat "$ROOT/.gitops/local/cluster/registry/deployment.yaml")"
 assert_contains "$registry_manifest" "mountPath: /var/lib/registry" \

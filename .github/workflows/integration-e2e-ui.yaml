@@ -249,6 +249,9 @@ jobs:
         with:
           version: v3.17.3
 
+      - name: Validate Helm chart contracts
+        run: ./scripts/helm-contract-test.sh
+
       - name: Install kind
         run: |
           set -euo pipefail

@@ -84,7 +84,9 @@ fn scaffold_generates_a_service_tree() {
     assert!(deploy_values.starts_with("local: false\npreview: false\n"));
     assert!(deploy_values.contains("tag: \"\""));
     assert!(!read(&out_dir, ".gitops/local/templates/deployment.yaml").contains(".Values.local"));
-    assert!(read(&out_dir, ".gitops/deploy/templates/deployment.yaml").contains("image.tag must be an immutable build tag"));
+    let deploy = read(&out_dir, ".gitops/deploy/templates/deployment.yaml");
+    assert!(deploy.contains("^(v[0-9]+[.][0-9]+[.][0-9]+|pr-[0-9]+-[0-9a-f]{40})$"));
+    assert!(deploy.contains("image.tag must match vMAJOR.MINOR.PATCH or pr-NUMBER-40_HEX_SHA"));
 
     let cargo = read(&out_dir, "Cargo.toml");
     assert!(cargo.contains("\"postgres\""), "Cargo.toml: {cargo}");

@@ -314,8 +314,9 @@ observability:
         } else {
             // This fragment is interpolated as a value below, so its Helm
             // delimiters must not be escaped for the surrounding `format!`.
-            r#"{{- if or (not .Values.image.tag) (eq .Values.image.tag "latest") }}
-{{- fail "image.tag must be an immutable build tag for cloud deployments; latest and empty are not allowed" }}
+            r#"{{- $imageTag := required "image.tag is required for cloud deployments" .Values.image.tag | toString }}
+{{- if not (regexMatch "^(v[0-9]+[.][0-9]+[.][0-9]+|pr-[0-9]+-[0-9a-f]{40})$" $imageTag) }}
+{{- fail (printf "image.tag must match vMAJOR.MINOR.PATCH or pr-NUMBER-40_HEX_SHA; got %q" $imageTag) }}
 {{- end }}
 "#
         };
@@ -454,8 +455,9 @@ spec:
         } else {
             // This fragment is interpolated as a value below, so its Helm
             // delimiters must not be escaped for the surrounding `format!`.
-            r#"{{- if or (not .Values.image.tag) (eq .Values.image.tag "latest") }}
-{{- fail "image.tag must be an immutable build tag for cloud deployments; latest and empty are not allowed" }}
+            r#"{{- $imageTag := required "image.tag is required for cloud deployments" .Values.image.tag | toString }}
+{{- if not (regexMatch "^(v[0-9]+[.][0-9]+[.][0-9]+|pr-[0-9]+-[0-9a-f]{40})$" $imageTag) }}
+{{- fail (printf "image.tag must match vMAJOR.MINOR.PATCH or pr-NUMBER-40_HEX_SHA; got %q" $imageTag) }}
 {{- end }}
 "#
         };
