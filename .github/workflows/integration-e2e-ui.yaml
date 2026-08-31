@@ -577,6 +577,32 @@ jobs:
             ui_code="$(curl -sS -o /dev/null -w '%{http_code}' \
               --noproxy '*' \
               http://e2e-ui-ui.local.svc.cluster.local:5180/ || true)"
+            # Deployment/Available only means the cargo-watch parent process
+            # is running. The API child still has to compile before the UI's
+            # server-side GraphQL loaders can succeed. Probe the same public
+            # ChatMessages shape that the UI uses so browser setup cannot race
+            # API startup and leave an empty replica scope behind.
+            api_code="$(curl -sS -o .ci-api-readiness.json -w '%{http_code}' \
+              --noproxy '*' \
+              -H 'content-type: application/json' \
+              --data-raw '{"query":"query LocalGitOpsReadiness { chat_messages(limit: 1, offset: 0, order_by: [{ created_at: desc }]) { message_id author { user_id display_name email } } }"}' \
+              http://e2e-ui-api.local.svc.cluster.local:8791/graphql || true)"
+            api_ready=0
+            if [ "$api_code" = 200 ] && jq -e \
+              '((.errors // []) | length == 0) and (.data.chat_messages != null)' \
+              .ci-api-readiness.json >/dev/null 2>&1; then
+              api_ready=1
+            fi
+            # Exercise the UI-to-API proxy and SSR loader as well. A 200 shell
+            # is insufficient: a failed SSR loader renders this explicit alert
+            # while still returning a successful HTML response.
+            chat_code="$(curl -sS -o .ci-chat-preflight.html -w '%{http_code}' \
+              --noproxy '*' \
+              http://e2e-ui-ui.local.svc.cluster.local:5180/chat || true)"
+            chat_has_ssr_error=0
+            if grep -Fq 'fetch failed' .ci-chat-preflight.html 2>/dev/null; then
+              chat_has_ssr_error=1
+            fi
             pures_code="$(curl -sS -o /dev/null -w '%{http_code}' \
               --noproxy '*' \
               http://e2e-ui-ui.local.svc.cluster.local:5180/src/lib/generated/user/pures.ts || true)"
@@ -590,13 +616,26 @@ jobs:
               --noproxy '*' \
               'http://zitadel-zitadel.auth.svc.cluster.local:8080/ui/v2/login/login?authRequest=ci-preflight' || true)"
             if [ "$ui_code" = 200 ] || [ "$ui_code" = 302 ] || [ "$ui_code" = 303 ]; then
-              if [ "$pures_code" = 200 ] && [ "$node_code" = 200 ] && [ "$oidc_code" = 200 ] && [ "$login_code" != 404 ]; then
+              if [ "$api_ready" = 1 ] && [ "$chat_code" = 200 ] \
+                && [ "$chat_has_ssr_error" = 0 ] \
+                && [ "$pures_code" = 200 ] && [ "$node_code" = 200 ] \
+                && [ "$oidc_code" = 200 ] && [ "$login_code" != 404 ]; then
                 break
               fi
             fi
             sleep 2
           done
           test "$ui_code" = 200 -o "$ui_code" = 302 -o "$ui_code" = 303
+          if [ "$api_ready" != 1 ]; then
+            echo "API GraphQL readiness preflight failed (HTTP $api_code)" >&2
+            cat .ci-api-readiness.json 2>/dev/null >&2 || true
+            exit 1
+          fi
+          if [ "$chat_code" != 200 ] || [ "$chat_has_ssr_error" != 0 ]; then
+            echo "UI Chat SSR preflight failed (HTTP $chat_code; ssr_error=$chat_has_ssr_error)" >&2
+            sed -n '1,160p' .ci-chat-preflight.html 2>/dev/null >&2 || true
+            exit 1
+          fi
           if [ "$pures_code" != 200 ] || [ "$node_code" != 200 ]; then
             echo "UI generated module preflight failed (pures.ts=$pures_code nodes/0.js=$node_code)" >&2
             curl -sS --noproxy '*' \
@@ -678,8 +717,12 @@ jobs:
             kubectl --context "$HOPS_KUBE_CONTEXT" -n auth get all
             echo '=== e2e-ui API logs ==='
             kubectl --context "$HOPS_KUBE_CONTEXT" -n local logs deployment/e2e-ui-api --tail=400 || true
+            echo '=== e2e-ui API previous container logs ==='
+            kubectl --context "$HOPS_KUBE_CONTEXT" -n local logs deployment/e2e-ui-api --previous --tail=400 || true
             echo '=== e2e-ui UI logs ==='
             kubectl --context "$HOPS_KUBE_CONTEXT" -n local logs deployment/e2e-ui-ui --tail=400 || true
+            echo '=== e2e-ui UI previous container logs ==='
+            kubectl --context "$HOPS_KUBE_CONTEXT" -n local logs deployment/e2e-ui-ui --previous --tail=400 || true
           } > .ci-kubernetes-diagnostics.log 2>&1
           cat .ci-kubernetes-diagnostics.log
           for file in .ci-api-port-forward.log .ci-ui-port-forward.log \
@@ -698,6 +741,8 @@ jobs:
             .ci-*-port-forward.log
             .ci-zitadel-proxy.log
             .ci-kubernetes-diagnostics.log
+            .ci-api-readiness.json
+            .ci-chat-preflight.html
           if-no-files-found: ignore
           retention-days: 7
 
