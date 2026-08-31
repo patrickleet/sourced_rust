@@ -33,6 +33,7 @@ import { isMainThread } from 'node:worker_threads';
 
 import {
 	analyzeDistributedSvelteKitBoundaries,
+	validateDistributedSvelteKitBoundaryPlan,
 	type DistributedIslandInventory,
 	type DistributedSvelteKitBoundaryPlan,
 	type DistributedSvelteKitBoundaryRegistration
@@ -40,6 +41,7 @@ import {
 
 export {
 	analyzeDistributedSvelteKitBoundaries,
+	validateDistributedSvelteKitBoundaryPlan,
 	type DistributedIslandInventory,
 	type DistributedIslandPlanInput,
 	type DistributedSvelteKitBoundary,
@@ -1213,6 +1215,15 @@ async function checkTransaction(
 		});
 		for (const [index, client] of integration.clients.entries()) {
 			const actual = await readFile(join(client.adapterOut, 'boundaries.json'), 'utf8');
+			let persisted: unknown;
+			try {
+				persisted = JSON.parse(actual);
+			} catch {
+				throw new Error(
+					`[distributed.island.boundary_plan_invalid] ${client.module} boundaries.json is not valid JSON`
+				);
+			}
+			validateDistributedSvelteKitBoundaryPlan(persisted, client.module);
 			const expected = boundaryPlanSource(plans[index]!);
 			if (actual !== expected) {
 				throw new Error(

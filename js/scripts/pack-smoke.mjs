@@ -475,7 +475,8 @@ import {
   distributedGraphqlProxy,
   distributedSvelteKit,
   distributedSvelteKitAliases,
-  generateDistributedSvelteKit
+  generateDistributedSvelteKit,
+  validateDistributedSvelteKitBoundaryPlan
 } from '@hops-ops/distributed/sveltekit/vite';
 import type {
   ReplicaOperationArtifact
@@ -510,6 +511,10 @@ Todos.read({ limit: 10 });
 provideDistributedSvelteKitClient(client);
 useDistributedSvelteKitClient<Commands>().operation(operation);
 useDistributedSvelteKitCommands<Commands>().todo.create({ title: 'typed' });
+client.retainBoundary(
+  { id: 'page-instance', route: '/todos', kind: 'page' },
+  { params: {}, search: new URLSearchParams(), session: null, props: {} }
+).release();
 
 createDistributedSvelteKitServer({
   routes: [],
@@ -537,6 +542,7 @@ void [
   plugin,
   aliases,
   proxy,
+  validateDistributedSvelteKitBoundaryPlan,
   leakedProxy
 ];
 client.destroy();
@@ -555,11 +561,14 @@ import {
 } from '@hops-ops/distributed/sveltekit/vite';
 
 assert.deepEqual(Object.keys(sveltekitSurface).sort(), [
+  'DistributedSvelteKitBoundaryController',
   'authFromPageData',
   'bindSveltekitOperation',
   'createDistributedSvelteKit',
   'createDistributedSvelteKitServer',
   'createPageDataSessionSource',
+  'defineDistributedBoundaryBinding',
+  'defineDistributedBoundaryOperation',
   'defineDistributedSvelteKitOperation',
   'distributedReloadLifecycle',
   'matchDistributedRoute',
@@ -567,6 +576,8 @@ assert.deepEqual(Object.keys(sveltekitSurface).sort(), [
   'provideDistributedSvelteKitClient',
   'registerDistributedReloadClient',
   'registerDistributedRoute',
+  'resolveDistributedBoundaryVariables',
+  'retainDistributedSvelteKitBoundary',
   'sessionSourceFromPageData',
   'useDistributedSvelteKitClient',
   'useDistributedSvelteKitCommands',
@@ -574,12 +585,14 @@ assert.deepEqual(Object.keys(sveltekitSurface).sort(), [
   'validateDistributedReloadState'
 ]);
 assert.deepEqual(Object.keys(sveltekitViteSurface).sort(), [
+  'analyzeDistributedSvelteKitBoundaries',
   'checkDistributedSvelteKit',
   'distributedGraphqlProxy',
   'distributedLifecycle',
   'distributedSvelteKit',
   'distributedSvelteKitAliases',
-  'generateDistributedSvelteKit'
+  'generateDistributedSvelteKit',
+  'validateDistributedSvelteKitBoundaryPlan'
 ]);
 assert.equal(typeof sveltekitViteSurface.generateDistributedSvelteKit, 'function');
 assert.equal(typeof sveltekitViteSurface.checkDistributedSvelteKit, 'function');

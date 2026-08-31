@@ -350,6 +350,25 @@ test('React and SvelteKit subpaths remain bundle-isolated and React is optional'
 		false,
 		'SvelteKit bundle must not require the optional React peer'
 	);
+	assert.equal(
+		svelteInputs.some(
+			(path) =>
+				path.includes('svelte/compiler') ||
+				path.includes('/sveltekit/vite.ts') ||
+				path.includes('/sveltekit/islands/boundaries.ts') ||
+				path.startsWith('node:')
+		),
+		false,
+		'Node-only component analysis must stay out of the browser SvelteKit subpath'
+	);
+	assert.ok(
+		reactBundle.outputFiles[0].contents.byteLength < 45_000,
+		'React adapter browser bundle exceeded its framework-isolation budget'
+	);
+	assert.ok(
+		svelteBundle.outputFiles[0].contents.byteLength < 700_000,
+		'SvelteKit adapter browser bundle pulled in an unexpected Node/compiler dependency'
+	);
 });
 
 test('React fixture protocol remains on the exact generated surface', () => {

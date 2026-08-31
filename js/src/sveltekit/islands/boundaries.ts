@@ -16,6 +16,7 @@ import type { DistributedBoundaryVariableSource } from '../boundary-variables.js
 
 const BOUNDARY_PLAN_VERSION = 1;
 const MAX_COMPONENTS = 4_096;
+const MAX_ISLANDS = 4_096;
 const MAX_COMPONENT_BYTES = 2 * 1024 * 1024;
 const MAX_GRAPH_EDGES = 32_768;
 
@@ -43,6 +44,12 @@ export type DistributedIslandPlanInput = Readonly<{
 	operationHash: string;
 	source: Readonly<{ path: string; line: number; column: number }>;
 	directives: Readonly<{ load: boolean; live: boolean }>;
+	liveCoverage: Readonly<{
+		requested: boolean;
+		finite: boolean;
+		kind: string;
+		maxItems?: number;
+	}>;
 	variableSchema: Readonly<{
 		reference: string;
 		codecVersion: number;
@@ -60,6 +67,8 @@ export type DistributedSvelteKitBoundaryOccurrence = Readonly<{
 	graphqlSource: string;
 	reason: 'route_document' | 'static_component_import' | 'explicit';
 	conservative: boolean;
+	directives: Readonly<{ load: boolean; live: boolean }>;
+	liveCoverage: DistributedIslandPlanInput['liveCoverage'];
 	binding: Readonly<{
 		version: 1;
 		id: string;
@@ -109,6 +118,28 @@ export type DistributedSvelteKitBoundaryAnalysisOptions = Readonly<{
 	aliases?: Readonly<Record<string, string>>;
 	clients: readonly DistributedSvelteKitBoundaryAnalysisClient[];
 }>;
+
+/** Validate a persisted adapter plan before check/dev treats it as coherent. */
+export function validateDistributedSvelteKitBoundaryPlan(
+	value: unknown,
+	module?: string
+): DistributedSvelteKitBoundaryPlan {
+	if (
+		value === null ||
+		typeof value !== 'object' ||
+		Array.isArray(value) ||
+		(value as { version?: unknown }).version !== BOUNDARY_PLAN_VERSION ||
+		typeof (value as { module?: unknown }).module !== 'string' ||
+		(module !== undefined && (value as { module: string }).module !== module) ||
+		!Array.isArray((value as { boundaries?: unknown }).boundaries) ||
+		!Array.isArray((value as { unplaced?: unknown }).unplaced)
+	) {
+		throw new Error(
+			`[distributed.island.boundary_plan_invalid] ${module ?? '<unknown>'} boundaries.json is not version ${BOUNDARY_PLAN_VERSION}`
+		);
+	}
+	return value as DistributedSvelteKitBoundaryPlan;
+}
 
 type ComponentModule = Readonly<{
 	path: string;
@@ -354,6 +385,19 @@ function occurrence(
 	conservative: boolean,
 	explicitSources?: Readonly<Record<string, DistributedBoundaryVariableSource>>
 ): DistributedSvelteKitBoundaryOccurrence {
+	if (
+		root.kind === 'layout' &&
+		entry.island.directives.live &&
+		!entry.island.liveCoverage.finite
+	) {
+		throw diagnostic(
+			'distributed.island.layout_live_unbounded',
+			entry.source,
+			entry.island.source.line,
+			entry.island.source.column,
+			`operation ${entry.island.operation} is live for layout ${root.route} without finite coverage; add a compiler-proved limit, move it to a page, register a bounded boundary-owned query, or mark it client-only`
+		);
+	}
 	const binding = boundaryBinding(entry, root, explicitSources);
 	return Object.freeze({
 		islandId: entry.island.id,
@@ -362,6 +406,8 @@ function occurrence(
 		graphqlSource: entry.source,
 		reason,
 		conservative,
+		directives: entry.island.directives,
+		liveCoverage: entry.island.liveCoverage,
 		binding
 	});
 }
@@ -406,7 +452,19 @@ function boundaryBinding(
 	for (const variable of variables) {
 		const explicit = ownDataValue(explicitSources, variable.name);
 		if (explicit !== undefined) {
-			sources.push([variable.name, normalizeBindingSource(explicit, variable.name)]);
+			let normalized: DistributedBoundaryVariableSource;
+			try {
+				normalized = normalizeBindingSource(explicit, variable.name);
+			} catch {
+				throw diagnostic(
+					'distributed.island.variable_source_invalid',
+					entry.source,
+					entry.island.source.line,
+					entry.island.source.column,
+					`operation ${entry.island.operation} variable ${variable.name} has an unsupported or unsafe explicit variable source at boundary ${root.route}; use a route/search parameter, trusted-session path, constant, forwarded prop, omission, parent/boundary query, client-only execution, or a better read root`
+				);
+			}
+			sources.push([variable.name, normalized]);
 			hasExplicit = true;
 		} else if (routeParams.has(variable.name)) {
 			sources.push([
@@ -515,14 +573,26 @@ function traverse(
 	cwd: string
 ): readonly string[] {
 	const reached = new Set<string>();
-	const visiting = [root.path];
+	const active = new Set<string>();
+	const parent = new Map<string, string>();
+	const visiting: Array<Readonly<{ path: string; exit: boolean }>> = [
+		{ path: root.path, exit: false }
+	];
 	let edges = 0;
 	while (visiting.length > 0) {
-		const path = visiting.pop()!;
+		const frame = visiting.pop()!;
+		const path = frame.path;
+		if (frame.exit) {
+			active.delete(path);
+			continue;
+		}
 		if (reached.has(path)) continue;
 		reached.add(path);
+		active.add(path);
+		visiting.push({ path, exit: true });
 		const component = components.get(path);
 		if (component === undefined) continue;
+		const targets: string[] = [];
 		for (const imported of component.imports) {
 			edges += 1;
 			if (edges > MAX_GRAPH_EDGES) {
@@ -535,7 +605,34 @@ function traverse(
 				);
 			}
 			const target = resolveComponentImport(path, imported, aliases, components, cwd);
-			if (target !== undefined && !reached.has(target)) visiting.push(target);
+			if (target === undefined) continue;
+			if (active.has(target)) {
+				const cycle = [target];
+				let cursor = path;
+				while (cursor !== target) {
+					cycle.push(cursor);
+					const previous = parent.get(cursor);
+					if (previous === undefined) break;
+					cursor = previous;
+				}
+				if (cycle.some((candidate) => componentIslands.has(candidate))) {
+					throw diagnostic(
+						'distributed.island.component_cycle',
+						projectPath(cwd, path),
+						imported.line,
+						imported.column,
+						`boundary ${root.route} reaches an @load island through a cyclic component graph; break the cycle, register an explicit boundary-owned query, or mark it client-only`
+					);
+				}
+				continue;
+			}
+			if (!reached.has(target)) {
+				parent.set(target, path);
+				targets.push(target);
+			}
+		}
+		for (const target of targets.reverse()) {
+			visiting.push({ path: target, exit: false });
 		}
 		for (const imported of component.dynamicImports) {
 			if (imported.opaque) {
@@ -784,12 +881,44 @@ function validateInventory(module: string, inventory: DistributedIslandInventory
 		typeof inventory !== 'object' ||
 		inventory.version !== 1 ||
 		!Array.isArray(inventory.islands) ||
+		inventory.islands.length > MAX_ISLANDS ||
 		typeof inventory.schemaFingerprint !== 'string' ||
 		typeof inventory.protocolFingerprint !== 'string'
 	) {
 		throw new Error(
 			`[distributed.island.inventory_invalid] ${module} islands.json is not version 1`
 		);
+	}
+	for (const island of inventory.islands) {
+		const source = island?.source;
+		if (
+			island?.version !== 1 ||
+			typeof island.id !== 'string' ||
+			typeof island.operation !== 'string' ||
+			typeof source?.path !== 'string' ||
+			!Number.isSafeInteger(source.line) ||
+			source.line < 1 ||
+			!Number.isSafeInteger(source.column) ||
+			source.column < 1 ||
+			island.directives === null ||
+			typeof island.directives !== 'object' ||
+			typeof island.directives.load !== 'boolean' ||
+			typeof island.directives.live !== 'boolean' ||
+			island.liveCoverage === null ||
+			typeof island.liveCoverage !== 'object' ||
+			typeof island.liveCoverage.requested !== 'boolean' ||
+			typeof island.liveCoverage.finite !== 'boolean' ||
+			typeof island.liveCoverage.kind !== 'string' ||
+			(
+				island.liveCoverage.maxItems !== undefined &&
+				(!Number.isSafeInteger(island.liveCoverage.maxItems) ||
+					island.liveCoverage.maxItems < 0)
+			)
+		) {
+			throw new Error(
+				`[distributed.island.version_unsupported] ${typeof source?.path === 'string' ? source.path : module}:${Number.isSafeInteger(source?.line) ? source.line : 1}:${Number.isSafeInteger(source?.column) ? source.column : 1}: island metadata is not version 1; regenerate the framework-neutral client and boundary plan`
+			);
+		}
 	}
 }
 
