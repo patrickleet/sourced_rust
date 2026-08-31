@@ -85,6 +85,7 @@ writeFileSync(
       version: 1,
       id: surface + '-island-' + index,
       operation: 'Operation' + index,
+	  operationHash: 'hash-' + index,
       source: { path: source, line: 1, column: 1 },
       directives: { load: true, live: false },
       variableSchema: {
@@ -177,7 +178,7 @@ async function commandLog(path) {
 		.map((line) => JSON.parse(line));
 }
 
-function islandInventory(source, operation = 'WidgetQuery') {
+function islandInventory(source, operation = 'WidgetQuery', variables = []) {
 	return {
 		version: 1,
 		schemaFingerprint: 'schema',
@@ -188,17 +189,78 @@ function islandInventory(source, operation = 'WidgetQuery') {
 				version: 1,
 				id: `island-${operation}`,
 				operation,
+				operationHash: `hash-${operation}`,
 				source: { path: source, line: 1, column: 1 },
 				directives: { load: true, live: false },
 				variableSchema: {
 					reference: `hash-${operation}#variable-codec-v1`,
 					codecVersion: 1,
-					variables: []
+					variables
 				}
 			}
 		]
 	};
 }
+
+test('boundary plans generate route-variable bindings and fail unprovable required values', async (t) => {
+	const root = await mkdtemp(join(tmpdir(), 'distributed-boundary-variables-'));
+	t.after(() => rm(root, { recursive: true, force: true }));
+	await mkdir(join(root, 'src/routes/items/[itemId]'), { recursive: true });
+	await mkdir(join(root, 'src/lib'), { recursive: true });
+	await writeFile(join(root, 'src/routes/items/[itemId]/+page.svelte'), '<p>item</p>\n');
+	const routeInventory = islandInventory(
+		'src/routes/items/[itemId]/+page.graphql',
+		'Item',
+		[{ name: 'itemId', graphqlType: 'ID!' }, { name: 'optional', graphqlType: 'String' }]
+	);
+	const planned = await analyzeDistributedSvelteKitBoundaries({
+		cwd: root,
+		clients: [{ module: '$distributed', inventory: routeInventory }]
+	});
+	assert.deepEqual(planned[0].boundaries[0].islands[0].binding.sources, {
+		itemId: { kind: 'route_param', name: 'itemId' },
+		optional: { kind: 'omit' }
+	});
+	assert.equal(planned[0].boundaries[0].islands[0].binding.discovery, 'route_param');
+
+	const required = islandInventory(
+		'src/routes/items/[itemId]/+page.graphql',
+		'Item',
+		[{ name: 'limit', graphqlType: 'Int!' }]
+	);
+	await assert.rejects(
+		analyzeDistributedSvelteKitBoundaries({
+			cwd: root,
+			clients: [{ module: '$distributed', inventory: required }]
+		}),
+		(error) => {
+			assert.match(error.message, /\[distributed\.island\.variable_unprovable\]/);
+			assert.match(error.message, /explicit binding, parent\/boundary query, client-only execution, or a better read root/);
+			return true;
+		}
+	);
+	const explicit = await analyzeDistributedSvelteKitBoundaries({
+		cwd: root,
+		clients: [
+			{
+				module: '$distributed',
+				inventory: required,
+				explicitBoundaries: [
+					{
+						operation: 'Item',
+						route: '/items/[itemId]',
+						kind: 'page',
+						variables: { limit: { kind: 'constant', value: 20 } }
+					}
+				]
+			}
+		]
+	});
+	assert.equal(explicit[0].boundaries[0].islands[0].binding.discovery, 'explicit');
+	assert.deepEqual(explicit[0].boundaries[0].islands[0].binding.sources, {
+		limit: { kind: 'constant', value: 20 }
+	});
+});
 
 test('Svelte boundary analysis promotes component islands to their nearest static page or layout', async (t) => {
 	const root = await mkdtemp(join(tmpdir(), 'distributed-boundary-test-'));

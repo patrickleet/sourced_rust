@@ -65,6 +65,38 @@ client.operation(TodoById).use();
 // @ts-expect-error Unknown generated operation variables fail at compile time.
 client.operation(TodoById).use({ id: 'todo-1', forged: true });
 
+const todoBoundary = client.operation(TodoById).boundary<
+	Readonly<{ user: Readonly<{ id: string }> }>,
+	Readonly<{ forwardedId: string }>
+>(
+	{
+		operation: 'TodoById',
+		route: '/todos/[id]',
+		kind: 'page',
+		discovery: 'component'
+	},
+	{ id: { kind: 'route_param', name: 'id' } }
+);
+todoBoundary.binding.resolve({
+	params: { id: 'todo-1' },
+	search: new URLSearchParams(),
+	session: { user: { id: 'user-1' } },
+	props: { forwardedId: 'todo-1' }
+}).id satisfies string;
+
+client.operation(TodoById).boundary(
+	{
+		operation: 'TodoById',
+		route: '/todos/[id]',
+		kind: 'page',
+		discovery: 'component'
+	},
+	{
+		// @ts-expect-error Constants retain the generated GraphQL variable type.
+		id: { kind: 'constant', value: 42 }
+	}
+);
+
 createDistributedSvelteKitServer({
 	routes: [
 		{

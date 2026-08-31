@@ -868,7 +868,10 @@ function resolveIntegration(
 			return Object.freeze({
 				operation: nonempty(boundary.operation, `${client.module} boundaries[${boundaryIndex}].operation`),
 				route: nonempty(boundary.route, `${client.module} boundaries[${boundaryIndex}].route`),
-				kind: boundary.kind
+				kind: boundary.kind,
+				...(boundary.variables === undefined
+					? {}
+					: { variables: boundary.variables })
 			});
 		});
 		validateManifestSource(client.module, client.manifest);

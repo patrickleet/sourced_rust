@@ -5,6 +5,13 @@ import type {
 	ReplicaSnapshot
 } from '../replica/index.js';
 import type { GraphqlVariables } from '../types.js';
+import {
+	defineDistributedBoundaryBinding,
+	defineDistributedBoundaryOperation,
+	type DistributedBoundaryOperation,
+	type DistributedBoundaryPlan,
+	type DistributedBoundaryVariableSources
+} from './boundary-variables.js';
 import type {
 	DistributedSvelteKitClient,
 	SveltekitBoundOperation
@@ -101,6 +108,24 @@ export function defineDistributedSvelteKitOperation<
 			return useDistributedSvelteKitClient<unknown>()
 				.operation(artifact)
 				.prefetch(variables);
+		},
+		boundary<
+			TSession = unknown,
+			TProps = Readonly<Record<string, unknown>>
+		>(
+			plan: DistributedBoundaryPlan,
+			sources: DistributedBoundaryVariableSources<TVariables>
+		): DistributedBoundaryOperation<TData, TVariables, TSession, TProps> {
+			return defineDistributedBoundaryOperation(
+				plan,
+				artifact,
+				defineDistributedBoundaryBinding<
+					TData,
+					TVariables,
+					TSession,
+					TProps
+				>(artifact, sources)
+			);
 		}
 	});
 }

@@ -12,6 +12,8 @@ import {
 
 import { parse } from 'svelte/compiler';
 
+import type { DistributedBoundaryVariableSource } from '../boundary-variables.js';
+
 const BOUNDARY_PLAN_VERSION = 1;
 const MAX_COMPONENTS = 4_096;
 const MAX_COMPONENT_BYTES = 2 * 1024 * 1024;
@@ -38,6 +40,7 @@ export type DistributedIslandPlanInput = Readonly<{
 	version: number;
 	id: string;
 	operation: string;
+	operationHash: string;
 	source: Readonly<{ path: string; line: number; column: number }>;
 	directives: Readonly<{ load: boolean; live: boolean }>;
 	variableSchema: Readonly<{
@@ -57,6 +60,12 @@ export type DistributedSvelteKitBoundaryOccurrence = Readonly<{
 	graphqlSource: string;
 	reason: 'route_document' | 'static_component_import' | 'explicit';
 	conservative: boolean;
+	binding: Readonly<{
+		version: 1;
+		id: string;
+		discovery: 'route_param' | 'empty' | 'explicit';
+		sources: Readonly<Record<string, DistributedBoundaryVariableSource>>;
+	}>;
 }>;
 
 export type DistributedSvelteKitBoundary = Readonly<{
@@ -90,6 +99,7 @@ export type DistributedSvelteKitBoundaryRegistration = Readonly<{
 	operation: string;
 	route: string;
 	kind: 'layout' | 'page';
+	variables?: Readonly<Record<string, DistributedBoundaryVariableSource>>;
 }>;
 
 export type DistributedSvelteKitBoundaryAnalysisOptions = Readonly<{
@@ -179,7 +189,12 @@ export async function analyzeDistributedSvelteKitBoundaries(
 		const islandByOperation = new Map(
 			loadIslands.map((entry) => [entry.island.operation, entry] as const)
 		);
-		const explicitByBoundary = new Map<string, typeof loadIslands>();
+		type ExplicitEntry = Readonly<{
+			entry: typeof loadIslands[number];
+			registration: DistributedSvelteKitBoundaryRegistration;
+		}>;
+		const explicitByBoundary = new Map<string, ExplicitEntry[]>();
+		const explicitByIdentity = new Map<string, DistributedSvelteKitBoundaryRegistration>();
 		const explicitlyPlaced = new Set<string>();
 		for (const registration of client.explicitBoundaries ?? []) {
 			const entry = islandByOperation.get(registration.operation);
@@ -190,8 +205,15 @@ export async function analyzeDistributedSvelteKitBoundaries(
 			}
 			const id = `${registration.kind}:${normalizeRoute(registration.route)}`;
 			const bucket = explicitByBoundary.get(id) ?? [];
-			bucket.push(entry);
+			const identity = `${id}\u0000${registration.operation}`;
+			if (explicitByIdentity.has(identity)) {
+				throw new Error(
+					`[distributed.island.explicit_duplicate] ${client.module} repeats ${registration.operation} at ${registration.route}`
+				);
+			}
+			bucket.push(Object.freeze({ entry, registration }));
 			explicitByBoundary.set(id, bucket);
+			explicitByIdentity.set(identity, registration);
 			explicitlyPlaced.add(entry.island.id);
 		}
 		for (const entry of loadIslands) {
@@ -238,12 +260,32 @@ export async function analyzeDistributedSvelteKitBoundaries(
 		const placed = new Set<string>();
 		for (const root of roots) {
 			const occurrences: DistributedSvelteKitBoundaryOccurrence[] = [];
-			for (const entry of explicitByBoundary.get(root.id) ?? []) {
-				occurrences.push(occurrence(cwd, entry, root.path, 'explicit', false));
+			for (const { entry, registration } of explicitByBoundary.get(root.id) ?? []) {
+				occurrences.push(
+					occurrence(
+						cwd,
+						entry,
+						root,
+						root.path,
+						'explicit',
+						false,
+						registration.variables
+					)
+				);
 				placed.add(entry.island.id);
 			}
 			for (const entry of routeIslands.get(root.path) ?? []) {
-				occurrences.push(occurrence(cwd, entry, root.path, 'route_document', false));
+				occurrences.push(
+					occurrence(
+						cwd,
+						entry,
+						root,
+						root.path,
+						'route_document',
+						false,
+						explicitByIdentity.get(`${root.id}\u0000${entry.island.operation}`)?.variables
+					)
+				);
 				placed.add(entry.island.id);
 			}
 			const dynamicComponentIslands = new Map(
@@ -255,11 +297,19 @@ export async function analyzeDistributedSvelteKitBoundaries(
 					.filter(([, entries]) => entries.length > 0)
 			);
 			const reachable = traverse(root, components, aliases, dynamicComponentIslands, cwd);
-			for (const component of reachable) {
-				for (const entry of componentIslands.get(component) ?? []) {
-					occurrences.push(
-						occurrence(cwd, entry, component, 'static_component_import', true)
-					);
+				for (const component of reachable) {
+					for (const entry of componentIslands.get(component) ?? []) {
+						occurrences.push(
+							occurrence(
+								cwd,
+								entry,
+								root,
+								component,
+								'static_component_import',
+								true,
+								explicitByIdentity.get(`${root.id}\u0000${entry.island.operation}`)?.variables
+							)
+						);
 					placed.add(entry.island.id);
 				}
 			}
@@ -298,18 +348,163 @@ export async function analyzeDistributedSvelteKitBoundaries(
 function occurrence(
 	cwd: string,
 	entry: { island: DistributedIslandPlanInput; source: string },
+	root: BoundaryRoot,
 	component: string,
 	reason: DistributedSvelteKitBoundaryOccurrence['reason'],
-	conservative: boolean
+	conservative: boolean,
+	explicitSources?: Readonly<Record<string, DistributedBoundaryVariableSource>>
 ): DistributedSvelteKitBoundaryOccurrence {
+	const binding = boundaryBinding(entry, root, explicitSources);
 	return Object.freeze({
 		islandId: entry.island.id,
 		operation: entry.island.operation,
 		component: projectPath(cwd, component),
 		graphqlSource: entry.source,
 		reason,
-		conservative
+		conservative,
+		binding
 	});
+}
+
+function boundaryBinding(
+	entry: { island: DistributedIslandPlanInput; source: string },
+	root: BoundaryRoot,
+	explicitSources?: Readonly<Record<string, DistributedBoundaryVariableSource>>
+): DistributedSvelteKitBoundaryOccurrence['binding'] {
+	if (
+		typeof entry.island.operationHash !== 'string' ||
+		entry.island.operationHash.length === 0 ||
+		!Array.isArray(entry.island.variableSchema?.variables)
+	) {
+		throw diagnostic(
+			'distributed.island.binding_inventory_invalid',
+			entry.source,
+			entry.island.source.line,
+			entry.island.source.column,
+			`operation ${entry.island.operation} has invalid variable-binding inventory; regenerate the framework-neutral client`
+		);
+	}
+	const variables = [...entry.island.variableSchema.variables].sort((left, right) =>
+		left.name.localeCompare(right.name)
+	);
+	const allowed = new Set(variables.map(({ name }) => name));
+	for (const name of Object.keys(explicitSources ?? {})) {
+		if (!allowed.has(name)) {
+			throw diagnostic(
+				'distributed.island.variable_unknown',
+				entry.source,
+				entry.island.source.line,
+				entry.island.source.column,
+				`operation ${entry.island.operation} binding names unknown variable ${name}; use an explicit binding, parent/boundary query, client-only execution, or a better read root`
+			);
+		}
+	}
+	const routeParams = new Set(routeParameterNames(root.route));
+	const sources: Array<[string, DistributedBoundaryVariableSource]> = [];
+	let hasExplicit = false;
+	let hasRoute = false;
+	for (const variable of variables) {
+		const explicit = ownDataValue(explicitSources, variable.name);
+		if (explicit !== undefined) {
+			sources.push([variable.name, normalizeBindingSource(explicit, variable.name)]);
+			hasExplicit = true;
+		} else if (routeParams.has(variable.name)) {
+			sources.push([
+				variable.name,
+				Object.freeze({ kind: 'route_param', name: variable.name })
+			]);
+			hasRoute = true;
+		} else if (!variable.graphqlType.endsWith('!')) {
+			sources.push([variable.name, Object.freeze({ kind: 'omit' })]);
+		} else {
+			throw diagnostic(
+				'distributed.island.variable_unprovable',
+				entry.source,
+				entry.island.source.line,
+				entry.island.source.column,
+				`operation ${entry.island.operation} variable ${variable.name} is not boundary-visible at ${root.route}; use an explicit binding, parent/boundary query, client-only execution, or a better read root`
+			);
+		}
+	}
+	const sourceRecord = Object.freeze(Object.fromEntries(sources));
+	return Object.freeze({
+		version: 1,
+		id: `boundary-v1:${fnv1a64(`${entry.island.operationHash}\n${stableJson(sourceRecord)}`)}`,
+		discovery: hasExplicit ? 'explicit' : hasRoute ? 'route_param' : 'empty',
+		sources: sourceRecord
+	});
+}
+
+function routeParameterNames(route: string): readonly string[] {
+	const names: string[] = [];
+	for (const segment of route.split('/')) {
+		const match = /^\[\[?(?:\.\.\.)?([_A-Za-z][_0-9A-Za-z]*)(?:=[^\]]+)?\]?\]$/.exec(segment);
+		if (match?.[1] !== undefined) names.push(match[1]);
+	}
+	return names;
+}
+
+function normalizeBindingSource(
+	value: unknown,
+	variable: string
+): DistributedBoundaryVariableSource {
+	if (value === null || typeof value !== 'object' || Array.isArray(value)) {
+		throw new TypeError(`Distributed boundary variable ${variable} source must be an object`);
+	}
+	const record = value as Record<string, unknown>;
+	const kind = ownDataValue(record, 'kind');
+	switch (kind) {
+		case 'omit':
+			return Object.freeze({ kind: 'omit' });
+		case 'route_param': {
+			const name = ownDataValue(record, 'name');
+			if (typeof name !== 'string' || name.length === 0) {
+				throw new TypeError(`Distributed boundary variable ${variable} source name is invalid`);
+			}
+			return Object.freeze({ kind: 'route_param', name });
+		}
+		case 'search_param': {
+			const name = ownDataValue(record, 'name');
+			if (typeof name !== 'string' || name.length === 0) {
+				throw new TypeError(`Distributed boundary variable ${variable} source name is invalid`);
+			}
+			const mode = ownDataValue(record, 'mode');
+			if (mode !== undefined && mode !== 'first' && mode !== 'all') {
+				throw new TypeError(`Distributed boundary variable ${variable} search mode is invalid`);
+			}
+			return Object.freeze({
+				kind: 'search_param',
+				name,
+				...(mode === undefined ? {} : { mode })
+			});
+		}
+		case 'trusted_session':
+		case 'forwarded_prop': {
+			const path = ownDataValue(record, 'path');
+			if (
+				!Array.isArray(path) ||
+				path.length === 0 ||
+				path.length > 16 ||
+				path.some((part) =>
+					typeof part !== 'string' ||
+					!/^[_A-Za-z][_0-9A-Za-z]*$/.test(part) ||
+					['__proto__', 'prototype', 'constructor'].includes(part)
+				)
+			) {
+				throw new TypeError(`Distributed boundary variable ${variable} source path is invalid`);
+			}
+			return Object.freeze({ kind, path: Object.freeze([...path]) });
+		}
+		case 'constant':
+			return Object.freeze({
+				kind: 'constant',
+				value: freezeStable(stableValue(ownDataValue(record, 'value')))
+			});
+		default:
+			throw new TypeError(
+				`Distributed boundary variable ${variable} source is unsupported; use an explicit binding, parent/boundary query, client-only execution, or a better read root`
+			);
+	}
 }
 
 function traverse(
@@ -670,6 +865,81 @@ function diagnostic(
 	message: string
 ): Error {
 	return new Error(`[${code}] ${path}:${line}:${column}: ${message}`);
+}
+
+function ownDataValue(value: unknown, key: string): unknown {
+	if (value === null || typeof value !== 'object') return undefined;
+	const descriptor = Object.getOwnPropertyDescriptor(value, key);
+	if (descriptor === undefined) return undefined;
+	if (!('value' in descriptor)) {
+		throw new TypeError('Distributed boundary binding contains an accessor');
+	}
+	return descriptor.value;
+}
+
+function stableJson(value: unknown): string {
+	return JSON.stringify(stableValue(value));
+}
+
+function stableValue(value: unknown): unknown {
+	const active = new Set<object>();
+	let visited = 0;
+	const visit = (current: unknown, depth: number): unknown => {
+		visited += 1;
+		if (visited > 4_096 || depth > 32) {
+			throw new TypeError('Distributed boundary binding exceeds structural limits');
+		}
+		if (
+			current === null ||
+			typeof current === 'string' ||
+			typeof current === 'boolean'
+		) return current;
+		if (typeof current === 'number' && Number.isFinite(current)) return current;
+		if (typeof current !== 'object') {
+			throw new TypeError('Distributed boundary binding is not JSON-compatible');
+		}
+		if (active.has(current)) throw new TypeError('Distributed boundary binding is cyclic');
+		active.add(current);
+		try {
+			if (Array.isArray(current)) return current.map((entry) => visit(entry, depth + 1));
+			if (
+				Object.getPrototypeOf(current) !== Object.prototype &&
+				Object.getPrototypeOf(current) !== null
+			) {
+				throw new TypeError('Distributed boundary binding must contain plain objects');
+			}
+			return Object.fromEntries(
+				Object.keys(current).sort().map((key) => {
+					if (['__proto__', 'prototype', 'constructor'].includes(key)) {
+						throw new TypeError('Distributed boundary binding contains a hostile object key');
+					}
+					return [key, visit(ownDataValue(current, key), depth + 1)];
+				})
+			);
+		} finally {
+			active.delete(current);
+		}
+	};
+	return visit(value, 0);
+}
+
+function freezeStable(value: unknown): unknown {
+	if (value === null || typeof value !== 'object') return value;
+	for (const entry of Array.isArray(value)
+		? value
+		: Object.values(value as Record<string, unknown>)) {
+		freezeStable(entry);
+	}
+	return Object.freeze(value);
+}
+
+function fnv1a64(value: string): string {
+	let hash = 0xcbf29ce484222325n;
+	for (const byte of new TextEncoder().encode(value)) {
+		hash ^= BigInt(byte);
+		hash = BigInt.asUintN(64, hash * 0x100000001b3n);
+	}
+	return hash.toString(16).padStart(16, '0');
 }
 
 function isMissing(error: unknown): boolean {

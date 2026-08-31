@@ -12,6 +12,18 @@ export {
 	parseDistributedGenerationEnvelope,
 	type DistributedGenerationEnvelope
 } from '../generation.js';
+
+export {
+	defineDistributedBoundaryBinding,
+	defineDistributedBoundaryOperation,
+	resolveDistributedBoundaryVariables,
+	type DistributedBoundaryBinding,
+	type DistributedBoundaryOperation,
+	type DistributedBoundaryPlan,
+	type DistributedBoundaryVariableContext,
+	type DistributedBoundaryVariableSource,
+	type DistributedBoundaryVariableSources
+} from './boundary-variables.js';
 export {
 	defineDistributedSvelteKitOperation,
 	provideDistributedSvelteKitClient,
@@ -26,6 +38,7 @@ export {
 	type CreateDistributedSvelteKitOptions,
 	type DistributedSvelteKitClient,
 	type SveltekitBoundOperation,
+	type SveltekitBoundBoundaryOperation,
 	type SveltekitCommandRuntimeFactory,
 	type SveltekitCommandRuntimeFactoryOptions,
 	type SveltekitCommandRuntimeLike,

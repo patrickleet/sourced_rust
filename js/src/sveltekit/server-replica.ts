@@ -8,6 +8,11 @@ import {
 import type { FetchLike } from '../request.js';
 import type { GqlAuth, GraphqlVariables } from '../types.js';
 import { authFromPageData, type PageGraphqlData } from './auth.js';
+import {
+	resolveDistributedBoundaryVariables,
+	type DistributedBoundaryOperation,
+	type DistributedBoundaryVariableContext
+} from './boundary-variables.js';
 import type {
 	SveltekitDistributedPageData,
 	SveltekitReplicaAuthority,
@@ -30,6 +35,8 @@ export type SveltekitServerLoadEventLike<TLocals = unknown> = Readonly<{
 	locals: TLocals;
 	route?: Readonly<{ id?: string | null }>;
 	url?: URL;
+	params?: Readonly<Record<string, string | undefined>>;
+	parent?(): Promise<Readonly<Record<string, unknown>>>;
 	fetch?: FetchLike;
 	/**
 	 * SvelteKit client-side navigation and hover preload (`__data.json`).
@@ -52,7 +59,15 @@ export type CreateDistributedSvelteKitServerOptions<
 	TSession extends NonNullable<PageGraphqlData['session']>,
 	TEvent extends SveltekitServerLoadEventLike = SveltekitServerLoadEventLike
 > = Readonly<{
-	routes: readonly DistributedRouteOperation[];
+	/** Transitional route inventory; removed after generated boundaries migrate. */
+	routes?: readonly DistributedRouteOperation[];
+	/** One executable binding per promoted page/layout island. */
+	boundaries?: readonly DistributedBoundaryOperation<
+		unknown,
+		GraphqlVariables,
+		TSession,
+		Readonly<Record<string, unknown>>
+	>[];
 	getSession(event: TEvent): Promise<TSession | null>;
 	getRole(
 		session: TSession | null,
@@ -82,7 +97,8 @@ export function createDistributedSvelteKitServer<
 >(
 	options: CreateDistributedSvelteKitServerOptions<TSession, TEvent>
 ): DistributedSvelteKitServer<TEvent> {
-	const routes = validateRoutes(options.routes);
+	const routes = validateRoutes(options.routes ?? []);
+	const boundaries = validateBoundaryOperations(options.boundaries ?? []);
 	return Object.freeze({
 		async load(event: TEvent) {
 			const session = await options.getSession(event);
@@ -102,7 +118,11 @@ export function createDistributedSvelteKitServer<
 			const auth =
 				options.getAuth?.(pageData, event) ?? authFromPageData(pageData);
 			const routeId = routeIdentity(event);
-			const selected = routes.filter(({ plan }) => plan.route === routeId);
+			const selectedRoutes = routes.filter(({ plan }) => plan.route === routeId);
+			const selectedBoundaries = boundaries.filter(
+				({ plan }) => plan.route === routeId
+			);
+			const selected = [...selectedRoutes, ...selectedBoundaries];
 			if (selected.length === 0) {
 				return {
 					...pageData,
@@ -123,13 +143,29 @@ export function createDistributedSvelteKitServer<
 				variables: GraphqlVariables;
 				watch: ReplicaWatch<unknown>;
 			}> = [];
+			const boundaryContext: DistributedBoundaryVariableContext<
+				TSession,
+				Readonly<Record<string, unknown>>
+			> = Object.freeze({
+				params: event.params ?? Object.freeze({}),
+				search: event.url?.searchParams ?? new URLSearchParams(),
+				session,
+				props:
+					selectedBoundaries.length > 0 && event.parent !== undefined
+						? await event.parent()
+						: Object.freeze({})
+			});
 			try {
 				for (const binding of selected) {
 					let variables: GraphqlVariables;
 					try {
-						variables =
-							(await options.variables?.[binding.plan.operation]?.(event)) ??
-							{};
+						variables = 'binding' in binding
+							? resolveDistributedBoundaryVariables(
+									binding.artifact,
+									binding.binding.sources,
+									boundaryContext
+								)
+							: (await options.variables?.[binding.plan.operation]?.(event)) ?? {};
 						const watch = replica.watch(
 							binding.artifact,
 							variables,
@@ -142,7 +178,10 @@ export function createDistributedSvelteKitServer<
 							watch
 						});
 					} catch (error) {
-						if (options.variables?.[binding.plan.operation] === undefined) {
+						if (
+							!('binding' in binding) &&
+							options.variables?.[binding.plan.operation] === undefined
+						) {
 							throw new Error(
 								`Distributed @load operation \`${binding.plan.operation}\` needs route variables; configure variables.${binding.plan.operation}(event) in createDistributedSvelteKitServer`,
 								{ cause: error }
@@ -164,7 +203,8 @@ export function createDistributedSvelteKitServer<
 						? undefined
 						: hydrationTransfer(
 								replica.dehydrate(),
-								selected.map(({ plan }) => plan.operation)
+								selected.map(({ plan }) => plan.operation),
+								selectedBoundaries.map(({ binding }) => binding.id)
 							);
 				return {
 					...pageData,
@@ -213,7 +253,8 @@ export function registerDistributedRoute<
 
 function hydrationTransfer(
 	state: ReplicaDehydratedState,
-	operations: readonly string[]
+	operations: readonly string[],
+	bindings: readonly string[] = []
 ): Readonly<{
 	hydration: SveltekitReplicaHydration;
 	authority: SveltekitReplicaAuthority;
@@ -222,7 +263,10 @@ function hydrationTransfer(
 		hydration: Object.freeze({
 			version: 1,
 			state,
-			operations: Object.freeze([...operations])
+			operations: Object.freeze([...operations]),
+			...(bindings.length === 0
+				? {}
+				: { bindings: Object.freeze([...bindings].sort()) })
 		}),
 		authority: Object.freeze({
 			version: 1,
@@ -338,6 +382,49 @@ function validateRoutes(
 					route
 				}),
 				artifact: binding.artifact
+			});
+		})
+	);
+}
+
+function validateBoundaryOperations<TSession>(
+	value: readonly DistributedBoundaryOperation<
+		unknown,
+		GraphqlVariables,
+		TSession,
+		Readonly<Record<string, unknown>>
+	>[]
+): readonly DistributedBoundaryOperation<
+	unknown,
+	GraphqlVariables,
+	TSession,
+	Readonly<Record<string, unknown>>
+>[] {
+	if (!Array.isArray(value)) {
+		throw new TypeError('createDistributedSvelteKitServer boundaries must be an array');
+	}
+	const identities = new Set<string>();
+	return Object.freeze(
+		value.map((operation, index) => {
+			if (
+				operation === null ||
+				typeof operation !== 'object' ||
+				operation.binding?.version !== 1 ||
+				operation.binding.artifactId !== operation.artifact?.id
+			) {
+				throw new TypeError(`invalid Distributed boundary operation at index ${index}`);
+			}
+			const route = normalizeRoute(operation.plan.route);
+			const identity = `${operation.plan.kind}\u0000${route}\u0000${operation.plan.operation}`;
+			if (identities.has(identity)) {
+				throw new TypeError(
+					`duplicate Distributed boundary operation ${operation.plan.operation} at ${route}`
+				);
+			}
+			identities.add(identity);
+			return Object.freeze({
+				...operation,
+				plan: Object.freeze({ ...operation.plan, route })
 			});
 		})
 	);
