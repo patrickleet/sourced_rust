@@ -13,6 +13,7 @@ import {
 	type DistributedBoundaryOperation,
 	type DistributedBoundaryVariableContext
 } from './boundary-variables.js';
+import { boundaryOperationIdentity } from './operation-identity.js';
 import type {
 	SveltekitDistributedPageData,
 	SveltekitReplicaAuthority,
@@ -147,6 +148,11 @@ export function createDistributedSvelteKitServer<
 				for (const watch of activeWatches) watch.destroy();
 			};
 			requestSignal?.addEventListener('abort', abort, { once: true });
+			const needsParent = selectedBoundaries.some(({ binding }) =>
+				Object.values(binding.sources).some(
+					(source) => source?.kind === 'forwarded_prop'
+				)
+			);
 			const boundaryContext: DistributedBoundaryVariableContext<
 				TSession,
 				Readonly<Record<string, unknown>>
@@ -155,7 +161,7 @@ export function createDistributedSvelteKitServer<
 				search: event.url?.searchParams ?? new URLSearchParams(),
 				session,
 				props:
-					selectedBoundaries.length > 0 && event.parent !== undefined
+					needsParent && event.parent !== undefined
 						? await event.parent()
 						: Object.freeze({})
 			});
@@ -168,7 +174,7 @@ export function createDistributedSvelteKitServer<
 						binding.binding.sources,
 						boundaryContext
 					);
-					const identity = ssrOperationIdentity(binding.artifact, variables);
+					const identity = boundaryOperationIdentity(binding.artifact, variables);
 					if (scheduled.has(identity)) continue;
 					scheduled.set(identity, {
 						identity,
@@ -325,19 +331,6 @@ function layoutOwnsRoute(layout: string, route: string): boolean {
 	const owner = normalizeRoute(layout);
 	const selected = normalizeRoute(route);
 	return owner === '/' || selected === owner || selected.startsWith(`${owner}/`);
-}
-
-function ssrOperationIdentity(
-	artifact: ReplicaOperationArtifact<unknown, GraphqlVariables>,
-	variables: GraphqlVariables
-): string {
-	return JSON.stringify([
-		artifact.protocol.version,
-		artifact.protocol.schemaHash,
-		artifact.protocol.surface,
-		artifact.id,
-		variables
-	]);
 }
 
 function validateConcurrency(value: number): number {

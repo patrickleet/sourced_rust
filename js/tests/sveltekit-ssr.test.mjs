@@ -165,16 +165,23 @@ test('static @load SSR is request-isolated and hydration avoids a duplicate firs
 	const socket = SsrWebSocket.instances[0];
 	socket.open();
 	socket.receive({ type: 'connection_ack' });
+	const subscribed = socket.sent.find(({ type }) => type === 'subscribe');
+	assert.ok(subscribed, 'the live handoff must open a subscription');
 	socket.receive({
 		type: 'next',
-		id: '1',
+		id: subscribed.id,
 		payload: todoFrame(
 			TodosArtifact,
-			[{ id: 'todo-alice', title: 'alice:1', status: 'open' }],
-			{ cacheScope: 'cache:alice', position: '1', source: 'live' }
+			[{ id: 'todo-alice', title: 'alice:live', status: 'open' }],
+			{ cacheScope: 'cache:alice', position: '2', source: 'live' }
 		)
 	});
 	await flushMicrotasks();
+	assert.equal(
+		todos.get().data.todos[0].title,
+		'alice:live',
+		'the live frame must be applied through the active subscription'
+	);
 	assert.equal(
 		browserFetches,
 		0,
@@ -183,6 +190,21 @@ test('static @load SSR is request-isolated and hydration avoids a duplicate firs
 	unsubscribe();
 	assert.equal(socket.closed, true);
 	client.destroy();
+});
+
+test('SSR only awaits parent data for forwarded-prop bindings', async () => {
+	const harness = serverHarness();
+	let parentCalls = 0;
+	const page = await harness.server.load({
+		...harness.event('alice'),
+		async parent() {
+			parentCalls += 1;
+			throw new Error('a boundary without forwarded props must not await parent data');
+		}
+	});
+
+	assert.equal(page.gqlError, null);
+	assert.equal(parentCalls, 0);
 });
 
 test('client-side data requests skip GraphQL so navigation stays SPA', async () => {

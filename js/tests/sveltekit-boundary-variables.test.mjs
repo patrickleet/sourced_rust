@@ -341,6 +341,99 @@ test('location orchestration derives one canonical key for layout, page, and hov
 	matcherClient.destroy();
 });
 
+test('location orchestration matches optional, rest, optional-rest, and group segments', async () => {
+	const optional = operationAt({
+		name: 'OptionalRoute',
+		route: '/optional/[[locale]]/[itemId]',
+		kind: 'page',
+		limit: 31
+	});
+	const rest = operationAt({
+		name: 'RestRoute',
+		route: '/rest/[...itemId]',
+		kind: 'page',
+		limit: 32
+	});
+	const optionalRest = operationAt({
+		name: 'OptionalRestRoute',
+		route: '/optional-rest/[[...itemId]]',
+		kind: 'page',
+		limit: 33
+	});
+	const optionalRestEmpty = defineDistributedBoundaryOperation(
+		{
+			operation: 'OptionalRestEmptyRoute',
+			route: '/optional-rest-empty/[[...unused]]',
+			kind: 'page',
+			discovery: 'explicit'
+		},
+		BoundTodosArtifact,
+		defineDistributedBoundaryBinding(BoundTodosArtifact, {
+			id: { kind: 'constant', value: 'empty' },
+			limit: { kind: 'constant', value: 35 }
+		})
+	);
+	const grouped = operationAt({
+		name: 'GroupedRoute',
+		route: '/(catalog)/grouped/[itemId]',
+		kind: 'page',
+		limit: 34
+	});
+	const selected = context();
+	const locationContext = Object.freeze({
+		search: selected.search,
+		session: selected.session,
+		props: selected.props
+	});
+	const variablesFor = async (boundary, pathname) => {
+		const requests = [];
+		const client = createDistributedSvelteKit({
+			boundaries: [boundary],
+			session: { getAuth: () => ({ accessToken: 'browser' }) },
+			async fetch(_url, init) {
+				const request = JSON.parse(init.body);
+				requests.push(request.variables);
+				return jsonResponse(
+					todoFrame(
+						BoundTodosArtifact,
+						[{ id: 'todo-route', title: 'route', status: 'open' }],
+						{ cacheScope: 'cache:routes', position: '1' }
+					)
+				);
+			}
+		});
+		await client.prefetchLocation(pathname, locationContext);
+		client.destroy();
+		assert.equal(requests.length, 1, `${pathname} must select its boundary`);
+		return requests[0];
+	};
+
+	assert.deepEqual(
+		await variablesFor(optional, '/optional/final'),
+		{ ...binding(31).resolve({ ...selected, params: { itemId: 'final' } }) }
+	);
+	assert.deepEqual(
+		await variablesFor(optional, '/optional/en/final'),
+		{ ...binding(31).resolve({ ...selected, params: { locale: 'en', itemId: 'final' } }) }
+	);
+	assert.deepEqual(
+		await variablesFor(rest, '/rest/a/b'),
+		{ ...binding(32).resolve({ ...selected, params: { itemId: 'a/b' } }) }
+	);
+	assert.deepEqual(
+		await variablesFor(optionalRest, '/optional-rest/a/b'),
+		{ ...binding(33).resolve({ ...selected, params: { itemId: 'a/b' } }) }
+	);
+	assert.deepEqual(
+		await variablesFor(optionalRestEmpty, '/optional-rest-empty'),
+		{ id: 'empty', limit: 35 }
+	);
+	assert.deepEqual(
+		await variablesFor(grouped, '/grouped/value'),
+		{ ...binding(34).resolve({ ...selected, params: { itemId: 'value' } }) }
+	);
+});
+
 test('boundary SSR selects parent layouts, deduplicates exact work, and bounds distinct refreshes', async () => {
 	const boundaries = [
 		operationAt({ name: 'RootItems', route: '/', kind: 'layout', limit: 20 }),

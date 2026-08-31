@@ -4,6 +4,7 @@ import type {
 	DistributedBoundaryOperation,
 	DistributedBoundaryVariableContext
 } from './boundary-variables.js';
+import { boundaryOperationIdentity } from './operation-identity.js';
 
 const MAX_BOUNDARY_INSTANCES = 4_096;
 const MAX_INSTANCE_ID_BYTES = 512;
@@ -265,7 +266,7 @@ export class DistributedSvelteKitBoundaryController {
 				return Object.freeze({
 					operation,
 					variables,
-					identity: operationIdentity(operation, variables),
+					identity: boundaryOperationIdentity(operation.artifact, variables),
 					live: operation.artifact.live !== undefined
 				});
 			})
@@ -526,18 +527,4 @@ function decodePathSegment(value: string): string | undefined {
 	} catch {
 		return undefined;
 	}
-}
-
-function operationIdentity(
-	operation: DistributedBoundaryOperation,
-	variables: GraphqlVariables
-): string {
-	const { protocol } = operation.artifact;
-	return JSON.stringify([
-		protocol.version,
-		protocol.schemaHash,
-		protocol.surface,
-		operation.artifact.id,
-		variables
-	]);
 }
