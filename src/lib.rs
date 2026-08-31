@@ -72,9 +72,9 @@ pub use entity::{
 pub use application::{
     admit_command_session, command_roles_require_principal, Application, ApplicationError,
     ApplicationManifest, CommandMount, CommandMountHandler, CommandMountRegistrar, CommandSpec,
-    ContractCompiler, DeploymentPlan, LogicalId, Module, Runtime, RuntimeDialect,
-    ModuleManifest, MountSelector, ProcessIntent, ProcessPreset, ProjectionSpec, SurfaceSpec,
-    APPLICATION_MANIFEST_SCHEMA_VERSION, DEPLOYMENT_PLAN_SCHEMA_VERSION,
+    ContractCompiler, DeploymentPlan, FrameworkCompatibility, LogicalId, Module, ModuleManifest,
+    MountSelector, ProcessIntent, ProcessPreset, ProjectionSpec, Runtime, RuntimeDialect,
+    SurfaceSpec, APPLICATION_MANIFEST_SCHEMA_VERSION, DEPLOYMENT_PLAN_SCHEMA_VERSION,
 };
 pub use command_dispatch::{
     CommandDispatchEnvelope, CommandDispatchError, CommandDispatchReceipt, CommandDispatcher,

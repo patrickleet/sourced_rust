@@ -40,8 +40,17 @@ fn distributed(args: &[&str]) -> String {
 #[ignore = "compiles the fixture via the manifest harness; run in the integration job"]
 fn describe_emits_manifest_json() {
     let json = distributed(&["describe"]);
+    let manifest: serde_json::Value = serde_json::from_str(&json).unwrap();
     assert!(json.contains("\"schema_version\""), "json: {json}");
     assert!(json.contains("\"orders\""), "json: {json}");
+    let framework = manifest["extensions"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|extension| extension["id"] == "distributed.framework")
+        .unwrap();
+    assert_eq!(framework["version"], 1);
+    assert_eq!(framework["value"]["release"], env!("CARGO_PKG_VERSION"));
 }
 
 #[test]

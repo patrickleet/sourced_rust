@@ -10,6 +10,7 @@ mod cli;
 mod client_compiler;
 pub mod contracts;
 mod generate;
+mod js_framework;
 pub mod lifecycle;
 mod manifest_harness;
 mod skills;
@@ -20,9 +21,9 @@ pub use cli::{
     run, run_distributed, AgentHarness, BuildArgs, Bus, ClientArgs, ClientManifestArgs,
     ContractsAcceptArgs, ContractsArgs, ContractsCheckArgs, ContractsCommands, ContractsOutput,
     DescribeArgs, DevArgs, DistributedArgs, DistributedCommands, Framework, GitopsPromote,
-    LifecycleOutput, ManifestFormat, Metrics, ProbeArgs, ScaffoldArgs, SchemaArgs, SchemaDialect,
-    SchemaFormat, ServiceArgs, ServiceCommands,
-    SkillsArgs, SkillsCommands, SkillsInitArgs, Store, Transport,
+    JavascriptWatchArgs, LifecycleOutput, ManifestFormat, Metrics, ProbeArgs, ScaffoldArgs,
+    SchemaArgs, SchemaDialect, SchemaFormat, ServiceArgs, ServiceCommands, SkillsArgs,
+    SkillsCommands, SkillsInitArgs, Store, Transport,
 };
 pub use client_compiler::{
     compile_client, ClientCompileError, ClientCompileInput, ClientDocument, ClientRouteDiscovery,

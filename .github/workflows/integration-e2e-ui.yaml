@@ -103,9 +103,6 @@ jobs:
       - name: Build Distributed CLI
         run: cargo build --manifest-path ../../Cargo.toml -p distributed_cli --bin distributed
 
-      - name: Install UI deps
-        run: make ui-install
-
       # Build first so dev starts from the same coherent, warm generation that
       # users get after `distributed build`, rather than racing a cold Cargo
       # compile against the readiness deadline.

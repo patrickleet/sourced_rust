@@ -1,5 +1,5 @@
 use clap::Parser;
-use distributed_cli::DistributedArgs;
+use distributed_cli::{DistributedArgs, DistributedCommands, LifecycleError, LifecycleOutput};
 
 /// The `distributed` CLI: contracts lifecycle, scaffold, client compile,
 /// describe manifests, and render schema artifacts.
@@ -13,6 +13,18 @@ struct Cli {
 fn main() {
     let cli = Cli::parse();
     if let Err(err) = distributed_cli::run_distributed(&cli.args) {
+        if matches!(
+            &cli.args.command,
+            DistributedCommands::Build(args) if matches!(args.output, LifecycleOutput::Json)
+        ) {
+            if let Some(diagnostic) = err
+                .downcast_ref::<LifecycleError>()
+                .and_then(LifecycleError::diagnostic)
+            {
+                println!("{diagnostic}");
+                std::process::exit(1);
+            }
+        }
         eprintln!("error: {err}");
         std::process::exit(1);
     }

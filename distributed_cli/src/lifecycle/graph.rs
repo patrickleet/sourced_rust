@@ -18,6 +18,7 @@ const MAX_LIFECYCLE_ROOTS: usize = 64;
 pub struct LifecycleError {
     message: String,
     reason: LifecycleErrorReason,
+    diagnostic: Option<serde_json::Value>,
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -32,6 +33,7 @@ impl LifecycleError {
         Self {
             message: message.into(),
             reason: LifecycleErrorReason::Other,
+            diagnostic: None,
         }
     }
 
@@ -39,6 +41,7 @@ impl LifecycleError {
         Self {
             message: message.into(),
             reason: LifecycleErrorReason::Canceled,
+            diagnostic: None,
         }
     }
 
@@ -46,7 +49,13 @@ impl LifecycleError {
         Self {
             message: message.into(),
             reason: LifecycleErrorReason::Superseded,
+            diagnostic: None,
         }
+    }
+
+    pub(crate) fn with_diagnostic(mut self, diagnostic: serde_json::Value) -> Self {
+        self.diagnostic = Some(diagnostic);
+        self
     }
 
     pub(crate) fn reason(&self) -> LifecycleErrorReason {
@@ -55,6 +64,11 @@ impl LifecycleError {
 
     pub fn message(&self) -> &str {
         &self.message
+    }
+
+    /// Stable structured diagnostic supplied by errors that expose one.
+    pub fn diagnostic(&self) -> Option<&serde_json::Value> {
+        self.diagnostic.as_ref()
     }
 }
 

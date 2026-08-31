@@ -26,6 +26,7 @@ use crate::contracts::{
     contracts_accept, contracts_check, unknown_scope_diagnostic, ContractAcceptScope,
     ContractCatalog,
 };
+use crate::js_framework::watch_local_javascript;
 use crate::lifecycle::{
     discover_lifecycle_project, run_lifecycle_build, run_lifecycle_dev,
     run_lifecycle_project_build, run_lifecycle_project_dev, DiscoveredLifecycleProject,
@@ -75,6 +76,9 @@ pub enum DistributedCommands {
     /// Internal bounded readiness probe used by `distributed dev`.
     #[command(name = "__probe", hide = true)]
     Probe(ProbeArgs),
+    /// Internal local Distributed JavaScript source watcher.
+    #[command(name = "__js-watch", hide = true)]
+    JavascriptWatch(JavascriptWatchArgs),
 }
 
 #[derive(Args, Debug)]
@@ -83,6 +87,15 @@ pub struct ProbeArgs {
     /// TCP address to connect to.
     #[arg(long)]
     pub address: String,
+}
+
+#[derive(Args, Debug)]
+/// Arguments for the supervisor's hidden local JavaScript builder.
+pub struct JavascriptWatchArgs {
+    #[arg(long)]
+    pub package_root: PathBuf,
+    #[arg(long)]
+    pub project_root: PathBuf,
 }
 
 /// Library adapter for embedding service-related commands under another CLI.
@@ -114,6 +127,9 @@ pub enum ServiceCommands {
     /// Internal bounded readiness probe used by `hops service dev`.
     #[command(name = "__probe", hide = true)]
     Probe(ProbeArgs),
+    /// Internal local Distributed JavaScript source watcher.
+    #[command(name = "__js-watch", hide = true)]
+    JavascriptWatch(JavascriptWatchArgs),
 }
 
 #[derive(Args, Debug)]
@@ -620,7 +636,12 @@ pub fn run_distributed(args: &DistributedArgs) -> Result<(), Box<dyn Error>> {
             SkillsCommands::List => run_skills_list(),
         },
         DistributedCommands::Probe(probe) => run_probe(probe),
+        DistributedCommands::JavascriptWatch(watch) => run_javascript_watch(watch),
     }
+}
+
+fn run_javascript_watch(args: &JavascriptWatchArgs) -> Result<(), Box<dyn Error>> {
+    watch_local_javascript(&args.package_root, &args.project_root).map_err(Into::into)
 }
 
 fn run_probe(args: &ProbeArgs) -> Result<(), Box<dyn Error>> {
@@ -662,6 +683,7 @@ pub fn run(args: &ServiceArgs) -> Result<(), Box<dyn Error>> {
             SkillsCommands::List => run_skills_list(),
         },
         ServiceCommands::Probe(probe) => run_probe(probe),
+        ServiceCommands::JavascriptWatch(watch) => run_javascript_watch(watch),
     }
 }
 
@@ -815,9 +837,12 @@ fn run_build(args: &BuildArgs, command_prefix: &[&str]) -> Result<(), Box<dyn Er
     )?;
     let (report, detail) = match &resolved {
         ResolvedLifecycleProject::Discovered(project) => {
-            if !args.check {
+            if args.check {
+                prepare_project_javascript(project, true)?;
+            } else {
                 build_project_runtime(project)?;
                 validate_project_application(project, args.lock_timeout_ms)?;
+                prepare_project_javascript(project, false)?;
                 prepare_project_wasm_pures(project)?;
                 build_project_ui(project)?;
             }
@@ -981,7 +1006,7 @@ fn prepare_project_wasm_pures(
 fn build_project_ui(project: &DiscoveredLifecycleProject) -> Result<(), Box<dyn Error>> {
     if let Some(ui) = &project.ui {
         let ui_root = project.plan.root.join(ui);
-        ensure_ui_dependencies(&ui_root)?;
+        prepare_ui_dependencies(project, &ui_root)?;
         eprintln!(
             "distributed build: compiling SvelteKit UI {}",
             ui_root.display()
@@ -996,10 +1021,47 @@ fn build_project_ui(project: &DiscoveredLifecycleProject) -> Result<(), Box<dyn 
     Ok(())
 }
 
+fn prepare_ui_dependencies(
+    project: &DiscoveredLifecycleProject,
+    ui_root: &Path,
+) -> Result<(), Box<dyn Error>> {
+    ensure_ui_dependencies(ui_root)?;
+    let Some(javascript) = &project.javascript else {
+        return Ok(());
+    };
+    if let Err(error) = javascript.verify_installed(ui_root) {
+        eprintln!("distributed: refreshing SvelteKit dependencies because {error}");
+        install_ui_dependencies(ui_root)?;
+        javascript.verify_installed(ui_root)?;
+    }
+    Ok(())
+}
+
+fn prepare_project_javascript(
+    project: &DiscoveredLifecycleProject,
+    check: bool,
+) -> Result<(), Box<dyn Error>> {
+    if let Some(javascript) = &project.javascript {
+        javascript.prepare(&project.plan.root, check)?;
+        if check {
+            let ui = project
+                .ui
+                .as_ref()
+                .ok_or("Distributed JavaScript package resolved without a UI root")?;
+            javascript.verify_installed(&project.plan.root.join(ui))?;
+        }
+    }
+    Ok(())
+}
+
 fn ensure_ui_dependencies(ui_root: &Path) -> Result<(), Box<dyn Error>> {
     if ui_root.join("node_modules").is_dir() {
         return Ok(());
     }
+    install_ui_dependencies(ui_root)
+}
+
+fn install_ui_dependencies(ui_root: &Path) -> Result<(), Box<dyn Error>> {
     let install = if ui_root.join("package-lock.json").is_file() {
         "ci"
     } else {
@@ -1044,8 +1106,9 @@ fn run_dev(args: &DevArgs, command_prefix: &[&str]) -> Result<(), Box<dyn Error>
     ctrlc::set_handler(move || signal_stop.store(true, Ordering::SeqCst))?;
     let report = match resolved {
         ResolvedLifecycleProject::Discovered(project) => {
+            prepare_project_javascript(&project, false)?;
             if let Some(ui) = &project.ui {
-                ensure_ui_dependencies(&project.plan.root.join(ui))?;
+                prepare_ui_dependencies(&project, &project.plan.root.join(ui))?;
             }
             eprintln!(
                 "distributed dev: project={} api={} ui={} (Ctrl-C to stop)",
@@ -2419,6 +2482,32 @@ fn validate_manifest_json(envelope: &serde_json::Value) -> Result<(), Box<dyn Er
         {
             return Err(format!("application manifest JSON is missing array {field}").into());
         }
+    }
+    let framework = envelope
+        .get("extensions")
+        .and_then(serde_json::Value::as_array)
+        .and_then(|extensions| {
+            extensions.iter().find(|extension| {
+                extension.get("id").and_then(serde_json::Value::as_str)
+                    == Some("distributed.framework")
+            })
+        })
+        .ok_or("application manifest JSON is missing framework compatibility")?;
+    if framework.get("version").and_then(serde_json::Value::as_u64) != Some(1) {
+        return Err("unsupported application framework compatibility record version".into());
+    }
+    let release = framework
+        .get("value")
+        .and_then(|value| value.get("release"))
+        .and_then(serde_json::Value::as_str)
+        .filter(|release| !release.is_empty())
+        .ok_or("application framework compatibility record is missing release")?;
+    if release != env!("CARGO_PKG_VERSION") {
+        return Err(format!(
+            "application manifest framework release `{release}` does not match CLI release `{}`",
+            env!("CARGO_PKG_VERSION")
+        )
+        .into());
     }
     Ok(())
 }

@@ -9,6 +9,9 @@ use crate::contracts::{
     ArtifactIdentity, ArtifactProvenance, ContractArtifactKind, ContractCatalog, ContractEntry,
     ContractScope, CONTRACT_CATALOG_SCHEMA_VERSION,
 };
+use crate::js_framework::{
+    discover_javascript_framework, JavascriptFrameworkPackage, JavascriptPackageSource,
+};
 
 use super::{
     digest_bytes, DistributedSourceIdentity, LifecycleBuildConfig, LifecycleDevConfig,
@@ -36,6 +39,8 @@ pub struct DiscoveredLifecycleProject {
     pub runtime_binary: String,
     /// Conventional SvelteKit root, when `ui/package.json` exists.
     pub ui: Option<PathBuf>,
+    /// Resolved Distributed browser runtime, when the UI consumes it.
+    pub(crate) javascript: Option<JavascriptFrameworkPackage>,
     /// Internal lifecycle graph synthesized from the discovered project.
     pub plan: LifecycleProjectPlan,
 }
@@ -55,6 +60,7 @@ struct CargoPackage {
     name: String,
     version: String,
     manifest_path: PathBuf,
+    source: Option<String>,
     #[serde(default)]
     metadata: Value,
     targets: Vec<CargoTarget>,
@@ -153,12 +159,35 @@ pub fn discover_lifecycle_project(
         .filter(|name| !name.is_empty())
         .unwrap_or(&application.package)
         .to_string();
+    let ui = root
+        .join("ui")
+        .join("package.json")
+        .is_file()
+        .then(|| PathBuf::from("ui"));
+    let javascript = ui
+        .as_ref()
+        .map(|ui| discover_javascript_framework(&root.join(ui)))
+        .transpose()?
+        .flatten();
     let sources = workspace_sources(&root, &workspace_packages)?;
-    let source_identity = source_identity(distributed, &executable)?;
+    let identities = framework_identities(
+        distributed,
+        &distributed_root,
+        &executable,
+        javascript.as_ref(),
+    )?;
+    let executable_identity = fs::read(&executable)
+        .map(|bytes| digest_bytes(&bytes))
+        .map_err(|error| {
+            LifecycleError::new(format!(
+                "failed to read distributed executable `{}`: {error}",
+                executable.display()
+            ))
+        })?;
     let executor_identity = digest_bytes(
         format!(
             "distributed-describe-v1\0{}\0{}\0{}",
-            source_identity, application.package, application.entrypoint
+            executable_identity, application.package, application.entrypoint
         )
         .as_bytes(),
     );
@@ -201,12 +230,14 @@ pub fn discover_lifecycle_project(
         )]),
     };
 
-    let ui = root
-        .join("ui")
-        .join("package.json")
-        .is_file()
-        .then(|| PathBuf::from("ui"));
-    let dev = lifecycle_dev(&runtime, ui.as_deref(), &executable, command_prefix);
+    let dev = lifecycle_dev(
+        &root,
+        &runtime,
+        ui.as_deref(),
+        javascript.as_ref(),
+        &executable,
+        command_prefix,
+    );
     let describe_args = command_prefix
         .iter()
         .map(|arg| (*arg).to_string())
@@ -226,9 +257,9 @@ pub fn discover_lifecycle_project(
         schema_version: LIFECYCLE_BUILD_CONFIG_SCHEMA_VERSION,
         application: project_name.clone(),
         source: DistributedSourceIdentity {
-            rust: source_identity.clone(),
-            cli: source_identity.clone(),
-            javascript: source_identity,
+            rust: identities.rust.identity,
+            cli: identities.cli.identity,
+            javascript: identities.javascript.identity,
         },
         roots: BTreeSet::from([APPLICATION_NODE.to_string()]),
         executors: BTreeMap::from([(
@@ -255,6 +286,7 @@ pub fn discover_lifecycle_project(
         runtime_package: runtime.package,
         runtime_binary: runtime.binary,
         ui,
+        javascript,
         plan: LifecycleProjectPlan {
             root,
             catalog,
@@ -488,31 +520,172 @@ fn portable_path(path: &Path) -> Result<String, LifecycleError> {
     Ok(value)
 }
 
-fn source_identity(package: &CargoPackage, executable: &Path) -> Result<String, LifecycleError> {
-    let manifest = fs::read(&package.manifest_path).map_err(|error| {
+#[derive(Clone, Debug)]
+struct FrameworkComponentIdentity {
+    identity: String,
+    description: String,
+}
+
+#[derive(Clone, Debug)]
+struct FrameworkIdentities {
+    rust: FrameworkComponentIdentity,
+    cli: FrameworkComponentIdentity,
+    javascript: FrameworkComponentIdentity,
+}
+
+fn framework_identities(
+    distributed: &CargoPackage,
+    distributed_root: &Path,
+    executable: &Path,
+    javascript: Option<&JavascriptFrameworkPackage>,
+) -> Result<FrameworkIdentities, LifecycleError> {
+    let rust = match distributed.source.as_deref() {
+        None => checkout_component("rust", &distributed.version, distributed_root)?,
+        Some(source) if source.starts_with("registry+") => {
+            release_component("rust", &distributed.version)
+        }
+        Some(source) => external_component("rust", &distributed.version, source),
+    };
+    let cli_version = env!("CARGO_PKG_VERSION");
+    let cli = match cli_checkout_root(executable) {
+        Some(root) => checkout_component("cli", cli_version, &root)?,
+        None => release_component("cli", cli_version),
+    };
+    let expected_javascript_root = distributed_root
+        .join("js")
+        .canonicalize()
+        .unwrap_or_else(|_| distributed_root.join("js"));
+    let javascript = match javascript {
+        None => rust.clone(),
+        Some(package) => match &package.source {
+            JavascriptPackageSource::Registry => release_component("javascript", &package.version),
+            JavascriptPackageSource::Local { root } if root == &expected_javascript_root => {
+                checkout_component("javascript", &package.version, distributed_root)?
+            }
+            JavascriptPackageSource::Local { root } => {
+                checkout_component("javascript", &package.version, root)?
+            }
+        },
+    };
+    let identities = FrameworkIdentities {
+        rust,
+        cli,
+        javascript,
+    };
+    ensure_framework_compatibility(
+        &identities,
+        &distributed.version,
+        distributed.source.is_none().then_some(distributed_root),
+    )?;
+    Ok(identities)
+}
+
+fn cli_checkout_root(executable: &Path) -> Option<PathBuf> {
+    executable.ancestors().find_map(|root| {
+        root.join("distributed_cli")
+            .join("Cargo.toml")
+            .is_file()
+            .then(|| root.to_path_buf())
+    })
+}
+
+fn ensure_framework_compatibility(
+    identities: &FrameworkIdentities,
+    rust_version: &str,
+    local_root: Option<&Path>,
+) -> Result<(), LifecycleError> {
+    if identities.rust.identity == identities.cli.identity
+        && identities.rust.identity == identities.javascript.identity
+    {
+        return Ok(());
+    }
+    let repair = local_root.map_or_else(
+        || format!(
+            "Install the matching CLI with `cargo install distributed_cli --version {rust_version} --locked --force`."
+        ),
+        |root| format!(
+            "Run this checkout's CLI with `cargo run --manifest-path \"{}/Cargo.toml\" -p distributed_cli --bin distributed -- <build|dev>`.",
+            root.display()
+        ),
+    );
+    let message = format!(
+        "incompatible Distributed framework members:\n  {}\n  {}\n  {}\nRust, CLI, and @hops-ops/distributed are released together. Use the same published version for all three, or resolve every local member from one checkout. {repair}",
+        identities.rust.description,
+        identities.cli.description,
+        identities.javascript.description,
+    );
+    let diagnostic = serde_json::json!({
+        "schema_version": 1,
+        "ok": false,
+        "error": {
+            "code": "CTL-FRAMEWORK-IDENTITY-MISMATCH",
+            "expected": {
+                "component": "rust",
+                "identity": identities.rust.identity.as_str(),
+                "description": identities.rust.description.as_str(),
+            },
+            "observed": {
+                "rust": {
+                    "identity": identities.rust.identity.as_str(),
+                    "description": identities.rust.description.as_str(),
+                },
+                "cli": {
+                    "identity": identities.cli.identity.as_str(),
+                    "description": identities.cli.description.as_str(),
+                },
+                "javascript": {
+                    "identity": identities.javascript.identity.as_str(),
+                    "description": identities.javascript.description.as_str(),
+                },
+            },
+            "affected_components": ["rust", "cli", "javascript"],
+            "repair": repair,
+        },
+    });
+    Err(LifecycleError::new(message).with_diagnostic(diagnostic))
+}
+
+fn release_component(label: &str, version: &str) -> FrameworkComponentIdentity {
+    FrameworkComponentIdentity {
+        identity: digest_bytes(format!("distributed-release\0{version}").as_bytes()),
+        description: format!("{label}: published version={version}"),
+    }
+}
+
+fn checkout_component(
+    label: &str,
+    version: &str,
+    root: &Path,
+) -> Result<FrameworkComponentIdentity, LifecycleError> {
+    let root = root.canonicalize().map_err(|error| {
         LifecycleError::new(format!(
-            "failed to read Distributed Cargo.toml `{}`: {error}",
-            package.manifest_path.display()
+            "failed to resolve Distributed {label} checkout `{}`: {error}",
+            root.display()
         ))
     })?;
-    let executable = fs::read(executable).map_err(|error| {
-        LifecycleError::new(format!(
-            "failed to read distributed executable `{}`: {error}",
-            executable.display()
-        ))
-    })?;
-    let mut bytes = Vec::with_capacity(manifest.len() + executable.len() + package.version.len());
-    bytes.extend_from_slice(package.version.as_bytes());
-    bytes.push(0);
-    bytes.extend_from_slice(&manifest);
-    bytes.push(0);
-    bytes.extend_from_slice(&executable);
-    Ok(digest_bytes(&bytes))
+    Ok(FrameworkComponentIdentity {
+        identity: digest_bytes(
+            format!("distributed-checkout\0{}", root.to_string_lossy()).as_bytes(),
+        ),
+        description: format!(
+            "{label}: local version={version} checkout={}",
+            root.display()
+        ),
+    })
+}
+
+fn external_component(label: &str, version: &str, source: &str) -> FrameworkComponentIdentity {
+    FrameworkComponentIdentity {
+        identity: digest_bytes(format!("distributed-external\0{version}\0{source}").as_bytes()),
+        description: format!("{label}: external version={version} source={source}"),
+    }
 }
 
 fn lifecycle_dev(
+    root: &Path,
     runtime: &RuntimeTarget,
     ui: Option<&Path>,
+    javascript: Option<&JavascriptFrameworkPackage>,
     executable: &Path,
     command_prefix: &[&str],
 ) -> LifecycleDevConfig {
@@ -545,7 +718,7 @@ fn lifecycle_dev(
                 program: executable.to_string_lossy().into_owned(),
                 args: probe_args(command_prefix, api_address),
                 interval_ms: 250,
-                timeout_ms: 15_000,
+                timeout_ms: 14_900,
             }),
         },
     )]);
@@ -583,8 +756,34 @@ fn lifecycle_dev(
                     program: executable.to_string_lossy().into_owned(),
                     args: probe_args(command_prefix, socket_address(&ui_host, &ui_port)),
                     interval_ms: 250,
-                    timeout_ms: 15_000,
+                    timeout_ms: 14_900,
                 }),
+            },
+        );
+    }
+    if let Some(package_root) = javascript.and_then(JavascriptFrameworkPackage::local_root) {
+        let args = command_prefix
+            .iter()
+            .map(|arg| (*arg).to_string())
+            .chain([
+                "__js-watch".to_string(),
+                "--package-root".to_string(),
+                package_root.to_string_lossy().into_owned(),
+                "--project-root".to_string(),
+                root.to_string_lossy().into_owned(),
+            ])
+            .collect();
+        processes.insert(
+            "framework-js".to_string(),
+            LifecycleDevProcess {
+                program: executable.to_string_lossy().into_owned(),
+                args,
+                cwd: None,
+                env: BTreeMap::new(),
+                url: None,
+                restart_on: BTreeSet::new(),
+                ready_after_ms: 100,
+                ready: None,
             },
         );
     }
@@ -633,6 +832,7 @@ mod tests {
             name: name.to_string(),
             version: "0.1.0".to_string(),
             manifest_path: PathBuf::from(format!("/fixture/{name}/Cargo.toml")),
+            source: None,
             metadata,
             targets: targets
                 .iter()
@@ -699,5 +899,82 @@ mod tests {
             probe_args(&["service"], "localhost:5180".to_string()),
             ["service", "__probe", "--address", "localhost:5180"]
         );
+    }
+
+    #[test]
+    fn coordinated_published_versions_share_one_identity() {
+        let identity = release_component("rust", "4.6.0");
+        let identities = FrameworkIdentities {
+            rust: identity.clone(),
+            cli: release_component("cli", "4.6.0"),
+            javascript: release_component("javascript", "4.6.0"),
+        };
+
+        ensure_framework_compatibility(&identities, "4.6.0", None).unwrap();
+    }
+
+    #[test]
+    fn published_version_skew_names_every_component_and_repair() {
+        let identities = FrameworkIdentities {
+            rust: release_component("rust", "4.6.0"),
+            cli: release_component("cli", "4.5.0"),
+            javascript: release_component("javascript", "4.6.0"),
+        };
+
+        let error = ensure_framework_compatibility(&identities, "4.6.0", None).unwrap_err();
+        let diagnostic = error.diagnostic().unwrap();
+        assert_eq!(
+            diagnostic["error"]["code"],
+            "CTL-FRAMEWORK-IDENTITY-MISMATCH"
+        );
+        assert_eq!(
+            diagnostic["error"]["observed"]["cli"]["description"],
+            "cli: published version=4.5.0"
+        );
+        let error = error.to_string();
+
+        assert!(error.contains("rust: published version=4.6.0"));
+        assert!(error.contains("cli: published version=4.5.0"));
+        assert!(error.contains("javascript: published version=4.6.0"));
+        assert!(error.contains("cargo install distributed_cli --version 4.6.0"));
+    }
+
+    #[test]
+    fn newer_cli_is_rejected_against_older_project_packages() {
+        let identities = FrameworkIdentities {
+            rust: release_component("rust", "4.5.0"),
+            cli: release_component("cli", "4.6.0"),
+            javascript: release_component("javascript", "4.5.0"),
+        };
+
+        let error = ensure_framework_compatibility(&identities, "4.5.0", None)
+            .unwrap_err()
+            .to_string();
+
+        assert!(error.contains("rust: published version=4.5.0"));
+        assert!(error.contains("cli: published version=4.6.0"));
+        assert!(error.contains("javascript: published version=4.5.0"));
+    }
+
+    #[test]
+    fn local_skew_points_to_the_checkout_cli() {
+        let checkout = tempfile::tempdir().unwrap();
+        let local = checkout_component("rust", "0.1.0", checkout.path()).unwrap();
+        let identities = FrameworkIdentities {
+            rust: local.clone(),
+            cli: release_component("cli", "4.6.0"),
+            javascript: FrameworkComponentIdentity {
+                identity: local.identity,
+                description: local.description.replace("rust:", "javascript:"),
+            },
+        };
+
+        let error = ensure_framework_compatibility(&identities, "0.1.0", Some(checkout.path()))
+            .unwrap_err()
+            .to_string();
+
+        assert!(error.contains("Run this checkout's CLI"));
+        assert!(error.contains(checkout.path().to_string_lossy().as_ref()));
+        assert!(!error.contains("cargo install distributed_cli --version 0.1.0"));
     }
 }

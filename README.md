@@ -427,8 +427,7 @@ OIDC, SvelteKit SSR, generated clients, live WS. Full runbook:
 # Default: one process (SQLite or Postgres + bus)
 cd tests/e2e-ui
 make up                    # Postgres + Zitadel → e2e-ui.env
-make ui-install            # local JS package + optional WASM demo
-distributed dev            # loads e2e-ui.env; starts Rust + SvelteKit
+distributed dev            # prepares linked JS/WASM; starts Rust + SvelteKit
 # UI  http://localhost:5180
 # API http://127.0.0.1:8791
 
@@ -1850,7 +1849,6 @@ no async blob event handler).
 ```bash
 cd tests/e2e-ui
 make up
-make ui-install
 distributed dev
 # UI http://127.0.0.1:5180  ·  API GraphQL http://127.0.0.1:8791/graphql
 # /todos  /chat  /blob  /admin  /login
@@ -2083,6 +2081,21 @@ cargo test
 distributed describe                  # print the ApplicationManifest as JSON
 distributed schema --dialect postgres # render migration SQL from read models
 ```
+
+For a full application, run `distributed build` or `distributed dev` from its
+Cargo workspace root. The CLI discovers the typed application, runtime binary,
+conventional `ui/` SvelteKit app, and `@hops-ops/distributed` dependency. A
+published app must use the same exact Distributed version in Cargo, the CLI,
+and npm because those artifacts ship as one release; a mismatch fails before
+the build and names all three resolved versions.
+
+A UI may instead use a local dependency such as
+`"@hops-ops/distributed": "file:../../../js"`. When Rust, CLI, and JS resolve
+from the same checkout, the lifecycle installs that package's build
+dependencies, rebuilds stale source, verifies its exported files, and records a
+receipt under the application `.distributed/` directory. `distributed dev`
+keeps the linked package compiled while Vite handles application HMR. There is
+no separate JS preparation command for application authors.
 
 Use the event-storming board as the input:
 
