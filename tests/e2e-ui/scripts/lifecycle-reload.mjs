@@ -14,6 +14,7 @@ const frameworkOriginal = readFileSync(framework, 'utf8');
 const baseURL = process.env.E2E_UI_ORIGIN || 'http://127.0.0.1:5180';
 const apiURL = process.env.E2E_API_ORIGIN || 'http://127.0.0.1:8791';
 const timeoutMs = 120_000;
+const preparingEvents = [];
 
 async function waitFor(predicate, label, timeout = timeoutMs) {
 	const started = Date.now();
@@ -38,8 +39,8 @@ async function transition(page, path, source, expectedReplicaRestore, assertGate
 	assert.equal(before.phase, 'active');
 	await page.evaluate(() => {
 		globalThis.__distributedReloadEvents = [];
-		globalThis.__distributedReloadPreparingEvents = [];
 	});
+	preparingEvents.length = 0;
 	const navigations = [];
 	const onNavigation = (frame) => {
 		if (frame === page.mainFrame()) navigations.push(frame.url());
@@ -59,11 +60,7 @@ async function transition(page, path, source, expectedReplicaRestore, assertGate
 		'pending lifecycle generation'
 	);
 	if (assertGate) {
-		await waitFor(
-			() => page.evaluate(() => globalThis.__distributedReloadPreparingEvents?.length > 0)
-				.catch(() => false),
-			'browser command gate'
-		);
+		await waitFor(() => preparingEvents.length > 0, 'browser command gate');
 		await page.locator('#todo-title').fill(`must-not-dispatch-${Date.now()}`);
 		await page.getByRole('button', { name: /^add$/i }).click();
 		await page.getByText(/paused during a coherent application reload/i).waitFor();
@@ -120,15 +117,17 @@ const context = await browser.newContext({
 });
 await context.addInitScript(() => {
 	globalThis.__distributedReloadEvents = [];
-	globalThis.__distributedReloadPreparingEvents = [];
 	addEventListener('distributed:reload-restored', (event) => {
 		globalThis.__distributedReloadEvents.push(event.detail);
 	});
 	addEventListener('distributed:reload-preparing', (event) => {
-		globalThis.__distributedReloadPreparingEvents.push(event.detail);
+		void globalThis.__distributedRecordReloadPreparing(event.detail);
 	});
 });
 const page = await context.newPage();
+await page.exposeFunction('__distributedRecordReloadPreparing', (detail) => {
+	preparingEvents.push(detail);
+});
 page.on('console', (message) => {
 	if (message.type() === 'error' || message.text().includes('Distributed reload')) {
 		console.error(`browser console ${message.type()}: ${message.text()}`);
