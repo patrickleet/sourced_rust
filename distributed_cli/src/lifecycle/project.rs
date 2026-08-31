@@ -21,6 +21,7 @@ use super::{
 
 const APPLICATION_NODE: &str = "application";
 const APPLICATION_OUTPUT: &str = "artifacts/application-manifest.json";
+const COLD_RUNTIME_READY_TIMEOUT_MS: u64 = 300_000;
 
 /// Cargo- and convention-derived inputs for one Distributed application.
 #[derive(Clone, Debug)]
@@ -37,7 +38,8 @@ pub struct DiscoveredLifecycleProject {
     pub runtime_package: String,
     /// Binary started by `distributed dev` and compiled by `distributed build`.
     pub runtime_binary: String,
-    /// Conventional SvelteKit root, when `ui/package.json` exists.
+    /// Canonical SvelteKit root, discovered conventionally or from Cargo
+    /// workspace metadata.
     pub ui: Option<PathBuf>,
     /// Resolved Distributed browser runtime, when the UI consumes it.
     pub(crate) javascript: Option<JavascriptFrameworkPackage>,
@@ -159,17 +161,22 @@ pub fn discover_lifecycle_project(
         .filter(|name| !name.is_empty())
         .unwrap_or(&application.package)
         .to_string();
-    let ui = root
-        .join("ui")
-        .join("package.json")
-        .is_file()
-        .then(|| PathBuf::from("ui"));
+    let ui = discover_ui(&metadata.metadata, &root)?;
     let javascript = ui
         .as_ref()
-        .map(|ui| discover_javascript_framework(&root.join(ui)))
+        .map(|ui| discover_javascript_framework(ui))
         .transpose()?
         .flatten();
-    let sources = workspace_sources(&root, &workspace_packages)?;
+    let mut sources = workspace_sources(&root, &workspace_packages)?;
+    if let Some(receipt) = javascript
+        .as_ref()
+        .and_then(|package| package.lifecycle_receipt(&root))
+    {
+        let receipt = receipt.strip_prefix(&root).map_err(|_| {
+            LifecycleError::new("JavaScript lifecycle receipt escapes the project root")
+        })?;
+        sources.insert(portable_path(receipt)?);
+    }
     let identities = framework_identities(
         distributed,
         &distributed_root,
@@ -314,6 +321,69 @@ fn cargo_metadata(manifest: &Path) -> Result<CargoMetadata, LifecycleError> {
     }
     serde_json::from_slice(&output.stdout)
         .map_err(|error| LifecycleError::new(format!("failed to parse Cargo metadata: {error}")))
+}
+
+pub(crate) fn discover_ui(
+    workspace_metadata: &Value,
+    root: &Path,
+) -> Result<Option<PathBuf>, LifecycleError> {
+    let declared = match workspace_metadata.pointer("/distributed/ui") {
+        None => None,
+        Some(ui) => Some(ui.get("path").and_then(Value::as_str).ok_or_else(|| {
+            LifecycleError::new("workspace Distributed UI metadata requires a string `path`")
+        })?),
+    };
+    let candidate = match declared {
+        Some(path) => {
+            if path.is_empty()
+                || path.trim() != path
+                || Path::new(path).is_absolute()
+                || path.contains('\0')
+            {
+                return Err(LifecycleError::new(
+                    "workspace Distributed UI path must be a non-empty relative path",
+                ));
+            }
+            root.join(path)
+        }
+        None => {
+            let conventional = root.join("ui");
+            if !conventional.join("package.json").is_file() {
+                return Ok(None);
+            }
+            conventional
+        }
+    };
+    let ui = candidate.canonicalize().map_err(|error| {
+        LifecycleError::new(format!(
+            "failed to resolve Distributed UI `{}`: {error}",
+            candidate.display()
+        ))
+    })?;
+    if !ui.join("package.json").is_file() {
+        return Err(LifecycleError::new(format!(
+            "Distributed UI `{}` has no package.json",
+            ui.display()
+        )));
+    }
+    if !ui.starts_with(root) {
+        let repository = root
+            .ancestors()
+            .find(|ancestor| ancestor.join(".git").exists())
+            .ok_or_else(|| {
+                LifecycleError::new(
+                    "an external Distributed UI requires the Cargo workspace to be inside a Git repository",
+                )
+            })?;
+        if !ui.starts_with(repository) {
+            return Err(LifecycleError::new(format!(
+                "Distributed UI `{}` resolves outside repository `{}`",
+                ui.display(),
+                repository.display()
+            )));
+        }
+    }
+    Ok(Some(ui))
 }
 
 fn discover_application(
@@ -693,8 +763,11 @@ fn lifecycle_dev(
     let api_address = loopback_address(&bind);
     let api_url = format!("http://{api_address}");
     let ui_host = std::env::var("UI_HOST").unwrap_or_else(|_| "localhost".to_string());
+    let ui_bind = std::env::var("UI_BIND").unwrap_or_else(|_| ui_host.clone());
     let ui_port = std::env::var("UI_PORT").unwrap_or_else(|_| "5180".to_string());
-    let ui_url = format!("http://{ui_host}:{ui_port}");
+    let ui_url = std::env::var("UI_URL")
+        .or_else(|_| std::env::var("AUTH_URL"))
+        .unwrap_or_else(|_| format!("http://{ui_host}:{ui_port}"));
     let mut processes = BTreeMap::from([(
         "api".to_string(),
         LifecycleDevProcess {
@@ -707,6 +780,7 @@ fn lifecycle_dev(
                 runtime.binary.clone(),
             ],
             cwd: None,
+            external_cwd: false,
             env: BTreeMap::from([
                 ("BIND".to_string(), bind.clone()),
                 ("BIND_ADDR".to_string(), bind),
@@ -718,11 +792,23 @@ fn lifecycle_dev(
                 program: executable.to_string_lossy().into_owned(),
                 args: probe_args(command_prefix, api_address),
                 interval_ms: 250,
-                timeout_ms: 14_900,
+                // `cargo run` may populate an empty target directory in a fresh
+                // worktree or development container. A real process failure is
+                // observed immediately; this budget only permits valid cold
+                // compilation to reach the readiness probe.
+                timeout_ms: COLD_RUNTIME_READY_TIMEOUT_MS,
             }),
         },
     )]);
     if let Some(ui) = ui {
+        let (cwd, external_cwd) = match ui.strip_prefix(root) {
+            Ok(relative) if relative.as_os_str().is_empty() => (None, false),
+            Ok(relative) => (
+                Some(portable_path(relative).expect("validated UI path")),
+                false,
+            ),
+            Err(_) => (Some(ui.to_string_lossy().into_owned()), true),
+        };
         processes.insert(
             "ui".to_string(),
             LifecycleDevProcess {
@@ -732,11 +818,12 @@ fn lifecycle_dev(
                     "dev".to_string(),
                     "--".to_string(),
                     "--host".to_string(),
-                    ui_host.clone(),
+                    ui_bind.clone(),
                     "--port".to_string(),
                     ui_port.clone(),
                 ],
-                cwd: Some(ui.to_string_lossy().into_owned()),
+                cwd,
+                external_cwd,
                 env: BTreeMap::from([
                     ("DISTRIBUTED_API_ORIGIN".to_string(), api_url.clone()),
                     ("E2E_API_ORIGIN".to_string(), api_url.clone()),
@@ -754,9 +841,12 @@ fn lifecycle_dev(
                 ready_after_ms: 100,
                 ready: Some(LifecycleDevProbe {
                     program: executable.to_string_lossy().into_owned(),
-                    args: probe_args(command_prefix, socket_address(&ui_host, &ui_port)),
+                    args: probe_args(
+                        command_prefix,
+                        loopback_address(&socket_address(&ui_bind, &ui_port)),
+                    ),
                     interval_ms: 250,
-                    timeout_ms: 14_900,
+                    timeout_ms: 60_000,
                 }),
             },
         );
@@ -779,6 +869,7 @@ fn lifecycle_dev(
                 program: executable.to_string_lossy().into_owned(),
                 args,
                 cwd: None,
+                external_cwd: false,
                 env: BTreeMap::new(),
                 url: None,
                 restart_on: BTreeSet::new(),
@@ -791,6 +882,7 @@ fn lifecycle_dev(
         poll_ms: 500,
         debounce_ms: 250,
         shutdown_ms: 5_000,
+        prepare_ms: 30_000,
         processes,
     }
 }
@@ -899,6 +991,80 @@ mod tests {
             probe_args(&["service"], "localhost:5180".to_string()),
             ["service", "__probe", "--address", "localhost:5180"]
         );
+    }
+
+    #[test]
+    fn discovered_runtime_allows_a_cold_cargo_build() {
+        assert_eq!(COLD_RUNTIME_READY_TIMEOUT_MS, 5 * 60 * 1_000);
+    }
+
+    #[test]
+    fn workspace_metadata_can_select_a_repository_local_sibling_ui() {
+        let repository = tempfile::tempdir().unwrap();
+        fs::write(repository.path().join(".git"), "gitdir: fixture").unwrap();
+        let application = repository.path().join("services/application");
+        let ui = repository.path().join("clients/web");
+        fs::create_dir_all(&application).unwrap();
+        fs::create_dir_all(&ui).unwrap();
+        fs::write(ui.join("package.json"), "{}").unwrap();
+
+        let discovered = discover_ui(
+            &serde_json::json!({
+                "distributed": { "ui": { "path": "../../clients/web" } }
+            }),
+            &application.canonicalize().unwrap(),
+        )
+        .unwrap()
+        .unwrap();
+
+        assert_eq!(discovered, ui.canonicalize().unwrap());
+    }
+
+    #[test]
+    fn workspace_metadata_rejects_a_ui_outside_the_repository() {
+        let repository = tempfile::tempdir().unwrap();
+        fs::write(repository.path().join(".git"), "gitdir: fixture").unwrap();
+        let application = repository.path().join("application");
+        fs::create_dir_all(&application).unwrap();
+        let outside = tempfile::tempdir().unwrap();
+        fs::write(outside.path().join("package.json"), "{}").unwrap();
+        let relative = format!(
+            "../../{}",
+            outside.path().file_name().unwrap().to_string_lossy()
+        );
+
+        let error = discover_ui(
+            &serde_json::json!({
+                "distributed": { "ui": { "path": relative } }
+            }),
+            &application.canonicalize().unwrap(),
+        )
+        .unwrap_err();
+
+        assert!(error.to_string().contains("outside repository"), "{error}");
+    }
+
+    #[test]
+    fn discovered_external_ui_is_an_explicit_supervisor_process_root() {
+        let application = tempfile::tempdir().unwrap();
+        let ui = tempfile::tempdir().unwrap();
+        let executable = std::env::current_exe().unwrap();
+        let config = lifecycle_dev(
+            application.path(),
+            &RuntimeTarget {
+                package: "fixture-runner".into(),
+                binary: "fixture".into(),
+            },
+            Some(ui.path()),
+            None,
+            &executable,
+            &[],
+        );
+
+        config.validate().unwrap();
+        let process = &config.processes["ui"];
+        assert!(process.external_cwd);
+        assert_eq!(process.cwd.as_deref(), ui.path().to_str());
     }
 
     #[test]

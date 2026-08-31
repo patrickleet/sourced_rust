@@ -133,6 +133,16 @@ async fn command_handler(
     headers: HeaderMap,
     Json(body): Json<Value>,
 ) -> impl IntoResponse {
+    if !super::lifecycle_mutations_open() {
+        return (
+            StatusCode::SERVICE_UNAVAILABLE,
+            Json(json!({
+                "code": "APPLICATION_RELOADING",
+                "error": "application generation is not active"
+            })),
+        )
+            .into_response();
+    }
     let session = session_from_headers(&headers);
     #[cfg(feature = "graphql")]
     let wait_path = match super::wait_path::parse_wait_path_body(&body) {

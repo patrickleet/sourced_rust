@@ -1,5 +1,18 @@
 export { authFromPageData, type PageGraphqlData } from './auth.js';
 export {
+	distributedReloadLifecycle,
+	registerDistributedReloadClient,
+	validateDistributedReloadLocation,
+	validateDistributedReloadState,
+	type DistributedReloadLifecycle,
+	type DistributedReloadOptions,
+	type DistributedReloadStateDeclaration
+} from './lifecycle.js';
+export {
+	parseDistributedGenerationEnvelope,
+	type DistributedGenerationEnvelope
+} from '../generation.js';
+export {
 	defineDistributedSvelteKitOperation,
 	provideDistributedSvelteKitClient,
 	useDistributedSvelteKitClient,

@@ -2,6 +2,11 @@ use super::*;
 
 impl GraphqlEngine {
     pub async fn execute(&self, session: &Session, mut request: Request) -> Response {
+        if selected_operation_type(&mut request) == Some(async_graphql::parser::types::OperationType::Mutation)
+            && !crate::microsvc::lifecycle_mutations_open()
+        {
+            return lifecycle_mutation_rejected();
+        }
         let authority = match resolve_execution_authority(&self.inner, session, &request) {
             Ok(authority) => authority,
             Err(()) => {
@@ -65,6 +70,11 @@ impl GraphqlEngine {
         session: &Session,
         mut request: Request,
     ) -> BoxStream<'static, async_graphql::Response> {
+        if selected_operation_type(&mut request) == Some(async_graphql::parser::types::OperationType::Mutation)
+            && !crate::microsvc::lifecycle_mutations_open()
+        {
+            return stream::once(async { lifecycle_mutation_rejected() }).boxed();
+        }
         let authority = match resolve_execution_authority(&self.inner, session, &request) {
             Ok(authority) => authority,
             Err(()) => {
@@ -266,5 +276,54 @@ impl GraphqlEngine {
             .set_requested_live_resume(parse_requested_live_resume(request))
             .map_err(|_| ())?;
         Ok(Some(accumulator))
+    }
+}
+
+fn selected_operation_type(
+    request: &mut Request,
+) -> Option<async_graphql::parser::types::OperationType> {
+    let requested = request.operation_name.clone();
+    let document = request.parsed_query().ok()?;
+    let mut operations = document.operations.iter();
+    if let Some(requested) = requested.as_deref() {
+        return operations
+            .find(|(name, _)| name.map(|name| name.as_str()) == Some(requested))
+            .map(|(_, operation)| operation.node.ty);
+    }
+    let operation = operations.next()?.1;
+    if operations.next().is_some() {
+        return None;
+    }
+    Some(operation.node.ty)
+}
+
+fn lifecycle_mutation_rejected() -> Response {
+    Response::from_errors(vec![ServerError::new(
+        "application generation is reloading; mutation dispatch is unavailable",
+        None,
+    )])
+}
+
+#[cfg(test)]
+mod lifecycle_request_tests {
+    use super::selected_operation_type;
+    use async_graphql::parser::types::OperationType;
+    use async_graphql::Request;
+
+    #[test]
+    fn selected_operation_type_fails_closed_for_ambiguous_documents() {
+        let mut mutation = Request::new("mutation Write { __typename }");
+        assert_eq!(selected_operation_type(&mut mutation), Some(OperationType::Mutation));
+
+        let mut selected = Request::new(
+            "query Read { __typename } mutation Write { __typename }",
+        )
+        .operation_name("Write");
+        assert_eq!(selected_operation_type(&mut selected), Some(OperationType::Mutation));
+
+        let mut ambiguous = Request::new(
+            "query Read { __typename } mutation Write { __typename }",
+        );
+        assert_eq!(selected_operation_type(&mut ambiguous), None);
     }
 }

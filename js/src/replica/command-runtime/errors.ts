@@ -22,12 +22,14 @@ export function commandRuntimeErrorMessage(
 			return 'Command response violated the generated protocol contract';
 		case 'REPLICA_COMMAND_REJECTED':
 			return 'Command was rejected';
-			case 'REPLICA_COMMAND_SCOPE_INVALIDATED':
-				return 'Command authorization scope changed';
-			case 'REPLICA_COMMAND_STATUS_UNAVAILABLE':
-				return 'Generated command status transport is unavailable';
-			case 'REPLICA_COMMAND_TRANSPORT_AMBIGUOUS':
-				return 'Command transport outcome is ambiguous';
+		case 'REPLICA_COMMAND_RELOADING':
+			return 'Command dispatch is paused during a coherent application reload';
+		case 'REPLICA_COMMAND_SCOPE_INVALIDATED':
+			return 'Command authorization scope changed';
+		case 'REPLICA_COMMAND_STATUS_UNAVAILABLE':
+			return 'Generated command status transport is unavailable';
+		case 'REPLICA_COMMAND_TRANSPORT_AMBIGUOUS':
+			return 'Command transport outcome is ambiguous';
 		}
 }
 

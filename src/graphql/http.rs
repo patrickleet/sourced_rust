@@ -267,11 +267,26 @@ fn unauthorized_response() -> Response {
         .into_response()
 }
 
+fn lifecycle_reloading_response() -> Response {
+    (
+        axum::http::StatusCode::SERVICE_UNAVAILABLE,
+        [("content-type", "application/json")],
+        r#"{"errors":[{"message":"application generation is reloading","extensions":{"code":"APPLICATION_RELOADING"}}]}"#,
+    )
+        .into_response()
+}
+
 async fn graphql_handler(
     State(engine): State<Arc<GraphqlEngine>>,
     headers: axum::http::HeaderMap,
     req: GraphQLRequest,
 ) -> Response {
+    let request = req.into_inner();
+    if !crate::microsvc::lifecycle_mutations_open()
+        && matches!(websocket_operation_type(&request), Ok(OperationType::Mutation))
+    {
+        return lifecycle_reloading_response();
+    }
     let identity = match resolve_identity_with_validator(
         &headers,
         engine.identity_config(),
@@ -285,7 +300,7 @@ async fn graphql_handler(
     let (session, principal) = identity.into_parts();
     // GraphiQL demo headers only apply under DevHeaders; other modes ignore them for AuthZ.
     let _ = engine.identity_config().mode == IdentityMode::DevHeaders;
-    let request = request_with_principal(req.into_inner(), principal);
+    let request = request_with_principal(request, principal);
     let response = engine.execute(&session, request).await;
     GraphQLResponse::from(response).into_response()
 }
@@ -295,6 +310,12 @@ async fn graphql_handler_with_service(
     headers: axum::http::HeaderMap,
     req: GraphQLRequest,
 ) -> Response {
+    let request = req.into_inner();
+    if !crate::microsvc::lifecycle_mutations_open()
+        && matches!(websocket_operation_type(&request), Ok(OperationType::Mutation))
+    {
+        return lifecycle_reloading_response();
+    }
     let identity = match resolve_identity_with_validator(
         &headers,
         state.engine.identity_config(),
@@ -306,7 +327,7 @@ async fn graphql_handler_with_service(
         Err(AuthError::Unauthorized) => return unauthorized_response(),
     };
     let (session, principal) = identity.into_parts();
-    let mut request = request_with_principal(req.into_inner(), principal);
+    let mut request = request_with_principal(request, principal);
     if let Some(host) = &state.host {
         request = request.data(Arc::clone(host));
     }
@@ -320,6 +341,12 @@ pub async fn microsvc_graphql_handler(
     headers: axum::http::HeaderMap,
     req: GraphQLRequest,
 ) -> Response {
+    let request = req.into_inner();
+    if !crate::microsvc::lifecycle_mutations_open()
+        && matches!(websocket_operation_type(&request), Ok(OperationType::Mutation))
+    {
+        return lifecycle_reloading_response();
+    }
     let engine = service
         .graphql_engine()
         .expect("graphql route mounted without engine");
@@ -335,7 +362,7 @@ pub async fn microsvc_graphql_handler(
     };
     let (session, principal) = identity.into_parts();
     let host: SharedCommandHost = Arc::new(LocalCommandHost::new(Arc::clone(&service)));
-    let request = request_with_principal(req.into_inner(), principal).data(host);
+    let request = request_with_principal(request, principal).data(host);
     let response = engine.execute(&session, request).await;
     GraphQLResponse::from(response).into_response()
 }

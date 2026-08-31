@@ -24,10 +24,32 @@
 	let appliedHydration: SveltekitReplicaHydration | undefined =
 		initialData.distributed;
 	let hydrationTimer: ReturnType<typeof setTimeout> | undefined;
+	const lifecycleDemoState: { value: string } =
+		browser && (globalThis as typeof globalThis & Record<string, unknown>)
+			.__distributedReloadState !== undefined
+			? (globalThis as typeof globalThis & Record<string, unknown>)
+					.__distributedReloadState as { value: string }
+			: { value: 'initial' };
+	if (browser) {
+		const diagnostics = globalThis as typeof globalThis & Record<string, unknown>;
+		diagnostics.__distributedReloadState = lifecycleDemoState;
+	}
 
 	const client = provideDistributed({
 		session: pageData.session,
 		browser,
+		reload: {
+			state: [
+				{
+					key: 'e2e-ui.lifecycle-demo',
+					fingerprint: 'v1',
+					capture: () => lifecycleDemoState.value,
+					restore: (value) => {
+						if (typeof value === 'string') lifecycleDemoState.value = value;
+					}
+				}
+			]
+		},
 		...(initialData.distributed !== undefined &&
 		initialData.distributedAuthority !== undefined
 			? {

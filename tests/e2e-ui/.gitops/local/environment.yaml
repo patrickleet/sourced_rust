@@ -19,12 +19,6 @@ spec:
         identity:
           enabled: true
           oidcGeneration: 1
-    - path: ui/.gitops/local
-      type: helm
-      values:
-        identity:
-          enabled: true
-          oidcGeneration: 1
     # Test identities are an explicit, independently rendered deploy.
     - path: ui/.gitops/test-users
       type: helm

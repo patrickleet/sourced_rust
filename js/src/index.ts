@@ -6,6 +6,10 @@ export type {
 	GraphqlVariables
 } from './types.js';
 export {
+	parseDistributedGenerationEnvelope,
+	type DistributedGenerationEnvelope
+} from './generation.js';
+export {
 	DISTRIBUTED_PROTOCOL_VERSION,
 	DistributedProtocolError,
 	compareDistributedDecimal,

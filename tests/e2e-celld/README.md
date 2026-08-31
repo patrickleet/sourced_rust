@@ -61,18 +61,22 @@ Eventual projectors and `@live` use **Postgres** from `e2e-ui.env`
 (`DATABASE_URL`). There is no SQLite read-model path. Cells still keep
 private SQLite per Durable Object. Override with `E2E_CELLD_DATABASE_URL`.
 
-`make run` reloads on its own:
+`make run` delegates the application to `distributed dev`:
 
 | Surface | How |
 |---|---|
-| Svelte UI | Vite HMR (`npm run dev`) |
-| GraphQL host | `cargo-watch` on `src/`, e2e-celld crates, and domain crates |
+| Svelte UI | Lifecycle-owned sibling UI + Vite HMR |
+| GraphQL host | Coherent Distributed generation rebuild/restart |
 | Cell worker | `cargo-watch` → `worker-build --dev` + `celld deploy` + compose restart |
 
-`WATCH=0` / `WATCH_WORKER=0` turn those cargo-watch loops off. Compose
+`WATCH_WORKER=0` turns the independent worker loop off. Compose
 `CELLD_WATCH` is the node's SQLite working directory, not a source watcher
 — celld loads a deployment at startup, so worker changes need a restart
 (the watch target does that). First `cargo-watch` install: `cargo install cargo-watch`.
+
+The Cargo workspace declares `../e2e-ui/ui` as its UI component. Both
+`distributed build` and `distributed dev` resolve it within the repository;
+CI and users do not launch a second unmanaged `npm run dev` process.
 
 Open `http://localhost:5180`. The navbar shows a **celld** badge. Sign in
 (`alice` / `Password1!` when Zitadel is up). Todos create/complete and

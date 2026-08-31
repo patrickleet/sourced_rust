@@ -7,20 +7,23 @@ use std::path::{Path, PathBuf};
 use std::process::{Child, Command, Stdio};
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Arc;
-use std::time::{Duration, Instant};
+use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 
 use crate::contracts::ContractCatalog;
 
-use super::build::lifecycle_input_snapshot;
+use super::build::{lifecycle_input_snapshot, resolve_output};
 use super::graph::LifecycleErrorReason;
 use super::{
-    run_lifecycle_project_build, validate_portable_path, validate_stable_value,
-    LifecycleBuildConfig, LifecycleBuildOptions, LifecycleBuildReport, LifecycleBuildRequest,
-    LifecycleError, LifecycleGraph, LifecycleProjectPlan,
+    activate_lifecycle_project_generation, run_lifecycle_project_build, validate_portable_path,
+    validate_stable_value, LifecycleActivation, LifecycleBuildConfig, LifecycleBuildOptions,
+    LifecycleBuildReport, LifecycleBuildRequest, LifecycleError, LifecycleGraph,
+    LifecycleProjectPlan,
 };
 
 const MAX_DEV_PROCESSES: usize = 64;
 const MAX_DEV_INTERVAL: Duration = Duration::from_secs(30);
+const MAX_DEV_PROBE_TIMEOUT: Duration = Duration::from_secs(300);
+const MAX_DEV_READINESS_TOTAL: Duration = Duration::from_secs(361);
 
 fn default_poll_ms() -> u64 {
     200
@@ -38,6 +41,10 @@ fn default_shutdown_ms() -> u64 {
     5_000
 }
 
+fn default_prepare_ms() -> u64 {
+    30_000
+}
+
 #[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
 #[serde(deny_unknown_fields)]
 pub struct LifecycleDevProcess {
@@ -47,6 +54,10 @@ pub struct LifecycleDevProcess {
     /// Working directory relative to the lifecycle root.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub cwd: Option<String>,
+    /// Permit an absolute working directory selected by trusted project
+    /// discovery. Ordinary lifecycle files remain root-confined by default.
+    #[serde(skip)]
+    pub external_cwd: bool,
     /// Process-specific environment. Values may use lifecycle placeholders.
     #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
     pub env: BTreeMap<String, String>,
@@ -85,6 +96,9 @@ pub struct LifecycleDevConfig {
     pub debounce_ms: u64,
     #[serde(default = "default_shutdown_ms")]
     pub shutdown_ms: u64,
+    /// Maximum browser capsule preparation window for coherent reloads.
+    #[serde(default = "default_prepare_ms")]
+    pub prepare_ms: u64,
     pub processes: BTreeMap<String, LifecycleDevProcess>,
 }
 
@@ -94,6 +108,7 @@ impl LifecycleDevConfig {
             ("poll", self.poll_ms),
             ("debounce", self.debounce_ms),
             ("shutdown", self.shutdown_ms),
+            ("prepare", self.prepare_ms),
         ] {
             if value == 0 || Duration::from_millis(value) > MAX_DEV_INTERVAL {
                 return Err(LifecycleError::new(format!(
@@ -111,17 +126,30 @@ impl LifecycleDevConfig {
             .values()
             .map(readiness_budget_ms)
             .sum::<u64>()
-            > MAX_DEV_INTERVAL.as_millis() as u64
+            > MAX_DEV_READINESS_TOTAL.as_millis() as u64
         {
             return Err(LifecycleError::new(
-                "total lifecycle dev readiness delay must not exceed 30s",
+                "total lifecycle dev readiness delay must not exceed 361s",
             ));
         }
         for (name, process) in &self.processes {
             validate_stable_value(name, "lifecycle dev process name")?;
             validate_stable_value(&process.program, "lifecycle dev process program")?;
             if let Some(cwd) = &process.cwd {
-                validate_portable_path(cwd, "lifecycle dev process cwd")?;
+                if process.external_cwd {
+                    let cwd = Path::new(cwd);
+                    if !cwd.is_absolute() || cwd.as_os_str().as_encoded_bytes().contains(&0) {
+                        return Err(LifecycleError::new(
+                            "external lifecycle dev process cwd must be an absolute path",
+                        ));
+                    }
+                } else {
+                    validate_portable_path(cwd, "lifecycle dev process cwd")?;
+                }
+            } else if process.external_cwd {
+                return Err(LifecycleError::new(
+                    "external lifecycle dev process cwd requires cwd",
+                ));
             }
             validate_process_env(name, &process.env)?;
             if let Some(url) = &process.url {
@@ -150,7 +178,7 @@ impl LifecycleDevConfig {
                     || probe.interval_ms == 0
                     || probe.timeout_ms == 0
                     || probe.interval_ms > probe.timeout_ms
-                    || Duration::from_millis(probe.timeout_ms) > MAX_DEV_INTERVAL
+                    || Duration::from_millis(probe.timeout_ms) > MAX_DEV_PROBE_TIMEOUT
                 {
                     return Err(LifecycleError::new(format!(
                         "lifecycle dev process `{name}` readiness probe is out of bounds"
@@ -248,7 +276,7 @@ pub fn run_lifecycle_project_dev(
         LifecycleError::new(format!("failed to resolve lifecycle dev root: {error}"))
     })?;
     let config = &options.project.config;
-    let dev = config.dev.clone().ok_or_else(|| {
+    let mut dev = config.dev.clone().ok_or_else(|| {
         LifecycleError::new("lifecycle project has no development process configuration")
     })?;
     dev.validate()?;
@@ -262,6 +290,14 @@ pub fn run_lifecycle_project_dev(
     initial_options.activation_inputs = None;
     initial_options.cancel = Some(Arc::clone(&options.stop));
     let initial = run_lifecycle_project_build(&options.project, &initial_options)?;
+    let state = DevStateStore::new(&root, &options.project.out)?;
+    state.write_active(&initial)?;
+    for process in dev.processes.values_mut() {
+        process.env.insert(
+            "DISTRIBUTED_LIFECYCLE_DIR".to_string(),
+            state.root.to_string_lossy().into_owned(),
+        );
+    }
     let mut children = ChildSet::start(&root, &dev, &initial, &options.stop)?;
     if options.progress {
         for (name, process) in &dev.processes {
@@ -277,6 +313,7 @@ pub fn run_lifecycle_project_dev(
     }
     let mut snapshot = lifecycle_input_snapshot(&root, catalog, &graph)?;
     let mut final_generation = initial.generation_id.clone();
+    let mut active = initial.clone();
     let mut rebuilds = 0;
     let mut restarts = dev
         .processes
@@ -316,6 +353,7 @@ pub fn run_lifecycle_project_dev(
             rebuild_options.nodes = Some(invalidated.clone());
             let submitted_inputs = latest.clone();
             rebuild_options.activation_inputs = Some(submitted_inputs.clone());
+            rebuild_options.activation = LifecycleActivation::Deferred;
             let cancel = Arc::new(AtomicBool::new(false));
             rebuild_options.cancel = Some(Arc::clone(&cancel));
             let build_project = options.project.clone();
@@ -371,9 +409,38 @@ pub fn run_lifecycle_project_dev(
                 Err(error) => return Err(error),
             };
             rebuilds += 1;
-            final_generation = generation.generation_id.clone();
             if options.stop.load(Ordering::SeqCst) {
                 return Ok(());
+            }
+            // A generation may be attempted more than once. Scope browser
+            // acknowledgements to this attempt so a persisted response from a
+            // rejected/superseded attempt can never authorize the next one.
+            let transition = state.begin_transition()?;
+            state.write_preparing(&active, &generation, transition.id(), dev.prepare_ms)?;
+            if let Err(error) = state.wait_for_prepare(
+                transition.id(),
+                Duration::from_millis(dev.prepare_ms),
+                &options.stop,
+            ) {
+                state.write_active(&active)?;
+                if options.stop.load(Ordering::SeqCst)
+                    && error.reason() == LifecycleErrorReason::Canceled
+                {
+                    return Ok(());
+                }
+                children.ensure_running().map_err(|serving| {
+					LifecycleError::new(format!(
+						"pending generation preparation failed: {error}; prior generation is no longer serving: {serving}"
+					))
+				})?;
+                if options.progress {
+                    eprintln!(
+						"lifecycle dev: rejected generation={} during preparation; prior generation remains active: {}",
+						generation.generation_id, error
+					);
+                }
+                snapshot = submitted_inputs;
+                continue;
             }
             let restarting = dev
                 .processes
@@ -381,9 +448,10 @@ pub fn run_lifecycle_project_dev(
                 .filter(|(_, process)| !process.restart_on.is_disjoint(&invalidated))
                 .map(|(name, _)| name.clone())
                 .collect::<Vec<_>>();
-            if let Err(error) = children.restart_invalidated(
+            if let Err(error) = children.restart_transactional(
                 &root,
                 &dev,
+                &active,
                 &generation,
                 &invalidated,
                 &mut restarts,
@@ -392,10 +460,57 @@ pub fn run_lifecycle_project_dev(
                 if options.stop.load(Ordering::SeqCst)
                     && error.reason() == LifecycleErrorReason::Canceled
                 {
+                    state.write_active(&active)?;
                     return Ok(());
                 }
-                return Err(error);
+                state.write_active(&active)?;
+                children.ensure_running().map_err(|serving| {
+					LifecycleError::new(format!(
+						"pending generation readiness failed: {error}; prior generation rollback is not serving: {serving}"
+					))
+				})?;
+                if options.progress {
+                    eprintln!(
+						"lifecycle dev: rejected generation={} during readiness; prior generation remains active: {}",
+						generation.generation_id, error
+					);
+                }
+                snapshot = submitted_inputs;
+                continue;
             }
+            if let Err(error) = activate_lifecycle_project_generation(
+                &options.project,
+                &generation,
+                options.build.lock_timeout,
+            ) {
+                let rollback = children.replace_generation(
+                    &root,
+                    &dev,
+                    &generation,
+                    &active,
+                    &invalidated,
+                    &options.stop,
+                );
+                return match rollback {
+					Ok(()) => {
+						state.write_active(&active)?;
+						if options.progress {
+							eprintln!(
+								"lifecycle dev: rejected generation={} during activation; prior generation remains active: {}",
+								generation.generation_id, error
+							);
+						}
+						snapshot = submitted_inputs;
+						continue;
+					}
+                    Err(rollback) => Err(LifecycleError::new(format!(
+                        "failed to activate pending generation: {error}; process rollback also failed: {rollback}"
+                    ))),
+                };
+            }
+            final_generation = generation.generation_id.clone();
+            active = generation.clone();
+            state.write_active(&active)?;
             if options.progress {
                 eprintln!(
                     "lifecycle dev: activated generation={} invalidated={} restarted={}",
@@ -422,6 +537,299 @@ pub fn run_lifecycle_project_dev(
         rebuilds,
         restarts,
     })
+}
+
+#[derive(Serialize)]
+#[serde(rename_all = "camelCase")]
+struct DevGenerationState<'a> {
+    generation_id: &'a str,
+    release_id: &'a str,
+    topology_id: &'a str,
+    compatibility_id: &'a str,
+}
+
+#[derive(Serialize)]
+#[serde(rename_all = "camelCase")]
+struct DevLifecycleState<'a> {
+    schema_version: u32,
+    phase: &'static str,
+    active: DevGenerationState<'a>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pending: Option<DevGenerationState<'a>>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    transition_id: Option<&'a str>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    deadline_unix_ms: Option<u64>,
+}
+
+struct DevStateStore {
+    root: PathBuf,
+    state: PathBuf,
+}
+
+impl DevStateStore {
+    fn new(project_root: &Path, output: &Path) -> Result<Self, LifecycleError> {
+        let root = resolve_output(project_root, output)?;
+        fs::create_dir_all(root.join("dev-control/participants"))
+            .map_err(dev_io("create lifecycle participant directory"))?;
+        fs::create_dir_all(root.join("dev-control/acks"))
+            .map_err(dev_io("create lifecycle acknowledgement directory"))?;
+        Ok(Self {
+            state: root.join("dev.json"),
+            root,
+        })
+    }
+
+    fn write_active(&self, active: &LifecycleBuildReport) -> Result<(), LifecycleError> {
+        self.write(&DevLifecycleState {
+            schema_version: 1,
+            phase: "active",
+            active: generation_state(active),
+            pending: None,
+            transition_id: None,
+            deadline_unix_ms: None,
+        })
+    }
+
+    fn begin_transition(&self) -> Result<DevTransition, LifecycleError> {
+        let directory = tempfile::Builder::new()
+            .prefix("transition-")
+            .tempdir_in(self.root.join("dev-control/acks"))
+            .map_err(dev_io(
+                "create lifecycle transition acknowledgement directory",
+            ))?;
+        let id = directory
+            .path()
+            .file_name()
+            .and_then(|name| name.to_str())
+            .filter(|name| safe_control_id(name))
+            .ok_or_else(|| LifecycleError::new("temporary lifecycle transition ID is invalid"))?
+            .to_string();
+        Ok(DevTransition {
+            id,
+            _directory: directory,
+        })
+    }
+
+    fn write_preparing(
+        &self,
+        active: &LifecycleBuildReport,
+        pending: &LifecycleBuildReport,
+        transition_id: &str,
+        prepare_ms: u64,
+    ) -> Result<(), LifecycleError> {
+        let deadline = unix_ms()?.saturating_add(prepare_ms);
+        self.write(&DevLifecycleState {
+            schema_version: 1,
+            phase: "preparing",
+            active: generation_state(active),
+            pending: Some(generation_state(pending)),
+            transition_id: Some(transition_id),
+            deadline_unix_ms: Some(deadline),
+        })
+    }
+
+    fn write(&self, state: &DevLifecycleState<'_>) -> Result<(), LifecycleError> {
+        let bytes = serde_json::to_vec(state).map_err(|error| {
+            LifecycleError::new(format!("serialize lifecycle dev state: {error}"))
+        })?;
+        let mut file = tempfile::NamedTempFile::new_in(&self.root)
+            .map_err(dev_io("create lifecycle dev state"))?;
+        use std::io::Write as _;
+        file.write_all(&bytes)
+            .map_err(dev_io("write lifecycle dev state"))?;
+        file.as_file()
+            .sync_all()
+            .map_err(dev_io("sync lifecycle dev state"))?;
+        file.persist(&self.state)
+            .map_err(|error| dev_io("activate lifecycle dev state")(error.error))?;
+        Ok(())
+    }
+
+    fn wait_for_prepare(
+        &self,
+        transition_id: &str,
+        timeout: Duration,
+        stop: &AtomicBool,
+    ) -> Result<(), LifecycleError> {
+        let started = Instant::now();
+        let discovery = Duration::from_millis(500).min(timeout);
+        let acknowledgement_settle = Duration::from_millis(1_000).min(timeout);
+        let mut complete_since = None;
+        loop {
+            if stop.load(Ordering::SeqCst) {
+                return Err(LifecycleError::canceled(
+                    "browser reload preparation was canceled",
+                ));
+            }
+            let participants = self.fresh_participants(Duration::from_secs(5))?;
+            if !participants.is_empty() {
+                let acknowledgements = self.acknowledgements(transition_id)?;
+                if participants
+                    .iter()
+                    .any(|id| acknowledgements.get(id) == Some(&false))
+                {
+                    return Err(LifecycleError::new(
+                        "a browser rejected coherent reload capsule preparation",
+                    ));
+                }
+                if participants
+                    .iter()
+                    .all(|id| acknowledgements.get(id) == Some(&true))
+                {
+                    let complete = complete_since.get_or_insert_with(Instant::now);
+                    if complete.elapsed() >= acknowledgement_settle {
+                        return Ok(());
+                    }
+                } else {
+                    complete_since = None;
+                }
+            } else if started.elapsed() >= discovery {
+                return Ok(());
+            } else {
+                complete_since = None;
+            }
+            if started.elapsed() >= timeout {
+                return Err(LifecycleError::new(format!(
+                    "browser reload preparation timed out after {}ms",
+                    timeout.as_millis()
+                )));
+            }
+            std::thread::sleep(Duration::from_millis(25));
+        }
+    }
+
+    fn fresh_participants(
+        &self,
+        maximum_age: Duration,
+    ) -> Result<BTreeSet<String>, LifecycleError> {
+        let now = SystemTime::now();
+        let mut result = BTreeSet::new();
+        for entry in fs::read_dir(self.root.join("dev-control/participants"))
+            .map_err(dev_io("read lifecycle participants"))?
+        {
+            let entry = entry.map_err(dev_io("read lifecycle participant"))?;
+            let name = entry.file_name().to_string_lossy().into_owned();
+            if !safe_control_id(name.strip_suffix(".json").unwrap_or("")) {
+                continue;
+            }
+            if !entry
+                .file_type()
+                .map_err(dev_io("inspect lifecycle participant type"))?
+                .is_file()
+            {
+                continue;
+            }
+            let metadata = entry
+                .metadata()
+                .map_err(dev_io("inspect lifecycle participant"))?;
+            if metadata.is_file()
+                && now
+                    .duration_since(
+                        metadata
+                            .modified()
+                            .map_err(dev_io("read participant time"))?,
+                    )
+                    .unwrap_or_default()
+                    <= maximum_age
+            {
+                result.insert(name.trim_end_matches(".json").to_string());
+            }
+        }
+        Ok(result)
+    }
+
+    fn acknowledgements(
+        &self,
+        transition_id: &str,
+    ) -> Result<BTreeMap<String, bool>, LifecycleError> {
+        let mut result = BTreeMap::new();
+        let directory = self.root.join("dev-control/acks").join(transition_id);
+        let entries = match fs::read_dir(directory) {
+            Ok(entries) => entries,
+            Err(error) if error.kind() == std::io::ErrorKind::NotFound => return Ok(result),
+            Err(error) => return Err(dev_io("read lifecycle acknowledgements")(error)),
+        };
+        for entry in entries {
+            let entry = entry.map_err(dev_io("read lifecycle acknowledgement"))?;
+            let name = entry.file_name().to_string_lossy().into_owned();
+            let id = name.strip_suffix(".json").unwrap_or("");
+            if !safe_control_id(id)
+                || !entry
+                    .file_type()
+                    .map_err(dev_io("inspect lifecycle acknowledgement type"))?
+                    .is_file()
+                || entry
+                    .metadata()
+                    .map_err(dev_io("inspect lifecycle acknowledgement"))?
+                    .len()
+                    > 1024
+            {
+                continue;
+            }
+            #[derive(Deserialize)]
+            #[serde(deny_unknown_fields)]
+            struct Ack {
+                ok: bool,
+            }
+            let ack: Ack = serde_json::from_slice(
+                &fs::read(entry.path()).map_err(dev_io("read lifecycle acknowledgement"))?,
+            )
+            .map_err(|error| {
+                LifecycleError::new(format!("parse lifecycle acknowledgement: {error}"))
+            })?;
+            result.insert(id.to_string(), ack.ok);
+        }
+        Ok(result)
+    }
+}
+
+struct DevTransition {
+    id: String,
+    // TempDir removes this attempt's acknowledgement directory after the
+    // preparation barrier completes or unwinds on an error.
+    _directory: tempfile::TempDir,
+}
+
+impl DevTransition {
+    fn id(&self) -> &str {
+        &self.id
+    }
+}
+
+impl Drop for DevStateStore {
+    fn drop(&mut self) {
+        let _ = fs::remove_file(&self.state);
+    }
+}
+
+fn generation_state(report: &LifecycleBuildReport) -> DevGenerationState<'_> {
+    DevGenerationState {
+        generation_id: &report.generation_id,
+        release_id: &report.release_id,
+        topology_id: &report.graph_id,
+        compatibility_id: &report.compatibility_id,
+    }
+}
+
+fn unix_ms() -> Result<u64, LifecycleError> {
+    SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .map_err(|error| LifecycleError::new(format!("system clock precedes Unix epoch: {error}")))?
+        .as_millis()
+        .try_into()
+        .map_err(|_| LifecycleError::new("system clock exceeds lifecycle timestamp bounds"))
+}
+
+fn safe_control_id(value: &str) -> bool {
+    (16..=128).contains(&value.len())
+        && value
+            .bytes()
+            .all(|byte| byte.is_ascii_alphanumeric() || matches!(byte, b'_' | b'-' | b':'))
+}
+
+fn dev_io(label: &'static str) -> impl FnOnce(std::io::Error) -> LifecycleError {
+    move |error| LifecycleError::new(format!("{label}: {error}"))
 }
 
 fn validate_restart_nodes(
@@ -511,31 +919,98 @@ impl ChildSet {
         Ok(())
     }
 
-    fn restart_invalidated(
+    fn restart_transactional(
         &mut self,
         root: &Path,
         config: &LifecycleDevConfig,
+        previous: &LifecycleBuildReport,
         generation: &LifecycleBuildReport,
         invalidated: &BTreeSet<String>,
         restarts: &mut BTreeMap<String, usize>,
         stop: &AtomicBool,
     ) -> Result<(), LifecycleError> {
+        let mut replaced = BTreeSet::new();
         for (name, process) in &config.processes {
             if process.restart_on.is_disjoint(invalidated) {
                 continue;
             }
-            stop_child(
+            if let Err(error) = stop_child(
                 name,
                 self.children.get_mut(name).unwrap(),
                 Duration::from_millis(config.shutdown_ms),
-            )?;
-            let mut child = spawn_process(root, name, process, generation)?;
-            if let Err(error) = wait_ready(root, name, process, generation, &mut child, stop) {
+            ) {
+                return Err(error);
+            }
+            let replacement =
+                spawn_process(root, name, process, generation).and_then(|mut child| {
+                    if let Err(error) =
+                        wait_ready(root, name, process, generation, &mut child, stop)
+                    {
+                        let _ =
+                            stop_child(name, &mut child, Duration::from_millis(config.shutdown_ms));
+                        return Err(error);
+                    }
+                    Ok(child)
+                });
+            match replacement {
+                Ok(child) => {
+                    self.children.insert(name.clone(), child);
+                    replaced.insert(name.clone());
+                }
+                Err(error) => {
+                    replaced.insert(name.clone());
+                    let rollback =
+                        self.replace_named_generation(root, config, previous, &replaced, stop);
+                    return match rollback {
+                        Ok(()) => Err(error),
+                        Err(rollback) => Err(LifecycleError::new(format!(
+                            "pending generation readiness failed: {error}; process rollback also failed: {rollback}"
+                        ))),
+                    };
+                }
+            }
+            *restarts.get_mut(name).unwrap() += 1;
+        }
+        Ok(())
+    }
+
+    fn replace_generation(
+        &mut self,
+        root: &Path,
+        config: &LifecycleDevConfig,
+        _current: &LifecycleBuildReport,
+        replacement: &LifecycleBuildReport,
+        invalidated: &BTreeSet<String>,
+        stop: &AtomicBool,
+    ) -> Result<(), LifecycleError> {
+        let names = config
+            .processes
+            .iter()
+            .filter(|(_, process)| !process.restart_on.is_disjoint(invalidated))
+            .map(|(name, _)| name.clone())
+            .collect();
+        self.replace_named_generation(root, config, replacement, &names, stop)
+    }
+
+    fn replace_named_generation(
+        &mut self,
+        root: &Path,
+        config: &LifecycleDevConfig,
+        replacement: &LifecycleBuildReport,
+        names: &BTreeSet<String>,
+        stop: &AtomicBool,
+    ) -> Result<(), LifecycleError> {
+        for name in names {
+            let process = &config.processes[name];
+            if let Some(child) = self.children.get_mut(name) {
+                stop_child(name, child, Duration::from_millis(config.shutdown_ms))?;
+            }
+            let mut child = spawn_process(root, name, process, replacement)?;
+            if let Err(error) = wait_ready(root, name, process, replacement, &mut child, stop) {
                 let _ = stop_child(name, &mut child, Duration::from_millis(config.shutdown_ms));
                 return Err(error);
             }
             self.children.insert(name.clone(), child);
-            *restarts.get_mut(name).unwrap() += 1;
         }
         Ok(())
     }
@@ -600,7 +1075,7 @@ fn wait_ready(
         if started.elapsed() >= timeout.unwrap() {
             return Err(readiness_timeout(name, probe.timeout_ms));
         }
-        let cwd = resolve_working_dir(root, process.cwd.as_deref())?;
+        let cwd = resolve_working_dir(root, process.cwd.as_deref(), process.external_cwd)?;
         let environment = expand_environment(root, name, process, generation);
         let args = probe
             .args
@@ -615,6 +1090,9 @@ fn wait_ready(
             .envs(environment)
             .env("DISTRIBUTED_GENERATION_ID", &generation.generation_id)
             .env("DISTRIBUTED_RELEASE_ID", &generation.release_id)
+            .env("DISTRIBUTED_TOPOLOGY_ID", &generation.graph_id)
+            .env("DISTRIBUTED_COMPATIBILITY_ID", &generation.compatibility_id)
+            .env("DISTRIBUTED_MEMBER_ID", name)
             .stdin(Stdio::null())
             .stdout(Stdio::null())
             .stderr(Stdio::null());
@@ -698,7 +1176,7 @@ fn spawn_process(
     process: &LifecycleDevProcess,
     generation: &LifecycleBuildReport,
 ) -> Result<Child, LifecycleError> {
-    let cwd = resolve_working_dir(root, process.cwd.as_deref())?;
+    let cwd = resolve_working_dir(root, process.cwd.as_deref(), process.external_cwd)?;
     let args = process
         .args
         .iter()
@@ -712,6 +1190,9 @@ fn spawn_process(
         .envs(expand_environment(root, name, process, generation))
         .env("DISTRIBUTED_GENERATION_ID", &generation.generation_id)
         .env("DISTRIBUTED_RELEASE_ID", &generation.release_id)
+        .env("DISTRIBUTED_TOPOLOGY_ID", &generation.graph_id)
+        .env("DISTRIBUTED_COMPATIBILITY_ID", &generation.compatibility_id)
+        .env("DISTRIBUTED_MEMBER_ID", name)
         .stdin(Stdio::null());
     #[cfg(unix)]
     command.process_group(0);
@@ -767,19 +1248,33 @@ fn expand_environment(
         .collect()
 }
 
-fn resolve_working_dir(root: &Path, cwd: Option<&str>) -> Result<PathBuf, LifecycleError> {
-    let path = cwd.map_or_else(|| root.to_path_buf(), |cwd| root.join(cwd));
+fn resolve_working_dir(
+    root: &Path,
+    cwd: Option<&str>,
+    external_cwd: bool,
+) -> Result<PathBuf, LifecycleError> {
+    let path = cwd.map_or_else(
+        || root.to_path_buf(),
+        |cwd| {
+            let cwd = Path::new(cwd);
+            if external_cwd {
+                cwd.to_path_buf()
+            } else {
+                root.join(cwd)
+            }
+        },
+    );
     let resolved = path.canonicalize().map_err(|error| {
         LifecycleError::new(format!(
             "failed to resolve lifecycle dev working directory `{}`: {error}",
             path.display()
         ))
     })?;
-    if !resolved.starts_with(root)
+    if (!external_cwd && !resolved.starts_with(root))
         || !fs::metadata(&resolved).is_ok_and(|metadata| metadata.is_dir())
     {
         return Err(LifecycleError::new(
-            "lifecycle dev working directory must be a directory under the root",
+            "lifecycle dev working directory must be a permitted directory",
         ));
     }
     Ok(resolved)
@@ -964,4 +1459,107 @@ fn resolve_file(root: &Path, path: &PathBuf) -> Result<PathBuf, LifecycleError> 
 
 fn io_error(error: std::io::Error) -> LifecycleError {
     LifecycleError::new(error.to_string())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn probed_process(timeout_ms: u64) -> LifecycleDevProcess {
+        LifecycleDevProcess {
+            program: "process".to_string(),
+            args: Vec::new(),
+            cwd: None,
+            external_cwd: false,
+            env: BTreeMap::new(),
+            url: None,
+            restart_on: BTreeSet::new(),
+            ready_after_ms: 100,
+            ready: Some(LifecycleDevProbe {
+                program: "probe".to_string(),
+                args: Vec::new(),
+                interval_ms: 250,
+                timeout_ms,
+            }),
+        }
+    }
+
+    fn config(processes: BTreeMap<String, LifecycleDevProcess>) -> LifecycleDevConfig {
+        LifecycleDevConfig {
+            poll_ms: 500,
+            debounce_ms: 250,
+            shutdown_ms: 5_000,
+            prepare_ms: 30_000,
+            processes,
+        }
+    }
+
+    #[test]
+    fn readiness_allows_cold_runtime_and_ui_probes_within_a_bounded_total() {
+        config(BTreeMap::from([
+            ("api".to_string(), probed_process(300_000)),
+            ("ui".to_string(), probed_process(60_000)),
+        ]))
+        .validate()
+        .unwrap();
+    }
+
+    #[test]
+    fn readiness_rejects_an_unbounded_probe_or_aggregate_budget() {
+        let probe_error = config(BTreeMap::from([(
+            "ui".to_string(),
+            probed_process(300_001),
+        )]))
+        .validate()
+        .unwrap_err();
+        assert!(probe_error.message().contains("probe is out of bounds"));
+
+        let total_error = config(BTreeMap::from([
+            ("api".to_string(), probed_process(300_000)),
+            ("ui".to_string(), probed_process(61_001)),
+        ]))
+        .validate()
+        .unwrap_err();
+        assert!(total_error.message().contains("must not exceed 361s"));
+    }
+
+    #[test]
+    fn external_working_directory_authority_is_discovery_only() {
+        let mut discovered = probed_process(60_000);
+        discovered.cwd = Some("/repository/clients/web".to_string());
+        discovered.external_cwd = true;
+
+        let serialized = serde_json::to_value(&discovered).unwrap();
+        assert!(serialized.get("external_cwd").is_none());
+
+        let mut authored = serialized;
+        authored["external_cwd"] = serde_json::Value::Bool(true);
+        let error = serde_json::from_value::<LifecycleDevProcess>(authored).unwrap_err();
+        assert!(error.to_string().contains("unknown field `external_cwd`"));
+    }
+
+    #[test]
+    fn transition_attempts_have_fresh_ids_and_isolated_acknowledgements() {
+        let project = tempfile::tempdir().unwrap();
+        let root = project.path().canonicalize().unwrap();
+        let state = DevStateStore::new(&root, Path::new(".distributed/lifecycle")).unwrap();
+        let first = state.begin_transition().unwrap();
+        let second = state.begin_transition().unwrap();
+
+        assert_ne!(first.id(), second.id());
+        assert!(safe_control_id(first.id()));
+        assert!(safe_control_id(second.id()));
+        let first_path = first._directory.path().to_path_buf();
+        let second_path = second._directory.path().to_path_buf();
+        fs::write(
+            first_path.join("browser_participant.json"),
+            br#"{"ok":false}"#,
+        )
+        .unwrap();
+        assert!(second_path.read_dir().unwrap().next().is_none());
+
+        drop(first);
+        assert!(!first_path.exists());
+        assert!(second_path.exists());
+    }
 }

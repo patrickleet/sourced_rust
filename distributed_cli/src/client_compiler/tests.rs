@@ -2314,6 +2314,22 @@ fn application_surfaces_are_explicit_and_fingerprint_separate_chunks() {
     ))
     .expect("compile exact application surface");
     assert_eq!(common_project.schema_fingerprint, common_fingerprint);
+    assert!(
+        file(&common_project, "sveltekit.ts").contains("key: \"surface:application:web-common\"")
+    );
+
+    let mut changed_contract = common.clone();
+    changed_contract["surface"]["eligible_roles"] = json!(["admin", "user"]);
+    refresh_schema_fingerprint(&mut changed_contract);
+    let changed_project = compile_client(ClientCompileInput::new(
+        changed_contract,
+        ClientSurfaceSelector::application("web-common", ["admin", "user"], ["user"]),
+        vec![document.clone()],
+    ))
+    .expect("compile changed contract for the same application surface");
+    assert!(
+        file(&changed_project, "sveltekit.ts").contains("key: \"surface:application:web-common\"")
+    );
 
     let mismatch = compile_client(ClientCompileInput::new(
         common,

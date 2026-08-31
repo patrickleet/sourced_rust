@@ -1,0 +1,273 @@
+import assert from 'node:assert/strict';
+import { spawnSync } from 'node:child_process';
+import { readFileSync, writeFileSync } from 'node:fs';
+import { dirname, isAbsolute, relative, resolve, sep } from 'node:path';
+import { fileURLToPath } from 'node:url';
+import { chromium } from 'playwright';
+
+const root = resolve(dirname(fileURLToPath(import.meta.url)), '..');
+const frameworkRoot = resolve(root, '../../js');
+const application = resolve(root, 'crates/todo-domain/src/commands/force_archive.rs');
+const framework = resolve(frameworkRoot, 'src/sveltekit/lifecycle.ts');
+const adminCommands = resolve(root, 'ui/src/lib/generated/admin/commands.ts');
+const lifecycleFile = resolve(root, '.distributed/lifecycle/dev.json');
+const baseURL = process.env.E2E_UI_ORIGIN || 'http://127.0.0.1:5180';
+const apiURL = process.env.E2E_API_ORIGIN || 'http://127.0.0.1:8791';
+const timeoutMs = 120_000;
+const preparingEvents = [];
+const participantStorageKey = '@hops-ops/distributed/reload-participant/v1';
+const participantIdPattern = /^[A-Za-z0-9_-]{16,128}$/;
+const kubeWorkload = process.env.DISTRIBUTED_LIFECYCLE_KUBE_WORKLOAD;
+const kubeContext = process.env.DISTRIBUTED_LIFECYCLE_KUBE_CONTEXT;
+const kubeNamespace = process.env.DISTRIBUTED_LIFECYCLE_KUBE_NAMESPACE || 'default';
+const kubeContainer = process.env.DISTRIBUTED_LIFECYCLE_KUBE_CONTAINER || 'application';
+
+function childPath(base, path) {
+	const child = relative(base, path);
+	return child !== '' && child !== '..' && !child.startsWith(`..${sep}`) && !isAbsolute(child)
+		? child
+		: undefined;
+}
+
+function remotePath(path) {
+	const projectChild = childPath(root, path);
+	if (projectChild) return `/workspace/tests/e2e-ui/${projectChild.split(sep).join('/')}`;
+	const frameworkChild = childPath(frameworkRoot, path);
+	if (frameworkChild) return `/workspace/js/${frameworkChild.split(sep).join('/')}`;
+	throw new Error(`lifecycle fixture path escapes its declared roots: ${path}`);
+}
+
+function kubectlExec(command, input) {
+	const args = [];
+	if (kubeContext) args.push('--context', kubeContext);
+	args.push(
+		'-n',
+		kubeNamespace,
+		'exec',
+		kubeWorkload,
+		'-c',
+		kubeContainer,
+		...(input === undefined ? [] : ['-i']),
+		'--',
+		...command
+	);
+	const result = spawnSync('kubectl', args, {
+		encoding: 'utf8',
+		input,
+		maxBuffer: 4 * 1024 * 1024
+	});
+	if (result.status !== 0) {
+		throw new Error(
+			`kubectl exec failed (${result.status ?? 'signal'}): ${(result.stderr || '').trim()}`
+		);
+	}
+	return result.stdout;
+}
+
+const fixtureIO = kubeWorkload
+	? {
+			read(path) {
+				return kubectlExec(['cat', remotePath(path)]);
+			},
+			write(path, source) {
+				kubectlExec(['tee', remotePath(path)], source);
+			},
+			pollMs: 250
+		}
+	: {
+			read(path) {
+				return readFileSync(path, 'utf8');
+			},
+			write(path, source) {
+				writeFileSync(path, source);
+			},
+			pollMs: 50
+		};
+const original = fixtureIO.read(application);
+const frameworkOriginal = fixtureIO.read(framework);
+
+async function waitFor(predicate, label, timeout = timeoutMs) {
+	const started = Date.now();
+	while (Date.now() - started < timeout) {
+		const value = await predicate();
+		if (value) return value;
+		await new Promise((resolvePromise) => setTimeout(resolvePromise, fixtureIO.pollMs));
+	}
+	throw new Error(`timed out waiting for ${label}`);
+}
+
+async function lifecycleState() {
+	try {
+		return JSON.parse(fixtureIO.read(lifecycleFile));
+	} catch {
+		return undefined;
+	}
+}
+
+async function waitForBrowserParticipant(page) {
+	const participantId = await waitFor(
+		() => page.evaluate((key) => sessionStorage.getItem(key), participantStorageKey),
+		'browser lifecycle participant ID'
+	);
+	assert.match(participantId, participantIdPattern);
+	const heartbeatFile = resolve(
+		root,
+		'.distributed/lifecycle/dev-control/participants',
+		`${participantId}.json`
+	);
+	await waitFor(() => {
+		try {
+			const heartbeat = JSON.parse(fixtureIO.read(heartbeatFile));
+			return Number.isFinite(heartbeat.seenAtUnixMs) &&
+				Date.now() - heartbeat.seenAtUnixMs < 5_000;
+		} catch {
+			return false;
+		}
+	}, 'fresh browser lifecycle participant heartbeat');
+}
+
+async function transition(page, path, source, expectedReplicaRestore, assertGate = false) {
+	const before = await lifecycleState();
+	assert.equal(before.phase, 'active');
+	await page.evaluate(() => {
+		globalThis.__distributedReloadEvents = [];
+	});
+	preparingEvents.length = 0;
+	const navigations = [];
+	const onNavigation = (frame) => {
+		if (frame === page.mainFrame()) navigations.push(frame.url());
+	};
+	page.on('framenavigated', onNavigation);
+	let mutationRequests = 0;
+	const documentRequests = [];
+	const onRequest = (request) => {
+		if (request.resourceType() === 'document') documentRequests.push(request.url());
+		if ((request.postData() ?? '').includes('todos_create')) mutationRequests += 1;
+	};
+	page.on('request', onRequest);
+	fixtureIO.write(path, source);
+
+	await waitFor(
+		async () => (await lifecycleState())?.phase === 'preparing',
+		'pending lifecycle generation'
+	);
+	if (assertGate) {
+		await waitFor(() => preparingEvents.length > 0, 'browser command gate');
+		await page.locator('#todo-title').fill(`must-not-dispatch-${Date.now()}`);
+		await page.getByRole('button', { name: /^add$/i }).click();
+		await page.getByText(/paused during a coherent application reload/i).waitFor();
+		assert.equal(mutationRequests, 0, 'reload gate must reject before GraphQL dispatch');
+		const readable = await fetch(`${apiURL}/graphql`, {
+			method: 'POST',
+			headers: { 'content-type': 'application/json' },
+			body: JSON.stringify({ query: 'query ReloadReadProbe { __typename }' })
+		});
+		assert.equal(readable.status, 200, 'pending API must continue serving GraphQL reads');
+		const direct = await fetch(`${apiURL}/graphql`, {
+			method: 'POST',
+			headers: { 'content-type': 'application/json' },
+			body: JSON.stringify({ query: 'mutation ReloadGateProbe { __typename }' })
+		});
+		assert.equal(direct.status, 503, 'pending API must reject direct GraphQL dispatch');
+		assert.equal(
+			(await direct.json()).errors[0].extensions.code,
+			'APPLICATION_RELOADING'
+		);
+	}
+
+	const restored = await waitFor(
+		async () => {
+			if (page.isClosed()) return undefined;
+			return page.evaluate(() => {
+				const state = globalThis;
+				return state.__distributedReloadEvents?.at(-1);
+			}).catch(() => undefined);
+		},
+		'controlled browser reload restoration'
+	);
+	assert.equal(restored.replicaCaptured, true, 'authenticated replica must participate');
+	assert.equal(restored.replicaRestored, expectedReplicaRestore);
+	assert.equal(
+		documentRequests.length,
+		1,
+		`coherent transition must request exactly one document: frames=${JSON.stringify(navigations)} documents=${JSON.stringify(documentRequests)}`
+	);
+	assert.equal(new URL(page.url()).hash, '#reload-proof');
+	assert.equal(
+		await page.evaluate(() => globalThis.__distributedReloadState?.value),
+		'preserve-me'
+	);
+	const after = await lifecycleState();
+	assert.equal(after.phase, 'active');
+	assert.notEqual(after.active.generationId, before.active.generationId);
+	if (expectedReplicaRestore) {
+		assert.equal(after.active.compatibilityId, before.active.compatibilityId);
+	} else {
+		assert.notEqual(after.active.compatibilityId, before.active.compatibilityId);
+	}
+	page.off('framenavigated', onNavigation);
+	page.off('request', onRequest);
+}
+
+const browser = await chromium.launch({ headless: true });
+const context = await browser.newContext({
+	storageState: resolve(root, 'e2e/.auth/alice.json')
+});
+await context.addInitScript(() => {
+	globalThis.__distributedReloadEvents = [];
+	addEventListener('distributed:reload-restored', (event) => {
+		globalThis.__distributedReloadEvents.push(event.detail);
+	});
+	addEventListener('distributed:reload-preparing', (event) => {
+		void globalThis.__distributedRecordReloadPreparing(event.detail);
+	});
+});
+const page = await context.newPage();
+await page.exposeFunction('__distributedRecordReloadPreparing', (detail) => {
+	preparingEvents.push(detail);
+});
+page.on('console', (message) => {
+	if (message.type() === 'error' || message.text().includes('Distributed reload')) {
+		console.error(`browser console ${message.type()}: ${message.text()}`);
+	}
+});
+page.on('pageerror', (error) => console.error(`browser page error: ${error.message}`));
+const baseline = await lifecycleState();
+assert.equal(baseline?.phase, 'active');
+try {
+	await page.goto(`${baseURL}/todos#reload-proof`, { waitUntil: 'domcontentloaded' });
+	await page.getByRole('heading', { name: /todos/i }).waitFor();
+	await waitFor(
+		() => page.evaluate(() => globalThis.__distributedReloadState !== undefined),
+		'client hydration'
+	);
+	await waitForBrowserParticipant(page);
+	await page.evaluate(() => {
+		globalThis.__distributedReloadState.value = 'preserve-me';
+	});
+
+	const compatible = `${original}\n// lifecycle-compatible source-only rebuild\n`;
+	await transition(page, application, compatible, true, true);
+
+	const frameworkCompatible = `${frameworkOriginal}\n// lifecycle-compatible framework rebuild\n`;
+	await transition(page, framework, frameworkCompatible, true);
+
+	const incompatible = compatible.replace(
+		'field: "todos_force_archive",',
+		'field: "todos_force_archive_reload",'
+	);
+	assert.notEqual(incompatible, compatible, 'incompatible fixture edit must apply');
+	await transition(page, application, incompatible, false);
+	console.log('lifecycle-reload: application + framework + incompatible transitions OK');
+} finally {
+	fixtureIO.write(application, original);
+	fixtureIO.write(framework, frameworkOriginal);
+	await waitFor(async () => {
+		const state = await lifecycleState();
+		return state?.phase === 'active' &&
+			state.active.generationId === baseline.active.generationId &&
+			!fixtureIO.read(adminCommands).includes('todos_force_archive_reload');
+	}, 'baseline source and generated-client restoration');
+	await context.close();
+	await browser.close();
+}

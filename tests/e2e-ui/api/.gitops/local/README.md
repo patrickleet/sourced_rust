@@ -1,16 +1,22 @@
-# e2e-ui API local chart
+# e2e-ui coherent application chart
 
-This standalone chart renders the editable API Deployment and Service for a
-Local Workbench Environment. Hops supplies source delivery and watches this
-chart; `cargo watch` owns process reload for Rust source changes.
+This cluster-development chart renders one Deployment running
+`distributed dev` for the complete editable application. The lifecycle owns
+the Rust API, SvelteKit UI, generated clients, linked framework JavaScript,
+and generation activation. Two Services expose ports 8791 and 5180 from that
+one lifecycle participant set.
 
-OIDC project / demo humans / web app live in the explicit **UI test-users**
-chart (`ui/.gitops/test-users`). When `identity.enabled`, this chart derives
-the same generation-specific OIDC connection Secret from the workspace
-namespace. Both `OIDC_AUDIENCE` and `OIDC_CLIENT_ID` read its generated
-`attribute.client_id`; only the service-user token remains in the residual
-`e2e-ui-oidc` Secret. Keep `identity.oidcGeneration` aligned with the UI
-Application so an OIDC rotation rolls both workloads onto matching credentials.
+Hops supplies the source mount or sync delivery. A Node init container places
+the pinned Node/npm toolchain beside the Rust toolchain without a custom local
+image or chart-level package installer. The linked framework package pins and
+installs its required `wasm-pack` compiler, so declared Rust/WASM pures are
+built inside the same lifecycle too. Dependency and framework builds are owned
+by `distributed dev`, not by chart shell scripts or a second UI Deployment.
+
+OIDC project, demo humans, and web application resources live in the explicit
+`ui/.gitops/test-users` chart. When identity is enabled, this chart consumes
+the same generation-specific connection Secret for the API audience and the
+UI client credentials.
 
 Platform AuthStack, ProviderConfig, and the shared PSQLCluster stay under the
 project `.gitops/local/cluster/` tree. Cloud images belong to the independent

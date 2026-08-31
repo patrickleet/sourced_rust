@@ -75,7 +75,7 @@ function runningUiPod(namespace) {
       '-n',
       namespace,
       '-l',
-      'hops.ops.com.ai/local-app=e2e-ui-ui',
+      'hops.ops.com.ai/local-app=e2e-ui-api',
       '--field-selector=status.phase=Running',
       '-o',
       'jsonpath={.items[0].metadata.name}',
@@ -84,7 +84,7 @@ function runningUiPod(namespace) {
   );
   const pod = (get.stdout || '').trim();
   if (!pod) {
-    throw new Error(`no Running e2e-ui-ui pod in ${namespace}: ${get.stderr || get.status}`);
+    throw new Error(`no Running e2e-ui application pod in ${namespace}: ${get.stderr || get.status}`);
   }
   return pod;
 }
@@ -127,9 +127,9 @@ function forceBeaconSync(namespace, worktreeRoot) {
 set -euo pipefail
 export COPYFILE_DISABLE=1
 tar cf - -C ${JSON.stringify(resolve(worktreeRoot, 'ui/src/lib/components'))} HmrBeacon.svelte \
-  | ${base.join(' ')} exec -i -n ${namespace} ${pod} -c ui -- \
+  | ${base.join(' ')} exec -i -n ${namespace} ${pod} -c application -- \
     tar xf - -C /workspace/tests/e2e-ui/ui/src/lib/components
-${base.join(' ')} exec -n ${namespace} ${pod} -c ui -- touch ${remoteBeacon}
+${base.join(' ')} exec -n ${namespace} ${pod} -c application -- touch ${remoteBeacon}
 `;
   const tar = spawnSync('bash', ['-c', script], {
     encoding: 'utf8',

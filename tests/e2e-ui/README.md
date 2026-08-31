@@ -31,11 +31,11 @@ hops local gitops environment ./.gitops/local/environment.yaml \
 
 Both commands watch by default; use `--once` for CI or a single diagnostic
 reconcile. The cluster tree owns Crossplane, providers, AuthStack, and the
-serving PSQLCluster; the environment tree owns the API, UI, and explicit
-test-user deploys. Change those GitOps trees rather than applying over the
-watchers with `kubectl`.
+serving PSQLCluster; the environment tree owns one coherent API+UI application
+deploy and the explicit test-user deploy. Change those GitOps trees rather
+than applying over the watchers with `kubectl`.
 
-Charts: `api/.gitops/local`, `ui/.gitops/local`, and
+Charts: `api/.gitops/local` (API + UI lifecycle) and
 `ui/.gitops/test-users`. Control plane: `.gitops/local/cluster/`.
 
 ## Option B — lifecycle dev on the host
@@ -55,8 +55,12 @@ starting either process, the CLI compiles and activates one coherent application
 manifest from the real e2e modules and surfaces. Cargo metadata locates the
 typed application and runtime; the conventional `ui/` directory selects
 SvelteKit. No lifecycle JSON or wrapper scripts are required. Vite still handles
-Svelte/CSS/GraphQL HMR, while application-contract changes trigger a coherent
-rebuild and the Rust process restart.
+Svelte/CSS HMR, while application, generated-client, required WASM, and linked
+framework changes trigger one coherent generation. The browser closes command
+dispatch, captures its declared JSON state and confirmed replica, waits for the
+affected Rust processes to become ready, then performs one controlled reload.
+Compatible state is restored; incompatible replica partitions are dropped and
+refetched. A failed prepare or readiness probe keeps the prior generation live.
 
 This fixture links `../../../js` so it covers the exact framework source in this
 repository. The lifecycle resolves that package, installs its own build
@@ -65,6 +69,13 @@ and then installs the UI dependencies. Ordinary applications resolve the same
 package from npm. When an application declares a Rust/WASM pure,
 `distributed build` and `distributed dev` compile it from its declaring Cargo
 package before Vite starts.
+
+CI runs `npm run test:lifecycle-reload` against the real `distributed dev`
+process. It proves a source-only application edit, a linked framework edit, and
+an incompatible command-contract edit, including one document reload per
+transition, browser rejection before GraphQL dispatch, direct API rejection
+while generations disagree, URL/app-state retention, compatible replica
+restoration, and incompatible replica revalidation.
 
 This is the **default one-process playground**. Optional celld:
 

@@ -39,9 +39,6 @@ jobs:
             tests/e2e-ui -> target
           shared-key: e2e-ui-offline
 
-      - name: Install wasm-pack
-        run: cargo install wasm-pack --locked || cargo install wasm-pack
-
       - uses: actions/setup-node@v4
         with:
           node-version: "22"
@@ -80,9 +77,6 @@ jobs:
             . -> target
             tests/e2e-ui -> target
           shared-key: e2e-ui-browser
-
-      - name: Install wasm-pack
-        run: cargo install wasm-pack --locked || cargo install wasm-pack
 
       - uses: actions/setup-node@v4
         with:
@@ -149,7 +143,9 @@ jobs:
           npx playwright install chromium --with-deps
 
       - name: Run browser e2e
-        run: npm run test:browser
+        run: |
+          npm run test:browser
+          npm run test:lifecycle-reload
         env:
           E2E_UI_ORIGIN: http://localhost:5180
           E2E_API_ORIGIN: http://127.0.0.1:8791
@@ -239,7 +235,7 @@ jobs:
           # nginx is only the CI ingress equivalent: Zitadel's API and Login
           # V2 UI are separate ClusterIP Services, but both use the one
           # external domain advertised in the OIDC authorize redirect.
-          sudo apt-get install -y jq openssl curl nginx
+          sudo apt-get install -y jq openssl curl nginx ripgrep
 
       - uses: azure/setup-kubectl@v4
         with:
@@ -248,6 +244,9 @@ jobs:
       - uses: azure/setup-helm@v4
         with:
           version: v3.17.3
+
+      - name: Verify coherent local GitOps chart contracts
+        run: ./scripts/helm-contract-test.sh
 
       - name: Install kind
         run: |
@@ -274,9 +273,6 @@ jobs:
           echo "$RUNNER_TEMP/hops-cli/bin" >> "$GITHUB_PATH"
           export PATH="$RUNNER_TEMP/hops-cli/bin:$PATH"
           hops --version
-
-      - name: Install wasm-pack
-        run: cargo install wasm-pack --locked || cargo install wasm-pack
 
       - name: Build Distributed CLI
         run: cargo build --manifest-path ../../Cargo.toml -p distributed_cli --bin distributed
@@ -502,7 +498,7 @@ jobs:
           done
 
           k -n local wait --for=condition=Available \
-            deployment/e2e-ui-api deployment/e2e-ui-ui --timeout=900s
+            deployment/e2e-ui-api --timeout=900s
 
       - name: Install Playwright + Chromium
         run: |
@@ -515,7 +511,7 @@ jobs:
           set -euo pipefail
           k() { kubectl --context "$HOPS_KUBE_CONTEXT" "$@"; }
 
-          # Deployment/Available only observes the cargo-watch parent. The
+          # Deployment/Available only observes the lifecycle supervisor. The
           # child e2e server compiles the workspace before it binds 8791, and
           # kubectl port-forward permanently loses its pod connection if the
           # first request arrives during that gap. Wait for the listener's
@@ -537,6 +533,24 @@ jobs:
           if [ "$api_listener_ready" != 1 ]; then
             echo "Timed out waiting for e2e-ui API listener" >&2
             k -n local logs deployment/e2e-ui-api --tail=400 >&2 || true
+            exit 1
+          fi
+
+          lifecycle_ready=0
+          for attempt in $(seq 1 180); do
+            app_log="$(k -n local logs deployment/e2e-ui-api --tail=500 2>/dev/null || true)"
+            if printf '%s\n' "$app_log" | grep -Fq \
+              'lifecycle dev: ready generation=' \
+              && printf '%s\n' "$app_log" | grep -Fq 'processes=api,framework-js,ui'; then
+              lifecycle_ready=1
+              echo "coherent API + framework-js + UI lifecycle is ready"
+              break
+            fi
+            sleep 2
+          done
+          if [ "$lifecycle_ready" != 1 ]; then
+            echo "Timed out waiting for the coherent application lifecycle" >&2
+            k -n local logs deployment/e2e-ui-api --tail=500 >&2 || true
             exit 1
           fi
 
@@ -600,8 +614,8 @@ jobs:
             ui_code="$(curl -sS -o /dev/null -w '%{http_code}' \
               --noproxy '*' \
               http://e2e-ui-ui.local.svc.cluster.local:5180/ || true)"
-            # Deployment/Available only means the cargo-watch parent process
-            # is running. The API child still has to compile before the UI's
+            # Deployment/Available only means the lifecycle supervisor is
+            # running. The API child still has to compile before the UI's
             # server-side GraphQL loaders can succeed. Probe the same public
             # ChatMessages shape that the UI uses so browser setup cannot race
             # API startup and leave an empty replica scope behind.
@@ -718,6 +732,14 @@ jobs:
           E2E_API_ORIGIN=http://e2e-ui-api.local.svc.cluster.local:8791 \
             npm run test:browser
 
+          E2E_UI_ORIGIN=http://e2e-ui-ui.local.svc.cluster.local:5180 \
+          E2E_API_ORIGIN=http://e2e-ui-api.local.svc.cluster.local:8791 \
+          DISTRIBUTED_LIFECYCLE_KUBE_CONTEXT="$HOPS_KUBE_CONTEXT" \
+          DISTRIBUTED_LIFECYCLE_KUBE_NAMESPACE=local \
+          DISTRIBUTED_LIFECYCLE_KUBE_WORKLOAD=deployment/e2e-ui-api \
+          DISTRIBUTED_LIFECYCLE_KUBE_CONTAINER=application \
+            npm run test:lifecycle-reload
+
       - name: Upload Kubernetes Playwright report
         if: failure()
         uses: actions/upload-artifact@v4
@@ -742,10 +764,6 @@ jobs:
             kubectl --context "$HOPS_KUBE_CONTEXT" -n local logs deployment/e2e-ui-api --tail=400 || true
             echo '=== e2e-ui API previous container logs ==='
             kubectl --context "$HOPS_KUBE_CONTEXT" -n local logs deployment/e2e-ui-api --previous --tail=400 || true
-            echo '=== e2e-ui UI logs ==='
-            kubectl --context "$HOPS_KUBE_CONTEXT" -n local logs deployment/e2e-ui-ui --tail=400 || true
-            echo '=== e2e-ui UI previous container logs ==='
-            kubectl --context "$HOPS_KUBE_CONTEXT" -n local logs deployment/e2e-ui-ui --previous --tail=400 || true
           } > .ci-kubernetes-diagnostics.log 2>&1
           cat .ci-kubernetes-diagnostics.log
           for file in .ci-api-port-forward.log .ci-ui-port-forward.log \

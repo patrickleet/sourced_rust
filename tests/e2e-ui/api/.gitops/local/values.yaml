@@ -8,28 +8,8 @@ environment:
 name: e2e-ui-api
 clusterDev:
   image: rust:1.94-bookworm
+  nodeImage: node:22-bookworm
   workingDir: /workspace/tests/e2e-ui
-  command:
-    - /bin/bash
-    - -c
-    - |
-      set -e
-      cd /workspace/tests/e2e-ui
-      if ! command -v cargo-watch >/dev/null 2>&1; then
-        cargo install cargo-watch --locked
-      fi
-      # Watch source inputs only; the fixture root also contains Playwright
-      # reports/auth state and Cargo's target output, which must not restart
-      # the API while tests are running.
-      cargo watch \
-        -w /workspace/tests/e2e-ui/Cargo.toml \
-        -w /workspace/tests/e2e-ui/Cargo.lock \
-        -w /workspace/tests/e2e-ui/crates \
-        -w /workspace/src \
-        -w /workspace/distributed_cli \
-        -w /workspace/distributed_macros \
-        -w /workspace/Cargo.toml \
-        -x 'run -p e2e-runner --bin e2e-ui'
 
 identity:
   enabled: false
@@ -40,11 +20,25 @@ identity:
   connectionSecretName: ""
 
 service:
+  name: e2e-ui-api
   port: 8791
   targetPort: 8791
 
+uiService:
+  name: e2e-ui-ui
+  port: 5180
+  targetPort: 5180
+
 env:
+  CARGO_TARGET_DIR: "/workspace/tests/e2e-ui/target"
   BIND: "0.0.0.0:8791"
+  UI_BIND: "0.0.0.0"
+  UI_PORT: "5180"
+  UI_URL: "http://e2e-ui-ui.default.svc.cluster.local:5180"
+  AUTH_URL: "http://e2e-ui-ui.default.svc.cluster.local:5180"
+  AUTH_TRUST_HOST: "true"
+  AUTH_USE_SECURE_COOKIES: "false"
+  PUBLIC_E2E_API_ORIGIN: "http://e2e-ui-api:8791"
   DATABASE_URL: "sqlite:/tmp/e2e-ui.db?mode=rwc"
   OIDC_ISSUER: "http://zitadel-zitadel.auth.svc.cluster.local:8080"
   OIDC_AUDIENCE: ""
@@ -52,6 +46,15 @@ env:
   ZITADEL_PROJECT_ID: ""
 
 secretEnv:
+  AUTH_SECRET:
+    secretName: e2e-ui-oidc
+    key: AUTH_SECRET
+  OIDC_CLIENT_ID:
+    secretName: e2e-ui-oidc
+    key: OIDC_CLIENT_ID
+  OIDC_CLIENT_SECRET:
+    secretName: e2e-ui-oidc
+    key: OIDC_CLIENT_SECRET
   ZITADEL_SERVICE_USER_TOKEN:
     secretName: e2e-ui-oidc
     key: ZITADEL_SERVICE_USER_TOKEN

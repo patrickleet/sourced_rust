@@ -2094,8 +2094,45 @@ A UI may instead use a local dependency such as
 from the same checkout, the lifecycle installs that package's build
 dependencies, rebuilds stale source, verifies its exported files, and records a
 receipt under the application `.distributed/` directory. `distributed dev`
-keeps the linked package compiled while Vite handles application HMR. There is
-no separate JS preparation command for application authors.
+keeps the linked package compiled while Vite handles application HMR. Changed
+framework outputs are built in isolation and published content-by-content, so
+unchanged files do not create a Vite reload storm. The framework receipt is a
+declared application input, so a real framework change still activates a new
+coherent generation. There is no separate JS preparation command for
+application authors.
+
+### Coherent development reloads
+
+CSS and HMR-safe Svelte modules stay on Vite's native fast path. A Rust,
+generated-client, worker, required WASM, or linked-framework change that needs
+the whole application follows one bounded transaction:
+
+```mermaid
+sequenceDiagram
+    participant Edit as Source edit
+    participant Dev as distributed dev
+    participant Browser as SvelteKit browser
+    participant API as API / workers
+
+    Edit->>Dev: declared input changes
+    Dev->>Dev: stage + validate pending generation
+    Dev-->>Browser: preparing(from, to, compatibility)
+    Browser->>Browser: close command gate; capture declared state + confirmed replica
+    Browser-->>Dev: bounded prepare acknowledgement
+    Dev->>API: restart affected processes with pending IDs
+    Dev->>Dev: readiness probes; atomically activate
+    Dev-->>Browser: active generation
+    Browser->>Browser: one controlled document reload
+    Browser->>Browser: restore compatible partitions; revalidate the rest
+```
+
+The browser capsule is size/depth/deadline bounded. It contains only explicitly
+declared JSON state, confirmed replica data, and pending command IDs—never auth
+credentials or command inputs. Browser commands close before optimism and
+transport, while API mutations and worker/service message dispatch fail closed
+until the process generation is active. A failed prepare, process readiness
+probe, or activation leaves the prior generation active and continues watching
+for the next edit.
 
 Use the event-storming board as the input:
 

@@ -683,6 +683,13 @@ export function createReplicaCommandRuntime<
 		if (disposed) {
 			throw new ReplicaCommandRuntimeError('REPLICA_COMMAND_DISPOSED');
 		}
+		try {
+			options.lifecycle?.assertDispatchOpen();
+		} catch (error) {
+			throw new ReplicaCommandRuntimeError('REPLICA_COMMAND_RELOADING', {
+				cause: error
+			});
+		}
 		const snapshot = authoritySnapshot();
 		const scope = snapshot.scope;
 		if (
@@ -1722,6 +1729,11 @@ export function createReplicaCommandRuntime<
 	return Object.freeze({
 		commands: commands as ReplicaBoundCommands<TEntries>,
 		observeResult,
+		pendingCommandIds(): readonly string[] {
+			return Object.freeze(
+				[...new Set([...pending.keys(), ...unmanagedLayers])].sort()
+			);
+		},
 		dispose(): void {
 			if (disposed) return;
 			disposed = true;

@@ -46,7 +46,7 @@ teardown() {
   cat > "$ROOT/bin/npm" <<'SCRIPT'
 #!/bin/sh
 set -eu
-if [ "$PWD" = "$DISTRIBUTED_ROOT/js" ]; then
+if [ -f package.json ] && grep -Fq '"name": "@hops-ops/distributed"' package.json; then
   exec "$ZERO_CONFIG_REAL_NPM" "$@"
 fi
 printf '%s:%s\n' "$PWD" "$*" > "$ZERO_CONFIG_NPM_LOG"

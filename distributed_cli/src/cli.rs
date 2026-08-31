@@ -30,8 +30,8 @@ use crate::js_framework::watch_local_javascript;
 use crate::lifecycle::{
     discover_lifecycle_project, run_lifecycle_build, run_lifecycle_dev,
     run_lifecycle_project_build, run_lifecycle_project_dev, DiscoveredLifecycleProject,
-    LifecycleBuildOptions, LifecycleBuildRequest, LifecycleCheckBaseline, LifecycleDevOptions,
-    LifecycleProjectDevOptions,
+    LifecycleActivation, LifecycleBuildOptions, LifecycleBuildRequest, LifecycleCheckBaseline,
+    LifecycleDevOptions, LifecycleProjectDevOptions,
 };
 use crate::manifest_harness::{run_manifest_harness, HarnessMode, HarnessOptions};
 use crate::skills::{embedded_skills, generate_skills, SkillsInitSpec, AGENTS_MD_FILE};
@@ -842,8 +842,13 @@ fn run_build(args: &BuildArgs, command_prefix: &[&str]) -> Result<(), Box<dyn Er
                 prepare_project_javascript(project, true)?;
             } else {
                 build_project_runtime(project)?;
-                validate_project_application(project, args.lock_timeout_ms)?;
+                // The linked JavaScript source receipt is a declared input to
+                // the typed application node. Materialize it before the
+                // read-only validation pass so a clean checkout is valid for
+                // the same reason as a warm checkout, not because a prior
+                // build happened to leave the receipt behind.
                 prepare_project_javascript(project, false)?;
+                validate_project_application(project, args.lock_timeout_ms)?;
                 prepare_project_wasm_pures(project)?;
                 build_project_ui(project)?;
             }
@@ -860,6 +865,7 @@ fn run_build(args: &BuildArgs, command_prefix: &[&str]) -> Result<(), Box<dyn Er
                     nodes: None,
                     activation_inputs: None,
                     cancel: None,
+                    activation: LifecycleActivation::Immediate,
                 },
             )
             .map_err(|error| contextualize_project_application_error(project, error))?;
@@ -963,6 +969,7 @@ fn validate_project_application(
             nodes: None,
             activation_inputs: None,
             cancel: None,
+            activation: LifecycleActivation::Immediate,
         },
     )
     .map(|_| ())
@@ -980,9 +987,7 @@ fn contextualize_project_application_error(
     .into()
 }
 
-fn prepare_project_wasm_pures(
-    project: &DiscoveredLifecycleProject,
-) -> Result<(), Box<dyn Error>> {
+fn prepare_project_wasm_pures(project: &DiscoveredLifecycleProject) -> Result<(), Box<dyn Error>> {
     if project.ui.is_none() {
         return Ok(());
     }
@@ -1006,18 +1011,23 @@ fn prepare_project_wasm_pures(
 
 fn build_project_ui(project: &DiscoveredLifecycleProject) -> Result<(), Box<dyn Error>> {
     if let Some(ui) = &project.ui {
-        let ui_root = project.plan.root.join(ui);
+        let ui_root = ui;
         prepare_ui_dependencies(project, &ui_root)?;
         eprintln!(
             "distributed build: compiling SvelteKit UI {}",
             ui_root.display()
         );
-        run_project_command(
-            &ui_root,
-            "npm",
-            &[OsString::from("run"), OsString::from("build")],
-            "SvelteKit UI build",
-        )?;
+        let status = Command::new("npm")
+            .args(["run", "build"])
+            .current_dir(&ui_root)
+            // Production builds must run the same compiler transaction as dev;
+            // committed generated files are an input to --check, not a reason
+            // to skip generation during an activating build.
+            .env("DISTRIBUTED_SKIP_CLIENT_COMPILE", "0")
+            .status()?;
+        if !status.success() {
+            return Err(format!("SvelteKit UI build failed with {status}").into());
+        }
     }
     Ok(())
 }
@@ -1049,7 +1059,7 @@ fn prepare_project_javascript(
                 .ui
                 .as_ref()
                 .ok_or("Distributed JavaScript package resolved without a UI root")?;
-            javascript.verify_installed(&project.plan.root.join(ui))?;
+            javascript.verify_installed(ui)?;
         }
     }
     Ok(())
@@ -1109,7 +1119,7 @@ fn run_dev(args: &DevArgs, command_prefix: &[&str]) -> Result<(), Box<dyn Error>
         ResolvedLifecycleProject::Discovered(project) => {
             prepare_project_javascript(&project, false)?;
             if let Some(ui) = &project.ui {
-                prepare_ui_dependencies(&project, &project.plan.root.join(ui))?;
+                prepare_ui_dependencies(&project, ui)?;
             }
             eprintln!(
                 "distributed dev: project={} api={} ui={} (Ctrl-C to stop)",
@@ -1130,6 +1140,7 @@ fn run_dev(args: &DevArgs, command_prefix: &[&str]) -> Result<(), Box<dyn Error>
                     nodes: None,
                     activation_inputs: None,
                     cancel: Some(Arc::clone(&stop)),
+                    activation: LifecycleActivation::Immediate,
                 },
                 stop: Arc::clone(&stop),
                 progress: true,
@@ -1617,17 +1628,18 @@ fn run_client(args: &ClientArgs) -> Result<(), Box<dyn Error>> {
             // Prefer explicit CLI roles when both lists are provided; otherwise
             // take eligible/schema roles from the application surface in the
             // manifest (one source of truth — no dual inventory config).
-            let (eligible_roles, schema_roles) =
-                if !args.eligible_role.is_empty() && !args.schema_role.is_empty() {
-                    (args.eligible_role.clone(), args.schema_role.clone())
-                } else if !args.eligible_role.is_empty() || !args.schema_role.is_empty() {
-                    return Err(
+            let (eligible_roles, schema_roles) = if !args.eligible_role.is_empty()
+                && !args.schema_role.is_empty()
+            {
+                (args.eligible_role.clone(), args.schema_role.clone())
+            } else if !args.eligible_role.is_empty() || !args.schema_role.is_empty() {
+                return Err(
                         "pass both --eligible-role and --schema-role, or neither (to use the manifest surface)"
                             .into(),
                     );
-                } else {
-                    application_roles_from_manifest(&manifest, surface)?
-                };
+            } else {
+                application_roles_from_manifest(&manifest, surface)?
+            };
             ClientSurfaceSelector::application(surface.clone(), eligible_roles, schema_roles)
         }
         _ => {
@@ -2475,7 +2487,14 @@ fn validate_manifest_json(envelope: &serde_json::Value) -> Result<(), Box<dyn Er
     {
         return Err("application manifest JSON is missing non-empty string name".into());
     }
-    for field in ["modules", "commands", "events", "projections", "models", "surfaces"] {
+    for field in [
+        "modules",
+        "commands",
+        "events",
+        "projections",
+        "models",
+        "surfaces",
+    ] {
         if envelope
             .get(field)
             .and_then(serde_json::Value::as_array)
