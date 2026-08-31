@@ -92,7 +92,7 @@ spec:
               valueFrom:
                 secretKeyRef:
                   name: {{ $oidcConn | quote }}
-                  key: attribute.client_secret
+                  key: {{ if eq $k "OIDC_CLIENT_ID" }}attribute.client_id{{ else }}attribute.client_secret{{ end }}
             {{- else }}
             - name: {{ $k }}
               valueFrom:

@@ -101,6 +101,16 @@ assert_not_matches() {
   fi
 }
 
+assert_matches() {
+  local hay="$1" pattern="$2" msg="$3"
+  if ! printf '%s' "$hay" | rg -U -q -- "$pattern"; then
+    echo "FAIL: $msg (missing match: $pattern)" >&2
+    fail=1
+  else
+    echo "ok: $msg"
+  fi
+}
+
 check_workspace() {
   local ns="$1"
   local features="$2"
@@ -206,6 +216,9 @@ assert_contains "$api_out" "name: OIDC_AUDIENCE" \
   "API audience comes from the generated connection secret"
 assert_contains "$api_out" "key: attribute.client_id" \
   "API audience/client id use the generated client id key"
+assert_matches "$api_out" \
+  'name: OIDC_CLIENT_ID\n[ ]+valueFrom:\n[ ]+secretKeyRef:\n[ ]+name: "e2e-ui-alice-oidc-conn-g1"\n[ ]+key: attribute.client_id\n[ ]+- name: OIDC_CLIENT_SECRET\n[ ]+valueFrom:\n[ ]+secretKeyRef:\n[ ]+name: "e2e-ui-alice-oidc-conn-g1"\n[ ]+key: attribute.client_secret' \
+  "UI maps generated OIDC client id and secret to distinct keys"
 assert_contains "$api_out" "--package distributed_cli --bin distributed" \
   "combined application starts Distributed dev"
 assert_contains "$api_out" "name: e2e-ui-api" \
