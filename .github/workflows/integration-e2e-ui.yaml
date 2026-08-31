@@ -515,6 +515,31 @@ jobs:
           set -euo pipefail
           k() { kubectl --context "$HOPS_KUBE_CONTEXT" "$@"; }
 
+          # Deployment/Available only observes the cargo-watch parent. The
+          # child e2e server compiles the workspace before it binds 8791, and
+          # kubectl port-forward permanently loses its pod connection if the
+          # first request arrives during that gap. Wait for the listener's
+          # own startup line before creating the forwards.
+          api_listener_ready=0
+          for attempt in $(seq 1 180); do
+            api_log="$(k -n local logs deployment/e2e-ui-api --tail=300 2>/dev/null || true)"
+            if printf '%s\n' "$api_log" | grep -Fq \
+              'sqlite) listening on http://0.0.0.0:8791'; then
+              api_listener_ready=1
+              echo "e2e-ui API listener is ready"
+              break
+            fi
+            if [ $((attempt % 15)) -eq 0 ]; then
+              echo "Waiting for e2e-ui API listener (attempt $attempt/180)"
+            fi
+            sleep 2
+          done
+          if [ "$api_listener_ready" != 1 ]; then
+            echo "Timed out waiting for e2e-ui API listener" >&2
+            k -n local logs deployment/e2e-ui-api --tail=400 >&2 || true
+            exit 1
+          fi
+
           # The app intentionally advertises service DNS names in AUTH_URL and
           # OIDC redirects. Map those names to the local port-forwards so the
           # browser follows the same URLs it uses inside the cluster.
