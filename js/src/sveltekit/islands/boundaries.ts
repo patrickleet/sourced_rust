@@ -268,9 +268,9 @@ export async function analyzeDistributedSvelteKitBoundaries(
 				bucket.push(entry);
 				componentIslands.set(target.path, bucket);
 			} else {
-				const bucket = routeIslands.get(target.path) ?? [];
+				const bucket = routeIslands.get(target.key) ?? [];
 				bucket.push(entry);
-				routeIslands.set(target.path, bucket);
+				routeIslands.set(target.key, bucket);
 			}
 		}
 
@@ -295,7 +295,11 @@ export async function analyzeDistributedSvelteKitBoundaries(
 		const placed = new Set<string>();
 		for (const root of roots) {
 			const occurrences: DistributedSvelteKitBoundaryOccurrence[] = [];
-			for (const { entry, registration } of explicitByBoundary.get(root.id) ?? []) {
+			const explicitEntries = explicitByBoundary.get(root.id) ?? [];
+			const explicitAtBoundary = new Set(
+				explicitEntries.map(({ entry }) => entry.island.id)
+			);
+			for (const { entry, registration } of explicitEntries) {
 				occurrences.push(
 					occurrence(
 						cwd,
@@ -309,7 +313,11 @@ export async function analyzeDistributedSvelteKitBoundaries(
 				);
 				placed.add(entry.island.id);
 			}
-			for (const entry of routeIslands.get(root.path) ?? []) {
+			for (
+				const entry of routeIslands.get(
+					routeBoundaryKey(root.kind, dirname(root.path))
+				) ?? []
+			) {
 				occurrences.push(
 					occurrence(
 						cwd,
@@ -327,24 +335,24 @@ export async function analyzeDistributedSvelteKitBoundaries(
 				[...componentIslands.entries()]
 					.map(([path, entries]) => [
 						path,
-						entries.filter(({ island }) => !explicitlyPlaced.has(island.id))
+						entries.filter(({ island }) => !explicitAtBoundary.has(island.id))
 					] as const)
 					.filter(([, entries]) => entries.length > 0)
 			);
 			const reachable = traverse(root, components, aliases, dynamicComponentIslands, cwd);
-				for (const component of reachable) {
-					for (const entry of componentIslands.get(component) ?? []) {
-						occurrences.push(
-							occurrence(
-								cwd,
-								entry,
-								root,
-								component,
-								'static_component_import',
-								true,
-								explicitByIdentity.get(`${root.id}\u0000${entry.island.operation}`)?.variables
-							)
-						);
+			for (const component of reachable) {
+				for (const entry of componentIslands.get(component) ?? []) {
+					occurrences.push(
+						occurrence(
+							cwd,
+							entry,
+							root,
+							component,
+							'static_component_import',
+							true,
+							explicitByIdentity.get(`${root.id}\u0000${entry.island.operation}`)?.variables
+						)
+					);
 					placed.add(entry.island.id);
 				}
 			}
@@ -849,7 +857,7 @@ function boundaryRoots(
 		.filter((path) => path.startsWith(`${routesDir}${sep}`) || path === routesDir)
 		.flatMap((path): BoundaryRoot[] => {
 			const name = posix.basename(portable(path));
-			const kind = name === '+page.svelte' ? 'page' : name === '+layout.svelte' ? 'layout' : undefined;
+			const kind = boundaryComponentKind(name);
 			if (kind === undefined) return [];
 			const routeDirectory = portable(relative(routesDir, dirname(path)));
 			const route = routeDirectory === '' ? '/' : `/${routeDirectory}`;
@@ -867,16 +875,32 @@ function boundaryRoots(
 		);
 }
 
+function boundaryComponentKind(name: string): BoundaryRoot['kind'] | undefined {
+	const match = /^\+(page|layout)(?:@[^/]*)?\.svelte$/.exec(name);
+	return match?.[1] === 'page' || match?.[1] === 'layout'
+		? match[1]
+		: undefined;
+}
+
+function routeBoundaryKey(kind: BoundaryRoot['kind'], directory: string): string {
+	return `${kind}\u0000${directory}`;
+}
+
 function islandOwnerComponent(
 	cwd: string,
 	source: string
-): Readonly<{ kind: 'component' | 'route'; path: string }> {
+):
+	| Readonly<{ kind: 'component'; path: string }>
+	| Readonly<{ kind: 'route'; key: string }> {
 	const absolute = contained(cwd, source, 'island source');
 	const suffix = extname(absolute);
 	const base = absolute.slice(0, -suffix.length);
 	const name = posix.basename(portable(base));
 	if (name === '+page' || name === '+layout') {
-		return { kind: 'route', path: `${base}.svelte` };
+		return {
+			kind: 'route',
+			key: routeBoundaryKey(name === '+page' ? 'page' : 'layout', dirname(base))
+		};
 	}
 	return { kind: 'component', path: `${base}.svelte` };
 }

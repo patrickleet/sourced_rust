@@ -375,6 +375,117 @@ test('Svelte boundary analysis promotes component islands to their nearest stati
 	);
 });
 
+test('Svelte boundary analysis recognizes named and reset page and layout roots', async (t) => {
+	const root = await mkdtemp(join(tmpdir(), 'distributed-boundary-reset-'));
+	t.after(() => rm(root, { recursive: true, force: true }));
+	await mkdir(join(root, 'src/routes/reset-page'), { recursive: true });
+	await mkdir(join(root, 'src/routes/reset-layout'), { recursive: true });
+	await mkdir(join(root, 'src/lib'), { recursive: true });
+	await writeFile(join(root, 'src/lib/Card.svelte'), '<p>card</p>\n');
+	await writeFile(
+		join(root, 'src/routes/reset-page/+page@.svelte'),
+		'<script>import Card from "$lib/Card.svelte";</script><Card />\n'
+	);
+	await writeFile(
+		join(root, 'src/routes/reset-layout/+layout@(app).svelte'),
+		'<slot />\n'
+	);
+
+	const page = islandInventory('src/routes/reset-page/+page.graphql', 'ResetPage');
+	const layout = islandInventory('src/routes/reset-layout/+layout.graphql', 'ResetLayout');
+	const card = islandInventory('src/lib/Card.graphql', 'ResetCard');
+	const [plan] = await analyzeDistributedSvelteKitBoundaries({
+		cwd: root,
+		clients: [
+			{
+				module: '$distributed',
+				inventory: {
+					...page,
+					islands: [...page.islands, ...layout.islands, ...card.islands]
+				}
+			}
+		]
+	});
+
+	assert.deepEqual(
+		plan.boundaries.map(({ id, source, islands }) => [
+			id,
+			source,
+			islands.map(({ operation, reason }) => [operation, reason])
+		]),
+		[
+			[
+				'layout:/reset-layout',
+				'src/routes/reset-layout/+layout@(app).svelte',
+				[['ResetLayout', 'route_document']]
+			],
+			[
+				'page:/reset-page',
+				'src/routes/reset-page/+page@.svelte',
+				[
+					['ResetCard', 'static_component_import'],
+					['ResetPage', 'route_document']
+				]
+			]
+		]
+	);
+	assert.deepEqual(plan.unplaced, []);
+});
+
+test('explicit boundaries do not hide dynamic island reachability on other routes', async (t) => {
+	const root = await mkdtemp(join(tmpdir(), 'distributed-boundary-explicit-scope-'));
+	t.after(() => rm(root, { recursive: true, force: true }));
+	await mkdir(join(root, 'src/routes/explicit'), { recursive: true });
+	await mkdir(join(root, 'src/routes/dynamic'), { recursive: true });
+	await mkdir(join(root, 'src/lib'), { recursive: true });
+	await writeFile(join(root, 'src/lib/Card.svelte'), '<p>card</p>\n');
+	await writeFile(join(root, 'src/routes/explicit/+page.svelte'), '<p>explicit</p>\n');
+	await writeFile(
+		join(root, 'src/routes/dynamic/+page.svelte'),
+		'<script>const Card = import("$lib/Card.svelte");</script><p>dynamic</p>\n'
+	);
+
+	await assert.rejects(
+		analyzeDistributedSvelteKitBoundaries({
+			cwd: root,
+			clients: [
+				{
+					module: '$distributed',
+					inventory: islandInventory('src/lib/Card.graphql', 'CardQuery'),
+					explicitBoundaries: [
+						{ operation: 'CardQuery', route: '/explicit', kind: 'page' }
+					]
+				}
+			]
+		}),
+		(error) => {
+			assert.match(error.message, /\[distributed\.island\.dynamic_load\]/);
+			assert.match(error.message, /boundary \/dynamic/);
+			return true;
+		}
+	);
+
+	const [allowed] = await analyzeDistributedSvelteKitBoundaries({
+		cwd: root,
+		clients: [
+			{
+				module: '$distributed',
+				inventory: islandInventory('src/lib/Card.graphql', 'CardQuery'),
+				explicitBoundaries: [
+					{ operation: 'CardQuery', route: '/dynamic', kind: 'page' }
+				]
+			}
+		]
+	});
+	assert.deepEqual(
+		allowed.boundaries.map(({ id, islands }) => [
+			id,
+			islands.map(({ operation, reason }) => [operation, reason])
+		]),
+		[['page:/dynamic', [['CardQuery', 'explicit']]]]
+	);
+});
+
 test('Svelte boundary analysis owns route documents and fails closed for dynamic load reachability', async (t) => {
 	const root = await mkdtemp(join(tmpdir(), 'distributed-boundary-negative-'));
 	t.after(() => rm(root, { recursive: true, force: true }));
