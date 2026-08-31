@@ -241,7 +241,7 @@ jobs:
           # nginx is only the CI ingress equivalent: Zitadel's API and Login
           # V2 UI are separate ClusterIP Services, but both use the one
           # external domain advertised in the OIDC authorize redirect.
-          sudo apt-get install -y jq openssl curl nginx
+          sudo apt-get install -y jq openssl curl nginx ripgrep
 
       - uses: azure/setup-kubectl@v4
         with:
