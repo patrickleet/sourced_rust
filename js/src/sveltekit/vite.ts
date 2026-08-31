@@ -341,9 +341,7 @@ export function distributedSvelteKit(
 			}
 		},
 		configureServer(server): void {
-			configureLifecycleServer(server, async () => {
-				await running;
-			});
+			configureLifecycleServer(server);
 			const integration = requireResolved(resolved);
 			const roots = integration.clients.flatMap((client) => [
 				...client.watchRoots,
@@ -454,15 +452,12 @@ const CONTROL_ID = /^[A-Za-z0-9_:-]{16,128}$/;
 const MAX_LIFECYCLE_STATE_BYTES = 1024 * 1024;
 const MAX_ACK_BYTES = 4096;
 
-function configureLifecycleServer(
-	server: ViteServerLike,
-	settleCompiler?: () => Promise<void>
-): void {
+function configureLifecycleServer(server: ViteServerLike): void {
 	const configured = process.env.DISTRIBUTED_LIFECYCLE_DIR;
 	if (configured === undefined || !isAbsolute(configured)) return;
 	const lifecycleRoot = resolve(configured);
 	server.middlewares?.use('/__distributed/lifecycle', (request, response) => {
-		void handleLifecycleRequest(lifecycleRoot, request, response, settleCompiler).catch(() => {
+		void handleLifecycleRequest(lifecycleRoot, request, response).catch(() => {
 			if (response.statusCode < 400) response.statusCode = 500;
 			response.end();
 		});
@@ -472,8 +467,7 @@ function configureLifecycleServer(
 async function handleLifecycleRequest(
 	lifecycleRoot: string,
 	request: ViteMiddlewareRequest,
-	response: ViteMiddlewareResponse,
-	settleCompiler?: () => Promise<void>
+	response: ViteMiddlewareResponse
 ): Promise<void> {
 	response.setHeader('cache-control', 'no-store');
 	if (request.method === 'GET') {
@@ -481,30 +475,11 @@ async function handleLifecycleRequest(
 		if (participant !== undefined && CONTROL_ID.test(participant)) {
 			await writeParticipantHeartbeat(lifecycleRoot, participant);
 		}
-		let state = await readLifecycleState(lifecycleRoot);
+		const state = await readLifecycleState(lifecycleRoot);
 		if (state === undefined) {
 			response.statusCode = 404;
 			response.end();
 			return;
-		}
-		if ((JSON.parse(state) as Record<string, unknown>).phase === 'preparing') {
-			const heartbeat = participant !== undefined && CONTROL_ID.test(participant)
-				? setInterval(
-					() => void writeParticipantHeartbeat(lifecycleRoot, participant).catch(() => undefined),
-					1_000
-				)
-				: undefined;
-			try {
-				await settleCompiler?.();
-			} finally {
-				if (heartbeat !== undefined) clearInterval(heartbeat);
-			}
-			state = await readLifecycleState(lifecycleRoot);
-			if (state === undefined) {
-				response.statusCode = 404;
-				response.end();
-				return;
-			}
 		}
 		response.statusCode = 200;
 		response.setHeader('content-type', 'application/json');
