@@ -16,6 +16,25 @@ pub const MAX_MANIFEST_COLLECTION_ITEMS: usize = 4096;
 pub const MAX_MANIFEST_STRING_BYTES: usize = 4096;
 pub const MAX_MANIFEST_JSON_BYTES: usize = 256 * 1024;
 pub const MAX_MANIFEST_JSON_DEPTH: usize = 32;
+/// Reserved manifest extension carrying the framework release that compiled it.
+pub const FRAMEWORK_COMPATIBILITY_EXTENSION_ID: &str = "distributed.framework";
+/// Schema version for the framework compatibility extension value.
+pub const FRAMEWORK_COMPATIBILITY_EXTENSION_VERSION: u32 = 1;
+
+/// Framework-owned release identity emitted by typed application introspection.
+#[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
+#[serde(deny_unknown_fields)]
+pub struct FrameworkCompatibility {
+    pub release: String,
+}
+
+impl FrameworkCompatibility {
+    pub fn current() -> Self {
+        Self {
+            release: env!("CARGO_PKG_VERSION").to_string(),
+        }
+    }
+}
 
 #[derive(Clone, Debug, Default, Deserialize, Eq, PartialEq, Serialize)]
 #[serde(deny_unknown_fields)]
@@ -123,7 +142,7 @@ impl ApplicationManifest {
             models: Vec::new(),
             surfaces: Vec::new(),
             required_capabilities: Vec::new(),
-            extensions: Vec::new(),
+            extensions: vec![framework_compatibility_extension()],
             fingerprints: ManifestFingerprint::default(),
             provenance: ManifestProvenance::default(),
         }
@@ -210,6 +229,32 @@ impl ApplicationManifest {
         self
     }
 
+    /// Return the framework release record injected by [`ApplicationManifest::new`].
+    pub fn framework_compatibility(&self) -> ApplicationResult<FrameworkCompatibility> {
+        let extension = self
+            .extensions
+            .iter()
+            .find(|extension| extension.id == FRAMEWORK_COMPATIBILITY_EXTENSION_ID)
+            .ok_or_else(|| {
+                ApplicationError::InvalidSpec(
+                    "application manifest is missing framework compatibility".into(),
+                )
+            })?;
+        if extension.version != FRAMEWORK_COMPATIBILITY_EXTENSION_VERSION {
+            return Err(ApplicationError::InvalidSpec(format!(
+                "framework compatibility extension version must be {FRAMEWORK_COMPATIBILITY_EXTENSION_VERSION}"
+            )));
+        }
+        let compatibility: FrameworkCompatibility = serde_json::from_value(extension.value.clone())
+            .map_err(|error| {
+                ApplicationError::InvalidSpec(format!(
+                    "invalid framework compatibility record: {error}"
+                ))
+            })?;
+        validate_portable_text("framework release", &compatibility.release)?;
+        Ok(compatibility)
+    }
+
     pub fn module_ids(&self) -> Vec<&str> {
         self.modules.iter().map(|module| module.id.as_str()).collect()
     }
@@ -226,6 +271,9 @@ impl ApplicationManifest {
         canonical.fingerprints = ManifestFingerprint::default();
         let mut logical = canonical.clone();
         logical.provenance = ManifestProvenance::default();
+        logical
+            .extensions
+            .retain(|extension| extension.id != FRAMEWORK_COMPATIBILITY_EXTENSION_ID);
         let logical_bytes = serde_json::to_vec(&canonical_json(&serde_json::to_value(&logical)?))?;
         canonical.fingerprints.logical = sha256_fingerprint(&logical_bytes);
         let canonical_without_canonical =
@@ -392,6 +440,14 @@ impl ApplicationManifest {
             }
             validate_json_contract("application extension", &extension.value)?;
         }
+        let compatibility = self.framework_compatibility()?;
+        if compatibility != FrameworkCompatibility::current() {
+            return Err(ApplicationError::InvalidSpec(format!(
+                "application manifest framework release `{}` does not match compiling framework `{}`",
+                compatibility.release,
+                env!("CARGO_PKG_VERSION")
+            )));
+        }
         validate_portable_text("manifest generator", &self.provenance.generator)?;
         if let Some(revision) = &self.provenance.source_revision {
             validate_artifact_text("source revision", revision)?;
@@ -449,6 +505,9 @@ fn expected_fingerprints(manifest: &ApplicationManifest) -> ApplicationResult<Ma
     canonical.fingerprints = ManifestFingerprint::default();
     let mut logical = canonical.clone();
     logical.provenance = ManifestProvenance::default();
+    logical
+        .extensions
+        .retain(|extension| extension.id != FRAMEWORK_COMPATIBILITY_EXTENSION_ID);
     let logical_bytes = serde_json::to_vec(&canonical_json(&serde_json::to_value(&logical)?))?;
     let logical = sha256_fingerprint(&logical_bytes);
     canonical.fingerprints.logical = logical.clone();
@@ -458,6 +517,16 @@ fn expected_fingerprints(manifest: &ApplicationManifest) -> ApplicationResult<Ma
         logical,
         canonical: canonical_fingerprint,
     })
+}
+
+fn framework_compatibility_extension() -> ApplicationExtension {
+    ApplicationExtension {
+        id: FRAMEWORK_COMPATIBILITY_EXTENSION_ID.to_string(),
+        version: FRAMEWORK_COMPATIBILITY_EXTENSION_VERSION,
+        value: serde_json::json!({
+            "release": env!("CARGO_PKG_VERSION"),
+        }),
+    }
 }
 
 fn validate_module(

@@ -42,7 +42,6 @@ Control plane: `gitops/cluster/` (`stacks/`, `configurations/`, …).
 ```bash
 cd tests/e2e-ui
 make up            # once: writes e2e-ui.env
-make ui-install    # once: install this checkout's locally linked JS package
 distributed dev
 ```
 
@@ -58,12 +57,13 @@ SvelteKit. No lifecycle JSON or wrapper scripts are required. Vite still handles
 Svelte/CSS/GraphQL HMR, while application-contract changes trigger a coherent
 rebuild and the Rust process restart.
 
-The extra one-time `ui-install` target is specific to this source fixture. It
-builds and installs the locally linked `../../../js` checkout so the test covers
-the exact framework source in this repository; `@hops-ops/distributed` is also
-published to npm for ordinary applications. Rust/WASM pures are not a fixture
-prerequisite: when an application declares one, `distributed build` and
-`distributed dev` compile it from its declaring Cargo package before Vite starts.
+This fixture links `../../../js` so it covers the exact framework source in this
+repository. The lifecycle resolves that package, installs its own build
+dependencies, compiles stale source, verifies every declared package export,
+and then installs the UI dependencies. Ordinary applications resolve the same
+package from npm. When an application declares a Rust/WASM pure,
+`distributed build` and `distributed dev` compile it from its declaring Cargo
+package before Vite starts.
 
 This is the **default one-process playground**. Optional celld:
 

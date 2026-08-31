@@ -34,8 +34,9 @@ pub(crate) use command::{
 pub use error::{ApplicationError, ApplicationResult};
 pub use identity::{canonical_json, sha256_fingerprint, LogicalId};
 pub use manifest::{
-    ApplicationExtension, ApplicationManifest, ManifestFingerprint, ManifestProvenance,
-    APPLICATION_MANIFEST_SCHEMA_VERSION, MAX_APPLICATION_MANIFEST_BYTES,
+    ApplicationExtension, ApplicationManifest, FrameworkCompatibility, ManifestFingerprint,
+    ManifestProvenance, APPLICATION_MANIFEST_SCHEMA_VERSION, FRAMEWORK_COMPATIBILITY_EXTENSION_ID,
+    FRAMEWORK_COMPATIBILITY_EXTENSION_VERSION, MAX_APPLICATION_MANIFEST_BYTES,
     MAX_MANIFEST_COLLECTION_ITEMS, MAX_MANIFEST_JSON_BYTES, MAX_MANIFEST_JSON_DEPTH,
     MAX_MANIFEST_STRING_BYTES,
 };

@@ -370,14 +370,19 @@ fn application_manifest_is_byte_deterministic_and_contains_no_executable_data() 
         .as_str()
         .unwrap()
         .starts_with("sha256:"));
-    assert_eq!(
-        value["extensions"][0]["value"]["literal_url"],
-        "https://domain.example/view"
-    );
-    assert_eq!(
-        value["extensions"][0]["value"]["literal_path"],
-        "orders/today"
-    );
+    let extensions = value["extensions"].as_array().unwrap();
+    let framework = extensions
+        .iter()
+        .find(|extension| extension["id"] == "distributed.framework")
+        .unwrap();
+    assert_eq!(framework["version"], 1);
+    assert_eq!(framework["value"]["release"], env!("CARGO_PKG_VERSION"));
+    let ui = extensions
+        .iter()
+        .find(|extension| extension["id"] == "ui")
+        .unwrap();
+    assert_eq!(ui["value"]["literal_url"], "https://domain.example/view");
+    assert_eq!(ui["value"]["literal_path"], "orders/today");
     assert!(!String::from_utf8(first.clone()).unwrap().contains("handler"));
     assert!(!String::from_utf8(first.clone())
         .unwrap()
@@ -388,6 +393,29 @@ fn application_manifest_is_byte_deterministic_and_contains_no_executable_data() 
     missing_version.as_object_mut().unwrap().remove("schema_version");
     let missing_version = serde_json::to_vec(&missing_version).unwrap();
     assert!(ApplicationManifest::from_canonical_bytes(&missing_version).is_err());
+
+    let mut missing_framework = application.manifest().clone();
+    missing_framework
+        .extensions
+        .retain(|extension| extension.id != "distributed.framework");
+    assert!(missing_framework
+        .validate()
+        .unwrap_err()
+        .to_string()
+        .contains("missing framework compatibility"));
+
+    let mut skewed_framework = application.manifest().clone();
+    skewed_framework
+        .extensions
+        .iter_mut()
+        .find(|extension| extension.id == "distributed.framework")
+        .unwrap()
+        .value["release"] = serde_json::json!("0.0.0-skewed");
+    assert!(skewed_framework
+        .validate()
+        .unwrap_err()
+        .to_string()
+        .contains("does not match compiling framework"));
 
     for field in ["tables", "services", "endpoints", "transport", "observability"] {
         let mut legacy_owner = value.clone();

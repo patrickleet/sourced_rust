@@ -38,16 +38,24 @@ teardown() {
   [ "$status" -eq 0 ]
 
   mkdir -p "$PROJECT/ui" "$ROOT/bin"
-  printf '{"name":"zero-config-ui","private":true,"scripts":{"build":"vite build"}}\n' \
+  printf '{"name":"zero-config-ui","private":true,"scripts":{"build":"vite build"},"dependencies":{"@hops-ops/distributed":"file:%s/js"}}\n' \
+    "$DISTRIBUTED_ROOT" \
     > "$PROJECT/ui/package.json"
+  ZERO_CONFIG_REAL_NPM="$(command -v npm)"
+  [ -n "$ZERO_CONFIG_REAL_NPM" ]
   cat > "$ROOT/bin/npm" <<'SCRIPT'
 #!/bin/sh
 set -eu
+if [ "$PWD" = "$DISTRIBUTED_ROOT/js" ]; then
+  exec "$ZERO_CONFIG_REAL_NPM" "$@"
+fi
 printf '%s:%s\n' "$PWD" "$*" > "$ZERO_CONFIG_NPM_LOG"
 if [ "$1" = "run" ] && [ "$2" = "dev" ]; then
   exec python3 -m http.server "${UI_PORT:-15180}" --bind 127.0.0.1
 fi
-mkdir -p node_modules
+mkdir -p node_modules/@hops-ops
+[ -e node_modules/@hops-ops/distributed ] || \
+  ln -s "$DISTRIBUTED_ROOT/js" node_modules/@hops-ops/distributed
 mkdir -p .svelte-kit/output
 SCRIPT
   chmod +x "$ROOT/bin/npm"
@@ -55,12 +63,15 @@ SCRIPT
   run env \
     PATH="$ROOT/bin:$PATH" \
     ZERO_CONFIG_NPM_LOG="$ROOT/npm.log" \
+    ZERO_CONFIG_REAL_NPM="$ZERO_CONFIG_REAL_NPM" \
     "$DISTRIBUTED_BIN" build "$PROJECT" --output json
   [ "$status" -eq 0 ]
   [[ "$output" == *'"ok":true'* ]]
   [ -x "$PROJECT/target/debug/zero-config-app" ]
   [ -f "$ROOT/npm.log" ]
   grep -F "$PROJECT/ui:run build" "$ROOT/npm.log"
+  [ -f "$DISTRIBUTED_ROOT/js/dist/index.js" ]
+  [ "$(find "$PROJECT/.distributed/javascript" -name '*.json' -type f | wc -l | tr -d ' ')" -eq 1 ]
   [ ! -e "$PROJECT/distributed.contracts.json" ]
   [ ! -e "$PROJECT/distributed.lifecycle.json" ]
   manifest_count="$(find "$PROJECT/.distributed/lifecycle/generations" \
@@ -75,6 +86,7 @@ SCRIPT
   env \
     PATH="$ROOT/bin:$PATH" \
     ZERO_CONFIG_NPM_LOG="$ROOT/npm.log" \
+    ZERO_CONFIG_REAL_NPM="$ZERO_CONFIG_REAL_NPM" \
     BIND="127.0.0.1:$API_PORT" \
     UI_HOST="127.0.0.1" \
     UI_PORT="$UI_PORT_VALUE" \
@@ -102,6 +114,7 @@ SCRIPT
   run env \
     PATH="$ROOT/bin:$PATH" \
     ZERO_CONFIG_NPM_LOG="$ROOT/npm.log" \
+    ZERO_CONFIG_REAL_NPM="$ZERO_CONFIG_REAL_NPM" \
     "$DISTRIBUTED_BIN" build "$PROJECT"
   [ "$status" -ne 0 ]
   [[ "$output" == *'validating typed application zero-config-app through zero_config_app::application_manifest'* ]]
@@ -109,6 +122,41 @@ SCRIPT
   [[ "$output" != *'compiling SvelteKit UI'* ]]
   [ "$(cat "$ROOT/npm.log")" = 'npm-must-not-run' ]
   [ "$(cat "$PROJECT/.distributed/lifecycle/active.json")" = "$active_before" ]
+}
+
+@test "linked checkout skew is structured and fails before build or dev startup" {
+  PROJECT="$ROOT/skewed-app"
+  run "$DISTRIBUTED_BIN" scaffold skewed-app \
+    --path "$PROJECT" \
+    --distributed-path "$DISTRIBUTED_ROOT" \
+    --query-api \
+    --store sqlite
+  [ "$status" -eq 0 ]
+
+  OTHER_JS="$ROOT/other-distributed/js"
+  mkdir -p "$PROJECT/ui" "$OTHER_JS"
+  printf '{"name":"@hops-ops/distributed","version":"0.1.0","scripts":{"build":"tsc"},"exports":{".":"./dist/index.js"}}\n' \
+    > "$OTHER_JS/package.json"
+  printf '{"name":"skewed-ui","private":true,"dependencies":{"@hops-ops/distributed":"file:%s"}}\n' \
+    "$OTHER_JS" \
+    > "$PROJECT/ui/package.json"
+
+  run "$DISTRIBUTED_BIN" build "$PROJECT" --output json
+  [ "$status" -eq 1 ]
+  [[ "$output" == *'"code":"CTL-FRAMEWORK-IDENTITY-MISMATCH"'* ]]
+  [[ "$output" == *'"affected_components":["rust","cli","javascript"]'* ]]
+  [[ "$output" == *'"expected"'* ]]
+  [[ "$output" == *'"repair"'* ]]
+  [ ! -e "$PROJECT/target/debug/skewed-app" ]
+  [ ! -e "$PROJECT/ui/node_modules" ]
+  [ ! -e "$PROJECT/.distributed/lifecycle/active.json" ]
+
+  run "$DISTRIBUTED_BIN" dev "$PROJECT"
+  [ "$status" -eq 1 ]
+  [[ "$output" == *'incompatible Distributed framework members'* ]]
+  [ ! -e "$PROJECT/target/debug/skewed-app" ]
+  [ ! -e "$PROJECT/ui/node_modules" ]
+  [ ! -e "$PROJECT/.distributed/lifecycle/active.json" ]
 }
 
 @test "build activates atomically and check reports drift without replacing active" {

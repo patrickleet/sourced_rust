@@ -55,7 +55,7 @@ down:
 
 ## Coherent application build + actual API/UI supervision.
 ## Vite still owns Svelte, CSS, and GraphQL hot updates.
-run: ui-install
+run:
 	cargo run --quiet --manifest-path ../../Cargo.toml -p distributed_cli --bin distributed -- dev .
 
 run-api:
@@ -220,9 +220,9 @@ test: test-domain test-suite ui-install ui-build ui-check ui-test
 
 ## CI-only orchestration: build the real application through Distributed, then
 ## overlap read-only Rust and UI verification without concurrent UI writers.
-ci-offline: ui-install
-	cd ui && $(NPM) run client:check
+ci-offline:
 	$(DISTRIBUTED) build .
+	cd ui && $(NPM) run client:check
 	@set -eu; \
 	status=0; \
 	$(MAKE) test-domain test-suite & rust_pid=$$!; \
