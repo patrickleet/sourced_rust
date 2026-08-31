@@ -1,4 +1,4 @@
-{{- /*
+{{- /* Test-user chart ownership.
   Cluster-shared role assignments for the demo humans.
 
   Grant XRs resolve HumanUser + Project IDs from status.atProvider, keeping
@@ -35,8 +35,12 @@ metadata:
 spec:
   userIdRef:
     name: {{ printf "e2e-%s" $grant.user }}
+    apiVersion: auth.hops.ops.com.ai/v1alpha1
+    kind: HumanUser
   projectIdRef:
     name: {{ $project }}
+    apiVersion: project.zitadel.m.crossplane.io/v1alpha1
+    kind: Project
   roles: {{ $grant.roles | toJson }}
   providerConfigRef:
     name: {{ $pc | quote }}

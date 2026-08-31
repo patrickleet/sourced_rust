@@ -335,7 +335,8 @@ pub struct ScaffoldArgs {
     /// Metrics integration to scaffold.
     #[arg(long, value_enum)]
     pub metrics: Option<Metrics>,
-    /// Generate a Helm deploy chart under .gitops/deploy.
+    /// Generate independent local and cloud workload charts under
+    /// .gitops/local and .gitops/deploy.
     #[arg(long)]
     pub gitops: bool,
     /// Generate a GitOps promotion chart for Argo CD or Flux.

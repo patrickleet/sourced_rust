@@ -1,0 +1,36 @@
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: registry
+  namespace: crossplane-system
+  labels:
+    app.kubernetes.io/name: registry
+    app.kubernetes.io/component: package-registry
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app.kubernetes.io/name: registry
+  template:
+    metadata:
+      labels:
+        app.kubernetes.io/name: registry
+        app.kubernetes.io/component: package-registry
+    spec:
+      containers:
+        - name: registry
+          image: registry:2
+          ports:
+            - name: registry
+              containerPort: 5000
+          readinessProbe:
+            httpGet:
+              path: /v2/
+              port: registry
+          volumeMounts:
+            - name: registry-data
+              mountPath: /var/lib/registry
+      volumes:
+        - name: registry-data
+          persistentVolumeClaim:
+            claimName: registry

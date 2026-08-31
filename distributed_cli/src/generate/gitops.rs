@@ -1,6 +1,6 @@
-//! GitOps artifact templates: the `.gitops/deploy` Helm chart (HTTP Deployment +
-//! Service, or Knative Service + Brokers + Triggers) and the `.gitops/promote`
-//! Argo CD / Flux promotion chart. Pure — produces `GeneratedFile`s.
+//! GitOps artifact templates: independent `.gitops/local` and `.gitops/deploy`
+//! workload charts, plus the optional `.gitops/promote` chart. Pure — produces
+//! `GeneratedFile`s.
 
 use std::collections::BTreeSet;
 
@@ -11,61 +11,19 @@ use super::{file, Scaffold};
 use crate::{GeneratedFile, GitopsPromoteTarget, MetricsTarget, ServiceTransport};
 
 impl Scaffold {
-    /// The `.gitops/deploy` (and optional `.gitops/promote`) files. The deploy
-    /// chart is emitted whenever any GitOps/GitHub option is set, because the
-    /// promotion charts target `.gitops/deploy`.
+    /// The required local/deploy workload charts and optional promote chart.
+    /// Local and cloud workload charts are separate render roots so a local
+    /// chart never needs a cloud branch (or vice versa).
     pub(super) fn gitops_files(&self) -> Vec<GeneratedFile> {
         let mut files = Vec::new();
-        let want_deploy = self.gitops
+        let want_workloads = self.gitops
             || self.gitops_promote.is_some()
             || self.github.is_some()
             || self.github_preview.is_some()
             || self.github_promote.is_some();
-        if want_deploy {
-            files.push(file(
-                ".gitops/deploy/Chart.yaml",
-                self.gitops_deploy_chart_yaml(),
-            ));
-            files.push(file(
-                ".gitops/deploy/values.yaml",
-                self.gitops_deploy_values_yaml(),
-            ));
-            match self.transport {
-                ServiceTransport::Http => {
-                    files.push(file(
-                        ".gitops/deploy/templates/deployment.yaml",
-                        self.gitops_http_deployment_yaml(),
-                    ));
-                    files.push(file(
-                        ".gitops/deploy/templates/service.yaml",
-                        self.gitops_http_service_yaml(),
-                    ));
-                    if self.metrics == Some(MetricsTarget::Prometheus) {
-                        files.push(file(
-                            ".gitops/deploy/templates/servicemonitor.yaml",
-                            self.gitops_service_monitor_yaml(),
-                        ));
-                        files.push(file(
-                            ".gitops/deploy/templates/prometheusrule.yaml",
-                            self.gitops_prometheus_rule_yaml(),
-                        ));
-                    }
-                }
-                ServiceTransport::Knative => {
-                    files.push(file(
-                        ".gitops/deploy/templates/knative-service.yaml",
-                        self.gitops_knative_service_yaml(),
-                    ));
-                    files.push(file(
-                        ".gitops/deploy/templates/knative-brokers.yaml",
-                        self.gitops_knative_brokers_yaml(),
-                    ));
-                    files.push(file(
-                        ".gitops/deploy/templates/knative-triggers.yaml",
-                        self.gitops_knative_triggers_yaml(),
-                    ));
-                }
-            }
+        if want_workloads {
+            files.extend(self.workload_chart_files(".gitops/local", true));
+            files.extend(self.workload_chart_files(".gitops/deploy", false));
         }
 
         if let Some(promote) = self.gitops_promote {
@@ -86,6 +44,66 @@ impl Scaffold {
                     ".gitops/promote/templates/helmrelease.yaml",
                     self.gitops_flux_helmrelease_yaml(),
                 )),
+            }
+        }
+
+        files
+    }
+
+    fn workload_chart_files(&self, root: &str, local: bool) -> Vec<GeneratedFile> {
+        let mut files = vec![
+            file(
+                &format!("{root}/Chart.yaml"),
+                if local {
+                    self.gitops_local_chart_yaml()
+                } else {
+                    self.gitops_deploy_chart_yaml()
+                },
+            ),
+            file(
+                &format!("{root}/values.yaml"),
+                if local {
+                    self.gitops_workload_values_yaml(true)
+                } else {
+                    self.gitops_deploy_values_yaml()
+                },
+            ),
+        ];
+
+        match self.transport {
+            ServiceTransport::Http => {
+                files.push(file(
+                    &format!("{root}/templates/deployment.yaml"),
+                    self.gitops_http_deployment_yaml(local),
+                ));
+                files.push(file(
+                    &format!("{root}/templates/service.yaml"),
+                    self.gitops_http_service_yaml(),
+                ));
+                if self.metrics == Some(MetricsTarget::Prometheus) {
+                    files.push(file(
+                        &format!("{root}/templates/servicemonitor.yaml"),
+                        self.gitops_service_monitor_yaml(),
+                    ));
+                    files.push(file(
+                        &format!("{root}/templates/prometheusrule.yaml"),
+                        self.gitops_prometheus_rule_yaml(),
+                    ));
+                }
+            }
+            ServiceTransport::Knative => {
+                files.push(file(
+                    &format!("{root}/templates/knative-service.yaml"),
+                    self.gitops_knative_service_yaml(local),
+                ));
+                files.push(file(
+                    &format!("{root}/templates/knative-brokers.yaml"),
+                    self.gitops_knative_brokers_yaml(),
+                ));
+                files.push(file(
+                    &format!("{root}/templates/knative-triggers.yaml"),
+                    self.gitops_knative_triggers_yaml(),
+                ));
             }
         }
 
@@ -215,7 +233,25 @@ appVersion: "0.1.0"
         )
     }
 
+    fn gitops_local_chart_yaml(&self) -> String {
+        format!(
+            r#"apiVersion: v2
+name: {chart_name}
+description: Local development chart for {service_name}
+type: application
+version: 0.1.0
+appVersion: "0.1.0"
+"#,
+            chart_name = k8s_name(&format!("{}-local", self.names.package_name)),
+            service_name = self.names.package_name,
+        )
+    }
+
     fn gitops_deploy_values_yaml(&self) -> String {
+        self.gitops_workload_values_yaml(false)
+    }
+
+    fn gitops_workload_values_yaml(&self, local: bool) -> String {
         let bus = self
             .bus
             .map(|bus| format!("bus:\n  kind: {}\n", bus.kind()))
@@ -246,10 +282,16 @@ prometheusRule:
         } else {
             ""
         };
+        let image_tag = if local { "latest" } else { "" };
         format!(
-            r#"image:
+            r#"local: {local}
+preview: false
+
+image:
   repository: {image_repository}
-  tag: latest
+  # Cloud promotion supplies an immutable release/build tag. Local charts keep
+  # the conventional latest default because they are local-runtime artifacts.
+  tag: "{image_tag}"
 service:
   port: 3000
 observability:
@@ -258,16 +300,27 @@ observability:
     otlpEndpoint: ""
 {bus}{metrics}{query_api_values}"#,
             image_repository = self.image_repository(),
+            image_tag = image_tag,
         )
     }
 
-    fn gitops_http_deployment_yaml(&self) -> String {
+    fn gitops_http_deployment_yaml(&self, local: bool) -> String {
         let name = k8s_name(&self.names.package_name);
         let bus_env = self.bus_env_yaml();
         let tracing_env = self.tracing_env_yaml();
         let query_api_env = self.query_api_env_yaml();
+        let image_validation = if local {
+            ""
+        } else {
+            // This fragment is interpolated as a value below, so its Helm
+            // delimiters must not be escaped for the surrounding `format!`.
+            r#"{{- if or (not .Values.image.tag) (eq .Values.image.tag "latest") }}
+{{- fail "image.tag must be an immutable build tag for cloud deployments; latest and empty are not allowed" }}
+{{- end }}
+"#
+        };
         format!(
-            r#"apiVersion: apps/v1
+            r#"{image_validation}apiVersion: apps/v1
 kind: Deployment
 metadata:
   name: {name}
@@ -296,6 +349,7 @@ spec:
             - name: BIND_ADDR
               value: 0.0.0.0:3000
 {bus_env}{tracing_env}{query_api_env}"#,
+            image_validation = image_validation,
         )
     }
 
@@ -390,13 +444,23 @@ spec:
         )
     }
 
-    fn gitops_knative_service_yaml(&self) -> String {
+    fn gitops_knative_service_yaml(&self, local: bool) -> String {
         let name = k8s_name(&self.names.package_name);
         let bus_env = self.bus_env_yaml();
         let tracing_env = self.tracing_env_yaml();
         let query_api_env = self.query_api_env_yaml();
+        let image_validation = if local {
+            ""
+        } else {
+            // This fragment is interpolated as a value below, so its Helm
+            // delimiters must not be escaped for the surrounding `format!`.
+            r#"{{- if or (not .Values.image.tag) (eq .Values.image.tag "latest") }}
+{{- fail "image.tag must be an immutable build tag for cloud deployments; latest and empty are not allowed" }}
+{{- end }}
+"#
+        };
         format!(
-            r#"apiVersion: serving.knative.dev/v1
+            r#"{image_validation}apiVersion: serving.knative.dev/v1
 kind: Service
 metadata:
   name: {name}
@@ -422,6 +486,7 @@ spec:
             - name: BIND_ADDR
               value: 0.0.0.0:3000
 {bus_env}{tracing_env}{query_api_env}"#,
+            image_validation = image_validation,
         )
     }
 
@@ -491,9 +556,19 @@ appVersion: "0.1.0"
     }
 
     fn gitops_promote_values_yaml(&self) -> String {
-        r#"repoUrl: https://example.invalid/repo.git
-targetRevision: HEAD
-destinationNamespace: default
+        r#"local: false
+preview: false
+environment:
+  name: ""
+  namespace: ""
+source:
+  repoURL: https://example.invalid/repo.git
+  targetRevision: HEAD
+deploy:
+  values: {}
+argocd:
+  namespace: argocd
+  project: default
 "#
         .to_string()
     }
@@ -501,19 +576,33 @@ destinationNamespace: default
     fn gitops_argo_application_yaml(&self) -> String {
         let name = k8s_name(&self.names.package_name);
         format!(
-            r#"apiVersion: argoproj.io/v1alpha1
+            r#"{{{{- if .Values.local }}}}
+{{{{- fail ".gitops/promote is cloud-only; set local=false" }}}}
+{{{{- end }}}}
+{{{{- $environment := required "environment.name is required" .Values.environment.name }}}}
+{{{{- $namespace := required "environment.namespace is required" .Values.environment.namespace }}}}
+{{{{- $repoURL := required "source.repoURL is required for cloud promotion" .Values.source.repoURL }}}}
+apiVersion: argoproj.io/v1alpha1
 kind: Application
 metadata:
-  name: {name}
+  name: {{{{ printf "%s-{name}" $environment }}}}
+  namespace: {{{{ .Values.argocd.namespace }}}}
 spec:
-  project: default
+  project: {{{{ .Values.argocd.project }}}}
   source:
-    repoURL: https://example.invalid/repo.git
-    targetRevision: HEAD
+    repoURL: {{{{ $repoURL | quote }}}}
+    targetRevision: {{{{ .Values.source.targetRevision | quote }}}}
     path: .gitops/deploy
+    helm:
+      valuesObject:
+        local: false
+        preview: {{{{ .Values.preview }}}}
+{{{{- with .Values.deploy.values }}}}
+{{{{ toYaml . | nindent 8 }}}}
+{{{{- end }}}}
   destination:
     server: https://kubernetes.default.svc
-    namespace: default
+    namespace: {{{{ $namespace }}}}
   syncPolicy:
     automated:
       prune: true
@@ -525,20 +614,26 @@ spec:
     fn gitops_flux_helmrelease_yaml(&self) -> String {
         let name = k8s_name(&self.names.package_name);
         format!(
-            r#"apiVersion: source.toolkit.fluxcd.io/v1
+            r#"{{{{- if .Values.local }}}}
+{{{{- fail ".gitops/promote is cloud-only; set local=false" }}}}
+{{{{- end }}}}
+{{{{- $namespace := required "environment.namespace is required" .Values.environment.namespace }}}}
+apiVersion: source.toolkit.fluxcd.io/v1
 kind: GitRepository
 metadata:
-  name: {name}-gitops
+  name: {{{{ printf "%s-gitops" "{name}" }}}}
+  namespace: {{{{ $namespace }}}}
 spec:
   interval: 1m
-  url: https://example.invalid/repo.git
+  url: {{{{ required "source.repoURL is required for cloud promotion" .Values.source.repoURL | quote }}}}
   ref:
-    branch: main
+    name: {{{{ .Values.source.targetRevision | quote }}}}
 ---
 apiVersion: helm.toolkit.fluxcd.io/v2
 kind: HelmRelease
 metadata:
   name: {name}
+  namespace: {{{{ $namespace }}}}
 spec:
   interval: 5m
   chart:
@@ -546,9 +641,16 @@ spec:
       chart: .gitops/deploy
       sourceRef:
         kind: GitRepository
-        name: {name}-gitops
+        name: {{{{ printf "%s-gitops" "{name}" }}}}
+        namespace: {{{{ $namespace }}}}
       interval: 1m
-  targetNamespace: default
+  targetNamespace: {{{{ $namespace }}}}
+  values:
+    local: false
+    preview: {{{{ .Values.preview }}}}
+{{{{- with .Values.deploy.values }}}}
+{{{{ toYaml . | nindent 4 }}}}
+{{{{- end }}}}
 "#,
         )
     }

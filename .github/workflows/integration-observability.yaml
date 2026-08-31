@@ -97,6 +97,7 @@ jobs:
       - name: Render chart and validate against CRD schemas
         run: |
           helm template obs target/tmp/scaffold-observability/.gitops/deploy \
+            --set image.tag=ci-test \
             --set serviceMonitor.enabled=true \
             --set prometheusRule.enabled=true \
             --set observability.tracing.enabled=true \

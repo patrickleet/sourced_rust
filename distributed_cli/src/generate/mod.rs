@@ -4,7 +4,7 @@
 //!
 //! - [`names`] — name/message normalization + validation (the portable rules);
 //! - [`service_crate`] — the Rust service-crate templates;
-//! - [`gitops`] — the `.gitops/{deploy,promote}` Helm/Knative charts;
+//! - [`gitops`] — the `.gitops/{local,deploy,promote}` Helm/Knative charts;
 //! - [`github`] — GitHub repo parsing + the release/preview/promote workflows.
 
 mod github;
@@ -162,7 +162,7 @@ impl Scaffold {
             files.push(file("src/read_models/mod.rs", self.read_models_mod_rs()));
         }
 
-        // GitOps charts (.gitops/deploy + optional .gitops/promote) and GitHub
+        // GitOps charts (.gitops/{local,deploy} + optional promote) and GitHub
         // workflow files (+ promotion charts) — staged in the same project.
         files.extend(self.gitops_files());
         files.extend(self.github_files());
@@ -405,12 +405,26 @@ mod tests {
         s.gitops = true;
         let project = generate_service_scaffold(s).unwrap();
         let paths = paths(&project);
+        assert!(paths.contains(&".gitops/local/Chart.yaml"));
+        assert!(paths.contains(&".gitops/local/templates/deployment.yaml"));
         assert!(paths.contains(&".gitops/deploy/Chart.yaml"));
         assert!(paths.contains(&".gitops/deploy/templates/deployment.yaml"));
         assert!(paths.contains(&".gitops/deploy/templates/service.yaml"));
         assert!(!paths.contains(&".gitops/deploy/templates/servicemonitor.yaml"));
         assert!(!paths.contains(&".gitops/deploy/templates/prometheusrule.yaml"));
         assert!(!paths.iter().any(|p| p.contains("knative")));
+
+        let local_values = contents(&project, ".gitops/local/values.yaml");
+        assert!(local_values.starts_with("local: true\npreview: false\n"));
+        assert!(local_values.contains("tag: \"latest\""));
+        let deploy_values = contents(&project, ".gitops/deploy/values.yaml");
+        assert!(deploy_values.starts_with("local: false\npreview: false\n"));
+        assert!(deploy_values.contains("tag: \"\""));
+        assert!(!local_values.contains("{{ if .Values.local }}"));
+        assert!(!deploy_values.contains("{{ if .Values.local }}"));
+        let deploy = contents(&project, ".gitops/deploy/templates/deployment.yaml");
+        assert!(deploy.contains("image.tag must be an immutable build tag"));
+        assert!(!paths.iter().any(|p| p.starts_with(".gitops/promote/")));
     }
 
     #[test]
@@ -652,6 +666,21 @@ mod tests {
         let paths = paths(&project);
         assert!(paths.contains(&".gitops/promote/Chart.yaml"));
         assert!(paths.contains(&".gitops/promote/templates/helmrelease.yaml"));
+    }
+
+    #[test]
+    fn gitops_promote_forwards_only_deploy_values() {
+        let mut s = spec("orders");
+        s.gitops_promote = Some(crate::GitopsPromoteTarget::Argo);
+        let project = generate_service_scaffold(s).unwrap();
+        let values = contents(&project, ".gitops/promote/values.yaml");
+        assert!(values.contains("deploy:\n  values: {}"));
+        let application = contents(&project, ".gitops/promote/templates/application.yaml");
+        assert!(application.contains("path: .gitops/deploy"));
+        assert!(application.contains("with .Values.deploy.values"));
+        assert!(application.contains("toYaml . | nindent 8"));
+        assert!(!application.contains(".Values.source.repoURL | toYaml"));
+        assert!(application.contains("environment.name is required"));
     }
 
     #[test]

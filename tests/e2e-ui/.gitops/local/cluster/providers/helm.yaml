@@ -1,0 +1,30 @@
+apiVersion: pkg.crossplane.io/v1
+kind: Provider
+metadata:
+  name: crossplane-contrib-provider-helm
+spec:
+  package: xpkg.crossplane.io/crossplane-contrib/provider-helm:v1.3.0
+  runtimeConfigRef:
+    name: local-dev-helm
+---
+# The service account is cluster-admin by design for this disposable local
+# cluster. Helm releases in the explicit Cluster/Environment trees may install
+# CRDs, namespaces, and cluster-scoped resources. Do not use this binding on a
+# shared or production cluster; see rbac/provider-accounts.yaml.
+apiVersion: pkg.crossplane.io/v1beta1
+kind: DeploymentRuntimeConfig
+metadata:
+  name: local-dev-helm
+spec:
+  serviceAccountTemplate:
+    metadata:
+      name: local-dev-helm
+---
+apiVersion: helm.m.crossplane.io/v1beta1
+kind: ProviderConfig
+metadata:
+  name: default
+  namespace: default
+spec:
+  credentials:
+    source: InjectedIdentity

@@ -85,15 +85,15 @@ overlay_e2e "$ALICE_WT"
 overlay_e2e "$BOB_WT"
 
 # Bob: do not own instance Features
-BOB_UI_APP="$BOB_WT/tests/e2e-ui/gitops/envs/local/ui.yaml"
-if [[ -f "$BOB_UI_APP" ]]; then
-  if rg -q 'instanceLoginV2:' "$BOB_UI_APP"; then
-    sed -i.bak 's/instanceLoginV2: true/instanceLoginV2: false/' "$BOB_UI_APP" || true
+BOB_ENV="$BOB_WT/tests/e2e-ui/.gitops/local/environment.yaml"
+if [[ -f "$BOB_ENV" ]]; then
+  if rg -q 'instanceLoginV2:' "$BOB_ENV"; then
+    sed -i.bak 's/instanceLoginV2: true/instanceLoginV2: false/' "$BOB_ENV" || true
   else
     # inject under identity:
     python3 - <<PY
 from pathlib import Path
-p = Path("$BOB_UI_APP")
+p = Path("$BOB_ENV")
 t = p.read_text()
 if "instanceLoginV2" not in t:
     t = t.replace("demoUsers: true", "instanceLoginV2: false\n          demoUsers: true")
@@ -126,14 +126,14 @@ if [[ "$SKIP_GITOPS" != "1" ]]; then
     die "kubectl cannot talk to a cluster (set KUBECONFIG); dual gitops requires local CP"
   fi
   log "reconciling workspace $ALICE_NAME from $ALICE_E2E"
-  (cd "$ALICE_E2E" && "$HOPS" local gitops worktree ./gitops/envs/local \
+  (cd "$ALICE_E2E" && "$HOPS" local gitops environment ./.gitops/local/environment.yaml \
     --name "$ALICE_NAME" --cluster-provider "$CLUSTER_PROVIDER" \
     --docker-provider "$DOCKER_PROVIDER" --cluster-name "$CLUSTER_NAME" \
     --context "$CONTEXT" --once) \
     | tee "$SCRATCH/gitops-alice.log" \
     || die "workspace gitops alice failed — see $SCRATCH/gitops-alice.log"
   log "reconciling workspace $BOB_NAME from $BOB_E2E"
-  (cd "$BOB_E2E" && "$HOPS" local gitops worktree ./gitops/envs/local \
+  (cd "$BOB_E2E" && "$HOPS" local gitops environment ./.gitops/local/environment.yaml \
     --name "$BOB_NAME" --cluster-provider "$CLUSTER_PROVIDER" \
     --docker-provider "$DOCKER_PROVIDER" --cluster-name "$CLUSTER_NAME" \
     --context "$CONTEXT" --once) \

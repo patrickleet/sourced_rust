@@ -1,0 +1,14 @@
+apiVersion: hops.local/v1alpha1
+kind: Cluster
+metadata:
+  name: e2e-ui
+spec:
+  clusterProvider: kind
+  # Use the portable Docker engine declaration. On macOS Hops still
+  # auto-detects Dory's socket; CI uses the runner's Docker daemon.
+  dockerProvider: docker
+  # Mount the distributed checkout so cluster-dev workloads can see both
+  # shared packages (js/) and this fixture (tests/e2e-ui/).
+  mountRoot: ../../../..
+  manifests:
+    path: tests/e2e-ui/.gitops/local/cluster

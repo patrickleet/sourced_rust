@@ -1,0 +1,24 @@
+# Local PostgreSQL platform substrate. PSQLStack installs CNPG/Atlas and the
+# local-path-backed `psql` StorageClass; platform/psql-cluster.yaml owns the
+# serving database independently from AuthStack.
+apiVersion: hops.ops.com.ai/v1alpha1
+kind: PSQLStack
+metadata:
+  name: psql
+  namespace: default
+spec:
+  clusterName: e2e-ui
+  helmProviderConfigRef:
+    name: default
+  kubernetesProviderConfigRef:
+    name: default
+  storageClass:
+    enabled: true
+    name: psql
+    provisioner: rancher.io/local-path
+    allowVolumeExpansion: false
+    parameters: {}
+  snapshotClass:
+    enabled: false
+  scaleToZeroPlugin:
+    enabled: false

@@ -1,6 +1,7 @@
-{{- /*
+{{- /* Test-user chart ownership.
   Cluster-shared project roles (user / admin) on the shared e2e-ui Project.
-  orgId omitted — defaults to ProviderConfig credential org (see humans template).
+  The project reference supplies the organization context; no generated
+  organization UUID is stored in this chart.
 */ -}}
 {{- if .Values.identity.enabled }}
 {{- $project := include "e2e-ui-ui.clusterProjectName" . -}}
@@ -17,9 +18,10 @@ metadata:
     hops.ops.com.ai/demo-role: user
 spec:
   forProvider:
-    {{- if .Values.identity.orgId }}
-    orgId: {{ .Values.identity.orgId | quote }}
-    {{- end }}
+    # provider-upjet-zitadel requires the field, while the project reference
+    # supplies the organization context. Keep it empty rather than copying a
+    # generated Zitadel UUID into GitOps.
+    orgId: ""
     roleKey: user
     displayName: user
     projectIdRef:
@@ -38,9 +40,7 @@ metadata:
     hops.ops.com.ai/demo-role: admin
 spec:
   forProvider:
-    {{- if .Values.identity.orgId }}
-    orgId: {{ .Values.identity.orgId | quote }}
-    {{- end }}
+    orgId: ""
     roleKey: admin
     displayName: admin
     projectIdRef:

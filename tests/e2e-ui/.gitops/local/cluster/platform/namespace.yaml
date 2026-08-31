@@ -1,0 +1,7 @@
+apiVersion: v1
+kind: Namespace
+metadata:
+  name: e2e-ui-platform
+  labels:
+    app.kubernetes.io/managed-by: hops-local-gitops
+    hops.ops.com.ai/cluster-owned: "true"

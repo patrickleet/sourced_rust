@@ -1,0 +1,36 @@
+# SECURITY BOUNDARY: these bindings are intentionally cluster-admin. The local
+# Helm and Kubernetes providers reconcile the arbitrary, explicitly selected
+# cluster tree (namespaces, StorageClasses, Helm-installed CRDs, and provider
+# resources), so a static least-privilege role would either break the fixture or
+# silently make a newly added manifest fail. This Cluster definition is for a
+# disposable, single-user kind cluster only; never point it at a shared or
+# production context, and do not run untrusted charts in it.
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRoleBinding
+metadata:
+  name: local-dev-helm-cluster-admin
+  labels:
+    app.kubernetes.io/managed-by: hops-local-gitops
+roleRef:
+  apiGroup: rbac.authorization.k8s.io
+  kind: ClusterRole
+  name: cluster-admin
+subjects:
+  - kind: ServiceAccount
+    name: local-dev-helm
+    namespace: crossplane-system
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRoleBinding
+metadata:
+  name: local-dev-kubernetes-cluster-admin
+  labels:
+    app.kubernetes.io/managed-by: hops-local-gitops
+roleRef:
+  apiGroup: rbac.authorization.k8s.io
+  kind: ClusterRole
+  name: cluster-admin
+subjects:
+  - kind: ServiceAccount
+    name: local-dev-kubernetes
+    namespace: crossplane-system

@@ -93,7 +93,8 @@ pub struct ServiceScaffoldSpec {
     /// Relative path (from the generated project dir) to the local `distributed`
     /// crate, used in the generated `Cargo.toml` dependency.
     pub distributed_dependency_path: String,
-    /// Generate a Helm deploy chart under `.gitops/deploy`.
+    /// Generate independent local and cloud workload charts under
+    /// `.gitops/local` and `.gitops/deploy`.
     pub gitops: bool,
     /// Generate a GitOps promotion chart for Argo CD or Flux.
     pub gitops_promote: Option<GitopsPromoteTarget>,

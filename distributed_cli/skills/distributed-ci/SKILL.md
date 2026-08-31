@@ -13,7 +13,7 @@ regenerating/extending these artifacts over hand-writing pipeline YAML.
 
 | Flag | Generates |
 |---|---|
-| `--gitops` | `.gitops/deploy/` Helm chart (Deployment + Service for `--transport http`; Knative Service + Brokers + Triggers for `--transport knative`) |
+| `--gitops` | Independent `.gitops/local/` and `.gitops/deploy/` workload charts (Deployment + Service for `--transport http`; Knative Service + Brokers + Triggers for `--transport knative`) |
 | `--gitops-promote <argo\|flux>` | `.gitops/promote/` chart with an Argo CD `Application` or Flux `GitRepository` + `HelmRelease` |
 | `--github OWNER/REPO` | `.github/workflows/version.yaml` + `release.yaml`, and a post-create `gh repo create` (private) if the repo does not exist |
 | `--github-preview OWNER/REPO` | `.github/workflows/preview.yaml` + `.gitops/preview/helm` promotion chart |
@@ -21,8 +21,10 @@ regenerating/extending these artifacts over hand-writing pipeline YAML.
 | `--metrics prometheus` (with `--gitops`, HTTP transport) | `metrics`/`serviceMonitor`/`prometheusRule` values plus Prometheus Operator `ServiceMonitor` and `PrometheusRule` templates |
 | `--tracing` (alias `--otel`) | OTLP tracing setup in the generated `main.rs` (Distributed's `otel` feature) and OTLP env values in the Helm chart |
 
-The `.gitops/deploy` chart is emitted whenever **any** of the flags above is
-set, because the promotion charts target `.gitops/deploy`.
+The `.gitops/local` and `.gitops/deploy` charts are emitted whenever **any** of
+the flags above is set. Local values default to `local: true`; cloud values
+default to `local: false` and an empty image tag, so a cloud render must supply
+an immutable release/build tag.
 
 ## How the release flow fits together
 
@@ -53,7 +55,8 @@ set, because the promotion charts target `.gitops/deploy`.
 - **Image repository**: defaults to `ghcr.io/<owner>/<repo>` (lowercased) when
   `--github` is set, else `ghcr.io/hops-ops/<name>`. The deploy chart's
   `values.yaml` and the promotion workflows must agree — they do when
-  generated together.
+  generated together. Cloud deploy templates reject an empty tag and `latest`;
+  the generated version workflow writes `v<version>` before promotion.
 - **Environment repositories** (`--github-preview` / `--github-promote`) are
   Argo CD-watched GitOps repos; the workflows open promotion PRs against them
   rather than pushing directly.

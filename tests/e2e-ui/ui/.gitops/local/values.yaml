@@ -1,0 +1,75 @@
+local: true
+preview: false
+
+environment:
+  name: local
+  namespace: default
+
+name: e2e-ui-ui
+clusterDev:
+  image: node:22-bookworm
+  workingDir: /workspace/tests/e2e-ui/ui
+  command:
+    - /bin/bash
+    - -c
+    - |
+      set -e
+      cd /workspace/js && npm install && npm run build
+      cd /workspace/tests/e2e-ui/ui
+      npm install
+      export DISTRIBUTED_SKIP_CLIENT_COMPILE=1
+      export E2E_API_ORIGIN="${E2E_API_ORIGIN:-http://e2e-ui-api:8791}"
+      export E2E_BASE_URL="$E2E_API_ORIGIN"
+      npm run dev -- --host 0.0.0.0 --port 5180
+
+service:
+  port: 5180
+  targetPort: 5180
+
+env:
+  HOST: "0.0.0.0"
+  PORT: "5180"
+  DISTRIBUTED_SKIP_CLIENT_COMPILE: "1"
+  E2E_API_ORIGIN: "http://e2e-ui-api:8791"
+  E2E_BASE_URL: "http://e2e-ui-api:8791"
+  PUBLIC_E2E_API_ORIGIN: "http://e2e-ui-api:8791"
+  AUTH_URL: "http://e2e-ui-ui.default.svc.cluster.local:5180"
+  AUTH_TRUST_HOST: "true"
+  AUTH_USE_SECURE_COOKIES: "false"
+  OIDC_ISSUER: "http://zitadel-zitadel.auth.svc.cluster.local:8080"
+  OIDC_AUDIENCE: ""
+  ZITADEL_PROJECT_ID: ""
+
+secretEnv:
+  AUTH_SECRET:
+    secretName: e2e-ui-oidc
+    key: AUTH_SECRET
+  OIDC_CLIENT_ID:
+    secretName: e2e-ui-oidc
+    key: OIDC_CLIENT_ID
+  OIDC_CLIENT_SECRET:
+    secretName: e2e-ui-oidc
+    key: OIDC_CLIENT_SECRET
+  ZITADEL_SERVICE_USER_TOKEN:
+    secretName: e2e-ui-oidc
+    key: ZITADEL_SERVICE_USER_TOKEN
+
+envFromSecrets: []
+
+# The workload only consumes identity output. Provisioning lives in the
+# explicit .gitops/test-users Environment deploy.
+identity:
+  enabled: false
+  # Must match the identity.workspace value passed to ui/.gitops/test-users.
+  # Empty means the resolved Environment name.
+  workspace: ""
+  oidcGeneration: 0
+
+sourceDelivery:
+  # Hops local gitops replaces this sentinel with the Cluster mountRoot
+  # hostPath before applying the Deployment. The chart is intentionally not a
+  # standalone Helm checkout; its command expects /workspace/js and the
+  # mounted tests/e2e-ui tree.
+  mode: none
+  hostPath: ""
+  mountPath: /workspace

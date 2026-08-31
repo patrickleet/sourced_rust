@@ -1,4 +1,4 @@
-name: e2e-ui fixture (offline + browser)
+name: e2e-ui fixture (offline + browser + local GitOps)
 
 # Nested Todos template under tests/e2e-ui — not the root workspace.
 # Local parity:
@@ -6,6 +6,7 @@ name: e2e-ui fixture (offline + browser)
 #   cd tests/e2e-ui && make test
 #   cd tests/e2e-ui && make ci-offline
 #   cd tests/e2e-ui && make up && make run   # distributed dev; then make test-browser
+#   cd tests/e2e-ui && hops local gitops cluster ./.gitops/local/cluster.yaml --once
 on:
   workflow_call:
 
@@ -190,3 +191,597 @@ jobs:
       - name: Tear down Docker
         if: always()
         run: docker compose -f docker/docker-compose.yml down -v || true
+
+  local-gitops:
+    name: e2e-ui Playwright (local GitOps kind)
+    runs-on: ubuntu-latest
+    timeout-minutes: 120
+    defaults:
+      run:
+        working-directory: tests/e2e-ui
+    env:
+      # Explicit deploy renderer support is merged in hops-cli #102. Keep the
+      # exact commit here until that change is included in a tagged release.
+      HOPS_CLI_REV: 339b32a81caaadb35e46f8be4c895d5a5dcc42e7
+      HOPS_KUBE_CONTEXT: kind-e2e-ui
+      HOPS_CLUSTER_NAME: e2e-ui
+
+    steps:
+      - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5
+        with:
+          persist-credentials: false
+
+      - uses: dtolnay/rust-toolchain@29eef336d9b2848a0b548edc03f92a220660cdb8
+        with:
+          toolchain: stable
+          targets: wasm32-unknown-unknown
+
+      - uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: |
+            . -> target
+            tests/e2e-ui -> target
+          shared-key: e2e-ui-local-gitops
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "22"
+          cache: npm
+          cache-dependency-path: |
+            js/package-lock.json
+            tests/e2e-ui/package-lock.json
+            tests/e2e-ui/ui/package-lock.json
+
+      - name: Install Kubernetes tools
+        run: |
+          set -euo pipefail
+          sudo apt-get update
+          # nginx is only the CI ingress equivalent: Zitadel's API and Login
+          # V2 UI are separate ClusterIP Services, but both use the one
+          # external domain advertised in the OIDC authorize redirect.
+          sudo apt-get install -y jq openssl curl nginx
+
+      - uses: azure/setup-kubectl@v4
+        with:
+          version: v1.32.0
+
+      - uses: azure/setup-helm@v4
+        with:
+          version: v3.17.3
+
+      - name: Install kind
+        run: |
+          set -euo pipefail
+          mkdir -p "$HOME/bin"
+          curl -fsSL \
+            https://kind.sigs.k8s.io/dl/v0.29.0/kind-linux-amd64 \
+            -o "$HOME/bin/kind"
+          chmod 0755 "$HOME/bin/kind"
+          echo "$HOME/bin" >> "$GITHUB_PATH"
+          export PATH="$HOME/bin:$PATH"
+          kind version
+
+      - name: Build hops CLI with local GitOps support
+        run: |
+          set -euo pipefail
+          cargo install \
+            --git https://github.com/hops-ops/hops-cli.git \
+            --rev "$HOPS_CLI_REV" \
+            --locked \
+            --root "$RUNNER_TEMP/hops-cli" \
+            --bin hops-cli
+          ln -sf "$RUNNER_TEMP/hops-cli/bin/hops-cli" "$RUNNER_TEMP/hops-cli/bin/hops"
+          echo "$RUNNER_TEMP/hops-cli/bin" >> "$GITHUB_PATH"
+          export PATH="$RUNNER_TEMP/hops-cli/bin:$PATH"
+          hops --version
+
+      - name: Install wasm-pack
+        run: cargo install wasm-pack --locked || cargo install wasm-pack
+
+      - name: Build Distributed CLI
+        run: cargo build --manifest-path ../../Cargo.toml -p distributed_cli --bin distributed
+
+      # Current Distributed owns the application build, including every
+      # declared Rust/WASM pure and the generated client modules. This is the
+      # same build path used by the live Docker Playwright job and by users
+      # before starting `distributed dev`; it also prepares the linked JS
+      # framework package after the #216 lifecycle change.
+      - name: Build generated application assets
+        run: |
+          set -euo pipefail
+          ../../target/debug/distributed build . --output json
+          test -s ui/src/lib/blob/pkg/blob_wasm.js
+          test -s ui/src/lib/blob/pkg/blob_wasm_bg.wasm
+
+      - name: Start kind and apply the Cluster GitOps tree
+        run: |
+          set -euo pipefail
+
+          k() { kubectl --context "$HOPS_KUBE_CONTEXT" "$@"; }
+
+          # AuthStack intentionally references live local secrets. Create only
+          # disposable CI values once the API server exists, before the
+          # Cluster tree starts reconciling AuthStack and its providers.
+          (
+            for attempt in $(seq 1 300); do
+              if k get namespace default >/dev/null 2>&1; then
+                k apply -f - <<'EOF'
+          apiVersion: v1
+          kind: Namespace
+          metadata:
+            name: auth
+          ---
+          apiVersion: v1
+          kind: Secret
+          metadata:
+            name: zitadel-masterkey
+            namespace: auth
+          type: Opaque
+          stringData:
+            masterkey: MasterkeyNeedsToHave32Characters
+          ---
+          apiVersion: v1
+          kind: Secret
+          metadata:
+            name: aws-creds
+            namespace: default
+          type: Opaque
+          stringData:
+            credentials: |
+              [default]
+              aws_access_key_id = ci
+              aws_secret_access_key = ci
+          EOF
+                exit 0
+              fi
+              sleep 2
+            done
+            echo "kind API did not become available while Hops was starting the cluster" >&2
+            exit 1
+          ) &
+          secrets_pid=$!
+          trap 'kill "$secrets_pid" 2>/dev/null || true' EXIT
+
+          # The first pass may apply the Cluster tree before AuthStack has
+          # produced its iam-admin PAT. That is expected; the second pass below
+          # runs after hops local zitadel has materialized the provider secret.
+          set +e
+          hops local gitops cluster ./.gitops/local/cluster.yaml \
+            --cluster-provider kind \
+            --docker-provider docker \
+            --cluster-name "$HOPS_CLUSTER_NAME" \
+            --context "$HOPS_KUBE_CONTEXT" \
+            --once
+          first_status=$?
+          set -e
+          wait "$secrets_pid"
+          trap - EXIT
+
+          # Do not hide a failure to create the kind cluster itself.
+          k get nodes
+          if [ "$first_status" -ne 0 ]; then
+            echo "Initial Cluster reconcile returned $first_status; continuing after AuthStack bootstrap"
+          fi
+
+      - name: Wait for AuthStack bootstrap credentials
+        run: |
+          set -euo pipefail
+          k() { kubectl --context "$HOPS_KUBE_CONTEXT" "$@"; }
+          for attempt in $(seq 1 180); do
+            pat="$(k -n auth get secret iam-admin-pat -o jsonpath='{.data.pat}' 2>/dev/null || true)"
+            if [ -n "$pat" ]; then
+              echo "AuthStack iam-admin-pat is available"
+              exit 0
+            fi
+
+            # The initial Cluster reconcile also installs the Crossplane
+            # packages. Their CRDs are not available until those package
+            # revisions become healthy, so platform manifests that were
+            # intentionally skipped for an unknown kind need another
+            # declarative pass. Retry only while AuthStack itself is absent;
+            # once it exists, its controller owns the remaining bootstrap.
+            if [ $((attempt % 12)) -eq 0 ] && ! k -n default get authstack zitadel >/dev/null 2>&1; then
+              echo "AuthStack CRD/object is not ready; retrying Cluster GitOps reconcile"
+              set +e
+              hops local gitops cluster ./.gitops/local/cluster.yaml \
+                --cluster-provider kind \
+                --docker-provider docker \
+                --cluster-name "$HOPS_CLUSTER_NAME" \
+                --context "$HOPS_KUBE_CONTEXT" \
+                --once
+              retry_status=$?
+              set -e
+              echo "Cluster retry returned $retry_status"
+            fi
+            if [ $((attempt % 12)) -eq 0 ]; then
+              k -n auth get pods -o wide || true
+              k -n default get authstack zitadel -o wide || true
+            fi
+            sleep 5
+          done
+          echo "Timed out waiting for AuthStack iam-admin-pat" >&2
+          k -n auth get pods -o wide || true
+          k -n default get authstack zitadel -o yaml || true
+          exit 1
+
+      - name: Materialize the Zitadel provider Secret with hops CLI
+        run: |
+          set -euo pipefail
+          # The Cluster tree owns Provider/ProviderConfig YAML. This command
+          # only materializes the live credential Secret from AuthStack's PAT.
+          hops local zitadel \
+            --cluster-provider kind \
+            --docker-provider docker \
+            --cluster-name "$HOPS_CLUSTER_NAME" \
+            --context "$HOPS_KUBE_CONTEXT" \
+            --source-context "$HOPS_KUBE_CONTEXT" \
+            --source-namespace auth \
+            --source-secret-name iam-admin-pat \
+            --source-secret-key pat \
+            --domain zitadel-zitadel.auth.svc.cluster.local \
+            --port 8080 \
+            --insecure \
+            --refresh
+
+      - name: Materialize the local UI session Secret from AuthStack
+        run: |
+          set -euo pipefail
+          k() { kubectl --context "$HOPS_KUBE_CONTEXT" "$@"; }
+
+          # e2e-ui's custom Login V2 flow needs a stable Auth.js session key
+          # and the AuthStack-generated login-client PAT. The residual Secret
+          # is deliberately outside the Cluster/Environment source trees: it
+          # is local runtime state, just like the source PAT used above.
+          for attempt in $(seq 1 120); do
+            login_pat="$(k -n auth get secret login-client -o jsonpath='{.data.pat}' 2>/dev/null || true)"
+            if [ -n "$login_pat" ]; then
+              login_pat_value="$(printf '%s' "$login_pat" | base64 --decode)"
+              k -n local create secret generic e2e-ui-oidc \
+                --from-literal=AUTH_SECRET=local-gitops-ci-auth-secret \
+                --from-literal=ZITADEL_SERVICE_USER_TOKEN="$login_pat_value" \
+                --dry-run=client -o yaml | k apply -f -
+              echo "Materialized local e2e-ui-oidc session Secret"
+              exit 0
+            fi
+            sleep 5
+          done
+          echo "Timed out waiting for AuthStack login-client PAT" >&2
+          k -n auth get secret login-client -o yaml || true
+          exit 1
+
+      - name: Reconcile Cluster and Environment GitOps definitions
+        run: |
+          set -euo pipefail
+          k() { kubectl --context "$HOPS_KUBE_CONTEXT" "$@"; }
+
+          succeeded=0
+          for attempt in $(seq 1 18); do
+            if hops local gitops cluster ./.gitops/local/cluster.yaml \
+              --cluster-provider kind \
+              --docker-provider docker \
+              --cluster-name "$HOPS_CLUSTER_NAME" \
+              --context "$HOPS_KUBE_CONTEXT" \
+              --once; then
+              succeeded=1
+              break
+            fi
+            echo "Cluster/Environment reconcile not ready (attempt $attempt/18); retrying"
+            sleep 10
+          done
+          test "$succeeded" = 1
+
+          # Exercise the reusable Environment entry point explicitly as well;
+          # the Cluster controller also discovers this file automatically.
+          hops local gitops environment ./.gitops/local/environment.yaml \
+            --cluster-provider kind \
+            --docker-provider docker \
+            --cluster-name "$HOPS_CLUSTER_NAME" \
+            --context "$HOPS_KUBE_CONTEXT" \
+            --once
+
+      - name: Wait for app, identity, and auth services
+        run: |
+          set -euo pipefail
+          k() { kubectl --context "$HOPS_KUBE_CONTEXT" "$@"; }
+
+          k -n auth wait --for=condition=Available \
+            deployment/zitadel-zitadel --timeout=900s
+          k -n default wait --for=condition=Ready \
+            "projects.project.zitadel.m.crossplane.io/e2e-ui" --timeout=600s
+          k -n local wait --for=condition=Ready \
+            "oidc.application.zitadel.m.crossplane.io/e2e-ui-local-web-g1" \
+            --timeout=600s
+          k -n local wait --for=condition=Ready \
+            "features.instance.zitadel.m.crossplane.io/e2e-ui-login-v2" \
+            --timeout=600s
+          k -n local wait --for=create \
+            secret/e2e-ui-local-oidc-conn-g1 --timeout=600s
+          for user in alice bob admin; do
+            k -n default wait --for=condition=Ready \
+              "humanuser.auth.hops.ops.com.ai/e2e-$user" --timeout=600s
+          done
+
+          k -n local wait --for=condition=Available \
+            deployment/e2e-ui-api deployment/e2e-ui-ui --timeout=900s
+
+      - name: Install Playwright + Chromium
+        run: |
+          set -euo pipefail
+          npm ci
+          npx playwright install chromium --with-deps
+
+      - name: Port-forward the Kubernetes services and run browser e2e
+        run: |
+          set -euo pipefail
+          k() { kubectl --context "$HOPS_KUBE_CONTEXT" "$@"; }
+
+          # Deployment/Available only observes the cargo-watch parent. The
+          # child e2e server compiles the workspace before it binds 8791, and
+          # kubectl port-forward permanently loses its pod connection if the
+          # first request arrives during that gap. Wait for the listener's
+          # own startup line before creating the forwards.
+          api_listener_ready=0
+          for attempt in $(seq 1 180); do
+            api_log="$(k -n local logs deployment/e2e-ui-api --tail=300 2>/dev/null || true)"
+            if printf '%s\n' "$api_log" | grep -Fq \
+              'sqlite) listening on http://0.0.0.0:8791'; then
+              api_listener_ready=1
+              echo "e2e-ui API listener is ready"
+              break
+            fi
+            if [ $((attempt % 15)) -eq 0 ]; then
+              echo "Waiting for e2e-ui API listener (attempt $attempt/180)"
+            fi
+            sleep 2
+          done
+          if [ "$api_listener_ready" != 1 ]; then
+            echo "Timed out waiting for e2e-ui API listener" >&2
+            k -n local logs deployment/e2e-ui-api --tail=400 >&2 || true
+            exit 1
+          fi
+
+          # The app intentionally advertises service DNS names in AUTH_URL and
+          # OIDC redirects. Map those names to the local port-forwards so the
+          # browser follows the same URLs it uses inside the cluster.
+          sudo sed -i '/# hops e2e-ui local GitOps/d' /etc/hosts
+          printf '%s\n' \
+            '127.0.0.1 e2e-ui-ui.local.svc.cluster.local e2e-ui-api.local.svc.cluster.local zitadel-zitadel.auth.svc.cluster.local # hops e2e-ui local GitOps' \
+            | sudo tee -a /etc/hosts >/dev/null
+
+          k -n local port-forward --address 127.0.0.1 svc/e2e-ui-ui 5180:5180 > .ci-ui-port-forward.log 2>&1 &
+          echo $! > .ci-ui-port-forward.pid
+          k -n local port-forward --address 127.0.0.1 svc/e2e-ui-api 8791:8791 > .ci-api-port-forward.log 2>&1 &
+          echo $! > .ci-api-port-forward.pid
+          # The Zitadel API and Login V2 UI are distinct Services. Keep the
+          # API on 18080 and expose one host:port to the browser through the
+          # same path split an ingress/Gateway would provide in a cluster.
+          k -n auth port-forward --address 127.0.0.1 svc/zitadel-zitadel 18080:8080 > .ci-zitadel-port-forward.log 2>&1 &
+          echo $! > .ci-zitadel-port-forward.pid
+          k -n auth port-forward --address 127.0.0.1 svc/zitadel-zitadel-login 13000:3000 > .ci-zitadel-login-port-forward.log 2>&1 &
+          echo $! > .ci-zitadel-login-port-forward.pid
+
+          nginx_prefix="$RUNNER_TEMP/zitadel-proxy-prefix"
+          mkdir -p "$nginx_prefix"
+          mkdir -p "$nginx_prefix"/{client_body_temp,proxy_temp,fastcgi_temp,uwsgi_temp,scgi_temp}
+          cat > "$RUNNER_TEMP/zitadel-proxy.conf" <<EOF
+          pid $RUNNER_TEMP/zitadel-proxy.pid;
+          error_log $RUNNER_TEMP/zitadel-proxy-error.log warn;
+          events { worker_connections 128; }
+          http {
+            access_log off;
+            client_body_temp_path $nginx_prefix/client_body_temp;
+            proxy_temp_path $nginx_prefix/proxy_temp;
+            fastcgi_temp_path $nginx_prefix/fastcgi_temp;
+            uwsgi_temp_path $nginx_prefix/uwsgi_temp;
+            scgi_temp_path $nginx_prefix/scgi_temp;
+            server {
+              listen 8080;
+              proxy_http_version 1.1;
+              proxy_set_header Host \$http_host;
+              proxy_set_header X-Forwarded-Host \$http_host;
+              proxy_set_header X-Forwarded-Proto \$scheme;
+              proxy_set_header X-Forwarded-For \$proxy_add_x_forwarded_for;
+
+              location ^~ /ui/v2/login {
+                proxy_pass http://127.0.0.1:13000;
+              }
+              location / {
+                proxy_pass http://127.0.0.1:18080;
+              }
+            }
+          }
+          EOF
+          nginx -t -c "$RUNNER_TEMP/zitadel-proxy.conf" -p "$nginx_prefix"
+          nginx -g 'daemon off;' -c "$RUNNER_TEMP/zitadel-proxy.conf" -p "$nginx_prefix" \
+            > .ci-zitadel-proxy.log 2>&1 &
+          echo $! > .ci-zitadel-proxy.pid
+
+          for attempt in $(seq 1 120); do
+            ui_code="$(curl -sS -o /dev/null -w '%{http_code}' \
+              --noproxy '*' \
+              http://e2e-ui-ui.local.svc.cluster.local:5180/ || true)"
+            # Deployment/Available only means the cargo-watch parent process
+            # is running. The API child still has to compile before the UI's
+            # server-side GraphQL loaders can succeed. Probe the same public
+            # ChatMessages shape that the UI uses so browser setup cannot race
+            # API startup and leave an empty replica scope behind.
+            api_code="$(curl -sS -o .ci-api-readiness.json -w '%{http_code}' \
+              --noproxy '*' \
+              -H 'content-type: application/json' \
+              --data-raw '{"query":"query LocalGitOpsReadiness { chat_messages(limit: 1, offset: 0, order_by: [{ created_at: desc }]) { message_id author { user_id display_name email } } }"}' \
+              http://e2e-ui-api.local.svc.cluster.local:8791/graphql || true)"
+            api_ready=0
+            if [ "$api_code" = 200 ] && jq -e \
+              '((.errors // []) | length == 0) and (.data.chat_messages != null)' \
+              .ci-api-readiness.json >/dev/null 2>&1; then
+              api_ready=1
+            fi
+            # Exercise the UI-to-API proxy and SSR loader as well. A 200 shell
+            # is insufficient: a failed SSR loader renders this explicit alert
+            # while still returning a successful HTML response.
+            chat_code="$(curl -sS -o .ci-chat-preflight.html -w '%{http_code}' \
+              --noproxy '*' \
+              http://e2e-ui-ui.local.svc.cluster.local:5180/chat || true)"
+            chat_has_ssr_error=0
+            if grep -Fq 'fetch failed' .ci-chat-preflight.html 2>/dev/null; then
+              chat_has_ssr_error=1
+            fi
+            pures_code="$(curl -sS -o /dev/null -w '%{http_code}' \
+              --noproxy '*' \
+              http://e2e-ui-ui.local.svc.cluster.local:5180/src/lib/generated/user/pures.ts || true)"
+            node_code="$(curl -sS -o /dev/null -w '%{http_code}' \
+              --noproxy '*' \
+              http://e2e-ui-ui.local.svc.cluster.local:5180/.svelte-kit/generated/client/nodes/0.js || true)"
+            oidc_code="$(curl -sS -o /dev/null -w '%{http_code}' \
+              --noproxy '*' \
+              http://zitadel-zitadel.auth.svc.cluster.local:8080/.well-known/openid-configuration || true)"
+            login_code="$(curl -sS -o /dev/null -w '%{http_code}' \
+              --noproxy '*' \
+              'http://zitadel-zitadel.auth.svc.cluster.local:8080/ui/v2/login/login?authRequest=ci-preflight' || true)"
+            if [ "$ui_code" = 200 ] || [ "$ui_code" = 302 ] || [ "$ui_code" = 303 ]; then
+              if [ "$api_ready" = 1 ] && [ "$chat_code" = 200 ] \
+                && [ "$chat_has_ssr_error" = 0 ] \
+                && [ "$pures_code" = 200 ] && [ "$node_code" = 200 ] \
+                && [ "$oidc_code" = 200 ] && [ "$login_code" != 404 ]; then
+                break
+              fi
+            fi
+            sleep 2
+          done
+          test "$ui_code" = 200 -o "$ui_code" = 302 -o "$ui_code" = 303
+          if [ "$api_ready" != 1 ]; then
+            echo "API GraphQL readiness preflight failed (HTTP $api_code)" >&2
+            cat .ci-api-readiness.json 2>/dev/null >&2 || true
+            exit 1
+          fi
+          if [ "$chat_code" != 200 ] || [ "$chat_has_ssr_error" != 0 ]; then
+            echo "UI Chat SSR preflight failed (HTTP $chat_code; ssr_error=$chat_has_ssr_error)" >&2
+            sed -n '1,160p' .ci-chat-preflight.html 2>/dev/null >&2 || true
+            exit 1
+          fi
+          if [ "$pures_code" != 200 ] || [ "$node_code" != 200 ]; then
+            echo "UI generated module preflight failed (pures.ts=$pures_code nodes/0.js=$node_code)" >&2
+            curl -sS --noproxy '*' \
+              http://e2e-ui-ui.local.svc.cluster.local:5180/src/lib/generated/user/pures.ts \
+              | sed -n '1,120p' >&2 || true
+            exit 1
+          fi
+          test "$oidc_code" = 200
+          if [ "$login_code" = 404 ]; then
+            echo "Zitadel Login V2 proxy preflight returned 404" >&2
+            curl -sS --noproxy '*' \
+              'http://zitadel-zitadel.auth.svc.cluster.local:8080/ui/v2/login/login?authRequest=ci-preflight' >&2 || true
+            exit 1
+          fi
+
+          # A Ready Oidc/Features resource only proves that Crossplane has
+          # reconciled its managed resource. Zitadel can still briefly serve a
+          # cached authorize configuration from before the app's Login V2
+          # baseUri was applied. Exercise the real authorize endpoint and wait
+          # until it points back to the app's custom /login page; otherwise the
+          # browser would be sent to the stock Login V2 service, which is not
+          # the flow exercised by this fixture.
+          client_id="$(k -n local get secret e2e-ui-local-oidc-conn-g1 -o json \
+            | jq -r '.data["attribute.client_id"] // empty' \
+            | base64 --decode)"
+          test -n "$client_id"
+          expected_login_prefix='http://e2e-ui-ui.local.svc.cluster.local:5180/login?authRequest=V2_'
+          authorize_location=""
+          for attempt in $(seq 1 90); do
+            authorize_location="$(curl -sS --noproxy '*' -D - -o /dev/null \
+              --get 'http://zitadel-zitadel.auth.svc.cluster.local:8080/oauth/v2/authorize' \
+              --data-urlencode "client_id=$client_id" \
+              --data-urlencode 'redirect_uri=http://e2e-ui-ui.local.svc.cluster.local:5180/auth/callback/oidc' \
+              --data-urlencode 'response_type=code' \
+              --data-urlencode 'scope=openid profile email' \
+              --data-urlencode 'state=ci-preflight' \
+              --data-urlencode 'code_challenge=ci-preflight-code-challenge-123456789012345678901234567890' \
+              --data-urlencode 'code_challenge_method=S256' \
+              | awk -F': ' 'tolower($1) == "location" {print $2}' \
+              | tr -d '\r' | tail -n1)"
+            if [[ "$authorize_location" == "$expected_login_prefix"* ]]; then
+              echo "Zitadel authorize redirects to the app Login V2 baseUri"
+              break
+            fi
+            if [ $((attempt % 10)) -eq 0 ]; then
+              echo "Waiting for app Login V2 redirect (attempt $attempt; location=${authorize_location:-none})"
+            fi
+            sleep 2
+          done
+          if [[ "$authorize_location" != "$expected_login_prefix"* ]]; then
+            echo "Zitadel authorize did not converge on the app Login V2 baseUri" >&2
+            echo "last Location: ${authorize_location:-<none>}" >&2
+            exit 1
+          fi
+
+          E2E_UI_ORIGIN=http://e2e-ui-ui.local.svc.cluster.local:5180 \
+          E2E_API_ORIGIN=http://e2e-ui-api.local.svc.cluster.local:8791 \
+            npm run test:browser
+
+      - name: Upload Kubernetes Playwright report
+        if: failure()
+        uses: actions/upload-artifact@v4
+        with:
+          name: e2e-ui-k8s-playwright-report
+          path: |
+            tests/e2e-ui/playwright-report
+            tests/e2e-ui/test-results
+          if-no-files-found: ignore
+          retention-days: 7
+
+      - name: Dump Kubernetes diagnostics on failure
+        if: failure()
+        run: |
+          set +e
+          {
+            kubectl --context "$HOPS_KUBE_CONTEXT" get pods -A -o wide
+            kubectl --context "$HOPS_KUBE_CONTEXT" get events -A --sort-by=.lastTimestamp
+            kubectl --context "$HOPS_KUBE_CONTEXT" -n local get all
+            kubectl --context "$HOPS_KUBE_CONTEXT" -n auth get all
+            echo '=== e2e-ui API logs ==='
+            kubectl --context "$HOPS_KUBE_CONTEXT" -n local logs deployment/e2e-ui-api --tail=400 || true
+            echo '=== e2e-ui API previous container logs ==='
+            kubectl --context "$HOPS_KUBE_CONTEXT" -n local logs deployment/e2e-ui-api --previous --tail=400 || true
+            echo '=== e2e-ui UI logs ==='
+            kubectl --context "$HOPS_KUBE_CONTEXT" -n local logs deployment/e2e-ui-ui --tail=400 || true
+            echo '=== e2e-ui UI previous container logs ==='
+            kubectl --context "$HOPS_KUBE_CONTEXT" -n local logs deployment/e2e-ui-ui --previous --tail=400 || true
+          } > .ci-kubernetes-diagnostics.log 2>&1
+          cat .ci-kubernetes-diagnostics.log
+          for file in .ci-api-port-forward.log .ci-ui-port-forward.log \
+            .ci-zitadel-port-forward.log .ci-zitadel-login-port-forward.log \
+            .ci-zitadel-proxy.log; do
+            echo "=== $file ==="
+            tail -100 "$file" 2>/dev/null || true
+          done
+
+      - name: Upload Kubernetes diagnostics
+        if: failure()
+        uses: actions/upload-artifact@v4
+        with:
+          name: e2e-ui-k8s-diagnostics
+          path: |
+            tests/e2e-ui/.ci-*-port-forward.log
+            tests/e2e-ui/.ci-zitadel-proxy.log
+            tests/e2e-ui/.ci-kubernetes-diagnostics.log
+            tests/e2e-ui/.ci-api-readiness.json
+            tests/e2e-ui/.ci-chat-preflight.html
+          if-no-files-found: ignore
+          retention-days: 7
+
+      - name: Tear down kind
+        if: always()
+        run: |
+          set +e
+          for file in .ci-api-port-forward.pid .ci-ui-port-forward.pid .ci-zitadel-port-forward.pid; do
+            if [ -f "$file" ]; then
+              kill "$(cat "$file")" 2>/dev/null || true
+            fi
+          done
+          if [ -f .ci-zitadel-login-port-forward.pid ]; then
+            kill "$(cat .ci-zitadel-login-port-forward.pid)" 2>/dev/null || true
+          fi
+          if [ -f .ci-zitadel-proxy.pid ]; then
+            kill "$(cat .ci-zitadel-proxy.pid)" 2>/dev/null || true
+          fi
+          kind delete cluster --name "$HOPS_CLUSTER_NAME" || true

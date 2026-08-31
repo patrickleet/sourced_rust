@@ -1,5 +1,7 @@
-{{- /* Package Deployment: production/CI image posture. Omitted for local/cluster-dev. */ -}}
-{{- if and (not .Values.local) (ne .Values.appRuntime "cluster-dev") (ne .Values.appRuntime "host") }}
+{{- $imageTag := required "image.tag must be an immutable build tag for cloud deployments" .Values.image.tag -}}
+{{- if eq $imageTag "latest" -}}
+{{- fail "image.tag=latest is not allowed for cloud deployments; supply a release/build tag" -}}
+{{- end -}}
 apiVersion: apps/v1
 kind: Deployment
 metadata:
@@ -20,7 +22,7 @@ spec:
     spec:
       containers:
         - name: api
-          image: "{{ .Values.image.repository }}:{{ .Values.image.tag }}"
+          image: "{{ .Values.image.repository }}:{{ $imageTag }}"
           imagePullPolicy: {{ .Values.image.pullPolicy }}
           ports:
             - containerPort: {{ .Values.service.targetPort }}
@@ -28,4 +30,3 @@ spec:
           env:
             - name: BIND
               value: {{ .Values.env.BIND | quote }}
-{{- end }}

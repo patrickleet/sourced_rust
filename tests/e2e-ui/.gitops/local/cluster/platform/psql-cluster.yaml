@@ -1,0 +1,22 @@
+# One shared local PostgreSQL cluster for the e2e-ui platform.
+#
+# PSQLStack installs the CNPG/Atlas substrate and the `psql` StorageClass;
+# this resource is the serving database. It is deliberately independent of
+# AuthStack so deleting/reconciling auth cannot silently delete the database.
+apiVersion: hops.ops.com.ai/v1alpha1
+kind: PSQLCluster
+metadata:
+  name: e2e-ui
+  namespace: auth
+  labels:
+    hops.ops.com.ai/fixture: e2e-ui
+    hops.ops.com.ai/cluster-owned: "true"
+spec:
+  clusterName: e2e-ui
+  targetNamespace: auth
+  kubernetesProviderConfigRef:
+    name: default
+    kind: ClusterProviderConfig
+  storage:
+    size: 2Gi
+    class: psql

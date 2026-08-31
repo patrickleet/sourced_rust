@@ -1,4 +1,4 @@
-{{- /*
+{{- /* Test-user chart ownership.
   Instance Login V2 features (gitops).
 
   Zitadel honors instance loginV2.baseUri when required=true. That is what
