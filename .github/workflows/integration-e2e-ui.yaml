@@ -671,10 +671,17 @@ jobs:
         if: failure()
         run: |
           set +e
-          kubectl --context "$HOPS_KUBE_CONTEXT" get pods -A -o wide
-          kubectl --context "$HOPS_KUBE_CONTEXT" get events -A --sort-by=.lastTimestamp
-          kubectl --context "$HOPS_KUBE_CONTEXT" -n local get all
-          kubectl --context "$HOPS_KUBE_CONTEXT" -n auth get all
+          {
+            kubectl --context "$HOPS_KUBE_CONTEXT" get pods -A -o wide
+            kubectl --context "$HOPS_KUBE_CONTEXT" get events -A --sort-by=.lastTimestamp
+            kubectl --context "$HOPS_KUBE_CONTEXT" -n local get all
+            kubectl --context "$HOPS_KUBE_CONTEXT" -n auth get all
+            echo '=== e2e-ui API logs ==='
+            kubectl --context "$HOPS_KUBE_CONTEXT" -n local logs deployment/e2e-ui-api --tail=400 || true
+            echo '=== e2e-ui UI logs ==='
+            kubectl --context "$HOPS_KUBE_CONTEXT" -n local logs deployment/e2e-ui-ui --tail=400 || true
+          } > .ci-kubernetes-diagnostics.log 2>&1
+          cat .ci-kubernetes-diagnostics.log
           for file in .ci-api-port-forward.log .ci-ui-port-forward.log \
             .ci-zitadel-port-forward.log .ci-zitadel-login-port-forward.log \
             .ci-zitadel-proxy.log; do
@@ -690,6 +697,7 @@ jobs:
           path: |
             .ci-*-port-forward.log
             .ci-zitadel-proxy.log
+            .ci-kubernetes-diagnostics.log
           if-no-files-found: ignore
           retention-days: 7
 
