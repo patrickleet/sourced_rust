@@ -23,7 +23,7 @@ use super::{
 const MAX_DEV_PROCESSES: usize = 64;
 const MAX_DEV_INTERVAL: Duration = Duration::from_secs(30);
 const MAX_DEV_PROBE_TIMEOUT: Duration = Duration::from_secs(300);
-const MAX_DEV_READINESS_TOTAL: Duration = Duration::from_secs(360);
+const MAX_DEV_READINESS_TOTAL: Duration = Duration::from_secs(361);
 
 fn default_poll_ms() -> u64 {
     200
@@ -129,7 +129,7 @@ impl LifecycleDevConfig {
             > MAX_DEV_READINESS_TOTAL.as_millis() as u64
         {
             return Err(LifecycleError::new(
-                "total lifecycle dev readiness delay must not exceed 360s",
+                "total lifecycle dev readiness delay must not exceed 361s",
             ));
         }
         for (name, process) in &self.processes {
@@ -1516,11 +1516,11 @@ mod tests {
 
         let total_error = config(BTreeMap::from([
             ("api".to_string(), probed_process(300_000)),
-            ("ui".to_string(), probed_process(60_001)),
+            ("ui".to_string(), probed_process(61_001)),
         ]))
         .validate()
         .unwrap_err();
-        assert!(total_error.message().contains("must not exceed 360s"));
+        assert!(total_error.message().contains("must not exceed 361s"));
     }
 
     #[test]
