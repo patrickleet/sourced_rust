@@ -65,6 +65,12 @@ async function transition(page, path, source, expectedReplicaRestore, assertGate
 		await page.getByRole('button', { name: /^add$/i }).click();
 		await page.getByText(/paused during a coherent application reload/i).waitFor();
 		assert.equal(mutationRequests, 0, 'reload gate must reject before GraphQL dispatch');
+		const readable = await fetch(`${apiURL}/graphql`, {
+			method: 'POST',
+			headers: { 'content-type': 'application/json' },
+			body: JSON.stringify({ query: 'query ReloadReadProbe { __typename }' })
+		});
+		assert.equal(readable.status, 200, 'pending API must continue serving GraphQL reads');
 		const direct = await fetch(`${apiURL}/graphql`, {
 			method: 'POST',
 			headers: { 'content-type': 'application/json' },
