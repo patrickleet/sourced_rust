@@ -268,6 +268,7 @@ test('failed reload registration disposes partially constructed client resources
 	assert.throws(
 		() =>
 			createDistributedSvelteKit({
+				boundaries: [],
 				session: {
 					getAuth: () => ({}),
 					subscribe: () => () => {
