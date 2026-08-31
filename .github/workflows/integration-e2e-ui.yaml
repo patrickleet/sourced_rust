@@ -295,6 +295,16 @@ jobs:
 
           k() { kubectl --context "$HOPS_KUBE_CONTEXT" "$@"; }
 
+          # Cluster reconciliation discovers the adjacent Environment
+          # definition automatically. Defer it until AuthStack's setup Job is
+          # complete; otherwise the instance Features MR and the setup Job race
+          # to own Login V2, leaving the provider unable to repair the
+          # singleton because it is protected by prevent_destroy.
+          environment_definition=.gitops/local/environment.yaml
+          deferred_environment="$RUNNER_TEMP/e2e-ui-environment.yaml"
+          test -f "$environment_definition"
+          mv "$environment_definition" "$deferred_environment"
+
           # AuthStack intentionally references live local secrets. Create only
           # disposable CI values once the API server exists, before the
           # Cluster tree starts reconciling AuthStack and its providers.
@@ -363,11 +373,16 @@ jobs:
         run: |
           set -euo pipefail
           k() { kubectl --context "$HOPS_KUBE_CONTEXT" "$@"; }
+          bootstrap_ready=0
           for attempt in $(seq 1 180); do
             pat="$(k -n auth get secret iam-admin-pat -o jsonpath='{.data.pat}' 2>/dev/null || true)"
-            if [ -n "$pat" ]; then
-              echo "AuthStack iam-admin-pat is available"
-              exit 0
+            setup_complete="$(k -n auth get job zitadel-zitadel-setup \
+              -o jsonpath='{.status.conditions[?(@.type=="Complete")].status}' \
+              2>/dev/null || true)"
+            if [ -n "$pat" ] && [ "$setup_complete" = True ]; then
+              echo "AuthStack credentials and setup Job are complete"
+              bootstrap_ready=1
+              break
             fi
 
             # The initial Cluster reconcile also installs the Crossplane
@@ -391,14 +406,22 @@ jobs:
             fi
             if [ $((attempt % 12)) -eq 0 ]; then
               k -n auth get pods -o wide || true
+              k -n auth get job zitadel-zitadel-setup -o wide || true
               k -n default get authstack zitadel -o wide || true
             fi
             sleep 5
           done
-          echo "Timed out waiting for AuthStack iam-admin-pat" >&2
-          k -n auth get pods -o wide || true
-          k -n default get authstack zitadel -o yaml || true
-          exit 1
+          if [ "$bootstrap_ready" != 1 ]; then
+            echo "Timed out waiting for AuthStack credentials and setup Job" >&2
+            k -n auth get pods -o wide || true
+            k -n auth get job zitadel-zitadel-setup -o yaml || true
+            k -n default get authstack zitadel -o yaml || true
+            exit 1
+          fi
+
+          deferred_environment="$RUNNER_TEMP/e2e-ui-environment.yaml"
+          test -f "$deferred_environment"
+          mv "$deferred_environment" .gitops/local/environment.yaml
 
       - name: Materialize the Zitadel provider Secret with hops CLI
         run: |
