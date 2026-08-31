@@ -216,6 +216,13 @@ jobs:
           toolchain: stable
           targets: wasm32-unknown-unknown
 
+      - uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: |
+            . -> target
+            tests/e2e-ui -> target
+          shared-key: e2e-ui-local-gitops
+
       - uses: actions/setup-node@v4
         with:
           node-version: "22"
@@ -271,10 +278,20 @@ jobs:
       - name: Install wasm-pack
         run: cargo install wasm-pack --locked || cargo install wasm-pack
 
-      - name: Build generated UI WASM assets
+      - name: Build Distributed CLI
+        run: cargo build --manifest-path ../../Cargo.toml -p distributed_cli --bin distributed
+
+      - name: Install UI deps
+        run: make ui-install
+
+      # Current Distributed owns the application build, including every
+      # declared Rust/WASM pure and the generated client modules. This is the
+      # same build path used by the live Docker Playwright job and by users
+      # before starting `distributed dev`.
+      - name: Build generated application assets
         run: |
           set -euo pipefail
-          make wasm
+          ../../target/debug/distributed build . --output json
           test -s ui/src/lib/blob/pkg/blob_wasm.js
           test -s ui/src/lib/blob/pkg/blob_wasm_bg.wasm
 
