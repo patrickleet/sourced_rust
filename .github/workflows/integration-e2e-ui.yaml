@@ -229,7 +229,10 @@ jobs:
         run: |
           set -euo pipefail
           sudo apt-get update
-          sudo apt-get install -y jq openssl curl
+          # nginx is only the CI ingress equivalent: Zitadel's API and Login
+          # V2 UI are separate ClusterIP Services, but both use the one
+          # external domain advertised in the OIDC authorize redirect.
+          sudo apt-get install -y jq openssl curl nginx
 
       - uses: azure/setup-kubectl@v4
         with:
@@ -509,8 +512,49 @@ jobs:
           echo $! > .ci-ui-port-forward.pid
           k -n local port-forward --address 127.0.0.1 svc/e2e-ui-api 8791:8791 > .ci-api-port-forward.log 2>&1 &
           echo $! > .ci-api-port-forward.pid
-          k -n auth port-forward --address 127.0.0.1 svc/zitadel-zitadel 8080:8080 > .ci-zitadel-port-forward.log 2>&1 &
+          # The Zitadel API and Login V2 UI are distinct Services. Keep the
+          # API on 18080 and expose one host:port to the browser through the
+          # same path split an ingress/Gateway would provide in a cluster.
+          k -n auth port-forward --address 127.0.0.1 svc/zitadel-zitadel 18080:8080 > .ci-zitadel-port-forward.log 2>&1 &
           echo $! > .ci-zitadel-port-forward.pid
+          k -n auth port-forward --address 127.0.0.1 svc/zitadel-zitadel-login 13000:3000 > .ci-zitadel-login-port-forward.log 2>&1 &
+          echo $! > .ci-zitadel-login-port-forward.pid
+
+          nginx_prefix="$RUNNER_TEMP/zitadel-proxy-prefix"
+          mkdir -p "$nginx_prefix"
+          mkdir -p "$nginx_prefix"/{client_body_temp,proxy_temp,fastcgi_temp,uwsgi_temp,scgi_temp}
+          cat > "$RUNNER_TEMP/zitadel-proxy.conf" <<EOF
+          pid $RUNNER_TEMP/zitadel-proxy.pid;
+          error_log $RUNNER_TEMP/zitadel-proxy-error.log warn;
+          events { worker_connections 128; }
+          http {
+            access_log off;
+            client_body_temp_path $nginx_prefix/client_body_temp;
+            proxy_temp_path $nginx_prefix/proxy_temp;
+            fastcgi_temp_path $nginx_prefix/fastcgi_temp;
+            uwsgi_temp_path $nginx_prefix/uwsgi_temp;
+            scgi_temp_path $nginx_prefix/scgi_temp;
+            server {
+              listen 8080;
+              proxy_http_version 1.1;
+              proxy_set_header Host \$http_host;
+              proxy_set_header X-Forwarded-Host \$http_host;
+              proxy_set_header X-Forwarded-Proto \$scheme;
+              proxy_set_header X-Forwarded-For \$proxy_add_x_forwarded_for;
+
+              location ^~ /ui/v2/login {
+                proxy_pass http://127.0.0.1:13000;
+              }
+              location / {
+                proxy_pass http://127.0.0.1:18080;
+              }
+            }
+          }
+          EOF
+          nginx -t -c "$RUNNER_TEMP/zitadel-proxy.conf" -p "$nginx_prefix"
+          nginx -g 'daemon off;' -c "$RUNNER_TEMP/zitadel-proxy.conf" -p "$nginx_prefix" \
+            > .ci-zitadel-proxy.log 2>&1 &
+          echo $! > .ci-zitadel-proxy.pid
 
           for attempt in $(seq 1 120); do
             ui_code="$(curl -sS -o /dev/null -w '%{http_code}' \
@@ -525,8 +569,11 @@ jobs:
             oidc_code="$(curl -sS -o /dev/null -w '%{http_code}' \
               --noproxy '*' \
               http://zitadel-zitadel.auth.svc.cluster.local:8080/.well-known/openid-configuration || true)"
+            login_code="$(curl -sS -o /dev/null -w '%{http_code}' \
+              --noproxy '*' \
+              'http://zitadel-zitadel.auth.svc.cluster.local:8080/ui/v2/login/login?authRequest=ci-preflight' || true)"
             if [ "$ui_code" = 200 ] || [ "$ui_code" = 302 ] || [ "$ui_code" = 303 ]; then
-              if [ "$pures_code" = 200 ] && [ "$node_code" = 200 ] && [ "$oidc_code" = 200 ]; then
+              if [ "$pures_code" = 200 ] && [ "$node_code" = 200 ] && [ "$oidc_code" = 200 ] && [ "$login_code" != 404 ]; then
                 break
               fi
             fi
@@ -541,6 +588,12 @@ jobs:
             exit 1
           fi
           test "$oidc_code" = 200
+          if [ "$login_code" = 404 ]; then
+            echo "Zitadel Login V2 proxy preflight returned 404" >&2
+            curl -sS --noproxy '*' \
+              'http://zitadel-zitadel.auth.svc.cluster.local:8080/ui/v2/login/login?authRequest=ci-preflight' >&2 || true
+            exit 1
+          fi
 
           E2E_UI_ORIGIN=http://e2e-ui-ui.local.svc.cluster.local:5180 \
           E2E_API_ORIGIN=http://e2e-ui-api.local.svc.cluster.local:8791 \
@@ -565,7 +618,9 @@ jobs:
           kubectl --context "$HOPS_KUBE_CONTEXT" get events -A --sort-by=.lastTimestamp
           kubectl --context "$HOPS_KUBE_CONTEXT" -n local get all
           kubectl --context "$HOPS_KUBE_CONTEXT" -n auth get all
-          for file in .ci-api-port-forward.log .ci-ui-port-forward.log .ci-zitadel-port-forward.log; do
+          for file in .ci-api-port-forward.log .ci-ui-port-forward.log \
+            .ci-zitadel-port-forward.log .ci-zitadel-login-port-forward.log \
+            .ci-zitadel-proxy.log; do
             echo "=== $file ==="
             tail -100 "$file" 2>/dev/null || true
           done
@@ -577,6 +632,7 @@ jobs:
           name: e2e-ui-k8s-diagnostics
           path: |
             tests/e2e-ui/.ci-*-port-forward.log
+            tests/e2e-ui/.ci-zitadel-proxy.log
           if-no-files-found: ignore
           retention-days: 7
 
@@ -589,4 +645,10 @@ jobs:
               kill "$(cat "$file")" 2>/dev/null || true
             fi
           done
+          if [ -f .ci-zitadel-login-port-forward.pid ]; then
+            kill "$(cat .ci-zitadel-login-port-forward.pid)" 2>/dev/null || true
+          fi
+          if [ -f .ci-zitadel-proxy.pid ]; then
+            kill "$(cat .ci-zitadel-proxy.pid)" 2>/dev/null || true
+          fi
           kind delete cluster --name "$HOPS_CLUSTER_NAME" || true
