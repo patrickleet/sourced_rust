@@ -20,6 +20,11 @@ entrypoint = "application_manifest"
 package = "e2e-celld-runner"
 binary = "e2e-celld"
 
+# This application intentionally owns a UI outside its Cargo workspace. The
+# lifecycle resolves and validates the path; no JSON process graph is needed.
+[workspace.metadata.distributed.ui]
+path = "../e2e-ui/ui"
+
 [workspace.package]
 version = "0.1.0"
 edition = "2021"

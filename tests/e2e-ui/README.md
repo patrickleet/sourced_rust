@@ -31,11 +31,11 @@ hops local gitops environment ./.gitops/local/environment.yaml \
 
 Both commands watch by default; use `--once` for CI or a single diagnostic
 reconcile. The cluster tree owns Crossplane, providers, AuthStack, and the
-serving PSQLCluster; the environment tree owns the API, UI, and explicit
-test-user deploys. Change those GitOps trees rather than applying over the
-watchers with `kubectl`.
+serving PSQLCluster; the environment tree owns one coherent API+UI application
+deploy and the explicit test-user deploy. Change those GitOps trees rather
+than applying over the watchers with `kubectl`.
 
-Charts: `api/.gitops/local`, `ui/.gitops/local`, and
+Charts: `api/.gitops/local` (API + UI lifecycle) and
 `ui/.gitops/test-users`. Control plane: `.gitops/local/cluster/`.
 
 ## Option B — lifecycle dev on the host

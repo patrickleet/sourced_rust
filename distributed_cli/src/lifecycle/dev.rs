@@ -54,6 +54,10 @@ pub struct LifecycleDevProcess {
     /// Working directory relative to the lifecycle root.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub cwd: Option<String>,
+    /// Permit an absolute working directory selected by trusted project
+    /// discovery. Ordinary lifecycle files remain root-confined by default.
+    #[serde(skip)]
+    pub external_cwd: bool,
     /// Process-specific environment. Values may use lifecycle placeholders.
     #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
     pub env: BTreeMap<String, String>,
@@ -132,7 +136,20 @@ impl LifecycleDevConfig {
             validate_stable_value(name, "lifecycle dev process name")?;
             validate_stable_value(&process.program, "lifecycle dev process program")?;
             if let Some(cwd) = &process.cwd {
-                validate_portable_path(cwd, "lifecycle dev process cwd")?;
+                if process.external_cwd {
+                    let cwd = Path::new(cwd);
+                    if !cwd.is_absolute() || cwd.as_os_str().as_encoded_bytes().contains(&0) {
+                        return Err(LifecycleError::new(
+                            "external lifecycle dev process cwd must be an absolute path",
+                        ));
+                    }
+                } else {
+                    validate_portable_path(cwd, "lifecycle dev process cwd")?;
+                }
+            } else if process.external_cwd {
+                return Err(LifecycleError::new(
+                    "external lifecycle dev process cwd requires cwd",
+                ));
             }
             validate_process_env(name, &process.env)?;
             if let Some(url) = &process.url {
@@ -578,7 +595,9 @@ impl DevStateStore {
         let directory = tempfile::Builder::new()
             .prefix("transition-")
             .tempdir_in(self.root.join("dev-control/acks"))
-            .map_err(dev_io("create lifecycle transition acknowledgement directory"))?;
+            .map_err(dev_io(
+                "create lifecycle transition acknowledgement directory",
+            ))?;
         let id = directory
             .path()
             .file_name()
@@ -1056,7 +1075,7 @@ fn wait_ready(
         if started.elapsed() >= timeout.unwrap() {
             return Err(readiness_timeout(name, probe.timeout_ms));
         }
-        let cwd = resolve_working_dir(root, process.cwd.as_deref())?;
+        let cwd = resolve_working_dir(root, process.cwd.as_deref(), process.external_cwd)?;
         let environment = expand_environment(root, name, process, generation);
         let args = probe
             .args
@@ -1157,7 +1176,7 @@ fn spawn_process(
     process: &LifecycleDevProcess,
     generation: &LifecycleBuildReport,
 ) -> Result<Child, LifecycleError> {
-    let cwd = resolve_working_dir(root, process.cwd.as_deref())?;
+    let cwd = resolve_working_dir(root, process.cwd.as_deref(), process.external_cwd)?;
     let args = process
         .args
         .iter()
@@ -1229,19 +1248,33 @@ fn expand_environment(
         .collect()
 }
 
-fn resolve_working_dir(root: &Path, cwd: Option<&str>) -> Result<PathBuf, LifecycleError> {
-    let path = cwd.map_or_else(|| root.to_path_buf(), |cwd| root.join(cwd));
+fn resolve_working_dir(
+    root: &Path,
+    cwd: Option<&str>,
+    external_cwd: bool,
+) -> Result<PathBuf, LifecycleError> {
+    let path = cwd.map_or_else(
+        || root.to_path_buf(),
+        |cwd| {
+            let cwd = Path::new(cwd);
+            if external_cwd {
+                cwd.to_path_buf()
+            } else {
+                root.join(cwd)
+            }
+        },
+    );
     let resolved = path.canonicalize().map_err(|error| {
         LifecycleError::new(format!(
             "failed to resolve lifecycle dev working directory `{}`: {error}",
             path.display()
         ))
     })?;
-    if !resolved.starts_with(root)
+    if (!external_cwd && !resolved.starts_with(root))
         || !fs::metadata(&resolved).is_ok_and(|metadata| metadata.is_dir())
     {
         return Err(LifecycleError::new(
-            "lifecycle dev working directory must be a directory under the root",
+            "lifecycle dev working directory must be a permitted directory",
         ));
     }
     Ok(resolved)
@@ -1437,6 +1470,7 @@ mod tests {
             program: "process".to_string(),
             args: Vec::new(),
             cwd: None,
+            external_cwd: false,
             env: BTreeMap::new(),
             url: None,
             restart_on: BTreeSet::new(),
@@ -1487,6 +1521,21 @@ mod tests {
     }
 
     #[test]
+    fn external_working_directory_authority_is_discovery_only() {
+        let mut discovered = probed_process(60_000);
+        discovered.cwd = Some("/repository/clients/web".to_string());
+        discovered.external_cwd = true;
+
+        let serialized = serde_json::to_value(&discovered).unwrap();
+        assert!(serialized.get("external_cwd").is_none());
+
+        let mut authored = serialized;
+        authored["external_cwd"] = serde_json::Value::Bool(true);
+        let error = serde_json::from_value::<LifecycleDevProcess>(authored).unwrap_err();
+        assert!(error.to_string().contains("unknown field `external_cwd`"));
+    }
+
+    #[test]
     fn transition_attempts_have_fresh_ids_and_isolated_acknowledgements() {
         let project = tempfile::tempdir().unwrap();
         let root = project.path().canonicalize().unwrap();
@@ -1499,8 +1548,11 @@ mod tests {
         assert!(safe_control_id(second.id()));
         let first_path = first._directory.path().to_path_buf();
         let second_path = second._directory.path().to_path_buf();
-        fs::write(first_path.join("browser_participant.json"), br#"{"ok":false}"#)
-            .unwrap();
+        fs::write(
+            first_path.join("browser_participant.json"),
+            br#"{"ok":false}"#,
+        )
+        .unwrap();
         assert!(second_path.read_dir().unwrap().next().is_none());
 
         drop(first);

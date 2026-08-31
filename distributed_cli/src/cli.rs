@@ -987,9 +987,7 @@ fn contextualize_project_application_error(
     .into()
 }
 
-fn prepare_project_wasm_pures(
-    project: &DiscoveredLifecycleProject,
-) -> Result<(), Box<dyn Error>> {
+fn prepare_project_wasm_pures(project: &DiscoveredLifecycleProject) -> Result<(), Box<dyn Error>> {
     if project.ui.is_none() {
         return Ok(());
     }
@@ -1013,7 +1011,7 @@ fn prepare_project_wasm_pures(
 
 fn build_project_ui(project: &DiscoveredLifecycleProject) -> Result<(), Box<dyn Error>> {
     if let Some(ui) = &project.ui {
-        let ui_root = project.plan.root.join(ui);
+        let ui_root = ui;
         prepare_ui_dependencies(project, &ui_root)?;
         eprintln!(
             "distributed build: compiling SvelteKit UI {}",
@@ -1061,7 +1059,7 @@ fn prepare_project_javascript(
                 .ui
                 .as_ref()
                 .ok_or("Distributed JavaScript package resolved without a UI root")?;
-            javascript.verify_installed(&project.plan.root.join(ui))?;
+            javascript.verify_installed(ui)?;
         }
     }
     Ok(())
@@ -1121,7 +1119,7 @@ fn run_dev(args: &DevArgs, command_prefix: &[&str]) -> Result<(), Box<dyn Error>
         ResolvedLifecycleProject::Discovered(project) => {
             prepare_project_javascript(&project, false)?;
             if let Some(ui) = &project.ui {
-                prepare_ui_dependencies(&project, &project.plan.root.join(ui))?;
+                prepare_ui_dependencies(&project, ui)?;
             }
             eprintln!(
                 "distributed dev: project={} api={} ui={} (Ctrl-C to stop)",
@@ -1630,17 +1628,18 @@ fn run_client(args: &ClientArgs) -> Result<(), Box<dyn Error>> {
             // Prefer explicit CLI roles when both lists are provided; otherwise
             // take eligible/schema roles from the application surface in the
             // manifest (one source of truth — no dual inventory config).
-            let (eligible_roles, schema_roles) =
-                if !args.eligible_role.is_empty() && !args.schema_role.is_empty() {
-                    (args.eligible_role.clone(), args.schema_role.clone())
-                } else if !args.eligible_role.is_empty() || !args.schema_role.is_empty() {
-                    return Err(
+            let (eligible_roles, schema_roles) = if !args.eligible_role.is_empty()
+                && !args.schema_role.is_empty()
+            {
+                (args.eligible_role.clone(), args.schema_role.clone())
+            } else if !args.eligible_role.is_empty() || !args.schema_role.is_empty() {
+                return Err(
                         "pass both --eligible-role and --schema-role, or neither (to use the manifest surface)"
                             .into(),
                     );
-                } else {
-                    application_roles_from_manifest(&manifest, surface)?
-                };
+            } else {
+                application_roles_from_manifest(&manifest, surface)?
+            };
             ClientSurfaceSelector::application(surface.clone(), eligible_roles, schema_roles)
         }
         _ => {
@@ -2488,7 +2487,14 @@ fn validate_manifest_json(envelope: &serde_json::Value) -> Result<(), Box<dyn Er
     {
         return Err("application manifest JSON is missing non-empty string name".into());
     }
-    for field in ["modules", "commands", "events", "projections", "models", "surfaces"] {
+    for field in [
+        "modules",
+        "commands",
+        "events",
+        "projections",
+        "models",
+        "surfaces",
+    ] {
         if envelope
             .get(field)
             .and_then(serde_json::Value::as_array)

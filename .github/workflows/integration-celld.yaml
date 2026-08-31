@@ -118,7 +118,7 @@ jobs:
       - name: Live celld HTTP + NATS profile tests
         run: make -C tests/e2e-ui test-celld
 
-      - name: Start e2e-celld API with Distributed dev + shared UI
+      - name: Start e2e-celld application with Distributed dev
         run: |
           set -euo pipefail
           set -a
@@ -131,6 +131,9 @@ jobs:
           export AUTH_URL=http://localhost:5180
           export AUTH_USE_SECURE_COOKIES=false
           export AUTH_TRUST_HOST=true
+          export PUBLIC_E2E_PROFILE=celld-nats
+          export UI_BIND=localhost
+          export UI_URL=http://localhost:5180
 
           target/debug/distributed dev tests/e2e-celld \
             > tests/e2e-celld/.ci-distributed-dev.log 2>&1 &
@@ -157,14 +160,8 @@ jobs:
           fi
           grep -F 'lifecycle dev: process api ready http://127.0.0.1:8791' \
             tests/e2e-celld/.ci-distributed-dev.log
-
-          cd tests/e2e-ui/ui
-          PUBLIC_E2E_PROFILE=celld-nats \
-            E2E_API_ORIGIN=http://127.0.0.1:8791 \
-            npm run dev -- --host localhost --port 5180 \
-            > ../.ci-celld-ui.log 2>&1 &
-          echo $! > ../.ci-celld-ui.pid
-          cd ../../..
+          grep -F 'lifecycle dev: process ui ready http://localhost:5180' \
+            tests/e2e-celld/.ci-distributed-dev.log
 
           ok=0
           for i in $(seq 1 60); do
@@ -178,7 +175,7 @@ jobs:
           done
           if [ "$ok" != "1" ]; then
             echo "e2e-celld UI failed to become ready (last HTTP $code)"
-            tail -100 tests/e2e-ui/.ci-celld-ui.log
+            tail -200 tests/e2e-celld/.ci-distributed-dev.log
             exit 1
           fi
 
@@ -260,7 +257,8 @@ jobs:
           echo '=== e2e-celld API ==='
           tail -240 tests/e2e-celld/.ci-distributed-dev.log || true
           echo '=== e2e-celld UI ==='
-          tail -100 tests/e2e-ui/.ci-celld-ui.log || true
+          grep -E 'lifecycle dev: process ui|vite|Local:' \
+            tests/e2e-celld/.ci-distributed-dev.log | tail -100 || true
           echo '=== Postgres + Zitadel ==='
           docker compose -f tests/e2e-ui/docker/docker-compose.yml ps -a || true
           docker compose -f tests/e2e-ui/docker/docker-compose.yml logs --tail=100 || true
@@ -268,8 +266,6 @@ jobs:
       - name: Tear down
         if: always()
         run: |
-          [ -f tests/e2e-ui/.ci-celld-ui.pid ] && \
-            kill "$(cat tests/e2e-ui/.ci-celld-ui.pid)" 2>/dev/null || true
           if [ -f tests/e2e-celld/.ci-distributed-dev.pid ]; then
             pid=$(cat tests/e2e-celld/.ci-distributed-dev.pid)
             kill -INT "$pid" 2>/dev/null || true

@@ -1,6 +1,6 @@
 apiVersion: v2
-name: e2e-ui-api
-description: Editable local workload for the e2e-ui API
+name: e2e-ui-application
+description: Coherent local lifecycle for the e2e-ui API and SvelteKit UI
 type: application
 version: 0.1.0
 appVersion: "0.1.0"

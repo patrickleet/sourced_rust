@@ -2,6 +2,10 @@
 {{- default .Chart.Name .Values.name | trunc 63 | trimSuffix "-" -}}
 {{- end -}}
 
+{{- define "e2e-ui-api.releaseNamespace" -}}
+{{- coalesce .Values.environment.namespace .Release.Namespace "default" -}}
+{{- end -}}
+
 {{- define "e2e-ui-api.labels" -}}
 app.kubernetes.io/name: {{ include "e2e-ui-api.name" . }}
 app.kubernetes.io/instance: {{ .Release.Name }}

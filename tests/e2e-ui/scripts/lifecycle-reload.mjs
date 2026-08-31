@@ -1,34 +1,102 @@
 import assert from 'node:assert/strict';
+import { spawnSync } from 'node:child_process';
 import { readFileSync, writeFileSync } from 'node:fs';
-import { dirname, resolve } from 'node:path';
+import { dirname, isAbsolute, relative, resolve, sep } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { chromium } from 'playwright';
 
 const root = resolve(dirname(fileURLToPath(import.meta.url)), '..');
+const frameworkRoot = resolve(root, '../../js');
 const application = resolve(root, 'crates/todo-domain/src/commands/force_archive.rs');
-const framework = resolve(root, '../../js/src/sveltekit/lifecycle.ts');
+const framework = resolve(frameworkRoot, 'src/sveltekit/lifecycle.ts');
 const adminCommands = resolve(root, 'ui/src/lib/generated/admin/commands.ts');
 const lifecycleFile = resolve(root, '.distributed/lifecycle/dev.json');
-const original = readFileSync(application, 'utf8');
-const frameworkOriginal = readFileSync(framework, 'utf8');
 const baseURL = process.env.E2E_UI_ORIGIN || 'http://127.0.0.1:5180';
 const apiURL = process.env.E2E_API_ORIGIN || 'http://127.0.0.1:8791';
 const timeoutMs = 120_000;
 const preparingEvents = [];
+const kubeWorkload = process.env.DISTRIBUTED_LIFECYCLE_KUBE_WORKLOAD;
+const kubeContext = process.env.DISTRIBUTED_LIFECYCLE_KUBE_CONTEXT;
+const kubeNamespace = process.env.DISTRIBUTED_LIFECYCLE_KUBE_NAMESPACE || 'default';
+const kubeContainer = process.env.DISTRIBUTED_LIFECYCLE_KUBE_CONTAINER || 'application';
+
+function childPath(base, path) {
+	const child = relative(base, path);
+	return child !== '' && child !== '..' && !child.startsWith(`..${sep}`) && !isAbsolute(child)
+		? child
+		: undefined;
+}
+
+function remotePath(path) {
+	const projectChild = childPath(root, path);
+	if (projectChild) return `/workspace/tests/e2e-ui/${projectChild.split(sep).join('/')}`;
+	const frameworkChild = childPath(frameworkRoot, path);
+	if (frameworkChild) return `/workspace/js/${frameworkChild.split(sep).join('/')}`;
+	throw new Error(`lifecycle fixture path escapes its declared roots: ${path}`);
+}
+
+function kubectlExec(command, input) {
+	const args = [];
+	if (kubeContext) args.push('--context', kubeContext);
+	args.push(
+		'-n',
+		kubeNamespace,
+		'exec',
+		kubeWorkload,
+		'-c',
+		kubeContainer,
+		...(input === undefined ? [] : ['-i']),
+		'--',
+		...command
+	);
+	const result = spawnSync('kubectl', args, {
+		encoding: 'utf8',
+		input,
+		maxBuffer: 4 * 1024 * 1024
+	});
+	if (result.status !== 0) {
+		throw new Error(
+			`kubectl exec failed (${result.status ?? 'signal'}): ${(result.stderr || '').trim()}`
+		);
+	}
+	return result.stdout;
+}
+
+const fixtureIO = kubeWorkload
+	? {
+			read(path) {
+				return kubectlExec(['cat', remotePath(path)]);
+			},
+			write(path, source) {
+				kubectlExec(['tee', remotePath(path)], source);
+			},
+			pollMs: 250
+		}
+	: {
+			read(path) {
+				return readFileSync(path, 'utf8');
+			},
+			write(path, source) {
+				writeFileSync(path, source);
+			},
+			pollMs: 50
+		};
+const original = fixtureIO.read(application);
+const frameworkOriginal = fixtureIO.read(framework);
 
 async function waitFor(predicate, label, timeout = timeoutMs) {
 	const started = Date.now();
 	while (Date.now() - started < timeout) {
 		const value = await predicate();
 		if (value) return value;
-		await new Promise((resolvePromise) => setTimeout(resolvePromise, 50));
+		await new Promise((resolvePromise) => setTimeout(resolvePromise, fixtureIO.pollMs));
 	}
 	throw new Error(`timed out waiting for ${label}`);
 }
 
 async function lifecycleState() {
 	try {
-		return JSON.parse(readFileSync(lifecycleFile, 'utf8'));
+		return JSON.parse(fixtureIO.read(lifecycleFile));
 	} catch {
 		return undefined;
 	}
@@ -53,7 +121,7 @@ async function transition(page, path, source, expectedReplicaRestore, assertGate
 		if ((request.postData() ?? '').includes('todos_create')) mutationRequests += 1;
 	};
 	page.on('request', onRequest);
-	writeFileSync(path, source);
+	fixtureIO.write(path, source);
 
 	await waitFor(
 		async () => (await lifecycleState())?.phase === 'preparing',
@@ -167,13 +235,13 @@ try {
 	await transition(page, application, incompatible, false);
 	console.log('lifecycle-reload: application + framework + incompatible transitions OK');
 } finally {
-	writeFileSync(application, original);
-	writeFileSync(framework, frameworkOriginal);
+	fixtureIO.write(application, original);
+	fixtureIO.write(framework, frameworkOriginal);
 	await waitFor(async () => {
 		const state = await lifecycleState();
 		return state?.phase === 'active' &&
 			state.active.generationId === baseline.active.generationId &&
-			!readFileSync(adminCommands, 'utf8').includes('todos_force_archive_reload');
+			!fixtureIO.read(adminCommands).includes('todos_force_archive_reload');
 	}, 'baseline source and generated-client restoration');
 	await context.close();
 	await browser.close();

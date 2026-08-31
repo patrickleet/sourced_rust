@@ -6,7 +6,7 @@
 set -euo pipefail
 
 ROOT="$(cd "$(dirname "$0")/.." && pwd)"
-UI_CHART="$ROOT/ui/.gitops/local"
+UI_CHART="$ROOT/api/.gitops/local"
 IDENTITY_CHART="$ROOT/ui/.gitops/test-users"
 API_CHART="$ROOT/api/.gitops/local"
 fail=0
@@ -24,7 +24,7 @@ render_ui() {
   local ns="$1"
   local oidc_generation="${2:-0}"
   local workspace="${3:-}"
-  helm template "e2e-ui-ui-${ns}" "$UI_CHART" \
+  helm template "e2e-ui-application-${ns}" "$UI_CHART" \
     --namespace "$ns" \
     --set local=true \
     --set preview=false \
@@ -73,7 +73,7 @@ render() {
 
 assert_contains() {
   local hay="$1" needle="$2" msg="$3"
-  if ! printf '%s' "$hay" | rg -q --fixed-strings "$needle"; then
+  if ! printf '%s' "$hay" | rg -q --fixed-strings -- "$needle"; then
     echo "FAIL: $msg (missing: $needle)" >&2
     fail=1
   else
@@ -83,7 +83,7 @@ assert_contains() {
 
 assert_not_contains() {
   local hay="$1" needle="$2" msg="$3"
-  if printf '%s' "$hay" | rg -q --fixed-strings "$needle"; then
+  if printf '%s' "$hay" | rg -q --fixed-strings -- "$needle"; then
     echo "FAIL: $msg (unexpected: $needle)" >&2
     fail=1
   else
@@ -186,8 +186,8 @@ assert_contains "$rotated_out" 'hops.ops.com.ai/oidc-generation: "1"' \
 assert_contains "$rotated_out" 'name: "e2e-ui-alice-oidc-conn-g1"' \
   "OIDC rotation uses matching connection secret generation"
 
-# API derives the same connection Secret and uses the generated client id as
-# both the JWT audience and client id. No Zitadel UUID belongs in values.
+# The combined application derives the connection Secret once for its API and
+# UI processes. No Zitadel UUID belongs in values.
 api_out="$(helm template e2e-ui-api-alice "$API_CHART" \
   --namespace alice \
   --set local=true \
@@ -206,6 +206,27 @@ assert_contains "$api_out" "name: OIDC_AUDIENCE" \
   "API audience comes from the generated connection secret"
 assert_contains "$api_out" "key: attribute.client_id" \
   "API audience/client id use the generated client id key"
+assert_contains "$api_out" "--package distributed_cli --bin distributed" \
+  "combined application starts Distributed dev"
+assert_contains "$api_out" "name: e2e-ui-api" \
+  "combined application exposes the API Service"
+assert_contains "$api_out" "name: e2e-ui-ui" \
+  "combined application exposes the UI Service"
+assert_not_contains "$api_out" "cargo watch" \
+  "chart does not bypass the lifecycle with cargo-watch"
+deployment_count="$(printf '%s\n' "$api_out" | rg -c '^kind: Deployment$')"
+if [ "$deployment_count" != 1 ]; then
+  echo "FAIL: combined application must render one Deployment (got $deployment_count)" >&2
+  fail=1
+else
+  echo "ok: combined application renders one Deployment"
+fi
+
+environment_manifest="$(cat "$ROOT/.gitops/local/environment.yaml")"
+assert_contains "$environment_manifest" "path: api/.gitops/local" \
+  "Environment deploys the combined application chart"
+assert_not_contains "$environment_manifest" "path: ui/.gitops/local" \
+  "Environment has no independent UI runtime deploy"
 
 # An explicit workspace override is shared by the UI and test-users charts.
 # The environment should pass this value through its shared values, rather than
