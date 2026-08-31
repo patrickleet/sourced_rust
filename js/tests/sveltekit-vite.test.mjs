@@ -13,6 +13,7 @@ import { Worker } from 'node:worker_threads';
 import test from 'node:test';
 
 import {
+	analyzeDistributedSvelteKitBoundaries,
 	checkDistributedSvelteKit,
 	distributedSvelteKit,
 	distributedSvelteKitAliases,
@@ -73,6 +74,27 @@ writeFileSync(
   out + '/manifest.json',
   JSON.stringify({ compiler_manifest_version: 1, operations: [] }) + '\n'
 );
+writeFileSync(
+  out + '/islands.json',
+  JSON.stringify({
+    version: 1,
+    schemaFingerprint: 'fake-schema-' + surface,
+    protocolFingerprint: 'fake-protocol-' + surface,
+    surface: { kind: 'application', name: surface },
+    islands: documents.map((source, index) => ({
+      version: 1,
+      id: surface + '-island-' + index,
+      operation: 'Operation' + index,
+      source: { path: source, line: 1, column: 1 },
+      directives: { load: true, live: false },
+      variableSchema: {
+        reference: 'hash-' + index + '#variable-codec-v1',
+        codecVersion: 1,
+        variables: []
+      }
+    }))
+  }) + '\n'
+);
 process.stdout.write('generated fake client\n');
 `;
 
@@ -92,6 +114,8 @@ async function fixture(t) {
 		join(root, 'src/routes/admin/+page.graphql'),
 		'query AdminTodos @load { todos { id } }\n'
 	);
+	await writeFile(join(root, 'src/routes/todos/+page.svelte'), '<p>todos</p>\n');
+	await writeFile(join(root, 'src/routes/admin/+page.svelte'), '<p>admin</p>\n');
 	const previousLog = process.env.DISTRIBUTED_FAKE_LOG;
 	const previousFailure = process.env.DISTRIBUTED_FAKE_FAIL_SURFACE;
 	const previousDelay = process.env.DISTRIBUTED_FAKE_DELAY_MS;
@@ -153,6 +177,225 @@ async function commandLog(path) {
 		.map((line) => JSON.parse(line));
 }
 
+function islandInventory(source, operation = 'WidgetQuery') {
+	return {
+		version: 1,
+		schemaFingerprint: 'schema',
+		protocolFingerprint: 'protocol',
+		surface: { kind: 'application', name: 'test' },
+		islands: [
+			{
+				version: 1,
+				id: `island-${operation}`,
+				operation,
+				source: { path: source, line: 1, column: 1 },
+				directives: { load: true, live: false },
+				variableSchema: {
+					reference: `hash-${operation}#variable-codec-v1`,
+					codecVersion: 1,
+					variables: []
+				}
+			}
+		]
+	};
+}
+
+test('Svelte boundary analysis promotes component islands to their nearest static page or layout', async (t) => {
+	const root = await mkdtemp(join(tmpdir(), 'distributed-boundary-test-'));
+	t.after(() => rm(root, { recursive: true, force: true }));
+	await mkdir(join(root, 'src/routes/orders'), { recursive: true });
+	await mkdir(join(root, 'src/lib'), { recursive: true });
+	await writeFile(
+		join(root, 'src/lib/OrderList.svelte'),
+		'<script>import Row from "./Row.svelte";</script><Row />\n'
+	);
+	await writeFile(
+		join(root, 'src/lib/Row.svelte'),
+		'<script>import OrderList from "./OrderList.svelte";</script><p>row</p>\n'
+	);
+	await writeFile(
+		join(root, 'src/routes/orders/+page.svelte'),
+		'<script>import OrderList from "$lib/OrderList.svelte";</script><OrderList />\n'
+	);
+	await writeFile(join(root, 'src/routes/orders/+layout.svelte'), '<slot />\n');
+
+	const analyze = () =>
+		analyzeDistributedSvelteKitBoundaries({
+			cwd: root,
+			clients: [
+				{
+					module: '$distributed',
+					inventory: islandInventory('src/lib/Row.graphql')
+				}
+			]
+		});
+	const pagePlan = (await analyze())[0];
+	assert.deepEqual(
+		pagePlan.boundaries.map(({ id, islands }) => [id, islands.map(({ operation }) => operation)]),
+		[['page:/orders', ['WidgetQuery']]],
+		'cycle-safe static traversal places one occurrence on the importing page'
+	);
+	assert.equal(pagePlan.boundaries[0].islands[0].reason, 'static_component_import');
+	assert.equal(pagePlan.boundaries[0].islands[0].conservative, true);
+	await writeFile(
+		join(root, 'src/routes/+layout.svelte'),
+		'<script>import OrderList from "$lib/OrderList.svelte";</script><OrderList /><slot />\n'
+	);
+	const repeatedPlan = (await analyze())[0];
+	assert.deepEqual(
+		repeatedPlan.boundaries.map(({ id }) => id),
+		['layout:/', 'page:/orders'],
+		'nested boundaries retain each statically owned occurrence for runtime deduplication'
+	);
+
+	await writeFile(join(root, 'src/routes/orders/+page.svelte'), '<p>page</p>\n');
+	await writeFile(join(root, 'src/routes/+layout.svelte'), '<slot />\n');
+	await writeFile(
+		join(root, 'src/routes/orders/+layout.svelte'),
+		'<script>import OrderList from "$lib/OrderList.svelte";</script><OrderList /><slot />\n'
+	);
+	const layoutPlan = (await analyze())[0];
+	assert.deepEqual(
+		layoutPlan.boundaries.map(({ id }) => id),
+		['layout:/orders'],
+		'moving the same component changes placement without changing its island identity'
+	);
+	assert.equal(
+		layoutPlan.boundaries[0].islands[0].islandId,
+		pagePlan.boundaries[0].islands[0].islandId
+	);
+});
+
+test('Svelte boundary analysis owns route documents and fails closed for dynamic load reachability', async (t) => {
+	const root = await mkdtemp(join(tmpdir(), 'distributed-boundary-negative-'));
+	t.after(() => rm(root, { recursive: true, force: true }));
+	await mkdir(join(root, 'src/routes/inbox'), { recursive: true });
+	await mkdir(join(root, 'src/lib'), { recursive: true });
+	await writeFile(join(root, 'src/routes/inbox/+layout.svelte'), '<slot />\n');
+	await writeFile(
+		join(root, 'src/routes/inbox/+page.svelte'),
+		'<script>const Card = import("$lib/Card.svelte");</script><p>inbox</p>\n'
+	);
+	await writeFile(join(root, 'src/lib/Card.svelte'), '<p>card</p>\n');
+	const route = await analyzeDistributedSvelteKitBoundaries({
+		cwd: root,
+		clients: [
+			{
+				module: '$distributed',
+				inventory: islandInventory('src/routes/inbox/+layout.graphql', 'Inbox')
+			}
+		]
+	});
+	assert.deepEqual(route[0].boundaries.map(({ id }) => id), ['layout:/inbox']);
+	assert.equal(route[0].boundaries[0].islands[0].reason, 'route_document');
+
+	await assert.rejects(
+		analyzeDistributedSvelteKitBoundaries({
+			cwd: root,
+			clients: [
+				{
+					module: '$distributed',
+					inventory: islandInventory('src/lib/Card.graphql', 'CardQuery')
+				}
+			]
+		}),
+		(error) => {
+			assert.match(error.message, /\[distributed\.island\.dynamic_load\]/);
+			assert.match(error.message, /src\/routes\/inbox\/\+page\.svelte:1:/);
+			assert.doesNotMatch(error.message, /<script>|<p>/);
+			return true;
+		}
+	);
+	await writeFile(
+		join(root, 'src/routes/inbox/+page.svelte'),
+		'<script>const target = "$lib/Card.svelte"; const Card = import(target);</script><p>inbox</p>\n'
+	);
+	await assert.rejects(
+		analyzeDistributedSvelteKitBoundaries({
+			cwd: root,
+			clients: [
+				{
+					module: '$distributed',
+					inventory: islandInventory('src/lib/Card.graphql', 'CardQuery')
+				}
+			]
+		}),
+		/\[distributed\.island\.dynamic_opaque\]/
+	);
+	const conflicting = islandInventory('src/lib/Card.graphql', 'CardQuery');
+	await assert.rejects(
+		analyzeDistributedSvelteKitBoundaries({
+			cwd: root,
+			clients: [
+				{
+					module: '$distributed',
+					inventory: {
+						...conflicting,
+						islands: [
+							...conflicting.islands,
+							...islandInventory('src/lib/Card.gql', 'OtherCardQuery').islands
+						]
+					}
+				}
+			]
+		}),
+		/\[distributed\.island\.sibling_conflict\]/
+	);
+});
+
+test('Svelte boundary analysis rejects unresolved aliases and cross-surface island ownership', async (t) => {
+	const root = await mkdtemp(join(tmpdir(), 'distributed-boundary-surface-'));
+	t.after(() => rm(root, { recursive: true, force: true }));
+	await mkdir(join(root, 'src/routes'), { recursive: true });
+	await mkdir(join(root, 'src/lib'), { recursive: true });
+	await writeFile(
+		join(root, 'src/routes/+page.svelte'),
+		'<script>import Card from "$widgets/Card.svelte";</script><Card />\n'
+	);
+	await assert.rejects(
+		analyzeDistributedSvelteKitBoundaries({
+			cwd: root,
+			clients: [{ module: '$distributed', inventory: islandInventory('src/routes/+page.graphql') }]
+		}),
+		/\[distributed\.island\.alias_unresolved\]/
+	);
+	await mkdir(join(root, 'src/widgets'), { recursive: true });
+	await writeFile(join(root, 'src/widgets/Card.svelte'), '<p>card</p>\n');
+	const aliased = await analyzeDistributedSvelteKitBoundaries({
+		cwd: root,
+		aliases: { $widgets: 'src/widgets' },
+		clients: [
+			{ module: '$distributed', inventory: islandInventory('src/widgets/Card.graphql') }
+		]
+	});
+	assert.deepEqual(aliased[0].boundaries.map(({ id }) => id), ['page:/']);
+
+	await assert.rejects(
+		analyzeDistributedSvelteKitBoundaries({
+			cwd: root,
+			clients: [
+				{ module: '$distributed', inventory: islandInventory('src/lib/Card.graphql') },
+				{ module: '$distributed/admin', inventory: islandInventory('src/lib/Card.graphql') }
+			]
+		}),
+		/\[distributed\.island\.cross_surface\]/
+	);
+	await writeFile(join(root, 'src/routes/+page.svelte'), '<p>page</p>\n');
+	const explicit = await analyzeDistributedSvelteKitBoundaries({
+		cwd: root,
+		clients: [
+			{
+				module: '$distributed',
+				inventory: islandInventory('src/lib/Missing.graphql', 'MissingQuery'),
+				explicitBoundaries: [
+					{ operation: 'MissingQuery', route: '/', kind: 'page' }
+				]
+			}
+		]
+	});
+	assert.equal(explicit[0].boundaries[0].islands[0].reason, 'explicit');
+});
+
 test('Vite compiles and resolves isolated user/admin physical entrypoints', async (t) => {
 	const { root, script, log } = await fixture(t);
 	const options = pluginOptions(root, script);
@@ -184,6 +427,18 @@ test('Vite compiles and resolves isolated user/admin physical entrypoints', asyn
 	assert.match(
 		await readFile(join(root, 'src/generated/admin/sveltekit.ts'), 'utf8'),
 		/e2e-ui-admin/
+	);
+	const userBoundaryPath = join(
+		root,
+		'.svelte-kit/distributed/clients',
+		Buffer.from('$distributed').toString('base64url'),
+		'boundaries.json'
+	);
+	const userBoundaries = JSON.parse(await readFile(userBoundaryPath, 'utf8'));
+	assert.deepEqual(
+		userBoundaries.boundaries.map(({ id }) => id),
+		['page:/todos'],
+		'adapter generation commits an inspectable boundary plan beside compiler output'
 	);
 
 	const initial = await commandLog(log);
@@ -262,6 +517,17 @@ test('Vite compiles and resolves isolated user/admin physical entrypoints', asyn
 		await readFile(join(root, 'src/generated/user/sveltekit.ts'), 'utf8'),
 		/todos/
 	);
+	await writeFile(join(root, 'src/routes/todos/+page.svelte'), '<p>changed</p>\n');
+	const pluginAfterGenerate = distributedSvelteKit(options);
+	await pluginAfterGenerate.configResolved({ root });
+	const svelteChangeStart = (await commandLog(log)).length;
+	await pluginAfterGenerate.watchChange(join(root, 'src/routes/todos/+page.svelte'));
+	assert.equal(
+		(await commandLog(log)).length,
+		svelteChangeStart + 4,
+		'Svelte import changes participate in the same coherent generation transaction'
+	);
+	await pluginAfterGenerate.closeBundle();
 });
 
 test('same-process Vite instances coalesce one shared startup generation', async (t) => {

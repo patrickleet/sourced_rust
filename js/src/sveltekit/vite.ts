@@ -31,6 +31,25 @@ import {
 } from 'node:path';
 import { isMainThread } from 'node:worker_threads';
 
+import {
+	analyzeDistributedSvelteKitBoundaries,
+	type DistributedIslandInventory,
+	type DistributedSvelteKitBoundaryPlan,
+	type DistributedSvelteKitBoundaryRegistration
+} from './islands/boundaries.js';
+
+export {
+	analyzeDistributedSvelteKitBoundaries,
+	type DistributedIslandInventory,
+	type DistributedIslandPlanInput,
+	type DistributedSvelteKitBoundary,
+	type DistributedSvelteKitBoundaryAnalysisClient,
+	type DistributedSvelteKitBoundaryAnalysisOptions,
+	type DistributedSvelteKitBoundaryOccurrence,
+	type DistributedSvelteKitBoundaryPlan,
+	type DistributedSvelteKitBoundaryRegistration
+} from './islands/boundaries.js';
+
 const GENERATED_SVELTEKIT_MODULE = 'sveltekit.ts';
 const MAX_COMMAND_OUTPUT_BYTES = 16 * 1024 * 1024;
 const MAX_GENERATED_COMPARE_FILES = 20_000;
@@ -95,6 +114,8 @@ export type DistributedSvelteKitClientCompiler = Readonly<{
 	documents: readonly string[];
 	/** Explicit `OPERATION=/route` fallbacks. */
 	routes?: readonly string[];
+	/** Typed fallback when static component ownership cannot be proven. */
+	boundaries?: readonly DistributedSvelteKitBoundaryRegistration[];
 	/** Compiler-owned artifact directory, relative to `cwd` by default. */
 	out: string;
 }>;
@@ -106,6 +127,12 @@ export type DistributedSvelteKitViteOptions = Readonly<{
 	command?: string;
 	/** Prefix argv, e.g. `cargo run ... --`; never interpreted by a shell. */
 	commandArgs?: readonly string[];
+	/** SvelteKit route source root. Defaults to `src/routes`. */
+	routesDir?: string;
+	/** SvelteKit library source root. Defaults to `src/lib`. */
+	libDir?: string;
+	/** Additional project-local `$name` aliases used by static component imports. */
+	aliases?: Readonly<Record<string, string>>;
 	clients: readonly DistributedSvelteKitClientCompiler[];
 }>;
 
@@ -115,8 +142,10 @@ type ResolvedClient = Readonly<{
 	selector: readonly ['--role' | '--surface', string];
 	documents: readonly string[];
 	routes: readonly string[];
+	boundaries: readonly DistributedSvelteKitBoundaryRegistration[];
 	out: string;
 	entry: string;
+	adapterOut: string;
 	watchRoots: readonly string[];
 	manifestWatchRoots: readonly string[];
 }>;
@@ -125,6 +154,9 @@ type ResolvedIntegration = Readonly<{
 	cwd: string;
 	command: string;
 	commandArgs: readonly string[];
+	routesDir: string;
+	libDir: string;
+	aliases: Readonly<Record<string, string>>;
 	clients: readonly ResolvedClient[];
 }>;
 
@@ -367,10 +399,14 @@ export function distributedSvelteKit(
 			configureLifecycleServer(server);
 			const integration = requireResolved(resolved);
 			if (!lifecycleOwnsCompile) {
-				const roots = integration.clients.flatMap((client) => [
-					...client.watchRoots,
-					...client.manifestWatchRoots
-				]);
+				const roots = [
+					integration.routesDir,
+					integration.libDir,
+					...integration.clients.flatMap((client) => [
+						...client.watchRoots,
+						...client.manifestWatchRoots
+					])
+				];
 				if (roots.length > 0) server.watcher.add(roots);
 			}
 			server.httpServer?.once('close', () => {
@@ -380,6 +416,8 @@ export function distributedSvelteKit(
 		buildStart(): void {
 			const integration = requireResolved(resolved);
 			if (lifecycleOwnsCompile) return;
+			this.addWatchFile(integration.routesDir);
+			this.addWatchFile(integration.libDir);
 			for (const client of integration.clients) {
 				for (const root of [...client.watchRoots, ...client.manifestWatchRoots]) this.addWatchFile(root);
 			}
@@ -405,7 +443,7 @@ export function distributedSvelteKit(
 			if (!isCompilerInput(context.file, integration)) return undefined;
 			if (lifecycleOwnsCompile) return [];
 			try {
-				await compile(`GraphQL change ${context.file}`);
+				await compile(`GraphQL/Svelte change ${context.file}`);
 			} catch (error) {
 				context.server.ws.send({
 					type: 'error',
@@ -432,7 +470,7 @@ export function distributedSvelteKit(
 			const integration = requireResolved(resolved);
 			if (lifecycleOwnsCompile) return;
 			if (isCompilerInput(id, integration)) {
-				await compile(`GraphQL watch change ${id}`);
+				await compile(`GraphQL/Svelte watch change ${id}`);
 			}
 		},
 		closeBundle: stop
@@ -758,6 +796,18 @@ function resolveIntegration(
 	}
 	const modules = new Set<string>();
 	const outputs: string[] = [];
+	const routesDir = containedPath(cwd, options.routesDir ?? 'src/routes', 'routesDir');
+	const libDir = containedPath(cwd, options.libDir ?? 'src/lib', 'libDir');
+	const aliases = Object.freeze(
+		Object.fromEntries(
+			Object.entries(options.aliases ?? {}).map(([key, value]) => {
+				if (!/^\$[A-Za-z0-9_-]+$/.test(key)) {
+					throw new TypeError(`Distributed SvelteKit alias \`${key}\` must be a single $name segment`);
+				}
+				return [key, portablePath(relative(cwd, containedPath(cwd, value, `alias ${key}`)))];
+			})
+		)
+	);
 	const clients = options.clients.map((client, index): ResolvedClient => {
 		if (client === null || typeof client !== 'object') {
 			throw new TypeError(`Distributed client[${index}] must be an object`);
@@ -804,6 +854,23 @@ function resolveIntegration(
 		const routes = (client.routes ?? []).map((route: string, routeIndex: number) =>
 			nonempty(route, `${client.module} routes[${routeIndex}]`)
 		);
+		const boundaries = (client.boundaries ?? []).map((
+			boundary: DistributedSvelteKitBoundaryRegistration,
+			boundaryIndex: number
+		) => {
+			if (
+				boundary === null ||
+				typeof boundary !== 'object' ||
+				(boundary.kind !== 'page' && boundary.kind !== 'layout')
+			) {
+				throw new TypeError(`${client.module} boundaries[${boundaryIndex}] is invalid`);
+			}
+			return Object.freeze({
+				operation: nonempty(boundary.operation, `${client.module} boundaries[${boundaryIndex}].operation`),
+				route: nonempty(boundary.route, `${client.module} boundaries[${boundaryIndex}].route`),
+				kind: boundary.kind
+			});
+		});
 		validateManifestSource(client.module, client.manifest);
 		const out = containedPath(
 			cwd,
@@ -823,14 +890,23 @@ function resolveIntegration(
 			}
 		}
 		outputs.push(out);
+		const adapterOut = join(
+			cwd,
+			'.svelte-kit',
+			'distributed',
+			'clients',
+			Buffer.from(client.module).toString('base64url')
+		);
 		return Object.freeze({
 			module: client.module,
 			manifest: client.manifest,
 			selector,
 			documents: Object.freeze(documents),
 			routes: Object.freeze(routes),
+			boundaries: Object.freeze(boundaries),
 			out,
 			entry: join(out, GENERATED_SVELTEKIT_MODULE),
+			adapterOut,
 			watchRoots: Object.freeze(documentWatchRoots(cwd, documents, out)),
 			manifestWatchRoots: Object.freeze(manifestWatchRoots(cwd, client.manifest))
 		});
@@ -848,6 +924,9 @@ function resolveIntegration(
 				return argument;
 			})
 		),
+		routesDir,
+		libDir,
+		aliases,
 		clients: Object.freeze(clients)
 	});
 }
@@ -959,6 +1038,13 @@ function isGraphqlInput(
 ): boolean {
 	const absolute = resolve(integration.cwd, file);
 	if (
+		absolute.endsWith('.svelte') &&
+		(isWithin(integration.routesDir, absolute) ||
+			isWithin(integration.libDir, absolute))
+	) {
+		return true;
+	}
+	if (
 		(!absolute.endsWith('.graphql') && !absolute.endsWith('.gql')) ||
 		!isWithin(integration.cwd, absolute)
 	) {
@@ -990,6 +1076,9 @@ async function compileTransaction(
 		output: string;
 		backup: string;
 		hadOutput: boolean;
+		adapterOutput: string;
+		adapterBackup: string;
+		hadAdapterOutput: boolean;
 	}> = [];
 	try {
 		for (const [index, client] of integration.clients.entries()) {
@@ -1041,8 +1130,20 @@ async function compileTransaction(
 				client,
 				output,
 				backup: join(transaction, `backup-${index}`),
-				hadOutput
+				hadOutput,
+				adapterOutput: join(transaction, `adapter-${index}`),
+				adapterBackup: join(transaction, `adapter-backup-${index}`),
+				hadAdapterOutput: await realDirectoryExists(client.adapterOut)
 			});
+		}
+		const plans = await analyzeStagedBoundaries(integration, staged);
+		for (const [index, item] of staged.entries()) {
+			await mkdir(item.adapterOutput, { recursive: true });
+			await writeFile(
+				join(item.adapterOutput, 'boundaries.json'),
+				boundaryPlanSource(plans[index]!),
+				{ encoding: 'utf8', flag: 'wx' }
+			);
 		}
 		throwIfAborted(signal);
 		await commitOutputs(integration, staged, signal);
@@ -1094,6 +1195,28 @@ async function checkTransaction(
 				signal
 			);
 		}
+		const plans = await analyzeDistributedSvelteKitBoundaries({
+			cwd: integration.cwd,
+			routesDir: portablePath(relative(integration.cwd, integration.routesDir)),
+			libDir: portablePath(relative(integration.cwd, integration.libDir)),
+			aliases: integration.aliases,
+			clients: await Promise.all(
+				integration.clients.map(async (client) => ({
+					module: client.module,
+					inventory: await readIslandInventory(integration.cwd, client.out),
+					explicitBoundaries: client.boundaries
+				}))
+			)
+		});
+		for (const [index, client] of integration.clients.entries()) {
+			const actual = await readFile(join(client.adapterOut, 'boundaries.json'), 'utf8');
+			const expected = boundaryPlanSource(plans[index]!);
+			if (actual !== expected) {
+				throw new Error(
+					`Distributed SvelteKit boundary plan for ${client.module} is stale; run generation without check`
+				);
+			}
+		}
 	} finally {
 		await rm(transaction, { recursive: true, force: true });
 	}
@@ -1108,6 +1231,59 @@ async function compilerTransactionRoot(
 		: integration.cwd;
 	await mkdir(root, { recursive: true });
 	return root;
+}
+
+async function analyzeStagedBoundaries(
+	integration: ResolvedIntegration,
+	staged: readonly Readonly<{ client: ResolvedClient; output: string }>[]
+): Promise<readonly DistributedSvelteKitBoundaryPlan[]> {
+	return await analyzeDistributedSvelteKitBoundaries({
+		cwd: integration.cwd,
+		routesDir: portablePath(relative(integration.cwd, integration.routesDir)),
+		libDir: portablePath(relative(integration.cwd, integration.libDir)),
+		aliases: integration.aliases,
+		clients: await Promise.all(
+			staged.map(async ({ client, output }) => ({
+				module: client.module,
+				inventory: await readIslandInventory(integration.cwd, output),
+				explicitBoundaries: client.boundaries
+			}))
+		)
+	});
+}
+
+async function readIslandInventory(
+	cwd: string,
+	output: string
+): Promise<DistributedIslandInventory> {
+	const path = join(output, 'islands.json');
+	const metadata = await lstat(path);
+	if (metadata.isSymbolicLink() || !metadata.isFile()) {
+		throw new Error(`Distributed island inventory ${portablePath(relative(cwd, path))} must be a regular file`);
+	}
+	const canonicalRoot = await realpath(cwd);
+	const canonical = await realpath(path);
+	if (!isWithin(canonicalRoot, canonical)) {
+		throw new Error('Distributed island inventory escaped the project root');
+	}
+	return JSON.parse(await readFile(canonical, 'utf8')) as DistributedIslandInventory;
+}
+
+function boundaryPlanSource(plan: DistributedSvelteKitBoundaryPlan): string {
+	return `${JSON.stringify(plan, null, 2)}\n`;
+}
+
+async function realDirectoryExists(path: string): Promise<boolean> {
+	try {
+		const metadata = await lstat(path);
+		if (metadata.isSymbolicLink() || !metadata.isDirectory()) {
+			throw new Error(`Distributed SvelteKit adapter output ${path} must be a real directory`);
+		}
+		return true;
+	} catch (error) {
+		if (isMissing(error)) return false;
+		throw error;
+	}
 }
 
 async function materializeManifest(
@@ -1187,25 +1363,48 @@ async function commitOutputs(
 		output: string;
 		backup: string;
 		hadOutput: boolean;
+		adapterOutput: string;
+		adapterBackup: string;
+		hadAdapterOutput: boolean;
 	}[],
 	signal: AbortSignal
 ): Promise<void> {
 	throwIfAborted(signal);
 	await validateResolvedPaths(integration);
-	const applied: typeof staged[number][] = [];
+	type Output = Readonly<{
+		target: string;
+		output: string;
+		backup: string;
+		hadOutput: boolean;
+	}>;
+	const outputs: Output[] = staged.flatMap((item) => [
+		{
+			target: item.client.out,
+			output: item.output,
+			backup: item.backup,
+			hadOutput: item.hadOutput
+		},
+		{
+			target: item.client.adapterOut,
+			output: item.adapterOutput,
+			backup: item.adapterBackup,
+			hadOutput: item.hadAdapterOutput
+		}
+	]);
+	const applied: Output[] = [];
 	try {
-		for (const item of staged) {
+		for (const item of outputs) {
 			throwIfAborted(signal);
-			await mkdir(dirname(item.client.out), { recursive: true });
-			await validateNearestExistingParent(integration.cwd, item.client.out);
-			if (item.hadOutput && await generatedTreesEqual(item.client.out, item.output)) {
+			await mkdir(dirname(item.target), { recursive: true });
+			await validateNearestExistingParent(integration.cwd, item.target);
+			if (item.hadOutput && await generatedTreesEqual(item.target, item.output)) {
 				continue;
 			}
-			if (item.hadOutput) await rename(item.client.out, item.backup);
+			if (item.hadOutput) await rename(item.target, item.backup);
 			try {
-				await rename(item.output, item.client.out);
+				await rename(item.output, item.target);
 			} catch (error) {
-				if (item.hadOutput) await rename(item.backup, item.client.out);
+				if (item.hadOutput) await rename(item.backup, item.target);
 				throw error;
 			}
 			applied.push(item);
@@ -1213,8 +1412,8 @@ async function commitOutputs(
 		throwIfAborted(signal);
 	} catch (error) {
 		for (const item of [...applied].reverse()) {
-			await rm(item.client.out, { recursive: true, force: true });
-			if (item.hadOutput) await rename(item.backup, item.client.out);
+			await rm(item.target, { recursive: true, force: true });
+			if (item.hadOutput) await rename(item.backup, item.target);
 		}
 		throw error;
 	}
