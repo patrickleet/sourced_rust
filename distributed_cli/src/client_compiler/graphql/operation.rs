@@ -236,6 +236,7 @@ pub(crate) fn compile_document(
         export_name: format!("Operation_{name}"),
         query_document,
         query_hash,
+        load: compiler_directives.load,
         live,
         variables,
         variable_codec,
@@ -404,14 +405,10 @@ pub(super) fn compile_route(
         }));
     }
     let Some(route) = registration else {
-        return Err(source_error(
-            "client.route.registration_required",
-            format!(
-                "`@load` operation `{operation}` is outside `src/routes/**/+page.graphql`; move it there or register `--route {operation}=/route-id`"
-            ),
-            document,
-            position,
-        ));
+        // Component-owned load islands intentionally have no route here. The
+        // framework adapter must prove their static reachability and promote
+        // them to a page/layout boundary before application execution.
+        return Ok(None);
     };
     Ok(Some(GeneratedRoutePlan {
         operation: operation.to_string(),

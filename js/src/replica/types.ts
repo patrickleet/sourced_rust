@@ -562,6 +562,44 @@ export type ReplicaOperationArtifact<
 	TVariables extends GraphqlVariables = GraphqlVariables
 > = ReplicaProtocolOperationArtifact<TData, TVariables>;
 
+/** Framework-neutral compiler metadata consumed by placement adapters. */
+export type ReplicaIslandMetadata = {
+	readonly version: 1;
+	readonly id: string;
+	readonly operation: string;
+	readonly operationHash: string;
+	readonly modulePath: string;
+	readonly exportName: string;
+	readonly source: ReplicaOperationSourceLocation;
+	readonly directives: {
+		readonly load: boolean;
+		readonly live: boolean;
+	};
+	readonly variableSchema: {
+		readonly reference: string;
+		readonly codecVersion: number;
+		readonly variables: readonly {
+			readonly name: string;
+			readonly graphqlType: string;
+		}[];
+	};
+	readonly liveCoverage: {
+		readonly requested: boolean;
+		readonly finite: boolean;
+		readonly kind: string;
+		readonly maxItems?: number;
+	};
+};
+
+/** One adapter-consumable island plan bound to its executable operation. */
+export type ReplicaIslandOperation<
+	TData = Record<string, unknown>,
+	TVariables extends GraphqlVariables = GraphqlVariables
+> = {
+	readonly plan: ReplicaIslandMetadata;
+	readonly artifact: ReplicaOperationArtifact<TData, TVariables>;
+};
+
 export type ReplicaWriteSource = 'network' | 'live' | 'ssr' | 'restore' | 'atomic';
 
 export type ReplicaResultEnvelope<TData = unknown> = {

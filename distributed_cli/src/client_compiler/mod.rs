@@ -6,6 +6,7 @@
 
 mod command_manifest;
 mod graphql;
+mod islands;
 mod manifest;
 mod projection_delta;
 mod render;
@@ -19,7 +20,7 @@ use std::fmt;
 use serde::{Deserialize, Serialize};
 use serde_json::Value as JsonValue;
 
-use graphql::{compile_document, CompiledOperation};
+use graphql::compile_document;
 use manifest::ClientManifest;
 use render::render_project;
 
@@ -134,6 +135,7 @@ impl ClientRouteRegistration {
 pub struct GeneratedClientProject {
     pub files: Vec<GeneratedClientFile>,
     pub operations: Vec<GeneratedOperationSummary>,
+    pub islands: Vec<GeneratedIslandPlan>,
     pub routes: Vec<GeneratedRoutePlan>,
     pub schema_fingerprint: String,
     pub protocol_fingerprint: String,
@@ -154,6 +156,64 @@ pub struct GeneratedOperationSummary {
     pub operation_hash: String,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub live_operation_hash: Option<String>,
+}
+
+/// Versioned, framework-neutral placement input for one application operation.
+///
+/// Framework adapters add component reachability and boundary ownership around
+/// this immutable compiler contract. Svelte, Vite, and router concepts must
+/// never enter this type.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct GeneratedIslandPlan {
+    pub version: u32,
+    pub id: String,
+    pub operation: String,
+    pub operation_hash: String,
+    pub module_path: String,
+    pub export_name: String,
+    pub source: GeneratedIslandSource,
+    pub directives: GeneratedIslandDirectives,
+    pub variable_schema: GeneratedIslandVariableSchema,
+    pub live_coverage: GeneratedIslandLiveCoverage,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq, Serialize)]
+pub struct GeneratedIslandSource {
+    pub path: String,
+    pub line: usize,
+    pub column: usize,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize)]
+pub struct GeneratedIslandDirectives {
+    pub load: bool,
+    pub live: bool,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct GeneratedIslandVariableSchema {
+    pub reference: String,
+    pub codec_version: u32,
+    pub variables: Vec<GeneratedIslandVariable>,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct GeneratedIslandVariable {
+    pub name: String,
+    pub graphql_type: String,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct GeneratedIslandLiveCoverage {
+    pub requested: bool,
+    pub finite: bool,
+    pub kind: String,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub max_items: Option<u64>,
 }
 
 #[derive(Clone, Debug, PartialEq, Eq, Serialize)]
@@ -327,7 +387,6 @@ pub fn compile_client(
         }
     }
 
-    validate_unique_routes(&operations)?;
     render_project(&manifest, operations)
 }
 
@@ -342,7 +401,22 @@ fn normalize_source_path(path: &str) -> Result<String, ClientCompileError> {
     if normalized.split('/').any(|segment| segment == "..") {
         return Err(ClientCompileError::manifest(
             "client.documents.parent_path",
-            format!("GraphQL document path `{path}` must not contain `..`"),
+            "GraphQL document path must not contain parent segments",
+        ));
+    }
+    let drive_absolute = normalized.as_bytes().get(1) == Some(&b':');
+    if normalized.len() > 4_096
+        || normalized.starts_with('/')
+        || drive_absolute
+        || normalized.chars().any(char::is_control)
+        || normalized
+            .split('/')
+            .any(|segment| segment.is_empty() || segment == ".")
+        || !(normalized.ends_with(".graphql") || normalized.ends_with(".gql"))
+    {
+        return Err(ClientCompileError::manifest(
+            "client.documents.invalid_path",
+            "GraphQL document path must be a safe project-relative .graphql or .gql path",
         ));
     }
     Ok(normalized)
@@ -405,25 +479,6 @@ fn normalize_route(route: &str) -> Result<String, ClientCompileError> {
         normalized.pop();
     }
     Ok(normalized)
-}
-
-fn validate_unique_routes(operations: &[CompiledOperation]) -> Result<(), ClientCompileError> {
-    let mut routes = BTreeMap::<&str, &str>::new();
-    for operation in operations {
-        let Some(route) = &operation.route else {
-            continue;
-        };
-        if let Some(previous) = routes.insert(&route.route, &operation.name) {
-            return Err(ClientCompileError::manifest(
-                "client.route.duplicate",
-                format!(
-                    "route `{}` is owned by both `{}` and `{}`",
-                    route.route, previous, operation.name
-                ),
-            ));
-        }
-    }
-    Ok(())
 }
 
 pub(crate) fn is_graphql_name(value: &str) -> bool {

@@ -397,6 +397,8 @@ fn generate_then_check_accepts_the_exact_artifact_tree() {
     for expected in [
         "commands.ts",
         "index.ts",
+        "islands.json",
+        "islands.ts",
         "manifest.json",
         "operations/todos.ts",
         "protocol.ts",
@@ -586,15 +588,13 @@ fn explicit_route_is_the_load_fallback_outside_route_conventions() {
     let project = project_dir("client-explicit-route");
     write_document(&project, "queries/todos.graphql", LOAD_TODOS_QUERY);
 
-    let missing_route = generate(&project, "queries/*.graphql", &[]);
-    assert_failure_contains(
-        &missing_route,
-        "client.route.registration_required",
-        "@load without route ownership",
-    );
+    let unplaced = generate(&project, "queries/*.graphql", &[]);
+    assert_success(&unplaced, "component-owned load island generation");
     assert!(
-        !project.join("generated").exists(),
-        "failed route discovery must not create output"
+        fs::read_to_string(project.join("generated/islands.json"))
+            .expect("read generated island inventory")
+            .contains("\"load\": true"),
+        "unplaced component island must retain its load intent for the adapter"
     );
 
     let generated = generate(&project, "queries/*.graphql", &["--route", "Todos=/todos"]);

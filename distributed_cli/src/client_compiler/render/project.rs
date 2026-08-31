@@ -3,6 +3,7 @@ use std::collections::{BTreeMap, BTreeSet};
 use serde::Serialize;
 
 use super::super::graphql::CompiledOperation;
+use super::super::islands::{island_plan, GeneratedIslandInventory, ISLAND_PLAN_VERSION};
 use super::super::manifest::{canonical_json_value, ClientManifest, ManifestSurface};
 use super::super::{
     ClientCompileError, GeneratedClientFile, GeneratedClientProject, GeneratedOperationSummary,
@@ -18,6 +19,10 @@ pub(crate) fn render_project(
 ) -> Result<GeneratedClientProject, ClientCompileError> {
     let mut files = Vec::new();
     let mut summaries = Vec::with_capacity(operations.len());
+    let islands = operations
+        .iter()
+        .map(|operation| island_plan(manifest, operation))
+        .collect::<Vec<_>>();
     let mut routes = Vec::new();
 
     for operation in &operations {
@@ -59,6 +64,14 @@ pub(crate) fn render_project(
         contents: render_protocol(manifest)?,
     });
     files.push(GeneratedClientFile {
+        path: "islands.json".into(),
+        contents: render_island_inventory(manifest, &islands)?,
+    });
+    files.push(GeneratedClientFile {
+        path: "islands.ts".into(),
+        contents: render_islands(&islands, &operations)?,
+    });
+    files.push(GeneratedClientFile {
         path: "routes.ts".into(),
         contents: render_routes(&routes, &operations)?,
     });
@@ -72,13 +85,14 @@ pub(crate) fn render_project(
     });
     files.push(GeneratedClientFile {
         path: "manifest.json".into(),
-        contents: render_compiler_manifest(manifest, &summaries, &routes)?,
+        contents: render_compiler_manifest(manifest, &summaries, &islands, &routes)?,
     });
     files.sort_by(|left, right| left.path.cmp(&right.path));
 
     Ok(GeneratedClientProject {
         files,
         operations: summaries,
+        islands,
         routes,
         schema_fingerprint: manifest.schema_fingerprint.clone(),
         protocol_fingerprint: manifest.protocol_fingerprint.clone(),
@@ -169,16 +183,18 @@ struct CompilerManifest<'a> {
     scalar_codecs: &'a BTreeMap<String, String>,
     commands_requiring_revalidation: &'a BTreeSet<String>,
     operations: &'a [GeneratedOperationSummary],
+    islands: &'a [super::super::GeneratedIslandPlan],
     routes: &'a [GeneratedRoutePlan],
 }
 
 fn render_compiler_manifest(
     manifest: &ClientManifest,
     operations: &[GeneratedOperationSummary],
+    islands: &[super::super::GeneratedIslandPlan],
     routes: &[GeneratedRoutePlan],
 ) -> Result<String, ClientCompileError> {
     let provenance = CompilerManifest {
-        compiler_manifest_version: 1,
+        compiler_manifest_version: 2,
         distributed_manifest_version: 2,
         protocol_version: 1,
         service_id: &manifest.service_id,
@@ -188,6 +204,7 @@ fn render_compiler_manifest(
         scalar_codecs: &manifest.scalar_codecs,
         commands_requiring_revalidation: &manifest.commands_requiring_revalidation,
         operations,
+        islands,
         routes,
     };
     serde_json::to_string_pretty(&provenance)
@@ -198,6 +215,87 @@ fn render_compiler_manifest(
                 format!("failed to render compiler provenance manifest: {error}"),
             )
         })
+}
+
+fn render_island_inventory(
+    manifest: &ClientManifest,
+    islands: &[super::super::GeneratedIslandPlan],
+) -> Result<String, ClientCompileError> {
+    serde_json::to_string_pretty(&GeneratedIslandInventory {
+        version: ISLAND_PLAN_VERSION,
+        schema_fingerprint: &manifest.schema_fingerprint,
+        protocol_fingerprint: &manifest.protocol_fingerprint,
+        surface: &manifest.surface,
+        islands,
+    })
+    .map(|rendered| format!("{rendered}\n"))
+    .map_err(|error| {
+        ClientCompileError::manifest(
+            "client.render.islands",
+            format!("failed to render island inventory: {error}"),
+        )
+    })
+}
+
+fn render_islands(
+    islands: &[super::super::GeneratedIslandPlan],
+    operations: &[CompiledOperation],
+) -> Result<String, ClientCompileError> {
+    let plans = serde_json::to_string_pretty(islands).map_err(|error| {
+        ClientCompileError::manifest(
+            "client.render.islands",
+            format!("failed to render island bindings: {error}"),
+        )
+    })?;
+    let mut imports = Vec::with_capacity(islands.len());
+    let mut bindings = Vec::with_capacity(islands.len());
+    for (index, island) in islands.iter().enumerate() {
+        let operation = operations
+            .iter()
+            .find(|operation| operation.name == island.operation)
+            .ok_or_else(|| {
+                ClientCompileError::manifest(
+                    "client.render.islands",
+                    format!(
+                        "island `{}` references missing operation `{}`",
+                        island.id, island.operation
+                    ),
+                )
+            })?;
+        let module = operation
+            .module_path
+            .strip_suffix(".ts")
+            .expect("compiler module paths end in .ts");
+        imports.push(format!(
+            "import {{ {} }} from './{module}.js';",
+            operation.export_name
+        ));
+        bindings.push(format!(
+            "  {{ plan: DISTRIBUTED_ISLANDS[{index}], artifact: {} }}",
+            operation.export_name
+        ));
+    }
+    let import_section = if imports.is_empty() {
+        String::new()
+    } else {
+        format!("{}\n\n", imports.join("\n"))
+    };
+    let bindings = if bindings.is_empty() {
+        "[]".to_string()
+    } else {
+        format!("[\n{}\n]", bindings.join(",\n"))
+    };
+    Ok(format!(
+        "{import_section}\
+         /** GENERATED framework-neutral island inventory. */\n\
+         export const DISTRIBUTED_ISLANDS = {plans} as const;\n\
+         \n\
+         /** Static island-to-artifact bindings consumed by framework adapters. */\n\
+         export const DISTRIBUTED_ISLAND_OPERATIONS = {bindings} as const;\n\
+         \n\
+         export type DistributedIslandPlan = (typeof DISTRIBUTED_ISLANDS)[number];\n\
+         export type DistributedIslandOperation = (typeof DISTRIBUTED_ISLAND_OPERATIONS)[number];\n"
+    ))
 }
 
 fn render_routes(
@@ -265,6 +363,7 @@ fn render_index(operations: &[CompiledOperation], has_pures: bool) -> String {
     let mut lines = vec![
         "/** GENERATED public entrypoint. */".to_string(),
         "export * from './commands.js';".into(),
+        "export * from './islands.js';".into(),
         "export * from './protocol.js';".into(),
         "export * from './routes.js';".into(),
     ];
@@ -320,6 +419,8 @@ fn render_sveltekit(
         "COMMANDS".to_string(),
         "DISTRIBUTED_ROUTES".to_string(),
         "DISTRIBUTED_ROUTE_OPERATIONS".to_string(),
+        "DISTRIBUTED_ISLANDS".to_string(),
+        "DISTRIBUTED_ISLAND_OPERATIONS".to_string(),
         "PROJECTOR_ARTIFACTS".to_string(),
         "provideDistributed".to_string(),
         "useCommands".to_string(),

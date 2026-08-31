@@ -15,6 +15,7 @@ pub(crate) struct CompiledOperation {
     pub(crate) export_name: String,
     pub(crate) query_document: String,
     pub(crate) query_hash: String,
+    pub(crate) load: bool,
     pub(crate) live: Option<CompiledLiveOperation>,
     pub(crate) variables: Vec<CompiledVariable>,
     pub(crate) variable_codec: CompiledVariableCodec,

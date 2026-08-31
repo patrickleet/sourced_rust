@@ -2013,11 +2013,10 @@ fn stale_generated_client_files(
             provenance_path.display()
         )
     })?;
-    if provenance
+    let compiler_manifest_version = provenance
         .get("compiler_manifest_version")
-        .and_then(serde_json::Value::as_u64)
-        != Some(1)
-    {
+        .and_then(serde_json::Value::as_u64);
+    if !matches!(compiler_manifest_version, Some(1 | 2)) {
         return Err(format!(
             "previous generated client manifest {} has an unsupported compiler_manifest_version; refusing to guess stale-file ownership",
             provenance_path.display()
