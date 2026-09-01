@@ -12,9 +12,30 @@ export {
 	parseDistributedGenerationEnvelope,
 	type DistributedGenerationEnvelope
 } from '../generation.js';
+
+export {
+	defineDistributedBoundaryBinding,
+	defineDistributedBoundaryOperation,
+	resolveDistributedBoundaryVariables,
+	type DistributedBoundaryBinding,
+	type DistributedBoundaryOperation,
+	type DistributedBoundaryPlan,
+	type DistributedBoundaryVariableContext,
+	type DistributedBoundaryVariableSource,
+	type DistributedBoundaryVariableSources
+} from './boundary-variables.js';
+export {
+	DistributedSvelteKitBoundaryController,
+	type DistributedSvelteKitBoundaryInstance,
+	type DistributedSvelteKitBoundaryLocation,
+	type DistributedSvelteKitLocationContext,
+	type SveltekitBoundaryLifecycleDiagnostic,
+	type SveltekitBoundaryRetention
+} from './boundary-lifecycle.js';
 export {
 	defineDistributedSvelteKitOperation,
 	provideDistributedSvelteKitClient,
+	retainDistributedSvelteKitBoundary,
 	useDistributedSvelteKitClient,
 	useDistributedSvelteKitCommands
 } from './context.js';
@@ -26,6 +47,7 @@ export {
 	type CreateDistributedSvelteKitOptions,
 	type DistributedSvelteKitClient,
 	type SveltekitBoundOperation,
+	type SveltekitBoundBoundaryOperation,
 	type SveltekitCommandRuntimeFactory,
 	type SveltekitCommandRuntimeFactoryOptions,
 	type SveltekitCommandRuntimeLike,
@@ -41,12 +63,7 @@ export {
 } from './replica.js';
 export {
 	createDistributedSvelteKitServer,
-	matchDistributedRoute,
-	registerDistributedRoute,
 	type CreateDistributedSvelteKitServerOptions,
-	type DistributedRouteOperation,
-	type DistributedRoutePlan,
-	type DistributedRouteVariables,
 	type DistributedSvelteKitServer,
 	type SveltekitServerLoadEventLike
 } from './server-replica.js';

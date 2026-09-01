@@ -179,6 +179,8 @@ export type {
 	ReplicaIndexCoverage,
 	ReplicaIndexInspection,
 	ReplicaIndexTarget,
+	ReplicaIslandMetadata,
+	ReplicaIslandOperation,
 	ReplicaListValue,
 	ReplicaLiveObserver,
 	ReplicaLiveState,

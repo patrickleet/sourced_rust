@@ -416,17 +416,17 @@ export const chatWalkthrough: DemoWalkthrough = {
 	title: 'Lobby chat',
 	kicker: 'Live query, then Eventual post',
 	summary:
-		'This page uses one GraphQL document. `@load` fills the first HTML. `@live` continues the same query on a WebSocket. A post is an Eventual command. The client writes an optimistic row into the shared replica. Guests read through the `e2e-ui-public` surface. The same `chat.post` declaration mounts on a local Service (`tests/e2e-ui`) or wait-dispatches to a small Chat cell (`tests/e2e-celld`). `@live` stays on GraphQL either way — that is the point of this demo.',
+		'This nested layout owns one GraphQL island across `/chat` and `/chat/about`. `@load` fills the first HTML. `@live` retains the same query and WebSocket subscription while child pages change. A post is an Eventual command. The client writes an optimistic row into the shared replica. Guests read through the `e2e-ui-public` surface. The same `chat.post` declaration mounts on a local Service (`tests/e2e-ui`) or wait-dispatches to a small Chat cell (`tests/e2e-celld`). `@live` stays on GraphQL either way — that is the point of this demo.',
 	tabs: [
 {
 			id: 'query',
 			label: '1 · Query / live',
-			lede: 'One GraphQL operation loads the page and continues as a live subscription. The operation reads the `ChatMessages` read model. Users, admins, and anonymous guests can read. Guests use the `e2e-ui-public` surface.',
-			principle: 'Declare the read model once. Use it on every surface that needs it.',
+			lede: 'One layout-owned GraphQL operation loads the room and continues as a live subscription. The compiler retains its boundary while navigation swaps `/chat` and `/chat/about`. The operation reads the `ChatMessages` read model. Users, admins, and anonymous guests can read. Guests use the `e2e-ui-public` surface.',
+			principle: 'Put shared data on the layout that owns its lifetime. Do not reopen the same stream per child page.',
 			samples: [
 				{
-					file: 'routes/chat/+page.graphql',
-					caption: '`@load` fills SSR. `@live` sends WebSocket frames for the same document.',
+					file: 'routes/chat/+layout.graphql',
+					caption: '`@load` fills SSR. `@live` sends WebSocket frames for the same retained layout document.',
 					code: `query ChatMessages($limit: Int!, $offset: Int!) @load @live {
   chat_messages(
     where: { room_id: { _eq: "lobby" } }
@@ -742,13 +742,13 @@ export const blobWalkthrough: DemoWalkthrough = {
 	title: 'Blob game',
 	kicker: 'Pure-function preview, then Atomic commit',
 	summary:
-		'One `@load` query owns the board list. A move is Atomic. The input is only `game_id` and `direction`. The next board is a pure function of the known row and the direction. The service declares that pure reduce. The client runs the `blob-domain` rules in WASM and updates the replica immediately. The handler runs the same pure function, stages the row, and commits Atomic. Do not write TypeScript game rules. The generated client hosts the WASM pure function.',
+		'The page owns the board list, while a reusable component owns the selected-game GraphQL island. Generation promotes that component island to the optional `[[gameId]]` route boundary and binds the parameter once. A move is Atomic. The next board is a pure function of the known row and the direction. The client runs the `blob-domain` rules in WASM and updates the replica immediately. The handler runs the same pure function, stages the row, and commits Atomic. Do not write TypeScript game rules.',
 	tabs: [
 {
 			id: 'query',
 			label: '1 · Query',
-			lede: 'One operation lists games from the `BlobGames` read model. The list includes the map JSON. The URL selects the active game. The board comes from the replica. A user sees only owned rows. An admin sees all rows.',
-			principle: 'Use one replica for user data.',
+			lede: 'The route document lists games from the `BlobGames` read model. A reusable component document selects the active game from `[[gameId]]`. The compiler discovers that component through the Svelte import graph and emits one binding used by SSR, hydration, navigation, and `SelectedBlobGame.use()`. The board still comes from the same replica.',
+			principle: 'Co-locate a query with the page, layout, or reusable component that owns its lifetime. Bind route state once.',
 			samples: [
 				{
 					file: 'routes/blob/[[gameId]]/+page.graphql',
@@ -800,10 +800,27 @@ pub struct BlobGames {
 				},
 				{
 					file: 'routes/blob/[[gameId]]/+page.svelte',
-					caption: 'The UI reads games from the replica. Do not keep a second board store.',
+					caption: 'The page reads the list from the replica and renders the reusable selected-game island.',
 					code: `const query = BlobGames.use();
 const games = $derived(
   $query.complete ? $query.data.blob_games : []
+);
+
+<SelectedBlobGame />`
+				},
+				{
+					file: 'components/blob/SelectedBlobGame.graphql · .svelte',
+					caption: 'The generated boundary resolves the optional route parameter once; the component receives a typed operation.',
+					code: `query SelectedBlobGame($gameId: String) @load {
+  blob_games(where: { game_id: { _eq: $gameId } }, limit: 1) {
+    game_id
+    score
+    status
+  }
+}
+
+const query = SelectedBlobGame.use(
+  gameId === undefined ? {} : { gameId }
 );`
 				}
 			]

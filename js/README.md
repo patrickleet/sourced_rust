@@ -5,7 +5,7 @@ The generated, end-to-end typed client for
 
 Rust table, relationship, role, and command definitions produce one authorized
 client surface. `distributed client` combines that surface with application GraphQL
-documents and emits typed operations, live companions, route-load plans, and
+documents and emits typed operations, live companions, island metadata, and
 commands. This package executes those artifacts through one normalized,
 causally consistent browser replica.
 
@@ -67,7 +67,7 @@ injects wire-only identity and revision fields, and emits:
 - an exact typed operation and optional live companion;
 - normalization, identity, relationship, filter, order, and pagination plans;
 - the closed variable codec used before cache lookup or transport;
-- a static `@load` route registry;
+- framework-neutral island metadata plus an inspectable SvelteKit boundary plan;
 - an SSR-safe SvelteKit wrapper with static operation bindings and tree-local
   client/command access;
 - a nested command tree with input defaults, optimistic effects, and causal
@@ -100,7 +100,10 @@ export const distributedClients = [
     module: '$distributed',
     manifest: { args: serviceManifestArgs },
     surface: 'e2e-ui',
-    documents: ['src/routes/(app)/**/*.graphql'],
+    documents: [
+      'src/routes/(app)/**/*.graphql',
+      'src/lib/components/**/*.graphql'
+    ],
     out: 'src/lib/generated/distributed'
   },
   {
@@ -127,6 +130,13 @@ The common and elevated document sets must not overlap. The route group above
 keeps ordinary application documents out of the admin tree; each trust boundary
 has its own Rust manifest entrypoint, generated directory, virtual module, and
 request-local replica. A single-surface application can omit the second entry.
+
+A component can own a sibling `Component.graphql` island. The adapter walks
+static Svelte imports and promotes `@load` work to the nearest page/layout.
+Route-local `+page.graphql` and `+layout.graphql` remain first-class. When a
+required variable cannot be proved from route/search/session/forwarded-prop
+sources, add one typed `boundaries` registration here; that generated binding
+is reused by SSR, hover prefetch, navigation, hydration, and live work.
 
 The Vite integration runs `distributed client` at startup/build, watches GraphQL
 documents, stages all surfaces, commits a rollback-capable multi-output
@@ -194,11 +204,11 @@ import {
   createDistributedSvelteKitServer
 } from '@hops-ops/distributed/sveltekit';
 import {
-  DISTRIBUTED_ROUTE_OPERATIONS
+  DISTRIBUTED_BOUNDARY_OPERATIONS
 } from '$distributed';
 
 const distributed = createDistributedSvelteKitServer({
-  routes: DISTRIBUTED_ROUTE_OPERATIONS,
+  boundaries: DISTRIBUTED_BOUNDARY_OPERATIONS,
   getSession: ({ locals }) => locals.auth(),
   getRole: (session) => roleFromSession(session)
 });
@@ -212,15 +222,20 @@ authorization lifecycle. The generated module retains no client singleton:
 ```ts
 // src/routes/+layout.svelte
 import { browser } from '$app/environment';
+import { page } from '$app/state';
 import {
   createPageDataSessionSource
 } from '@hops-ops/distributed/sveltekit';
-import { provideDistributed } from '$distributed';
+import {
+  DISTRIBUTED_BOUNDARY_OPERATIONS,
+  provideDistributed
+} from '$distributed';
 
 let { data, children } = $props();
 const pageData = createPageDataSessionSource(data);
 
 const client = provideDistributed({
+  boundaries: DISTRIBUTED_BOUNDARY_OPERATIONS,
   browser,
   session: pageData.session,
   ...(data.distributed !== undefined &&
@@ -233,6 +248,26 @@ const client = provideDistributed({
 });
 
 $effect(() => pageData.set(data));
+
+$effect(() => {
+  const retained = client.retainLocation(
+    { id: 'active-page', pathname: page.url.pathname, kind: 'page' },
+    {
+      search: page.url.searchParams,
+      session: data.session,
+      props: data
+    }
+  );
+  return () => retained.release();
+});
+
+// A delegated link-hover handler can warm any generated target without an
+// operation-name switch or a second variable map.
+await client.prefetchLocation(target.pathname, {
+  search: target.searchParams,
+  session: data.session,
+  props: data
+});
 ```
 
 Route components import only their generated surface. Static operation wrappers
@@ -296,7 +331,10 @@ deduplicates work, and optionally maintains the generated live operation.
 `read()` is side-effect-free. `dehydrate()` and `hydrate()` transfer confirmed
 state without exposing a public storage schema. Cold `hydrate` seeds an empty
 client; warm same-scope `hydrate` merges so soft navigation cannot discard
-confirmed session data the next route did not re-dehydrate.
+confirmed session data the next boundary did not re-dehydrate. Layout
+retention survives child navigation, page retention is replaced on page exit,
+and exact layout/page duplicates share one replica watch until the final owner
+releases it.
 
 The replica stores normalized records and exact argument-sensitive indexes,
 not GraphQL response blobs. Generated selection metadata reconstructs each
@@ -423,7 +461,7 @@ duplicated as decision documents in this package.
   command runtime, query-plan helpers, and optional persistence.
 - `@hops-ops/distributed/diagnostics` — redacted support snapshots and artifact
   inspection.
-- `@hops-ops/distributed/sveltekit` — Svelte stores, SSR route loading,
+- `@hops-ops/distributed/sveltekit` — Svelte stores, island SSR composition,
   hydration, auth lifecycle, and tree-local generated bindings.
 - `@hops-ops/distributed/sveltekit/vite` — Node-only one-shot/check/watch
   generation, virtual module aliases, and GraphQL HTTP/WebSocket proxy helpers.

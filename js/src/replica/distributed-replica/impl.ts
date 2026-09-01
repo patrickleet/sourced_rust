@@ -198,6 +198,7 @@ export class DistributedReplicaImpl implements DistributedReplicaApi {
 	readonly #engine: CacheEngine;
 	readonly #transport: ReplicaTransport | undefined;
 	readonly #reportObserverError: (error: AggregateError) => void;
+	readonly #onAuthorizationGenerationDispose: (() => void) | undefined;
 	readonly #diagnostics: ReplicaDiagnosticsSink | undefined;
 	readonly #diagnosticLayers:
 		| Map<string, ReplicaDiagnosticLayerInput>
@@ -262,6 +263,8 @@ export class DistributedReplicaImpl implements DistributedReplicaApi {
 	constructor(options: DistributedReplicaOptions = {}) {
 		this.#transport = options.transport;
 		this.#reportObserverError = options.onObserverError ?? reportUnhandledObserverError;
+		this.#onAuthorizationGenerationDispose =
+			options.onAuthorizationGenerationDispose;
 		this.#diagnostics = options.diagnostics;
 		this.#diagnosticLayers =
 			options.diagnostics === undefined ? undefined : new Map();
@@ -411,6 +414,13 @@ export class DistributedReplicaImpl implements DistributedReplicaApi {
 			getProtocolGenerationSequence: () => self.#protocolGenerationSequence,
 			bumpProtocolGenerationSequence: () => {
 				self.#protocolGenerationSequence += 1;
+			},
+			disposeAuthorizationGeneration: () => {
+				try {
+					self.#onAuthorizationGenerationDispose?.();
+				} catch (error) {
+					self._reportObserverErrors([error]);
+				}
 			},
 			getTrustedPresets: () => self.#trustedPresets,
 			setTrustedPresets: (value) => {

@@ -4,13 +4,17 @@ import {
   createDistributedSvelteKit,
   defineDistributedSvelteKitOperation,
   provideDistributedSvelteKitClient,
+  retainDistributedSvelteKitBoundary,
   useDistributedSvelteKitCommands
 } from '@hops-ops/distributed/sveltekit';
 
 import type {
   CreateDistributedSvelteKitOptions,
+  DistributedBoundaryVariableContext,
   DistributedReloadOptions,
-  DistributedSvelteKitClient
+  DistributedSvelteKitBoundaryInstance,
+  DistributedSvelteKitClient,
+  SveltekitBoundaryRetention
 } from '@hops-ops/distributed/sveltekit';
 
 import {
@@ -24,7 +28,9 @@ import { Operation_BlobGames as DistributedOperation_0 } from './operations/blob
 
 import { Operation_ChatMessages as DistributedOperation_1 } from './operations/chat-messages.js';
 
-import { Operation_Todos as DistributedOperation_2 } from './operations/todos.js';
+import { Operation_SelectedBlobGame as DistributedOperation_2 } from './operations/selected-blob-game.js';
+
+import { Operation_Todos as DistributedOperation_3 } from './operations/todos.js';
 
 /** Inspectable framework-neutral artifacts remain available here. */
 export * from './index.js';
@@ -35,8 +41,11 @@ export const BlobGames = defineDistributedSvelteKitOperation(DistributedOperatio
 /** Tree-local Svelte binding for the generated `ChatMessages` artifact. */
 export const ChatMessages = defineDistributedSvelteKitOperation(DistributedOperation_1);
 
+/** Tree-local Svelte binding for the generated `SelectedBlobGame` artifact. */
+export const SelectedBlobGame = defineDistributedSvelteKitOperation(DistributedOperation_2);
+
 /** Tree-local Svelte binding for the generated `Todos` artifact. */
-export const Todos = defineDistributedSvelteKitOperation(DistributedOperation_2);
+export const Todos = defineDistributedSvelteKitOperation(DistributedOperation_3);
 
 /**
  * Create and install one component-tree/request-local generated client.
@@ -58,3 +67,13 @@ export function provideDistributed(
 export function useCommands(): GeneratedCommands {
   return useDistributedSvelteKitCommands<GeneratedCommands>();
 }
+
+/** Retain all generated selections for one mounted page/layout instance. */
+export function retainBoundary<TSession, TProps>(
+  instance: DistributedSvelteKitBoundaryInstance,
+  context: DistributedBoundaryVariableContext<TSession, TProps>
+): SveltekitBoundaryRetention {
+  return retainDistributedSvelteKitBoundary(instance, context);
+}
+
+export { DISTRIBUTED_BOUNDARY_OPERATIONS, DISTRIBUTED_BOUNDARY_PLAN } from './boundaries.js';

@@ -217,6 +217,7 @@ test('component SSR subscriptions stay transport-free when browser is false', as
 		}
 	}
 	const client = createDistributedSvelteKit({
+		boundaries: [],
 		session: { getAuth: () => ({ accessToken: 'server-token' }) },
 		browser: false,
 		fetch: async () => {
@@ -257,6 +258,7 @@ test('caller projection cancellation does not hide a globally pending command', 
 	});
 	const receipt = Object.freeze(receiptValue);
 	const client = createDistributedSvelteKit({
+		boundaries: [],
 		session: { getAuth: () => ({ accessToken: 'token' }) },
 		browser: false,
 		createCommands() {
@@ -334,6 +336,7 @@ test('Svelte uses replica-owned revalidation with an undecorated GraphQL transpo
 	let position = 0;
 	let commandTransport;
 	const client = createDistributedSvelteKit({
+		boundaries: [],
 		session: { getAuth: () => ({ accessToken: 'token' }) },
 		fetch: async (_url, init) => {
 			requests.push(JSON.parse(init.body));
@@ -461,6 +464,7 @@ test('Svelte composition shares one diagnostics sink with operations and generat
 	});
 	let factoryOptions;
 	const client = createDistributedSvelteKit({
+		boundaries: [],
 		session: { getAuth: () => ({ accessToken: 'token' }) },
 		replica: { diagnostics },
 		createCommands(replica, transport, options) {

@@ -14,6 +14,7 @@
 	import { BlobGames, ensurePureFunctionsReady, useCommands } from '$distributed';
 	import { parseBoard, TILE, type Direction } from '$lib/blob/board';
 	import { Button } from '$lib/components/shared/ui';
+	import SelectedBlobGame from '$lib/components/blob/SelectedBlobGame.svelte';
 	import { AppPage, InlineAlert, PageHeader } from '$lib/components/product';
 	import { HowItsBuilt } from '$lib/components/walkthrough';
 	import { blobWalkthrough } from '$lib/walkthrough';
@@ -212,6 +213,9 @@
 </svelte:head>
 
 <AppPage>
+	{#key routeGameId}
+		<SelectedBlobGame />
+	{/key}
 	<div class="blob-page" data-blob-hydrated={hydrated ? '1' : '0'}>
 		<div class="blob-title-row">
 			<PageHeader

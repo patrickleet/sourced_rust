@@ -71,6 +71,7 @@ export type ProtocolHost = {
 	setProtocolGeneration(value: ProtocolGeneration | undefined): void;
 	getProtocolGenerationSequence(): number;
 	bumpProtocolGenerationSequence(): void;
+	disposeAuthorizationGeneration(): void;
 	getTrustedPresets(): readonly DistributedTrustedPreset[];
 	setTrustedPresets(value: readonly DistributedTrustedPreset[]): void;
 	getCommandAuthorityContract():
@@ -238,6 +239,7 @@ export function purgeProtocolGeneration(host: ProtocolHost): void {
 
 export function closeAuthorizationGeneration(host: ProtocolHost): void {
 	host.bumpProtocolGenerationSequence();
+	host.disposeAuthorizationGeneration();
 	host.abortAuthorization();
 	host.closeActiveTransports();
 }

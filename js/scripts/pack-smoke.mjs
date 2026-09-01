@@ -465,7 +465,6 @@ import {
   createDistributedSvelteKitServer,
   createPageDataSessionSource,
   defineDistributedSvelteKitOperation,
-  matchDistributedRoute,
   provideDistributedSvelteKitClient,
   useDistributedSvelteKitClient,
   useDistributedSvelteKitCommands
@@ -475,7 +474,8 @@ import {
   distributedGraphqlProxy,
   distributedSvelteKit,
   distributedSvelteKitAliases,
-  generateDistributedSvelteKit
+  generateDistributedSvelteKit,
+  validateDistributedSvelteKitBoundaryPlan
 } from '@hops-ops/distributed/sveltekit/vite';
 import type {
   ReplicaOperationArtifact
@@ -502,6 +502,7 @@ const pageData = createPageDataSessionSource({
   engineRole: null
 });
 const client = createDistributedSvelteKit<Commands>({
+  boundaries: [],
   browser: false,
   session: pageData.session
 });
@@ -510,13 +511,23 @@ Todos.read({ limit: 10 });
 provideDistributedSvelteKitClient(client);
 useDistributedSvelteKitClient<Commands>().operation(operation);
 useDistributedSvelteKitCommands<Commands>().todo.create({ title: 'typed' });
+client.retainBoundary(
+  { id: 'page-instance', route: '/todos', kind: 'page' },
+  { params: {}, search: new URLSearchParams(), session: null, props: {} }
+).release();
+client.retainLocation(
+  { id: 'active-page', pathname: '/todos', kind: 'page' },
+  { search: new URLSearchParams(), session: null, props: {} }
+).release();
+void client.prefetchLocation('/todos', {
+  search: new URLSearchParams(), session: null, props: {}
+});
 
 createDistributedSvelteKitServer({
-  routes: [],
+  boundaries: [],
   getSession: async () => null,
   getRole: () => 'user'
 });
-void matchDistributedRoute('/todos', '/todos');
 
 const compiler = {
   clients: [{
@@ -537,6 +548,7 @@ void [
   plugin,
   aliases,
   proxy,
+  validateDistributedSvelteKitBoundaryPlan,
   leakedProxy
 ];
 client.destroy();
@@ -555,18 +567,21 @@ import {
 } from '@hops-ops/distributed/sveltekit/vite';
 
 assert.deepEqual(Object.keys(sveltekitSurface).sort(), [
+  'DistributedSvelteKitBoundaryController',
   'authFromPageData',
   'bindSveltekitOperation',
   'createDistributedSvelteKit',
   'createDistributedSvelteKitServer',
   'createPageDataSessionSource',
+  'defineDistributedBoundaryBinding',
+  'defineDistributedBoundaryOperation',
   'defineDistributedSvelteKitOperation',
   'distributedReloadLifecycle',
-  'matchDistributedRoute',
   'parseDistributedGenerationEnvelope',
   'provideDistributedSvelteKitClient',
   'registerDistributedReloadClient',
-  'registerDistributedRoute',
+  'resolveDistributedBoundaryVariables',
+  'retainDistributedSvelteKitBoundary',
   'sessionSourceFromPageData',
   'useDistributedSvelteKitClient',
   'useDistributedSvelteKitCommands',
@@ -574,12 +589,14 @@ assert.deepEqual(Object.keys(sveltekitSurface).sort(), [
   'validateDistributedReloadState'
 ]);
 assert.deepEqual(Object.keys(sveltekitViteSurface).sort(), [
+  'analyzeDistributedSvelteKitBoundaries',
   'checkDistributedSvelteKit',
   'distributedGraphqlProxy',
   'distributedLifecycle',
   'distributedSvelteKit',
   'distributedSvelteKitAliases',
-  'generateDistributedSvelteKit'
+  'generateDistributedSvelteKit',
+  'validateDistributedSvelteKitBoundaryPlan'
 ]);
 assert.equal(typeof sveltekitViteSurface.generateDistributedSvelteKit, 'function');
 assert.equal(typeof sveltekitViteSurface.checkDistributedSvelteKit, 'function');
@@ -602,6 +619,7 @@ pageData.set({
 assert.equal(pageData.session.getAuth().accessToken, 'token');
 
 const client = createDistributedSvelteKit({
+  boundaries: [],
   browser: false,
   session: pageData.session
 });

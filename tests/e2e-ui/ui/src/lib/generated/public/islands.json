@@ -1,0 +1,54 @@
+{
+  "version": 1,
+  "schemaFingerprint": "sha256:a206d73627c88205f30bc1a3aa7f6cc67472d5492ad073b2efea9cd6199b08d2",
+  "protocolFingerprint": "sha256:00fb342f3acb4dc1c1716a43cc3001c748d5f6c500ff831690d820e9e43e2782",
+  "surface": {
+    "kind": "application",
+    "name": "e2e-ui-public",
+    "eligible_roles": [
+      "anonymous"
+    ],
+    "schema_roles": [
+      "anonymous"
+    ]
+  },
+  "islands": [
+    {
+      "version": 1,
+      "id": "sha256:227fd81589ae74dbda488a561f212ef84453875f24ece17f1dbbcd076ac84602",
+      "operation": "ChatMessages",
+      "operationHash": "sha256:16e82d9939a08f205efef9238393f8e4582da0e58d15ace6470d7831c0798603",
+      "modulePath": "operations/chat-messages.ts",
+      "exportName": "Operation_ChatMessages",
+      "source": {
+        "path": "src/graphql/public/chat.graphql",
+        "line": 3,
+        "column": 1
+      },
+      "directives": {
+        "load": true,
+        "live": true
+      },
+      "variableSchema": {
+        "reference": "sha256:16e82d9939a08f205efef9238393f8e4582da0e58d15ace6470d7831c0798603#variable-codec-v1",
+        "codecVersion": 1,
+        "variables": [
+          {
+            "name": "limit",
+            "graphqlType": "Int!"
+          },
+          {
+            "name": "offset",
+            "graphqlType": "Int!"
+          }
+        ]
+      },
+      "liveCoverage": {
+        "requested": true,
+        "finite": true,
+        "kind": "offset",
+        "maxItems": 1000
+      }
+    }
+  ]
+}

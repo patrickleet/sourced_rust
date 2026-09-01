@@ -6,6 +6,7 @@
 
 mod command_manifest;
 mod graphql;
+mod islands;
 mod manifest;
 mod projection_delta;
 mod render;
@@ -13,13 +14,13 @@ mod render;
 #[cfg(test)]
 mod command_manifest_tests;
 
-use std::collections::{BTreeMap, BTreeSet};
+use std::collections::BTreeMap;
 use std::fmt;
 
 use serde::{Deserialize, Serialize};
 use serde_json::Value as JsonValue;
 
-use graphql::{compile_document, CompiledOperation};
+use graphql::compile_document;
 use manifest::ClientManifest;
 use render::render_project;
 
@@ -32,9 +33,6 @@ pub struct ClientCompileInput {
     pub selector: ClientSurfaceSelector,
     /// GraphQL sources. Filesystem traversal and glob expansion stay in the CLI.
     pub documents: Vec<ClientDocument>,
-    /// Explicit fallback for `@load` documents outside the conventional route
-    /// location. Equivalent CLI syntax is `--route Operation=/route-id`.
-    pub route_registrations: Vec<ClientRouteRegistration>,
 }
 
 impl ClientCompileInput {
@@ -47,16 +45,7 @@ impl ClientCompileInput {
             manifest,
             selector,
             documents,
-            route_registrations: Vec::new(),
         }
-    }
-
-    pub fn with_route_registrations(
-        mut self,
-        route_registrations: Vec<ClientRouteRegistration>,
-    ) -> Self {
-        self.route_registrations = route_registrations;
-        self
     }
 }
 
@@ -113,28 +102,12 @@ impl ClientDocument {
     }
 }
 
-/// Explicit `@load` route fallback, keyed by the GraphQL operation name.
-#[derive(Clone, Debug, PartialEq, Eq)]
-pub struct ClientRouteRegistration {
-    pub operation: String,
-    pub route: String,
-}
-
-impl ClientRouteRegistration {
-    pub fn new(operation: impl Into<String>, route: impl Into<String>) -> Self {
-        Self {
-            operation: operation.into(),
-            route: route.into(),
-        }
-    }
-}
-
 /// Pure compiler output. `files` is sorted by portable relative path.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct GeneratedClientProject {
     pub files: Vec<GeneratedClientFile>,
     pub operations: Vec<GeneratedOperationSummary>,
-    pub routes: Vec<GeneratedRoutePlan>,
+    pub islands: Vec<GeneratedIslandPlan>,
     pub schema_fingerprint: String,
     pub protocol_fingerprint: String,
 }
@@ -156,19 +129,62 @@ pub struct GeneratedOperationSummary {
     pub live_operation_hash: Option<String>,
 }
 
+/// Versioned, framework-neutral placement input for one application operation.
+///
+/// Framework adapters add component reachability and boundary ownership around
+/// this immutable compiler contract. Svelte, Vite, and router concepts must
+/// never enter this type.
 #[derive(Clone, Debug, PartialEq, Eq, Serialize)]
-pub struct GeneratedRoutePlan {
+#[serde(rename_all = "camelCase")]
+pub struct GeneratedIslandPlan {
+    pub version: u32,
+    pub id: String,
     pub operation: String,
-    pub route: String,
-    pub source_path: String,
-    pub discovery: ClientRouteDiscovery,
+    pub operation_hash: String,
+    pub module_path: String,
+    pub export_name: String,
+    pub source: GeneratedIslandSource,
+    pub directives: GeneratedIslandDirectives,
+    pub variable_schema: GeneratedIslandVariableSchema,
+    pub live_coverage: GeneratedIslandLiveCoverage,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq, Serialize)]
+pub struct GeneratedIslandSource {
+    pub path: String,
+    pub line: usize,
+    pub column: usize,
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize)]
-#[serde(rename_all = "snake_case")]
-pub enum ClientRouteDiscovery {
-    Convention,
-    Explicit,
+pub struct GeneratedIslandDirectives {
+    pub load: bool,
+    pub live: bool,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct GeneratedIslandVariableSchema {
+    pub reference: String,
+    pub codec_version: u32,
+    pub variables: Vec<GeneratedIslandVariable>,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct GeneratedIslandVariable {
+    pub name: String,
+    pub graphql_type: String,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct GeneratedIslandLiveCoverage {
+    pub requested: bool,
+    pub finite: bool,
+    pub kind: String,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub max_items: Option<u64>,
 }
 
 /// Stable, source-located error returned for every unsupported or invalid
@@ -261,18 +277,9 @@ pub fn compile_client(
         }
     }
 
-    let registrations = validate_route_registrations(input.route_registrations)?;
-    let mut used_registrations = BTreeSet::new();
     let mut operations = Vec::with_capacity(input.documents.len());
     for document in &input.documents {
-        let operation = compile_document(document, &manifest, &registrations)?;
-        if operation.route.as_ref().is_some_and(|route| {
-            route.discovery == ClientRouteDiscovery::Explicit
-                && used_registrations.insert(operation.name.clone())
-        }) {
-            // Insert performed by the predicate.
-        }
-        operations.push(operation);
+        operations.push(compile_document(document, &manifest)?);
     }
 
     operations.sort_by(|left, right| {
@@ -307,27 +314,6 @@ pub fn compile_client(
         }
     }
 
-    for operation in registrations.keys() {
-        if !operations
-            .iter()
-            .any(|candidate| &candidate.name == operation)
-        {
-            return Err(ClientCompileError::manifest(
-                "client.route.unknown_registration",
-                format!("explicit route registration names unknown operation `{operation}`"),
-            ));
-        }
-        if !used_registrations.contains(operation) {
-            return Err(ClientCompileError::manifest(
-                "client.route.unused_registration",
-                format!(
-                    "explicit route registration for `{operation}` is unused; registrations are only valid as the `@load` fallback"
-                ),
-            ));
-        }
-    }
-
-    validate_unique_routes(&operations)?;
     render_project(&manifest, operations)
 }
 
@@ -342,90 +328,26 @@ fn normalize_source_path(path: &str) -> Result<String, ClientCompileError> {
     if normalized.split('/').any(|segment| segment == "..") {
         return Err(ClientCompileError::manifest(
             "client.documents.parent_path",
-            format!("GraphQL document path `{path}` must not contain `..`"),
+            "GraphQL document path must not contain parent segments",
         ));
     }
-    Ok(normalized)
-}
-
-fn validate_route_registrations(
-    mut registrations: Vec<ClientRouteRegistration>,
-) -> Result<BTreeMap<String, String>, ClientCompileError> {
-    registrations.sort_by(|left, right| {
-        left.operation
-            .cmp(&right.operation)
-            .then_with(|| left.route.cmp(&right.route))
-    });
-    let mut result = BTreeMap::new();
-    for registration in registrations {
-        if !is_graphql_name(&registration.operation) {
-            return Err(ClientCompileError::manifest(
-                "client.route.invalid_operation",
-                format!(
-                    "route registration operation `{}` is not a GraphQL name",
-                    registration.operation
-                ),
-            ));
-        }
-        let route = normalize_route(&registration.route)?;
-        if result
-            .insert(registration.operation.clone(), route)
-            .is_some()
-        {
-            return Err(ClientCompileError::manifest(
-                "client.route.duplicate_registration",
-                format!(
-                    "duplicate route registration for operation `{}`",
-                    registration.operation
-                ),
-            ));
-        }
-    }
-    Ok(result)
-}
-
-fn normalize_route(route: &str) -> Result<String, ClientCompileError> {
-    let mut normalized = route.trim().replace('\\', "/");
-    if normalized.is_empty() || !normalized.starts_with('/') {
-        return Err(ClientCompileError::manifest(
-            "client.route.invalid",
-            format!("route `{route}` must be non-empty and start with `/`"),
-        ));
-    }
-    if normalized.contains('?')
-        || normalized.contains('#')
-        || normalized.split('/').any(|segment| segment == "..")
+    let drive_absolute = normalized.as_bytes().get(1) == Some(&b':');
+    if normalized.len() > 4_096
+        || normalized.starts_with('/')
+        || drive_absolute
+        || normalized.chars().any(char::is_control)
+        || normalized
+            .split('/')
+            .any(|segment| segment.is_empty() || segment == ".")
+        || !(normalized.ends_with(".graphql") || normalized.ends_with(".gql"))
     {
         return Err(ClientCompileError::manifest(
-            "client.route.invalid",
-            format!("route `{route}` must not contain query, fragment, or parent segments"),
+            "client.documents.invalid_path",
+            "GraphQL document path must be a safe project-relative .graphql or .gql path",
         ));
-    }
-    while normalized.len() > 1 && normalized.ends_with('/') {
-        normalized.pop();
     }
     Ok(normalized)
 }
-
-fn validate_unique_routes(operations: &[CompiledOperation]) -> Result<(), ClientCompileError> {
-    let mut routes = BTreeMap::<&str, &str>::new();
-    for operation in operations {
-        let Some(route) = &operation.route else {
-            continue;
-        };
-        if let Some(previous) = routes.insert(&route.route, &operation.name) {
-            return Err(ClientCompileError::manifest(
-                "client.route.duplicate",
-                format!(
-                    "route `{}` is owned by both `{}` and `{}`",
-                    route.route, previous, operation.name
-                ),
-            ));
-        }
-    }
-    Ok(())
-}
-
 pub(crate) fn is_graphql_name(value: &str) -> bool {
     let mut chars = value.chars();
     matches!(chars.next(), Some('_' | 'A'..='Z' | 'a'..='z'))

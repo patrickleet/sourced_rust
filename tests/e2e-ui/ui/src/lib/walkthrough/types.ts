@@ -1,6 +1,6 @@
 /** One code sample inside a walkthrough tab. */
 export type WalkthroughSample = {
-	/** Path-like label (e.g. routes/chat/+page.graphql) */
+	/** Path-like label (e.g. routes/chat/+layout.graphql) */
 	file: string;
 	/** Short caption under the path */
 	caption?: string;

@@ -166,46 +166,49 @@ async fn live_cell_private_routes_reject_missing_forged_and_malformed_authority(
         "input": { "title": "must not be created" }
     });
 
-    let missing = client
-        .post(format!("{base}/todo/{id}/todo.create"))
-        .header(CELL_SERVICE_ID_HEADER, TEST_SERVICE_ID)
-        .header(CELL_PRINCIPAL_PARTITION_HEADER, TEST_PRINCIPAL_PARTITION)
-        .header("x-user-id", "alice")
-        .header("x-roles", "admin")
-        .json(&command)
-        .send()
-        .await
-        .expect("missing secret");
+    let missing = send_through_dev_reload(
+        client
+            .post(format!("{base}/todo/{id}/todo.create"))
+            .header(CELL_SERVICE_ID_HEADER, TEST_SERVICE_ID)
+            .header(CELL_PRINCIPAL_PARTITION_HEADER, TEST_PRINCIPAL_PARTITION)
+            .header("x-user-id", "alice")
+            .header("x-roles", "admin")
+            .json(&command),
+        "missing secret",
+    )
+    .await;
     assert_eq!(missing.status(), 401);
 
-    let forged = client
-        .post(format!("{base}/todo/{id}/todo.create"))
-        .header(
-            CELL_INTERNAL_SECRET_HEADER,
-            "forged-secret-for-red-team-request",
-        )
-        .header(CELL_SERVICE_ID_HEADER, TEST_SERVICE_ID)
-        .header(CELL_PRINCIPAL_PARTITION_HEADER, TEST_PRINCIPAL_PARTITION)
-        .header("x-user-id", "alice")
-        .header("x-roles", "admin")
-        .json(&command)
-        .send()
-        .await
-        .expect("forged secret");
+    let forged = send_through_dev_reload(
+        client
+            .post(format!("{base}/todo/{id}/todo.create"))
+            .header(
+                CELL_INTERNAL_SECRET_HEADER,
+                "forged-secret-for-red-team-request",
+            )
+            .header(CELL_SERVICE_ID_HEADER, TEST_SERVICE_ID)
+            .header(CELL_PRINCIPAL_PARTITION_HEADER, TEST_PRINCIPAL_PARTITION)
+            .header("x-user-id", "alice")
+            .header("x-roles", "admin")
+            .json(&command),
+        "forged secret",
+    )
+    .await;
     assert_eq!(forged.status(), 401);
 
-    let read = client
-        .get(format!("{base}/todo/{id}"))
-        .send()
-        .await
-        .expect("unauthenticated read");
+    let read = send_through_dev_reload(
+        client.get(format!("{base}/todo/{id}")),
+        "unauthenticated read",
+    )
+    .await;
     assert_eq!(read.status(), 401);
 
-    let removed = trusted_cell_request(client.post(format!("{base}/todo/{id}/outbox.claim")))
-        .json(&serde_json::json!({}))
-        .send()
-        .await
-        .expect("removed host-drain route");
+    let removed = send_through_dev_reload(
+        trusted_cell_request(client.post(format!("{base}/todo/{id}/outbox.claim")))
+            .json(&serde_json::json!({})),
+        "removed host-drain route",
+    )
+    .await;
     assert_eq!(removed.status(), 404);
 }
 
@@ -224,19 +227,20 @@ async fn live_todo_cell_create_complete_reopen_archive_and_isolate() {
 
     let (a, b) = unique_cell_pair("todo");
 
-    let created = trusted_cell_request(
-        client
-            .post(format!("{base}/todo/{a}/todo.create"))
-            .header("x-user-id", "alice")
-            .header("x-roles", "user"),
+    let created = send_through_dev_reload(
+        trusted_cell_request(
+            client
+                .post(format!("{base}/todo/{a}/todo.create"))
+                .header("x-user-id", "alice")
+                .header("x-roles", "user"),
+        )
+        .json(&serde_json::json!({
+            "commandId": "0190a000-0000-7000-8000-000000000201",
+            "input": { "title": "ship celld" }
+        })),
+        "create",
     )
-    .json(&serde_json::json!({
-        "commandId": "0190a000-0000-7000-8000-000000000201",
-        "input": { "title": "ship celld" }
-    }))
-    .send()
-    .await
-    .expect("create");
+    .await;
     assert_eq!(created.status(), 201, "{}", created.text().await.unwrap());
     let created: Value = created.json().await.unwrap();
     assert_eq!(created["payload"]["id"], a);
@@ -250,55 +254,58 @@ async fn live_todo_cell_create_complete_reopen_archive_and_isolate() {
         .expect("causationId")
         .to_string();
 
-    let replay = trusted_cell_request(
-        client
-            .post(format!("{base}/todo/{a}/todo.create"))
-            .header("x-user-id", "alice")
-            .header("x-roles", "user"),
+    let replay = send_through_dev_reload(
+        trusted_cell_request(
+            client
+                .post(format!("{base}/todo/{a}/todo.create"))
+                .header("x-user-id", "alice")
+                .header("x-roles", "user"),
+        )
+        .json(&serde_json::json!({
+            "commandId": "0190a000-0000-7000-8000-000000000201",
+            "input": { "title": "ship celld" }
+        })),
+        "replay create",
     )
-    .json(&serde_json::json!({
-        "commandId": "0190a000-0000-7000-8000-000000000201",
-        "input": { "title": "ship celld" }
-    }))
-    .send()
-    .await
-    .expect("replay create");
+    .await;
     assert_eq!(replay.status(), 201, "{}", replay.text().await.unwrap());
     let replay: Value = replay.json().await.unwrap();
     assert_eq!(replay["receipt"]["replayed"], true);
     assert_eq!(replay["receipt"]["causationId"], causation_id);
     assert_eq!(replay["payload"], created["payload"]);
 
-    let conflict = trusted_cell_request(
-        client
-            .post(format!("{base}/todo/{a}/todo.create"))
-            .header("x-user-id", "alice")
-            .header("x-roles", "user"),
+    let conflict = send_through_dev_reload(
+        trusted_cell_request(
+            client
+                .post(format!("{base}/todo/{a}/todo.create"))
+                .header("x-user-id", "alice")
+                .header("x-roles", "user"),
+        )
+        .json(&serde_json::json!({
+            "commandId": "0190a000-0000-7000-8000-000000000201",
+            "input": { "title": "different input" }
+        })),
+        "conflicting create",
     )
-    .json(&serde_json::json!({
-        "commandId": "0190a000-0000-7000-8000-000000000201",
-        "input": { "title": "different input" }
-    }))
-    .send()
-    .await
-    .expect("conflicting create");
+    .await;
     assert_eq!(conflict.status(), 409, "{}", conflict.text().await.unwrap());
     let conflict: Value = conflict.json().await.unwrap();
     assert_eq!(conflict["code"], "COMMAND_ID_REUSE");
 
-    let completed = trusted_cell_request(
-        client
-            .post(format!("{base}/todo/{a}/todo.complete"))
-            .header("x-user-id", "alice")
-            .header("x-roles", "user"),
+    let completed = send_through_dev_reload(
+        trusted_cell_request(
+            client
+                .post(format!("{base}/todo/{a}/todo.complete"))
+                .header("x-user-id", "alice")
+                .header("x-roles", "user"),
+        )
+        .json(&serde_json::json!({
+            "commandId": "0190a000-0000-7000-8000-000000000202",
+            "input": {}
+        })),
+        "complete",
     )
-    .json(&serde_json::json!({
-        "commandId": "0190a000-0000-7000-8000-000000000202",
-        "input": {}
-    }))
-    .send()
-    .await
-    .expect("complete");
+    .await;
     assert_eq!(
         completed.status(),
         200,
@@ -312,54 +319,58 @@ async fn live_todo_cell_create_complete_reopen_archive_and_isolate() {
         "0190a000-0000-7000-8000-000000000202"
     );
 
-    let reopened = trusted_cell_request(
-        client
-            .post(format!("{base}/todo/{a}/todo.reopen"))
-            .header("x-user-id", "alice")
-            .header("x-roles", "user"),
+    let reopened = send_through_dev_reload(
+        trusted_cell_request(
+            client
+                .post(format!("{base}/todo/{a}/todo.reopen"))
+                .header("x-user-id", "alice")
+                .header("x-roles", "user"),
+        )
+        .json(&serde_json::json!({
+            "commandId": "0190a000-0000-7000-8000-000000000203",
+            "input": {}
+        })),
+        "reopen",
     )
-    .json(&serde_json::json!({
-        "commandId": "0190a000-0000-7000-8000-000000000203",
-        "input": {}
-    }))
-    .send()
-    .await
-    .expect("reopen");
+    .await;
     assert_eq!(reopened.status(), 200, "{}", reopened.text().await.unwrap());
     let reopened: Value = reopened.json().await.unwrap();
     assert_eq!(reopened["payload"]["status"], "open");
 
-    let archived = trusted_cell_request(
-        client
-            .post(format!("{base}/todo/{a}/todo.archive"))
-            .header("x-user-id", "alice")
-            .header("x-roles", "user"),
+    let archived = send_through_dev_reload(
+        trusted_cell_request(
+            client
+                .post(format!("{base}/todo/{a}/todo.archive"))
+                .header("x-user-id", "alice")
+                .header("x-roles", "user"),
+        )
+        .json(&serde_json::json!({
+            "commandId": "0190a000-0000-7000-8000-000000000204",
+            "input": {}
+        })),
+        "archive",
     )
-    .json(&serde_json::json!({
-        "commandId": "0190a000-0000-7000-8000-000000000204",
-        "input": {}
-    }))
-    .send()
-    .await
-    .expect("archive");
+    .await;
     assert_eq!(archived.status(), 200, "{}", archived.text().await.unwrap());
     let archived: Value = archived.json().await.unwrap();
     assert_eq!(archived["payload"]["status"], "archived");
 
-    let got: Value = trusted_cell_request(client.get(format!("{base}/todo/{a}")))
-        .send()
-        .await
-        .expect("get")
-        .json()
-        .await
-        .unwrap();
+    let got: Value = send_through_dev_reload(
+        trusted_cell_request(client.get(format!("{base}/todo/{a}"))),
+        "get Todo",
+    )
+    .await
+    .json()
+    .await
+    .unwrap();
     assert_eq!(got["title"], "ship celld");
     assert_eq!(got["status"], "archived");
 
-    let other = trusted_cell_request(client.get(format!("{base}/todo/{b}")))
-        .send()
-        .await
-        .expect("missing cell");
+    let other = send_through_dev_reload(
+        trusted_cell_request(client.get(format!("{base}/todo/{b}"))),
+        "missing Todo cell",
+    )
+    .await;
     assert_eq!(other.status(), 404, "second name must be a different cell");
 }
 
@@ -379,24 +390,25 @@ async fn live_chat_cell_post_and_isolate() {
     let (a, b) = unique_cell_pair("chat");
     let created_at = unix_millis();
 
-    let posted = trusted_cell_request(
-        client
-            .post(format!("{base}/chat/{a}/chat.post"))
-            .header("x-user-id", "alice")
-            .header("x-roles", "user"),
+    let posted = send_through_dev_reload(
+        trusted_cell_request(
+            client
+                .post(format!("{base}/chat/{a}/chat.post"))
+                .header("x-user-id", "alice")
+                .header("x-roles", "user"),
+        )
+        .json(&serde_json::json!({
+            "commandId": "0190a000-0000-7000-8000-000000000301",
+            "input": {
+                "message_id": a,
+                "room_id": "lobby",
+                "body": "hello from a cell",
+                "created_at": created_at,
+            }
+        })),
+        "post chat message",
     )
-    .json(&serde_json::json!({
-        "commandId": "0190a000-0000-7000-8000-000000000301",
-        "input": {
-            "message_id": a,
-            "room_id": "lobby",
-            "body": "hello from a cell",
-            "created_at": created_at,
-        }
-    }))
-    .send()
-    .await
-    .expect("post");
+    .await;
     assert_eq!(posted.status(), 201, "{}", posted.text().await.unwrap());
     let posted: Value = posted.json().await.unwrap();
     assert_eq!(posted["payload"]["message_id"], a);
@@ -407,21 +419,23 @@ async fn live_chat_cell_post_and_isolate() {
         "0190a000-0000-7000-8000-000000000301"
     );
 
-    let got: Value = trusted_cell_request(client.get(format!("{base}/chat/{a}")))
-        .send()
-        .await
-        .expect("get")
-        .json()
-        .await
-        .unwrap();
+    let got: Value = send_through_dev_reload(
+        trusted_cell_request(client.get(format!("{base}/chat/{a}"))),
+        "get chat message",
+    )
+    .await
+    .json()
+    .await
+    .unwrap();
     assert_eq!(got["body"], "hello from a cell");
     assert_eq!(got["author_id"], "alice");
     assert_eq!(got["room_id"], "lobby");
 
-    let other = trusted_cell_request(client.get(format!("{base}/chat/{b}")))
-        .send()
-        .await
-        .expect("missing cell");
+    let other = send_through_dev_reload(
+        trusted_cell_request(client.get(format!("{base}/chat/{b}"))),
+        "missing Chat cell",
+    )
+    .await;
     assert_eq!(other.status(), 404, "second name must be a different cell");
 }
 
@@ -448,6 +462,44 @@ fn trusted_cell_request(request: reqwest::RequestBuilder) -> reqwest::RequestBui
         .header(CELL_INTERNAL_SECRET_HEADER, secret)
         .header(CELL_SERVICE_ID_HEADER, TEST_SERVICE_ID)
         .header(CELL_PRINCIPAL_PARTITION_HEADER, TEST_PRINCIPAL_PARTITION)
+}
+
+/// `celld dev` performs exact-generation reloads when its project watcher sees
+/// a local change. A command response can therefore be lost after the command
+/// committed. Retrying the identical buffered request exercises the command
+/// ID contract instead of converting a successful commit into a test failure.
+async fn send_through_dev_reload(
+    request: reqwest::RequestBuilder,
+    operation: &str,
+) -> reqwest::Response {
+    let deadline = std::time::Instant::now() + Duration::from_secs(15);
+
+    loop {
+        let attempt = request
+            .try_clone()
+            .expect("celld test requests must have replayable buffered bodies");
+        let retryable_failure = match attempt.send().await {
+            Ok(response) if response.status() != reqwest::StatusCode::SERVICE_UNAVAILABLE => {
+                return response;
+            }
+            Ok(response) => {
+                let status = response.status();
+                let body = response.text().await.unwrap_or_default();
+                assert!(
+                    body.contains("\"draining\":true"),
+                    "{operation} returned unexpected {status}: {body}"
+                );
+                format!("{status}: {body}")
+            }
+            Err(error) => error.to_string(),
+        };
+
+        assert!(
+            std::time::Instant::now() < deadline,
+            "{operation} did not survive a celld dev reload within 15s: {retryable_failure}"
+        );
+        tokio::time::sleep(Duration::from_millis(100)).await;
+    }
 }
 
 async fn wait_healthy(client: &reqwest::Client, base: &str) {

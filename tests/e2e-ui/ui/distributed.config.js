@@ -284,6 +284,30 @@ export const distributedClients = Object.freeze(
 			}),
 			surface: client.surface,
 			documents: client.documents,
+			...(client.surface === 'e2e-ui' || client.surface === 'e2e-ui-public'
+				? {
+						boundaries: Object.freeze([
+							Object.freeze({
+								operation: 'ChatMessages',
+								route: '/chat',
+								kind: 'layout',
+								variables: Object.freeze({
+									limit: Object.freeze({ kind: 'constant', value: 25 }),
+									offset: Object.freeze({ kind: 'constant', value: 0 })
+								})
+							}),
+							Object.freeze({
+								operation: 'ChatMessages',
+								route: '/chat',
+								kind: 'page',
+								variables: Object.freeze({
+									limit: Object.freeze({ kind: 'constant', value: 25 }),
+									offset: Object.freeze({ kind: 'constant', value: 0 })
+								})
+							})
+						])
+					}
+				: {}),
 			out: client.output
 		})
 	)

@@ -3,10 +3,10 @@ use std::collections::{BTreeMap, BTreeSet};
 use serde::Serialize;
 
 use super::super::graphql::CompiledOperation;
+use super::super::islands::{island_plan, GeneratedIslandInventory, ISLAND_PLAN_VERSION};
 use super::super::manifest::{canonical_json_value, ClientManifest, ManifestSurface};
 use super::super::{
     ClientCompileError, GeneratedClientFile, GeneratedClientProject, GeneratedOperationSummary,
-    GeneratedRoutePlan,
 };
 use super::commands::render_commands;
 use super::common::json_string;
@@ -18,8 +18,10 @@ pub(crate) fn render_project(
 ) -> Result<GeneratedClientProject, ClientCompileError> {
     let mut files = Vec::new();
     let mut summaries = Vec::with_capacity(operations.len());
-    let mut routes = Vec::new();
-
+    let islands = operations
+        .iter()
+        .map(|operation| island_plan(manifest, operation))
+        .collect::<Vec<_>>();
     for operation in &operations {
         files.push(GeneratedClientFile {
             path: operation.module_path.clone(),
@@ -33,15 +35,7 @@ pub(crate) fn render_project(
             operation_hash: operation.query_hash.clone(),
             live_operation_hash: operation.live.as_ref().map(|live| live.hash.clone()),
         });
-        if let Some(route) = &operation.route {
-            routes.push(route.clone());
-        }
     }
-    routes.sort_by(|left, right| {
-        left.route
-            .cmp(&right.route)
-            .then_with(|| left.operation.cmp(&right.operation))
-    });
     files.push(GeneratedClientFile {
         path: "commands.ts".into(),
         contents: render_commands(manifest)?,
@@ -59,8 +53,12 @@ pub(crate) fn render_project(
         contents: render_protocol(manifest)?,
     });
     files.push(GeneratedClientFile {
-        path: "routes.ts".into(),
-        contents: render_routes(&routes, &operations)?,
+        path: "islands.json".into(),
+        contents: render_island_inventory(manifest, &islands)?,
+    });
+    files.push(GeneratedClientFile {
+        path: "islands.ts".into(),
+        contents: render_islands(&islands, &operations)?,
     });
     files.push(GeneratedClientFile {
         path: "sveltekit.ts".into(),
@@ -72,14 +70,14 @@ pub(crate) fn render_project(
     });
     files.push(GeneratedClientFile {
         path: "manifest.json".into(),
-        contents: render_compiler_manifest(manifest, &summaries, &routes)?,
+        contents: render_compiler_manifest(manifest, &summaries, &islands)?,
     });
     files.sort_by(|left, right| left.path.cmp(&right.path));
 
     Ok(GeneratedClientProject {
         files,
         operations: summaries,
-        routes,
+        islands,
         schema_fingerprint: manifest.schema_fingerprint.clone(),
         protocol_fingerprint: manifest.protocol_fingerprint.clone(),
     })
@@ -169,16 +167,16 @@ struct CompilerManifest<'a> {
     scalar_codecs: &'a BTreeMap<String, String>,
     commands_requiring_revalidation: &'a BTreeSet<String>,
     operations: &'a [GeneratedOperationSummary],
-    routes: &'a [GeneratedRoutePlan],
+    islands: &'a [super::super::GeneratedIslandPlan],
 }
 
 fn render_compiler_manifest(
     manifest: &ClientManifest,
     operations: &[GeneratedOperationSummary],
-    routes: &[GeneratedRoutePlan],
+    islands: &[super::super::GeneratedIslandPlan],
 ) -> Result<String, ClientCompileError> {
     let provenance = CompilerManifest {
-        compiler_manifest_version: 1,
+        compiler_manifest_version: 2,
         distributed_manifest_version: 2,
         protocol_version: 1,
         service_id: &manifest.service_id,
@@ -188,7 +186,7 @@ fn render_compiler_manifest(
         scalar_codecs: &manifest.scalar_codecs,
         commands_requiring_revalidation: &manifest.commands_requiring_revalidation,
         operations,
-        routes,
+        islands,
     };
     serde_json::to_string_pretty(&provenance)
         .map(|rendered| format!("{rendered}\n"))
@@ -200,28 +198,48 @@ fn render_compiler_manifest(
         })
 }
 
-fn render_routes(
-    routes: &[GeneratedRoutePlan],
+fn render_island_inventory(
+    manifest: &ClientManifest,
+    islands: &[super::super::GeneratedIslandPlan],
+) -> Result<String, ClientCompileError> {
+    serde_json::to_string_pretty(&GeneratedIslandInventory {
+        version: ISLAND_PLAN_VERSION,
+        schema_fingerprint: &manifest.schema_fingerprint,
+        protocol_fingerprint: &manifest.protocol_fingerprint,
+        surface: &manifest.surface,
+        islands,
+    })
+    .map(|rendered| format!("{rendered}\n"))
+    .map_err(|error| {
+        ClientCompileError::manifest(
+            "client.render.islands",
+            format!("failed to render island inventory: {error}"),
+        )
+    })
+}
+
+fn render_islands(
+    islands: &[super::super::GeneratedIslandPlan],
     operations: &[CompiledOperation],
 ) -> Result<String, ClientCompileError> {
-    let routes_json = serde_json::to_string_pretty(routes).map_err(|error| {
+    let plans = serde_json::to_string_pretty(islands).map_err(|error| {
         ClientCompileError::manifest(
-            "client.render.routes",
-            format!("failed to render route plan: {error}"),
+            "client.render.islands",
+            format!("failed to render island bindings: {error}"),
         )
     })?;
-    let mut imports = Vec::new();
-    let mut bindings = Vec::new();
-    for (index, route) in routes.iter().enumerate() {
+    let mut imports = Vec::with_capacity(islands.len());
+    let mut bindings = Vec::with_capacity(islands.len());
+    for (index, island) in islands.iter().enumerate() {
         let operation = operations
             .iter()
-            .find(|operation| operation.name == route.operation)
+            .find(|operation| operation.name == island.operation)
             .ok_or_else(|| {
                 ClientCompileError::manifest(
-                    "client.render.routes",
+                    "client.render.islands",
                     format!(
-                        "route `{}` references missing operation `{}`",
-                        route.route, route.operation
+                        "island `{}` references missing operation `{}`",
+                        island.id, island.operation
                     ),
                 )
             })?;
@@ -234,7 +252,7 @@ fn render_routes(
             operation.export_name
         ));
         bindings.push(format!(
-            "  {{ plan: DISTRIBUTED_ROUTES[{index}], artifact: {} }}",
+            "  {{ plan: DISTRIBUTED_ISLANDS[{index}], artifact: {} }}",
             operation.export_name
         ));
     }
@@ -250,14 +268,14 @@ fn render_routes(
     };
     Ok(format!(
         "{import_section}\
-         /** GENERATED framework-neutral `@load` ownership plan. */\n\
-         export const DISTRIBUTED_ROUTES = {routes_json} as const;\n\
+         /** GENERATED framework-neutral island inventory. */\n\
+         export const DISTRIBUTED_ISLANDS = {plans} as const;\n\
          \n\
-         /** Static route-to-artifact bindings consumed by framework SSR adapters. */\n\
-         export const DISTRIBUTED_ROUTE_OPERATIONS = {bindings} as const;\n\
+         /** Static island-to-artifact bindings consumed by framework adapters. */\n\
+         export const DISTRIBUTED_ISLAND_OPERATIONS = {bindings} as const;\n\
          \n\
-         export type DistributedRoutePlan = (typeof DISTRIBUTED_ROUTES)[number];\n\
-         export type DistributedRouteOperation = (typeof DISTRIBUTED_ROUTE_OPERATIONS)[number];\n"
+         export type DistributedIslandPlan = (typeof DISTRIBUTED_ISLANDS)[number];\n\
+         export type DistributedIslandOperation = (typeof DISTRIBUTED_ISLAND_OPERATIONS)[number];\n"
     ))
 }
 
@@ -265,8 +283,8 @@ fn render_index(operations: &[CompiledOperation], has_pures: bool) -> String {
     let mut lines = vec![
         "/** GENERATED public entrypoint. */".to_string(),
         "export * from './commands.js';".into(),
+        "export * from './islands.js';".into(),
         "export * from './protocol.js';".into(),
-        "export * from './routes.js';".into(),
     ];
     if has_pures {
         lines.push("export * from './pures.js';".into());
@@ -318,10 +336,11 @@ fn render_sveltekit(
     let mut value_exports = BTreeSet::from([
         "COMMAND_ARTIFACTS".to_string(),
         "COMMANDS".to_string(),
-        "DISTRIBUTED_ROUTES".to_string(),
-        "DISTRIBUTED_ROUTE_OPERATIONS".to_string(),
+        "DISTRIBUTED_ISLANDS".to_string(),
+        "DISTRIBUTED_ISLAND_OPERATIONS".to_string(),
         "PROJECTOR_ARTIFACTS".to_string(),
         "provideDistributed".to_string(),
+        "retainBoundary".to_string(),
         "useCommands".to_string(),
     ]);
     if !manifest.commands.is_empty() {
@@ -358,13 +377,17 @@ fn render_sveltekit(
             "  createDistributedSvelteKit,",
             "  defineDistributedSvelteKitOperation,",
             "  provideDistributedSvelteKitClient,",
+            "  retainDistributedSvelteKitBoundary,",
             "  useDistributedSvelteKitCommands",
             "} from '@hops-ops/distributed/sveltekit';",
             "",
             "import type {",
             "  CreateDistributedSvelteKitOptions,",
+            "  DistributedBoundaryVariableContext,",
             "  DistributedReloadOptions,",
-            "  DistributedSvelteKitClient",
+            "  DistributedSvelteKitBoundaryInstance,",
+            "  DistributedSvelteKitClient,",
+            "  SveltekitBoundaryRetention",
             "} from '@hops-ops/distributed/sveltekit';",
         ]
         .join("\n"),
@@ -446,6 +469,14 @@ fn render_sveltekit(
             "/** Resolve the nearest generated command surface during component initialization. */",
             "export function useCommands(): GeneratedCommands {",
             "  return useDistributedSvelteKitCommands<GeneratedCommands>();",
+            "}",
+            "",
+            "/** Retain all generated selections for one mounted page/layout instance. */",
+            "export function retainBoundary<TSession, TProps>(",
+            "  instance: DistributedSvelteKitBoundaryInstance,",
+            "  context: DistributedBoundaryVariableContext<TSession, TProps>",
+            "): SveltekitBoundaryRetention {",
+            "  return retainDistributedSvelteKitBoundary(instance, context);",
             "}",
         ]
         .into_iter()

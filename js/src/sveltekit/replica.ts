@@ -23,6 +23,22 @@ import type { FetchLike } from '../request.js';
 import { replicaCommandProjectedLifecycleOf } from '../replica/command-runtime.js';
 import { authFromPageData, type PageGraphqlData } from './auth.js';
 import {
+	defineDistributedBoundaryBinding,
+	defineDistributedBoundaryOperation,
+	type DistributedBoundaryPlan,
+	type DistributedBoundaryOperation,
+	type DistributedBoundaryVariableSources,
+	type DistributedBoundaryVariableContext
+} from './boundary-variables.js';
+import {
+	DistributedSvelteKitBoundaryController,
+	type DistributedSvelteKitBoundaryInstance,
+	type DistributedSvelteKitBoundaryLocation,
+	type DistributedSvelteKitLocationContext,
+	type SveltekitBoundaryLifecycleDiagnostic,
+	type SveltekitBoundaryRetention
+} from './boundary-lifecycle.js';
+import {
 	distributedReloadLifecycle,
 	registerDistributedReloadClient,
 	type DistributedReloadOptions
@@ -57,6 +73,8 @@ export type SveltekitReplicaHydration = Readonly<{
 	version: 1;
 	state: import('../replica/index.js').ReplicaDehydratedState;
 	readonly operations?: readonly string[];
+	/** Exact variable-binding fingerprints used to create this SSR seed. */
+	readonly bindings?: readonly string[];
 }>;
 
 /**
@@ -112,6 +130,10 @@ export type CreateDistributedSvelteKitOptions<TCommands = Readonly<Record<never,
 		authority?: SveltekitReplicaAuthority;
 		createCommands?: SveltekitCommandRuntimeFactory<TCommands>;
 		replica?: Omit<DistributedReplicaOptions, 'transport'>;
+		/** Generated boundary operations accepted by this component-tree client. */
+		boundaries: readonly DistributedBoundaryOperation[];
+		/** Redacted structural lifecycle events for boundary ownership diagnostics. */
+		onBoundaryDiagnostic?: (event: SveltekitBoundaryLifecycleDiagnostic) => void;
 		onAuthError?: (error: unknown) => void;
 		/** Generated clients supply the surface key; apps may declare safe state partitions. */
 		reload?: DistributedReloadOptions;
@@ -175,6 +197,14 @@ export type SveltekitBoundOperation<
 	read(variables: TVariables): ReplicaSnapshot<TData>;
 	/** Client-side hover/nav warmup; no-ops when the replica already has a complete snapshot. */
 	prefetch(variables: TVariables): Promise<void>;
+	/** One typed binding shared by SSR, navigation, prefetch, hydration, and live use. */
+	boundary<
+		TSession = unknown,
+		TProps = Readonly<Record<string, unknown>>
+	>(
+		plan: DistributedBoundaryPlan,
+		sources: DistributedBoundaryVariableSources<TVariables>
+	): DistributedBoundaryOperation<TData, TVariables, TSession, TProps>;
 }>;
 
 export type DistributedSvelteKitClient<TCommands> = Readonly<{
@@ -184,6 +214,29 @@ export type DistributedSvelteKitClient<TCommands> = Readonly<{
 	operation<TData, TVariables extends GraphqlVariables>(
 		artifact: ReplicaOperationArtifact<TData, TVariables>
 	): SveltekitBoundOperation<TData, TVariables>;
+	boundary<
+		TData,
+		TVariables extends GraphqlVariables,
+		TSession,
+		TProps
+	>(
+		operation: DistributedBoundaryOperation<TData, TVariables, TSession, TProps>
+	): SveltekitBoundBoundaryOperation<TData, TVariables, TSession, TProps>;
+	/** Retain every generated selection owned by one mounted page/layout instance. */
+	retainBoundary<TSession, TProps>(
+		instance: DistributedSvelteKitBoundaryInstance,
+		context: DistributedBoundaryVariableContext<TSession, TProps>
+	): SveltekitBoundaryRetention;
+	/** Retain the nearest generated page/layout boundary at this location. */
+	retainLocation<TSession, TProps>(
+		location: DistributedSvelteKitBoundaryLocation,
+		context: DistributedSvelteKitLocationContext<TSession, TProps>
+	): SveltekitBoundaryRetention;
+	/** Prefetch the generated page and owning layout selections for a target URL. */
+	prefetchLocation<TSession, TProps>(
+		pathname: string,
+		context: DistributedSvelteKitLocationContext<TSession, TProps>
+	): Promise<void>;
 	/**
 	 * Apply a server seed. A malformed or mismatched seed closes the old
 	 * generation and returns false so the bound operation refetches.
@@ -198,6 +251,28 @@ export type DistributedSvelteKitClient<TCommands> = Readonly<{
 	): Promise<void>;
 	invalidateAuthorization(): void;
 	destroy(): void;
+}>;
+
+export type SveltekitBoundBoundaryOperation<
+	TData,
+	TVariables extends GraphqlVariables,
+	TSession,
+	TProps
+> = Readonly<{
+	operation: DistributedBoundaryOperation<TData, TVariables, TSession, TProps>;
+	variables(
+		context: DistributedBoundaryVariableContext<TSession, TProps>
+	): TVariables;
+	use(
+		context: DistributedBoundaryVariableContext<TSession, TProps>,
+		options?: UseSveltekitOperationOptions
+	): SveltekitQueryStore<TData>;
+	read(
+		context: DistributedBoundaryVariableContext<TSession, TProps>
+	): ReplicaSnapshot<TData>;
+	prefetch(
+		context: DistributedBoundaryVariableContext<TSession, TProps>
+	): Promise<void>;
 }>;
 
 /**
@@ -216,6 +291,9 @@ export function createDistributedSvelteKit<TCommands = Readonly<Record<never, ne
 	) {
 		throw new TypeError('Distributed SvelteKit requires one session source');
 	}
+	if (!Array.isArray(options.boundaries)) {
+		throw new TypeError('Distributed SvelteKit requires generated boundary operations');
+	}
 	if (
 		(options.hydration === undefined) !==
 		(options.authority === undefined)
@@ -226,9 +304,16 @@ export function createDistributedSvelteKit<TCommands = Readonly<Record<never, ne
 	}
 
 	let replica: DistributedReplica | undefined;
+	let boundaryController: DistributedSvelteKitBoundaryController | undefined;
+	const boundaryIds = Object.freeze(
+		[...new Set(options.boundaries.map(({ binding }) => binding.id))].sort()
+	);
 	const auth = createAuthorizationFence(
 		options.session,
-		() => replica?.invalidateAuthorization(),
+		() => {
+			boundaryController?.disposeScope();
+			replica?.invalidateAuthorization();
+		},
 		options.onAuthError
 	);
 	const configuredUrl = options.url;
@@ -245,8 +330,17 @@ export function createDistributedSvelteKit<TCommands = Readonly<Record<never, ne
 	});
 	replica = createDistributedReplica({
 		transport,
-		...(options.replica ?? {})
+		...(options.replica ?? {}),
+		onAuthorizationGenerationDispose: () => {
+			boundaryController?.disposeScope();
+			options.replica?.onAuthorizationGenerationDispose?.();
+		}
 	});
+	boundaryController = new DistributedSvelteKitBoundaryController(
+		replica,
+		options.boundaries,
+		options.onBoundaryDiagnostic
+	);
 
 	const stores = new Set<SveltekitQueryStoreImpl<unknown>>();
 	const pending = new PendingReceiptStore();
@@ -258,6 +352,12 @@ export function createDistributedSvelteKit<TCommands = Readonly<Record<never, ne
 		let accepted = false;
 		try {
 			const expected = validatedHydrationAuthority(authority);
+			const hydrationBindings = [...(hydration.bindings ?? [])].sort();
+			if (hydrationBindings.some((value) => !boundaryIds.includes(value))) {
+				throw new TypeError(
+					'Distributed SvelteKit hydration boundary binding fingerprint changed'
+				);
+			}
 			const active = replica!.scope;
 			if (active !== undefined && !sameReplicaScope(active, expected)) {
 				throw new TypeError(
@@ -270,7 +370,10 @@ export function createDistributedSvelteKit<TCommands = Readonly<Record<never, ne
 		} catch {
 			accepted = false;
 		}
-		if (!accepted) replica!.invalidateAuthorization();
+		if (!accepted) {
+			boundaryController!.disposeScope();
+			replica!.invalidateAuthorization();
+		}
 		return accepted;
 	};
 	if (options.hydration !== undefined && options.authority !== undefined) {
@@ -330,23 +433,83 @@ export function createDistributedSvelteKit<TCommands = Readonly<Record<never, ne
 				stores.delete(store as SveltekitQueryStoreImpl<unknown>);
 			}
 		});
+	const boundary = <
+		TData,
+		TVariables extends GraphqlVariables,
+		TSession,
+		TProps
+	>(
+		binding: DistributedBoundaryOperation<TData, TVariables, TSession, TProps>
+	): SveltekitBoundBoundaryOperation<TData, TVariables, TSession, TProps> => {
+		if (!boundaryIds.includes(binding.binding.id)) {
+			throw new TypeError(
+				'Distributed boundary operation was not registered with this SvelteKit client'
+			);
+		}
+		const bound = operation(binding.artifact);
+		const variables = (
+			context: DistributedBoundaryVariableContext<TSession, TProps>
+		): TVariables => binding.binding.resolve(context);
+		return Object.freeze({
+			operation: binding,
+			variables,
+			use(context, useOptions) {
+				const invoke = bound.use as (
+					variables: TVariables,
+					options?: UseSveltekitOperationOptions
+				) => SveltekitQueryStore<TData>;
+				return invoke(variables(context), useOptions);
+			},
+			read(context) {
+				return bound.read(variables(context));
+			},
+			prefetch(context) {
+				return bound.prefetch(variables(context));
+			}
+		});
+	};
 
 	return Object.freeze({
 		replica,
 		transport,
 		commands,
 		operation,
+		boundary,
+		retainBoundary(instance, context) {
+			if (destroyed) {
+				throw new Error('Distributed SvelteKit client is destroyed');
+			}
+			return boundaryController!.retain(instance, context);
+		},
+		retainLocation(location, context) {
+			if (destroyed) {
+				throw new Error('Distributed SvelteKit client is destroyed');
+			}
+			return boundaryController!.retainLocation(location, context);
+		},
+		prefetchLocation(pathname, context) {
+			if (destroyed) {
+				return Promise.reject(
+					new Error('Distributed SvelteKit client is destroyed')
+				);
+			}
+			return boundaryController!.prefetchLocation(pathname, context);
+		},
 		hydrate,
 		prefetch(artifact, variables) {
 			return prefetchReplicaOperation(replica!, artifact, variables);
 		},
 		invalidateAuthorization(): void {
-			if (!destroyed) replica!.invalidateAuthorization();
+			if (!destroyed) {
+				boundaryController!.disposeScope();
+				replica!.invalidateAuthorization();
+			}
 		},
 		destroy(): void {
 			if (destroyed) return;
 			destroyed = true;
 			auth.dispose();
+			boundaryController!.destroy();
 			for (const store of [...stores]) store.destroy();
 			stores.clear();
 			pending.clear();
@@ -459,7 +622,22 @@ function bindOperation<TData, TVariables extends GraphqlVariables>(
 		use,
 		read: (variables: TVariables) => replica.read(artifact, variables),
 		prefetch: (variables: TVariables) =>
-			prefetchReplicaOperation(replica, artifact, variables)
+			prefetchReplicaOperation(replica, artifact, variables),
+		boundary<TSession, TProps>(
+			plan: DistributedBoundaryPlan,
+			sources: DistributedBoundaryVariableSources<TVariables>
+		): DistributedBoundaryOperation<TData, TVariables, TSession, TProps> {
+			return defineDistributedBoundaryOperation(
+				plan,
+				artifact,
+				defineDistributedBoundaryBinding<
+					TData,
+					TVariables,
+					TSession,
+					TProps
+				>(artifact, sources)
+			);
+		}
 	});
 }
 

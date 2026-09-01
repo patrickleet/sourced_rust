@@ -23,6 +23,7 @@ export class ReplicaWatchState<TData, TVariables extends GraphqlVariables>
 	#snapshot: ReplicaSnapshot<TData>;
 	#identitySignature: string;
 	#destroyed = false;
+	#autoFetchScheduled = false;
 	readonly #unregister: () => void;
 
 	constructor(
@@ -74,7 +75,8 @@ export class ReplicaWatchState<TData, TVariables extends GraphqlVariables>
 	_cacheChanged(materialized: MaterializedReplicaResult<TData>): void {
 		if (this.#destroyed) return;
 		this.materialized = materialized;
-		this.#sync(true);
+		this.#sync(false);
+		this.#scheduleAutoFetch();
 	}
 
 	_stateChanged(allowFetch: boolean): void {
@@ -108,5 +110,14 @@ export class ReplicaWatchState<TData, TVariables extends GraphqlVariables>
 			this.#owner._reportObserverErrors(errors);
 		}
 		if (allowFetch) void this.#owner._fetch(this, false);
+	}
+
+	#scheduleAutoFetch(): void {
+		if (this.#autoFetchScheduled || this.#destroyed) return;
+		this.#autoFetchScheduled = true;
+		queueMicrotask(() => {
+			this.#autoFetchScheduled = false;
+			if (!this.#destroyed) void this.#owner._fetch(this, false);
+		});
 	}
 }

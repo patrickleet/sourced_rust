@@ -4,13 +4,15 @@
 	 * the anonymous surface. Signed-in traffic keeps the root portable user client.
 	 */
 	import { browser } from '$app/environment';
+	import { page } from '$app/state';
 	import { onDestroy, untrack } from 'svelte';
 	import type { Snippet } from 'svelte';
 	import {
 		createPageDataSessionSource,
+		useDistributedSvelteKitClient,
 		type SveltekitReplicaHydration
 	} from '@hops-ops/distributed/sveltekit';
-	import { provideDistributed } from '$distributed/public';
+	import { DISTRIBUTED_BOUNDARY_OPERATIONS, provideDistributed } from '$distributed/public';
 
 	import type { LayoutData } from './$types';
 
@@ -33,6 +35,7 @@
 
 	const client = guestAtMount
 		? provideDistributed({
+				boundaries: DISTRIBUTED_BOUNDARY_OPERATIONS,
 				session: pageData.session,
 				browser,
 				...(guestBootstrap
@@ -42,10 +45,24 @@
 						}
 					: {})
 			})
+		: useDistributedSvelteKitClient();
+	const layoutRetention = browser
+		? client.retainLocation(
+				{
+					id: 'layout:/chat',
+					pathname: untrack(() => page.url.pathname),
+					kind: 'layout'
+				},
+				{
+					search: untrack(() => page.url.searchParams),
+					session: initialData.session,
+					props: initialData
+				}
+			)
 		: null;
 
 	$effect(() => {
-		if (!client || signedIn) return;
+		if (!guestAtMount || signedIn) return;
 		pageData.set(data);
 		if (
 			data.distributed === undefined ||
@@ -64,7 +81,8 @@
 
 	onDestroy(() => {
 		if (hydrationTimer !== undefined) clearTimeout(hydrationTimer);
-		client?.destroy();
+		layoutRetention?.release();
+		if (guestAtMount) client.destroy();
 	});
 </script>
 

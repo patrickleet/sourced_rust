@@ -1,5 +1,5 @@
 {
-  "compiler_manifest_version": 1,
+  "compiler_manifest_version": 2,
   "distributed_manifest_version": 2,
   "protocol_version": 1,
   "service_id": "e2e-ui",
@@ -30,19 +30,50 @@
   "operations": [
     {
       "name": "ChatMessages",
-      "source_path": "src/routes/chat/+page.graphql",
+      "source_path": "src/graphql/public/chat.graphql",
       "module_path": "operations/chat-messages.ts",
       "export_name": "Operation_ChatMessages",
       "operation_hash": "sha256:16e82d9939a08f205efef9238393f8e4582da0e58d15ace6470d7831c0798603",
       "live_operation_hash": "sha256:1679906f6ce4c8de83deb937cccce20561447e4f74e410d3a83d1aecebd6bd00"
     }
   ],
-  "routes": [
+  "islands": [
     {
+      "version": 1,
+      "id": "sha256:227fd81589ae74dbda488a561f212ef84453875f24ece17f1dbbcd076ac84602",
       "operation": "ChatMessages",
-      "route": "/chat",
-      "source_path": "src/routes/chat/+page.graphql",
-      "discovery": "convention"
+      "operationHash": "sha256:16e82d9939a08f205efef9238393f8e4582da0e58d15ace6470d7831c0798603",
+      "modulePath": "operations/chat-messages.ts",
+      "exportName": "Operation_ChatMessages",
+      "source": {
+        "path": "src/graphql/public/chat.graphql",
+        "line": 3,
+        "column": 1
+      },
+      "directives": {
+        "load": true,
+        "live": true
+      },
+      "variableSchema": {
+        "reference": "sha256:16e82d9939a08f205efef9238393f8e4582da0e58d15ace6470d7831c0798603#variable-codec-v1",
+        "codecVersion": 1,
+        "variables": [
+          {
+            "name": "limit",
+            "graphqlType": "Int!"
+          },
+          {
+            "name": "offset",
+            "graphqlType": "Int!"
+          }
+        ]
+      },
+      "liveCoverage": {
+        "requested": true,
+        "finite": true,
+        "kind": "offset",
+        "maxItems": 1000
+      }
     }
   ]
 }

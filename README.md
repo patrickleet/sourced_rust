@@ -24,10 +24,10 @@ sequenceDiagram
         Author->>Build: Domain crates: commands, events, command RBAC
         Author->>Build: Read-model crates: query shapes, relationships, read RBAC
         Author->>Build: Projections: event → internal read-model mutation
-        Author->>Build: +page.graphql: @load and optional @live
+        Author->>Build: Page, layout, or component .graphql: @load and optional @live
         Build-->>API: Command + query/subscription surfaces with RBAC
         Build-->>Projector: Server projection programs
-        Build-->>Kit: Loaders, live operations, typed commands, replica plans
+        Build-->>Kit: Island boundaries, live operations, typed commands, replica plans
         Build-->>Replica: Optimistic projection programs + declared Rust/WASM pures
     end
 
@@ -63,11 +63,14 @@ sequenceDiagram
     end
 ```
 
-The page-level GraphQL documents are part of the application contract. `@load`
-generates the SvelteKit SSR/navigation data path; `@live` adds the subscription
-that carries committed read-model changes back into the browser replica. Public
-writes still use domain commands. Projection mutation programs stay internal and
-provide the shared server-update and optimistic-replica protocol.
+Co-located GraphQL documents are part of the application contract. An `@load`
+operation may belong to a page, a layout, or a reusable component. The compiler
+promotes it to the nearest static SvelteKit boundary, emits one variable-binding
+plan, and uses that plan for SSR, hydration, navigation, prefetch, and component
+reads. `@live` retains the same operation as a subscription for the lifetime of
+that boundary. Public writes still use domain commands. Projection mutation
+programs stay internal and provide the shared server-update and
+optimistic-replica protocol.
 
 ### 01 · Unidirectional
 
@@ -373,18 +376,23 @@ await commands.todo.complete({ todo_id });
 
 JS package deep-dive: [`js/README.md`](js/README.md).
 
-### 09 · SvelteKit
+### 09 · SvelteKit GraphQL islands
 
-SSR first, then live — one query.
+Put each query where its UI ownership lives.
 
 `@load` and `@live` use the same GraphQL operation for server render,
-rehydrate, and a push change feed. Users get a fast first paint and rooms
-that stay current without a second subscription document or polling.
+rehydration, navigation, prefetch, and a push change feed. A page document is
+replaced with the page. A layout document remains retained across its child
+pages. A reusable component document is discovered from its Svelte import
+graph and promoted to the nearest static page or layout that can supply its
+variables. Generated bindings resolve route params, search params, trusted
+session values, constants, and forwarded props once; UI code receives a typed
+operation and does not duplicate that wiring.
 
-[`tests/e2e-ui/ui/src/routes/chat/+page.graphql`](tests/e2e-ui/ui/src/routes/chat/+page.graphql)
+[`tests/e2e-ui/ui/src/routes/chat/+layout.graphql`](tests/e2e-ui/ui/src/routes/chat/+layout.graphql)
 
 ```graphql
-# Same query powers SSR (@load) and live change feed (@live)
+# This nested layout owns one finite live window across /chat child pages.
 query ChatMessages($limit: Int!, $offset: Int!) @load @live {
   chat_messages(
     where: { room_id: { _eq: "lobby" } }
@@ -398,6 +406,13 @@ query ChatMessages($limit: Int!, $offset: Int!) @load @live {
   }
 }
 ```
+
+Reusable component island:
+[`SelectedBlobGame.graphql`](tests/e2e-ui/ui/src/lib/components/blob/SelectedBlobGame.graphql)
+is consumed by
+[`SelectedBlobGame.svelte`](tests/e2e-ui/ui/src/lib/components/blob/SelectedBlobGame.svelte).
+Its optional `gameId` comes from `[[gameId]]`; the generated boundary uses that
+same binding for SSR, hydration, navigation, prefetch, and `SelectedBlobGame.use()`.
 
 ### 10 · OIDC
 
@@ -460,7 +475,8 @@ Start here in the code:
 |---|---|
 | [`ui/src/routes/todos/+page.graphql`](tests/e2e-ui/ui/src/routes/todos/+page.graphql) | Co-located read. `@load` → SSR seed; no hand-written load function for the list. |
 | [`ui/src/routes/todos/+page.svelte`](tests/e2e-ui/ui/src/routes/todos/+page.svelte) | `Todos.use()` + `useCommands()` — page never invents a cache or optimistic recipe. |
-| [`ui/src/routes/chat/+page.graphql`](tests/e2e-ui/ui/src/routes/chat/+page.graphql) | Same document does SSR **and** live: `@load @live`. |
+| [`ui/src/routes/chat/+layout.graphql`](tests/e2e-ui/ui/src/routes/chat/+layout.graphql) | Same document does layout-retained SSR **and** live: `@load @live`. |
+| [`ui/src/lib/components/blob/SelectedBlobGame.graphql`](tests/e2e-ui/ui/src/lib/components/blob/SelectedBlobGame.graphql) | Reusable component island promoted to the nearest static route boundary; one route-param binding drives SSR and component reads. |
 | [`ui/src/routes/blob/[[gameId]]/+page.svelte`](tests/e2e-ui/ui/src/routes/blob/[[gameId]]/+page.svelte) | Arrow keys → `commands.blob.move`; board from `BlobGames.use()`. |
 | [`crates/service/src/modules/compose.rs`](tests/e2e-ui/crates/service/src/modules/compose.rs) | One `Service` lists modules. No `Runtime::role`. |
 | [`crates/service/src/handlers/commands/blob_move.rs`](tests/e2e-ui/crates/service/src/handlers/commands/blob_move.rs) | `PreparedCommand<Atomic<BlobGameView>>` — map/score written with the event. |

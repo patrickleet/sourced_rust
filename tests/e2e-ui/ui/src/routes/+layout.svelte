@@ -2,15 +2,14 @@
 	import '../app.css';
 	import '$lib/styles/chrome.css';
 	import { browser } from '$app/environment';
+	import { page } from '$app/state';
 	import { onDestroy, untrack } from 'svelte';
 	import type { Snippet } from 'svelte';
 	import {
 		createPageDataSessionSource,
-		matchDistributedRoute,
 		type SveltekitReplicaHydration
 	} from '@hops-ops/distributed/sveltekit';
-	import { DISTRIBUTED_ROUTE_OPERATIONS, provideDistributed } from '$distributed';
-	import { CHAT_PAGE_SIZE } from '$lib/chat/lobby-log';
+	import { DISTRIBUTED_BOUNDARY_OPERATIONS, provideDistributed } from '$distributed';
 
 	import AuthRefresh from '$lib/components/shared/AuthRefresh.svelte';
 	import Navbar from '$lib/components/shared/header/Navbar.svelte';
@@ -36,6 +35,7 @@
 	}
 
 	const client = provideDistributed({
+		boundaries: DISTRIBUTED_BOUNDARY_OPERATIONS,
 		session: pageData.session,
 		browser,
 		reload: {
@@ -81,39 +81,46 @@
 		}, 0);
 	});
 
+	$effect(() => {
+		if (!browser || !data.session?.user) return;
+		const retention = client.retainLocation(
+			{
+				id: 'root-active-page',
+				pathname: page.url.pathname,
+				kind: 'page'
+			},
+			{
+				search: page.url.searchParams,
+				session: data.session,
+				props: data
+			}
+		);
+		return () => retention.release();
+	});
+
+	function prefetchLink(event: PointerEvent) {
+		if (!browser || !data.session?.user) return;
+		const target = event.target;
+		if (!(target instanceof Element)) return;
+		const anchor = target.closest('a[href]');
+		if (!(anchor instanceof HTMLAnchorElement)) return;
+		const targetUrl = new URL(anchor.href, page.url);
+		if (targetUrl.origin !== page.url.origin) return;
+		void client.prefetchLocation(targetUrl.pathname, {
+			search: targetUrl.searchParams,
+			session: data.session,
+			props: data
+		}).catch(() => undefined);
+	}
+
 	onDestroy(() => {
 		if (hydrationTimer !== undefined) clearTimeout(hydrationTimer);
 		client.destroy();
 	});
 
-	$effect(() => {
-		if (!browser) return;
-		const onEnter = (event: PointerEvent) => {
-			const node = event.target;
-			if (!(node instanceof Element)) return;
-			const link = node.closest('a[href]');
-			if (!(link instanceof HTMLAnchorElement)) return;
-			if (link.target && link.target !== '_self') return;
-			if (link.origin !== window.location.origin) return;
-			const signedIn = !!data.session?.user;
-			// Anonymous routes install their own public-surface client below this
-			// layout. Prefetching their user-surface artifact here cannot warm that
-			// client and may establish the wrong schema binding before navigation.
-			if (!signedIn) return;
-			for (const { plan, artifact } of DISTRIBUTED_ROUTE_OPERATIONS) {
-				if (!matchDistributedRoute(plan.route, link.pathname)) continue;
-				const variables =
-					plan.operation === 'ChatMessages'
-						? { limit: CHAT_PAGE_SIZE, offset: 0 }
-						: {};
-				void client.prefetch(artifact, variables);
-			}
-		};
-		document.addEventListener('pointerenter', onEnter, true);
-		return () => document.removeEventListener('pointerenter', onEnter, true);
-	});
 </script>
 
+<svelte:window onpointerover={prefetchLink} />
 <AuthRefresh />
 <Navbar />
 <main>

@@ -26,9 +26,10 @@ pub use cli::{
     SkillsCommands, SkillsInitArgs, Store, Transport,
 };
 pub use client_compiler::{
-    compile_client, ClientCompileError, ClientCompileInput, ClientDocument, ClientRouteDiscovery,
-    ClientRouteRegistration, ClientSourceLocation, ClientSurfaceSelector, GeneratedClientFile,
-    GeneratedClientProject, GeneratedOperationSummary, GeneratedRoutePlan,
+    compile_client, ClientCompileError, ClientCompileInput, ClientDocument, ClientSourceLocation,
+    ClientSurfaceSelector, GeneratedClientFile, GeneratedClientProject, GeneratedIslandDirectives,
+    GeneratedIslandLiveCoverage, GeneratedIslandPlan, GeneratedIslandSource,
+    GeneratedIslandVariable, GeneratedIslandVariableSchema, GeneratedOperationSummary,
 };
 pub use contracts::{
     check_migration_history, check_migration_inventory, check_predecessor_chain,

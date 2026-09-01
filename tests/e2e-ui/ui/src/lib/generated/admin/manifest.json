@@ -1,5 +1,5 @@
 {
-  "compiler_manifest_version": 1,
+  "compiler_manifest_version": 2,
   "distributed_manifest_version": 2,
   "protocol_version": 1,
   "service_id": "e2e-ui",
@@ -36,12 +36,34 @@
       "operation_hash": "sha256:3436d01402748d8c4f2f5d2ff5f1173fea89786c8e902de09a24bd03596eaf27"
     }
   ],
-  "routes": [
+  "islands": [
     {
+      "version": 1,
+      "id": "sha256:817997ceaf481a314270b6f76a35b81f8f2425e581579365ab7079276141b2fe",
       "operation": "AdminAllTodos",
-      "route": "/admin",
-      "source_path": "src/routes/admin/+page.graphql",
-      "discovery": "convention"
+      "operationHash": "sha256:3436d01402748d8c4f2f5d2ff5f1173fea89786c8e902de09a24bd03596eaf27",
+      "modulePath": "operations/admin-all-todos.ts",
+      "exportName": "Operation_AdminAllTodos",
+      "source": {
+        "path": "src/routes/admin/+page.graphql",
+        "line": 2,
+        "column": 1
+      },
+      "directives": {
+        "load": true,
+        "live": false
+      },
+      "variableSchema": {
+        "reference": "sha256:3436d01402748d8c4f2f5d2ff5f1173fea89786c8e902de09a24bd03596eaf27#variable-codec-v1",
+        "codecVersion": 1,
+        "variables": []
+      },
+      "liveCoverage": {
+        "requested": false,
+        "finite": true,
+        "kind": "offset",
+        "maxItems": 1000
+      }
     }
   ]
 }

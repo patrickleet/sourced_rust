@@ -3,8 +3,7 @@ use sha2::{Digest, Sha256};
 
 use super::manifest::{refresh_schema_fingerprint, ClientManifest};
 use super::{
-    compile_client, ClientCompileInput, ClientDocument, ClientRouteDiscovery,
-    ClientRouteRegistration, ClientSurfaceSelector,
+    compile_client, ClientCompileInput, ClientDocument, ClientSurfaceSelector,
 };
 
 fn fingerprint(label: &str) -> String {
@@ -1124,11 +1123,6 @@ fn compiles_aliases_composite_wire_identity_live_and_load() {
         )
     );
     assert!(operation.live_operation_hash.is_some());
-    assert_eq!(project.routes[0].route, "/todos");
-    assert_eq!(
-        project.routes[0].discovery,
-        ClientRouteDiscovery::Convention
-    );
 }
 
 #[test]
@@ -1145,6 +1139,70 @@ fn operation_artifact_carries_normalized_source_provenance() {
             "column": 1
         })
     );
+}
+
+#[test]
+fn component_load_compiles_to_a_framework_neutral_island_inventory() {
+    let project = compile_client(ClientCompileInput::new(
+        manifest(),
+        ClientSurfaceSelector::role("user"),
+        vec![ClientDocument::new(
+            "src/lib/todos/TodoSummary.graphql",
+            "query TodoSummary($limit: Int!) @load @live { todos(limit: $limit) { id } }",
+        )],
+    ))
+    .expect("component load island compiles before adapter placement");
+
+    assert!(project.files.iter().all(|file| file.path != "routes.ts"));
+    assert_eq!(project.islands.len(), 1);
+    let island = &project.islands[0];
+    assert_eq!(island.version, 1);
+    assert_eq!(island.operation, "TodoSummary");
+    assert_eq!(island.source.path, "src/lib/todos/TodoSummary.graphql");
+    assert!(island.directives.load);
+    assert!(island.directives.live);
+    assert!(island.live_coverage.finite);
+    assert_eq!(island.variable_schema.variables[0].name, "limit");
+    assert_eq!(island.variable_schema.variables[0].graphql_type, "Int!");
+
+    let inventory: JsonValue =
+        serde_json::from_str(file(&project, "islands.json")).expect("island inventory JSON");
+    assert_eq!(inventory["version"], 1);
+    assert_eq!(inventory["islands"][0]["id"], island.id);
+    assert_eq!(
+        inventory["islands"][0]["operationHash"],
+        island.operation_hash
+    );
+    assert!(file(&project, "islands.ts").contains("DISTRIBUTED_ISLAND_OPERATIONS"));
+    assert!(!file(&project, "islands.json").contains("svelte"));
+    assert!(!file(&project, "islands.ts").contains("svelte"));
+
+    assert!(file(&project, "islands.ts").contains(&island.id));
+    assert!(file(&project, "islands.ts").contains("artifact: Operation_TodoSummary"));
+}
+
+#[test]
+fn multiple_load_islands_may_share_one_future_boundary() {
+    let project = compile_client(
+        ClientCompileInput::new(
+            manifest(),
+            ClientSurfaceSelector::role("user"),
+            vec![
+                ClientDocument::new(
+                    "src/lib/todos/TodoCount.graphql",
+                    "query TodoCount @load { todos { id } }",
+                ),
+                ClientDocument::new(
+                    "src/lib/todos/TodoTitles.graphql",
+                    "query TodoTitles @load { todos { title } }",
+                ),
+            ],
+        ),
+    )
+    .expect("route ownership is no longer one-operation-per-route");
+
+    assert_eq!(project.islands.len(), 2);
+    assert_ne!(project.islands[0].id, project.islands[1].id);
 }
 
 #[test]
@@ -2360,7 +2418,7 @@ fn application_surfaces_are_explicit_and_fingerprint_separate_chunks() {
 }
 
 #[test]
-fn explicit_load_registration_is_the_documented_fallback() {
+fn sveltekit_wrapper_exposes_framework_neutral_islands_without_routes() {
     let input = ClientCompileInput::new(
         manifest(),
         ClientSurfaceSelector::role("user"),
@@ -2369,20 +2427,9 @@ fn explicit_load_registration_is_the_documented_fallback() {
             "query Todos @load { todos { id } }",
         )],
     );
-    let error = compile_client(input.clone()).expect_err("registration required");
-    assert_eq!(error.code, "client.route.registration_required");
-    assert!(error.message.contains("--route Todos=/route-id"));
-
-    let project = compile_client(
-        input.with_route_registrations(vec![ClientRouteRegistration::new("Todos", "/todos")]),
-    )
-    .expect("explicit route");
-    assert_eq!(project.routes[0].route, "/todos");
-    assert_eq!(project.routes[0].discovery, ClientRouteDiscovery::Explicit);
-    let routes = file(&project, "routes.ts");
-    assert!(routes.contains("import { Operation_Todos } from './operations/todos.js';"));
-    assert!(routes.contains("export const DISTRIBUTED_ROUTE_OPERATIONS"));
-    assert!(routes.contains("plan: DISTRIBUTED_ROUTES[0], artifact: Operation_Todos"));
+    let project = compile_client(input).expect("adapter-owned island placement");
+    assert!(project.islands[0].directives.load);
+    assert!(project.files.iter().all(|file| file.path != "routes.ts"));
     let sveltekit = file(&project, "sveltekit.ts");
     assert!(
         sveltekit.contains(
@@ -2391,6 +2438,8 @@ fn explicit_load_registration_is_the_documented_fallback() {
         "{sveltekit}"
     );
     assert!(sveltekit.contains("export function provideDistributed("));
+    assert!(sveltekit.contains("export function retainBoundary<TSession, TProps>("));
+    assert!(sveltekit.contains("return retainDistributedSvelteKitBoundary(instance, context);"));
     assert!(sveltekit.contains("export function useCommands(): GeneratedCommands"));
     assert!(sveltekit.contains("export type GeneratedCommands = Readonly<Record<never, never>>;"));
     assert!(!sveltekit.contains("createGeneratedCommands"));
@@ -4002,27 +4051,8 @@ fn manifest_parser_accepts_mixed_per_model_revision_evidence() {
 }
 
 #[test]
-fn rejects_unknown_and_duplicate_route_registrations() {
-    let error = compile_client(
-        input("query Todos { todos { id } }")
-            .with_route_registrations(vec![ClientRouteRegistration::new("Missing", "/missing")]),
-    )
-    .expect_err("unknown registration");
-    assert_eq!(error.code, "client.route.unknown_registration");
-
-    let error = compile_client(
-        input("query Todos { todos { id } }").with_route_registrations(vec![
-            ClientRouteRegistration::new("Todos", "/one"),
-            ClientRouteRegistration::new("Todos", "/two"),
-        ]),
-    )
-    .expect_err("duplicate registration");
-    assert_eq!(error.code, "client.route.duplicate_registration");
-}
-
-#[test]
-fn source_paths_cannot_inject_generated_typescript() {
-    let project = compile_client(ClientCompileInput::new(
+fn source_paths_fail_closed_before_they_can_inject_generated_typescript() {
+    let error = compile_client(ClientCompileInput::new(
         manifest(),
         ClientSurfaceSelector::role("user"),
         vec![ClientDocument::new(
@@ -4030,14 +4060,7 @@ fn source_paths_cannot_inject_generated_typescript() {
             "query Safe { todos { id } }",
         )],
     ))
-    .expect("compile adversarial source path");
-    let module = file(&project, &project.operations[0].module_path);
-
-    assert!(module.starts_with("/** GENERATED by distributed client. Do not edit. */\n"));
-    assert!(!module.contains("compromised"));
-    assert!(
-        !module.contains("\"source\""),
-        "unsafe provenance must be omitted from executable artifacts"
-    );
-    assert!(file(&project, "manifest.json").contains("\\nexport const compromised"));
+    .expect_err("reject adversarial source path");
+    assert_eq!(error.code, "client.documents.invalid_path");
+    assert!(!error.message.contains("export const compromised"));
 }

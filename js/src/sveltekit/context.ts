@@ -5,6 +5,17 @@ import type {
 	ReplicaSnapshot
 } from '../replica/index.js';
 import type { GraphqlVariables } from '../types.js';
+import {
+	defineDistributedBoundaryBinding,
+	defineDistributedBoundaryOperation,
+	type DistributedBoundaryOperation,
+	type DistributedBoundaryPlan,
+	type DistributedBoundaryVariableSources
+} from './boundary-variables.js';
+import type {
+	DistributedSvelteKitBoundaryInstance,
+	SveltekitBoundaryRetention
+} from './boundary-lifecycle.js';
 import type {
 	DistributedSvelteKitClient,
 	SveltekitBoundOperation
@@ -68,6 +79,17 @@ export function useDistributedSvelteKitCommands<TCommands>(): TCommands {
 	return useDistributedSvelteKitClient<TCommands>().commands;
 }
 
+/** Retain the generated selections owned by the nearest page/layout instance. */
+export function retainDistributedSvelteKitBoundary<TSession, TProps>(
+	instance: DistributedSvelteKitBoundaryInstance,
+	context: import('./boundary-variables.js').DistributedBoundaryVariableContext<
+		TSession,
+		TProps
+	>
+): SveltekitBoundaryRetention {
+	return useDistributedSvelteKitClient<unknown>().retainBoundary(instance, context);
+}
+
 /**
  * Define one SSR-safe generated operation wrapper.
  *
@@ -101,6 +123,24 @@ export function defineDistributedSvelteKitOperation<
 			return useDistributedSvelteKitClient<unknown>()
 				.operation(artifact)
 				.prefetch(variables);
+		},
+		boundary<
+			TSession = unknown,
+			TProps = Readonly<Record<string, unknown>>
+		>(
+			plan: DistributedBoundaryPlan,
+			sources: DistributedBoundaryVariableSources<TVariables>
+		): DistributedBoundaryOperation<TData, TVariables, TSession, TProps> {
+			return defineDistributedBoundaryOperation(
+				plan,
+				artifact,
+				defineDistributedBoundaryBinding<
+					TData,
+					TVariables,
+					TSession,
+					TProps
+				>(artifact, sources)
+			);
 		}
 	});
 }

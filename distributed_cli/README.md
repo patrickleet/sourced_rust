@@ -233,11 +233,13 @@ intersection across every root, relationship selection, and aggregate use.
 The current query surface supports complete and offset-window roots; cursor
 artifacts are not certified and therefore fail closed to revalidation.
 
-`@load` is discovered automatically for `src/routes/**/+page.graphql`. A
-co-located document with a different filename can use the explicit fallback
-`--route OperationName=/route`. Unsupported or unprovable selections fail at
-build time with their source location; the compiler does not emit a partial
-normalization plan.
+`@load` and `@live` compile into framework-neutral island metadata. Rendering
+adapters own placement: the SvelteKit adapter discovers route documents and
+sibling component documents, promotes them to page/layout boundaries, and
+supports typed explicit boundary registration when static discovery cannot
+prove ownership. Unsupported or unprovable selections fail at build time with
+their source location; the compiler does not emit a partial normalization plan
+or an adapter-specific route registry.
 
 ## `distributed describe` — manifest as JSON
 

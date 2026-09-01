@@ -367,6 +367,9 @@
 		{:else}
 			Reading as <strong>anonymous</strong> (e2e-ui-public). Sign in to post.
 		{/if}
+		<a class="ch-info-link" data-testid="chat-child-link" href="/chat/about">
+			About this room
+		</a>
 	</PageHeader>
 
 	{#if data.gqlError}
@@ -529,6 +532,14 @@
 		background: transparent;
 		border: 1px solid var(--wf-line, #e2e0d9);
 		color: var(--wf-ink-soft, #5c5c56);
+	}
+
+	.ch-info-link {
+		margin-left: 0.45rem;
+		color: var(--wf-accent, #3d5a80);
+		font-weight: 650;
+		text-decoration-thickness: 1px;
+		text-underline-offset: 0.18em;
 	}
 
 	.ch-status[data-state='active'] {
