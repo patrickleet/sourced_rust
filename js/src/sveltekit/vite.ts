@@ -372,9 +372,9 @@ export function distributedSvelteKit(
 			await validateResolvedPaths(resolved);
 			/*
 			 * The lifecycle has already built the active generation before it starts
-			 * this UI process. A replacement process likewise serves the generation
-			 * staged by the lifecycle; compiling again here would race the supervisor
-			 * and can prevent the replacement from reaching its readiness probe.
+			 * this UI process. The supervisor activates later generations atomically
+			 * while this server stays available; compiling again here would race that
+			 * owner and can prevent the UI from reaching its readiness probe.
 			 */
 			/*
 			 * SvelteKit post-build analysis loads Vite config in an isolated

@@ -916,9 +916,11 @@ fn lifecycle_dev(
                 external_cwd,
                 env: ui_env,
                 url: Some(ui_url.clone()),
-                restart_on: lifecycle_owns_client_compile
-                    .then(|| BTreeSet::from([APPLICATION_NODE.to_string()]))
-                    .unwrap_or_default(),
+                // The lifecycle atomically activates generated client files and
+                // the browser lifecycle owns the one document reload. Restarting
+                // Vite before activation disconnects its HMR socket and can race
+                // that controlled reload with an uncoordinated browser retry.
+                restart_on: BTreeSet::new(),
                 ready_after_ms: 100,
                 ready: Some(LifecycleDevProbe {
                     program: executable.to_string_lossy().into_owned(),
@@ -1206,6 +1208,37 @@ mod tests {
                     "ui/src/routes/[[itemId]]/+page.graphql.bindings.js"
                 ))
         );
+    }
+
+    #[test]
+    fn lifecycle_owned_ui_stays_serving_until_generation_activation() {
+        let project = tempfile::tempdir().unwrap();
+        let ui = project.path().join("ui");
+        fs::create_dir_all(&ui).unwrap();
+        let executable = std::env::current_exe().unwrap();
+        let config = lifecycle_dev(
+            project.path(),
+            &RuntimeTarget {
+                package: "fixture-runner".into(),
+                binary: "fixture".into(),
+            },
+            Some(&ui),
+            None,
+            true,
+            &executable,
+            &[],
+        );
+
+        config.validate().unwrap();
+        let process = &config.processes["ui"];
+        assert_eq!(
+            process
+                .env
+                .get("DISTRIBUTED_LIFECYCLE_OWNS_CLIENT_COMPILE")
+                .map(String::as_str),
+            Some("1")
+        );
+        assert!(process.restart_on.is_empty());
     }
 
     #[test]
