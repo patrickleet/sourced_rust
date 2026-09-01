@@ -294,7 +294,7 @@ export function distributedSvelteKit(
 	options: DistributedSvelteKitViteOptions
 ): DistributedSvelteKitVitePlugin {
 	const lifecycleOwnsCompile =
-		process.env.DISTRIBUTED_LIFECYCLE_DIR !== undefined;
+		process.env.DISTRIBUTED_LIFECYCLE_OWNS_CLIENT_COMPILE === '1';
 	let resolved: ResolvedIntegration | undefined;
 	let dirty = false;
 	let running: Promise<void> | undefined;
@@ -371,13 +371,11 @@ export function distributedSvelteKit(
 			frameworkDist = localFrameworkDist(config.root);
 			await validateResolvedPaths(resolved);
 			/*
-			 * `distributed dev` has already staged this generation and owns every
-			 * compiler input through its application watcher. Recompiling here would
-			 * race the API process for Cargo and mutate generated output outside the
-			 * lifecycle transaction. The virtual modules still resolve the staged
-			 * files, while compiler inputs below are held for the supervisor reload.
+			 * A lifecycle-owned client compiles once as its replacement UI process
+			 * starts. Subsequent document and binding edits are held for the
+			 * supervisor, which restarts that process inside the coherent generation
+			 * transition instead of racing this compiler against Cargo.
 			 */
-			if (lifecycleOwnsCompile) return;
 			/*
 			 * SvelteKit post-build analysis loads Vite config in an isolated
 			 * worker marked with SVELTEKIT_FORK. That pass reads framework
@@ -459,7 +457,7 @@ export function distributedSvelteKit(
 					context.server.moduleGraph.invalidateModule(module);
 				}
 			}
-			if (process.env.DISTRIBUTED_LIFECYCLE_DIR === undefined) {
+			if (!lifecycleOwnsCompile) {
 				context.server.ws.send({ type: 'full-reload', path: '*' });
 			}
 			reloadedGeneration = completedGeneration;

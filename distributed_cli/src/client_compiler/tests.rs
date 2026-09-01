@@ -1745,7 +1745,7 @@ fn emits_executable_filter_order_and_pagination_plans_with_hidden_dependencies()
     assert!(generated.contains("type Operation_Planned_Input_todo_order_by_Direction ="));
     assert!(generated.contains("readonly \"order\"?: Operation_Planned_Input_todo_order_by | readonly Operation_Planned_Input_todo_order_by[] | null;"));
     assert!(generated.contains("\"variableCodec\": {"));
-    assert!(generated.contains("\"version\": 1"));
+    assert!(generated.contains("\"version\": 2"));
     assert!(generated.contains("\"maxBoolWidth\": 256"));
     assert!(generated.contains("\"maxInList\": 1000"));
     let provenance: JsonValue =

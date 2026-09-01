@@ -1047,12 +1047,19 @@ test('same-process Vite instances coalesce one shared startup generation', async
 test('supervised Vite defers generated-client compilation to the lifecycle', async (t) => {
 	const { root, script, log } = await fixture(t);
 	const previousLifecycle = process.env.DISTRIBUTED_LIFECYCLE_DIR;
+	const previousClientOwnership = process.env.DISTRIBUTED_LIFECYCLE_OWNS_CLIENT_COMPILE;
 	process.env.DISTRIBUTED_LIFECYCLE_DIR = join(root, '.distributed', 'lifecycle');
+	process.env.DISTRIBUTED_LIFECYCLE_OWNS_CLIENT_COMPILE = '1';
 	t.after(() => {
 		if (previousLifecycle === undefined) {
 			delete process.env.DISTRIBUTED_LIFECYCLE_DIR;
 		} else {
 			process.env.DISTRIBUTED_LIFECYCLE_DIR = previousLifecycle;
+		}
+		if (previousClientOwnership === undefined) {
+			delete process.env.DISTRIBUTED_LIFECYCLE_OWNS_CLIENT_COMPILE;
+		} else {
+			process.env.DISTRIBUTED_LIFECYCLE_OWNS_CLIENT_COMPILE = previousClientOwnership;
 		}
 	});
 	const plugin = distributedSvelteKit(pluginOptions(root, script));
@@ -1065,7 +1072,8 @@ test('supervised Vite defers generated-client compilation to the lifecycle', asy
 	};
 	plugin.configureServer(server);
 
-	assert.deepEqual(await commandLog(log), []);
+	const startupCommands = await commandLog(log);
+	assert.equal(startupCommands.length, 4, 'replacement startup compiles all client surfaces once');
 	assert.deepEqual(added, []);
 	assert.deepEqual(
 		await plugin.handleHotUpdate({
@@ -1075,7 +1083,19 @@ test('supervised Vite defers generated-client compilation to the lifecycle', asy
 		[]
 	);
 	await plugin.watchChange(join(root, 'src/routes/admin/+page.graphql'));
-	assert.deepEqual(await commandLog(log), []);
+	assert.deepEqual(await commandLog(log), startupCommands);
+	assert.deepEqual(
+		await plugin.handleHotUpdate({
+			file: join(root, 'src/routes/todos/+page.graphql.bindings.js'),
+			server
+		}),
+		[]
+	);
+	assert.deepEqual(
+		await commandLog(log),
+		startupCommands,
+		'binding sidecars are held for the same lifecycle-owned restart as documents'
+	);
 	await plugin.closeBundle();
 });
 
