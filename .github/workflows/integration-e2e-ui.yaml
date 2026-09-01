@@ -451,6 +451,9 @@ jobs:
           # and the AuthStack-generated login-client PAT. The residual Secret
           # is deliberately outside the Cluster/Environment source trees: it
           # is local runtime state, just like the source PAT used above.
+          # The Environment reconcile is still intentionally deferred here,
+          # so create only its target namespace before writing runtime state.
+          k create namespace local --dry-run=client -o yaml | k apply -f -
           for attempt in $(seq 1 120); do
             login_pat="$(k -n auth get secret login-client -o jsonpath='{.data.pat}' 2>/dev/null || true)"
             if [ -n "$login_pat" ]; then
