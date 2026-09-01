@@ -1130,7 +1130,7 @@ async function compileTransaction(
 				hadAdapterOutput: await realDirectoryExists(client.adapterOut)
 			});
 		}
-		const plans = await analyzeStagedBoundaries(integration, staged);
+		const plans = await analyzeStagedBoundaries(integration, transaction, staged);
 		const plansByModule = new Map(plans.map((plan) => [plan.module, plan]));
 		for (const item of staged) {
 			const plan = plansByModule.get(item.client.module);
@@ -1205,7 +1205,7 @@ async function checkTransaction(
 			await validateGeneratedEntrypoint(integration.cwd, output, client.module);
 			staged.push(Object.freeze({ client, output }));
 		}
-		const plans = await analyzeStagedBoundaries(integration, staged);
+		const plans = await analyzeStagedBoundaries(integration, transaction, staged);
 		const plansByModule = new Map(plans.map((plan) => [plan.module, plan]));
 		for (const [index, client] of integration.clients.entries()) {
 			const output = staged[index]!.output;
@@ -1275,6 +1275,7 @@ async function validateAdapterBoundaryPlan(
 
 async function analyzeStagedBoundaries(
 	integration: ResolvedIntegration,
+	transactionRoot: string,
 	staged: readonly Readonly<{ client: ResolvedClient; output: string }>[]
 ): Promise<readonly DistributedSvelteKitBoundaryPlan[]> {
 	return await analyzeDistributedSvelteKitBoundaries({
@@ -1285,7 +1286,7 @@ async function analyzeStagedBoundaries(
 		clients: await Promise.all(
 			staged.map(async ({ client, output }) => ({
 				module: client.module,
-				inventory: await readIslandInventory(integration.cwd, output),
+				inventory: await readIslandInventory(transactionRoot, output),
 				explicitBoundaries: client.boundaries
 			}))
 		)
@@ -1293,15 +1294,15 @@ async function analyzeStagedBoundaries(
 }
 
 async function readIslandInventory(
-	cwd: string,
+	transactionRoot: string,
 	output: string
 ): Promise<DistributedIslandInventory> {
 	const path = join(output, 'islands.json');
 	const metadata = await lstat(path);
 	if (metadata.isSymbolicLink() || !metadata.isFile()) {
-		throw new Error(`Distributed island inventory ${portablePath(relative(cwd, path))} must be a regular file`);
+		throw new Error(`Distributed island inventory ${portablePath(relative(transactionRoot, path))} must be a regular file`);
 	}
-	const canonicalRoot = await realpath(cwd);
+	const canonicalRoot = await realpath(transactionRoot);
 	const canonical = await realpath(path);
 	if (!isWithin(canonicalRoot, canonical)) {
 		throw new Error('Distributed island inventory escaped the project root');

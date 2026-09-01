@@ -1046,9 +1046,11 @@ test('same-process Vite instances coalesce one shared startup generation', async
 
 test('supervised Vite defers generated-client compilation to the lifecycle', async (t) => {
 	const { root, script, log } = await fixture(t);
+	const lifecycleRoot = await mkdtemp(join(tmpdir(), 'distributed-supervisor-'));
+	t.after(() => rm(lifecycleRoot, { recursive: true, force: true }));
 	const previousLifecycle = process.env.DISTRIBUTED_LIFECYCLE_DIR;
 	const previousClientOwnership = process.env.DISTRIBUTED_LIFECYCLE_OWNS_CLIENT_COMPILE;
-	process.env.DISTRIBUTED_LIFECYCLE_DIR = join(root, '.distributed', 'lifecycle');
+	process.env.DISTRIBUTED_LIFECYCLE_DIR = lifecycleRoot;
 	process.env.DISTRIBUTED_LIFECYCLE_OWNS_CLIENT_COMPILE = '1';
 	t.after(() => {
 		if (previousLifecycle === undefined) {
