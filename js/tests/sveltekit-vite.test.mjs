@@ -1075,7 +1075,11 @@ test('supervised Vite defers generated-client compilation to the lifecycle', asy
 	plugin.configureServer(server);
 
 	const startupCommands = await commandLog(log);
-	assert.equal(startupCommands.length, 4, 'replacement startup compiles all client surfaces once');
+	assert.deepEqual(
+		startupCommands,
+		[],
+		'lifecycle-owned startup serves the generation already built by the supervisor'
+	);
 	assert.deepEqual(added, []);
 	assert.deepEqual(
 		await plugin.handleHotUpdate({

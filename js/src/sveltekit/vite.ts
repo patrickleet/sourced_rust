@@ -371,10 +371,10 @@ export function distributedSvelteKit(
 			frameworkDist = localFrameworkDist(config.root);
 			await validateResolvedPaths(resolved);
 			/*
-			 * A lifecycle-owned client compiles once as its replacement UI process
-			 * starts. Subsequent document and binding edits are held for the
-			 * supervisor, which restarts that process inside the coherent generation
-			 * transition instead of racing this compiler against Cargo.
+			 * The lifecycle has already built the active generation before it starts
+			 * this UI process. A replacement process likewise serves the generation
+			 * staged by the lifecycle; compiling again here would race the supervisor
+			 * and can prevent the replacement from reaching its readiness probe.
 			 */
 			/*
 			 * SvelteKit post-build analysis loads Vite config in an isolated
@@ -383,6 +383,7 @@ export function distributedSvelteKit(
 			 * the owning build's physical project lock and duplicate generation.
 			 */
 			if (!isMainThread && process.env.SVELTEKIT_FORK === 'true') return;
+			if (lifecycleOwnsCompile) return;
 			lock = await acquireCompilerLock(resolved.cwd);
 			try {
 				await compile('Vite startup', true);
