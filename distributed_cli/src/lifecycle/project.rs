@@ -617,15 +617,33 @@ fn add_client_compiler_sources(
     for client in inventory.clients {
         for document in client.documents {
             let document_source = rooted(&document);
-            let document_source = if ui.join(&document).is_file() {
-                Pattern::escape(&document_source)
+            if ui.join(&document).is_file() {
+                // The document is guaranteed to match this pattern, while an
+                // optional `.bindings.js` sibling is included without making
+                // that sidecar mandatory. Escaping preserves bracketed
+                // SvelteKit route segments as literal path components.
+                sources.insert(format!("{}*", Pattern::escape(&document_source)));
             } else {
-                document_source
-            };
-            // The document is guaranteed to match this pattern, while an
-            // optional `.bindings.js` sibling is included in the same bounded
-            // lifecycle source without making that sidecar mandatory.
-            sources.insert(format!("{document_source}*"));
+                // Client declarations may place their wildcard in a directory
+                // component, while lifecycle catalog globs deliberately may
+                // only vary the final component. Hash the bounded stable
+                // directory so document and sidecar additions are observed.
+                let stable = document.split(['*', '?', '[']).next().unwrap_or(&document);
+                let directory = if stable.ends_with('/') {
+                    stable.trim_end_matches('/')
+                } else {
+                    Path::new(stable)
+                        .parent()
+                        .and_then(Path::to_str)
+                        .unwrap_or_default()
+                };
+                if directory.is_empty() {
+                    return Err(LifecycleError::new(format!(
+                        "client document pattern `{document}` has no bounded source directory"
+                    )));
+                }
+                sources.insert(rooted(directory));
+            }
         }
     }
     Ok(true)
@@ -1141,9 +1159,15 @@ mod tests {
         let ui = project.path().join("ui");
         fs::create_dir_all(&ui).unwrap();
         fs::create_dir_all(ui.join("src/routes/[[itemId]]")).unwrap();
+        fs::create_dir_all(ui.join("src/routes/chat")).unwrap();
         fs::write(
             ui.join("src/routes/[[itemId]]/+page.graphql"),
             "query Item { item { id } }\n",
+        )
+        .unwrap();
+        fs::write(
+            ui.join("src/routes/chat/+layout.gql"),
+            "query Chat { chat { id } }\n",
         )
         .unwrap();
         fs::write(
@@ -1170,7 +1194,7 @@ mod tests {
             sources,
             BTreeSet::from([
                 "ui/distributed.clients.json".to_string(),
-                "ui/src/routes/*/+page.graphql*".to_string(),
+                "ui/src/routes".to_string(),
                 "ui/src/routes/[[][[]itemId[]][]]/+page.graphql*".to_string(),
                 "ui/src/routes/chat/+layout.gql*".to_string(),
             ])
