@@ -24,18 +24,25 @@ let cell = AggregateCell::<Todo>::new_with_snapshots(shard, 1)?
     .mount(complete())
     .with_celld_outbox(CelldOutbox::from_env(&env, "OUTBOX")?);
 
-cell.persist_and_drain_outbox(&env, &storage, |state| {
+let drain = cell.persist_and_drain_outbox(&env, &storage, |state| {
     persist_cell_state(&sql, state)
 })
 .await?;
+for error in drain.deferred {
+    worker::console_error!("outbox drain deferred: {error}");
+}
 ```
 
 The same `persist_and_drain_outbox` call runs after a command and from the
 Durable Object alarm. It persists the full state before Queue egress, arms the
 watchdog before publishing, persists any settlements even when a later store
 operation errors, and clears the alarm only when no retryable rows remain.
-Released Queue outcomes stay pending for the alarm and do not turn an already
-committed command into an HTTP error.
+Failure to persist that first state or arm its watchdog rejects the request.
+After both are established, the command is durably accepted: Queue, settlement,
+or later alarm-operation failures are returned in
+`CelldOutboxDrainOutcome::deferred` for diagnostics while the already-armed
+watchdog owns retry. Released Queue outcomes likewise stay pending. Neither can
+turn an already committed command into an HTTP error.
 
 Queue is intentionally not modeled as a full Distributed `Bus`: it has one
 consumer and no fanout. `CelldQueueRelay` is generic over `MessagePublisher`,

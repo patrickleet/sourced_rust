@@ -191,14 +191,16 @@ where
 
     /// Persist this cell's complete state, durably arm its Queue watchdog,
     /// dispatch pending outbox rows, persist settlements, and rearm or clear
-    /// the watchdog according to the remaining backlog.
+    /// the watchdog according to the remaining backlog. Once the initial state
+    /// and watchdog are durable, later failures are returned as deferred drain
+    /// diagnostics rather than as a rejection of the committed command.
     #[cfg(feature = "workers-rs")]
     pub async fn persist_and_drain_outbox<F, E>(
         &self,
         env: &worker::Env,
         storage: &worker::Storage,
         persist: F,
-    ) -> Result<crate::OutboxDispatchOutcome, crate::bus::TransportError>
+    ) -> Result<super::celld_outbox::CelldOutboxDrainOutcome, crate::bus::TransportError>
     where
         F: Fn(&DurableAggregateCellState) -> Result<(), E>,
         E: std::fmt::Display,

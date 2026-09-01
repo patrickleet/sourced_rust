@@ -28,6 +28,29 @@ const STATE_DDL: &str = "CREATE TABLE IF NOT EXISTS cell_state (
   body TEXT NOT NULL
 )";
 
+async fn persist_and_drain_cell<A>(
+    sql: &SqlStorage,
+    storage: &Storage,
+    env: &Env,
+    cell: &AggregateCell<A>,
+) -> Result<()>
+where
+    A: distributed::Aggregate + Send + Sync + 'static,
+{
+    let outcome = cell
+        .persist_and_drain_outbox(env, storage, |state| persist_cell_state(sql, state))
+        .await
+        .map_err(|error| Error::RustError(error.to_string()))?;
+    for error in outcome.deferred {
+        worker::console_error!(
+            "celld outbox immediate drain deferred for {}: {}",
+            cell.instance_name(),
+            error
+        );
+    }
+    Ok(())
+}
+
 #[durable_object]
 pub struct TodoCell {
     cell: AggregateCell<Todo>,
@@ -125,12 +148,7 @@ impl DurableObject for TodoCell {
         if let Err(error) = restore_cell_state(&self.sql, &self.cell) {
             return json_status(json!({ "error": error }), 500);
         }
-        self.cell
-            .persist_and_drain_outbox(&self.env, &self.storage, |state| {
-                persist_cell_state(&self.sql, state)
-            })
-            .await
-            .map_err(|error| Error::RustError(error.to_string()))?;
+        persist_and_drain_cell(&self.sql, &self.storage, &self.env, &self.cell).await?;
         Response::ok("ok")
     }
 }
@@ -204,12 +222,7 @@ impl DurableObject for ChatCell {
         if let Err(error) = restore_cell_state(&self.sql, &self.cell) {
             return json_status(json!({ "error": error }), 500);
         }
-        self.cell
-            .persist_and_drain_outbox(&self.env, &self.storage, |state| {
-                persist_cell_state(&self.sql, state)
-            })
-            .await
-            .map_err(|error| Error::RustError(error.to_string()))?;
+        persist_and_drain_cell(&self.sql, &self.storage, &self.env, &self.cell).await?;
         Response::ok("ok")
     }
 }
@@ -347,16 +360,12 @@ async fn post_chat(
     {
         Ok(dispatch) => {
             seal_chat_from_load(cell).await;
-            cell.persist_and_drain_outbox(env, storage, |state| persist_cell_state(sql, state))
-                .await
-                .map_err(|error| Error::RustError(error.to_string()))?;
+            persist_and_drain_cell(sql, storage, env, cell).await?;
             let events = projection_events_wire(cell, dispatch.causation_id())?;
             wait_path_ok(dispatch.payload().clone(), &dispatch, 201, events)
         }
         Err(error) => {
-            cell.persist_and_drain_outbox(env, storage, |state| persist_cell_state(sql, state))
-                .await
-                .map_err(|error| Error::RustError(error.to_string()))?;
+            persist_and_drain_cell(sql, storage, env, cell).await?;
             map_cell_error(error, cell)
         }
     }
@@ -502,9 +511,7 @@ async fn create_todo(
     {
         Ok(dispatch) => {
             seal_from_load(cell).await;
-            cell.persist_and_drain_outbox(env, storage, |state| persist_cell_state(sql, state))
-                .await
-                .map_err(|error| Error::RustError(error.to_string()))?;
+            persist_and_drain_cell(sql, storage, env, cell).await?;
             let events = projection_events_wire(cell, dispatch.causation_id())?;
             wait_path_ok(
                 http_from_command(id, dispatch.payload(), &title),
@@ -514,9 +521,7 @@ async fn create_todo(
             )
         }
         Err(error) => {
-            cell.persist_and_drain_outbox(env, storage, |state| persist_cell_state(sql, state))
-                .await
-                .map_err(|error| Error::RustError(error.to_string()))?;
+            persist_and_drain_cell(sql, storage, env, cell).await?;
             map_cell_error(error, cell)
         }
     }
@@ -558,9 +563,7 @@ async fn transition_todo(
     {
         Ok(dispatch) => {
             seal_from_load(cell).await;
-            cell.persist_and_drain_outbox(env, storage, |state| persist_cell_state(sql, state))
-                .await
-                .map_err(|error| Error::RustError(error.to_string()))?;
+            persist_and_drain_cell(sql, storage, env, cell).await?;
             let events = projection_events_wire(cell, dispatch.causation_id())?;
             let title = cell
                 .load()
@@ -577,9 +580,7 @@ async fn transition_todo(
             )
         }
         Err(error) => {
-            cell.persist_and_drain_outbox(env, storage, |state| persist_cell_state(sql, state))
-                .await
-                .map_err(|error| Error::RustError(error.to_string()))?;
+            persist_and_drain_cell(sql, storage, env, cell).await?;
             map_cell_error(error, cell)
         }
     }
