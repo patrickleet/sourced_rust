@@ -66,18 +66,19 @@ const RequiredRevalidationCommand = Object.freeze({
 });
 
 const NoVariables = Object.freeze({
-	version: 1,
+	version: 2,
 	limits: Object.freeze({
 		maxDepth: 8,
 		maxBoolWidth: 256,
 		maxInList: 1_000
 	}),
 	variables: Object.freeze({}),
+	defaults: Object.freeze({}),
 	inputs: Object.freeze({})
 });
 
 const TodoByIdVariables = Object.freeze({
-	version: 1,
+	version: 2,
 	limits: NoVariables.limits,
 	variables: Object.freeze({
 		id: Object.freeze({
@@ -87,6 +88,7 @@ const TodoByIdVariables = Object.freeze({
 			nullable: false
 		})
 	}),
+	defaults: Object.freeze({}),
 	inputs: Object.freeze({})
 });
 

@@ -1795,7 +1795,8 @@ fn generated_variable_codec_types_recursive_inputs_and_custom_scalars() {
 
     let artifact = operation_artifact(&project);
     assert_eq!(artifact["protocol"]["trustedPresets"], json!([]));
-    assert_eq!(artifact["variableCodec"]["version"], 1);
+    assert_eq!(artifact["variableCodec"]["version"], 2);
+    assert_eq!(artifact["variableCodec"]["defaults"], json!({}));
     assert_eq!(
         artifact["variableCodec"]["limits"],
         json!({
@@ -2339,12 +2340,26 @@ fn compiles_nested_filter_and_order_variables_with_recursive_value_sources() {
 }
 
 #[test]
-fn rejects_variable_defaults_until_cache_identity_can_apply_them() {
-    let error = compile_client(input(
-        "query Defaulted($limit: Int = 10) { todos(limit: $limit) { id } }",
+fn compiles_variable_defaults_into_query_types_identity_and_island_plan() {
+    let project = compile_client(input(
+        "query Defaulted($limit: Int! = 10) @load { todos(limit: $limit) { id } }",
     ))
-    .expect_err("defaults would currently diverge from replica argument identity");
-    assert_eq!(error.code, "client.variable.default_unsupported");
+    .expect("defaults are compiler-owned inputs");
+    let operation = &project.operations[0];
+    let generated = file(&project, &operation.module_path);
+    assert!(generated.contains("readonly \"limit\"?: number;"));
+    assert!(generated.contains("query Defaulted($limit: Int! = 10)"));
+
+    let artifact = operation_artifact(&project);
+    assert_eq!(artifact["variableCodec"]["version"], 2);
+    assert_eq!(artifact["variableCodec"]["defaults"], json!({"limit": 10}));
+
+    let islands: JsonValue =
+        serde_json::from_str(file(&project, "islands.json")).expect("island inventory JSON");
+    assert_eq!(
+        islands["islands"][0]["variableSchema"]["variables"][0]["defaultValue"],
+        10
+    );
 }
 
 #[test]

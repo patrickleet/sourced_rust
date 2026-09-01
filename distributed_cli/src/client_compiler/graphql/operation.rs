@@ -467,7 +467,16 @@ pub(super) fn render_compiled_argument(value: &CompiledArgument) -> String {
 }
 
 pub(super) fn render_variable(variable: &CompiledVariable) -> Result<String, ClientCompileError> {
-    Ok(format!("${}: {}", variable.name, variable.graphql_type))
+    Ok(format!(
+        "${}: {}{}",
+        variable.name,
+        variable.graphql_type,
+        variable
+            .default
+            .as_ref()
+            .map(|default| format!(" = {}", default.wire))
+            .unwrap_or_default()
+    ))
 }
 
 pub(super) fn render_value(

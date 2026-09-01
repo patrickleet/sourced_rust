@@ -1,4 +1,5 @@
-import { lstat, readFile, readdir } from 'node:fs/promises';
+import { createHash } from 'node:crypto';
+import { lstat, readFile, readdir, realpath } from 'node:fs/promises';
 import {
 	dirname,
 	extname,
@@ -9,15 +10,19 @@ import {
 	resolve,
 	sep
 } from 'node:path';
+import { pathToFileURL } from 'node:url';
 
 import { parse } from 'svelte/compiler';
 
 import type { DistributedBoundaryVariableSource } from '../boundary-variables.js';
+import { isGraphqlIslandBindings } from '../island-bindings.js';
 
 const BOUNDARY_PLAN_VERSION = 1;
+const VARIABLE_CODEC_VERSION = 2;
 const MAX_COMPONENTS = 4_096;
 const MAX_ISLANDS = 4_096;
 const MAX_COMPONENT_BYTES = 2 * 1024 * 1024;
+const MAX_BINDINGS_BYTES = 256 * 1024;
 const MAX_GRAPH_EDGES = 32_768;
 
 type AstNode = Readonly<Record<string, unknown>> & {
@@ -58,6 +63,7 @@ export type DistributedIslandPlanInput = Readonly<{
 		variables: readonly Readonly<{
 			name: string;
 			graphqlType: string;
+			defaultValue?: unknown;
 		}>[];
 	}>;
 }>;
@@ -167,8 +173,10 @@ type BoundaryRoot = Readonly<{
 }>;
 
 /**
- * Analyze Svelte component reachability without evaluating application code.
- * The returned plan is deterministic and contains project-relative paths only.
+ * Analyze Svelte component reachability without evaluating application
+ * components. Colocated, bounded GraphQL binding sidecars are the only app
+ * modules evaluated. The returned plan is deterministic and contains
+ * project-relative paths only.
  */
 export async function analyzeDistributedSvelteKitBoundaries(
 	options: DistributedSvelteKitBoundaryAnalysisOptions
@@ -209,6 +217,7 @@ export async function analyzeDistributedSvelteKitBoundaries(
 	}
 
 	const plans: DistributedSvelteKitBoundaryPlan[] = [];
+	const colocatedBindings = await loadColocatedBindings(cwd, sourceOwners.keys());
 	for (const client of [...options.clients].sort((left, right) =>
 		left.module.localeCompare(right.module)
 	)) {
@@ -308,7 +317,7 @@ export async function analyzeDistributedSvelteKitBoundaries(
 						root.path,
 						'explicit',
 						false,
-						registration.variables
+						bindingSources(entry, registration.variables, colocatedBindings)
 					)
 				);
 				placed.add(entry.island.id);
@@ -326,7 +335,11 @@ export async function analyzeDistributedSvelteKitBoundaries(
 						root.path,
 						'route_document',
 						false,
-						explicitByIdentity.get(`${root.id}\u0000${entry.island.operation}`)?.variables
+						bindingSources(
+							entry,
+							explicitByIdentity.get(`${root.id}\u0000${entry.island.operation}`)?.variables,
+							colocatedBindings
+						)
 					)
 				);
 				placed.add(entry.island.id);
@@ -350,7 +363,11 @@ export async function analyzeDistributedSvelteKitBoundaries(
 							component,
 							'static_component_import',
 							true,
-							explicitByIdentity.get(`${root.id}\u0000${entry.island.operation}`)?.variables
+							bindingSources(
+								entry,
+								explicitByIdentity.get(`${root.id}\u0000${entry.island.operation}`)?.variables,
+								colocatedBindings
+							)
 						)
 					);
 					placed.add(entry.island.id);
@@ -386,6 +403,79 @@ export async function analyzeDistributedSvelteKitBoundaries(
 		}));
 	}
 	return Object.freeze(plans);
+}
+
+function bindingSources(
+	entry: Readonly<{ source: string; island: DistributedIslandPlanInput }>,
+	explicit: Readonly<Record<string, DistributedBoundaryVariableSource>> | undefined,
+	colocated: ReadonlyMap<string, Readonly<Record<string, DistributedBoundaryVariableSource>>>
+): Readonly<Record<string, DistributedBoundaryVariableSource>> | undefined {
+	const sidecar = colocated.get(entry.source);
+	if (explicit !== undefined && sidecar !== undefined) {
+		throw diagnostic(
+			'distributed.island.variable_binding_conflict',
+			entry.source,
+			entry.island.source.line,
+			entry.island.source.column,
+			`operation ${entry.island.operation} has both centralized and colocated variable bindings; remove the screen behavior from distributed.config and keep ${entry.source}.bindings.js`
+		);
+	}
+	return sidecar ?? explicit;
+}
+
+async function loadColocatedBindings(
+	cwd: string,
+	sources: Iterable<string>
+): Promise<ReadonlyMap<string, Readonly<Record<string, DistributedBoundaryVariableSource>>>> {
+	const canonicalRoot = await realpath(cwd);
+	const bindings = new Map<
+		string,
+		Readonly<Record<string, DistributedBoundaryVariableSource>>
+	>();
+	for (const source of [...new Set(sources)].sort()) {
+		const path = contained(cwd, `${source}.bindings.js`, 'GraphQL island bindings');
+		let metadata;
+		try {
+			metadata = await lstat(path);
+		} catch (error) {
+			if (isMissing(error)) continue;
+			throw error;
+		}
+		if (!metadata.isFile() || metadata.isSymbolicLink()) {
+			throw new Error(
+				`[distributed.island.bindings_invalid] ${source}.bindings.js must be a regular project-local file`
+			);
+		}
+		if (metadata.size > MAX_BINDINGS_BYTES) {
+			throw new Error(
+				`[distributed.island.bindings_too_large] ${source}.bindings.js exceeds ${MAX_BINDINGS_BYTES} bytes`
+			);
+		}
+		const canonicalPath = await realpath(path);
+		if (!isWithin(canonicalRoot, canonicalPath)) {
+			throw new Error(
+				`[distributed.island.bindings_invalid] ${source}.bindings.js must stay within the project root`
+			);
+		}
+		const bytes = await readFile(canonicalPath);
+		const url = pathToFileURL(canonicalPath);
+		url.searchParams.set(
+			'distributed-binding',
+			createHash('sha256').update(bytes).digest('hex')
+		);
+		const loaded = await import(url.href);
+		const value = ownDataValue(loaded, 'default');
+		if (!isGraphqlIslandBindings(value)) {
+			throw new Error(
+				`[distributed.island.bindings_invalid] ${source}.bindings.js must default-export defineGraphqlIslandBindings({...})`
+			);
+		}
+		bindings.set(
+			source,
+			value as Readonly<Record<string, DistributedBoundaryVariableSource>>
+		);
+	}
+	return bindings;
 }
 
 function occurrence(
@@ -486,7 +576,7 @@ function boundaryBinding(
 				Object.freeze({ kind: 'route_param', name: variable.name })
 			]);
 			hasRoute = true;
-		} else if (!variable.graphqlType.endsWith('!')) {
+		} else if (Object.hasOwn(variable, 'defaultValue') || !variable.graphqlType.endsWith('!')) {
 			sources.push([variable.name, Object.freeze({ kind: 'omit' })]);
 		} else {
 			throw diagnostic(
@@ -896,10 +986,14 @@ function islandOwnerComponent(
 	const suffix = extname(absolute);
 	const base = absolute.slice(0, -suffix.length);
 	const name = posix.basename(portable(base));
-	if (name === '+page' || name === '+layout') {
+	const routeDocument = /^\+(page|layout)(?:\.[_A-Za-z][_0-9A-Za-z-]*)?$/.exec(name);
+	if (routeDocument !== null) {
 		return {
 			kind: 'route',
-			key: routeBoundaryKey(name === '+page' ? 'page' : 'layout', dirname(base))
+			key: routeBoundaryKey(
+				routeDocument[1] === 'page' ? 'page' : 'layout',
+				dirname(base)
+			)
 		};
 	}
 	return { kind: 'component', path: `${base}.svelte` };
@@ -946,6 +1040,10 @@ function validateInventory(module: string, inventory: DistributedIslandInventory
 			Array.isArray(variableSchema) ||
 			typeof variableSchema.reference !== 'string' ||
 			!Number.isSafeInteger(variableSchema.codecVersion) ||
+			variableSchema.codecVersion !== VARIABLE_CODEC_VERSION ||
+			!variableSchema.reference.endsWith(
+				`#variable-codec-v${VARIABLE_CODEC_VERSION}`
+			) ||
 			!Array.isArray(variableSchema.variables) ||
 			variableSchema.variables.some(
 				(variable: unknown) =>

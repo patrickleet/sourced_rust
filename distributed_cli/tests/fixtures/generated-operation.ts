@@ -169,7 +169,7 @@ export const Operation_ScalarInputs: ReplicaOperationArtifact<Operation_ScalarIn
     "column": 3
   },
   "variableCodec": {
-    "version": 1,
+    "version": 2,
     "limits": {
       "maxDepth": 8,
       "maxBoolWidth": 256,
@@ -222,6 +222,7 @@ export const Operation_ScalarInputs: ReplicaOperationArtifact<Operation_ScalarIn
         "filterBaseDepth": 1
       }
     },
+    "defaults": {},
     "inputs": {
       "todo_bool_exp": {
         "kind": "filter",

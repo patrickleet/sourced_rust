@@ -54,8 +54,8 @@
         "live": false
       },
       "variableSchema": {
-        "reference": "sha256:3436d01402748d8c4f2f5d2ff5f1173fea89786c8e902de09a24bd03596eaf27#variable-codec-v1",
-        "codecVersion": 1,
+        "reference": "sha256:3436d01402748d8c4f2f5d2ff5f1173fea89786c8e902de09a24bd03596eaf27#variable-codec-v2",
+        "codecVersion": 2,
         "variables": []
       },
       "liveCoverage": {

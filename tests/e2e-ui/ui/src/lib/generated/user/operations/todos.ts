@@ -25,13 +25,14 @@ export const Operation_Todos: ReplicaOperationArtifact<Operation_Todos_Data, Ope
     "column": 1
   },
   "variableCodec": {
-    "version": 1,
+    "version": 2,
     "limits": {
       "maxDepth": 8,
       "maxBoolWidth": 256,
       "maxInList": 1000
     },
     "variables": {},
+    "defaults": {},
     "inputs": {}
   },
   "roots": [

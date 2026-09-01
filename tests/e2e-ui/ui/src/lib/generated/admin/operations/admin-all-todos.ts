@@ -25,13 +25,14 @@ export const Operation_AdminAllTodos: ReplicaOperationArtifact<Operation_AdminAl
     "column": 1
   },
   "variableCodec": {
-    "version": 1,
+    "version": 2,
     "limits": {
       "maxDepth": 8,
       "maxBoolWidth": 256,
       "maxInList": 1000
     },
     "variables": {},
+    "defaults": {},
     "inputs": {}
   },
   "roots": [

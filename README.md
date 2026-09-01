@@ -393,7 +393,7 @@ operation and does not duplicate that wiring.
 
 ```graphql
 # This nested layout owns one finite live window across /chat child pages.
-query ChatMessages($limit: Int!, $offset: Int!) @load @live {
+query ChatMessages($limit: Int! = 25, $offset: Int! = 0) @load @live {
   chat_messages(
     where: { room_id: { _eq: "lobby" } }
     limit: $limit
@@ -406,6 +406,14 @@ query ChatMessages($limit: Int!, $offset: Int!) @load @live {
   }
 }
 ```
+
+GraphQL defaults are the preferred home for stable island inputs. They become
+optional in the generated TypeScript API and are canonicalized before cache
+identity or transport, so SSR can load this query and the component can simply
+call `ChatMessages.use()`. Route parameters with matching variable names are
+inferred. Exceptional values such as search parameters, trusted session claims,
+or forwarded props live beside the document in `<document>.bindings.js`, not in
+the application-wide build configuration.
 
 Reusable component island:
 [`SelectedBlobGame.graphql`](tests/e2e-ui/ui/src/lib/components/blob/SelectedBlobGame.graphql)

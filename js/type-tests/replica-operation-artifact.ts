@@ -44,7 +44,7 @@ export const protocolWithoutTrustedPresets: ReplicaOperationProtocol = {
 };
 
 const variableCodec = {
-	version: 1,
+	version: 2,
 	limits: {
 		maxDepth: 16,
 		maxBoolWidth: 32,
@@ -58,6 +58,7 @@ const variableCodec = {
 			nullable: false
 		}
 	},
+	defaults: {},
 	inputs: {}
 } as const satisfies ReplicaVariableCodecArtifact;
 

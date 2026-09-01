@@ -15,7 +15,7 @@ const codecLimits = Object.freeze({
 });
 
 const variableCodec = Object.freeze({
-	version: 1,
+	version: 2,
 	limits: codecLimits,
 	variables: Object.freeze({
 		big: Object.freeze({
@@ -72,6 +72,7 @@ const variableCodec = Object.freeze({
 			filterBaseDepth: 0
 		})
 	}),
+	defaults: Object.freeze({}),
 	inputs: Object.freeze({
 		item_bool_exp: Object.freeze({
 			kind: 'filter',
@@ -350,6 +351,45 @@ test('scalar canonicalization is deterministic and preserves omission versus nul
 	assert.notEqual(JSON.stringify(omitted), JSON.stringify(explicitNull));
 });
 
+test('GraphQL defaults are canonical identity inputs and explicit values win', () => {
+	const defaultedArtifact = Object.freeze({
+		...CodecArtifact,
+		variableCodec: Object.freeze({
+			...variableCodec,
+			defaults: Object.freeze({ id: 7, offset: 25 })
+		})
+	});
+	assert.deepEqual(canonicalizeOperationVariables(defaultedArtifact, {}), {
+		id: '7',
+		offset: 25
+	});
+	assert.deepEqual(
+		canonicalizeOperationVariables(defaultedArtifact, {
+			id: 9,
+			offset: 0
+		}),
+		{ id: '9', offset: 0 }
+	);
+	assert.deepEqual(
+		canonicalizeOperationVariables(defaultedArtifact, {
+			id: undefined,
+			offset: undefined
+		}),
+		{ id: '7', offset: 25 }
+	);
+	assert.throws(
+		() =>
+			canonicalizeOperationVariables(
+				{
+					...defaultedArtifact,
+					variableCodec: { ...defaultedArtifact.variableCodec, defaults: { id: null } }
+				},
+				{}
+			),
+		/invalid GraphQL operation input at artifact\.variableCodec\.defaults\.id/
+	);
+});
+
 test('canonical write and read variables share normalized index identity', () => {
 	const replica = createDistributedReplica();
 	replica.writeResult(
@@ -594,7 +634,7 @@ test('per-variable maxItems applies after coercion while null skips it', () => {
 
 test('codec limits and per-variable constraints must be exact JS integers', () => {
 	const invalidCodecs = [
-		{ ...variableCodec, version: 2 },
+		{ ...variableCodec, version: 3 },
 		{
 			...variableCodec,
 			limits: { ...codecLimits, maxDepth: Number.MAX_SAFE_INTEGER + 1 }
@@ -653,9 +693,10 @@ test('cyclic or incompatible codec artifacts fail without walking forever', () =
 	const cyclicArtifact = {
 		...CodecArtifact,
 		variableCodec: {
-			version: 1,
+			version: 2,
 			limits: codecLimits,
 			variables: { value: cyclicRef },
+			defaults: {},
 			inputs: {}
 		}
 	};
@@ -667,7 +708,7 @@ test('cyclic or incompatible codec artifacts fail without walking forever', () =
 	const incompatibleArtifact = {
 		...CodecArtifact,
 		variableCodec: {
-			version: 1,
+			version: 2,
 			limits: codecLimits,
 			variables: {
 				where: {
@@ -677,6 +718,7 @@ test('cyclic or incompatible codec artifacts fail without walking forever', () =
 					filterBaseDepth: 0
 				}
 			},
+			defaults: {},
 			inputs: {
 				bad_filter: {
 					kind: 'filter',

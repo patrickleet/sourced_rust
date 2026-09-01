@@ -134,9 +134,52 @@ request-local replica. A single-surface application can omit the second entry.
 A component can own a sibling `Component.graphql` island. The adapter walks
 static Svelte imports and promotes `@load` work to the nearest page/layout.
 Route-local `+page.graphql` and `+layout.graphql` remain first-class. When a
-required variable cannot be proved from route/search/session/forwarded-prop
-sources, add one typed `boundaries` registration here; that generated binding
-is reused by SSR, hover prefetch, navigation, hydration, and live work.
+surface needs its own authorization-specific copy, use a qualified route
+document such as `+layout.public.graphql`; it still belongs to that layout.
+
+Put stable values in GraphQL itself:
+
+```graphql
+query ChatMessages(
+  $limit: Int! = 25
+  $offset: Int! = 0
+) @load @live {
+  chat_messages(limit: $limit, offset: $offset) { message_id body }
+}
+```
+
+The generated variable properties are optional, while the compiler-owned codec
+canonicalizes the defaults before cache identity, SSR, live continuation, or
+transport. An explicit `ChatMessages.use({ limit: 50, offset: 0 })` overrides
+them; `ChatMessages.use()` uses the exact defaults.
+
+Same-name route parameters are inferred. For external values, add one bounded
+sidecar beside the document rather than putting screen behavior in
+`distributed.config.js`:
+
+```js
+// SearchResults.graphql.bindings.js
+import {
+  defineGraphqlIslandBindings,
+  forwardedProp,
+  searchParam,
+  sessionClaim
+} from '@hops-ops/distributed/sveltekit';
+
+export default defineGraphqlIslandBindings({
+  query: searchParam('q'),
+  viewerId: sessionClaim('user', 'id'),
+  filters: forwardedProp('filters')
+});
+```
+
+The helper rejects unsafe shapes, generation checks the keys against the
+operation, and the same binding is reused by SSR, hover prefetch, navigation,
+hydration, and live work. Resolution precedence is explicit call variables,
+then sidecar/route sources, then GraphQL defaults. A non-null variable without
+any of those sources fails generation before transport. Central `boundaries`
+registrations remain an explicit-placement escape hatch and cannot be combined
+with a sidecar for the same operation.
 
 The Vite integration runs `distributed client` at startup/build, watches GraphQL
 documents, stages all surfaces, commits a rollback-capable multi-output

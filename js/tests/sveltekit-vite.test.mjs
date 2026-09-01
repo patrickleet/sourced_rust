@@ -9,6 +9,7 @@ import {
 } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
+import { pathToFileURL } from 'node:url';
 import { Worker } from 'node:worker_threads';
 import test from 'node:test';
 
@@ -97,8 +98,8 @@ writeFileSync(
         kind: 'unknown'
       },
       variableSchema: {
-        reference: 'hash-' + index + '#variable-codec-v1',
-        codecVersion: 1,
+        reference: 'hash-' + index + '#variable-codec-v2',
+        codecVersion: 2,
         variables: []
       }
     }))
@@ -208,8 +209,8 @@ function islandInventory(source, operation = 'WidgetQuery', variables = []) {
 					kind: 'unknown'
 				},
 				variableSchema: {
-					reference: `hash-${operation}#variable-codec-v1`,
-					codecVersion: 1,
+					reference: `hash-${operation}#variable-codec-v2`,
+					codecVersion: 2,
 					variables
 				}
 			}
@@ -226,7 +227,11 @@ test('boundary plans generate route-variable bindings and fail unprovable requir
 	const routeInventory = islandInventory(
 		'src/routes/items/[itemId]/+page.graphql',
 		'Item',
-		[{ name: 'itemId', graphqlType: 'ID!' }, { name: 'optional', graphqlType: 'String' }]
+		[
+			{ name: 'itemId', graphqlType: 'ID!' },
+			{ name: 'limit', graphqlType: 'Int!', defaultValue: 25 },
+			{ name: 'optional', graphqlType: 'String' }
+		]
 	);
 	const planned = await analyzeDistributedSvelteKitBoundaries({
 		cwd: root,
@@ -234,9 +239,25 @@ test('boundary plans generate route-variable bindings and fail unprovable requir
 	});
 	assert.deepEqual(planned[0].boundaries[0].islands[0].binding.sources, {
 		itemId: { kind: 'route_param', name: 'itemId' },
+		limit: { kind: 'omit' },
 		optional: { kind: 'omit' }
 	});
 	assert.equal(planned[0].boundaries[0].islands[0].binding.discovery, 'route_param');
+	const qualified = await analyzeDistributedSvelteKitBoundaries({
+		cwd: root,
+		clients: [
+			{
+				module: '$distributed/public',
+				inventory: islandInventory(
+					'src/routes/items/[itemId]/+page.public.graphql',
+					'PublicItem',
+					[{ name: 'itemId', graphqlType: 'ID!' }]
+				)
+			}
+		]
+	});
+	assert.equal(qualified[0].boundaries[0].route, '/items/[itemId]');
+	assert.equal(qualified[0].boundaries[0].kind, 'page');
 
 	const required = islandInventory(
 		'src/routes/items/[itemId]/+page.graphql',
@@ -275,6 +296,46 @@ test('boundary plans generate route-variable bindings and fail unprovable requir
 	assert.deepEqual(explicit[0].boundaries[0].islands[0].binding.sources, {
 		limit: { kind: 'constant', value: 20 }
 	});
+
+	await writeFile(join(root, 'package.json'), '{"type":"module"}\n');
+	const sidecar = join(
+		root,
+		'src/routes/items/[itemId]/+page.graphql.bindings.js'
+	);
+	const helper = pathToFileURL(join(process.cwd(), 'dist/sveltekit/index.js')).href;
+	await writeFile(
+		sidecar,
+		`import { defineGraphqlIslandBindings, searchParam } from ${JSON.stringify(helper)};\n` +
+			`export default defineGraphqlIslandBindings({ limit: searchParam('pageSize') });\n`
+	);
+	const colocated = await analyzeDistributedSvelteKitBoundaries({
+		cwd: root,
+		clients: [{ module: '$distributed', inventory: required }]
+	});
+	assert.deepEqual(colocated[0].boundaries[0].islands[0].binding.sources, {
+		limit: { kind: 'search_param', name: 'pageSize', mode: 'first' }
+	});
+	await assert.rejects(
+		analyzeDistributedSvelteKitBoundaries({
+			cwd: root,
+			clients: [
+				{
+					module: '$distributed',
+					inventory: required,
+					explicitBoundaries: [
+						{
+							operation: 'Item',
+							route: '/items/[itemId]',
+							kind: 'page',
+							variables: { limit: { kind: 'constant', value: 20 } }
+						}
+					]
+				}
+			]
+		}),
+		/\[distributed\.island\.variable_binding_conflict\]/
+	);
+	await rm(sidecar);
 	for (const hostile of [
 		{ kind: 'trusted_session', path: ['__proto__'] },
 		{ kind: 'query_result', path: ['items', 'limit'] }
@@ -307,6 +368,14 @@ test('boundary plans generate route-variable bindings and fail unprovable requir
 			}
 		);
 	}
+	await writeFile(sidecar, 'export default {};\n');
+	await assert.rejects(
+		analyzeDistributedSvelteKitBoundaries({
+			cwd: root,
+			clients: [{ module: '$distributed', inventory: required }]
+		}),
+		/\[distributed\.island\.bindings_invalid\]/
+	);
 });
 
 test('Svelte boundary analysis promotes component islands to their nearest static page or layout', async (t) => {
@@ -731,6 +800,19 @@ test('boundary diagnostics reject cycles, stale plans, and unbounded layout live
 		analyzeDistributedSvelteKitBoundaries({
 			cwd: root,
 			clients: [{ module: '$distributed', inventory: stale }]
+		}),
+		/\[distributed\.island\.version_unsupported\] src\/lib\/Missing\.graphql:1:1/
+	);
+	const staleCodec = islandInventory('src/lib/Missing.graphql', 'StaleCodec');
+	staleCodec.islands[0].variableSchema = {
+		...staleCodec.islands[0].variableSchema,
+		reference: `hash-StaleCodec#variable-codec-v1`,
+		codecVersion: 1
+	};
+	await assert.rejects(
+		analyzeDistributedSvelteKitBoundaries({
+			cwd: root,
+			clients: [{ module: '$distributed', inventory: staleCodec }]
 		}),
 		/\[distributed\.island\.version_unsupported\] src\/lib\/Missing\.graphql:1:1/
 	);
@@ -1180,6 +1262,21 @@ test('gql changes regenerate and cancellation before commit preserves old output
 		(await commandLog(log)).length,
 		beforeGql + 4,
 		'legacy .gql inputs receive the same compiler watch lifecycle'
+	);
+	await writeFile(join(root, 'package.json'), '{"type":"module"}\n');
+	const bindings = join(root, 'src/routes/todos/+page.graphql.bindings.js');
+	const helper = pathToFileURL(join(process.cwd(), 'dist/sveltekit/index.js')).href;
+	await writeFile(
+		bindings,
+		`import { defineGraphqlIslandBindings } from ${JSON.stringify(helper)};\n` +
+			'export default defineGraphqlIslandBindings({});\n'
+	);
+	const beforeBindings = (await commandLog(log)).length;
+	await plugin.handleHotUpdate({ file: bindings, server });
+	assert.equal(
+		(await commandLog(log)).length,
+		beforeBindings + 4,
+		'colocated GraphQL binding changes receive the compiler watch lifecycle'
 	);
 	await plugin.closeBundle();
 

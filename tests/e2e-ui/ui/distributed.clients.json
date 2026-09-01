@@ -22,7 +22,7 @@
     {
       "module": "$distributed/public",
       "surface": "e2e-ui-public",
-      "documents": ["src/graphql/public/chat.graphql"],
+      "documents": ["src/routes/chat/+layout.public.graphql"],
       "output": "src/lib/generated/public",
       "manifest_entrypoint": "e2e_service::distributed_public_client_surface"
     }

@@ -1035,6 +1035,10 @@ function isGraphqlInput(
 	integration: ResolvedIntegration
 ): boolean {
 	const absolute = resolve(integration.cwd, file);
+	const isDocument = absolute.endsWith('.graphql') || absolute.endsWith('.gql');
+	const isBindings =
+		absolute.endsWith('.graphql.bindings.js') ||
+		absolute.endsWith('.gql.bindings.js');
 	if (
 		absolute.endsWith('.svelte') &&
 		(isWithin(integration.routesDir, absolute) ||
@@ -1043,7 +1047,7 @@ function isGraphqlInput(
 		return true;
 	}
 	if (
-		(!absolute.endsWith('.graphql') && !absolute.endsWith('.gql')) ||
+		(!isDocument && !isBindings) ||
 		!isWithin(integration.cwd, absolute)
 	) {
 		return false;

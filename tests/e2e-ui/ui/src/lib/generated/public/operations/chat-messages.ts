@@ -2,8 +2,8 @@
 import type { ReplicaOperationArtifact } from '@hops-ops/distributed/replica';
 
 export type Operation_ChatMessages_Variables = {
-  readonly "limit": number;
-  readonly "offset": number;
+  readonly "limit"?: number;
+  readonly "offset"?: number;
 };
 
 export type Operation_ChatMessages_Data = {
@@ -22,19 +22,19 @@ export type Operation_ChatMessages_Data = {
 };
 
 /** Exact canonical query bytes sent to the server. */
-export const Operation_ChatMessagesDocument = "query ChatMessages($limit: Int!, $offset: Int!) {\n  chat_messages(limit: $limit, offset: $offset, order_by: [{created_at: desc}], where: {room_id: {_eq: \"lobby\"}}) {\n    message_id\n    room_id\n    author_id\n    body\n    created_at\n    author {\n      user_id\n      display_name\n      email\n      _distributed_typename: __typename\n    }\n    _distributed_typename: __typename\n  }\n}\n";
+export const Operation_ChatMessagesDocument = "query ChatMessages($limit: Int! = 25, $offset: Int! = 0) {\n  chat_messages(limit: $limit, offset: $offset, order_by: [{created_at: desc}], where: {room_id: {_eq: \"lobby\"}}) {\n    message_id\n    room_id\n    author_id\n    body\n    created_at\n    author {\n      user_id\n      display_name\n      email\n      _distributed_typename: __typename\n    }\n    _distributed_typename: __typename\n  }\n}\n";
 
 /** Typed normalized-replica operation descriptor. */
 export const Operation_ChatMessages: ReplicaOperationArtifact<Operation_ChatMessages_Data, Operation_ChatMessages_Variables> = {
-  "id": "sha256:16e82d9939a08f205efef9238393f8e4582da0e58d15ace6470d7831c0798603",
-  "document": "query ChatMessages($limit: Int!, $offset: Int!) {\n  chat_messages(limit: $limit, offset: $offset, order_by: [{created_at: desc}], where: {room_id: {_eq: \"lobby\"}}) {\n    message_id\n    room_id\n    author_id\n    body\n    created_at\n    author {\n      user_id\n      display_name\n      email\n      _distributed_typename: __typename\n    }\n    _distributed_typename: __typename\n  }\n}\n",
+  "id": "sha256:f346242c36efd78f1c04d86c741b0f5c6c6f75c66d78ba9454a4647243922bfe",
+  "document": "query ChatMessages($limit: Int! = 25, $offset: Int! = 0) {\n  chat_messages(limit: $limit, offset: $offset, order_by: [{created_at: desc}], where: {room_id: {_eq: \"lobby\"}}) {\n    message_id\n    room_id\n    author_id\n    body\n    created_at\n    author {\n      user_id\n      display_name\n      email\n      _distributed_typename: __typename\n    }\n    _distributed_typename: __typename\n  }\n}\n",
   "source": {
-    "path": "src/graphql/public/chat.graphql",
+    "path": "src/routes/chat/+layout.public.graphql",
     "line": 3,
     "column": 1
   },
   "variableCodec": {
-    "version": 1,
+    "version": 2,
     "limits": {
       "maxDepth": 8,
       "maxBoolWidth": 256,
@@ -53,6 +53,10 @@ export const Operation_ChatMessages: ReplicaOperationArtifact<Operation_ChatMess
         "codec": "int32",
         "nullable": false
       }
+    },
+    "defaults": {
+      "limit": 25,
+      "offset": 0
     },
     "inputs": {}
   },
@@ -431,11 +435,11 @@ export const Operation_ChatMessages: ReplicaOperationArtifact<Operation_ChatMess
         "anonymous"
       ]
     },
-    "operation": "sha256:16e82d9939a08f205efef9238393f8e4582da0e58d15ace6470d7831c0798603",
+    "operation": "sha256:f346242c36efd78f1c04d86c741b0f5c6c6f75c66d78ba9454a4647243922bfe",
     "trustedPresets": []
   },
   "live": {
-    "id": "sha256:1679906f6ce4c8de83deb937cccce20561447e4f74e410d3a83d1aecebd6bd00",
-    "document": "subscription ChatMessages_Live($limit: Int!, $offset: Int!) {\n  chat_messages(limit: $limit, offset: $offset, order_by: [{created_at: desc}], where: {room_id: {_eq: \"lobby\"}}) {\n    message_id\n    room_id\n    author_id\n    body\n    created_at\n    author {\n      user_id\n      display_name\n      email\n      _distributed_typename: __typename\n    }\n    _distributed_typename: __typename\n  }\n}\n"
+    "id": "sha256:113118af4df9cd0fce72eb3a6bd360599c79757410e7bb1b1f65d061ea583205",
+    "document": "subscription ChatMessages_Live($limit: Int! = 25, $offset: Int! = 0) {\n  chat_messages(limit: $limit, offset: $offset, order_by: [{created_at: desc}], where: {room_id: {_eq: \"lobby\"}}) {\n    message_id\n    room_id\n    author_id\n    body\n    created_at\n    author {\n      user_id\n      display_name\n      email\n      _distributed_typename: __typename\n    }\n    _distributed_typename: __typename\n  }\n}\n"
   }
 };

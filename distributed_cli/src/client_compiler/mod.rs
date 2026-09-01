@@ -175,6 +175,8 @@ pub struct GeneratedIslandVariableSchema {
 pub struct GeneratedIslandVariable {
     pub name: String,
     pub graphql_type: String,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub default_value: Option<JsonValue>,
 }
 
 #[derive(Clone, Debug, PartialEq, Eq, Serialize)]

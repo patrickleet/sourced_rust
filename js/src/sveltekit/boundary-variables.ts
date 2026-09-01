@@ -213,8 +213,12 @@ function validateSources<TData, TVariables extends GraphqlVariables>(
 		throw new TypeError('Distributed boundary variable sources must be an object');
 	}
 	const definitions = artifact.variableCodec?.variables;
+	const defaults = artifact.variableCodec?.defaults;
 	if (definitions === null || typeof definitions !== 'object' || Array.isArray(definitions)) {
 		throw new TypeError('Distributed boundary artifact has no variable codec');
+	}
+	if (defaults === null || typeof defaults !== 'object' || Array.isArray(defaults)) {
+		throw new TypeError('Distributed boundary artifact has no variable defaults');
 	}
 	const names = Object.keys(sources);
 	if (names.length > MAX_BINDING_VARIABLES) {
@@ -234,7 +238,7 @@ function validateSources<TData, TVariables extends GraphqlVariables>(
 			typeof definition === 'object' &&
 			'nullable' in definition &&
 			definition.nullable === false;
-		if (required && !Object.hasOwn(sources, name)) {
+		if (required && !Object.hasOwn(defaults, name) && !Object.hasOwn(sources, name)) {
 			throw new TypeError(
 				`Distributed boundary binding is missing required variable ${name}; use an explicit binding, parent/boundary query, client-only execution, or a better read root`
 			);

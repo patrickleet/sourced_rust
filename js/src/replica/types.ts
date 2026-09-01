@@ -197,9 +197,11 @@ export type ReplicaVariableCodecLimits = {
 
 /** Exact variable codec emitted beside a generated operation artifact. */
 export type ReplicaVariableCodecArtifact = {
-	readonly version: 1;
+	readonly version: 2;
 	readonly limits: ReplicaVariableCodecLimits;
 	readonly variables: Readonly<Record<string, ReplicaVariableInputRef>>;
+	/** Canonical GraphQL defaults, applied before cache identity or transport. */
+	readonly defaults: Readonly<Record<string, ReplicaValue>>;
 	readonly inputs: Readonly<Record<string, ReplicaVariableInputDefinition>>;
 };
 
@@ -581,6 +583,7 @@ export type ReplicaIslandMetadata = {
 		readonly variables: readonly {
 			readonly name: string;
 			readonly graphqlType: string;
+			readonly defaultValue?: ReplicaValue;
 		}[];
 	};
 	readonly liveCoverage: {

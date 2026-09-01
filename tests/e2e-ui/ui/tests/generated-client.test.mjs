@@ -77,28 +77,22 @@ test('generated clients use one island boundary plan with no route registry', ()
 			operation: 'ChatMessages',
 			binding: chat[0].binding,
 			live: true
-		},
-		{
-			id: 'page:/chat',
-			operation: 'ChatMessages',
-			binding: chat[0].binding,
-			live: true
 		}
 	]);
 	assert.deepEqual(
 		user.boundaries
 			.find((boundary) => boundary.id === 'layout:/chat')
-			.islands[0].binding.sources,
+		.islands[0].binding.sources,
 		{
-			limit: { kind: 'constant', value: 25 },
-			offset: { kind: 'constant', value: 0 }
+			limit: { kind: 'omit' },
+			offset: { kind: 'omit' }
 		}
 	);
 
 	const publicPlan = boundaryPlan('public');
 	assert.equal(
 		publicPlan.boundaries[0].islands[0].graphqlSource,
-		'src/graphql/public/chat.graphql',
+		'src/routes/chat/+layout.public.graphql',
 		'authorization surfaces own distinct GraphQL sources'
 	);
 });

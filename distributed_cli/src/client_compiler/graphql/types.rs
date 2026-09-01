@@ -32,6 +32,13 @@ pub(crate) struct CompiledLiveOperation {
 pub(crate) struct CompiledVariable {
     pub(crate) name: String,
     pub(crate) graphql_type: Type,
+    pub(crate) default: Option<CompiledVariableDefault>,
+}
+
+#[derive(Clone, Debug)]
+pub(crate) struct CompiledVariableDefault {
+    pub(crate) value: JsonValue,
+    pub(crate) wire: String,
 }
 
 #[derive(Clone, Debug, Serialize)]
@@ -39,6 +46,7 @@ pub(crate) struct CompiledVariableCodec {
     pub(crate) version: u32,
     pub(crate) limits: CompiledVariableCodecLimits,
     pub(crate) variables: BTreeMap<String, CompiledInputType>,
+    pub(crate) defaults: BTreeMap<String, JsonValue>,
     pub(crate) inputs: BTreeMap<String, CompiledInputDefinition>,
 }
 
