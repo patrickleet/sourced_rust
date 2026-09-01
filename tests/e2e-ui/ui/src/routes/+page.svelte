@@ -172,7 +172,7 @@ await commands.todo.complete({ todo_id });
 
 // Generated client hosts the module. No TypeScript board rules.`;
 
-	const codeLive = `# Same query powers SSR (@load) and live change feed (@live)
+	const codeLive = `# The nested layout retains one live window across child pages.
 query ChatMessages($limit: Int!, $offset: Int!) @load @live {
   chat_messages(
     where: { room_id: { _eq: "lobby" } }
@@ -786,20 +786,25 @@ Service::new()
 		<div class="wf-band-inner">
 			<article class="wf-story-step">
 				<div class="wf-story-copy">
-					<span class="wf-label">09 · SvelteKit</span>
-					<h2 class="wf-step-title">SSR first, then live — one query</h2>
+					<span class="wf-label">09 · SvelteKit GraphQL islands</span>
+					<h2 class="wf-step-title">Put each query where its UI ownership lives</h2>
 					<p class="wf-why">
-						<code>@load</code> and <code>@live</code> use the same GraphQL operation for server
-						render, rehydrate, and a push change feed. Users get a fast first paint and rooms that
-						stay current without you maintaining a second subscription document or polling.
+						A page island is replaced with its page. This chat <strong>layout island</strong> stays
+						retained across <code>/chat</code> and <code>/chat/about</code>, so one
+						<code>@load @live</code> operation owns SSR, hydration, navigation, and its live feed.
 					</p>
-					<span class="wf-sample-path">tests/e2e-ui/ui/src/routes/chat/+page.graphql</span>
+					<p class="wf-why">
+						Reusable components can own islands too. The blob demo imports
+						<code>SelectedBlobGame.graphql</code>; generation promotes it to the nearest static
+						route boundary and binds <code>[[gameId]]</code> once for SSR and component reads.
+					</p>
+					<span class="wf-sample-path">tests/e2e-ui/ui/src/routes/chat/+layout.graphql · src/lib/components/blob/SelectedBlobGame.graphql</span>
 				</div>
 				<div class="wf-code-stack">
 					<div class="wf-code">
 						<div class="wf-code-bar">
-							<span>+page.graphql</span>
-							<em>load + live</em>
+							<span>+layout.graphql</span>
+							<em>retained load + live</em>
 						</div>
 						<pre><code>{@html highlightCode(codeLive)}</code></pre>
 					</div>

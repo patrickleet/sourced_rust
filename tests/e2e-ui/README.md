@@ -93,6 +93,26 @@ the GraphQL process.
 
 ## The developer experience
 
+### GraphQL islands: page, layout, and component ownership
+
+The UI deliberately exercises all three SvelteKit ownership levels. `@load`
+is not limited to `+page.graphql`:
+
+- [`routes/todos/+page.graphql`](ui/src/routes/todos/+page.graphql) is
+  page-owned SSR data.
+- [`routes/chat/+layout.graphql`](ui/src/routes/chat/+layout.graphql) owns the
+  finite `@load @live` lobby window across `/chat` and `/chat/about`; navigation
+  retains one normalized replica and live subscription.
+- [`SelectedBlobGame.graphql`](ui/src/lib/components/blob/SelectedBlobGame.graphql)
+  is imported through [`SelectedBlobGame.svelte`](ui/src/lib/components/blob/SelectedBlobGame.svelte).
+  The compiler discovers the reusable component island, promotes it to the
+  nearest static route boundary, and binds the optional `[[gameId]]` parameter.
+
+Generated boundary plans are the shared contract for SSR, hydration,
+navigation, prefetch, and component reads. The root user/public layouts and the
+nested admin layout each install only their generated surface; no page owns a
+hand-written GraphQL loader or variable switch.
+
 The page code stays ordinary:
 
 ```ts
