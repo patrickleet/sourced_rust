@@ -497,8 +497,8 @@ duplicated as decision documents in this package.
   inspection.
 - `@hops-ops/distributed/sveltekit` — Svelte stores, island SSR composition,
   hydration, auth lifecycle, and tree-local generated bindings.
-- `@hops-ops/distributed/sveltekit/vite` — Node-only one-shot/check/watch
-  generation, virtual module aliases, and GraphQL HTTP/WebSocket proxy helpers.
+- `@hops-ops/distributed/sveltekit/vite` — public Vite plugin, virtual module
+  aliases, and GraphQL HTTP/WebSocket proxy helpers.
 - `@hops-ops/distributed/react` — provider and query hook over the same replica.
 
 All other subpaths are private and blocked by the package export map.
