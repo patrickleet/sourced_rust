@@ -23,6 +23,31 @@ import {
 	generateDistributedSvelteKitLifecycle,
 	validateDistributedSvelteKitBoundaryPlan
 } from '../dist/sveltekit/vite.js';
+import {
+	distributedSvelteKit as distributedSvelteKitPublic,
+	distributedSvelteKitAliases as distributedSvelteKitAliasesPublic
+} from '../dist/sveltekit/public-vite.js';
+
+test('public Vite adapters require the application lifecycle', () => {
+	const previous = process.env.DISTRIBUTED_LIFECYCLE_OWNS_CLIENT_COMPILE;
+	delete process.env.DISTRIBUTED_LIFECYCLE_OWNS_CLIENT_COMPILE;
+	try {
+		assert.throws(
+			() => distributedSvelteKitPublic({ clients: [] }),
+			/run the UI through `distributed dev` or `distributed build`/
+		);
+		assert.throws(
+			() => distributedSvelteKitAliasesPublic({ clients: [] }),
+			/run the UI through `distributed dev` or `distributed build`/
+		);
+	} finally {
+		if (previous === undefined) {
+			delete process.env.DISTRIBUTED_LIFECYCLE_OWNS_CLIENT_COMPILE;
+		} else {
+			process.env.DISTRIBUTED_LIFECYCLE_OWNS_CLIENT_COMPILE = previous;
+		}
+	}
+});
 
 const fakeDistributedSource = String.raw`
 import {

@@ -256,7 +256,7 @@ type LifecycleHtmlTag = Readonly<{
 	injectTo: 'head-prepend';
 }>;
 
-/** Lifecycle-only side channel for projects using committed generated clients. */
+/** Internal browser lifecycle side channel without generated-client resolution. */
 export function distributedLifecycle(): DistributedLifecycleVitePlugin {
 	let frameworkDist: string | undefined;
 	return {
@@ -838,21 +838,32 @@ export function distributedSvelteKitAliases(
 		options.cwd ?? process.cwd()
 	);
 	validateResolvedPathsSync(integration);
-	return Object.freeze(
-		Object.fromEntries(
-			[...integration.clients]
-				.sort(
-					(left, right) =>
-						right.module.length - left.module.length ||
-						left.module.localeCompare(right.module)
-				)
-				.map((client) => [
-					client.module,
-					process.env.DISTRIBUTED_LIFECYCLE_OWNS_CLIENT_COMPILE === '1'
-						? activeLifecycleClientEntry(client)
-						: client.entry
-				])
+	const lifecycleOwnsCompile =
+		process.env.DISTRIBUTED_LIFECYCLE_OWNS_CLIENT_COMPILE === '1';
+	const frameworkDist = lifecycleOwnsCompile
+		? localFrameworkDist(integration.cwd)
+		: undefined;
+	if (lifecycleOwnsCompile && frameworkDist === undefined) {
+		throw new Error('Installed @hops-ops/distributed package is unavailable');
+	}
+	const aliases = [...integration.clients]
+		.sort(
+			(left, right) =>
+				right.module.length - left.module.length ||
+				left.module.localeCompare(right.module)
 		)
+		.map((client) => [
+			client.module,
+			lifecycleOwnsCompile ? activeLifecycleClientEntry(client) : client.entry
+		]);
+	if (frameworkDist !== undefined) {
+		aliases.push(
+			['@hops-ops/distributed/replica', join(frameworkDist, 'replica')],
+			['@hops-ops/distributed/sveltekit', join(frameworkDist, 'sveltekit')]
+		);
+	}
+	return Object.freeze(
+		Object.fromEntries(aliases)
 	);
 }
 

@@ -181,10 +181,10 @@ any of those sources fails generation before transport. Central `boundaries`
 registrations remain an explicit-placement escape hatch and cannot be combined
 with a sidecar for the same operation.
 
-The Vite integration runs `distributed client` at startup/build, watches GraphQL
-documents, stages all surfaces, commits a rollback-capable multi-output
-transaction, then triggers one reload. It exposes the generated Svelte wrapper
-through the configured virtual module:
+The application lifecycle runs the client compiler before Vite starts and after
+declared GraphQL, binding, or Svelte ownership inputs change. Vite consumes the
+active immutable client tree and reloads its virtual modules only after atomic
+activation:
 
 ```ts
 // vite.config.ts
@@ -226,18 +226,9 @@ export default {
 };
 ```
 
-One-shot scripts use the same configuration and transaction:
-
-```js
-import {
-  checkDistributedSvelteKit,
-  generateDistributedSvelteKit
-} from '@hops-ops/distributed/sveltekit/vite';
-import { distributedViteOptions } from './distributed.config.js';
-
-await generateDistributedSvelteKit(distributedViteOptions);
-await checkDistributedSvelteKit(distributedViteOptions); // never writes
-```
+The Vite plugin and aliases consume lifecycle-owned generated clients. Run them
+through `distributed dev` or `distributed build`; direct Vite execution fails
+closed rather than compiling or reading a second source-tree copy.
 
 Create one request-local server replica in the root layout:
 

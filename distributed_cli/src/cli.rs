@@ -1006,34 +1006,48 @@ fn build_project_ui(
         let ui_root = ui;
         prepare_ui_dependencies(project, &ui_root)?;
         eprintln!(
+            "distributed build: checking SvelteKit UI {}",
+            ui_root.display()
+        );
+        run_project_ui_script(project, generation, ui_root, "check", true)?;
+        eprintln!(
             "distributed build: compiling SvelteKit UI {}",
             ui_root.display()
         );
-        let status = Command::new("npm")
-            .args(["run", "build"])
-            .current_dir(&ui_root)
-            // Production builds must run the same compiler transaction as dev;
-            // committed generated files are an input to --check, not a reason
-            // to skip generation during an activating build.
-            .env("DISTRIBUTED_SKIP_CLIENT_COMPILE", "0")
-            .env("DISTRIBUTED_LIFECYCLE_OWNS_CLIENT_COMPILE", "1")
-            .env("DISTRIBUTED_LIFECYCLE_PROJECT_ROOT", &project.plan.root)
-            .env(
-                "DISTRIBUTED_LIFECYCLE_DIR",
-                if project.plan.out.is_absolute() {
-                    project.plan.out.clone()
-                } else {
-                    project.plan.root.join(&project.plan.out)
-                },
-            )
-            .env(
-                "DISTRIBUTED_LIFECYCLE_GENERATION_ID",
-                &generation.generation_id,
-            )
-            .status()?;
-        if !status.success() {
-            return Err(format!("SvelteKit UI build failed with {status}").into());
-        }
+        run_project_ui_script(project, generation, ui_root, "build", false)?;
+    }
+    Ok(())
+}
+
+fn run_project_ui_script(
+    project: &DiscoveredLifecycleProject,
+    generation: &crate::lifecycle::LifecycleBuildReport,
+    ui_root: &Path,
+    script: &str,
+    if_present: bool,
+) -> Result<(), Box<dyn Error>> {
+    let lifecycle_dir = if project.plan.out.is_absolute() {
+        project.plan.out.clone()
+    } else {
+        project.plan.root.join(&project.plan.out)
+    };
+    let mut command = Command::new("npm");
+    command.args(["run", script]);
+    if if_present {
+        command.arg("--if-present");
+    }
+    let status = command
+        .current_dir(ui_root)
+        .env("DISTRIBUTED_LIFECYCLE_OWNS_CLIENT_COMPILE", "1")
+        .env("DISTRIBUTED_LIFECYCLE_PROJECT_ROOT", &project.plan.root)
+        .env("DISTRIBUTED_LIFECYCLE_DIR", lifecycle_dir)
+        .env(
+            "DISTRIBUTED_LIFECYCLE_GENERATION_ID",
+            &generation.generation_id,
+        )
+        .status()?;
+    if !status.success() {
+        return Err(format!("SvelteKit UI `{script}` failed with {status}").into());
     }
     Ok(())
 }

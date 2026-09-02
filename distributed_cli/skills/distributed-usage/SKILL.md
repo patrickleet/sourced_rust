@@ -316,8 +316,8 @@ Run the full app: `cd tests/e2e-ui && make`. Suite: `make test`.
 ### e2e-ui cluster-dev dogfood (agents)
 
 Namespace = hops `--name`. Fix the live pods, not a host `make run`. After
-source changes: `make gen-client`, restart, **wait until API logs `listening`
-and Vite is ready**, then curl the FQDNs. Schema/pure errors usually mean
+source changes: rebuild through `distributed build`, restart, **wait until API
+logs `listening` and Vite is ready**, then curl the FQDNs. Schema/pure errors usually mean
 stale build, not a roles redesign. Full checklist: hops skill
 `references/local-workbench.md` § Dogfood.
 

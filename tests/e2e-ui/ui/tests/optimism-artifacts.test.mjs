@@ -11,12 +11,11 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import fs from 'node:fs';
-import path from 'node:path';
-import { fileURLToPath } from 'node:url';
 import vm from 'node:vm';
 
-const uiRoot = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..');
-const commandsPath = path.join(uiRoot, 'src/lib/generated/user/commands.ts');
+import { generatedPath } from './lifecycle-generation.mjs';
+
+const commandsPath = generatedPath('user', 'commands.ts');
 
 /**
  * Extract frozen command artifact objects from the generated TS module without

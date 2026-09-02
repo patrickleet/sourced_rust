@@ -76,10 +76,11 @@ distributed dev
 `distributed dev` first generates and activates the typed application manifest
 and every declared client, then starts the Cargo runtime and `npm run dev` for
 `ui/`, waits for both readiness probes, and prints the usable API and browser
-URLs. No separate `npm run client:generate` preflight is required. Vite owns
-Svelte/CSS HMR; GraphQL or binding-only changes rebuild the client node without
-restarting Rust, while Rust contract changes rebuild the application and its
-downstream clients together. The browser switches `$distributed` imports only
+URLs. No generated client tree or generation preflight exists in application
+source. Vite owns Svelte/CSS HMR; GraphQL or binding-only changes rebuild the
+client node without restarting Rust, while Rust contract changes rebuild the
+application and its downstream clients together. The browser switches
+`$distributed` imports only
 after the immutable generation pointer activates. Ctrl-C shuts down all process
 groups and their descendants.
 

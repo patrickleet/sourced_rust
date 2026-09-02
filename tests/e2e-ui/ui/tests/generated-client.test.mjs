@@ -2,13 +2,14 @@ import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import fs from 'node:fs';
 import path from 'node:path';
-import { fileURLToPath } from 'node:url';
 
-const uiRoot = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..');
-const read = (...segments) =>
-	fs.readFileSync(path.join(uiRoot, ...segments), 'utf8');
+import {
+	generatedPath,
+	readGenerated,
+	uiRoot
+} from './lifecycle-generation.mjs';
 const boundaryPlan = (surface) => {
-	const source = read('src/lib/generated', surface, 'boundaries.ts');
+	const source = readGenerated(surface, 'boundaries.ts');
 	const match = /DISTRIBUTED_BOUNDARY_PLAN = (\{[\s\S]*?\}) as const;/.exec(
 		source
 	);
@@ -17,8 +18,8 @@ const boundaryPlan = (surface) => {
 };
 
 test('normal and elevated command inventories cannot be mixed', () => {
-	const user = read('src/lib/generated/user/commands.ts');
-	const admin = read('src/lib/generated/admin/commands.ts');
+	const user = readGenerated('user', 'commands.ts');
+	const admin = readGenerated('admin', 'commands.ts');
 
 	assert.match(user, /"name": "todo\.create"/);
 	assert.match(user, /"name": "chat\.post"/);
@@ -40,12 +41,12 @@ test('generated clients use one island boundary plan with no route registry', ()
 	for (const surface of ['user', 'public', 'admin']) {
 		assert.equal(
 			fs.existsSync(
-				path.join(uiRoot, 'src/lib/generated', surface, 'routes.ts')
+				generatedPath(surface, 'routes.ts')
 			),
 			false,
 			`${surface} must not regenerate routes.ts`
 		);
-		const generated = read('src/lib/generated', surface, 'sveltekit.ts');
+		const generated = readGenerated(surface, 'sveltekit.ts');
 		assert.match(generated, /DISTRIBUTED_BOUNDARY_OPERATIONS/);
 		assert.doesNotMatch(generated, /DISTRIBUTED_ROUTE_OPERATIONS/);
 	}
@@ -110,7 +111,7 @@ test('application source contains no superseded route or variable switches', () 
 			const target = path.join(current, entry.name);
 			if (entry.isDirectory()) pending.push(target);
 			else if (/\.(?:svelte|ts|js|mjs)$/.test(entry.name)) {
-				assert.doesNotMatch(read(path.relative(uiRoot, target)), forbidden);
+				assert.doesNotMatch(fs.readFileSync(target, 'utf8'), forbidden);
 			}
 		}
 	}

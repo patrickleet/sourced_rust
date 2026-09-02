@@ -709,6 +709,13 @@ fn discover_client_lifecycle(
     }
     let mut outputs = BTreeMap::new();
     for (index, client) in inventory.clients.into_iter().enumerate() {
+        let source_tree_output = ui.join(&client.output);
+        if source_tree_output.exists() {
+            return Err(LifecycleError::new(format!(
+                "lifecycle-owned client output `{}` still exists in the application source tree; remove it and run `distributed build` or `distributed dev`",
+                source_tree_output.display()
+            )));
+        }
         outputs.insert(format!("client-{index}"), rooted(&client.output));
         outputs.insert(
             format!("boundary-plan-{index}"),
@@ -1335,6 +1342,15 @@ mod tests {
                 ),
                 ("client-0".to_string(), "ui/src/lib/generated".to_string()),
             ])
+        );
+
+        fs::create_dir_all(ui.join("src/lib/generated")).unwrap();
+        let error = discover_client_lifecycle(project.path(), Some(&ui)).unwrap_err();
+        assert!(
+            error
+                .to_string()
+                .contains("still exists in the application source tree"),
+            "{error}"
         );
     }
 

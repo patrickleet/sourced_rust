@@ -2,7 +2,6 @@ name: e2e-ui fixture (offline + browser + local GitOps)
 
 # Nested Todos template under tests/e2e-ui — not the root workspace.
 # Local parity:
-#   cd tests/e2e-ui && make check-client
 #   cd tests/e2e-ui && make test
 #   cd tests/e2e-ui && make ci-offline
 #   cd tests/e2e-ui && make up && make run   # distributed dev; then make test-browser

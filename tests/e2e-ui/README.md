@@ -54,8 +54,8 @@ Demo users are `alice`, `bob`, and `admin` with password `Password1!`.
 starting either process, the CLI compiles and activates one coherent application
 manifest plus all three clients declared in `ui/distributed.clients.json` from
 the real e2e modules, surfaces, and colocated GraphQL documents. The clients are
-immutable generation outputs, so neither a clean checkout nor `make run` needs
-to invoke `npm run client:generate`. Cargo metadata locates the typed application
+immutable generation outputs, so a clean checkout contains no generated client
+tree. Cargo metadata locates the typed application
 and runtime; the conventional `ui/` directory selects SvelteKit. No lifecycle
 JSON or wrapper scripts are required. Vite still handles
 Svelte/CSS HMR, while application, generated-client, required WASM, and linked
@@ -357,11 +357,15 @@ may run in another process on the same packages.
 ## Generation and tests
 
 ```bash
-make gen-client
-make check-client
+distributed build
 make test
 make test-browser
 ```
+
+`distributed build` owns manifest generation, all generated clients, Svelte
+type-checking, the production UI build, and activation. Generated client trees
+live only in the active immutable lifecycle generation and are not committed to
+`ui/src/lib`.
 
 ### Optimism regression gates
 
