@@ -858,11 +858,7 @@ fn run_build(args: &BuildArgs, command_prefix: &[&str]) -> Result<(), Box<dyn Er
                     nodes: None,
                     activation_inputs: None,
                     cancel: None,
-                    activation: if args.check {
-                        LifecycleActivation::Immediate
-                    } else {
-                        LifecycleActivation::Deferred
-                    },
+                    activation: LifecycleActivation::Deferred,
                 },
             )
             .map_err(|error| contextualize_project_generation_error(project, error))?;
