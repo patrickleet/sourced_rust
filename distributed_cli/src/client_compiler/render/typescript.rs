@@ -39,7 +39,7 @@ pub(super) fn render_variables_type(
         lines.push(format!(
             "  readonly {}{}: {};",
             quoted_property(&variable.name),
-            if variable.graphql_type.nullable {
+            if variable.graphql_type.nullable || variable.default.is_some() {
                 "?"
             } else {
                 ""

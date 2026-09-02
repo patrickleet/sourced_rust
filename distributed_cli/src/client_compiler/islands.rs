@@ -41,6 +41,10 @@ pub(crate) fn island_plan(
         .map(|variable| GeneratedIslandVariable {
             name: variable.name.clone(),
             graphql_type: variable.graphql_type.to_string(),
+            default_value: variable
+                .default
+                .as_ref()
+                .map(|default| default.value.clone()),
         })
         .collect();
 

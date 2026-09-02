@@ -15,13 +15,13 @@ export const DISTRIBUTED_BOUNDARY_PLAN = {
       "source": "src/routes/chat/+layout.svelte",
       "islands": [
         {
-          "islandId": "sha256:227fd81589ae74dbda488a561f212ef84453875f24ece17f1dbbcd076ac84602",
+          "islandId": "sha256:3850f12e756a6ad51d2ecaa1757a1e95d4d272100aa9122bf1e01d9ed28916b4",
           "operation": "ChatMessages",
           "modulePath": "operations/chat-messages.ts",
           "exportName": "Operation_ChatMessages",
           "component": "src/routes/chat/+layout.svelte",
-          "graphqlSource": "src/graphql/public/chat.graphql",
-          "reason": "explicit",
+          "graphqlSource": "src/routes/chat/+layout.public.graphql",
+          "reason": "route_document",
           "conservative": false,
           "directives": {
             "load": true,
@@ -35,59 +35,14 @@ export const DISTRIBUTED_BOUNDARY_PLAN = {
           },
           "binding": {
             "version": 1,
-            "id": "boundary-v1:b21a2cca7f797af2",
-            "discovery": "explicit",
+            "id": "boundary-v1:9b9941772620a19f",
+            "discovery": "empty",
             "sources": {
               "limit": {
-                "kind": "constant",
-                "value": 25
+                "kind": "omit"
               },
               "offset": {
-                "kind": "constant",
-                "value": 0
-              }
-            }
-          }
-        }
-      ]
-    },
-    {
-      "id": "page:/chat",
-      "route": "/chat",
-      "kind": "page",
-      "source": "src/routes/chat/+page.svelte",
-      "islands": [
-        {
-          "islandId": "sha256:227fd81589ae74dbda488a561f212ef84453875f24ece17f1dbbcd076ac84602",
-          "operation": "ChatMessages",
-          "modulePath": "operations/chat-messages.ts",
-          "exportName": "Operation_ChatMessages",
-          "component": "src/routes/chat/+page.svelte",
-          "graphqlSource": "src/graphql/public/chat.graphql",
-          "reason": "explicit",
-          "conservative": false,
-          "directives": {
-            "load": true,
-            "live": true
-          },
-          "liveCoverage": {
-            "requested": true,
-            "finite": true,
-            "kind": "offset",
-            "maxItems": 1000
-          },
-          "binding": {
-            "version": 1,
-            "id": "boundary-v1:b21a2cca7f797af2",
-            "discovery": "explicit",
-            "sources": {
-              "limit": {
-                "kind": "constant",
-                "value": 25
-              },
-              "offset": {
-                "kind": "constant",
-                "value": 0
+                "kind": "omit"
               }
             }
           }
@@ -102,12 +57,10 @@ const DistributedBoundaryBinding_0 = defineDistributedBoundaryBinding(
   DistributedBoundaryArtifact_0,
   {
   "limit": {
-    "kind": "constant",
-    "value": 25
+    "kind": "omit"
   },
   "offset": {
-    "kind": "constant",
-    "value": 0
+    "kind": "omit"
   }
 } as const
 );
@@ -116,39 +69,14 @@ const DistributedBoundaryOperation_0 = defineDistributedBoundaryOperation(
   "operation": "ChatMessages",
   "route": "/chat",
   "kind": "layout",
-  "sourcePath": "src/graphql/public/chat.graphql",
-  "discovery": "explicit"
+  "sourcePath": "src/routes/chat/+layout.public.graphql",
+  "discovery": "route_document"
 } as const,
   DistributedBoundaryArtifact_0,
   DistributedBoundaryBinding_0
 );
-const DistributedBoundaryBinding_1 = defineDistributedBoundaryBinding(
-  DistributedBoundaryArtifact_0,
-  {
-  "limit": {
-    "kind": "constant",
-    "value": 25
-  },
-  "offset": {
-    "kind": "constant",
-    "value": 0
-  }
-} as const
-);
-const DistributedBoundaryOperation_1 = defineDistributedBoundaryOperation(
-  {
-  "operation": "ChatMessages",
-  "route": "/chat",
-  "kind": "page",
-  "sourcePath": "src/graphql/public/chat.graphql",
-  "discovery": "explicit"
-} as const,
-  DistributedBoundaryArtifact_0,
-  DistributedBoundaryBinding_1
-);
 
 /** Executable SSR/browser ownership assembled from the same boundary plan. */
 export const DISTRIBUTED_BOUNDARY_OPERATIONS = [
-  DistributedBoundaryOperation_0,
-  DistributedBoundaryOperation_1
+  DistributedBoundaryOperation_0
 ] as const;

@@ -148,7 +148,7 @@ const TODO_SELECTION = Object.freeze({
 });
 
 const VARIABLE_CODEC = Object.freeze({
-	version: 1,
+	version: 2,
 	limits: Object.freeze({
 		maxDepth: 8,
 		maxBoolWidth: 256,
@@ -162,17 +162,19 @@ const VARIABLE_CODEC = Object.freeze({
 			nullable: false
 		})
 	}),
+	defaults: Object.freeze({}),
 	inputs: Object.freeze({})
 });
 
 const NO_VARIABLES = Object.freeze({
-	version: 1,
+	version: 2,
 	limits: Object.freeze({
 		maxDepth: 8,
 		maxBoolWidth: 256,
 		maxInList: 1_000
 	}),
 	variables: Object.freeze({}),
+	defaults: Object.freeze({}),
 	inputs: Object.freeze({})
 });
 

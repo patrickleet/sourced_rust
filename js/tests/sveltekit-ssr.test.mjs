@@ -84,13 +84,14 @@ const forwardedTodosArtifact = Object.freeze({
 		operation: 'forwarded-todos-v1'
 	}),
 	variableCodec: Object.freeze({
-		version: 1,
+		version: 2,
 		limits: Object.freeze({ maxDepth: 64, maxBoolWidth: 256, maxInList: 1000 }),
 		variables: Object.freeze({
 			payload: Object.freeze({
 				kind: 'scalar', scalar: 'JSON', codec: 'json', nullable: true
 			})
 		}),
+		defaults: Object.freeze({}),
 		inputs: Object.freeze({})
 	})
 });

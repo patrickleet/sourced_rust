@@ -201,7 +201,7 @@ const operation: ReplicaOperationArtifact<TodosData, TodosVariables> = {
     trustedPresets: []
   },
   variableCodec: {
-    version: 1,
+    version: 2,
     limits: { maxDepth: 8, maxBoolWidth: 32, maxInList: 64 },
     variables: {
       limit: {
@@ -211,6 +211,7 @@ const operation: ReplicaOperationArtifact<TodosData, TodosVariables> = {
         nullable: false
       }
     },
+    defaults: {},
     inputs: {}
   },
   roots: [{
@@ -298,13 +299,14 @@ const operation = Object.freeze({
     trustedPresets: Object.freeze([])
   }),
   variableCodec: Object.freeze({
-    version: 1,
+    version: 2,
     limits: Object.freeze({
       maxDepth: 8,
       maxBoolWidth: 32,
       maxInList: 64
     }),
     variables: Object.freeze({}),
+    defaults: Object.freeze({}),
     inputs: Object.freeze({})
   }),
   roots: Object.freeze([Object.freeze({
@@ -570,18 +572,25 @@ assert.deepEqual(Object.keys(sveltekitSurface).sort(), [
   'DistributedSvelteKitBoundaryController',
   'authFromPageData',
   'bindSveltekitOperation',
+  'constant',
   'createDistributedSvelteKit',
   'createDistributedSvelteKitServer',
   'createPageDataSessionSource',
   'defineDistributedBoundaryBinding',
   'defineDistributedBoundaryOperation',
   'defineDistributedSvelteKitOperation',
+  'defineGraphqlIslandBindings',
   'distributedReloadLifecycle',
+  'forwardedProp',
+  'omitVariable',
   'parseDistributedGenerationEnvelope',
   'provideDistributedSvelteKitClient',
   'registerDistributedReloadClient',
   'resolveDistributedBoundaryVariables',
   'retainDistributedSvelteKitBoundary',
+  'routeParam',
+  'searchParam',
+  'sessionClaim',
   'sessionSourceFromPageData',
   'useDistributedSvelteKitClient',
   'useDistributedSvelteKitCommands',

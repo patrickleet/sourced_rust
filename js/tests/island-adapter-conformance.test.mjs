@@ -23,8 +23,8 @@ const VanillaIsland = Object.freeze({
 		}),
 		directives: Object.freeze({ load: true, live: true }),
 		variableSchema: Object.freeze({
-			reference: `sha256:${'b'.repeat(64)}#variable-codec-v1`,
-			codecVersion: 1,
+			reference: `sha256:${'b'.repeat(64)}#variable-codec-v2`,
+			codecVersion: 2,
 			variables: Object.freeze([])
 		}),
 		liveCoverage: Object.freeze({

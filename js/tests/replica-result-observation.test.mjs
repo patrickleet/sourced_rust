@@ -21,13 +21,14 @@ const Query = Object.freeze({
 		trustedPresets: Object.freeze([])
 	}),
 	variableCodec: Object.freeze({
-		version: 1,
+		version: 2,
 		limits: Object.freeze({
 			maxDepth: 8,
 			maxBoolWidth: 32,
 			maxInList: 64
 		}),
 		variables: Object.freeze({}),
+		defaults: Object.freeze({}),
 		inputs: Object.freeze({})
 	}),
 	live: Object.freeze({
@@ -249,13 +250,14 @@ test('receipt-only protocol frames notify only after the authoritative scope com
 			trustedPresets: Object.freeze([])
 		}),
 		variableCodec: Object.freeze({
-			version: 1,
+			version: 2,
 			limits: Object.freeze({
 				maxDepth: 8,
 				maxBoolWidth: 32,
 				maxInList: 64
 			}),
 			variables: Object.freeze({}),
+			defaults: Object.freeze({}),
 			inputs: Object.freeze({})
 		}),
 		roots: Object.freeze([])

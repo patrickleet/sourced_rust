@@ -102,7 +102,12 @@ is not limited to `+page.graphql`:
   page-owned SSR data.
 - [`routes/chat/+layout.graphql`](ui/src/routes/chat/+layout.graphql) owns the
   finite `@load @live` lobby window across `/chat` and `/chat/about`; navigation
-  retains one normalized replica and live subscription.
+  retains one normalized replica and live subscription. Its `limit` and
+  `offset` live as GraphQL defaults, so SSR and `ChatMessages.use()` share the
+  same canonical variables without application-level boundary constants.
+- [`routes/chat/+layout.public.graphql`](ui/src/routes/chat/+layout.public.graphql)
+  is the authorization-specific anonymous copy. Surface-qualified route
+  documents are still discovered as layout-owned islands.
 - [`SelectedBlobGame.graphql`](ui/src/lib/components/blob/SelectedBlobGame.graphql)
   is imported through [`SelectedBlobGame.svelte`](ui/src/lib/components/blob/SelectedBlobGame.svelte).
   The compiler discovers the reusable component island, promotes it to the

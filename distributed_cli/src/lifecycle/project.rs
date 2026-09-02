@@ -1,3 +1,4 @@
+use glob::Pattern;
 use serde::Deserialize;
 use serde_json::Value;
 use std::collections::{BTreeMap, BTreeSet};
@@ -6,8 +7,8 @@ use std::path::{Path, PathBuf};
 use std::process::Command;
 
 use crate::contracts::{
-    ArtifactIdentity, ArtifactProvenance, ContractArtifactKind, ContractCatalog, ContractEntry,
-    ContractScope, CONTRACT_CATALOG_SCHEMA_VERSION,
+    ArtifactIdentity, ArtifactProvenance, ClientInventory, ContractArtifactKind, ContractCatalog,
+    ContractEntry, ContractScope, CONTRACT_CATALOG_SCHEMA_VERSION, MAX_CATALOG_GLOB_MATCHES,
 };
 use crate::js_framework::{
     discover_javascript_framework, JavascriptFrameworkPackage, JavascriptPackageSource,
@@ -168,6 +169,8 @@ pub fn discover_lifecycle_project(
         .transpose()?
         .flatten();
     let mut sources = workspace_sources(&root, &workspace_packages)?;
+    let lifecycle_owns_client_compile =
+        add_client_compiler_sources(&root, ui.as_deref(), &mut sources)?;
     if let Some(receipt) = javascript
         .as_ref()
         .and_then(|package| package.lifecycle_receipt(&root))
@@ -223,7 +226,7 @@ pub fn discover_lifecycle_project(
                     sources,
                     generator: "distributed.application-manifest".to_string(),
                     source_revision: None,
-                    glob_limit: None,
+                    glob_limit: lifecycle_owns_client_compile.then_some(MAX_CATALOG_GLOB_MATCHES),
                 },
                 predecessor: None,
                 outputs: BTreeMap::from([("manifest".to_string(), APPLICATION_OUTPUT.to_string())]),
@@ -242,6 +245,7 @@ pub fn discover_lifecycle_project(
         &runtime,
         ui.as_deref(),
         javascript.as_ref(),
+        lifecycle_owns_client_compile,
         &executable,
         command_prefix,
     );
@@ -577,6 +581,74 @@ fn workspace_sources(
     Ok(sources)
 }
 
+fn add_client_compiler_sources(
+    root: &Path,
+    ui: Option<&Path>,
+    sources: &mut BTreeSet<String>,
+) -> Result<bool, LifecycleError> {
+    let Some(ui) = ui else {
+        return Ok(false);
+    };
+    let inventory_path = ui.join("distributed.clients.json");
+    if !inventory_path.is_file() {
+        return Ok(false);
+    }
+    let Ok(ui_relative) = ui.strip_prefix(root) else {
+        // An explicitly selected repository-local sibling UI remains supported,
+        // but its client compiler stays Vite-owned because lifecycle catalog
+        // sources are deliberately confined to the Cargo workspace root.
+        return Ok(false);
+    };
+    let inventory = ClientInventory::from_path(&inventory_path)
+        .map_err(|error| LifecycleError::new(error.to_string()))?;
+    let ui_prefix = if ui_relative.as_os_str().is_empty() {
+        String::new()
+    } else {
+        portable_path(ui_relative)?
+    };
+    let rooted = |path: &str| {
+        if ui_prefix.is_empty() {
+            path.to_string()
+        } else {
+            format!("{ui_prefix}/{path}")
+        }
+    };
+    sources.insert(rooted("distributed.clients.json"));
+    for client in inventory.clients {
+        for document in client.documents {
+            let document_source = rooted(&document);
+            if ui.join(&document).is_file() {
+                // The document is guaranteed to match this pattern, while an
+                // optional `.bindings.js` sibling is included without making
+                // that sidecar mandatory. Escaping preserves bracketed
+                // SvelteKit route segments as literal path components.
+                sources.insert(format!("{}*", Pattern::escape(&document_source)));
+            } else {
+                // Client declarations may place their wildcard in a directory
+                // component, while lifecycle catalog globs deliberately may
+                // only vary the final component. Hash the bounded stable
+                // directory so document and sidecar additions are observed.
+                let stable = document.split(['*', '?', '[']).next().unwrap_or(&document);
+                let directory = if stable.ends_with('/') {
+                    stable.trim_end_matches('/')
+                } else {
+                    Path::new(stable)
+                        .parent()
+                        .and_then(Path::to_str)
+                        .unwrap_or_default()
+                };
+                if directory.is_empty() {
+                    return Err(LifecycleError::new(format!(
+                        "client document pattern `{document}` has no bounded source directory"
+                    )));
+                }
+                sources.insert(rooted(directory));
+            }
+        }
+    }
+    Ok(true)
+}
+
 fn portable_path(path: &Path) -> Result<String, LifecycleError> {
     let value = path
         .components()
@@ -756,6 +828,7 @@ fn lifecycle_dev(
     runtime: &RuntimeTarget,
     ui: Option<&Path>,
     javascript: Option<&JavascriptFrameworkPackage>,
+    lifecycle_owns_client_compile: bool,
     executable: &Path,
     command_prefix: &[&str],
 ) -> LifecycleDevConfig {
@@ -809,6 +882,23 @@ fn lifecycle_dev(
             ),
             Err(_) => (Some(ui.to_string_lossy().into_owned()), true),
         };
+        let mut ui_env = BTreeMap::from([
+            ("DISTRIBUTED_API_ORIGIN".to_string(), api_url.clone()),
+            ("E2E_API_ORIGIN".to_string(), api_url.clone()),
+            (
+                "AUTH_SECRET".to_string(),
+                std::env::var("AUTH_SECRET")
+                    .unwrap_or_else(|_| "distributed-local-development-only-secret".to_string()),
+            ),
+            ("AUTH_URL".to_string(), ui_url.clone()),
+            ("AUTH_USE_SECURE_COOKIES".to_string(), "false".to_string()),
+        ]);
+        if lifecycle_owns_client_compile {
+            ui_env.insert(
+                "DISTRIBUTED_LIFECYCLE_OWNS_CLIENT_COMPILE".to_string(),
+                "1".to_string(),
+            );
+        }
         processes.insert(
             "ui".to_string(),
             LifecycleDevProcess {
@@ -824,19 +914,12 @@ fn lifecycle_dev(
                 ],
                 cwd,
                 external_cwd,
-                env: BTreeMap::from([
-                    ("DISTRIBUTED_API_ORIGIN".to_string(), api_url.clone()),
-                    ("E2E_API_ORIGIN".to_string(), api_url.clone()),
-                    (
-                        "AUTH_SECRET".to_string(),
-                        std::env::var("AUTH_SECRET").unwrap_or_else(|_| {
-                            "distributed-local-development-only-secret".to_string()
-                        }),
-                    ),
-                    ("AUTH_URL".to_string(), ui_url.clone()),
-                    ("AUTH_USE_SECURE_COOKIES".to_string(), "false".to_string()),
-                ]),
+                env: ui_env,
                 url: Some(ui_url.clone()),
+                // The lifecycle atomically activates generated client files and
+                // the browser lifecycle owns the one document reload. Restarting
+                // Vite before activation disconnects its HMR socket and can race
+                // that controlled reload with an uncoordinated browser retry.
                 restart_on: BTreeSet::new(),
                 ready_after_ms: 100,
                 ready: Some(LifecycleDevProbe {
@@ -1057,6 +1140,7 @@ mod tests {
             },
             Some(ui.path()),
             None,
+            false,
             &executable,
             &[],
         );
@@ -1065,6 +1149,96 @@ mod tests {
         let process = &config.processes["ui"];
         assert!(process.external_cwd);
         assert_eq!(process.cwd.as_deref(), ui.path().to_str());
+        assert!(!process
+            .env
+            .contains_key("DISTRIBUTED_LIFECYCLE_OWNS_CLIENT_COMPILE"));
+        assert!(process.restart_on.is_empty());
+    }
+
+    #[test]
+    fn client_compiler_sources_include_optional_binding_sidecars() {
+        let project = tempfile::tempdir().unwrap();
+        let ui = project.path().join("ui");
+        fs::create_dir_all(&ui).unwrap();
+        fs::create_dir_all(ui.join("src/routes/[[itemId]]")).unwrap();
+        fs::create_dir_all(ui.join("src/routes/chat")).unwrap();
+        fs::write(
+            ui.join("src/routes/[[itemId]]/+page.graphql"),
+            "query Item { item { id } }\n",
+        )
+        .unwrap();
+        fs::write(
+            ui.join("src/routes/chat/+layout.gql"),
+            "query Chat { chat { id } }\n",
+        )
+        .unwrap();
+        fs::write(
+            ui.join("distributed.clients.json"),
+            r#"{
+              "schema_version": 1,
+              "clients": [{
+                "module": "$distributed",
+                "surface": "fixture",
+                "documents": [
+                  "src/routes/*/+page.graphql",
+                  "src/routes/chat/+layout.gql",
+                  "src/routes/[[itemId]]/+page.graphql"
+                ],
+                "output": "src/lib/generated"
+              }]
+            }"#,
+        )
+        .unwrap();
+        let mut sources = BTreeSet::new();
+
+        assert!(add_client_compiler_sources(project.path(), Some(&ui), &mut sources).unwrap());
+        assert_eq!(
+            sources,
+            BTreeSet::from([
+                "ui/distributed.clients.json".to_string(),
+                "ui/src/routes".to_string(),
+                "ui/src/routes/[[][[]itemId[]][]]/+page.graphql*".to_string(),
+                "ui/src/routes/chat/+layout.gql*".to_string(),
+            ])
+        );
+        assert!(
+            Pattern::new("ui/src/routes/[[][[]itemId[]][]]/+page.graphql*")
+                .unwrap()
+                .matches_path(Path::new(
+                    "ui/src/routes/[[itemId]]/+page.graphql.bindings.js"
+                ))
+        );
+    }
+
+    #[test]
+    fn lifecycle_owned_ui_stays_serving_until_generation_activation() {
+        let project = tempfile::tempdir().unwrap();
+        let ui = project.path().join("ui");
+        fs::create_dir_all(&ui).unwrap();
+        let executable = std::env::current_exe().unwrap();
+        let config = lifecycle_dev(
+            project.path(),
+            &RuntimeTarget {
+                package: "fixture-runner".into(),
+                binary: "fixture".into(),
+            },
+            Some(&ui),
+            None,
+            true,
+            &executable,
+            &[],
+        );
+
+        config.validate().unwrap();
+        let process = &config.processes["ui"];
+        assert_eq!(
+            process
+                .env
+                .get("DISTRIBUTED_LIFECYCLE_OWNS_CLIENT_COMPILE")
+                .map(String::as_str),
+            Some("1")
+        );
+        assert!(process.restart_on.is_empty());
     }
 
     #[test]

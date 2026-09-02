@@ -19,6 +19,7 @@ import { FILTER_OPERATORS, GRAPHQL_NAME, MAX_VARIABLE_CODEC_DEPTH } from './cons
 export type VariableCodecRegistry = {
 	readonly limits: ReplicaVariableCodecLimits;
 	readonly variables: ReadonlyMap<string, ReplicaVariableInputRef>;
+	readonly defaults: ReadonlyMap<string, ReplicaValue>;
 	readonly inputs: ReadonlyMap<string, ReplicaVariableInputDefinition>;
 };
 
@@ -54,6 +55,10 @@ export function canonicalizeOperationVariables<
 	)) {
 		const present = supplied.has(name) && supplied.get(name) !== undefined;
 		if (!present) {
+			if (registry.defaults.has(name)) {
+				canonical.push([name, registry.defaults.get(name)!]);
+				continue;
+			}
 			if (!input.nullable) {
 				variableValueInvalid(`variables.${name}`, 'required variable is missing');
 			}
@@ -78,9 +83,9 @@ export function validateVariableCodec(codec: ReplicaVariableCodecArtifact): Vari
 	const root = artifactRecord(
 		codec,
 		'artifact.variableCodec',
-		['version', 'limits', 'variables', 'inputs']
+		['version', 'limits', 'variables', 'defaults', 'inputs']
 	);
-	if (root.version !== 1) variableCodecInvalid('artifact.variableCodec.version');
+	if (root.version !== 2) variableCodecInvalid('artifact.variableCodec.version');
 	const rawLimits = artifactRecord(
 		root.limits,
 		'artifact.variableCodec.limits',
@@ -135,7 +140,30 @@ export function validateVariableCodec(codec: ReplicaVariableCodecArtifact): Vari
 			0
 		);
 	}
-	return { limits, variables, inputs };
+
+	const defaults = new Map<string, ReplicaValue>();
+	const registry = { limits, variables, defaults, inputs };
+	for (const [name, value] of artifactRecordEntries(
+		root.defaults,
+		'artifact.variableCodec.defaults'
+	)) {
+		const input = variables.get(name);
+		if (input === undefined) {
+			variableCodecInvalid(`artifact.variableCodec.defaults.${name}`);
+		}
+		defaults.set(
+			name,
+			canonicalizeInputRef(
+				input,
+				value,
+				registry,
+				`artifact.variableCodec.defaults.${name}`,
+				new Set(),
+				0
+			)
+		);
+	}
+	return registry;
 }
 
 export function validateInputRef(
@@ -1153,4 +1181,3 @@ export function variableCodecInvalid(path: string): never {
 export function variableValueInvalid(path: string, detail: string): never {
 	throw new TypeError(`invalid GraphQL operation input at ${path}: ${detail}`);
 }
-

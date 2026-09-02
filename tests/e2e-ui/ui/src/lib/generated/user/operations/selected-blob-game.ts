@@ -26,7 +26,7 @@ export const Operation_SelectedBlobGame: ReplicaOperationArtifact<Operation_Sele
     "column": 1
   },
   "variableCodec": {
-    "version": 1,
+    "version": 2,
     "limits": {
       "maxDepth": 8,
       "maxBoolWidth": 256,
@@ -40,6 +40,7 @@ export const Operation_SelectedBlobGame: ReplicaOperationArtifact<Operation_Sele
         "nullable": true
       }
     },
+    "defaults": {},
     "inputs": {}
   },
   "roots": [

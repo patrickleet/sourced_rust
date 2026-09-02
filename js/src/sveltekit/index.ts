@@ -25,6 +25,15 @@ export {
 	type DistributedBoundaryVariableSources
 } from './boundary-variables.js';
 export {
+	constant,
+	defineGraphqlIslandBindings,
+	forwardedProp,
+	omitVariable,
+	routeParam,
+	searchParam,
+	sessionClaim
+} from './island-bindings.js';
+export {
 	DistributedSvelteKitBoundaryController,
 	type DistributedSvelteKitBoundaryInstance,
 	type DistributedSvelteKitBoundaryLocation,

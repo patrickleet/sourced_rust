@@ -26,19 +26,21 @@ pub(super) fn compile_variables(
             ));
         }
         reject_directives(&definition.directives, "variable definition", document)?;
-        if definition.default_value.is_some() {
-            return Err(source_error(
-                "client.variable.default_unsupported",
-                format!(
-                    "variable `${name}` declares a default; pass the effective root argument explicitly so cache identity cannot diverge from server coercion"
-                ),
-                document,
-                definition.name.pos,
-            ));
-        }
+        let default = definition
+            .default_value
+            .as_ref()
+            .map(|default| {
+                let value = Value::from(default.node.clone());
+                Ok(CompiledVariableDefault {
+                    value: value_to_json(&value, document, default.pos)?,
+                    wire: render_value(&value, document, default.pos)?,
+                })
+            })
+            .transpose()?;
         variables.push(CompiledVariable {
             name: name.to_string(),
             graphql_type: definition.var_type.node.clone(),
+            default,
         });
     }
     variables.sort_by(|left, right| left.name.cmp(&right.name));
@@ -158,14 +160,24 @@ pub(super) fn compile_variable_codec(
         )?;
         compiled_variables.insert(variable.name.clone(), input_type);
     }
+    let defaults = variables
+        .iter()
+        .filter_map(|variable| {
+            variable
+                .default
+                .as_ref()
+                .map(|default| (variable.name.clone(), default.value.clone()))
+        })
+        .collect();
     Ok(CompiledVariableCodec {
-        version: 1,
+        version: 2,
         limits: CompiledVariableCodecLimits {
             max_depth: manifest.execution.max_depth,
             max_bool_width: manifest.execution.max_bool_width,
             max_in_list: manifest.execution.max_in_list,
         },
         variables: compiled_variables,
+        defaults,
         inputs,
     })
 }

@@ -427,7 +427,7 @@ export const chatWalkthrough: DemoWalkthrough = {
 				{
 					file: 'routes/chat/+layout.graphql',
 					caption: '`@load` fills SSR. `@live` sends WebSocket frames for the same retained layout document.',
-					code: `query ChatMessages($limit: Int!, $offset: Int!) @load @live {
+					code: `query ChatMessages($limit: Int! = 25, $offset: Int! = 0) @load @live {
   chat_messages(
     where: { room_id: { _eq: "lobby" } }
     limit: $limit
@@ -474,7 +474,7 @@ pub struct ChatMessages {
 				{
 					file: 'routes/chat/+page.svelte',
 					caption: 'The hook binds the replica. The page reverses the list for display.',
-					code: `const lobby = ChatMessages.use({ limit: PAGE_SIZE, offset: 0 });
+					code: `const lobby = ChatMessages.use();
 const livePage = $derived.by(() => {
   const pageMessages = Array.isArray($lobby.data?.chat_messages)
     ? $lobby.data.chat_messages

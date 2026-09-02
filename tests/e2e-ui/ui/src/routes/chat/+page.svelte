@@ -66,7 +66,7 @@
 	const displayName = $derived(sessionDisplayName(data.session));
 
 	/** Live newest page — same variables SSR seeded. */
-	const lobby = ChatMessages.use({ limit: PAGE_SIZE, offset: 0 });
+	const lobby = ChatMessages.use();
 	// Capture a bound op at init so scroll handlers can open history watches
 	// without re-entering Svelte context.
 	const chat = useDistributedSvelteKitClient().operation(ChatMessages.artifact);

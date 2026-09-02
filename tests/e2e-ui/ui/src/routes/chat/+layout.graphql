@@ -1,5 +1,5 @@
 # The nested chat layout owns the finite live lobby window across child pages.
-query ChatMessages($limit: Int!, $offset: Int!) @load @live {
+query ChatMessages($limit: Int! = 25, $offset: Int! = 0) @load @live {
   chat_messages(
     where: { room_id: { _eq: "lobby" } }
     limit: $limit

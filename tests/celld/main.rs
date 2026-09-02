@@ -375,6 +375,105 @@ async fn live_todo_cell_create_complete_reopen_archive_and_isolate() {
 }
 
 #[tokio::test]
+async fn live_independent_todo_cells_accept_bursts_while_queue_drain_is_busy() {
+    let Some(base) = env_support::broker_env("CELLD_URL", "celld live Todo burst") else {
+        return;
+    };
+    let base = base.trim_end_matches('/').to_string();
+    let client = reqwest::Client::builder()
+        .timeout(Duration::from_secs(10))
+        .build()
+        .expect("client");
+
+    wait_healthy(&client, &base).await;
+
+    let nonce = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .expect("clock")
+        .as_nanos();
+    let ids = (0..6)
+        .map(|index| format!("todo-burst-{nonce}-{index}"))
+        .collect::<Vec<_>>();
+
+    for (index, id) in ids.iter().enumerate() {
+        let command_id = format!("0190a000-0000-7000-8000-{:012}", 400 + index);
+        let response = send_through_dev_reload(
+            trusted_cell_request(
+                client
+                    .post(format!("{base}/todo/{id}/todo.create"))
+                    .header("x-user-id", "alice")
+                    .header("x-roles", "user"),
+            )
+            .json(&serde_json::json!({
+                "commandId": command_id,
+                "input": { "title": format!("burst {index}") }
+            })),
+            "burst create",
+        )
+        .await;
+        let status = response.status();
+        let body = response.text().await.unwrap_or_default();
+        assert_eq!(status, 201, "burst create {index}: {body}");
+    }
+
+    let completed = futures_util::future::join_all(ids.iter().enumerate().map(|(index, id)| {
+        let client = client.clone();
+        let base = base.clone();
+        async move {
+            let command_id = format!("0190a000-0000-7000-8000-{:012}", 500 + index);
+            send_through_dev_reload(
+                trusted_cell_request(
+                    client
+                        .post(format!("{base}/todo/{id}/todo.complete"))
+                        .header("x-user-id", "alice")
+                        .header("x-roles", "user"),
+                )
+                .json(&serde_json::json!({
+                    "commandId": command_id,
+                    "input": {}
+                })),
+                "burst complete",
+            )
+            .await
+        }
+    }))
+    .await;
+    for (index, response) in completed.into_iter().enumerate() {
+        let status = response.status();
+        let body = response.text().await.unwrap_or_default();
+        assert_eq!(status, 200, "burst complete {index}: {body}");
+    }
+
+    let reopened = futures_util::future::join_all(ids.iter().enumerate().map(|(index, id)| {
+        let client = client.clone();
+        let base = base.clone();
+        async move {
+            let command_id = format!("0190a000-0000-7000-8000-{:012}", 600 + index);
+            send_through_dev_reload(
+                trusted_cell_request(
+                    client
+                        .post(format!("{base}/todo/{id}/todo.reopen"))
+                        .header("x-user-id", "alice")
+                        .header("x-roles", "user"),
+                )
+                .json(&serde_json::json!({
+                    "commandId": command_id,
+                    "input": {}
+                })),
+                "burst reopen",
+            )
+            .await
+        }
+    }))
+    .await;
+    for (index, response) in reopened.into_iter().enumerate() {
+        let status = response.status();
+        let body = response.text().await.unwrap_or_default();
+        assert_eq!(status, 200, "burst reopen {index}: {body}");
+    }
+}
+
+#[tokio::test]
 async fn live_chat_cell_post_and_isolate() {
     let Some(base) = env_support::broker_env("CELLD_URL", "celld live Chat cell") else {
         return;

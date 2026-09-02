@@ -22,8 +22,8 @@ export const DISTRIBUTED_ISLANDS = [
       "live": false
     },
     "variableSchema": {
-      "reference": "sha256:a4fa7bd07cd0202f399c6d82a9ee79e67586c5a65ee3a4098b2d84e8ef6ed4fa#variable-codec-v1",
-      "codecVersion": 1,
+      "reference": "sha256:a4fa7bd07cd0202f399c6d82a9ee79e67586c5a65ee3a4098b2d84e8ef6ed4fa#variable-codec-v2",
+      "codecVersion": 2,
       "variables": []
     },
     "liveCoverage": {
@@ -35,9 +35,9 @@ export const DISTRIBUTED_ISLANDS = [
   },
   {
     "version": 1,
-    "id": "sha256:0364b0fe73dc280f9a53d0a8a0cc2728247754969dbf4f7542773bb4bb64a045",
+    "id": "sha256:121c4ce12ff5de76af6d16253f3f76b9d1a7559ec1579a1e33d7d2fd48eafb02",
     "operation": "ChatMessages",
-    "operationHash": "sha256:16e82d9939a08f205efef9238393f8e4582da0e58d15ace6470d7831c0798603",
+    "operationHash": "sha256:f346242c36efd78f1c04d86c741b0f5c6c6f75c66d78ba9454a4647243922bfe",
     "modulePath": "operations/chat-messages.ts",
     "exportName": "Operation_ChatMessages",
     "source": {
@@ -50,16 +50,18 @@ export const DISTRIBUTED_ISLANDS = [
       "live": true
     },
     "variableSchema": {
-      "reference": "sha256:16e82d9939a08f205efef9238393f8e4582da0e58d15ace6470d7831c0798603#variable-codec-v1",
-      "codecVersion": 1,
+      "reference": "sha256:f346242c36efd78f1c04d86c741b0f5c6c6f75c66d78ba9454a4647243922bfe#variable-codec-v2",
+      "codecVersion": 2,
       "variables": [
         {
           "name": "limit",
-          "graphqlType": "Int!"
+          "graphqlType": "Int!",
+          "defaultValue": 25
         },
         {
           "name": "offset",
-          "graphqlType": "Int!"
+          "graphqlType": "Int!",
+          "defaultValue": 0
         }
       ]
     },
@@ -87,8 +89,8 @@ export const DISTRIBUTED_ISLANDS = [
       "live": false
     },
     "variableSchema": {
-      "reference": "sha256:6a16ad716ee1617ca22509603ee8b07cc641076cc95d13faa79ff79d83aa8fa3#variable-codec-v1",
-      "codecVersion": 1,
+      "reference": "sha256:6a16ad716ee1617ca22509603ee8b07cc641076cc95d13faa79ff79d83aa8fa3#variable-codec-v2",
+      "codecVersion": 2,
       "variables": [
         {
           "name": "gameId",
@@ -120,8 +122,8 @@ export const DISTRIBUTED_ISLANDS = [
       "live": false
     },
     "variableSchema": {
-      "reference": "sha256:df906cbf75f2d5c11256c816a3a3726f34689e5d1a57f198484396c8c3803030#variable-codec-v1",
-      "codecVersion": 1,
+      "reference": "sha256:df906cbf75f2d5c11256c816a3a3726f34689e5d1a57f198484396c8c3803030#variable-codec-v2",
+      "codecVersion": 2,
       "variables": []
     },
     "liveCoverage": {

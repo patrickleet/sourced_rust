@@ -26,7 +26,7 @@ export const Operation_RustRuntimeBridge: ReplicaOperationArtifact<Operation_Rus
     "column": 3
   },
   "variableCodec": {
-    "version": 1,
+    "version": 2,
     "limits": {
       "maxDepth": 8,
       "maxBoolWidth": 256,
@@ -46,6 +46,7 @@ export const Operation_RustRuntimeBridge: ReplicaOperationArtifact<Operation_Rus
         "nullable": false
       }
     },
+    "defaults": {},
     "inputs": {}
   },
   "roots": [

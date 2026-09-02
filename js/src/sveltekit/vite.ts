@@ -294,7 +294,7 @@ export function distributedSvelteKit(
 	options: DistributedSvelteKitViteOptions
 ): DistributedSvelteKitVitePlugin {
 	const lifecycleOwnsCompile =
-		process.env.DISTRIBUTED_LIFECYCLE_DIR !== undefined;
+		process.env.DISTRIBUTED_LIFECYCLE_OWNS_CLIENT_COMPILE === '1';
 	let resolved: ResolvedIntegration | undefined;
 	let dirty = false;
 	let running: Promise<void> | undefined;
@@ -371,13 +371,11 @@ export function distributedSvelteKit(
 			frameworkDist = localFrameworkDist(config.root);
 			await validateResolvedPaths(resolved);
 			/*
-			 * `distributed dev` has already staged this generation and owns every
-			 * compiler input through its application watcher. Recompiling here would
-			 * race the API process for Cargo and mutate generated output outside the
-			 * lifecycle transaction. The virtual modules still resolve the staged
-			 * files, while compiler inputs below are held for the supervisor reload.
+			 * The lifecycle has already built the active generation before it starts
+			 * this UI process. The supervisor activates later generations atomically
+			 * while this server stays available; compiling again here would race that
+			 * owner and can prevent the UI from reaching its readiness probe.
 			 */
-			if (lifecycleOwnsCompile) return;
 			/*
 			 * SvelteKit post-build analysis loads Vite config in an isolated
 			 * worker marked with SVELTEKIT_FORK. That pass reads framework
@@ -385,6 +383,7 @@ export function distributedSvelteKit(
 			 * the owning build's physical project lock and duplicate generation.
 			 */
 			if (!isMainThread && process.env.SVELTEKIT_FORK === 'true') return;
+			if (lifecycleOwnsCompile) return;
 			lock = await acquireCompilerLock(resolved.cwd);
 			try {
 				await compile('Vite startup', true);
@@ -459,7 +458,7 @@ export function distributedSvelteKit(
 					context.server.moduleGraph.invalidateModule(module);
 				}
 			}
-			if (process.env.DISTRIBUTED_LIFECYCLE_DIR === undefined) {
+			if (!lifecycleOwnsCompile) {
 				context.server.ws.send({ type: 'full-reload', path: '*' });
 			}
 			reloadedGeneration = completedGeneration;
@@ -1035,6 +1034,10 @@ function isGraphqlInput(
 	integration: ResolvedIntegration
 ): boolean {
 	const absolute = resolve(integration.cwd, file);
+	const isDocument = absolute.endsWith('.graphql') || absolute.endsWith('.gql');
+	const isBindings =
+		absolute.endsWith('.graphql.bindings.js') ||
+		absolute.endsWith('.gql.bindings.js');
 	if (
 		absolute.endsWith('.svelte') &&
 		(isWithin(integration.routesDir, absolute) ||
@@ -1043,7 +1046,7 @@ function isGraphqlInput(
 		return true;
 	}
 	if (
-		(!absolute.endsWith('.graphql') && !absolute.endsWith('.gql')) ||
+		(!isDocument && !isBindings) ||
 		!isWithin(integration.cwd, absolute)
 	) {
 		return false;
@@ -1128,7 +1131,7 @@ async function compileTransaction(
 				hadAdapterOutput: await realDirectoryExists(client.adapterOut)
 			});
 		}
-		const plans = await analyzeStagedBoundaries(integration, staged);
+		const plans = await analyzeStagedBoundaries(integration, transaction, staged);
 		const plansByModule = new Map(plans.map((plan) => [plan.module, plan]));
 		for (const item of staged) {
 			const plan = plansByModule.get(item.client.module);
@@ -1203,7 +1206,7 @@ async function checkTransaction(
 			await validateGeneratedEntrypoint(integration.cwd, output, client.module);
 			staged.push(Object.freeze({ client, output }));
 		}
-		const plans = await analyzeStagedBoundaries(integration, staged);
+		const plans = await analyzeStagedBoundaries(integration, transaction, staged);
 		const plansByModule = new Map(plans.map((plan) => [plan.module, plan]));
 		for (const [index, client] of integration.clients.entries()) {
 			const output = staged[index]!.output;
@@ -1273,6 +1276,7 @@ async function validateAdapterBoundaryPlan(
 
 async function analyzeStagedBoundaries(
 	integration: ResolvedIntegration,
+	transactionRoot: string,
 	staged: readonly Readonly<{ client: ResolvedClient; output: string }>[]
 ): Promise<readonly DistributedSvelteKitBoundaryPlan[]> {
 	return await analyzeDistributedSvelteKitBoundaries({
@@ -1283,7 +1287,7 @@ async function analyzeStagedBoundaries(
 		clients: await Promise.all(
 			staged.map(async ({ client, output }) => ({
 				module: client.module,
-				inventory: await readIslandInventory(integration.cwd, output),
+				inventory: await readIslandInventory(transactionRoot, output),
 				explicitBoundaries: client.boundaries
 			}))
 		)
@@ -1291,15 +1295,15 @@ async function analyzeStagedBoundaries(
 }
 
 async function readIslandInventory(
-	cwd: string,
+	transactionRoot: string,
 	output: string
 ): Promise<DistributedIslandInventory> {
 	const path = join(output, 'islands.json');
 	const metadata = await lstat(path);
 	if (metadata.isSymbolicLink() || !metadata.isFile()) {
-		throw new Error(`Distributed island inventory ${portablePath(relative(cwd, path))} must be a regular file`);
+		throw new Error(`Distributed island inventory ${portablePath(relative(transactionRoot, path))} must be a regular file`);
 	}
-	const canonicalRoot = await realpath(cwd);
+	const canonicalRoot = await realpath(transactionRoot);
 	const canonical = await realpath(path);
 	if (!isWithin(canonicalRoot, canonical)) {
 		throw new Error('Distributed island inventory escaped the project root');

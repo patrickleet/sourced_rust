@@ -105,6 +105,21 @@ function waitForTodoCommand(
 	);
 }
 
+async function expectTodoCommandSuccess(
+	response: import('@playwright/test').Response,
+	mutation: string
+) {
+	const responseBody = await response.text();
+	expect(
+		response.ok(),
+		`${mutation} HTTP ${response.status()}: ${responseBody.slice(0, 400)}`
+	).toBeTruthy();
+	expect(
+		responseBody,
+		`${mutation} GraphQL errors: ${responseBody.slice(0, 600)}`
+	).not.toMatch(/"errors"\s*:\s*\[/);
+}
+
 test.describe('todos (alice)', () => {
 	test('create, complete, reopen, archive', async ({ page }) => {
 		const title = `e2e todo ${Date.now()}`;
@@ -438,7 +453,7 @@ test.describe('todos (alice)', () => {
 			await page.locator('#todo-title').fill(title);
 			const response = waitForTodoCommand(page, 'todos_create');
 			await page.getByRole('button', { name: /^add$/i }).click();
-			expect((await response).ok(), 'setup todos_create must succeed').toBeTruthy();
+			await expectTodoCommandSuccess(await response, 'setup todos_create');
 			const item = page.locator('.item', { hasText: title });
 			await expect(item).toBeVisible();
 			const todoId = await item.getAttribute('data-todo-id');

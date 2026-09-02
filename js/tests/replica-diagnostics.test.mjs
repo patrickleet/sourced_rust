@@ -36,13 +36,14 @@ const Todos = Object.freeze({
 		trustedPresets: Object.freeze([])
 	}),
 	variableCodec: Object.freeze({
-		version: 1,
+		version: 2,
 		limits: Object.freeze({
 			maxDepth: 8,
 			maxBoolWidth: 32,
 			maxInList: 64
 		}),
 		variables: Object.freeze({}),
+		defaults: Object.freeze({}),
 		inputs: Object.freeze({})
 	}),
 	source: Object.freeze({
@@ -599,13 +600,14 @@ test('one diagnostics store receives both replica state and generated command ar
 		id: operationHash,
 		live: undefined,
 		variableCodec: Object.freeze({
-			version: 1,
+			version: 2,
 			limits: Object.freeze({
 				maxDepth: 8,
 				maxBoolWidth: 32,
 				maxInList: 64
 			}),
 			variables: Object.freeze({}),
+			defaults: Object.freeze({}),
 			inputs: Object.freeze({})
 		}),
 		protocol: Object.freeze({
