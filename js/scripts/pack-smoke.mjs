@@ -477,6 +477,7 @@ import {
   distributedSvelteKit,
   distributedSvelteKitAliases,
   generateDistributedSvelteKit,
+  generateDistributedSvelteKitLifecycle,
   validateDistributedSvelteKitBoundaryPlan
 } from '@hops-ops/distributed/sveltekit/vite';
 import type {
@@ -547,6 +548,7 @@ const proxy = distributedGraphqlProxy('http://127.0.0.1:8791');
 void [
   checkDistributedSvelteKit,
   generateDistributedSvelteKit,
+  generateDistributedSvelteKitLifecycle,
   plugin,
   aliases,
   proxy,
@@ -605,9 +607,11 @@ assert.deepEqual(Object.keys(sveltekitViteSurface).sort(), [
   'distributedSvelteKit',
   'distributedSvelteKitAliases',
   'generateDistributedSvelteKit',
+  'generateDistributedSvelteKitLifecycle',
   'validateDistributedSvelteKitBoundaryPlan'
 ]);
 assert.equal(typeof sveltekitViteSurface.generateDistributedSvelteKit, 'function');
+assert.equal(typeof sveltekitViteSurface.generateDistributedSvelteKitLifecycle, 'function');
 assert.equal(typeof sveltekitViteSurface.checkDistributedSvelteKit, 'function');
 
 const pageData = createPageDataSessionSource({
@@ -883,6 +887,17 @@ async function smokePack() {
 		);
 		await typecheck(svelteConsumerDirectory, []);
 		await run(nodeCommand, ['runtime.mjs'], svelteConsumerDirectory);
+		await stat(
+			join(
+				svelteConsumerDirectory,
+				'node_modules',
+				'@hops-ops',
+				'distributed',
+				'dist',
+				'sveltekit',
+				'lifecycle-compiler.js'
+			)
+		);
 		await assert.rejects(
 			stat(join(svelteConsumerDirectory, 'node_modules', 'react')),
 			(error) => error?.code === 'ENOENT',

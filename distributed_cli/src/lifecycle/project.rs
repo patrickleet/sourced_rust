@@ -1,3 +1,5 @@
+use base64::engine::general_purpose::URL_SAFE_NO_PAD;
+use base64::Engine as _;
 use glob::Pattern;
 use serde::Deserialize;
 use serde_json::Value;
@@ -7,8 +9,9 @@ use std::path::{Path, PathBuf};
 use std::process::Command;
 
 use crate::contracts::{
-    ArtifactIdentity, ArtifactProvenance, ClientInventory, ContractArtifactKind, ContractCatalog,
-    ContractEntry, ContractScope, CONTRACT_CATALOG_SCHEMA_VERSION, MAX_CATALOG_GLOB_MATCHES,
+    ArtifactIdentity, ArtifactPredecessor, ArtifactProvenance, ClientInventory,
+    ContractArtifactKind, ContractCatalog, ContractEntry, ContractScope,
+    CONTRACT_CATALOG_SCHEMA_VERSION, MAX_CATALOG_GLOB_MATCHES,
 };
 use crate::js_framework::{
     discover_javascript_framework, JavascriptFrameworkPackage, JavascriptPackageSource,
@@ -22,6 +25,8 @@ use super::{
 
 const APPLICATION_NODE: &str = "application";
 const APPLICATION_OUTPUT: &str = "artifacts/application-manifest.json";
+const CLIENT_NODE: &str = "clients";
+const CLIENT_CONFIG: &str = "distributed.config.js";
 const COLD_RUNTIME_READY_TIMEOUT_MS: u64 = 300_000;
 
 /// Cargo- and convention-derived inputs for one Distributed application.
@@ -86,6 +91,13 @@ struct ApplicationTarget {
 struct RuntimeTarget {
     package: String,
     binary: String,
+}
+
+#[derive(Debug)]
+struct ClientLifecycle {
+    config: PathBuf,
+    sources: BTreeSet<String>,
+    outputs: BTreeMap<String, String>,
 }
 
 /// Discover a Distributed application without a user-authored lifecycle graph.
@@ -169,8 +181,7 @@ pub fn discover_lifecycle_project(
         .transpose()?
         .flatten();
     let mut sources = workspace_sources(&root, &workspace_packages)?;
-    let lifecycle_owns_client_compile =
-        add_client_compiler_sources(&root, ui.as_deref(), &mut sources)?;
+    let mut client_lifecycle = discover_client_lifecycle(&root, ui.as_deref())?;
     if let Some(receipt) = javascript
         .as_ref()
         .and_then(|package| package.lifecycle_receipt(&root))
@@ -178,7 +189,11 @@ pub fn discover_lifecycle_project(
         let receipt = receipt.strip_prefix(&root).map_err(|_| {
             LifecycleError::new("JavaScript lifecycle receipt escapes the project root")
         })?;
-        sources.insert(portable_path(receipt)?);
+        if let Some(client) = &mut client_lifecycle {
+            client.sources.insert(portable_path(receipt)?);
+        } else {
+            sources.insert(portable_path(receipt)?);
+        }
     }
     let identities = framework_identities(
         distributed,
@@ -207,29 +222,57 @@ pub fn discover_lifecycle_project(
         format!("{}::{}", application.crate_name, application.entrypoint)
     };
 
-    let catalog = ContractCatalog {
-        schema_version: CONTRACT_CATALOG_SCHEMA_VERSION,
-        entries: BTreeMap::from([(
-            APPLICATION_NODE.to_string(),
+    let application_identity = ArtifactIdentity::new(
+        ContractArtifactKind::ApplicationManifest,
+        format!("ref:application/{project_name}"),
+    );
+    let application_entry = ContractEntry {
+        id: APPLICATION_NODE.to_string(),
+        kind: ContractArtifactKind::ApplicationManifest,
+        scope: ContractScope {
+            id: format!("application/{project_name}"),
+        },
+        owner: format!("{project_name}/application"),
+        identity: application_identity.clone(),
+        provenance: ArtifactProvenance {
+            sources,
+            generator: "distributed.application-manifest".to_string(),
+            source_revision: None,
+            glob_limit: None,
+        },
+        predecessor: None,
+        outputs: BTreeMap::from([("manifest".to_string(), APPLICATION_OUTPUT.to_string())]),
+        lifecycle: BTreeSet::from(["build".to_string(), "check".to_string(), "dev".to_string()]),
+        environment_policy: None,
+    };
+    let mut entries = BTreeMap::from([(APPLICATION_NODE.to_string(), application_entry)]);
+    if let Some(client) = &client_lifecycle {
+        let mut client_sources = client.sources.clone();
+        client_sources.insert(APPLICATION_OUTPUT.to_string());
+        entries.insert(
+            CLIENT_NODE.to_string(),
             ContractEntry {
-                id: APPLICATION_NODE.to_string(),
-                kind: ContractArtifactKind::ApplicationManifest,
+                id: CLIENT_NODE.to_string(),
+                kind: ContractArtifactKind::GeneratedClientTree,
                 scope: ContractScope {
-                    id: format!("application/{project_name}"),
+                    id: format!("application/{project_name}/clients"),
                 },
-                owner: format!("{project_name}/application"),
+                owner: format!("{project_name}/clients"),
                 identity: ArtifactIdentity::new(
-                    ContractArtifactKind::ApplicationManifest,
-                    format!("ref:application/{project_name}"),
+                    ContractArtifactKind::GeneratedClientTree,
+                    format!("ref:application/{project_name}/clients"),
                 ),
                 provenance: ArtifactProvenance {
-                    sources,
-                    generator: "distributed.application-manifest".to_string(),
+                    sources: client_sources,
+                    generator: "distributed.sveltekit-clients".to_string(),
                     source_revision: None,
-                    glob_limit: lifecycle_owns_client_compile.then_some(MAX_CATALOG_GLOB_MATCHES),
+                    glob_limit: Some(MAX_CATALOG_GLOB_MATCHES),
                 },
-                predecessor: None,
-                outputs: BTreeMap::from([("manifest".to_string(), APPLICATION_OUTPUT.to_string())]),
+                predecessor: Some(ArtifactPredecessor {
+                    entry_id: APPLICATION_NODE.to_string(),
+                    identity: application_identity,
+                }),
+                outputs: client.outputs.clone(),
                 lifecycle: BTreeSet::from([
                     "build".to_string(),
                     "check".to_string(),
@@ -237,7 +280,11 @@ pub fn discover_lifecycle_project(
                 ]),
                 environment_policy: None,
             },
-        )]),
+        );
+    }
+    let catalog = ContractCatalog {
+        schema_version: CONTRACT_CATALOG_SCHEMA_VERSION,
+        entries,
     };
 
     let dev = lifecycle_dev(
@@ -245,7 +292,7 @@ pub fn discover_lifecycle_project(
         &runtime,
         ui.as_deref(),
         javascript.as_ref(),
-        lifecycle_owns_client_compile,
+        client_lifecycle.is_some(),
         &executable,
         command_prefix,
     );
@@ -264,6 +311,45 @@ pub fn discover_lifecycle_project(
             distributed_root.to_string_lossy().into_owned(),
         ])
         .collect();
+    let mut executors = BTreeMap::from([(
+        "distributed.application-manifest".to_string(),
+        LifecycleExecutor {
+            identity: executor_identity,
+            program: executable.to_string_lossy().into_owned(),
+            args: describe_args,
+            stdout: Some(APPLICATION_OUTPUT.to_string()),
+        },
+    )]);
+    if let Some(client) = &client_lifecycle {
+        let javascript = javascript.as_ref().ok_or_else(|| {
+            LifecycleError::new(
+                "distributed.clients.json requires @hops-ops/distributed in the UI package",
+            )
+        })?;
+        let compiler = ui
+            .as_ref()
+            .expect("client lifecycle has a UI")
+            .join("node_modules/@hops-ops/distributed/dist/sveltekit/lifecycle-compiler.js");
+        let identity = digest_bytes(
+            format!(
+                "distributed-sveltekit-lifecycle-v1\0{}\0{}",
+                identities.javascript.identity, javascript.version
+            )
+            .as_bytes(),
+        );
+        executors.insert(
+            "distributed.sveltekit-clients".to_string(),
+            LifecycleExecutor {
+                identity,
+                program: "node".to_string(),
+                args: vec![
+                    compiler.to_string_lossy().into_owned(),
+                    client.config.to_string_lossy().into_owned(),
+                ],
+                stdout: None,
+            },
+        );
+    }
     let config = LifecycleBuildConfig {
         schema_version: LIFECYCLE_BUILD_CONFIG_SCHEMA_VERSION,
         application: project_name.clone(),
@@ -272,16 +358,12 @@ pub fn discover_lifecycle_project(
             cli: identities.cli.identity,
             javascript: identities.javascript.identity,
         },
-        roots: BTreeSet::from([APPLICATION_NODE.to_string()]),
-        executors: BTreeMap::from([(
-            "distributed.application-manifest".to_string(),
-            LifecycleExecutor {
-                identity: executor_identity,
-                program: executable.to_string_lossy().into_owned(),
-                args: describe_args,
-                stdout: Some(APPLICATION_OUTPUT.to_string()),
-            },
-        )]),
+        roots: BTreeSet::from([if client_lifecycle.is_some() {
+            CLIENT_NODE.to_string()
+        } else {
+            APPLICATION_NODE.to_string()
+        }]),
+        executors,
         dev: Some(dev),
     };
     config.validate()?;
@@ -581,24 +663,30 @@ fn workspace_sources(
     Ok(sources)
 }
 
-fn add_client_compiler_sources(
+fn discover_client_lifecycle(
     root: &Path,
     ui: Option<&Path>,
-    sources: &mut BTreeSet<String>,
-) -> Result<bool, LifecycleError> {
+) -> Result<Option<ClientLifecycle>, LifecycleError> {
     let Some(ui) = ui else {
-        return Ok(false);
+        return Ok(None);
     };
     let inventory_path = ui.join("distributed.clients.json");
     if !inventory_path.is_file() {
-        return Ok(false);
+        return Ok(None);
     }
     let Ok(ui_relative) = ui.strip_prefix(root) else {
         // An explicitly selected repository-local sibling UI remains supported,
         // but its client compiler stays Vite-owned because lifecycle catalog
         // sources are deliberately confined to the Cargo workspace root.
-        return Ok(false);
+        return Ok(None);
     };
+    let config = ui.join(CLIENT_CONFIG);
+    if !config.is_file() {
+        return Err(LifecycleError::new(format!(
+            "{} requires sibling {CLIENT_CONFIG} exporting distributedViteOptions",
+            inventory_path.display()
+        )));
+    }
     let inventory = ClientInventory::from_path(&inventory_path)
         .map_err(|error| LifecycleError::new(error.to_string()))?;
     let ui_prefix = if ui_relative.as_os_str().is_empty() {
@@ -613,9 +701,31 @@ fn add_client_compiler_sources(
             format!("{ui_prefix}/{path}")
         }
     };
-    sources.insert(rooted("distributed.clients.json"));
-    for client in inventory.clients {
+    let mut sources = BTreeSet::from([rooted("distributed.clients.json"), rooted(CLIENT_CONFIG)]);
+    for source in ["src/routes", "src/lib"] {
+        if ui.join(source).is_dir() {
+            sources.insert(rooted(source));
+        }
+    }
+    let mut outputs = BTreeMap::new();
+    for (index, client) in inventory.clients.into_iter().enumerate() {
+        outputs.insert(format!("client-{index}"), rooted(&client.output));
+        outputs.insert(
+            format!("boundary-plan-{index}"),
+            rooted(&format!(
+                ".svelte-kit/distributed/clients/{}",
+                URL_SAFE_NO_PAD.encode(client.module.as_bytes())
+            )),
+        );
         for document in client.documents {
+            if ["src/routes/", "src/lib/"]
+                .iter()
+                .any(|prefix| document.starts_with(prefix) && ui.join(prefix).is_dir())
+            {
+                // The bounded source tree already captures the document, its
+                // optional binding sidecar, Svelte ownership, and additions.
+                continue;
+            }
             let document_source = rooted(&document);
             if ui.join(&document).is_file() {
                 // The document is guaranteed to match this pattern, while an
@@ -646,7 +756,11 @@ fn add_client_compiler_sources(
             }
         }
     }
-    Ok(true)
+    Ok(Some(ClientLifecycle {
+        config,
+        sources,
+        outputs,
+    }))
 }
 
 fn portable_path(path: &Path) -> Result<String, LifecycleError> {
@@ -897,6 +1011,10 @@ fn lifecycle_dev(
             ui_env.insert(
                 "DISTRIBUTED_LIFECYCLE_OWNS_CLIENT_COMPILE".to_string(),
                 "1".to_string(),
+            );
+            ui_env.insert(
+                "DISTRIBUTED_LIFECYCLE_PROJECT_ROOT".to_string(),
+                root.to_string_lossy().into_owned(),
             );
         }
         processes.insert(
@@ -1156,10 +1274,11 @@ mod tests {
     }
 
     #[test]
-    fn client_compiler_sources_include_optional_binding_sidecars() {
+    fn client_compiler_sources_cover_svelte_and_binding_sidecars_without_overlap() {
         let project = tempfile::tempdir().unwrap();
         let ui = project.path().join("ui");
         fs::create_dir_all(&ui).unwrap();
+        fs::create_dir_all(ui.join("src/lib")).unwrap();
         fs::create_dir_all(ui.join("src/routes/[[itemId]]")).unwrap();
         fs::create_dir_all(ui.join("src/routes/chat")).unwrap();
         fs::write(
@@ -1189,24 +1308,33 @@ mod tests {
             }"#,
         )
         .unwrap();
-        let mut sources = BTreeSet::new();
+        fs::write(
+            ui.join(CLIENT_CONFIG),
+            "export const distributedViteOptions = {};\n",
+        )
+        .unwrap();
 
-        assert!(add_client_compiler_sources(project.path(), Some(&ui), &mut sources).unwrap());
+        let lifecycle = discover_client_lifecycle(project.path(), Some(&ui))
+            .unwrap()
+            .unwrap();
         assert_eq!(
-            sources,
+            lifecycle.sources,
             BTreeSet::from([
+                "ui/distributed.config.js".to_string(),
                 "ui/distributed.clients.json".to_string(),
+                "ui/src/lib".to_string(),
                 "ui/src/routes".to_string(),
-                "ui/src/routes/[[][[]itemId[]][]]/+page.graphql*".to_string(),
-                "ui/src/routes/chat/+layout.gql*".to_string(),
             ])
         );
-        assert!(
-            Pattern::new("ui/src/routes/[[][[]itemId[]][]]/+page.graphql*")
-                .unwrap()
-                .matches_path(Path::new(
-                    "ui/src/routes/[[itemId]]/+page.graphql.bindings.js"
-                ))
+        assert_eq!(
+            lifecycle.outputs,
+            BTreeMap::from([
+                (
+                    "boundary-plan-0".to_string(),
+                    "ui/.svelte-kit/distributed/clients/JGRpc3RyaWJ1dGVk".to_string(),
+                ),
+                ("client-0".to_string(), "ui/src/lib/generated".to_string()),
+            ])
         );
     }
 
@@ -1237,6 +1365,13 @@ mod tests {
                 .get("DISTRIBUTED_LIFECYCLE_OWNS_CLIENT_COMPILE")
                 .map(String::as_str),
             Some("1")
+        );
+        assert_eq!(
+            process
+                .env
+                .get("DISTRIBUTED_LIFECYCLE_PROJECT_ROOT")
+                .map(String::as_str),
+            project.path().to_str()
         );
         assert!(process.restart_on.is_empty());
     }

@@ -52,9 +52,12 @@ Demo users are `alice`, `bob`, and `admin` with password `Password1!`.
 
 `make run` is a convenience alias for the same zero-config command. Before
 starting either process, the CLI compiles and activates one coherent application
-manifest from the real e2e modules and surfaces. Cargo metadata locates the
-typed application and runtime; the conventional `ui/` directory selects
-SvelteKit. No lifecycle JSON or wrapper scripts are required. Vite still handles
+manifest plus all three clients declared in `ui/distributed.clients.json` from
+the real e2e modules, surfaces, and colocated GraphQL documents. The clients are
+immutable generation outputs, so neither a clean checkout nor `make run` needs
+to invoke `npm run client:generate`. Cargo metadata locates the typed application
+and runtime; the conventional `ui/` directory selects SvelteKit. No lifecycle
+JSON or wrapper scripts are required. Vite still handles
 Svelte/CSS HMR, while application, generated-client, required WASM, and linked
 framework changes trigger one coherent generation. The browser closes command
 dispatch, captures its declared JSON state and confirmed replica, waits for the

@@ -450,7 +450,7 @@ OIDC, SvelteKit SSR, generated clients, live WS. Full runbook:
 # Default: one process (SQLite or Postgres + bus)
 cd tests/e2e-ui
 make up                    # Postgres + Zitadel → e2e-ui.env
-distributed dev            # prepares linked JS/WASM; starts Rust + SvelteKit
+distributed dev            # prepares JS/WASM + clients; starts Rust + SvelteKit
 # UI  http://localhost:5180
 # API http://127.0.0.1:8791
 
@@ -2125,6 +2125,15 @@ declared application input, so a real framework change still activates a new
 coherent generation. There is no separate JS preparation command for
 application authors.
 
+When `ui/distributed.clients.json` is present, `distributed build` and
+`distributed dev` also own client generation. The inventory and
+`ui/distributed.config.js` become declared lifecycle inputs; generated client
+trees are stored beside the typed application manifest in the same immutable
+generation. A clean checkout therefore needs no `client:generate` step. A
+GraphQL document or colocated binding edit invalidates only the client node,
+while a Rust surface edit invalidates the application node and its client
+successor. Failed client compilation never advances the active pointer.
+
 ### Coherent development reloads
 
 CSS and HMR-safe Svelte modules stay on Vite's native fast path. A Rust,
@@ -2139,7 +2148,7 @@ sequenceDiagram
     participant API as API / workers
 
     Edit->>Dev: declared input changes
-    Dev->>Dev: stage + validate pending generation
+    Dev->>Dev: stage manifest + generated clients; validate pending generation
     Dev-->>Browser: preparing(from, to, compatibility)
     Browser->>Browser: close command gate; capture declared state + confirmed replica
     Browser-->>Dev: bounded prepare acknowledgement

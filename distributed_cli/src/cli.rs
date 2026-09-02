@@ -28,10 +28,10 @@ use crate::contracts::{
 };
 use crate::js_framework::watch_local_javascript;
 use crate::lifecycle::{
-    discover_lifecycle_project, run_lifecycle_build, run_lifecycle_dev,
-    run_lifecycle_project_build, run_lifecycle_project_dev, DiscoveredLifecycleProject,
-    LifecycleActivation, LifecycleBuildOptions, LifecycleBuildRequest, LifecycleCheckBaseline,
-    LifecycleDevOptions, LifecycleProjectDevOptions,
+    activate_lifecycle_project_generation, discover_lifecycle_project, run_lifecycle_build,
+    run_lifecycle_dev, run_lifecycle_project_build, run_lifecycle_project_dev,
+    DiscoveredLifecycleProject, LifecycleActivation, LifecycleBuildOptions, LifecycleBuildRequest,
+    LifecycleCheckBaseline, LifecycleDevOptions, LifecycleProjectDevOptions,
 };
 use crate::manifest_harness::{run_manifest_harness, HarnessMode, HarnessOptions};
 use crate::skills::{embedded_skills, generate_skills, SkillsInitSpec, AGENTS_MD_FILE};
@@ -839,15 +839,11 @@ fn run_build(args: &BuildArgs, command_prefix: &[&str]) -> Result<(), Box<dyn Er
                 prepare_project_javascript(project, true)?;
             } else {
                 build_project_runtime(project)?;
-                // The linked JavaScript source receipt is a declared input to
-                // the typed application node. Materialize it before the
-                // read-only validation pass so a clean checkout is valid for
-                // the same reason as a warm checkout, not because a prior
-                // build happened to leave the receipt behind.
                 prepare_project_javascript(project, false)?;
-                validate_project_application(project, args.lock_timeout_ms)?;
+                if let Some(ui) = &project.ui {
+                    prepare_ui_dependencies(project, ui)?;
+                }
                 prepare_project_wasm_pures(project)?;
-                build_project_ui(project)?;
             }
             eprintln!(
                 "distributed build: introspecting typed application {} (the first run may compile its harness)",
@@ -862,10 +858,22 @@ fn run_build(args: &BuildArgs, command_prefix: &[&str]) -> Result<(), Box<dyn Er
                     nodes: None,
                     activation_inputs: None,
                     cancel: None,
-                    activation: LifecycleActivation::Immediate,
+                    activation: if args.check {
+                        LifecycleActivation::Immediate
+                    } else {
+                        LifecycleActivation::Deferred
+                    },
                 },
             )
-            .map_err(|error| contextualize_project_application_error(project, error))?;
+            .map_err(|error| contextualize_project_generation_error(project, error))?;
+            if !args.check {
+                build_project_ui(project, &report)?;
+                activate_lifecycle_project_generation(
+                    &project.plan,
+                    &report,
+                    Duration::from_millis(args.lock_timeout_ms),
+                )?;
+            }
             (report, Some(project))
         }
         ResolvedLifecycleProject::Files {
@@ -949,37 +957,21 @@ fn build_project_runtime(project: &DiscoveredLifecycleProject) -> Result<(), Box
     )
 }
 
-fn validate_project_application(
-    project: &DiscoveredLifecycleProject,
-    lock_timeout_ms: u64,
-) -> Result<(), Box<dyn Error>> {
-    eprintln!(
-        "distributed build: validating typed application {} through {}",
-        project.application_package, project.application_entrypoint
-    );
-    run_lifecycle_project_build(
-        &project.plan,
-        &LifecycleBuildRequest {
-            check: true,
-            check_baseline: LifecycleCheckBaseline::ActiveGeneration,
-            lock_timeout: Duration::from_millis(lock_timeout_ms),
-            nodes: None,
-            activation_inputs: None,
-            cancel: None,
-            activation: LifecycleActivation::Immediate,
-        },
-    )
-    .map(|_| ())
-    .map_err(|error| contextualize_project_application_error(project, error))
-}
-
-fn contextualize_project_application_error(
+fn contextualize_project_generation_error(
     project: &DiscoveredLifecycleProject,
     error: impl std::fmt::Display,
 ) -> Box<dyn Error> {
+    let error = error.to_string();
+    if error.contains("lifecycle node `application`") {
+        return format!(
+            "typed application `{}` could not be introspected through `{}`; the selected application crate must publicly export a zero-argument function returning `distributed::ApplicationManifest` (or select another export with `[package.metadata.distributed.application] entrypoint = \"...\"`):\n{error}",
+            project.application_package, project.application_entrypoint
+        )
+        .into();
+    }
     format!(
-        "typed application `{}` could not be introspected through `{}`; the selected application crate must publicly export a zero-argument function returning `distributed::ApplicationManifest` (or select another export with `[package.metadata.distributed.application] entrypoint = \"...\"`):\n{error}",
-        project.application_package, project.application_entrypoint
+        "coherent application generation failed for `{}`:\n{error}",
+        project.name
     )
     .into()
 }
@@ -1006,7 +998,10 @@ fn prepare_project_wasm_pures(project: &DiscoveredLifecycleProject) -> Result<()
     Ok(())
 }
 
-fn build_project_ui(project: &DiscoveredLifecycleProject) -> Result<(), Box<dyn Error>> {
+fn build_project_ui(
+    project: &DiscoveredLifecycleProject,
+    generation: &crate::lifecycle::LifecycleBuildReport,
+) -> Result<(), Box<dyn Error>> {
     if let Some(ui) = &project.ui {
         let ui_root = ui;
         prepare_ui_dependencies(project, &ui_root)?;
@@ -1021,6 +1016,20 @@ fn build_project_ui(project: &DiscoveredLifecycleProject) -> Result<(), Box<dyn 
             // committed generated files are an input to --check, not a reason
             // to skip generation during an activating build.
             .env("DISTRIBUTED_SKIP_CLIENT_COMPILE", "0")
+            .env("DISTRIBUTED_LIFECYCLE_OWNS_CLIENT_COMPILE", "1")
+            .env("DISTRIBUTED_LIFECYCLE_PROJECT_ROOT", &project.plan.root)
+            .env(
+                "DISTRIBUTED_LIFECYCLE_DIR",
+                if project.plan.out.is_absolute() {
+                    project.plan.out.clone()
+                } else {
+                    project.plan.root.join(&project.plan.out)
+                },
+            )
+            .env(
+                "DISTRIBUTED_LIFECYCLE_GENERATION_ID",
+                &generation.generation_id,
+            )
             .status()?;
         if !status.success() {
             return Err(format!("SvelteKit UI build failed with {status}").into());
