@@ -9,7 +9,6 @@ const root = resolve(dirname(fileURLToPath(import.meta.url)), '..');
 const frameworkRoot = resolve(root, '../../js');
 const application = resolve(root, 'crates/todo-domain/src/commands/force_archive.rs');
 const framework = resolve(frameworkRoot, 'src/sveltekit/lifecycle.ts');
-const adminCommands = resolve(root, 'ui/src/lib/generated/admin/commands.ts');
 const lifecycleFile = resolve(root, '.distributed/lifecycle/dev.json');
 const baseURL = process.env.E2E_UI_ORIGIN || 'http://127.0.0.1:5180';
 const apiURL = process.env.E2E_API_ORIGIN || 'http://127.0.0.1:8791';
@@ -102,6 +101,19 @@ async function lifecycleState() {
 	} catch {
 		return undefined;
 	}
+}
+
+function activeAdminCommands(state) {
+	const generationId = state?.active?.generationId;
+	if (!/^sha256:[0-9a-f]{64}$/.test(generationId ?? '')) {
+		throw new Error('active lifecycle generation ID is invalid');
+	}
+	return resolve(
+		root,
+		'.distributed/lifecycle/generations',
+		generationId,
+		'ui/src/lib/generated/admin/commands.ts'
+	);
 }
 
 async function waitForBrowserParticipant(page) {
@@ -266,7 +278,7 @@ try {
 		const state = await lifecycleState();
 		return state?.phase === 'active' &&
 			state.active.generationId === baseline.active.generationId &&
-			!fixtureIO.read(adminCommands).includes('todos_force_archive_reload');
+			!fixtureIO.read(activeAdminCommands(state)).includes('todos_force_archive_reload');
 	}, 'baseline source and generated-client restoration');
 	await context.close();
 	await browser.close();

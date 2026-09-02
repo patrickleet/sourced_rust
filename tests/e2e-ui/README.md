@@ -331,7 +331,7 @@ the normal GraphQL command result.
 | `crates/service/src/service.rs` | Deployment catalog, placement, routes, and typed commands. |
 | `ui/src/routes/*/+page.graphql` | Co-located SSR/live reads. |
 | `ui/src/routes/*/+page.svelte` | `*.use()` and ordinary typed command calls. |
-| `ui/src/lib/generated/` | Generator-owned user/admin clients; do not hand-edit. |
+| `.distributed/lifecycle/generations/<id>/ui/src/lib/generated/` | Immutable lifecycle-owned user/admin/public clients. |
 
 Todo and Chat mount catalog-pinned local causal executors through explicit
 `modeled_projector(...).handle(...)` event handlers. Those handlers apply the
