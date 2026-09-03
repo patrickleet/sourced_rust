@@ -943,6 +943,7 @@ impl ChildSet {
                 &mut previous_child,
                 Duration::from_millis(config.shutdown_ms),
             ) {
+                self.children.insert(name.clone(), previous_child);
                 return Err(error);
             }
             let replacement =
@@ -1007,11 +1008,14 @@ impl ChildSet {
         for name in names {
             let process = &config.processes[name];
             if let Some(mut child) = self.children.remove(name) {
-                stop_child(
+                if let Err(error) = stop_child(
                     name,
                     &mut child,
                     Duration::from_millis(config.shutdown_ms),
-                )?;
+                ) {
+                    self.children.insert(name.clone(), child);
+                    return Err(error);
+                }
             }
             let mut child = spawn_process(root, name, process, replacement)?;
             if let Err(error) = wait_ready(root, name, process, replacement, &mut child, stop) {

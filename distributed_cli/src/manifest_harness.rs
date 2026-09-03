@@ -228,7 +228,7 @@ fn harness_main_rs(entrypoint: &str, mode: HarnessMode) -> String {
     }
 }
 
-fn resolve_target_manifest_path(
+pub(crate) fn resolve_target_manifest_path(
     path: &Path,
     manifest_path: Option<&Path>,
 ) -> Result<PathBuf, Box<dyn Error>> {

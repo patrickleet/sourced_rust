@@ -33,7 +33,9 @@ use crate::lifecycle::{
     DiscoveredLifecycleProject, LifecycleActivation, LifecycleBuildOptions, LifecycleBuildRequest,
     LifecycleCheckBaseline, LifecycleDevOptions, LifecycleProjectDevOptions,
 };
-use crate::manifest_harness::{run_manifest_harness, HarnessMode, HarnessOptions};
+use crate::manifest_harness::{
+    resolve_target_manifest_path, run_manifest_harness, HarnessMode, HarnessOptions,
+};
 use crate::skills::{embedded_skills, generate_skills, SkillsInitSpec, AGENTS_MD_FILE};
 use crate::wasm_pures::build_declared_wasm_pures;
 use crate::{
@@ -1028,7 +1030,7 @@ fn prepare_project_wasm_pures(project: &DiscoveredLifecycleProject) -> Result<()
         .map(|(javascript, ui)| javascript.wasm_pack_launcher(ui));
     build_declared_wasm_pures(
         &manifest,
-        &project.cargo_root,
+        &project.cargo_root.join("Cargo.toml"),
         wasm_pack_launcher.as_deref(),
     )?;
     Ok(())
@@ -1654,13 +1656,11 @@ fn run_describe(args: &DescribeArgs) -> Result<(), Box<dyn Error>> {
                 && std::env::var_os("DISTRIBUTED_LIFECYCLE_CHECK").as_deref()
                     != Some(std::ffi::OsStr::new("1"))
             {
-                let root = PathBuf::from(
-                    std::env::var_os("DISTRIBUTED_LIFECYCLE_ROOT")
-                        .expect("lifecycle root was checked above"),
-                );
+                let cargo_manifest =
+                    resolve_target_manifest_path(&args.path, args.manifest_path.as_deref())?;
                 build_declared_wasm_pures(
                     &envelope,
-                    &root,
+                    &cargo_manifest,
                     args.wasm_pack_launcher.as_deref(),
                 )?;
             }

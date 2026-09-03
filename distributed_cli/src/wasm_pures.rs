@@ -66,27 +66,30 @@ struct CargoTarget {
 struct WasmStamp {
     schema_version: u64,
     source_identity: String,
+    compiler_identity: String,
     rust_package: String,
     import: String,
 }
 
 pub(crate) fn build_declared_wasm_pures(
     manifest: &Value,
-    project_root: &Path,
+    cargo_manifest: &Path,
     wasm_pack_launcher: Option<&Path>,
 ) -> Result<usize, Box<dyn Error>> {
-    let metadata = cargo_metadata(&project_root.join("Cargo.toml"))?;
-    let Some(ui_root) = crate::lifecycle::discover_ui(&metadata.metadata, project_root)? else {
-        return Ok(0);
-    };
-    let ui_lib = ui_root.join("src/lib");
     let pures = collect_wasm_pures(manifest)?;
     if pures.is_empty() {
         return Ok(0);
     }
+    let metadata = cargo_metadata(cargo_manifest)?;
+    let project_root = &metadata.workspace_root;
+    let Some(ui_root) = crate::lifecycle::discover_ui(&metadata.metadata, project_root)? else {
+        return Ok(0);
+    };
+    let ui_lib = ui_root.join("src/lib");
     let wasm_pack_launcher = wasm_pack_launcher.ok_or(
         "browser WASM pures require @hops-ops/distributed in the application UI",
     )?;
+    let compiler_identity = compiler_identity(wasm_pack_launcher)?;
     let mut outputs = BTreeMap::<PathBuf, &WasmPure>::new();
     for pure in &pures {
         let relative = portable_import_path(&pure.import)?;
@@ -123,8 +126,9 @@ pub(crate) fn build_declared_wasm_pures(
             .and_then(|name| name.to_str())
             .ok_or_else(|| format!("WASM import `{}` has no UTF-8 output name", pure.import))?;
         let stamp = WasmStamp {
-            schema_version: 1,
+            schema_version: 2,
             source_identity: package_source_identity(&metadata, &package.id)?,
+            compiler_identity: compiler_identity.clone(),
             rust_package: pure.rust_package.clone(),
             import: pure.import.clone(),
         };
@@ -403,6 +407,79 @@ fn collect_source_files(
     Ok(())
 }
 
+fn compiler_identity(launcher: &Path) -> Result<String, Box<dyn Error>> {
+    let launcher = launcher.canonicalize().map_err(|error| {
+        format!(
+            "failed to resolve browser WASM compiler `{}`: {error}",
+            launcher.display()
+        )
+    })?;
+    if !launcher.is_file() {
+        return Err(format!(
+            "browser WASM compiler `{}` is not a file",
+            launcher.display()
+        )
+        .into());
+    }
+    let package_root = launcher
+        .parent()
+        .ok_or("browser WASM compiler has no package directory")?;
+    let mut files = BTreeSet::new();
+    collect_compiler_files(package_root, package_root, &mut files)?;
+    let mut hash = Sha256::new();
+    let mut bytes = 0_u64;
+    for file in files {
+        let content = fs::read(&file)?;
+        bytes = bytes.saturating_add(content.len() as u64);
+        if bytes > MAX_SOURCE_BYTES {
+            return Err(format!(
+                "browser WASM compiler exceeds the {MAX_SOURCE_BYTES}-byte fingerprint limit"
+            )
+            .into());
+        }
+        hash.update(file.strip_prefix(package_root)?.to_string_lossy().as_bytes());
+        hash.update([0]);
+        hash.update(&content);
+        hash.update([0]);
+    }
+    Ok(format!("sha256:{:x}", hash.finalize()))
+}
+
+fn collect_compiler_files(
+    root: &Path,
+    directory: &Path,
+    files: &mut BTreeSet<PathBuf>,
+) -> Result<(), Box<dyn Error>> {
+    let mut entries = fs::read_dir(directory)?.collect::<Result<Vec<_>, _>>()?;
+    entries.sort_by_key(|entry| entry.file_name());
+    for entry in entries {
+        let path = entry.path();
+        let metadata = fs::symlink_metadata(&path)?;
+        if metadata.file_type().is_symlink() {
+            return Err(format!(
+                "browser WASM compiler package contains symlink `{}`",
+                path.display()
+            )
+            .into());
+        }
+        if metadata.is_dir() {
+            if !path.starts_with(root) {
+                return Err("browser WASM compiler package escapes its root".into());
+            }
+            collect_compiler_files(root, &path, files)?;
+        } else if metadata.is_file() {
+            files.insert(path);
+            if files.len() > MAX_SOURCE_FILES {
+                return Err(format!(
+                    "browser WASM compiler contains more than {MAX_SOURCE_FILES} files"
+                )
+                .into());
+            }
+        }
+    }
+    Ok(())
+}
+
 fn stamp_matches(
     stamp_path: &Path,
     destination: &Path,
@@ -416,6 +493,7 @@ fn stamp_matches(
     };
     Ok(observed.schema_version == expected.schema_version
         && observed.source_identity == expected.source_identity
+        && observed.compiler_identity == expected.compiler_identity
         && observed.rust_package == expected.rust_package
         && observed.import == expected.import
         && destination
@@ -601,6 +679,21 @@ mod tests {
     fn rejects_import_path_traversal() {
         let error = portable_import_path("../outside/module").unwrap_err();
         assert!(error.to_string().contains("portable relative path"));
+    }
+
+    #[test]
+    fn compiler_identity_tracks_the_installed_package() {
+        let fixture = tempfile::tempdir().unwrap();
+        let launcher = fixture.path().join("run.js");
+        let binary = fixture.path().join("binary/wasm-pack");
+        fs::create_dir(fixture.path().join("binary")).unwrap();
+        fs::write(&launcher, "require('./binary');\n").unwrap();
+        fs::write(&binary, "compiler-v1\n").unwrap();
+
+        let initial = compiler_identity(&launcher).unwrap();
+        assert_eq!(initial, compiler_identity(&launcher).unwrap());
+        fs::write(&binary, "compiler-v2\n").unwrap();
+        assert_ne!(initial, compiler_identity(&launcher).unwrap());
     }
 
     #[test]
