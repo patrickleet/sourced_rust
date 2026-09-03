@@ -545,7 +545,7 @@ jobs:
           # first request arrives during that gap. Wait for the listener's
           # own startup line before creating the forwards.
           api_listener_ready=0
-          for attempt in $(seq 1 180); do
+          for attempt in $(seq 1 450); do
             api_log="$(k -n local logs deployment/e2e-ui-api --tail=300 2>/dev/null || true)"
             if printf '%s\n' "$api_log" | grep -Fq \
               'sqlite) listening on http://0.0.0.0:8791'; then

@@ -1135,7 +1135,28 @@ pub fn activate_lifecycle_project_generation(
         .parent()
         .ok_or_else(|| LifecycleError::new("lifecycle output must have a parent directory"))?;
     let _lock = BuildLock::acquire(&root, out_parent, lock_timeout)?;
+    ensure_activation_predecessor(
+        &out,
+        report.active_generation.as_deref(),
+        &report.generation_id,
+    )?;
     write_active_generation(&out, &report.generation_id, &report.release_id)
+}
+
+fn ensure_activation_predecessor(
+    out: &Path,
+    expected: Option<&str>,
+    generation_id: &str,
+) -> Result<(), LifecycleError> {
+    let observed = read_active_generation(out)?;
+    if observed.as_deref() == expected || observed.as_deref() == Some(generation_id) {
+        return Ok(());
+    }
+    Err(LifecycleError::superseded(format!(
+        "lifecycle activation for generation `{generation_id}` was superseded: expected active generation `{}`, found `{}`",
+        expected.unwrap_or("none"),
+        observed.as_deref().unwrap_or("none")
+    )))
 }
 
 fn read_bounded_manifest<T: for<'de> Deserialize<'de>>(
@@ -1353,6 +1374,26 @@ fn io_error(label: &'static str) -> impl FnOnce(std::io::Error) -> LifecycleErro
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::lifecycle::graph::LifecycleErrorReason;
+
+    #[test]
+    fn activation_rejects_an_advanced_generation() {
+        let fixture = tempfile::tempdir().expect("create activation fixture");
+        let out = fixture.path();
+        write_active_generation(out, "generation-b", "release-b")
+            .expect("write advanced generation");
+
+        let error = ensure_activation_predecessor(out, Some("generation-a"), "generation-c")
+            .expect_err("a stale deferred activation must be rejected");
+        assert_eq!(error.reason(), LifecycleErrorReason::Superseded);
+        assert!(error.message().contains("generation-a"));
+        assert!(error.message().contains("generation-b"));
+
+        ensure_activation_predecessor(out, Some("generation-b"), "generation-c")
+            .expect("the observed predecessor may advance");
+        ensure_activation_predecessor(out, Some("generation-a"), "generation-b")
+            .expect("activating the already-active generation is idempotent");
+    }
 
     #[test]
     fn concurrent_build_lock_wait_is_bounded() {

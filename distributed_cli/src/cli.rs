@@ -843,8 +843,13 @@ fn run_build(args: &BuildArgs, command_prefix: &[&str]) -> Result<(), Box<dyn Er
                 if let Some(ui) = &project.ui {
                     prepare_ui_dependencies(project, ui)?;
                 }
-                prepare_project_wasm_pures(project)
-                    .map_err(|error| contextualize_project_generation_error(project, error))?;
+                prepare_project_wasm_pures(project).map_err(|error| {
+                    contextualize_project_generation_error(
+                        project,
+                        ProjectGenerationPhase::ApplicationPreflight,
+                        error,
+                    )
+                })?;
             }
             eprintln!(
                 "distributed build: introspecting typed application {} (the first run may compile its harness)",
@@ -862,7 +867,13 @@ fn run_build(args: &BuildArgs, command_prefix: &[&str]) -> Result<(), Box<dyn Er
                     activation: LifecycleActivation::Deferred,
                 },
             )
-            .map_err(|error| contextualize_project_generation_error(project, error))?;
+            .map_err(|error| {
+                contextualize_project_generation_error(
+                    project,
+                    ProjectGenerationPhase::LifecycleBuild,
+                    error,
+                )
+            })?;
             if !args.check {
                 build_project_ui(project, &report)?;
                 activate_lifecycle_project_generation(
@@ -954,14 +965,19 @@ fn build_project_runtime(project: &DiscoveredLifecycleProject) -> Result<(), Box
     )
 }
 
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+enum ProjectGenerationPhase {
+    ApplicationPreflight,
+    LifecycleBuild,
+}
+
 fn contextualize_project_generation_error(
     project: &DiscoveredLifecycleProject,
+    phase: ProjectGenerationPhase,
     error: impl std::fmt::Display,
 ) -> Box<dyn Error> {
     let error = error.to_string();
-    if error.contains("lifecycle node `application`")
-        || error.contains("manifest harness failed for package")
-    {
+    if is_application_introspection_failure(phase, &error) {
         return format!(
             "typed application `{}` could not be introspected through `{}`; the selected application crate must publicly export a zero-argument function returning `distributed::ApplicationManifest` (or select another export with `[package.metadata.distributed.application] entrypoint = \"...\"`):\n{error}",
             project.application_package, project.application_entrypoint
@@ -973,6 +989,15 @@ fn contextualize_project_generation_error(
         project.name
     )
     .into()
+}
+
+fn is_application_introspection_failure(phase: ProjectGenerationPhase, error: &str) -> bool {
+    match phase {
+        ProjectGenerationPhase::ApplicationPreflight => {
+            error.contains("manifest harness failed for package")
+        }
+        ProjectGenerationPhase::LifecycleBuild => error.contains("lifecycle node `application`"),
+    }
 }
 
 fn prepare_project_wasm_pures(project: &DiscoveredLifecycleProject) -> Result<(), Box<dyn Error>> {
@@ -2821,6 +2846,23 @@ mod tests {
         assert!(error.to_string().contains(&format!(
             "version 3; expected {DISTRIBUTED_CLIENT_MANIFEST_VERSION}"
         )));
+    }
+
+    #[test]
+    fn project_generation_errors_preserve_the_failing_phase() {
+        let harness_error = "manifest harness failed for package `client-surface`";
+        assert!(is_application_introspection_failure(
+            ProjectGenerationPhase::ApplicationPreflight,
+            harness_error
+        ));
+        assert!(!is_application_introspection_failure(
+            ProjectGenerationPhase::LifecycleBuild,
+            harness_error
+        ));
+        assert!(is_application_introspection_failure(
+            ProjectGenerationPhase::LifecycleBuild,
+            "lifecycle node `application` executor failed"
+        ));
     }
 
     #[test]
