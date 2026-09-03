@@ -2,7 +2,6 @@ name: e2e-ui fixture (offline + browser + local GitOps)
 
 # Nested Todos template under tests/e2e-ui — not the root workspace.
 # Local parity:
-#   cd tests/e2e-ui && make check-client
 #   cd tests/e2e-ui && make test
 #   cd tests/e2e-ui && make ci-offline
 #   cd tests/e2e-ui && make up && make run   # distributed dev; then make test-browser
@@ -374,7 +373,10 @@ jobs:
           set -euo pipefail
           k() { kubectl --context "$HOPS_KUBE_CONTEXT" "$@"; }
           bootstrap_ready=0
-          for attempt in $(seq 1 180); do
+          # A fresh cluster compiles both the lifecycle CLI and the typed
+          # application inside the pod. Keep this bounded, but allow the
+          # uncached release runner enough time to finish both builds.
+          for attempt in $(seq 1 450); do
             pat="$(k -n auth get secret iam-admin-pat -o jsonpath='{.data.pat}' 2>/dev/null || true)"
             setup_complete="$(k -n auth get job zitadel-zitadel-setup \
               -o jsonpath='{.status.conditions[?(@.type=="Complete")].status}' \
@@ -543,7 +545,7 @@ jobs:
           # first request arrives during that gap. Wait for the listener's
           # own startup line before creating the forwards.
           api_listener_ready=0
-          for attempt in $(seq 1 180); do
+          for attempt in $(seq 1 450); do
             api_log="$(k -n local logs deployment/e2e-ui-api --tail=300 2>/dev/null || true)"
             if printf '%s\n' "$api_log" | grep -Fq \
               'sqlite) listening on http://0.0.0.0:8791'; then
@@ -552,7 +554,7 @@ jobs:
               break
             fi
             if [ $((attempt % 15)) -eq 0 ]; then
-              echo "Waiting for e2e-ui API listener (attempt $attempt/180)"
+              echo "Waiting for e2e-ui API listener (attempt $attempt/450)"
             fi
             sleep 2
           done
@@ -563,7 +565,7 @@ jobs:
           fi
 
           lifecycle_ready=0
-          for attempt in $(seq 1 180); do
+          for attempt in $(seq 1 450); do
             app_log="$(k -n local logs deployment/e2e-ui-api --tail=500 2>/dev/null || true)"
             if printf '%s\n' "$app_log" | grep -Fq \
               'lifecycle dev: ready generation=' \
@@ -588,16 +590,32 @@ jobs:
             '127.0.0.1 e2e-ui-ui.local.svc.cluster.local e2e-ui-api.local.svc.cluster.local zitadel-zitadel.auth.svc.cluster.local # hops e2e-ui local GitOps' \
             | sudo tee -a /etc/hosts >/dev/null
 
-          k -n local port-forward --address 127.0.0.1 svc/e2e-ui-ui 5180:5180 > .ci-ui-port-forward.log 2>&1 &
+          keep_port_forwarding() {
+            local namespace="$1"
+            local target="$2"
+            local mapping="$3"
+            while true; do
+              status=0
+              k -n "$namespace" port-forward --address 127.0.0.1 "$target" "$mapping" || status=$?
+              echo "port-forward $namespace/$target $mapping exited with status $status; restarting" >&2
+              sleep 0.2
+            done
+          }
+
+          # A browser closing Vite's HMR socket can reset the stream used by
+          # kubectl port-forward. Some kubectl releases terminate the entire
+          # forwarding process for that single reset, so keep the disposable
+          # CI tunnels alive for the duration of the browser suite.
+          keep_port_forwarding local svc/e2e-ui-ui 5180:5180 > .ci-ui-port-forward.log 2>&1 &
           echo $! > .ci-ui-port-forward.pid
-          k -n local port-forward --address 127.0.0.1 svc/e2e-ui-api 8791:8791 > .ci-api-port-forward.log 2>&1 &
+          keep_port_forwarding local svc/e2e-ui-api 8791:8791 > .ci-api-port-forward.log 2>&1 &
           echo $! > .ci-api-port-forward.pid
           # The Zitadel API and Login V2 UI are distinct Services. Keep the
           # API on 18080 and expose one host:port to the browser through the
           # same path split an ingress/Gateway would provide in a cluster.
-          k -n auth port-forward --address 127.0.0.1 svc/zitadel-zitadel 18080:8080 > .ci-zitadel-port-forward.log 2>&1 &
+          keep_port_forwarding auth svc/zitadel-zitadel 18080:8080 > .ci-zitadel-port-forward.log 2>&1 &
           echo $! > .ci-zitadel-port-forward.pid
-          k -n auth port-forward --address 127.0.0.1 svc/zitadel-zitadel-login 13000:3000 > .ci-zitadel-login-port-forward.log 2>&1 &
+          keep_port_forwarding auth svc/zitadel-zitadel-login 13000:3000 > .ci-zitadel-login-port-forward.log 2>&1 &
           echo $! > .ci-zitadel-login-port-forward.pid
 
           nginx_prefix="$RUNNER_TEMP/zitadel-proxy-prefix"
@@ -666,9 +684,6 @@ jobs:
             if grep -Fq 'fetch failed' .ci-chat-preflight.html 2>/dev/null; then
               chat_has_ssr_error=1
             fi
-            pures_code="$(curl -sS -o /dev/null -w '%{http_code}' \
-              --noproxy '*' \
-              http://e2e-ui-ui.local.svc.cluster.local:5180/src/lib/generated/user/pures.ts || true)"
             node_code="$(curl -sS -o /dev/null -w '%{http_code}' \
               --noproxy '*' \
               http://e2e-ui-ui.local.svc.cluster.local:5180/.svelte-kit/generated/client/nodes/0.js || true)"
@@ -681,7 +696,7 @@ jobs:
             if [ "$ui_code" = 200 ] || [ "$ui_code" = 302 ] || [ "$ui_code" = 303 ]; then
               if [ "$api_ready" = 1 ] && [ "$chat_code" = 200 ] \
                 && [ "$chat_has_ssr_error" = 0 ] \
-                && [ "$pures_code" = 200 ] && [ "$node_code" = 200 ] \
+                && [ "$node_code" = 200 ] \
                 && [ "$oidc_code" = 200 ] && [ "$login_code" != 404 ]; then
                 break
               fi
@@ -699,11 +714,8 @@ jobs:
             sed -n '1,160p' .ci-chat-preflight.html 2>/dev/null >&2 || true
             exit 1
           fi
-          if [ "$pures_code" != 200 ] || [ "$node_code" != 200 ]; then
-            echo "UI generated module preflight failed (pures.ts=$pures_code nodes/0.js=$node_code)" >&2
-            curl -sS --noproxy '*' \
-              http://e2e-ui-ui.local.svc.cluster.local:5180/src/lib/generated/user/pures.ts \
-              | sed -n '1,120p' >&2 || true
+          if [ "$node_code" != 200 ]; then
+            echo "UI generated route preflight failed (nodes/0.js=$node_code)" >&2
             exit 1
           fi
           test "$oidc_code" = 200

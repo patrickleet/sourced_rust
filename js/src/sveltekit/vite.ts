@@ -52,6 +52,7 @@ export {
 } from './islands/boundaries.js';
 
 const GENERATED_SVELTEKIT_MODULE = 'sveltekit.ts';
+const SHA256_ID = /^sha256:[0-9a-f]{64}$/;
 const GENERATED_BOUNDARIES_MODULE = 'boundaries.ts';
 const MAX_COMMAND_OUTPUT_BYTES = 16 * 1024 * 1024;
 const MAX_GENERATED_COMPARE_FILES = 20_000;
@@ -138,6 +139,7 @@ export type DistributedSvelteKitViteOptions = Readonly<{
 
 type ResolvedClient = Readonly<{
 	module: string;
+	sourceRoot: string;
 	manifest: DistributedSvelteKitManifestSource;
 	selector: readonly ['--role' | '--surface', string];
 	documents: readonly string[];
@@ -151,6 +153,8 @@ type ResolvedClient = Readonly<{
 
 type ResolvedIntegration = Readonly<{
 	cwd: string;
+	/** Root that contains compiler-owned outputs; differs from cwd for lifecycle stages. */
+	outputRoot: string;
 	command: string;
 	commandArgs: readonly string[];
 	routesDir: string;
@@ -229,7 +233,7 @@ export type DistributedSvelteKitVitePlugin = Readonly<{
 	configResolved(config: Readonly<{ root: string }>): Promise<void>;
 	configureServer(server: ViteServerLike): void;
 	buildStart(this: RollupWatchContextLike): void;
-	resolveId(source: string): string | undefined;
+	resolveId(source: string, importer?: string): string | undefined;
 	load(id: string): string | undefined;
 	transformIndexHtml(): LifecycleHtmlTag[];
 	handleHotUpdate(context: ViteHotContextLike): Promise<never[] | undefined>;
@@ -252,7 +256,7 @@ type LifecycleHtmlTag = Readonly<{
 	injectTo: 'head-prepend';
 }>;
 
-/** Lifecycle-only side channel for projects using committed generated clients. */
+/** Internal browser lifecycle side channel without generated-client resolution. */
 export function distributedLifecycle(): DistributedLifecycleVitePlugin {
 	let frameworkDist: string | undefined;
 	return {
@@ -274,6 +278,24 @@ export async function generateDistributedSvelteKit(
 	options: DistributedSvelteKitViteOptions
 ): Promise<void> {
 	await runCompilerOnce(options, 'generate');
+}
+
+/**
+ * Generate a client tree into an immutable lifecycle stage.
+ *
+ * This is the compiler boundary used by `distributed build` and `distributed
+ * dev`; application sources are still read from `options.cwd`, while every
+ * compiler-owned output is redirected beneath the candidate generation.
+ */
+export async function generateDistributedSvelteKitLifecycle(
+	options: DistributedSvelteKitViteOptions,
+	lifecycle: Readonly<{ projectRoot: string; stage: string }>
+): Promise<void> {
+	const resolved = resolveIntegration(options, options.cwd ?? process.cwd());
+	await runResolvedCompilerOnce(
+		relocateLifecycleOutputs(resolved, lifecycle),
+		'generate'
+	);
 }
 
 /** Check every configured surface through canonical `distributed client --check`; never write. */
@@ -396,6 +418,10 @@ export function distributedSvelteKit(
 		configureServer(server): void {
 			configureLifecycleServer(server);
 			const integration = requireResolved(resolved);
+			const activePointer = lifecycleActivePointer();
+			if (lifecycleOwnsCompile && activePointer !== undefined) {
+				server.watcher.add(activePointer);
+			}
 			if (!lifecycleOwnsCompile) {
 				const roots = [
 					integration.routesDir,
@@ -420,7 +446,42 @@ export function distributedSvelteKit(
 				for (const root of [...client.watchRoots, ...client.manifestWatchRoots]) this.addWatchFile(root);
 			}
 		},
-		resolveId(source): string | undefined {
+		resolveId(source, importer): string | undefined {
+			if (lifecycleOwnsCompile && frameworkDist !== undefined) {
+				if (source === '@hops-ops/distributed/replica') {
+					return join(frameworkDist, 'replica', 'index.js');
+				}
+				if (source === '@hops-ops/distributed/sveltekit') {
+					return join(frameworkDist, 'sveltekit', 'index.js');
+				}
+			}
+			if (
+				lifecycleOwnsCompile &&
+				importer !== undefined &&
+				(source.startsWith('./') || source.startsWith('../'))
+			) {
+				const lifecycleRoot = process.env.DISTRIBUTED_LIFECYCLE_DIR;
+				if (
+					lifecycleRoot !== undefined &&
+					isAbsolute(lifecycleRoot) &&
+					isWithin(join(resolve(lifecycleRoot), 'generations'), importer)
+				) {
+					const generationRoot = activeLifecycleGenerationRoot();
+					const candidate = resolve(dirname(importer), source);
+					if (!isWithin(generationRoot, importer) || existsSync(candidate)) {
+						return undefined;
+					}
+					const projectRoot = process.env.DISTRIBUTED_LIFECYCLE_PROJECT_ROOT;
+					if (projectRoot === undefined || !isAbsolute(projectRoot)) {
+						throw new Error('Distributed lifecycle project root is unavailable');
+					}
+					const workspaceCandidate = join(
+						resolve(projectRoot),
+						relative(generationRoot, candidate)
+					);
+					if (existsSync(workspaceCandidate)) return workspaceCandidate;
+				}
+			}
 			const client = resolved?.clients.find(
 				(candidate) => candidate.module === source
 			);
@@ -431,13 +492,31 @@ export function distributedSvelteKit(
 				(candidate) => virtualId(candidate.module) === id
 			);
 			if (client === undefined) return undefined;
-			return `export * from ${JSON.stringify(portablePath(client.entry))};\n`;
+			const entry = lifecycleOwnsCompile
+				? activeLifecycleClientEntry(client)
+				: client.entry;
+			return `export * from ${JSON.stringify(portablePath(entry))};\n`;
 		},
 		transformIndexHtml: lifecycleGenerationMeta,
 		async handleHotUpdate(context): Promise<never[] | undefined> {
 			const suppressed = suppressFrameworkHotUpdate(context, frameworkDist);
 			if (suppressed !== undefined) return suppressed;
 			const integration = requireResolved(resolved);
+			if (
+				lifecycleOwnsCompile &&
+				lifecycleActivePointer() === canonicalExistingPath(context.file)
+			) {
+				for (const client of integration.clients) {
+					const module = context.server.moduleGraph.getModuleById(
+						virtualId(client.module)
+					);
+					if (module !== undefined) context.server.moduleGraph.invalidateModule(module);
+				}
+				// The browser lifecycle owns the one coordinated document reload after
+				// every participant has persisted its capsule. Vite only needs to drop
+				// the old virtual modules so that reload resolves the active generation.
+				return [];
+			}
 			if (!isCompilerInput(context.file, integration)) return undefined;
 			if (lifecycleOwnsCompile) return [];
 			try {
@@ -724,6 +803,13 @@ async function runCompilerOnce(
 		options,
 		options.cwd ?? process.cwd()
 	);
+	await runResolvedCompilerOnce(integration, mode);
+}
+
+async function runResolvedCompilerOnce(
+	integration: ResolvedIntegration,
+	mode: 'generate' | 'check'
+): Promise<void> {
 	await validateResolvedPaths(integration);
 	const lock = await acquireCompilerLock(integration.cwd);
 	const children = new Set<ChildProcess>();
@@ -762,17 +848,87 @@ export function distributedSvelteKitAliases(
 		options.cwd ?? process.cwd()
 	);
 	validateResolvedPathsSync(integration);
-	return Object.freeze(
-		Object.fromEntries(
-			[...integration.clients]
-				.sort(
-					(left, right) =>
-						right.module.length - left.module.length ||
-						left.module.localeCompare(right.module)
-				)
-				.map((client) => [client.module, client.entry])
+	const lifecycleOwnsCompile =
+		process.env.DISTRIBUTED_LIFECYCLE_OWNS_CLIENT_COMPILE === '1';
+	const frameworkDist = lifecycleOwnsCompile
+		? localFrameworkDist(integration.cwd)
+		: undefined;
+	if (lifecycleOwnsCompile && frameworkDist === undefined) {
+		throw new Error('Installed @hops-ops/distributed package is unavailable');
+	}
+	const aliases = [...integration.clients]
+		.sort(
+			(left, right) =>
+				right.module.length - left.module.length ||
+				left.module.localeCompare(right.module)
 		)
+		.map((client) => [
+			client.module,
+			lifecycleOwnsCompile ? activeLifecycleClientEntry(client) : client.entry
+		]);
+	if (frameworkDist !== undefined) {
+		aliases.push(
+			['@hops-ops/distributed/replica', join(frameworkDist, 'replica')],
+			['@hops-ops/distributed/sveltekit', join(frameworkDist, 'sveltekit')]
+		);
+	}
+	return Object.freeze(
+		Object.fromEntries(aliases)
 	);
+}
+
+function lifecycleActivePointer(): string | undefined {
+	const root = process.env.DISTRIBUTED_LIFECYCLE_DIR;
+	return root !== undefined && isAbsolute(root)
+		? canonicalExistingPath(join(resolve(root), 'active.json'))
+		: undefined;
+}
+
+function activeLifecycleClientEntry(client: ResolvedClient): string {
+	const generationRoot = activeLifecycleGenerationRoot();
+	const projectRoot = process.env.DISTRIBUTED_LIFECYCLE_PROJECT_ROOT!;
+	const project = realpathSync(resolve(projectRoot));
+	const sourceRoot = realpathSync(client.sourceRoot);
+	if (!isWithin(project, sourceRoot) || !isWithin(client.sourceRoot, client.entry)) {
+		throw new Error('Distributed client entry escapes the lifecycle project root');
+	}
+	return join(
+		generationRoot,
+		relative(project, sourceRoot),
+		relative(client.sourceRoot, client.entry)
+	);
+}
+
+function activeLifecycleGenerationRoot(): string {
+	const lifecycleRoot = process.env.DISTRIBUTED_LIFECYCLE_DIR;
+	const projectRoot = process.env.DISTRIBUTED_LIFECYCLE_PROJECT_ROOT;
+	if (
+		lifecycleRoot === undefined ||
+		projectRoot === undefined ||
+		!isAbsolute(lifecycleRoot) ||
+		!isAbsolute(projectRoot)
+	) {
+		throw new Error(
+			'Distributed lifecycle-owned client resolution requires absolute lifecycle and project roots'
+		);
+	}
+	const requestedGeneration = process.env.DISTRIBUTED_LIFECYCLE_GENERATION_ID;
+	let generation: unknown = requestedGeneration;
+	if (generation === undefined) {
+		const pointer = readFileSync(join(resolve(lifecycleRoot), 'active.json'));
+		if (pointer.byteLength > MAX_LIFECYCLE_STATE_BYTES) {
+			throw new Error('Distributed active lifecycle pointer exceeds 1 MiB');
+		}
+		const parsed = JSON.parse(pointer.toString('utf8')) as { generation_id?: unknown };
+		generation = parsed.generation_id;
+	}
+	if (
+		typeof generation !== 'string' ||
+		!SHA256_ID.test(generation)
+	) {
+		throw new Error('Distributed active lifecycle pointer has an invalid generation ID');
+	}
+	return join(resolve(lifecycleRoot), 'generations', generation);
 }
 
 function resolveIntegration(
@@ -897,6 +1053,7 @@ function resolveIntegration(
 		);
 		return Object.freeze({
 			module: client.module,
+			sourceRoot: cwd,
 			manifest: client.manifest,
 			selector,
 			documents: Object.freeze(documents),
@@ -910,6 +1067,7 @@ function resolveIntegration(
 	});
 	return Object.freeze({
 		cwd,
+		outputRoot: cwd,
 		command,
 		commandArgs: Object.freeze(
 			(options.commandArgs ?? []).map((argument, index) => {
@@ -925,6 +1083,39 @@ function resolveIntegration(
 		libDir,
 		aliases,
 		clients: Object.freeze(clients)
+	});
+}
+
+function relocateLifecycleOutputs(
+	integration: ResolvedIntegration,
+	lifecycle: Readonly<{ projectRoot: string; stage: string }>
+): ResolvedIntegration {
+	const projectRoot = realpathSync(resolve(lifecycle.projectRoot));
+	const sourceRoot = realpathSync(integration.cwd);
+	const stage = realpathSync(resolve(lifecycle.stage));
+	if (!isWithin(projectRoot, sourceRoot)) {
+		throw new TypeError('Distributed lifecycle UI must stay within the project root');
+	}
+	if (stage === projectRoot || isWithin(stage, projectRoot)) {
+		throw new TypeError('Distributed lifecycle stage must not contain the project source tree');
+	}
+	const sourcePrefix = relative(projectRoot, sourceRoot);
+	const relocate = (path: string): string =>
+		join(stage, sourcePrefix, relative(integration.cwd, path));
+	return Object.freeze({
+		...integration,
+		outputRoot: stage,
+		clients: Object.freeze(
+			integration.clients.map((client) => {
+				const out = relocate(client.out);
+				return Object.freeze({
+					...client,
+					out,
+					entry: join(out, GENERATED_SVELTEKIT_MODULE),
+					adapterOut: relocate(client.adapterOut)
+				});
+			})
+		)
 	});
 }
 
@@ -1577,7 +1768,7 @@ async function commitOutputs(
 		for (const item of outputs) {
 			throwIfAborted(signal);
 			await mkdir(dirname(item.target), { recursive: true });
-			await validateNearestExistingParent(integration.cwd, item.target);
+			await validateNearestExistingParent(integration.outputRoot, item.target);
 			if (item.hadOutput && await generatedTreesEqual(item.target, item.output)) {
 				continue;
 			}
@@ -1752,10 +1943,10 @@ async function validateResolvedPaths(
 }
 
 function validateResolvedPathsSync(integration: ResolvedIntegration): void {
-	const canonicalRoot = realpathSync(integration.cwd);
+	const canonicalRoot = realpathSync(integration.outputRoot);
 	const physicalOutputs: Array<{ module: string; path: string }> = [];
 	for (const client of integration.clients) {
-		const output = plannedPhysicalPath(canonicalRoot, integration.cwd, client.out);
+		const output = plannedPhysicalPath(canonicalRoot, integration.outputRoot, client.out);
 		for (const existing of physicalOutputs) {
 			if (
 				physicalPathKey(output).startsWith(
@@ -1772,8 +1963,9 @@ function validateResolvedPathsSync(integration: ResolvedIntegration): void {
 			}
 		}
 		physicalOutputs.push({ module: client.module, path: output });
+		const canonicalSourceRoot = realpathSync(integration.cwd);
 		for (const watchRoot of client.watchRoots) {
-			plannedPhysicalPath(canonicalRoot, integration.cwd, watchRoot);
+			plannedPhysicalPath(canonicalSourceRoot, integration.cwd, watchRoot);
 		}
 	}
 }

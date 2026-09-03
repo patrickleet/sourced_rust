@@ -244,7 +244,7 @@ impl Drop for TemporaryDirectory {
 }
 
 #[test]
-fn catalog_references_one_declarative_client_inventory() {
+fn catalog_and_declarative_client_inventory_validate_independently() {
     let root = repository_root();
     let catalog = ContractCatalog::from_path(root.join("distributed.contracts.json"))
         .expect("repository catalog should resolve without writing");
@@ -257,6 +257,8 @@ fn catalog_references_one_declarative_client_inventory() {
         .clients
         .iter()
         .any(|client| client.surface == "e2e-ui-admin"));
+    assert_eq!(catalog.entries.len(), 1);
+    assert!(catalog.entries.contains_key("migration-inventory"));
     assert_eq!(
         catalog.canonical_bytes().expect("canonical catalog"),
         ContractCatalog::from_json_str(

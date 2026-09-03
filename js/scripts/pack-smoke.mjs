@@ -472,16 +472,20 @@ import {
   useDistributedSvelteKitCommands
 } from '@hops-ops/distributed/sveltekit';
 import {
-  checkDistributedSvelteKit,
   distributedGraphqlProxy,
   distributedSvelteKit,
   distributedSvelteKitAliases,
-  generateDistributedSvelteKit,
   validateDistributedSvelteKitBoundaryPlan
 } from '@hops-ops/distributed/sveltekit/vite';
 import type {
   ReplicaOperationArtifact
 } from '@hops-ops/distributed/replica';
+// @ts-expect-error Manual client generation is lifecycle-internal.
+import { generateDistributedSvelteKit } from '@hops-ops/distributed/sveltekit/vite';
+// @ts-expect-error Manual generated-client drift checks are lifecycle-internal.
+import { checkDistributedSvelteKit } from '@hops-ops/distributed/sveltekit/vite';
+// @ts-expect-error The browser lifecycle side channel is lifecycle-internal.
+import { distributedLifecycle } from '@hops-ops/distributed/sveltekit/vite';
 // @ts-expect-error The removed Svelte pilot query helper must stay absent.
 import { createUseGraphql } from '@hops-ops/distributed/sveltekit';
 // @ts-expect-error The removed Svelte pilot load helper must stay absent.
@@ -545,12 +549,13 @@ const aliases = distributedSvelteKitAliases(compiler);
 const proxy = distributedGraphqlProxy('http://127.0.0.1:8791');
 
 void [
-  checkDistributedSvelteKit,
-  generateDistributedSvelteKit,
   plugin,
   aliases,
   proxy,
   validateDistributedSvelteKitBoundaryPlan,
+  generateDistributedSvelteKit,
+  checkDistributedSvelteKit,
+  distributedLifecycle,
   leakedProxy
 ];
 client.destroy();
@@ -599,16 +604,12 @@ assert.deepEqual(Object.keys(sveltekitSurface).sort(), [
 ]);
 assert.deepEqual(Object.keys(sveltekitViteSurface).sort(), [
   'analyzeDistributedSvelteKitBoundaries',
-  'checkDistributedSvelteKit',
   'distributedGraphqlProxy',
-  'distributedLifecycle',
   'distributedSvelteKit',
   'distributedSvelteKitAliases',
-  'generateDistributedSvelteKit',
   'validateDistributedSvelteKitBoundaryPlan'
 ]);
-assert.equal(typeof sveltekitViteSurface.generateDistributedSvelteKit, 'function');
-assert.equal(typeof sveltekitViteSurface.checkDistributedSvelteKit, 'function');
+assert.equal(typeof sveltekitViteSurface.distributedSvelteKit, 'function');
 
 const pageData = createPageDataSessionSource({
   session: null,
@@ -883,6 +884,17 @@ async function smokePack() {
 		);
 		await typecheck(svelteConsumerDirectory, []);
 		await run(nodeCommand, ['runtime.mjs'], svelteConsumerDirectory);
+		await stat(
+			join(
+				svelteConsumerDirectory,
+				'node_modules',
+				'@hops-ops',
+				'distributed',
+				'dist',
+				'sveltekit',
+				'lifecycle-compiler.js'
+			)
+		);
 		await assert.rejects(
 			stat(join(svelteConsumerDirectory, 'node_modules', 'react')),
 			(error) => error?.code === 'ENOENT',

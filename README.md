@@ -450,7 +450,7 @@ OIDC, SvelteKit SSR, generated clients, live WS. Full runbook:
 # Default: one process (SQLite or Postgres + bus)
 cd tests/e2e-ui
 make up                    # Postgres + Zitadel → e2e-ui.env
-distributed dev            # prepares linked JS/WASM; starts Rust + SvelteKit
+distributed dev            # prepares JS/WASM + clients; starts Rust + SvelteKit
 # UI  http://localhost:5180
 # API http://127.0.0.1:8791
 
@@ -1842,12 +1842,16 @@ manifest entrypoints, document sets, generated directories, virtual modules,
 and request-local replicas; an admin superset is never bundled into the common
 client.
 
-In `tests/e2e-ui`:
+For an application such as `tests/e2e-ui`:
 
 ```bash
-make gen-client    # Rust Service + ui/distributed.config.js → user/admin clients
-make check-client  # byte/file-set drift gate; never rewrites
+distributed build  # manifest + clients + Svelte check/build + atomic activation
+distributed dev    # same generation lifecycle with supervised API/UI processes
 ```
+
+Application code does not invoke the client compiler directly or commit its
+outputs. `distributed client-manifest` and `distributed client` are internal
+compiler primitives used by the lifecycle, not parallel application workflows.
 
 See [`js/README.md`](js/README.md) for the package API and
 [`tests/e2e-ui/README.md`](tests/e2e-ui/README.md) for the complete integration
@@ -1877,7 +1881,6 @@ distributed dev
 # UI http://127.0.0.1:5180  ·  API GraphQL http://127.0.0.1:8791/graphql
 # /todos  /chat  /blob  /admin  /login
 make test         # domain + behavioral + JS-backed UI build/typecheck/tests
-make check-client # generated user/admin clients are current
 
 # Same UI against celld (Todo + chat.post wait-dispatch; @live stays on GraphQL)
 make up-celld-nats && cd ../e2e-celld && make run
@@ -1893,12 +1896,15 @@ make up-celld-nats && cd ../e2e-celld && make run
 | `…/react` | Optional React hooks adapter |
 | `…/diagnostics` | Client diagnostics helpers |
 
-Generate app clients from the Rust surface:
+The lifecycle internally lowers the Rust surface through:
 
 ```bash
-distributed client-manifest …   # export role/app surface IR
-distributed client …            # compile co-located .graphql → typed modules
+distributed client-manifest …
+distributed client …
 ```
+
+Application authors use `distributed build` and `distributed dev`; these
+low-level commands are documented for compiler integration and diagnostics.
 
 See [`js/README.md`](js/README.md) for package API and packaging.
 
@@ -2125,6 +2131,15 @@ declared application input, so a real framework change still activates a new
 coherent generation. There is no separate JS preparation command for
 application authors.
 
+When `ui/distributed.clients.json` is present, `distributed build` and
+`distributed dev` also own client generation. The inventory and
+`ui/distributed.config.js` become declared lifecycle inputs; generated client
+trees are stored beside the typed application manifest in the same immutable
+generation. A clean checkout contains no generated client tree. A
+GraphQL document or colocated binding edit invalidates only the client node,
+while a Rust surface edit invalidates the application node and its client
+successor. Failed client compilation never advances the active pointer.
+
 ### Coherent development reloads
 
 CSS and HMR-safe Svelte modules stay on Vite's native fast path. A Rust,
@@ -2139,7 +2154,7 @@ sequenceDiagram
     participant API as API / workers
 
     Edit->>Dev: declared input changes
-    Dev->>Dev: stage + validate pending generation
+    Dev->>Dev: stage manifest + generated clients; validate pending generation
     Dev-->>Browser: preparing(from, to, compatibility)
     Browser->>Browser: close command gate; capture declared state + confirmed replica
     Browser-->>Dev: bounded prepare acknowledgement

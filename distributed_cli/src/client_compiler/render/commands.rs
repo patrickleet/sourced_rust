@@ -178,17 +178,17 @@ pub(super) fn render_pures(manifest: &ClientManifest) -> Result<Option<String>, 
         match delivery {
             PureDelivery::ClientModule { module, export } => {
                 let alias = format!("pure_{index}");
-                // From generated/<surface>/ to $lib/<module>
-                let rel = format!("../../{module}.js");
-                sections.push(format!("import {{ {export} as {alias} }} from '{rel}';"));
+                let specifier = format!("$lib/{module}.js");
+                sections.push(format!(
+                    "import {{ {export} as {alias} }} from '{specifier}';"
+                ));
                 entries.push(format!("  {}: {alias}", quoted_property(fn_name)));
             }
             PureDelivery::WasmPackage { package, export } => {
                 let host = format!("pureHost_{index}");
-                // From generated/<surface>/ to $lib/<package>.js (wasm-pack entry)
-                let rel = format!("../../{package}.js");
+                let specifier = format!("$lib/{package}.js");
                 sections.push(format!(
-                    "const {host} = createWasmJsonPure({{\n  load: () => import('{rel}'),\n  exportName: {export_lit}\n}});",
+                    "const {host} = createWasmJsonPure({{\n  load: () => import('{specifier}'),\n  exportName: {export_lit}\n}});",
                     export_lit = serde_json::to_string(export).unwrap_or_else(|_| "\"\"".into()),
                 ));
                 entries.push(format!("  {}: {host}.pure", quoted_property(fn_name)));

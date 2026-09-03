@@ -180,6 +180,15 @@ impl JavascriptFrameworkPackage {
             .map(|root| receipt_path(project_root, root))
     }
 
+    pub(crate) fn wasm_pack_launcher(&self, ui_root: &Path) -> PathBuf {
+        match &self.source {
+            JavascriptPackageSource::Local { root } => {
+                root.join("node_modules/wasm-pack/run.js")
+            }
+            JavascriptPackageSource::Registry => ui_root.join("node_modules/wasm-pack/run.js"),
+        }
+    }
+
     pub(crate) fn verify_installed(&self, ui_root: &Path) -> Result<(), LifecycleError> {
         let installed_root = ui_root.join("node_modules").join(DISTRIBUTED_JS_PACKAGE);
         match &self.source {

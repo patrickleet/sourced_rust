@@ -27,8 +27,8 @@
       "import": "./dist/sveltekit/index.js"
     },
     "./sveltekit/vite": {
-      "types": "./dist/sveltekit/vite.d.ts",
-      "import": "./dist/sveltekit/vite.js"
+      "types": "./dist/sveltekit/public-vite.d.ts",
+      "import": "./dist/sveltekit/public-vite.js"
     },
     "./react": {
       "types": "./dist/react/index.d.ts",

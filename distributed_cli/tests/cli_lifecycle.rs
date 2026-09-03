@@ -265,7 +265,11 @@ baseline="$root/accepted-generation.txt"
 if test ! -f "$baseline"; then
   printf '%s\n' "$DISTRIBUTED_GENERATION_ID" > "$baseline"
 fi
-test "$(cat "$baseline")" = "$DISTRIBUTED_GENERATION_ID"
+if test "$(cat "$baseline")" = "$DISTRIBUTED_GENERATION_ID"; then
+  printf '%s\n' "$DISTRIBUTED_GENERATION_ID" >> "$root/accepted-readiness.log"
+  exit 0
+fi
+exit 1
 "#,
     )
     .expect("write generation readiness probe");
@@ -633,6 +637,10 @@ fn dev_readiness_failure_restores_processes_and_preserves_active_pointer() {
     wait_until(Duration::from_secs(5), || {
         fs::read_to_string(root.join("dev-process.log"))
             .is_ok_and(|log| log.lines().filter(|line| line.starts_with("api:")).count() == 3)
+    });
+    wait_until(Duration::from_secs(5), || {
+        fs::read_to_string(root.join("accepted-readiness.log"))
+            .is_ok_and(|log| log.lines().count() == 2)
     });
     let report = supervisor.stop_and_join();
     assert_eq!(report.initial_generation, report.final_generation);

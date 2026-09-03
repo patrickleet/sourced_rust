@@ -861,7 +861,7 @@ await commands.blob.move({ game_id, direction });
 					file: 'generated/user/pures.ts',
 					caption: 'The generated client hosts WASM. The app has no TypeScript simulate file.',
 					code: `const pureHost_0 = createWasmJsonPure({
-  load: () => import('../../blob/pkg/blob_wasm.js'),
+  load: () => import('$lib/blob/pkg/blob_wasm.js'),
   exportName: 'blobSimulateMove',
 });
 export const PURE_FUNCTIONS = {
@@ -1336,7 +1336,7 @@ mutation DeleteTodo {
 				},
 				{
 					file: 'application.rs · surface constants',
-					caption: 'These names are stable. gen-client and host identity use them.',
+					caption: 'These names are stable. Client generation and host identity use them.',
 					code: `pub const DISTRIBUTED_CLIENT_SURFACE: &str = "e2e-ui";
 pub const DISTRIBUTED_ADMIN_CLIENT_SURFACE: &str = "e2e-ui-admin";
 pub const DISTRIBUTED_PUBLIC_CLIENT_SURFACE: &str = "e2e-ui-public";`

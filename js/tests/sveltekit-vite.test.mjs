@@ -3,6 +3,7 @@ import {
 	mkdtemp,
 	mkdir,
 	readFile,
+	realpath,
 	rm,
 	symlink,
 	writeFile
@@ -19,8 +20,34 @@ import {
 	distributedSvelteKit,
 	distributedSvelteKitAliases,
 	generateDistributedSvelteKit,
+	generateDistributedSvelteKitLifecycle,
 	validateDistributedSvelteKitBoundaryPlan
 } from '../dist/sveltekit/vite.js';
+import {
+	distributedSvelteKit as distributedSvelteKitPublic,
+	distributedSvelteKitAliases as distributedSvelteKitAliasesPublic
+} from '../dist/sveltekit/public-vite.js';
+
+test('public Vite adapters require the application lifecycle', () => {
+	const previous = process.env.DISTRIBUTED_LIFECYCLE_OWNS_CLIENT_COMPILE;
+	delete process.env.DISTRIBUTED_LIFECYCLE_OWNS_CLIENT_COMPILE;
+	try {
+		assert.throws(
+			() => distributedSvelteKitPublic({ clients: [] }),
+			/run the UI through `distributed dev` or `distributed build`/
+		);
+		assert.throws(
+			() => distributedSvelteKitAliasesPublic({ clients: [] }),
+			/run the UI through `distributed dev` or `distributed build`/
+		);
+	} finally {
+		if (previous === undefined) {
+			delete process.env.DISTRIBUTED_LIFECYCLE_OWNS_CLIENT_COMPILE;
+		} else {
+			process.env.DISTRIBUTED_LIFECYCLE_OWNS_CLIENT_COMPILE = previous;
+		}
+	}
+});
 
 const fakeDistributedSource = String.raw`
 import {
@@ -861,6 +888,38 @@ test('Vite maps analyzed boundary plans by module rather than declaration order'
 	await checkDistributedSvelteKit(options);
 });
 
+test('lifecycle generation writes only to the immutable candidate stage', async (t) => {
+	const { root, script } = await fixture(t);
+	const stage = join(root, '.distributed/lifecycle-stage');
+	await mkdir(stage, { recursive: true });
+
+	await generateDistributedSvelteKitLifecycle(pluginOptions(root, script), {
+		projectRoot: root,
+		stage
+	});
+
+	assert.match(
+		await readFile(join(stage, 'src/generated/user/sveltekit.ts'), 'utf8'),
+		/e2e-ui/
+	);
+	await assert.rejects(
+		readFile(join(root, 'src/generated/user/sveltekit.ts')),
+		(error) => error?.code === 'ENOENT'
+	);
+	assert.match(
+		await readFile(
+			join(
+				stage,
+				'.svelte-kit/distributed/clients',
+				Buffer.from('$distributed').toString('base64url'),
+				'boundaries.json'
+			),
+			'utf8'
+		),
+		/"module": "\$distributed"/
+	);
+});
+
 test('Vite compiles and resolves isolated user/admin physical entrypoints', async (t) => {
 	const { root, script, log } = await fixture(t);
 	const options = pluginOptions(root, script);
@@ -1050,8 +1109,23 @@ test('supervised Vite defers generated-client compilation to the lifecycle', asy
 	t.after(() => rm(lifecycleRoot, { recursive: true, force: true }));
 	const previousLifecycle = process.env.DISTRIBUTED_LIFECYCLE_DIR;
 	const previousClientOwnership = process.env.DISTRIBUTED_LIFECYCLE_OWNS_CLIENT_COMPILE;
+	const previousProjectRoot = process.env.DISTRIBUTED_LIFECYCLE_PROJECT_ROOT;
+	const generation = `sha256:${'a'.repeat(64)}`;
+	const activePointer = join(lifecycleRoot, 'active.json');
+	await mkdir(join(lifecycleRoot, 'generations', generation, 'src/generated/user'), {
+		recursive: true
+	});
+	await writeFile(
+		join(lifecycleRoot, 'generations', generation, 'src/generated/user/sveltekit.ts'),
+		'export const supervised = true;\n'
+	);
+	await writeFile(
+		activePointer,
+		JSON.stringify({ schema_version: 1, generation_id: generation })
+	);
 	process.env.DISTRIBUTED_LIFECYCLE_DIR = lifecycleRoot;
 	process.env.DISTRIBUTED_LIFECYCLE_OWNS_CLIENT_COMPILE = '1';
+	process.env.DISTRIBUTED_LIFECYCLE_PROJECT_ROOT = root;
 	t.after(() => {
 		if (previousLifecycle === undefined) {
 			delete process.env.DISTRIBUTED_LIFECYCLE_DIR;
@@ -1063,14 +1137,34 @@ test('supervised Vite defers generated-client compilation to the lifecycle', asy
 		} else {
 			process.env.DISTRIBUTED_LIFECYCLE_OWNS_CLIENT_COMPILE = previousClientOwnership;
 		}
+		if (previousProjectRoot === undefined) {
+			delete process.env.DISTRIBUTED_LIFECYCLE_PROJECT_ROOT;
+		} else {
+			process.env.DISTRIBUTED_LIFECYCLE_PROJECT_ROOT = previousProjectRoot;
+		}
 	});
 	const plugin = distributedSvelteKit(pluginOptions(root, script));
 	await plugin.configResolved({ root });
+	await writeFile(activePointer, 'not-json');
+	assert.equal(
+		plugin.resolveId('./ordinary-relative-import.js', join(root, 'src/app.ts')),
+		undefined,
+		'unrelated imports do not read lifecycle generation state'
+	);
+	await writeFile(
+		activePointer,
+		JSON.stringify({ schema_version: 1, generation_id: generation })
+	);
 	const added = [];
+	const invalidated = [];
+	const websocketMessages = [];
 	const server = {
 		watcher: { add: (paths) => added.push(paths) },
-		ws: { send() {} },
-		moduleGraph: { getModuleById() {}, invalidateModule() {} }
+		ws: { send: (message) => websocketMessages.push(message) },
+		moduleGraph: {
+			getModuleById: (id) => ({ id }),
+			invalidateModule: (module) => invalidated.push(module.id)
+		}
 	};
 	plugin.configureServer(server);
 
@@ -1080,7 +1174,32 @@ test('supervised Vite defers generated-client compilation to the lifecycle', asy
 		[],
 		'lifecycle-owned startup serves the generation already built by the supervisor'
 	);
-	assert.deepEqual(added, []);
+	assert.deepEqual(added, [await realpath(activePointer)]);
+	const userId = plugin.resolveId('$distributed');
+	const adminId = plugin.resolveId('$distributed/admin');
+	assert.match(
+		plugin.load(userId),
+		new RegExp(
+			JSON.stringify(
+				join(
+					lifecycleRoot,
+					'generations',
+					generation,
+					'src/generated/user/sveltekit.ts'
+				)
+			).replace(/[.*+?^${}()|[\]\\]/g, '\\$&')
+		)
+	);
+	assert.deepEqual(
+		await plugin.handleHotUpdate({ file: activePointer, server }),
+		[]
+	);
+	assert.deepEqual(invalidated, [userId, adminId]);
+	assert.deepEqual(
+		websocketMessages,
+		[],
+		'the browser lifecycle remains the sole coordinated reload authority'
+	);
 	assert.deepEqual(
 		await plugin.handleHotUpdate({
 			file: join(root, 'src/routes/todos/+page.graphql'),

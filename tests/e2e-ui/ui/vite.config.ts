@@ -1,10 +1,6 @@
-import { existsSync } from 'node:fs';
-import { resolve } from 'node:path';
-
 import { sveltekit } from '@sveltejs/kit/vite';
 import {
 	distributedGraphqlProxy,
-	distributedLifecycle,
 	distributedSvelteKit
 } from '@hops-ops/distributed/sveltekit/vite';
 import { defineConfig } from 'vite';
@@ -17,22 +13,9 @@ if (!Number.isSafeInteger(uiPort) || uiPort < 1 || uiPort > 65_535) {
 	throw new TypeError('UI_PORT must be an integer from 1 through 65535');
 }
 
-// Cluster-dev node images often lack cargo/the distributed CLI. Prefer committed generated
-// clients when present so vite can start without a Rust toolchain.
-const generatedReady = distributedViteOptions.clients.every((client: { out: string }) =>
-	existsSync(resolve(distributedViteOptions.cwd, client.out, 'sveltekit.ts'))
-);
-const skipClientCompile =
-	process.env.DISTRIBUTED_SKIP_CLIENT_COMPILE === '1' ||
-	(process.env.DISTRIBUTED_SKIP_CLIENT_COMPILE !== '0' &&
-		process.env.DISTRIBUTED_LIFECYCLE_DIR === undefined &&
-		generatedReady);
-
 export default defineConfig({
 	plugins: [
-		...(skipClientCompile
-			? [distributedLifecycle()]
-			: [distributedSvelteKit(distributedViteOptions)]),
+		distributedSvelteKit(distributedViteOptions),
 		sveltekit()
 	],
 	css: { devSourcemap: true },

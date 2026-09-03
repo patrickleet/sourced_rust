@@ -96,7 +96,7 @@ struct CompiledPureReduce {
     /// Stable pure id used as pureFunctions key.
     #[serde(rename = "fn")]
     pure_fn: String,
-    /// App `$lib`-relative module without extension (for gen-client pures.ts).
+    /// App `$lib`-relative module without extension (for generated pures.ts).
     #[serde(skip)]
     client_module: String,
     /// Named export in that module.

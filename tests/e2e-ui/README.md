@@ -52,9 +52,12 @@ Demo users are `alice`, `bob`, and `admin` with password `Password1!`.
 
 `make run` is a convenience alias for the same zero-config command. Before
 starting either process, the CLI compiles and activates one coherent application
-manifest from the real e2e modules and surfaces. Cargo metadata locates the
-typed application and runtime; the conventional `ui/` directory selects
-SvelteKit. No lifecycle JSON or wrapper scripts are required. Vite still handles
+manifest plus all three clients declared in `ui/distributed.clients.json` from
+the real e2e modules, surfaces, and colocated GraphQL documents. The clients are
+immutable generation outputs, so a clean checkout contains no generated client
+tree. Cargo metadata locates the typed application
+and runtime; the conventional `ui/` directory selects SvelteKit. No lifecycle
+JSON or wrapper scripts are required. Vite still handles
 Svelte/CSS HMR, while application, generated-client, required WASM, and linked
 framework changes trigger one coherent generation. The browser closes command
 dispatch, captures its declared JSON state and confirmed replica, waits for the
@@ -328,7 +331,7 @@ the normal GraphQL command result.
 | `crates/service/src/service.rs` | Deployment catalog, placement, routes, and typed commands. |
 | `ui/src/routes/*/+page.graphql` | Co-located SSR/live reads. |
 | `ui/src/routes/*/+page.svelte` | `*.use()` and ordinary typed command calls. |
-| `ui/src/lib/generated/` | Generator-owned user/admin clients; do not hand-edit. |
+| `.distributed/lifecycle/generations/<id>/ui/src/lib/generated/` | Immutable lifecycle-owned user/admin/public clients. |
 
 Todo and Chat mount catalog-pinned local causal executors through explicit
 `modeled_projector(...).handle(...)` event handlers. Those handlers apply the
@@ -354,11 +357,15 @@ may run in another process on the same packages.
 ## Generation and tests
 
 ```bash
-make gen-client
-make check-client
+distributed build
 make test
 make test-browser
 ```
+
+`distributed build` owns manifest generation, all generated clients, Svelte
+type-checking, the production UI build, and activation. Generated client trees
+live only in the active immutable lifecycle generation and are not committed to
+`ui/src/lib`.
 
 ### Optimism regression gates
 

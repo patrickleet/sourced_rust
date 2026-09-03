@@ -8,8 +8,8 @@
 #                    # optional celld+NATS profile (not make run; CI live path)
 
 .PHONY: all up down run run-api stop test ci-offline test-domain test-suite \
-	test-browser test-browser-install js-install js-build ui-install ui-build ui-check ui-test \
-	gen-client check-client contracts-check check clean help \
+	test-browser test-browser-install application-build js-install js-build ui-install ui-test \
+	contracts-check check clean help \
 	up-celld-nats down-celld-nats down-celld test-celld test-celld-http test-celld-nats
 
 # Defaults only — do NOT `include e2e-ui.env` (shell-quoted dotenv breaks Make).
@@ -123,16 +123,28 @@ up-celld-nats:
 		echo "celld relay registration failed:"; tail -80 $(CELLD_RELAY_LOG); \
 		kill "$$relay_launcher_pid" 2>/dev/null || true; exit 1; \
 	fi; \
-	relay_node_pid=$$(lsof -tiTCP:$(CELLD_HTTP_PORT) -sTCP:LISTEN | head -1); \
+	relay_node_pid=""; \
+	for i in $$(seq 1 80); do \
+		relay_node_pid=$$(lsof -tiTCP:$(CELLD_HTTP_PORT) -sTCP:LISTEN 2>/dev/null | head -1); \
+		[ -n "$$relay_node_pid" ] && break; \
+		sleep 0.25; \
+	done; \
 	[ -n "$$relay_node_pid" ] || { echo "celld relay listener PID was not found"; kill "$$relay_launcher_pid" 2>/dev/null || true; exit 1; }; \
 	kill "$$relay_launcher_pid" 2>/dev/null || true; \
+	kill "$$relay_node_pid" 2>/dev/null || true; \
 	for i in $$(seq 1 80); do \
 		lsof -tiTCP:$(CELLD_HTTP_PORT) -sTCP:LISTEN >/dev/null 2>&1 || break; \
 		sleep 0.25; \
 	done; \
-	if kill -0 "$$relay_node_pid" 2>/dev/null; then kill "$$relay_node_pid"; fi; \
 	if lsof -tiTCP:$(CELLD_HTTP_PORT) -sTCP:LISTEN >/dev/null 2>&1; then \
-		echo "celld relay listener remained after registration"; exit 1; \
+		kill -KILL "$$relay_node_pid" 2>/dev/null || true; \
+		for i in $$(seq 1 20); do \
+			lsof -tiTCP:$(CELLD_HTTP_PORT) -sTCP:LISTEN >/dev/null 2>&1 || break; \
+			sleep 0.1; \
+		done; \
+	fi; \
+	if lsof -tiTCP:$(CELLD_HTTP_PORT) -sTCP:LISTEN >/dev/null 2>&1; then \
+		echo "celld relay listener remained after TERM and KILL"; exit 1; \
 	fi; \
 	echo "starting aggregate Worker from the same celld dev store…"; \
 	celld dev $(CELLD_PROJECT) --host 127.0.0.1 --port $(CELLD_HTTP_PORT) --logs > $(CELLD_LOG) 2>&1 & \
@@ -215,21 +227,21 @@ test-celld-nats:
 	  DISTRIBUTED_INTERNAL_SECRET="$(DISTRIBUTED_INTERNAL_SECRET)" \
 	  cargo test --test e2e_ui_celld_nats_profile --features graphql,http,sqlite -- --nocapture
 
-test: test-domain test-suite ui-install ui-build ui-check ui-test
+application-build:
+	$(DISTRIBUTED) build .
+
+test: application-build
+	$(MAKE) test-domain test-suite ui-test
 	@echo "OK — offline domain + suite + UI build + typecheck + structural tests"
 
 ## CI-only orchestration: build the real application through Distributed, then
 ## overlap read-only Rust and UI verification without concurrent UI writers.
 ci-offline:
 	$(DISTRIBUTED) build .
-	cd ui && $(NPM) run client:check
 	@set -eu; \
 	status=0; \
 	$(MAKE) test-domain test-suite & rust_pid=$$!; \
-	( cd ui && \
-		$(NPM) run check && \
-		$(NPM) test \
-	) & ui_pid=$$!; \
+	( cd ui && $(NPM) test ) & ui_pid=$$!; \
 	wait $$rust_pid || status=$$?; \
 	wait $$ui_pid || status=$$?; \
 	[ $$status -eq 0 ] || exit $$status; \
@@ -263,23 +275,8 @@ js-build: js-install
 ui-install: js-build
 	cd ui && $(NPM) install
 
-ui-build: ui-install
-	cd ui && $(NPM) run build
-
-ui-check: ui-install
-	cd ui && $(NPM) run check
-
-ui-test: ui-install
+ui-test:
 	cd ui && $(NPM) test
-
-## One app-owned config drives Vite development, explicit generation, and CI drift checks.
-## Manifests remain ephemeral; compiler-owned output remains committed and inspectable.
-gen-client: ui-install
-	cd ui && $(NPM) run client:generate
-
-## Byte/file-set drift check through distributed --check; never repairs generated files.
-check-client: ui-install
-	cd ui && $(NPM) run client:check
 
 ## Aggregate read-only contract check (repo root catalog when present).
 contracts-check:
@@ -289,7 +286,7 @@ contracts-check:
 	  echo "contracts-check: no catalog yet; skipping aggregate gate"; \
 	fi
 
-check: check-client
+check: application-build
 	cargo check --workspace
 	cargo test -p todo-domain -p chat-domain -p blob-domain --no-run
 	cargo test -p e2e-suite --test behavioral --no-run
@@ -304,9 +301,7 @@ help:
 	@echo "  make up         Postgres + Zitadel + OIDC bootstrap → e2e-ui.env"
 	@echo "  make run        coherent build + API + UI supervision (Vite HMR active)"
 	@echo "  make test       offline suite + UI structural"
-	@echo "  make ci-offline CI drift + offline suites with safe pipeline overlap"
-	@echo "  make gen-client      typed Service → generated user/admin clients"
-	@echo "  make check-client    verify generated artifacts byte-for-byte"
+	@echo "  make ci-offline coherent build + offline suites with safe pipeline overlap"
 	@echo "  make down       playground docker compose down (not celld/NATS)"
 	@echo "  make up-celld-nats    optional celld+NATS profile (not make run)"
 	@echo "  rebuild/restart with make up-celld-nats after Worker source changes"
