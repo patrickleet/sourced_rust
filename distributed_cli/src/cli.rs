@@ -395,6 +395,9 @@ pub struct DescribeArgs {
     /// Path to the local Distributed crate.
     #[arg(long)]
     pub distributed_path: Option<PathBuf>,
+    /// Exact wasm-pack JavaScript launcher owned by the resolved framework package.
+    #[arg(long, hide = true)]
+    pub wasm_pack_launcher: Option<PathBuf>,
 }
 
 #[derive(Args, Debug)]
@@ -1018,7 +1021,16 @@ fn prepare_project_wasm_pures(project: &DiscoveredLifecycleProject) -> Result<()
     )?;
     let manifest: serde_json::Value = serde_json::from_str(&json)?;
     validate_manifest_json(&manifest)?;
-    build_declared_wasm_pures(&manifest, &project.cargo_root)?;
+    let wasm_pack_launcher = project
+        .javascript
+        .as_ref()
+        .zip(project.ui.as_ref())
+        .map(|(javascript, ui)| javascript.wasm_pack_launcher(ui));
+    build_declared_wasm_pures(
+        &manifest,
+        &project.cargo_root,
+        wasm_pack_launcher.as_deref(),
+    )?;
     Ok(())
 }
 
@@ -1646,7 +1658,11 @@ fn run_describe(args: &DescribeArgs) -> Result<(), Box<dyn Error>> {
                     std::env::var_os("DISTRIBUTED_LIFECYCLE_ROOT")
                         .expect("lifecycle root was checked above"),
                 );
-                build_declared_wasm_pures(&envelope, &root)?;
+                build_declared_wasm_pures(
+                    &envelope,
+                    &root,
+                    args.wasm_pack_launcher.as_deref(),
+                )?;
             }
             println!("{}", serde_json::to_string_pretty(&envelope)?);
             Ok(())

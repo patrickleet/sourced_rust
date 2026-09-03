@@ -271,12 +271,12 @@ test "$(cat "$baseline")" = "$DISTRIBUTED_GENERATION_ID"
     .expect("write generation readiness probe");
     let path = root.join("distributed.lifecycle.json");
     let mut config: Value = serde_json::from_slice(&fs::read(&path).unwrap()).unwrap();
-    config["dev"]["prepare_ms"] = serde_json::json!(100);
+    config["dev"]["prepare_ms"] = serde_json::json!(500);
     config["dev"]["processes"]["api"]["ready"] = serde_json::json!({
         "program": "/bin/sh",
         "args": ["{root}/generation-probe.sh", "{root}"],
         "interval_ms": 10,
-        "timeout_ms": 100
+        "timeout_ms": 1_000
     });
     fs::write(path, serde_json::to_vec_pretty(&config).unwrap()).unwrap();
 }

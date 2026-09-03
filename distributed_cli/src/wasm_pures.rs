@@ -73,6 +73,7 @@ struct WasmStamp {
 pub(crate) fn build_declared_wasm_pures(
     manifest: &Value,
     project_root: &Path,
+    wasm_pack_launcher: Option<&Path>,
 ) -> Result<usize, Box<dyn Error>> {
     let metadata = cargo_metadata(&project_root.join("Cargo.toml"))?;
     let Some(ui_root) = crate::lifecycle::discover_ui(&metadata.metadata, project_root)? else {
@@ -83,6 +84,9 @@ pub(crate) fn build_declared_wasm_pures(
     if pures.is_empty() {
         return Ok(0);
     }
+    let wasm_pack_launcher = wasm_pack_launcher.ok_or(
+        "browser WASM pures require @hops-ops/distributed in the application UI",
+    )?;
     let mut outputs = BTreeMap::<PathBuf, &WasmPure>::new();
     for pure in &pures {
         let relative = portable_import_path(&pure.import)?;
@@ -137,6 +141,7 @@ pub(crate) fn build_declared_wasm_pures(
         build_wasm_pure(
             project_root,
             &ui_root,
+            wasm_pack_launcher,
             package_dir,
             output_name,
             &destination,
@@ -436,6 +441,7 @@ fn stamp_matches(
 fn build_wasm_pure(
     project_root: &Path,
     ui_root: &Path,
+    wasm_pack_launcher: &Path,
     package_dir: &Path,
     output_name: &str,
     destination: &Path,
@@ -464,8 +470,8 @@ fn build_wasm_pure(
         "distributed: compiling required browser WASM {} from Cargo package {}",
         stamp.import, stamp.rust_package
     );
-    let wasm_pack = wasm_pack_executable(ui_root);
-    let output = Command::new(&wasm_pack)
+    let output = Command::new("node")
+        .arg(wasm_pack_launcher)
         .arg("build")
         .arg(package_dir)
         .args(["--target", "web", "--out-dir"])
@@ -476,8 +482,8 @@ fn build_wasm_pure(
         .status()
         .map_err(|error| {
             format!(
-                "failed to start required WASM compiler `{}` for pure `{}`; run `npm install` in `{}` or install wasm-pack on PATH: {error}",
-                wasm_pack.display(), stamp.import, ui_root.display()
+                "failed to start the @hops-ops/distributed WASM compiler `{}` for pure `{}`; run `distributed build` from `{}`: {error}",
+                wasm_pack_launcher.display(), stamp.import, project_root.display()
             )
         })?;
     if !output.success() {
@@ -529,25 +535,6 @@ fn build_wasm_pure(
     }
     fs::write(stamp_path, serde_json::to_vec(stamp)?)?;
     Ok(())
-}
-
-fn wasm_pack_executable(ui_root: &Path) -> PathBuf {
-    let executable = if cfg!(windows) {
-        "wasm-pack.cmd"
-    } else {
-        "wasm-pack"
-    };
-    for installed in [
-        ui_root.join("node_modules/.bin").join(executable),
-        ui_root
-            .join("node_modules/@hops-ops/distributed/node_modules/.bin")
-            .join(executable),
-    ] {
-        if installed.is_file() {
-            return installed;
-        }
-    }
-    PathBuf::from(executable)
 }
 
 fn ensure_real_directory_path(root: &Path, directory: &Path) -> Result<(), Box<dyn Error>> {
@@ -848,21 +835,4 @@ mod tests {
             .contains("more than one local Cargo package"));
     }
 
-    #[test]
-    fn wasm_pack_prefers_the_framework_installed_ui_binary() {
-        let fixture = tempfile::tempdir().unwrap();
-        let executable = if cfg!(windows) {
-            "wasm-pack.cmd"
-        } else {
-            "wasm-pack"
-        };
-        let installed = fixture
-            .path()
-            .join("node_modules/@hops-ops/distributed/node_modules/.bin")
-            .join(executable);
-        fs::create_dir_all(installed.parent().unwrap()).unwrap();
-        fs::write(&installed, "fixture").unwrap();
-
-        assert_eq!(wasm_pack_executable(fixture.path()), installed);
-    }
 }

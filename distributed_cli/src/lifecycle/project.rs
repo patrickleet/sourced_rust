@@ -309,7 +309,7 @@ pub fn discover_lifecycle_project(
     } else {
         format!("{{root}}/{}/Cargo.toml", portable_path(cargo_relative)?)
     };
-    let describe_args = command_prefix
+    let mut describe_args = command_prefix
         .iter()
         .map(|arg| (*arg).to_string())
         .chain([
@@ -323,7 +323,17 @@ pub fn discover_lifecycle_project(
             "--distributed-path".to_string(),
             distributed_root.to_string_lossy().into_owned(),
         ])
-        .collect();
+        .collect::<Vec<_>>();
+    if let Some(wasm_pack_launcher) = javascript
+        .as_ref()
+        .zip(ui.as_ref())
+        .map(|(javascript, ui)| javascript.wasm_pack_launcher(ui))
+    {
+        describe_args.extend([
+            "--wasm-pack-launcher".to_string(),
+            wasm_pack_launcher.to_string_lossy().into_owned(),
+        ]);
+    }
     let mut executors = BTreeMap::from([(
         "distributed.application-manifest".to_string(),
         LifecycleExecutor {
