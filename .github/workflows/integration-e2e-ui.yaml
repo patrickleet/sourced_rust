@@ -668,9 +668,6 @@ jobs:
             if grep -Fq 'fetch failed' .ci-chat-preflight.html 2>/dev/null; then
               chat_has_ssr_error=1
             fi
-            pures_code="$(curl -sS -o /dev/null -w '%{http_code}' \
-              --noproxy '*' \
-              http://e2e-ui-ui.local.svc.cluster.local:5180/src/lib/generated/user/pures.ts || true)"
             node_code="$(curl -sS -o /dev/null -w '%{http_code}' \
               --noproxy '*' \
               http://e2e-ui-ui.local.svc.cluster.local:5180/.svelte-kit/generated/client/nodes/0.js || true)"
@@ -683,7 +680,7 @@ jobs:
             if [ "$ui_code" = 200 ] || [ "$ui_code" = 302 ] || [ "$ui_code" = 303 ]; then
               if [ "$api_ready" = 1 ] && [ "$chat_code" = 200 ] \
                 && [ "$chat_has_ssr_error" = 0 ] \
-                && [ "$pures_code" = 200 ] && [ "$node_code" = 200 ] \
+                && [ "$node_code" = 200 ] \
                 && [ "$oidc_code" = 200 ] && [ "$login_code" != 404 ]; then
                 break
               fi
@@ -701,11 +698,8 @@ jobs:
             sed -n '1,160p' .ci-chat-preflight.html 2>/dev/null >&2 || true
             exit 1
           fi
-          if [ "$pures_code" != 200 ] || [ "$node_code" != 200 ]; then
-            echo "UI generated module preflight failed (pures.ts=$pures_code nodes/0.js=$node_code)" >&2
-            curl -sS --noproxy '*' \
-              http://e2e-ui-ui.local.svc.cluster.local:5180/src/lib/generated/user/pures.ts \
-              | sed -n '1,120p' >&2 || true
+          if [ "$node_code" != 200 ]; then
+            echo "UI generated route preflight failed (nodes/0.js=$node_code)" >&2
             exit 1
           fi
           test "$oidc_code" = 200

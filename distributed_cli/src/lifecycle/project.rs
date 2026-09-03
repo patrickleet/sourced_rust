@@ -1113,7 +1113,7 @@ fn lifecycle_dev(
                 "--package-root".to_string(),
                 package_root.to_string_lossy().into_owned(),
                 "--project-root".to_string(),
-                root.to_string_lossy().into_owned(),
+                cargo_root.to_string_lossy().into_owned(),
             ])
             .collect();
         processes.insert(
@@ -1302,9 +1302,17 @@ mod tests {
         let repository = tempfile::tempdir().unwrap();
         let application = repository.path().join("services/application");
         let ui = repository.path().join("clients/web");
+        let javascript_root = repository.path().join("framework/javascript");
         fs::create_dir_all(&application).unwrap();
         fs::create_dir_all(&ui).unwrap();
+        fs::create_dir_all(&javascript_root).unwrap();
         let executable = std::env::current_exe().unwrap();
+        let javascript = JavascriptFrameworkPackage {
+            version: "1.0.0".into(),
+            source: JavascriptPackageSource::Local {
+                root: javascript_root.clone(),
+            },
+        };
         let config = lifecycle_dev(
             repository.path(),
             &application,
@@ -1313,7 +1321,7 @@ mod tests {
                 binary: "fixture".into(),
             },
             Some(&ui),
-            None,
+            Some(&javascript),
             true,
             &executable,
             &[],
@@ -1334,6 +1342,13 @@ mod tests {
             repository.path().to_str()
         );
         assert!(process.restart_on.is_empty());
+        let framework = &config.processes["framework-js"];
+        let project_root = framework
+            .args
+            .windows(2)
+            .find(|args| args[0] == "--project-root")
+            .map(|args| args[1].as_str());
+        assert_eq!(project_root, application.to_str());
     }
 
     #[test]
