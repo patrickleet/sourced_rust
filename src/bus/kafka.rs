@@ -369,9 +369,12 @@ async fn ensure_topics(brokers: &str, topics: &[&str]) -> Result<(), TransportEr
         .set("bootstrap.servers", brokers)
         .create()
         .map_err(|err| retryable("kafka admin", err))?;
+    // Let the broker's topic policy choose the partition count and replication
+    // factor. The transport must not silently collapse a production cluster to
+    // one partition and one replica merely because it had to create a topic.
     let new_topics: Vec<NewTopic<'_>> = topics
         .iter()
-        .map(|topic| NewTopic::new(topic, 1, TopicReplication::Fixed(1)))
+        .map(|topic| NewTopic::new(topic, -1, TopicReplication::Fixed(-1)))
         .collect();
     let results = admin
         .create_topics(

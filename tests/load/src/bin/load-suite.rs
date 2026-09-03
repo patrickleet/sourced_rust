@@ -138,17 +138,19 @@ fn expect_value(flag: &str, value: Option<String>) -> Result<String, String> {
 
 fn parse_duration(raw: &str) -> Result<Duration, String> {
     if let Some(secs) = raw.strip_suffix('s') {
-        return Ok(Duration::from_secs_f64(
-            secs.parse().map_err(|_| format!("not a duration: {raw}"))?,
-        ));
+        let secs = secs.parse().map_err(|_| format!("not a duration: {raw}"))?;
+        return checked_duration(secs, raw);
     }
     if let Some(mins) = raw.strip_suffix('m') {
         let mins: f64 = mins.parse().map_err(|_| format!("not a duration: {raw}"))?;
-        return Ok(Duration::from_secs_f64(mins * 60.0));
+        return checked_duration(mins * 60.0, raw);
     }
-    Ok(Duration::from_secs_f64(
-        raw.parse().map_err(|_| format!("not a duration: {raw}"))?,
-    ))
+    let secs = raw.parse().map_err(|_| format!("not a duration: {raw}"))?;
+    checked_duration(secs, raw)
+}
+
+fn checked_duration(secs: f64, raw: &str) -> Result<Duration, String> {
+    Duration::try_from_secs_f64(secs).map_err(|_| format!("not a duration: {raw}"))
 }
 
 fn print_help() {
@@ -194,5 +196,12 @@ mod tests {
         assert!(locks_only);
         assert!(!snapshots_only);
         assert!(filter.is_none());
+    }
+
+    #[test]
+    fn duration_rejects_non_finite_and_overflowing_values() {
+        for raw in ["NaN", "inf", "1e308", "NaNm", "infm", "1e308m"] {
+            assert!(parse_duration(raw).is_err(), "accepted {raw}");
+        }
     }
 }

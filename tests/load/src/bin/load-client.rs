@@ -67,7 +67,7 @@ fn parse_duration(raw: &str) -> Result<Duration, String> {
     }
     if let Some(mins) = raw.strip_suffix('m') {
         let mins: f64 = mins.parse().map_err(|_| format!("not a duration: {raw}"))?;
-        return Ok(Duration::from_secs_f64(mins * 60.0));
+        return checked_duration(mins * 60.0, raw);
     }
     parse_f64_secs(raw)
 }
@@ -77,7 +77,11 @@ fn parse_f64_secs(raw: &str) -> Result<Duration, String> {
     if secs < 0.0 {
         return Err("duration must be >= 0".into());
     }
-    Ok(Duration::from_secs_f64(secs))
+    checked_duration(secs, raw)
+}
+
+fn checked_duration(secs: f64, raw: &str) -> Result<Duration, String> {
+    Duration::try_from_secs_f64(secs).map_err(|_| format!("not a duration: {raw}"))
 }
 
 fn print_help() {
@@ -106,5 +110,12 @@ mod tests {
     fn concurrency_rejects_zero() {
         assert_eq!(parse_usize("0").unwrap_err(), "not a positive integer: 0");
         assert_eq!(parse_usize("4").unwrap(), 4);
+    }
+
+    #[test]
+    fn duration_rejects_non_finite_and_overflowing_values() {
+        for raw in ["NaN", "inf", "1e308", "NaNm", "infm", "1e308m"] {
+            assert!(parse_duration(raw).is_err(), "accepted {raw}");
+        }
     }
 }

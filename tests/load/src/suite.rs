@@ -356,7 +356,10 @@ async fn run_cell(config: &SuiteConfig, cell: &Cell) -> Result<crate::stats::Run
             let server = tokio::spawn(async move {
                 let _ = serve_listener(service, listener).await;
             });
-            wait_for_health(&base, Duration::from_secs(5)).await?;
+            if let Err(error) = wait_for_health(&base, Duration::from_secs(5)).await {
+                server.abort();
+                return Err(error);
+            }
             let mut client = client;
             client.url = base.clone();
             let invoker = Invoker::Http {
