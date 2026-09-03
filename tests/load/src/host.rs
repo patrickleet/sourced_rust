@@ -194,8 +194,8 @@ pub async fn connect_sqlite(
         }
     }
     let _ = std::fs::remove_file(path);
-    let _ = std::fs::remove_file(path.with_extension("sqlite-wal"));
-    let _ = std::fs::remove_file(path.with_extension("sqlite-shm"));
+    let _ = std::fs::remove_file(sqlite_sidecar(path, "-wal"));
+    let _ = std::fs::remove_file(sqlite_sidecar(path, "-shm"));
 
     let url = format!("sqlite:{}?mode=rwc", path.display());
     let options = SqliteConnectOptions::from_str(&url)?
@@ -210,6 +210,30 @@ pub async fn connect_sqlite(
     let repo = SqliteRepository::new(pool);
     repo.migrate().await?;
     Ok(repo)
+}
+
+fn sqlite_sidecar(path: &Path, suffix: &str) -> PathBuf {
+    let mut sidecar = path.as_os_str().to_os_string();
+    sidecar.push(suffix);
+    PathBuf::from(sidecar)
+}
+
+#[cfg(test)]
+mod path_tests {
+    use super::*;
+
+    #[test]
+    fn sqlite_sidecars_append_to_the_complete_database_name() {
+        let path = Path::new("target/load.custom-db");
+        assert_eq!(
+            sqlite_sidecar(path, "-wal"),
+            PathBuf::from("target/load.custom-db-wal")
+        );
+        assert_eq!(
+            sqlite_sidecar(path, "-shm"),
+            PathBuf::from("target/load.custom-db-shm")
+        );
+    }
 }
 
 fn service_for<R, L>(inner: R, locks: L, snapshot_frequency: Option<u64>) -> Service
@@ -343,7 +367,14 @@ pub async fn wait_for_health(base: &str, timeout: std::time::Duration) -> Result
     let deadline = tokio::time::Instant::now() + timeout;
     let url = format!("{base}/health");
     loop {
-        if let Ok(resp) = client.get(&url).send().await {
+        let now = tokio::time::Instant::now();
+        if now >= deadline {
+            return Err(format!(
+                "health check did not succeed at {url} within {timeout:?}"
+            ));
+        }
+        let remaining = deadline - now;
+        if let Ok(Ok(resp)) = tokio::time::timeout(remaining, client.get(&url).send()).await {
             if resp.status().is_success() {
                 return Ok(());
             }

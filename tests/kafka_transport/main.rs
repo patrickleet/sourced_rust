@@ -273,6 +273,66 @@ async fn listen_receives_later_command_topic_after_first_name_is_idle() {
     listen.abort();
 }
 
+#[tokio::test]
+async fn one_bus_keeps_distinct_consumers_for_distinct_subscription_plans() {
+    let Some(brokers) = brokers() else { return };
+    let ns = unique("ns");
+    let bus = KafkaBus::connect(&brokers)
+        .group("workers")
+        .namespace(&ns)
+        .with_fetch_timeout(Duration::from_secs(2))
+        .await
+        .expect("connect");
+    let first_name = unique("first.command");
+    let second_name = unique("second.command");
+
+    for (name, id) in [(&first_name, "first-1"), (&second_name, "second-1")] {
+        bus.send_message(Message::new(name, MessageKind::Command, b"{}".to_vec()).with_id(id))
+            .await
+            .expect("seed command topic");
+    }
+
+    let first = Arc::new(Mutex::new(Vec::new()));
+    let second = Arc::new(Mutex::new(Vec::new()));
+    let first_listener = {
+        let bus = bus.clone();
+        let router = recording_for(&first_name, MessageKind::Command, first.clone());
+        tokio::spawn(async move {
+            bus.listen(router, RunOptions::idempotent().wait_when_idle())
+                .await
+        })
+    };
+    let second_listener = {
+        let bus = bus.clone();
+        let router = recording_for(&second_name, MessageKind::Command, second.clone());
+        tokio::spawn(async move {
+            bus.listen(router, RunOptions::idempotent().wait_when_idle())
+                .await
+        })
+    };
+
+    let deadline = tokio::time::Instant::now() + Duration::from_secs(15);
+    loop {
+        let first_seen = first.lock().unwrap().iter().any(|id| id == "first-1");
+        let second_seen = second.lock().unwrap().iter().any(|id| id == "second-1");
+        if first_seen && second_seen {
+            break;
+        }
+        if tokio::time::Instant::now() >= deadline {
+            first_listener.abort();
+            second_listener.abort();
+            panic!(
+                "distinct plans did not both consume: first={:?} second={:?}",
+                first.lock().unwrap(),
+                second.lock().unwrap()
+            );
+        }
+        tokio::time::sleep(Duration::from_millis(50)).await;
+    }
+    first_listener.abort();
+    second_listener.abort();
+}
+
 /// Build a namespaced `KafkaBus` for `group` (empty `group` = no group).
 async fn kafka_bus(brokers: &str, ns: &str, group: &str) -> KafkaBus {
     let builder = KafkaBus::connect(brokers).namespace(ns);

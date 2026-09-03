@@ -412,16 +412,6 @@ impl<B: SqlBusDialect> SqlBus<B> {
         self
     }
 
-    /// Keep `listen`/`subscribe` running when the queue or log is empty.
-    ///
-    /// Drain-to-idle (`Duration::ZERO`, the default) is for tests. A playground
-    /// or worker that rebuilds `Service` after every idle drain pays seconds
-    /// of projector bootstrap on the next Eventual command.
-    pub fn with_idle_poll(mut self, idle_poll: Duration) -> Self {
-        self.idle_poll = idle_poll;
-        self
-    }
-
     /// Create the bus tables (queue, log, log identity, and offsets) if absent.
     ///
     /// Called by `listen`/`subscribe`; producers must ensure the tables exist
@@ -579,6 +569,11 @@ impl<B: SqlBusDialect> MessageSource for SqlQueueSource<B> {
             claimed.sort_by_key(|claim| claim.row.seq);
             self.buffer.extend(claimed);
         }
+        Ok(self.buffer.pop_front().map(|claimed| SqlQueueReceived {
+            dialect: self.dialect.clone(),
+            row: claimed.row,
+            claim_token: claimed.claim_token,
+        }))
     }
 
     async fn wait(&mut self) -> Result<(), TransportError> {

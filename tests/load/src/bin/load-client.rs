@@ -56,7 +56,9 @@ fn expect_value(flag: &str, value: Option<String>) -> Result<String, String> {
 
 fn parse_usize(raw: &str) -> Result<usize, String> {
     raw.parse()
-        .map_err(|_| format!("not a positive integer: {raw}"))
+        .ok()
+        .filter(|value| *value > 0)
+        .ok_or_else(|| format!("not a positive integer: {raw}"))
 }
 
 fn parse_duration(raw: &str) -> Result<Duration, String> {
@@ -94,4 +96,15 @@ Options:
   --repo NAME                       Copied into the JSON report only
   --snapshots N                     Copied into the JSON report (host --snapshots N)"
     );
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn concurrency_rejects_zero() {
+        assert_eq!(parse_usize("0").unwrap_err(), "not a positive integer: 0");
+        assert_eq!(parse_usize("4").unwrap(), 4);
+    }
 }

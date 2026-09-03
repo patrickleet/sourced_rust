@@ -1,6 +1,6 @@
 //! Load driver over any [`Invoker`].
 
-use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicU64, AtomicUsize, Ordering};
 use std::sync::Arc;
 use std::time::{Duration, Instant};
 
@@ -96,6 +96,8 @@ pub async fn run_invoker(
     };
 
     let measuring = Arc::new(AtomicBool::new(false));
+    let paused = Arc::new(AtomicBool::new(false));
+    let in_flight = Arc::new(AtomicUsize::new(0));
     let stop = Arc::new(AtomicBool::new(false));
     let ok = Arc::new(AtomicU64::new(0));
     let err = Arc::new(AtomicU64::new(0));
@@ -107,16 +109,28 @@ pub async fn run_invoker(
         let scenario = config.scenario;
         let hot_id = hot_id.clone();
         let measuring = Arc::clone(&measuring);
+        let paused = Arc::clone(&paused);
+        let in_flight = Arc::clone(&in_flight);
         let stop = Arc::clone(&stop);
         let ok = Arc::clone(&ok);
         let err = Arc::clone(&err);
         let samples = Arc::clone(&samples);
         workers.push(tokio::spawn(async move {
             while !stop.load(Ordering::Relaxed) {
+                if paused.load(Ordering::SeqCst) {
+                    tokio::task::yield_now().await;
+                    continue;
+                }
+                in_flight.fetch_add(1, Ordering::SeqCst);
+                if paused.load(Ordering::SeqCst) {
+                    in_flight.fetch_sub(1, Ordering::SeqCst);
+                    continue;
+                }
                 let (command, body) = command_body(scenario, hot_id.as_deref());
                 let started = Instant::now();
                 let result = invoker.invoke(&command, body).await;
                 let elapsed_ms = started.elapsed().as_secs_f64() * 1000.0;
+                in_flight.fetch_sub(1, Ordering::SeqCst);
                 if !measuring.load(Ordering::Relaxed) {
                     continue;
                 }
@@ -136,6 +150,11 @@ pub async fn run_invoker(
     tokio::time::sleep(config.warmup).await;
     let pipelined_baseline = if config.pipelined {
         if let Invoker::Bus(bus) = &invoker {
+            paused.store(true, Ordering::SeqCst);
+            while in_flight.load(Ordering::SeqCst) != 0 {
+                tokio::task::yield_now().await;
+            }
+            drain_pipeline(bus, Duration::from_secs(8)).await;
             Some((
                 bus.applied_ok.load(Ordering::Relaxed),
                 bus.applied_err.load(Ordering::Relaxed),
@@ -147,6 +166,7 @@ pub async fn run_invoker(
         None
     };
     measuring.store(true, Ordering::Relaxed);
+    paused.store(false, Ordering::SeqCst);
     let started = Instant::now();
     tokio::time::sleep(config.duration).await;
     let elapsed = started.elapsed();

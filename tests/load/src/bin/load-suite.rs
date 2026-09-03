@@ -11,10 +11,13 @@ use distributed_load::{default_cells, run_suite, Scenario, SuiteConfig};
 
 #[tokio::main]
 async fn main() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
-    let (config, filter, snapshots_only) = parse_args(std::env::args().skip(1))?;
+    let (config, filter, snapshots_only, locks_only) = parse_args(std::env::args().skip(1))?;
     let mut cells = default_cells(&config);
     if snapshots_only {
         cells.retain(|cell| cell.snapshot_frequency.is_some());
+    }
+    if locks_only {
+        cells.retain(|cell| cell.lock != distributed_load::LockKind::Memory);
     }
     if let Some(filter) = filter {
         cells.retain(|cell| cell.name().contains(&filter));
@@ -33,10 +36,11 @@ async fn main() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
 
 fn parse_args(
     args: impl IntoIterator<Item = String>,
-) -> Result<(SuiteConfig, Option<String>, bool), String> {
+) -> Result<(SuiteConfig, Option<String>, bool, bool), String> {
     let mut config = SuiteConfig::default();
     let mut filter = None;
     let mut snapshots_only = false;
+    let mut locks_only = false;
     let mut args = args.into_iter();
     while let Some(arg) = args.next() {
         match arg.as_str() {
@@ -55,6 +59,7 @@ fn parse_args(
             "--no-locks" => config.include_locks = false,
             "--locks-only" => {
                 config.include_locks = true;
+                locks_only = true;
             }
             "--no-snapshots" => config.include_snapshots = false,
             "--snapshots-only" => {
@@ -81,7 +86,7 @@ fn parse_args(
             other => return Err(format!("unknown argument {other}")),
         }
     }
-    Ok((config, filter, snapshots_only))
+    Ok((config, filter, snapshots_only, locks_only))
 }
 
 fn parse_snapshot_dispatches(raw: &str) -> Result<Vec<distributed_load::DispatchKind>, String> {
@@ -175,4 +180,19 @@ Env:
   KAFKA_BROKERS          127.0.0.1:9092 (requires --features kafka)
   AMQP_URL               amqp://guest:guest@localhost:5672/%2f (requires --features rabbitmq)"
     );
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn locks_only_is_returned_as_an_active_filter() {
+        let (config, filter, snapshots_only, locks_only) =
+            parse_args(["--locks-only".to_string()]).unwrap();
+        assert!(config.include_locks);
+        assert!(locks_only);
+        assert!(!snapshots_only);
+        assert!(filter.is_none());
+    }
 }

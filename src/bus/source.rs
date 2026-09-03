@@ -41,48 +41,14 @@ pub trait MessageSource: Send {
     /// Park until `recv` might return work. Used only when
     /// [`IdlePolicy::Wait`](super::IdlePolicy::Wait) is set.
     ///
-    /// The default sleeps a short interval so an adapter that cannot wait
-    /// does not busy-spin. Adapters with a wakeup (notify, LISTEN, broker
-    /// long-poll) should override this.
+    /// Sources used with this policy must override the default with a real
+    /// notification, broker long-poll, or bounded timer. Failing explicitly is
+    /// safer than letting an unsupported source spin at executor speed.
     fn wait(&mut self) -> impl Future<Output = Result<(), TransportError>> + Send + '_ {
         async {
-            #[cfg(any(
-                feature = "http",
-                feature = "grpc",
-                feature = "postgres",
-                feature = "sqlite",
-                feature = "nats",
-                feature = "rabbitmq",
-                feature = "kafka",
-            ))]
-            {
-                tokio::time::sleep(std::time::Duration::from_millis(25)).await;
-            }
-            #[cfg(not(any(
-                feature = "http",
-                feature = "grpc",
-                feature = "postgres",
-                feature = "sqlite",
-                feature = "nats",
-                feature = "rabbitmq",
-                feature = "kafka",
-            )))]
-            {
-                // No timer in the default crate. Yield once so Wait does not
-                // busy-spin a tight poll loop.
-                let mut yielded = false;
-                std::future::poll_fn(|cx| {
-                    if yielded {
-                        std::task::Poll::Ready(())
-                    } else {
-                        yielded = true;
-                        cx.waker().wake_by_ref();
-                        std::task::Poll::Pending
-                    }
-                })
-                .await;
-            }
-            Ok(())
+            Err(TransportError::permanent(
+                "message source does not support idle waiting",
+            ))
         }
     }
 }

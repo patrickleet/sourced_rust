@@ -108,8 +108,9 @@ impl BusInvoker {
             Some(rx)
         };
         let payload = serde_json::to_vec(&body).map_err(|e| e.to_string())?;
-        let message = Message::new(command, MessageKind::Command, payload).with_id(id);
+        let message = Message::new(command, MessageKind::Command, payload).with_id(id.clone());
         if let Err(e) = self.live.send(message).await {
+            self.pending.lock().expect("completion map").remove(&id);
             return Err(e.to_string());
         }
         self.notify.notify_waiters();
@@ -119,8 +120,14 @@ impl BusInvoker {
         let rx = rx.expect("applied mode registers a completion channel");
         match tokio::time::timeout(Duration::from_secs(15), rx).await {
             Ok(Ok(result)) => result,
-            Ok(Err(_)) => Err("bus completion dropped".into()),
-            Err(_) => Err("bus completion timed out".into()),
+            Ok(Err(_)) => {
+                self.pending.lock().expect("completion map").remove(&id);
+                Err("bus completion dropped".into())
+            }
+            Err(_) => {
+                self.pending.lock().expect("completion map").remove(&id);
+                Err("bus completion timed out".into())
+            }
         }
     }
 }

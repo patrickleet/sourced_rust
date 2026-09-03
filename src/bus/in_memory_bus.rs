@@ -172,6 +172,16 @@ struct QueueSource {
     wake: Arc<Notify>,
 }
 
+impl QueueSource {
+    fn has_available(&self) -> Result<bool, TransportError> {
+        let queues = self.queues.lock().map_err(|_| lock_poisoned("queue"))?;
+        Ok(self
+            .names
+            .iter()
+            .any(|name| queues.get(name).is_some_and(|queue| !queue.is_empty())))
+    }
+}
+
 impl MessageSource for QueueSource {
     type Received = InMemoryReceived;
 
@@ -194,7 +204,11 @@ impl MessageSource for QueueSource {
     }
 
     async fn wait(&mut self) -> Result<(), TransportError> {
-        self.wake.notified().await;
+        let notified = self.wake.notified();
+        if self.has_available()? {
+            return Ok(());
+        }
+        notified.await;
         Ok(())
     }
 }
@@ -207,6 +221,21 @@ struct TopicSource {
     cursors: TopicCursors,
     source_epoch: ProjectionEpoch,
     wake: Arc<Notify>,
+}
+
+impl TopicSource {
+    fn has_available(&self) -> Result<bool, TransportError> {
+        let topics = self.topics.lock().map_err(|_| lock_poisoned("topic"))?;
+        let cursors = self
+            .cursors
+            .lock()
+            .map_err(|_| lock_poisoned("topic cursor"))?;
+        Ok(self.names.iter().any(|name| {
+            topics
+                .get(name)
+                .is_some_and(|log| cursors.get(name).copied().unwrap_or_default() < log.len())
+        }))
+    }
 }
 
 impl MessageSource for TopicSource {
@@ -254,7 +283,11 @@ impl MessageSource for TopicSource {
     }
 
     async fn wait(&mut self) -> Result<(), TransportError> {
-        self.wake.notified().await;
+        let notified = self.wake.notified();
+        if self.has_available()? {
+            return Ok(());
+        }
+        notified.await;
         Ok(())
     }
 }
@@ -320,6 +353,7 @@ mod tests {
     use crate::bus::{Handlers, MessageKind};
     use crate::trace_context::{CAUSATION_ID, TRACEPARENT};
     use std::future::Future;
+    use std::time::Duration;
 
     fn block_on<F: Future>(future: F) -> F::Output {
         use std::ptr;
@@ -442,6 +476,54 @@ mod tests {
         b_ids.sort();
         assert_eq!(a_ids, vec!["e0", "e1", "e2"]);
         assert_eq!(b_ids, vec!["e0", "e1", "e2"]);
+    }
+
+    #[tokio::test]
+    async fn one_publish_wakes_every_waiting_topic_subscriber() {
+        let bus = InMemoryBus::new();
+        let first = recorder();
+        let second = recorder();
+        let first_task = {
+            let bus = bus.clone();
+            let service = event_service(first.clone());
+            tokio::spawn(async move {
+                bus.subscribe(service, RunOptions::idempotent().wait_when_idle())
+                    .await
+            })
+        };
+        let second_task = {
+            let bus = bus.clone();
+            let service = event_service(second.clone());
+            tokio::spawn(async move {
+                bus.subscribe(service, RunOptions::idempotent().wait_when_idle())
+                    .await
+            })
+        };
+        tokio::time::timeout(Duration::from_secs(1), async {
+            while bus.wake.waiter_count() < 2 {
+                tokio::task::yield_now().await;
+            }
+        })
+        .await
+        .expect("both subscribers registered their idle waiters");
+
+        bus.publish_message(
+            Message::new("evt", MessageKind::Event, b"{}".to_vec()).with_id("broadcast"),
+        )
+        .await
+        .unwrap();
+        tokio::time::timeout(Duration::from_secs(1), async {
+            while first.lock().unwrap().is_empty() || second.lock().unwrap().is_empty() {
+                tokio::task::yield_now().await;
+            }
+        })
+        .await
+        .expect("both waiting subscribers handled the publish");
+
+        assert_eq!(first.lock().unwrap().as_slice(), ["broadcast"]);
+        assert_eq!(second.lock().unwrap().as_slice(), ["broadcast"]);
+        first_task.abort();
+        second_task.abort();
     }
 
     #[test]

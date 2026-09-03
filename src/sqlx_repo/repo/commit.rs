@@ -214,27 +214,13 @@ where
         mut batch: CommitBatch<'a>,
     ) -> impl Future<Output = Result<(), RepositoryError>> + Send + 'a {
         async move {
-            let mut delay = std::time::Duration::from_millis(5);
-            for attempt in 0..8 {
-                match commit_sqlx_batch(self, &mut batch, None, None).await {
-                    Ok(()) => return Ok(()),
-                    Err(CommandLedgerError::Storage(error))
-                        if error.is_retryable() && attempt + 1 < 8 =>
-                    {
-                        tokio::time::sleep(delay).await;
-                        delay = (delay * 2).min(std::time::Duration::from_millis(80));
-                    }
-                    Err(CommandLedgerError::Storage(error)) => return Err(error),
-                    Err(error) => {
-                        return Err(RepositoryError::Model(format!(
-                            "unexpected command ledger error in ordinary commit: {error}"
-                        )));
-                    }
-                }
+            match commit_sqlx_batch(self, &mut batch, None, None).await {
+                Ok(()) => Ok(()),
+                Err(CommandLedgerError::Storage(error)) => Err(error),
+                Err(error) => Err(RepositoryError::Model(format!(
+                    "unexpected command ledger error in ordinary commit: {error}"
+                ))),
             }
-            Err(RepositoryError::Model(
-                "exhausted retryable storage retries in ordinary commit".into(),
-            ))
         }
     }
 }

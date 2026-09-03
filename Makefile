@@ -72,7 +72,8 @@ LOAD_SNAPSHOTS ?=
 load-host:
 	$(CARGO) run --manifest-path $(LOAD_MANIFEST) --release --bin load-host -- \
 		--repo $(LOAD_REPO) --bind $(LOAD_BIND) \
-		--database-url $(LOAD_DATABASE_URL) --sqlite-path $(LOAD_SQLITE_PATH) \
+		$(if $(LOAD_DATABASE_URL),--database-url $(LOAD_DATABASE_URL),) \
+		--sqlite-path $(LOAD_SQLITE_PATH) \
 		$(if $(LOAD_SNAPSHOTS),--snapshots $(LOAD_SNAPSHOTS),)
 
 load-client:

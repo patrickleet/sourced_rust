@@ -269,7 +269,7 @@ fn skip_reason(cell: &Cell, config: &SuiteConfig) -> Option<String> {
         if !config.include_external {
             return Some("external buses disabled (--no-external)".into());
         }
-        if std::env::var("NATS_URL").is_err() {
+        if !environment_has_value("NATS_URL") {
             return Some("NATS_URL is unset".into());
         }
     }
@@ -280,7 +280,7 @@ fn skip_reason(cell: &Cell, config: &SuiteConfig) -> Option<String> {
         if !config.include_external {
             return Some("external buses disabled (--no-external)".into());
         }
-        if std::env::var("KAFKA_BROKERS").is_err() {
+        if !environment_has_value("KAFKA_BROKERS") {
             return Some("KAFKA_BROKERS is unset".into());
         }
     }
@@ -291,11 +291,15 @@ fn skip_reason(cell: &Cell, config: &SuiteConfig) -> Option<String> {
         if !config.include_external {
             return Some("external buses disabled (--no-external)".into());
         }
-        if std::env::var("AMQP_URL").is_err() {
+        if !environment_has_value("AMQP_URL") {
             return Some("AMQP_URL is unset".into());
         }
     }
     None
+}
+
+fn environment_has_value(name: &str) -> bool {
+    std::env::var(name).is_ok_and(|value| !value.trim().is_empty())
 }
 
 async fn run_cell(config: &SuiteConfig, cell: &Cell) -> Result<crate::stats::RunReport, String> {
