@@ -204,7 +204,8 @@ async function transition(page, path, source, expectedReplicaRestore, assertGate
 				return state.__distributedReloadEvents?.at(-1);
 			}).catch(() => undefined);
 		},
-		'controlled browser reload restoration'
+		'controlled browser reload restoration',
+		lifecycleBuildTimeoutMs
 	);
 	assert.equal(restored.replicaCaptured, true, 'authenticated replica must participate');
 	assert.equal(restored.replicaRestored, expectedReplicaRestore);

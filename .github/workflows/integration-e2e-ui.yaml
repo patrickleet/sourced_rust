@@ -373,7 +373,10 @@ jobs:
           set -euo pipefail
           k() { kubectl --context "$HOPS_KUBE_CONTEXT" "$@"; }
           bootstrap_ready=0
-          for attempt in $(seq 1 180); do
+          # A fresh cluster compiles both the lifecycle CLI and the typed
+          # application inside the pod. Keep this bounded, but allow the
+          # uncached release runner enough time to finish both builds.
+          for attempt in $(seq 1 450); do
             pat="$(k -n auth get secret iam-admin-pat -o jsonpath='{.data.pat}' 2>/dev/null || true)"
             setup_complete="$(k -n auth get job zitadel-zitadel-setup \
               -o jsonpath='{.status.conditions[?(@.type=="Complete")].status}' \
@@ -551,7 +554,7 @@ jobs:
               break
             fi
             if [ $((attempt % 15)) -eq 0 ]; then
-              echo "Waiting for e2e-ui API listener (attempt $attempt/180)"
+              echo "Waiting for e2e-ui API listener (attempt $attempt/450)"
             fi
             sleep 2
           done
@@ -562,7 +565,7 @@ jobs:
           fi
 
           lifecycle_ready=0
-          for attempt in $(seq 1 180); do
+          for attempt in $(seq 1 450); do
             app_log="$(k -n local logs deployment/e2e-ui-api --tail=500 2>/dev/null || true)"
             if printf '%s\n' "$app_log" | grep -Fq \
               'lifecycle dev: ready generation=' \

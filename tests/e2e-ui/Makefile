@@ -126,13 +126,20 @@ up-celld-nats:
 	relay_node_pid=$$(lsof -tiTCP:$(CELLD_HTTP_PORT) -sTCP:LISTEN | head -1); \
 	[ -n "$$relay_node_pid" ] || { echo "celld relay listener PID was not found"; kill "$$relay_launcher_pid" 2>/dev/null || true; exit 1; }; \
 	kill "$$relay_launcher_pid" 2>/dev/null || true; \
+	kill "$$relay_node_pid" 2>/dev/null || true; \
 	for i in $$(seq 1 80); do \
 		lsof -tiTCP:$(CELLD_HTTP_PORT) -sTCP:LISTEN >/dev/null 2>&1 || break; \
 		sleep 0.25; \
 	done; \
-	if kill -0 "$$relay_node_pid" 2>/dev/null; then kill "$$relay_node_pid"; fi; \
 	if lsof -tiTCP:$(CELLD_HTTP_PORT) -sTCP:LISTEN >/dev/null 2>&1; then \
-		echo "celld relay listener remained after registration"; exit 1; \
+		kill -KILL "$$relay_node_pid" 2>/dev/null || true; \
+		for i in $$(seq 1 20); do \
+			lsof -tiTCP:$(CELLD_HTTP_PORT) -sTCP:LISTEN >/dev/null 2>&1 || break; \
+			sleep 0.1; \
+		done; \
+	fi; \
+	if lsof -tiTCP:$(CELLD_HTTP_PORT) -sTCP:LISTEN >/dev/null 2>&1; then \
+		echo "celld relay listener remained after TERM and KILL"; exit 1; \
 	fi; \
 	echo "starting aggregate Worker from the same celld dev store…"; \
 	celld dev $(CELLD_PROJECT) --host 127.0.0.1 --port $(CELLD_HTTP_PORT) --logs > $(CELLD_LOG) 2>&1 & \
