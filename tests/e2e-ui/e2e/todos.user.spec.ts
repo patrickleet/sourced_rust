@@ -203,8 +203,13 @@ test.describe('todos (alice)', () => {
 		// Establish one row that must remain visible while later commands update.
 		const baseline = `continuity baseline ${Date.now()}`;
 		await page.locator('#todo-title').fill(baseline);
+		const baselineCreateResponse = waitForTodoCommand(page, 'todos_create');
 		await page.getByRole('button', { name: /^add$/i }).click();
 		await expect(page.locator('.item', { hasText: baseline })).toBeVisible();
+		await expectTodoCommandSuccess(
+			await baselineCreateResponse,
+			'baseline todos_create'
+		);
 
 		const navigations: string[] = [];
 		page.on('framenavigated', (frame) => {
@@ -228,12 +233,18 @@ test.describe('todos (alice)', () => {
 
 		const changed = `continuity changed ${Date.now()}`;
 		await page.locator('#todo-title').fill(changed);
+		const changedCreateResponse = waitForTodoCommand(page, 'todos_create');
 		await page.getByRole('button', { name: /^add$/i }).click();
 		const openItem = page
 			.locator('.panel')
 			.filter({ has: page.getByRole('heading', { name: /^open$/i }) })
 			.locator('.item', { hasText: changed });
 		await expect(openItem).toBeVisible();
+		await expectTodoCommandSuccess(
+			await changedCreateResponse,
+			'changed todos_create'
+		);
+		const completeResponse = waitForTodoCommand(page, 'todos_complete');
 		await openItem.getByRole('button', { name: /^done$/i }).click();
 		await expect(
 			page
@@ -241,6 +252,10 @@ test.describe('todos (alice)', () => {
 				.filter({ has: page.getByRole('heading', { name: /^done$/i }) })
 				.locator('.item', { hasText: changed })
 		).toBeVisible();
+		await expectTodoCommandSuccess(
+			await completeResponse,
+			'continuity todos_complete'
+		);
 
 		const samples = await page.evaluate(() => {
 			const state = globalThis as typeof globalThis & {
@@ -307,7 +322,7 @@ test.describe('todos (alice)', () => {
 			await openItem.locator('button:disabled').count(),
 			'a newly created optimistic Todo must not expose actions before its receipt'
 		).toBe(3);
-		await createResponse;
+		await expectTodoCommandSuccess(await createResponse, 'ordered todos_create');
 		await expect(openItem).toBeVisible();
 		await expect(openItem).toHaveAttribute('aria-busy', 'false');
 		await expect(openItem.locator('.pending-state')).toHaveCount(0);
@@ -335,7 +350,10 @@ test.describe('todos (alice)', () => {
 			await page.locator('.board button:disabled').count(),
 			'routine command concurrency guards must not flash Todo row controls disabled'
 		).toBe(0);
-		await completeResponse;
+		await expectTodoCommandSuccess(
+			await completeResponse,
+			'ordered todos_complete'
+		);
 		await expect(doneItem).toBeVisible();
 		expectBinarySorted(await visibleTodoOrders(page));
 		expect(completeRequests, 'complete must reach the server once').toBe(1);
@@ -366,7 +384,7 @@ test.describe('todos (alice)', () => {
 			await page.locator('.board button:disabled').count(),
 			'routine command concurrency guards must not flash Todo row controls disabled'
 		).toBe(0);
-		await reopenResponse;
+		await expectTodoCommandSuccess(await reopenResponse, 'ordered todos_reopen');
 		await expect(reopenedItem).toBeVisible();
 		await page.waitForTimeout(750);
 		const reopenOrderFrames = await stopTodoOrderTrace(page);
@@ -389,7 +407,10 @@ test.describe('todos (alice)', () => {
 		);
 		await reopenedItem.getByRole('button', { name: /^done$/i }).click();
 		await expect(doneItem).toBeVisible({ timeout: 1_000 });
-		await authoritativeCompleteResponse;
+		await expectTodoCommandSuccess(
+			await authoritativeCompleteResponse,
+			'authoritative todos_complete'
+		);
 		await page.waitForTimeout(750);
 		const authoritativeCompleteFrames = await stopTodoOrderTrace(page);
 		expect(

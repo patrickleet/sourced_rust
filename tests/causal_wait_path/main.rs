@@ -4,6 +4,7 @@
 use std::sync::Arc;
 
 use distributed::bus::{Bus, BusConsumer, InMemoryBus, TransportError};
+use distributed::cell_host::InternalHttpSecret;
 use distributed::command_dispatch::{CommandHost, HttpCommandHost, SharedCommandHost};
 use distributed::graphql::VerifiedPrincipal;
 use distributed::graphql::{
@@ -135,6 +136,71 @@ async fn start_http(service: Arc<Service>) -> String {
         axum::serve(listener, app).await.unwrap();
     });
     format!("http://{addr}")
+}
+
+#[tokio::test]
+async fn cell_wait_path_replays_once_after_internal_failure() {
+    use std::sync::atomic::{AtomicUsize, Ordering};
+
+    use axum::{extract::State, http::StatusCode, routing::post, Json, Router};
+
+    async fn command(
+        State(attempts): State<Arc<AtomicUsize>>,
+        Json(body): Json<serde_json::Value>,
+    ) -> (StatusCode, Json<serde_json::Value>) {
+        if attempts.fetch_add(1, Ordering::SeqCst) == 0 {
+            return (
+                StatusCode::INTERNAL_SERVER_ERROR,
+                Json(json!({ "code": "INTERNAL", "error": "transient" })),
+            );
+        }
+        (
+            StatusCode::CREATED,
+            Json(json!({
+                "payload": { "id": "todo-replayed" },
+                "receipt": {
+                    "commandId": body["commandId"],
+                    "causationId": "cause-replayed",
+                    "state": "succeeded",
+                    "replayed": true
+                },
+                "events": []
+            })),
+        )
+    }
+
+    let attempts = Arc::new(AtomicUsize::new(0));
+    let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let addr = listener.local_addr().unwrap();
+    let app = Router::new()
+        .route("/todo/todo-replayed/todo.create", post(command))
+        .with_state(Arc::clone(&attempts));
+    tokio::spawn(async move {
+        axum::serve(listener, app).await.unwrap();
+    });
+
+    let host = HttpCommandHost::new_internal(
+        format!("http://{addr}/todo/todo-replayed"),
+        InternalHttpSecret::new("test-only-internal-secret-32-bytes").unwrap(),
+    )
+    .unwrap();
+    let command_id = "0190a000-0000-7000-8000-000000000106";
+    let (status, body) = host
+        .post_cell_wait_path(
+            "todo.create",
+            command_id,
+            json!({ "id": "todo-replayed" }),
+            &distributed::microsvc::Session::new(),
+            "causal-wait-path",
+            "partition-1",
+        )
+        .await
+        .unwrap();
+
+    assert_eq!(status, 201);
+    assert_eq!(body["receipt"]["commandId"], command_id);
+    assert_eq!(body["receipt"]["replayed"], true);
+    assert_eq!(attempts.load(Ordering::SeqCst), 2);
 }
 
 #[tokio::test]

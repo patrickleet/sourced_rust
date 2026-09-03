@@ -356,6 +356,24 @@ impl HttpCommandHost {
         service_id: &str,
         principal_partition: &str,
     ) -> Result<(u16, Value), CausalDispatchError> {
+        let first = self
+            .post_wait_path_inner(
+                command,
+                command_id,
+                input.clone(),
+                session,
+                Some((service_id, principal_partition)),
+            )
+            .await;
+        if !matches!(&first, Ok((status, _)) if *status >= 500) {
+            return first;
+        }
+
+        // Cell commands are fenced by commandId. A Worker may durably commit
+        // the command and still fail while arming its outbox watchdog or
+        // producing the response. One replay closes that ambiguous response
+        // window without reapplying the aggregate mutation; persistent
+        // failures still surface unchanged.
         self.post_wait_path_inner(
             command,
             command_id,
