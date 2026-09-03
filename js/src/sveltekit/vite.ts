@@ -460,9 +460,17 @@ export function distributedSvelteKit(
 				importer !== undefined &&
 				(source.startsWith('./') || source.startsWith('../'))
 			) {
-				const generationRoot = activeLifecycleGenerationRoot();
-				const candidate = resolve(dirname(importer), source);
-				if (isWithin(generationRoot, importer) && !existsSync(candidate)) {
+				const lifecycleRoot = process.env.DISTRIBUTED_LIFECYCLE_DIR;
+				if (
+					lifecycleRoot !== undefined &&
+					isAbsolute(lifecycleRoot) &&
+					isWithin(join(resolve(lifecycleRoot), 'generations'), importer)
+				) {
+					const generationRoot = activeLifecycleGenerationRoot();
+					const candidate = resolve(dirname(importer), source);
+					if (!isWithin(generationRoot, importer) || existsSync(candidate)) {
+						return undefined;
+					}
 					const projectRoot = process.env.DISTRIBUTED_LIFECYCLE_PROJECT_ROOT;
 					if (projectRoot === undefined || !isAbsolute(projectRoot)) {
 						throw new Error('Distributed lifecycle project root is unavailable');

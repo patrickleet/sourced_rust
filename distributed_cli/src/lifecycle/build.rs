@@ -168,7 +168,7 @@ pub struct LifecycleBuildOptions {
 /// lifecycle files.
 #[derive(Clone, Debug)]
 pub struct LifecycleProjectPlan {
-    /// Canonical Cargo workspace root.
+    /// Canonical lifecycle root shared by every owned application component.
     pub root: PathBuf,
     /// Tool-derived ownership catalog for generated application artifacts.
     pub catalog: ContractCatalog,

@@ -940,7 +940,7 @@ fn build_project_runtime(project: &DiscoveredLifecycleProject) -> Result<(), Box
         project.runtime_binary, project.runtime_package
     );
     run_project_command(
-        &project.plan.root,
+        &project.cargo_root,
         "cargo",
         &[
             OsString::from("build"),
@@ -978,8 +978,8 @@ fn prepare_project_wasm_pures(project: &DiscoveredLifecycleProject) -> Result<()
     }
     let json = run_manifest_harness(
         &HarnessOptions {
-            path: project.plan.root.clone(),
-            manifest_path: Some(project.plan.root.join("Cargo.toml")),
+            path: project.cargo_root.clone(),
+            manifest_path: Some(project.cargo_root.join("Cargo.toml")),
             package: Some(project.application_package.clone()),
             features: Vec::new(),
             no_default_features: false,
@@ -990,7 +990,7 @@ fn prepare_project_wasm_pures(project: &DiscoveredLifecycleProject) -> Result<()
     )?;
     let manifest: serde_json::Value = serde_json::from_str(&json)?;
     validate_manifest_json(&manifest)?;
-    build_declared_wasm_pures(&manifest, &project.plan.root)?;
+    build_declared_wasm_pures(&manifest, &project.cargo_root)?;
     Ok(())
 }
 
@@ -1069,7 +1069,7 @@ fn prepare_project_javascript(
     check: bool,
 ) -> Result<(), Box<dyn Error>> {
     if let Some(javascript) = &project.javascript {
-        javascript.prepare(&project.plan.root, check)?;
+        javascript.prepare(&project.cargo_root, check)?;
         if check {
             let ui = project
                 .ui

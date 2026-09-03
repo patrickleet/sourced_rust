@@ -455,9 +455,11 @@ fn build_wasm_pure(
             .into());
         }
     }
+    let staging_root = ui_root.join(".distributed/wasm-staging");
+    ensure_real_directory_path(ui_root, &staging_root)?;
     let stage = tempfile::Builder::new()
         .prefix(".distributed-wasm-stage-")
-        .tempdir_in(parent)?;
+        .tempdir_in(&staging_root)?;
     eprintln!(
         "distributed: compiling required browser WASM {} from Cargo package {}",
         stamp.import, stamp.rust_package
@@ -501,7 +503,7 @@ fn build_wasm_pure(
     let staged_path = stage.keep();
     let backup = tempfile::Builder::new()
         .prefix(".distributed-wasm-backup-")
-        .tempdir_in(parent)?;
+        .tempdir_in(&staging_root)?;
     let backup_path = backup.path().to_path_buf();
     backup.close()?;
     let had_destination = destination.exists();

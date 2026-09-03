@@ -902,7 +902,10 @@ test('lifecycle generation writes only to the immutable candidate stage', async 
 		await readFile(join(stage, 'src/generated/user/sveltekit.ts'), 'utf8'),
 		/e2e-ui/
 	);
-	await assert.rejects(readFile(join(root, 'src/generated/user/sveltekit.ts')));
+	await assert.rejects(
+		readFile(join(root, 'src/generated/user/sveltekit.ts')),
+		(error) => error?.code === 'ENOENT'
+	);
 	assert.match(
 		await readFile(
 			join(
@@ -1142,6 +1145,16 @@ test('supervised Vite defers generated-client compilation to the lifecycle', asy
 	});
 	const plugin = distributedSvelteKit(pluginOptions(root, script));
 	await plugin.configResolved({ root });
+	await writeFile(activePointer, 'not-json');
+	assert.equal(
+		plugin.resolveId('./ordinary-relative-import.js', join(root, 'src/app.ts')),
+		undefined,
+		'unrelated imports do not read lifecycle generation state'
+	);
+	await writeFile(
+		activePointer,
+		JSON.stringify({ schema_version: 1, generation_id: generation })
+	);
 	const added = [];
 	const invalidated = [];
 	const websocketMessages = [];

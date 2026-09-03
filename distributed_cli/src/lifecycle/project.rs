@@ -44,6 +44,9 @@ pub struct DiscoveredLifecycleProject {
     pub runtime_package: String,
     /// Binary started by `distributed dev` and compiled by `distributed build`.
     pub runtime_binary: String,
+    /// Canonical Cargo workspace root. This can be narrower than the lifecycle
+    /// root when the application owns a repository-local sibling UI.
+    pub(crate) cargo_root: PathBuf,
     /// Canonical SvelteKit root, discovered conventionally or from Cargo
     /// workspace metadata.
     pub ui: Option<PathBuf>,
@@ -175,18 +178,19 @@ pub fn discover_lifecycle_project(
         .unwrap_or(&application.package)
         .to_string();
     let ui = discover_ui(&metadata.metadata, &root)?;
+    let lifecycle_root = lifecycle_root(&root, ui.as_deref())?;
     let javascript = ui
         .as_ref()
         .map(|ui| discover_javascript_framework(ui))
         .transpose()?
         .flatten();
-    let mut sources = workspace_sources(&root, &workspace_packages)?;
-    let mut client_lifecycle = discover_client_lifecycle(&root, ui.as_deref())?;
+    let mut sources = workspace_sources(&lifecycle_root, &root, &workspace_packages)?;
+    let mut client_lifecycle = discover_client_lifecycle(&lifecycle_root, ui.as_deref())?;
     if let Some(receipt) = javascript
         .as_ref()
         .and_then(|package| package.lifecycle_receipt(&root))
     {
-        let receipt = receipt.strip_prefix(&root).map_err(|_| {
+        let receipt = receipt.strip_prefix(&lifecycle_root).map_err(|_| {
             LifecycleError::new("JavaScript lifecycle receipt escapes the project root")
         })?;
         if let Some(client) = &mut client_lifecycle {
@@ -288,6 +292,7 @@ pub fn discover_lifecycle_project(
     };
 
     let dev = lifecycle_dev(
+        &lifecycle_root,
         &root,
         &runtime,
         ui.as_deref(),
@@ -296,13 +301,21 @@ pub fn discover_lifecycle_project(
         &executable,
         command_prefix,
     );
+    let cargo_relative = root.strip_prefix(&lifecycle_root).map_err(|_| {
+        LifecycleError::new("Cargo workspace escapes the application lifecycle root")
+    })?;
+    let cargo_manifest = if cargo_relative.as_os_str().is_empty() {
+        "{root}/Cargo.toml".to_string()
+    } else {
+        format!("{{root}}/{}/Cargo.toml", portable_path(cargo_relative)?)
+    };
     let describe_args = command_prefix
         .iter()
         .map(|arg| (*arg).to_string())
         .chain([
             "describe".to_string(),
             "--manifest-path".to_string(),
-            "{root}/Cargo.toml".to_string(),
+            cargo_manifest,
             "--package".to_string(),
             application.package.clone(),
             "--entrypoint".to_string(),
@@ -378,15 +391,14 @@ pub fn discover_lifecycle_project(
         distributed_root,
         runtime_package: runtime.package,
         runtime_binary: runtime.binary,
+        cargo_root: root.clone(),
         ui,
         javascript,
         plan: LifecycleProjectPlan {
-            root,
+            root: lifecycle_root,
             catalog,
             config,
-            out: out
-                .map(Path::to_path_buf)
-                .unwrap_or_else(|| PathBuf::from(".distributed/lifecycle")),
+            out: root.join(out.unwrap_or_else(|| Path::new(".distributed/lifecycle"))),
         },
     })
 }
@@ -633,20 +645,32 @@ fn runtime_target(
 }
 
 fn workspace_sources(
-    root: &Path,
+    lifecycle_root: &Path,
+    cargo_root: &Path,
     packages: &[&CargoPackage],
 ) -> Result<BTreeSet<String>, LifecycleError> {
-    let mut sources = BTreeSet::from(["Cargo.toml".to_string()]);
-    if root.join("Cargo.lock").is_file() {
-        sources.insert("Cargo.lock".to_string());
+    let cargo_manifest = cargo_root.join("Cargo.toml");
+    let cargo_manifest = cargo_manifest
+        .strip_prefix(lifecycle_root)
+        .map_err(|_| LifecycleError::new("Cargo workspace manifest escapes the lifecycle root"))?;
+    let mut sources = BTreeSet::from([portable_path(cargo_manifest)?]);
+    let cargo_lock = cargo_root.join("Cargo.lock");
+    if cargo_lock.is_file() {
+        let cargo_lock = cargo_lock.strip_prefix(lifecycle_root).map_err(|_| {
+            LifecycleError::new("Cargo workspace lockfile escapes the lifecycle root")
+        })?;
+        sources.insert(portable_path(cargo_lock)?);
     }
     for package in packages {
-        let manifest = package.manifest_path.strip_prefix(root).map_err(|_| {
-            LifecycleError::new(format!(
-                "workspace package `{}` resolves outside the Cargo workspace",
-                package.name
-            ))
-        })?;
+        let manifest = package
+            .manifest_path
+            .strip_prefix(lifecycle_root)
+            .map_err(|_| {
+                LifecycleError::new(format!(
+                    "workspace package `{}` resolves outside the Cargo workspace",
+                    package.name
+                ))
+            })?;
         sources.insert(portable_path(manifest)?);
         let source = package
             .manifest_path
@@ -654,13 +678,31 @@ fn workspace_sources(
             .expect("Cargo manifest has a parent")
             .join("src");
         if source.is_dir() {
-            let source = source.strip_prefix(root).map_err(|_| {
+            let source = source.strip_prefix(lifecycle_root).map_err(|_| {
                 LifecycleError::new("workspace source resolves outside the Cargo workspace")
             })?;
             sources.insert(portable_path(source)?);
         }
     }
     Ok(sources)
+}
+
+fn lifecycle_root(cargo_root: &Path, ui: Option<&Path>) -> Result<PathBuf, LifecycleError> {
+    let Some(ui) = ui else {
+        return Ok(cargo_root.to_path_buf());
+    };
+    if ui.starts_with(cargo_root) {
+        return Ok(cargo_root.to_path_buf());
+    }
+    cargo_root
+        .ancestors()
+        .find(|ancestor| ancestor.join(".git").exists() && ui.starts_with(ancestor))
+        .map(Path::to_path_buf)
+        .ok_or_else(|| {
+            LifecycleError::new(
+                "repository-local UI and Cargo workspace have no shared lifecycle root",
+            )
+        })
 }
 
 fn discover_client_lifecycle(
@@ -674,12 +716,9 @@ fn discover_client_lifecycle(
     if !inventory_path.is_file() {
         return Ok(None);
     }
-    let Ok(ui_relative) = ui.strip_prefix(root) else {
-        // An explicitly selected repository-local sibling UI remains supported,
-        // but its client compiler stays Vite-owned because lifecycle catalog
-        // sources are deliberately confined to the Cargo workspace root.
-        return Ok(None);
-    };
+    let ui_relative = ui.strip_prefix(root).map_err(|_| {
+        LifecycleError::new("Distributed UI escapes the application lifecycle root")
+    })?;
     let config = ui.join(CLIENT_CONFIG);
     if !config.is_file() {
         return Err(LifecycleError::new(format!(
@@ -946,6 +985,7 @@ fn external_component(label: &str, version: &str, source: &str) -> FrameworkComp
 
 fn lifecycle_dev(
     root: &Path,
+    cargo_root: &Path,
     runtime: &RuntimeTarget,
     ui: Option<&Path>,
     javascript: Option<&JavascriptFrameworkPackage>,
@@ -962,6 +1002,11 @@ fn lifecycle_dev(
     let ui_url = std::env::var("UI_URL")
         .or_else(|_| std::env::var("AUTH_URL"))
         .unwrap_or_else(|_| format!("http://{ui_host}:{ui_port}"));
+    let cargo_cwd = cargo_root
+        .strip_prefix(root)
+        .ok()
+        .filter(|relative| !relative.as_os_str().is_empty())
+        .map(|relative| portable_path(relative).expect("validated Cargo workspace path"));
     let mut processes = BTreeMap::from([(
         "api".to_string(),
         LifecycleDevProcess {
@@ -973,7 +1018,7 @@ fn lifecycle_dev(
                 "--bin".to_string(),
                 runtime.binary.clone(),
             ],
-            cwd: None,
+            cwd: cargo_cwd,
             external_cwd: false,
             env: BTreeMap::from([
                 ("BIND".to_string(), bind.clone()),
@@ -1253,30 +1298,41 @@ mod tests {
     }
 
     #[test]
-    fn discovered_external_ui_is_an_explicit_supervisor_process_root() {
-        let application = tempfile::tempdir().unwrap();
-        let ui = tempfile::tempdir().unwrap();
+    fn repository_sibling_ui_shares_one_lifecycle_root() {
+        let repository = tempfile::tempdir().unwrap();
+        let application = repository.path().join("services/application");
+        let ui = repository.path().join("clients/web");
+        fs::create_dir_all(&application).unwrap();
+        fs::create_dir_all(&ui).unwrap();
         let executable = std::env::current_exe().unwrap();
         let config = lifecycle_dev(
-            application.path(),
+            repository.path(),
+            &application,
             &RuntimeTarget {
                 package: "fixture-runner".into(),
                 binary: "fixture".into(),
             },
-            Some(ui.path()),
+            Some(&ui),
             None,
-            false,
+            true,
             &executable,
             &[],
         );
 
         config.validate().unwrap();
+        let api = &config.processes["api"];
+        assert!(!api.external_cwd);
+        assert_eq!(api.cwd.as_deref(), Some("services/application"));
         let process = &config.processes["ui"];
-        assert!(process.external_cwd);
-        assert_eq!(process.cwd.as_deref(), ui.path().to_str());
-        assert!(!process
-            .env
-            .contains_key("DISTRIBUTED_LIFECYCLE_OWNS_CLIENT_COMPILE"));
+        assert!(!process.external_cwd);
+        assert_eq!(process.cwd.as_deref(), Some("clients/web"));
+        assert_eq!(
+            process
+                .env
+                .get("DISTRIBUTED_LIFECYCLE_PROJECT_ROOT")
+                .map(String::as_str),
+            repository.path().to_str()
+        );
         assert!(process.restart_on.is_empty());
     }
 
@@ -1361,6 +1417,7 @@ mod tests {
         fs::create_dir_all(&ui).unwrap();
         let executable = std::env::current_exe().unwrap();
         let config = lifecycle_dev(
+            project.path(),
             project.path(),
             &RuntimeTarget {
                 package: "fixture-runner".into(),

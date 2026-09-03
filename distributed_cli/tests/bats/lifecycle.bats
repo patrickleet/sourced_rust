@@ -117,7 +117,7 @@ SCRIPT
     ZERO_CONFIG_REAL_NPM="$ZERO_CONFIG_REAL_NPM" \
     "$DISTRIBUTED_BIN" build "$PROJECT"
   [ "$status" -ne 0 ]
-  [[ "$output" == *'validating typed application zero-config-app through zero_config_app::application_manifest'* ]]
+  [[ "$output" == *'introspecting typed application zero-config-app'* ]]
   [[ "$output" == *'must publicly export a zero-argument function returning `distributed::ApplicationManifest`'* ]]
   [[ "$output" != *'compiling SvelteKit UI'* ]]
   [ "$(cat "$ROOT/npm.log")" = 'npm-must-not-run' ]
