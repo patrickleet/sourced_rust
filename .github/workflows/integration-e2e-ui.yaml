@@ -590,16 +590,32 @@ jobs:
             '127.0.0.1 e2e-ui-ui.local.svc.cluster.local e2e-ui-api.local.svc.cluster.local zitadel-zitadel.auth.svc.cluster.local # hops e2e-ui local GitOps' \
             | sudo tee -a /etc/hosts >/dev/null
 
-          k -n local port-forward --address 127.0.0.1 svc/e2e-ui-ui 5180:5180 > .ci-ui-port-forward.log 2>&1 &
+          keep_port_forwarding() {
+            local namespace="$1"
+            local target="$2"
+            local mapping="$3"
+            while true; do
+              status=0
+              k -n "$namespace" port-forward --address 127.0.0.1 "$target" "$mapping" || status=$?
+              echo "port-forward $namespace/$target $mapping exited with status $status; restarting" >&2
+              sleep 0.2
+            done
+          }
+
+          # A browser closing Vite's HMR socket can reset the stream used by
+          # kubectl port-forward. Some kubectl releases terminate the entire
+          # forwarding process for that single reset, so keep the disposable
+          # CI tunnels alive for the duration of the browser suite.
+          keep_port_forwarding local svc/e2e-ui-ui 5180:5180 > .ci-ui-port-forward.log 2>&1 &
           echo $! > .ci-ui-port-forward.pid
-          k -n local port-forward --address 127.0.0.1 svc/e2e-ui-api 8791:8791 > .ci-api-port-forward.log 2>&1 &
+          keep_port_forwarding local svc/e2e-ui-api 8791:8791 > .ci-api-port-forward.log 2>&1 &
           echo $! > .ci-api-port-forward.pid
           # The Zitadel API and Login V2 UI are distinct Services. Keep the
           # API on 18080 and expose one host:port to the browser through the
           # same path split an ingress/Gateway would provide in a cluster.
-          k -n auth port-forward --address 127.0.0.1 svc/zitadel-zitadel 18080:8080 > .ci-zitadel-port-forward.log 2>&1 &
+          keep_port_forwarding auth svc/zitadel-zitadel 18080:8080 > .ci-zitadel-port-forward.log 2>&1 &
           echo $! > .ci-zitadel-port-forward.pid
-          k -n auth port-forward --address 127.0.0.1 svc/zitadel-zitadel-login 13000:3000 > .ci-zitadel-login-port-forward.log 2>&1 &
+          keep_port_forwarding auth svc/zitadel-zitadel-login 13000:3000 > .ci-zitadel-login-port-forward.log 2>&1 &
           echo $! > .ci-zitadel-login-port-forward.pid
 
           nginx_prefix="$RUNNER_TEMP/zitadel-proxy-prefix"
