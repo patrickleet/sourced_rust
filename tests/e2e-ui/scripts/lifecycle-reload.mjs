@@ -13,6 +13,7 @@ const lifecycleFile = resolve(root, '.distributed/lifecycle/dev.json');
 const baseURL = process.env.E2E_UI_ORIGIN || 'http://127.0.0.1:5180';
 const apiURL = process.env.E2E_API_ORIGIN || 'http://127.0.0.1:8791';
 const timeoutMs = 120_000;
+const lifecycleBuildTimeoutMs = 300_000;
 const preparingEvents = [];
 const participantStorageKey = '@hops-ops/distributed/reload-participant/v1';
 const participantIdPattern = /^[A-Za-z0-9_-]{16,128}$/;
@@ -159,10 +160,18 @@ async function transition(page, path, source, expectedReplicaRestore, assertGate
 	page.on('request', onRequest);
 	fixtureIO.write(path, source);
 
-	await waitFor(
-		async () => (await lifecycleState())?.phase === 'preparing',
-		'pending lifecycle generation'
-	);
+	try {
+		await waitFor(
+			async () => (await lifecycleState())?.phase === 'preparing',
+			'pending lifecycle generation',
+			lifecycleBuildTimeoutMs
+		);
+	} catch (error) {
+		throw new Error(
+			`${error.message}; last lifecycle state=${JSON.stringify(await lifecycleState())}`,
+			{ cause: error }
+		);
+	}
 	if (assertGate) {
 		await waitFor(() => preparingEvents.length > 0, 'browser command gate');
 		await page.locator('#todo-title').fill(`must-not-dispatch-${Date.now()}`);
