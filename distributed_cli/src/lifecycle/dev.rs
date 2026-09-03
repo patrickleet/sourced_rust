@@ -934,9 +934,13 @@ impl ChildSet {
             if process.restart_on.is_disjoint(invalidated) {
                 continue;
             }
+            let mut previous_child = self
+                .children
+                .remove(name)
+                .expect("configured lifecycle process must be running");
             if let Err(error) = stop_child(
                 name,
-                self.children.get_mut(name).unwrap(),
+                &mut previous_child,
                 Duration::from_millis(config.shutdown_ms),
             ) {
                 return Err(error);
@@ -1002,8 +1006,12 @@ impl ChildSet {
     ) -> Result<(), LifecycleError> {
         for name in names {
             let process = &config.processes[name];
-            if let Some(child) = self.children.get_mut(name) {
-                stop_child(name, child, Duration::from_millis(config.shutdown_ms))?;
+            if let Some(mut child) = self.children.remove(name) {
+                stop_child(
+                    name,
+                    &mut child,
+                    Duration::from_millis(config.shutdown_ms),
+                )?;
             }
             let mut child = spawn_process(root, name, process, replacement)?;
             if let Err(error) = wait_ready(root, name, process, replacement, &mut child, stop) {

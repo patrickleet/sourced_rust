@@ -265,18 +265,22 @@ baseline="$root/accepted-generation.txt"
 if test ! -f "$baseline"; then
   printf '%s\n' "$DISTRIBUTED_GENERATION_ID" > "$baseline"
 fi
-test "$(cat "$baseline")" = "$DISTRIBUTED_GENERATION_ID"
+if test "$(cat "$baseline")" = "$DISTRIBUTED_GENERATION_ID"; then
+  printf '%s\n' "$DISTRIBUTED_GENERATION_ID" >> "$root/accepted-readiness.log"
+  exit 0
+fi
+exit 1
 "#,
     )
     .expect("write generation readiness probe");
     let path = root.join("distributed.lifecycle.json");
     let mut config: Value = serde_json::from_slice(&fs::read(&path).unwrap()).unwrap();
-    config["dev"]["prepare_ms"] = serde_json::json!(500);
+    config["dev"]["prepare_ms"] = serde_json::json!(100);
     config["dev"]["processes"]["api"]["ready"] = serde_json::json!({
         "program": "/bin/sh",
         "args": ["{root}/generation-probe.sh", "{root}"],
         "interval_ms": 10,
-        "timeout_ms": 1_000
+        "timeout_ms": 100
     });
     fs::write(path, serde_json::to_vec_pretty(&config).unwrap()).unwrap();
 }
@@ -633,6 +637,10 @@ fn dev_readiness_failure_restores_processes_and_preserves_active_pointer() {
     wait_until(Duration::from_secs(5), || {
         fs::read_to_string(root.join("dev-process.log"))
             .is_ok_and(|log| log.lines().filter(|line| line.starts_with("api:")).count() == 3)
+    });
+    wait_until(Duration::from_secs(5), || {
+        fs::read_to_string(root.join("accepted-readiness.log"))
+            .is_ok_and(|log| log.lines().count() == 2)
     });
     let report = supervisor.stop_and_join();
     assert_eq!(report.initial_generation, report.final_generation);
