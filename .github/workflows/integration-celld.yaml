@@ -107,6 +107,13 @@ jobs:
             --features graphql,http,sqlite --no-run
           npm install --prefix tests/e2e-ui
 
+      # celld dev watches its project for rebuilds. Complete browser/toolchain
+      # installation before opening the live serving window so host package
+      # installation cannot overlap a cell request with a fenced reload.
+      - name: Install Playwright + Chromium
+        working-directory: tests/e2e-ui
+        run: npx playwright install chromium --with-deps
+
       - name: Bring up celld 0.4 + Queue relay + NATS
         run: |
           command -v celld
@@ -176,10 +183,6 @@ jobs:
             tail -200 tests/e2e-celld/.ci-distributed-dev.log
             exit 1
           fi
-
-      - name: Install Playwright + Chromium
-        working-directory: tests/e2e-ui
-        run: npx playwright install chromium --with-deps
 
       - name: Red-team private HTTP boundaries
         run: |
