@@ -123,7 +123,12 @@ up-celld-nats:
 		echo "celld relay registration failed:"; tail -80 $(CELLD_RELAY_LOG); \
 		kill "$$relay_launcher_pid" 2>/dev/null || true; exit 1; \
 	fi; \
-	relay_node_pid=$$(lsof -tiTCP:$(CELLD_HTTP_PORT) -sTCP:LISTEN | head -1); \
+	relay_node_pid=""; \
+	for i in $$(seq 1 80); do \
+		relay_node_pid=$$(lsof -tiTCP:$(CELLD_HTTP_PORT) -sTCP:LISTEN 2>/dev/null | head -1); \
+		[ -n "$$relay_node_pid" ] && break; \
+		sleep 0.25; \
+	done; \
 	[ -n "$$relay_node_pid" ] || { echo "celld relay listener PID was not found"; kill "$$relay_launcher_pid" 2>/dev/null || true; exit 1; }; \
 	kill "$$relay_launcher_pid" 2>/dev/null || true; \
 	kill "$$relay_node_pid" 2>/dev/null || true; \

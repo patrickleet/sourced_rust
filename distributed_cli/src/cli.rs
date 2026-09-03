@@ -843,7 +843,8 @@ fn run_build(args: &BuildArgs, command_prefix: &[&str]) -> Result<(), Box<dyn Er
                 if let Some(ui) = &project.ui {
                     prepare_ui_dependencies(project, ui)?;
                 }
-                prepare_project_wasm_pures(project)?;
+                prepare_project_wasm_pures(project)
+                    .map_err(|error| contextualize_project_generation_error(project, error))?;
             }
             eprintln!(
                 "distributed build: introspecting typed application {} (the first run may compile its harness)",
@@ -958,7 +959,9 @@ fn contextualize_project_generation_error(
     error: impl std::fmt::Display,
 ) -> Box<dyn Error> {
     let error = error.to_string();
-    if error.contains("lifecycle node `application`") {
+    if error.contains("lifecycle node `application`")
+        || error.contains("manifest harness failed for package")
+    {
         return format!(
             "typed application `{}` could not be introspected through `{}`; the selected application crate must publicly export a zero-argument function returning `distributed::ApplicationManifest` (or select another export with `[package.metadata.distributed.application] entrypoint = \"...\"`):\n{error}",
             project.application_package, project.application_entrypoint
