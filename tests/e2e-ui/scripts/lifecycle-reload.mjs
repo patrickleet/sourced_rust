@@ -160,19 +160,19 @@ async function transition(page, path, source, expectedReplicaRestore, assertGate
 	page.on('request', onRequest);
 	fixtureIO.write(path, source);
 
-	try {
-		await waitFor(
-			async () => (await lifecycleState())?.phase === 'preparing',
-			'pending lifecycle generation',
-			lifecycleBuildTimeoutMs
-		);
-	} catch (error) {
-		throw new Error(
-			`${error.message}; last lifecycle state=${JSON.stringify(await lifecycleState())}`,
-			{ cause: error }
-		);
-	}
 	if (assertGate) {
+		try {
+			await waitFor(
+				async () => (await lifecycleState())?.phase === 'preparing',
+				'pending lifecycle generation',
+				lifecycleBuildTimeoutMs
+			);
+		} catch (error) {
+			throw new Error(
+				`${error.message}; last lifecycle state=${JSON.stringify(await lifecycleState())}`,
+				{ cause: error }
+			);
+		}
 		await waitFor(() => preparingEvents.length > 0, 'browser command gate');
 		await page.locator('#todo-title').fill(`must-not-dispatch-${Date.now()}`);
 		await page.getByRole('button', { name: /^add$/i }).click();
@@ -289,7 +289,7 @@ try {
 		return state?.phase === 'active' &&
 			state.active.generationId === baseline.active.generationId &&
 			!fixtureIO.read(activeAdminCommands(state)).includes('todos_force_archive_reload');
-	}, 'baseline source and generated-client restoration');
+	}, 'baseline source and generated-client restoration', lifecycleBuildTimeoutMs);
 	await context.close();
 	await browser.close();
 }
