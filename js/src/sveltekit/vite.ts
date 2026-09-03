@@ -512,7 +512,9 @@ export function distributedSvelteKit(
 					);
 					if (module !== undefined) context.server.moduleGraph.invalidateModule(module);
 				}
-				context.server.ws.send({ type: 'full-reload', path: '*' });
+				// The browser lifecycle owns the one coordinated document reload after
+				// every participant has persisted its capsule. Vite only needs to drop
+				// the old virtual modules so that reload resolves the active generation.
 				return [];
 			}
 			if (!isCompilerInput(context.file, integration)) return undefined;

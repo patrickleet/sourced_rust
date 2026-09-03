@@ -1195,7 +1195,11 @@ test('supervised Vite defers generated-client compilation to the lifecycle', asy
 		[]
 	);
 	assert.deepEqual(invalidated, [userId, adminId]);
-	assert.deepEqual(websocketMessages, [{ type: 'full-reload', path: '*' }]);
+	assert.deepEqual(
+		websocketMessages,
+		[],
+		'the browser lifecycle remains the sole coordinated reload authority'
+	);
 	assert.deepEqual(
 		await plugin.handleHotUpdate({
 			file: join(root, 'src/routes/todos/+page.graphql'),
