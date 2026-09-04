@@ -184,10 +184,12 @@ pub fn read_model_catalog() -> ReadModelCatalog {
 }
 ```
 
-Point at a different function with `--entrypoint <path>`. Because these commands
-compile the target crate, they need the local `distributed` crate to be
-resolvable — found automatically from the workspace, or pass `--distributed-path`
-/ set `DISTRIBUTED_PATH`.
+Point at a different function with `--entrypoint <path>`. Application-manifest
+exports compile with the dependencies already resolved by the target crate.
+Schema generation also invokes framework schema helpers directly, so those
+commands need the local `distributed` crate to be resolvable — found
+automatically from the workspace, or pass `--distributed-path` / set
+`DISTRIBUTED_PATH`.
 
 ## `distributed client-manifest` — authorized client surface
 
@@ -199,6 +201,10 @@ Compiles the service's `distributed_client_surface` export into the versioned,
 role/application-selected manifest used by the operation compiler. The export
 already contains one concrete role or named application surface; it is not an
 admin catalog that downstream tools filter themselves.
+
+The client-manifest harness uses the framework type already resolved by the
+target service. A published service therefore does not need a local
+`distributed` checkout or `--distributed-path` for client generation.
 
 ## `distributed client` — typed query, live, and command artifacts
 
