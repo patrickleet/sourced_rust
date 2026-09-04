@@ -200,6 +200,10 @@ role/application-selected manifest used by the operation compiler. The export
 already contains one concrete role or named application surface; it is not an
 admin catalog that downstream tools filter themselves.
 
+The client-manifest harness uses the framework type already resolved by the
+target service. A published service therefore does not need a local
+`distributed` checkout or `--distributed-path` for client generation.
+
 ## `distributed client` — typed query, live, and command artifacts
 
 ```bash

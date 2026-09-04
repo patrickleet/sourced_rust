@@ -52,6 +52,10 @@ impl HarnessMode {
             HarnessMode::SchemaSql(_) | HarnessMode::SchemaGraphql => "read_model_catalog",
         }
     }
+
+    fn requires_distributed_dependency(self) -> bool {
+        matches!(self, Self::SchemaSql(_) | Self::SchemaGraphql)
+    }
 }
 
 pub(crate) fn run_manifest_harness(
@@ -61,8 +65,10 @@ pub(crate) fn run_manifest_harness(
     let manifest_path =
         resolve_target_manifest_path(&options.path, options.manifest_path.as_deref())?;
     let package = cargo_package(&manifest_path, options.package.as_deref())?;
-    let distributed_path =
-        resolve_distributed_path(options.distributed_path.as_deref(), &package.directory)?;
+    let distributed_path = mode
+        .requires_distributed_dependency()
+        .then(|| resolve_distributed_path(options.distributed_path.as_deref(), &package.directory))
+        .transpose()?;
     let crate_ident = package.name.replace('-', "_");
     let entrypoint = options
         .entrypoint
@@ -88,7 +94,7 @@ pub(crate) fn run_manifest_harness(
             &crate_ident,
             &package.name,
             &package.directory,
-            &distributed_path,
+            distributed_path.as_deref(),
             &options.features,
             options.no_default_features,
         ),
@@ -144,7 +150,7 @@ fn harness_cargo_toml(
     crate_ident: &str,
     package_name: &str,
     package_dir: &Path,
-    distributed_path: &Path,
+    distributed_path: Option<&Path>,
     features: &[String],
     no_default_features: bool,
 ) -> String {
@@ -158,6 +164,14 @@ fn harness_cargo_toml(
     } else {
         ""
     };
+    let distributed_dependency = distributed_path
+        .map(|path| {
+            format!(
+                "distributed = {{ path = {} }}\n",
+                toml_string(path_for_toml(path))
+            )
+        })
+        .unwrap_or_default();
 
     format!(
         r#"[package]
@@ -168,12 +182,11 @@ edition = "2021"
 [workspace]
 
 [dependencies]
-distributed = {{ path = {distributed_path} }}
-serde_json = "1"
+{distributed_dependency}serde_json = "1"
 {crate_ident} = {{ package = {package_name}, path = {package_dir}{default_features}, features = [{features}] }}
 "#,
         harness_package_name = toml_string(harness_package_name),
-        distributed_path = toml_string(path_for_toml(distributed_path)),
+        distributed_dependency = distributed_dependency,
         package_name = toml_string(package_name),
         package_dir = toml_string(path_for_toml(package_dir)),
     )
@@ -217,7 +230,7 @@ fn harness_main_rs(entrypoint: &str, mode: HarnessMode) -> String {
         ),
         HarnessMode::ClientManifest => format!(
             r#"fn main() {{
-    let export: distributed::graphql::DistributedClientSurfaceExport = {entrypoint}();
+    let export = {entrypoint}();
     let manifest = export
         .manifest()
         .expect("client Surface should compile into a manifest");
@@ -368,7 +381,7 @@ mod tests {
             "todo_model",
             "todo-model",
             Path::new("/tmp/todo-model"),
-            Path::new("/tmp/distributed"),
+            Some(Path::new("/tmp/distributed")),
             &[],
             false,
         );
@@ -395,7 +408,7 @@ mod tests {
     }
 
     #[test]
-    fn client_harness_uses_the_shared_surface_export_compiler() {
+    fn client_harness_uses_the_target_surface_export_compiler() {
         assert_eq!(
             HarnessMode::ClientManifest.default_entrypoint(),
             "distributed_client_surface"
@@ -404,11 +417,31 @@ mod tests {
             "orders_service::distributed_client_surface",
             HarnessMode::ClientManifest,
         );
-        assert!(main_rs.contains(
-            "let export: distributed::graphql::DistributedClientSurfaceExport = orders_service::distributed_client_surface();"
-        ));
+        assert!(main_rs.contains("let export = orders_service::distributed_client_surface();"));
+        assert!(!main_rs.contains("distributed::graphql::DistributedClientSurfaceExport"));
         assert!(main_rs.contains(".manifest()"));
         assert!(!main_rs.contains("build_surface"));
+    }
+
+    #[test]
+    fn client_harness_does_not_add_a_second_framework_dependency() {
+        assert!(!HarnessMode::ClientManifest.requires_distributed_dependency());
+        assert!(!HarnessMode::DescribeJson.requires_distributed_dependency());
+        assert!(HarnessMode::SchemaSql(SchemaDialect::Postgres).requires_distributed_dependency());
+        assert!(HarnessMode::SchemaGraphql.requires_distributed_dependency());
+
+        let cargo_toml = harness_cargo_toml(
+            "distributed-manifest-harness-client-manifest",
+            "orders_service",
+            "orders-service",
+            Path::new("/tmp/orders-service"),
+            None,
+            &[],
+            false,
+        );
+
+        assert!(!cargo_toml.contains("distributed ="), "{cargo_toml}");
+        assert!(cargo_toml.contains("orders_service ="), "{cargo_toml}");
     }
 
     #[test]
