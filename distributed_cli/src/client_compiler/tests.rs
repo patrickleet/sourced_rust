@@ -4079,3 +4079,29 @@ fn source_paths_fail_closed_before_they_can_inject_generated_typescript() {
     assert_eq!(error.code, "client.documents.invalid_path");
     assert!(!error.message.contains("export const compromised"));
 }
+
+#[test]
+fn generated_lazy_commands_defer_definitions_and_preserve_command_signatures() {
+    let project = compile_client(ClientCompileInput::new(
+        generated_command_types_manifest(),
+        ClientSurfaceSelector::role("user"),
+        vec![ClientDocument::new(
+            "todos.graphql",
+            "query Todos { todos { id } }",
+        )],
+    ))
+    .expect("compile lazy commands");
+    let lazy = file(&project, "lazy-commands.ts");
+    assert!(lazy.contains("import type { COMMANDS, GeneratedCommandRuntimeOptions }"));
+    assert!(lazy.contains("import('./commands.js')"));
+    assert!(lazy.contains("\"hasInput\": false"));
+    assert!(lazy.contains("\"hasInput\": true"));
+    let wrapper = file(&project, "sveltekit.ts");
+    assert!(wrapper.contains("export function provideDistributedLazy("));
+    assert!(wrapper.contains("createCommands: createLazyCommands"));
+    assert!(wrapper.contains("createCommands: createGeneratedCommands"));
+    assert_eq!(
+        lazy.replace("'./commands.js'", "'./generated-commands.js'"),
+        include_str!("../../tests/fixtures/generated-lazy-commands.ts")
+    );
+}
