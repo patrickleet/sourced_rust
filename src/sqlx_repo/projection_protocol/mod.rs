@@ -60,6 +60,8 @@ mod reads;
 mod store_impl;
 mod types;
 mod writes;
+#[cfg(feature = "graphql")]
+mod rebuild;
 
 use helpers::*;
 use identity::*;
