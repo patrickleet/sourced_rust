@@ -54,3 +54,6 @@ pub use provenance::{
 
 #[cfg(test)]
 mod tests;
+
+#[cfg(all(test, feature = "graphql"))]
+mod source_snapshot_tests;

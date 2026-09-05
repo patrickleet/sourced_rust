@@ -267,6 +267,64 @@ mutation SaveTodo {
 }
 ```
 
+#### Full-state projections and out-of-order events
+
+Broker delivery order is not necessarily aggregate commit order. For a read
+model whose rows are complete snapshots owned by one aggregate stream, opt in
+to source-version fencing:
+
+```rust,ignore
+distributed::projection! {
+    pub const TODOS: ProjectionDescriptor<EventualOnly> = {
+        name: "project_todos",
+        version: 2,
+        epoch: "todos-source-snapshots-v1",
+        model: Todos,
+        source: aggregate_snapshot,
+        on {
+            events: [TodoCreatedDomainEvent, TodoCompletedDomainEvent],
+            mutation: SaveTodo,
+            input: { todo: body },
+        },
+        on {
+            events: [TodoPurgedDomainEvent],
+            mutation: DeleteTodo,
+            input: { todo_id: aggregate_id },
+        },
+    };
+}
+```
+
+The framework compares canonical `(aggregate_sequence, publication_ordinal)`
+within the owning `(aggregate_type, aggregate_id)` stream. A late snapshot
+cannot overwrite a newer row or resurrect a deleted one. Even deletion before
+creation leaves a durable tombstone. A newer snapshot can recreate the row.
+Source fences, physical rows, row revisions, broker checkpoints and causal
+observations commit atomically in the memory, SQLite and PostgreSQL adapters.
+A stale input confirms the current row revision without generating a fake row
+update; a concurrent change makes that confirmation retry through the normal
+projection conflict path.
+
+Use this only for complete replacement snapshots with stable row keys. Every
+affected key must be owned by one aggregate stream; joins, counters, partial
+patches and relationship side effects need their own ordering/fold semantics.
+This mode rejects delta operations, expression partitions and direct placement.
+Different aggregate streams cannot take over an existing fenced key. Matching
+source versions with conflicting occurrence content fail closed.
+
+Migration `0005_projection_source_snapshots` persists the fence alongside each
+record, including tombstones; compaction does not remove it. Enabling this on
+an existing unversioned projection requires an explicit read-model rebuild
+from retained canonical events. Merely changing the projection version or epoch
+does not infer a source version for existing rows. The normal ordered-delivery
+contract and transport identity checks still apply; this is not a replacement
+for reliable broker delivery or an incremental-event reorder buffer.
+
+Custom program factories can use `ProjectionProgram::with_source_snapshots()`;
+the policy is part of the canonical program identity. Browser optimism continues
+to use the same mutation program, and authoritative confirmation uses committed
+row revisions rather than comparing browser timestamps.
+
 Handlers stay thin: most Todo commands are `portable_command!` — shard,
 invoke one domain method, commit Eventual. `todo.create` keeps a `handle:`
 escape hatch when the body needs extra checks.
