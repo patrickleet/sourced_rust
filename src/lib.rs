@@ -169,6 +169,7 @@ macro_rules! projection {
             version: $version:expr,
             epoch: $epoch:literal,
             model: $model:ty,
+            $(source: $source:ident,)?
             $(
                 on {
                     events: [ $($event_ty:ty),+ $(,)? ],
@@ -206,12 +207,14 @@ macro_rules! projection {
                         )+
                     }
                 )+
-                $crate::compile_projection(
+                let program = $crate::compile_projection(
                     $name,
                     $version,
                     $crate::ProjectionPartition::Unit,
                     handlers,
-                )
+                )?;
+                $(let program = $crate::__projection_source_policy!(program, $source)?;)?
+                Ok(program)
             }
             fn __resolve(
                 occurrence: &$crate::DomainEventOccurrence,
@@ -297,6 +300,15 @@ macro_rules! projection {
                 __inventory,
             )
         };
+    };
+}
+
+/// Declaration helper for the closed source-ordering policy.
+#[doc(hidden)]
+#[macro_export]
+macro_rules! __projection_source_policy {
+    ($program:expr, aggregate_snapshot) => {
+        $program.with_source_snapshots()
     };
 }
 

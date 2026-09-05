@@ -410,6 +410,11 @@ where
                     &mutation.expectation,
                     mutation.kind,
                     current.as_ref(),
+                    mutation.source_snapshot.is_some(),
+                )?;
+                crate::projection_protocol::validate_snapshot_write(
+                    current.as_ref().map(|record| &record.metadata),
+                    mutation.source_snapshot.as_ref(),
                 )?;
                 let change = allocate_change(
                     &mut state,
@@ -426,6 +431,7 @@ where
                     revision,
                     tombstone,
                     change: change.cursor.clone(),
+                    source_snapshot: mutation.source_snapshot.clone(),
                 };
                 records_by_scope.insert(mutation.scope.clone(), metadata.clone());
                 records.push(metadata);
@@ -469,7 +475,7 @@ where
                                 actual_revision: metadata.revision.revision(),
                             });
                         }
-                        if metadata.tombstone {
+                        if metadata.tombstone && metadata.source_snapshot.is_none() {
                             return Err(ProjectionProtocolError::RecordTombstoned {
                                 model: expected.scope().model().to_string(),
                             });

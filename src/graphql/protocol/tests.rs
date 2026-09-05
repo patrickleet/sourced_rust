@@ -146,6 +146,7 @@ fn direct_projected_receipt() -> CausalCommandReceiptSource {
     receipt.obligations.clear();
     receipt.direct_projection = Some(SameTransactionProjectionEvidence {
         records: vec![ProjectionRecordMetadata {
+            source_snapshot: None,
             revision: revision.clone(),
             tombstone: false,
             change: change.clone(),
