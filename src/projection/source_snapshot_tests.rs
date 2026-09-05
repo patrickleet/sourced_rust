@@ -501,3 +501,210 @@ fn source_snapshots_reject_direct_materialization() {
         Err(ProjectionTopologyError::DirectIneligible { .. })
     ));
 }
+
+fn rebuild_projector() -> crate::graphql::SurfaceProjector {
+    let mounts = crate::LocalProjectionMountsBuilder::new("snapshot-test", "events")
+        .unwrap()
+        .eventual_model::<SnapshotRow, _>("rebuild-test", SNAPSHOTS, "snapshot-v1")
+        .unwrap()
+        .build()
+        .unwrap();
+    mounts.projector("rebuild-test").unwrap()
+}
+
+async fn rebuild_matrix(store: &impl ProjectionProtocolStore) {
+    use crate::projection::rebuild::SnapshotProjectionRebuild;
+    let projector = rebuild_projector();
+    let (_, binding) = projector.modeled[0].raw().unwrap();
+    let physical = binding.physical_topology().unwrap();
+    let compiled = CompiledProjectionTopology::from_modeled_binding(
+        ProjectorTopologyId::new(physical.version(), physical.name(), physical.digest()).unwrap(),
+        binding
+            .outputs()
+            .iter()
+            .map(|o| (o.model(), o.storage(), o.schema())),
+    )
+    .unwrap();
+    store
+        .register_projection_models(compiled.topology(), compiled.ownership())
+        .await
+        .unwrap();
+    let h = Harness {
+        codec: compiled.codec(),
+    };
+    let first = event("a", 1, "old", false);
+    let second = event("a", 2, "new", false);
+    let removed = event("a", 3, "deleted", true);
+    let mut old = h.prepare(store, &first, 1).await.unwrap();
+    old.mutations[0].source_snapshot = None;
+    let applied = store.commit_projection(old).await.unwrap();
+    let checkpoint = applied.checkpoint.unwrap();
+    let original = h.read(store, "a").await;
+
+    // Neither a missing record nor a suffix masquerading as full history passes.
+    for history in [
+        vec![],
+        vec![second.clone()],
+        vec![first.clone(), removed.clone()],
+    ] {
+        assert!(SnapshotProjectionRebuild::begin(store, &projector)
+            .await
+            .unwrap()
+            .from_complete_history(&history)
+            .is_err());
+    }
+    let mut conflicting = second.clone();
+    conflicting.overwrite_causation_id("another-cause");
+    assert!(SnapshotProjectionRebuild::begin(store, &projector)
+        .await
+        .unwrap()
+        .from_complete_history(&[first.clone(), second.clone(), conflicting])
+        .is_err());
+    assert_eq!(h.read(store, "a").await.record, original.record);
+
+    let rebuild = SnapshotProjectionRebuild::begin(store, &projector)
+        .await
+        .unwrap();
+    // Reverse delivery and exact duplicate occurrences are deterministic.
+    let plan = rebuild
+        .from_complete_history(&[second.clone(), first.clone(), second.clone()])
+        .unwrap();
+    assert_eq!(plan.record_count(), 1);
+    assert_eq!(plan.apply(store).await.unwrap(), 1);
+    let row = h.read(store, "a").await;
+    assert_eq!(
+        row.row.unwrap().get("title"),
+        Some(&RowValue::String("new".into()))
+    );
+    assert!(row.record.unwrap().source_snapshot.is_some());
+    assert_eq!(
+        store
+            .projection_checkpoint(checkpoint.input(), ProjectionGeneration::initial())
+            .await
+            .unwrap(),
+        Some(checkpoint.clone())
+    );
+    // Inbox/checkpoint identity remains intact; no domain event was republished.
+    assert_eq!(
+        h.apply(store, &first, 1).await.unwrap().outcome,
+        ProjectionCommitOutcome::Duplicate
+    );
+    h.apply(store, &first, 2).await.unwrap_err(); // same message, different position is still rejected
+    h.apply(store, &removed, 3).await.unwrap();
+
+    // Exact inventory CAS rejects modifications made after begin, including inserts.
+    let pending = SnapshotProjectionRebuild::begin(store, &projector)
+        .await
+        .unwrap()
+        .from_complete_history(&[first.clone(), second.clone(), removed.clone()])
+        .unwrap();
+    let other = event("b", 1, "other", false);
+    h.apply(store, &other, 4).await.unwrap();
+    assert!(pending.apply(store).await.is_err());
+    assert!(h.read(store, "a").await.row.is_none());
+    // Missing the stored tombstone occurrence cannot resurrect it.
+    assert!(SnapshotProjectionRebuild::begin(store, &projector)
+        .await
+        .unwrap()
+        .from_complete_history(&[first.clone(), second.clone(), other.clone()])
+        .is_err());
+    let recreated = event("a", 4, "recreated", false);
+    let history = [first, second, removed, other, recreated.clone()];
+    SnapshotProjectionRebuild::begin(store, &projector)
+        .await
+        .unwrap()
+        .from_complete_history(&history)
+        .unwrap()
+        .apply(store)
+        .await
+        .unwrap();
+    let restored = h.read(store, "a").await;
+    assert_eq!(restored.record.unwrap().revision.incarnation(), 2);
+    assert_eq!(
+        restored.row.unwrap().get("title"),
+        Some(&RowValue::String("recreated".into()))
+    );
+}
+
+async fn rebuild_rollback(store: &impl ProjectionProtocolStore) {
+    use crate::projection::rebuild::SnapshotProjectionRebuild;
+    let projector = rebuild_projector();
+    let before = SnapshotProjectionRebuild::begin(store, &projector)
+        .await
+        .unwrap();
+    let h = Harness {
+        codec: before.context.compiled.codec(),
+    };
+    let original_a = h.read(store, "a").await;
+    let original_b = h.read(store, "b").await;
+    let history = [
+        event("a", 1, "old", false),
+        event("a", 2, "new", false),
+        event("a", 3, "deleted", true),
+        event("a", 4, "recreated", false),
+        event("a", 5, "valid first write", false),
+        event("b", 1, "other", false),
+        event("b", 2, "reject me", false),
+    ];
+    let error = before
+        .from_complete_history(&history)
+        .unwrap()
+        .apply(store)
+        .await
+        .unwrap_err();
+    assert!(error.to_string().contains("rebuild_test_reject"), "{error}");
+    let after_a = h.read(store, "a").await;
+    let after_b = h.read(store, "b").await;
+    assert_eq!(after_a.row, original_a.row);
+    assert_eq!(after_b.row, original_b.row);
+    assert_eq!(after_a.record, original_a.record);
+    assert_eq!(after_b.record, original_b.record);
+}
+
+#[tokio::test]
+async fn snapshot_rebuild_memory() {
+    rebuild_matrix(&crate::InMemoryRepository::new()).await;
+}
+
+#[cfg(feature = "sqlite")]
+#[tokio::test]
+async fn snapshot_rebuild_sqlite() {
+    let store = crate::SqliteRepository::connect_and_migrate("sqlite::memory:")
+        .await
+        .unwrap();
+    let mut registry = crate::table::TableSchemaRegistry::new();
+    registry
+        .register_schema(SnapshotRow::schema().clone())
+        .unwrap();
+    store
+        .bootstrap_table_schema_for_dev(&registry)
+        .await
+        .unwrap();
+    rebuild_matrix(&store).await;
+    sqlx::query("CREATE TRIGGER rebuild_test_reject BEFORE UPDATE ON source_snapshot_rows WHEN NEW.title = 'reject me' BEGIN SELECT RAISE(ABORT, 'rebuild_test_reject'); END")
+        .execute(store.pool()).await.unwrap();
+    rebuild_rollback(&store).await;
+}
+
+#[cfg(feature = "postgres")]
+#[tokio::test]
+async fn snapshot_rebuild_postgres() {
+    let Ok(url) = std::env::var("DISTRIBUTED_REBUILD_TEST_POSTGRES_URL") else {
+        return;
+    };
+    let store = crate::PostgresRepository::connect_and_migrate(&url)
+        .await
+        .unwrap();
+    let mut registry = crate::table::TableSchemaRegistry::new();
+    registry
+        .register_schema(SnapshotRow::schema().clone())
+        .unwrap();
+    store
+        .bootstrap_table_schema_for_dev(&registry)
+        .await
+        .unwrap();
+    rebuild_matrix(&store).await;
+    sqlx::query("ALTER TABLE source_snapshot_rows ADD CONSTRAINT rebuild_test_reject CHECK (title <> 'reject me')")
+        .execute(store.pool()).await.unwrap();
+    rebuild_rollback(&store).await;
+}

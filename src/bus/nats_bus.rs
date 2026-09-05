@@ -218,6 +218,98 @@ impl NatsBus {
             .map_err(|err| retryable("nats get_or_create_stream", err))
     }
 
+    /// Read a bounded, stable archive of retained canonical domain events.
+    ///
+    /// Does not create streams/consumers, acknowledge deliveries, or publish.
+    /// Rejects truncated, gapped, changing, or oversized streams. Noncanonical
+    /// integration events and commands are excluded. A complete broker archive
+    /// is NOT proof that every historical aggregate publication reached it:
+    /// stop producers and drain outboxes before using this for maintenance.
+    pub async fn retained_domain_events(
+        &self,
+    ) -> Result<Vec<crate::DomainEventOccurrence>, TransportError> {
+        let namespace = self.validated_namespace()?;
+        let mut stream = self
+            .jetstream
+            .get_stream(Self::stream_name(&namespace))
+            .await
+            .map_err(|e| retryable("open domain-event archive", e))?;
+        let before = stream
+            .info()
+            .await
+            .map_err(|e| retryable("read archive boundary", e))?
+            .clone();
+        let state = &before.state;
+        if state.last_sequence > 100_000
+            || state.bytes > 64 * 1024 * 1024
+            || state.messages != state.last_sequence
+            || (state.messages > 0 && state.first_sequence != 1)
+        {
+            return Err(TransportError::permanent(
+                "domain-event archive is truncated, gapped, or exceeds 100000 messages / 64 MiB",
+            ));
+        }
+        let prefix = format!("{namespace}.evt.");
+        let mut events = Vec::new();
+        let mut bytes = 0usize;
+        for sequence in 1..=state.last_sequence {
+            let message = stream
+                .get_raw_message(sequence)
+                .await
+                .map_err(|e| retryable("read retained domain-event archive message", e))?;
+            bytes = bytes
+                .checked_add(message.payload.len())
+                .ok_or_else(|| TransportError::permanent("domain-event archive size overflow"))?;
+            if bytes > 64 * 1024 * 1024 {
+                return Err(TransportError::permanent(
+                    "domain-event archive exceeds 64 MiB",
+                ));
+            }
+            if message.sequence != sequence {
+                return Err(TransportError::permanent(
+                    "domain-event archive returned a different sequence",
+                ));
+            }
+            let Some(name) = message.subject.as_str().strip_prefix(&prefix) else {
+                continue;
+            };
+            if message
+                .headers
+                .get("x-sourced-payload-codec")
+                .map(|v| v.as_str())
+                != Some("distributed.domain-event-occurrence+json")
+            {
+                continue;
+            }
+            let event = crate::DomainEventOccurrence::from_canonical_bytes(&message.payload)
+                .map_err(|e| {
+                    TransportError::permanent(format!("invalid archived occurrence: {e}"))
+                })?;
+            if event.descriptor().name != name
+                || message.headers.get("Nats-Msg-Id").map(|v| v.as_str()) != Some(event.id())
+            {
+                return Err(TransportError::permanent(
+                    "archived occurrence differs from its transport identity",
+                ));
+            }
+            events.push(event);
+        }
+        let after = stream
+            .info()
+            .await
+            .map_err(|e| retryable("verify archive boundary", e))?;
+        if before.created != after.created
+            || before.state.last_sequence != after.state.last_sequence
+            || before.state.messages != after.state.messages
+            || before.state.first_sequence != after.state.first_sequence
+        {
+            return Err(TransportError::permanent(
+                "domain-event archive changed while reading; quiesce producers and retry",
+            ));
+        }
+        Ok(events)
+    }
+
     /// Build a durable pull source over the bus stream, filtered to `subjects`,
     /// stripping `strip_prefix` so the dispatched message name is the bare name.
     async fn source(
@@ -275,6 +367,78 @@ impl NatsBus {
             )
             .await?;
         run_source(router, source, options).await
+    }
+}
+
+#[cfg(test)]
+mod archive_tests {
+    use super::*;
+
+    #[derive(serde::Serialize, serde::Deserialize, crate::DomainState)]
+    #[domain_state(version = 1)]
+    struct ArchiveState {
+        title: String,
+    }
+
+    #[tokio::test]
+    async fn retained_archive_is_non_consuming_and_rejects_missing_history() {
+        let Ok(url) = std::env::var("DISTRIBUTED_ARCHIVE_TEST_NATS_URL") else {
+            return;
+        };
+        let namespace = format!("archive-test-{}", uuid::Uuid::now_v7().simple());
+        let bus = NatsBus::connect(&url).namespace(&namespace).await.unwrap();
+        let mut stream = bus.ensure_stream().await.unwrap();
+        for sequence in 1..=3 {
+            let event = crate::DomainEventOccurrence::capture(
+                crate::DomainEventDescriptor::state::<ArchiveState>("archive.changed", 1),
+                crate::DomainEventEnvelope {
+                    aggregate_type: "archive-item".into(),
+                    aggregate_id: "a".into(),
+                    aggregate_sequence: sequence,
+                    publication_ordinal: 0,
+                    occurred_at: std::time::UNIX_EPOCH,
+                    metadata: Default::default(),
+                },
+                &ArchiveState {
+                    title: sequence.to_string(),
+                },
+            )
+            .unwrap();
+            let mut headers = async_nats::HeaderMap::new();
+            headers.insert(
+                "x-sourced-payload-codec",
+                "distributed.domain-event-occurrence+json",
+            );
+            headers.insert("Nats-Msg-Id", event.id());
+            bus.jetstream
+                .publish_with_headers(
+                    format!("{namespace}.evt.archive.changed"),
+                    headers,
+                    event.canonical_bytes().unwrap().into(),
+                )
+                .await
+                .unwrap()
+                .await
+                .unwrap();
+        }
+        let first = bus.retained_domain_events().await.unwrap();
+        assert_eq!(first.len(), 3);
+        assert_eq!(bus.retained_domain_events().await.unwrap(), first);
+        let info = stream.info().await.unwrap();
+        assert_eq!(info.state.consumer_count, 0);
+        assert_eq!(info.state.messages, 3);
+        // Delete only a message in this test's fresh UUID-scoped stream.
+        stream.delete_message(2).await.unwrap();
+        assert!(bus
+            .retained_domain_events()
+            .await
+            .unwrap_err()
+            .to_string()
+            .contains("gapped"));
+        bus.jetstream
+            .delete_stream(NatsBus::stream_name(&namespace))
+            .await
+            .unwrap();
     }
 }
 

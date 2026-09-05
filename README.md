@@ -325,6 +325,47 @@ the policy is part of the canonical program identity. Browser optimism continues
 to use the same mutation program, and authoritative confirmation uses committed
 row revisions rather than comparing browser timestamps.
 
+#### Rebuilding existing snapshot projections
+
+Use explicit maintenance, not a startup fallback or republishing loop:
+
+```rust,ignore
+use distributed::projection::rebuild::SnapshotProjectionRebuild;
+
+// Stop producers, drain outboxes, stop consumers, and back up the read model.
+// Reuse the same generated SurfaceProjector mounted by the application.
+let rebuild = SnapshotProjectionRebuild::begin(&repository, &projector).await?;
+// Read history AFTER capturing the target inventory. Another authoritative
+// archive can supply these canonical occurrences; rebuilding is bus-neutral.
+let events = nats_bus.retained_domain_events().await?;
+let plan = rebuild.from_complete_history(&events)?;
+println!("{} records to rebuild", plan.record_count());
+plan.apply(&repository).await?;
+```
+
+Memory, SQLite and PostgreSQL commit complete rows/tombstones, source fences,
+new record revisions and live-query changes atomically. A concurrent update,
+insertion or deletion invalidates the captured inventory. Failure rolls back the
+whole projection. Broker checkpoints, inbox receipts, command ledgers and prior
+causal observations are preserved; maintenance does not claim a domain command
+occurred. No domain handlers, external effects or queue sends run.
+
+The archive must cover every existing record and retain its stored source
+occurrence, where present. Conflicting duplicate occurrences, missing aggregate
+sequence prefixes and stale source heads fail closed. The caller must establish
+history completeness: even a broker stream starting at sequence one may have
+been created after its aggregates. The NATS reader verifies a stable, gap-free
+retained stream without creating consumers or acknowledging messages, but cannot
+prove that unpublished events or earlier deleted streams never existed.
+
+This first API is bounded offline maintenance for one active local,
+unit-partition snapshot binding: at most 10,000 records and 100,000 occurrences /
+64 MiB of canonical history. It intentionally rejects delta folds and histories
+whose publication sequences have gaps. It does not migrate schemas/topologies,
+perform online shadow swaps, or make several independent projections one
+transaction. Keep services stopped if a multi-projection maintenance run fails;
+capture fresh inventories and rerun before resuming them.
+
 Handlers stay thin: most Todo commands are `portable_command!` — shard,
 invoke one domain method, commit Eventual. `todo.create` keeps a `handle:`
 escape hatch when the body needs extra checks.
