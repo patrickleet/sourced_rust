@@ -9,13 +9,14 @@ mod client_surface_parity_tests {
     use sha2::{Digest, Sha256};
 
     use super::*;
-    use crate::graphql::command_contract::{CommandEffects, TypedCommandContract};
+    use crate::command::CommandConsistency;
+    use crate::command::{CommandEffects, TypedCommandContract};
     use crate::graphql::commands::TypedCommandInventory;
     #[cfg(feature = "sqlite")]
     use crate::graphql::ModelNormalization;
     use crate::graphql::{
-        claim, col, ClientRootOperation, CommandConsistency, DistributedClientSurfaceExport,
-        GraphqlInputType, GraphqlOutputType, GraphqlTypeDef, GraphqlTypeField, RoleGrant,
+        claim, col, ClientRootOperation, DistributedClientSurfaceExport, GraphqlInputType,
+        GraphqlOutputType, GraphqlTypeDef, GraphqlTypeField, RoleGrant,
     };
     use crate::table::{ColumnType, PrimaryKey, TableColumn, TableKind, TableSchema};
     #[cfg(feature = "sqlite")]
@@ -71,8 +72,8 @@ mod client_surface_parity_tests {
             name: command_name.into(),
             field_name: field_name.into(),
             roles: roles.iter().map(|role| (*role).into()).collect(),
-            input: I::graphql_type().with_type_id(TypeId::of::<I>()),
-            output: O::graphql_type().with_type_id(TypeId::of::<O>()),
+            input: I::graphql_type().with_type_id(TypeId::of::<I>()).into(),
+            output: O::graphql_type().with_type_id(TypeId::of::<O>()).into(),
             input_type_id: TypeId::of::<I>(),
             output_type_id: TypeId::of::<O>(),
             consistency: CommandConsistency::Succeeded,

@@ -17,13 +17,13 @@ use std::sync::Mutex;
 use serde::Serialize;
 
 use crate::aggregate::{hydrate, Aggregate, AggregateRepository};
+use crate::command::{
+    validate_resolved_direct_plan, Atomic, CommandCommitProofError, CommandOutcome,
+    PrepareCommandError, PreparedCommand, ProjectionCommitProof, ResolvedDirectProjectionTarget,
+    TypedCommandContract,
+};
 use crate::command_ledger::CausalGetStream;
 use crate::domain_event::{DomainEventCaptureError, DomainEventCommitGuardError};
-use crate::graphql::command_contract::{
-    validate_resolved_direct_plan, CommandCommitProofError, CommandOutcome, ProjectionCommitProof,
-    ResolvedDirectProjectionTarget, TypedCommandContract,
-};
-use crate::graphql::{Atomic, PrepareCommandError, PreparedCommand};
 use crate::outbox::{OutboxMessage, PreparedDomainEvent};
 use crate::projection::lower::{
     DirectCandidate, LoweredProjectionPlan, ProjectionDescriptor,
@@ -1292,7 +1292,7 @@ mod tests {
         workspace.stage(aggregate).unwrap();
         let mut parts = workspace.into_parts().unwrap();
 
-        let contract = crate::graphql::typed_command::<TestInput, Atomic<TestView>>("test.project")
+        let contract = crate::command::typed_command::<TestInput, Atomic<TestView>>("test.project")
             .into_contract();
         parts.validate_prepared(&contract, &mut prepared).unwrap();
     }
@@ -1308,7 +1308,7 @@ mod tests {
             })
             .unwrap();
         let mut parts = workspace.into_parts().unwrap();
-        let contract = crate::graphql::typed_command::<TestInput, Atomic<TestView>>("test.project")
+        let contract = crate::command::typed_command::<TestInput, Atomic<TestView>>("test.project")
             .into_contract();
 
         assert!(matches!(
@@ -1339,7 +1339,7 @@ mod tests {
             .unwrap();
         workspace.stage_read_models(conflicting).unwrap();
         let mut parts = workspace.into_parts().unwrap();
-        let contract = crate::graphql::typed_command::<TestInput, Atomic<TestView>>("test.project")
+        let contract = crate::command::typed_command::<TestInput, Atomic<TestView>>("test.project")
             .into_contract();
 
         assert!(matches!(
@@ -1368,7 +1368,7 @@ mod tests {
         mutation
             .values
             .insert("title", RowValue::String("different".into()));
-        let contract = crate::graphql::typed_command::<TestInput, Atomic<TestView>>("test.project")
+        let contract = crate::command::typed_command::<TestInput, Atomic<TestView>>("test.project")
             .into_contract();
 
         assert!(matches!(
@@ -1384,7 +1384,7 @@ mod tests {
     }
 
     fn modeled_direct_contract() -> TypedCommandContract {
-        crate::graphql::typed_command::<TestInput, Atomic<ModeledDirectView>>("test.modeled-direct")
+        crate::command::typed_command::<TestInput, Atomic<ModeledDirectView>>("test.modeled-direct")
             .into_contract()
     }
 

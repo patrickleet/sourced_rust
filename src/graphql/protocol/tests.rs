@@ -1,7 +1,7 @@
 use super::accumulator::ProtocolAccumulatorError;
 use super::*;
+use crate::command::CommandConsistency;
 use crate::command_ledger::CommandLedgerState;
-use crate::graphql::command_contract::CommandConsistency;
 use crate::microsvc::{
     CausalCommandProjectionObligation, CausalCommandPublicState, CausalCommandPublicStatus,
     CausalCommandReceiptSource, CausalProjectionEvidenceState,

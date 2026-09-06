@@ -1,9 +1,9 @@
 use super::*;
+use crate::command::{typed_command, Eventual, PreparedCommand, Succeeded};
 use crate::graphql::{
-    build_surface, claim, col, rel, surface_for_application, surface_for_role, typed_command,
-    Eventual, GraphqlInputType, GraphqlOutputType, GraphqlTypeDef, GraphqlTypeField,
-    PreparedCommand, RoleGrant, Succeeded, SurfaceCommand, SurfaceOptions, SurfaceProjector,
-    SurfaceTypeField,
+    build_surface, claim, col, rel, surface_for_application, surface_for_role, GraphqlInputType,
+    GraphqlOutputType, GraphqlTypeDef, GraphqlTypeField, RoleGrant, SurfaceCommand, SurfaceOptions,
+    SurfaceProjector, SurfaceTypeField,
 };
 use crate::microsvc::{CausalCommandContext, HandlerError, Routes, Service};
 use crate::table::{
@@ -897,11 +897,11 @@ fn role_and_application_partition_manifests_hide_raw_paths_and_denied_values() {
         .unwrap()
         .projections
         .add_preview(
-            crate::graphql::CommandProjectionPreview::new()
+            crate::command::CommandProjectionPreview::new()
                 .events(crate::events![ManifestTodoProjected])
                 .field(
                     ["private_partition_path"],
-                    crate::graphql::CommandProjectionPreviewSource::constant(
+                    crate::command::CommandProjectionPreviewSource::constant(
                         crate::ProjectionValue::string("denied-partition-value"),
                     ),
                 ),
@@ -1413,7 +1413,7 @@ fn denied_modeled_projection_exports_no_program_event_slot_or_preset_identity() 
         .find(|command| command.command_name == "todo.complete")
         .unwrap();
     command.projections.previews[0].preview.fields[0].source =
-        crate::graphql::CommandProjectionPreviewSource::trusted("denied-owner-secret", "string");
+        crate::command::CommandProjectionPreviewSource::trusted("denied-owner-secret", "string");
     let selected = surface_for_role(
         &full,
         "user",

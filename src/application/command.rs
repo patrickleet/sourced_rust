@@ -7,12 +7,12 @@ use serde::{Deserialize, Serialize};
 
 use super::error::{ApplicationError, ApplicationResult};
 use super::identity::{canonical_json, sha256_fingerprint, LogicalId};
-use crate::graphql::command_contract::{
-    CommandConsistency, CommandOutcome, TypedCommand, TypedCommandContract,
+use crate::command::{
+    CommandConsistency, CommandInputType, CommandOutcome, CommandTypeDef, TypedCommand,
+    TypedCommandContract,
 };
-use crate::graphql::{GraphqlInputType, GraphqlTypeDef};
 
-/// Serializable GraphQL type field used by a portable command contract.
+/// Serializable command type field used by a portable command contract.
 #[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
 #[serde(deny_unknown_fields)]
 pub struct CommandTypeField {
@@ -25,7 +25,7 @@ pub struct CommandTypeField {
     pub nested: Option<Box<CommandTypeSpec>>,
 }
 
-/// Serializable GraphQL input/output type used by a portable command contract.
+/// Serializable command input/output type used by a portable command contract.
 #[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
 #[serde(deny_unknown_fields)]
 pub struct CommandTypeSpec {
@@ -35,8 +35,8 @@ pub struct CommandTypeSpec {
 
 pub type TypeSpec = CommandTypeSpec;
 
-impl From<&GraphqlTypeDef> for CommandTypeSpec {
-    fn from(definition: &GraphqlTypeDef) -> Self {
+impl From<&CommandTypeDef> for CommandTypeSpec {
+    fn from(definition: &CommandTypeDef) -> Self {
         Self {
             name: definition.name.clone(),
             fields: definition
@@ -199,7 +199,7 @@ impl CommandDefinition {
         mount: Option<CommandMount>,
     ) -> ApplicationResult<Self>
     where
-        I: GraphqlInputType + serde::de::DeserializeOwned + Send + 'static,
+        I: CommandInputType + serde::de::DeserializeOwned + Send + 'static,
         K: CommandOutcome,
     {
         let (_, typed_contract) = command.into_parts();
@@ -358,7 +358,7 @@ impl CommandSpec {
     /// Build a portable spec from the framework's existing typed declaration.
     pub fn from_typed_command<I, K>(command: &TypedCommand<I, K>) -> ApplicationResult<Self>
     where
-        I: GraphqlInputType + serde::de::DeserializeOwned + Send + 'static,
+        I: CommandInputType + serde::de::DeserializeOwned + Send + 'static,
         K: CommandOutcome,
     {
         let (_, contract) = command.clone().into_parts();
@@ -366,19 +366,19 @@ impl CommandSpec {
     }
 
     pub(crate) fn from_contract(
-        contract: &crate::graphql::command_contract::TypedCommandContract,
+        contract: &crate::command::TypedCommandContract,
     ) -> ApplicationResult<Self> {
         let projection_contract = serde_json::to_value(&contract.projections)?;
         let applies = serde_json::to_value(&contract.projections.previews)?;
         let confirmations = contract
             .confirmations
             .iter()
-            .map(crate::graphql::command_contract::CommandProjectionConfirmation::canonical_value)
+            .map(crate::command::CommandProjectionConfirmation::canonical_value)
             .collect();
         let direct_projection = contract
             .direct_projection
             .as_ref()
-            .map(crate::graphql::command_contract::CommandDirectProjectionTarget::canonical_value);
+            .map(crate::command::CommandDirectProjectionTarget::canonical_value);
         let mut emits: Vec<EventSpec> = contract
             .projections
             .selectors
@@ -889,7 +889,7 @@ impl CommandMount {
 
 impl<I, K> TypedCommand<I, K>
 where
-    I: GraphqlInputType + serde::de::DeserializeOwned + Send + 'static,
+    I: CommandInputType + serde::de::DeserializeOwned + Send + 'static,
     K: CommandOutcome,
 {
     /// Compile the exact declaration into its portable, serializable spec.

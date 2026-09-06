@@ -25,9 +25,9 @@ use crate::application::{
 use crate::bus::{
     Message, MessageKind, OrderedDelivery, RunOptions, SubscriptionPlan, TransportError,
 };
+use crate::command::{TypedCommandContract, TypedServiceCommandBinding};
 #[cfg(feature = "graphql")]
 use crate::command_ledger::{CommandId, CommandLookup, PrincipalPartitionId};
-use crate::graphql::command_contract::{TypedCommandContract, TypedServiceCommandBinding};
 #[cfg(feature = "graphql")]
 use crate::graphql::identity::VerifiedPrincipal;
 use crate::microsvc::error::HandlerError;

@@ -8,6 +8,12 @@
 
 #![cfg_attr(not(feature = "graphql"), allow(dead_code))]
 
+pub(crate) mod input;
+mod types;
+
+pub(crate) use types::scalar_type_name;
+pub use types::{CommandInputType, CommandOutputType, CommandTypeDef, CommandTypeField};
+
 mod direct_projection;
 mod effect_wire;
 mod effects;

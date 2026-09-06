@@ -24,6 +24,7 @@ mod time;
 pub mod aggregate;
 pub mod application;
 pub mod bus;
+pub mod command;
 pub mod command_dispatch;
 pub mod domain_event;
 pub mod entity;
@@ -468,8 +469,8 @@ pub use microsvc::{
 // mount); commands predict events via `.emits`/`.preview`.
 pub use distributed_macros::{
     aggregate, application, command, command_input_defaults, digest, module, mutation,
-    mutation_file, portable_command, sourced, DomainEvent, DomainState, GraphqlInput,
-    GraphqlOutput, ReadModel, Snapshot,
+    mutation_file, portable_command, sourced, CommandInput, CommandOutput, DomainEvent,
+    DomainState, GraphqlInput, GraphqlOutput, ReadModel, Snapshot,
 };
 
 // Re-export enqueue macro (requires "emitter" feature)

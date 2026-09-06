@@ -10,7 +10,7 @@ use super::error::{ApplicationError, ApplicationResult};
 use super::identity::{canonical_json, sha256_fingerprint};
 use super::manifest::ApplicationManifest;
 use super::mount::MountSelector;
-use crate::graphql::command_contract::CommandConsistency;
+use crate::command::CommandConsistency;
 
 /// A named logical capability required by one or more mounts.
 #[derive(Clone, Copy, Debug, Deserialize, Eq, Hash, Ord, PartialEq, PartialOrd, Serialize)]

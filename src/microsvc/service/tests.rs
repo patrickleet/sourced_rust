@@ -6,6 +6,11 @@ use crate::aggregate::Aggregate;
 #[cfg(feature = "graphql")]
 use crate::bus::RunOptions;
 use crate::bus::{Message, MessageKind, SubscriptionPlan};
+#[cfg(all(feature = "graphql", feature = "sqlite"))]
+use crate::command::Eventual;
+use crate::command::{typed_command, PreparedCommand, Succeeded};
+#[cfg(feature = "graphql")]
+use crate::command::{Atomic, CommandConsistency};
 #[cfg(feature = "graphql")]
 use crate::command_ledger::{
     AttemptFence, CausalCommitBatch, CausalGetStream, CausalRepositoryIdentity,
@@ -13,17 +18,10 @@ use crate::command_ledger::{
     CommandLedgerStore, CommandLookup, CommandLookupScope, CommandReservation, ReservationOutcome,
 };
 #[cfg(feature = "graphql")]
-use crate::graphql::command_contract::CommandConsistency;
-#[cfg(feature = "graphql")]
 use crate::graphql::identity::VerifiedPrincipal;
-#[cfg(all(feature = "graphql", feature = "sqlite"))]
-use crate::graphql::Eventual;
-use crate::graphql::{
-    typed_command, GraphqlInputType, GraphqlOutputType, GraphqlTypeDef, GraphqlTypeField,
-    PreparedCommand, Succeeded,
-};
+use crate::graphql::{GraphqlInputType, GraphqlOutputType, GraphqlTypeDef, GraphqlTypeField};
 #[cfg(feature = "graphql")]
-use crate::graphql::{Atomic, SurfaceDirectProjection, SurfaceProjector};
+use crate::graphql::{SurfaceDirectProjection, SurfaceProjector};
 #[cfg(feature = "graphql")]
 use crate::microsvc::HasOutboxStore;
 use crate::microsvc::{
@@ -1215,7 +1213,7 @@ async fn thin_complete_registers_without_a_handler_context_body() {
     let routes = Routes::new()
         .with_repo(repository.aggregate::<CausalDispatcherAggregate>())
         .typed_command(
-            typed_command::<CausalTestInput, crate::graphql::Succeeded<TypedOutput>>("todo.create")
+            typed_command::<CausalTestInput, crate::command::Succeeded<TypedOutput>>("todo.create")
                 .roles(["user"]),
         )
         .create()
@@ -1227,7 +1225,7 @@ async fn thin_complete_registers_without_a_handler_context_body() {
             id: aggregate.entity().id().to_string(),
         })
         .typed_command(
-            typed_command::<CausalTestInput, crate::graphql::Succeeded<TypedOutput>>(
+            typed_command::<CausalTestInput, crate::command::Succeeded<TypedOutput>>(
                 "todo.complete",
             )
             .roles(["user"]),

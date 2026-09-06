@@ -16,7 +16,7 @@ use super::identity::{canonical_json, sha256_fingerprint, LogicalId};
 use super::manifest::{ApplicationManifest, APPLICATION_MANIFEST_SCHEMA_VERSION};
 use super::mount::{validate_mounts_against_manifest, MountSelector, ProcessPreset};
 use super::topology::{derive_topology, TopologyIntent};
-use crate::graphql::command_contract::CommandConsistency;
+use crate::command::CommandConsistency;
 
 /// Wire schema version for deployment plans.
 pub const DEPLOYMENT_PLAN_SCHEMA_VERSION: u32 = 1;

@@ -117,7 +117,7 @@ mod tests {
         compile_deployment_plan, Application, CommandDefinition, CommandSpec, CommandTypeSpec,
         ModelFieldSpec, ModelSpec, Module, ProcessIntent, ProcessPreset, ProjectionSpec,
     };
-    use crate::graphql::CommandConsistency;
+    use crate::command::CommandConsistency;
     use std::sync::Arc;
 
     fn manifest() -> crate::application::ApplicationManifest {

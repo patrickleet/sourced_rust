@@ -5,7 +5,7 @@ use serde::{Deserialize, Serialize};
 use super::command::{CommandDefinition, CommandMount, CommandSpec, CommandTypeSpec, EventSpec};
 use super::error::{ApplicationError, ApplicationResult};
 use super::identity::{canonical_json, sha256_fingerprint, LogicalId};
-use crate::graphql::command_contract::TypedCommandContract;
+use crate::command::TypedCommandContract;
 use crate::graphql::surface::{
     RootKind, Surface, SurfaceArgument, SurfaceCommand, SurfaceCommandShape,
     SurfaceProjectionOwner, SurfaceRelationshipKeys, SurfaceSelection, SurfaceTypeDef,
@@ -287,7 +287,7 @@ pub struct SurfaceCommandSpec {
     pub roles: Vec<String>,
     pub input: Option<CommandTypeSpec>,
     pub output: Option<CommandTypeSpec>,
-    pub consistency: crate::graphql::CommandConsistency,
+    pub consistency: crate::command::CommandConsistency,
     pub defaults: serde_json::Value,
     pub effects: serde_json::Value,
     pub confirmations: serde_json::Value,
@@ -541,7 +541,7 @@ fn surface_command_spec(command: &SurfaceCommand) -> ApplicationResult<SurfaceCo
         direct_projection: command
             .direct_projection
             .as_ref()
-            .map(crate::graphql::command_contract::CommandDirectProjectionTarget::canonical_value),
+            .map(crate::command::CommandDirectProjectionTarget::canonical_value),
         projected_model: command
             .projected_model
             .as_ref()

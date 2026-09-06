@@ -1,8 +1,7 @@
-//! Canonical typed GraphQL command-input validation.
+//! Canonical typed command-input validation.
 //!
-//! Authenticated GraphQL causal dispatch passes through this one validator
-//! before ledger reservation. Direct and bus transports currently fail closed;
-//! any future verified framework envelope must enter through this same path.
+//! Every authenticated command host passes through this validator before
+//! ledger reservation. Transport adapters must retain these normalization rules.
 //! The retained wire value is the source of hashing and declaration-expression
 //! resolution, so decoding the Rust input never becomes a second, potentially
 //! differently named serialization path.
@@ -14,7 +13,7 @@ use serde::de::DeserializeOwned;
 use serde_json::{Number, Value};
 use sha2::{Digest, Sha256};
 
-use super::{GraphqlTypeDef, GraphqlTypeField};
+use super::{CommandTypeDef, CommandTypeField};
 
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub(crate) struct CommandInputError {
@@ -43,7 +42,7 @@ impl std::fmt::Display for CommandInputError {
 
 impl std::error::Error for CommandInputError {}
 
-/// Validated, recursively key-sorted GraphQL wire input and its stable digest.
+/// Validated, recursively key-sorted command wire input and its stable digest.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub(crate) struct CanonicalCommandInput {
     wire: Value,
@@ -110,7 +109,7 @@ impl<I> CanonicalTypedCommandInput<I> {
 }
 
 pub(crate) fn canonicalize_command_input(
-    definition: &GraphqlTypeDef,
+    definition: &CommandTypeDef,
     input: Value,
 ) -> Result<CanonicalCommandInput, CommandInputError> {
     let wire = canonicalize_object(definition, input, "$")?;
@@ -132,7 +131,7 @@ fn hex_digest(digest: &[u8; 32]) -> String {
 }
 
 fn canonicalize_object(
-    definition: &GraphqlTypeDef,
+    definition: &CommandTypeDef,
     value: Value,
     path: &str,
 ) -> Result<Value, CommandInputError> {
@@ -183,7 +182,7 @@ fn canonicalize_object(
 }
 
 fn canonicalize_field(
-    field: &GraphqlTypeField,
+    field: &CommandTypeField,
     value: Value,
     path: &str,
 ) -> Result<Value, CommandInputError> {
@@ -218,7 +217,7 @@ fn canonicalize_field(
 }
 
 fn canonicalize_leaf(
-    field: &GraphqlTypeField,
+    field: &CommandTypeField,
     value: Value,
     path: &str,
 ) -> Result<Value, CommandInputError> {
@@ -399,9 +398,9 @@ mod tests {
         nullable: bool,
         list: bool,
         item_nullable: bool,
-        nested: Option<GraphqlTypeDef>,
-    ) -> GraphqlTypeField {
-        GraphqlTypeField {
+        nested: Option<CommandTypeDef>,
+    ) -> CommandTypeField {
+        CommandTypeField {
             name: name.into(),
             type_name: type_name.into(),
             nullable,
@@ -411,8 +410,8 @@ mod tests {
         }
     }
 
-    fn definition() -> GraphqlTypeDef {
-        GraphqlTypeDef::new(
+    fn definition() -> CommandTypeDef {
+        CommandTypeDef::new(
             "Input",
             vec![
                 field("id", "String", false, false, false, None),
@@ -424,7 +423,7 @@ mod tests {
                     false,
                     false,
                     false,
-                    Some(GraphqlTypeDef::new(
+                    Some(CommandTypeDef::new(
                         "NestedInput",
                         vec![field("count", "BigInt", false, false, false, None)],
                     )),
@@ -508,7 +507,7 @@ mod tests {
 
     #[test]
     fn graphql_int_is_limited_to_the_signed_32_bit_range() {
-        let definition = GraphqlTypeDef::new(
+        let definition = CommandTypeDef::new(
             "IntInput",
             vec![field("value", "Int", false, false, false, None)],
         );
@@ -527,7 +526,7 @@ mod tests {
 
     #[test]
     fn decoding_retains_the_original_wire_instead_of_reserializing_rust() {
-        let definition = GraphqlTypeDef::new(
+        let definition = CommandTypeDef::new(
             "RenamedInput",
             vec![field("wireId", "String", false, false, false, None)],
         );

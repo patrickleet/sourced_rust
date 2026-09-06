@@ -6,7 +6,7 @@
 //! `feature = "graphql"`.
 
 pub mod client_manifest;
-pub(crate) mod command_contract;
+pub(crate) use crate::command as command_contract;
 pub mod naming;
 pub mod projection_delta;
 pub mod sdl;
@@ -70,7 +70,6 @@ pub use permissions::{
 };
 pub use types::{GraphqlInputType, GraphqlOutputType, GraphqlTypeDef, GraphqlTypeField};
 
-pub(crate) mod command_input;
 #[cfg(feature = "graphql")]
 mod compile;
 #[cfg(feature = "graphql")]

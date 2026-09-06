@@ -1396,6 +1396,44 @@ use distributed::bus::{run_source, RunOptions};
 run_source(service, source, RunOptions::idempotent()).await?;
 ```
 
+## Command contracts
+
+Command semantics live in `distributed::command`, independently of the query
+transport. Use `CommandInput` and `CommandOutput` to describe Serde input/output
+shapes, and `command::{typed_command, Succeeded, Eventual, Atomic, PreparedCommand}`
+to declare and prepare commands. The GraphQL adapter derives its surface from
+those contracts; GraphQL naming restrictions are checked when exposing them.
+
+```rust
+# use distributed::command;
+use distributed::{CommandInput, CommandOutput};
+use distributed::command::{typed_command, Succeeded};
+use serde::{Deserialize, Serialize};
+
+#[derive(Deserialize, CommandInput)]
+struct RenameInput { id: String, title: String }
+
+#[derive(Serialize, CommandOutput)]
+struct RenameOutput { id: String }
+
+# fn main() {
+let declaration = typed_command::<RenameInput, Succeeded<RenameOutput>>("todo.rename");
+# }
+```
+
+To migrate existing command DTOs, replace `GraphqlInput`/`GraphqlOutput` with
+`CommandInput`/`CommandOutput` throughout the DTO's nested types and import
+command APIs from `distributed::command`. Manual metadata implementations use
+`CommandInputType`/`CommandOutputType`, `command_type()`, and
+`CommandTypeDef`/`CommandTypeField`. Existing GraphQL derives, manual GraphQL
+trait implementations, and command re-exports remain compatible through the
+GraphQL adapter. Choose one metadata implementation per direction on each DTO.
+Equivalent declarations retain their wire shapes and command fingerprints.
+
+`Atomic<M>` continues to obtain its response shape from the relational read
+model and requires the existing transaction proof. Moving command ownership
+does not change Eventual projection confirmation or Atomic response sealing.
+
 ## Microservice Framework (`microsvc`)
 
 The `microsvc` module provides a convention-based async command/event handler framework. Register handlers on typed `Routes<D>` bundles, collect them into a non-generic `Service`, then expose that service over HTTP, gRPC, the bus, or direct dispatch.

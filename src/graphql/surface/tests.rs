@@ -1,8 +1,9 @@
 use std::any::TypeId;
 
 use super::*;
-use crate::graphql::command_contract::{CommandEffects, TypedCommandContract};
+use crate::command::{CommandEffects, TypedCommandContract};
 use crate::graphql::commands::TypedCommandInventory;
+
 use crate::graphql::{GraphqlTypeDef, GraphqlTypeField};
 use crate::table::{
     ColumnType, PrimaryKey, RelationshipDef, RelationshipKind, TableColumn, TableKind,
@@ -243,8 +244,9 @@ fn test_command(
                 nested: None,
             }],
         )
-        .with_type_id(input_type_id),
-        output: output.with_type_id(output_type_id),
+        .with_type_id(input_type_id)
+        .into(),
+        output: output.with_type_id(output_type_id).into(),
         input_type_id,
         output_type_id,
         consistency: CommandConsistency::Succeeded,
