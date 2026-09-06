@@ -1,4 +1,4 @@
-//! Command data-shape derives and legacy GraphQL adapters.
+//! Transport-neutral command data-shape derives.
 
 use proc_macro2::TokenStream;
 use quote::{format_ident, quote};
@@ -23,8 +23,8 @@ impl SerdeDirection {
 
     fn derive_name(self) -> &'static str {
         match self {
-            Self::Deserialize => "GraphqlInput",
-            Self::Serialize => "GraphqlOutput",
+            Self::Deserialize => "CommandInput",
+            Self::Serialize => "CommandOutput",
         }
     }
 }
@@ -59,7 +59,7 @@ impl RenameRule {
             other => Err(syn::Error::new_spanned(
                 value,
                 format!(
-                    "unsupported serde rename_all rule `{other}` for GraphqlInput/GraphqlOutput"
+                    "unsupported serde rename_all rule `{other}` for CommandInput/CommandOutput"
                 ),
             )),
         }
@@ -98,31 +98,6 @@ impl RenameRule {
     }
 }
 
-pub fn expand_graphql_input(input: DeriveInput) -> syn::Result<TokenStream> {
-    let framework = crate::shared::framework_path()?;
-    expand(
-        input,
-        quote! { #framework::graphql::GraphqlInputType },
-        quote! { #framework::graphql::GraphqlInputType },
-        framework,
-        SerdeDirection::Deserialize,
-        false,
-    )
-}
-
-pub fn expand_graphql_output(input: DeriveInput) -> syn::Result<TokenStream> {
-    let framework = crate::shared::framework_path()?;
-    expand(
-        input,
-        quote! { #framework::graphql::GraphqlOutputType },
-        quote! { #framework::graphql::GraphqlOutputType },
-        framework,
-        SerdeDirection::Serialize,
-        false,
-    )
-}
-
-/// Neutral derives share serialization analysis with the legacy GraphQL derives.
 pub fn expand_command_input(input: DeriveInput) -> syn::Result<TokenStream> {
     let framework = crate::shared::framework_path()?;
     expand(
@@ -131,9 +106,7 @@ pub fn expand_command_input(input: DeriveInput) -> syn::Result<TokenStream> {
         quote! { #framework::command::CommandInputType },
         framework,
         SerdeDirection::Deserialize,
-        true,
     )
-    .map_err(command_error)
 }
 
 pub fn expand_command_output(input: DeriveInput) -> syn::Result<TokenStream> {
@@ -144,19 +117,6 @@ pub fn expand_command_output(input: DeriveInput) -> syn::Result<TokenStream> {
         quote! { #framework::command::CommandOutputType },
         framework,
         SerdeDirection::Serialize,
-        true,
-    )
-    .map_err(command_error)
-}
-
-fn command_error(error: syn::Error) -> syn::Error {
-    syn::Error::new(
-        error.span(),
-        error
-            .to_string()
-            .replace("GraphqlInput", "CommandInput")
-            .replace("GraphqlOutput", "CommandOutput")
-            .replace("GraphQL", "command"),
     )
 }
 
@@ -166,49 +126,24 @@ fn expand(
     nested_trait: TokenStream,
     framework: TokenStream,
     serde_direction: SerdeDirection,
-    neutral: bool,
 ) -> syn::Result<TokenStream> {
-    let method = if neutral {
-        quote! { command_type }
-    } else {
-        quote! { graphql_type }
-    };
-    let (type_def, type_field) = if neutral {
-        (
-            quote! { #framework::command::CommandTypeDef },
-            quote! { #framework::command::CommandTypeField },
-        )
-    } else {
-        (
-            quote! { #framework::graphql::GraphqlTypeDef },
-            quote! { #framework::graphql::GraphqlTypeField },
-        )
-    };
+    let method = quote! { command_type };
+    let type_def = quote! { #framework::command::CommandTypeDef };
+    let type_field = quote! { #framework::command::CommandTypeField };
     let name = &input.ident;
     let visibility = &input.vis;
     validate_serde_container_shape(&input.attrs, serde_direction)?;
     let rename_all = serde_rename_all(&input.attrs, serde_direction)?;
-    if !neutral
-        && matches!(
-            rename_all,
-            Some(RenameRule::KebabCase | RenameRule::ScreamingKebabCase)
-        )
-    {
-        if let Some(value) = serde_name_value(&input.attrs, "rename_all", serde_direction)? {
-            return Err(syn::Error::new_spanned(value,
-                "serde kebab-case field names cannot be represented in GraphQL; use camelCase or snake_case"));
-        }
-    }
     let Data::Struct(data) = &input.data else {
         return Err(syn::Error::new_spanned(
             &input,
-            "GraphqlInput/GraphqlOutput only support structs with named fields",
+            "CommandInput/CommandOutput only support structs with named fields",
         ));
     };
     let Fields::Named(fields) = &data.fields else {
         return Err(syn::Error::new_spanned(
             &input,
-            "GraphqlInput/GraphqlOutput require named fields",
+            "CommandInput/CommandOutput require named fields",
         ));
     };
 
@@ -230,9 +165,6 @@ fn expand(
                     .map(|rule| rule.apply(rust_field_name))
                     .unwrap_or_else(|| rust_field_name.to_string())
             });
-        if !neutral {
-            validate_graphql_field_name(&field_name_str, field)?;
-        }
         let (type_name, nullable, list, item_nullable, nested) =
             map_type(&field.ty, field, &nested_trait, &method)?;
         let effect_path_kind = if !list && nested.is_some() {
@@ -370,7 +302,7 @@ fn map_type(
         if extract_path_arg(current, "Vec").is_some() {
             return Err(syn::Error::new_spanned(
                 ty,
-                "nested lists are not supported for GraphqlInput/GraphqlOutput fields",
+                "nested lists are not supported for CommandInput/CommandOutput fields",
             ));
         }
     }
@@ -380,7 +312,7 @@ fn map_type(
         _ => {
             return Err(syn::Error::new_spanned(
                 span,
-                "unsupported field type for GraphqlInput/GraphqlOutput",
+                "unsupported field type for CommandInput/CommandOutput",
             ));
         }
     };
@@ -497,7 +429,7 @@ fn validate_serde_field_shape(attrs: &[Attribute], direction: SerdeDirection) ->
                 return Err(syn::Error::new_spanned(
                     meta,
                     format!(
-                        "#[serde({attribute})] is not supported by {} because it changes the declared GraphQL field shape; define a separate wire type",
+                        "#[serde({attribute})] is not supported by {} because it changes the declared command field shape; define a separate wire type",
                         direction.derive_name(),
                     ),
                 ));
@@ -561,7 +493,7 @@ fn validate_serde_container_shape(
                 return Err(syn::Error::new_spanned(
                     meta,
                     format!(
-                        "#[serde({attribute})] is not supported by {} because it changes the declared GraphQL object shape; define a separate wire type",
+                        "#[serde({attribute})] is not supported by {} because it changes the declared command object shape; define a separate wire type",
                         direction.derive_name(),
                     ),
                 ));
@@ -617,7 +549,7 @@ fn set_serde_name(found: &mut Option<LitStr>, value: LitStr, key: &str) -> syn::
     if found.is_some() {
         return Err(syn::Error::new_spanned(
             value,
-            format!("duplicate serde `{key}` rule for GraphqlInput/GraphqlOutput"),
+            format!("duplicate serde `{key}` rule for CommandInput/CommandOutput"),
         ));
     }
     *found = Some(value);
@@ -640,30 +572,12 @@ fn string_literal(value: &Expr, key: &str) -> syn::Result<LitStr> {
     }
 }
 
-fn validate_graphql_field_name(name: &str, span: &syn::Field) -> syn::Result<()> {
-    let mut chars = name.chars();
-    let first_valid = match chars.next() {
-        Some('_') => !name.starts_with("__"),
-        Some(first) => first.is_ascii_alphabetic(),
-        None => false,
-    };
-    if first_valid && chars.all(|ch| ch.is_ascii_alphanumeric() || ch == '_') {
-        return Ok(());
-    }
-    Err(syn::Error::new_spanned(
-        span,
-        format!(
-            "serde field name `{name}` is not a valid GraphQL name; use #[serde(rename = \"valid_name\")]"
-        ),
-    ))
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
 
     #[test]
-    fn graphql_safe_rename_all_rules_match_serde_field_rules() {
+    fn rename_all_rules_match_serde_field_rules() {
         let field = "long_field_name";
         let cases = [
             ("lowercase", "long_field_name"),
@@ -672,6 +586,8 @@ mod tests {
             ("camelCase", "longFieldName"),
             ("snake_case", "long_field_name"),
             ("SCREAMING_SNAKE_CASE", "LONG_FIELD_NAME"),
+            ("kebab-case", "long-field-name"),
+            ("SCREAMING-KEBAB-CASE", "LONG-FIELD-NAME"),
         ];
         for (rule, expected) in cases {
             let literal = LitStr::new(rule, proc_macro2::Span::call_site());
@@ -689,7 +605,7 @@ mod tests {
                 custom_id: String,
             }
         };
-        let input_tokens = expand_graphql_input(input).unwrap().to_string();
+        let input_tokens = expand_command_input(input).unwrap().to_string();
         assert!(input_tokens.contains("\"regularField\""));
         assert!(input_tokens.contains("\"inputID\""));
 
@@ -701,7 +617,7 @@ mod tests {
                 custom_id: String,
             }
         };
-        let output_tokens = expand_graphql_output(output).unwrap().to_string();
+        let output_tokens = expand_command_output(output).unwrap().to_string();
         assert!(output_tokens.contains("\"REGULAR_FIELD\""));
         assert!(output_tokens.contains("\"OUTPUT_ID\""));
     }
@@ -711,7 +627,7 @@ mod tests {
         let nested: DeriveInput = syn::parse_quote! {
             struct Nested { values: Option<Vec<Option<Vec<String>>>> }
         };
-        let error = expand_graphql_input(nested).unwrap_err().to_string();
+        let error = expand_command_input(nested).unwrap_err().to_string();
         assert!(error.contains("nested lists are not supported"), "{error}");
 
         let skipped: DeriveInput = syn::parse_quote! {
@@ -720,9 +636,9 @@ mod tests {
                 value: String,
             }
         };
-        let error = expand_graphql_input(skipped).unwrap_err().to_string();
+        let error = expand_command_input(skipped).unwrap_err().to_string();
         assert!(
-            error.contains("changes the declared GraphQL field shape"),
+            error.contains("changes the declared command field shape"),
             "{error}"
         );
 
@@ -732,7 +648,7 @@ mod tests {
                 value: String,
             }
         };
-        let error = expand_graphql_input(defaulted).unwrap_err().to_string();
+        let error = expand_command_input(defaulted).unwrap_err().to_string();
         assert!(error.contains("#[serde(default)]"), "{error}");
 
         let custom: DeriveInput = syn::parse_quote! {
@@ -741,21 +657,21 @@ mod tests {
                 value: String,
             }
         };
-        let error = expand_graphql_input(custom).unwrap_err().to_string();
+        let error = expand_command_input(custom).unwrap_err().to_string();
         assert!(error.contains("#[serde(deserialize_with)]"), "{error}");
 
         let transparent: DeriveInput = syn::parse_quote! {
             #[serde(transparent)]
             struct Transparent { value: String }
         };
-        let error = expand_graphql_output(transparent).unwrap_err().to_string();
+        let error = expand_command_output(transparent).unwrap_err().to_string();
         assert!(error.contains("#[serde(transparent)]"), "{error}");
 
         let container_default: DeriveInput = syn::parse_quote! {
             #[serde(default = "default_input")]
             struct ContainerDefault { value: String }
         };
-        let error = expand_graphql_input(container_default)
+        let error = expand_command_input(container_default)
             .unwrap_err()
             .to_string();
         assert!(error.contains("#[serde(default)]"), "{error}");

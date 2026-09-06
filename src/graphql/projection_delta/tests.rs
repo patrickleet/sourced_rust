@@ -51,12 +51,12 @@ const FOREIGN_CAUSATION_ID: &str = "0190a000-0000-7000-8000-000000000018";
 const TEST_COMMAND_NAME: &str = "todo.modeled";
 
 #[allow(dead_code)]
-#[derive(Deserialize, crate::GraphqlInput)]
+#[derive(Deserialize, crate::CommandInput)]
 struct ModeledCommandInput {
     todo_id: String,
 }
 
-#[derive(Serialize, crate::GraphqlOutput)]
+#[derive(Serialize, crate::CommandOutput)]
 struct ModeledCommandOutput {
     accepted: bool,
 }

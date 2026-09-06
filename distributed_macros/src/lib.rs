@@ -202,25 +202,5 @@ pub fn derive_command_output(input: TokenStream) -> TokenStream {
     }
 }
 
-/// Derive `GraphqlInputType` for command mutation input structs.
-#[proc_macro_derive(GraphqlInput, attributes(serde))]
-pub fn derive_graphql_input(input: TokenStream) -> TokenStream {
-    let input = syn::parse_macro_input!(input as DeriveInput);
-    match command_types::expand_graphql_input(input) {
-        Ok(tokens) => tokens.into(),
-        Err(err) => err.to_compile_error().into(),
-    }
-}
-
-/// Derive `GraphqlOutputType` for command mutation output structs.
-#[proc_macro_derive(GraphqlOutput, attributes(serde))]
-pub fn derive_graphql_output(input: TokenStream) -> TokenStream {
-    let input = syn::parse_macro_input!(input as DeriveInput);
-    match command_types::expand_graphql_output(input) {
-        Ok(tokens) => tokens.into(),
-        Err(err) => err.to_compile_error().into(),
-    }
-}
-
 #[cfg(test)]
 mod entry_tests;

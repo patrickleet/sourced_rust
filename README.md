@@ -1421,14 +1421,16 @@ let declaration = typed_command::<RenameInput, Succeeded<RenameOutput>>("todo.re
 # }
 ```
 
-To migrate existing command DTOs, replace `GraphqlInput`/`GraphqlOutput` with
-`CommandInput`/`CommandOutput` throughout the DTO's nested types and import
-command APIs from `distributed::command`. Manual metadata implementations use
-`CommandInputType`/`CommandOutputType`, `command_type()`, and
-`CommandTypeDef`/`CommandTypeField`. Existing GraphQL derives, manual GraphQL
-trait implementations, and command re-exports remain compatible through the
-GraphQL adapter. Choose one metadata implementation per direction on each DTO.
-Equivalent declarations retain their wire shapes and command fingerprints.
+This is a breaking Rust API change. Replace `GraphqlInput`/`GraphqlOutput`
+with `CommandInput`/`CommandOutput` throughout the DTO's nested types and
+move command imports from `distributed::graphql` to `distributed::command`.
+Manual metadata implementations now use `CommandInputType`/`CommandOutputType`,
+`command_type()`, and `CommandTypeDef`/`CommandTypeField`. The old GraphQL
+command re-exports, metadata types, and derives have been removed.
+
+GraphQL remains the application's UI gateway: it exposes the command contract
+alongside queries and subscriptions. Command handlers describe their data and
+consistency through the core API, independently of where that gateway runs.
 
 `Atomic<M>` continues to obtain its response shape from the relational read
 model and requires the existing transaction proof. Moving command ownership
@@ -1826,9 +1828,8 @@ distributed = { version = "0.1", features = ["graphql", "postgres"] }
 ### Mount on a service
 
 ```rust,ignore
-use distributed::graphql::{
-    claim, col, read, typed_command, Eventual, GraphqlEngine,
-};
+use distributed::command::{typed_command, Eventual};
+use distributed::graphql::{claim, col, read, GraphqlEngine};
 use distributed::microsvc::{Routes, Service};
 
 let routes = Routes::new()

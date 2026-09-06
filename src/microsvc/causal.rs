@@ -816,8 +816,8 @@ mod tests {
     use super::*;
     use std::sync::Arc;
 
+    use crate::command::CommandTypeDef;
     use crate::entity::{Entity, EventRecord};
-    use crate::graphql::GraphqlTypeDef;
     use crate::table::{
         ColumnType, PrimaryKey, RowKey, RowValue, RowValues, TableColumn, TableKind, TableMutation,
         TableSchema,
@@ -1067,9 +1067,9 @@ mod tests {
     #[derive(serde::Deserialize)]
     struct TestInput {}
 
-    impl crate::graphql::GraphqlInputType for TestInput {
-        fn graphql_type() -> GraphqlTypeDef {
-            GraphqlTypeDef::new("TestInput", Vec::new())
+    impl crate::command::CommandInputType for TestInput {
+        fn command_type() -> CommandTypeDef {
+            CommandTypeDef::new("TestInput", Vec::new())
                 .with_type_id(std::any::TypeId::of::<Self>())
         }
     }

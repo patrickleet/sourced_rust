@@ -1,6 +1,6 @@
-use distributed::GraphqlInput;
+use distributed::CommandInput;
 
-#[derive(GraphqlInput)]
+#[derive(CommandInput)]
 #[serde(transparent)]
 struct TransparentInput {
     value: String,

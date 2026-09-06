@@ -6,19 +6,20 @@ use distributed::application::{
     CommandDefinition, CommandMount, CommandSpec, CommandTypeField, CommandTypeSpec,
     ContractCompiler, Module, ProjectionSpec, Runtime, RuntimeDialect, SurfaceSpec,
 };
+use distributed::command::{typed_command, CommandConsistency, Succeeded};
 use distributed::graphql::{
     build_surface, col, prune_client_manifest, surface_for_application_contract, surface_for_role,
-    typed_command, ClientCommandPureReduce, ClientProjectionArm, ClientProjectionEventRef,
+    ClientCommandPureReduce, ClientProjectionArm, ClientProjectionEventRef,
     ClientProjectionFallback, ClientProjectionMutationKind, ClientProjectionOperation,
-    ClientProjectionPartition, ClientProjectionProgram, ClientSurfaceIdentity, CommandConsistency,
+    ClientProjectionPartition, ClientProjectionProgram, ClientSurfaceIdentity,
     CommandProjectionArmRef, CommandProjectionExtension, CommandProjectionPreviewOccurrence,
-    DistributedClientSurfaceExport, RoleGrant, Succeeded, Surface, SurfaceOptions,
+    DistributedClientSurfaceExport, RoleGrant, Surface, SurfaceOptions,
 };
 use distributed::projection::{
     PROJECTION_OPERATION_SEMANTICS_VERSION, PROJECTION_PROGRAM_IR_VERSION,
 };
 use distributed::{
-    ApplicationManifest, GraphqlInput, GraphqlOutput, ReadModel, RelationalReadModel,
+    ApplicationManifest, CommandInput, CommandOutput, ReadModel, RelationalReadModel,
 };
 use serde::{Deserialize, Serialize};
 
@@ -40,12 +41,12 @@ struct ChatView {
 }
 
 #[allow(dead_code)]
-#[derive(Clone, Deserialize, GraphqlInput)]
+#[derive(Clone, Deserialize, CommandInput)]
 struct ContractCommandInput {
     title: String,
 }
 
-#[derive(Clone, Serialize, GraphqlOutput)]
+#[derive(Clone, Serialize, CommandOutput)]
 struct ContractCommandOutput {
     id: String,
 }

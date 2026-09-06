@@ -1,9 +1,9 @@
 use super::*;
 use crate::command::{typed_command, Eventual, PreparedCommand, Succeeded};
+use crate::command::{CommandInputType, CommandOutputType, CommandTypeDef, CommandTypeField};
 use crate::graphql::{
-    build_surface, claim, col, rel, surface_for_application, surface_for_role, GraphqlInputType,
-    GraphqlOutputType, GraphqlTypeDef, GraphqlTypeField, RoleGrant, SurfaceCommand, SurfaceOptions,
-    SurfaceProjector, SurfaceTypeField,
+    build_surface, claim, col, rel, surface_for_application, surface_for_role, RoleGrant,
+    SurfaceCommand, SurfaceOptions, SurfaceProjector, SurfaceTypeField,
 };
 use crate::microsvc::{CausalCommandContext, HandlerError, Routes, Service};
 use crate::table::{
@@ -184,11 +184,11 @@ fn team_members() -> TableSchema {
 
 #[derive(Deserialize)]
 struct CompleteInput;
-impl GraphqlInputType for CompleteInput {
-    fn graphql_type() -> GraphqlTypeDef {
-        GraphqlTypeDef::new(
+impl CommandInputType for CompleteInput {
+    fn command_type() -> CommandTypeDef {
+        CommandTypeDef::new(
             "CompleteTodoInput",
-            vec![GraphqlTypeField {
+            vec![CommandTypeField {
                 name: "todo_id".into(),
                 type_name: "String".into(),
                 nullable: false,
@@ -203,11 +203,11 @@ impl GraphqlInputType for CompleteInput {
 
 #[derive(Serialize)]
 struct CompletePayload;
-impl GraphqlOutputType for CompletePayload {
-    fn graphql_type() -> GraphqlTypeDef {
-        GraphqlTypeDef::new(
+impl CommandOutputType for CompletePayload {
+    fn command_type() -> CommandTypeDef {
+        CommandTypeDef::new(
             "CompleteTodoPayload",
-            vec![GraphqlTypeField {
+            vec![CommandTypeField {
                 name: "todo_id".into(),
                 type_name: "String".into(),
                 nullable: false,
@@ -479,7 +479,7 @@ fn modeled_surface_with_base(
 }
 
 fn projected_surface() -> Surface {
-    use super::super::command_contract::{CommandEffects, CommandProjectedModel, EffectExpression};
+    use crate::command::{CommandEffects, CommandProjectedModel, EffectExpression};
 
     let todo_schema: &'static TableSchema = Box::leak(Box::new(todos()));
     let mut surface = build_surface(&[todo_schema.clone(), users()], &SurfaceOptions::sqlite())
@@ -601,7 +601,7 @@ fn projected_command_exports_opaque_role_safe_direct_target() {
 
 #[test]
 fn legacy_effect_presets_are_not_v2_client_authority() {
-    use super::super::command_contract::{
+    use crate::command::{
         CommandEffect, CommandEffects, EffectExpression, EffectFieldValue, EffectKey,
     };
 
