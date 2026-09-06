@@ -1,4 +1,4 @@
-//! GraphqlInput / GraphqlOutput derive macros.
+//! Command data-shape derives and legacy GraphQL adapters.
 
 use proc_macro2::TokenStream;
 use quote::{format_ident, quote};
@@ -41,6 +41,8 @@ enum RenameRule {
     CamelCase,
     SnakeCase,
     ScreamingSnakeCase,
+    KebabCase,
+    ScreamingKebabCase,
 }
 
 impl RenameRule {
@@ -52,10 +54,8 @@ impl RenameRule {
             "camelCase" => Ok(Self::CamelCase),
             "snake_case" => Ok(Self::SnakeCase),
             "SCREAMING_SNAKE_CASE" => Ok(Self::ScreamingSnakeCase),
-            "kebab-case" | "SCREAMING-KEBAB-CASE" => Err(syn::Error::new_spanned(
-                value,
-                "serde kebab-case field names cannot be represented in GraphQL; use camelCase or snake_case",
-            )),
+            "kebab-case" => Ok(Self::KebabCase),
+            "SCREAMING-KEBAB-CASE" => Ok(Self::ScreamingKebabCase),
             other => Err(syn::Error::new_spanned(
                 value,
                 format!(
@@ -67,6 +67,8 @@ impl RenameRule {
 
     fn apply(self, field: &str) -> String {
         match self {
+            Self::KebabCase => field.replace('_', "-"),
+            Self::ScreamingKebabCase => field.replace('_', "-").to_ascii_uppercase(),
             Self::LowerCase | Self::SnakeCase => field.to_string(),
             Self::UpperCase | Self::ScreamingSnakeCase => field.to_ascii_uppercase(),
             Self::PascalCase => {
@@ -104,6 +106,7 @@ pub fn expand_graphql_input(input: DeriveInput) -> syn::Result<TokenStream> {
         quote! { #framework::graphql::GraphqlInputType },
         framework,
         SerdeDirection::Deserialize,
+        false,
     )
 }
 
@@ -115,6 +118,45 @@ pub fn expand_graphql_output(input: DeriveInput) -> syn::Result<TokenStream> {
         quote! { #framework::graphql::GraphqlOutputType },
         framework,
         SerdeDirection::Serialize,
+        false,
+    )
+}
+
+/// Neutral derives share serialization analysis with the legacy GraphQL derives.
+pub fn expand_command_input(input: DeriveInput) -> syn::Result<TokenStream> {
+    let framework = crate::shared::framework_path()?;
+    expand(
+        input,
+        quote! { #framework::command::CommandInputType },
+        quote! { #framework::command::CommandInputType },
+        framework,
+        SerdeDirection::Deserialize,
+        true,
+    )
+    .map_err(command_error)
+}
+
+pub fn expand_command_output(input: DeriveInput) -> syn::Result<TokenStream> {
+    let framework = crate::shared::framework_path()?;
+    expand(
+        input,
+        quote! { #framework::command::CommandOutputType },
+        quote! { #framework::command::CommandOutputType },
+        framework,
+        SerdeDirection::Serialize,
+        true,
+    )
+    .map_err(command_error)
+}
+
+fn command_error(error: syn::Error) -> syn::Error {
+    syn::Error::new(
+        error.span(),
+        error
+            .to_string()
+            .replace("GraphqlInput", "CommandInput")
+            .replace("GraphqlOutput", "CommandOutput")
+            .replace("GraphQL", "command"),
     )
 }
 
@@ -124,11 +166,39 @@ fn expand(
     nested_trait: TokenStream,
     framework: TokenStream,
     serde_direction: SerdeDirection,
+    neutral: bool,
 ) -> syn::Result<TokenStream> {
+    let method = if neutral {
+        quote! { command_type }
+    } else {
+        quote! { graphql_type }
+    };
+    let (type_def, type_field) = if neutral {
+        (
+            quote! { #framework::command::CommandTypeDef },
+            quote! { #framework::command::CommandTypeField },
+        )
+    } else {
+        (
+            quote! { #framework::graphql::GraphqlTypeDef },
+            quote! { #framework::graphql::GraphqlTypeField },
+        )
+    };
     let name = &input.ident;
     let visibility = &input.vis;
     validate_serde_container_shape(&input.attrs, serde_direction)?;
     let rename_all = serde_rename_all(&input.attrs, serde_direction)?;
+    if !neutral
+        && matches!(
+            rename_all,
+            Some(RenameRule::KebabCase | RenameRule::ScreamingKebabCase)
+        )
+    {
+        if let Some(value) = serde_name_value(&input.attrs, "rename_all", serde_direction)? {
+            return Err(syn::Error::new_spanned(value,
+                "serde kebab-case field names cannot be represented in GraphQL; use camelCase or snake_case"));
+        }
+    }
     let Data::Struct(data) = &input.data else {
         return Err(syn::Error::new_spanned(
             &input,
@@ -160,13 +230,15 @@ fn expand(
                     .map(|rule| rule.apply(rust_field_name))
                     .unwrap_or_else(|| rust_field_name.to_string())
             });
-        validate_graphql_field_name(&field_name_str, field)?;
+        if !neutral {
+            validate_graphql_field_name(&field_name_str, field)?;
+        }
         let (type_name, nullable, list, item_nullable, nested) =
-            map_type(&field.ty, field, &nested_trait)?;
+            map_type(&field.ty, field, &nested_trait, &method)?;
         let effect_path_kind = if !list && nested.is_some() {
-            quote! { #framework::graphql::EffectInputObjectKind }
+            quote! { #framework::command::EffectInputObjectKind }
         } else {
-            quote! { #framework::graphql::EffectInputTerminalKind }
+            quote! { #framework::command::EffectInputTerminalKind }
         };
         let effect_wire = effect_input_wire_tokens(&framework, &type_name, list, nested.is_some());
         let nested_tokens = match nested {
@@ -174,7 +246,7 @@ fn expand(
             None => quote! { None },
         };
         field_tokens.push(quote! {
-            #framework::graphql::GraphqlTypeField {
+            #type_field {
                 name: #field_name_str.to_string(),
                 type_name: #type_name.to_string(),
                 nullable: #nullable,
@@ -189,16 +261,16 @@ fn expand(
             let nested_ty = effect_nested_type(field_ty);
             let non_null_ty = effect_non_null_type(field_ty);
             let nullability = if extract_path_arg(field_ty, "Option").is_some() {
-                quote! { #framework::graphql::EffectNullable }
+                quote! { #framework::command::EffectNullable }
             } else {
-                quote! { #framework::graphql::EffectRequired }
+                quote! { #framework::command::EffectRequired }
             };
             effect_input_markers.push(quote! {
                 #[doc(hidden)]
                 #[allow(non_camel_case_types)]
                 #visibility struct #marker;
 
-                impl #framework::graphql::EffectInputFieldMarker for #marker {
+                impl #framework::command::EffectInputFieldMarker for #marker {
                     type Input = #name;
                     type Value = #field_ty;
                     type NonNullValue = #non_null_ty;
@@ -217,8 +289,8 @@ fn expand(
     let type_name_str = name.to_string();
     Ok(quote! {
         impl #trait_path for #name {
-            fn graphql_type() -> #framework::graphql::GraphqlTypeDef {
-                #framework::graphql::GraphqlTypeDef::new(
+            fn #method() -> #type_def {
+                #type_def::new(
                     #type_name_str,
                     vec![#(#field_tokens),*],
                 ).with_type_id(::std::any::TypeId::of::<#name>())
@@ -236,20 +308,20 @@ fn effect_input_wire_tokens(
     nested: bool,
 ) -> proc_macro2::TokenStream {
     if list {
-        return quote! { #framework::graphql::EffectWireList };
+        return quote! { #framework::command::EffectWireList };
     }
     if nested {
-        return quote! { #framework::graphql::EffectWireObject };
+        return quote! { #framework::command::EffectWireObject };
     }
     match type_name {
-        "String" | "ID" => quote! { #framework::graphql::EffectWireString },
-        "Boolean" => quote! { #framework::graphql::EffectWireBoolean },
-        "BigInt" | "Int" => quote! { #framework::graphql::EffectWireBigInt },
-        "Float" => quote! { #framework::graphql::EffectWireFloat },
-        "JSON" => quote! { #framework::graphql::EffectWireJson },
-        "Bytea" => quote! { #framework::graphql::EffectWireBytea },
-        "Timestamptz" => quote! { #framework::graphql::EffectWireTimestamp },
-        _ => quote! { #framework::graphql::EffectWireUnsupported },
+        "String" | "ID" => quote! { #framework::command::EffectWireString },
+        "Boolean" => quote! { #framework::command::EffectWireBoolean },
+        "BigInt" | "Int" => quote! { #framework::command::EffectWireBigInt },
+        "Float" => quote! { #framework::command::EffectWireFloat },
+        "JSON" => quote! { #framework::command::EffectWireJson },
+        "Bytea" => quote! { #framework::command::EffectWireBytea },
+        "Timestamptz" => quote! { #framework::command::EffectWireTimestamp },
+        _ => quote! { #framework::command::EffectWireUnsupported },
     }
 }
 
@@ -277,6 +349,7 @@ fn map_type(
     ty: &Type,
     span: &syn::Field,
     nested_trait: &TokenStream,
+    method: &TokenStream,
 ) -> syn::Result<(String, bool, bool, bool, Option<TokenStream>)> {
     let mut current = ty;
     let mut nullable = false;
@@ -333,7 +406,7 @@ fn map_type(
         return Ok((s.to_string(), nullable, list, item_nullable, None));
     }
 
-    let nested = quote! { <#current as #nested_trait>::graphql_type() };
+    let nested = quote! { <#current as #nested_trait>::#method() };
     Ok((ident, nullable, list, item_nullable, Some(nested)))
 }
 

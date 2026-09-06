@@ -100,7 +100,7 @@ impl CommandProjectionPreview {
     }
 
     /// Bind this preview to the exact outward event-set value also passed to
-    /// [`crate::graphql::TypedCommand::emits`].
+    /// [`crate::command::TypedCommand::emits`].
     #[must_use]
     pub fn events(mut self, events: CommandProjectionEventSet) -> Self {
         self.selectors = events.selectors;
@@ -767,7 +767,7 @@ pub fn __command_projection_preview_constant(
 /// - `#[sourced]`-generated `domain_commands::*` transition witnesses (public
 ///   aggregate methods that call domain-marked `#[event]` recorders)
 ///
-/// Prefer [`crate::graphql::TypedCommand::emits_events`] with these types over
+/// Prefer [`crate::command::TypedCommand::emits_events`] with these types over
 /// hand-maintaining a parallel event list when the domain already owns the
 /// transition.
 pub trait CommandEventSet {
@@ -814,8 +814,8 @@ impl_command_event_set_tuple!(E1, E2, E3, E4, E5, E6, E7, E8);
 #[macro_export]
 macro_rules! events {
     ($($event:ty),+ $(,)?) => {
-        $crate::graphql::__command_projection_events([
-            $($crate::graphql::__command_projection_event_descriptor::<$event>()),+
+        $crate::command::__command_projection_events([
+            $($crate::command::__command_projection_event_descriptor::<$event>()),+
         ])
     };
 }
@@ -829,7 +829,7 @@ macro_rules! state_preview {
     (
         $event:ty => $state:ty { $($fields:tt)* }
     ) => {{
-        $crate::graphql::__command_projection_state_preview::<$event, $state>(
+        $crate::command::__command_projection_state_preview::<$event, $state>(
             $crate::__distributed_state_preview_fields!(@collect [] ; $($fields)*)
         )
     }};
@@ -841,7 +841,7 @@ macro_rules! event_preview {
     (
         $event:ty => $body:ty { $($fields:tt)* }
     ) => {{
-        $crate::graphql::__command_projection_event_preview::<$event, $body>(
+        $crate::command::__command_projection_event_preview::<$event, $body>(
             $crate::__distributed_state_preview_fields!(@collect [] ; $($fields)*)
         )
     }};
@@ -865,7 +865,7 @@ macro_rules! __distributed_state_preview_fields {
                 $($out,)*
                 (
                     stringify!($field),
-                    $crate::graphql::CommandProjectionPreviewSource::input([
+                    $crate::command::CommandProjectionPreviewSource::input([
                         stringify!($first) $(, stringify!($rest))*
                     ])
                 ),
@@ -882,7 +882,7 @@ macro_rules! __distributed_state_preview_fields {
                 $($out,)*
                 (
                     stringify!($field),
-                    $crate::graphql::CommandProjectionPreviewSource::generated_default([
+                    $crate::command::CommandProjectionPreviewSource::generated_default([
                         stringify!($first) $(, stringify!($rest))*
                     ])
                 ),
@@ -899,7 +899,7 @@ macro_rules! __distributed_state_preview_fields {
                 $($out,)*
                 (
                     stringify!($field),
-                    $crate::graphql::CommandProjectionPreviewSource::trusted($name, $codec)
+                    $crate::command::CommandProjectionPreviewSource::trusted($name, $codec)
                 ),
             ];
             $($tail)*
@@ -907,19 +907,19 @@ macro_rules! __distributed_state_preview_fields {
     };
     (@collect [$($out:expr,)*] ; $field:ident : unknown, $($tail:tt)*) => {
         $crate::__distributed_state_preview_fields!(
-            @collect [$($out,)* (stringify!($field), $crate::graphql::CommandProjectionPreviewSource::Unknown),];
+            @collect [$($out,)* (stringify!($field), $crate::command::CommandProjectionPreviewSource::Unknown),];
             $($tail)*
         )
     };
     (@collect [$($out:expr,)*] ; $field:ident : absent, $($tail:tt)*) => {
         $crate::__distributed_state_preview_fields!(
-            @collect [$($out,)* (stringify!($field), $crate::graphql::CommandProjectionPreviewSource::Absent),];
+            @collect [$($out,)* (stringify!($field), $crate::command::CommandProjectionPreviewSource::Absent),];
             $($tail)*
         )
     };
     (@collect [$($out:expr,)*] ; $field:ident : null, $($tail:tt)*) => {
         $crate::__distributed_state_preview_fields!(
-            @collect [$($out,)* (stringify!($field), $crate::graphql::CommandProjectionPreviewSource::Null),];
+            @collect [$($out,)* (stringify!($field), $crate::command::CommandProjectionPreviewSource::Null),];
             $($tail)*
         )
     };
@@ -929,7 +929,7 @@ macro_rules! __distributed_state_preview_fields {
                 $($out,)*
                 (
                     stringify!($field),
-                    $crate::graphql::__command_projection_preview_constant($constant)
+                    $crate::command::__command_projection_preview_constant($constant)
                 ),
             ];
             $($tail)*
@@ -941,7 +941,7 @@ macro_rules! __distributed_state_preview_fields {
                 $($out,)*
                 (
                     stringify!($field),
-                    $crate::graphql::__command_projection_preview_constant($constant)
+                    $crate::command::__command_projection_preview_constant($constant)
                 ),
             ];
             $($tail)*

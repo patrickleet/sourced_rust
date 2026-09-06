@@ -2,8 +2,7 @@
 
 use std::any::TypeId;
 
-use crate::graphql::naming::scalar_type_name;
-use crate::read_model::RelationalReadModel;
+use crate::command::{CommandInputType, CommandOutputType, CommandTypeDef, CommandTypeField};
 
 /// One field on a GraphQL input or output object.
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -72,40 +71,6 @@ pub trait GraphqlOutputType {
     fn graphql_type() -> GraphqlTypeDef;
 }
 
-/// Build a command-output object from the same relational schema that owns
-/// the generated query object.
-///
-/// Atomic command results contain stored columns only. Relationships stay
-/// query-time fields and are never invented by a same-transaction row result.
-pub(crate) fn read_model_graphql_type<M>() -> GraphqlTypeDef
-where
-    M: RelationalReadModel + 'static,
-{
-    let schema = M::schema();
-    let fields = schema
-        .columns
-        .iter()
-        .filter(|column| !column.skipped)
-        .map(|column| {
-            let type_name = scalar_type_name(&column.column_type).unwrap_or_else(|| {
-                panic!(
-                    "read model `{}` column `{}` has no GraphQL scalar mapping",
-                    schema.model_name, column.column_name
-                )
-            });
-            GraphqlTypeField {
-                name: column.column_name.clone(),
-                type_name: type_name.into(),
-                nullable: column.nullable,
-                list: false,
-                item_nullable: false,
-                nested: None,
-            }
-        })
-        .collect();
-    GraphqlTypeDef::new(schema.model_name.clone(), fields).with_type_id(TypeId::of::<M>())
-}
-
 // Builtin scalar mappings for free-standing helpers used by derives.
 #[allow(dead_code)]
 pub fn scalar_for_rust_type(ty: &str) -> Option<&'static str> {
@@ -118,5 +83,68 @@ pub fn scalar_for_rust_type(ty: &str) -> Option<&'static str> {
         "f32" | "f64" => Some("Float"),
         "Value" | "serde_json::Value" => Some("JSON"),
         _ => None,
+    }
+}
+
+// Legacy GraphQL authors can keep their derives/manual implementations. The core
+// depends only on command traits; the adapter translates legacy metadata here.
+impl<T: GraphqlInputType> CommandInputType for T {
+    fn command_type() -> CommandTypeDef {
+        T::graphql_type().into()
+    }
+}
+impl<T: GraphqlOutputType> CommandOutputType for T {
+    fn command_type() -> CommandTypeDef {
+        T::graphql_type().into()
+    }
+}
+
+impl From<GraphqlTypeDef> for CommandTypeDef {
+    fn from(value: GraphqlTypeDef) -> Self {
+        Self {
+            name: value.name,
+            type_id: value.type_id,
+            fields: value
+                .fields
+                .into_iter()
+                .map(|field| CommandTypeField {
+                    name: field.name,
+                    type_name: field.type_name,
+                    nullable: field.nullable,
+                    list: field.list,
+                    item_nullable: field.item_nullable,
+                    nested: field.nested.map(|nested| Box::new((*nested).into())),
+                })
+                .collect(),
+        }
+    }
+}
+
+/// Derive GraphQL metadata from a transport-neutral command descriptor.
+impl From<CommandTypeDef> for GraphqlTypeDef {
+    fn from(value: CommandTypeDef) -> Self {
+        Self {
+            name: value.name,
+            type_id: value.type_id,
+            fields: value
+                .fields
+                .into_iter()
+                .map(|field| GraphqlTypeField {
+                    name: field.name,
+                    type_name: field.type_name,
+                    nullable: field.nullable,
+                    list: field.list,
+                    item_nullable: field.item_nullable,
+                    nested: field.nested.map(|nested| Box::new((*nested).into())),
+                })
+                .collect(),
+        }
+    }
+}
+
+// Preserve the existing public conversion at the compatibility boundary.
+impl From<&GraphqlTypeDef> for crate::application::CommandTypeSpec {
+    fn from(value: &GraphqlTypeDef) -> Self {
+        Self::from(&CommandTypeDef::from(value.clone()))
     }
 }

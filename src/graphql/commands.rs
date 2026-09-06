@@ -17,14 +17,14 @@ use super::surface::{
     SurfaceProjectionOwner,
 };
 use super::surface::{SurfaceCommand, SurfaceCommandShape, SurfaceTypeDef, SurfaceTypeField};
-use super::types::GraphqlTypeDef;
+use crate::command::CommandTypeDef;
 
 #[derive(Clone, Debug, Default)]
 pub(crate) struct TypedCommandInventory {
     contracts: Vec<TypedCommandContract>,
 }
 
-fn surface_type(definition: &GraphqlTypeDef) -> SurfaceTypeDef {
+fn surface_type(definition: &CommandTypeDef) -> SurfaceTypeDef {
     SurfaceTypeDef {
         name: definition.name.clone(),
         fields: definition

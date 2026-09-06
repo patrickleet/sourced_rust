@@ -540,8 +540,7 @@ pub struct Surface {
     pub(crate) projectors_attached: bool,
     /// Non-serializable provenance proving typed commands came from one
     /// executable Service inventory rather than a lookalike command list.
-    pub(crate) service_binding:
-        Option<crate::graphql::command_contract::TypedServiceCommandBinding>,
+    pub(crate) service_binding: Option<crate::command::TypedServiceCommandBinding>,
 }
 
 /// Debug output is intentionally limited to already-authorized public IDs.
@@ -865,7 +864,7 @@ impl Surface {
     #[cfg(any(test, feature = "graphql"))]
     pub(crate) fn with_service_binding(
         mut self,
-        binding: Option<crate::graphql::command_contract::TypedServiceCommandBinding>,
+        binding: Option<crate::command::TypedServiceCommandBinding>,
     ) -> Self {
         self.service_binding = binding;
         self

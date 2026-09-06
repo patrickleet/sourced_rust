@@ -24,8 +24,7 @@ use super::projections::{
     CommandProjectionEvents, CommandProjectionPreview, CommandProjectionPreviewSource,
     CommandProjectionPureReduce,
 };
-use crate::graphql::naming;
-use crate::graphql::types::{GraphqlInputType, GraphqlTypeDef};
+use super::types::{scalar_type_name, CommandInputType, CommandTypeDef};
 use crate::microsvc::Session;
 use crate::outbox::OutboxMessage;
 use crate::projection_protocol::{
@@ -39,8 +38,8 @@ pub(crate) struct TypedCommandContract {
     pub name: String,
     pub field_name: String,
     pub roles: Vec<String>,
-    pub input: GraphqlTypeDef,
-    pub output: GraphqlTypeDef,
+    pub input: CommandTypeDef,
+    pub output: CommandTypeDef,
     pub input_type_id: TypeId,
     pub output_type_id: TypeId,
     pub consistency: CommandConsistency,
@@ -111,8 +110,8 @@ impl TypedCommandContract {
             "name": self.name,
             "field_name": self.field_name,
             "roles": roles,
-            "input": canonical_graphql_type(&self.input),
-            "output": canonical_graphql_type(&self.output),
+            "input": canonical_command_type(&self.input),
+            "output": canonical_command_type(&self.output),
             "consistency": self.consistency,
             "input_defaults": input_defaults,
             "effects": effects,
@@ -166,7 +165,7 @@ impl TypedCommandContract {
                                         .iter()
                                         .find(|column| column.column_name == field.field)
                                 })
-                                .and_then(|column| naming::scalar_type_name(&column.column_type)),
+                                .and_then(|column| scalar_type_name(&column.column_type)),
                         )
                         .map(|value| ResolvedProjectionKeyField {
                             field: field.field.clone(),
@@ -343,7 +342,7 @@ fn resolve_projection_obligation_expression(
     }
 }
 
-fn canonical_graphql_type(definition: &GraphqlTypeDef) -> serde_json::Value {
+fn canonical_command_type(definition: &CommandTypeDef) -> serde_json::Value {
     let mut fields = definition.fields.iter().collect::<Vec<_>>();
     fields.sort_by(|left, right| left.name.cmp(&right.name));
     serde_json::json!({
@@ -354,7 +353,7 @@ fn canonical_graphql_type(definition: &GraphqlTypeDef) -> serde_json::Value {
             "nullable": field.nullable,
             "list": field.list,
             "item_nullable": field.item_nullable,
-            "nested": field.nested.as_deref().map(canonical_graphql_type),
+            "nested": field.nested.as_deref().map(canonical_command_type),
         })).collect::<Vec<_>>(),
     })
 }
@@ -399,13 +398,13 @@ impl TypedServiceCommandBinding {
             }
             if contract.input.type_id != Some(contract.input_type_id) {
                 return Err(format!(
-                    "typed command `{}` input GraphQL metadata is missing or has a different Rust TypeId",
+                    "typed command `{}` input command metadata is missing or has a different Rust TypeId",
                     contract.name
                 ));
             }
             if contract.output.type_id != Some(contract.output_type_id) {
                 return Err(format!(
-                    "typed command `{}` output GraphQL metadata is missing or has a different Rust TypeId",
+                    "typed command `{}` output command metadata is missing or has a different Rust TypeId",
                     contract.name
                 ));
             }
@@ -565,7 +564,7 @@ impl<I, K: CommandOutcome> Clone for TypedCommand<I, K> {
 /// Begin a typed command declaration.
 pub fn typed_command<I, K>(name: &'static str) -> TypedCommand<I, K>
 where
-    I: GraphqlInputType + DeserializeOwned + Send + 'static,
+    I: CommandInputType + DeserializeOwned + Send + 'static,
     K: CommandOutcome,
 {
     let route_name = name;
@@ -577,8 +576,8 @@ where
             other => other,
         })
         .collect();
-    let input = I::graphql_type();
-    let output = K::__graphql_output_type();
+    let input = I::command_type();
+    let output = K::__command_output_type();
     let projected_model = K::__projected_model()
         .map(|(output_type_id, schema)| CommandProjectedModel::new(output_type_id, schema));
     TypedCommand {
@@ -616,7 +615,7 @@ where
 pub fn command_transition<S, I, K>(name: &'static str) -> TypedCommand<I, K>
 where
     S: super::CommandEventSet,
-    I: GraphqlInputType + DeserializeOwned + Send + 'static,
+    I: CommandInputType + DeserializeOwned + Send + 'static,
     K: CommandOutcome,
 {
     typed_command::<I, K>(name).emits_events::<S>()
@@ -750,7 +749,7 @@ impl<I, K: CommandOutcome> TypedCommand<I, K> {
 
 impl<I, M> TypedCommand<I, Atomic<M>>
 where
-    I: GraphqlInputType + DeserializeOwned + Send + 'static,
+    I: CommandInputType + DeserializeOwned + Send + 'static,
     M: RelationalReadModel + Serialize + Send + Sync + 'static,
 {
     /// Attach compiler-generated direct projection ownership metadata.

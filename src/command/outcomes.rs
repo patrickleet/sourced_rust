@@ -8,7 +8,7 @@ use super::projection_proof::{
     validate_resolved_direct_plan, CommandCommitProofError, ProjectionCommitProof,
 };
 use super::typed_command::TypedCommandContract;
-use crate::graphql::types::{read_model_graphql_type, GraphqlOutputType, GraphqlTypeDef};
+use super::types::{read_model_command_type, CommandOutputType, CommandTypeDef};
 use crate::outbox::OutboxMessage;
 use crate::projection::lower::LoweredProjectionPlan;
 use crate::projection_protocol::SameTransactionProjectionBatch;
@@ -70,7 +70,7 @@ macro_rules! committed_outcome {
 
         impl<T> CommandOutcome for $wrapper<T>
         where
-            T: GraphqlOutputType + Serialize + Send + Sync + 'static,
+            T: CommandOutputType + Serialize + Send + Sync + 'static,
         {
             type Payload = T;
             const CONSISTENCY: CommandConsistency = $kind;
@@ -83,8 +83,8 @@ macro_rules! committed_outcome {
                 Self::from_committed_payload(payload)
             }
 
-            fn __graphql_output_type() -> GraphqlTypeDef {
-                T::graphql_type()
+            fn __command_output_type() -> CommandTypeDef {
+                T::command_type()
             }
         }
     };
@@ -110,8 +110,8 @@ where
         Self::from_committed_payload(payload)
     }
 
-    fn __graphql_output_type() -> GraphqlTypeDef {
-        read_model_graphql_type::<T>()
+    fn __command_output_type() -> CommandTypeDef {
+        read_model_command_type::<T>()
     }
 
     fn __projected_model() -> Option<(TypeId, &'static TableSchema)> {
@@ -172,7 +172,7 @@ pub trait CommandOutcome: sealed::Outcome + Send + Sync + 'static {
     fn __finalize_committed(payload: Self::Payload) -> Self;
 
     #[doc(hidden)]
-    fn __graphql_output_type() -> GraphqlTypeDef;
+    fn __command_output_type() -> CommandTypeDef;
 
     /// Compiler-only model identity retained by an ordinary
     /// `typed_command::<I, Atomic<M>>` declaration. The sealed default keeps

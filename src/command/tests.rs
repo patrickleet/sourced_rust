@@ -1,5 +1,5 @@
 use super::*;
-use crate::graphql::{GraphqlInputType, GraphqlOutputType, GraphqlTypeDef, GraphqlTypeField};
+use crate::command::{CommandInputType, CommandOutputType, CommandTypeDef, CommandTypeField};
 use crate::microsvc::Session;
 use crate::outbox::OutboxMessage;
 use crate::projection_protocol::{
@@ -9,17 +9,30 @@ use crate::table::{ColumnType, PrimaryKey, TableColumn, TableKind, TableSchema};
 use serde::{Deserialize, Serialize};
 use std::any::TypeId;
 
+#[test]
+fn command_ledger_fingerprint_preserves_the_v1_canonical_contract() {
+    // The v1 digest includes historical field/scalar names. Module ownership
+    // must not change the identity used to recognize a command retry.
+    let (_, contract) = typed_command::<Input, Succeeded<Payload>>("core.fingerprint").into_parts();
+    let digest = contract.fingerprint_bytes();
+    let hex: String = digest.iter().map(|byte| format!("{byte:02x}")).collect();
+    assert_eq!(
+        hex,
+        "39cd9dbf7a1b3a17e0ee5c04841af2af95b0ba391c07eced4c4e1a80d9e55be5"
+    );
+}
+
 #[allow(dead_code)]
 #[derive(Deserialize)]
 struct Input {
     id: String,
 }
 
-impl GraphqlInputType for Input {
-    fn graphql_type() -> GraphqlTypeDef {
-        GraphqlTypeDef::new(
+impl CommandInputType for Input {
+    fn command_type() -> CommandTypeDef {
+        CommandTypeDef::new(
             "Input",
-            vec![GraphqlTypeField {
+            vec![CommandTypeField {
                 name: "id".into(),
                 type_name: "String".into(),
                 nullable: false,
@@ -123,11 +136,11 @@ impl crate::domain_event::DomainEventContract for DishonestStateContract {
 
 impl crate::domain_event::DomainEventBodyContract<TodoState> for DishonestStateContract {}
 
-impl GraphqlOutputType for Payload {
-    fn graphql_type() -> GraphqlTypeDef {
-        GraphqlTypeDef::new(
+impl CommandOutputType for Payload {
+    fn command_type() -> CommandTypeDef {
+        CommandTypeDef::new(
             "Payload",
-            vec![GraphqlTypeField {
+            vec![CommandTypeField {
                 name: "id".into(),
                 type_name: "String".into(),
                 nullable: false,
@@ -847,11 +860,11 @@ fn command_fingerprints_canonicalize_nested_json_object_keys() {
 }
 
 #[test]
-fn binding_rejects_missing_graphql_type_ids() {
+fn binding_rejects_missing_command_type_ids() {
     let mut contract = typed_command::<Input, Succeeded<Payload>>("todo.create").into_contract();
     contract.input.type_id = None;
     let error = TypedServiceCommandBinding::from_contracts("todos", &[contract]).unwrap_err();
-    assert!(error.contains("input GraphQL metadata is missing"));
+    assert!(error.contains("input command metadata is missing"));
 }
 
 #[test]
@@ -859,7 +872,7 @@ fn binding_canonicalizes_fields_and_roles_but_preserves_effect_order() {
     let mut first = typed_command::<Input, Succeeded<Payload>>("todo.create")
         .roles(["writer", "admin"])
         .into_contract();
-    first.input.fields.push(GraphqlTypeField {
+    first.input.fields.push(CommandTypeField {
         name: "z_extra".into(),
         type_name: "String".into(),
         nullable: true,
@@ -886,7 +899,7 @@ fn binding_canonicalizes_fields_and_roles_but_preserves_effect_order() {
     let mut reordered = typed_command::<Input, Succeeded<Payload>>("todo.create")
         .roles(["writer", "admin"])
         .into_contract();
-    reordered.input.fields.push(GraphqlTypeField {
+    reordered.input.fields.push(CommandTypeField {
         name: "z_extra".into(),
         type_name: "String".into(),
         nullable: true,
