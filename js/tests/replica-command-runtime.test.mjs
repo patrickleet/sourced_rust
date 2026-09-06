@@ -712,6 +712,23 @@ test('coherent reload gate rejects before optimism or transport dispatch', async
 	runtime.dispose();
 });
 
+test('HTTP reload gate rolls back optimism and reports a reload, not an invalid receipt', async () => {
+	for (const status of [503, 200]) {
+		const replica = new TestReplica();
+		const runtime = createReplicaCommandRuntime(replica, {
+			dispatch() {
+				assert.ok(replica.layer(COMMAND_A), 'optimism exists before the response');
+				return { status, errors: [{message: 'application generation is reloading',
+					extensions: {code: 'APPLICATION_RELOADING'}}] };
+			}
+		}, {change: artifact()});
+		await assert.rejects(runtime.commands.change({id: 'todo-1', title: 'blocked'}, {commandId: COMMAND_A}),
+			{code: status === 503 ? 'REPLICA_COMMAND_RELOADING' : 'REPLICA_COMMAND_PROTOCOL_INVALID'});
+		assert.equal(replica.layer(COMMAND_A), undefined);
+		runtime.dispose();
+	}
+});
+
 test('actual delta rebases later optimism while same-record dispatch retains invocation order', async () => {
 	const replica = new TestReplica();
 	const first = deferred();
