@@ -15,6 +15,10 @@
 //!
 //! The `group` is the logical consumer identity (the service/deployment name).
 //! Same group ⇒ competing; different groups ⇒ independent fan-out copies.
+//! Startup reconciles that durable's subject filters without resetting its
+//! acknowledgement cursor or broker tuning. Replicas sharing a group must use
+//! the same subscription inventory. Adding a filter does not replay messages
+//! previously skipped by that consumer; historical catch-up is explicit.
 //!
 //! Requires the `nats` feature. Integration-tested in `tests/nats_transport`.
 
@@ -319,17 +323,41 @@ impl NatsBus {
         strip_prefix: String,
     ) -> Result<NatsJetStreamSource, TransportError> {
         let stream = self.ensure_stream().await?;
-        let consumer = stream
+        let mut consumer = stream
             .get_or_create_consumer(
                 durable,
                 PullConfig {
                     durable_name: Some(durable.to_string()),
-                    filter_subjects: subjects,
+                    filter_subjects: subjects.clone(),
                     ..Default::default()
                 },
             )
             .await
             .map_err(|err| retryable("nats get_or_create_consumer", err))?;
+        // Opening a durable does not reconcile its existing configuration. An
+        // added route otherwise never receives events after an application
+        // upgrade. Update filters in place, preserving progress and tuning.
+        let current = &consumer.cached_info().config;
+        let mut actual = current.filter_subjects.clone();
+        if !current.filter_subject.is_empty() {
+            actual.push(current.filter_subject.clone());
+        }
+        actual.sort();
+        actual.dedup();
+        let mut desired = subjects;
+        desired.sort();
+        desired.dedup();
+        if actual != desired {
+            use async_nats::jetstream::consumer::FromConsumer;
+            let mut config = PullConfig::try_from_consumer_config(current.clone())
+                .map_err(|err| retryable("nats read durable config", err))?;
+            config.filter_subject.clear();
+            config.filter_subjects = desired;
+            consumer = stream
+                .update_consumer(config)
+                .await
+                .map_err(|err| retryable("nats update consumer filters", err))?;
+        }
         Ok(NatsJetStreamSource::new(consumer)
             .with_fetch_timeout(self.fetch_timeout)
             .with_strip_prefix(strip_prefix)
@@ -373,6 +401,136 @@ impl NatsBus {
 #[cfg(test)]
 mod archive_tests {
     use super::*;
+
+    #[tokio::test]
+    #[ignore = "requires DISTRIBUTED_ARCHIVE_TEST_NATS_URL with JetStream"]
+    async fn durable_filter_updates_preserve_progress_and_broker_tuning() {
+        use futures::StreamExt;
+        let url = std::env::var("DISTRIBUTED_ARCHIVE_TEST_NATS_URL").expect("test JetStream URL");
+        let namespace = format!("filter-test-{}", uuid::Uuid::now_v7().simple());
+        let bus = NatsBus::connect(&url).namespace(&namespace).await.unwrap();
+        let stream = bus.ensure_stream().await.unwrap();
+        let first = format!("{namespace}.evt.first");
+        let added = format!("{namespace}.evt.added");
+        let mut consumer = stream
+            .create_consumer(PullConfig {
+                durable_name: Some("filter-proof".into()),
+                filter_subjects: vec![first.clone()],
+                ack_wait: Duration::from_secs(17),
+                max_ack_pending: 29,
+                ..Default::default()
+            })
+            .await
+            .unwrap();
+        let created = consumer.cached_info().created;
+        bus.jetstream
+            .publish(first.clone(), "first".into())
+            .await
+            .unwrap()
+            .await
+            .unwrap();
+        let mut messages = consumer
+            .fetch()
+            .max_messages(1)
+            .expires(Duration::from_secs(2))
+            .messages()
+            .await
+            .unwrap();
+        let message = messages.next().await.unwrap().unwrap();
+        message.double_ack().await.unwrap();
+        drop(messages);
+        let acknowledged = consumer.info().await.unwrap().ack_floor.stream_sequence;
+        assert_eq!(acknowledged, 1);
+        bus.jetstream
+            .publish(added.clone(), "retained-new".into())
+            .await
+            .unwrap()
+            .await
+            .unwrap();
+        // Simulate the old application polling past an unmatched input.
+        let mut unmatched = consumer
+            .fetch()
+            .max_messages(1)
+            .expires(Duration::from_millis(100))
+            .messages()
+            .await
+            .unwrap();
+        assert!(unmatched.next().await.is_none());
+        drop(unmatched);
+        drop(
+            bus.source(
+                "filter-proof",
+                vec![added.clone(), first.clone()],
+                format!("{namespace}.evt."),
+            )
+            .await
+            .unwrap(),
+        );
+        let info = consumer.info().await.unwrap();
+        assert_eq!(
+            info.created, created,
+            "must update, not replace, the consumer"
+        );
+        assert_eq!(info.ack_floor.stream_sequence, acknowledged);
+        assert_eq!(info.config.ack_wait, Duration::from_secs(17));
+        assert_eq!(info.config.max_ack_pending, 29);
+        assert_eq!(info.config.filter_subjects.len(), 2);
+        bus.jetstream
+            .publish(added.clone(), "future-new".into())
+            .await
+            .unwrap()
+            .await
+            .unwrap();
+        let mut messages = consumer
+            .fetch()
+            .max_messages(2)
+            .expires(Duration::from_secs(2))
+            .messages()
+            .await
+            .unwrap();
+        let mut delivered = Vec::new();
+        while let Some(message) = messages.next().await {
+            let message = message.unwrap();
+            delivered.push(String::from_utf8(message.payload.to_vec()).unwrap());
+            message.double_ack().await.unwrap();
+        }
+        assert!(delivered.contains(&"future-new".into()));
+        assert!(
+            !delivered.contains(&"first".into()),
+            "acknowledged effects must not replay"
+        );
+        // NATS does not promise historical catch-up for an added filter. Keep
+        // any observed retained delivery visible in the test output.
+        eprintln!("filter update delivered: {delivered:?}");
+        drop(
+            bus.source(
+                "filter-proof",
+                vec![added.clone()],
+                format!("{namespace}.evt."),
+            )
+            .await
+            .unwrap(),
+        );
+        drop(
+            bus.source(
+                "filter-proof",
+                vec![added.clone()],
+                format!("{namespace}.evt."),
+            )
+            .await
+            .unwrap(),
+        );
+        assert_eq!(
+            consumer.info().await.unwrap().config.filter_subjects,
+            vec![added]
+        );
+        assert_eq!(consumer.cached_info().created, created);
+        // The stream was created only by this test under a fresh UUID namespace.
+        bus.jetstream
+            .delete_stream(NatsBus::stream_name(&namespace))
+            .await
+            .unwrap();
+    }
 
     #[derive(serde::Serialize, serde::Deserialize, crate::DomainState)]
     #[domain_state(version = 1)]
