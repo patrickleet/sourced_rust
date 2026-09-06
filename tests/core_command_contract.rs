@@ -30,28 +30,6 @@ mod neutral {
     }
 }
 
-mod legacy {
-    use super::*;
-    use distributed::{GraphqlInput, GraphqlOutput};
-
-    #[derive(Deserialize, GraphqlInput)]
-    #[serde(rename_all = "camelCase")]
-    pub struct ContractInput {
-        record_id: String,
-        count: i64,
-        nested: Option<Vec<Option<NestedInput>>>,
-    }
-    #[derive(Deserialize, GraphqlInput)]
-    pub struct NestedInput {
-        enabled: bool,
-    }
-    #[derive(Serialize, GraphqlOutput)]
-    pub struct ContractOutput {
-        record_id: String,
-        value: f64,
-    }
-}
-
 fn artifact<I, O>() -> serde_json::Value
 where
     I: CommandInputType + serde::de::DeserializeOwned + Send + 'static,
@@ -80,14 +58,6 @@ fn neutral_declarations_preserve_the_pre_extraction_artifact() {
     assert_eq!(
         artifact::<neutral::ContractInput, neutral::ContractOutput>(),
         expected
-    );
-}
-
-#[test]
-fn legacy_graphql_derives_remain_compatible() {
-    assert_eq!(
-        artifact::<legacy::ContractInput, legacy::ContractOutput>(),
-        artifact::<neutral::ContractInput, neutral::ContractOutput>()
     );
 }
 
@@ -152,13 +122,4 @@ fn neutral_shapes_follow_serde_direction_and_preserve_item_nullability() {
         let list = &definition.fields[2];
         assert!(list.list && list.nullable && list.item_nullable);
     }
-}
-
-#[test]
-fn graphql_metadata_can_be_derived_from_neutral_shapes() {
-    let neutral = neutral::ContractInput::command_type();
-    let graph = graphql::GraphqlTypeDef::from(neutral.clone());
-    assert_eq!(graph.name, neutral.name);
-    assert_eq!(graph.transitive_nested()[0].name, "NestedInput");
-    assert_eq!(command::CommandTypeDef::from(graph), neutral);
 }

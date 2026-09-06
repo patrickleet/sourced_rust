@@ -1,6 +1,6 @@
-use distributed::GraphqlInput;
+use distributed::CommandInput;
 
-#[derive(GraphqlInput)]
+#[derive(CommandInput)]
 struct DefaultedInput {
     #[serde(default)]
     value: String,

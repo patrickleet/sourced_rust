@@ -5,7 +5,7 @@ use distributed::application::{
     CommandTypeSpec, DeploymentPlan, ModelFieldSpec, ModelSpec, Module, MountSelector,
     ProcessIntent, ProcessPreset, ProjectionSpec,
 };
-use distributed::graphql::CommandConsistency;
+use distributed::command::CommandConsistency;
 
 fn portable_command(id: &str, consistency: CommandConsistency) -> CommandSpec {
     let command = CommandSpec::try_new(

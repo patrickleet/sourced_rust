@@ -1,6 +1,6 @@
-use distributed::GraphqlOutput;
+use distributed::CommandOutput;
 
-#[derive(GraphqlOutput)]
+#[derive(CommandOutput)]
 struct CustomOutput {
     #[serde(with = "wire_value")]
     value: String,

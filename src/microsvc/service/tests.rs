@@ -11,6 +11,7 @@ use crate::command::Eventual;
 use crate::command::{typed_command, PreparedCommand, Succeeded};
 #[cfg(feature = "graphql")]
 use crate::command::{Atomic, CommandConsistency};
+use crate::command::{CommandInputType, CommandOutputType, CommandTypeDef, CommandTypeField};
 #[cfg(feature = "graphql")]
 use crate::command_ledger::{
     AttemptFence, CausalCommitBatch, CausalGetStream, CausalRepositoryIdentity,
@@ -19,7 +20,6 @@ use crate::command_ledger::{
 };
 #[cfg(feature = "graphql")]
 use crate::graphql::identity::VerifiedPrincipal;
-use crate::graphql::{GraphqlInputType, GraphqlOutputType, GraphqlTypeDef, GraphqlTypeField};
 #[cfg(feature = "graphql")]
 use crate::graphql::{SurfaceDirectProjection, SurfaceProjector};
 #[cfg(feature = "graphql")]
@@ -73,10 +73,10 @@ struct TypedOutput {
     id: String,
 }
 
-fn one_string_field(name: &str, field: &str) -> GraphqlTypeDef {
-    GraphqlTypeDef::new(
+fn one_string_field(name: &str, field: &str) -> CommandTypeDef {
+    CommandTypeDef::new(
         name,
-        vec![GraphqlTypeField {
+        vec![CommandTypeField {
             name: field.into(),
             type_name: "String".into(),
             nullable: false,
@@ -87,14 +87,14 @@ fn one_string_field(name: &str, field: &str) -> GraphqlTypeDef {
     )
 }
 
-impl GraphqlInputType for TypedInput {
-    fn graphql_type() -> GraphqlTypeDef {
+impl CommandInputType for TypedInput {
+    fn command_type() -> CommandTypeDef {
         one_string_field("TypedInput", "id").with_type_id(std::any::TypeId::of::<Self>())
     }
 }
 
-impl GraphqlOutputType for TypedOutput {
-    fn graphql_type() -> GraphqlTypeDef {
+impl CommandOutputType for TypedOutput {
+    fn command_type() -> CommandTypeDef {
         one_string_field("TypedOutput", "id").with_type_id(std::any::TypeId::of::<Self>())
     }
 }
@@ -107,12 +107,12 @@ struct CausalTestInput {
 }
 
 #[cfg(feature = "graphql")]
-impl GraphqlInputType for CausalTestInput {
-    fn graphql_type() -> GraphqlTypeDef {
-        GraphqlTypeDef::new(
+impl CommandInputType for CausalTestInput {
+    fn command_type() -> CommandTypeDef {
+        CommandTypeDef::new(
             "CausalTestInput",
             vec![
-                GraphqlTypeField {
+                CommandTypeField {
                     name: "id".into(),
                     type_name: "String".into(),
                     nullable: false,
@@ -120,7 +120,7 @@ impl GraphqlInputType for CausalTestInput {
                     item_nullable: false,
                     nested: None,
                 },
-                GraphqlTypeField {
+                CommandTypeField {
                     name: "label".into(),
                     type_name: "String".into(),
                     nullable: false,
@@ -135,7 +135,7 @@ impl GraphqlInputType for CausalTestInput {
 }
 
 #[cfg(feature = "graphql")]
-#[derive(Clone, Deserialize, crate::GraphqlInput)]
+#[derive(Clone, Deserialize, crate::CommandInput)]
 struct CausalProjectionInput {
     #[serde(rename = "todoId")]
     id: String,
@@ -587,28 +587,28 @@ fn modeled_lifecycle_projector(
 }
 
 #[cfg(feature = "graphql")]
-impl GraphqlOutputType for CausalProjectionObligationView {
-    fn graphql_type() -> GraphqlTypeDef {
+impl CommandOutputType for CausalProjectionObligationView {
+    fn command_type() -> CommandTypeDef {
         one_string_field("CausalProjectionObligationView", "id")
             .with_type_id(std::any::TypeId::of::<Self>())
     }
 }
 
 #[cfg(feature = "graphql")]
-impl GraphqlOutputType for CausalProjectionSiblingView {
-    fn graphql_type() -> GraphqlTypeDef {
+impl CommandOutputType for CausalProjectionSiblingView {
+    fn command_type() -> CommandTypeDef {
         one_string_field("CausalProjectionSiblingView", "id")
             .with_type_id(std::any::TypeId::of::<Self>())
     }
 }
 
 #[cfg(feature = "graphql")]
-impl GraphqlOutputType for CausalLifecycleView {
-    fn graphql_type() -> GraphqlTypeDef {
-        GraphqlTypeDef::new(
+impl CommandOutputType for CausalLifecycleView {
+    fn command_type() -> CommandTypeDef {
+        CommandTypeDef::new(
             "CausalLifecycleView",
             vec![
-                GraphqlTypeField {
+                CommandTypeField {
                     name: "id".into(),
                     type_name: "String".into(),
                     nullable: false,
@@ -616,7 +616,7 @@ impl GraphqlOutputType for CausalLifecycleView {
                     item_nullable: false,
                     nested: None,
                 },
-                GraphqlTypeField {
+                CommandTypeField {
                     name: "label".into(),
                     type_name: "String".into(),
                     nullable: false,

@@ -39,23 +39,23 @@ impl CellItem {
     }
 }
 
-#[derive(Debug, Deserialize, crate::GraphqlInput)]
+#[derive(Debug, Deserialize, crate::CommandInput)]
 struct CreateInput {
     id: String,
     title: String,
 }
 
-#[derive(Debug, Serialize, crate::GraphqlOutput)]
+#[derive(Debug, Serialize, crate::CommandOutput)]
 struct CreatePayload {
     id: String,
 }
 
-#[derive(Debug, Deserialize, crate::GraphqlInput)]
+#[derive(Debug, Deserialize, crate::CommandInput)]
 struct CompleteInput {
     id: String,
 }
 
-#[derive(Debug, Serialize, crate::GraphqlOutput)]
+#[derive(Debug, Serialize, crate::CommandOutput)]
 struct CompletePayload {
     id: String,
     done: bool,

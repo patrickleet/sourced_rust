@@ -470,7 +470,7 @@ pub use microsvc::{
 pub use distributed_macros::{
     aggregate, application, command, command_input_defaults, digest, module, mutation,
     mutation_file, portable_command, sourced, CommandInput, CommandOutput, DomainEvent,
-    DomainState, GraphqlInput, GraphqlOutput, ReadModel, Snapshot,
+    DomainState, ReadModel, Snapshot,
 };
 
 // Re-export enqueue macro (requires "emitter" feature)
