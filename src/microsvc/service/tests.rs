@@ -1093,8 +1093,7 @@ fn service_compiles_exact_application_modules_from_command_namespaces() {
         Routes::new()
             .with_repo(repository.queued().aggregate::<RouteComboAggregate>())
             .typed_command(
-                typed_command::<TypedInput, Succeeded<TypedOutput>>("access.grant")
-                    .roles(["user"]),
+                typed_command::<TypedInput, Succeeded<TypedOutput>>("access.grant").roles(["user"]),
             )
             .handle(typed_handler)
             .typed_command(
@@ -1103,18 +1102,15 @@ fn service_compiles_exact_application_modules_from_command_namespaces() {
             )
             .handle(typed_handler),
     );
-    let surface = crate::graphql::build_surface(
-        &[],
-        &crate::graphql::SurfaceOptions::sqlite(),
-    )
-    .expect("empty read-model Surface should build")
-    .with_service(&service)
-    .expect("typed Service should bind to the Surface");
+    let surface = crate::graphql::build_surface(&[], &crate::graphql::SurfaceOptions::sqlite())
+        .expect("empty read-model Surface should build")
+        .with_service(&service)
+        .expect("typed Service should bind to the Surface");
     let surface = crate::application::SurfaceSpec::from_surface("catalog", &surface)
         .expect("Surface should become a portable application contract");
 
     let application = service
-        .application("catalog", surface)
+        .application("catalog", surface.clone())
         .expect("Service and Surface should compile into one application");
 
     assert_eq!(
@@ -1133,6 +1129,20 @@ fn service_compiles_exact_application_modules_from_command_namespaces() {
             .map(|command| command.id.as_str())
             .collect::<Vec<_>>(),
         ["access.grant", "repository.create"]
+    );
+
+    let mut missing = surface.clone();
+    missing
+        .commands
+        .retain(|command| command.id != "access.grant");
+    assert!(matches!(
+        service.application("catalog", missing),
+        Err(crate::ApplicationError::Missing { kind: "surface command", identity })
+            if identity == "access.grant"
+    ));
+    assert!(
+        Service::new().application("catalog", surface).is_err(),
+        "a Surface cannot expose commands absent from the owning Service"
     );
 }
 

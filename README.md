@@ -2191,6 +2191,34 @@ a smaller target: model fields, event methods, handler bodies, and projection
 shapes. Boilerplate service setup, manifest discovery, schema output, and GitOps
 artifacts stay deterministic.
 
+For an existing typed `Service`, derive the logical application from its command
+inventory and the same full GraphQL `Surface` used by the runtime:
+
+```rust,ignore
+let surface = distributed::SurfaceSpec::from_surface("catalog", &full_surface)?;
+let application = service.application("catalog", surface)?;
+let manifest = application.manifest();
+```
+
+Command namespaces such as `orders.submit` supply module names; there is no
+second module list to maintain. Assembly rejects commands missing from the
+Surface or exposed by the Surface without a Service owner. Role-selected client
+exports remain authorization views of that full contract. Complete application
+manifests are bounded at 4 MiB; each opaque JSON contract remains bounded at
+1 MiB, with the existing collection, string and nesting limits still enforced.
+
+An event-driven policy that emits through another aggregate can explicitly carry
+the incoming command's causal identity before recording its events:
+
+```rust,ignore
+ctx.inherit_causation(&mut downstream)?;
+downstream.record(observation)?;
+```
+
+This requires an incoming causation ID and does not manufacture one for external
+events. NATS preserves the message's payload content type and keeps reserved
+transport headers out of user metadata across delivery.
+
 ```bash
 cargo install distributed_cli            # installs `distributed`
 
