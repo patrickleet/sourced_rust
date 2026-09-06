@@ -4,6 +4,7 @@ import { readFileSync, writeFileSync } from 'node:fs';
 import { dirname, isAbsolute, relative, resolve, sep } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { chromium } from 'playwright';
+import { waitForProjectedTodo } from './lifecycle-command-proof.mjs';
 
 const root = resolve(dirname(fileURLToPath(import.meta.url)), '..');
 const frameworkRoot = resolve(root, '../../js');
@@ -244,9 +245,38 @@ async function transition(page, path, source, expectedReplicaRestore, assertGate
 	assert.equal(body.extensions.distributed.generation.generationId, after.active.generationId);
 	assert.equal(body.extensions.distributed.generation.releaseId, after.active.releaseId);
 	assert.ok(body.extensions.distributed.command, 'actual command receipt required');
-	// Discard browser optimism and confirm the persisted read model on a new page.
+	const todo = body.data.todos_create;
+	assert.equal(todo.title, title);
+	assert.equal(typeof todo.todo_id, 'string');
+	const requestHeaders = await mutation.request().allHeaders();
+	const headers = Object.fromEntries(
+		['authorization', 'x-user-id', 'x-roles']
+			.filter((name) => requestHeaders[name] !== undefined)
+			.map((name) => [name, requestHeaders[name]])
+	);
+	const attempts = await waitForProjectedTodo(async (remainingMs) => {
+		const result = await page.request.post(mutation.url(), {
+			headers,
+			timeout: remainingMs,
+			data: {
+				query: `query ReloadTodoProof($id: String!) {
+					todos(where: { todo_id: { _eq: $id } }, limit: 1) {
+						todo_id owner_id title status
+					}
+				}`,
+				variables: { id: todo.todo_id }
+			}
+		});
+		assert.equal(result.status(), 200, 'authoritative Todo query must succeed');
+		return result.json();
+	}, todo, timeoutMs);
+	console.log(`lifecycle-reload: ${relative(root, path)} command accepted and projected (${attempts} queries)`);
+	// @load is not @live. Reloading before projection can seed an empty result
+	// that never changes, even though the projector subsequently commits the row.
+	// Now discard browser optimism and prove fresh SSR + hydration independently.
 	await page.reload({waitUntil: 'domcontentloaded'});
 	await page.locator('[data-todo-id]').filter({hasText: title}).waitFor({timeout: timeoutMs});
+	console.log(`lifecycle-reload: ${relative(root, path)} fresh page confirmed ${todo.todo_id}`);
 	await waitFor(() => page.evaluate(() => globalThis.__distributedReloadState !== undefined), 'hydration after command proof');
 	await page.evaluate(() => { globalThis.__distributedReloadState.value = 'preserve-me'; });
 	await waitForBrowserParticipant(page);
