@@ -23,8 +23,8 @@ mod time;
 
 pub mod aggregate;
 pub mod application;
-pub mod command_dispatch;
 pub mod bus;
+pub mod command_dispatch;
 pub mod domain_event;
 pub mod entity;
 pub mod repository;
@@ -96,13 +96,13 @@ pub use domain_event::{
 
 // Logical projection contracts. Physical read-model lowering deliberately lives
 // behind adapters and is not part of this semantic surface.
-pub use projection::{LocalProjectionMounts, LocalProjectionMountsBuilder, 
-    ProjectionArm, ProjectionAssignment, ProjectionEnvelopeField, ProjectionEventSelector,
-    ProjectionEventSet, ProjectionExpression, ProjectionField, ProjectionInvalidation,
-    ProjectionKeyField, ProjectionMutationKind, ProjectionMutationProvenance,
-    ProjectionObjectValueField, ProjectionOccurrenceProvenance, ProjectionOperation,
-    ProjectionPartition, ProjectionPlanTemplate, ProjectionProgram, ProjectionProgramError,
-    ProjectionProgramId, ProjectionProgramLimits, ProjectionRelationship,
+pub use projection::{
+    LocalProjectionMounts, LocalProjectionMountsBuilder, ProjectionArm, ProjectionAssignment,
+    ProjectionEnvelopeField, ProjectionEventSelector, ProjectionEventSet, ProjectionExpression,
+    ProjectionField, ProjectionInvalidation, ProjectionKeyField, ProjectionMutationKind,
+    ProjectionMutationProvenance, ProjectionObjectValueField, ProjectionOccurrenceProvenance,
+    ProjectionOperation, ProjectionPartition, ProjectionPlanTemplate, ProjectionProgram,
+    ProjectionProgramError, ProjectionProgramId, ProjectionProgramLimits, ProjectionRelationship,
     ProjectionRelationshipEffect, ProjectionRelationshipEffectKind, ProjectionScalarTransform,
     ProjectionTarget, ProjectionValue, ProjectionValueRef, ProjectionValueType,
     ResolvedProjectionKey, ResolvedProjectionMutation, ResolvedProjectionMutationScope,
@@ -368,10 +368,6 @@ pub use outbox::{
 // `DEFAULT_OUTBOX_SOURCE_BATCH`, `DEFAULT_OUTBOX_SOURCE_LEASE`) stay reachable
 // under `distributed::outbox_worker::*` and are intentionally NOT re-exported
 // at the crate root.
-pub use outbox_worker::{
-    BusOutboxPublishHook, BusPublisher, ClaimOutboxMessages, OutboxClaimRef, OutboxDispatchOutcome,
-    OutboxDispatcher, OutboxPublishFailureAction, OutboxSource, OutboxStore, ReceivedOutboxMessage,
-};
 #[cfg(any(
     feature = "http",
     feature = "grpc",
@@ -385,6 +381,10 @@ pub use outbox_worker::{
 pub use outbox_worker::{
     drain_worker_id, OutboxDrainHandle, OutboxDrainRunner, OutboxPublishMailbox,
     DEFAULT_OUTBOX_HINT_CAPACITY,
+};
+pub use outbox_worker::{
+    BusOutboxPublishHook, BusPublisher, ClaimOutboxMessages, OutboxClaimRef, OutboxDispatchOutcome,
+    OutboxDispatcher, OutboxPublishFailureAction, OutboxSource, OutboxStore, ReceivedOutboxMessage,
 };
 
 pub use queued_repo::{
@@ -418,12 +418,12 @@ pub use read_model::{
 // `distributed::table::*`.
 pub use table::{
     ColumnType, DeleteTableRowMutation, ExpectedVersion, ForeignKey, PatchMode,
-    PatchTableRowMutation, PrimaryKey, RelationshipDef, RelationshipKind, RowKey, RowPatch,
-    RowValue, RowValues, RowWriteMode, TableAdapterCapabilities, TableColumn, TableCommitOutcome,
-    TableIndex, TableKind, TableMigrationArtifact, TableModel, TableMutation, TableRowMutation,
-    TableSchema, TableSchemaAdapter, TableSchemaAdapterCapabilities, TableSchemaBootstrap,
-    TableSchemaIssue, TableSchemaIssueKind, TableSchemaRegistry, TableSchemaRegistryExt,
-    ReadModelCatalog, TableSchemaVerification, TableStoreError, TableWritePlan,
+    PatchTableRowMutation, PrimaryKey, ReadModelCatalog, RelationshipDef, RelationshipKind, RowKey,
+    RowPatch, RowValue, RowValues, RowWriteMode, TableAdapterCapabilities, TableColumn,
+    TableCommitOutcome, TableIndex, TableKind, TableMigrationArtifact, TableModel, TableMutation,
+    TableRowMutation, TableSchema, TableSchemaAdapter, TableSchemaAdapterCapabilities,
+    TableSchemaBootstrap, TableSchemaIssue, TableSchemaIssueKind, TableSchemaRegistry,
+    TableSchemaRegistryExt, TableSchemaVerification, TableStoreError, TableWritePlan,
     DEFAULT_TABLE_VERSION_COLUMN,
 };
 pub use trace_context::{
@@ -457,9 +457,9 @@ macro_rules! graphql_models {
 
 // Session convenience re-exports used by GraphQL permission filters.
 pub use microsvc::{
-    MessageEndpointDescriptor, MetricsEndpointDescriptor, ROLE_KEY, ServiceDescriptor,
+    MessageEndpointDescriptor, MetricsEndpointDescriptor, ServiceDescriptor,
     ServiceObservabilityDescriptor, TraceExportMode, TracePropagationMode, TracingDescriptor,
-    TransportDescriptor, USER_ID_KEY,
+    TransportDescriptor, ROLE_KEY, USER_ID_KEY,
 };
 
 // Re-export proc macros. The old event-owning projection proc-macro and

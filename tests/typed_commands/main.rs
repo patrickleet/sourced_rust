@@ -37,12 +37,12 @@ use distributed::{
     body_bindings_for_model, body_field_binding, command_input_defaults, compile_projection,
     descriptor_from_factories, inventory_single_model, lower_single_model,
     resolve_mutation_program, state_upsert_program_for_model, Aggregate, AggregateRepository,
-    ReadModelCatalog, DomainEventDescriptor, DomainEventOccurrence, Entity, EventRecord,
-    GraphqlInput, GraphqlOutput, InMemoryRepository, MutationAssignment, MutationEventBinding,
-    MutationExpression, MutationField, MutationKeyField, MutationKind, MutationOperation,
-    MutationProgram, MutationProgramError, ProjectionExpression, ProjectionHandler,
-    ProjectionPartition, ProjectionProgram, ProjectionProgramError, ProjectionValue,
-    ProjectionValueType, ReadModel, RelationalReadModel, ResolvedProjectionPlan, SqliteRepository,
+    DomainEventDescriptor, DomainEventOccurrence, Entity, EventRecord, GraphqlInput, GraphqlOutput,
+    InMemoryRepository, MutationAssignment, MutationEventBinding, MutationExpression,
+    MutationField, MutationKeyField, MutationKind, MutationOperation, MutationProgram,
+    MutationProgramError, ProjectionExpression, ProjectionHandler, ProjectionPartition,
+    ProjectionProgram, ProjectionProgramError, ProjectionValue, ProjectionValueType, ReadModel,
+    ReadModelCatalog, RelationalReadModel, ResolvedProjectionPlan, SqliteRepository,
 };
 use serde::{Deserialize, Serialize};
 use tower::util::ServiceExt;
@@ -1628,8 +1628,7 @@ fn pool_free_typed_export_preserves_service_provenance_and_rejects_relabeling() 
     assert_eq!(manifest.service_id, "plans");
     assert_eq!(manifest.commands[0].name, "plan.create");
 
-    let error = DistributedClientSurfaceExport::from_selected("other-plans", selected)
-        .unwrap_err();
+    let error = DistributedClientSurfaceExport::from_selected("other-plans", selected).unwrap_err();
     assert!(error
         .to_string()
         .contains("does not match typed Surface provenance"));

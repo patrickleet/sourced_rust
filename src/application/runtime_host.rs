@@ -183,7 +183,7 @@ mod tests {
         use crate::command_dispatch::{CommandDispatchError, CommandDispatcher};
         use crate::microsvc::{CommandRequest, CommandResponse};
         use async_trait::async_trait;
-        
+
         struct Stub;
         #[async_trait]
         impl CommandDispatcher for Stub {

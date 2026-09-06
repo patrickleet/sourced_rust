@@ -322,10 +322,7 @@ impl Service {
     /// Register one explicit command mount against the already-installed
     /// typed route inventory. The route's canonical command spec is the only
     /// authority; a stale or lookalike mount is rejected before dispatch.
-    pub fn register_command_mount(
-        &mut self,
-        mount: CommandMount,
-    ) -> Result<(), HandlerError> {
+    pub fn register_command_mount(&mut self, mount: CommandMount) -> Result<(), HandlerError> {
         self.register_command_mount_inner(mount)
     }
 
@@ -359,12 +356,10 @@ impl Service {
                 mount.spec().id
             )));
         }
-        if !self
-            .registered_command_mounts
-            .iter()
-            .any(|registered| registered.spec().id == mount.spec().id
-                && registered.spec().fingerprint == mount.spec().fingerprint)
-        {
+        if !self.registered_command_mounts.iter().any(|registered| {
+            registered.spec().id == mount.spec().id
+                && registered.spec().fingerprint == mount.spec().fingerprint
+        }) {
             return Err(HandlerError::Rejected(
                 "command mount was not registered against this service".into(),
             ));
@@ -404,10 +399,7 @@ impl Service {
         .await
     }
 
-    fn register_command_mount_inner(
-        &mut self,
-        mount: CommandMount,
-    ) -> Result<(), HandlerError> {
+    fn register_command_mount_inner(&mut self, mount: CommandMount) -> Result<(), HandlerError> {
         let Some(indices) = self
             .index
             .get(&MessageKind::Command)
@@ -449,9 +441,11 @@ impl Service {
                 mount.spec().id
             )));
         }
-        if self.registered_command_mounts.iter().any(|registered| {
-            registered.spec().id == mount.spec().id
-        }) {
+        if self
+            .registered_command_mounts
+            .iter()
+            .any(|registered| registered.spec().id == mount.spec().id)
+        {
             return Err(HandlerError::Rejected(format!(
                 "command mount `{}` is registered more than once",
                 mount.spec().id
@@ -1192,10 +1186,7 @@ impl Service {
 }
 
 impl CommandMountRegistrar for Service {
-    fn register_command_mount(
-        &mut self,
-        mount: CommandMount,
-    ) -> Result<(), HandlerError> {
+    fn register_command_mount(&mut self, mount: CommandMount) -> Result<(), HandlerError> {
         self.register_command_mount_inner(mount)
     }
 }

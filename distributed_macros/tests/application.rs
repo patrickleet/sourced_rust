@@ -98,8 +98,14 @@ fn command_module_and_application_macros_share_one_portable_spec() {
     assert_eq!(spec.id, "todo.create");
     assert_eq!(spec.roles, ["admin", "user"]);
     assert_eq!(spec.emits[0].name, "todo.created");
-    assert!(spec.applies.as_array().is_some_and(|values| !values.is_empty()));
-    assert!(spec.defaults.as_array().is_some_and(|values| !values.is_empty()));
+    assert!(spec
+        .applies
+        .as_array()
+        .is_some_and(|values| !values.is_empty()));
+    assert!(spec
+        .defaults
+        .as_array()
+        .is_some_and(|values| !values.is_empty()));
     assert!(!spec.effects.is_null());
     assert!(!spec.fingerprint.is_empty());
     assert_eq!(

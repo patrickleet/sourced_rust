@@ -908,7 +908,14 @@ fn role_and_application_partition_manifests_hide_raw_paths_and_denied_values() {
         );
     let all_grants = grants();
     let role = surface_for_role(&full, "user", &all_grants["user"]).unwrap();
-    let application = surface_for_application(&full, "web", &["user".into()], &["user".into()], &all_grants).unwrap();
+    let application = surface_for_application(
+        &full,
+        "web",
+        &["user".into()],
+        &["user".into()],
+        &all_grants,
+    )
+    .unwrap();
 
     for (identity, selected) in [
         (ClientSurfaceIdentity::role("user"), role),
@@ -1832,15 +1839,14 @@ fn bigint_keys_embed_until_decimal_string_identity_is_available() {
 fn application_surface_is_common_contract_with_safe_role_limit_semantics() {
     let full = full_surface();
     let all_grants = grants();
-    let selected =
-        surface_for_application(
-            &full,
-            "web",
-            &["user".into(), "admin".into()],
-            &["user".into(), "admin".into()],
-            &all_grants,
-        )
-            .unwrap();
+    let selected = surface_for_application(
+        &full,
+        "web",
+        &["user".into(), "admin".into()],
+        &["user".into(), "admin".into()],
+        &all_grants,
+    )
+    .unwrap();
     let manifest = client_manifest_from_surface(
         "todos-service",
         ClientSurfaceIdentity::application("web", ["admin", "user"], ["admin", "user"]),
@@ -2315,15 +2321,14 @@ fn relational_row_policy_is_server_only_when_relationship_key_is_hidden() {
 #[test]
 fn application_role_sets_are_canonical_before_fingerprinting() {
     let full = full_surface();
-    let selected =
-        surface_for_application(
-            &full,
-            "web",
-            &["admin".into(), "user".into()],
-            &["admin".into(), "user".into()],
-            &grants(),
-        )
-        .unwrap();
+    let selected = surface_for_application(
+        &full,
+        "web",
+        &["admin".into(), "user".into()],
+        &["admin".into(), "user".into()],
+        &grants(),
+    )
+    .unwrap();
     let first = client_manifest_from_surface(
         "todos-service",
         ClientSurfaceIdentity::Application {

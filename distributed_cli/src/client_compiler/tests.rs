@@ -2,9 +2,7 @@ use serde_json::{json, Value as JsonValue};
 use sha2::{Digest, Sha256};
 
 use super::manifest::{refresh_schema_fingerprint, ClientManifest};
-use super::{
-    compile_client, ClientCompileInput, ClientDocument, ClientSurfaceSelector,
-};
+use super::{compile_client, ClientCompileInput, ClientDocument, ClientSurfaceSelector};
 
 fn fingerprint(label: &str) -> String {
     let digest = Sha256::digest(label.as_bytes());
@@ -1183,22 +1181,20 @@ fn component_load_compiles_to_a_framework_neutral_island_inventory() {
 
 #[test]
 fn multiple_load_islands_may_share_one_future_boundary() {
-    let project = compile_client(
-        ClientCompileInput::new(
-            manifest(),
-            ClientSurfaceSelector::role("user"),
-            vec![
-                ClientDocument::new(
-                    "src/lib/todos/TodoCount.graphql",
-                    "query TodoCount @load { todos { id } }",
-                ),
-                ClientDocument::new(
-                    "src/lib/todos/TodoTitles.graphql",
-                    "query TodoTitles @load { todos { title } }",
-                ),
-            ],
-        ),
-    )
+    let project = compile_client(ClientCompileInput::new(
+        manifest(),
+        ClientSurfaceSelector::role("user"),
+        vec![
+            ClientDocument::new(
+                "src/lib/todos/TodoCount.graphql",
+                "query TodoCount @load { todos { id } }",
+            ),
+            ClientDocument::new(
+                "src/lib/todos/TodoTitles.graphql",
+                "query TodoTitles @load { todos { title } }",
+            ),
+        ],
+    ))
     .expect("route ownership is no longer one-operation-per-route");
 
     assert_eq!(project.islands.len(), 2);

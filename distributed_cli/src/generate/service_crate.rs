@@ -213,7 +213,7 @@ async fn main() -> Result<(), {error_type}> {{
             .map(|model| format!("        .read_model::<{}>()\n", model.view_ident))
             .collect::<String>();
         format!(
-r#"use distributed::{{
+            r#"use distributed::{{
     Application, ApplicationManifest, ReadModelCatalog, SurfaceSpec,
 }};
 

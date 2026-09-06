@@ -155,7 +155,9 @@ fn pure_function_inventory(
 }
 
 /// Generate `pures.ts` mapping pure fn ids to hosts / hand imports.
-pub(super) fn render_pures(manifest: &ClientManifest) -> Result<Option<String>, ClientCompileError> {
+pub(super) fn render_pures(
+    manifest: &ClientManifest,
+) -> Result<Option<String>, ClientCompileError> {
     let inventory = pure_function_inventory(manifest)?;
     if inventory.is_empty() {
         return Ok(None);
@@ -168,9 +170,7 @@ pub(super) fn render_pures(manifest: &ClientManifest) -> Result<Option<String>, 
         .iter()
         .any(|(_, d)| matches!(d, PureDelivery::WasmPackage { .. }));
     if needs_wasm {
-        sections.push(
-            "import { createWasmJsonPure } from '@hops-ops/distributed/replica';".into(),
-        );
+        sections.push("import { createWasmJsonPure } from '@hops-ops/distributed/replica';".into());
     }
     let mut entries = Vec::new();
     let mut ready_calls = Vec::new();

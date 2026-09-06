@@ -186,9 +186,7 @@ pub fn derive_process_capabilities(
                         &mut reasons,
                         Capability::DirectProjectionTransaction,
                         Some(mount),
-                        format!(
-                            "atomic command `{id}` requires collocated direct projection"
-                        ),
+                        format!("atomic command `{id}` requires collocated direct projection"),
                     );
                     push(
                         &mut reasons,
@@ -289,7 +287,10 @@ pub fn derive_process_capabilities(
                         Some(mount),
                         format!("surface `{id}` dispatches commands remotely"),
                     );
-                } else if mounts.iter().any(|m| matches!(m, MountSelector::Command { .. })) {
+                } else if mounts
+                    .iter()
+                    .any(|m| matches!(m, MountSelector::Command { .. }))
+                {
                     push(
                         &mut reasons,
                         Capability::LocalCommandDispatch,
@@ -358,10 +359,7 @@ pub fn derive_process_capabilities(
             return Err(ApplicationError::Collision {
                 kind: "schema lifecycle owner",
                 identity: schema_owner.clone().unwrap_or_default(),
-                reason: format!(
-                    "expected single logical owner `{}`",
-                    manifest.name
-                ),
+                reason: format!("expected single logical owner `{}`", manifest.name),
             });
         }
     }

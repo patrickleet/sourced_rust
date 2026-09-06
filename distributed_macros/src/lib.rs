@@ -2,7 +2,6 @@ mod aggregate;
 mod application;
 mod command;
 mod command_input_defaults;
-mod portable_command;
 mod digest;
 mod domain_event;
 mod domain_state;
@@ -10,6 +9,7 @@ mod enqueue;
 mod graphql_types;
 mod module;
 mod mutation;
+mod portable_command;
 // Event-owning `projection!` authoring removed (mutation projectors cutover).
 mod read_model;
 mod shared;
