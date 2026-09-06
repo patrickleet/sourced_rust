@@ -58,8 +58,8 @@
 mod causal;
 pub mod cell_host;
 mod context;
-mod descriptor;
 mod dependencies;
+mod descriptor;
 mod error;
 pub(crate) mod lifecycle;
 mod message_router;
@@ -88,12 +88,12 @@ pub use dependencies::{
     CausalRouteDependencies, ConfigurableOutboxPublisher, HasOutboxStore, HasReadModelStore,
     HasRepo, ReadModelStoreDependencies, RepoDependencies, RepoReadModelDependencies,
 };
-pub use error::HandlerError;
 pub use descriptor::{
     MessageEndpointDescriptor, MetricsEndpointDescriptor, ServiceDescriptor,
     ServiceObservabilityDescriptor, TraceExportMode, TracePropagationMode, TracingDescriptor,
     TransportDescriptor,
 };
+pub use error::HandlerError;
 pub use projector::{
     CausalProjectorContext, CausalProjectorRouteBuilder, LoadedProjection, ProjectionRepairHandle,
     ProjectionRepairHandleParseError,
@@ -105,6 +105,20 @@ pub use runtime::{DEFAULT_MAX_PUBLISH_ATTEMPTS, DEFAULT_PUBLISH_LEASE};
 pub(crate) use service::CausalCommandProjectionEvidence;
 #[cfg(feature = "graphql")]
 pub use service::GraphqlServiceBindError;
+pub use service::{
+    direct_read_model, invoke_transition, require_loaded, CausalCommandContext,
+    CausalCommitBuilder, CausalRepository, CommandRequest, CommandResponse, DeliveryKind,
+    DirectReadModelProjection, HandlerNames, HandlerSpec, PortableCommand, PreparedCausalCommit,
+    PreparedCommandHandler, RouteBuilder, Routes, Service, ThinCommandBuilder, ThinCommandInvoked,
+    ThinCommandLoaded, TypedRouteBuilder,
+};
+#[cfg(feature = "graphql")]
+pub(crate) use service::{
+    CausalCommandProjectionObligation, CausalCommandPublicState, CausalCommandReceiptSource,
+    CausalProjectionEvidenceState,
+};
+#[cfg(feature = "graphql")]
+pub use service::{CausalCommandPublicStatus, CausalDispatchError, CausalDispatchResult};
 #[cfg(any(
     feature = "http",
     feature = "grpc",
@@ -114,23 +128,7 @@ pub use service::GraphqlServiceBindError;
     feature = "rabbitmq",
     feature = "kafka",
 ))]
-pub use workers::{
-    spawn_outbox_publish_loop, spawn_service_consumer_loop, CONSUMER_IDLE_POLL,
-};
-pub use service::{
-    direct_read_model, invoke_transition, require_loaded, CausalCommandContext, CausalCommitBuilder,
-    CausalRepository, CommandRequest, CommandResponse, DeliveryKind, DirectReadModelProjection,
-    HandlerNames, HandlerSpec, PortableCommand, PreparedCausalCommit, PreparedCommandHandler,
-    RouteBuilder, Routes, Service, ThinCommandBuilder, ThinCommandInvoked, ThinCommandLoaded,
-    TypedRouteBuilder,
-};
-#[cfg(feature = "graphql")]
-pub use service::{CausalCommandPublicStatus, CausalDispatchError, CausalDispatchResult};
-#[cfg(feature = "graphql")]
-pub(crate) use service::{
-    CausalCommandProjectionObligation, CausalCommandPublicState, CausalCommandReceiptSource,
-    CausalProjectionEvidenceState,
-};
+pub use workers::{spawn_outbox_publish_loop, spawn_service_consumer_loop, CONSUMER_IDLE_POLL};
 #[cfg(feature = "graphql")]
 pub(crate) mod wait_path;
 pub use session::{Session, ROLE_KEY, USER_ID_KEY};

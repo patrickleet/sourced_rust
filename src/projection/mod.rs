@@ -19,11 +19,11 @@ mod provenance;
 // contract before their owning tasks define one.
 pub mod catalog;
 pub mod executor;
-#[cfg(feature = "graphql")]
-pub mod rebuild;
 pub mod local_mounts;
 pub mod lower;
 pub mod placement;
+#[cfg(feature = "graphql")]
+pub mod rebuild;
 
 pub use local_mounts::{
     LocalDirectMount, LocalEventualMount, LocalProjectionMounts, LocalProjectionMountsBuilder,

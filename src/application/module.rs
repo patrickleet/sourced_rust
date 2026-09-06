@@ -84,10 +84,7 @@ impl ModelSpec {
         let table = LogicalId::try_new("model table", table)?.into_string();
         let mut fields = fields.into_iter().collect::<Vec<_>>();
         fields.sort_by(|left, right| left.name.cmp(&right.name));
-        let mut primary_key = primary_key
-            .into_iter()
-            .map(Into::into)
-            .collect::<Vec<_>>();
+        let mut primary_key = primary_key.into_iter().map(Into::into).collect::<Vec<_>>();
         primary_key.sort();
         primary_key.dedup();
         if fields.is_empty() {
@@ -127,7 +124,6 @@ impl ModelSpec {
         self.fingerprint = sha256_fingerprint(&serde_json::to_vec(&canonical_json(&value))?);
         Ok(())
     }
-
 }
 
 /// Portable projection-owner identity aggregated into a module.
@@ -258,11 +254,13 @@ impl ProjectionSpec {
     pub fn canonical_bytes(&self) -> ApplicationResult<Vec<u8>> {
         let mut value = serde_json::to_value(self)?;
         if let serde_json::Value::Object(fields) = &mut value {
-            fields.insert("fingerprint".into(), serde_json::Value::String(String::new()));
+            fields.insert(
+                "fingerprint".into(),
+                serde_json::Value::String(String::new()),
+            );
         }
         serde_json::to_vec(&canonical_json(&value)).map_err(Into::into)
     }
-
 }
 
 /// A root field identity retained by a surface contract.
@@ -423,7 +421,8 @@ impl SurfaceSpec {
                 spec.fields
                     .sort_by(|left, right| left.name.cmp(&right.name));
                 spec.primary_key.sort();
-                spec.relationships.sort_by(|left, right| left.name.cmp(&right.name));
+                spec.relationships
+                    .sort_by(|left, right| left.name.cmp(&right.name));
                 spec.refresh_fingerprint()?;
                 Ok(spec)
             })
@@ -434,7 +433,12 @@ impl SurfaceSpec {
             .query_fields
             .iter()
             .map(|root| ("query", root))
-            .chain(surface.subscription_fields.iter().map(|root| ("subscription", root)))
+            .chain(
+                surface
+                    .subscription_fields
+                    .iter()
+                    .map(|root| ("subscription", root)),
+            )
             .map(|(operation, root)| SurfaceRootSpec {
                 operation: operation.into(),
                 name: root.name.clone(),
@@ -512,7 +516,10 @@ impl SurfaceSpec {
     pub fn canonical_bytes(&self) -> ApplicationResult<Vec<u8>> {
         let mut value = serde_json::to_value(self)?;
         if let serde_json::Value::Object(fields) = &mut value {
-            fields.insert("fingerprint".into(), serde_json::Value::String(String::new()));
+            fields.insert(
+                "fingerprint".into(),
+                serde_json::Value::String(String::new()),
+            );
         }
         serde_json::to_vec(&canonical_json(&value)).map_err(Into::into)
     }
@@ -577,16 +584,19 @@ fn surface_relationship_spec(
             .collect(),
         keys: surface_relationship_keys(&relationship.keys),
         dependencies: relationship.dependencies.clone(),
-        aggregate: relationship.aggregate.as_ref().map(|aggregate| SurfaceAggregateSpec {
-            name: aggregate.name.clone(),
-            type_name: aggregate.type_name.clone(),
-            arguments: aggregate
-                .arguments
-                .iter()
-                .map(surface_argument_spec)
-                .collect(),
-            dependencies: aggregate.dependencies.clone(),
-        }),
+        aggregate: relationship
+            .aggregate
+            .as_ref()
+            .map(|aggregate| SurfaceAggregateSpec {
+                name: aggregate.name.clone(),
+                type_name: aggregate.type_name.clone(),
+                arguments: aggregate
+                    .arguments
+                    .iter()
+                    .map(surface_argument_spec)
+                    .collect(),
+                dependencies: aggregate.dependencies.clone(),
+            }),
     })
 }
 
@@ -973,7 +983,9 @@ impl ModuleBuilder {
                 .flat_map(|surface| surface.projections.iter().cloned()),
         );
         projections.sort_by(|left, right| left.id.cmp(&right.id));
-        projections = dedup_identical("projection", projections, |projection| projection.id.clone())?;
+        projections = dedup_identical("projection", projections, |projection| {
+            projection.id.clone()
+        })?;
 
         let mut events = commands
             .iter()

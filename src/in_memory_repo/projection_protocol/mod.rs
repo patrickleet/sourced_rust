@@ -42,12 +42,12 @@ use crate::table::{
 
 mod direct_projection;
 mod read_helpers;
+#[cfg(feature = "graphql")]
+mod rebuild;
 mod state;
 mod state_impl;
 mod store_impl;
 mod util;
-#[cfg(feature = "graphql")]
-mod rebuild;
 
 pub(super) use direct_projection::stage_same_transaction_projection;
 pub(super) use state::{reject_causal_owned_plans, InMemoryProjectionProtocolState};

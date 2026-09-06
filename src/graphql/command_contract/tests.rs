@@ -236,11 +236,10 @@ fn command_transition_fills_emits_from_domain_event_set() {
 
 #[test]
 fn authenticated_user_field_reuses_generated_event_schema_metadata() {
-    let contract = super::command_transition::<TodoStateChanged, Input, Succeeded<Payload>>(
-        "todo.complete",
-    )
-    .authenticated_user_field::<TodoStateChanged, TodoState>("status")
-    .into_contract();
+    let contract =
+        super::command_transition::<TodoStateChanged, Input, Succeeded<Payload>>("todo.complete")
+            .authenticated_user_field::<TodoStateChanged, TodoState>("status")
+            .into_contract();
     let field = contract.projections.inferred_values[0]
         .preview
         .fields

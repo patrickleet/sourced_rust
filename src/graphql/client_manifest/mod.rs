@@ -57,9 +57,10 @@ pub use identity::ClientSurfaceIdentity;
 pub use limits::{ClientComplexityWeights, ClientExecutionLimits};
 pub use types::{
     ClientAggregateSemantics, ClientArgument, ClientArgumentKind, ClientCapabilities,
-    ClientCommand, ClientCommandExtensionSlots, ClientCommandShape, ClientField, ClientFilterField,
-    ClientFilterInput, ClientFilterInputRelationship, ClientFilterSemantics, ClientKeyField,
-    ClientModel, ClientOrderSemantics, ClientPaginationSemantics, ClientProjectionArm,
+    ClientCommand, ClientCommandExtensionSlots, ClientCommandPureArg, ClientCommandPureReduce,
+    ClientCommandShape, ClientField, ClientFilterField, ClientFilterInput,
+    ClientFilterInputRelationship, ClientFilterSemantics, ClientKeyField, ClientModel,
+    ClientOrderSemantics, ClientPaginationSemantics, ClientProjectionArm,
     ClientProjectionAssignment, ClientProjectionBinding, ClientProjectionBindingState,
     ClientProjectionEnvelopeField, ClientProjectionEventRef, ClientProjectionExecutionClass,
     ClientProjectionExpression, ClientProjectionFallback, ClientProjectionField,
@@ -74,9 +75,8 @@ pub use types::{
     ClientRootKind, ClientRootOperation, ClientRowPolicy, ClientTrustedPresetDescriptor,
     ClientTypeDef, ClientTypeField, CommandConfirmationsExtension, CommandConsistencyExtension,
     CommandDirectProjectionExtension, CommandEffectsExtension, CommandInputDefaultsExtension,
-    ClientCommandPureArg, ClientCommandPureReduce, CommandProjectionArmRef,
-    CommandProjectionExtension, CommandProjectionPreviewOccurrence, CommandProjectionPreviewValue,
-    DistributedClientManifest, ModelNormalization,
+    CommandProjectionArmRef, CommandProjectionExtension, CommandProjectionPreviewOccurrence,
+    CommandProjectionPreviewValue, DistributedClientManifest, ModelNormalization,
     RelationshipKeyMapping, ScalarCodec,
 };
 pub(crate) use validation::trusted_preset_descriptors;

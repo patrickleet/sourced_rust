@@ -213,12 +213,10 @@ fn atomic_separation_fails_and_eventual_split_succeeds() {
     let collocated = compile_deployment_plan(
         "atomic-local",
         &manifest,
-        [ProcessIntent::new("writer")
-            .unwrap()
-            .mounts([
-                MountSelector::command("todo.force").unwrap(),
-                MountSelector::projector("project_todos_direct").unwrap(),
-            ])],
+        [ProcessIntent::new("writer").unwrap().mounts([
+            MountSelector::command("todo.force").unwrap(),
+            MountSelector::projector("project_todos_direct").unwrap(),
+        ])],
     );
     assert!(collocated.is_ok(), "{collocated:?}");
 }
