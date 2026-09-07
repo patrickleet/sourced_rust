@@ -35,6 +35,8 @@ required-features = ["graphql", "sqlite"]
 [features]
 default = []
 application-runtime = []
+# Portable gateway declarations and dispatch only; runtime adapters are separate.
+gateway = ["dep:url"]
 runtime = ["application-runtime"]
 emitter = ["dep:event-emitter-rs"]
 metrics = []
@@ -79,6 +81,7 @@ tokio = { version = "1", features = ["rt-multi-thread", "net", "macros", "time",
 tracing = { version = "0.1", optional = true }
 tracing-opentelemetry = { version = "0.33", default-features = false, optional = true }
 uuid = { version = "1", features = ["v7"] }
+url = { version = "2", optional = true }
 worker = { version = "0.8", features = ["queue"], optional = true }
 
 [target.'cfg(all(target_arch = "wasm32", target_os = "unknown"))'.dependencies]

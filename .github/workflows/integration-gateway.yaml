@@ -1,0 +1,40 @@
+name: Portable gateway contracts
+
+on:
+  pull_request:
+    paths:
+      - 'src/**'
+      - 'distributed_macros/**'
+      - 'Cargo.toml'
+      - 'build.rs'
+      - 'tests/gateway*'
+      - 'tests/gateway*/**'
+      - '.github/workflows/integration-gateway.yaml'
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  contracts:
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5
+        with:
+          persist-credentials: false
+      - uses: dtolnay/rust-toolchain@29eef336d9b2848a0b548edc03f92a220660cdb8
+        with:
+          toolchain: stable
+          targets: wasm32-unknown-unknown
+          components: rustfmt, clippy
+      - name: Format contract and fixture sources
+        run: rustfmt --edition 2021 --check src/gateway/mod.rs tests/gateway_routing.rs tests/gateway_extensions.rs tests/gateway-portable/src/lib.rs
+      - name: Test portable routing and adapter contracts
+        run: cargo test --manifest-path tests/gateway-portable/Cargo.toml --locked
+      - name: Check fixture lints
+        run: cargo clippy --manifest-path tests/gateway-portable/Cargo.toml --locked --all-targets -- -D warnings
+      - name: Compile the UI/auth consumer to Wasm
+        run: cargo check --manifest-path tests/gateway-portable/Cargo.toml --locked --target wasm32-unknown-unknown
+      - name: Verify native and Wasm dependency isolation
+        run: python3 tests/gateway-portable/check_dependencies.py
