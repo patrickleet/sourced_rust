@@ -161,4 +161,8 @@ async function verifyLiveRace(page,origin){
   await expect(page.getByText(body,{exact:true})).toBeVisible();
   const samples=await page.evaluate(()=>{globalThis.__gatewayLiveObserver.disconnect();return globalThis.__gatewayLiveSamples;});
   assert.ok(samples.every(Boolean),'late live observation removed the confirmed message');
+  const message=page.locator('.ch-msg',{hasText:body});
+  await expect(page.locator('.ch-msg-block',{has:message}).locator('.ch-status-footer')).toHaveText('Delivered');
+  await page.reload();
+  await expect(page.locator('.ch-msg',{hasText:body})).toBeVisible();
 }
