@@ -270,6 +270,8 @@ pub fn build_role_schema(
                         .unwrap_or_else(Session::new);
                     let authority = ctx.data_opt::<ExecutionAuthority>().cloned();
                     let protocol = ctx.data_opt::<ProtocolResponseAccumulator>().cloned();
+                    #[cfg(feature = "gateway-delivery")]
+                    let captured = ctx.data_opt::<super::delivery::PlanCapture>().cloned();
                     let selection = compile::selection_from_field(ctx.field());
                     SubscriptionFieldFuture::new(async move {
                         let inner = inner.ok_or_else(|| {
@@ -280,6 +282,31 @@ pub fn build_role_schema(
                             &session,
                             &inner.anonymous_role,
                         );
+                        #[cfg(feature = "gateway-delivery")]
+                        if let Some(captured) = captured {
+                            let plan = compile::compile_query(
+                                &inner,
+                                &session,
+                                &role,
+                                &model,
+                                compile::RootKind::List,
+                                &selection,
+                            )
+                            .map_err(async_graphql::Error::new)?;
+                            if let compile::QueryPlan::Sql(plan) = plan {
+                                captured
+                                    .0
+                                    .lock()
+                                    .map_err(|_| {
+                                        async_graphql::Error::new("plan capture unavailable")
+                                    })?
+                                    .push(plan);
+                                return Err(async_graphql::Error::new(super::delivery::CAPTURED));
+                            }
+                            return Err(async_graphql::Error::new(
+                                "query is ineligible for delivery reuse",
+                            ));
+                        }
                         let stream = super::subscribe::live_query_stream(
                             inner, session, role, model, selection, protocol,
                         )

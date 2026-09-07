@@ -117,3 +117,6 @@ Concurrent queries can share a bounded execution independently of caching via
 `NativeDelivery::coalescing(FlightLimits)`. Each consumer still authenticates;
 last-consumer cancellation drops the upstream future. See
 [query coalescing](../../docs/gateway/query-coalescing.md).
+
+Shared live delivery is independently selected with `NativeDelivery::live(LiveLimits)`.
+See [live sharing and recovery](../../docs/gateway/live-sharing.md).

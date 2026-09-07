@@ -460,3 +460,9 @@ pub use delivery::{NativeDelivery, NativeDeliveryOptions};
 
 #[cfg(all(feature = "gateway-graphql-native", feature = "gateway-delivery"))]
 mod flight;
+
+#[cfg(all(feature = "gateway-graphql-native", feature = "gateway-delivery"))]
+mod live;
+
+#[cfg(all(feature = "gateway-graphql-native", feature = "gateway-delivery"))]
+mod live_transport;

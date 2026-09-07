@@ -342,3 +342,62 @@ fn flight_admission_limits_freshness_and_generation_fences() {
     assert!(registry.leave(new));
     assert!(registry.is_empty());
 }
+
+#[test]
+fn live_scope_replay_and_proof_sensitive_frames() {
+    let request = json!({"query":"subscription { todos { title } }"});
+    let mut admitted = admission("v1");
+    admitted.key = OperationKey::from_origin(&admitted.identity, &request).unwrap();
+    let key = LiveKey::admitted(&admitted, &request, None, 100).unwrap();
+    let mut resumed = request.clone();
+    resumed["extensions"] =
+        json!({"distributed":{"resume":[{"projection":"todos","position":"1","token":"cursor"}]}});
+    let mut replay = admitted.clone();
+    replay.key = OperationKey::from_origin(&replay.identity, &resumed).unwrap();
+    let replay_key = LiveKey::admitted(&replay, &resumed, None, 100).unwrap();
+    assert!(key.same_operation(&replay_key));
+    assert!(!key.same_initial(&replay_key));
+    for changed in ["subject", "policy"] {
+        let mut other = admitted.clone();
+        if changed == "subject" {
+            other.identity.cache_scope = "bob".into();
+        } else {
+            other.identity.authorization_generation = "policy-2".into();
+        }
+        other.key = OperationKey::from_origin(&other.identity, &request).unwrap();
+        assert!(!key.same_operation(&LiveKey::admitted(&other, &request, None, 100).unwrap()));
+    }
+    assert!(LiveKey::admitted(&admitted, &request, None, 200).is_err());
+    assert!(LiveKey::admitted(
+        &admission("v1"),
+        &json!({"query":"{ todos { title } }"}),
+        None,
+        100
+    )
+    .is_err());
+    let mut payload: serde_json::Value = serde_json::from_slice(&snapshot(&admitted).body).unwrap();
+    payload["extensions"]["distributed"]["live"] = json!({"supported":true,"cursors":[{"projection":"todos","position":"2","token":"cursor"}]});
+    let first = LiveFrame::from_origin(&admitted, payload.clone(), None, 4096).unwrap();
+    assert!(
+        first.same_frame(&LiveFrame::from_origin(&admitted, payload.clone(), None, 4096).unwrap())
+    );
+    payload["extensions"]["distributed"]["observations"] = json!([{"commandId":"confirmed"}]);
+    let proof = LiveFrame::from_origin(&admitted, payload.clone(), None, 4096).unwrap();
+    assert!(
+        !first.same_frame(&proof),
+        "equal data with new evidence must be delivered"
+    );
+    assert!(first.same_cursor(&proof));
+    payload["data"] = json!({"todos":[{"title":"external write"}]});
+    let changed = LiveFrame::from_origin(&admitted, payload.clone(), None, 4096).unwrap();
+    assert!(
+        !first.same_cursor(&changed),
+        "same projector cursor does not cover external writes"
+    );
+    payload["extensions"]["distributed"]["live"]["supported"] = false.into();
+    let unsupported = LiveFrame::from_origin(&admitted, payload, None, 4096).unwrap();
+    assert!(!unsupported.same_cursor(&unsupported));
+    let mut stronger = context();
+    stronger.observe([index("scope", "3")]).unwrap();
+    assert!(!first.satisfies(&admitted, Some(&stronger)));
+}
