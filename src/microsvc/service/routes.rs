@@ -1722,10 +1722,23 @@ where
             }
 
             let fence = attempt.fence();
+            let replay = crate::microsvc::cell_host::causal::CellCommandReplay {
+                payload: replay_payload.clone(),
+                events: batch
+                    .outbox_messages
+                    .iter()
+                    .map(crate::microsvc::cell_host::CellProjectionEventWireItem::from_message)
+                    .collect(),
+            };
+            let replay = serde_json::to_value(replay).map_err(|error| {
+                CellDispatchError::Internal(format!(
+                    "cell command replay could not be encoded: {error}"
+                ))
+            })?;
             let completion = attempt
                 .complete(
                     TerminalCommandState::Succeeded,
-                    replay_payload.clone(),
+                    replay,
                     policy.replay_retention,
                 )
                 .map_err(crate::microsvc::cell_host::causal::internal_ledger_error)?;

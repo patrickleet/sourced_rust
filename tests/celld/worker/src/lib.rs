@@ -7,10 +7,9 @@
 
 use chat_domain::{post, ChatMessage, ChatMessageState};
 use distributed::cell_host::{
-    cell_projection_event_evidence, AggregateCell, CellCommandIdentity, CellDispatchError,
-    CellDispatchResult, CellWaitPathRequest, CelldOutbox, DurableAggregateCellState,
-    InternalHttpSecret, CELL_INTERNAL_SECRET_ENV, CELL_INTERNAL_SECRET_HEADER,
-    CELL_PRINCIPAL_PARTITION_HEADER, CELL_SERVICE_ID_HEADER,
+    AggregateCell, CellCommandIdentity, CellDispatchError, CellDispatchResult, CellWaitPathRequest,
+    CelldOutbox, DurableAggregateCellState, InternalHttpSecret, CELL_INTERNAL_SECRET_ENV,
+    CELL_INTERNAL_SECRET_HEADER, CELL_PRINCIPAL_PARTITION_HEADER, CELL_SERVICE_ID_HEADER,
 };
 use distributed::microsvc::{Session, ROLE_KEY, USER_ID_KEY};
 use serde::de::DeserializeOwned;
@@ -361,7 +360,7 @@ async fn post_chat(
         Ok(dispatch) => {
             seal_chat_from_load(cell).await;
             persist_and_drain_cell(sql, storage, env, cell).await?;
-            let events = projection_events_wire(cell, dispatch.causation_id())?;
+            let events = serde_json::to_value(dispatch.projection_events())?;
             wait_path_ok(dispatch.payload().clone(), &dispatch, 201, events)
         }
         Err(error) => {
@@ -462,19 +461,6 @@ fn wait_path_ok(
     )
 }
 
-fn projection_events_wire<A>(cell: &AggregateCell<A>, causation_id: &str) -> Result<Value>
-where
-    A: distributed::Aggregate + Send + Sync + 'static,
-{
-    let rows = cell
-        .durable_outbox()
-        .map_err(|error| Error::RustError(error.to_string()))?;
-    serde_json::to_value(
-        cell_projection_event_evidence(&rows, causation_id).map_err(Error::RustError)?,
-    )
-    .map_err(|error| Error::RustError(error.to_string()))
-}
-
 async fn create_todo(
     sql: &SqlStorage,
     storage: &Storage,
@@ -512,7 +498,7 @@ async fn create_todo(
         Ok(dispatch) => {
             seal_from_load(cell).await;
             persist_and_drain_cell(sql, storage, env, cell).await?;
-            let events = projection_events_wire(cell, dispatch.causation_id())?;
+            let events = serde_json::to_value(dispatch.projection_events())?;
             wait_path_ok(
                 http_from_command(id, dispatch.payload(), &title),
                 &dispatch,
@@ -564,7 +550,7 @@ async fn transition_todo(
         Ok(dispatch) => {
             seal_from_load(cell).await;
             persist_and_drain_cell(sql, storage, env, cell).await?;
-            let events = projection_events_wire(cell, dispatch.causation_id())?;
+            let events = serde_json::to_value(dispatch.projection_events())?;
             let title = cell
                 .load()
                 .await
