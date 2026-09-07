@@ -482,6 +482,7 @@ mod tests {
     }
     #[cfg(feature = "postgres")]
     #[tokio::test]
+    #[ignore = "requires owned gateway-postgres primary; run tests/gateway-postgres/run.py"]
     async fn postgres_transactional_coverage_and_snapshot_race() {
         let pool = sqlx::postgres::PgPoolOptions::new()
             .max_connections(3)
