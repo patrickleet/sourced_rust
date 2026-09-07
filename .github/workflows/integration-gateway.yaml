@@ -1,4 +1,4 @@
-name: Portable gateway contracts
+name: Application gateway
 
 on:
   pull_request:
@@ -7,6 +7,10 @@ on:
       - 'distributed_macros/**'
       - 'Cargo.toml'
       - 'build.rs'
+      - 'tests/e2e-ui/ui/src/auth.ts'
+      - 'tests/e2e-ui/ui/src/lib/server/**'
+      - 'tests/e2e-ui/ui/src/routes/api/auth/**'
+      - 'tests/graphql_identity/**'
       - 'tests/gateway*'
       - 'tests/gateway*/**'
       - '.github/workflows/integration-gateway.yaml'
@@ -38,3 +42,28 @@ jobs:
         run: cargo check --manifest-path tests/gateway-portable/Cargo.toml --locked --target wasm32-unknown-unknown
       - name: Verify native and Wasm dependency isolation
         run: python3 tests/gateway-portable/check_dependencies.py
+
+  auth:
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5
+        with:
+          persist-credentials: false
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '24'
+      - uses: dtolnay/rust-toolchain@29eef336d9b2848a0b548edc03f92a220660cdb8
+        with:
+          toolchain: stable
+      - name: Verify gateway and backend identity
+        run: cargo test -p distributed --no-default-features --features gateway,graphql,sqlite --test graphql_identity
+      - name: Install pinned auth fixture dependencies
+        working-directory: tests/gateway-auth
+        run: npm ci
+      - name: Install Chromium
+        working-directory: tests/gateway-auth
+        run: npx playwright install --with-deps chromium
+      - name: Run production Auth.js lifecycle and browser security cases
+        working-directory: tests/gateway-auth
+        run: npm test
