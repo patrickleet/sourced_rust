@@ -812,6 +812,46 @@ impl TryFrom<&EventRecord> for TodoEvent { /* ... */ }
 impl Aggregate for Todo { /* ... */ }
 ```
 
+### Flat events and optimistic updates
+
+With `domain = event`, recorder parameters are the flat outward event body.
+Literal arguments in public transitions also inform generated optimistic
+projections—there is no second status mapping to maintain:
+
+```rust,ignore
+#[sourced(entity, aggregate_type = "review")]
+impl Review {
+    pub fn approve(&mut self, id: String) -> distributed::SourcedResult {
+        // Validate the decision here, before recording it.
+        self.record_status(id, "approved".into())?;
+        Ok(())
+    }
+
+    #[event("review.status_recorded", version = 1, domain = event)]
+    fn record_status(&mut self, id: String, status: String) {
+        self.entity.set_id(id);
+        self.status = status;
+    }
+}
+```
+
+A portable command selecting `domain_commands::Approve` carries the known
+`status = "approved"` into its projection preview. The projection still defines
+which read-model fields it updates; permissions and confirmed events still
+decide what the client can ultimately retain.
+
+Inference recognizes scalar literals, literal string ownership conversions,
+and optional literals using fully qualified standard constructors (for example,
+`::core::option::Option::Some(true)`). Bare `Some`/`None` remain unknown because
+they can be shadowed. Inference preserves numeric types. Computed IDs, clocks,
+variables, arbitrary calls, and unsupported expressions stay unknown. When
+calls to the same recorder disagree, only their shared constants are retained.
+This does not predict authorization or guarantee an event will occur. Snapshot
+events continue to infer known values from recorder state assignments.
+
+See [the executable contract tests](tests/sourced/flat_preview.rs), including
+the generated GraphQL client manifest and conflicting/dynamic-value cases.
+
 ### Durable Stream Identity
 
 `Aggregate::aggregate_type()` provides the type component of a persistence stream's identity (the pair `(aggregate_type, aggregate_id)`). The default uses Rust's type name for development convenience, but **production persistence should set an explicit, stable durable name**:
