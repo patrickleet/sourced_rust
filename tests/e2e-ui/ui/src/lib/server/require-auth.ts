@@ -11,7 +11,7 @@ type AuthLocals = {
 };
 
 /** Share the current-session check between protected UI and refresh/API routes. */
-export function isCurrentSession(session: AuthSession | null): session is AuthSession {
+export function isCurrentSession(session: AuthSession | null): session is AuthSession & { user: NonNullable<unknown> } {
 	return !!session?.user && !session.error &&
 		(session.expiresAt === undefined || session.expiresAt > Date.now() / 1000);
 }

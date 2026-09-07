@@ -9,6 +9,8 @@ on:
       - 'build.rs'
       - 'migrations/**'
       - 'docs/gateway/**'
+      - 'tests/e2e-ui/**'
+      - 'distributed_cli/src/lifecycle/**'
       - 'tests/e2e-ui/ui/src/auth.ts'
       - 'tests/e2e-ui/ui/src/lib/server/**'
       - 'tests/e2e-ui/ui/src/routes/api/auth/**'
@@ -176,3 +178,33 @@ jobs:
           node tests/gateway-worker/run.mjs
       - name: Prove actual DO coordination, SQL reduction, restart and cancellation
         run: cargo test --no-default-features --features gateway-graphql-native,gateway-delivery,sqlite --test graphql_query_protocol worker_ -- --ignored --nocapture --test-threads=1
+
+  application:
+    runs-on: ubuntu-latest
+    timeout-minutes: 35
+    steps:
+      - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5
+        with:
+          persist-credentials: false
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '24'
+      - uses: dtolnay/rust-toolchain@29eef336d9b2848a0b548edc03f92a220660cdb8
+        with:
+          toolchain: stable
+          targets: wasm32-unknown-unknown
+      - name: Install isolated browser fixture
+        run: |
+          cargo install wasm-pack --locked
+          npm ci --prefix tests/gateway-auth
+          cd tests/gateway-auth
+          npx playwright install --with-deps chromium
+      - name: Verify explicit application mounts
+        run: cargo test --no-default-features --features graphql,sqlite,application-runtime,gateway --test application_composition --test application_plans --test gateway_mounts
+      - name: Build coherent application and run public-origin browser flows
+        run: node tests/e2e-ui/gateway/run.mjs
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: gateway-application
+          path: tests/e2e-ui/gateway/artifacts/

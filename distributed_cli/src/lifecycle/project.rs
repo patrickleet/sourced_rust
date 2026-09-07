@@ -1009,7 +1009,8 @@ fn lifecycle_dev(
     let ui_host = std::env::var("UI_HOST").unwrap_or_else(|_| "localhost".to_string());
     let ui_bind = std::env::var("UI_BIND").unwrap_or_else(|_| ui_host.clone());
     let ui_port = std::env::var("UI_PORT").unwrap_or_else(|_| "5180".to_string());
-    let ui_url = std::env::var("UI_URL")
+    let ui_url = std::env::var("PUBLIC_ORIGIN")
+        .or_else(|_| std::env::var("UI_URL"))
         .or_else(|_| std::env::var("AUTH_URL"))
         .unwrap_or_else(|_| format!("http://{ui_host}:{ui_port}"));
     let cargo_cwd = cargo_root

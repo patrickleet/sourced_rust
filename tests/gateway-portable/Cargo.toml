@@ -37,3 +37,7 @@ path = "../gateway_graphql_operation.rs"
 [[test]]
 name = "edge_query_delivery"
 path = "../edge_query_delivery.rs"
+
+[[test]]
+name = "gateway_mounts"
+path = "../gateway_mounts.rs"
