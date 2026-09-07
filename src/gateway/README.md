@@ -112,3 +112,8 @@ resource (`gateway-graphql-native,gateway-delivery`). Origin-side
 `GatewayVersionStore` supplies transactional data/proof dependency versions;
 every hit authenticates and validates at the primary without result SQL.
 See [activation, limits, public-age policy and rollback](../../docs/gateway/snapshot-cache.md).
+
+Concurrent queries can share a bounded execution independently of caching via
+`NativeDelivery::coalescing(FlightLimits)`. Each consumer still authenticates;
+last-consumer cancellation drops the upstream future. See
+[query coalescing](../../docs/gateway/query-coalescing.md).

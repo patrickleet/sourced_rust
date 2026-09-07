@@ -456,4 +456,7 @@ impl GatewayAdapter for NativeGateway {
 #[cfg(all(feature = "gateway-graphql-native", feature = "gateway-delivery"))]
 mod delivery;
 #[cfg(all(feature = "gateway-graphql-native", feature = "gateway-delivery"))]
-pub use delivery::NativeDelivery;
+pub use delivery::{NativeDelivery, NativeDeliveryOptions};
+
+#[cfg(all(feature = "gateway-graphql-native", feature = "gateway-delivery"))]
+mod flight;

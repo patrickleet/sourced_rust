@@ -1903,3 +1903,201 @@ async fn native_snapshot_cache_revalidates_each_consumer_without_result_sql() {
         );
     }
 }
+
+#[cfg(all(feature = "gateway-delivery", feature = "gateway-graphql-native"))]
+#[tokio::test]
+async fn hundred_reads_one_execution_with_cache_disabled() {
+    use axum::{routing::post, Router};
+    use distributed::gateway::{delivery::FlightLimits, native::*, *};
+    use distributed::graphql::delivery::GatewayVersionStore;
+    use tower::ServiceExt;
+    let fixture = protocol_fixture_with_retention(10).await;
+    let store = GatewayVersionStore::install(
+        &distributed::graphql::GraphqlPool::from(fixture.repository.pool().clone()),
+        "flight-test",
+        ["causal_query_views".into()],
+    )
+    .await
+    .unwrap();
+    let engine = Arc::new(
+        GraphqlEngine::builder(&fixture.repository)
+            .service_id(SERVICE_ID)
+            .protocol_token_key(TEST_PROTOCOL_TOKEN_KEY)
+            .roles(&["user"])
+            .anonymous_role("user")
+            .subscriptions(false)
+            .model::<CausalQueryView>(ModelPermissions::new().grant("user", read().all_columns()))
+            .client_projectors([projector()])
+            .gateway_versions(store.clone())
+            .build()
+            .unwrap(),
+    );
+    let protocol_hash = engine
+        .delivery_identity(
+            &user_session(),
+            &Request::new("query Coalesced { causal_query_views { title } }"),
+        )
+        .unwrap()
+        .protocol_hash;
+    let gate = Arc::new(tokio::sync::Semaphore::new(0));
+    let handler_gate = gate.clone();
+    let origin = Router::new().route(
+        "/graphql",
+        post(move |axum::Json(value): axum::Json<serde_json::Value>| {
+            let engine = engine.clone();
+            let gate = handler_gate.clone();
+            async move {
+                if value["extensions"]["gatewayDelivery"]["action"] == "snapshot" {
+                    gate.acquire().await.unwrap().forget();
+                }
+                axum::Json(
+                    serde_json::to_value(
+                        engine
+                            .execute(
+                                &user_session(),
+                                serde_json::from_value::<Request>(value).unwrap(),
+                            )
+                            .await,
+                    )
+                    .unwrap(),
+                )
+            }
+        }),
+    );
+    let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let origin_url = format!("http://{}", listener.local_addr().unwrap());
+    struct Stop(tokio::task::JoinHandle<()>);
+    impl Drop for Stop {
+        fn drop(&mut self) {
+            self.0.abort();
+        }
+    }
+    let _server = Stop(tokio::spawn(async move {
+        axum::serve(listener, origin).await.unwrap()
+    }));
+    let delivery = Arc::new(NativeDelivery::coalescing(FlightLimits::default()).unwrap());
+    let config = GatewayConfig {
+        bindings: vec![Binding::new(
+            "api",
+            BindingKind::Graphql {
+                executor: GraphqlExecutor::Remote { origin: origin_url },
+                capabilities: GraphqlCapabilities {
+                    queries: true,
+                    ..Default::default()
+                },
+                delivery: DeliveryCapabilities {
+                    coalescing: true,
+                    ..Default::default()
+                },
+                schema_extensions: vec![],
+            },
+        )],
+        routes: vec![Route::new("api", RoutePath::prefix("/graphql"), "api")],
+    }
+    .build()
+    .unwrap();
+    let router = NativeGateway::new(
+        config,
+        NativeOptions::new("http://public.invalid"),
+        [(
+            "api".into(),
+            NativeBinding::GraphqlWithDelivery(
+                GraphqlBinding::Remote(RemoteGraphql {
+                    live_path: None,
+                    ..Default::default()
+                }),
+                delivery.clone(),
+            ),
+        )],
+        NativeAuth::anonymous(),
+    )
+    .unwrap()
+    .router();
+    let document = "query Coalesced { causal_query_views { title } }";
+    let spawn = |extension: Option<serde_json::Value>| {
+        let router = router.clone();
+        let mut request = json!({"query":document});
+        if let Some(extension) = extension {
+            request["extensions"] = json!({"gatewayFreshness":extension});
+        }
+        tokio::spawn(async move {
+            let response = router
+                .oneshot(
+                    axum::http::Request::post("/graphql")
+                        .header("content-type", "application/json")
+                        .body(axum::body::Body::from(request.to_string()))
+                        .unwrap(),
+                )
+                .await
+                .unwrap();
+            assert_eq!(response.status(), axum::http::StatusCode::OK);
+            let bytes = axum::body::to_bytes(response.into_body(), 1024 * 1024)
+                .await
+                .unwrap();
+            serde_json::from_slice::<serde_json::Value>(&bytes).unwrap()
+        })
+    };
+    let wait = |groups, consumers| {
+        let delivery = delivery.clone();
+        async move {
+            tokio::time::timeout(Duration::from_secs(10), async {
+                while delivery.flight_counts() != (groups, consumers) {
+                    tokio::time::sleep(Duration::from_millis(5)).await;
+                }
+            })
+            .await
+            .expect("all consumers admitted and joined before releasing result execution");
+        }
+    };
+    let mut consumers = Vec::new();
+    for _ in 0..100 {
+        consumers.push(spawn(None));
+    }
+    wait(1, 100).await;
+    assert_eq!(store.metrics().validations, 100);
+    assert_eq!(store.metrics().result_executions, 0);
+    gate.add_permits(1);
+    let first = consumers.pop().unwrap().await.unwrap();
+    assert!(first.get("errors").is_none(), "{first}");
+    for consumer in consumers {
+        assert_eq!(consumer.await.unwrap(), first);
+    }
+    assert_eq!(
+        store.metrics().result_executions,
+        1,
+        "100 overlapping consumers must execute result SQL exactly once"
+    );
+    assert_eq!(delivery.flight_counts(), (0, 0));
+    // Cache is disabled: a subsequent nonoverlapping request executes again.
+    let next = spawn(None);
+    wait(1, 1).await;
+    gate.add_permits(1);
+    assert_eq!(next.await.unwrap(), first);
+    assert_eq!(store.metrics().result_executions, 2);
+    // One consumer can cancel without aborting the other's execution.
+    let cancelled = spawn(None);
+    let survivor = spawn(None);
+    wait(1, 2).await;
+    cancelled.abort();
+    let _ = cancelled.await;
+    wait(1, 1).await;
+    gate.add_permits(1);
+    assert_eq!(survivor.await.unwrap(), first);
+    assert_eq!(store.metrics().result_executions, 3);
+    // A stronger floor must not join a flight admitted without that floor.
+    let protocol = &first["extensions"]["distributed"];
+    let index = &protocol["snapshot"]["indexes"][0];
+    let context = json!({"version":1,"schemaHash":protocol["schemaHash"],"protocolHash":protocol_hash,
+        "authorizationGeneration":protocol["authorizationGeneration"],"cacheScope":protocol["cacheScope"],"pending":[],
+        "minimum":[{"kind":"index","projection":index["projection"],"scopeToken":index["scopeToken"],"position":"1"}]});
+    let old = spawn(None);
+    wait(1, 1).await;
+    let stronger = spawn(Some(context));
+    wait(2, 2).await;
+    gate.add_permits(2);
+    assert_eq!(old.await.unwrap(), first);
+    let strong = stronger.await.unwrap();
+    assert!(strong.get("errors").is_none(), "{strong}");
+    assert_eq!(store.metrics().result_executions, 5);
+    assert_eq!(delivery.flight_counts(), (0, 0));
+}
