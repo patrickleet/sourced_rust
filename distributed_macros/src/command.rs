@@ -193,7 +193,7 @@ pub fn expand(
     })?;
     if !function.sig.asyncness.is_some() {
         return Err(syn::Error::new_spanned(
-            &function.sig.fn_token,
+            function.sig.fn_token,
             "typed command handlers must be async",
         ));
     }
