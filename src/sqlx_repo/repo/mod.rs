@@ -16,7 +16,6 @@
     reason = "async trait impls return impl Future + Send to preserve public Send bounds"
 )]
 
-use std::borrow::Cow;
 use std::collections::{BTreeMap, HashMap};
 use std::future::Future;
 use std::sync::{Arc, RwLock};
@@ -28,13 +27,12 @@ use sqlx::query_builder::Separated;
 use sqlx::{Encode, Executor, IntoArguments, Pool, QueryBuilder, Row, Transaction, Type};
 
 use crate::command_ledger::{
-    AttemptFence, AttemptToken, CanonicalInputHash, CausalCommitBatch, CausalGetStream,
-    CausalRepositoryIdentity, CausalStorageIdentity, CausalTransactionalCommit, CausationId,
-    CommandCompletion, CommandContractFingerprint, CommandId, CommandLedgerError, CommandLedgerKey,
-    CommandLedgerRecord, CommandLedgerState, CommandLedgerStore, CommandLookup, CommandLookupScope,
-    CommandReservation, PrincipalPartitionId, ReservationDecision, ReservationOutcome,
+    AttemptFence, CausalCommitBatch, CausalGetStream, CausalRepositoryIdentity,
+    CausalStorageIdentity, CausalTransactionalCommit, CommandCompletion, CommandLedgerError,
+    CommandLedgerKey, CommandLedgerStore, CommandLookup, CommandLookupScope, CommandReservation,
+    ReservationOutcome,
 };
-use crate::entity::{Entity, EventRecord, BITCODE_PAYLOAD_CODEC};
+use crate::entity::{Entity, EventRecord};
 use crate::outbox::{OutboxMessage, OutboxMessageStatus};
 use crate::outbox_worker::{
     ensure_active_claim, ClaimOutboxMessages, OutboxBacklogStats, OutboxClaimRef, OutboxStore,
@@ -42,10 +40,9 @@ use crate::outbox_worker::{
 use crate::projection_protocol::{ProjectionChangeRetention, SameTransactionProjectionBatch};
 use crate::read_model::{ReadModelLoadGraph, ReadModelLoadRequest, ReadModelQueryCapabilities};
 use crate::repository::{
-    validate_commit_batch, validate_snapshot_identity, validate_supported_event_codec, CommitBatch,
-    GetStream, InboxReceipt, InboxStore, PreparedEventAppend, ReadModelWritePlanStore,
-    RelationalReadModelQueryStore, RepositoryError, SnapshotStore, SnapshotWrite, StreamIdentity,
-    TransactionalCommit,
+    validate_commit_batch, CommitBatch, GetStream, InboxReceipt, InboxStore, PreparedEventAppend,
+    ReadModelWritePlanStore, RelationalReadModelQueryStore, RepositoryError, SnapshotStore,
+    SnapshotWrite, StreamIdentity, TransactionalCommit,
 };
 use crate::snapshot::SnapshotRecord;
 use crate::sqlx_repo::projection_protocol::{
@@ -76,6 +73,7 @@ mod backend;
 mod commit;
 mod errors;
 mod events;
+mod executor;
 mod inbox;
 mod outbox;
 mod read_models;

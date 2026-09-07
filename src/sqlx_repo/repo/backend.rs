@@ -158,9 +158,6 @@ pub(super) fn ids_by_type(identities: &[StreamIdentity]) -> BTreeMap<&str, Vec<&
     groups
 }
 
-/// Bound parameters per `aggregate_events` row.
-pub(super) const EVENT_BIND_COLUMNS: usize = 10;
-
 /// Bound parameters per `outbox_messages` row.
 pub(super) const OUTBOX_BIND_COLUMNS: usize = 19;
 

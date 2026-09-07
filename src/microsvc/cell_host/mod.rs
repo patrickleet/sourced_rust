@@ -20,6 +20,8 @@ mod celld_outbox;
 #[cfg(feature = "graphql")]
 mod command;
 mod internal_auth;
+#[cfg(all(feature = "workers-rs", target_arch = "wasm32"))]
+mod sql_executor;
 mod store;
 mod wire;
 

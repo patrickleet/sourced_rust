@@ -1,6 +1,8 @@
 mod error;
 mod identity;
 mod inbox;
+pub(crate) mod sql;
+pub(crate) mod sqlite_codec;
 mod traits;
 mod validation;
 
@@ -12,6 +14,4 @@ pub use traits::{
     RelationalReadModelQueryStore, Repository, SnapshotStore, SnapshotWrite, StreamWrite,
     TransactionalCommit,
 };
-#[cfg(any(feature = "postgres", feature = "sqlite"))]
-pub(crate) use validation::validate_supported_event_codec;
 pub(crate) use validation::{validate_commit_batch, validate_snapshot_identity};
