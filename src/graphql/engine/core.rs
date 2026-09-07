@@ -231,6 +231,8 @@ pub(crate) struct EngineInner {
     pub command_binding: Option<TypedServiceCommandBinding>,
     pub causal_storage_identity: Option<crate::command_ledger::CausalStorageIdentity>,
     pub pool: GraphqlPool,
+    #[cfg(feature = "gateway-delivery")]
+    pub read_routing: Option<super::ReadRouting>,
     pub catalog: BTreeMap<String, CatalogEntry>,
     pub by_table: BTreeMap<String, String>,
     pub permissions: BTreeMap<(String, String), RoleModelPerm>,
@@ -294,6 +296,8 @@ pub struct GraphqlEngineBuilder {
     pub(crate) command_binding: Option<TypedServiceCommandBinding>,
     pub(crate) causal_storage_identity: Option<crate::command_ledger::CausalStorageIdentity>,
     pub(crate) pool: GraphqlPool,
+    #[cfg(feature = "gateway-delivery")]
+    pub(crate) read_routing: Option<super::ReadRouting>,
     pub(crate) catalog: BTreeMap<String, CatalogEntry>,
     pub(crate) by_table: BTreeMap<String, String>,
     pub(crate) permissions: BTreeMap<(String, String), RoleModelPerm>,

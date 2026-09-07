@@ -40,3 +40,7 @@ pub mod native;
 /// Portable GraphQL operation selection and capability admission.
 #[cfg(feature = "gateway-graphql")]
 pub mod graphql;
+
+/// Portable authenticated delivery identity and freshness contracts.
+#[cfg(feature = "gateway-delivery")]
+pub mod delivery;

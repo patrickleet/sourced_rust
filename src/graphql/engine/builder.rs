@@ -10,6 +10,8 @@ impl GraphqlEngineBuilder {
             command_binding: None,
             causal_storage_identity: source.causal_storage_identity,
             pool: source.pool,
+            #[cfg(feature = "gateway-delivery")]
+            read_routing: None,
             catalog: BTreeMap::new(),
             by_table: BTreeMap::new(),
             permissions: BTreeMap::new(),
@@ -42,6 +44,18 @@ impl GraphqlEngineBuilder {
     /// Query-only gateway executors disable this before schema construction.
     pub fn subscriptions(mut self, enabled: bool) -> Self {
         self.subscriptions = enabled;
+        self
+    }
+
+    /// Opt in selected exact query documents to a read replica. The engine's
+    /// original repository remains the primary for current reads and evidence.
+    #[cfg(feature = "gateway-delivery")]
+    pub fn read_routing(mut self, routing: ReadRouting) -> Self {
+        if std::mem::discriminant(&self.pool) != std::mem::discriminant(&routing.replica) {
+            self.pending_errors
+                .push("read replica must use the primary SQL dialect".into());
+        }
+        self.read_routing = Some(routing);
         self
     }
 
@@ -1011,6 +1025,8 @@ impl GraphqlEngineBuilder {
             command_binding: self.command_binding,
             causal_storage_identity: self.causal_storage_identity,
             pool: self.pool,
+            #[cfg(feature = "gateway-delivery")]
+            read_routing: self.read_routing,
             catalog: self.catalog,
             by_table: self.by_table,
             permissions: self.permissions,
