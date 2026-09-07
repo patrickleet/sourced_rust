@@ -7,8 +7,12 @@
 //! candidate-scan outbox claim (SQLite has no row locks). It is feature-gated
 //! behind `sqlite` and async-only.
 
+use crate::repository::sqlite_codec::{
+    decode as system_time_from_storage, decode_epoch as system_time_from_epoch_secs,
+    encode as system_time_to_storage,
+};
 use std::sync::LazyLock;
-use std::time::{Duration, SystemTime, UNIX_EPOCH};
+use std::time::{Duration, SystemTime};
 
 use sqlx::migrate::Migrator;
 use sqlx::query_builder::Separated;
@@ -54,15 +58,12 @@ impl crate::sqlx_repo::repo::SqlxRepoBackend for Sqlite {
     // recovery re-reads stream versions in the same transaction.
     const CONFLICT_REREAD_IN_TX: bool = true;
     const NOW: &'static str = "CURRENT_TIMESTAMP";
-    const COMMAND_LEDGER_SELECT: &'static str = "command_name, command_contract_hash, \
-         input_hash, state, causation_id, attempt_token, attempt_number, lease_expires_at, \
-         outcome, created_at, updated_at, completed_at, retention_expires_at, compacted_at";
+    const COMMAND_LEDGER_SELECT: &'static str =
+        crate::repository::sqlite_codec::COMMAND_LEDGER_SELECT;
     const COMMAND_LEDGER_LOCK_SUFFIX: &'static str = "";
     const COMMAND_LEDGER_COMPACTION_LOCK_SUFFIX: &'static str = "";
-    const EVENT_SELECT: &'static str = "event_name, event_version, payload, payload_codec, \
-         payload_codec_version, metadata, sequence, recorded_at";
-    const SNAPSHOT_SELECT: &'static str = "aggregate_type, aggregate_id, version, \
-         snapshot_version, payload, payload_codec, payload_codec_version, metadata, recorded_at";
+    const EVENT_SELECT: &'static str = crate::repository::sqlite_codec::EVENT_SELECT;
+    const SNAPSHOT_SELECT: &'static str = crate::repository::sqlite_codec::SNAPSHOT_SELECT;
     const OUTBOX_SELECT: &'static str = "message_id, event_type, payload, payload_codec, \
          payload_codec_version, metadata, status, created_at, claimed_by, claimed_until, \
          attempts, last_error, destination, source_aggregate_type, source_aggregate_id, \
@@ -463,40 +464,6 @@ impl crate::sqlx_repo::read_model::SqlxReadModelBackend for Sqlite {
             }
         })
     }
-}
-
-fn system_time_to_storage(timestamp: SystemTime) -> Result<String, RepositoryError> {
-    let duration = timestamp.duration_since(UNIX_EPOCH).map_err(|err| {
-        RepositoryError::Model(format!(
-            "event timestamp before UNIX epoch cannot be stored in sqlite: {err}"
-        ))
-    })?;
-    Ok(format!(
-        "{}.{:09}",
-        duration.as_secs(),
-        duration.subsec_nanos()
-    ))
-}
-
-fn system_time_from_storage(value: &str) -> Result<SystemTime, RepositoryError> {
-    let invalid =
-        || RepositoryError::Model(format!("sqlite stored timestamp `{value}` is invalid"));
-    let (secs, nanos) = value.split_once('.').ok_or_else(invalid)?;
-    let secs = secs.parse::<u64>().map_err(|_| invalid())?;
-    let nanos = nanos.parse::<u32>().map_err(|_| invalid())?;
-    if nanos >= 1_000_000_000 {
-        return Err(invalid());
-    }
-    Ok(UNIX_EPOCH + Duration::new(secs, nanos))
-}
-
-fn system_time_from_epoch_secs(value: f64) -> Result<SystemTime, RepositoryError> {
-    if !value.is_finite() || value < 0.0 {
-        return Err(RepositoryError::Model(format!(
-            "sqlite timestamp epoch value {value} is invalid"
-        )));
-    }
-    Ok(UNIX_EPOCH + Duration::from_secs_f64(value))
 }
 
 fn repository_storage_error(operation: &str, err: sqlx::Error) -> RepositoryError {
