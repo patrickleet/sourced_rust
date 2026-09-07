@@ -23,3 +23,7 @@ path = "../gateway_routing.rs"
 [[test]]
 name = "gateway_extensions"
 path = "../gateway_extensions.rs"
+
+[[test]]
+name = "gateway_auth"
+path = "../gateway_auth.rs"

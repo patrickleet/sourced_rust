@@ -17,7 +17,9 @@
 
 #![deny(missing_docs)]
 
+mod auth;
 mod config;
+mod context;
 mod extension;
 mod route;
 
@@ -27,3 +29,6 @@ pub use config::{
 };
 pub use extension::{GatewayAdapter, Rejection};
 pub use route::{Methods, Route, RoutePath, SelectedRoute, MAX_ADMISSIONS, MAX_PATH_BYTES};
+
+pub use auth::{is_untrusted_identity_header, Admission, AuthError, AuthProvider};
+pub use context::{BackendCredential, Credentials, Identity, RequestContext};
