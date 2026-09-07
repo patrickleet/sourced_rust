@@ -204,6 +204,7 @@ jobs:
         run: |
           cargo install wasm-pack --locked
           npm ci --prefix tests/gateway-auth
+          npm ci --prefix tests/e2e-ui
           cd tests/gateway-auth
           npx playwright install --with-deps chromium
       - name: Verify explicit application mounts
@@ -212,6 +213,8 @@ jobs:
         run: node tests/e2e-ui/gateway/run.mjs
       - name: Verify dev lifecycle and browser flows through the gateway
         run: GATEWAY_SKIP_BUILD=1 GATEWAY_DEV=1 node tests/e2e-ui/gateway/run.mjs
+      - name: Verify controlled reloads across gateway and application restarts
+        run: GATEWAY_SKIP_BUILD=1 GATEWAY_DEV=1 GATEWAY_LIFECYCLE=1 node tests/e2e-ui/gateway/run.mjs
       - uses: actions/upload-artifact@v4
         if: always()
         with:
