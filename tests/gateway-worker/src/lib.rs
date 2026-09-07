@@ -13,18 +13,18 @@ fn delivery_options(env: &Env) -> WorkerDeliveryOptions {
         return WorkerDeliveryOptions::default();
     }
     WorkerDeliveryOptions {
-        snapshots: (mode != "flights").then_some(SnapshotLimits {
+        snapshots: (mode == "all" || mode == "snapshots").then_some(SnapshotLimits {
             entries: 128,
             bytes: 2 * 1024 * 1024,
             entry_bytes: 256 * 1024,
         }),
-        coalescing: Some(FlightLimits {
+        coalescing: (mode == "all" || mode == "flights").then_some(FlightLimits {
             groups: 8,
             consumers: 128,
             response_bytes: 256 * 1024,
             ..Default::default()
         }),
-        live: (mode != "flights").then(|| LiveLimits {
+        live: (mode == "all" || mode == "live").then(|| LiveLimits {
             groups: 4,
             consumers: 128,
             frame_bytes: 64 * 1024,
@@ -139,7 +139,7 @@ impl DurableObject for DeliveryCoordinator {
         match request.path().as_str() {
             "/__metrics" => {
                 return Response::from_json(
-                    &serde_json::json!({"query":self.coordinator.counts(),"live":self.coordinator.live_counts()}),
+                    &serde_json::json!({"query":self.coordinator.counts(),"live":self.coordinator.live_counts(),"metrics":self.coordinator.metrics()}),
                 )
             }
             "/__reset" => {
@@ -156,6 +156,10 @@ impl DurableObject for DeliveryCoordinator {
 #[event(fetch)]
 async fn fetch(request: Request, env: Env, _ctx: Context) -> Result<Response> {
     if request.path() == "/__coordinators" {
+        let options = delivery_options(&env);
+        if options.snapshots.is_none() && options.coalescing.is_none() && options.live.is_none() {
+            return Response::from_json(&Vec::<serde_json::Value>::new());
+        }
         let reset = request.method() == ::worker::Method::Post;
         let mut counts = Vec::new();
         for shard in 0..4 {

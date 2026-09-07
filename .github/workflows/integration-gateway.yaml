@@ -176,6 +176,13 @@ jobs:
         run: |
           node tests/gateway-worker/proxy-runtime.mjs
           node tests/gateway-worker/run.mjs
+      - name: Measure actual native and workerd origin/client savings
+        run: cargo test --no-default-features --features gateway-graphql-native,gateway-delivery,sqlite --test graphql_query_protocol separate_origin_and_client_savings -- --ignored --nocapture
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: gateway-delivery-load
+          path: tests/gateway-worker/artifacts/load-report.json
       - name: Prove actual DO coordination, SQL reduction, restart and cancellation
         run: cargo test --no-default-features --features gateway-graphql-native,gateway-delivery,sqlite --test graphql_query_protocol worker_ -- --ignored --nocapture --test-threads=1
 

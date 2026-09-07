@@ -25,6 +25,7 @@ pub struct NativeDeliveryOptions {
 /// Bounded native delivery. Each consumer authenticates at the origin before
 /// lookup/join; snapshot storage and shared query execution are independent.
 pub struct NativeDelivery {
+    bypasses: std::sync::atomic::AtomicU64,
     snapshots: Option<Mutex<SnapshotCache>>,
     flights: Option<Arc<super::flight::NativeFlights>>,
     pub(super) live: Option<Arc<super::live::NativeLive>>,
@@ -53,6 +54,7 @@ impl NativeDelivery {
             .or(options.snapshots.map(|limits| limits.entry_bytes))
             .unwrap_or(1024 * 1024);
         Ok(Self {
+            bypasses: std::sync::atomic::AtomicU64::new(0),
             snapshots: options
                 .snapshots
                 .map(SnapshotCache::new)
@@ -66,6 +68,16 @@ impl NativeDelivery {
             live: options.live.map(super::live::NativeLive::new).transpose()?,
             entry_bytes,
         })
+    }
+    /// Cache decisions and origin-ineligible query bypasses. Labels contain no
+    /// request identity. None indicates snapshot storage was not selected.
+    pub fn metrics(&self) -> (Option<SnapshotMetrics>, u64) {
+        (
+            self.snapshots
+                .as_ref()
+                .and_then(|cache| cache.lock().ok().map(|cache| cache.metrics())),
+            self.bypasses.load(std::sync::atomic::Ordering::Relaxed),
+        )
     }
     /// Allocate a bounded origin-validated snapshot cache.
     pub fn snapshots(limits: SnapshotLimits) -> Result<Self, GatewayError> {
@@ -139,6 +151,8 @@ impl NativeDelivery {
         let admission = match validate(binding, inner, executor, &context, &parts, &value).await {
             AdmissionResult::Eligible(admission) => admission,
             AdmissionResult::Bypass => {
+                self.bypasses
+                    .fetch_add(1, std::sync::atomic::Ordering::Relaxed);
                 return binding
                     .execute_http(
                         inner,
@@ -147,7 +161,7 @@ impl NativeDelivery {
                         request(&parts, value),
                         Some(permit),
                     )
-                    .await
+                    .await;
             }
             AdmissionResult::Error(error) => return error,
         };

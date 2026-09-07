@@ -112,6 +112,7 @@ impl WorkerDeliveryBinding {
 /// A restart starts empty; every reuse still requires current origin validation.
 /// Do not keep this in ordinary ingress isolate memory.
 pub struct WorkerCoordinator {
+    bypasses: std::cell::Cell<u64>,
     options: WorkerDeliveryOptions,
     cache: Option<RefCell<SnapshotCache>>,
     flights: Option<Rc<Flights>>,
@@ -122,6 +123,7 @@ impl WorkerCoordinator {
     pub fn new(options: WorkerDeliveryOptions) -> std::result::Result<Rc<Self>, GatewayError> {
         options.validate()?;
         Ok(Rc::new(Self {
+            bypasses: std::cell::Cell::new(0),
             options,
             live: options
                 .live
@@ -144,6 +146,13 @@ impl WorkerCoordinator {
                 .map(RefCell::new),
             flights: options.coalescing.map(Flights::new).transpose()?,
         }))
+    }
+    /// Identifier-free cache decisions and origin-ineligible query bypasses.
+    pub fn metrics(&self) -> (Option<SnapshotMetrics>, u64) {
+        (
+            self.cache.as_ref().map(|cache| cache.borrow().metrics()),
+            self.bypasses.get(),
+        )
     }
     /// Forget cached data and fence in-progress fills after reset/lost feed.
     pub fn invalidate_all(&self) {
@@ -377,7 +386,10 @@ impl WorkerCoordinator {
             .map_err(|_| worker::Error::RustError("invalid freshness".into()))?;
         let admission = match origin.validate(&value).await? {
             Admitted::Eligible(admission) => admission,
-            Admitted::Bypass => return origin.execute(value).await,
+            Admitted::Bypass => {
+                self.bypasses.set(self.bypasses.get().saturating_add(1));
+                return origin.execute(value).await;
+            }
             Admitted::Error(response) => return Ok(response),
         };
         let ticket = if let Some(cache) = &self.cache {

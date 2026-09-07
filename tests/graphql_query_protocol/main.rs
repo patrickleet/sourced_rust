@@ -2573,3 +2573,6 @@ async fn worker_live_coordinator_uses_actual_oidc_origin() {
         String::from_utf8_lossy(&result.stderr)
     );
 }
+
+#[cfg(all(feature = "gateway-delivery", feature = "gateway-graphql-native"))]
+mod load;

@@ -388,7 +388,9 @@ impl WorkerGateway {
                 if let Err(error) = super::graphql::admit_request(&value, *capabilities) {
                     return Response::from_json(&error.envelope());
                 }
-                if let Some(delivery) = delivery {
+                if let Some(delivery) = delivery.as_ref().filter(|delivery| {
+                    delivery.options.snapshots.is_some() || delivery.options.coalescing.is_some()
+                }) {
                     if super::graphql::operation_kind(
                         value["query"].as_str().unwrap_or(""),
                         value["operationName"].as_str(),

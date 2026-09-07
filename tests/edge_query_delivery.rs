@@ -192,6 +192,9 @@ fn private_validation_public_age_and_late_fill_fence() {
     );
     let newer = admission("v2");
     assert!(cache.lookup(&newer, None, 101).unwrap().is_none());
+    assert_eq!(cache.metrics().hits, 1);
+    assert_eq!(cache.metrics().misses, 1);
+    assert_eq!(cache.metrics().stale_rejections, 1);
     let ticket = cache.begin_fill(&first, 100).unwrap();
     assert!(
         !cache
@@ -205,6 +208,15 @@ fn private_validation_public_age_and_late_fill_fence() {
         .install(late, first.clone(), body.clone(), 101)
         .unwrap());
     assert!(cache.is_empty());
+    assert_eq!(cache.metrics().invalidations, 1);
+    assert_eq!(cache.metrics().fill_bypasses, 2);
+    let labels = serde_json::to_value(cache.metrics()).unwrap();
+    assert_eq!(labels.as_object().unwrap().len(), 5);
+    assert!(labels
+        .as_object()
+        .unwrap()
+        .values()
+        .all(serde_json::Value::is_u64));
     let mut public = first.clone();
     public.policy = SnapshotPolicy::Public {
         max_age_seconds: 10,
