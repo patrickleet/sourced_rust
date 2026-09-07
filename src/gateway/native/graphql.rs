@@ -350,6 +350,10 @@ impl GraphqlBinding {
         if let Some(coordinator) = parts
             .extensions
             .get::<Arc<super::NativeDelivery>>()
+            .filter(|delivery| {
+                let caps = delivery.capabilities();
+                caps.snapshots || caps.coalescing
+            })
             .cloned()
         {
             if super::super::graphql::operation_kind(

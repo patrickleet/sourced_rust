@@ -248,6 +248,7 @@ pub struct FillTicket {
 /// Portable bounded snapshot store. Runtime adapters provide current origin
 /// admission for every consumer and coordinate calls; this owns no task/socket.
 pub struct SnapshotCache {
+    metrics: super::SnapshotMetrics,
     limits: SnapshotLimits,
     entries: BTreeMap<OperationKey, Entry>,
     bytes: usize,
@@ -267,6 +268,7 @@ impl SnapshotCache {
             return Err(DeliveryError::InvalidContext);
         }
         Ok(Self {
+            metrics: super::SnapshotMetrics::default(),
             limits,
             entries: BTreeMap::new(),
             bytes: 0,
@@ -299,6 +301,7 @@ impl SnapshotCache {
             freshness.bind(&admission.identity)?;
         }
         let Some(entry) = self.entries.get_mut(&admission.key) else {
+            self.metrics.misses = self.metrics.misses.saturating_add(1);
             return Ok(None);
         };
         let current = entry.admission.validator == admission.validator;
@@ -317,8 +320,11 @@ impl SnapshotCache {
             || entry.admission.identity != admission.identity
             || !entry.response.satisfies(admission, freshness)
         {
+            self.metrics.misses = self.metrics.misses.saturating_add(1);
+            self.metrics.stale_rejections = self.metrics.stale_rejections.saturating_add(1);
             return Ok(None);
         }
+        self.metrics.hits = self.metrics.hits.saturating_add(1);
         self.sequence = self.sequence.saturating_add(1);
         entry.sequence = self.sequence;
         Ok(Some(entry.response.clone()))
@@ -340,6 +346,7 @@ impl SnapshotCache {
                 .map(|(a, b)| a.len() + b.len())
                 .sum::<usize>();
         if bytes > self.limits.entry_bytes {
+            self.metrics.fill_bypasses = self.metrics.fill_bypasses.saturating_add(1);
             return Ok(false);
         }
         if self.generation == u64::MAX
@@ -347,11 +354,13 @@ impl SnapshotCache {
             || ticket.key != admission.key
             || !response.satisfies(&admission, None)
         {
+            self.metrics.fill_bypasses = self.metrics.fill_bypasses.saturating_add(1);
             return Ok(false);
         }
         let value: serde_json::Value =
             serde_json::from_slice(&response.body).map_err(|_| DeliveryError::Ineligible)?;
         if value["extensions"]["gatewayDelivery"]["validator"] != admission.validator {
+            self.metrics.fill_bypasses = self.metrics.fill_bypasses.saturating_add(1);
             return Ok(false);
         }
         if let Some(previous) = self.entries.remove(&ticket.key) {
@@ -383,11 +392,16 @@ impl SnapshotCache {
     }
     /// Lost feed, rebuild or coordinator reset discards data and fences fills.
     pub fn invalidate_all(&mut self) {
+        self.metrics.invalidations = self.metrics.invalidations.saturating_add(1);
         self.entries.clear();
         self.bytes = 0;
         // Saturation cannot permit an old ticket to become current: at the
         // terminal counter value installation is permanently disabled.
         self.generation = self.generation.saturating_add(1);
+    }
+    /// Snapshot decisions without any identity-bearing labels.
+    pub fn metrics(&self) -> super::SnapshotMetrics {
+        self.metrics
     }
     /// Current resident entry count for diagnostics and boundedness checks.
     pub fn len(&self) -> usize {

@@ -37,3 +37,6 @@ pub use coordinator::*;
 
 mod live;
 pub use live::*;
+
+mod metrics;
+pub use metrics::*;
