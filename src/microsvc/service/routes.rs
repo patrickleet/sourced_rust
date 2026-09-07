@@ -43,6 +43,8 @@ use crate::graphql::SurfaceProjector;
 use crate::microsvc::causal::CausalWorkspace;
 use crate::microsvc::cell_host::{CellCommandIdentity, CellDispatchError, CellDispatchResult};
 use crate::microsvc::context::Context;
+#[cfg(feature = "graphql")]
+use crate::microsvc::dependencies::CausalHostProjections;
 use crate::microsvc::dependencies::{
     CausalProjectionRouteDependencies, CausalRouteDependencies, ConfigurableOutboxPublisher,
     HasOutboxStore, HasReadModelStore, HasRepo,
@@ -71,8 +73,6 @@ use crate::outbox_worker::{
     OutboxDispatcher, OutboxDrainRunner, OutboxPublishMailbox, DEFAULT_DRAIN_LEASE,
     DEFAULT_OUTBOX_HINT_CAPACITY,
 };
-#[cfg(feature = "graphql")]
-use crate::projection_protocol::ProjectionProtocolStore;
 #[cfg(feature = "graphql")]
 use crate::projection_protocol::{CompiledProjectionTopology, ProjectorTopologyId};
 use crate::repository::{StreamIdentity, TransactionalCommit};
@@ -1842,7 +1842,7 @@ where
                 self.direct_projection_bootstrap
                     .get_or_try_init(|| async {
                         repository
-                            .register_projection_models(topology, ownership)
+                            .__register_direct_projection_models(topology, ownership)
                             .await
                             .map_err(|error| {
                                 CausalDispatchError::Internal(format!(

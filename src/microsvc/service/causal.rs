@@ -22,8 +22,7 @@ use crate::microsvc::session::Session;
 use crate::projection_protocol::{
     ProjectionCausationEvidenceRequest, ProjectionObligationEvidence,
     ProjectionObligationEvidenceBatchRequest, ProjectionObligationEvidenceRequest,
-    ProjectionObservationKind, ProjectionProtocolStore, ProjectionRecordScope,
-    SameTransactionProjectionEvidence,
+    ProjectionObservationKind, ProjectionRecordScope, SameTransactionProjectionEvidence,
 };
 #[cfg(feature = "graphql")]
 use crate::repository::CommitBatch;
@@ -819,7 +818,7 @@ pub(super) async fn evaluate_causal_command_status<R>(
     protocol: Option<&crate::graphql::protocol::ProtocolResponseAccumulator>,
 ) -> Result<CausalCommandPublicStatus, CausalDispatchError>
 where
-    R: CommandLedgerStore + ProjectionProtocolStore + Send + Sync,
+    R: CommandLedgerStore + crate::microsvc::dependencies::CausalHostProjections + Send + Sync,
 {
     match lookup {
         CommandLookup::Unknown => Ok(CausalCommandPublicStatus::unknown(command_id.as_str())),
@@ -953,7 +952,7 @@ pub(super) async fn evaluate_pending_projection_evidence<R>(
     CausalDispatchError,
 >
 where
-    R: ProjectionProtocolStore + Send + Sync,
+    R: crate::microsvc::dependencies::CausalHostProjections + Send + Sync,
 {
     if let Some(metadata) = receipt.projection_metadata.as_ref() {
         return evaluate_pending_modeled_projection_evidence(
@@ -996,7 +995,7 @@ where
         ))
     })?;
     let batch = repository
-        .projection_obligation_evidence_batch(&request)
+        .command_obligation_evidence(&request)
         .await
         .map_err(|error| {
             CausalDispatchError::Internal(format!(
@@ -1089,7 +1088,7 @@ async fn evaluate_pending_modeled_projection_evidence<R>(
     CausalDispatchError,
 >
 where
-    R: ProjectionProtocolStore + Send + Sync,
+    R: crate::microsvc::dependencies::CausalHostProjections + Send + Sync,
 {
     let request = ProjectionCausationEvidenceRequest::new(
         receipt.causation_id.clone(),
@@ -1101,7 +1100,7 @@ where
         ))
     })?;
     let batch = repository
-        .projection_causation_evidence(&request)
+        .command_causation_evidence(&request)
         .await
         .map_err(|error| {
             CausalDispatchError::Internal(format!(

@@ -28,7 +28,7 @@ pub trait CausalRepositoryBackend:
     + CommandLedgerStore
     + CausalTransactionalCommit
     + CausalRepositoryIdentity
-    + ProjectionProtocolStore
+    + CausalHostProjections
     + TransactionalCommit
     + Send
     + Sync
@@ -41,12 +41,104 @@ impl<T> CausalRepositoryBackend for T where
         + CommandLedgerStore
         + CausalTransactionalCommit
         + CausalRepositoryIdentity
-        + ProjectionProtocolStore
+        + CausalHostProjections
         + TransactionalCommit
         + Send
         + Sync
         + 'static
 {
+}
+
+pub(crate) trait CausalHostProjections: Send + Sync {
+    #[cfg(feature = "graphql")]
+    fn command_obligation_evidence<'a>(
+        &'a self,
+        _request: &'a crate::projection_protocol::ProjectionObligationEvidenceBatchRequest,
+    ) -> impl std::future::Future<
+        Output = Result<
+            crate::projection_protocol::ProjectionObligationEvidenceBatch,
+            crate::projection_protocol::ProjectionProtocolError,
+        >,
+    > + Send
+           + 'a {
+        async {
+            Err(
+                crate::projection_protocol::ProjectionProtocolError::InvalidBatch(
+                    "command-only cells do not query projection evidence".into(),
+                ),
+            )
+        }
+    }
+
+    #[cfg(feature = "graphql")]
+    fn command_causation_evidence<'a>(
+        &'a self,
+        _request: &'a crate::projection_protocol::ProjectionCausationEvidenceRequest,
+    ) -> impl std::future::Future<
+        Output = Result<
+            crate::projection_protocol::ProjectionCausationEvidenceBatch,
+            crate::projection_protocol::ProjectionProtocolError,
+        >,
+    > + Send
+           + 'a {
+        async {
+            Err(
+                crate::projection_protocol::ProjectionProtocolError::InvalidBatch(
+                    "command-only cells do not query projection evidence".into(),
+                ),
+            )
+        }
+    }
+    /// Bootstrap direct projections only on hosts that own a projection store.
+    /// Command-only hosts reject this operation without inventing query storage.
+    fn __register_direct_projection_models<'a>(
+        &'a self,
+        topology: &'a crate::projection_protocol::ProjectorTopologyId,
+        ownership: &'a [crate::projection_protocol::ProjectionModelOwnership],
+    ) -> impl std::future::Future<
+        Output = Result<(), crate::projection_protocol::ProjectionProtocolError>,
+    > + Send
+           + 'a;
+}
+
+impl<T: ProjectionProtocolStore> CausalHostProjections for T {
+    #[cfg(feature = "graphql")]
+    fn command_obligation_evidence<'a>(
+        &'a self,
+        request: &'a crate::projection_protocol::ProjectionObligationEvidenceBatchRequest,
+    ) -> impl std::future::Future<
+        Output = Result<
+            crate::projection_protocol::ProjectionObligationEvidenceBatch,
+            crate::projection_protocol::ProjectionProtocolError,
+        >,
+    > + Send
+           + 'a {
+        self.projection_obligation_evidence_batch(request)
+    }
+
+    #[cfg(feature = "graphql")]
+    fn command_causation_evidence<'a>(
+        &'a self,
+        request: &'a crate::projection_protocol::ProjectionCausationEvidenceRequest,
+    ) -> impl std::future::Future<
+        Output = Result<
+            crate::projection_protocol::ProjectionCausationEvidenceBatch,
+            crate::projection_protocol::ProjectionProtocolError,
+        >,
+    > + Send
+           + 'a {
+        self.projection_causation_evidence(request)
+    }
+    fn __register_direct_projection_models<'a>(
+        &'a self,
+        topology: &'a crate::projection_protocol::ProjectorTopologyId,
+        ownership: &'a [crate::projection_protocol::ProjectionModelOwnership],
+    ) -> impl std::future::Future<
+        Output = Result<(), crate::projection_protocol::ProjectionProtocolError>,
+    > + Send
+           + 'a {
+        self.register_projection_models(topology, ownership)
+    }
 }
 
 /// Compile-time extraction of the one aggregate repository owned by a typed

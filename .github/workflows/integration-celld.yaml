@@ -25,6 +25,47 @@ env:
   DISTRIBUTED_INTERNAL_SECRET: test-only-internal-secret-change-me-2026
 
 jobs:
+  storage:
+    name: celld SQL transactions and crash recovery
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5
+        with:
+          persist-credentials: false
+      - uses: dtolnay/rust-toolchain@29eef336d9b2848a0b548edc03f92a220660cdb8
+        with:
+          toolchain: stable
+          targets: wasm32-unknown-unknown
+      - uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: tests/celld/worker -> tests/celld/worker/target
+          shared-key: celld-storage
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "22"
+      - name: Install test runtimes
+        run: |
+          sudo apt-get update && sudo apt-get install -y sqlite3
+          npm install -g esbuild
+          cargo install worker-build --locked
+          curl -fsSL https://celld.dev/install.sh | sh
+          echo "$HOME/.local/bin" >> "$GITHUB_PATH"
+      - name: Build isolated fault-probe Worker
+        working-directory: tests/celld/worker
+        run: worker-build --release --features storage-conformance
+      - name: Prove SQL atomicity, fencing, autonomous recovery and growth
+        run: node tests/celld/storage-conformance.mjs
+      - name: Retain storage proof results and logs
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: celld-storage-proof
+          path: |
+            /tmp/distributed-cell-storage-*/results.json
+            /tmp/distributed-cell-storage-*/celld-*.log
+          if-no-files-found: ignore
+
   e2e-celld:
     name: e2e-celld workspace tests
     runs-on: ubuntu-latest
