@@ -70,6 +70,7 @@ async fn wait_replayed(pool: &sqlx::PgPool, title: &str) {
 }
 
 #[tokio::test]
+#[ignore = "requires owned primary and paused standby; run tests/gateway-postgres/run.py"]
 async fn paused_replica_never_certifies_freshness() {
     let primary = sqlx::postgres::PgPoolOptions::new()
         .acquire_timeout(Duration::from_secs(3))
@@ -175,6 +176,12 @@ async fn paused_replica_never_certifies_freshness() {
         .status()
         .unwrap()
         .success());
+    wait_replayed(&primary, "committed").await;
+    assert_eq!(
+        query(&engine, CURRENT, Some(context)).await["data"]["gateway_replica_views"][0]["title"],
+        "committed",
+        "restarted primary retains its committed data and serves a current read"
+    );
     sqlx::query("SELECT pg_wal_replay_resume()")
         .execute(&replica)
         .await
