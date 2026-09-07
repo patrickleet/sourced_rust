@@ -19,18 +19,16 @@ use sqlx::query_builder::Separated;
 use sqlx::sqlite::SqliteRow;
 use sqlx::{QueryBuilder, Row, Sqlite, SqlitePool};
 
-use crate::outbox::{OutboxMessage, OutboxMessageStatus};
+use crate::outbox::OutboxMessage;
 use crate::outbox_worker::ClaimOutboxMessages;
 use crate::repository::RepositoryError;
 use crate::sqlx_repo::read_model::quote_identifier;
 use crate::sqlx_repo::repo::{
-    embedded_migrator, outbox_message_by_id, system_time_epoch_secs, SqlxOutboxStore,
-    SqlxRepository, SQLITE_MIGRATIONS,
+    embedded_migrator, SqlxOutboxStore, SqlxRepository, SQLITE_MIGRATIONS,
 };
 use crate::sqlx_repo::{
     self, is_sqlite_unique_constraint, read_model_i64_from_u64 as sqlx_read_model_i64_from_u64,
     read_model_u64_from_i64 as sqlx_read_model_u64_from_i64,
-    repository_i64_from_u64 as sqlx_repository_i64_from_u64,
 };
 use crate::table::TableSqlDialect;
 use crate::table::{
@@ -64,10 +62,7 @@ impl crate::sqlx_repo::repo::SqlxRepoBackend for Sqlite {
     const COMMAND_LEDGER_COMPACTION_LOCK_SUFFIX: &'static str = "";
     const EVENT_SELECT: &'static str = crate::repository::sqlite_codec::EVENT_SELECT;
     const SNAPSHOT_SELECT: &'static str = crate::repository::sqlite_codec::SNAPSHOT_SELECT;
-    const OUTBOX_SELECT: &'static str = "message_id, event_type, payload, payload_codec, \
-         payload_codec_version, metadata, status, created_at, claimed_by, claimed_until, \
-         attempts, last_error, destination, source_aggregate_type, source_aggregate_id, \
-         source_sequence, correlation_id, causation_id";
+    const OUTBOX_SELECT: &'static str = crate::repository::sqlite_codec::OUTBOX_SELECT;
     const ORDER_BY_CREATED_AT: &'static str = "CAST(created_at AS REAL)";
     const OUTBOX_OLDEST_CREATED_AT_SELECT: &'static str =
         "MIN(CAST(created_at AS REAL)) AS oldest_created_at";
@@ -212,121 +207,23 @@ impl crate::sqlx_repo::repo::SqlxRepoBackend for Sqlite {
         pool: &SqlitePool,
         request: ClaimOutboxMessages,
     ) -> Result<Vec<OutboxMessage>, RepositoryError> {
-        {
-            if request.batch_size == 0 {
-                return Ok(Vec::new());
-            }
-
-            let now = SystemTime::now();
-            let now_epoch = system_time_epoch_secs::<Sqlite>(now)?;
-            let claimed_until = now.checked_add(request.lease).ok_or_else(|| {
-                RepositoryError::Model("failed to compute outbox lease deadline".into())
-            })?;
-            let claimed_until_storage = system_time_to_storage(claimed_until)?;
-
-            let mut tx = pool
-                .begin()
-                .await
-                .map_err(|err| repository_storage_error("begin outbox claim transaction", err))?;
-
-            // Explicit ids (after-commit immediate dispatch) bypass the ordered
-            // candidate scan; the per-id conditional UPDATE below still enforces
-            // claimability and destination, so raced/unclaimable ids are skipped.
-            let candidate_ids: Vec<String> = if let Some(ids) = request.message_ids.clone() {
-                ids
-            } else {
-                let limit = sqlx_repository_i64_from_u64(
-                    SQLITE_BACKEND,
-                    request.batch_size as u64,
-                    "outbox claim limit",
-                    SIGNED_INTEGER_STORAGE,
-                )?;
-                let candidate_rows = sqlx::query(
-                    r#"
-                    SELECT message_id
-                    FROM outbox_messages
-                    WHERE (
-                        (status = ? AND CAST(next_available_at AS REAL) <= ?)
-                        OR (status = ? AND (claimed_until IS NULL OR CAST(claimed_until AS REAL) <= ?))
-                    )
-                      AND (? IS NULL OR destination = ?)
-                    ORDER BY CAST(created_at AS REAL) ASC, message_id ASC
-                    LIMIT ?
-                    "#,
-                )
-                .bind(OutboxMessageStatus::Pending.as_str())
-                .bind(now_epoch)
-                .bind(OutboxMessageStatus::InFlight.as_str())
-                .bind(now_epoch)
-                .bind(request.destination.as_deref())
-                .bind(request.destination.as_deref())
-                .bind(limit)
-                .fetch_all(&mut *tx)
-                .await
-                .map_err(|err| {
-                    repository_storage_error("select claimable outbox messages", err)
-                })?;
-                let mut ids = Vec::with_capacity(candidate_rows.len());
-                for row in candidate_rows {
-                    ids.push(row.try_get::<String, _>("message_id").map_err(|err| {
-                        repository_storage_error("decode outbox message id row", err)
-                    })?);
-                }
-                ids
-            };
-
-            let mut claimed = Vec::new();
-            for message_id in candidate_ids {
-                if claimed.len() >= request.batch_size {
-                    break;
-                }
-                let result = sqlx::query(
-                    r#"
-                    UPDATE outbox_messages
-                    SET status = ?,
-                        claimed_by = ?,
-                        claimed_until = ?,
-                        attempts = attempts + 1,
-                        updated_at = CURRENT_TIMESTAMP
-                    WHERE message_id = ?
-                      AND (
-                        (status = ? AND CAST(next_available_at AS REAL) <= ?)
-                        OR (
-                          status = ?
-                          AND (claimed_until IS NULL OR CAST(claimed_until AS REAL) <= ?)
-                        )
-                      )
-                      AND (? IS NULL OR destination = ?)
-                    "#,
-                )
-                .bind(OutboxMessageStatus::InFlight.as_str())
-                .bind(&request.worker_id)
-                .bind(&claimed_until_storage)
-                .bind(&message_id)
-                .bind(OutboxMessageStatus::Pending.as_str())
-                .bind(now_epoch)
-                .bind(OutboxMessageStatus::InFlight.as_str())
-                .bind(now_epoch)
-                .bind(request.destination.as_deref())
-                .bind(request.destination.as_deref())
-                .execute(&mut *tx)
-                .await
-                .map_err(|err| repository_storage_error("claim outbox message", err))?;
-
-                if result.rows_affected() == 0 {
-                    continue;
-                }
-
-                if let Some(message) = outbox_message_by_id(&mut *tx, &message_id).await? {
-                    claimed.push(message);
-                }
-            }
-
-            tx.commit()
-                .await
-                .map_err(|err| repository_storage_error("commit outbox claim transaction", err))?;
-            Ok(claimed)
+        if request.batch_size == 0 {
+            return Ok(Vec::new());
         }
+        let mut tx = pool
+            .begin()
+            .await
+            .map_err(|error| repository_storage_error("begin outbox claim transaction", error))?;
+        let claimed = crate::repository::sql::outbox::claim_sqlite(
+            &mut crate::sqlx_repo::repo::ConnectionExecutor::<Sqlite>(&mut tx),
+            request,
+            SystemTime::now(),
+        )
+        .await?;
+        tx.commit()
+            .await
+            .map_err(|error| repository_storage_error("commit outbox claim transaction", error))?;
+        Ok(claimed)
     }
 }
 

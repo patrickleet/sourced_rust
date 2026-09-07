@@ -11,6 +11,7 @@ use std::future::Future;
 use std::time::{Duration, SystemTime};
 
 pub(crate) mod ledger;
+pub(crate) mod outbox;
 
 use crate::entity::{Entity, EventRecord, BITCODE_PAYLOAD_CODEC};
 use crate::snapshot::SnapshotRecord;
@@ -51,6 +52,11 @@ pub(crate) enum SqlPart<'a> {
     LedgerDeadline(Duration),
     LedgerDeadlineIsLive(SystemTime),
     LedgerJson(String),
+    TimestampCompare {
+        column: &'static str,
+        operator: &'static str,
+        value: SystemTime,
+    },
 }
 
 /// Structural statements: values are never interpolated into SQL text. The
@@ -108,6 +114,7 @@ pub(crate) trait SqlExecutor: Send {
     type Row: SqlRow;
     const EVENT_SELECT: &'static str;
     const SNAPSHOT_SELECT: &'static str;
+    const OUTBOX_SELECT: &'static str;
     const NOW: &'static str;
     const COMMAND_LEDGER_SELECT: &'static str;
     const COMMAND_LEDGER_LOCK_SUFFIX: &'static str;

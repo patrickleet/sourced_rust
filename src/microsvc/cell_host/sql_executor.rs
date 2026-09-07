@@ -173,6 +173,16 @@ impl CellSqlExecutor {
         let mut bindings = Vec::new();
         for part in statement.0 {
             match part {
+                SqlPart::TimestampCompare {
+                    column,
+                    operator,
+                    value,
+                } => {
+                    sql.push_str(&format!(
+                        "CAST({column} AS REAL) {operator} CAST(? AS REAL)"
+                    ));
+                    bindings.push(SqlStorageValue::String(sqlite_codec::encode(value)?));
+                }
                 SqlPart::LedgerNow | SqlPart::LedgerNowEpoch => {
                     sql.push_str("unixepoch('now','subsec')")
                 }
@@ -220,6 +230,7 @@ impl SqlExecutor for CellSqlExecutor {
     type Row = CellSqlRow;
     const EVENT_SELECT: &'static str = sqlite_codec::EVENT_SELECT;
     const SNAPSHOT_SELECT: &'static str = sqlite_codec::SNAPSHOT_SELECT;
+    const OUTBOX_SELECT: &'static str = sqlite_codec::OUTBOX_SELECT;
     const NOW: &'static str = "CURRENT_TIMESTAMP";
     const COMMAND_LEDGER_SELECT: &'static str = sqlite_codec::COMMAND_LEDGER_SELECT;
     const COMMAND_LEDGER_LOCK_SUFFIX: &'static str = "";

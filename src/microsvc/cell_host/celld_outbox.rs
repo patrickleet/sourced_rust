@@ -488,7 +488,7 @@ mod tests {
             );
             let states = states.lock().unwrap();
             assert_eq!(states[0].outbox[0].status, OutboxMessageStatus::Pending);
-            assert_eq!(states[1].outbox[0].status, OutboxMessageStatus::Published);
+            assert!(states[1].outbox.is_empty());
         });
     }
 

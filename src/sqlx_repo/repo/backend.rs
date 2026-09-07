@@ -158,9 +158,6 @@ pub(super) fn ids_by_type(identities: &[StreamIdentity]) -> BTreeMap<&str, Vec<&
     groups
 }
 
-/// Bound parameters per `outbox_messages` row.
-pub(super) const OUTBOX_BIND_COLUMNS: usize = 19;
-
 /// Dialect surface for the shared repository path (event store, snapshots,
 /// outbox lifecycle, consumer inbox, schema bootstrap).
 ///
