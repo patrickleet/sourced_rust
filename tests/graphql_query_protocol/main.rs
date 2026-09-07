@@ -2101,3 +2101,304 @@ async fn hundred_reads_one_execution_with_cache_disabled() {
     assert_eq!(store.metrics().result_executions, 5);
     assert_eq!(delivery.flight_counts(), (0, 0));
 }
+
+#[cfg(all(feature = "gateway-delivery", feature = "gateway-graphql-native"))]
+#[tokio::test]
+async fn hundred_subscribers_one_upstream_over_embedded_and_remote_websockets() {
+    use axum::Router;
+    use distributed::gateway::{delivery::LiveLimits, native::*, *};
+    use distributed::graphql::{delivery::GatewayVersionStore, IdentityConfig, OidcConfig};
+    use jsonwebtoken::{encode, Algorithm, EncodingKey, Header};
+    use rsa::{pkcs1::EncodeRsaPrivateKey, traits::PublicKeyParts, RsaPrivateKey, RsaPublicKey};
+    let private = RsaPrivateKey::new(&mut rand::thread_rng(), 2048).unwrap();
+    let public = RsaPublicKey::from(&private);
+    let encoding = EncodingKey::from_rsa_pem(
+        private
+            .to_pkcs1_pem(rsa::pkcs8::LineEnding::LF)
+            .unwrap()
+            .as_bytes(),
+    )
+    .unwrap();
+    let jwks=json!({"keys":[{"kty":"RSA","kid":"live-test","alg":"RS256","use":"sig",
+        "n":base64::engine::general_purpose::URL_SAFE_NO_PAD.encode(public.n().to_bytes_be()),"e":base64::engine::general_purpose::URL_SAFE_NO_PAD.encode(public.e().to_bytes_be())}]}).to_string();
+    let token = |subject: &str| {
+        let now = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .unwrap()
+            .as_secs();
+        let mut header = Header::new(Algorithm::RS256);
+        header.kid = Some("live-test".into());
+        encode(&header,&json!({"iss":"https://live-fixture.invalid","aud":"live-fixture","sub":subject,"iat":now-1,"nbf":now-1,"exp":now+3600,"roles":["user"]}),&encoding).unwrap()
+    };
+    struct Server {
+        origin: String,
+        task: tokio::task::JoinHandle<()>,
+    }
+    impl Drop for Server {
+        fn drop(&mut self) {
+            self.task.abort();
+        }
+    }
+    async fn serve(router: Router) -> Server {
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let origin = format!("http://{}", listener.local_addr().unwrap());
+        Server {
+            origin,
+            task: tokio::spawn(async move { axum::serve(listener, router).await.unwrap() }),
+        }
+    }
+    type Socket = tokio_tungstenite::WebSocketStream<
+        tokio_tungstenite::MaybeTlsStream<tokio::net::TcpStream>,
+    >;
+    async fn connect(origin: &str, token: &str, legacy: bool) -> Socket {
+        let mut request = format!("{}/graphql/ws", origin.replace("http:", "ws:"))
+            .into_client_request()
+            .unwrap();
+        request.headers_mut().insert(
+            "sec-websocket-protocol",
+            if legacy {
+                "graphql-ws"
+            } else {
+                "graphql-transport-ws"
+            }
+            .parse()
+            .unwrap(),
+        );
+        let (mut socket, _) = tokio_tungstenite::connect_async(request).await.unwrap();
+        socket.send(WsMessage::Text(json!({"type":"connection_init","payload":{"authorization":format!("Bearer {token}")}}).to_string().into())).await.unwrap();
+        let ack = tokio::time::timeout(Duration::from_secs(10), socket.next())
+            .await
+            .unwrap()
+            .unwrap()
+            .unwrap();
+        assert!(
+            matches!(ack,WsMessage::Text(ref text) if serde_json::from_str::<Value>(text).unwrap()["type"]=="connection_ack"),
+            "{ack:?}"
+        );
+        socket
+    }
+    async fn next(socket: &mut Socket, id: &str, title: &str) -> Value {
+        tokio::time::timeout(Duration::from_secs(10), async {
+            loop {
+                let message = socket.next().await.unwrap().unwrap();
+                if let WsMessage::Text(text) = message {
+                    let value: Value = serde_json::from_str(&text).unwrap();
+                    if matches!(value["type"].as_str(), Some("next" | "data")) {
+                        assert_eq!(value["id"], id);
+                        assert!(value["payload"].get("errors").is_none(), "{value}");
+                        if value["payload"]["data"]["causal_query_views"][0]["title"] == title {
+                            return value["payload"].clone();
+                        }
+                    }
+                }
+            }
+        })
+        .await
+        .expect("matching full live frame")
+    }
+    for remote in [false, true] {
+        eprintln!(
+            "shared live transport: {}",
+            if remote { "remote" } else { "embedded" }
+        );
+        let fixture = protocol_fixture_with_retention(10).await;
+        let versions = GatewayVersionStore::install(
+            &distributed::graphql::GraphqlPool::from(fixture.repository.pool().clone()),
+            "live-fixture",
+            ["causal_query_views".into()],
+        )
+        .await
+        .unwrap();
+        let oidc = OidcConfig::new("https://live-fixture.invalid", "live-fixture")
+            .with_static_jwks(jwks.clone())
+            .engine_roles(&["user"]);
+        let engine = Arc::new(
+            GraphqlEngine::builder(&fixture.repository)
+                .service_id(SERVICE_ID)
+                .protocol_token_key(TEST_PROTOCOL_TOKEN_KEY)
+                .roles(&["user"])
+                .anonymous_role("user")
+                .identity(IdentityConfig::oidc_bearer(oidc))
+                .model::<CausalQueryView>(
+                    ModelPermissions::new().grant("user", read().all_columns()),
+                )
+                .client_projectors([projector()])
+                .change_stream(fixture.repository.read_model_changes())
+                .gateway_versions(versions.clone())
+                .build()
+                .unwrap(),
+        );
+        let caps = GraphqlCapabilities {
+            queries: true,
+            live: true,
+            ..Default::default()
+        };
+        let origin = serve(distributed::graphql::graphql_router_composed(
+            engine.clone(),
+            None,
+            None,
+        ))
+        .await;
+        let executor = if remote {
+            GraphqlExecutor::Remote {
+                origin: origin.origin.clone(),
+            }
+        } else {
+            GraphqlExecutor::Embedded
+        };
+        let binding = if remote {
+            GraphqlBinding::Remote(RemoteGraphql::default())
+        } else {
+            GraphqlBinding::Embedded(EmbeddedGraphql::new(engine.clone(), None, caps).unwrap())
+        };
+        let delivery = Arc::new(NativeDelivery::live(LiveLimits::default()).unwrap());
+        let config = GatewayConfig {
+            bindings: vec![Binding::new(
+                "api",
+                BindingKind::Graphql {
+                    executor,
+                    capabilities: caps,
+                    delivery: DeliveryCapabilities {
+                        live_sharing: true,
+                        ..Default::default()
+                    },
+                    schema_extensions: vec![],
+                },
+            )],
+            routes: vec![Route::new("api", RoutePath::prefix("/graphql"), "api")],
+        }
+        .build()
+        .unwrap();
+        let gateway = serve(
+            NativeGateway::new(
+                config,
+                NativeOptions::new("http://public.invalid"),
+                [(
+                    "api".into(),
+                    NativeBinding::GraphqlWithDelivery(binding, delivery.clone()),
+                )],
+                NativeAuth::anonymous(),
+            )
+            .unwrap()
+            .router(),
+        )
+        .await;
+        let alice = token("alice");
+        let bob = token("bob");
+        let mut sockets = futures_util::future::join_all(
+            (0..100).map(|_| connect(&gateway.origin, &alice, false)),
+        )
+        .await;
+        for (n, socket) in sockets.iter_mut().enumerate() {
+            socket.send(WsMessage::Text(json!({"id":format!("consumer-{n}"),"type":"subscribe","payload":{"query":LIVE_SUBSCRIPTION}}).to_string().into())).await.unwrap();
+        }
+        let mut first = None;
+        for (n, socket) in sockets.iter_mut().enumerate() {
+            let payload = next(socket, &format!("consumer-{n}"), "causal row").await;
+            if let Some(first) = &first {
+                assert_eq!(&payload, first);
+            } else {
+                first = Some(payload);
+            }
+        }
+        assert_eq!(
+            (delivery.live_counts().0, delivery.live_counts().1),
+            (1, 100)
+        );
+        assert_eq!(engine.live_subscriber_count(), 1);
+        assert_eq!(versions.metrics().validations, 100);
+        assert_eq!(
+            versions.metrics().result_executions,
+            1,
+            "100 authenticated clients should own one origin live query"
+        );
+        let first = first.unwrap();
+        let mut bob_socket = connect(&gateway.origin, &bob, false).await;
+        bob_socket
+            .send(WsMessage::Text(
+                json!({"id":"consumer-0","type":"subscribe","payload":{"query":LIVE_SUBSCRIPTION}})
+                    .to_string()
+                    .into(),
+            ))
+            .await
+            .unwrap();
+        let bob_frame = next(&mut bob_socket, "consumer-0", "causal row").await;
+        assert_ne!(
+            first["extensions"]["distributed"]["cacheScope"],
+            bob_frame["extensions"]["distributed"]["cacheScope"]
+        );
+        assert_eq!(
+            (delivery.live_counts().0, engine.live_subscriber_count()),
+            (2, 2),
+            "identical roles/data must not cross subject scopes"
+        );
+        bob_socket
+            .send(WsMessage::Text(
+                json!({"id":"consumer-0","type":"complete"})
+                    .to_string()
+                    .into(),
+            ))
+            .await
+            .unwrap();
+        let _ = bob_socket.close(None).await;
+        project_item(&fixture.repository, &fixture.bus, 2, "committed-live").await;
+        for (n, socket) in sockets.iter_mut().enumerate() {
+            let frame = next(socket, &format!("consumer-{n}"), "committed-live").await;
+            assert_eq!(
+                frame["extensions"]["distributed"]["snapshot"]["indexes"][0]["position"],
+                "2"
+            );
+        }
+        let mut resumed = connect(&gateway.origin, &alice, true).await;
+        resumed.send(WsMessage::Text(json!({"id":"legacy-resume","type":"start","payload":{"query":LIVE_SUBSCRIPTION,"extensions":{"distributed":{"resume":{"cursors":first["extensions"]["distributed"]["live"]["cursors"]}}}}}).to_string().into())).await.unwrap();
+        let replay = next(&mut resumed, "legacy-resume", "committed-live").await;
+        assert_eq!(replay["extensions"]["distributed"]["live"]["reset"], false);
+        tokio::time::timeout(Duration::from_secs(5), async {
+            while delivery.live_counts().0 != 1 || engine.live_subscriber_count() != 1 {
+                tokio::time::sleep(Duration::from_millis(5)).await;
+            }
+        })
+        .await
+        .expect("independent replay handed off and released its origin producer");
+        assert!(delivery.live_counts().6 >= 1);
+        for (n, socket) in sockets.iter_mut().enumerate() {
+            socket
+                .send(WsMessage::Text(
+                    json!({"id":format!("consumer-{n}"),"type":"complete"})
+                        .to_string()
+                        .into(),
+                ))
+                .await
+                .unwrap();
+            let _ = socket.close(None).await;
+        }
+        tokio::time::timeout(Duration::from_secs(5), async {
+            while delivery.live_counts().1 != 1 {
+                tokio::time::sleep(Duration::from_millis(5)).await;
+            }
+        })
+        .await
+        .unwrap();
+        assert_eq!(
+            engine.live_subscriber_count(),
+            1,
+            "remaining resumed client retains upstream ownership"
+        );
+        resumed
+            .send(WsMessage::Text(
+                json!({"id":"legacy-resume","type":"stop"})
+                    .to_string()
+                    .into(),
+            ))
+            .await
+            .unwrap();
+        let _ = resumed.close(None).await;
+        tokio::time::timeout(Duration::from_secs(5), async {
+            while delivery.live_counts().0 != 0 || engine.live_subscriber_count() != 0 {
+                tokio::time::sleep(Duration::from_millis(5)).await;
+            }
+        })
+        .await
+        .expect("last leave tears down gateway and origin live producers");
+    }
+}

@@ -29,6 +29,11 @@ fn ineligible() -> Response {
     )
 }
 impl GraphqlEngine {
+    /// Active origin live-query producers for delivery diagnostics.
+    pub fn live_subscriber_count(&self) -> usize {
+        self.inner.change_hub.subscriber_count()
+    }
+
     pub(super) fn enable_delivery_capture(
         &self,
         session: &Session,
@@ -60,11 +65,11 @@ impl GraphqlEngine {
             .map_err(|_| ())
     }
     pub(super) async fn validate_delivery(&self, session: &Session, request: Request) -> Response {
-        if operation_kind(&request.query, request.operation_name.as_deref())
-            != Ok(OperationKind::Query)
-        {
-            return ineligible();
-        }
+        let live = match operation_kind(&request.query, request.operation_name.as_deref()) {
+            Ok(OperationKind::Query) => false,
+            Ok(OperationKind::Subscription) => true,
+            _ => return ineligible(),
+        };
         let Some(store) = &self.inner.gateway_versions else {
             return ineligible();
         };
@@ -98,22 +103,27 @@ impl GraphqlEngine {
             .get(&TypeId::of::<VerifiedPrincipal>())
             .and_then(|p| p.downcast_ref::<VerifiedPrincipal>())
             .and_then(VerifiedPrincipal::expires_at)
-            .unwrap_or(now.saturating_add(30));
+            .unwrap_or(now.saturating_add(if live { 3600 } else { 30 }));
         if expiry <= now {
             return unavailable();
         }
         let operation = operation_fingerprint(&request.query);
         let policy = store.policy(&request.query, request.operation_name.as_deref());
         let captured = PlanCapture::default();
-        let response = schema
-            .execute(
-                request
-                    .data(session.clone())
-                    .data(authority)
-                    .data(Arc::clone(&self.inner))
-                    .data(captured.clone()),
-            )
-            .await;
+        let request = request
+            .data(session.clone())
+            .data(authority)
+            .data(Arc::clone(&self.inner))
+            .data(captured.clone());
+        let response = if live {
+            schema
+                .execute_stream(request)
+                .next()
+                .await
+                .unwrap_or_else(ineligible)
+        } else {
+            schema.execute(request).await
+        };
         // Schema validation and normal compiler authorization still run. Only
         // the private capture sentinel may replace SQL; unknown/custom fields,
         // cell reads and multi-root documents never acquire cache eligibility.

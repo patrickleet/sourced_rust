@@ -107,7 +107,12 @@ pub struct SnapshotResponse {
     pub body: Vec<u8>,
 }
 impl SnapshotResponse {
-    fn evidence(&self, admission: &OriginAdmission, complete: bool) -> Option<Vec<Minimum>> {
+    pub(super) fn evidence(
+        &self,
+        admission: &OriginAdmission,
+        complete: bool,
+        live: bool,
+    ) -> Option<Vec<Minimum>> {
         if self.status != 200
             || self.headers.iter().any(|(name, value)| {
                 name.eq_ignore_ascii_case("set-cookie")
@@ -138,7 +143,7 @@ impl SnapshotResponse {
             || protocol["operation"] != admission.operation
             || protocol.get("command").is_some()
             || protocol.get("receipt").is_some()
-            || protocol.get("live").is_some()
+            || (!live && protocol.get("live").is_some())
         {
             return None;
         }
@@ -191,11 +196,25 @@ impl SnapshotResponse {
         admission: &OriginAdmission,
         freshness: Option<&FreshnessContext>,
     ) -> bool {
-        self.evidence(admission, false).is_some_and(|evidence| {
-            freshness.is_none_or(|context| {
-                context.bind(&admission.identity).is_ok() && context.satisfied_by(&evidence)
+        self.evidence(admission, false, false)
+            .is_some_and(|evidence| {
+                freshness.is_none_or(|context| {
+                    context.bind(&admission.identity).is_ok() && context.satisfied_by(&evidence)
+                })
             })
-        })
+    }
+    /// Validate live fan-out while retaining the origin's live envelope.
+    pub fn live_shareable(
+        &self,
+        admission: &OriginAdmission,
+        freshness: Option<&FreshnessContext>,
+    ) -> bool {
+        self.evidence(admission, false, true)
+            .is_some_and(|evidence| {
+                freshness.is_none_or(|context| {
+                    context.bind(&admission.identity).is_ok() && context.satisfied_by(&evidence)
+                })
+            })
     }
     /// Candidate proof covers every required floor in the admitted scope.
     pub fn satisfies(
@@ -203,11 +222,12 @@ impl SnapshotResponse {
         admission: &OriginAdmission,
         freshness: Option<&FreshnessContext>,
     ) -> bool {
-        self.evidence(admission, true).is_some_and(|evidence| {
-            freshness.is_none_or(|context| {
-                context.bind(&admission.identity).is_ok() && context.satisfied_by(&evidence)
+        self.evidence(admission, true, false)
+            .is_some_and(|evidence| {
+                freshness.is_none_or(|context| {
+                    context.bind(&admission.identity).is_ok() && context.satisfied_by(&evidence)
+                })
             })
-        })
     }
 }
 

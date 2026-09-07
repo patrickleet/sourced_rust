@@ -113,6 +113,8 @@ jobs:
 
       - name: Verify shared query cancellation, expiry and deadlines
         run: cargo test -p distributed --no-default-features --features gateway-graphql-native,gateway-delivery,sqlite --lib gateway::native::flight::tests
+      - name: Verify shared live replay, expiry, backpressure and teardown
+        run: cargo test -p distributed --no-default-features --features gateway-graphql-native,gateway-delivery,sqlite --lib gateway::native::live::tests
       - name: Verify transactional cache coverage and Atomic rollback
         run: |
           cargo test -p distributed --no-default-features --features gateway-graphql-native,gateway-delivery,sqlite --lib graphql::delivery::versions::tests

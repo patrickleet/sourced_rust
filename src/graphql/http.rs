@@ -325,6 +325,56 @@ fn lifecycle_reloading_response() -> Response {
         .into_response()
 }
 
+// Gateway-delivered WS operations carry the original connection_init payload.
+// Only the origin's existing credential parser/validator resolves authority;
+// the gateway neither decodes roles nor fabricates a provider identity.
+async fn resolve_http_identity(
+    engine: &GraphqlEngine,
+    headers: &HeaderMap,
+    request: &Request,
+) -> Result<ResolvedIdentity, AuthError> {
+    #[cfg(feature = "gateway-delivery")]
+    if let Some(init) = request
+        .extensions
+        .get("gatewayDelivery")
+        .and_then(|value| serde_json::to_value(value).ok())
+        .and_then(|value| value.get("connectionInit").cloned())
+    {
+        return resolve_gateway_ws_identity(engine, headers, &init)
+            .await
+            .map_err(|_| AuthError::Unauthorized);
+    }
+    let _ = request;
+    resolve_identity_with_validator(
+        headers,
+        engine.identity_config(),
+        engine.identity_validator(),
+    )
+    .await
+}
+#[cfg(feature = "gateway-delivery")]
+pub(crate) async fn resolve_gateway_ws_identity(
+    engine: &GraphqlEngine,
+    headers: &HeaderMap,
+    init: &serde_json::Value,
+) -> Result<ResolvedIdentity, String> {
+    let base = match engine.identity_config().mode {
+        IdentityMode::OidcBearer | IdentityMode::Hybrid => Session::new(),
+        _ => {
+            resolve_identity_with_validator(
+                headers,
+                engine.identity_config(),
+                engine.identity_validator(),
+            )
+            .await
+            .map_err(|_| "unauthorized".to_owned())?
+            .into_parts()
+            .0
+        }
+    };
+    resolve_ws_identity(engine, headers, base, init).await
+}
+
 async fn graphql_handler(
     State(engine): State<Arc<GraphqlEngine>>,
     headers: axum::http::HeaderMap,
@@ -339,13 +389,7 @@ async fn graphql_handler(
     {
         return lifecycle_reloading_response();
     }
-    let identity = match resolve_identity_with_validator(
-        &headers,
-        engine.identity_config(),
-        engine.identity_validator(),
-    )
-    .await
-    {
+    let identity = match resolve_http_identity(&engine, &headers, &request).await {
         Ok(identity) => identity,
         Err(AuthError::Unauthorized) => return unauthorized_response(),
     };
@@ -371,13 +415,7 @@ async fn graphql_handler_with_service(
     {
         return lifecycle_reloading_response();
     }
-    let identity = match resolve_identity_with_validator(
-        &headers,
-        state.engine.identity_config(),
-        state.engine.identity_validator(),
-    )
-    .await
-    {
+    let identity = match resolve_http_identity(&state.engine, &headers, &request).await {
         Ok(identity) => identity,
         Err(AuthError::Unauthorized) => return unauthorized_response(),
     };
@@ -411,13 +449,7 @@ pub async fn microsvc_graphql_handler(
     let engine = service
         .graphql_engine()
         .expect("graphql route mounted without engine");
-    let identity = match resolve_identity_with_validator(
-        &headers,
-        engine.identity_config(),
-        engine.identity_validator(),
-    )
-    .await
-    {
+    let identity = match resolve_http_identity(&engine, &headers, &request).await {
         Ok(identity) => identity,
         Err(AuthError::Unauthorized) => return unauthorized_response(),
     };

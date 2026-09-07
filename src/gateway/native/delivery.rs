@@ -19,12 +19,15 @@ pub struct NativeDeliveryOptions {
     pub snapshots: Option<SnapshotLimits>,
     /// Optional concurrent query execution coordination.
     pub coalescing: Option<FlightLimits>,
+    /// Optional shared live operation coordination.
+    pub live: Option<LiveLimits>,
 }
 /// Bounded native delivery. Each consumer authenticates at the origin before
 /// lookup/join; snapshot storage and shared query execution are independent.
 pub struct NativeDelivery {
     snapshots: Option<Mutex<SnapshotCache>>,
     flights: Option<Arc<super::flight::NativeFlights>>,
+    pub(super) live: Option<Arc<super::live::NativeLive>>,
     entry_bytes: usize,
 }
 struct Fill {
@@ -41,14 +44,14 @@ struct Fill {
 impl NativeDelivery {
     /// Allocate only the explicitly selected capabilities and their bounds.
     pub fn new(options: NativeDeliveryOptions) -> Result<Self, GatewayError> {
-        if options.snapshots.is_none() && options.coalescing.is_none() {
+        if options.snapshots.is_none() && options.coalescing.is_none() && options.live.is_none() {
             return Err(GatewayError("no delivery capability selected"));
         }
         let entry_bytes = options
             .coalescing
             .map(|limits| limits.response_bytes)
             .or(options.snapshots.map(|limits| limits.entry_bytes))
-            .expect("selected delivery");
+            .unwrap_or(1024 * 1024);
         Ok(Self {
             snapshots: options
                 .snapshots
@@ -60,6 +63,7 @@ impl NativeDelivery {
                 .coalescing
                 .map(super::flight::NativeFlights::new)
                 .transpose()?,
+            live: options.live.map(super::live::NativeLive::new).transpose()?,
             entry_bytes,
         })
     }
@@ -68,6 +72,7 @@ impl NativeDelivery {
         Self::new(NativeDeliveryOptions {
             snapshots: Some(limits),
             coalescing: None,
+            live: None,
         })
     }
     /// Allocate bounded query coalescing without snapshot storage.
@@ -75,13 +80,28 @@ impl NativeDelivery {
         Self::new(NativeDeliveryOptions {
             snapshots: None,
             coalescing: Some(limits),
+            live: None,
         })
+    }
+    /// Allocate shared live coordination without query caching/coalescing.
+    pub fn live(limits: LiveLimits) -> Result<Self, GatewayError> {
+        Self::new(NativeDeliveryOptions {
+            live: Some(limits),
+            ..Default::default()
+        })
+    }
+    /// Active live groups/consumers and cumulative source attempts, resets,
+    /// upstream frames, duplicate frames and safe consumer handoffs.
+    pub fn live_counts(&self) -> (usize, usize, u64, u64, u64, u64, u64) {
+        self.live
+            .as_ref()
+            .map_or((0, 0, 0, 0, 0, 0, 0), |live| live.counts())
     }
     pub(super) fn capabilities(&self) -> DeliveryCapabilities {
         DeliveryCapabilities {
             snapshots: self.snapshots.is_some(),
             coalescing: self.flights.is_some(),
-            live_sharing: false,
+            live_sharing: self.live.is_some(),
         }
     }
     /// Current active query groups and admitted consumers, without identifiers.
@@ -272,12 +292,12 @@ impl NativeDelivery {
     }
 }
 
-enum AdmissionResult {
+pub(super) enum AdmissionResult {
     Eligible(OriginAdmission),
     Bypass,
     Error(Response),
 }
-async fn validate(
+pub(super) async fn validate(
     binding: &GraphqlBinding,
     inner: &std::sync::Arc<NativeInner>,
     executor: &GraphqlExecutor,
@@ -344,9 +364,15 @@ fn mark(value: &mut serde_json::Value, action: &str) {
     if !value["extensions"].is_object() {
         value["extensions"] = serde_json::json!({});
     }
+    let init = value["extensions"]["gatewayDelivery"]
+        .get("connectionInit")
+        .cloned();
     value["extensions"]["gatewayDelivery"] = serde_json::json!({"action":action});
+    if let Some(init) = init {
+        value["extensions"]["gatewayDelivery"]["connectionInit"] = init;
+    }
 }
-fn request(parts: &Parts, value: serde_json::Value) -> Request<Body> {
+pub(super) fn request(parts: &Parts, value: serde_json::Value) -> Request<Body> {
     let mut request = Request::new(Body::from(value.to_string()));
     *request.method_mut() = parts.method.clone();
     *request.uri_mut() = parts.uri.clone();

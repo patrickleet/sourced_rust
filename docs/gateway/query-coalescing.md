@@ -3,7 +3,7 @@
 Mount `NativeDelivery::coalescing(FlightLimits)` with the GraphQL binding's
 `coalescing` capability. This creates no snapshot cache. To select both, use
 `NativeDelivery::new(NativeDeliveryOptions { snapshots: Some(...), coalescing:
-Some(...) })`. All capabilities remain explicit and independently removable.
+Some(...), ..Default::default() })`. All capabilities remain explicit and independently removable.
 The origin uses the authenticated delivery control path and version store
 described in [snapshot-cache.md](snapshot-cache.md).
 

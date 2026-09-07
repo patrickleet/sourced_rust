@@ -28,7 +28,9 @@ use tower::ServiceExt;
 /// registration. The executor owns the composed schema and authorization.
 #[derive(Clone)]
 pub struct EmbeddedGraphql {
-    router: Router,
+    pub(super) router: Router,
+    #[cfg(feature = "gateway-delivery")]
+    pub(super) engine: Option<Arc<GraphqlEngine>>,
     capabilities: GraphqlCapabilities,
     extensions: BTreeSet<String>,
 }
@@ -54,6 +56,8 @@ impl EmbeddedGraphql {
             return Err(GatewayError("command surface requires a command host"));
         }
         Ok(Self {
+            #[cfg(feature = "gateway-delivery")]
+            engine: Some(engine.clone()),
             router: graphql_router_composed(engine, host, Some(operation_filter(capabilities))),
             capabilities,
             extensions: BTreeSet::new(),
@@ -81,6 +85,8 @@ impl EmbeddedGraphql {
         }
         Ok(Self {
             router: factory(operation_filter(capabilities)),
+            #[cfg(feature = "gateway-delivery")]
+            engine: None,
             capabilities,
             extensions: registered,
         })
@@ -205,11 +211,33 @@ impl GraphqlBinding {
         };
         let upgrade = request.headers().contains_key(header::UPGRADE);
         if upgrade {
+            #[cfg(feature = "gateway-delivery")]
+            let shared = request
+                .extensions()
+                .get::<Arc<super::NativeDelivery>>()
+                .cloned()
+                .filter(|delivery| delivery.live.is_some());
             if !capabilities.live {
                 return response(StatusCode::NOT_FOUND);
             }
             return match (self, executor) {
                 (Self::Embedded(embedded), _) => {
+                    #[cfg(feature = "gateway-delivery")]
+                    if let Some(coordinator) = shared.filter(|_| embedded.engine.is_some()) {
+                        let execution = super::live_transport::Execution {
+                            binding: self.clone(),
+                            inner: inner.clone(),
+                            declaration: declaration.clone(),
+                            context,
+                        };
+                        return super::live_transport::upgrade_embedded(
+                            execution,
+                            request,
+                            embedded.clone(),
+                            coordinator,
+                        )
+                        .await;
+                    }
                     let permit = match inner.permits.clone().try_acquire_owned() {
                         Ok(permit) => permit,
                         Err(_) => return response(StatusCode::SERVICE_UNAVAILABLE),
@@ -249,14 +277,46 @@ impl GraphqlBinding {
                         origin,
                         remote.live_path.as_deref().expect("validated live path"),
                         *capabilities,
-                        context,
+                        context.clone(),
                         request,
+                        #[cfg(feature = "gateway-delivery")]
+                        shared.map(|coordinator| {
+                            (
+                                super::live_transport::Execution {
+                                    binding: self.clone(),
+                                    inner: inner.clone(),
+                                    declaration: declaration.clone(),
+                                    context,
+                                },
+                                coordinator,
+                            )
+                        }),
                     )
                     .await
                 }
                 _ => response(StatusCode::SERVICE_UNAVAILABLE),
             };
         }
+        self.execute_operation(inner, declaration, context, request)
+            .await
+    }
+
+    /// Execute an already-selected HTTP operation without an upgrade branch.
+    pub(super) async fn execute_operation(
+        &self,
+        inner: &Arc<NativeInner>,
+        declaration: &BindingKind,
+        context: RequestContext,
+        request: Request<Body>,
+    ) -> Response {
+        let BindingKind::Graphql {
+            capabilities,
+            executor,
+            ..
+        } = declaration
+        else {
+            return response(StatusCode::SERVICE_UNAVAILABLE);
+        };
         if request.method() != "POST" {
             let mut result = response(StatusCode::METHOD_NOT_ALLOWED);
             result
@@ -296,7 +356,8 @@ impl GraphqlBinding {
                 value["query"].as_str().unwrap_or(""),
                 value["operationName"].as_str(),
             ) == Ok(super::super::graphql::OperationKind::Query)
-                && value["extensions"].get("gatewayDelivery").is_none()
+                && (value["extensions"].get("gatewayDelivery").is_none()
+                    || value["extensions"]["gatewayDelivery"]["action"] == "execute")
             {
                 return coordinator
                     .execute(self, inner, executor, context, parts, value, permit)
@@ -353,12 +414,16 @@ fn rewrite_path(request: &mut Request<Body>, path: &str) {
 }
 
 async fn remote_websocket(
-    inner: &NativeInner,
+    inner: &Arc<NativeInner>,
     origin: &str,
     path: &str,
     capabilities: GraphqlCapabilities,
     context: RequestContext,
     request: Request<Body>,
+    #[cfg(feature = "gateway-delivery")] sharing: Option<(
+        super::live_transport::Execution,
+        Arc<super::NativeDelivery>,
+    )>,
 ) -> Response {
     let permit = match inner.permits.clone().try_acquire_owned() {
         Ok(permit) => permit,
@@ -387,6 +452,16 @@ async fn remote_websocket(
     if proxy::prepare_headers(&mut parts.headers, inner, &context, true).is_err() {
         return response(StatusCode::BAD_REQUEST);
     }
+    #[cfg(feature = "gateway-delivery")]
+    let sharing = sharing.map(|(execution, coordinator)| {
+        (
+            execution,
+            coordinator,
+            super::delivery::request(&parts, serde_json::json!({}))
+                .into_parts()
+                .0,
+        )
+    });
     parts.headers.insert(
         header::SEC_WEBSOCKET_PROTOCOL,
         HeaderValue::from_static(protocol),
@@ -484,6 +559,19 @@ async fn remote_websocket(
                     ),
                 )
                 .await;
+                #[cfg(feature = "gateway-delivery")]
+                if let Some((execution, coordinator, parts)) = sharing {
+                    super::live_transport::remote(
+                        socket,
+                        upstream,
+                        execution,
+                        parts,
+                        coordinator,
+                        protocol,
+                    )
+                    .await;
+                    return;
+                }
                 bridge(socket, upstream, capabilities, protocol).await;
             })
             .await;
