@@ -5,6 +5,53 @@
 use serde_json::{json, Value};
 use worker::*;
 
+#[derive(serde::Deserialize, distributed::CommandInput)]
+pub struct BatchInput {
+    pub todo_id: String,
+    pub title: String,
+}
+
+#[derive(serde::Serialize, distributed::CommandOutput)]
+pub struct BatchPayload {
+    pub title: String,
+}
+
+async fn handle_batch(
+    ctx: &distributed::microsvc::CausalCommandContext<'_, todo_domain::Todo>,
+    input: BatchInput,
+) -> std::result::Result<
+    distributed::command::PreparedCommand<distributed::command::Eventual<BatchPayload>>,
+    distributed::microsvc::HandlerError,
+> {
+    use distributed::microsvc::HandlerError;
+    let principal = ctx.user_id()?;
+    let repo = ctx.repo();
+    let mut todo = repo
+        .get(&input.todo_id)
+        .await?
+        .ok_or_else(|| HandlerError::Rejected("missing batch fixture".into()))?;
+    for index in 0..32 {
+        todo.rename(principal, &format!("{} {index}", input.title))
+            .map_err(|error| HandlerError::Rejected(error.to_string()))?;
+    }
+    let title = todo_domain::TodoState::from(&*todo).title;
+    repo.publish_events()
+        .commit(todo)?
+        .eventual(BatchPayload { title })
+}
+
+distributed::portable_command! {
+    name: "todo.test_batch",
+    transition: todo_domain::domain_commands::Rename,
+    aggregate: todo_domain::Todo,
+    input: BatchInput,
+    outcome: distributed::command::Eventual<BatchPayload>,
+    shard: |input| input.todo_id.clone(),
+    roles: ["user"],
+    field: "test_batch",
+    handle: handle_batch,
+}
+
 pub async fn handle(sql: &SqlStorage, request: &mut Request) -> Result<Response> {
     if request.method() != Method::Post {
         return Response::error("method not allowed", 405);

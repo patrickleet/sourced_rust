@@ -164,6 +164,29 @@ try {
     await record(fault, { rollback, recovered });
   }
 
+  // One command crosses both event and outbox SQL insert chunk boundaries.
+  await command("batch", "todo.create", { title: "batch" });
+  const batchId = commandId();
+  await probe("batch", "fail-completion");
+  const failedBatch = await post("batch", "todo.test_batch", {
+    commandId: batchId, input: { title: "batch" },
+  });
+  assert.ok(failedBatch.status >= 400, await failedBatch.text());
+  const batchRollback = (await probe("batch", "inspect")).counts;
+  assert.equal(batchRollback.events, 1);
+  assert.equal(batchRollback.snapshotVersion, 1);
+  assert.equal(batchRollback.completed, 1);
+  assert.equal(batchRollback.outbox, 0);
+  await probe("batch", "clear-faults");
+  const batchResult = await command("batch", "todo.test_batch", { title: "batch" }, batchId);
+  assert.equal(batchResult.events.length, 32);
+  const batchCommit = (await probe("batch", "inspect")).counts;
+  assert.equal(batchCommit.events, 33);
+  assert.equal(batchCommit.snapshotVersion, 33);
+  assert.equal(batchCommit.completed, 2);
+  assert.equal(batchCommit.outbox, 0);
+  await record("multi-chunk atomic command", { batchRollback, batchCommit });
+
   // The acceptance/delete gap: the test Worker clears its fault on activation.
   // Only the retained lease and alarm may cause the duplicate send.
   const before = (await queueRows()).length;

@@ -167,7 +167,8 @@ node tests/celld/storage-conformance.mjs
 ```
 
 It requires Node.js, sqlite3, esbuild and celld in addition to the Worker
-toolchain. It tests final-write rollback, lease fencing during commit,
+toolchain. It tests final-write rollback across multi-chunk event/outbox inserts
+(the Worker uses at most 100 bound parameters per SQL statement), lease fencing during commit,
 Queue-acceptance/delete crash redelivery with stable IDs, prearmed-alarm
 recovery without another cell request, and receipt replay after delivery. It
 also retains 1,101 unsent messages and more than 8 MiB of event payload in one
