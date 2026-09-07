@@ -92,3 +92,6 @@ pub use subscribe::ChangeHub;
 
 #[cfg(all(feature = "graphql", feature = "gateway-delivery"))]
 pub use engine::ReadRouting;
+
+#[cfg(all(feature = "graphql", feature = "gateway-delivery"))]
+pub mod delivery;

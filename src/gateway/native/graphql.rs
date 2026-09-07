@@ -286,7 +286,43 @@ impl GraphqlBinding {
         if let Err(error) = admit_request(&value, *capabilities) {
             return error_response(error);
         }
-        let mut request = Request::from_parts(parts, Body::from(body));
+        #[cfg(feature = "gateway-delivery")]
+        if let Some(coordinator) = parts
+            .extensions
+            .get::<Arc<super::NativeDelivery>>()
+            .cloned()
+        {
+            if super::super::graphql::operation_kind(
+                value["query"].as_str().unwrap_or(""),
+                value["operationName"].as_str(),
+            ) == Ok(super::super::graphql::OperationKind::Query)
+                && value["extensions"].get("gatewayDelivery").is_none()
+            {
+                return coordinator
+                    .execute(self, inner, executor, context, parts, value, permit)
+                    .await;
+            }
+        }
+        self.execute_http(
+            inner,
+            executor,
+            context,
+            Request::from_parts(parts, Body::from(body)),
+            Some(permit),
+        )
+        .await
+    }
+
+    pub(super) async fn execute_http(
+        &self,
+        inner: &NativeInner,
+        executor: &GraphqlExecutor,
+        context: RequestContext,
+        mut request: Request<Body>,
+        permit: Option<tokio::sync::OwnedSemaphorePermit>,
+    ) -> Response {
+        // Internal control/result calls share the outer admitted capacity slot.
+        // Plain remote streaming responses retain their own permit in the body.
         match (self, executor) {
             (Self::Embedded(embedded), _) => {
                 if proxy::prepare_headers(request.headers_mut(), inner, &context, false).is_err() {

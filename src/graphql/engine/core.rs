@@ -233,6 +233,8 @@ pub(crate) struct EngineInner {
     pub pool: GraphqlPool,
     #[cfg(feature = "gateway-delivery")]
     pub read_routing: Option<super::ReadRouting>,
+    #[cfg(feature = "gateway-delivery")]
+    pub gateway_versions: Option<crate::graphql::delivery::GatewayVersionStore>,
     pub catalog: BTreeMap<String, CatalogEntry>,
     pub by_table: BTreeMap<String, String>,
     pub permissions: BTreeMap<(String, String), RoleModelPerm>,
@@ -298,6 +300,8 @@ pub struct GraphqlEngineBuilder {
     pub(crate) pool: GraphqlPool,
     #[cfg(feature = "gateway-delivery")]
     pub(crate) read_routing: Option<super::ReadRouting>,
+    #[cfg(feature = "gateway-delivery")]
+    pub(crate) gateway_versions: Option<crate::graphql::delivery::GatewayVersionStore>,
     pub(crate) catalog: BTreeMap<String, CatalogEntry>,
     pub(crate) by_table: BTreeMap<String, String>,
     pub(crate) permissions: BTreeMap<(String, String), RoleModelPerm>,

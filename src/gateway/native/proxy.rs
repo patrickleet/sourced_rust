@@ -86,7 +86,15 @@ pub(super) async fn forward(
         Ok(permit) => permit,
         Err(_) => return response(StatusCode::SERVICE_UNAVAILABLE),
     };
-    forward_with_permit(inner, origin, allow_websocket, context, request, permit).await
+    forward_with_permit(
+        inner,
+        origin,
+        allow_websocket,
+        context,
+        request,
+        Some(permit),
+    )
+    .await
 }
 
 pub(super) async fn forward_with_permit(
@@ -95,7 +103,7 @@ pub(super) async fn forward_with_permit(
     allow_websocket: bool,
     context: RequestContext,
     mut request: Request<Body>,
-    permit: tokio::sync::OwnedSemaphorePermit,
+    permit: Option<tokio::sync::OwnedSemaphorePermit>,
 ) -> Response {
     if request
         .headers()

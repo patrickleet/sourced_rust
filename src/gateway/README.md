@@ -106,3 +106,9 @@ admission require a fresh origin identity for every consumer.
 No routing migration is required. Disable replica registration to route all reads
 to primary; keep client revision fences active during a deployment rollback.
 The isolated physical standby fixture is documented in tests/gateway-postgres.
+
+Snapshot caching is available through the explicit `NativeDelivery::snapshots`
+resource (`gateway-graphql-native,gateway-delivery`). Origin-side
+`GatewayVersionStore` supplies transactional data/proof dependency versions;
+every hit authenticates and validates at the primary without result SQL.
+See [activation, limits, public-age policy and rollback](../../docs/gateway/snapshot-cache.md).

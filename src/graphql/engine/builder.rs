@@ -12,6 +12,8 @@ impl GraphqlEngineBuilder {
             pool: source.pool,
             #[cfg(feature = "gateway-delivery")]
             read_routing: None,
+            #[cfg(feature = "gateway-delivery")]
+            gateway_versions: None,
             catalog: BTreeMap::new(),
             by_table: BTreeMap::new(),
             permissions: BTreeMap::new(),
@@ -56,6 +58,17 @@ impl GraphqlEngineBuilder {
                 .push("read replica must use the primary SQL dialect".into());
         }
         self.read_routing = Some(routing);
+        self
+    }
+
+    /// Enable origin dependency validation after installing version coverage
+    /// in the engine's database. This allocates no gateway cache or coordinator.
+    #[cfg(feature = "gateway-delivery")]
+    pub fn gateway_versions(
+        mut self,
+        store: crate::graphql::delivery::GatewayVersionStore,
+    ) -> Self {
+        self.gateway_versions = Some(store);
         self
     }
 
@@ -1027,6 +1040,8 @@ impl GraphqlEngineBuilder {
             pool: self.pool,
             #[cfg(feature = "gateway-delivery")]
             read_routing: self.read_routing,
+            #[cfg(feature = "gateway-delivery")]
+            gateway_versions: self.gateway_versions,
             catalog: self.catalog,
             by_table: self.by_table,
             permissions: self.permissions,
