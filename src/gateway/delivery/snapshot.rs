@@ -107,7 +107,7 @@ pub struct SnapshotResponse {
     pub body: Vec<u8>,
 }
 impl SnapshotResponse {
-    fn evidence(&self, admission: &OriginAdmission) -> Option<Vec<Minimum>> {
+    fn evidence(&self, admission: &OriginAdmission, complete: bool) -> Option<Vec<Minimum>> {
         if self.status != 200
             || self.headers.iter().any(|(name, value)| {
                 name.eq_ignore_ascii_case("set-cookie")
@@ -143,11 +143,23 @@ impl SnapshotResponse {
             return None;
         }
         let snapshot = &protocol["snapshot"];
-        if snapshot["recordsComplete"] != true || snapshot["indexesComparable"] != true {
+        if complete
+            && (snapshot["recordsComplete"] != true || snapshot["indexesComparable"] != true)
+        {
+            return None;
+        }
+        if complete
+            && (snapshot["records"].as_array().is_none()
+                || snapshot["indexes"].as_array().is_none())
+        {
             return None;
         }
         let mut evidence = Vec::new();
-        for record in snapshot["records"].as_array()? {
+        for record in snapshot["records"]
+            .as_array()
+            .map(Vec::as_slice)
+            .unwrap_or(&[])
+        {
             let minimum = Minimum::Record {
                 model: record["model"].as_str()?.into(),
                 scope_token: record["scopeToken"].as_str()?.into(),
@@ -157,7 +169,11 @@ impl SnapshotResponse {
             minimum.validate().ok()?;
             evidence.push(minimum);
         }
-        for index in snapshot["indexes"].as_array()? {
+        for index in snapshot["indexes"]
+            .as_array()
+            .map(Vec::as_slice)
+            .unwrap_or(&[])
+        {
             let minimum = Minimum::Index {
                 projection: index["projection"].as_str()?.into(),
                 scope_token: index["scopeToken"].as_str()?.into(),
@@ -168,13 +184,26 @@ impl SnapshotResponse {
         }
         Some(evidence)
     }
+    /// Complete admitted HTTP result may be shared in flight without requiring
+    /// future cache eligibility. Any supplied minima still require actual proof.
+    pub fn shareable(
+        &self,
+        admission: &OriginAdmission,
+        freshness: Option<&FreshnessContext>,
+    ) -> bool {
+        self.evidence(admission, false).is_some_and(|evidence| {
+            freshness.is_none_or(|context| {
+                context.bind(&admission.identity).is_ok() && context.satisfied_by(&evidence)
+            })
+        })
+    }
     /// Candidate proof covers every required floor in the admitted scope.
     pub fn satisfies(
         &self,
         admission: &OriginAdmission,
         freshness: Option<&FreshnessContext>,
     ) -> bool {
-        self.evidence(admission).is_some_and(|evidence| {
+        self.evidence(admission, true).is_some_and(|evidence| {
             freshness.is_none_or(|context| {
                 context.bind(&admission.identity).is_ok() && context.satisfied_by(&evidence)
             })

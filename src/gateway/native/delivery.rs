@@ -9,45 +9,100 @@ use axum::{
     response::IntoResponse,
 };
 use futures_util::StreamExt;
-use std::sync::Mutex;
+use std::sync::{Arc, Mutex};
 use tokio::sync::OwnedSemaphorePermit;
 
-/// Bounded native coordinator. Snapshot storage is allocated only when this
-/// explicit resource is mounted; every lookup first visits authenticated origin
-/// validation. Query-flight and live-sharing mounts remain independent.
+/// Independently selected native delivery capabilities. None allocates nothing.
+#[derive(Default)]
+pub struct NativeDeliveryOptions {
+    /// Optional complete snapshot storage.
+    pub snapshots: Option<SnapshotLimits>,
+    /// Optional concurrent query execution coordination.
+    pub coalescing: Option<FlightLimits>,
+}
+/// Bounded native delivery. Each consumer authenticates at the origin before
+/// lookup/join; snapshot storage and shared query execution are independent.
 pub struct NativeDelivery {
-    snapshots: Mutex<SnapshotCache>,
+    snapshots: Option<Mutex<SnapshotCache>>,
+    flights: Option<Arc<super::flight::NativeFlights>>,
     entry_bytes: usize,
 }
+struct Fill {
+    binding: GraphqlBinding,
+    inner: Arc<NativeInner>,
+    executor: GraphqlExecutor,
+    context: RequestContext,
+    parts: Parts,
+    value: serde_json::Value,
+    admission: OriginAdmission,
+    freshness: Option<FreshnessContext>,
+    ticket: Option<FillTicket>,
+}
 impl NativeDelivery {
+    /// Allocate only the explicitly selected capabilities and their bounds.
+    pub fn new(options: NativeDeliveryOptions) -> Result<Self, GatewayError> {
+        if options.snapshots.is_none() && options.coalescing.is_none() {
+            return Err(GatewayError("no delivery capability selected"));
+        }
+        let entry_bytes = options
+            .coalescing
+            .map(|limits| limits.response_bytes)
+            .or(options.snapshots.map(|limits| limits.entry_bytes))
+            .expect("selected delivery");
+        Ok(Self {
+            snapshots: options
+                .snapshots
+                .map(SnapshotCache::new)
+                .transpose()
+                .map_err(|_| GatewayError("invalid snapshot limits"))?
+                .map(Mutex::new),
+            flights: options
+                .coalescing
+                .map(super::flight::NativeFlights::new)
+                .transpose()?,
+            entry_bytes,
+        })
+    }
     /// Allocate a bounded origin-validated snapshot cache.
     pub fn snapshots(limits: SnapshotLimits) -> Result<Self, GatewayError> {
-        let snapshots =
-            SnapshotCache::new(limits).map_err(|_| GatewayError("invalid snapshot limits"))?;
-        Ok(Self {
-            snapshots: Mutex::new(snapshots),
-            entry_bytes: limits.entry_bytes,
+        Self::new(NativeDeliveryOptions {
+            snapshots: Some(limits),
+            coalescing: None,
+        })
+    }
+    /// Allocate bounded query coalescing without snapshot storage.
+    pub fn coalescing(limits: FlightLimits) -> Result<Self, GatewayError> {
+        Self::new(NativeDeliveryOptions {
+            snapshots: None,
+            coalescing: Some(limits),
         })
     }
     pub(super) fn capabilities(&self) -> DeliveryCapabilities {
         DeliveryCapabilities {
-            snapshots: true,
-            coalescing: false,
+            snapshots: self.snapshots.is_some(),
+            coalescing: self.flights.is_some(),
             live_sharing: false,
         }
     }
-    /// Invalidate on a known lost feed, rebuild or coordinator reset. Private
-    /// lookups still validate at primary even without a pushed invalidation.
+    /// Current active query groups and admitted consumers, without identifiers.
+    pub fn flight_counts(&self) -> (usize, usize) {
+        self.flights
+            .as_ref()
+            .map_or((0, 0), |flights| flights.counts())
+    }
+    /// Lost-feed/rebuild reset fences fills; primary hit validation still applies.
     pub fn invalidate_all(&self) {
-        if let Ok(mut cache) = self.snapshots.lock() {
-            cache.invalidate_all();
+        if let Some(cache) = &self.snapshots {
+            if let Ok(mut cache) = cache.lock() {
+                cache.invalidate_all();
+            }
         }
     }
     #[allow(clippy::too_many_arguments)]
     pub(super) async fn execute(
-        &self,
+        self: &Arc<Self>,
         binding: &GraphqlBinding,
-        inner: &NativeInner,
+        inner: &Arc<NativeInner>,
         executor: &GraphqlExecutor,
         context: RequestContext,
         parts: Parts,
@@ -76,8 +131,8 @@ impl NativeDelivery {
             }
             AdmissionResult::Error(error) => return error,
         };
-        let ticket = {
-            let Ok(mut cache) = self.snapshots.lock() else {
+        let ticket = if let Some(cache) = &self.snapshots {
+            let Ok(mut cache) = cache.lock() else {
                 return response(StatusCode::SERVICE_UNAVAILABLE);
             };
             match cache.lookup(&admission, freshness.as_ref(), super::now()) {
@@ -86,16 +141,72 @@ impl NativeDelivery {
                 Ok(None) => {}
             }
             match cache.begin_fill(&admission, super::now()) {
-                Ok(ticket) => ticket,
+                Ok(ticket) => Some(ticket),
                 Err(_) => return response(StatusCode::SERVICE_UNAVAILABLE),
             }
+        } else {
+            None
         };
+        let fill = Fill {
+            binding: binding.clone(),
+            inner: inner.clone(),
+            executor: executor.clone(),
+            context: context.clone(),
+            parts: request(&parts, value.clone()).into_parts().0,
+            value: value.clone(),
+            admission: admission.clone(),
+            freshness: freshness.clone(),
+            ticket,
+        };
+        let result = if let Some(flights) = &self.flights {
+            let key =
+                match FlightKey::admitted(&admission, &value, freshness.as_ref(), super::now()) {
+                    Ok(key) => key,
+                    Err(_) => return response(StatusCode::BAD_REQUEST),
+                };
+            let owner = self.clone();
+            match flights
+                .execute(key, admission, freshness, move || async move {
+                    owner.fill(fill).await
+                })
+                .await
+            {
+                Some(result) => result,
+                None => {
+                    return binding
+                        .execute_http(
+                            inner,
+                            executor,
+                            context,
+                            request(&parts, value),
+                            Some(permit),
+                        )
+                        .await
+                }
+            }
+        } else {
+            self.fill(fill).await
+        };
+        super::flight::with_permit(result, permit)
+    }
+    async fn fill(&self, fill: Fill) -> Response {
+        let Fill {
+            binding,
+            inner,
+            executor,
+            context,
+            parts,
+            value,
+            admission,
+            freshness,
+            ticket,
+        } = fill;
         let mut execution = value.clone();
         mark(&mut execution, "snapshot");
         let result = binding
             .execute_http(
-                inner,
-                executor,
+                &inner,
+                &executor,
                 context.clone(),
                 request(&parts, execution),
                 None,
@@ -113,14 +224,7 @@ impl NativeDelivery {
         };
         let body = match captured {
             Captured::Bytes(body) => body,
-            Captured::Streaming(body) => {
-                // An oversized/streaming result bypasses cache without truncation.
-                let stream = body.into_data_stream().map(move |chunk| {
-                    let _ = &permit;
-                    chunk
-                });
-                return Response::from_parts(response_parts, Body::from_stream(stream));
-            }
+            Captured::Streaming(body) => return Response::from_parts(response_parts, body),
         };
         let headers = response_parts
             .headers
@@ -139,15 +243,20 @@ impl NativeDelivery {
             headers,
             body: body.to_vec(),
         };
-        if !snapshot.satisfies(&admission, freshness.as_ref()) {
+        if !snapshot.shareable(&admission, freshness.as_ref()) {
             return Response::from_parts(response_parts, Body::from(body));
         }
-        // Recheck the actual fill's vector and authorization after result SQL.
-        // A delayed fill cannot install behind a newer primary commit, even if
-        // the invalidation feed was delayed, dropped or never connected.
-        match validate(binding, inner, executor, &context, &parts, &value).await {
+        // Scope/policy can change while result work is running. Authenticate
+        // after the result too, including when only coalescing is selected.
+        match validate(&binding, &inner, &executor, &context, &parts, &value).await {
             AdmissionResult::Eligible(current) => {
-                if let Ok(mut cache) = self.snapshots.lock() {
+                if current.identity != admission.identity || current.key != admission.key {
+                    return response(StatusCode::CONFLICT);
+                }
+                if let (Some(ticket), Some(cache)) = (ticket, &self.snapshots) {
+                    let Ok(mut cache) = cache.lock() else {
+                        return response(StatusCode::SERVICE_UNAVAILABLE);
+                    };
                     if cache
                         .install(ticket, current, snapshot, super::now())
                         .is_err()
@@ -170,7 +279,7 @@ enum AdmissionResult {
 }
 async fn validate(
     binding: &GraphqlBinding,
-    inner: &NativeInner,
+    inner: &std::sync::Arc<NativeInner>,
     executor: &GraphqlExecutor,
     context: &RequestContext,
     parts: &Parts,
@@ -251,7 +360,7 @@ fn request(parts: &Parts, value: serde_json::Value) -> Request<Body> {
     );
     request
 }
-fn cached_response(snapshot: SnapshotResponse) -> Response {
+pub(super) fn cached_response(snapshot: SnapshotResponse) -> Response {
     let mut result = snapshot.body.into_response();
     *result.status_mut() = StatusCode::from_u16(snapshot.status).expect("validated status");
     result.headers_mut().clear();
@@ -265,11 +374,11 @@ fn cached_response(snapshot: SnapshotResponse) -> Response {
     }
     result
 }
-enum Captured {
+pub(super) enum Captured {
     Bytes(Bytes),
     Streaming(Body),
 }
-async fn capture(body: Body, limit: usize) -> Captured {
+pub(super) async fn capture(body: Body, limit: usize) -> Captured {
     let mut stream = body.into_data_stream();
     let mut chunks = Vec::new();
     let mut bytes = 0;

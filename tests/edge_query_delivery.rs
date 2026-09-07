@@ -288,3 +288,57 @@ fn cache_envelope_eligibility_freshness_and_capacity() {
     let ticket = cache.begin_fill(&other, 100).unwrap();
     assert!(!cache.install(ticket, other, oversized, 100).unwrap());
 }
+
+#[test]
+fn flight_admission_limits_freshness_and_generation_fences() {
+    let request = json!({"query":"{ todos { title } }"});
+    let admission = admission("v1");
+    let key = FlightKey::admitted(&admission, &request, None, 100).unwrap();
+    let mut stronger = context();
+    stronger.observe([index("scope", "3")]).unwrap();
+    assert_ne!(
+        key,
+        FlightKey::admitted(&admission, &request, Some(&stronger), 100).unwrap()
+    );
+    let mut later = admission.clone();
+    later.validator = "v2".into();
+    assert_ne!(
+        key,
+        FlightKey::admitted(&later, &request, None, 100).unwrap()
+    );
+    assert!(FlightKey::admitted(&admission, &request, None, 200).is_err());
+    let mut forged = context();
+    forged.cache_scope = "bob".into();
+    assert!(FlightKey::admitted(&admission, &request, Some(&forged), 100).is_err());
+    let mut registry = FlightRegistry::new(FlightLimits {
+        groups: 1,
+        consumers: 100,
+        deadline_ms: 1000,
+        ..Default::default()
+    })
+    .unwrap();
+    let mut tickets = Vec::new();
+    for index in 0..100 {
+        let (ticket, owner) = registry.join(key.clone(), 0).unwrap();
+        assert_eq!(owner, index == 0);
+        tickets.push(ticket);
+    }
+    assert_eq!(registry.consumers(), 100);
+    assert!(registry.join(key.clone(), 1).is_err());
+    assert!(!registry.leave(tickets.pop().unwrap()));
+    assert_eq!(registry.consumers(), 99);
+    for ticket in tickets {
+        registry.leave(ticket);
+    }
+    assert!(registry.is_empty());
+    let (old, _) = registry.join(key.clone(), 100).unwrap();
+    let (new, owner) = registry.join(key.clone(), 1100).unwrap();
+    assert!(owner);
+    assert!(
+        !registry.leave(old),
+        "expired owner cannot release new generation"
+    );
+    assert_eq!(registry.consumers(), 1);
+    assert!(registry.leave(new));
+    assert!(registry.is_empty());
+}

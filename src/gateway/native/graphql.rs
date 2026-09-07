@@ -190,7 +190,7 @@ impl GraphqlBinding {
 
     pub(super) async fn execute(
         &self,
-        inner: &NativeInner,
+        inner: &Arc<NativeInner>,
         declaration: &BindingKind,
         context: RequestContext,
         mut request: Request<Body>,
@@ -315,7 +315,7 @@ impl GraphqlBinding {
 
     pub(super) async fn execute_http(
         &self,
-        inner: &NativeInner,
+        inner: &Arc<NativeInner>,
         executor: &GraphqlExecutor,
         context: RequestContext,
         mut request: Request<Body>,
