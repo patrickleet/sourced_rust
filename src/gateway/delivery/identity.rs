@@ -85,6 +85,7 @@ impl OperationKey {
             .as_object_mut()
             .ok_or(DeliveryError::Ineligible)?;
         object.remove("gatewayFreshness");
+        object.remove("gatewayDelivery");
         let bytes = canonical_json(&serde_json::json!([
             identity, document, name, variables, extensions
         ]))?;

@@ -118,6 +118,9 @@ pub enum NativeBinding {
     /// Embedded or complete remote GraphQL executor.
     #[cfg(feature = "gateway-graphql-native")]
     Graphql(GraphqlBinding),
+    /// GraphQL with an explicitly allocated bounded delivery coordinator.
+    #[cfg(all(feature = "gateway-graphql-native", feature = "gateway-delivery"))]
+    GraphqlWithDelivery(GraphqlBinding, Arc<NativeDelivery>),
     /// Configured UI proxy. Upgrades are disabled unless explicitly selected.
     UiProxy {
         /// Whether this target may negotiate a WebSocket upgrade.
@@ -201,6 +204,29 @@ impl NativeGateway {
                     executor,
                     *capabilities,
                     *delivery,
+                    schema_extensions,
+                    &origin,
+                )?;
+                compatible = true;
+            }
+            #[cfg(all(feature = "gateway-graphql-native", feature = "gateway-delivery"))]
+            if let (
+                BindingKind::Graphql {
+                    executor,
+                    capabilities,
+                    delivery,
+                    schema_extensions,
+                },
+                NativeBinding::GraphqlWithDelivery(binding, coordinator),
+            ) = (&declaration.kind, &binding)
+            {
+                if *delivery != coordinator.capabilities() {
+                    return Err(GatewayError("delivery resource does not match declaration"));
+                }
+                binding.validate(
+                    executor,
+                    *capabilities,
+                    super::DeliveryCapabilities::default(),
                     schema_extensions,
                     &origin,
                 )?;
@@ -399,6 +425,13 @@ impl GatewayAdapter for NativeGateway {
                     .execute(&self.0, &selected.binding().kind, context, request)
                     .await
             }
+            #[cfg(all(feature = "gateway-graphql-native", feature = "gateway-delivery"))]
+            NativeBinding::GraphqlWithDelivery(binding, coordinator) => {
+                request.extensions_mut().insert(Arc::clone(coordinator));
+                binding
+                    .execute(&self.0, &selected.binding().kind, context, request)
+                    .await
+            }
             NativeBinding::Assets(assets) => assets.serve(request),
             NativeBinding::Admission(_) => response(StatusCode::SERVICE_UNAVAILABLE),
         }
@@ -419,3 +452,8 @@ impl GatewayAdapter for NativeGateway {
         }
     }
 }
+
+#[cfg(all(feature = "gateway-graphql-native", feature = "gateway-delivery"))]
+mod delivery;
+#[cfg(all(feature = "gateway-graphql-native", feature = "gateway-delivery"))]
+pub use delivery::NativeDelivery;

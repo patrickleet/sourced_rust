@@ -756,6 +756,20 @@ async fn resolve_root(
     let selection = compile::selection_from_field(ctx.field());
     let plan = compile::compile_query(&inner, &session, &role, model, kind, &selection)
         .map_err(|e| client_error("BAD_REQUEST", sanitize_compile_error(&e)))?;
+    #[cfg(feature = "gateway-delivery")]
+    if let Some(captured) = ctx.data_opt::<super::delivery::PlanCapture>() {
+        if let QueryPlan::Sql(plan) = plan {
+            let mut plans = captured
+                .0
+                .lock()
+                .map_err(|_| client_error("INTERNAL", "plan capture unavailable"))?;
+            plans.push(plan);
+            return Err(async_graphql::Error::new(super::delivery::CAPTURED));
+        }
+        return Err(async_graphql::Error::new(
+            "query is ineligible for delivery reuse",
+        ));
+    }
     let value = match plan {
         QueryPlan::CellByKey {
             model,

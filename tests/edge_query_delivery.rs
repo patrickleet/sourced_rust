@@ -153,3 +153,138 @@ fn invalid_context_never_weakens_routing() {
         ReadTarget::Primary
     );
 }
+
+fn admission(validator: &str) -> OriginAdmission {
+    let identity = identity("alice");
+    OriginAdmission {
+        key: OperationKey::from_origin(&identity, &json!({"query":"{ todos { title } }"})).unwrap(),
+        identity,
+        operation: "document-fingerprint".into(),
+        validator: validator.into(),
+        validated_at: 100,
+        expires_at: 200,
+        policy: SnapshotPolicy::Current,
+    }
+}
+fn snapshot(admission: &OriginAdmission) -> SnapshotResponse {
+    SnapshotResponse { status: 200, headers: vec![("content-type".into(), "application/json".into())], body: serde_json::to_vec(&json!({
+        "data":{"todos":[]}, "extensions": {
+            "gatewayDelivery":{"validator":admission.validator},
+            "distributed": {"protocolVersion":1,"schemaHash":admission.identity.schema_hash,
+            "authorizationGeneration":admission.identity.authorization_generation,"cacheScope":admission.identity.cache_scope,
+            "operation":admission.operation,"snapshot":{"recordsComplete":true,"indexesComparable":true,"records":[],
+                "indexes":[{"projection":"todos","scopeToken":"scope","position":"2"}]}}
+        }
+    })).unwrap() }
+}
+#[test]
+fn private_validation_public_age_and_late_fill_fence() {
+    let mut cache = SnapshotCache::new(SnapshotLimits::default()).unwrap();
+    let first = admission("v1");
+    let body = snapshot(&first);
+    let ticket = cache.begin_fill(&first, 100).unwrap();
+    assert!(cache
+        .install(ticket, first.clone(), body.clone(), 100)
+        .unwrap());
+    assert_eq!(
+        cache.lookup(&first, None, 101).unwrap().unwrap().body,
+        body.body
+    );
+    let newer = admission("v2");
+    assert!(cache.lookup(&newer, None, 101).unwrap().is_none());
+    let ticket = cache.begin_fill(&first, 100).unwrap();
+    assert!(
+        !cache
+            .install(ticket, newer.clone(), body.clone(), 101)
+            .unwrap(),
+        "old bytes cannot acquire new version"
+    );
+    let late = cache.begin_fill(&first, 100).unwrap();
+    cache.invalidate_all();
+    assert!(!cache
+        .install(late, first.clone(), body.clone(), 101)
+        .unwrap());
+    assert!(cache.is_empty());
+    let mut public = first.clone();
+    public.policy = SnapshotPolicy::Public {
+        max_age_seconds: 10,
+    };
+    let ticket = cache.begin_fill(&public, 100).unwrap();
+    assert!(cache
+        .install(ticket, public.clone(), body.clone(), 100)
+        .unwrap());
+    let mut current = public.clone();
+    current.validator = "v2".into();
+    current.validated_at = 108;
+    assert!(cache.lookup(&current, None, 108).unwrap().is_some());
+    current.validated_at = 111;
+    assert!(
+        cache.lookup(&current, None, 111).unwrap().is_none(),
+        "fresh admission cannot renew old public age"
+    );
+    assert!(
+        cache.lookup(&current, None, 200).is_err(),
+        "expired consumer cannot reuse public entry"
+    );
+    current.policy = SnapshotPolicy::Current;
+    assert!(cache.lookup(&current, None, 112).unwrap().is_none());
+}
+#[test]
+fn cache_envelope_eligibility_freshness_and_capacity() {
+    let admission = admission("v1");
+    let valid = snapshot(&admission);
+    let mut floor = context();
+    floor.observe([index("scope", "3")]).unwrap();
+    assert!(!valid.satisfies(&admission, Some(&floor)));
+    let mut floor = context();
+    floor.observe([index("scope", "2")]).unwrap();
+    assert!(valid.satisfies(&admission, Some(&floor)));
+    for (name, value) in [
+        ("Set-Cookie", "session=secret"),
+        ("Cache-Control", "private, no-store"),
+        ("Vary", "*"),
+    ] {
+        let mut response = valid.clone();
+        response.headers.push((name.into(), value.into()));
+        assert!(!response.satisfies(&admission, None));
+    }
+    for path in ["errors", "partial", "command", "protocol", "null"] {
+        let mut response = valid.clone();
+        let mut value: serde_json::Value = serde_json::from_slice(&response.body).unwrap();
+        match path {
+            "errors" => value["errors"] = json!([{"message":"denied"}]),
+            "partial" => {
+                value["extensions"]["distributed"]["snapshot"]["recordsComplete"] = false.into()
+            }
+            "command" => value["extensions"]["distributed"]["command"] = json!({}),
+            "protocol" => value["extensions"]["distributed"]["protocolVersion"] = 2.into(),
+            _ => value["data"] = serde_json::Value::Null,
+        }
+        response.body = serde_json::to_vec(&value).unwrap();
+        assert!(!response.satisfies(&admission, None), "{path}");
+    }
+    let mut cache = SnapshotCache::new(SnapshotLimits {
+        entries: 1,
+        bytes: 4096,
+        entry_bytes: 2048,
+    })
+    .unwrap();
+    let ticket = cache.begin_fill(&admission, 100).unwrap();
+    assert!(cache
+        .install(ticket, admission.clone(), valid.clone(), 100)
+        .unwrap());
+    let mut other = admission.clone();
+    other.identity.cache_scope = "bob".into();
+    other.key = OperationKey::from_origin(&other.identity, &json!({"query":"{ todos { title } }"}))
+        .unwrap();
+    let ticket = cache.begin_fill(&other, 100).unwrap();
+    assert!(cache
+        .install(ticket, other.clone(), snapshot(&other), 100)
+        .unwrap());
+    assert_eq!(cache.len(), 1);
+    assert!(cache.lookup(&admission, None, 100).unwrap().is_none());
+    let mut oversized = snapshot(&other);
+    oversized.body.resize(4096, b' ');
+    let ticket = cache.begin_fill(&other, 100).unwrap();
+    assert!(!cache.install(ticket, other, oversized, 100).unwrap());
+}

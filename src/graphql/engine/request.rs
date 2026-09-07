@@ -29,6 +29,10 @@ impl ProtocolPreparationError {
 
 impl GraphqlEngine {
     pub async fn execute(&self, session: &Session, mut request: Request) -> Response {
+        #[cfg(feature = "gateway-delivery")]
+        if delivery::action(&request).as_deref() == Some("validate") {
+            return self.validate_delivery(session, request).await;
+        }
         if selected_operation_type(&mut request)
             == Some(async_graphql::parser::types::OperationType::Mutation)
             && !crate::microsvc::lifecycle_mutations_open()
@@ -68,6 +72,15 @@ impl GraphqlEngine {
             Ok(accumulator) => accumulator,
             Err(error) => return error.into_response(),
         };
+        #[cfg(feature = "gateway-delivery")]
+        if let Some(accumulator) = &accumulator {
+            if self
+                .enable_delivery_capture(session, &request, accumulator)
+                .is_err()
+            {
+                return protocol_internal_error_response();
+            }
+        }
         if introspection {
             // The relaxed schema is defense-in-depth restricted even if a
             // future classifier or request extension behaves unexpectedly.

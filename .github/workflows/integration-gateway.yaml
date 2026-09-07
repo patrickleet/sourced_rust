@@ -7,6 +7,8 @@ on:
       - 'distributed_macros/**'
       - 'Cargo.toml'
       - 'build.rs'
+      - 'migrations/**'
+      - 'docs/gateway/**'
       - 'tests/e2e-ui/ui/src/auth.ts'
       - 'tests/e2e-ui/ui/src/lib/server/**'
       - 'tests/e2e-ui/ui/src/routes/api/auth/**'
@@ -107,7 +109,12 @@ jobs:
         with:
           toolchain: stable
       - name: Verify embedded and remote GraphQL protocols
-        run: cargo test -p distributed --no-default-features --features gateway-graphql-native,gateway-delivery,sqlite --test gateway_graphql --test gateway_graphql_operation --test graphql_causal_transport --test graphql_query_protocol --test graphql_identity
+        run: cargo test -p distributed --no-default-features --features gateway-graphql-native,gateway-delivery,sqlite --test gateway_graphql --test gateway_graphql_operation --test graphql_causal_transport --test graphql_query_protocol --test graphql_identity --test graphql_sqlite --test sqlite_repository
+
+      - name: Verify transactional cache coverage and Atomic rollback
+        run: |
+          cargo test -p distributed --no-default-features --features gateway-graphql-native,gateway-delivery,sqlite --lib graphql::delivery::versions::tests
+          cargo test -p distributed --no-default-features --features gateway-graphql-native,gateway-delivery,sqlite --lib sqlite_direct_projection_and_ledger_replay_commit_atomically
 
   freshness:
     runs-on: ubuntu-latest

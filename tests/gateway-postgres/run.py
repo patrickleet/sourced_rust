@@ -65,6 +65,8 @@ try:
     print("Fixture PostgreSQL " + docker("exec", primary, "postgres", "--version"), flush=True)
     env = {**os.environ, "GATEWAY_TEST_PRIMARY_URL": url(primary), "GATEWAY_TEST_REPLICA_URL": url(standby), "GATEWAY_TEST_PRIMARY_CONTAINER": primary}
     subprocess.run(["cargo", "test", "-p", "distributed", "--no-default-features", "--features", "gateway-delivery,graphql,postgres", "--test", "edge_query_delivery_postgres", "--", "--nocapture"], cwd=ROOT, env=env, check=True)
+    subprocess.run(["cargo", "test", "-p", "distributed", "--no-default-features", "--features", "gateway-delivery,graphql,postgres", "--lib", "graphql::delivery::versions::tests", "--", "--nocapture"], cwd=ROOT, env=env, check=True)
+    subprocess.run(["cargo", "test", "-p", "distributed", "--no-default-features", "--features", "gateway-delivery,graphql,postgres", "--test", "postgres_repository", "projected_command_ledger_rows_upgrade_to_atomic_and_preserve_checks", "--", "--nocapture"], cwd=ROOT, env={**env, "DATABASE_URL": env["GATEWAY_TEST_PRIMARY_URL"]}, check=True)
 finally:
     for bridge in bridges:
         bridge.shutdown(); bridge.server_close()

@@ -1589,3 +1589,317 @@ async fn freshness_context_binds_origin_and_rejects_unproven_minima() {
         "FRESHNESS_SCOPE_CHANGED"
     );
 }
+
+#[cfg(feature = "gateway-delivery")]
+#[tokio::test]
+async fn gateway_validator_tracks_projection_commit_in_the_result_snapshot() {
+    use distributed::graphql::delivery::GatewayVersionStore;
+    let fixture = protocol_fixture_with_retention(10).await;
+    let pool = distributed::graphql::GraphqlPool::from(fixture.repository.pool().clone());
+    let store =
+        GatewayVersionStore::install(&pool, "query-protocol-cache", ["causal_query_views".into()])
+            .await
+            .unwrap();
+    let engine = GraphqlEngine::builder(&fixture.repository)
+        .service_id(SERVICE_ID)
+        .protocol_token_key(TEST_PROTOCOL_TOKEN_KEY)
+        .roles(&["user"])
+        .anonymous_role("user")
+        .model::<CausalQueryView>(ModelPermissions::new().grant("user", read().all_columns()))
+        .client_projectors([projector()])
+        .gateway_versions(store.clone())
+        .build()
+        .unwrap();
+    let request = |action: &str| {
+        let mut request = Request::new("query CachedRows { causal_query_views { title } }");
+        request.extensions.insert(
+            "gatewayDelivery".into(),
+            async_graphql::Value::from_json(json!({"action":action})).unwrap(),
+        );
+        request
+    };
+    let validate = wire_response(engine.execute(&user_session(), request("validate")).await);
+    assert_eq!(
+        validate["extensions"]["gatewayDelivery"]["eligible"], true,
+        "{validate}"
+    );
+    let validator = validate["extensions"]["gatewayDelivery"]["admission"]["validator"].clone();
+    let first = wire_response(engine.execute(&user_session(), request("snapshot")).await);
+    assert_eq!(
+        first["extensions"]["gatewayDelivery"]["validator"], validator,
+        "{first}"
+    );
+    assert_eq!(
+        first["data"]["causal_query_views"][0]["title"],
+        "causal row"
+    );
+    project_item(&fixture.repository, &fixture.bus, 2, "changed").await;
+    let validate = wire_response(engine.execute(&user_session(), request("validate")).await);
+    assert_ne!(
+        validate["extensions"]["gatewayDelivery"]["admission"]["validator"],
+        validator
+    );
+    let second = wire_response(engine.execute(&user_session(), request("snapshot")).await);
+    assert_eq!(
+        second["extensions"]["gatewayDelivery"]["validator"],
+        validate["extensions"]["gatewayDelivery"]["admission"]["validator"]
+    );
+    assert_eq!(second["data"]["causal_query_views"][0]["title"], "changed");
+    assert_eq!(
+        distributed_envelope(&second)["snapshot"]["indexes"][0]["position"],
+        "2"
+    );
+    store.rotate_epoch(&pool).await.unwrap();
+    let next_epoch = wire_response(engine.execute(&user_session(), request("validate")).await);
+    assert_ne!(
+        next_epoch["extensions"]["gatewayDelivery"]["admission"]["validator"],
+        second["extensions"]["gatewayDelivery"]["validator"]
+    );
+    // A failed write transaction cannot advance the cache dependency version.
+    let mut tx = fixture.repository.pool().begin().await.unwrap();
+    sqlx::query("UPDATE causal_query_views SET title='rolled back'")
+        .execute(&mut *tx)
+        .await
+        .unwrap();
+    tx.rollback().await.unwrap();
+    let rolled_back = wire_response(engine.execute(&user_session(), request("validate")).await);
+    assert_eq!(
+        rolled_back["extensions"]["gatewayDelivery"]["admission"]["validator"],
+        next_epoch["extensions"]["gatewayDelivery"]["admission"]["validator"]
+    );
+}
+
+#[cfg(all(feature = "gateway-delivery", feature = "gateway-graphql-native"))]
+#[tokio::test]
+async fn native_snapshot_cache_revalidates_each_consumer_without_result_sql() {
+    use axum::{routing::post, Router};
+    use distributed::gateway::{delivery::SnapshotLimits, native::*, *};
+    use distributed::graphql::delivery::GatewayVersionStore;
+    use std::sync::atomic::{AtomicBool, Ordering};
+    use tower::ServiceExt;
+    let fixture = protocol_fixture_with_retention(10).await;
+    let pool = distributed::graphql::GraphqlPool::from(fixture.repository.pool().clone());
+    let store = GatewayVersionStore::install(&pool, "native-cache", ["causal_query_views".into()])
+        .await
+        .unwrap();
+    let engine = Arc::new(
+        GraphqlEngine::builder(&fixture.repository)
+            .service_id(SERVICE_ID)
+            .protocol_token_key(TEST_PROTOCOL_TOKEN_KEY)
+            .roles(&["user"])
+            .anonymous_role("user")
+            .subscriptions(false)
+            .model::<CausalQueryView>(
+                ModelPermissions::new().grant("user", read().all_columns().aggregations()),
+            )
+            .client_projectors([projector()])
+            .gateway_versions(store.clone())
+            .build()
+            .unwrap(),
+    );
+    let revoked = Arc::new(AtomicBool::new(false));
+    let origin = {
+        let engine = engine.clone();
+        let revoked = revoked.clone();
+        Router::new().route(
+            "/graphql",
+            post(move |axum::Json(value): axum::Json<serde_json::Value>| {
+                let engine = engine.clone();
+                let revoked = revoked.clone();
+                async move {
+                    if revoked.load(Ordering::SeqCst) {
+                        return (
+                            axum::http::StatusCode::UNAUTHORIZED,
+                            axum::Json(json!({"error":"denied"})),
+                        );
+                    }
+                    let request: Request = serde_json::from_value(value).unwrap();
+                    (
+                        axum::http::StatusCode::OK,
+                        axum::Json(
+                            serde_json::to_value(engine.execute(&user_session(), request).await)
+                                .unwrap(),
+                        ),
+                    )
+                }
+            }),
+        )
+    };
+    let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let origin_url = format!("http://{}", listener.local_addr().unwrap());
+    let origin_task = tokio::spawn(async move { axum::serve(listener, origin).await.unwrap() });
+    struct Stop(tokio::task::JoinHandle<()>);
+    impl Drop for Stop {
+        fn drop(&mut self) {
+            self.0.abort();
+        }
+    }
+    let _origin = Stop(origin_task);
+    for remote in [false, true] {
+        let caps = GraphqlCapabilities {
+            queries: true,
+            ..Default::default()
+        };
+        let executor = if remote {
+            GraphqlExecutor::Remote {
+                origin: origin_url.clone(),
+            }
+        } else {
+            GraphqlExecutor::Embedded
+        };
+        let binding = if remote {
+            GraphqlBinding::Remote(RemoteGraphql {
+                live_path: None,
+                ..Default::default()
+            })
+        } else {
+            GraphqlBinding::Embedded(EmbeddedGraphql::new(engine.clone(), None, caps).unwrap())
+        };
+        let delivery = Arc::new(NativeDelivery::snapshots(SnapshotLimits::default()).unwrap());
+        let config = GatewayConfig {
+            bindings: vec![Binding::new(
+                "api",
+                BindingKind::Graphql {
+                    executor,
+                    capabilities: caps,
+                    delivery: DeliveryCapabilities {
+                        snapshots: true,
+                        ..Default::default()
+                    },
+                    schema_extensions: vec![],
+                },
+            )],
+            routes: vec![Route::new("api", RoutePath::prefix("/graphql"), "api")],
+        }
+        .build()
+        .unwrap();
+        let gateway = NativeGateway::new(
+            config,
+            NativeOptions::new("http://public.invalid"),
+            [(
+                "api".into(),
+                NativeBinding::GraphqlWithDelivery(binding, delivery.clone()),
+            )],
+            NativeAuth::anonymous(),
+        )
+        .unwrap()
+        .router();
+        let run = |document: &str| {
+            let gateway = gateway.clone();
+            let body = serde_json::to_vec(&json!({"query": document})).unwrap();
+            async move {
+                let response = gateway
+                    .oneshot(
+                        axum::http::Request::post("/graphql")
+                            .header("content-type", "application/json")
+                            .body(axum::body::Body::from(body))
+                            .unwrap(),
+                    )
+                    .await
+                    .unwrap();
+                let status = response.status();
+                let bytes = axum::body::to_bytes(response.into_body(), 1024 * 1024)
+                    .await
+                    .unwrap();
+                (
+                    status,
+                    serde_json::from_slice::<serde_json::Value>(&bytes).unwrap(),
+                )
+            }
+        };
+        let document = "query Cache { causal_query_views { title } }";
+        let before = store.metrics();
+        let (status, first) = run(document).await;
+        assert_eq!(status, axum::http::StatusCode::OK);
+        assert!(first.get("errors").is_none(), "{first}");
+        assert!(
+            first["extensions"]["gatewayDelivery"]["validator"].is_string(),
+            "{first}"
+        );
+        let filled = store.metrics();
+        assert_eq!(filled.result_executions, before.result_executions + 1);
+        assert_eq!(filled.validations, before.validations + 2);
+        for _ in 0..5 {
+            assert_eq!(run(document).await.1, first);
+        }
+        let hit = store.metrics();
+        assert_eq!(
+            hit.result_executions, filled.result_executions,
+            "cache hit ran result SQL"
+        );
+        assert_eq!(
+            hit.validations,
+            filled.validations + 5,
+            "each consumer needs fresh origin admission"
+        );
+        // No invalidation feed is connected: transactional dependency validation
+        // must still discover a supported external SQL producer's update.
+        sqlx::query("UPDATE causal_query_views SET title=title || '-external'")
+            .execute(fixture.repository.pool())
+            .await
+            .unwrap();
+        let changed = run(document).await.1;
+        assert_ne!(changed["data"], first["data"]);
+        assert_eq!(store.metrics().result_executions, hit.result_executions + 1);
+        assert_eq!(run(document).await.1, changed);
+        delivery.invalidate_all();
+        assert_eq!(run(document).await.1, changed);
+        assert_eq!(store.metrics().result_executions, hit.result_executions + 2);
+        if remote {
+            revoked.store(true, Ordering::SeqCst);
+            assert_eq!(
+                run(document).await.0,
+                axum::http::StatusCode::UNAUTHORIZED,
+                "no private stale-on-auth-error"
+            );
+            assert_eq!(store.metrics().result_executions, hit.result_executions + 2);
+            revoked.store(false, Ordering::SeqCst);
+        }
+        // A projection can advance evidence while leaving selected data equal.
+        let title = changed["data"]["causal_query_views"][0]["title"]
+            .as_str()
+            .unwrap();
+        project_item(
+            &fixture.repository,
+            &fixture.bus,
+            if remote { 3 } else { 2 },
+            title,
+        )
+        .await;
+        let proof_only = run(document).await.1;
+        assert_eq!(proof_only["data"], changed["data"]);
+        assert_ne!(
+            proof_only["extensions"]["gatewayDelivery"]["validator"],
+            changed["extensions"]["gatewayDelivery"]["validator"]
+        );
+        let filtered =
+            "query Filtered { causal_query_views(where: {title: {_eq: \"matching\"}}) { title } }";
+        let count = "query Count { causal_query_views_aggregate(where: {title: {_eq: \"matching\"}}) { aggregate { count } } }";
+        assert_eq!(
+            run(filtered).await.1["data"]["causal_query_views"],
+            json!([])
+        );
+        let empty_count = run(count).await.1;
+        assert!(empty_count.get("errors").is_none(), "{empty_count}");
+        assert_eq!(
+            empty_count["data"]["causal_query_views_aggregate"]["aggregate"]["count"],
+            0
+        );
+        let filled = store.metrics();
+        run(filtered).await;
+        run(count).await;
+        assert_eq!(store.metrics().result_executions, filled.result_executions);
+        sqlx::query("UPDATE causal_query_views SET title='matching'")
+            .execute(fixture.repository.pool())
+            .await
+            .unwrap();
+        assert_eq!(
+            run(filtered).await.1["data"]["causal_query_views"][0]["title"],
+            "matching"
+        );
+        assert_eq!(
+            run(count).await.1["data"]["causal_query_views_aggregate"]["aggregate"]["count"],
+            1
+        );
+    }
+}
