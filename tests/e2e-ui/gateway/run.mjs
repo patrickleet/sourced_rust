@@ -28,7 +28,7 @@ if(process.env.GATEWAY_SKIP_BUILD!=='1'){
 }
 const temporary=await mkdtemp(path.join(os.tmpdir(),'gateway-app-'));
 try{
- for(const delivery of ['none','all']){
+ for(const delivery of (process.env.GATEWAY_LIFECYCLE==='1'?['none']:['none','all'])){
   const apiPort=await freePort(),uiPort=await freePort(),issuer=`http://127.0.0.1:${await freePort()}`;
   const publicOrigin=`http://127.0.0.1:${apiPort}`;
   const idp=await startProvider(issuer,publicOrigin,{jwtAudience:'gateway-fixture'});
@@ -78,7 +78,18 @@ try{
     await page.goto(publicOrigin+'/blob');await expect(page.getByTestId('blob-start-game')).toBeEnabled();await page.getByTestId('blob-start-game').click();await expect(page.locator('.blob-board')).toBeVisible({timeout:20000});
     await verifyBlobRace(page);
     await verifyLiveRace(page,publicOrigin);
-    await verifyAuth(context,idp,publicOrigin);
+    if(process.env.GATEWAY_LIFECYCLE==='1'){
+      assert.ok(devMode,'full reload proof requires the CLI dev host');
+      const storage=path.join(temporary,'reload-auth.json');await context.storageState({path:storage});
+      // The lifecycle fixture owns the browser participants during source edits.
+      await browser.close();browser=undefined;
+      const reload=launch(process.execPath,['scripts/lifecycle-reload.mjs'],{env:{...environment,E2E_UI_ORIGIN:publicOrigin,E2E_API_ORIGIN:publicOrigin,E2E_RELOAD_STORAGE_STATE:storage}});
+      reload.child.stdout.on('data',chunk=>process.stdout.write(chunk));
+      const [code]=await once(reload.child,'exit');
+      await writeFile(path.join(artifacts,'lifecycle-reload.log'),reload.logs());
+      assert.equal(code,0,reload.logs());
+      console.log('PASS complete controlled browser lifecycle through the public gateway');
+    }else await verifyAuth(context,idp,publicOrigin);
     assert.deepEqual(errors,[]);console.log('PASS actual public-origin application login, Todo Eventual and Blob Atomic with delivery '+delivery);
   }catch(error){await writeFile(path.join(artifacts,delivery+'-failure.txt'),String(error));throw error;}
   finally{await browser?.close();await ui?.stop();await api?.stop();await new Promise(r=>idp.server.close(r));if(api)await writeFile(path.join(artifacts,delivery+'-api.log'),api.logs());if(ui)await writeFile(path.join(artifacts,delivery+'-ui.log'),ui.logs());}

@@ -209,7 +209,18 @@ async function transition(page, path, source, expectedReplicaRestore, assertGate
 		},
 		'controlled browser reload restoration',
 		lifecycleBuildTimeoutMs
-	);
+	).catch(async (error) => {
+		const browserState = await page.evaluate(() => {
+			const capsule = JSON.parse(sessionStorage.getItem('@hops-ops/distributed/reload-capsule/v1') || 'null');
+			return {
+				generation: document.querySelector('meta[name="distributed-generation"]')?.getAttribute('content'),
+				capsulePhase: capsule?.phase,
+				capsuleTarget: capsule?.to?.generationId,
+				restoredEvents: globalThis.__distributedReloadEvents?.length
+			};
+		}).catch(() => undefined);
+		throw new Error(`${error.message}; browser=${JSON.stringify(browserState)}`, { cause: error });
+	});
 	assert.equal(restored.replicaCaptured, true, 'authenticated replica must participate');
 	assert.equal(restored.replicaRestored, expectedReplicaRestore);
 	assert.equal(
@@ -284,7 +295,7 @@ async function transition(page, path, source, expectedReplicaRestore, assertGate
 
 const browser = await chromium.launch({ headless: true });
 const context = await browser.newContext({
-	storageState: resolve(root, 'e2e/.auth/alice.json')
+	storageState: process.env.E2E_RELOAD_STORAGE_STATE || resolve(root, 'e2e/.auth/alice.json')
 });
 await context.addInitScript(() => {
 	globalThis.__distributedReloadEvents = [];
