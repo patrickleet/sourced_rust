@@ -556,6 +556,9 @@ export class DistributedReplicaImpl implements DistributedReplicaApi {
 			closeActiveTransports: () => self.#closeActiveTransports(),
 			closeAuthorizationGeneration: () => self.#closeAuthorizationGeneration(),
 			resumeLiveWatches: () => self.#resumeLiveWatches(),
+			refreshWatches: () => {
+				for (const key of self.#watches.keys()) self.#emitState(key, true);
+			},
 			syncDiagnostics: () => self.#syncDiagnostics(),
 			diagnosticEvent: (event) => self.#diagnosticEvent(event),
 			refreshIndexMaintenance: () => self.#refreshIndexMaintenance(),
@@ -1008,6 +1011,13 @@ export class DistributedReplicaImpl implements DistributedReplicaApi {
 		authoritativeScope: ReplicaAuthoritativeScope
 	): boolean {
 		return hydrateReplica(this.#hydrationHost(), state, authoritativeScope);
+	}
+
+	reauthorize(
+		state: ReplicaDehydratedState,
+		authoritativeScope: ReplicaAuthoritativeScope
+	): boolean {
+		return hydrateReplica(this.#hydrationHost(), state, authoritativeScope, 'reauthorize');
 	}
 
 	#bindArtifact<TData, TVariables extends GraphqlVariables>(

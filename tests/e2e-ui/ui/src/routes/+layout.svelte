@@ -7,6 +7,7 @@
 	import type { Snippet } from 'svelte';
 	import {
 		createPageDataSessionSource,
+		type SveltekitDistributedPageData,
 		type SveltekitReplicaHydration
 	} from '@hops-ops/distributed/sveltekit';
 	import { DISTRIBUTED_BOUNDARY_OPERATIONS, provideDistributed } from '$distributed';
@@ -19,7 +20,7 @@
 	let { data, children }: { data: LayoutData; children: Snippet } = $props();
 
 	const initialData = untrack(() => data);
-	const pageData = createPageDataSessionSource(initialData);
+	const pageData = createPageDataSessionSource<SveltekitDistributedPageData>(initialData);
 	let appliedHydration: SveltekitReplicaHydration | undefined =
 		initialData.distributed;
 	let hydrationTimer: ReturnType<typeof setTimeout> | undefined;
@@ -59,17 +60,17 @@
 			: {})
 	});
 
-	$effect(() => {
-		pageData.set(data);
+	function applyPageData(next: SveltekitDistributedPageData) {
+		pageData.set(next);
 		if (
-			data.distributed === undefined ||
-			data.distributedAuthority === undefined ||
-			data.distributed === appliedHydration
+			next.distributed === undefined ||
+			next.distributedAuthority === undefined ||
+			next.distributed === appliedHydration
 		) {
 			return;
 		}
 
-		appliedHydration = data.distributed;
+		appliedHydration = next.distributed;
 		if (hydrationTimer !== undefined) clearTimeout(hydrationTimer);
 		// Session listeners fence an old credential in the microtask queue.
 		// Apply the separately-authorized navigation seed after that fence.
@@ -77,9 +78,11 @@
 		// confirmed keys omitted from this route seed are retained.
 		hydrationTimer = setTimeout(() => {
 			hydrationTimer = undefined;
-			client.hydrate(data.distributed!, data.distributedAuthority!);
+			client.hydrate(next.distributed!, next.distributedAuthority!);
 		}, 0);
-	});
+	}
+
+	$effect(() => applyPageData(data));
 
 	$effect(() => {
 		if (!browser || !data.session?.user) return;
@@ -121,7 +124,8 @@
 </script>
 
 <svelte:window onpointerover={prefetchLink} />
-<AuthRefresh />
+<!-- Refresh uses its seed as scope evidence; keep newer local command state. -->
+<AuthRefresh onRefresh={(next) => pageData.set(next)} />
 <Navbar />
 <main>
 	{@render children()}

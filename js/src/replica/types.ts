@@ -898,6 +898,16 @@ export interface DistributedReplica {
 		state: ReplicaDehydratedState,
 		authoritativeScope: ReplicaAuthoritativeScope
 	): boolean;
+	/**
+	 * Validate a fresh transfer against independent server authority and the
+	 * exact active scope, then restart query/live transports without applying
+	 * the transfer's potentially older data. Preserves command/freshness state.
+	 * Returns false without mutating state when validation fails.
+	 */
+	reauthorize(
+		state: ReplicaDehydratedState,
+		authoritativeScope: ReplicaAuthoritativeScope
+	): boolean;
 	createOptimisticLayer(
 		id: string,
 		update: (writer: ReplicaOptimisticWriter) => void,

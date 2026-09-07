@@ -4,7 +4,7 @@ import { once } from 'node:events';
 import { randomBytes } from 'node:crypto';
 
 // An isolated, in-memory standards implementation. No external IdP or secrets.
-export async function startProvider(issuer, publicOrigin, { jwtAudience } = {}) {
+export async function startProvider(issuer, publicOrigin, { jwtAudience, accessTokenTtl = 61 } = {}) {
   let refreshes = 0;
   let failRefresh = false;
   const provider = new Provider(issuer, {
@@ -23,7 +23,7 @@ export async function startProvider(issuer, publicOrigin, { jwtAudience } = {}) 
       extraTokenClaims:()=>({roles:['user']}),
       scopes:['openid','profile','email','offline_access','urn:zitadel:iam:org:project:roles','urn:zitadel:iam:org:projects:roles',`urn:zitadel:iam:org:project:id:${jwtAudience}:aud`,`urn:zitadel:iam:org:project:id:${jwtAudience}:roles`],
     } : {}),
-    ttl: { AccessToken: 61 },
+    ttl: { AccessToken: accessTokenTtl },
     async issueRefreshToken() { return true; },
     claims: { openid: ['sub'], profile: ['name', ...(jwtAudience?['roles']:[])], email: ['email'] },
     async findAccount(_ctx, id) {

@@ -9,6 +9,7 @@ import {fileURLToPath} from 'node:url';
 import {randomBytes} from 'node:crypto';
 import {chromium,expect} from '../../gateway-auth/node_modules/@playwright/test/index.mjs';
 import {startProvider} from '../../gateway-auth/provider.mjs';
+import {verifySessionRefreshContinuity} from './refresh.mjs';
 const root=path.resolve(path.dirname(fileURLToPath(import.meta.url)),'..');
 const devMode=process.env.GATEWAY_DEV==='1';
 const environment={PATH:process.env.PATH,HOME:process.env.HOME,RUSTUP_TOOLCHAIN:process.env.RUSTUP_TOOLCHAIN||'stable',NODE_ENV:'production'};
@@ -31,7 +32,7 @@ try{
  for(const delivery of (process.env.GATEWAY_LIFECYCLE==='1'?['none']:['none','all'])){
   const apiPort=await freePort(),uiPort=await freePort(),issuer=`http://127.0.0.1:${await freePort()}`;
   const publicOrigin=`http://127.0.0.1:${apiPort}`;
-  const idp=await startProvider(issuer,publicOrigin,{jwtAudience:'gateway-fixture'});
+  const idp=await startProvider(issuer,publicOrigin,{jwtAudience:'gateway-fixture',accessTokenTtl:65});
   let api,ui,browser;
   try{
     if(devMode){
@@ -78,6 +79,7 @@ try{
     await page.goto(publicOrigin+'/blob');await expect(page.getByTestId('blob-start-game')).toBeEnabled();await page.getByTestId('blob-start-game').click();await expect(page.locator('.blob-board')).toBeVisible({timeout:20000});
     await verifyBlobRace(page);
     await verifyLiveRace(page,publicOrigin);
+    await verifySessionRefreshContinuity(page,publicOrigin);
     if(process.env.GATEWAY_LIFECYCLE==='1'){
       assert.ok(devMode,'full reload proof requires the CLI dev host');
       const storage=path.join(temporary,'reload-auth.json');await context.storageState({path:storage});
@@ -133,10 +135,10 @@ async function verifyBlobRace(page){
 async function verifyAuth(context,idp,origin){
   const cookies=(await context.cookies()).filter(cookie=>cookie.name.startsWith('authjs.session-token'));
   assert.ok(cookies.length&&cookies.every(cookie=>cookie.httpOnly&&cookie.sameSite==='Lax'&&cookie.path==='/'));
-  await new Promise(resolve=>setTimeout(resolve,2200));
+  await new Promise(resolve=>setTimeout(resolve,6000));
   const response=await context.request.post(origin+'/api/auth/refresh',{headers:{origin}});
   assert.equal(response.status(),200);assert.equal((await response.json()).authenticated,true);assert.ok(idp.refreshes()>0);
-  idp.failRefresh();await new Promise(resolve=>setTimeout(resolve,2200));
+  idp.failRefresh();await new Promise(resolve=>setTimeout(resolve,6000));
   const failed=await context.request.post(origin+'/api/auth/refresh',{headers:{origin}});
   assert.equal(failed.status(),401);assert.equal((await failed.json()).error,'RefreshAccessTokenError');
   const denied=await context.request.get(origin+'/todos',{maxRedirects:0});assert.equal(denied.status(),303);
