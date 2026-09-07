@@ -16,6 +16,13 @@ pub(crate) trait CausalGetStream: Send + Sync {
         &'a self,
         identity: &'a StreamIdentity,
     ) -> impl Future<Output = Result<Option<Entity>, RepositoryError>> + Send + 'a;
+
+    /// Fetch only the post-snapshot tail without retaining wrapper queue locks.
+    fn get_causal_stream_tail<'a>(
+        &'a self,
+        identity: &'a StreamIdentity,
+        after_version: u64,
+    ) -> impl Future<Output = Result<Option<Entity>, RepositoryError>> + Send + 'a;
 }
 
 /// Proves that command reservation, stream loading, and causal commit are all

@@ -16,7 +16,7 @@ use std::sync::Mutex;
 
 use serde::Serialize;
 
-use crate::aggregate::{hydrate, Aggregate, AggregateRepository};
+use crate::aggregate::{Aggregate, AggregateRepository};
 use crate::command::{
     validate_resolved_direct_plan, Atomic, CommandCommitProofError, CommandOutcome,
     PrepareCommandError, PreparedCommand, ProjectionCommitProof, ResolvedDirectProjectionTarget,
@@ -58,12 +58,7 @@ where
     A: Aggregate + Send + Sync + 'static,
 {
     fn load<'a>(&'a self, identity: &'a StreamIdentity) -> LoadAggregateFuture<'a, A> {
-        Box::pin(async move {
-            let Some(entity) = self.repository.repo().get_causal_stream(identity).await? else {
-                return Ok(None);
-            };
-            hydrate::<A>(entity).map(Some)
-        })
+        Box::pin(async move { self.repository.get_causal(identity).await })
     }
 
     fn snapshot_writes(
@@ -1005,6 +1000,13 @@ mod tests {
     }
 
     impl CausalGetStream for TestRepo {
+        async fn get_causal_stream_tail(
+            &self,
+            _identity: &StreamIdentity,
+            _after_version: u64,
+        ) -> Result<Option<Entity>, RepositoryError> {
+            panic!("this fixture does not configure snapshots")
+        }
         async fn get_causal_stream<'a>(
             &'a self,
             identity: &'a StreamIdentity,

@@ -1,14 +1,10 @@
 use super::*;
 
-/// One migration registration emitted by the root build script.
-#[derive(Clone, Copy)]
-pub(crate) struct EmbeddedMigration {
-    pub(crate) version: i64,
-    pub(crate) description: &'static str,
-    pub(crate) sql: &'static str,
-}
-
-include!(concat!(env!("OUT_DIR"), "/migration_inventory.rs"));
+pub(crate) use crate::repository::migrations::EmbeddedMigration;
+#[cfg(feature = "postgres")]
+pub(crate) use crate::repository::migrations::POSTGRES_MIGRATIONS;
+#[cfg(feature = "sqlite")]
+pub(crate) use crate::repository::migrations::SQLITE_MIGRATIONS;
 
 /// Build an embedded migrator from the validated, generated migration inventory.
 pub(crate) fn embedded_migrator(files: &[EmbeddedMigration]) -> Migrator {

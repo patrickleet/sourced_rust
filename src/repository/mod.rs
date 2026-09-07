@@ -1,6 +1,12 @@
 mod error;
 mod identity;
 mod inbox;
+#[cfg(any(
+    feature = "sqlite",
+    feature = "postgres",
+    all(feature = "workers-rs", target_arch = "wasm32")
+))]
+pub(crate) mod migrations;
 pub(crate) mod sql;
 pub(crate) mod sqlite_codec;
 mod traits;

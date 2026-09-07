@@ -187,6 +187,14 @@ where
     R: CausalGetStream,
     L: LockManager,
 {
+    fn get_causal_stream_tail<'a>(
+        &'a self,
+        identity: &'a StreamIdentity,
+        after_version: u64,
+    ) -> impl Future<Output = Result<Option<Entity>, RepositoryError>> + Send + 'a {
+        self.inner.get_causal_stream_tail(identity, after_version)
+    }
+
     fn get_causal_stream<'a>(
         &'a self,
         identity: &'a StreamIdentity,

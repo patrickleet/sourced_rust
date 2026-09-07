@@ -122,6 +122,14 @@ where
     for<'q> &'q [u8]: Encode<'q, DB> + Type<DB>,
     for<'r> &'r str: sqlx::ColumnIndex<DB::Row>,
 {
+    fn get_causal_stream_tail<'a>(
+        &'a self,
+        identity: &'a StreamIdentity,
+        after_version: u64,
+    ) -> impl Future<Output = Result<Option<Entity>, RepositoryError>> + Send + 'a {
+        GetStream::get_stream_tail(self, identity, after_version)
+    }
+
     fn get_causal_stream<'a>(
         &'a self,
         identity: &'a StreamIdentity,

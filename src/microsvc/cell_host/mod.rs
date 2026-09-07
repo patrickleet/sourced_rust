@@ -22,6 +22,8 @@ mod command;
 mod internal_auth;
 #[cfg(all(feature = "workers-rs", target_arch = "wasm32"))]
 mod sql_executor;
+#[cfg(all(feature = "workers-rs", target_arch = "wasm32"))]
+mod sql_store;
 mod store;
 mod wire;
 
@@ -41,9 +43,11 @@ pub use command::{CelldCommandHost, CelldRoute};
 pub use internal_auth::{
     InternalHttpSecret, CELL_INTERNAL_SECRET_ENV, CELL_INTERNAL_SECRET_HEADER,
 };
+pub use store::CellStreamStore;
+#[cfg(not(all(feature = "workers-rs", target_arch = "wasm32")))]
 pub use store::{
-    CellStreamStore, DurableAggregateCellState, DurableCellCommand, DurableCellEvents,
-    DurableCellSnapshot, DURABLE_AGGREGATE_CELL_STATE_VERSION,
+    DurableAggregateCellState, DurableCellCommand, DurableCellEvents, DurableCellSnapshot,
+    DURABLE_AGGREGATE_CELL_STATE_VERSION,
 };
 pub(crate) use wire::validate_cell_projection_events;
 pub use wire::{

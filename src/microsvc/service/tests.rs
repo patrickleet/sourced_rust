@@ -810,6 +810,13 @@ impl AmbiguousCommitRepository {
 
 #[cfg(feature = "graphql")]
 impl CausalGetStream for AmbiguousCommitRepository {
+    fn get_causal_stream_tail<'a>(
+        &'a self,
+        identity: &'a crate::StreamIdentity,
+        after_version: u64,
+    ) -> impl Future<Output = Result<Option<Entity>, crate::RepositoryError>> + Send + 'a {
+        self.inner.get_causal_stream_tail(identity, after_version)
+    }
     fn get_causal_stream<'a>(
         &'a self,
         identity: &'a crate::StreamIdentity,
@@ -2006,8 +2013,9 @@ async fn causal_dispatch_overwrites_event_and_outbox_causation_with_ledger_ident
 #[tokio::test]
 async fn causal_dispatch_uses_the_configured_immediate_outbox_publisher() {
     let repository = InMemoryRepository::new();
-    let observed_broker_metadata = Arc::new(Mutex::new(None::<[String; 4]>));
+    let observed_broker_metadata = Arc::new(Mutex::new(None::<[String; 6]>));
     let route_observed_broker_metadata = Arc::clone(&observed_broker_metadata);
+    let bus = crate::bus::InMemoryBus::new();
     let service = Service::new()
         .named("causal-tests")
         .routes(
@@ -2045,6 +2053,8 @@ async fn causal_dispatch_uses_the_configured_immediate_outbox_publisher() {
                     >| {
                         let message = context.message();
                         let metadata = [
+                            message.id().expect("published message ID").to_string(),
+                            message.name().to_string(),
                             message.causation_id().unwrap_or_default().to_string(),
                             message
                                 .metadata("x-sourced-source-aggregate-type")
@@ -2067,7 +2077,7 @@ async fn causal_dispatch_uses_the_configured_immediate_outbox_publisher() {
                     },
                 ),
         )
-        .with_bus(crate::bus::InMemoryBus::new());
+        .with_bus(bus.clone());
 
     service
         .dispatch_causal(
@@ -2087,11 +2097,14 @@ async fn causal_dispatch_uses_the_configured_immediate_outbox_publisher() {
                 tokio::task::yield_now().await;
                 continue;
             }
-            if !outbox
-                .messages_by_status(crate::outbox::OutboxMessageStatus::Published, usize::MAX)
+            if outbox
+                .messages_by_status(crate::outbox::OutboxMessageStatus::InFlight, usize::MAX)
                 .await
                 .unwrap()
                 .is_empty()
+                && bus
+                    .published_ids()
+                    .contains(&"todo-immediate:immediate-fact".to_string())
             {
                 break;
             }
@@ -2105,22 +2118,25 @@ async fn causal_dispatch_uses_the_configured_immediate_outbox_publisher() {
         .messages_by_status(crate::outbox::OutboxMessageStatus::Published, usize::MAX)
         .await
         .unwrap();
-    assert_eq!(published.len(), 1);
-    assert_eq!(published[0].id(), "todo-immediate:immediate-fact");
-    assert_eq!(published[0].event_type, "causal.immediate_fact");
-    let causation = published[0]
+    assert!(
+        published.is_empty(),
+        "delivered messages are deleted, not retained as evidence"
+    );
+    let stream = repository
+        .get_stream(
+            &crate::StreamIdentity::new(
+                CausalDispatcherAggregate::aggregate_type(),
+                "todo-immediate",
+            )
+            .unwrap(),
+        )
+        .await
+        .unwrap()
+        .unwrap();
+    let causation = stream.events()[0]
         .causation_id()
-        .expect("persisted outbox row should retain ledger causation")
+        .expect("committed event carries ledger causation")
         .to_string();
-    assert_eq!(
-        published[0].source_aggregate_type.as_deref(),
-        Some(CausalDispatcherAggregate::aggregate_type())
-    );
-    assert_eq!(
-        published[0].source_aggregate_id.as_deref(),
-        Some("todo-immediate")
-    );
-    assert_eq!(published[0].source_sequence, Some(1));
 
     service
         .run(RunOptions::idempotent())
@@ -2129,6 +2145,8 @@ async fn causal_dispatch_uses_the_configured_immediate_outbox_publisher() {
     assert_eq!(
         observed_broker_metadata.lock().unwrap().as_ref(),
         Some(&[
+            "todo-immediate:immediate-fact".to_string(),
+            "causal.immediate_fact".to_string(),
             causation,
             CausalDispatcherAggregate::aggregate_type().to_string(),
             "todo-immediate".to_string(),
