@@ -291,7 +291,7 @@ fn validate_binding(kind: &BindingKind) -> Result<(), GatewayError> {
     Ok(())
 }
 
-fn validate_origin(origin: &str) -> Result<(), GatewayError> {
+pub(crate) fn validate_origin(origin: &str) -> Result<(), GatewayError> {
     let invalid = GatewayError(
         "binding requires an absolute HTTP(S) origin without credentials, path, query or fragment",
     );

@@ -37,6 +37,8 @@ default = []
 application-runtime = []
 # Portable gateway declarations and dispatch only; runtime adapters are separate.
 gateway = ["dep:url"]
+# Native HTTP adapter remains independent of GraphQL and SQL.
+gateway-native = ["gateway", "http", "reqwest/stream", "dep:hyper", "dep:hyper-util", "dep:tower", "tokio/io-util"]
 runtime = ["application-runtime"]
 emitter = ["dep:event-emitter-rs"]
 metrics = []
@@ -57,6 +59,9 @@ async-trait = "0.1"
 async-graphql = { version = "7", optional = true }
 async-graphql-axum = { version = "7", optional = true }
 axum = { version = "0.8", optional = true }
+hyper = { version = "1", features = ["http1", "server"], optional = true }
+hyper-util = { version = "0.1", features = ["tokio"], optional = true }
+tower = { version = "0.5", features = ["util"], optional = true }
 base64 = "0.23.0"
 futures = { version = "0.3", optional = true }
 lapin = { version = "4", optional = true }
@@ -95,7 +100,7 @@ sha2 = "0.10"
 tonic-build = { version = "0.14", default-features = false, features = ["transport"] }
 
 [dev-dependencies]
-axum = "0.8"
+axum = { version = "0.8", features = ["ws"] }
 distributed_cli = { path = "distributed_cli" }
 tower = { version = "0.5", features = ["util"] }
 http-body-util = "0.1"
