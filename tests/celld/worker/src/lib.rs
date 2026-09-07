@@ -90,6 +90,8 @@ impl DurableObject for TodoCell {
             .with_celld_outbox(outbox);
         #[cfg(feature = "storage-conformance")]
         storage_conformance::reset_faults_on_activation(&sql).expect("reset test faults");
+        #[cfg(feature = "storage-conformance")]
+        let cell = cell.mount(storage_conformance::test_batch());
         Self {
             cell,
             #[cfg(feature = "storage-conformance")]
@@ -124,6 +126,10 @@ impl DurableObject for TodoCell {
 
         match (req.method(), parts.get(2).map(String::as_str)) {
             (Method::Get, None) => get_todo(&self.cell, &id).await,
+            #[cfg(feature = "storage-conformance")]
+            (Method::Post, Some("todo.test_batch")) => {
+                transition_todo(&self.env, &self.cell, &id, "todo.test_batch", &mut req).await
+            }
             (Method::Post, Some("todo.create")) => {
                 create_todo(&self.env, &self.cell, &id, &mut req).await
             }

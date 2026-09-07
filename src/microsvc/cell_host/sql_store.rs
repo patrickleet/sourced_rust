@@ -22,6 +22,10 @@ use crate::repository::{
 };
 use crate::snapshot::SnapshotRecord;
 
+// Durable Object SQL limits bindings per statement, not per transaction.
+// Both shared insert planners split large commands within the same transaction.
+const MAX_SQL_BIND_PARAMS: usize = 100;
+
 #[derive(Clone)]
 pub(super) struct CellSqlRepository {
     connection: CellSqlConnection,
@@ -97,7 +101,7 @@ impl CellSqlRepository {
                         .into());
                     }
                 }
-                for insert in sql::event_inserts(&prepared, 900)? {
+                for insert in sql::event_inserts(&prepared, MAX_SQL_BIND_PARAMS)? {
                     executor.execute(insert.statement).await?;
                 }
                 // SQL binding errors in this runtime have no structured constraint
@@ -119,7 +123,7 @@ impl CellSqlRepository {
                         .into());
                     }
                 }
-                for insert in outbox::inserts(&batch.outbox_messages, 900)? {
+                for insert in outbox::inserts(&batch.outbox_messages, MAX_SQL_BIND_PARAMS)? {
                     executor.execute(insert.statement).await?;
                 }
                 for snapshot in &batch.snapshots {
