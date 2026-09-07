@@ -106,7 +106,8 @@ jobs:
       - name: Start application with Distributed dev
         run: |
           set -euo pipefail
-          export AUTH_URL="${E2E_UI_ORIGIN:-http://localhost:5180}"
+          export PUBLIC_ORIGIN="${E2E_UI_ORIGIN:-http://localhost:8791}"
+          export AUTH_URL="$PUBLIC_ORIGIN"
           export AUTH_USE_SECURE_COOKIES=false
           export AUTH_TRUST_HOST=true
 
@@ -137,7 +138,7 @@ jobs:
           fi
 
           grep -F 'lifecycle dev: process api ready http://127.0.0.1:8791' .distributed-dev.log
-          grep -F 'lifecycle dev: process ui ready http://localhost:5180' .distributed-dev.log
+          grep -F 'lifecycle dev: process ui ready http://localhost:8791' .distributed-dev.log
           tail -40 .distributed-dev.log
 
       - name: Install Playwright + Chromium
@@ -153,7 +154,7 @@ jobs:
           npm run test:browser
           npm run test:lifecycle-reload
         env:
-          E2E_UI_ORIGIN: http://localhost:5180
+          E2E_UI_ORIGIN: http://localhost:8791
           E2E_API_ORIGIN: http://127.0.0.1:8791
           CI: true
 
