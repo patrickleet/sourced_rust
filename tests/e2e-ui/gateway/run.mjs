@@ -2,7 +2,7 @@ import assert from 'node:assert/strict';
 import {spawn} from 'node:child_process';
 import {createServer} from 'node:http';
 import {once} from 'node:events';
-import {mkdtemp,mkdir,writeFile,rm} from 'node:fs/promises';
+import {mkdtemp,mkdir,readFile,writeFile,rm} from 'node:fs/promises';
 import os from 'node:os';
 import path from 'node:path';
 import {fileURLToPath} from 'node:url';
@@ -10,15 +10,16 @@ import {randomBytes} from 'node:crypto';
 import {chromium,expect} from '../../gateway-auth/node_modules/@playwright/test/index.mjs';
 import {startProvider} from '../../gateway-auth/provider.mjs';
 const root=path.resolve(path.dirname(fileURLToPath(import.meta.url)),'..');
+const devMode=process.env.GATEWAY_DEV==='1';
 const environment={PATH:process.env.PATH,HOME:process.env.HOME,RUSTUP_TOOLCHAIN:process.env.RUSTUP_TOOLCHAIN||'stable',NODE_ENV:'production'};
 async function freePort(){const server=createServer();server.listen(0,'127.0.0.1');await once(server,'listening');const port=server.address().port;await new Promise(r=>server.close(r));return port;}
 function launch(program,args,{cwd=root,env=environment}={}){
   let log='';const child=spawn(program,args,{cwd,env,stdio:['ignore','pipe','pipe']});
   child.on('error',error=>log+='process launch failed: '+error.code);
   child.stdout.on('data',chunk=>log=(log+chunk).slice(-60000));child.stderr.on('data',chunk=>log=(log+chunk).slice(-60000));
-  return {child,logs:()=>log,stop:async()=>{if(child.exitCode===null){child.kill('SIGTERM');await once(child,'exit');}}};
+  return {child,logs:()=>log,stop:async()=>{if(child.exitCode===null){child.kill('SIGINT');await once(child,'exit');}}};
 }
-async function ready(url,process){for(let i=0;i<300;i++){if(process.child.exitCode!==null)throw Error(process.logs());try{const response=await fetch(url);if(response.ok)return;}catch{}await new Promise(r=>setTimeout(r,100));}throw Error('readiness timeout: '+process.logs());}
+async function ready(url,process){for(let i=0;i<3600;i++){if(process.child.exitCode!==null)throw Error(process.logs());try{const response=await fetch(url);if(response.ok)return;}catch{}await new Promise(r=>setTimeout(r,100));}throw Error('readiness timeout: '+process.logs());}
 const artifacts=path.join(root,'gateway/artifacts');await mkdir(artifacts,{recursive:true});
 if(process.env.GATEWAY_SKIP_BUILD!=='1'){
   const {NODE_ENV,...buildEnvironment}=environment;
@@ -33,10 +34,26 @@ try{
   const idp=await startProvider(issuer,publicOrigin,{jwtAudience:'gateway-fixture'});
   let api,ui,browser;
   try{
+    if(devMode){
+      const {NODE_ENV,...devEnvironment}=environment;
+      api=launch(path.resolve(root,'../../target/debug/distributed'),['dev',root],{env:{...devEnvironment,DATABASE_URL:`sqlite:${temporary}/${delivery}.db?mode=rwc`,BIND:`127.0.0.1:${apiPort}`,PUBLIC_ORIGIN:publicOrigin,UI_INTERNAL_ORIGIN:`http://127.0.0.1:${uiPort}`,UI_PORT:String(uiPort),UI_BIND:'127.0.0.1',GATEWAY_DELIVERY:delivery,OIDC_ISSUER:issuer,OIDC_AUDIENCE:'gateway-fixture',OIDC_CLIENT_ID:'gateway-fixture',OIDC_CLIENT_SECRET:'local-fixture-only',AUTH_URL:publicOrigin,AUTH_SECRET:randomBytes(32).toString('hex'),AUTH_USE_SECURE_COOKIES:'false',GRAPHIQL:'0'}});
+      ui={logs:api.logs,stop:async()=>{}};
+    }else{
     api=launch(path.join(root,'target/debug/e2e-ui'),[],{env:{...environment,DATABASE_URL:`sqlite:${temporary}/${delivery}.db?mode=rwc`,BIND:`127.0.0.1:${apiPort}`,PUBLIC_ORIGIN:publicOrigin,UI_INTERNAL_ORIGIN:`http://127.0.0.1:${uiPort}`,GATEWAY_DELIVERY:delivery,OIDC_ISSUER:issuer,OIDC_AUDIENCE:'gateway-fixture',OIDC_CLIENT_ID:'gateway-fixture',GRAPHIQL:'0'}});
     await ready(publicOrigin+'/health',api);
     ui=launch(process.execPath,['build/index.js'],{cwd:path.join(root,'ui'),env:{...environment,HOST:'127.0.0.1',PORT:String(uiPort),PUBLIC_ORIGIN:publicOrigin,ORIGIN:publicOrigin,AUTH_URL:publicOrigin,AUTH_SECRET:randomBytes(32).toString('hex'),AUTH_USE_SECURE_COOKIES:'false',OIDC_ISSUER:issuer,OIDC_CLIENT_ID:'gateway-fixture',OIDC_CLIENT_SECRET:'local-fixture-only',OIDC_AUDIENCE:'gateway-fixture',E2E_API_ORIGIN:publicOrigin}});
-    await ready(publicOrigin,ui);
+    }
+    await ready(publicOrigin,api);
+    if(devMode){
+      const participant='gateway_ci_lifecycle_probe';
+      const response=await fetch(publicOrigin+'/__distributed/lifecycle',{headers:{'x-distributed-participant':participant}});
+      assert.equal(response.status,200,'gateway must route lifecycle to the UI');
+      assert.equal((await response.json()).phase,'active');
+      const heartbeat=JSON.parse(await readFile(path.join(root,'.distributed/lifecycle/dev-control/participants',participant+'.json'),'utf8'));
+      assert.ok(Date.now()-heartbeat.seenAtUnixMs<5000);
+      const ack=await fetch(publicOrigin+'/__distributed/lifecycle',{method:'POST',headers:{origin:publicOrigin,'content-type':'application/json'},body:JSON.stringify({participantId:participant,transitionId:'gateway_ci_no_transition',ok:true})});
+      assert.equal(ack.status,409,'same-origin acknowledgement reaches lifecycle state validation');
+    }
     browser=await chromium.launch();const context=await browser.newContext();const page=await context.newPage();
     const errors=[];page.on('pageerror',error=>errors.push(error.message));
     await page.goto(publicOrigin);await page.getByRole('link',{name:/log in|sign in/i}).first().click();

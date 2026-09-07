@@ -115,7 +115,8 @@ jobs:
           echo $! > .distributed-dev.pid
 
           ok=0
-          for i in $(seq 1 240); do
+          # Match the CLI's bounded cold-runtime + UI readiness budget.
+          for i in $(seq 1 720); do
             if grep -Fq 'lifecycle dev: ready generation=' .distributed-dev.log; then
               ok=1
               break
