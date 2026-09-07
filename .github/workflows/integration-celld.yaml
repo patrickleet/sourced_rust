@@ -7,7 +7,7 @@ name: celld (live + e2e-celld)
 #   make -C tests/e2e-celld test
 #   make -C tests/e2e-ui up && make -C tests/e2e-ui up-celld-nats
 #   WATCH=0 WATCH_WORKER=0 make -C tests/e2e-celld run
-#   E2E_UI_ORIGIN=http://localhost:5180 npx --prefix tests/e2e-ui playwright test \
+#   E2E_UI_ORIGIN=http://localhost:8791 npx --prefix tests/e2e-ui playwright test \
 #     todos.user.spec.ts chat.user.spec.ts --project chromium-user
 #
 # Default `cargo test` (quality) still runs fixture-only celld checks and
@@ -133,12 +133,13 @@ jobs:
           export BIND=127.0.0.1:8791
           export CELLD_URL=http://127.0.0.1:18880
           export NATS_URL=nats://127.0.0.1:14222
-          export AUTH_URL=http://localhost:5180
+          export PUBLIC_ORIGIN=http://localhost:8791
+          export AUTH_URL="$PUBLIC_ORIGIN"
           export AUTH_USE_SECURE_COOKIES=false
           export AUTH_TRUST_HOST=true
           export PUBLIC_E2E_PROFILE=celld-nats
           export UI_BIND=localhost
-          export UI_URL=http://localhost:5180
+          export UI_URL=http://localhost:8791
 
           target/debug/distributed dev tests/e2e-celld \
             > tests/e2e-celld/.ci-distributed-dev.log 2>&1 &
@@ -165,13 +166,13 @@ jobs:
           fi
           grep -F 'lifecycle dev: process api ready http://127.0.0.1:8791' \
             tests/e2e-celld/.ci-distributed-dev.log
-          grep -F 'lifecycle dev: process ui ready http://localhost:5180' \
+          grep -F 'lifecycle dev: process ui ready http://localhost:8791' \
             tests/e2e-celld/.ci-distributed-dev.log
 
           ok=0
           for i in $(seq 1 60); do
             code=$(curl -s -o /dev/null -w '%{http_code}' \
-              "http://localhost:5180/" 2>/dev/null || echo 000)
+              "http://localhost:8791/" 2>/dev/null || echo 000)
             if [ "$code" = "200" ] || [ "$code" = "302" ] || [ "$code" = "303" ]; then
               ok=1
               break
@@ -230,7 +231,7 @@ jobs:
           npx playwright test todos.user.spec.ts chat.user.spec.ts
           --project chromium-user
         env:
-          E2E_UI_ORIGIN: http://localhost:5180
+          E2E_UI_ORIGIN: http://localhost:8791
           E2E_API_ORIGIN: http://127.0.0.1:8791
           CI: true
 

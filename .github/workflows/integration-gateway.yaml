@@ -210,6 +210,8 @@ jobs:
         run: cargo test --no-default-features --features graphql,sqlite,application-runtime,gateway --test application_composition --test application_plans --test gateway_mounts
       - name: Build coherent application and run public-origin browser flows
         run: node tests/e2e-ui/gateway/run.mjs
+      - name: Verify dev lifecycle and browser flows through the gateway
+        run: GATEWAY_SKIP_BUILD=1 GATEWAY_DEV=1 node tests/e2e-ui/gateway/run.mjs
       - uses: actions/upload-artifact@v4
         if: always()
         with:

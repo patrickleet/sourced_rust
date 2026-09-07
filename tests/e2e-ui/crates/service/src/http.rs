@@ -88,7 +88,6 @@ pub fn gateway_router(
         "/healthz",
         "/metrics",
         "/graphiql",
-        "/__distributed",
     ] {
         routes.push(Route::new(
             format!("http-{}", routes.len()),
