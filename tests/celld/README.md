@@ -52,6 +52,19 @@ The e2e-celld host wires that one route to `BusPublisher<NatsBus>`. Kafka,
 RabbitMQ, and Knative use the same Queue consumer and relay contract; only the
 native `BusPublisher<B>` changes.
 
+## Command retry receipts
+
+The wait-path response gets its projection inputs from
+`CellDispatchResult::projection_events()`, stored atomically with the command's
+terminal retry receipt. It does not scan the outbox. A retry therefore returns
+the same result and projection inputs even when delivery has removed the outbox
+rows. Receipt evidence follows the existing command replay retention; event
+history belongs in the event store, not in delivery records.
+
+This changes the internal successful cell replay payload. Previously persisted
+successful receipts are not silently accepted as the new format. The public
+HTTP response shape is unchanged.
+
 ## Queue naming and sharding
 
 The producer binding name is local to the Worker and may be any valid binding

@@ -7,7 +7,19 @@
 
 use std::time::Duration;
 
+use serde::{Deserialize, Serialize};
 use serde_json::Value;
+
+use super::CellProjectionEventWireItem;
+
+/// Bounded retry material, owned by the command ledger and expired with its
+/// replay retention. It is not an outbox record or an event history archive.
+#[derive(Deserialize, Serialize)]
+#[serde(deny_unknown_fields)]
+pub(crate) struct CellCommandReplay {
+    pub payload: Value,
+    pub events: Vec<CellProjectionEventWireItem>,
+}
 
 use crate::command_ledger::{
     AttemptFence, CausalCommitBatch, CausalTransactionalCommit, CommandAttempt, CommandId,
@@ -68,6 +80,7 @@ impl CellCommandIdentity {
 #[derive(Clone, Debug, PartialEq)]
 pub struct CellDispatchResult {
     payload: Value,
+    events: Vec<CellProjectionEventWireItem>,
     command_id: String,
     causation_id: String,
     state: String,
@@ -75,6 +88,11 @@ pub struct CellDispatchResult {
 }
 
 impl CellDispatchResult {
+    /// Exact confirmation evidence retained with this command's retry receipt.
+    /// Delivery may have already removed all of the command's outbox rows.
+    pub fn projection_events(&self) -> &[CellProjectionEventWireItem] {
+        &self.events
+    }
     pub fn payload(&self) -> &Value {
         &self.payload
     }
@@ -189,13 +207,23 @@ pub(crate) fn replay_result(
         CommandLedgerState::Succeeded
         | CommandLedgerState::SucceededPendingProjection
         | CommandLedgerState::Atomic
-        | CommandLedgerState::ProjectionFailed => Ok(CellDispatchResult {
-            payload: replay.outcome,
-            command_id: replay.command_id.as_str().to_string(),
-            causation_id: replay.causation_id.as_str().to_string(),
-            state: replay.state.as_str().to_string(),
-            replayed,
-        }),
+        | CommandLedgerState::ProjectionFailed => {
+            let receipt: CellCommandReplay =
+                serde_json::from_value(replay.outcome).map_err(|error| {
+                    CellDispatchError::Internal(format!("invalid cell command replay: {error}"))
+                })?;
+            // Validate persisted data just as strictly as the initial response.
+            super::parse_cell_projection_events(&serde_json::json!({ "events": receipt.events }))
+                .map_err(CellDispatchError::Internal)?;
+            Ok(CellDispatchResult {
+                payload: receipt.payload,
+                events: receipt.events,
+                command_id: replay.command_id.as_str().to_string(),
+                causation_id: replay.causation_id.as_str().to_string(),
+                state: replay.state.as_str().to_string(),
+                replayed,
+            })
+        }
         CommandLedgerState::Rejected => replay_rejection(replay.outcome),
         CommandLedgerState::InProgress
         | CommandLedgerState::RetryableUnknown
