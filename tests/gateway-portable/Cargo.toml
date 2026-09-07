@@ -9,6 +9,7 @@ publish = false
 [features]
 default = ["gateway"]
 gateway = ["distributed/gateway"]
+gateway-graphql = ["gateway", "distributed/gateway-graphql"]
 
 [dependencies]
 distributed = { path = "../..", default-features = false }
@@ -27,3 +28,7 @@ path = "../gateway_extensions.rs"
 [[test]]
 name = "gateway_auth"
 path = "../gateway_auth.rs"
+
+[[test]]
+name = "gateway_graphql_operation"
+path = "../gateway_graphql_operation.rs"

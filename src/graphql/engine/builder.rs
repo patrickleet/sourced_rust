@@ -27,6 +27,7 @@ impl GraphqlEngineBuilder {
             introspection_for_anonymous: true,
             statement_timeout: Duration::from_secs(5),
             graphiql: false,
+            subscriptions: true,
             typed_commands: TypedCommandInventory::empty(),
             projectors: Vec::new(),
             change_rx: None,
@@ -35,6 +36,13 @@ impl GraphqlEngineBuilder {
             identity: IdentityConfig::dev_headers(),
             read_stores: BTreeMap::new(),
         }
+    }
+
+    /// Include live roots in the runtime schema and generated client surface.
+    /// Query-only gateway executors disable this before schema construction.
+    pub fn subscriptions(mut self, enabled: bool) -> Self {
+        self.subscriptions = enabled;
+        self
     }
 
     pub fn model<M: RelationalReadModelIncludes>(mut self, perms: ModelPermissions<M>) -> Self {
@@ -725,7 +733,7 @@ impl GraphqlEngineBuilder {
                 SqlDialect::Postgres => SurfaceDialect::Postgres,
             },
             aggregates: true,
-            subscriptions: true,
+            subscriptions: self.subscriptions,
             default_limit: self.default_limit,
             max_limit: self.max_limit,
         };

@@ -36,3 +36,7 @@ pub use context::{BackendCredential, Credentials, Identity, RequestContext};
 /// Native HTTP routing, streaming proxy and static asset adapter.
 #[cfg(feature = "gateway-native")]
 pub mod native;
+
+/// Portable GraphQL operation selection and capability admission.
+#[cfg(feature = "gateway-graphql")]
+pub mod graphql;

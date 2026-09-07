@@ -11,6 +11,8 @@ on:
       - 'tests/e2e-ui/ui/src/lib/server/**'
       - 'tests/e2e-ui/ui/src/routes/api/auth/**'
       - 'tests/graphql_identity/**'
+      - 'tests/graphql_causal_transport/**'
+      - 'tests/graphql_query_protocol/**'
       - 'tests/gateway*'
       - 'tests/gateway*/**'
       - '.github/workflows/integration-gateway.yaml'
@@ -40,6 +42,11 @@ jobs:
         run: cargo clippy --manifest-path tests/gateway-portable/Cargo.toml --locked --all-targets -- -D warnings
       - name: Compile the UI/auth consumer to Wasm
         run: cargo check --manifest-path tests/gateway-portable/Cargo.toml --locked --target wasm32-unknown-unknown
+      - name: Test and compile portable GraphQL operation policy
+        run: |
+          cargo test --manifest-path tests/gateway-portable/Cargo.toml --locked --features gateway-graphql
+          cargo check --manifest-path tests/gateway-portable/Cargo.toml --locked --features gateway-graphql --target wasm32-unknown-unknown
+          python3 tests/gateway-portable/check_dependencies.py --features gateway-graphql
       - name: Verify native and Wasm dependency isolation
         run: python3 tests/gateway-portable/check_dependencies.py
 
@@ -85,3 +92,16 @@ jobs:
         run: cargo clippy --manifest-path tests/gateway-native/Cargo.toml --locked --all-targets -- -D warnings
       - name: Verify UI/auth executor dependency isolation
         run: python3 tests/gateway-native/check_dependencies.py
+
+  graphql:
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5
+        with:
+          persist-credentials: false
+      - uses: dtolnay/rust-toolchain@29eef336d9b2848a0b548edc03f92a220660cdb8
+        with:
+          toolchain: stable
+      - name: Verify embedded and remote GraphQL protocols
+        run: cargo test -p distributed --no-default-features --features gateway-graphql-native,sqlite --test gateway_graphql --test gateway_graphql_operation --test graphql_causal_transport --test graphql_query_protocol --test graphql_identity

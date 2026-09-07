@@ -54,6 +54,30 @@ pub fn graphiql_page() -> Html<String> {
     )
 }
 
+/// Per-operation execution admission for a composed GraphQL surface. The
+/// filter runs for HTTP and each WS operation, after ordinary authentication.
+/// It may restrict the surface but never supplies identity or commit evidence.
+pub type GraphqlOperationFilter = Arc<dyn Fn(&Request) -> Result<(), ServerError> + Send + Sync>;
+
+/// Resource lease supplied only by the native gateway adapter.
+pub struct GraphqlConnectionGuard {
+    pub(crate) lifetime: std::time::Duration,
+    pub(crate) _permit: tokio::sync::OwnedSemaphorePermit,
+}
+impl GraphqlConnectionGuard {
+    /// Run a custom executor connection within its admitted lifetime. Keep this
+    /// guard alive until completion to retain the gateway capacity permit.
+    pub async fn run<F: std::future::Future>(&self, connection: F) -> Option<F::Output> {
+        tokio::time::timeout(self.lifetime, connection).await.ok()
+    }
+}
+
+#[derive(Default)]
+struct GraphqlWsOptions {
+    filter: Option<GraphqlOperationFilter>,
+    guard: Option<Arc<GraphqlConnectionGuard>>,
+}
+
 /// [`Executor`] for WebSocket subscriptions.
 ///
 /// Prefers a [`Session`] injected via `connection_init` / `session_data` (GraphiQL
@@ -64,6 +88,7 @@ pub struct GraphqlSessionExecutor {
     session: Session,
     principal: Option<VerifiedPrincipal>,
     host: Option<SharedCommandHost>,
+    filter: Option<GraphqlOperationFilter>,
 }
 
 impl GraphqlSessionExecutor {
@@ -73,6 +98,7 @@ impl GraphqlSessionExecutor {
             session,
             principal: None,
             host: None,
+            filter: None,
         }
     }
 
@@ -81,18 +107,23 @@ impl GraphqlSessionExecutor {
         session: Session,
         principal: Option<VerifiedPrincipal>,
         host: Option<SharedCommandHost>,
+        filter: Option<GraphqlOperationFilter>,
     ) -> Self {
         Self {
             engine,
             session,
             principal,
             host,
+            filter,
         }
     }
 }
 
 impl Executor for GraphqlSessionExecutor {
     async fn execute(&self, request: Request) -> GqlResponse {
+        if let Some(Err(error)) = self.filter.as_ref().map(|filter| filter(&request)) {
+            return GqlResponse::from_errors(vec![error]);
+        }
         // Subscriptions must not go through execute() — that yields
         // "Subscription root not found". GraphiQL should use the WS path only.
         self.engine
@@ -113,6 +144,11 @@ impl Executor for GraphqlSessionExecutor {
         session_data: Option<Arc<Data>>,
     ) -> BoxStream<'static, GqlResponse> {
         use std::any::TypeId;
+        if let Some(Err(error)) = self.filter.as_ref().map(|filter| filter(&request)) {
+            return Box::pin(futures_util::stream::once(async move {
+                GqlResponse::from_errors(vec![error])
+            }));
+        }
         let session = session_data
             .as_ref()
             .and_then(|d| d.get(&TypeId::of::<Session>()))
@@ -231,10 +267,22 @@ pub fn graphql_router_with_dispatcher(
 
 /// GraphQL router that wait-dispatches through an explicit command host.
 pub fn graphql_router_with_host(engine: Arc<GraphqlEngine>, host: SharedCommandHost) -> Router {
+    graphql_router_composed(engine, Some(host), None)
+}
+
+/// Compose the existing HTTP and WS handlers with an operation filter. A
+/// query-only executor can omit the command host entirely. Callers still own
+/// schema construction; filters cannot hide fields from schema introspection.
+pub fn graphql_router_composed(
+    engine: Arc<GraphqlEngine>,
+    host: Option<SharedCommandHost>,
+    filter: Option<GraphqlOperationFilter>,
+) -> Router {
     let graphiql = engine.graphiql_enabled();
     let state = GraphqlHttpState {
         engine,
-        host: Some(host),
+        host,
+        filter,
     };
     let mut router = Router::new()
         .route(
@@ -256,6 +304,7 @@ pub fn graphql_router_with_host(engine: Arc<GraphqlEngine>, host: SharedCommandH
 struct GraphqlHttpState {
     engine: Arc<GraphqlEngine>,
     host: Option<SharedCommandHost>,
+    filter: Option<GraphqlOperationFilter>,
 }
 
 fn unauthorized_response() -> Response {
@@ -333,6 +382,9 @@ async fn graphql_handler_with_service(
         Err(AuthError::Unauthorized) => return unauthorized_response(),
     };
     let (session, principal) = identity.into_parts();
+    if let Some(Err(error)) = state.filter.as_ref().map(|filter| filter(&request)) {
+        return GraphQLResponse::from(GqlResponse::from_errors(vec![error])).into_response();
+    }
     let mut request = request_with_principal(request, principal);
     if let Some(host) = &state.host {
         request = request.data(Arc::clone(host));
@@ -404,6 +456,7 @@ pub async fn microsvc_graphql_ws(
     headers: HeaderMap,
     uri: axum::http::Uri,
     protocol: GraphQLProtocol,
+    guard: Option<axum::Extension<Arc<GraphqlConnectionGuard>>>,
     upgrade: WebSocketUpgrade,
 ) -> Response {
     let engine = match service.graphql_engine() {
@@ -411,7 +464,19 @@ pub async fn microsvc_graphql_ws(
         None => return StatusCode::NOT_FOUND.into_response(),
     };
     let host: SharedCommandHost = Arc::new(LocalCommandHost::new(Arc::clone(&service)));
-    graphql_ws_upgrade(engine, Some(host), headers, uri, protocol, upgrade).await
+    graphql_ws_upgrade(
+        engine,
+        Some(host),
+        GraphqlWsOptions {
+            filter: None,
+            guard: guard.map(|guard| guard.0),
+        },
+        headers,
+        uri,
+        protocol,
+        upgrade,
+    )
+    .await
 }
 
 async fn graphql_ws_with_host(
@@ -419,14 +484,28 @@ async fn graphql_ws_with_host(
     headers: HeaderMap,
     uri: axum::http::Uri,
     protocol: GraphQLProtocol,
+    guard: Option<axum::Extension<Arc<GraphqlConnectionGuard>>>,
     upgrade: WebSocketUpgrade,
 ) -> Response {
-    graphql_ws_upgrade(state.engine, state.host, headers, uri, protocol, upgrade).await
+    graphql_ws_upgrade(
+        state.engine,
+        state.host,
+        GraphqlWsOptions {
+            filter: state.filter,
+            guard: guard.map(|guard| guard.0),
+        },
+        headers,
+        uri,
+        protocol,
+        upgrade,
+    )
+    .await
 }
 
 async fn graphql_ws_upgrade(
     engine: Arc<GraphqlEngine>,
     host: Option<SharedCommandHost>,
+    options: GraphqlWsOptions,
     headers: HeaderMap,
     uri: axum::http::Uri,
     protocol: GraphQLProtocol,
@@ -459,6 +538,7 @@ async fn graphql_ws_upgrade(
         upgrade_session.clone(),
         upgrade_principal,
         host,
+        options.filter,
     );
     let engine_for_init = Arc::clone(&engine);
     upgrade
@@ -466,7 +546,7 @@ async fn graphql_ws_upgrade(
         .on_upgrade(move |socket| {
             let base = upgrade_session;
             let upgrade_headers = upgrade_headers;
-            GraphQLWebSocket::new(socket, executor, protocol)
+            let serve = GraphQLWebSocket::new(socket, executor, protocol)
                 .on_connection_init(move |payload| {
                     let base = base.clone();
                     let engine = engine_for_init;
@@ -490,7 +570,15 @@ async fn graphql_ws_upgrade(
                         Ok(data)
                     }
                 })
-                .serve()
+                .serve();
+            async move {
+                if let Some(guard) = options.guard {
+                    let _ = tokio::time::timeout(guard.lifetime, serve).await;
+                    drop(guard);
+                } else {
+                    serve.await;
+                }
+            }
         })
         .into_response()
 }
