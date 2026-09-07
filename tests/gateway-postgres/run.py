@@ -6,6 +6,7 @@ ROOT = Path(__file__).resolve().parents[2]
 IMAGE = "postgres@sha256:cf78e76683b9ca8c5733cbbdce6c9262b45b6767934dd0a95e671f9a0fc20685"
 prefix = "gateway-replay-" + uuid.uuid4().hex[:10]
 primary, standby = prefix + "-primary", prefix + "-standby"
+primary_data = prefix + "-data"
 
 def docker(*args):
     try:
@@ -56,7 +57,7 @@ def url(container):
 
 try:
     docker("network", "create", prefix)
-    docker("run", "-d", "--name", primary, "--network", prefix, "--network-alias", "primary", "--tmpfs", "/var/lib/postgresql/data", "-e", "POSTGRES_HOST_AUTH_METHOD=trust", IMAGE, "postgres", "-c", "wal_level=replica", "-c", "max_wal_senders=4")
+    docker("run", "-d", "--name", primary, "--network", prefix, "--network-alias", "primary", "--mount", "type=volume,source=" + primary_data + ",target=/var/lib/postgresql/data", "-e", "POSTGRES_HOST_AUTH_METHOD=trust", IMAGE, "postgres", "-c", "wal_level=replica", "-c", "max_wal_senders=4")
     ready(primary)
     docker("exec", primary, "sh", "-c", "printf 'host replication postgres all trust\n' >> /var/lib/postgresql/data/pg_hba.conf")
     docker("exec", primary, "psql", "-U", "postgres", "-c", "SELECT pg_reload_conf()")
@@ -64,7 +65,8 @@ try:
     ready(standby)
     print("Fixture PostgreSQL " + docker("exec", primary, "postgres", "--version"), flush=True)
     env = {**os.environ, "GATEWAY_TEST_PRIMARY_URL": url(primary), "GATEWAY_TEST_REPLICA_URL": url(standby), "GATEWAY_TEST_PRIMARY_CONTAINER": primary}
-    subprocess.run(["cargo", "test", "-p", "distributed", "--no-default-features", "--features", "gateway-delivery,graphql,postgres", "--test", "edge_query_delivery_postgres", "--", "--nocapture"], cwd=ROOT, env=env, check=True)
+    subprocess.run(["cargo", "test", "-p", "distributed", "--no-default-features", "--features", "gateway-delivery,graphql,postgres", "--test", "edge_query_delivery_postgres", "--", "--ignored", "--nocapture"], cwd=ROOT, env=env, check=True)
+    ready(primary)  # The standby proof deliberately stops and restarts the primary.
     subprocess.run(["cargo", "test", "-p", "distributed", "--no-default-features", "--features", "gateway-delivery,graphql,postgres", "--lib", "graphql::delivery::versions::tests::postgres_transactional_coverage_and_snapshot_race", "--", "--ignored", "--nocapture"], cwd=ROOT, env=env, check=True)
     subprocess.run(["cargo", "test", "-p", "distributed", "--no-default-features", "--features", "gateway-delivery,graphql,postgres", "--test", "postgres_repository", "projected_command_ledger_rows_upgrade_to_atomic_and_preserve_checks", "--", "--nocapture"], cwd=ROOT, env={**env, "DATABASE_URL": env["GATEWAY_TEST_PRIMARY_URL"]}, check=True)
 finally:
@@ -72,4 +74,5 @@ finally:
         bridge.shutdown(); bridge.server_close()
     for container in [standby, primary]:
         subprocess.run(["docker", "rm", "-f", container], capture_output=True)
+    subprocess.run(["docker", "volume", "rm", primary_data], capture_output=True)
     subprocess.run(["docker", "network", "rm", prefix], capture_output=True)
