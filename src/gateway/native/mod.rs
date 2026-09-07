@@ -1,6 +1,10 @@
 //! Opt-in native HTTP gateway. Construction starts no listener or projector.
 mod assets;
+#[cfg(feature = "gateway-graphql-native")]
+mod graphql;
 mod proxy;
+#[cfg(feature = "gateway-graphql-native")]
+pub use graphql::{EmbeddedGraphql, GraphqlBinding, RemoteGraphql};
 
 use super::{
     Admission, AuthError, BackendCredential, BindingKind, Credentials, Gateway, GatewayAdapter,
@@ -111,6 +115,9 @@ impl NativeOptions {
 pub enum NativeBinding {
     /// Complete application router; URI is preserved, without prefix stripping.
     Handler(Router),
+    /// Embedded or complete remote GraphQL executor.
+    #[cfg(feature = "gateway-graphql-native")]
+    Graphql(GraphqlBinding),
     /// Configured UI proxy. Upgrades are disabled unless explicitly selected.
     UiProxy {
         /// Whether this target may negotiate a WebSocket upgrade.
@@ -171,13 +178,34 @@ impl NativeGateway {
             let declaration = gateway
                 .binding(&id)
                 .ok_or(GatewayError("undeclared native binding"))?;
-            let compatible = matches!(
+            #[allow(unused_mut)]
+            let mut compatible = matches!(
                 (&declaration.kind, &binding),
                 (BindingKind::Handler, NativeBinding::Handler(_))
                     | (BindingKind::UiProxy { .. }, NativeBinding::UiProxy { .. })
                     | (BindingKind::Assets, NativeBinding::Assets(_))
                     | (BindingKind::Admission, NativeBinding::Admission(_))
             );
+            #[cfg(feature = "gateway-graphql-native")]
+            if let (
+                BindingKind::Graphql {
+                    executor,
+                    capabilities,
+                    delivery,
+                    schema_extensions,
+                },
+                NativeBinding::Graphql(binding),
+            ) = (&declaration.kind, &binding)
+            {
+                binding.validate(
+                    executor,
+                    *capabilities,
+                    *delivery,
+                    schema_extensions,
+                    &origin,
+                )?;
+                compatible = true;
+            }
             if !compatible {
                 return Err(GatewayError("incompatible native binding"));
             }
@@ -364,6 +392,12 @@ impl GatewayAdapter for NativeGateway {
                     return response(StatusCode::SERVICE_UNAVAILABLE);
                 };
                 proxy::forward(&self.0, origin, *websocket, context, request).await
+            }
+            #[cfg(feature = "gateway-graphql-native")]
+            NativeBinding::Graphql(binding) => {
+                binding
+                    .execute(&self.0, &selected.binding().kind, context, request)
+                    .await
             }
             NativeBinding::Assets(assets) => assets.serve(request),
             NativeBinding::Admission(_) => response(StatusCode::SERVICE_UNAVAILABLE),

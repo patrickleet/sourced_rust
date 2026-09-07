@@ -1219,19 +1219,51 @@ async fn query_over_http_and_graphql_ws(
     (http, next["payload"].clone())
 }
 
+#[derive(Clone, Copy)]
+enum QueryGatewayMode {
+    Direct,
+    #[cfg(feature = "gateway-graphql-native")]
+    Embedded,
+    #[cfg(feature = "gateway-graphql-native")]
+    Remote,
+}
+
 #[tokio::test]
 async fn http_and_graphql_ws_serialize_the_same_query_revision_envelope() {
+    exercise_query_transport(QueryGatewayMode::Direct).await;
+}
+
+#[cfg(feature = "gateway-graphql-native")]
+#[tokio::test]
+async fn gateway_embedded_query_revision_parity() {
+    exercise_query_transport(QueryGatewayMode::Embedded).await;
+}
+
+#[cfg(feature = "gateway-graphql-native")]
+#[tokio::test]
+async fn gateway_remote_query_revision_parity() {
+    exercise_query_transport(QueryGatewayMode::Remote).await;
+}
+
+async fn exercise_query_transport(mode: QueryGatewayMode) {
     let fixture = protocol_fixture_with_retention(10).await;
-    let engine = GraphqlEngine::builder(&fixture.repository)
+    let builder = GraphqlEngine::builder(&fixture.repository)
         .service_id(SERVICE_ID)
         .protocol_token_key(TEST_PROTOCOL_TOKEN_KEY)
         .roles(&["user"])
         .anonymous_role("user")
         .model::<CausalQueryView>(ModelPermissions::new().grant("user", read().all_columns()))
         .client_projectors([projector()])
-        .change_stream(fixture.repository.read_model_changes())
-        .build()
-        .expect("query transport parity engine");
+        .change_stream(fixture.repository.read_model_changes());
+    #[cfg(feature = "gateway-graphql-native")]
+    let builder = match mode {
+        QueryGatewayMode::Direct => builder,
+        _ => builder.identity(distributed::graphql::IdentityConfig::oidc_bearer(
+            distributed::graphql::OidcConfig::new("http://local-fixture.invalid", "query-api")
+                .require_auth(false),
+        )),
+    };
+    let engine = builder.build().expect("query transport parity engine");
     let service = Arc::new(
         Service::new()
             .named(SERVICE_ID)
@@ -1242,8 +1274,67 @@ async fn http_and_graphql_ws_serialize_the_same_query_revision_envelope() {
         .await
         .expect("query transport listener");
     let address = listener.local_addr().expect("query transport address");
+    #[allow(unused_mut)]
+    let mut upstream = None::<tokio::task::JoinHandle<()>>;
+    let router = match mode {
+        QueryGatewayMode::Direct => distributed::microsvc::router(service),
+        #[cfg(feature = "gateway-graphql-native")]
+        mode => {
+            use distributed::gateway::{native::*, *};
+            let caps = GraphqlCapabilities {
+                commands: false,
+                queries: true,
+                live: true,
+            };
+            let (executor, binding) = match mode {
+                QueryGatewayMode::Embedded => (
+                    GraphqlExecutor::Embedded,
+                    GraphqlBinding::Embedded(
+                        EmbeddedGraphql::new(service.graphql_engine().unwrap(), None, caps)
+                            .unwrap(),
+                    ),
+                ),
+                QueryGatewayMode::Remote => {
+                    let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+                    let origin = format!("http://{}", listener.local_addr().unwrap());
+                    upstream = Some(tokio::spawn(async move {
+                        axum::serve(listener, distributed::microsvc::router(service))
+                            .await
+                            .unwrap()
+                    }));
+                    (
+                        GraphqlExecutor::Remote { origin },
+                        GraphqlBinding::Remote(RemoteGraphql::default()),
+                    )
+                }
+                QueryGatewayMode::Direct => unreachable!(),
+            };
+            let config = GatewayConfig {
+                bindings: vec![Binding::new(
+                    "graphql",
+                    BindingKind::Graphql {
+                        executor,
+                        capabilities: caps,
+                        delivery: DeliveryCapabilities::default(),
+                        schema_extensions: vec![],
+                    },
+                )],
+                routes: vec![Route::new("api", RoutePath::prefix("/graphql"), "graphql")],
+            }
+            .build()
+            .unwrap();
+            NativeGateway::new(
+                config,
+                NativeOptions::new(format!("http://{address}")),
+                [("graphql".into(), NativeBinding::Graphql(binding))],
+                NativeAuth::anonymous(),
+            )
+            .unwrap()
+            .router()
+        }
+    };
     let server = tokio::spawn(async move {
-        axum::serve(listener, distributed::microsvc::router(service))
+        axum::serve(listener, router)
             .await
             .expect("query transport server");
     });
@@ -1261,7 +1352,117 @@ async fn http_and_graphql_ws_serialize_the_same_query_revision_envelope() {
             "{case}: HTTP and GraphQL-WS must preserve one canonical query/revision envelope"
         );
     }
+    // Exercise committed projection changes through the actual socket path,
+    // including redundant invalidation and immutable per-frame causal metadata.
+    let mut request = format!("ws://{address}/graphql/ws")
+        .into_client_request()
+        .unwrap();
+    request.headers_mut().insert(
+        SEC_WEBSOCKET_PROTOCOL,
+        "graphql-transport-ws".parse().unwrap(),
+    );
+    let (mut socket, _) = tokio_tungstenite::connect_async(request).await.unwrap();
+    socket
+        .send(WsMessage::Text(
+            json!({"type":"connection_init"}).to_string().into(),
+        ))
+        .await
+        .unwrap();
+    let ack = socket.next().await.unwrap().unwrap();
+    assert_eq!(
+        serde_json::from_str::<Value>(ack.to_text().unwrap()).unwrap()["type"],
+        "connection_ack"
+    );
+    socket
+        .send(WsMessage::Text(
+            json!({"id":"live-proof", "type":"subscribe", "payload":{"query":LIVE_SUBSCRIPTION}})
+                .to_string()
+                .into(),
+        ))
+        .await
+        .unwrap();
+    let mut frames = Vec::new();
+    for position in 1..=3 {
+        if position > 1 {
+            project_item(
+                &fixture.repository,
+                &fixture.bus,
+                position,
+                &format!("causal row {position}"),
+            )
+            .await;
+        }
+        let frame = tokio::time::timeout(Duration::from_secs(5), socket.next())
+            .await
+            .unwrap()
+            .unwrap()
+            .unwrap();
+        let frame: Value = serde_json::from_str(frame.to_text().unwrap()).unwrap();
+        assert_eq!(frame["id"], "live-proof");
+        assert_eq!(frame["type"], "next");
+        let title = if position == 1 {
+            "causal row".into()
+        } else {
+            format!("causal row {position}")
+        };
+        assert_live_frame(
+            &frame["payload"],
+            "causal_query_views",
+            &title,
+            &position.to_string(),
+            false,
+        );
+        if position > 1 {
+            assert_eq!(
+                distributed_envelope(&frame["payload"])["snapshot"]["observations"][0]
+                    ["causationId"],
+                format!("query-protocol-command-{position}")
+            );
+        }
+        frames.push(frame["payload"].clone());
+        fixture
+            .repository
+            .publish_read_model_change(distributed::ReadModelChange::new(["causal_query_views"]));
+        let redundant = tokio::time::timeout(Duration::from_millis(350), socket.next()).await;
+        if position == 1 {
+            assert!(
+                redundant.is_err(),
+                "identical data and metadata must be suppressed"
+            );
+        } else {
+            // The origin emits a proof-only frame as its causation suffix moves
+            // to the new head. Preserve it even though domain data is identical.
+            let redundant = redundant.unwrap().unwrap().unwrap();
+            let proof: Value = serde_json::from_str(redundant.to_text().unwrap()).unwrap();
+            assert_eq!(proof["id"], "live-proof");
+            assert_eq!(proof["payload"]["data"], frame["payload"]["data"]);
+            assert_eq!(
+                distributed_envelope(&proof["payload"])["snapshot"]["observations"],
+                json!([])
+            );
+            fixture
+                .repository
+                .publish_read_model_change(distributed::ReadModelChange::new([
+                    "causal_query_views",
+                ]));
+            assert!(
+                tokio::time::timeout(Duration::from_millis(350), socket.next())
+                    .await
+                    .is_err()
+            );
+        }
+    }
+    for (i, frame) in frames.iter().enumerate() {
+        assert_eq!(
+            distributed_envelope(frame)["snapshot"]["indexes"][0]["position"],
+            (i + 1).to_string()
+        );
+    }
+    socket.close(None).await.unwrap();
     server.abort();
+    if let Some(upstream) = upstream {
+        upstream.abort();
+    }
 }
 
 #[tokio::test]

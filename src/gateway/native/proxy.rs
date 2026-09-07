@@ -6,7 +6,7 @@ use axum::http::header;
 use futures_util::{Stream, StreamExt};
 use std::{io, time::Duration};
 
-fn strip_hop_headers(headers: &mut HeaderMap) {
+pub(super) fn strip_hop_headers(headers: &mut HeaderMap) {
     let named: Vec<_> = headers
         .get_all(header::CONNECTION)
         .iter()
@@ -80,12 +80,23 @@ pub(super) async fn forward(
     origin: &str,
     allow_websocket: bool,
     context: RequestContext,
-    mut request: Request<Body>,
+    request: Request<Body>,
 ) -> Response {
     let permit = match inner.permits.clone().try_acquire_owned() {
         Ok(permit) => permit,
         Err(_) => return response(StatusCode::SERVICE_UNAVAILABLE),
     };
+    forward_with_permit(inner, origin, allow_websocket, context, request, permit).await
+}
+
+pub(super) async fn forward_with_permit(
+    inner: &NativeInner,
+    origin: &str,
+    allow_websocket: bool,
+    context: RequestContext,
+    mut request: Request<Body>,
+    permit: tokio::sync::OwnedSemaphorePermit,
+) -> Response {
     if request
         .headers()
         .get(header::CONTENT_LENGTH)
@@ -112,20 +123,9 @@ pub(super) async fn forward(
     if prepare_headers(request.headers_mut(), inner, &context, wants_upgrade).is_err() {
         return response(StatusCode::BAD_REQUEST);
     }
-    let hops = request
-        .headers()
-        .get("x-distributed-gateway-hops")
-        .and_then(|v| v.to_str().ok())
-        .map_or_else(
-            || inner.hop_id.clone(),
-            |previous| format!("{previous},{}", inner.hop_id),
-        );
-    let Ok(hops) = HeaderValue::from_str(&hops) else {
+    if add_hop(request.headers_mut(), inner).is_err() {
         return response(StatusCode::BAD_REQUEST);
-    };
-    request
-        .headers_mut()
-        .insert("x-distributed-gateway-hops", hops);
+    }
     let target = request.uri().path_and_query().map_or("/", |p| p.as_str());
     // Path ownership already rejected traversal/authority aliases. A configured
     // origin is concatenated with origin-form target, never joined to a URL.
@@ -227,4 +227,22 @@ pub(super) async fn forward(
     *result.status_mut() = status;
     *result.headers_mut() = headers;
     result
+}
+
+pub(super) fn add_hop(headers: &mut HeaderMap, inner: &NativeInner) -> Result<(), ()> {
+    let hops = headers
+        .get("x-distributed-gateway-hops")
+        .and_then(|v| v.to_str().ok())
+        .map_or_else(
+            || inner.hop_id.clone(),
+            |previous| format!("{previous},{}", inner.hop_id),
+        );
+    if hops.len() > 512 {
+        return Err(());
+    }
+    headers.insert(
+        "x-distributed-gateway-hops",
+        HeaderValue::from_str(&hops).map_err(|_| ())?,
+    );
+    Ok(())
 }

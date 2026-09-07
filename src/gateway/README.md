@@ -56,3 +56,21 @@ a bounded hop chain also detects loops through aliases at runtime.
 budget. Protected assets run normal admission before lookup. It performs no
 caller-selected filesystem access. Native construction starts no listener,
 projector or event consumer. Disabling this mount restores previous entrypoints.
+
+### GraphQL executors
+
+`gateway-graphql` adds a portable parser-based selected-operation policy; it
+compiles to Wasm without an executor. `gateway-graphql-native` binds the existing
+GraphQL HTTP/WS executor or a whole remote endpoint to `NativeBinding::Graphql`.
+Build query-only engines without command inventory and with `subscriptions(false)`
+when live is absent. Commands include status recovery; status queries are never
+ordinary reusable reads. Configure custom fields on the selected executor and
+register their extension IDs. Custom embedded executors must install the supplied
+operation filter and retain/run `GraphqlConnectionGuard` for custom WS handlers.
+
+Remote transport preserves operation names, variables, errors, extensions and
+GraphQL WS IDs. It never retries mutations or creates receipts on transport
+failure. Configured body, concurrency and connection lifetime limits apply;
+backend authorization remains authoritative. Optional delivery features are
+rejected until their adapters are bound. Removing the GraphQL binding restores
+the existing direct executor routes; no migration is required.

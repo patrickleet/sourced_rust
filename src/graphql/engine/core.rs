@@ -309,6 +309,7 @@ pub struct GraphqlEngineBuilder {
     pub(crate) introspection_for_anonymous: bool,
     pub(crate) statement_timeout: Duration,
     pub(crate) graphiql: bool,
+    pub(crate) subscriptions: bool,
     pub(crate) typed_commands: TypedCommandInventory,
     pub(crate) projectors: Vec<SurfaceProjectionOwner>,
     pub(crate) change_rx: Option<tokio::sync::broadcast::Receiver<ReadModelChange>>,
