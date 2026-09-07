@@ -48,3 +48,5 @@ pub mod delivery;
 /// workers-rs ingress and sharded Durable Object delivery adapter.
 #[cfg(feature = "gateway-worker")]
 pub mod worker;
+
+mod application;

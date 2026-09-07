@@ -46,8 +46,13 @@ make up            # once: writes e2e-ui.env
 distributed dev
 ```
 
-The UI is at `http://localhost:5180`; GraphQL is at
-`http://127.0.0.1:8791/graphql`. The CLI loads `e2e-ui.env` when it exists.
+The public UI is at `http://localhost:8791`; GraphQL is at
+`http://localhost:8791/graphql`. The backend hosts the application gateway and
+proxies UI/auth requests to internal SvelteKit on port 5180. `PUBLIC_ORIGIN`
+selects the public URL and `UI_INTERNAL_ORIGIN` selects the UI upstream. Vite
+does not proxy API requests back to the gateway. Set `GATEWAY_DELIVERY=all` to
+opt into bounded query snapshots, coalescing and shared live delivery; the
+default `none` allocates none of those coordinators. The CLI loads `e2e-ui.env` when it exists.
 Demo users are `alice`, `bob`, and `admin` with password `Password1!`.
 
 `make run` is a convenience alias for the same zero-config command. Before

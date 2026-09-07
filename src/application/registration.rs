@@ -64,6 +64,21 @@ impl Application {
         })
     }
 
+    /// Declare a gateway's logical capabilities beside the typed Service surface.
+    /// Origins, routes, credentials and adapter resources remain host bindings.
+    #[cfg(feature = "gateway")]
+    pub fn with_gateway(
+        mut self,
+        id: impl Into<String>,
+        gateway: &crate::gateway::Gateway,
+    ) -> ApplicationResult<Self> {
+        self.manifest
+            .extensions
+            .push(gateway.application_extension(id)?);
+        self.manifest.refresh_fingerprints()?;
+        Ok(self)
+    }
+
     pub fn name(&self) -> &str {
         &self.name
     }

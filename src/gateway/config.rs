@@ -205,6 +205,11 @@ impl Gateway {
         &self.routes
     }
 
+    /// Deterministic logical binding inventory for explicit application mounts.
+    pub fn bindings(&self) -> impl ExactSizeIterator<Item = &Binding> {
+        self.bindings.values()
+    }
+
     /// Resolve a configured resource without accepting a caller-selected URL.
     pub fn binding(&self, id: &str) -> Option<&Binding> {
         self.bindings.get(id)
