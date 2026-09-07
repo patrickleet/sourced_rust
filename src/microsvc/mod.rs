@@ -59,6 +59,7 @@ mod causal;
 pub mod cell_host;
 mod context;
 mod dependencies;
+pub(crate) use dependencies::CausalHostProjections;
 mod descriptor;
 mod error;
 pub(crate) mod lifecycle;

@@ -58,6 +58,15 @@ pub async fn handle(sql: &SqlStorage, request: &mut Request) -> Result<Response>
             )?;
             Response::ok("armed")
         }
+        Some("fail-claim") => {
+            sql.exec(
+                "CREATE TRIGGER test_fail_claim BEFORE UPDATE ON outbox_messages
+                 WHEN NEW.status = 'in_flight'
+                 BEGIN SELECT RAISE(ABORT, 'test claim failure'); END",
+                None,
+            )?;
+            Response::ok("armed")
+        }
         Some("clear-faults") => {
             reset_faults_on_activation(sql)?;
             Response::ok("cleared")
@@ -72,7 +81,8 @@ pub fn reset_faults_on_activation(sql: &SqlStorage) -> Result<()> {
     sql.exec(
         "DROP TRIGGER IF EXISTS test_fail_completion;
         DROP TRIGGER IF EXISTS test_expire_attempt;
-        DROP TRIGGER IF EXISTS test_fail_settlement;",
+        DROP TRIGGER IF EXISTS test_fail_settlement;
+        DROP TRIGGER IF EXISTS test_fail_claim;",
         None,
     )?;
     Ok(())

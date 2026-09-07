@@ -48,23 +48,7 @@ enum CellOwnership {
     },
 }
 
-/// Private command-side repository for one cell instance (`{aggregate_type}:{shard}`).
-///
-/// Exclusive cells reject any stream that is not this cell's shard. Parent
-/// cells (`for_parent_shard`) hold sibling streams of one game and commit
-/// them in one [`CommitBatch`].
-///
-/// ```compile_fail
-/// fn two_cell_transaction_does_not_exist(
-///     left: &distributed::cell_host::CellStreamStore,
-///     right: &distributed::cell_host::CellStreamStore,
-///     batch: distributed::CommitBatch<'_>,
-/// ) {
-///     let _ = left.commit_across(right, batch);
-/// }
-/// ```
-
-/// One stream's event records for Durable Object SQLite persistence.
+/// One stream's event records in a native restart-test export.
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 #[cfg(not(all(feature = "workers-rs", target_arch = "wasm32")))]
 pub struct DurableCellEvents {
@@ -72,7 +56,7 @@ pub struct DurableCellEvents {
     pub events: Vec<EventRecord>,
 }
 
-/// Snapshot cache record for Durable Object SQLite persistence.
+/// Snapshot cache record in a native restart-test export.
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 #[cfg(not(all(feature = "workers-rs", target_arch = "wasm32")))]
 pub struct DurableCellSnapshot {
@@ -86,7 +70,7 @@ pub struct DurableCellSnapshot {
     pub payload: Vec<u8>,
 }
 
-/// One versioned command-ledger row for Durable Object SQLite persistence.
+/// One versioned command-ledger row in a native restart-test export.
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 #[cfg(not(all(feature = "workers-rs", target_arch = "wasm32")))]
 pub struct DurableCellCommand {
@@ -94,7 +78,7 @@ pub struct DurableCellCommand {
     pub body: String,
 }
 
-/// Current persisted aggregate-cell state envelope version.
+/// Current native restart-test export version.
 #[cfg(not(all(feature = "workers-rs", target_arch = "wasm32")))]
 pub const DURABLE_AGGREGATE_CELL_STATE_VERSION: u16 = 1;
 
@@ -112,6 +96,20 @@ pub struct DurableAggregateCellState {
     pub sealed_row: Option<Value>,
 }
 
+/// Private command-side repository for one cell instance (`{aggregate_type}:{shard}`).
+///
+/// Exclusive cells reject any stream that is not this cell's shard. Parent
+/// cells hold sibling streams and commit them in one [`CommitBatch`].
+///
+/// ```compile_fail
+/// fn two_cell_transaction_does_not_exist(
+///     left: &distributed::cell_host::CellStreamStore,
+///     right: &distributed::cell_host::CellStreamStore,
+///     batch: distributed::CommitBatch<'_>,
+/// ) {
+///     let _ = left.commit_across(right, batch);
+/// }
+/// ```
 #[derive(Clone)]
 pub struct CellStreamStore {
     ownership: CellOwnership,
