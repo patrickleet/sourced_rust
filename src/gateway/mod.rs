@@ -32,3 +32,7 @@ pub use route::{Methods, Route, RoutePath, SelectedRoute, MAX_ADMISSIONS, MAX_PA
 
 pub use auth::{is_untrusted_identity_header, Admission, AuthError, AuthProvider};
 pub use context::{BackendCredential, Credentials, Identity, RequestContext};
+
+/// Native HTTP routing, streaming proxy and static asset adapter.
+#[cfg(feature = "gateway-native")]
+pub mod native;

@@ -26,3 +26,33 @@ The reusable production Auth.js/OIDC/browser fixture is in
 plumbing; merely declaring routes or providers starts no service or identity
 store. Removing a gateway mount restores the application's prior entrypoints;
 backend authentication stays enabled.
+
+## Native HTTP adapter
+
+Enable `gateway-native` and construct `NativeGateway` from a validated gateway,
+`NativeOptions`, explicit named `NativeBinding` resources and `NativeAuth`.
+Mount its `router()` on the application's existing listener. Local handlers
+receive `RequestContext` through Axum request extensions. UI proxy targets come
+from the portable declaration; callers cannot select upstream URLs.
+
+Use the real public origin in `NativeOptions::new`. Incoming identity and
+forwarded headers are stripped; Host and forwarded host/protocol are rebuilt
+from this value, while Origin is preserved for CSRF. Add deployment-specific
+identity/secret header names to `strip_headers`. Upstream redirects are returned
+to the browser, with private-origin locations mapped to public origin. The
+proxy disables retries, automatic redirects, environment proxies and automatic
+response decompression. Duplicate Set-Cookie values remain separate.
+
+`ProxyLimits` bounds request bytes, active proxy streams, connect/header wait,
+read idle time and upgraded-connection lifetime. Known oversize requests return
+413; over-limit streamed uploads terminate rather than being retried. Capacity
+exhaustion returns 503. Response bytes stream without a whole-body buffer;
+dropping the body releases capacity and cancels its upstream stream. WebSocket
+upgrades require an explicit target opt-in and close on disconnect, identity
+expiry or configured lifetime. Exact public-origin loops fail construction;
+a bounded hop chain also detects loops through aliases at runtime.
+
+`StaticAssets` validates an immutable preloaded path/byte inventory and memory
+budget. Protected assets run normal admission before lookup. It performs no
+caller-selected filesystem access. Native construction starts no listener,
+projector or event consumer. Disabling this mount restores previous entrypoints.
