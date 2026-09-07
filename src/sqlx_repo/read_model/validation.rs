@@ -162,14 +162,6 @@ pub(crate) fn belongs_to_target_column(
     Ok(target_schema.primary_key.columns[0].clone())
 }
 
-pub(crate) fn empty_string_as_none(value: &str) -> Option<&str> {
-    if value.is_empty() {
-        None
-    } else {
-        Some(value)
-    }
-}
-
 pub(crate) fn row_write_values<'schema>(
     schema: &'schema TableSchema,
     values: &RowValues,

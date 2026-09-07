@@ -728,6 +728,17 @@ CQRS is the architectural split between write-side aggregates and query-side rea
 
 Published messages are a separate boundary. An aggregate event record is not automatically a domain event. When other services, projections, or transports need a fact or command, create an `OutboxMessage` and commit it with the aggregate. The outbox payload can represent a domain event, integration event, command, or any other transport message.
 
+The outbox stores delivery work, not publication history. Successful delivery
+deletes the row under its active lease. Failed or ambiguous sends retain the row
+for retry or inspection. A crash after transport acceptance but before deletion
+can deliver the same event ID again; consumers must remain idempotent. Event
+history belongs in the event store, and command retry results belong in command
+receipts. Neither depends on retaining delivered outbox rows.
+
+In v5, `OutboxStore::complete` and `complete_many` remove delivered rows instead
+of retaining `Published` records. Repeating settlement of a removed row returns
+`NotFound`; stale claims on existing rows still return `InvalidState`.
+
 The existing names and serialized fields such as `EventRecord::event_name` remain part of the compatibility contract. Terminology cleanup should clarify usage without renaming stored event records unless a migration path is explicitly designed.
 
 ## Pluggable by Default
@@ -1384,7 +1395,7 @@ in `bus` (no concrete broker dependency).
 
 **Two confirmation thresholds** (do not collapse them):
 
-1. **Producer publish** — when an outbox row may be marked published (SQL commit,
+1. **Producer publish** — when an outbox row may be deleted (SQL commit,
    broker confirm/ack, Knative 2xx, in-memory accept). Unknown outcomes stay retryable.
 2. **Consumer ack** — only after the handler (and optional inbox receipt) committed.
    Never silently ack a handler error.

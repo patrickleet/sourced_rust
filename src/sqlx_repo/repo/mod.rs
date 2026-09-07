@@ -34,9 +34,7 @@ use crate::command_ledger::{
 };
 use crate::entity::{Entity, EventRecord};
 use crate::outbox::{OutboxMessage, OutboxMessageStatus};
-use crate::outbox_worker::{
-    ensure_active_claim, ClaimOutboxMessages, OutboxBacklogStats, OutboxClaimRef, OutboxStore,
-};
+use crate::outbox_worker::{ClaimOutboxMessages, OutboxBacklogStats, OutboxClaimRef, OutboxStore};
 use crate::projection_protocol::{ProjectionChangeRetention, SameTransactionProjectionBatch};
 use crate::read_model::{ReadModelLoadGraph, ReadModelLoadRequest, ReadModelQueryCapabilities};
 use crate::repository::{
@@ -51,13 +49,10 @@ use crate::sqlx_repo::projection_protocol::{
 };
 use crate::sqlx_repo::read_model::{
     apply_read_model_write_plan_in_tx, begin_read_model_tx, commit_read_model_tx,
-    empty_string_as_none, load_read_model_graph, remember_read_model_schemas,
-    sql_read_model_capabilities, validate_sql_write_plan, SqlxReadModelBackend,
+    load_read_model_graph, remember_read_model_schemas, sql_read_model_capabilities,
+    validate_sql_write_plan, SqlxReadModelBackend,
 };
-use crate::sqlx_repo::{
-    audited_table_schema_sql, deserialize_event_metadata, repository_i64_from_u64,
-    repository_u16_from_i64, repository_u64_from_i64, serialize_event_metadata,
-};
+use crate::sqlx_repo::{audited_table_schema_sql, repository_u64_from_i64};
 use crate::table::{
     generate_table_migration_artifacts, table_schema_bootstrap_result, table_schema_statements,
     TableMigrationArtifact, TableSchemaBootstrap, TableSchemaRegistry, TableSqlDialect,
@@ -74,6 +69,7 @@ mod commit;
 mod errors;
 mod events;
 mod executor;
+pub(crate) use executor::ConnectionExecutor;
 mod inbox;
 mod outbox;
 mod read_models;
@@ -93,8 +89,6 @@ pub(crate) use backend::POSTGRES_MIGRATIONS;
 #[cfg(feature = "sqlite")]
 pub(crate) use backend::SQLITE_MIGRATIONS;
 pub(crate) use errors::{repository_storage_error, system_time_epoch_secs};
-#[cfg(feature = "sqlite")]
-pub(crate) use outbox::outbox_message_by_id;
 #[cfg(feature = "postgres")]
 pub(crate) use outbox::outbox_message_from_row;
 pub use types::{SqlxOutboxStore, SqlxRepository};

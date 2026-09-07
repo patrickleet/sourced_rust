@@ -3,8 +3,8 @@
 use super::*;
 use crate::repository::sql::{SqlBind, SqlExecutor, SqlPart, SqlRow, Statement};
 
-pub(super) struct ConnectionExecutor<'a, DB: SqlxRepoBackend>(pub &'a mut DB::Connection);
-pub(super) struct EventRow<DB: SqlxRepoBackend>(pub DB::Row);
+pub(crate) struct ConnectionExecutor<'a, DB: SqlxRepoBackend>(pub &'a mut DB::Connection);
+pub(crate) struct EventRow<DB: SqlxRepoBackend>(pub DB::Row);
 
 impl<DB> SqlRow for EventRow<DB>
 where
@@ -60,6 +60,18 @@ where
     let mut builder = QueryBuilder::<DB>::new("");
     for part in &statement.0 {
         match part {
+            SqlPart::TimestampCompare {
+                column,
+                operator,
+                value,
+            } => {
+                DB::push_timestamp_cmp(
+                    &mut builder,
+                    column,
+                    operator,
+                    system_time_epoch_secs::<DB>(*value)?,
+                );
+            }
             SqlPart::LedgerNow => DB::push_command_ledger_now(&mut builder),
             SqlPart::LedgerNowEpoch => DB::push_command_ledger_now_epoch(&mut builder),
             SqlPart::LedgerDeadline(value) => {
@@ -108,6 +120,7 @@ where
     type Row = EventRow<DB>;
     const EVENT_SELECT: &'static str = DB::EVENT_SELECT;
     const SNAPSHOT_SELECT: &'static str = DB::SNAPSHOT_SELECT;
+    const OUTBOX_SELECT: &'static str = DB::OUTBOX_SELECT;
     const NOW: &'static str = DB::NOW;
     const COMMAND_LEDGER_SELECT: &'static str = DB::COMMAND_LEDGER_SELECT;
     const COMMAND_LEDGER_LOCK_SUFFIX: &'static str = DB::COMMAND_LEDGER_LOCK_SUFFIX;
