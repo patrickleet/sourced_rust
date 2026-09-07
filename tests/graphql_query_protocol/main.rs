@@ -2402,3 +2402,174 @@ async fn hundred_subscribers_one_upstream_over_embedded_and_remote_websockets() 
         .expect("last leave tears down gateway and origin live producers");
     }
 }
+
+#[cfg(all(feature = "gateway-delivery", feature = "gateway-graphql-native"))]
+#[tokio::test]
+#[ignore = "requires pinned tests/gateway-worker npm installation and worker-build; run explicitly in Worker CI"]
+async fn worker_coordinator_uses_actual_origin_projection_sql() {
+    use axum::{
+        routing::{get, post},
+        Router,
+    };
+    use distributed::graphql::delivery::GatewayVersionStore;
+    let fixture = protocol_fixture_with_retention(10).await;
+    let store = GatewayVersionStore::install(
+        &distributed::graphql::GraphqlPool::from(fixture.repository.pool().clone()),
+        "worker-test",
+        ["causal_query_views".into()],
+    )
+    .await
+    .unwrap();
+    let engine = Arc::new(
+        GraphqlEngine::builder(&fixture.repository)
+            .service_id(SERVICE_ID)
+            .protocol_token_key(TEST_PROTOCOL_TOKEN_KEY)
+            .roles(&["user"])
+            .anonymous_role("user")
+            .subscriptions(false)
+            .model::<CausalQueryView>(ModelPermissions::new().grant("user", read().all_columns()))
+            .client_projectors([projector()])
+            .gateway_versions(store.clone())
+            .build()
+            .unwrap(),
+    );
+    let gate = Arc::new(tokio::sync::Semaphore::new(0));
+    let handler_gate = gate.clone();
+    let blocking_gate = gate.clone();
+    let pool = fixture.repository.pool().clone();
+    let origin=Router::new().route("/graphql",post(move |axum::Json(value):axum::Json<Value>|{let engine=engine.clone();let gate=handler_gate.clone();async move{
+        if value["extensions"]["gatewayDelivery"]["action"]=="snapshot"{gate.acquire().await.unwrap().forget();}
+        axum::Json(serde_json::to_value(engine.execute(&user_session(),serde_json::from_value::<Request>(value).unwrap()).await).unwrap())
+    }})).route("/__metrics",get(move ||{let store=store.clone();async move{let metrics=store.metrics();axum::Json(json!({"validations":metrics.validations,"resultExecutions":metrics.result_executions}))}}))
+    .route("/__release",post(move ||{let gate=gate.clone();async move{gate.add_permits(1000);"released"}}))
+    .route("/__write",post(move ||{let pool=pool.clone();async move{sqlx::query("UPDATE causal_query_views SET title='external write'").execute(&pool).await.unwrap();"written"}}));
+    let origin = origin.route(
+        "/__block",
+        post(move || {
+            let gate = blocking_gate.clone();
+            async move {
+                gate.forget_permits(gate.available_permits());
+                "blocked"
+            }
+        }),
+    );
+    let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let origin_url = format!("http://{}", listener.local_addr().unwrap());
+    struct Stop(tokio::task::JoinHandle<()>);
+    impl Drop for Stop {
+        fn drop(&mut self) {
+            self.0.abort();
+        }
+    }
+    let _server = Stop(tokio::spawn(async move {
+        axum::serve(listener, origin).await.unwrap()
+    }));
+    let result = tokio::process::Command::new("node")
+        .arg("tests/gateway-worker/query-runtime.mjs")
+        .env("GATEWAY_ORIGIN", origin_url)
+        .kill_on_drop(true)
+        .output()
+        .await
+        .unwrap();
+    println!("{}", String::from_utf8_lossy(&result.stdout));
+    assert!(
+        result.status.success(),
+        "{}",
+        String::from_utf8_lossy(&result.stderr)
+    );
+}
+
+#[cfg(all(feature = "gateway-delivery", feature = "gateway-graphql-native"))]
+#[tokio::test]
+#[ignore = "requires pinned local workerd fixture; run explicitly in Worker CI"]
+async fn worker_live_coordinator_uses_actual_oidc_origin() {
+    use axum::Router;
+    use distributed::graphql::{delivery::GatewayVersionStore, IdentityConfig, OidcConfig};
+    use jsonwebtoken::{encode, Algorithm, EncodingKey, Header};
+    use rsa::{pkcs1::EncodeRsaPrivateKey, traits::PublicKeyParts, RsaPrivateKey, RsaPublicKey};
+    let private = RsaPrivateKey::new(&mut rand::thread_rng(), 2048).unwrap();
+    let public = RsaPublicKey::from(&private);
+    let encoding = EncodingKey::from_rsa_pem(
+        private
+            .to_pkcs1_pem(rsa::pkcs8::LineEnding::LF)
+            .unwrap()
+            .as_bytes(),
+    )
+    .unwrap();
+    let jwks=json!({"keys":[{"kty":"RSA","kid":"live-test","alg":"RS256","use":"sig",
+        "n":base64::engine::general_purpose::URL_SAFE_NO_PAD.encode(public.n().to_bytes_be()),"e":base64::engine::general_purpose::URL_SAFE_NO_PAD.encode(public.e().to_bytes_be())}]}).to_string();
+    let token = |subject: &str| {
+        let now = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .unwrap()
+            .as_secs();
+        let mut header = Header::new(Algorithm::RS256);
+        header.kid = Some("live-test".into());
+        encode(&header,&json!({"iss":"https://live-fixture.invalid","aud":"live-fixture","sub":subject,"iat":now-1,"nbf":now-1,"exp":now+3600,"roles":["user"]}),&encoding).unwrap()
+    };
+
+    let fixture = protocol_fixture_with_retention(5).await;
+    let versions = GatewayVersionStore::install(
+        &distributed::graphql::GraphqlPool::from(fixture.repository.pool().clone()),
+        "worker-live-fixture",
+        ["causal_query_views".into()],
+    )
+    .await
+    .unwrap();
+    let oidc = OidcConfig::new("https://live-fixture.invalid", "live-fixture")
+        .with_static_jwks(jwks)
+        .engine_roles(&["user"]);
+    let engine = Arc::new(
+        GraphqlEngine::builder(&fixture.repository)
+            .service_id(SERVICE_ID)
+            .protocol_token_key(TEST_PROTOCOL_TOKEN_KEY)
+            .roles(&["user"])
+            .identity(IdentityConfig::oidc_bearer(oidc))
+            .model::<CausalQueryView>(ModelPermissions::new().grant("user", read().all_columns()))
+            .client_projectors([projector()])
+            .change_stream(fixture.repository.read_model_changes())
+            .gateway_versions(versions.clone())
+            .build()
+            .unwrap(),
+    );
+    let router = distributed::graphql::graphql_router_composed(engine.clone(), None, None);
+    let repository = fixture.repository.clone();
+    let bus = fixture.bus.clone();
+    let control=Router::new().route("/__metrics",axum::routing::get(move ||{let engine=engine.clone();let versions=versions.clone();async move{let metrics=versions.metrics();axum::Json(json!({"producers":engine.live_subscriber_count(),"validations":metrics.validations,"resultExecutions":metrics.result_executions}))}}))
+    .route("/__commit",axum::routing::post(move ||{let repository=repository.clone();let bus=bus.clone();async move{project_item(&repository,&bus,2,"worker committed").await;"committed"}}));
+    let next_repository = fixture.repository.clone();
+    let next_bus = fixture.bus.clone();
+    let short_encoding = encoding.clone();
+    let control=control.route("/__next/{position}",axum::routing::post(move |axum::extract::Path(position):axum::extract::Path<u64>|{let repository=next_repository.clone();let bus=next_bus.clone();async move{project_item(&repository,&bus,position,if position==23{"worker-22"}else{"worker update"}).await;"committed"}}))
+    .route("/__short_token",axum::routing::get(move ||{let encoding=short_encoding.clone();async move{
+        let now=std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).unwrap().as_secs();let mut header=Header::new(Algorithm::RS256);header.kid=Some("live-test".into());
+        axum::Json(json!({"token":encode(&header,&json!({"iss":"https://live-fixture.invalid","aud":"live-fixture","sub":"alice","iat":now-1,"nbf":now-1,"exp":now+3,"roles":["user"]}),&encoding).unwrap()}))
+    }}));
+    let router = router.merge(control);
+    let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let origin_url = format!("http://{}", listener.local_addr().unwrap());
+    struct Stop(tokio::task::JoinHandle<()>);
+    impl Drop for Stop {
+        fn drop(&mut self) {
+            self.0.abort();
+        }
+    }
+    let _server = Stop(tokio::spawn(async move {
+        axum::serve(listener, router).await.unwrap()
+    }));
+    let result = tokio::process::Command::new("node")
+        .arg("tests/gateway-worker/live-runtime.mjs")
+        .env("GATEWAY_ORIGIN", origin_url)
+        .env("GATEWAY_TOKEN_ALICE", token("alice"))
+        .env("GATEWAY_TOKEN_BOB", token("bob"))
+        .kill_on_drop(true)
+        .output()
+        .await
+        .unwrap();
+    println!("{}", String::from_utf8_lossy(&result.stdout));
+    assert!(
+        result.status.success(),
+        "{}",
+        String::from_utf8_lossy(&result.stderr)
+    );
+}

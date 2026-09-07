@@ -43,6 +43,8 @@ gateway-native = ["gateway", "http", "reqwest/stream", "dep:hyper", "dep:hyper-u
 gateway-graphql = ["gateway", "dep:async-graphql-parser"]
 # Shared portable identity, freshness and delivery contracts.
 gateway-delivery = ["gateway-graphql"]
+# workers-rs ingress and delivery contracts, without native executors.
+gateway-worker = ["gateway-delivery", "dep:worker", "dep:futures-channel"]
 gateway-graphql-native = ["gateway-native", "gateway-graphql", "graphql", "dep:tokio-tungstenite"]
 runtime = ["application-runtime"]
 emitter = ["dep:event-emitter-rs"]
@@ -77,6 +79,7 @@ reqwest = { version = "0.13", default-features = false, features = ["json", "rus
 jsonwebtoken = { version = "9", optional = true }
 bitcode = { version = "0.6.9", features = ["serde"] }
 event-emitter-rs = { version = "0.1.4", optional = true }
+futures-channel = { version = "0.3", features = ["sink"], optional = true }
 futures-util = { version = "0.3", default-features = false, features = ["alloc"] }
 hmac = { version = "0.12", optional = true }
 opentelemetry = { version = "0.32", default-features = false, features = ["trace"], optional = true }
