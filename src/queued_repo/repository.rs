@@ -304,6 +304,51 @@ where
     }
 }
 
+impl<R, L> crate::microsvc::CausalHostProjections for QueuedRepository<R, L>
+where
+    R: crate::microsvc::CausalHostProjections,
+    L: LockManager,
+{
+    #[cfg(feature = "graphql")]
+    fn command_obligation_evidence<'a>(
+        &'a self,
+        request: &'a crate::projection_protocol::ProjectionObligationEvidenceBatchRequest,
+    ) -> impl std::future::Future<
+        Output = Result<
+            crate::projection_protocol::ProjectionObligationEvidenceBatch,
+            crate::projection_protocol::ProjectionProtocolError,
+        >,
+    > + Send
+           + 'a {
+        self.inner.command_obligation_evidence(request)
+    }
+
+    #[cfg(feature = "graphql")]
+    fn command_causation_evidence<'a>(
+        &'a self,
+        request: &'a crate::projection_protocol::ProjectionCausationEvidenceRequest,
+    ) -> impl std::future::Future<
+        Output = Result<
+            crate::projection_protocol::ProjectionCausationEvidenceBatch,
+            crate::projection_protocol::ProjectionProtocolError,
+        >,
+    > + Send
+           + 'a {
+        self.inner.command_causation_evidence(request)
+    }
+    fn __register_direct_projection_models<'a>(
+        &'a self,
+        topology: &'a crate::projection_protocol::ProjectorTopologyId,
+        ownership: &'a [crate::projection_protocol::ProjectionModelOwnership],
+    ) -> impl std::future::Future<
+        Output = Result<(), crate::projection_protocol::ProjectionProtocolError>,
+    > + Send
+           + 'a {
+        self.inner
+            .__register_direct_projection_models(topology, ownership)
+    }
+}
+
 impl<R, L> ProjectionProtocolStore for QueuedRepository<R, L>
 where
     R: ProjectionProtocolStore,

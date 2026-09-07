@@ -833,6 +833,11 @@ impl CausalRepositoryIdentity for AmbiguousCommitRepository {
 }
 
 #[cfg(feature = "graphql")]
+impl crate::microsvc::dependencies::CausalHostProjections for AmbiguousCommitRepository {
+    crate::microsvc::dependencies::direct_causal_projection_methods!();
+}
+
+#[cfg(feature = "graphql")]
 impl ProjectionProtocolStore for AmbiguousCommitRepository {
     fn register_projection_models<'a>(
         &'a self,

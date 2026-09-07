@@ -5,7 +5,7 @@ import assert from "node:assert/strict";
 import { spawn, execFileSync } from "node:child_process";
 import { once } from "node:events";
 import { createWriteStream } from "node:fs";
-import { cp, mkdir, mkdtemp, readFile, readdir, writeFile } from "node:fs/promises";
+import { access, cp, mkdir, mkdtemp, readFile, readdir, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join, dirname } from "node:path";
 import { createServer } from "node:net";
@@ -105,7 +105,7 @@ async function command(id, name, input, command = commandId(), extraHeaders = {}
   assert.equal(response.status, name === "todo.create" ? 201 : 200, JSON.stringify(body));
   return body;
 }
-async function queueRows() {
+async function queueRows(countOnly = false) {
   const runtime = join(project, ".celld/dev/runtime");
   try {
     const queue = (await readdir(runtime)).find(name => name.startsWith("__Queue:"));
@@ -114,8 +114,21 @@ async function queueRows() {
     const epochs = (await readdir(ltx)).filter(name => /^e[0-9]+$/.test(name))
       .sort((a, b) => Number(b.slice(1)) - Number(a.slice(1)));
     if (!epochs.length) return [];
-    const rows = execFileSync("sqlite3", ["-readonly", "-json", join(ltx, epochs[0], "db.sqlite"),
-      "SELECT seq, hex(body) AS body FROM __queue_messages ORDER BY seq"], { encoding: "utf8", maxBuffer: 128 * 1024 * 1024 });
+    const database = join(ltx, epochs[0], "db.sqlite");
+    // Recovery creates the epoch directory before materializing its database.
+    // Observe only the newest epoch; never mistake a stale epoch for delivery.
+    await access(database);
+    let rows;
+    try {
+      rows = execFileSync("sqlite3", ["-readonly", "-json", database,
+      countOnly ? "SELECT COUNT(*) AS count FROM __queue_messages" :
+        "SELECT seq, hex(body) AS body FROM __queue_messages ORDER BY seq"], { encoding: "utf8", maxBuffer: 128 * 1024 * 1024 });
+    } catch (error) {
+      // A retired epoch may disappear between discovery and the read.
+      // Missing files are retryable observations; SQL errors are not.
+      await access(database);
+      throw error;
+    }
     return rows.trim() ? JSON.parse(rows) : [];
   } catch (error) {
     if (error.code === "ENOENT") return [];
@@ -187,7 +200,10 @@ try {
     (await queueRows()).length > beforeDeferred);
   await record("committed-before-send restart", (await probe("commit-crash", "inspect")).counts);
 
-  // More than 8 MiB of actual event payload in one cell, not padding a result.
+  // Grow event history AND an unsent outbox beyond the former single-value
+  // ceiling. Claim failures cannot reject an already committed command.
+  const beforeGrowth = (await queueRows(true))[0].count;
+  await probe("growth", "fail-claim");
   const payload = "x".repeat(8192);
   const firstId = commandId();
   const first = await command("growth", "todo.create", { title: "0 " + payload }, firstId);
@@ -201,10 +217,12 @@ try {
   assert.equal(grown.snapshotVersion, 1101);
   assert.equal(grown.snapshots, 1);
   assert.equal(grown.completed, 1101);
-  assert.equal(grown.outbox, 0);
+  assert.equal(grown.outbox, 1101);
   assert.equal(grown.wholeStateTables, 0);
   await crash();
   await start();
+  await until("large pending outbox drains from alarms without a cell request", async () =>
+    (await queueRows(true))[0]?.count >= beforeGrowth + 1101, 120_000);
   const oldRetry = await command("growth", "todo.create", { title: "0 " + payload }, firstId);
   assert.equal(oldRetry.receipt.replayed, true);
   assert.deepEqual(oldRetry.events, first.events);
@@ -212,6 +230,7 @@ try {
   const afterRestart = (await probe("growth", "inspect")).counts;
   assert.equal(afterRestart.events, 1102);
   assert.equal(afterRestart.snapshotVersion, 1102);
+  assert.equal(afterRestart.outbox, 0);
   await record("growth and snapshot-tail restart", { grown, afterRestart });
 } finally {
   await crash();

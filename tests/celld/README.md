@@ -169,8 +169,11 @@ node tests/celld/storage-conformance.mjs
 It requires Node.js, sqlite3, esbuild and celld in addition to the Worker
 toolchain. It tests final-write rollback, lease fencing during commit,
 Queue-acceptance/delete crash redelivery with stable IDs, prearmed-alarm
-recovery without another cell request, receipt replay after delivery, and more
-than 8 MiB of event payload in a single snapshot-backed cell across restart.
+recovery without another cell request, and receipt replay after delivery. It
+also retains 1,101 unsent messages and more than 8 MiB of event payload in one
+snapshot-backed cell, restarts it, and verifies that alarms drain the backlog
+without another aggregate request. Events and receipts remain; delivered
+outbox rows do not.
 It prints and retains its temporary artifact directory. Fault probes are
 feature-gated out of ordinary Worker builds. CI runs this proof separately
 from the full Queue/NATS/browser profile.
