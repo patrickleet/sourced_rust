@@ -355,8 +355,20 @@ once. Components do not generate IDs or maintain optimistic/cache recipes.
 `@load` results are normalized on the server, dehydrated, and restored in the
 browser without a duplicate first request. Hydration cannot authorize itself:
 the server sends a separate authority value, and the adapter requires both
-values to match. Session, token, tenant, or role changes abort HTTP and live
-work, discard the old generation, and reconnect under server-issued scope.
+values to match. Credential changes abort old HTTP and live work. Without fresh
+server evidence, they also discard the old generation. A refreshed credential
+received together with a new authorized seed for the exact active scope can
+keep the warm replica and pending optimism. The seed proves authorization;
+its data does not overwrite newer local command results or freshness floors.
+`createPageDataSessionSource`
+provides that transfer automatically; custom session sources can supply
+`getHydration()` alongside `getAuth()`. Never derive this authority from a JWT
+or reuse an old transfer. Logout, changed scopes, and invalid hydration still
+purge the generation.
+
+The sample auth refresh endpoint returns an authorized seed for the current
+route before invalidating SvelteKit page data. Ordinary SPA navigation still
+skips server GraphQL work.
 
 Confirmed records and indexes under an active scope stay until auth/scope
 change, stale+revalidate, or a newer authoritative write. Same-scope soft

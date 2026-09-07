@@ -4,6 +4,7 @@ import test from 'node:test';
 
 import {
 	createDistributedSvelteKit,
+	createPageDataSessionSource,
 	createDistributedSvelteKitServer,
 	defineDistributedBoundaryBinding,
 	defineDistributedBoundaryOperation
@@ -11,6 +12,7 @@ import {
 import {
 	REACT_FIXTURE_SCHEMA,
 	TodosArtifact,
+	TodoModel,
 	todoFrame
 } from './fixtures/adapter-conformance.mjs';
 
@@ -507,3 +509,76 @@ test('lazy command authority preserves isolated SSR hydration and query prefetch
  clients.forEach(client=>client.destroy());
  await assert.rejects(clients[0].preloadCommands(),/destroyed/);
 });
+
+
+test('fresh same-scope SSR authority rotates credentials without emptying the visible replica', async () => {
+	const harness = serverHarness();
+	const first = await harness.server.load(harness.event('alice', '1'));
+	const second = await harness.server.load(harness.event('alice', '2'));
+	const pageData = createPageDataSessionSource(first);
+	const requests = [];
+	SsrWebSocket.instances.length = 0;
+	const client = createDistributedSvelteKit({
+		boundaries: [todosBoundary], session: pageData.session,
+		hydration: first.distributed, authority: first.distributedAuthority,
+		fetch: (url, init) => new Promise(resolve => requests.push({init, resolve})),
+		webSocket: SsrWebSocket
+	});
+	const todos = client.operation(TodosArtifact).use();
+	const values = [];
+	const unsubscribe = todos.subscribe(snapshot => values.push(snapshot.data.todos?.[0]?.title));
+	await flushMicrotasks();
+	const oldSocket = SsrWebSocket.instances[0];
+	const oldRequest = todos.refetch();
+	await flushMicrotasks();
+	assert.equal(requests.length, 1);
+	client.replica.writeResult(TodosArtifact, {}, todoFrame(TodosArtifact, [{id:'todo-alice', title:'confirmed ahead', status:'open'}], {cacheScope:'cache:alice', position:'3'}), 'network');
+	client.replica.createOptimisticLayer('pending-edit', writer => writer.writeRecord(TodoModel, 'todo-alice', {fields:{title:'optimistic edit'}}));
+	pageData.set({...second, accessToken: 'rotated-alice'});
+	await flushMicrotasks();
+	assert.ok(values.every(value => value === 'alice:1' || value === 'confirmed ahead' || value === 'optimistic edit'), JSON.stringify(values));
+	assert.equal(todos.get().data.todos[0].title, 'optimistic edit');
+	assert.equal(requests[0].init.signal.aborted, true);
+	assert.equal(oldSocket.closed, true);
+	assert.equal(requests.length, 1, 'fresh SSR data needs no replacement browser query');
+	const nextSocket = SsrWebSocket.instances.at(-1);
+	assert.notEqual(nextSocket, oldSocket);
+	nextSocket.open();
+	await flushMicrotasks();
+	assert.equal(nextSocket.sent[0].payload.authorization, 'Bearer rotated-alice');
+	requests[0].resolve(jsonResponse(todoFrame(TodosArtifact, [{id:'todo-alice',title:'late old credential',status:'open'}], {cacheScope:'cache:alice',position:'3'})));
+	await oldRequest;
+	assert.equal(todos.get().data.todos[0].title, 'optimistic edit', 'closed credential work cannot overwrite the new seed');
+	client.replica.rejectOptimisticLayer('pending-edit');
+	assert.equal(todos.get().data.todos[0].title, 'confirmed ahead', 'the refresh seed cannot overwrite a newer confirmed command result');
+	unsubscribe(); client.destroy();
+});
+
+for (const kind of ['missing', 'replayed', 'historical', 'tampered', 'different-scope', 'logout']) {
+	test(`credential change with ${kind} hydration still purges the old replica`, async () => {
+		const harness = serverHarness();
+		const first = await harness.server.load(harness.event('alice'));
+		const second = await harness.server.load(harness.event(kind === 'different-scope' ? 'bob' : 'alice', '2'));
+		const pageData = createPageDataSessionSource(first);
+		const client = createDistributedSvelteKit({
+			boundaries: [todosBoundary], session: pageData.session,
+			hydration: first.distributed, authority: first.distributedAuthority,
+			fetch: () => new Promise(() => {}), webSocket: SsrWebSocket
+		});
+		const todos = client.operation(TodosArtifact).use({}, {live:false});
+		const unsubscribe = todos.subscribe(() => {});
+		await flushMicrotasks();
+		let next = {...second, accessToken:'new-credential'};
+		if(kind === 'missing') {delete next.distributed;delete next.distributedAuthority;}
+		if(kind === 'historical') {pageData.set({...first, distributed:undefined, distributedAuthority:undefined});await flushMicrotasks();}
+		if(kind === 'replayed' || kind === 'historical') next = {...first, accessToken:'new-credential'};
+		if(kind === 'tampered') {next.distributed = structuredClone(next.distributed);next.distributed.state.scope.cacheScope = 'cache:forged';}
+		if(kind === 'logout') next = {session:null};
+		pageData.set(next);
+		await flushMicrotasks();
+		assert.equal(todos.get().complete, false);
+		assert.deepEqual(todos.get().data, {});
+		assert.equal(client.replica.scope, undefined);
+		unsubscribe(); client.destroy();
+	});
+}
