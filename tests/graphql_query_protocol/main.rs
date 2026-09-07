@@ -1496,3 +1496,96 @@ async fn unowned_legacy_query_is_explicitly_incomplete_and_still_strips_keys() {
     assert_eq!(snapshot["observations"], json!([]));
     assert_opaque_token(&snapshot["scopeToken"], "query-snapshot");
 }
+
+#[cfg(feature = "gateway-delivery")]
+#[tokio::test]
+async fn freshness_context_binds_origin_and_rejects_unproven_minima() {
+    use distributed::gateway::delivery::{FreshnessContext, Minimum};
+    let fixture = protocol_fixture_with_retention(10).await;
+    let document = "query ReadFreshness { causal_query_views { title } }";
+    let request = || Request::new(document);
+    let identity = fixture
+        .engine
+        .delivery_identity(&user_session(), &request())
+        .unwrap();
+    let mut context = FreshnessContext::parse(&json!({
+        "version":1, "schemaHash":identity.schema_hash, "protocolHash":identity.protocol_hash,
+        "authorizationGeneration":identity.authorization_generation, "cacheScope":identity.cache_scope,
+        "pending":[{"complete":true,"models":["CausalQueryView"],"relationships":[]}], "minimum":[]
+    })).unwrap();
+    let with_context = |context: &FreshnessContext| {
+        let mut request = request();
+        request.extensions.insert(
+            "gatewayFreshness".into(),
+            async_graphql::Value::from_json(serde_json::to_value(context).unwrap()).unwrap(),
+        );
+        request
+    };
+    let before = wire_response(
+        fixture
+            .engine
+            .execute(&user_session(), with_context(&context))
+            .await,
+    );
+    assert_eq!(
+        before["data"]["causal_query_views"][0]["title"],
+        "causal row"
+    );
+    assert_eq!(
+        distributed_envelope(&before)["snapshot"]["observations"],
+        json!([])
+    );
+    project_item(&fixture.repository, &fixture.bus, 2, "committed").await;
+    let after = wire_response(
+        fixture
+            .engine
+            .execute(&user_session(), with_context(&context))
+            .await,
+    );
+    let index = &distributed_envelope(&after)["snapshot"]["indexes"][0];
+    context
+        .observe([Minimum::Index {
+            projection: index["projection"].as_str().unwrap().into(),
+            scope_token: index["scopeToken"].as_str().unwrap().into(),
+            position: "2".into(),
+        }])
+        .unwrap();
+    context.pending.clear();
+    assert_eq!(
+        wire_response(
+            fixture
+                .engine
+                .execute(&user_session(), with_context(&context))
+                .await
+        )["data"]["causal_query_views"][0]["title"],
+        "committed"
+    );
+    let mut future = context.clone();
+    if let Minimum::Index { position, .. } = &mut future.minimum[0] {
+        *position = "999".into();
+    }
+    let rejected = serde_json::to_value(
+        fixture
+            .engine
+            .execute(&user_session(), with_context(&future))
+            .await,
+    )
+    .unwrap();
+    assert_eq!(
+        rejected["errors"][0]["extensions"]["code"],
+        "FRESHNESS_PENDING"
+    );
+    assert!(rejected["data"].is_null());
+    let mut forged = context;
+    forged.cache_scope = "another-subject".into();
+    assert_eq!(
+        serde_json::to_value(
+            fixture
+                .engine
+                .execute(&user_session(), with_context(&forged))
+                .await
+        )
+        .unwrap()["errors"][0]["extensions"]["code"],
+        "FRESHNESS_SCOPE_CHANGED"
+    );
+}

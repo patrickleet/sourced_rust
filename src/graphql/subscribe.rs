@@ -275,6 +275,8 @@ async fn execute_list(
         .ok_or_else(|| "authorized GraphQL role surface is unavailable".to_string())?;
     let executed = super::query_protocol::execute_query_with_protocol(
         inner,
+        &inner.pool,
+        true,
         role_surface,
         protocol.clone(),
         plan,

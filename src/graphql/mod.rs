@@ -89,3 +89,6 @@ pub use identity::{
 pub use read_store::{CellByKeyGetter, HttpCellByKey, MapCellByKey, ReadStore};
 #[cfg(feature = "graphql")]
 pub use subscribe::ChangeHub;
+
+#[cfg(all(feature = "graphql", feature = "gateway-delivery"))]
+pub use engine::ReadRouting;

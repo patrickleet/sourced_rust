@@ -535,6 +535,8 @@ struct PreparedLiveMetadata {
 #[cfg(any(feature = "sqlite", feature = "postgres"))]
 pub(crate) async fn execute_query_with_protocol(
     inner: &EngineInner,
+    pool: &GraphqlPool,
+    primary: bool,
     role_surface: Arc<Surface>,
     accumulator: ProtocolResponseAccumulator,
     plan: &SqlPlan,
@@ -566,10 +568,11 @@ pub(crate) async fn execute_query_with_protocol(
     // The snapshot helper accepts an HRTB closure whose returned future may
     // borrow only its connection. Keep every other input owned by the closure
     // so plan/runtime references cannot escape into that future.
+    let _ = primary;
     let plan = plan.clone();
     let runtime = inner.query_protocol.clone();
     let statement_timeout = inner.statement_timeout;
-    match &inner.pool {
+    match pool {
         #[cfg(feature = "sqlite")]
         GraphqlPool::Sqlite(pool) => {
             let run = with_projection_read_snapshot(pool, move |connection| {
@@ -618,6 +621,9 @@ pub(crate) async fn execute_query_with_protocol(
                     .map_err(|error| {
                         query_execution_error(format!("statement_timeout: {error}"))
                     })?;
+                    execute::ensure_primary_backend(connection, primary)
+                        .await
+                        .map_err(query_execution_error)?;
                     let executed = execute::execute_postgres_in_connection(connection, &plan)
                         .await
                         .map_err(query_execution_error)?;

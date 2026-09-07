@@ -765,12 +765,19 @@ async fn resolve_root(
             .await
             .map_err(|_| client_error("INTERNAL", "cell read dependency failed"))?,
         QueryPlan::Sql(plan) => {
+            let (pool, primary) = (&inner.pool, true);
+            #[cfg(feature = "gateway-delivery")]
+            let (pool, primary) = ctx
+                .data_opt::<super::engine::read_routing::ReadRequest>()
+                .map_or((pool, primary), |read| read.pool(&inner, &plan));
             if let Some(protocol) = ctx.data_opt::<ProtocolResponseAccumulator>().cloned() {
                 let role_surface = inner.role_surfaces.get(&role).cloned().ok_or_else(|| {
                     client_error("INTERNAL", "authorized GraphQL role surface is unavailable")
                 })?;
                 let executed = super::query_protocol::execute_query_with_protocol(
                     &inner,
+                    pool,
+                    primary,
                     role_surface,
                     protocol.clone(),
                     &plan,
@@ -783,7 +790,7 @@ async fn resolve_root(
                     .map_err(|_| client_error("INTERNAL", "query evidence encoding failed"))?;
                 executed.value
             } else {
-                super::engine::execute_plan(&inner, &plan)
+                super::execute::execute_sql_on_pool(&inner, pool, primary, &plan)
                     .await
                     .map_err(|e| client_error_for_execute_err(&e))?
             }

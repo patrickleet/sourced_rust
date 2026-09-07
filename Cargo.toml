@@ -41,6 +41,8 @@ gateway = ["dep:url"]
 gateway-native = ["gateway", "http", "reqwest/stream", "dep:hyper", "dep:hyper-util", "dep:tower", "tokio/io-util"]
 # Whole-operation selection is portable; execution adapters are separately gated.
 gateway-graphql = ["gateway", "dep:async-graphql-parser"]
+# Shared portable identity, freshness and delivery contracts.
+gateway-delivery = ["gateway-graphql"]
 gateway-graphql-native = ["gateway-native", "gateway-graphql", "graphql", "dep:tokio-tungstenite"]
 runtime = ["application-runtime"]
 emitter = ["dep:event-emitter-rs"]

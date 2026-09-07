@@ -74,3 +74,35 @@ failure. Configured body, concurrency and connection lifetime limits apply;
 backend authorization remains authoritative. Optional delivery features are
 rejected until their adapters are bound. Removing the GraphQL binding restores
 the existing direct executor routes; no migration is required.
+
+### Causal read routing
+
+`gateway-delivery` supplies bounded exact-scope identity, dependency overlap and
+record/index minima contracts without a server or SQL dependency. With GraphQL,
+`ReadRouting::new(replica).stale_tolerant(document, operation_name)` explicitly
+registers stale-tolerant reads. Pass it to `GraphqlEngineBuilder::read_routing`;
+the builder's original repository remains the authoritative primary. Schema and
+SQL dialect must match. Unregistered queries, command recovery and live refreshes
+use primary. SQLx pools do not certify replay progress.
+
+Generated query artifacts carry the protocol fingerprint. The client sends
+`extensions.gatewayFreshness`, bound to its server-established schema, protocol,
+policy and cache scope. Generated command dependencies select affected queries;
+unknown effects broaden within the authorized surface. Pending effects force
+primary without confirming projection. Confirmed query/live index clocks and
+Atomic record fences survive optimistic layer retirement. An origin response
+that cannot cover supplied minima returns `FRESHNESS_PENDING`, including
+incomparable scopes. No stale fallback occurs on primary failure. Context limits
+fail explicitly rather than discarding retained evidence. This initial router
+has no replica-proof adapter; any retained floor uses primary.
+
+Applications must change the configured protocol namespace when activating a
+new projection epoch/backend with incomparable evidence. Old contexts are
+rejected and the existing replica scope/reset lifecycle handles rebootstrap.
+Keep normal backend authentication on the executor: cacheScope and minima are
+identifiers/hints, never bearer credentials. Snapshot-cache and shared-work
+admission require a fresh origin identity for every consumer.
+
+No routing migration is required. Disable replica registration to route all reads
+to primary; keep client revision fences active during a deployment rollback.
+The isolated physical standby fixture is documented in tests/gateway-postgres.
