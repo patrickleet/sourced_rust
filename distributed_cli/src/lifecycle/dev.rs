@@ -285,6 +285,9 @@ pub fn run_lifecycle_project_dev(
     validate_restart_nodes(&dev, &graph)?;
 
     // Initial coherent generation is an absolute serving barrier.
+    // Observe before building/starting children: edits during startup must not
+    // become a new baseline without ever being built.
+    let mut snapshot = lifecycle_input_snapshot(&root, catalog, &graph)?;
     let mut initial_options = options.build.clone();
     initial_options.nodes = None;
     initial_options.activation_inputs = None;
@@ -315,7 +318,6 @@ pub fn run_lifecycle_project_dev(
             dev.processes.keys().cloned().collect::<Vec<_>>().join(",")
         );
     }
-    let mut snapshot = lifecycle_input_snapshot(&root, catalog, &graph)?;
     let mut final_generation = initial.generation_id.clone();
     let mut active = initial.clone();
     let mut rebuilds = 0;
