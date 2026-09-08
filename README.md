@@ -1841,6 +1841,16 @@ let loaded = repo
   PK (same-named columns, or `foreign_key` / `target_foreign_key` in PK order).
   A one-column `foreign_key` on a composite PK is an error, not a silent
   `.first()`.
+- **Unique-key joins:** direct relationships can set
+  `references = "namespace,revision"` alongside
+  `foreign_key = "object_namespace,object_revision"`. The referenced columns
+  must be a complete declared unique key, such as
+  `#[unique(columns = ["namespace", "revision"])]`, on the target of
+  `belongs_to` or the source of `has_many`. Foreign-key columns pair in the
+  declared reference order. This lets a model retain a surrogate primary key
+  for row identity while relating by a domain key. Missing/null foreign keys
+  produce no match; nested target permissions still apply. Omitting `references`
+  selects the primary key. `references` is not supported on `many_to_many`.
 - **Cyclic singular relationships:** use `Option<Box<T>>` for a `belongs_to`
   field when two models refer to each other. For example,
   `#[readmodel(belongs_to = "Profile", foreign_key = "id")]`
