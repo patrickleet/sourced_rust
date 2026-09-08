@@ -401,6 +401,12 @@ pub(crate) fn belongs_to_join_columns(
             "expected a belongs_to relationship".into(),
         ));
     }
+    if relationship.references.is_none() && target.primary_key.columns.len() != 1 {
+        return Err(TableStoreError::Metadata(format!(
+            "belongs_to include `{}` targeting `{}` through `{}` requires a single-column primary key",
+            relationship.field_name, target.model_name, relationship.foreign_key.as_deref().unwrap_or("unspecified foreign key"),
+        )));
+    }
     let pairs = super::registry::resolve_direct_join_keys(source, relationship, target)?;
     match pairs.as_slice() {
         [pair] => Ok((pair.foreign_key_column.clone(), pair.primary_key_column.clone())),
