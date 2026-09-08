@@ -59,3 +59,4 @@ jobs:
         run: |
           docker exec ${{ job.services.postgres.id }} createdb -U postgres distributed_unique_key_test
           cargo test --lib --no-default-features --features graphql,postgres graphql::engine::composite_relationship_tests::unique_key_join_postgres_authorization_and_manifest -- --ignored --exact
+          cargo test --lib --no-default-features --features postgres sqlx_repo::projection_protocol::reads::candidate_key_snapshot_lookup_postgres -- --ignored --exact
