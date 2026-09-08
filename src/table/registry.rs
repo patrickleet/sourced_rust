@@ -249,7 +249,8 @@ pub struct M2mJoinKeys {
     pub target: Vec<JoinColumnPair>,
 }
 
-/// One foreign-key column paired with one primary-key column for a direct join.
+/// One foreign-key column paired with a referenced key column for a direct join.
+/// The referenced key defaults to the primary key, or is selected by `references`.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct DirectJoinPair {
     pub foreign_key_column: String,
@@ -270,11 +271,11 @@ impl DirectJoinPair {
 
 /// Resolve `has_many` / `belongs_to` join equalities.
 ///
-/// `foreign_key` lists the FK-holding table's columns in the other end's PK
-/// order, same arity as that PK (comma-separated when more than one).
+/// `foreign_key` lists the FK-holding table's columns in the order of `references`,
+/// or the other end's primary key when references are omitted. Arity must match.
 ///
-/// - **HasMany**: FK columns live on the target; PK is the source.
-/// - **BelongsTo**: FK columns live on the source; PK is the target.
+/// - **HasMany**: FK columns live on the target; referenced key is on the source.
+/// - **BelongsTo**: FK columns live on the source; referenced key is on the target.
 pub fn resolve_direct_join_keys(
     source: &TableSchema,
     relationship: &RelationshipDef,
