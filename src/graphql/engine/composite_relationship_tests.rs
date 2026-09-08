@@ -309,6 +309,7 @@ async fn unique_key_sql(pool: &GraphqlPool, statement: &'static str) {
 }
 
 async fn unique_key_join_fixture(pool: GraphqlPool) {
+    use futures_util::StreamExt;
     for statement in [
         "CREATE TEMP TABLE composite_records (id TEXT PRIMARY KEY NOT NULL, tenant_id TEXT NOT NULL, record_id TEXT NOT NULL, value TEXT NOT NULL, UNIQUE(tenant_id, record_id))",
         "CREATE TEMP TABLE simple_records (simple_id TEXT PRIMARY KEY NOT NULL, tenant_id TEXT NOT NULL, record_id TEXT)",
@@ -394,10 +395,12 @@ async fn unique_key_join_fixture(pool: GraphqlPool) {
         ])
     );
     // Parent visibility must not confer visibility on the referenced object.
+    let (changes, change_rx) = tokio::sync::broadcast::channel(8);
     let mut builder = GraphqlEngine::from_schema_catalog(&project, pool.clone())
         .unwrap()
         .roles(&["reader"])
-        .grant_all("reader");
+        .grant_all("reader")
+        .change_stream(change_rx);
     builder
         .permissions
         .get_mut(&("CompositeRecord".into(), "reader".into()))
@@ -434,6 +437,18 @@ async fn unique_key_join_fixture(pool: GraphqlPool) {
     );
     session.set(crate::microsvc::ROLE_KEY, "reader");
     let query = "{ simple_records(order_by: [{simple_id: asc}]) { simple_id record { id } } }";
+    let mut live = Box::pin(
+        restricted.execute_stream(&session, Request::new(format!("subscription {query}"))),
+    );
+    let initial_live = tokio::time::timeout(std::time::Duration::from_secs(3), live.next())
+        .await
+        .expect("initial candidate-key subscription timed out")
+        .expect("subscription ended");
+    assert!(initial_live.errors.is_empty(), "{:?}", initial_live.errors);
+    assert_eq!(
+        initial_live.data.into_json().unwrap()["simple_records"][0]["record"]["id"],
+        "opaque-a"
+    );
     let response = restricted.execute(&session, Request::new(query)).await;
     assert!(response.errors.is_empty(), "{:?}", response.errors);
     assert_eq!(
@@ -467,6 +482,25 @@ async fn unique_key_join_fixture(pool: GraphqlPool) {
         "UPDATE composite_records SET value='revoked' WHERE id='opaque-a'",
     )
     .await;
+    changes
+        .send(crate::read_model::ReadModelChange::new([
+            "composite_records",
+        ]))
+        .unwrap();
+    let revoked_live = tokio::time::timeout(std::time::Duration::from_secs(3), live.next())
+        .await
+        .expect("target-only change did not refresh candidate-key subscription")
+        .expect("subscription ended");
+    assert!(revoked_live.errors.is_empty(), "{:?}", revoked_live.errors);
+    for row in revoked_live.data.into_json().unwrap()["simple_records"]
+        .as_array()
+        .unwrap()
+    {
+        assert!(
+            row["record"].is_null(),
+            "live result leaked revoked target: {row}"
+        );
+    }
     let revoked = restricted.execute(&session, Request::new(query)).await;
     assert!(revoked.errors.is_empty(), "{:?}", revoked.errors);
     for row in revoked.data.into_json().unwrap()["simple_records"]
