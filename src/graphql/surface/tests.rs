@@ -1310,6 +1310,7 @@ fn relationship_only_when_target_on_surface() {
         foreign_keys: Vec::new(),
         indexes: Vec::new(),
         relationships: vec![RelationshipDef {
+            references: None,
             field_name: "children".into(),
             kind: RelationshipKind::HasMany,
             target_model: "ChildView".into(),
@@ -1388,6 +1389,7 @@ fn surface_rejects_relationship_and_generated_aggregate_field_collisions() {
         foreign_keys: Vec::new(),
         indexes: Vec::new(),
         relationships: vec![RelationshipDef {
+            references: None,
             field_name: "children".into(),
             kind: RelationshipKind::HasMany,
             target_model: "CollisionChild".into(),
@@ -1432,6 +1434,7 @@ fn relationship_keys_canonicalize_rust_field_names_to_graphql_columns() {
         foreign_keys: Vec::new(),
         indexes: Vec::new(),
         relationships: vec![RelationshipDef {
+            references: None,
             field_name: "account".into(),
             kind: RelationshipKind::BelongsTo,
             target_model: "AccountView".into(),
@@ -1489,6 +1492,7 @@ fn pool_free_surface_rejects_a_partial_composite_belongs_to_key() {
         foreign_keys: Vec::new(),
         indexes: Vec::new(),
         relationships: vec![RelationshipDef {
+            references: None,
             field_name: "composite".into(),
             kind: RelationshipKind::BelongsTo,
             target_model: "CompositeView".into(),
@@ -1525,6 +1529,7 @@ fn row_policy_rejects_a_partial_composite_m2m_mapping() {
         foreign_keys: Vec::new(),
         indexes: Vec::new(),
         relationships: vec![RelationshipDef {
+            references: None,
             field_name: "labels".into(),
             kind: RelationshipKind::ManyToMany,
             target_model: "OperationalLabel".into(),
@@ -1629,6 +1634,7 @@ fn belongs_to_onto_composite_identity_is_selected_when_keys_are_paired() {
         foreign_keys: Vec::new(),
         indexes: Vec::new(),
         relationships: vec![RelationshipDef {
+            references: None,
             field_name: "composite".into(),
             kind: RelationshipKind::BelongsTo,
             target_model: "CompositeView".into(),
@@ -1680,6 +1686,7 @@ fn has_many_onto_composite_child_is_selected_on_the_parent() {
         foreign_keys: Vec::new(),
         indexes: Vec::new(),
         relationships: vec![RelationshipDef {
+            references: None,
             field_name: "projects".into(),
             kind: RelationshipKind::HasMany,
             target_model: "ProjectView".into(),
@@ -1755,6 +1762,7 @@ fn has_many_from_composite_parent_is_selected() {
         foreign_keys: Vec::new(),
         indexes: Vec::new(),
         relationships: vec![RelationshipDef {
+            references: None,
             field_name: "files".into(),
             kind: RelationshipKind::HasMany,
             target_model: "ProjectFileView".into(),

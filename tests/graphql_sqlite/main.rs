@@ -325,6 +325,7 @@ fn parent_schema() -> TableSchema {
         foreign_keys: Vec::new(),
         indexes: Vec::new(),
         relationships: vec![RelationshipDef {
+            references: None,
             field_name: "children".into(),
             kind: RelationshipKind::HasMany,
             target_model: "ChildView".into(),
@@ -553,6 +554,7 @@ fn post_schema() -> TableSchema {
         foreign_keys: Vec::new(),
         indexes: Vec::new(),
         relationships: vec![RelationshipDef {
+            references: None,
             field_name: "author".into(),
             kind: RelationshipKind::BelongsTo,
             target_model: "AuthorView".into(),

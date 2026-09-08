@@ -2024,6 +2024,7 @@ mod tests {
     fn relationship_kind_is_part_of_the_output_schema_identity() {
         let mut schema = todo_schema("todos");
         schema.relationships.push(RelationshipDef {
+            references: None,
             field_name: "owner".into(),
             kind: RelationshipKind::BelongsTo,
             target_model: "Owners".into(),
