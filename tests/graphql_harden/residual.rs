@@ -32,6 +32,7 @@ async fn a8_nested_has_many_without_child_grant_is_unknown_field() {
 
     let mut parent = ParentView::schema().clone();
     parent.relationships = vec![RelationshipDef {
+        references: None,
         field_name: "children".into(),
         kind: RelationshipKind::HasMany,
         target_model: "ChildView".into(),
@@ -102,6 +103,7 @@ async fn a12_rel_where_without_target_grant_is_unknown_field() {
 
     let mut parent = ParentView::schema().clone();
     parent.relationships = vec![RelationshipDef {
+        references: None,
         field_name: "children".into(),
         kind: RelationshipKind::HasMany,
         target_model: "ChildView".into(),

@@ -187,6 +187,7 @@ async fn a5_nested_relationship_column_allowlist_denies() {
 
     let mut parent = ParentView::schema().clone();
     parent.relationships = vec![RelationshipDef {
+        references: None,
         field_name: "children".into(),
         kind: RelationshipKind::HasMany,
         target_model: "ChildView".into(),
@@ -242,6 +243,7 @@ async fn a5_nested_relationship_column_allowlist_denies() {
 fn parent_child_engine(pool: sqlx::SqlitePool) -> GraphqlEngine {
     let mut parent = ParentView::schema().clone();
     parent.relationships = vec![RelationshipDef {
+        references: None,
         field_name: "children".into(),
         kind: RelationshipKind::HasMany,
         target_model: "ChildView".into(),
