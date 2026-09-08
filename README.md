@@ -1283,6 +1283,43 @@ let message = OutboxMessage::encode_for_entity(
 )?;
 ```
 
+### Facts derived by event handlers
+
+An event handler may verify an external result without making another aggregate
+decision—for example, extracting document metadata after an upload. Derive a
+typed fact from the incoming canonical occurrence:
+
+```rust,ignore
+#[derive(serde::Serialize, distributed::DomainEvent)]
+#[domain_event(name = "document.indexed", version = 1)]
+struct DocumentIndexed {
+    document_id: String,
+    word_count: u64,
+}
+
+let indexed = source.derive(
+    "document-indexer",
+    "metadata-v1",
+    &DocumentIndexed { document_id, word_count },
+)?;
+```
+
+The same source, producer, output key and body produce identical canonical bytes
+and an identical event ID. Different outputs or changed bodies have different
+IDs. `indexed.derivation()` identifies the immediate source and producer; the
+aggregate fields retain the original transition's provenance, not an invented
+commit. Timestamp, causation, correlation and trace metadata come from the source.
+Ordinary typed projections can consume the derived fact. Aggregate-snapshot
+projections reject it because it does not establish a new aggregate version.
+
+Publish the canonical bytes using the existing bus API and `indexed.id()` as
+the message ID. Propagate its causal metadata. Acknowledge the incoming delivery
+only after every output publish succeeds; a failure retries the source and may
+republish an accepted prefix with the same IDs. This is at-least-once delivery,
+not an atomic external effect plus publish. Aggregate decisions still use a
+transactional outbox. Bound external reads and make effects idempotent before
+using this pattern.
+
 ### Publishing the Outbox
 
 How a committed row reaches the bus depends on whether a bus is attached to the
