@@ -1,16 +1,40 @@
 import { test, expect } from '@playwright/test';
 import { build } from '../../../js/node_modules/esbuild/lib/main.js';
 import { createDistributedReplica } from '../../../js/dist/replica/index.js';
+import {
+	createDistributedSvelteKitServer,
+	defineDistributedBoundaryBinding,
+	defineDistributedBoundaryOperation
+} from '../../../js/dist/sveltekit/index.js';
 import { artifact, frame } from '../../../js/tests/fixtures/unique-key-artifact.mjs';
 import { fileURLToPath } from 'node:url';
 
-// Browser runtime contract proof. The transport is controlled; SQL joins and
-// application SSR are covered separately, not simulated by this test.
+// SvelteKit loader-to-browser contract proof. GraphQL transport is controlled;
+// this does not claim to exercise database-backed live delivery.
 test('candidate-key artifact hydrates and changes relationships in Chromium', async ({ page }) => {
-	const server = createDistributedReplica();
-	server.writeResult(artifact, {}, frame('1', 'target-one', 'first'), 'network');
-	const initial = server.read(artifact, {});
-	const seed = server.dehydrate();
+	const boundary = defineDistributedBoundaryOperation({
+		operation: 'UniqueKeyBridge', route: '/unique-key', kind: 'page', discovery: 'route_document'
+	}, artifact, defineDistributedBoundaryBinding(artifact, {}));
+	const server = createDistributedSvelteKitServer({
+		boundaries: [boundary], getSession: async () => null, getRole: () => 'user'
+	});
+	let serverFetches = 0;
+	const loaded = await server.load({
+		locals: {}, route: { id: '/unique-key' }, url: new URL('https://example.test/unique-key'),
+		async fetch(_url, init) {
+			serverFetches++;
+			expect(JSON.parse(init.body).query).toBe(artifact.document);
+			return new Response(JSON.stringify(frame('1', 'target-one', 'first')), {
+				headers: { 'content-type': 'application/json' }
+			});
+		}
+	});
+	expect(loaded.gqlError).toBeNull();
+	expect(serverFetches).toBe(1);
+	const seed = loaded.distributed.state;
+	const serverResult = createDistributedReplica();
+	expect(serverResult.hydrate(seed, seed.scope)).toBe(true);
+	const initial = serverResult.read(artifact, {});
 	const runtimePath = fileURLToPath(new URL('../../../js/dist/replica/index.js', import.meta.url));
 	const bundle = await build({
 		stdin: { contents: `
