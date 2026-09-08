@@ -3,20 +3,51 @@ use super::*;
 #[cfg(all(test, feature = "sqlite"))]
 #[tokio::test]
 async fn candidate_key_snapshot_lookup_selects_surrogate_keys_in_sql() {
-    use crate::table::{
-        ColumnType, PrimaryKey, RelationshipDef, RelationshipKind, RowValue, TableColumn,
-        TableIndex, TableKind,
-    };
     let pool = sqlx::sqlite::SqlitePoolOptions::new()
         .max_connections(1)
         .connect("sqlite::memory:")
         .await
         .unwrap();
     let mut connection = pool.acquire().await.unwrap();
+    candidate_key_snapshot_sql_fixture::<sqlx::Sqlite>(&mut connection).await;
+}
+
+#[cfg(all(test, feature = "postgres"))]
+#[tokio::test]
+#[ignore = "requires dedicated DISTRIBUTED_UNIQUE_KEY_TEST_POSTGRES_URL; explicitly run in CI"]
+async fn candidate_key_snapshot_lookup_postgres() {
+    let url = std::env::var("DISTRIBUTED_UNIQUE_KEY_TEST_POSTGRES_URL")
+        .expect("dedicated test database URL");
+    let options: sqlx::postgres::PgConnectOptions = url.parse().unwrap();
+    assert!(options
+        .get_database()
+        .unwrap_or("")
+        .starts_with("distributed_unique_key_test"));
+    let pool = sqlx::postgres::PgPoolOptions::new()
+        .max_connections(1)
+        .connect_with(options)
+        .await
+        .unwrap();
+    let mut connection = pool.acquire().await.unwrap();
+    candidate_key_snapshot_sql_fixture::<sqlx::Postgres>(&mut connection).await;
+}
+
+#[cfg(test)]
+async fn candidate_key_snapshot_sql_fixture<DB>(connection: &mut DB::Connection)
+where
+    DB: SqlxRepoBackend,
+    DB::Arguments: IntoArguments<DB>,
+    for<'c> &'c mut DB::Connection: Executor<'c, Database = DB>,
+    for<'r> &'r str: sqlx::ColumnIndex<DB::Row>,
+{
+    use crate::table::{
+        ColumnType, PrimaryKey, RelationshipDef, RelationshipKind, RowValue, TableColumn,
+        TableIndex, TableKind,
+    };
     for statement in [
-        "CREATE TABLE snapshot_targets (id TEXT PRIMARY KEY, tenant TEXT NOT NULL, candidate TEXT, UNIQUE(tenant,candidate))",
+        "CREATE TEMP TABLE snapshot_targets (id TEXT PRIMARY KEY, tenant TEXT NOT NULL, candidate TEXT, UNIQUE(tenant,candidate))",
         "INSERT INTO snapshot_targets VALUES ('opaque-a','a','same'),('opaque-b','b','same'),('null-target','a',NULL)",
-    ] { sqlx::query(statement).execute(&mut *connection).await.unwrap(); }
+    ] { sqlx::query::<DB>(statement).execute(&mut *connection).await.unwrap(); }
     let target = TableSchema {
         model_name: "SnapshotTarget".into(),
         table_name: "snapshot_targets".into(),
@@ -69,8 +100,8 @@ async fn candidate_key_snapshot_lookup_selects_surrogate_keys_in_sql() {
                 .map(|v| RowValue::String(v.into()))
                 .unwrap_or(RowValue::Null),
         );
-        let keys = read_projection_relationship_keys_in_executor::<sqlx::Sqlite>(
-            &mut connection,
+        let keys = read_projection_relationship_keys_in_executor::<DB>(
+            &mut *connection,
             &source,
             &values,
             &relation,
