@@ -141,6 +141,32 @@ fn full_surface() -> Surface {
         .expect("non-empty Surface should compile")
 }
 
+#[test]
+fn generated_surface_above_opaque_json_budget_round_trips() {
+    let tables = (0..500)
+        .map(|index| {
+            let mut table = TodoView::schema().clone();
+            table.model_name = format!("CatalogView{index:03}");
+            table.table_name = format!("catalog_view_{index:03}");
+            table
+        })
+        .collect::<Vec<_>>();
+    let surface = build_surface(&tables, &SurfaceOptions::sqlite()).unwrap();
+    let spec = SurfaceSpec::from_surface("catalog", &surface).unwrap();
+    let contract_bytes = serde_json::to_vec(&spec.contract).unwrap().len();
+    assert!(
+        contract_bytes > distributed::application::MAX_MANIFEST_JSON_BYTES,
+        "fixture must exceed opaque JSON budget: {contract_bytes}"
+    );
+    let application = Application::try_new("catalog-app", [], [spec]).unwrap();
+    let bytes = application.manifest().canonical_bytes().unwrap();
+    assert!(bytes.len() <= distributed::application::MAX_APPLICATION_MANIFEST_BYTES);
+    assert_eq!(
+        ApplicationManifest::from_canonical_bytes(&bytes).unwrap(),
+        *application.manifest()
+    );
+}
+
 fn selected_surface() -> Surface {
     let full = full_surface();
     let grants = BTreeMap::from([(
