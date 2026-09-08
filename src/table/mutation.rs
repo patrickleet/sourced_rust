@@ -397,7 +397,9 @@ pub(crate) fn belongs_to_join_columns(
     target: &TableSchema,
 ) -> Result<(String, String), TableStoreError> {
     if !matches!(relationship.kind, RelationshipKind::BelongsTo) {
-        return Err(TableStoreError::Metadata("expected a belongs_to relationship".into()));
+        return Err(TableStoreError::Metadata(
+            "expected a belongs_to relationship".into(),
+        ));
     }
     let pairs = super::registry::resolve_direct_join_keys(source, relationship, target)?;
     match pairs.as_slice() {
