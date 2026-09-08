@@ -8,13 +8,12 @@ use super::identity::{canonical_json, sha256_fingerprint, LogicalId};
 use super::module::{ModelSpec, Module, ModuleManifest, ProjectionSpec, SurfaceSpec};
 
 /// Wire/schema version for the complete logical application manifest.
-pub const APPLICATION_MANIFEST_SCHEMA_VERSION: u32 = 1;
+pub const APPLICATION_MANIFEST_SCHEMA_VERSION: u32 = 2;
 
 /// Bounds applied before a portable application artifact is accepted.
 ///
-/// A complete manifest intentionally carries authoritative module declarations,
-/// their flattened application inventory, and selected Surface contracts. Keep
-/// the total bounded while leaving room for a production-sized application.
+/// A complete manifest carries authoritative module declarations and selected
+/// Surface contracts. Flattened inventories are reconstructed, not serialized.
 pub const MAX_APPLICATION_MANIFEST_BYTES: usize = 4 * 1024 * 1024;
 pub const MAX_MANIFEST_COLLECTION_ITEMS: usize = 4096;
 pub const MAX_MANIFEST_STRING_BYTES: usize = 4096;
@@ -107,8 +106,7 @@ impl ApplicationExtension {
 /// executable handlers are intentionally absent. Those belong to named
 /// schema/deployment/runtime layers and cannot become portable application
 /// identity by accident.
-#[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
-#[serde(deny_unknown_fields)]
+#[derive(Clone, Debug, Eq, PartialEq, Serialize)]
 pub struct ApplicationManifest {
     /// This field is required during decoding: canonical input may not omit
     /// the explicit schema version and receive a legacy default.
@@ -116,13 +114,13 @@ pub struct ApplicationManifest {
     pub name: String,
     #[serde(default)]
     pub modules: Vec<ModuleManifest>,
-    #[serde(default)]
+    #[serde(skip_serializing)]
     pub commands: Vec<CommandSpec>,
-    #[serde(default)]
+    #[serde(skip_serializing)]
     pub events: Vec<super::command::EventSpec>,
-    #[serde(default)]
+    #[serde(skip_serializing)]
     pub projections: Vec<ProjectionSpec>,
-    #[serde(default)]
+    #[serde(skip_serializing)]
     pub models: Vec<ModelSpec>,
     #[serde(default)]
     pub surfaces: Vec<SurfaceSpec>,
@@ -136,7 +134,123 @@ pub struct ApplicationManifest {
     pub provenance: ManifestProvenance,
 }
 
+/// Versioned portable authority. Derived inventories are deliberately absent:
+/// accepting them would introduce a second, potentially conflicting authority.
+#[derive(Deserialize)]
+#[serde(deny_unknown_fields)]
+struct ManifestWire {
+    schema_version: u32,
+    name: String,
+    #[serde(default)]
+    modules: Vec<ModuleManifest>,
+    #[serde(default)]
+    surfaces: Vec<SurfaceSpec>,
+    #[serde(default)]
+    required_capabilities: Vec<String>,
+    #[serde(default)]
+    extensions: Vec<ApplicationExtension>,
+    #[serde(default)]
+    fingerprints: ManifestFingerprint,
+    #[serde(default)]
+    provenance: ManifestProvenance,
+}
+
+impl<'de> Deserialize<'de> for ApplicationManifest {
+    fn deserialize<D: serde::Deserializer<'de>>(deserializer: D) -> Result<Self, D::Error> {
+        let wire = ManifestWire::deserialize(deserializer)?;
+        let mut manifest = Self {
+            schema_version: wire.schema_version,
+            name: wire.name,
+            modules: wire.modules,
+            surfaces: wire.surfaces,
+            required_capabilities: wire.required_capabilities,
+            extensions: wire.extensions,
+            fingerprints: wire.fingerprints,
+            provenance: wire.provenance,
+            commands: Vec::new(),
+            events: Vec::new(),
+            projections: Vec::new(),
+            models: Vec::new(),
+        };
+        manifest
+            .reconstruct_inventories()
+            .map_err(serde::de::Error::custom)?;
+        Ok(manifest)
+    }
+}
+
 impl ApplicationManifest {
+    fn validate_inventory_expansion(&self) -> ApplicationResult<()> {
+        // Check expansion before cloning any nested declarations. Duplicate
+        // declarations still consume the reconstruction budget.
+        validate_collection_len("modules", self.modules.len())?;
+        validate_collection_len("surfaces", self.surfaces.len())?;
+        for (kind, count) in [
+            (
+                "derived commands",
+                self.modules.iter().map(|m| m.commands.len()).sum(),
+            ),
+            (
+                "derived events",
+                self.modules.iter().map(|m| m.events.len()).sum(),
+            ),
+            (
+                "derived projections",
+                self.modules
+                    .iter()
+                    .map(|m| m.projections.len())
+                    .chain(self.surfaces.iter().map(|s| s.projections.len()))
+                    .sum(),
+            ),
+            (
+                "derived models",
+                self.modules
+                    .iter()
+                    .map(|m| m.models.len())
+                    .chain(self.surfaces.iter().map(|s| s.models.len()))
+                    .sum(),
+            ),
+        ] {
+            validate_collection_len(kind, count)?;
+        }
+        Ok(())
+    }
+
+    fn reconstruct_inventories(&mut self) -> ApplicationResult<()> {
+        self.validate_inventory_expansion()?;
+        self.commands = dedup_commands(
+            self.modules
+                .iter()
+                .flat_map(|m| m.commands.iter().cloned())
+                .collect(),
+        )?;
+        self.events = dedup_events(
+            self.modules
+                .iter()
+                .flat_map(|m| m.events.iter().cloned())
+                .collect(),
+        )?;
+        self.projections = dedup_projections(
+            self.modules
+                .iter()
+                .flat_map(|m| m.projections.iter().cloned())
+                .chain(
+                    self.surfaces
+                        .iter()
+                        .flat_map(|s| s.projections.iter().cloned()),
+                )
+                .collect(),
+        )?;
+        self.models = dedup_models(
+            self.modules
+                .iter()
+                .flat_map(|m| m.models.iter().cloned())
+                .chain(self.surfaces.iter().flat_map(|s| s.models.iter().cloned()))
+                .collect(),
+        )?;
+        Ok(())
+    }
+
     pub fn new(name: impl Into<String>) -> Self {
         Self {
             schema_version: APPLICATION_MANIFEST_SCHEMA_VERSION,
@@ -365,6 +479,7 @@ impl ApplicationManifest {
             });
         }
         LogicalId::try_new("application", self.name.clone())?;
+        self.validate_inventory_expansion()?;
         validate_collection_len("modules", self.modules.len())?;
         validate_collection_len("commands", self.commands.len())?;
         validate_collection_len("events", self.events.len())?;
