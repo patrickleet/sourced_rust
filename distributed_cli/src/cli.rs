@@ -44,7 +44,7 @@ use crate::{
     MetricsTarget, PostCreateAction, ServiceScaffoldSpec, ServiceTransport, StoreTarget,
 };
 
-const DISTRIBUTED_MANIFEST_SCHEMA_VERSION: u64 = 1;
+const DISTRIBUTED_MANIFEST_SCHEMA_VERSION: u64 = 2;
 const DISTRIBUTED_CLIENT_MANIFEST_VERSION: u64 = 2;
 
 /// Top-level standalone CLI arguments for the `distributed` binary.
@@ -2515,42 +2515,35 @@ fn github_repo_create_args(slug: &str) -> Vec<&str> {
 }
 
 fn validate_manifest_json(envelope: &serde_json::Value) -> Result<(), Box<dyn Error>> {
-    let Some(schema_version) = envelope
+    let schema_version = envelope
         .get("schema_version")
         .and_then(serde_json::Value::as_u64)
-    else {
-        return Err("manifest JSON is missing numeric schema_version".into());
-    };
+        .ok_or("manifest JSON is missing numeric schema_version")?;
     if schema_version != DISTRIBUTED_MANIFEST_SCHEMA_VERSION {
-        return Err(format!(
-            "unsupported Distributed manifest schema version {schema_version}; expected {DISTRIBUTED_MANIFEST_SCHEMA_VERSION}"
-        )
-        .into());
+        return Err(format!("unsupported Distributed manifest schema version {schema_version}; expected {DISTRIBUTED_MANIFEST_SCHEMA_VERSION}").into());
     }
-    // `describe` emits ApplicationManifest JSON (logical composition artifact),
-    // not the retired DistributedManifestEnvelope { project: ... } shape.
     if envelope
         .get("name")
         .and_then(serde_json::Value::as_str)
-        .map(str::is_empty)
-        .unwrap_or(true)
+        .filter(|name| !name.is_empty())
+        .is_none()
     {
         return Err("application manifest JSON is missing non-empty string name".into());
     }
-    for field in [
-        "modules",
-        "commands",
-        "events",
-        "projections",
-        "models",
-        "surfaces",
-    ] {
+    for field in ["modules", "surfaces"] {
         if envelope
             .get(field)
             .and_then(serde_json::Value::as_array)
             .is_none()
         {
             return Err(format!("application manifest JSON is missing array {field}").into());
+        }
+    }
+    for field in ["commands", "events", "models", "projections"] {
+        if envelope.get(field).is_some() {
+            return Err(
+                format!("application manifest JSON contains redundant inventory {field}").into(),
+            );
         }
     }
     let framework = envelope
