@@ -979,7 +979,14 @@ fn validate_surface(
             .map(|projection| projection.id.clone())
             .collect::<Vec<_>>(),
     )?;
-    validate_json_contract("surface canonical contract", &surface.contract)?;
+    // This is the structured catalog of an entire Surface, not an opaque
+    // extension value. Its contents are checked below against the typed spec;
+    // the complete serialized application still owns the aggregate byte budget.
+    validate_json_contract_with_budget(
+        "surface canonical contract",
+        &surface.contract,
+        MAX_APPLICATION_MANIFEST_BYTES,
+    )?;
     validate_surface_selection(surface)?;
     validate_portable_text("surface dialect", &surface.dialect)?;
     if surface.max_limit == 0 || surface.default_limit > surface.max_limit {
@@ -1855,10 +1862,18 @@ fn validate_sha256_text(kind: &'static str, value: &str) -> ApplicationResult<()
 }
 
 fn validate_json_contract(kind: &'static str, value: &serde_json::Value) -> ApplicationResult<()> {
+    validate_json_contract_with_budget(kind, value, MAX_MANIFEST_JSON_BYTES)
+}
+
+fn validate_json_contract_with_budget(
+    kind: &'static str,
+    value: &serde_json::Value,
+    max_bytes: usize,
+) -> ApplicationResult<()> {
     let bytes = serde_json::to_vec(value)?;
-    if bytes.len() > MAX_MANIFEST_JSON_BYTES {
+    if bytes.len() > max_bytes {
         return Err(ApplicationError::InvalidSpec(format!(
-            "{kind} exceeds {MAX_MANIFEST_JSON_BYTES} JSON bytes"
+            "{kind} exceeds {max_bytes} JSON bytes"
         )));
     }
     fn walk(kind: &'static str, value: &serde_json::Value, depth: usize) -> ApplicationResult<()> {
@@ -2014,6 +2029,37 @@ mod size_limit_tests {
     use super::*;
 
     #[test]
+    fn structured_surface_budget_preserves_nested_validation() {
+        let validate = |value: &serde_json::Value| {
+            validate_json_contract_with_budget(
+                "surface canonical contract",
+                value,
+                MAX_APPLICATION_MANIFEST_BYTES,
+            )
+        };
+        assert!(validate(&serde_json::json!({"bad": "nul\u{0}value"})).is_err());
+        assert!(
+            validate(&serde_json::json!({"bad": "x".repeat(MAX_MANIFEST_STRING_BYTES + 1)}))
+                .is_err()
+        );
+        assert!(validate(&serde_json::json!(vec![
+            0;
+            MAX_MANIFEST_COLLECTION_ITEMS + 1
+        ]))
+        .is_err());
+        let mut deep = serde_json::Value::Null;
+        for _ in 0..=MAX_MANIFEST_JSON_DEPTH {
+            deep = serde_json::json!([deep]);
+        }
+        assert!(validate(&deep).is_err());
+        let oversized = serde_json::json!(vec!["x".repeat(MAX_MANIFEST_STRING_BYTES); 1024]);
+        assert!(validate(&oversized)
+            .unwrap_err()
+            .to_string()
+            .contains("exceeds 4194304 JSON bytes"));
+    }
+
+    #[test]
     fn json_contract_can_exceed_the_old_256_kib_limit() {
         let chunk = "x".repeat(MAX_MANIFEST_STRING_BYTES);
         let within_budget = serde_json::json!(vec![chunk.clone(); 96]);
@@ -2057,5 +2103,8 @@ mod size_limit_tests {
 
         let error = manifest.canonical_bytes().unwrap_err().to_string();
         assert!(error.contains("application manifest exceeds 4194304 bytes"));
+        let oversized_bytes = serde_json::to_vec(&manifest).unwrap();
+        assert!(oversized_bytes.len() > MAX_APPLICATION_MANIFEST_BYTES);
+        assert!(ApplicationManifest::from_canonical_bytes(&oversized_bytes).is_err());
     }
 }
