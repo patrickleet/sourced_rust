@@ -298,6 +298,7 @@ async fn d8_nested_has_many_exceeds_complexity_budget() {
 
     let mut parent = ParentView::schema().clone();
     parent.relationships = vec![RelationshipDef {
+        references: None,
         field_name: "children".into(),
         kind: RelationshipKind::HasMany,
         target_model: "ChildView".into(),
@@ -307,6 +308,7 @@ async fn d8_nested_has_many_exceeds_complexity_budget() {
     }];
     let mut child = ChildView::schema().clone();
     child.relationships = vec![RelationshipDef {
+        references: None,
         field_name: "grandchildren".into(),
         kind: RelationshipKind::HasMany,
         target_model: "GrandView".into(),
@@ -401,6 +403,7 @@ async fn d8_shallow_nested_has_many_within_budget() {
 
     let mut parent = ParentView::schema().clone();
     parent.relationships = vec![RelationshipDef {
+        references: None,
         field_name: "children".into(),
         kind: RelationshipKind::HasMany,
         target_model: "ChildView".into(),
@@ -476,6 +479,7 @@ async fn d8_low_max_complexity_rejects_single_nest() {
 
     let mut parent = ParentView::schema().clone();
     parent.relationships = vec![RelationshipDef {
+        references: None,
         field_name: "children".into(),
         kind: RelationshipKind::HasMany,
         target_model: "ChildView".into(),
