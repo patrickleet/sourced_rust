@@ -2146,6 +2146,7 @@ mod client_surface_parity_tests {
             foreign_keys: Vec::new(),
             indexes: Vec::new(),
             relationships: vec![RelationshipDef {
+                references: None,
                 field_name: "children".into(),
                 kind: RelationshipKind::HasMany,
                 target_model: "PolicyChildView".into(),
