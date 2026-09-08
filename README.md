@@ -2375,6 +2375,13 @@ distributed describe                  # print the ApplicationManifest as JSON
 distributed schema --dialect postgres # render migration SQL from read models
 ```
 
+Application manifest wire version 2 stores module declarations and selected
+Surface contracts without repeating top-level `commands`, `events`, `models`,
+or `projections`. The Rust `ApplicationManifest` decoder reconstructs those
+inventories and validates their ownership; its convenience fields are unchanged.
+Portable artifacts remain bounded to 4 MiB. Version 1 artifacts must be
+regenerated with the matching CLI; they are not accepted as version 2.
+
 For a full application, run `distributed build` or `distributed dev` from its
 Cargo workspace root. The CLI discovers the typed application, runtime binary,
 conventional `ui/` SvelteKit app, and `@hops-ops/distributed` dependency. A

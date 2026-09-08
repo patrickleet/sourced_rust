@@ -352,6 +352,87 @@ fn module_identity_is_identical_across_full_and_split_selection() {
 }
 
 #[test]
+fn normalized_manifest_fits_without_serializing_duplicate_model_inventory() {
+    use distributed::application::{ModelFieldSpec, ModelSpec, MAX_APPLICATION_MANIFEST_BYTES};
+    let models = (0..64).map(|index| {
+        ModelSpec::try_new(
+            format!("Catalog{index:03}"),
+            format!("catalog_{index:03}"),
+            (0..400).map(|field| ModelFieldSpec {
+                name: format!("field_{field:03}_with_a_descriptive_domain_attribute_name"),
+                scalar: "String".into(),
+                nullable: false,
+            }),
+            ["field_000_with_a_descriptive_domain_attribute_name"],
+        )
+        .unwrap()
+    });
+    let module = Module::new("catalog").models(models).build().unwrap();
+    let manifest = ApplicationManifest::try_from_modules("catalog-app", [module], []).unwrap();
+    let bytes = manifest.canonical_bytes().unwrap();
+    assert!(bytes.len() < MAX_APPLICATION_MANIFEST_BYTES);
+    let mut redundant = serde_json::from_slice::<serde_json::Value>(&bytes).unwrap();
+    redundant["models"] = serde_json::to_value(&manifest.models).unwrap();
+    let redundant_bytes = serde_json::to_vec(&redundant).unwrap();
+    assert!(redundant_bytes.len() > MAX_APPLICATION_MANIFEST_BYTES);
+    assert!(ApplicationManifest::from_canonical_bytes(&redundant_bytes).is_err());
+    assert_eq!(
+        ApplicationManifest::from_canonical_bytes(&bytes).unwrap(),
+        manifest
+    );
+}
+
+#[test]
+fn manifest_reconstruction_rejects_excessive_inventory_before_cloning() {
+    let mut manifest =
+        ApplicationManifest::try_from_modules("app", [command_module()], []).unwrap();
+    let mut wire = serde_json::to_value(&manifest).unwrap();
+    let command = wire["modules"][0]["commands"][0].clone();
+    wire["modules"][0]["commands"] = serde_json::Value::Array(vec![
+        command;
+        distributed::application::MAX_MANIFEST_COLLECTION_ITEMS
+            + 1
+    ]);
+    let error = serde_json::from_value::<ApplicationManifest>(wire).unwrap_err();
+    assert!(error.to_string().contains("derived commands"), "{error}");
+    manifest.modules[0].commands = vec![
+        manifest.commands[0].clone();
+        distributed::application::MAX_MANIFEST_COLLECTION_ITEMS + 1
+    ];
+    let error = manifest.canonical_bytes().unwrap_err();
+    assert!(error.to_string().contains("derived commands"), "{error}");
+}
+
+#[test]
+fn manifest_wire_derives_inventories_without_accepting_a_second_authority() {
+    let manifest =
+        ApplicationManifest::try_from_modules("normalized-app", [command_module()], []).unwrap();
+    let bytes = manifest.canonical_bytes().unwrap();
+    let wire: serde_json::Value = serde_json::from_slice(&bytes).unwrap();
+    assert_eq!(wire["schema_version"], 2);
+    for field in ["commands", "events", "models", "projections"] {
+        assert!(
+            wire.get(field).is_none(),
+            "{field} is derived, not wire authority"
+        );
+        let mut redundant = wire.clone();
+        redundant[field] = serde_json::json!([]);
+        assert!(serde_json::from_value::<ApplicationManifest>(redundant).is_err());
+    }
+    assert_eq!(
+        ApplicationManifest::from_canonical_bytes(&bytes).unwrap(),
+        manifest
+    );
+    let mut inconsistent = manifest.clone();
+    inconsistent.commands.clear();
+    assert!(inconsistent.canonical_bytes().is_err());
+
+    let mut old = wire;
+    old["schema_version"] = serde_json::json!(1);
+    assert!(ApplicationManifest::from_canonical_bytes(&serde_json::to_vec(&old).unwrap()).is_err());
+}
+
+#[test]
 fn application_manifest_is_byte_deterministic_and_contains_no_executable_data() {
     let spec = command("todo.create");
     let mount = CommandMount::from_request_handler(spec.clone(), |request| async move {
@@ -561,7 +642,7 @@ fn nested_fingerprints_and_projection_references_are_fail_closed() {
     let application = application_with_commands(&["todo.create"]);
     let bytes = application.manifest().canonical_bytes().unwrap();
     let mut value: serde_json::Value = serde_json::from_slice(&bytes).unwrap();
-    value["commands"][0]["fingerprint"] = serde_json::json!("");
+    value["modules"][0]["commands"][0]["fingerprint"] = serde_json::json!("");
     let malformed: ApplicationManifest = serde_json::from_value(value)
         .expect("the malformed value should still be structurally deserializable");
     assert!(malformed.clone().refresh_fingerprints().is_err());
