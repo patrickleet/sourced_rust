@@ -518,11 +518,26 @@ fn command_artifact_json(
             direct_projection_json(direct, manifest)?,
         );
     }
-    if !command.extensions.trusted_presets.is_empty() {
-        artifact.insert(
-            "trustedPresets".into(),
-            serde_json::json!(command.extensions.trusted_presets),
-        );
+    let mut referenced_presets = projection
+        .as_ref()
+        .map(CompiledCommandProjection::trusted_preset_names)
+        .unwrap_or_default();
+    if let Some(ManifestEffectExpression::TrustedPreset { name }) = command
+        .extensions
+        .direct_projection
+        .as_ref()
+        .and_then(|direct| direct.partition.as_ref())
+    {
+        referenced_presets.insert(name.clone());
+    }
+    let trusted_presets = command
+        .extensions
+        .trusted_presets
+        .iter()
+        .filter(|descriptor| referenced_presets.contains(&descriptor.name))
+        .collect::<Vec<_>>();
+    if !trusted_presets.is_empty() {
+        artifact.insert("trustedPresets".into(), serde_json::json!(trusted_presets));
     }
     artifact.insert(
         "revalidation".into(),
