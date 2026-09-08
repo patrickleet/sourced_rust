@@ -491,6 +491,7 @@ mod tests {
             kind: TableKind::ReadModel,
         };
         let relationship = RelationshipDef {
+            references: None,
             field_name: "children".into(),
             kind: RelationshipKind::HasMany,
             target_model: "Child".into(),

@@ -3,6 +3,30 @@ use super::*;
 use syn::DeriveInput;
 
 #[test]
+fn direct_relationship_references_are_order_independent_and_emitted() {
+    for attributes in [
+        "references = \"namespace,oid\", belongs_to = \"Object\", foreign_key = \"scope,oid\"",
+        "belongs_to = \"Object\", foreign_key = \"scope,oid\", references = \"namespace,oid\"",
+    ] {
+        let input = syn::parse_str(&format!(
+            "struct Ref {{ id: String, #[readmodel({attributes})] object: Option<Object> }}"
+        )).unwrap();
+        let expanded = expand_read_model(input).unwrap().to_string();
+        assert!(expanded.contains("references : Some (\"namespace,oid\""), "{expanded}");
+    }
+    for attributes in [
+        "references = \"id\"",
+        "belongs_to = \"Object\", foreign_key = \"id\", references = \"id\", references = \"id\"",
+        "many_to_many = \"Object\", foreign_key = \"id\", through = \"links\", references = \"id\"",
+    ] {
+        let input = syn::parse_str(&format!(
+            "struct Ref {{ id: String, #[readmodel({attributes})] object: Option<Object> }}"
+        )).unwrap();
+        assert!(expand_read_model(input).is_err(), "accepted {attributes}");
+    }
+}
+
+#[test]
 fn boxed_belongs_to_preserves_target_markers_and_checks_inner_type() {
     let input: DeriveInput = syn::parse_quote! {
         struct Parent {

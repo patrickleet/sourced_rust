@@ -97,6 +97,7 @@ fn todos() -> TableSchema {
         foreign_keys: Vec::new(),
         indexes: Vec::new(),
         relationships: vec![RelationshipDef {
+            references: None,
             field_name: "owner".into(),
             kind: RelationshipKind::BelongsTo,
             target_model: "UserView".into(),
@@ -148,6 +149,7 @@ fn teams() -> TableSchema {
         foreign_keys: Vec::new(),
         indexes: Vec::new(),
         relationships: vec![RelationshipDef {
+            references: None,
             field_name: "members".into(),
             kind: RelationshipKind::ManyToMany,
             target_model: "UserView".into(),
@@ -1782,6 +1784,7 @@ fn bigint_keys_embed_until_decimal_string_identity_is_available() {
         foreign_keys: Vec::new(),
         indexes: Vec::new(),
         relationships: vec![RelationshipDef {
+            references: None,
             field_name: "account".into(),
             kind: RelationshipKind::BelongsTo,
             target_model: "AccountView".into(),

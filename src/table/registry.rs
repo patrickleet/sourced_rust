@@ -158,6 +158,12 @@ impl TableSchemaRegistry {
                     let _ = resolve_direct_join_keys(schema, relationship, target_schema)?;
                 }
                 RelationshipKind::ManyToMany => {
+                    if relationship.references.is_some() {
+                        return Err(TableStoreError::Metadata(format!(
+                            "model `{}` relationship `{}` references requires a direct relationship",
+                            schema.model_name, relationship.field_name,
+                        )));
+                    }
                     let through = relationship.through.as_deref().ok_or_else(|| {
                         TableStoreError::Metadata(format!(
                             "model `{}` relationship `{}` many-to-many must declare `through`",
@@ -284,7 +290,31 @@ pub fn resolve_direct_join_keys(
             )));
         }
     };
-    let pk_columns = &pk_schema.primary_key.columns;
+    let explicit = parse_explicit_through_columns(
+        source, relationship, "references", relationship.references.as_deref(),
+    )?;
+    let referenced_columns = if let Some(names) = explicit {
+        let columns = names.iter().map(|name| {
+            column_name_on(pk_schema, name).map(str::to_owned).ok_or_else(|| TableStoreError::Metadata(format!(
+                "model `{}` relationship `{}` references unknown column `{name}` on `{}`",
+                source.model_name, relationship.field_name, pk_schema.model_name,
+            )))
+        }).collect::<Result<Vec<_>, _>>()?;
+        let unique = columns == pk_schema.primary_key.columns || pk_schema.indexes.iter().any(|index| {
+            index.unique && index.columns.len() == columns.len()
+                && index.columns.iter().all(|column| columns.contains(column))
+        });
+        if !unique {
+            return Err(TableStoreError::Metadata(format!(
+                "model `{}` relationship `{}` references must name a declared unique key on `{}`",
+                source.model_name, relationship.field_name, pk_schema.model_name,
+            )));
+        }
+        columns
+    } else {
+        pk_schema.primary_key.columns.clone()
+    };
+    let pk_columns = &referenced_columns;
     if pk_columns.is_empty() {
         return Err(TableStoreError::Metadata(format!(
             "model `{}` relationship `{}` cannot join because `{}` has an empty primary key",
@@ -714,6 +744,7 @@ mod m2m_join_key_tests {
 
     fn labels_rel(foreign_key: Option<&str>, target_foreign_key: Option<&str>) -> RelationshipDef {
         RelationshipDef {
+            references: None,
             field_name: "labels".into(),
             kind: RelationshipKind::ManyToMany,
             target_model: "LabelView".into(),
@@ -842,6 +873,7 @@ mod m2m_join_key_tests {
 
     fn files_rel(foreign_key: &str) -> RelationshipDef {
         RelationshipDef {
+            references: None,
             field_name: "files".into(),
             kind: RelationshipKind::HasMany,
             target_model: "ProjectFileView".into(),
@@ -892,6 +924,7 @@ mod m2m_join_key_tests {
             ],
             &["workspace_id", "path", "file_id"],
             vec![RelationshipDef {
+                references: None,
                 field_name: "project".into(),
                 kind: RelationshipKind::BelongsTo,
                 target_model: "ProjectView".into(),
@@ -940,5 +973,45 @@ mod m2m_join_key_tests {
                 DirectJoinPair::new("project_path", "path"),
             ]
         );
+    }
+
+    #[test]
+    fn direct_join_can_reference_a_composite_candidate_key() {
+        let mut target = schema("Object", "objects", vec![pk_column("id"), column("namespace"), column("oid")], &["id"], vec![]);
+        target.indexes.push(crate::table::TableIndex {
+            name: None, columns: vec!["namespace".into(), "oid".into()], unique: true,
+        });
+        let relation = RelationshipDef {
+            references: Some("namespace,oid".into()),
+            field_name: "object".into(), kind: RelationshipKind::BelongsTo,
+            target_model: "Object".into(), foreign_key: Some("scope,object_oid".into()),
+            through: None, target_foreign_key: None,
+        };
+        let source = schema("Ref", "refs", vec![pk_column("ref_id"), column("scope"), column("object_oid")], &["ref_id"], vec![relation.clone()]);
+        assert_eq!(resolve_direct_join_keys(&source, &relation, &target).unwrap(), vec![
+            DirectJoinPair::new("scope", "namespace"),
+            DirectJoinPair::new("object_oid", "oid"),
+        ]);
+        assert_eq!(target.primary_key.columns, vec!["id"]);
+        let reverse = RelationshipDef {
+            field_name: "refs".into(), kind: RelationshipKind::HasMany,
+            target_model: "Ref".into(), ..relation
+        };
+        assert_eq!(resolve_direct_join_keys(&target, &reverse, &source).unwrap(), vec![
+            DirectJoinPair::new("scope", "namespace"),
+            DirectJoinPair::new("object_oid", "oid"),
+        ]);
+    }
+
+    #[test]
+    fn direct_join_rejects_non_unique_candidate_key() {
+        let source = projects(files_rel("workspace_id,path"));
+        let target = project_files();
+        let mut relation = source.relationships[0].clone();
+        relation.references = Some("kind".into());
+        let error = resolve_direct_join_keys(&source, &relation, &target).unwrap_err().to_string();
+        assert!(error.contains("declared unique key"), "{error}");
+        relation.references = Some("missing".into());
+        assert!(resolve_direct_join_keys(&source, &relation, &target).unwrap_err().to_string().contains("unknown column"));
     }
 }
