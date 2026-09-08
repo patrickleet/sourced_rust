@@ -391,6 +391,24 @@ pub(crate) fn has_many_join_columns(
     }
 }
 
+pub(crate) fn belongs_to_join_columns(
+    source: &TableSchema,
+    relationship: &RelationshipDef,
+    target: &TableSchema,
+) -> Result<(String, String), TableStoreError> {
+    if !matches!(relationship.kind, RelationshipKind::BelongsTo) {
+        return Err(TableStoreError::Metadata("expected a belongs_to relationship".into()));
+    }
+    let pairs = super::registry::resolve_direct_join_keys(source, relationship, target)?;
+    match pairs.as_slice() {
+        [pair] => Ok((pair.foreign_key_column.clone(), pair.primary_key_column.clone())),
+        _ => Err(TableStoreError::Metadata(format!(
+            "relationship `{}` has a composite direct join; single-column belongs_to helpers cannot load it",
+            relationship.field_name,
+        ))),
+    }
+}
+
 pub(crate) fn key_fingerprint(key: &RowKey) -> String {
     let mut fingerprint = String::new();
     for (column, value) in key.iter() {
