@@ -267,6 +267,64 @@ async fn belongs_to_with_a_partial_composite_foreign_key_is_rejected() {
 
 #[cfg(feature = "sqlite")]
 #[tokio::test]
+async fn unique_key_join_preserves_namespace_nulls_and_surrogate_identity() {
+    let pool = sqlx::sqlite::SqlitePoolOptions::new().max_connections(1)
+        .connect("sqlite::memory:").await.unwrap();
+    for statement in [
+        "CREATE TABLE composite_records (id TEXT PRIMARY KEY NOT NULL, tenant_id TEXT NOT NULL, record_id TEXT NOT NULL, value TEXT NOT NULL, UNIQUE(tenant_id, record_id))",
+        "CREATE TABLE simple_records (simple_id TEXT PRIMARY KEY NOT NULL, tenant_id TEXT NOT NULL, record_id TEXT)",
+        "INSERT INTO composite_records VALUES ('opaque-a','a','same','first'),('opaque-b','b','same','second')",
+        "INSERT INTO simple_records VALUES ('1','a','same'),('2','b','same'),('3','a',NULL),('4','missing','same')",
+    ] {
+        sqlx::query(statement).execute(&pool).await.unwrap();
+    }
+    let mut target = composite_records();
+    for column in &mut target.columns { column.primary_key = false; }
+    target.columns.push(TableColumn { primary_key: true, ..TableColumn::new("id", "id", ColumnType::Text) });
+    target.primary_key = PrimaryKey::new(["id"]);
+    target.indexes.push(crate::table::TableIndex { name: None, columns: vec!["tenant_id".into(), "record_id".into()], unique: true });
+    target.relationships.push(RelationshipDef {
+        references: Some("tenant_id,record_id".into()),
+        field_name: "refs".into(), kind: RelationshipKind::HasMany,
+        target_model: "SimpleRecord".into(), foreign_key: Some("tenant_id,record_id".into()),
+        through: None, target_foreign_key: None,
+    });
+    let mut source = simple_records();
+    source.columns.push(TableColumn { nullable: true, ..TableColumn::new("record_id", "record_id", ColumnType::Text) });
+    source.relationships.push(RelationshipDef {
+        references: Some("tenant_id,record_id".into()),
+        field_name: "record".into(), kind: RelationshipKind::BelongsTo,
+        target_model: "CompositeRecord".into(), foreign_key: Some("tenant_id,record_id".into()),
+        through: None, target_foreign_key: None,
+    });
+    let project = ReadModelCatalog::new("unique-key-test").table_schema(target).table_schema(source);
+    let engine = GraphqlEngine::from_schema_catalog(&project, pool).unwrap()
+        .roles(&["admin"]).grant_all("admin").build().unwrap();
+    let mut session = Session::new();
+    session.set(crate::microsvc::ROLE_KEY, "admin");
+    let response = engine.execute(&session, Request::new(
+        "{ simple_records(order_by: [{simple_id: asc}]) { simple_id record { id value } } }"
+    )).await;
+    assert!(response.errors.is_empty(), "{:?}", response.errors);
+    let data = response.data.into_json().unwrap();
+    assert_eq!(data["simple_records"], serde_json::json!([
+        {"simple_id":"1","record":{"id":"opaque-a","value":"first"}},
+        {"simple_id":"2","record":{"id":"opaque-b","value":"second"}},
+        {"simple_id":"3","record":null},
+        {"simple_id":"4","record":null},
+    ]));
+    let reverse = engine.execute(&session, Request::new(
+        "{ composite_records(order_by: [{id: asc}]) { id refs { simple_id } } }"
+    )).await;
+    assert!(reverse.errors.is_empty(), "{:?}", reverse.errors);
+    assert_eq!(reverse.data.into_json().unwrap()["composite_records"], serde_json::json!([
+        {"id":"opaque-a","refs":[{"simple_id":"1"}]},
+        {"id":"opaque-b","refs":[{"simple_id":"2"}]},
+    ]));
+}
+
+#[cfg(feature = "sqlite")]
+#[tokio::test]
 async fn belongs_to_loads_composite_target_rows() {
     let pool = sqlx::sqlite::SqlitePoolOptions::new()
         .max_connections(1)
