@@ -1,5 +1,32 @@
 use super::*;
 
+enum ProtocolPreparationError {
+    RequiredPreset,
+    Internal,
+}
+
+impl From<()> for ProtocolPreparationError {
+    fn from(_: ()) -> Self {
+        Self::Internal
+    }
+}
+
+impl ProtocolPreparationError {
+    fn into_response(self) -> Response {
+        match self {
+            Self::RequiredPreset => {
+                let mut error =
+                    ServerError::new("required session input is missing or invalid", None);
+                let mut extensions = async_graphql::ErrorExtensionValues::default();
+                extensions.set("code", "BAD_REQUEST");
+                error.extensions = Some(extensions);
+                Response::from_errors(vec![error])
+            }
+            Self::Internal => protocol_internal_error_response(),
+        }
+    }
+}
+
 impl GraphqlEngine {
     pub async fn execute(&self, session: &Session, mut request: Request) -> Response {
         if selected_operation_type(&mut request)
@@ -39,7 +66,7 @@ impl GraphqlEngine {
 
         let accumulator = match self.protocol_accumulator(&authority, session, &request) {
             Ok(accumulator) => accumulator,
-            Err(()) => return protocol_internal_error_response(),
+            Err(error) => return error.into_response(),
         };
         if introspection {
             // The relaxed schema is defense-in-depth restricted even if a
@@ -113,8 +140,8 @@ impl GraphqlEngine {
         }
         let accumulator = match self.protocol_accumulator(&authority, session, &request) {
             Ok(accumulator) => accumulator,
-            Err(()) => {
-                return stream::once(async { protocol_internal_error_response() }).boxed();
+            Err(error) => {
+                return stream::once(async move { error.into_response() }).boxed();
             }
         };
         if accumulator
@@ -144,7 +171,7 @@ impl GraphqlEngine {
         authority: &ExecutionAuthority,
         session: &Session,
         request: &Request,
-    ) -> Result<Option<ProtocolResponseAccumulator>, ()> {
+    ) -> Result<Option<ProtocolResponseAccumulator>, ProtocolPreparationError> {
         let Some(runtime) = &self.inner.protocol else {
             return Ok(None);
         };
@@ -153,7 +180,10 @@ impl GraphqlEngine {
         let trusted_presets = surface_info
             .trusted_presets
             .iter()
-            .map(|descriptor| resolve_protocol_preset(session, descriptor).ok_or(()))
+            .map(|descriptor| {
+                resolve_protocol_preset(session, descriptor)
+                    .ok_or(ProtocolPreparationError::RequiredPreset)
+            })
             .collect::<Result<Vec<_>, _>>()?;
         let principal = request
             .data
@@ -311,6 +341,16 @@ mod lifecycle_request_tests {
     use super::selected_operation_type;
     use async_graphql::parser::types::OperationType;
     use async_graphql::Request;
+
+    #[test]
+    fn internal_protocol_preparation_errors_are_not_request_errors() {
+        let response = super::ProtocolPreparationError::from(()).into_response();
+        let expected = super::protocol_internal_error_response();
+        assert_eq!(
+            serde_json::to_value(response).unwrap(),
+            serde_json::to_value(expected).unwrap()
+        );
+    }
 
     #[test]
     fn selected_operation_type_fails_closed_for_ambiguous_documents() {

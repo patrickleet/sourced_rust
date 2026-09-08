@@ -1994,6 +1994,12 @@ ModelPermissions::new()
 Row predicates can bind session claims (`claim("x-user-id")`, …) so multi-tenant
 RLS lives in the engine, not ad-hoc handler SQL.
 
+With the causal protocol enabled, required session presets must be present and
+valid for their declared codecs before execution. Missing or malformed values
+return `BAD_REQUEST` for both ordinary and streaming requests, without running
+resolvers or issuing a partial protocol envelope. The error does not disclose
+claim names or values; configure the identity mapping to supply those inputs.
+
 ### Identity (first-class OIDC)
 
 Auth is a **built-in GraphQL concern**, not a separate product you wire after the
