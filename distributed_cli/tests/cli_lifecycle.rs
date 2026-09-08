@@ -775,6 +775,53 @@ fn dev_browser_prepare_timeout_preserves_active_pointer_and_processes() {
 }
 
 #[test]
+fn dev_rebuilds_source_edited_while_initial_process_readiness_is_held() {
+    let fixture = temporary_root("dev-startup-edit");
+    let root = fixture.path().to_path_buf();
+    write_fixture(&root);
+    enable_dev(&root);
+    let path = root.join("distributed.lifecycle.json");
+    let mut config: Value = serde_json::from_slice(&fs::read(&path).unwrap()).unwrap();
+    config["dev"]["processes"]["api"]["ready"] = serde_json::json!({
+        "program": "/bin/test",
+        "args": ["-f", "{root}/release-readiness"],
+        "interval_ms": 10,
+        "timeout_ms": 5000
+    });
+    fs::write(&path, serde_json::to_vec_pretty(&config).unwrap()).unwrap();
+    let supervisor = DevSupervisor::start(root.clone());
+    wait_until(Duration::from_secs(5), || {
+        root.join("dev-process.log").exists()
+    });
+    let before = wait_for_stable_file(
+        &root.join("dist/distributed/active.json"),
+        Duration::from_secs(5),
+    );
+    // The initial build is complete but the supervisor cannot finish startup.
+    fs::write(root.join("src/input.txt"), "edited-during-startup\n").unwrap();
+    fs::write(root.join("release-readiness"), "release\n").unwrap();
+    wait_until(Duration::from_secs(5), || {
+        fs::read(root.join("dist/distributed/active.json")).is_ok_and(|active| active != before)
+    });
+    let report = supervisor.stop_and_join();
+    assert_ne!(report.initial_generation, report.final_generation);
+    assert_eq!(report.rebuilds, 1);
+    assert_eq!(report.restarts["api"], 1);
+    assert_eq!(report.restarts["ui"], 0);
+    let active: Value =
+        serde_json::from_slice(&fs::read(root.join("dist/distributed/active.json")).unwrap())
+            .unwrap();
+    let artifact = root
+        .join("dist/distributed")
+        .join(active["path"].as_str().unwrap())
+        .join("generated/application.json");
+    assert_eq!(
+        fs::read_to_string(artifact).unwrap(),
+        "application:edited-during-startup\n"
+    );
+}
+
+#[test]
 fn dev_cancels_a_superseded_executor_before_activation() {
     let fixture = temporary_root("dev-cancel");
     let root = fixture.path().to_path_buf();
