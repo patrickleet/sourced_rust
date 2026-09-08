@@ -977,6 +977,70 @@ mod client_surface_parity_tests {
 
     #[cfg(feature = "sqlite")]
     #[tokio::test]
+    async fn required_presets_reject_query_and_stream_without_internal_errors() {
+        let mut engine = preset_protocol_engine();
+        Arc::get_mut(&mut engine.inner)
+            .unwrap()
+            .protocol
+            .as_mut()
+            .unwrap()
+            .roles
+            .get_mut("user")
+            .unwrap()
+            .surface
+            .trusted_presets = vec![ClientTrustedPresetDescriptor {
+            name: "x-required-number".into(),
+            codec: "int32".into(),
+        }];
+        for value in [None, Some("not-a-number"), Some("01"), Some("2147483648")] {
+            let mut session = Session::new();
+            session.set("x-roles", "user");
+            if let Some(value) = value {
+                session.set("x-required-number", value);
+            }
+            let query = engine
+                .execute(&session, Request::new("{ __typename }"))
+                .await;
+            let streamed = engine
+                .execute_stream(&session, Request::new("{ __typename }"))
+                .collect::<Vec<_>>()
+                .await;
+            assert_eq!(streamed.len(), 1);
+            for response in std::iter::once(query).chain(streamed) {
+                assert_eq!(response.errors.len(), 1);
+                let error = serde_json::to_value(&response.errors[0]).unwrap();
+                assert_eq!(error["extensions"]["code"], "BAD_REQUEST", "{error}");
+                assert_eq!(
+                    error["message"],
+                    "required session input is missing or invalid"
+                );
+                assert_eq!(response.data, Value::Null);
+                assert!(!response.extensions.contains_key("distributed"));
+            }
+        }
+        let mut valid = Session::new();
+        valid.set("x-roles", "user");
+        valid.set("x-required-number", "42");
+        let response = engine.execute(&valid, Request::new("{ __typename }")).await;
+        assert!(!response.is_err(), "{:?}", response.errors);
+        assert_eq!(
+            distributed_extension(&response)["trustedPresets"][0]["value"],
+            42
+        );
+        let responses = engine
+            .execute_stream(&valid, Request::new("{ __typename }"))
+            .collect::<Vec<_>>()
+            .await;
+        assert_eq!(responses.len(), 1);
+        assert!(!responses[0].is_err());
+        assert_eq!(
+            distributed_extension(&responses[0])["trustedPresets"][0]["value"],
+            42
+        );
+    }
+
+    #[cfg(feature = "sqlite")]
+    #[tokio::test]
     async fn cache_scope_tracks_only_relevant_claims_and_private_policy() {
         use crate::graphql::identity::VerifiedPrincipal;
 
