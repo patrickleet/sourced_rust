@@ -268,8 +268,11 @@ async fn belongs_to_with_a_partial_composite_foreign_key_is_rejected() {
 #[cfg(feature = "sqlite")]
 #[tokio::test]
 async fn unique_key_join_preserves_namespace_nulls_and_surrogate_identity() {
-    let pool = sqlx::sqlite::SqlitePoolOptions::new().max_connections(1)
-        .connect("sqlite::memory:").await.unwrap();
+    let pool = sqlx::sqlite::SqlitePoolOptions::new()
+        .max_connections(1)
+        .connect("sqlite::memory:")
+        .await
+        .unwrap();
     unique_key_join_fixture(pool.into()).await;
 }
 
@@ -277,20 +280,31 @@ async fn unique_key_join_preserves_namespace_nulls_and_surrogate_identity() {
 #[tokio::test]
 #[ignore = "requires dedicated DISTRIBUTED_UNIQUE_KEY_TEST_POSTGRES_URL; run explicitly in PostgreSQL CI"]
 async fn unique_key_join_postgres_authorization_and_manifest() {
-    let url = std::env::var("DISTRIBUTED_UNIQUE_KEY_TEST_POSTGRES_URL").expect("dedicated test database URL");
+    let url = std::env::var("DISTRIBUTED_UNIQUE_KEY_TEST_POSTGRES_URL")
+        .expect("dedicated test database URL");
     let options: sqlx::postgres::PgConnectOptions = url.parse().unwrap();
-    assert!(options.get_database().unwrap_or("").starts_with("distributed_unique_key_test"));
-    let pool = sqlx::postgres::PgPoolOptions::new().max_connections(1)
-        .connect_with(options).await.unwrap();
+    assert!(options
+        .get_database()
+        .unwrap_or("")
+        .starts_with("distributed_unique_key_test"));
+    let pool = sqlx::postgres::PgPoolOptions::new()
+        .max_connections(1)
+        .connect_with(options)
+        .await
+        .unwrap();
     unique_key_join_fixture(pool.into()).await;
 }
 
 async fn unique_key_sql(pool: &GraphqlPool, statement: &'static str) {
     match pool {
         #[cfg(feature = "sqlite")]
-        GraphqlPool::Sqlite(pool) => { sqlx::query(statement).execute(pool).await.unwrap(); }
+        GraphqlPool::Sqlite(pool) => {
+            sqlx::query(statement).execute(pool).await.unwrap();
+        }
         #[cfg(feature = "postgres")]
-        GraphqlPool::Postgres(pool) => { sqlx::query(statement).execute(pool).await.unwrap(); }
+        GraphqlPool::Postgres(pool) => {
+            sqlx::query(statement).execute(pool).await.unwrap();
+        }
     }
 }
 
@@ -304,27 +318,51 @@ async fn unique_key_join_fixture(pool: GraphqlPool) {
         unique_key_sql(&pool, statement).await;
     }
     let mut target = composite_records();
-    for column in &mut target.columns { column.primary_key = false; }
-    target.columns.push(TableColumn { primary_key: true, ..TableColumn::new("id", "id", ColumnType::Text) });
+    for column in &mut target.columns {
+        column.primary_key = false;
+    }
+    target.columns.push(TableColumn {
+        primary_key: true,
+        ..TableColumn::new("id", "id", ColumnType::Text)
+    });
     target.primary_key = PrimaryKey::new(["id"]);
-    target.indexes.push(crate::table::TableIndex { name: None, columns: vec!["tenant_id".into(), "record_id".into()], unique: true });
+    target.indexes.push(crate::table::TableIndex {
+        name: None,
+        columns: vec!["tenant_id".into(), "record_id".into()],
+        unique: true,
+    });
     target.relationships.push(RelationshipDef {
         references: Some("tenant_id,record_id".into()),
-        field_name: "refs".into(), kind: RelationshipKind::HasMany,
-        target_model: "SimpleRecord".into(), foreign_key: Some("tenant_id,record_id".into()),
-        through: None, target_foreign_key: None,
+        field_name: "refs".into(),
+        kind: RelationshipKind::HasMany,
+        target_model: "SimpleRecord".into(),
+        foreign_key: Some("tenant_id,record_id".into()),
+        through: None,
+        target_foreign_key: None,
     });
     let mut source = simple_records();
-    source.columns.push(TableColumn { nullable: true, ..TableColumn::new("record_id", "record_id", ColumnType::Text) });
+    source.columns.push(TableColumn {
+        nullable: true,
+        ..TableColumn::new("record_id", "record_id", ColumnType::Text)
+    });
     source.relationships.push(RelationshipDef {
         references: Some("tenant_id,record_id".into()),
-        field_name: "record".into(), kind: RelationshipKind::BelongsTo,
-        target_model: "CompositeRecord".into(), foreign_key: Some("tenant_id,record_id".into()),
-        through: None, target_foreign_key: None,
+        field_name: "record".into(),
+        kind: RelationshipKind::BelongsTo,
+        target_model: "CompositeRecord".into(),
+        foreign_key: Some("tenant_id,record_id".into()),
+        through: None,
+        target_foreign_key: None,
     });
-    let project = ReadModelCatalog::new("unique-key-test").table_schema(target).table_schema(source);
-    let engine = GraphqlEngine::from_schema_catalog(&project, pool.clone()).unwrap()
-        .roles(&["admin"]).grant_all("admin").build().unwrap();
+    let project = ReadModelCatalog::new("unique-key-test")
+        .table_schema(target)
+        .table_schema(source);
+    let engine = GraphqlEngine::from_schema_catalog(&project, pool.clone())
+        .unwrap()
+        .roles(&["admin"])
+        .grant_all("admin")
+        .build()
+        .unwrap();
     let mut session = Session::new();
     session.set(crate::microsvc::ROLE_KEY, "admin");
     let response = engine.execute(&session, Request::new(
@@ -332,56 +370,109 @@ async fn unique_key_join_fixture(pool: GraphqlPool) {
     )).await;
     assert!(response.errors.is_empty(), "{:?}", response.errors);
     let data = response.data.into_json().unwrap();
-    assert_eq!(data["simple_records"], serde_json::json!([
-        {"simple_id":"1","record":{"id":"opaque-a","value":"first"}},
-        {"simple_id":"2","record":{"id":"opaque-b","value":"second"}},
-        {"simple_id":"3","record":null},
-        {"simple_id":"4","record":null},
-    ]));
-    let reverse = engine.execute(&session, Request::new(
-        "{ composite_records(order_by: [{id: asc}]) { id refs { simple_id } } }"
-    )).await;
+    assert_eq!(
+        data["simple_records"],
+        serde_json::json!([
+            {"simple_id":"1","record":{"id":"opaque-a","value":"first"}},
+            {"simple_id":"2","record":{"id":"opaque-b","value":"second"}},
+            {"simple_id":"3","record":null},
+            {"simple_id":"4","record":null},
+        ])
+    );
+    let reverse = engine
+        .execute(
+            &session,
+            Request::new("{ composite_records(order_by: [{id: asc}]) { id refs { simple_id } } }"),
+        )
+        .await;
     assert!(reverse.errors.is_empty(), "{:?}", reverse.errors);
-    assert_eq!(reverse.data.into_json().unwrap()["composite_records"], serde_json::json!([
-        {"id":"opaque-a","refs":[{"simple_id":"1"}]},
-        {"id":"opaque-b","refs":[{"simple_id":"2"}]},
-    ]));
+    assert_eq!(
+        reverse.data.into_json().unwrap()["composite_records"],
+        serde_json::json!([
+            {"id":"opaque-a","refs":[{"simple_id":"1"}]},
+            {"id":"opaque-b","refs":[{"simple_id":"2"}]},
+        ])
+    );
     // Parent visibility must not confer visibility on the referenced object.
-    let mut builder = GraphqlEngine::from_schema_catalog(&project, pool.clone()).unwrap()
-        .roles(&["reader"]).grant_all("reader");
-    builder.permissions.get_mut(&("CompositeRecord".into(), "reader".into())).unwrap()
-        .permission.row_filter = Some(crate::graphql::col("value").eq("first"));
+    let mut builder = GraphqlEngine::from_schema_catalog(&project, pool.clone())
+        .unwrap()
+        .roles(&["reader"])
+        .grant_all("reader");
+    builder
+        .permissions
+        .get_mut(&("CompositeRecord".into(), "reader".into()))
+        .unwrap()
+        .permission
+        .row_filter = Some(crate::graphql::col("value").eq("first"));
     let restricted = builder.build().unwrap();
     let manifest = restricted.client_manifest_for_role("reader").unwrap();
-    let object_model = manifest.models.iter().find(|model| model.source_table == "composite_records").unwrap();
+    let object_model = manifest
+        .models
+        .iter()
+        .find(|model| model.source_table == "composite_records")
+        .unwrap();
     let normalization = serde_json::to_value(&object_model.normalization).unwrap();
     assert_eq!(normalization["kind"], "normalized");
     assert_eq!(normalization["fields"].as_array().unwrap().len(), 1);
     assert_eq!(normalization["fields"][0]["name"], "id");
-    let ref_model = manifest.models.iter().find(|model| model.source_table == "simple_records").unwrap();
-    let mapping = &ref_model.relationships.iter().find(|relation| relation.name == "record").unwrap().key_mapping;
-    assert_eq!(serde_json::to_value(mapping).unwrap(), serde_json::json!({
-        "kind":"direct", "local":["tenant_id","record_id"], "remote":["tenant_id","record_id"]
-    }));
+    let ref_model = manifest
+        .models
+        .iter()
+        .find(|model| model.source_table == "simple_records")
+        .unwrap();
+    let mapping = &ref_model
+        .relationships
+        .iter()
+        .find(|relation| relation.name == "record")
+        .unwrap()
+        .key_mapping;
+    assert_eq!(
+        serde_json::to_value(mapping).unwrap(),
+        serde_json::json!({
+            "kind":"direct", "local":["tenant_id","record_id"], "remote":["tenant_id","record_id"]
+        })
+    );
     session.set(crate::microsvc::ROLE_KEY, "reader");
     let query = "{ simple_records(order_by: [{simple_id: asc}]) { simple_id record { id } } }";
     let response = restricted.execute(&session, Request::new(query)).await;
     assert!(response.errors.is_empty(), "{:?}", response.errors);
-    assert_eq!(response.data.into_json().unwrap()["simple_records"], serde_json::json!([
-        {"simple_id":"1","record":{"id":"opaque-a"}},
-        {"simple_id":"2","record":null},
-        {"simple_id":"3","record":null},
-        {"simple_id":"4","record":null},
-    ]));
-    let hidden_filter = restricted.execute(&session, Request::new(
-        "{ simple_records(where: {record: {value: {_eq: \"second\"}}}) { simple_id } }"
-    )).await;
-    assert!(hidden_filter.errors.is_empty(), "{:?}", hidden_filter.errors);
-    assert_eq!(hidden_filter.data.into_json().unwrap()["simple_records"], serde_json::json!([]));
-    unique_key_sql(&pool, "UPDATE composite_records SET value='revoked' WHERE id='opaque-a'").await;
+    assert_eq!(
+        response.data.into_json().unwrap()["simple_records"],
+        serde_json::json!([
+            {"simple_id":"1","record":{"id":"opaque-a"}},
+            {"simple_id":"2","record":null},
+            {"simple_id":"3","record":null},
+            {"simple_id":"4","record":null},
+        ])
+    );
+    let hidden_filter = restricted
+        .execute(
+            &session,
+            Request::new(
+                "{ simple_records(where: {record: {value: {_eq: \"second\"}}}) { simple_id } }",
+            ),
+        )
+        .await;
+    assert!(
+        hidden_filter.errors.is_empty(),
+        "{:?}",
+        hidden_filter.errors
+    );
+    assert_eq!(
+        hidden_filter.data.into_json().unwrap()["simple_records"],
+        serde_json::json!([])
+    );
+    unique_key_sql(
+        &pool,
+        "UPDATE composite_records SET value='revoked' WHERE id='opaque-a'",
+    )
+    .await;
     let revoked = restricted.execute(&session, Request::new(query)).await;
     assert!(revoked.errors.is_empty(), "{:?}", revoked.errors);
-    for row in revoked.data.into_json().unwrap()["simple_records"].as_array().unwrap() {
+    for row in revoked.data.into_json().unwrap()["simple_records"]
+        .as_array()
+        .unwrap()
+    {
         assert!(row["record"].is_null(), "revoked target leaked: {row}");
     }
 }
