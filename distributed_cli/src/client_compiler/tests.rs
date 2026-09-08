@@ -3106,6 +3106,62 @@ fn command_protocol_and_extensions_are_preserved_exactly() {
         ["values"][2]["source"] =
         json!({"kind": "trusted_preset", "name": "priority", "codec": "int32"});
     refresh_schema_fingerprint(&mut preset_i64_value);
+    // An unknown record identity drops the mutation, including its preset
+    // expression. The generated inventory must follow the compiled result,
+    // while the surface retains the complete trusted context contract.
+    let mut recovery_preset = preset_i64_value.clone();
+    recovery_preset["commands"][0]["extensions"]["projection"]["preview_occurrences"][0]
+        ["values"][1]["source"] = json!({"kind": "unknown"});
+    refresh_schema_fingerprint(&mut recovery_preset);
+    for (fixture, retained) in [(preset_i64_value.clone(), true), (recovery_preset, false)] {
+        let compiled = compile_client(input_with_manifest(fixture, "query Todos { todos { id } }"))
+            .expect("compile preset inventory after preview lowering");
+        let source = file(&compiled, "commands.ts");
+        let declaration = source
+            .split("export const Command_createTodo:")
+            .nth(1)
+            .unwrap();
+        let body = declaration
+            .split_once(" = ")
+            .unwrap()
+            .1
+            .split_once("\n};")
+            .unwrap()
+            .0;
+        let artifact: JsonValue = serde_json::from_str(&format!("{body}\n}}")).unwrap();
+        assert_eq!(
+            artifact["protocol"]["trustedPresets"],
+            json!([{"name": "priority", "codec": "int32"}])
+        );
+        if retained {
+            assert_eq!(
+                artifact["trustedPresets"],
+                json!([{"name": "priority", "codec": "int32"}])
+            );
+            assert!(!artifact["projection"]["preview"]["operations"]
+                .as_array()
+                .unwrap()
+                .is_empty());
+        } else {
+            let fixture: JsonValue = serde_json::from_str(include_str!(
+                "../../tests/fixtures/generated-recovery-preset-command.json"
+            ))
+            .unwrap();
+            assert_eq!(
+                artifact, fixture,
+                "JS bridge fixture must match compiler output"
+            );
+            assert!(artifact.get("trustedPresets").is_none());
+            assert!(artifact["projection"]["preview"]["operations"]
+                .as_array()
+                .unwrap()
+                .is_empty());
+            assert!(!artifact["projection"]["preview"]["recoveries"]
+                .as_array()
+                .unwrap()
+                .is_empty());
+        }
+    }
     let mut invalid_u64_source = input_i64_value.clone();
     invalid_u64_source["projection_programs"][0]["arms"][0]["operations"][0]["fields"][1]
         ["assignment"]["expression"]["value_type"] = json!({"type": "u64"});

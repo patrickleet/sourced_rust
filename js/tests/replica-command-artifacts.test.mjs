@@ -32,6 +32,23 @@ const GENERATED_DRAINING_COMMAND = JSON.parse(
 	)
 );
 
+test('compiled recovery-only command drops unused presets without weakening validation', () => {
+	const artifact = JSON.parse(readFileSync(new URL(
+		'../../distributed_cli/tests/fixtures/generated-recovery-preset-command.json', import.meta.url
+	), 'utf8'));
+	assert.deepEqual(artifact.protocol.trustedPresets, [{ name: 'priority', codec: 'int32' }]);
+	assert.equal(artifact.trustedPresets, undefined);
+	assert.deepEqual(artifact.projection.preview.operations, []);
+	assert.ok(artifact.projection.preview.recoveries.length > 0);
+	const input = { id: GENERATED_UUID, tenantId: 'tenant-1', title: 'Prepare' };
+	assert.doesNotThrow(() => prepareReplicaCommand(artifact, input, { commandId: COMMAND_ID }));
+	const invalid = { ...artifact, trustedPresets: artifact.protocol.trustedPresets };
+	assert.throws(
+		() => prepareReplicaCommand(invalid, input, { commandId: COMMAND_ID }),
+		/artifact.trustedPresets\[0\]/
+	);
+});
+
 const scalarField = (
 	name,
 	typeName = 'String',
