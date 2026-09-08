@@ -1,5 +1,94 @@
 use super::*;
 
+#[cfg(all(test, feature = "sqlite"))]
+#[tokio::test]
+async fn candidate_key_snapshot_lookup_selects_surrogate_keys_in_sql() {
+    use crate::table::{
+        ColumnType, PrimaryKey, RelationshipDef, RelationshipKind, RowValue, TableColumn,
+        TableIndex, TableKind,
+    };
+    let pool = sqlx::sqlite::SqlitePoolOptions::new()
+        .max_connections(1)
+        .connect("sqlite::memory:")
+        .await
+        .unwrap();
+    let mut connection = pool.acquire().await.unwrap();
+    for statement in [
+        "CREATE TABLE snapshot_targets (id TEXT PRIMARY KEY, tenant TEXT NOT NULL, candidate TEXT, UNIQUE(tenant,candidate))",
+        "INSERT INTO snapshot_targets VALUES ('opaque-a','a','same'),('opaque-b','b','same'),('null-target','a',NULL)",
+    ] { sqlx::query(statement).execute(&mut *connection).await.unwrap(); }
+    let target = TableSchema {
+        model_name: "SnapshotTarget".into(),
+        table_name: "snapshot_targets".into(),
+        columns: vec![
+            TableColumn {
+                primary_key: true,
+                ..TableColumn::new("id", "id", ColumnType::Text)
+            },
+            TableColumn::new("tenant", "tenant", ColumnType::Text),
+            TableColumn {
+                nullable: true,
+                ..TableColumn::new("candidate", "candidate", ColumnType::Text)
+            },
+        ],
+        primary_key: PrimaryKey::new(["id"]),
+        version_column: None,
+        foreign_keys: vec![],
+        indexes: vec![TableIndex {
+            name: None,
+            columns: vec!["tenant".into(), "candidate".into()],
+            unique: true,
+        }],
+        relationships: vec![],
+        kind: TableKind::ReadModel,
+    };
+    let mut source = target.clone();
+    source.model_name = "SnapshotSource".into();
+    source.table_name = "snapshot_sources".into();
+    let relation = RelationshipDef {
+        field_name: "target".into(),
+        kind: RelationshipKind::BelongsTo,
+        target_model: target.model_name.clone(),
+        foreign_key: Some("tenant,candidate".into()),
+        references: Some("tenant,candidate".into()),
+        through: None,
+        target_foreign_key: None,
+    };
+    for (tenant, candidate, expected) in [
+        ("a", Some("same"), Some("opaque-a")),
+        ("b", Some("same"), Some("opaque-b")),
+        ("missing", Some("same"), None),
+        ("a", None, None),
+    ] {
+        let mut values = RowValues::new();
+        values.insert("id", RowValue::String("source-id".into()));
+        values.insert("tenant", RowValue::String(tenant.into()));
+        values.insert(
+            "candidate",
+            candidate
+                .map(|v| RowValue::String(v.into()))
+                .unwrap_or(RowValue::Null),
+        );
+        let keys = read_projection_relationship_keys_in_executor::<sqlx::Sqlite>(
+            &mut connection,
+            &source,
+            &values,
+            &relation,
+            &target,
+            2,
+        )
+        .await
+        .unwrap();
+        assert_eq!(
+            keys,
+            expected
+                .into_iter()
+                .map(|id| RowKey::new([("id", RowValue::String(id.into()))]))
+                .collect::<Vec<_>>()
+        );
+    }
+}
+
 pub(super) fn decode_change_row<DB>(
     row: &DB::Row,
     topology: &ProjectorTopologyId,
@@ -1086,53 +1175,12 @@ where
     for<'c> &'c mut DB::Connection: Executor<'c, Database = DB>,
     for<'r> &'r str: sqlx::ColumnIndex<DB::Row>,
 {
-    let foreign_key = relationship.foreign_key.as_deref().ok_or_else(|| {
-        ProjectionProtocolError::InvalidBatch(format!(
-            "projection graph relationship `{}` has no foreign key",
-            relationship.field_name
-        ))
-    })?;
-    let (target_column, value) = match relationship.kind {
-        RelationshipKind::HasMany => {
-            let (target_column, root_column) =
-                projection_has_many_columns(root_schema, relationship, target_schema)?;
-            let value = root_row.get(&root_column).cloned().ok_or_else(|| {
-                ProjectionProtocolError::InvalidBatch(format!(
-                    "projection graph root `{}` is missing relationship key `{root_column}`",
-                    root_schema.model_name
-                ))
-            })?;
-            (target_column, value)
-        }
-        RelationshipKind::BelongsTo => {
-            let source_column = column_name_for(root_schema, foreign_key).ok_or_else(|| {
-                ProjectionProtocolError::InvalidBatch(format!(
-                    "projection graph relationship `{}` foreign key `{foreign_key}` is not a source column",
-                    relationship.field_name
-                ))
-            })?;
-            let [target_column] = target_schema.primary_key.columns.as_slice() else {
-                return Err(ProjectionProtocolError::InvalidBatch(format!(
-                    "projection graph belongs-to target `{}` must have one primary-key column",
-                    target_schema.model_name
-                )));
-            };
-            let value = root_row.get(&source_column).cloned().ok_or_else(|| {
-                ProjectionProtocolError::InvalidBatch(format!(
-                    "projection graph root `{}` is missing relationship key `{source_column}`",
-                    root_schema.model_name
-                ))
-            })?;
-            (target_column.clone(), value)
-        }
-        RelationshipKind::ManyToMany => {
-            return Err(ProjectionProtocolError::InvalidBatch(format!(
-                "projection graph relationship `{}` is many-to-many; project an explicit join read model instead",
-                relationship.field_name
-            )));
-        }
-    };
-    if value == RowValue::Null {
+    let values =
+        projection_relationship_values(root_schema, root_row, relationship, target_schema)?;
+    if values
+        .iter()
+        .any(|(_, value)| *value == crate::table::RowValue::Null)
+    {
         return Ok(Vec::new());
     }
 
@@ -1146,13 +1194,18 @@ where
     builder.push(" FROM ");
     builder.push(quote_identifier(&target_schema.table_name));
     builder.push(" WHERE ");
-    builder.push(quote_identifier(&target_column));
-    builder.push(" = ");
-    DB::push_row_value_bind(
-        &mut builder,
-        value,
-        column_by_name(target_schema, &target_column)?,
-    )?;
+    for (index, (target_column, value)) in values.into_iter().enumerate() {
+        if index > 0 {
+            builder.push(" AND ");
+        }
+        builder.push(quote_identifier(&target_column));
+        builder.push(" = ");
+        DB::push_row_value_bind(
+            &mut builder,
+            value,
+            column_by_name(target_schema, &target_column)?,
+        )?;
+    }
     push_order_by_primary_key(&mut builder, target_schema);
     builder.push(" LIMIT ");
     builder.push(max_unique.saturating_add(1).to_string());
