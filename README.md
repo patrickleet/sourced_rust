@@ -2301,7 +2301,10 @@ second module list to maintain. Assembly rejects commands missing from the
 Surface or exposed by the Surface without a Service owner. Role-selected client
 exports remain authorization views of that full contract. Complete application
 manifests are bounded at 4 MiB; each opaque JSON contract remains bounded at
-1 MiB, with the existing collection, string and nesting limits still enforced.
+1 MiB. A generated Surface contract uses the complete-manifest budget rather
+than the opaque-value cap; its typed contents and the existing collection,
+string and nesting limits are still validated. The complete artifact, including
+all surfaces and module inventories, must fit within 4 MiB.
 
 An event-driven policy that emits through another aggregate can explicitly carry
 the incoming command's causal identity before recording its events:
