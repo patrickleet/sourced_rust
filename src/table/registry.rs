@@ -291,15 +291,25 @@ pub fn resolve_direct_join_keys(
         }
     };
     let explicit = parse_explicit_through_columns(
-        source, relationship, "references", relationship.references.as_deref(),
+        source,
+        relationship,
+        "references",
+        relationship.references.as_deref(),
     )?;
     let referenced_columns = if let Some(names) = explicit {
-        let columns = names.iter().map(|name| {
-            column_name_on(pk_schema, name).map(str::to_owned).ok_or_else(|| TableStoreError::Metadata(format!(
+        let columns = names
+            .iter()
+            .map(|name| {
+                column_name_on(pk_schema, name)
+                    .map(str::to_owned)
+                    .ok_or_else(|| {
+                        TableStoreError::Metadata(format!(
                 "model `{}` relationship `{}` references unknown column `{name}` on `{}`",
                 source.model_name, relationship.field_name, pk_schema.model_name,
-            )))
-        }).collect::<Result<Vec<_>, _>>()?;
+            ))
+                    })
+            })
+            .collect::<Result<Vec<_>, _>>()?;
         if columns.iter().collect::<BTreeSet<_>>().len() != columns.len() {
             return Err(TableStoreError::Metadata(format!(
                 "model `{}` relationship `{}` references repeats a physical column",
@@ -307,10 +317,16 @@ pub fn resolve_direct_join_keys(
             )));
         }
         let unique = (columns.len() == pk_schema.primary_key.columns.len()
-            && pk_schema.primary_key.columns.iter().all(|column| columns.contains(column))) || pk_schema.indexes.iter().any(|index| {
-            index.unique && index.columns.len() == columns.len()
-                && index.columns.iter().all(|column| columns.contains(column))
-        });
+            && pk_schema
+                .primary_key
+                .columns
+                .iter()
+                .all(|column| columns.contains(column)))
+            || pk_schema.indexes.iter().any(|index| {
+                index.unique
+                    && index.columns.len() == columns.len()
+                    && index.columns.iter().all(|column| columns.contains(column))
+            });
         if !unique {
             return Err(TableStoreError::Metadata(format!(
                 "model `{}` relationship `{}` references must name a declared unique key on `{}`",
@@ -347,7 +363,11 @@ pub fn resolve_direct_join_keys(
             relationship.field_name,
             fk_names.len(),
             pk_schema.model_name,
-            if relationship.references.is_some() { "referenced key" } else { "primary key" },
+            if relationship.references.is_some() {
+                "referenced key"
+            } else {
+                "primary key"
+            },
             pk_columns.len()
         )));
     }
@@ -370,10 +390,18 @@ pub fn resolve_direct_join_keys(
                 source.model_name, relationship.field_name,
             )));
         }
-        let foreign = fk_schema.columns.iter().find(|column| column.column_name == foreign_key_column).unwrap();
-        let referenced = pk_schema.columns.iter().find(|column| column.column_name == *pk_column).ok_or_else(|| {
-            TableStoreError::Metadata(format!("referenced key column `{pk_column}` is missing"))
-        })?;
+        let foreign = fk_schema
+            .columns
+            .iter()
+            .find(|column| column.column_name == foreign_key_column)
+            .unwrap();
+        let referenced = pk_schema
+            .columns
+            .iter()
+            .find(|column| column.column_name == *pk_column)
+            .ok_or_else(|| {
+                TableStoreError::Metadata(format!("referenced key column `{pk_column}` is missing"))
+            })?;
         if foreign.column_type != referenced.column_type || foreign.jsonb != referenced.jsonb {
             return Err(TableStoreError::Metadata(format!(
                 "model `{}` relationship `{}` joins incompatible column types for `{foreign_key_column}` and `{pk_column}`",
@@ -1008,30 +1036,55 @@ mod m2m_join_key_tests {
 
     #[test]
     fn direct_join_can_reference_a_composite_candidate_key() {
-        let mut target = schema("Object", "objects", vec![pk_column("id"), column("namespace"), column("oid")], &["id"], vec![]);
+        let mut target = schema(
+            "Object",
+            "objects",
+            vec![pk_column("id"), column("namespace"), column("oid")],
+            &["id"],
+            vec![],
+        );
         target.indexes.push(crate::table::TableIndex {
-            name: None, columns: vec!["namespace".into(), "oid".into()], unique: true,
+            name: None,
+            columns: vec!["namespace".into(), "oid".into()],
+            unique: true,
         });
         let relation = RelationshipDef {
             references: Some("namespace,oid".into()),
-            field_name: "object".into(), kind: RelationshipKind::BelongsTo,
-            target_model: "Object".into(), foreign_key: Some("scope,object_oid".into()),
-            through: None, target_foreign_key: None,
+            field_name: "object".into(),
+            kind: RelationshipKind::BelongsTo,
+            target_model: "Object".into(),
+            foreign_key: Some("scope,object_oid".into()),
+            through: None,
+            target_foreign_key: None,
         };
-        let source = schema("Ref", "refs", vec![pk_column("ref_id"), column("scope"), column("object_oid")], &["ref_id"], vec![relation.clone()]);
-        assert_eq!(resolve_direct_join_keys(&source, &relation, &target).unwrap(), vec![
-            DirectJoinPair::new("scope", "namespace"),
-            DirectJoinPair::new("object_oid", "oid"),
-        ]);
+        let source = schema(
+            "Ref",
+            "refs",
+            vec![pk_column("ref_id"), column("scope"), column("object_oid")],
+            &["ref_id"],
+            vec![relation.clone()],
+        );
+        assert_eq!(
+            resolve_direct_join_keys(&source, &relation, &target).unwrap(),
+            vec![
+                DirectJoinPair::new("scope", "namespace"),
+                DirectJoinPair::new("object_oid", "oid"),
+            ]
+        );
         assert_eq!(target.primary_key.columns, vec!["id"]);
         let reverse = RelationshipDef {
-            field_name: "refs".into(), kind: RelationshipKind::HasMany,
-            target_model: "Ref".into(), ..relation
+            field_name: "refs".into(),
+            kind: RelationshipKind::HasMany,
+            target_model: "Ref".into(),
+            ..relation
         };
-        assert_eq!(resolve_direct_join_keys(&target, &reverse, &source).unwrap(), vec![
-            DirectJoinPair::new("scope", "namespace"),
-            DirectJoinPair::new("object_oid", "oid"),
-        ]);
+        assert_eq!(
+            resolve_direct_join_keys(&target, &reverse, &source).unwrap(),
+            vec![
+                DirectJoinPair::new("scope", "namespace"),
+                DirectJoinPair::new("object_oid", "oid"),
+            ]
+        );
     }
 
     #[test]
@@ -1040,10 +1093,15 @@ mod m2m_join_key_tests {
         let target = project_files();
         let mut relation = source.relationships[0].clone();
         relation.references = Some("kind".into());
-        let error = resolve_direct_join_keys(&source, &relation, &target).unwrap_err().to_string();
+        let error = resolve_direct_join_keys(&source, &relation, &target)
+            .unwrap_err()
+            .to_string();
         assert!(error.contains("declared unique key"), "{error}");
         relation.references = Some("missing".into());
-        assert!(resolve_direct_join_keys(&source, &relation, &target).unwrap_err().to_string().contains("unknown column"));
+        assert!(resolve_direct_join_keys(&source, &relation, &target)
+            .unwrap_err()
+            .to_string()
+            .contains("unknown column"));
     }
 
     #[test]
@@ -1053,10 +1111,16 @@ mod m2m_join_key_tests {
         let mut relation = source.relationships[0].clone();
         source.columns[0].field_name = "workspace_alias".into();
         relation.references = Some("workspace_alias,workspace_id".into());
-        assert!(resolve_direct_join_keys(&source, &relation, &target).unwrap_err().to_string().contains("repeats a physical column"));
+        assert!(resolve_direct_join_keys(&source, &relation, &target)
+            .unwrap_err()
+            .to_string()
+            .contains("repeats a physical column"));
         relation.references = Some("workspace_id,path".into());
         target.columns[0].column_type = ColumnType::Integer;
-        assert!(resolve_direct_join_keys(&source, &relation, &target).unwrap_err().to_string().contains("incompatible column types"));
+        assert!(resolve_direct_join_keys(&source, &relation, &target)
+            .unwrap_err()
+            .to_string()
+            .contains("incompatible column types"));
     }
 
     #[test]
@@ -1064,7 +1128,9 @@ mod m2m_join_key_tests {
         let source = projects(labels_rel(None, None));
         let mut relation = source.relationships[0].clone();
         relation.references = Some("path".into());
-        let error = resolve_m2m_join_keys(&source, &relation, &source, &labels()).unwrap_err().to_string();
+        let error = resolve_m2m_join_keys(&source, &relation, &source, &labels())
+            .unwrap_err()
+            .to_string();
         assert!(error.contains("requires a direct relationship"), "{error}");
     }
 }

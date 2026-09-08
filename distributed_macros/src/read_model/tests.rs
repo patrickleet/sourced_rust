@@ -10,9 +10,13 @@ fn direct_relationship_references_are_order_independent_and_emitted() {
     ] {
         let input = syn::parse_str(&format!(
             "struct Ref {{ id: String, #[readmodel({attributes})] object: Option<Object> }}"
-        )).unwrap();
+        ))
+        .unwrap();
         let expanded = expand_read_model(input).unwrap().to_string();
-        assert!(expanded.contains("references : Some (\"namespace,oid\""), "{expanded}");
+        assert!(
+            expanded.contains("references : Some (\"namespace,oid\""),
+            "{expanded}"
+        );
     }
     for attributes in [
         "references = \"id\"",
@@ -21,7 +25,8 @@ fn direct_relationship_references_are_order_independent_and_emitted() {
     ] {
         let input = syn::parse_str(&format!(
             "struct Ref {{ id: String, #[readmodel({attributes})] object: Option<Object> }}"
-        )).unwrap();
+        ))
+        .unwrap();
         assert!(expand_read_model(input).is_err(), "accepted {attributes}");
     }
 }
