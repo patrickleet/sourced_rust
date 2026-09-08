@@ -387,6 +387,9 @@ impl ResolvedProjectionPlan {
         program: &ProjectionProgram,
         occurrence: &DomainEventOccurrence,
     ) -> Result<Self, ProjectionProgramError> {
+        if program.source_snapshots() && occurrence.derivation().is_some() {
+            return Err(ProjectionProgramError::DerivedSourceSnapshot);
+        }
         let matches = program
             .arms()
             .iter()

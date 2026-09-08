@@ -38,6 +38,11 @@ impl SourceSnapshotVersion {
     pub(crate) fn from_occurrence(
         event: &DomainEventOccurrence,
     ) -> Result<Self, ProjectionProtocolError> {
+        if event.derivation().is_some() {
+            return Err(ProjectionProtocolError::InvalidBatch(
+                "derived facts cannot establish an aggregate source snapshot".into(),
+            ));
+        }
         let canonical = event
             .canonical_bytes()
             .map_err(|error| ProjectionProtocolError::InvalidBatch(error.to_string()))?;
