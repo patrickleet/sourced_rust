@@ -2,7 +2,8 @@ use quote::quote;
 use syn::{Attribute, DeriveInput, Expr, ExprArray, ExprLit, Field, Lit, LitStr, Meta, Token};
 
 use super::types::{
-    option_inner_type, option_string_tokens, validate_relationship_target_type, vec_inner_type,
+    box_inner_type, option_inner_type, option_string_tokens, validate_relationship_target_type,
+    vec_inner_type,
 };
 
 #[derive(Default)]
@@ -412,17 +413,29 @@ impl FieldAttrs {
                         ),
                     )
                 })?;
+                let boxed = box_inner_type(inner);
+                let inner = boxed.unwrap_or(inner);
                 validate_relationship_target_type(
                     field,
                     inner,
                     &relationship.target_model,
                     field_name,
                 )?;
+                let hydrated_value = if boxed.is_some() {
+                    quote! { ::std::boxed::Box::new(<#inner as distributed::RelationalReadModel>::from_row(row)?) }
+                } else {
+                    quote! { <#inner as distributed::RelationalReadModel>::from_row(row)? }
+                };
+                let included_value = if boxed.is_some() {
+                    quote! { value.as_ref() }
+                } else {
+                    quote! { value }
+                };
                 let hydrate = quote! {
                     #field_name => {
                         let mut rows = rows.into_iter();
                         self.#ident = match rows.next() {
-                            Some(row) => Some(<#inner as distributed::RelationalReadModel>::from_row(row)?),
+                            Some(row) => Some(#hydrated_value),
                             None => None,
                         };
                         if rows.next().is_some() {
@@ -438,7 +451,7 @@ impl FieldAttrs {
                     #field_name => {
                         let mut rows = Vec::new();
                         if let Some(value) = &self.#ident {
-                            rows.push(distributed::RelationalReadModel::to_row(value)?);
+                            rows.push(distributed::RelationalReadModel::to_row(#included_value)?);
                         }
                         Ok(rows)
                     }

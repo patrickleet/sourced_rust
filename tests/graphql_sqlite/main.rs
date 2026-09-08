@@ -12,6 +12,71 @@ use distributed::{
 use serde::{Deserialize, Serialize};
 use sqlx::sqlite::SqlitePoolOptions;
 
+#[derive(Clone, Debug, Default, PartialEq, Serialize, Deserialize, ReadModel)]
+#[table("boxed_accounts")]
+struct BoxedAccount {
+    id: String,
+    #[readmodel(belongs_to = "BoxedProfile", foreign_key = "id")]
+    profile: Option<Box<BoxedProfile>>,
+}
+
+#[derive(Clone, Debug, Default, PartialEq, Serialize, Deserialize, ReadModel)]
+#[table("boxed_profiles")]
+struct BoxedProfile {
+    id: String,
+    owner_id: String,
+    #[readmodel(belongs_to = "BoxedAccount", foreign_key = "id")]
+    account: Option<BoxedAccount>,
+}
+
+#[tokio::test]
+async fn boxed_singular_cycles_preserve_nested_graphql_permissions() {
+    let pool = SqlitePoolOptions::new()
+        .max_connections(1)
+        .connect("sqlite::memory:")
+        .await
+        .unwrap();
+    for sql in [
+        "CREATE TABLE boxed_accounts (id TEXT PRIMARY KEY)",
+        "CREATE TABLE boxed_profiles (id TEXT PRIMARY KEY, owner_id TEXT NOT NULL)",
+        "INSERT INTO boxed_accounts VALUES ('a'), ('b')",
+        "INSERT INTO boxed_profiles VALUES ('a', 'alice'), ('b', 'bob')",
+    ] {
+        sqlx::query(sql).execute(&pool).await.unwrap();
+    }
+    let engine = GraphqlEngine::builder(pool)
+        .model::<BoxedAccount>(ModelPermissions::new().grant("user", read().all_columns()))
+        .model::<BoxedProfile>(
+            ModelPermissions::new().grant(
+                "user",
+                read()
+                    .all_columns()
+                    .rows(col("owner_id").eq(distributed::graphql::claim("x-user-id"))),
+            ),
+        )
+        .roles(&["user"])
+        .build()
+        .unwrap();
+    let response = engine
+        .execute(
+            &session_role("user", "alice"),
+            Request::new(
+                "{ boxed_accounts(order_by: [{ id: asc }]) { id profile { id account { id } } } }",
+            ),
+        )
+        .await;
+    assert!(!response.is_err(), "{:?}", response.errors);
+    assert_eq!(
+        serde_json::to_value(response.data).unwrap(),
+        serde_json::json!({
+            "boxed_accounts": [
+                {"id": "a", "profile": {"id": "a", "account": {"id": "a"}}},
+                {"id": "b", "profile": null}
+            ]
+        })
+    );
+}
+
 fn orders_schema() -> TableSchema {
     TableSchema {
         model_name: "OrderView".into(),
