@@ -307,7 +307,10 @@ impl FieldAttrs {
                 syn::Error::new_spanned(field, "`references` requires a direct relationship")
             })?;
             if matches!(relationship.kind, RelationshipKindAttr::ManyToMany) {
-                return Err(syn::Error::new_spanned(field, "`references` requires a direct relationship"));
+                return Err(syn::Error::new_spanned(
+                    field,
+                    "`references` requires a direct relationship",
+                ));
             }
             relationship.references = Some(references);
         }

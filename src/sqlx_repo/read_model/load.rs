@@ -4,9 +4,9 @@ use std::sync::RwLock;
 use sqlx::{Database, Encode, Executor, IntoArguments, Type};
 
 use super::{
-    column_by_name, push_key_predicates, push_order_by_primary_key,
-    quote_identifier, relational_row_select, resolve_registered_read_model_schemas,
-    row_to_versioned_values, IncludeSpec, SqlxReadModelBackend,
+    column_by_name, push_key_predicates, push_order_by_primary_key, quote_identifier,
+    relational_row_select, resolve_registered_read_model_schemas, row_to_versioned_values,
+    IncludeSpec, SqlxReadModelBackend,
 };
 use crate::read_model::{
     ReadModelIncludeRows, ReadModelLoadGraph, ReadModelLoadRequest, ReadModelQueryCapabilities,
@@ -147,7 +147,9 @@ where
     for<'r> &'r str: sqlx::ColumnIndex<<DB as Database>::Row>,
 {
     let (source_column, target_column) = crate::table::belongs_to_join_columns(
-        root_schema, &spec.relationship, &spec.target_schema,
+        root_schema,
+        &spec.relationship,
+        &spec.target_schema,
     )?;
     let source_value = root_row.get(&source_column).ok_or_else(|| {
         TableStoreError::Metadata(format!(
