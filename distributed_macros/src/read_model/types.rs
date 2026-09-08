@@ -131,6 +131,24 @@ pub(super) fn vec_inner_type(ty: &Type) -> Option<&Type> {
     })
 }
 
+/// One allocation wrapper for a singular relationship, not a model or column.
+pub(super) fn box_inner_type(ty: &Type) -> Option<&Type> {
+    let segment = last_type_segment(ty)?;
+    if segment.ident != "Box" {
+        return None;
+    }
+    let PathArguments::AngleBracketed(args) = &segment.arguments else {
+        return None;
+    };
+    if args.args.len() != 1 {
+        return None;
+    }
+    match args.args.first()? {
+        GenericArgument::Type(ty) => Some(ty),
+        _ => None,
+    }
+}
+
 pub(super) fn validate_relationship_target_type(
     field: &Field,
     ty: &Type,

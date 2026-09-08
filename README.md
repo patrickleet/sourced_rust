@@ -1804,6 +1804,12 @@ let loaded = repo
   PK (same-named columns, or `foreign_key` / `target_foreign_key` in PK order).
   A one-column `foreign_key` on a composite PK is an error, not a silent
   `.first()`.
+- **Cyclic singular relationships:** use `Option<Box<T>>` for a `belongs_to`
+  field when two models refer to each other. For example,
+  `#[readmodel(belongs_to = "Profile", foreign_key = "id")]`
+  `profile: Option<Box<Profile>>`. The box only gives Rust a finite-sized type;
+  GraphQL still exposes one nullable `Profile`, not a list or embedded JSON
+  column. Ordinary `Option<T>` remains the same singular relationship.
 - **Writes:** `ReadModelWritePlan` / workspace `upsert` + `commit` (same transaction
   as events when staged on `CommitBatch`).
 - **Internal loads:** PK-anchored includes —
