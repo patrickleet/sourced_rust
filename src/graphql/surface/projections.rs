@@ -1075,6 +1075,7 @@ mod tests {
             "todos",
             &["todo_id", "owner_id", "title"],
             vec![RelationshipDef {
+                references: None,
                 field_name: "owner".into(),
                 kind: RelationshipKind::BelongsTo,
                 target_model: "UserView".into(),

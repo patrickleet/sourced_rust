@@ -69,6 +69,7 @@ fn workspaces() -> TableSchema {
         foreign_keys: Vec::new(),
         indexes: Vec::new(),
         relationships: vec![RelationshipDef {
+            references: None,
             field_name: "projects".into(),
             kind: RelationshipKind::HasMany,
             target_model: "ProjectView".into(),
@@ -158,6 +159,7 @@ fn project_labels() -> TableSchema {
 fn projects_with_labels() -> TableSchema {
     let mut schema = projects();
     schema.relationships.push(RelationshipDef {
+        references: None,
         field_name: "labels".into(),
         kind: RelationshipKind::ManyToMany,
         target_model: "LabelView".into(),
@@ -175,6 +177,7 @@ fn simple_records_with_composite_fk() -> TableSchema {
         .columns
         .push(TableColumn::new("record_id", "record_id", ColumnType::Text));
     schema.relationships.push(RelationshipDef {
+        references: None,
         field_name: "composite".into(),
         kind: RelationshipKind::BelongsTo,
         target_model: "CompositeRecord".into(),
@@ -189,6 +192,7 @@ fn simple_records_with_composite_fk() -> TableSchema {
 fn projects_with_files() -> TableSchema {
     let mut schema = projects();
     schema.relationships.push(RelationshipDef {
+        references: None,
         field_name: "files".into(),
         kind: RelationshipKind::HasMany,
         target_model: "ProjectFileView".into(),
@@ -233,6 +237,7 @@ async fn belongs_to_with_a_partial_composite_foreign_key_is_rejected() {
     let composite = composite_records();
     let mut simple = simple_records();
     simple.relationships.push(RelationshipDef {
+        references: None,
         field_name: "composite".into(),
         kind: RelationshipKind::BelongsTo,
         target_model: "CompositeRecord".into(),

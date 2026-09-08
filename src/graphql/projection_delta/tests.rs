@@ -3675,6 +3675,7 @@ fn todos() -> TableSchema {
         foreign_keys: vec![],
         indexes: vec![],
         relationships: vec![RelationshipDef {
+            references: None,
             field_name: "owner".into(),
             kind: RelationshipKind::BelongsTo,
             target_model: "UserView".into(),

@@ -99,6 +99,7 @@ impl FieldAttrs {
     pub(super) fn from_field(field: &Field) -> syn::Result<Self> {
         let mut attrs = Self::default();
         let mut pending_foreign_key: Option<String> = None;
+        let mut pending_references: Option<String> = None;
         let mut pending_through: Option<String> = None;
         let mut pending_target_foreign_key: Option<String> = None;
         for attr in &field.attrs {
@@ -165,6 +166,11 @@ impl FieldAttrs {
                     if meta.input.peek(Token![=]) {
                         attrs.default = Some(meta.value()?.parse::<LitStr>()?.value());
                     }
+                } else if meta.path.is_ident("references") {
+                    if pending_references.is_some() {
+                        return Err(meta.error("relationship references declared more than once"));
+                    }
+                    pending_references = Some(meta.value()?.parse::<LitStr>()?.value());
                 } else if meta.path.is_ident("foreign_key") {
                     let value = meta.value()?.parse::<LitStr>()?.value();
                     if attrs.relationship.is_some() {
@@ -185,6 +191,7 @@ impl FieldAttrs {
                 } else if meta.path.is_ident("has_many") {
                     let target = meta.value()?.parse::<LitStr>()?.value();
                     attrs.relationship = Some(RelationshipAttr {
+                        references: None,
                         kind: RelationshipKindAttr::HasMany,
                         target_model: target,
                         foreign_key: None,
@@ -194,6 +201,7 @@ impl FieldAttrs {
                 } else if meta.path.is_ident("belongs_to") {
                     let target = meta.value()?.parse::<LitStr>()?.value();
                     attrs.relationship = Some(RelationshipAttr {
+                        references: None,
                         kind: RelationshipKindAttr::BelongsTo,
                         target_model: target,
                         foreign_key: None,
@@ -203,6 +211,7 @@ impl FieldAttrs {
                 } else if meta.path.is_ident("many_to_many") {
                     let target = meta.value()?.parse::<LitStr>()?.value();
                     attrs.relationship = Some(RelationshipAttr {
+                        references: None,
                         kind: RelationshipKindAttr::ManyToMany,
                         target_model: target,
                         foreign_key: None,
@@ -293,6 +302,16 @@ impl FieldAttrs {
             }
         }
 
+        if let Some(references) = pending_references {
+            let relationship = attrs.relationship.as_mut().ok_or_else(|| {
+                syn::Error::new_spanned(field, "`references` requires a direct relationship")
+            })?;
+            if matches!(relationship.kind, RelationshipKindAttr::ManyToMany) {
+                return Err(syn::Error::new_spanned(field, "`references` requires a direct relationship"));
+            }
+            relationship.references = Some(references);
+        }
+
         if attrs.jsonb && attrs.text {
             return Err(syn::Error::new_spanned(
                 field,
@@ -331,6 +350,7 @@ impl FieldAttrs {
             ));
         };
         let target_model = &relationship.target_model;
+        let references = option_string_tokens(relationship.references.as_deref());
         let through = option_string_tokens(relationship.through.as_deref());
         let target_foreign_key = option_string_tokens(relationship.target_foreign_key.as_deref());
         let kind = match relationship.kind {
@@ -342,6 +362,7 @@ impl FieldAttrs {
         };
         Ok(Some(quote! {
             distributed::RelationshipDef {
+                references: #references,
                 field_name: #field_name.to_string(),
                 kind: #kind,
                 target_model: #target_model.to_string(),
@@ -485,6 +506,7 @@ pub(super) struct ForeignKeyParts {
 
 #[derive(Clone)]
 pub(super) struct RelationshipAttr {
+    pub(super) references: Option<String>,
     pub(super) kind: RelationshipKindAttr,
     pub(super) target_model: String,
     pub(super) foreign_key: Option<String>,

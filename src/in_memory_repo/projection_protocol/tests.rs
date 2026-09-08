@@ -116,6 +116,7 @@ fn graph_parent_schema() -> &'static TableSchema {
         indexes: Vec::new(),
         relationships: vec![
             RelationshipDef {
+                references: None,
                 field_name: "children".into(),
                 kind: RelationshipKind::HasMany,
                 target_model: "GraphChildView".into(),
@@ -124,6 +125,7 @@ fn graph_parent_schema() -> &'static TableSchema {
                 target_foreign_key: None,
             },
             RelationshipDef {
+                references: None,
                 field_name: "featured_children".into(),
                 kind: RelationshipKind::HasMany,
                 target_model: "GraphChildView".into(),
