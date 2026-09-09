@@ -1,6 +1,6 @@
 use super::*;
 
-enum ProtocolPreparationError {
+pub(super) enum ProtocolPreparationError {
     RequiredPreset,
     Internal,
 }
