@@ -47,6 +47,7 @@ import {
 import { ReplicaCommandRuntimeError } from './errors.js';
 import {
 	replicaCommandAuthority,
+	replicaCommandFreshness,
 	replicaCommandProjectionDelta,
 	replicaCommandProjectedLifecycle,
 	replicaCommandReadRecord,
@@ -601,6 +602,7 @@ export function createReplicaCommandRuntime<
 			return validated.requiresRevalidation;
 		}
 		const seam = replica[replicaCommandProjectionDelta]!;
+		if (validated.revalidation !== undefined) replica[replicaCommandFreshness]?.(prepared.commandId, validated.revalidation);
 		const actualPrepared = Object.freeze({
 			...prepared,
 			optimistic: Object.freeze({
@@ -1188,6 +1190,7 @@ export function createReplicaCommandRuntime<
 				readRecord: replica[replicaCommandReadRecord]?.bind(replica),
 				pureFunctions: options.pureFunctions
 			};
+			replica[replicaCommandFreshness]?.(prepared.commandId, prepared.revalidation);
 			(replica as SemanticReplica).createOptimisticLayer(
 				prepared.commandId,
 				(writer) =>
@@ -1287,6 +1290,17 @@ export function createReplicaCommandRuntime<
 				'REPLICA_COMMAND_SCOPE_INVALIDATED',
 				{ commandId: prepared.commandId }
 			);
+		}
+
+		// The HTTP lifecycle gate rejects before dispatch and before a receipt
+		// exists. Classify only its exact failure shape, never a success/receipt.
+		if (result.status === 503 && result.data == null && result.extensions === undefined &&
+			result.errors?.length === 1 && result.errors[0].extensions?.code === 'APPLICATION_RELOADING') {
+			rejectUnmanagedLayer(prepared.commandId);
+			revalidateInBackground(prepared, authority);
+			throw new ReplicaCommandRuntimeError('REPLICA_COMMAND_RELOADING', {
+				commandId: prepared.commandId
+			});
 		}
 
 		const rejection = graphqlCommandRejection(result);

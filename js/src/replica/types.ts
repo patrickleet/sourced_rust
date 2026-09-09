@@ -517,6 +517,8 @@ export type ReplicaOperationSourceLocation = {
 };
 
 export type ReplicaOperationProtocol = {
+	/** Exact generated protocol generation for causal delivery context. */
+	readonly protocolHash?: string;
 	readonly version: 1;
 	/** Opaque service schema fingerprint, compared byte-for-byte. */
 	readonly schemaHash: string;
@@ -893,6 +895,16 @@ export interface DistributedReplica {
 	 * dehydrated its page subset. Auth/scope change still purges.
 	 */
 	hydrate(
+		state: ReplicaDehydratedState,
+		authoritativeScope: ReplicaAuthoritativeScope
+	): boolean;
+	/**
+	 * Validate a fresh transfer against independent server authority and the
+	 * exact active scope, then restart query/live transports without applying
+	 * the transfer's potentially older data. Preserves command/freshness state.
+	 * Returns false without mutating state when validation fails.
+	 */
+	reauthorize(
 		state: ReplicaDehydratedState,
 		authoritativeScope: ReplicaAuthoritativeScope
 	): boolean;

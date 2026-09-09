@@ -235,6 +235,7 @@ export type DistributedSvelteKitVitePlugin = Readonly<{
 	buildStart(this: RollupWatchContextLike): void;
 	resolveId(source: string, importer?: string): string | undefined;
 	load(id: string): string | undefined;
+	transform(code: string, id: string, options?: Readonly<{ ssr?: boolean }>): string | undefined;
 	transformIndexHtml(): LifecycleHtmlTag[];
 	handleHotUpdate(context: ViteHotContextLike): Promise<never[] | undefined>;
 	watchChange(id: string): Promise<void>;
@@ -448,6 +449,9 @@ export function distributedSvelteKit(
 		},
 		resolveId(source, importer): string | undefined {
 			if (lifecycleOwnsCompile && frameworkDist !== undefined) {
+				if (source === '@hops-ops/distributed/replica/lazy') {
+					return join(frameworkDist, 'replica', 'lazy.js');
+				}
 				if (source === '@hops-ops/distributed/replica') {
 					return join(frameworkDist, 'replica', 'index.js');
 				}
@@ -496,6 +500,13 @@ export function distributedSvelteKit(
 				? activeLifecycleClientEntry(client)
 				: client.entry;
 			return `export * from ${JSON.stringify(portablePath(entry))};\n`;
+		},
+		transform(code, id, options): string | undefined {
+			if (!lifecycleOwnsCompile || options?.ssr || frameworkDist === undefined) return;
+			if (id.split('?', 1)[0] !== join(frameworkDist, 'sveltekit', 'lifecycle.js')) return;
+			// SvelteKit aliases can resolve generated clients before the virtual
+			// module hook. Attach once to the actual shared browser lifecycle.
+			return code + `\nif (import.meta.hot) import.meta.hot.on('vite:ws:disconnect', () => distributedReloadLifecycle().deferDevTransportReload());\n`;
 		},
 		transformIndexHtml: lifecycleGenerationMeta,
 		async handleHotUpdate(context): Promise<never[] | undefined> {
@@ -868,6 +879,7 @@ export function distributedSvelteKitAliases(
 		]);
 	if (frameworkDist !== undefined) {
 		aliases.push(
+			['@hops-ops/distributed/replica/lazy', join(frameworkDist, 'replica', 'lazy.js')],
 			['@hops-ops/distributed/replica', join(frameworkDist, 'replica')],
 			['@hops-ops/distributed/sveltekit', join(frameworkDist, 'sveltekit')]
 		);

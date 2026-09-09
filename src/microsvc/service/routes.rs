@@ -23,6 +23,11 @@ use super::handlers::{
 use crate::aggregate::Aggregate;
 use crate::application::{CommandMount, CommandMountRegistrar, CommandSpec};
 use crate::bus::{Bus, Message, MessageKind, MessagePublisher, OrderedDelivery, TransportError};
+use crate::command::input::canonicalize_command_input;
+use crate::command::{
+    command_transition, CommandConsistency, CommandEventSet, CommandInputType, CommandOutcome,
+    CompiledInputDefaults, TypedCommand, TypedCommandContract,
+};
 use crate::command_ledger::{
     CanonicalInputHash, CausalCommitBatch, CausalTransactionalCommit, CommandContractFingerprint,
     CommandLedgerStore, CommandReservation, ReservationOutcome, TerminalCommandState,
@@ -32,17 +37,14 @@ use crate::command_ledger::{
     CausalRepositoryIdentity, CommandId, CommandLedgerKey, CommandLookup, CommandLookupScope,
     PrincipalPartitionId,
 };
-use crate::graphql::command_contract::CommandConsistency;
-use crate::graphql::command_contract::{
-    CommandEventSet, CommandOutcome, CompiledInputDefaults, TypedCommandContract,
-};
-use crate::graphql::command_input::canonicalize_command_input;
 #[cfg(feature = "graphql")]
 use crate::graphql::identity::VerifiedPrincipal;
-use crate::graphql::{command_transition, GraphqlInputType, SurfaceProjector, TypedCommand};
+use crate::graphql::SurfaceProjector;
 use crate::microsvc::causal::CausalWorkspace;
 use crate::microsvc::cell_host::{CellCommandIdentity, CellDispatchError, CellDispatchResult};
 use crate::microsvc::context::Context;
+#[cfg(feature = "graphql")]
+use crate::microsvc::dependencies::CausalHostProjections;
 use crate::microsvc::dependencies::{
     CausalProjectionRouteDependencies, CausalRouteDependencies, ConfigurableOutboxPublisher,
     HasOutboxStore, HasReadModelStore, HasRepo,
@@ -71,8 +73,6 @@ use crate::outbox_worker::{
     OutboxDispatcher, OutboxDrainRunner, OutboxPublishMailbox, DEFAULT_DRAIN_LEASE,
     DEFAULT_OUTBOX_HINT_CAPACITY,
 };
-#[cfg(feature = "graphql")]
-use crate::projection_protocol::ProjectionProtocolStore;
 #[cfg(feature = "graphql")]
 use crate::projection_protocol::{CompiledProjectionTopology, ProjectorTopologyId};
 use crate::repository::{StreamIdentity, TransactionalCommit};
@@ -597,9 +597,9 @@ where
         E: crate::domain_event::DomainEventBodyContract<S>,
         S: crate::DomainState + crate::projection::lower::ProjectionBodyMetadata,
     {
-        let values = crate::graphql::__command_projection_state_known_values::<E, S>(vec![(
+        let values = crate::command::__command_projection_state_known_values::<E, S>(vec![(
             rust_field,
-            crate::graphql::CommandProjectionPreviewSource::trusted("x-user-id", "string"),
+            crate::command::CommandProjectionPreviewSource::trusted("x-user-id", "string"),
         )]);
         self.contract
             .projections
@@ -611,7 +611,7 @@ where
     #[must_use]
     pub fn preview_reduce_known_record(
         mut self,
-        reduce: crate::graphql::CommandProjectionPureReduce,
+        reduce: crate::command::CommandProjectionPureReduce,
     ) -> Self {
         self.contract.projections.add_pure_reduce(reduce);
         self
@@ -750,12 +750,12 @@ where
     }
 }
 
-impl<D, I, T> ThinCommandBuilder<D, I, crate::graphql::Eventual<T>, ThinCommandInvoked>
+impl<D, I, T> ThinCommandBuilder<D, I, crate::command::Eventual<T>, ThinCommandInvoked>
 where
     D: CausalRouteDependencies + Send + Sync + 'static,
     D::Aggregate: Aggregate + Send + Sync + 'static,
     I: serde::de::DeserializeOwned + Send + Sync + 'static,
-    T: crate::graphql::GraphqlOutputType + serde::Serialize + Send + Sync + 'static,
+    T: crate::command::CommandOutputType + serde::Serialize + Send + Sync + 'static,
 {
     /// Publish captured events, commit, and return an Eventual payload.
     ///
@@ -782,12 +782,12 @@ where
     }
 }
 
-impl<D, I, T> ThinCommandBuilder<D, I, crate::graphql::Succeeded<T>, ThinCommandInvoked>
+impl<D, I, T> ThinCommandBuilder<D, I, crate::command::Succeeded<T>, ThinCommandInvoked>
 where
     D: CausalRouteDependencies + Send + Sync + 'static,
     D::Aggregate: Aggregate + Send + Sync + 'static,
     I: serde::de::DeserializeOwned + Send + Sync + 'static,
-    T: crate::graphql::GraphqlOutputType + serde::Serialize + Send + Sync + 'static,
+    T: crate::command::CommandOutputType + serde::Serialize + Send + Sync + 'static,
 {
     /// Commit and return a Succeeded payload. Used when the command is not Eventual.
     pub fn succeeded<F>(self, payload: F) -> Routes<D>
@@ -826,18 +826,18 @@ where
     roles: Vec<String>,
 }
 
-impl<'a, A, I, T> PreparedCommandHandler<'a, A, I, crate::graphql::Eventual<T>>
+impl<'a, A, I, T> PreparedCommandHandler<'a, A, I, crate::command::Eventual<T>>
     for ThinEventualHandler<A, I, T>
 where
     A: Aggregate + Send + Sync + 'static,
     I: serde::de::DeserializeOwned + Send + Sync + 'static,
-    T: crate::graphql::GraphqlOutputType + serde::Serialize + Send + Sync + 'static,
+    T: crate::command::CommandOutputType + serde::Serialize + Send + Sync + 'static,
 {
     type Future = Pin<
         Box<
             dyn Future<
                     Output = Result<
-                        crate::graphql::PreparedCommand<crate::graphql::Eventual<T>>,
+                        crate::command::PreparedCommand<crate::command::Eventual<T>>,
                         HandlerError,
                     >,
                 > + Send
@@ -887,18 +887,18 @@ where
     roles: Vec<String>,
 }
 
-impl<'a, A, I, T> PreparedCommandHandler<'a, A, I, crate::graphql::Succeeded<T>>
+impl<'a, A, I, T> PreparedCommandHandler<'a, A, I, crate::command::Succeeded<T>>
     for ThinSucceededHandler<A, I, T>
 where
     A: Aggregate + Send + Sync + 'static,
     I: serde::de::DeserializeOwned + Send + Sync + 'static,
-    T: crate::graphql::GraphqlOutputType + serde::Serialize + Send + Sync + 'static,
+    T: crate::command::CommandOutputType + serde::Serialize + Send + Sync + 'static,
 {
     type Future = Pin<
         Box<
             dyn Future<
                     Output = Result<
-                        crate::graphql::PreparedCommand<crate::graphql::Succeeded<T>>,
+                        crate::command::PreparedCommand<crate::command::Succeeded<T>>,
                         HandlerError,
                     >,
                 > + Send
@@ -1097,7 +1097,7 @@ impl<D: Send + Sync + 'static> Routes<D> {
     pub fn command_transition<S, I, K>(self, name: &'static str) -> TypedRouteBuilder<D, I, K>
     where
         S: CommandEventSet,
-        I: GraphqlInputType + serde::de::DeserializeOwned + Send + 'static,
+        I: CommandInputType + serde::de::DeserializeOwned + Send + 'static,
         K: CommandOutcome,
     {
         self.typed_command(command_transition::<S, I, K>(name))
@@ -1722,10 +1722,23 @@ where
             }
 
             let fence = attempt.fence();
+            let replay = crate::microsvc::cell_host::causal::CellCommandReplay {
+                payload: replay_payload.clone(),
+                events: batch
+                    .outbox_messages
+                    .iter()
+                    .map(crate::microsvc::cell_host::CellProjectionEventWireItem::from_message)
+                    .collect(),
+            };
+            let replay = serde_json::to_value(replay).map_err(|error| {
+                CellDispatchError::Internal(format!(
+                    "cell command replay could not be encoded: {error}"
+                ))
+            })?;
             let completion = attempt
                 .complete(
                     TerminalCommandState::Succeeded,
-                    replay_payload.clone(),
+                    replay,
                     policy.replay_retention,
                 )
                 .map_err(crate::microsvc::cell_host::causal::internal_ledger_error)?;
@@ -1829,7 +1842,7 @@ where
                 self.direct_projection_bootstrap
                     .get_or_try_init(|| async {
                         repository
-                            .register_projection_models(topology, ownership)
+                            .__register_direct_projection_models(topology, ownership)
                             .await
                             .map_err(|error| {
                                 CausalDispatchError::Internal(format!(

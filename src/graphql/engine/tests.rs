@@ -9,13 +9,14 @@ mod client_surface_parity_tests {
     use sha2::{Digest, Sha256};
 
     use super::*;
-    use crate::graphql::command_contract::{CommandEffects, TypedCommandContract};
+    use crate::command::CommandConsistency;
+    use crate::command::{CommandEffects, TypedCommandContract};
+    use crate::command::{CommandInputType, CommandOutputType, CommandTypeDef, CommandTypeField};
     use crate::graphql::commands::TypedCommandInventory;
     #[cfg(feature = "sqlite")]
     use crate::graphql::ModelNormalization;
     use crate::graphql::{
-        claim, col, ClientRootOperation, CommandConsistency, DistributedClientSurfaceExport,
-        GraphqlInputType, GraphqlOutputType, GraphqlTypeDef, GraphqlTypeField, RoleGrant,
+        claim, col, ClientRootOperation, DistributedClientSurfaceExport, RoleGrant,
     };
     use crate::table::{ColumnType, PrimaryKey, TableColumn, TableKind, TableSchema};
     #[cfg(feature = "sqlite")]
@@ -64,15 +65,15 @@ mod client_surface_parity_tests {
         roles: &[&str],
     ) -> TypedCommandContract
     where
-        I: GraphqlInputType + 'static,
-        O: GraphqlOutputType + 'static,
+        I: CommandInputType + 'static,
+        O: CommandOutputType + 'static,
     {
         TypedCommandContract {
             name: command_name.into(),
             field_name: field_name.into(),
             roles: roles.iter().map(|role| (*role).into()).collect(),
-            input: I::graphql_type().with_type_id(TypeId::of::<I>()),
-            output: O::graphql_type().with_type_id(TypeId::of::<O>()),
+            input: I::command_type().with_type_id(TypeId::of::<I>()),
+            output: O::command_type().with_type_id(TypeId::of::<O>()),
             input_type_id: TypeId::of::<I>(),
             output_type_id: TypeId::of::<O>(),
             consistency: CommandConsistency::Succeeded,
@@ -976,6 +977,70 @@ mod client_surface_parity_tests {
 
     #[cfg(feature = "sqlite")]
     #[tokio::test]
+    async fn required_presets_reject_query_and_stream_without_internal_errors() {
+        let mut engine = preset_protocol_engine();
+        Arc::get_mut(&mut engine.inner)
+            .unwrap()
+            .protocol
+            .as_mut()
+            .unwrap()
+            .roles
+            .get_mut("user")
+            .unwrap()
+            .surface
+            .trusted_presets = vec![ClientTrustedPresetDescriptor {
+            name: "x-required-number".into(),
+            codec: "int32".into(),
+        }];
+        for value in [None, Some("not-a-number"), Some("01"), Some("2147483648")] {
+            let mut session = Session::new();
+            session.set("x-roles", "user");
+            if let Some(value) = value {
+                session.set("x-required-number", value);
+            }
+            let query = engine
+                .execute(&session, Request::new("{ __typename }"))
+                .await;
+            let streamed = engine
+                .execute_stream(&session, Request::new("{ __typename }"))
+                .collect::<Vec<_>>()
+                .await;
+            assert_eq!(streamed.len(), 1);
+            for response in std::iter::once(query).chain(streamed) {
+                assert_eq!(response.errors.len(), 1);
+                let error = serde_json::to_value(&response.errors[0]).unwrap();
+                assert_eq!(error["extensions"]["code"], "BAD_REQUEST", "{error}");
+                assert_eq!(
+                    error["message"],
+                    "required session input is missing or invalid"
+                );
+                assert_eq!(response.data, Value::Null);
+                assert!(!response.extensions.contains_key("distributed"));
+            }
+        }
+        let mut valid = Session::new();
+        valid.set("x-roles", "user");
+        valid.set("x-required-number", "42");
+        let response = engine.execute(&valid, Request::new("{ __typename }")).await;
+        assert!(!response.is_err(), "{:?}", response.errors);
+        assert_eq!(
+            distributed_extension(&response)["trustedPresets"][0]["value"],
+            42
+        );
+        let responses = engine
+            .execute_stream(&valid, Request::new("{ __typename }"))
+            .collect::<Vec<_>>()
+            .await;
+        assert_eq!(responses.len(), 1);
+        assert!(!responses[0].is_err());
+        assert_eq!(
+            distributed_extension(&responses[0])["trustedPresets"][0]["value"],
+            42
+        );
+    }
+
+    #[cfg(feature = "sqlite")]
+    #[tokio::test]
     async fn cache_scope_tracks_only_relevant_claims_and_private_policy() {
         use crate::graphql::identity::VerifiedPrincipal;
 
@@ -1404,9 +1469,9 @@ mod client_surface_parity_tests {
         type_name: &str,
         nullable: bool,
         list: bool,
-        nested: Option<GraphqlTypeDef>,
-    ) -> GraphqlTypeField {
-        GraphqlTypeField {
+        nested: Option<CommandTypeDef>,
+    ) -> CommandTypeField {
+        CommandTypeField {
             name: name.into(),
             type_name: type_name.into(),
             nullable,
@@ -1418,16 +1483,16 @@ mod client_surface_parity_tests {
 
     struct ChangeOrderInput;
 
-    impl GraphqlInputType for ChangeOrderInput {
-        fn graphql_type() -> GraphqlTypeDef {
-            let patch = GraphqlTypeDef::new(
+    impl CommandInputType for ChangeOrderInput {
+        fn command_type() -> CommandTypeDef {
+            let patch = CommandTypeDef::new(
                 "OrderPatchInput",
                 vec![
                     type_field("status", "String", false, false, None),
                     type_field("metadata", "JSON", true, false, None),
                 ],
             );
-            GraphqlTypeDef::new(
+            CommandTypeDef::new(
                 "ChangeOrderInput",
                 vec![
                     type_field("patch", "OrderPatchInput", false, false, Some(patch)),
@@ -1439,16 +1504,16 @@ mod client_surface_parity_tests {
 
     struct ChangeOrderPayload;
 
-    impl GraphqlOutputType for ChangeOrderPayload {
-        fn graphql_type() -> GraphqlTypeDef {
-            let changed_order = GraphqlTypeDef::new(
+    impl CommandOutputType for ChangeOrderPayload {
+        fn command_type() -> CommandTypeDef {
+            let changed_order = CommandTypeDef::new(
                 "ChangedOrder",
                 vec![
                     type_field("status", "String", false, false, None),
                     type_field("order_id", "String", false, false, None),
                 ],
             );
-            GraphqlTypeDef::new(
+            CommandTypeDef::new(
                 "ChangeOrderPayload",
                 vec![
                     type_field("warnings", "String", true, true, None),
@@ -2081,6 +2146,7 @@ mod client_surface_parity_tests {
             foreign_keys: Vec::new(),
             indexes: Vec::new(),
             relationships: vec![RelationshipDef {
+                references: None,
                 field_name: "children".into(),
                 kind: RelationshipKind::HasMany,
                 target_model: "PolicyChildView".into(),

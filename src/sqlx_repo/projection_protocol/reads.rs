@@ -1,5 +1,125 @@
 use super::*;
 
+#[cfg(all(test, feature = "sqlite"))]
+#[tokio::test]
+async fn candidate_key_snapshot_lookup_selects_surrogate_keys_in_sql() {
+    let pool = sqlx::sqlite::SqlitePoolOptions::new()
+        .max_connections(1)
+        .connect("sqlite::memory:")
+        .await
+        .unwrap();
+    let mut connection = pool.acquire().await.unwrap();
+    candidate_key_snapshot_sql_fixture::<sqlx::Sqlite>(&mut connection).await;
+}
+
+#[cfg(all(test, feature = "postgres"))]
+#[tokio::test]
+#[ignore = "requires dedicated DISTRIBUTED_UNIQUE_KEY_TEST_POSTGRES_URL; explicitly run in CI"]
+async fn candidate_key_snapshot_lookup_postgres() {
+    let url = std::env::var("DISTRIBUTED_UNIQUE_KEY_TEST_POSTGRES_URL")
+        .expect("dedicated test database URL");
+    let options: sqlx::postgres::PgConnectOptions = url.parse().unwrap();
+    assert!(options
+        .get_database()
+        .unwrap_or("")
+        .starts_with("distributed_unique_key_test"));
+    let pool = sqlx::postgres::PgPoolOptions::new()
+        .max_connections(1)
+        .connect_with(options)
+        .await
+        .unwrap();
+    let mut connection = pool.acquire().await.unwrap();
+    candidate_key_snapshot_sql_fixture::<sqlx::Postgres>(&mut connection).await;
+}
+
+#[cfg(test)]
+async fn candidate_key_snapshot_sql_fixture<DB>(connection: &mut DB::Connection)
+where
+    DB: SqlxRepoBackend,
+    DB::Arguments: IntoArguments<DB>,
+    for<'c> &'c mut DB::Connection: Executor<'c, Database = DB>,
+    for<'r> &'r str: sqlx::ColumnIndex<DB::Row>,
+{
+    use crate::table::{
+        ColumnType, PrimaryKey, RelationshipDef, RelationshipKind, RowValue, TableColumn,
+        TableIndex, TableKind,
+    };
+    for statement in [
+        "CREATE TEMP TABLE snapshot_targets (id TEXT PRIMARY KEY, tenant TEXT NOT NULL, candidate TEXT, UNIQUE(tenant,candidate))",
+        "INSERT INTO snapshot_targets VALUES ('opaque-a','a','same'),('opaque-b','b','same'),('null-target','a',NULL)",
+    ] { sqlx::query::<DB>(statement).execute(&mut *connection).await.unwrap(); }
+    let target = TableSchema {
+        model_name: "SnapshotTarget".into(),
+        table_name: "snapshot_targets".into(),
+        columns: vec![
+            TableColumn {
+                primary_key: true,
+                ..TableColumn::new("id", "id", ColumnType::Text)
+            },
+            TableColumn::new("tenant", "tenant", ColumnType::Text),
+            TableColumn {
+                nullable: true,
+                ..TableColumn::new("candidate", "candidate", ColumnType::Text)
+            },
+        ],
+        primary_key: PrimaryKey::new(["id"]),
+        version_column: None,
+        foreign_keys: vec![],
+        indexes: vec![TableIndex {
+            name: None,
+            columns: vec!["tenant".into(), "candidate".into()],
+            unique: true,
+        }],
+        relationships: vec![],
+        kind: TableKind::ReadModel,
+    };
+    let mut source = target.clone();
+    source.model_name = "SnapshotSource".into();
+    source.table_name = "snapshot_sources".into();
+    let relation = RelationshipDef {
+        field_name: "target".into(),
+        kind: RelationshipKind::BelongsTo,
+        target_model: target.model_name.clone(),
+        foreign_key: Some("tenant,candidate".into()),
+        references: Some("tenant,candidate".into()),
+        through: None,
+        target_foreign_key: None,
+    };
+    for (tenant, candidate, expected) in [
+        ("a", Some("same"), Some("opaque-a")),
+        ("b", Some("same"), Some("opaque-b")),
+        ("missing", Some("same"), None),
+        ("a", None, None),
+    ] {
+        let mut values = RowValues::new();
+        values.insert("id", RowValue::String("source-id".into()));
+        values.insert("tenant", RowValue::String(tenant.into()));
+        values.insert(
+            "candidate",
+            candidate
+                .map(|v| RowValue::String(v.into()))
+                .unwrap_or(RowValue::Null),
+        );
+        let keys = read_projection_relationship_keys_in_executor::<DB>(
+            &mut *connection,
+            &source,
+            &values,
+            &relation,
+            &target,
+            2,
+        )
+        .await
+        .unwrap();
+        assert_eq!(
+            keys,
+            expected
+                .into_iter()
+                .map(|id| RowKey::new([("id", RowValue::String(id.into()))]))
+                .collect::<Vec<_>>()
+        );
+    }
+}
+
 pub(super) fn decode_change_row<DB>(
     row: &DB::Row,
     topology: &ProjectorTopologyId,
@@ -200,6 +320,10 @@ where
     }
 
     let current = record_in_tx(tx, &staged.scope, &state.change_epoch).await?;
+    crate::projection_protocol::validate_snapshot_write(
+        current.as_ref().map(|record| &record.metadata),
+        None,
+    )?;
     let physical_exists = physical_row_exists_in_tx(tx, &staged.mutation).await?;
     match current.as_ref().map(|record| &record.metadata) {
         None if physical_exists => {
@@ -228,6 +352,7 @@ where
         &expectation,
         ProjectionMutationKind::Upsert,
         current.as_ref(),
+        false,
     )?;
     debug_assert!(!tombstone);
     let change = allocate_change(
@@ -242,6 +367,7 @@ where
         None,
     )?;
     let metadata = ProjectionRecordMetadata {
+        source_snapshot: None,
         revision: revision.clone(),
         tombstone,
         change: change.cursor.clone(),
@@ -358,6 +484,7 @@ where
          record.tombstone AS ps_record_tombstone, \
          record.change_epoch AS ps_record_change_epoch, \
          record.change_position AS ps_record_change_position, \
+         record.source_snapshot AS ps_source_snapshot, \
          checkpoint.source_bytes AS ps_cursor_source_bytes, \
          checkpoint.source_hash AS ps_cursor_source_hash, \
          checkpoint.source_partition_bytes AS ps_cursor_partition_bytes, \
@@ -671,6 +798,11 @@ where
                     )?,
                 )?,
                 tombstone,
+                source_snapshot: decode_source_snapshot(
+                    first.try_get("ps_source_snapshot").map_err(|error| {
+                        protocol_storage_error::<DB>("decode source snapshot", error)
+                    })?,
+                )?,
                 change: ProjectionChangeCursor::new(
                     request.scope.topology().clone(),
                     request.scope.projection_partition().clone(),
@@ -1074,53 +1206,12 @@ where
     for<'c> &'c mut DB::Connection: Executor<'c, Database = DB>,
     for<'r> &'r str: sqlx::ColumnIndex<DB::Row>,
 {
-    let foreign_key = relationship.foreign_key.as_deref().ok_or_else(|| {
-        ProjectionProtocolError::InvalidBatch(format!(
-            "projection graph relationship `{}` has no foreign key",
-            relationship.field_name
-        ))
-    })?;
-    let (target_column, value) = match relationship.kind {
-        RelationshipKind::HasMany => {
-            let (target_column, root_column) =
-                projection_has_many_columns(root_schema, relationship, target_schema)?;
-            let value = root_row.get(&root_column).cloned().ok_or_else(|| {
-                ProjectionProtocolError::InvalidBatch(format!(
-                    "projection graph root `{}` is missing relationship key `{root_column}`",
-                    root_schema.model_name
-                ))
-            })?;
-            (target_column, value)
-        }
-        RelationshipKind::BelongsTo => {
-            let source_column = column_name_for(root_schema, foreign_key).ok_or_else(|| {
-                ProjectionProtocolError::InvalidBatch(format!(
-                    "projection graph relationship `{}` foreign key `{foreign_key}` is not a source column",
-                    relationship.field_name
-                ))
-            })?;
-            let [target_column] = target_schema.primary_key.columns.as_slice() else {
-                return Err(ProjectionProtocolError::InvalidBatch(format!(
-                    "projection graph belongs-to target `{}` must have one primary-key column",
-                    target_schema.model_name
-                )));
-            };
-            let value = root_row.get(&source_column).cloned().ok_or_else(|| {
-                ProjectionProtocolError::InvalidBatch(format!(
-                    "projection graph root `{}` is missing relationship key `{source_column}`",
-                    root_schema.model_name
-                ))
-            })?;
-            (target_column.clone(), value)
-        }
-        RelationshipKind::ManyToMany => {
-            return Err(ProjectionProtocolError::InvalidBatch(format!(
-                "projection graph relationship `{}` is many-to-many; project an explicit join read model instead",
-                relationship.field_name
-            )));
-        }
-    };
-    if value == RowValue::Null {
+    let values =
+        projection_relationship_values(root_schema, root_row, relationship, target_schema)?;
+    if values
+        .iter()
+        .any(|(_, value)| *value == crate::table::RowValue::Null)
+    {
         return Ok(Vec::new());
     }
 
@@ -1134,13 +1225,18 @@ where
     builder.push(" FROM ");
     builder.push(quote_identifier(&target_schema.table_name));
     builder.push(" WHERE ");
-    builder.push(quote_identifier(&target_column));
-    builder.push(" = ");
-    DB::push_row_value_bind(
-        &mut builder,
-        value,
-        column_by_name(target_schema, &target_column)?,
-    )?;
+    for (index, (target_column, value)) in values.into_iter().enumerate() {
+        if index > 0 {
+            builder.push(" AND ");
+        }
+        builder.push(quote_identifier(&target_column));
+        builder.push(" = ");
+        DB::push_row_value_bind(
+            &mut builder,
+            value,
+            column_by_name(target_schema, &target_column)?,
+        )?;
+    }
     push_order_by_primary_key(&mut builder, target_schema);
     builder.push(" LIMIT ");
     builder.push(max_unique.saturating_add(1).to_string());
@@ -1845,7 +1941,7 @@ where
         "SELECT record.topology_hash AS live_topology_hash, record.partition_hash AS \
          live_partition_hash, record.model_name AS live_model_name, \
          record.canonical_key_bytes, record.canonical_key_hash, record.incarnation, \
-         record.revision, record.tombstone, record.change_epoch, record.change_position, \
+         record.revision, record.tombstone, record.change_epoch, record.change_position, record.source_snapshot, \
          partition.topology_bytes AS live_topology_bytes, \
          partition.partition_bytes AS live_partition_bytes, \
          partition.change_epoch AS live_partition_epoch, \
@@ -1998,16 +2094,20 @@ where
                 "projection live-record change exceeds its partition head",
             ));
         }
-        let metadata = ProjectionRecordMetadata {
-            revision: RecordRevision::new(scope.clone(), incarnation, revision)?,
-            tombstone: false,
-            change: ProjectionChangeCursor::new(
-                scope.topology().clone(),
-                scope.projection_partition().clone(),
-                change_epoch,
-                change_position,
-            )?,
-        };
+        let metadata =
+            ProjectionRecordMetadata {
+                source_snapshot: decode_source_snapshot(row.try_get("source_snapshot").map_err(
+                    |error| protocol_storage_error::<DB>("decode source snapshot", error),
+                )?)?,
+                revision: RecordRevision::new(scope.clone(), incarnation, revision)?,
+                tombstone: false,
+                change: ProjectionChangeCursor::new(
+                    scope.topology().clone(),
+                    scope.projection_partition().clone(),
+                    change_epoch,
+                    change_position,
+                )?,
+            };
         if records[*index].replace(metadata).is_some() {
             return Err(corrupt_storage(format!(
                 "projection live-record identity for model `{}` is ambiguous across partitions",

@@ -588,6 +588,14 @@ impl GetStream for InMemoryRepository {
 }
 
 impl CausalGetStream for InMemoryRepository {
+    fn get_causal_stream_tail<'a>(
+        &'a self,
+        identity: &'a StreamIdentity,
+        after_version: u64,
+    ) -> impl std::future::Future<Output = Result<Option<Entity>, RepositoryError>> + Send + 'a
+    {
+        GetStream::get_stream_tail(self, identity, after_version)
+    }
     fn get_causal_stream<'a>(
         &'a self,
         identity: &'a StreamIdentity,
