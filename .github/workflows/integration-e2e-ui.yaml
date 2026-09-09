@@ -122,6 +122,7 @@ jobs:
             if ! kill -0 "$(cat .distributed-dev.pid)" 2>/dev/null; then
               echo "distributed dev exited before readiness"
               tail -200 .distributed-dev.log
+              ps -eo pid,ppid,etime,stat,comm
               exit 1
             fi
             sleep 0.5
@@ -129,6 +130,9 @@ jobs:
           if [ "$ok" != "1" ]; then
             echo "distributed dev failed to become ready"
             tail -200 .distributed-dev.log
+            # Executable names identify quiet build children without exposing
+            # credentials from process arguments or environment variables.
+            ps -eo pid,ppid,etime,stat,comm
             exit 1
           fi
 
