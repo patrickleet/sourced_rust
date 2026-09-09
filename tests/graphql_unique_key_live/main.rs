@@ -103,8 +103,12 @@ async fn publish(repository: &SqliteRepository, bus: &InMemoryBus, revision: &st
         .unwrap();
 }
 
-#[tokio::test]
-async fn projected_candidate_keys_generate_a_live_client() {
+async fn fixture() -> (
+    SqliteRepository,
+    InMemoryBus,
+    GraphqlEngine,
+    distributed_cli::GeneratedClientProject,
+) {
     let repository = SqliteRepository::connect_and_migrate("sqlite::memory:")
         .await
         .unwrap();
@@ -139,6 +143,12 @@ async fn projected_candidate_keys_generate_a_live_client() {
     .unwrap();
     assert_eq!(generated.operations.len(), 1);
     assert!(generated.operations[0].live_operation_hash.is_some());
+    (repository, bus, engine, generated)
+}
+
+#[tokio::test]
+async fn projected_candidate_keys_generate_a_live_client() {
+    let (repository, bus, engine, _) = fixture().await;
     let mut session = distributed::microsvc::Session::new();
     session.set(distributed::microsvc::ROLE_KEY, "user");
     let result = engine
@@ -175,4 +185,67 @@ async fn projected_candidate_keys_generate_a_live_client() {
             {"id": "reference-stable", "target": {"id": "opaque-two", "body": "Content two"}}
         ]})
     );
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+#[ignore = "requires built JS and Playwright Chromium; explicitly run by browser CI"]
+async fn projected_candidate_keys_reach_chromium_over_http_and_websocket() {
+    use axum::{
+        routing::{get, post},
+        Json,
+    };
+    let (repository, bus, engine, generated) = fixture().await;
+    let operation = &generated.operations[0];
+    let module = generated
+        .files
+        .iter()
+        .find(|file| file.path == operation.module_path)
+        .unwrap()
+        .contents
+        .clone();
+    let export_name = operation.export_name.clone();
+    let app = distributed::microsvc::router(std::sync::Arc::new(
+        Service::new()
+            .named("unique-key-live")
+            .try_with_graphql(engine)
+            .unwrap(),
+    ))
+    .route(
+        "/references",
+        get(|| async { axum::response::Html("<output></output>") }),
+    )
+    .route(
+        "/fixture",
+        get(move || {
+            let module = module.clone();
+            let export_name = export_name.clone();
+            async move { Json(serde_json::json!({"module": module, "exportName": export_name})) }
+        }),
+    )
+    .route(
+        "/publish",
+        post(move || {
+            let repository = repository.clone();
+            let bus = bus.clone();
+            async move {
+                publish(&repository, &bus, "two").await;
+                Json(serde_json::json!({"ok": true}))
+            }
+        }),
+    );
+    let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let origin = format!("http://{}", listener.local_addr().unwrap());
+    let server = tokio::spawn(async move {
+        axum::serve(listener, app).await.unwrap();
+    });
+    let status = tokio::task::spawn_blocking(move || {
+        std::process::Command::new("node")
+            .arg("tests/e2e-ui/scripts/unique-key-connected.mjs")
+            .arg(origin)
+            .status()
+    })
+    .await
+    .unwrap();
+    server.abort();
+    assert!(status.unwrap().success(), "connected browser proof failed");
 }
